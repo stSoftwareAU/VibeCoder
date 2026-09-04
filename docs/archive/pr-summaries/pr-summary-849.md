@@ -84,9 +84,13 @@ flowchart LR
   that phase — evidence: `worker/deno/tests/prompt_override_resolver_test.ts::buildIssuePrompt - a work-on override replaces the issue template`,
   `::buildPlanningPrompt - a planning override replaces the template, the critique keeps its own`,
   `::buildGrillMePrompt - a grill-me override replaces the template` — reviewer:
-  partial — reason: the reviewer found a second issue-prompt entry point
-  (`lib/execute_claude_phase.ts:894`) that did not receive the overrides; it now
-  does, with its CLI command passing them (`worker/deno/commands/execute_claude_phase.ts`).
+  met — reason: the reviewer found two defects on the way, both fixed here. The
+  container launcher parsed the block against the stock label names, so a fleet
+  that renamed `planning` could not launch a config `loadConfig` accepts
+  (`readConfiguredCustomPromptPaths` now reads the names from the same file;
+  `::readConfiguredCustomPromptPaths - the launcher reads the same renamed label the worker does`);
+  and the `prompt-builder` / `grill-me-processor` CLI entry points never passed
+  the overrides, so they rendered the built-in template.
 - **met** — an override is validated against the placeholders of the phase it
   replaces and rejected at config load — evidence:
   `worker/deno/tests/builtin_prompt_overrides_test.ts::parseCustomLabelPrompts - validates an override against its own phase`,
@@ -103,30 +107,39 @@ flowchart LR
   — reviewer: met
 - **met** — two entries claiming the same built-in label fail config load —
   evidence: `worker/deno/tests/builtin_prompt_overrides_test.ts::parseCustomLabelPrompts - rejects two entries claiming one phase`
-  — reviewer: met — reason: the reviewer noted the *second*, phase-keyed guard
-  could never fire because the label key always collided first; that dead branch
-  was removed and the live check now names the phase and the earlier entry.
+  — reviewer: met — reason: the reviewer recorded the documented refinement —
+  the key is `label::phase`, so a literal duplicate is refused while a second
+  `planning` entry naming `planning_critique` is accepted, which is what the
+  "distinct mapping entry for the critique" requirement forces.
 - **met** — phases with no override load the built-in template exactly as today
   — evidence: `worker/deno/tests/prompt_override_resolver_test.ts::resolvePromptTemplate - no override loads the built-in template`,
   `::buildIssuePrompt - no override renders the built-in template`,
-  `::buildGrillMePrompt - no override renders the built-in template`, plus the
-  unchanged pre-existing prompt/config suites — reviewer: met
-- **partial** — the run record names the template file each phase used —
-  evidence: `worker/deno/lib/prompt_override_resolver.ts` logs
-  `Prompt template for phase '<phase>': <file>` with structured `phase` /
-  `template` / `overrideLabel` fields, asserted in
-  `worker/deno/tests/prompt_override_resolver_test.ts::resolvePromptTemplate - no override loads the built-in template`
-  — reviewer: partial — reason: the record is the worker log line, matching how
-  the existing prompt-commit traceability is emitted (`phases/execute_phase.ts`);
-  it is not folded into a structured run artefact. The reviewer's related
-  finding — a `work-on` override missing from the prompt SHA — is fixed
-  (`lib/prompt_builder_cache.ts`).
+  `::buildGrillMePrompt - no override renders the built-in template`,
+  `::buildQuestionPrompt - no override renders the built-in template`, plus the
+  unchanged pre-existing prompt/config suites — reviewer: met — reason: the
+  reviewer separately found that an override *label* was joining the
+  operational dispatch set, so configuring a private `work-on` prompt flipped
+  the fleet's main discovery label onto the label-adder AND gate. Fixed:
+  `customLabelPromptLabels()` now returns dispatch mappings only
+  (`::customLabelPromptLabels - an override never joins the trust-gated dispatch set`).
+- **met** — the run record names the template file each phase used — evidence:
+  `PromptParts.templateSource` is set by every overridable builder and surfaced
+  as `promptTemplate` on the execute-phase result beside `promptsCommit`
+  (`worker/deno/lib/execute_claude_phase.ts:165`), plus the
+  `Prompt template for phase '<phase>': <file>` log line —
+  `worker/deno/tests/prompt_override_resolver_test.ts::buildIssuePrompt - the result names the template file the build read`,
+  `::buildPlanningPrompt - the record names each turn's own template` —
+  reviewer: partial — reason: the reviewer judged the diff before the
+  structural record existed, calling the log line alone insufficient. It was
+  right, so the field was added rather than the verdict argued with.
 - **met** — tests cover overrides for `issue`, `planning` and `grill-me` plus
   each rejection; `deno task test` and `./quality.sh` pass — evidence:
-  `worker/deno/tests/builtin_prompt_overrides_test.ts` (23 tests),
-  `worker/deno/tests/prompt_override_resolver_test.ts` (12 tests), full gate run
-  after the final edit — reviewer: met — reason: the reviewer could not confirm
-  the full suite (still running when it reported); it was run here and passed.
+  `worker/deno/tests/builtin_prompt_overrides_test.ts` (25 tests),
+  `worker/deno/tests/prompt_override_resolver_test.ts` (16 tests),
+  `worker/deno/tests/quorum_orchestrator_test.ts` (3 override tests), full gate
+  run after the final edit — reviewer: met — reason: the reviewer flagged one
+  gap, that `question` and both quorum turns shipped without a builder-level
+  override test; those five tests were added.
 - **unrequested** — `worker/deno/lib/planning_processor.ts`
   `extractSubIssueNumbers` rewritten off a dynamic `RegExp` — reviewer:
   unrequested — reason: this change puts the file in semgrep's changed-file set
@@ -150,70 +163,86 @@ flowchart LR
   same "one entry per turn" rule rather than being silently unoverridable; the
   `grill-me` contract is what makes a `grill-me` override validatable at all
   (the criterion requires it) and it is satisfied by the shipped template.
+- **unrequested** — `PromptOverrideBuildError` / `refuseFallbackPastOverride()`
+  wired into the planning, planning-critique and question processors, turning a
+  previously survivable prompt-build failure into a thrown run failure when the
+  phase is overridden — reviewer: unrequested — reason: the issue does not ask
+  for the basic-prompt rescue to change, but leaving it would mean an operator's
+  broken override silently ran a built-in-shaped prompt — the exact silent
+  substitution the first acceptance criterion rules out. The rescue is untouched
+  for a broken *repository* template.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — silent fallback past an operator's override: the planning,
-  planning-critique and question processors answered a failed prompt build with
-  a hard-coded basic prompt — evidence:
-  `worker/deno/lib/question_processor.ts:326`,
-  `worker/deno/lib/planning_processor.ts:1173` and `:1316` — reason: fixed here
-  — `refuseFallbackPastOverride()` throws when the phase is overridden, and the
-  basic-prompt rescue survives only for a broken repository template
-  (`worker/deno/tests/prompt_override_resolver_test.ts::refuseFallbackPastOverride - throws for an overridden phase`).
-- **violation** — dead exported function `builtInLabelNames()` with no caller
-  and no test — evidence: `worker/deno/lib/builtin_prompt_overrides.ts:81` —
-  reason: fixed here — removed.
-- **violation** — `overridablePhases()` was exported for a documentation-facing
-  message that did not exist — evidence:
-  `worker/deno/lib/builtin_prompt_overrides.ts:105` — reason: fixed here — it
-  now renders the overridable phases in the rejection an operator sees when
-  `phase` is set on a label that overrides nothing.
-- **violation** — docs contradicted the code: the `label` bullet claimed
-  list-wide label uniqueness while the example showed two `planning` entries —
-  evidence: `docs/CONFIGURATION.md:500` — reason: fixed here — the bullet now
-  states the label/phase pair rule.
-- **violation** — the new label-names parameter on `parseCustomLabelPrompts` /
-  `assertCustomLabelPrompts` had no `@param` and a default that silently
-  resolves stock names — evidence:
-  `worker/deno/lib/custom_label_prompts_config.ts:258`, `:306` — reason: fixed
-  here — both are documented, naming the consequence for a caller holding a
-  `WorkerConfig`. After the #850 merge the names ride on the shared
-  `CustomLabelPromptOptions` alongside the path resolver.
-- **violation** — the documented `customPromptPath` > `work-on` override
-  precedence had no test — evidence: `worker/deno/lib/prompt_builder.ts:481` —
-  reason: fixed here —
-  `worker/deno/tests/prompt_override_resolver_test.ts::buildIssuePrompt - a dispatched custom prompt wins over a work-on override`.
-- **clean** — Australian English throughout the new libs, tests and docs; commit
-  safety (no hidden or credential path staged, both trailers present); test
-  quality (no source-grepping, no wall-clock budgets — every test drives real
-  `loadConfig` / parser / builder code and asserts on rendered output); small,
-  single-purpose modules with matching `tests/*_test.ts` partners; `Result<T,E>`
-  rather than throwing for control flow, with the one deliberate fail-loud
-  throw at the config-load boundary; security posture — `phase` is allowlisted
-  and never reaches a filesystem path, `prompt_path` keeps its absolute-path,
-  control-character and readability checks, the reserved-label bypass is scoped
-  to override entries only so `top-priority` / `low-priority` stay unremappable,
-  and requiring `{{BOUNDARY_INTEGRITY_INSTRUCTION}}` in the `grill-me` and
-  `quorum` contracts means an override cannot drop the untrusted-text fencing.
+- **violation** — Never Fail Silently: two registered CLI commands hold a
+  `WorkerConfig` yet never passed `promptOverrides`, so a configured override
+  was silently replaced by the built-in template on those entry points —
+  evidence: `worker/deno/commands/prompt_builder.ts:47` (with `:74`, `:98`) and
+  `worker/deno/commands/grill_me_processor.ts:79` — reason: fixed here — both
+  now pass `promptOverrideMappings(config)`, closing the same gap the diff had
+  already closed for `commands/execute_claude_phase.ts`.
+- **violation** — Test Coverage Expectations: the `question`, `quorum` and
+  `quorum_judge` override paths shipped and were documented with no test driving
+  `promptOverrides` through their builders — evidence:
+  `worker/deno/lib/prompt_builder.ts:1102` and
+  `worker/deno/lib/quorum_orchestrator.ts:588` — reason: fixed here — five tests
+  added (`prompt_override_resolver_test.ts::buildQuestionPrompt - a question override replaces the template`
+  and its no-override partner; `quorum_orchestrator_test.ts::runQuorum - a quorum override replaces the draft template, the judge keeps its own`,
+  `::runQuorum - a quorum_judge override replaces only the judge template`,
+  `::runQuorum - an override deleted since config load fails the run loudly`).
+- **violation** — PR summary accuracy: the Test Plan said "existing suites
+  unchanged and green" while the same diff modified
+  `worker/deno/tests/service_account_env_test.ts` and
+  `worker/deno/lib/vibe_env_registry.ts`, and the Evidence section still
+  described that suite as an environment-sensitive pre-existing failure —
+  evidence: `docs/archive/pr-summaries/pr-summary-849.md:206` and `:61` —
+  reason: fixed here — both sections now disclose the three base-branch repairs
+  and what they were.
+- **clean** — Australian English throughout the new libs, tests and docs (no
+  American spellings in added lines); Deno/TypeScript conventions (`Result<T,E>`
+  for control flow with the single deliberate fail-loud throw at the config-load
+  boundary, `@std/assert` only, both new modules paired with a `tests/*_test.ts`,
+  small single-purpose files); test quality (no source-grepping, no wall-clock
+  budgets, no removed or commented-out tests — every test drives real
+  `loadConfig` / parser / builder code and asserts on rendered output);
+  fail-loud behaviour at the phase level (`refuseFallbackPastOverride()` guards
+  the planning, critique and question basic-prompt rescues; grill-me, quorum and
+  the execute phase already return the error); commit messages (every commit
+  names Issue #849 and carries the `Vibe-Coder-Run-Id` trailer); commit safety
+  (no hidden or credential path staged); a code change owes a docs change
+  (CONFIGURATION.md, EXTENDING.md and the workflows priority row all updated);
+  security posture — `phase` is allowlist-resolved and never reaches a
+  filesystem path, the reserved-label bypass is scoped to override entries so
+  `top-priority` / `low-priority` stay unremappable, and
+  `{{BOUNDARY_INTEGRITY_INSTRUCTION}}` is required for `grill-me` and `quorum`
+  so an override cannot drop the untrusted-text fencing.
 
 ## Test Plan
 
-- Added `worker/deno/tests/builtin_prompt_overrides_test.ts` — label→phase
-  resolution (including a renamed `planning_label`), per-phase placeholder
-  validation, `refine-issue` rejection, duplicate-claim rejection, `phase` on a
-  non-built-in label, the dispatch/override partition, and four end-to-end
-  `loadConfig` cases.
-- Added `worker/deno/tests/prompt_override_resolver_test.ts` — built-in
-  fallback and its traceability record, override applied to its own phase only,
-  fail-loud on a deleted or contract-breaking override, the
-  `refuseFallbackPastOverride` guard, dispatched-prompt precedence, and
+- Added `worker/deno/tests/builtin_prompt_overrides_test.ts` (25 tests) —
+  label→phase resolution (including a renamed `planning_label`), per-phase
+  placeholder validation, `refine-issue` rejection, duplicate-claim rejection,
+  `phase` on a non-built-in label, the dispatch/override partition, the
+  launcher and worker agreeing on a renamed label, the trust-gate boundary
+  (an override never becomes an operational dispatch label), and five
+  end-to-end `loadConfig` cases.
+- Added `worker/deno/tests/prompt_override_resolver_test.ts` (16 tests) —
+  built-in fallback and its traceability record, override applied to its own
+  phase only, fail-loud on a deleted or contract-breaking override, the
+  `refuseFallbackPastOverride` guard, dispatched-prompt precedence, the
+  `templateSource` run record for an overridden and a built-in build, and
   overrides through `buildIssuePrompt`, `buildPlanningPrompt`,
-  `buildPlanningCritiquePrompt` and `buildGrillMePrompt`.
-- Existing suites unchanged and green:
-  `tests/custom_label_prompts_config_test.ts`,
+  `buildPlanningCritiquePrompt`, `buildQuestionPrompt` and `buildGrillMePrompt`.
+- Extended `worker/deno/tests/quorum_orchestrator_test.ts` — three tests
+  driving `runQuorum` with an override: the draft turn, the judge turn (neither
+  implying the other), and a file deleted since config load failing the run.
+- Repaired three failures the milestone branch already carried, each of which
+  blocked this gate: `worker/deno/tests/service_account_env_test.ts` (an unused
+  import and an object interpolated into a path) and the missing
+  `VIBE_CUSTOM_PROMPT_PATHS` registry entry. Both suites now pass.
+- Otherwise unchanged and green: `tests/custom_label_prompts_config_test.ts`,
   `tests/custom_label_dispatch_test.ts`, `tests/config_test.ts`,
   `tests/planning_processor_test.ts`, `tests/question_processor_test.ts`, the
-  grill-me, quorum and prompt-builder suites, and the full `deno task test`.
+  grill-me and prompt-builder suites, and the full `deno task test`.
