@@ -2,11 +2,16 @@
  * End-to-end tests for the subscription usage-limit path in
  * `runClaudeWithRetry()` (Issue #4315).
  *
- * A stub `claude` on PATH prints the CLI's usage-limit message to STDERR
- * (with empty stdout — the shape a real refusal has) and exits non-zero.
- * The runner must: detect it from stderr, NOT walk the model-fallback
- * ladder, return exit code 2 with the usage-limit evidence, and write the
- * durable signal to WORK_DIR — not the per-issue cwd.
+ * A stub agent, named by path (Issue #959), prints the CLI's usage-limit
+ * message to STDERR (with empty stdout — the shape a real refusal has) and
+ * exits non-zero. The runner must: detect it from stderr, NOT walk the
+ * model-fallback ladder, return exit code 2 with the usage-limit evidence,
+ * and write the durable signal to the work volume — not the per-issue cwd.
+ *
+ * Neither the stub nor the work volume is installed in the process
+ * environment any more (Issue #960): the binary path and `workDir` are
+ * both invocation options, so this suite races nothing under
+ * `deno test --parallel`.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -17,29 +22,27 @@ import {
   USAGE_LIMIT_MAX_WAIT_SECONDS,
 } from "../lib/claude_runner.ts";
 import { rateLimitSignalPath } from "../lib/rate_limit_signal.ts";
+import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 
-async function withUsageLimitStub<T>(
+/**
+ * Run `fn` with a stub agent that refuses with `stderrMessage` and logs
+ * every `--model` it was asked for.
+ *
+ * The log lives beside the stub, so disposing the stub takes it too.
+ */
+function withUsageLimitStub<T>(
   stderrMessage: string,
-  fn: (stub: { dir: string; modelLog: string }) => Promise<T>,
+  fn: (stub: AgentStub & { modelLog: string }) => Promise<T>,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_ul_stub_" });
-  const modelLog = `${dir}/models.log`;
-  await Deno.writeTextFile(
-    `${dir}/claude`,
-    "#!/usr/bin/env bash\n" +
-      `prev=""\nfor arg in "$@"; do\n  if [ "$prev" = "--model" ]; then printf '%s\\n' "$arg" >> '${modelLog}'; fi\n  prev="$arg"\ndone\n` +
-      `printf '%s\\n' '${stderrMessage}' >&2\n` +
-      "exit 1\n",
+  const body = `modelLog="$(dirname "$0")/models.log"\n` +
+    `prev=""\nfor arg in "$@"; do\n  if [ "$prev" = "--model" ]; then printf '%s\\n' "$arg" >> "$modelLog"; fi\n  prev="$arg"\ndone\n` +
+    `printf '%s\\n' '${stderrMessage}' >&2\n` +
+    "exit 1\n";
+  return withAgentStub(
+    body,
+    (stub) => fn({ ...stub, modelLog: `${stub.dir}/models.log` }),
+    { prefix: "claude_ul_stub_" },
   );
-  await Deno.chmod(`${dir}/claude`, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  try {
-    return await fn({ dir, modelLog });
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    await Deno.remove(dir, { recursive: true }).catch(() => undefined);
-  }
 }
 
 Deno.test({
@@ -49,8 +52,6 @@ Deno.test({
   ignore: Deno.build.os === "windows",
   async fn() {
     const workDir = await Deno.makeTempDir({ prefix: "ul_workdir_" });
-    const previousWorkDir = Deno.env.get("WORK_DIR");
-    Deno.env.set("WORK_DIR", workDir);
     try {
       const resetEpoch = Math.floor(Date.now() / 1000) + 2 * 3600;
       await Deno.mkdir(`${workDir}/some-repo-clone`, { recursive: true });
@@ -65,6 +66,8 @@ Deno.test({
               timeoutSeconds: 30,
               killAfterSeconds: 2,
               cwd: `${workDir}/some-repo-clone`,
+              agentBinaryPath: stub.path,
+              workDir,
             },
             { maxRetries: 2, maxWaitSeconds: 600, initialWaitInterval: 300 },
           );
@@ -114,9 +117,6 @@ Deno.test({
       } catch { /* expected: absent */ }
       assertEquals(cwdSignal, false, "signal must not be written to cwd");
     } finally {
-      if (previousWorkDir !== undefined) {
-        Deno.env.set("WORK_DIR", previousWorkDir);
-      } else Deno.env.delete("WORK_DIR");
       await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
     }
   },
@@ -129,18 +129,18 @@ Deno.test({
   ignore: Deno.build.os === "windows",
   async fn() {
     const workDir = await Deno.makeTempDir({ prefix: "ul_workdir_" });
-    const previousWorkDir = Deno.env.get("WORK_DIR");
-    Deno.env.set("WORK_DIR", workDir);
     try {
       const { result } = await withUsageLimitStub(
         "You have hit your usage limit for this 5-hour window",
-        async () => ({
+        async (stub) => ({
           result: await runClaudeWithRetry(
             {
               prompt: "t",
               model: "opus",
               timeoutSeconds: 30,
               killAfterSeconds: 2,
+              agentBinaryPath: stub.path,
+              workDir,
             },
             { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 },
           ),
@@ -152,9 +152,6 @@ Deno.test({
       assertEquals(result.value.usageLimit?.resetEpochMs, undefined);
       assertStringIncludes(result.value.stderr ?? "", "usage limit");
     } finally {
-      if (previousWorkDir !== undefined) {
-        Deno.env.set("WORK_DIR", previousWorkDir);
-      } else Deno.env.delete("WORK_DIR");
       await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
     }
   },

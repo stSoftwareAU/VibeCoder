@@ -24,6 +24,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
+import { type AgentStub, createAgentStub } from "./support/agent_stub.ts";
 import type { TreeProgressState } from "../lib/progress_extension.ts";
 import {
   buildExtensionTelemetry,
@@ -485,22 +486,14 @@ const TOOL_LINE =
   `{"type":"assistant","message":{"content":[{"type":"tool_use",` +
   `"name":"Edit","input":{"file_path":"worker/deno/lib/x.ts"}}]}}`;
 
-/** Install a stub `claude` on PATH; see the #4298 suite for the rationale. */
-async function installStub(
-  body: string,
-): Promise<{ restore: () => Promise<void> }> {
-  const dir = await Deno.makeTempDir({ prefix: "timeout_report_768_" });
-  const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(stubPath, `#!/usr/bin/env bash\n${body}`);
-  await Deno.chmod(stubPath, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  return {
-    restore: async () => {
-      Deno.env.set("PATH", originalPath);
-      await Deno.remove(dir, { recursive: true }).catch(() => undefined);
-    },
-  };
+/**
+ * Write a stub agent and return its path (Issue #960).
+ *
+ * Handed to the runner as `agentBinaryPath` rather than installed on the
+ * process-wide `PATH`; see the #4298 suite for the rationale.
+ */
+function installStub(body: string): Promise<AgentStub> {
+  return createAgentStub(body, { prefix: "timeout_report_768_" });
 }
 
 /** A stub that emits a tool call every `gapSeconds` for `count` iterations. */
@@ -536,6 +529,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -556,7 +550,7 @@ Deno.test({
       assertStringIncludes(kill, "last extension refused:");
       assertStringIncludes(kill, "working tree unchanged");
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });

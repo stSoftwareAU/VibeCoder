@@ -17,44 +17,45 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-/** Read an env var, tolerating a denied `--allow-env`. */
-function env(name: string): string | undefined {
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+
+/** Read an env var through `lookup`, tolerating a denied `--allow-env`. */
+function env(
+  name: string,
+  lookup: EnvLookup = processEnvLookup,
+): string | undefined {
   try {
-    return Deno.env.get(name) || undefined;
+    return lookup(name) || undefined;
   } catch {
     return undefined;
   }
 }
 
 /**
- * The two directories every cache path in this module is derived from
- * (Issue #966).
+ * Where to look for the work volume root (Issue #960).
  *
- * Both are paths, so they are taken as plain directory parameters rather
- * than as an environment lookup: the caller says where the caches live and
- * the variable name disappears from the call site. `undefined`/empty
- * `workDir` means "there is no cache directory", which is exactly what an
- * unset `WORK_DIR` has always meant (Issue #131).
+ * Both fields exist so a test can name the directory instead of exporting
+ * `WORK_DIR` into the process, which races every other test in the run and
+ * is what keeps the gate's `deno test` stage serial (Issue #880, plan #944).
+ * Production passes neither and reads the process environment exactly as
+ * before.
  */
-export interface CacheRoots {
-  /** Durable work volume root — the `WORK_DIR` the run driver exports. */
+export interface WorkerCacheDirOptions {
+  /** The work volume root. Wins over any `WORK_DIR` in the environment. */
   workDir?: string;
-  /** Home directory backing the legacy read-only fallback. */
+  /** Environment lookup; defaults to the real process environment. */
+  env?: EnvLookup;
+  /**
+   * Home directory backing the legacy read-only fallback (Issue #966).
+   * Wins over any `HOME` in the environment, so a test can name the
+   * directory instead of exporting one into the process.
+   */
   home?: string;
 }
 
 /**
- * The roots as the process environment reports them — the production
- * default for every function below, so passing nothing behaves exactly as
- * reading `Deno.env.get` here did.
- */
-export function processCacheRoots(): CacheRoots {
-  return { workDir: env("WORK_DIR"), home: env("HOME") };
-}
-
-/**
- * The worker cache directory: `${workDir}/.vibe-cache`, or `undefined`
- * when there is no work directory (Issue #131).
+ * The worker cache directory: `${WORK_DIR}/.vibe-cache`, or `undefined`
+ * when `WORK_DIR` is unset (Issue #131).
  *
  * `WORK_DIR` is only exported by the run driver (`run_worker.ts`,
  * Issue #4370), so any other entry point — setup, launcher, housekeeping,
@@ -64,21 +65,21 @@ export function processCacheRoots(): CacheRoots {
  * host (Issue #118).
  */
 export function workerCacheDir(
-  roots: CacheRoots = processCacheRoots(),
+  options: WorkerCacheDirOptions = {},
 ): string | undefined {
-  const workDir = roots.workDir;
+  const workDir = options.workDir ?? env("WORK_DIR", options.env);
   return workDir ? `${workDir}/.vibe-cache` : undefined;
 }
 
 /**
  * Path of a named cache file in the worker cache directory, or `undefined`
- * when there is no cache directory (no work directory — Issue #131).
+ * when there is no cache directory (`WORK_DIR` unset — Issue #131).
  */
 export function workerCachePath(
   fileName: string,
-  roots: CacheRoots = processCacheRoots(),
+  options: WorkerCacheDirOptions = {},
 ): string | undefined {
-  const dir = workerCacheDir(roots);
+  const dir = workerCacheDir(options);
   return dir ? `${dir}/${fileName}` : undefined;
 }
 
@@ -88,9 +89,10 @@ export function workerCachePath(
  */
 export function legacyHomeCachePath(
   fileName: string,
-  roots: CacheRoots = processCacheRoots(),
+  options: WorkerCacheDirOptions = {},
 ): string {
-  return `${roots.home || "."}/.vibe-coder/${fileName}`;
+  const home = options.home ?? env("HOME", options.env);
+  return `${home ?? "."}/.vibe-coder/${fileName}`;
 }
 
 /**
@@ -99,13 +101,9 @@ export function legacyHomeCachePath(
  */
 export async function readCacheWithLegacyFallback(
   fileName: string,
-  roots: CacheRoots = processCacheRoots(),
 ): Promise<string | null> {
   for (
-    const path of [
-      workerCachePath(fileName, roots),
-      legacyHomeCachePath(fileName, roots),
-    ]
+    const path of [workerCachePath(fileName), legacyHomeCachePath(fileName)]
   ) {
     if (path === undefined) continue; // no cache dir when WORK_DIR is unset
     try {

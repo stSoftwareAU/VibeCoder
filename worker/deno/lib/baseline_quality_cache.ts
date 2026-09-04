@@ -27,9 +27,8 @@
 import type { Result } from "../types.ts";
 import type { GitCommandOutput } from "./git_timeout.ts";
 import {
-  type CacheRoots,
   legacyHomeCachePath,
-  processCacheRoots,
+  type WorkerCacheDirOptions,
   workerCachePath,
 } from "./worker_cache_dir.ts";
 import type { DiffableCheck, GenericFinding } from "./baseline_gate.ts";
@@ -130,7 +129,7 @@ export function isBaselineQualityCacheEnabled(
  *   caller that passes nothing behaves exactly as before (Issue #966).
  */
 export function baselineQualityCachePath(
-  roots: CacheRoots = processCacheRoots(),
+  roots: WorkerCacheDirOptions = {},
 ): string | undefined {
   return workerCachePath(BASELINE_QUALITY_CACHE_FILE, roots);
 }
@@ -169,7 +168,7 @@ export async function computeBaselineQualityCacheKey(
 /** Read the whole cache file, dropping anything malformed. */
 async function loadCache(
   path: string | undefined,
-  roots: CacheRoots,
+  roots: WorkerCacheDirOptions,
 ): Promise<Map<string, BaselineQualityCacheEntry>> {
   // No cache directory (no work directory — Issue #133): report "no cached
   // baseline" without touching the filesystem, so the caller re-runs the
@@ -292,7 +291,7 @@ function validateFindings(value: unknown): GenericFinding[] | null {
 export async function readBaselineQualityCache(
   key: string,
   path?: string,
-  roots: CacheRoots = processCacheRoots(),
+  roots: WorkerCacheDirOptions = {},
 ): Promise<BaselineQualityCacheEntry | null> {
   const resolved = path ?? baselineQualityCachePath(roots);
   const entry = (await loadCache(resolved, roots)).get(key);
@@ -330,7 +329,7 @@ export async function writeBaselineQualityCache(
   key: string,
   outcome: BaselineQualityOutcome,
   path?: string,
-  roots: CacheRoots = processCacheRoots(),
+  roots: WorkerCacheDirOptions = {},
 ): Promise<void> {
   const resolved = path ?? baselineQualityCachePath(roots);
   if (resolved === undefined) return;

@@ -534,6 +534,19 @@ export interface RunClaudeOptions {
    * other test in the process. With this it names the stub instead.
    */
   agentBinaryPath?: string;
+  /**
+   * The durable work volume root for this invocation (Issue #960).
+   *
+   * Two things are derived from it and both used to be read straight off the
+   * process: where the fleet-wide rate/usage-limit signal is written, and
+   * where the per-run Playwright MCP config lives. Omitted — every
+   * production caller — `WORK_DIR` is read exactly as before.
+   *
+   * Supplied, it wins over `WORK_DIR`, so a test names the directory instead
+   * of exporting one into the process environment and racing every other
+   * test in the run (Issue #880, plan #944).
+   */
+  workDir?: string;
 }
 
 /** Options for retry behaviour. */
@@ -583,8 +596,17 @@ export const USAGE_LIMIT_MAX_WAIT_SECONDS = 3600;
  * durable WORK_DIR every worker on the volume reads, never the per-issue
  * clone the agent happens to run in. Falls back to cwd only when WORK_DIR
  * is unset (tests, ad-hoc CLI use).
+ *
+ * `explicitWorkDir` — `RunClaudeOptions.workDir` (Issue #960) — wins over the
+ * environment, so a test names the volume rather than exporting `WORK_DIR`
+ * into a process it shares with every other test in the run.
  */
-function resolveSignalDir(cwd: string | undefined): string | undefined {
+function resolveSignalDir(
+  cwd: string | undefined,
+  explicitWorkDir?: string,
+): string | undefined {
+  const named = explicitWorkDir?.trim() || undefined;
+  if (named) return named;
   let workDir: string | undefined;
   try {
     workDir = Deno.env.get("WORK_DIR")?.trim() || undefined;
@@ -880,6 +902,7 @@ export async function runClaudeWithTimeout(
     ? await ensureAgentMcpConfig({
       cwd,
       log: (message) => logger?.warn?.(message),
+      ...(options.workDir ? { workDir: options.workDir } : {}),
     })
     : undefined;
   // The prompt travels on stdin when the provider can read it there
@@ -2623,7 +2646,10 @@ export async function runClaudeWithRetry(
           "USAGE_LIMIT",
           `exit_code=${exitCode} wait_seconds=${waitSeconds}`,
         );
-        const signalDir = resolveSignalDir(currentOptions.cwd);
+        const signalDir = resolveSignalDir(
+          currentOptions.cwd,
+          currentOptions.workDir,
+        );
         if (signalDir) {
           // Issue #333: carry the true reset beside the capped wait, so the
           // FLEET report can say "no quota until Tuesday" rather than only
@@ -2745,7 +2771,10 @@ export async function runClaudeWithRetry(
         // signal lives in WORK_DIR (Issue #4315): it used to be written to
         // cwd — the per-issue clone — which run_core never reads, and the
         // main execute path passed no cwd at all, so it was never written.
-        const rateSignalDir = resolveSignalDir(currentOptions.cwd);
+        const rateSignalDir = resolveSignalDir(
+          currentOptions.cwd,
+          currentOptions.workDir,
+        );
         if (rateSignalDir) {
           const signalResult = await writeRateLimitSignal(
             rateSignalDir,
