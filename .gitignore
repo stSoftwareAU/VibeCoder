@@ -19,6 +19,11 @@
 !.deno-version
 !.node-version
 
+# Except the release floor (Issue #808): the one line that moves the release
+# series off the automatic patch increment. `.github/workflows/release-tag.yml`
+# reads it out of the checkout, so an ignored copy would fail the tag step.
+!.release-floor
+
 # Explicitly ignore config files that may contain secrets
 .config.json
 .config*.json

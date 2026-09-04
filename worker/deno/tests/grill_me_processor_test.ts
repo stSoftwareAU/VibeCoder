@@ -50,7 +50,13 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { GitHubComment, GitHubIssue, WorkerConfig } from "../types.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
 
+// Prompts resolve against this checkout, never the worker host's (Issue #844)
+// — named as a parameter on every call rather than pinned by deleting the
+// host's overrides from the shared process environment (Issue #968).
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
+
+/** A prompts directory that does not exist, for the failure path of #2727. */
+const MISSING_PROMPTS_DIR = "/nonexistent/prompts/dir/for/2727";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -870,6 +876,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -978,6 +985,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -1062,6 +1070,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -1127,6 +1136,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -1339,6 +1349,7 @@ Deno.test("processGrillMe - first round adds needs-human after posting Round 1",
 
   deps.crashHandling.clearHeartbeat = capture.clearHeartbeat;
   const result = await processGrillMe(ctx, {
+    promptsDir: PROMPTS_DIR,
     ghClient,
     logger: deps.logger,
     deps,
@@ -1421,6 +1432,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -1481,6 +1493,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -1542,6 +1555,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -1594,6 +1608,7 @@ Deno.test(
     const deps = createMockDeps();
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -1649,6 +1664,7 @@ Deno.test(
     const deps = createMockDeps();
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -1723,6 +1739,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -1803,6 +1820,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -1876,6 +1894,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -1956,6 +1975,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -2015,6 +2035,7 @@ Deno.test("processGrillMe - returns failure Result when Claude errors and does n
 
   deps.crashHandling.clearHeartbeat = capture.clearHeartbeat;
   const result = await processGrillMe(ctx, {
+    promptsDir: PROMPTS_DIR,
     ghClient,
     logger: deps.logger,
     deps,
@@ -2072,6 +2093,7 @@ Deno.test("processGrillMe - returns failure when Claude times out and does not r
   });
 
   const result = await processGrillMe(ctx, {
+    promptsDir: PROMPTS_DIR,
     ghClient,
     logger: deps.logger,
     deps,
@@ -2132,6 +2154,7 @@ Deno.test("processGrillMe - escalates to needs-human after two consecutive failu
   });
 
   const result = await processGrillMe(ctx, {
+    promptsDir: PROMPTS_DIR,
     ghClient,
     logger: deps.logger,
     deps,
@@ -2170,6 +2193,7 @@ Deno.test("processGrillMe - fails when claim is rejected by another worker", asy
   });
 
   const result = await processGrillMe(ctx, {
+    promptsDir: PROMPTS_DIR,
     ghClient,
     logger: deps.logger,
     deps,
@@ -2212,6 +2236,7 @@ Deno.test("processGrillMe - returns failure when Claude posts no round comment",
   });
 
   const result = await processGrillMe(ctx, {
+    promptsDir: PROMPTS_DIR,
     ghClient,
     logger: deps.logger,
     deps,
@@ -2273,6 +2298,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -2336,6 +2362,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -2385,6 +2412,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -2421,6 +2449,7 @@ Deno.test(
     const deps = createMockDeps();
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -2466,6 +2495,7 @@ Deno.test(
     const deps = createMockDeps();
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -2507,6 +2537,7 @@ Deno.test(
     const deps = createMockDeps();
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -2554,6 +2585,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -2601,6 +2633,7 @@ Deno.test(
     const deps = createMockDeps();
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -2651,25 +2684,16 @@ Deno.test(
       },
     });
 
-    // Force the prompt build to fail by pointing the loader at a
-    // non-existent prompts directory. Restore afterwards so other tests
-    // (run sequentially) keep using the real prompts.
-    const prevPromptsDir = Deno.env.get("PROMPTS_DIR");
-    Deno.env.set("PROMPTS_DIR", "/nonexistent/prompts/dir/for/2727");
-    let result;
-    try {
-      result = await processGrillMe(ctx, {
-        ghClient,
-        logger: deps.logger,
-        deps,
-      });
-    } finally {
-      if (prevPromptsDir === undefined) {
-        Deno.env.delete("PROMPTS_DIR");
-      } else {
-        Deno.env.set("PROMPTS_DIR", prevPromptsDir);
-      }
-    }
+    // Force the prompt build to fail by naming a prompts directory that does
+    // not exist (Issue #968). It is a parameter, so nothing about the process
+    // environment changes and the other suites sharing this process are
+    // unaffected — which is what took this file off the serial pass.
+    const result = await processGrillMe(ctx, {
+      ghClient,
+      logger: deps.logger,
+      deps,
+      promptsDir: MISSING_PROMPTS_DIR,
+    });
 
     assertEquals(result.ok, false);
     if (result.ok) return;
@@ -2711,6 +2735,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -2755,6 +2780,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -2800,6 +2826,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -2840,6 +2867,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -2947,6 +2975,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -3008,6 +3037,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -3074,6 +3104,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -3154,6 +3185,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -3226,6 +3258,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -3289,6 +3322,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -3358,6 +3392,7 @@ Deno.test(
     };
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -3411,6 +3446,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: createMockDeps().logger,
       deps: createMockDeps(),

@@ -21,13 +21,13 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { buildIssuePrompt } from "../lib/prompt_builder.ts";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
-/** The wording the retired versions used to license a PR over the cap. */
+/** The wording the template used to license a PR over the cap. */
 const OLD_LICENCE = "commit what you have";
 
 /** The rendered issue prompt: template plus injected guidelines. */
@@ -46,15 +46,12 @@ async function renderIssue(): Promise<string> {
   return `${result.value.systemPrompt}\n${result.value.prompt}`;
 }
 
-/** The latest `issue` text, and the version it came from. */
-async function latestIssue(): Promise<{ version: string; text: string }> {
-  const latest = await getLatestVersion("issue", PROMPTS_DIR);
-  assertEquals(latest.ok, true);
-  if (!latest.ok) throw new Error(latest.error.message);
-  const loaded = await loadPrompt("issue", latest.value, PROMPTS_DIR);
+/** The `issue` template text. */
+async function issueText(): Promise<string> {
+  const loaded = await loadPrompt("issue", PROMPTS_DIR);
   assertEquals(loaded.ok, true);
   if (!loaded.ok) throw new Error(loaded.error.message);
-  return { version: latest.value, text: loaded.value };
+  return loaded.value;
 }
 
 Deno.test("quality cap - no rendered passage licenses a PR over failing checks (Issue #785)", async () => {
@@ -70,13 +67,13 @@ Deno.test("quality cap - no rendered passage licenses a PR over failing checks (
 Deno.test("quality cap - the cap itself survives (Issue #785)", async () => {
   // The bound exists for a good reason; this issue is about what follows it,
   // not about letting a run loop forever.
-  const { text } = await latestIssue();
+  const text = await issueText();
   assertStringIncludes(text, "3\n   attempts");
   assertStringIncludes(text, "Do not loop indefinitely");
 });
 
 Deno.test("quality cap - exhaustion hands off instead of raising a PR (Issue #785)", async () => {
-  const { text } = await latestIssue();
+  const text = await issueText();
   assertStringIncludes(text, "do **not** create a pull request");
   // The branch is preserved, so the next run resumes rather than restarts.
   assertStringIncludes(text, "the branch is preserved");
@@ -100,18 +97,7 @@ Deno.test("quality cap - the must-pass gate the hand-off defers to is still stat
 Deno.test("quality cap - the hand-off names the security stage as the reason (Issue #785)", async () => {
   // A reader who thinks the cap is about lint will treat the hand-off as
   // bureaucracy. The gate runs the same SAST ruleset as the blocking check.
-  const { text } = await latestIssue();
+  const text = await issueText();
   assertStringIncludes(text, "semgrep");
   assertStringIncludes(text, "unresolved security finding");
-});
-
-Deno.test("quality cap - v42 stays immutable (Issue #785)", async () => {
-  const result = await loadPrompt("issue", "v42", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (!result.ok) return;
-  assert(
-    result.value.toLowerCase().includes(OLD_LICENCE),
-    "v42 carried the licence its successor removes and must keep reading as " +
-      "it did",
-  );
 });

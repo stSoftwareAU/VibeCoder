@@ -1,94 +1,84 @@
 /**
- * Tests for prompt manager module (Issue #914).
+ * Tests for prompt manager module (Issue #914, #844).
  *
- * Migrated from tests/prompt-management.bats.
+ * Migrated from tests/prompt-management.bats. Issue #844 removed `vN.md`
+ * versioning, so these drive the single-`prompt.md` contract and the
+ * commit-hash traceability that replaced version numbers.
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 import {
-  getLatestVersion,
   getOptionalPlaceholders,
+  getPromptsCommit,
   getPromptsDir,
   getRequiredPlaceholders,
-  listPromptVersions,
   loadPrompt,
-  recordPromptVersion,
+  PROMPT_FILENAME,
+  recordPromptCommit,
   validateAllPromptTemplates,
-  validatePromptImmutability,
   validatePromptTemplate,
 } from "../lib/prompt_manager.ts";
 
 // Resolve the prompts directory relative to this test file
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
-// --- listPromptVersions tests ---
+// --- loadPrompt tests (Issue #844: one `prompt.md` per type) ---
 
-Deno.test("prompt manager - lists coding_guidelines versions", async () => {
-  const result = await listPromptVersions("coding_guidelines", PROMPTS_DIR);
+Deno.test("prompt manager - loads coding_guidelines template", async () => {
+  const result = await loadPrompt("coding_guidelines", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.length > 0, true);
-    assertEquals(result.value[0], "v1");
   }
 });
 
-Deno.test("prompt manager - returns error for non-existent prompt", async () => {
-  const result = await listPromptVersions("nonexistent_prompt", PROMPTS_DIR);
-  assertEquals(result.ok, false);
+Deno.test("prompt manager - loads the type's prompt.md, not a versioned file", async () => {
+  const result = await loadPrompt("coding_guidelines", PROMPTS_DIR);
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  const onDisk = await Deno.readTextFile(
+    `${PROMPTS_DIR}/coding_guidelines/${PROMPT_FILENAME}`,
+  );
+  assertEquals(result.value, onDisk);
 });
 
-Deno.test("prompt manager - sorts versions numerically", async () => {
-  const result = await listPromptVersions("coding_guidelines", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (result.ok && result.value.length >= 2) {
-    const nums = result.value.map((v) => parseInt(v.replace("v", ""), 10));
-    for (let i = 1; i < nums.length; i++) {
-      assertEquals(nums[i]! > nums[i - 1]!, true);
+Deno.test("prompt manager - returns an error naming the missing file", async () => {
+  const result = await loadPrompt("nonexistent_prompt", PROMPTS_DIR);
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "nonexistent_prompt");
+    assertStringIncludes(result.error.message, PROMPT_FILENAME);
+  }
+});
+
+Deno.test("prompt manager - errors when the directory exists but prompt.md does not", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "prompt-missing-file-" });
+  try {
+    await Deno.mkdir(`${dir}/issue`);
+    const result = await loadPrompt("issue", dir);
+    assertEquals(result.ok, false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("prompt manager - no versioned prompt files remain in the tree", async () => {
+  for await (const entry of Deno.readDir(PROMPTS_DIR)) {
+    if (!entry.isDirectory) continue;
+    for await (const file of Deno.readDir(`${PROMPTS_DIR}/${entry.name}`)) {
+      assertEquals(
+        /^v\d+\.md$/.test(file.name),
+        false,
+        `${entry.name}/${file.name} is a leftover versioned template`,
+      );
     }
   }
 });
 
-// --- getLatestVersion tests ---
-
-Deno.test("prompt manager - gets latest version for coding_guidelines", async () => {
-  const result = await getLatestVersion("coding_guidelines", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    // Latest version should be a vN string
-    assertEquals(/^v\d+$/.test(result.value), true);
-  }
-});
-
-Deno.test("prompt manager - returns error for non-existent prompt", async () => {
-  const result = await getLatestVersion("does_not_exist", PROMPTS_DIR);
-  assertEquals(result.ok, false);
-});
-
-// --- loadPrompt tests ---
-
-Deno.test("prompt manager - loads coding_guidelines template", async () => {
-  const result = await loadPrompt("coding_guidelines", undefined, PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    assertEquals(result.value.length > 0, true);
-  }
-});
-
-Deno.test("prompt manager - loads specific version", async () => {
-  const result = await loadPrompt("coding_guidelines", "v1", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    assertEquals(result.value.length > 0, true);
-  }
-});
-
-Deno.test("prompt manager - returns error for non-existent version", async () => {
-  const result = await loadPrompt("coding_guidelines", "v9999", PROMPTS_DIR);
-  assertEquals(result.ok, false);
-});
-
 Deno.test("prompt manager - loads issue template", async () => {
-  const result = await loadPrompt("issue", undefined, PROMPTS_DIR);
+  const result = await loadPrompt("issue", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (result.ok) {
     assertStringIncludes(result.value, "{{ISSUE_NUMBER}}");
@@ -96,7 +86,7 @@ Deno.test("prompt manager - loads issue template", async () => {
 });
 
 Deno.test("prompt manager - loads planning template", async () => {
-  const result = await loadPrompt("planning", undefined, PROMPTS_DIR);
+  const result = await loadPrompt("planning", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (result.ok) {
     assertStringIncludes(result.value, "{{PLANNING_LABEL}}");
@@ -104,52 +94,88 @@ Deno.test("prompt manager - loads planning template", async () => {
 });
 
 Deno.test("prompt manager - loads question template", async () => {
-  const result = await loadPrompt("question", undefined, PROMPTS_DIR);
+  const result = await loadPrompt("question", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (result.ok) {
     assertStringIncludes(result.value, "{{QUESTION_LABEL}}");
   }
 });
 
-// --- recordPromptVersion tests ---
+// --- recordPromptCommit tests ---
 
-Deno.test("prompt manager - records version to log file", async () => {
+Deno.test("prompt manager - records the prompts commit to a log file", async () => {
   const tempDir = await Deno.makeTempDir();
-  const logFile = `${tempDir}/versions.log`;
+  const logFile = `${tempDir}/prompts.log`;
 
   try {
-    const result = await recordPromptVersion(logFile, "issue", "v2");
+    const result = await recordPromptCommit(logFile, "2326b04");
     assertEquals(result.ok, true);
 
     const content = await Deno.readTextFile(logFile);
-    assertStringIncludes(content, "prompt=issue");
-    assertStringIncludes(content, "version=v2");
+    assertStringIncludes(content, "prompts_commit=2326b04");
   } finally {
     await Deno.remove(tempDir, { recursive: true });
   }
 });
 
-Deno.test("prompt manager - appends multiple entries", async () => {
+Deno.test("prompt manager - appends multiple commit entries", async () => {
   const tempDir = await Deno.makeTempDir();
-  const logFile = `${tempDir}/versions.log`;
+  const logFile = `${tempDir}/prompts.log`;
 
   try {
-    await recordPromptVersion(logFile, "issue", "v1");
-    await recordPromptVersion(logFile, "coding_guidelines", "v3");
+    await recordPromptCommit(logFile, "aaaaaaa");
+    await recordPromptCommit(logFile, "bbbbbbb");
 
     const content = await Deno.readTextFile(logFile);
-    assertStringIncludes(content, "prompt=issue");
-    assertStringIncludes(content, "prompt=coding_guidelines");
+    assertStringIncludes(content, "prompts_commit=aaaaaaa");
+    assertStringIncludes(content, "prompts_commit=bbbbbbb");
   } finally {
     await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("prompt manager - recordPromptCommit fails loud on an unwritable path", async () => {
+  const result = await recordPromptCommit("/nonexistent-dir/x.log", "abc1234");
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(
+      result.error.message,
+      "Failed to record prompt commit",
+    );
+  }
+});
+
+// --- getPromptsCommit tests (Issue #844) ---
+
+Deno.test("getPromptsCommit - resolves the short HEAD hash of the checkout", async () => {
+  const result = await getPromptsCommit(PROMPTS_DIR);
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(/^[0-9a-f]{7,40}$/.test(result.value), true, result.value);
+  }
+});
+
+Deno.test("getPromptsCommit - fails loud outside a git checkout", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "prompts-commit-nogit-" });
+  try {
+    const result = await getPromptsCommit(dir);
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertStringIncludes(
+        result.error.message,
+        "Failed to resolve prompts commit",
+      );
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
 });
 
 // --- getRequiredPlaceholders tests ---
 
 // Issue #3813: `CODING_GUIDELINES` moved from required to optional — since
-// #1262 the guidelines ride in the system prompt, so issue v31+ carries no
-// placeholder for them.
+// #1262 the guidelines ride in the system prompt, so the issue template
+// carries no placeholder for them.
 Deno.test("prompt manager - returns placeholders for issue template", () => {
   const result = getRequiredPlaceholders("issue");
   assertEquals(result.ok, true);
@@ -304,26 +330,18 @@ Deno.test("prompt manager - accepts a scan body without OPEN_ISSUE_TITLES", () =
   }
 });
 
-Deno.test("prompt manager - every shipped scan version still validates", async () => {
+Deno.test("prompt manager - every shipped scan template still validates", async () => {
   for (const type of SCAN_TYPES_WITH_OPEN_ISSUE_TITLES) {
-    const versions = await listPromptVersions(type, PROMPTS_DIR);
-    assertEquals(versions.ok, true, `No versions listed for '${type}'`);
-    if (!versions.ok) continue;
+    const loaded = await loadPrompt(type, PROMPTS_DIR);
+    assertEquals(loaded.ok, true, `Failed to load ${type}`);
+    if (!loaded.ok) continue;
 
-    for (const version of versions.value) {
-      const loaded = await loadPrompt(type, version, PROMPTS_DIR);
-      assertEquals(loaded.ok, true, `Failed to load ${type}/${version}`);
-      if (!loaded.ok) continue;
-
-      const result = validatePromptTemplate(type, loaded.value);
-      assertEquals(
-        result.ok,
-        true,
-        `${type}/${version} failed validation: ${
-          result.ok ? "" : result.error.message
-        }`,
-      );
-    }
+    const result = validatePromptTemplate(type, loaded.value);
+    assertEquals(
+      result.ok,
+      true,
+      `${type} failed validation: ${result.ok ? "" : result.error.message}`,
+    );
   }
 });
 
@@ -334,161 +352,55 @@ Deno.test("prompt manager - validates all prompt templates pass", async () => {
   assertEquals(result.ok, true);
 });
 
-// --- validatePromptImmutability tests (Issue #3041) ---
+// --- getPromptsDir tests (Issue #4302, #968) ---
 //
-// These WHAT-tests drive the function against real temporary git repositories
-// and assert on the observable contract — the set of modified prompt version
-// files returned — rather than which git subcommands run or in what order, so
-// they survive a reimplementation of the diff parsing.
-
-/** Create a temporary git repo with a committed prompt version file. */
-async function createPromptRepo(): Promise<string> {
-  const dir = await Deno.makeTempDir({ prefix: "prompt-immutability-test-" });
-
-  const run = async (args: string[]) => {
-    const cmd = new Deno.Command("git", {
-      args,
-      cwd: dir,
-      stdout: "piped",
-      stderr: "piped",
-    });
-    await cmd.output();
-  };
-
-  await run(["init", "-b", "main"]);
-  await run(["config", "user.email", "test@example.com"]);
-  await run(["config", "user.name", "Test"]);
-
-  await Deno.mkdir(`${dir}/prompts/issue`, { recursive: true });
-  await Deno.writeTextFile(`${dir}/prompts/issue/v1.md`, "original v1\n");
-  await run(["add", "."]);
-  await run(["commit", "-m", "initial prompt"]);
-
-  return dir;
-}
-
-async function gitRun(dir: string, args: string[]): Promise<void> {
-  const cmd = new Deno.Command("git", {
-    args,
-    cwd: dir,
-    stdout: "piped",
-    stderr: "piped",
-  });
-  await cmd.output();
-}
-
-async function cleanupRepo(dir: string): Promise<void> {
-  try {
-    await Deno.remove(dir, { recursive: true });
-  } catch {
-    // Ignore
-  }
-}
-
-Deno.test("prompt manager - immutability reports unstaged modified version file", async () => {
-  const dir = await createPromptRepo();
-  try {
-    // Modify an existing committed prompt version (the prohibited edit).
-    await Deno.writeTextFile(`${dir}/prompts/issue/v1.md`, "tampered\n");
-
-    const result = await validatePromptImmutability(dir);
-    assertEquals(result.ok, false);
-    if (!result.ok) {
-      assertStringIncludes(result.error.message, "prompts/issue/v1.md");
-      assertStringIncludes(result.error.message, "Issue #235");
-    }
-  } finally {
-    await cleanupRepo(dir);
-  }
-});
-
-Deno.test("prompt manager - immutability passes on a clean repo", async () => {
-  const dir = await createPromptRepo();
-  try {
-    const result = await validatePromptImmutability(dir);
-    assertEquals(result.ok, true);
-    if (result.ok) {
-      assertEquals(result.value, []);
-    }
-  } finally {
-    await cleanupRepo(dir);
-  }
-});
-
-Deno.test("prompt manager - immutability allows a brand-new version file", async () => {
-  const dir = await createPromptRepo();
-  try {
-    // Adding a new version is permitted — only modifications are rejected.
-    await Deno.writeTextFile(`${dir}/prompts/issue/v2.md`, "new version\n");
-    await gitRun(dir, ["add", "prompts/issue/v2.md"]);
-
-    const result = await validatePromptImmutability(dir);
-    assertEquals(result.ok, true);
-    if (result.ok) {
-      assertEquals(result.value, []);
-    }
-  } finally {
-    await cleanupRepo(dir);
-  }
-});
-
-Deno.test("prompt manager - immutability ignores non-version prompt files", async () => {
-  const dir = await createPromptRepo();
-  try {
-    // A non-version file (README) is not subject to the immutability rule.
-    await Deno.writeTextFile(`${dir}/prompts/issue/README.md`, "docs\n");
-    await gitRun(dir, ["add", "prompts/issue/README.md"]);
-    await gitRun(dir, ["commit", "-m", "add readme"]);
-    await Deno.writeTextFile(
-      `${dir}/prompts/issue/README.md`,
-      "changed docs\n",
-    );
-
-    const result = await validatePromptImmutability(dir);
-    assertEquals(result.ok, true);
-    if (result.ok) {
-      assertEquals(result.value, []);
-    }
-  } finally {
-    await cleanupRepo(dir);
-  }
-});
-
-Deno.test("prompt manager - immutability detects committed change vs base branch", async () => {
-  const dir = await createPromptRepo();
-  try {
-    // Branch off main, commit a modification to an existing version file.
-    await gitRun(dir, ["checkout", "-b", "feature"]);
-    await Deno.writeTextFile(
-      `${dir}/prompts/issue/v1.md`,
-      "tampered on branch\n",
-    );
-    await gitRun(dir, ["commit", "-am", "modify v1"]);
-
-    const result = await validatePromptImmutability(dir, "main");
-    assertEquals(result.ok, false);
-    if (!result.ok) {
-      assertStringIncludes(result.error.message, "prompts/issue/v1.md");
-    }
-  } finally {
-    await cleanupRepo(dir);
-  }
-});
+// The environment is handed in (Issue #968). Every value below is absent from
+// the real process environment, so a resolution order that quietly fell back
+// to `Deno.env.get` would read the *ambient* worker configuration and fail
+// these assertions rather than pass on it.
 
 Deno.test("getPromptsDir - VIBE_BASE_DIR names the checkout when the driver runs from a staged copy (Issue #4302)", () => {
-  const savedBase = Deno.env.get("VIBE_BASE_DIR");
-  const savedPrompts = Deno.env.get("PROMPTS_DIR");
-  Deno.env.delete("PROMPTS_DIR");
-  Deno.env.set("VIBE_BASE_DIR", "/workspace");
-  try {
-    assertEquals(getPromptsDir(), "/workspace/prompts");
-    // PROMPTS_DIR still wins outright.
-    Deno.env.set("PROMPTS_DIR", "/elsewhere/prompts");
-    assertEquals(getPromptsDir(), "/elsewhere/prompts");
-  } finally {
-    if (savedBase !== undefined) Deno.env.set("VIBE_BASE_DIR", savedBase);
-    else Deno.env.delete("VIBE_BASE_DIR");
-    if (savedPrompts !== undefined) Deno.env.set("PROMPTS_DIR", savedPrompts);
-    else Deno.env.delete("PROMPTS_DIR");
-  }
+  assertEquals(
+    getPromptsDir(undefined, envFrom({ VIBE_BASE_DIR: "/workspace" })),
+    "/workspace/prompts",
+  );
+});
+
+Deno.test("getPromptsDir - PROMPTS_DIR wins outright over VIBE_BASE_DIR (Issue #4302)", () => {
+  const env = envFrom({
+    PROMPTS_DIR: "/elsewhere/prompts",
+    VIBE_BASE_DIR: "/workspace",
+  });
+  assertEquals(getPromptsDir(undefined, env), "/elsewhere/prompts");
+  // …and over an explicit worker directory too.
+  assertEquals(getPromptsDir("/staged/worker/deno", env), "/elsewhere/prompts");
+});
+
+Deno.test("getPromptsDir - a worker directory beats VIBE_BASE_DIR", () => {
+  assertEquals(
+    getPromptsDir(
+      "/staged/worker/deno",
+      envFrom({ VIBE_BASE_DIR: "/workspace" }),
+    ),
+    "/staged/worker/deno/../prompts",
+  );
+});
+
+Deno.test("getPromptsDir - falls back to this module's checkout when nothing is set", () => {
+  // The injected environment carries neither override, so the result must be
+  // the module-relative path — the same directory these tests load from. The
+  // fallback is spelled with `..` segments, so compare the resolved paths.
+  assertEquals(
+    Deno.realPathSync(getPromptsDir(undefined, emptyEnv)),
+    Deno.realPathSync(PROMPTS_DIR),
+  );
+});
+
+Deno.test("getPromptsDir - an empty override is not an override", () => {
+  assertEquals(
+    Deno.realPathSync(
+      getPromptsDir(undefined, envFrom({ PROMPTS_DIR: "", VIBE_BASE_DIR: "" })),
+    ),
+    Deno.realPathSync(PROMPTS_DIR),
+  );
 });

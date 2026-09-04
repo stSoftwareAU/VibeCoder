@@ -1,10 +1,11 @@
 /**
- * Prompt versioning and template management (Issue #197, #914).
+ * Prompt template management (Issue #197, #914, #844).
  *
- * Manages versioned prompt templates stored in the prompts/ directory.
- * Each prompt is a subdirectory containing versioned markdown files
- * (v1.md, v2.md, etc.). This enables rapid iteration, easy rollback,
- * and traceability of which prompt version was used for each issue.
+ * Manages the prompt templates stored in the prompts/ directory. Each prompt
+ * is a subdirectory holding a single editable `prompt.md`. Issue #844 removed
+ * the `vN.md` versioning convention: the repo is public, so git history is the
+ * record of how a template evolved, and a run's traceability comes from the
+ * checkout's commit hash rather than a per-template version number.
  *
  * Migrated from worker/shared/prompt_manager.sh.
  *
@@ -12,6 +13,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /**
  * Known template types and their required placeholders.
@@ -20,9 +22,9 @@ import type { Result } from "../types.ts";
 // builder-hosted types. Since #1262 the guidelines ride in the system prompt,
 // so `prompt_builder.ts` substituted the placeholder with an empty string and
 // every host rendered a heading with nothing under it. The placeholder is gone
-// from issue v31, planning v21, question v9, pr_feedback v12, spelling_fix v6,
-// workflow_setup v6 and ci_fix v11; it stays registered as *optional* so the
-// immutability tests pinned to the earlier versions still validate.
+// from the issue, planning, question, pr_feedback, spelling_fix,
+// workflow_setup and ci_fix templates; it stays registered as *optional* so a
+// template that still carries it is not rejected.
 const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
   issue: ["ISSUE_NUMBER", "QUALITY_INSTRUCTIONS"],
   pr_feedback: ["PR_NUMBER", "QUALITY_INSTRUCTIONS"],
@@ -70,7 +72,7 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
   // Issue #84: the conflict-resolution pass. The template names the PR, the
   // base branch being merged in, and the conflicted paths the worker found
   // after starting the merge — all three are load-bearing, so all three are
-  // required from v1.
+  // required.
   merge_conflict: [
     "PR_NUMBER",
     "QUALITY_INSTRUCTIONS",
@@ -85,24 +87,22 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
     "EXISTING_WORKFLOWS",
   ],
   security_scan: [
-    // Issue #2135 (v6): `{{REPO_FULL_NAME}}` was retired — the worker's
+    // Issue #2135: `{{REPO_FULL_NAME}}` was retired — the worker's
     // cwd already points at the cloned repo, so `gh issue create`
     // operates on the right one without explicit substitution.
-    // Issue #2159 (v8): `{{LANGUAGE_HINTS}}` was retired — the scanner
+    // Issue #2159: `{{LANGUAGE_HINTS}}` was retired — the scanner
     // agent detects dominant languages at scan time as step zero of the
     // Phase 1 inventory.
-    // Issue #2439 (v11): `{{ATTRIBUTION_FOOTER}}` was added as an
-    // *optional* placeholder — see OPTIONAL_PLACEHOLDERS below. Keeping
-    // it optional preserves backwards compatibility with the
-    // immutability tests pinned to older versions.
+    // Issue #2439: `{{ATTRIBUTION_FOOTER}}` was added as an *optional*
+    // placeholder — see OPTIONAL_PLACEHOLDERS below.
     "SUPPRESSED_IDS",
     "KNOWN_OPEN_FINDING_IDS",
   ],
   best_practices: [
     // Issue #2148: the best-practices template substitutes the picked
     // bucket and the two dedup lists at file time.
-    // Issue #2439 (v4): `{{ATTRIBUTION_FOOTER}}` was added as an
-    // optional placeholder — see OPTIONAL_PLACEHOLDERS below.
+    // Issue #2439: `{{ATTRIBUTION_FOOTER}}` was added as an optional
+    // placeholder — see OPTIONAL_PLACEHOLDERS below.
     "BUCKET",
     "SUPPRESSED_IDS",
     "KNOWN_OPEN_FINDING_IDS",
@@ -111,8 +111,8 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
     // Issue #2250 (parent #2214): language-agnostic WHAT-vs-HOW test
     // quality scan. Same two dedup lists as best-practices and
     // security-scan; no bucket — the scan is language-agnostic.
-    // Issue #2439 (v2): `{{ATTRIBUTION_FOOTER}}` was added as an
-    // optional placeholder — see OPTIONAL_PLACEHOLDERS below.
+    // Issue #2439: `{{ATTRIBUTION_FOOTER}}` was added as an optional
+    // placeholder — see OPTIONAL_PLACEHOLDERS below.
     "SUPPRESSED_IDS",
     "KNOWN_OPEN_FINDING_IDS",
   ],
@@ -120,8 +120,8 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
     // Issue #2255 (parent #2243): single-bucket GitHub Actions audit.
     // Same two dedup lists as the other scans, plus the two catalogue
     // tables rendered from `github_actions_catalogue.ts` at file time.
-    // Issue #2439 (v7): `{{ATTRIBUTION_FOOTER}}` was added as an
-    // optional placeholder — see OPTIONAL_PLACEHOLDERS below.
+    // Issue #2439: `{{ATTRIBUTION_FOOTER}}` was added as an optional
+    // placeholder — see OPTIONAL_PLACEHOLDERS below.
     "SUPPRESSED_IDS",
     "KNOWN_OPEN_FINDING_IDS",
     "ACTIONS_CATALOGUE_TABLE",
@@ -171,10 +171,9 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
   ],
   doc_coverage: [
     // Issue #3807 (template #6): module-doc & README coverage scan. The
-    // type was unregistered until v6, so `validatePromptTemplate`
+    // type was unregistered for a long while, so `validatePromptTemplate`
     // refused the surface and nothing guarded its two load-bearing
-    // dedup placeholders. Every shipped version (v1 onwards) carries
-    // both, so registering them is backwards compatible.
+    // dedup placeholders.
     "SUPPRESSED_IDS",
     "KNOWN_OPEN_FINDING_IDS",
   ],
@@ -182,8 +181,8 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
     // Issue #3609 (template #17): copy-paste blocks that encode the same
     // knowledge and should call one existing helper. Same two dedup lists
     // as the other scan templates — language-agnostic, no bucket — plus
-    // the deterministic duplicate-block pre-pass, which is required from
-    // v1 (unlike test-audit's COVERAGE_GAPS, added in a later version).
+    // the deterministic duplicate-block pre-pass, which is required
+    // (unlike test-audit's COVERAGE_GAPS, which is optional).
     "SUPPRESSED_IDS",
     "KNOWN_OPEN_FINDING_IDS",
     "DUPLICATE_BLOCKS",
@@ -199,8 +198,7 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
   // Issue #536 (parent #523): dead-code, deprecated-API and format-drift file
   // findings like the other scans but were unregistered, so
   // `validatePromptTemplate` refused the surface outright and nothing guarded
-  // their two dedup placeholders. Every shipped version (v1 onwards) of all
-  // three carries both, so registering them is backwards compatible — the
+  // their two dedup placeholders. All three templates carry both — the
   // `doc_coverage` precedent from #3807.
   dead_code: [
     "SUPPRESSED_IDS",
@@ -225,16 +223,15 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
  * compatible). Used for discoverability and documentation.
  *
  * Issue #3813: `CODING_GUIDELINES` moved here from REQUIRED_PLACEHOLDERS —
- * versions up to and including issue v30 carry it, later ones do not.
+ * the builder-hosted templates no longer carry it.
  *
  * Issue #536 (parent #523): `OPEN_ISSUE_TITLES` — the all-open-issues dedup
  * block — is registered here for every scan type that files findings.
  * `{{KNOWN_OPEN_FINDING_IDS}}` stays the deterministic first line of dedup;
  * the title list is what lets the scanner skip a semantic duplicate already
  * open under another label. It is *optional* like `ATTRIBUTION_FOOTER`
- * (#2439) and `CODING_GUIDELINES` (#3813): REQUIRED_PLACEHOLDERS is enforced
- * against every shipped version of a type, so requiring it would retroactively
- * invalidate the ~14 prompt histories the immutability tests pin.
+ * (#2439) and `CODING_GUIDELINES` (#3813): a scan template that omits it is
+ * still valid.
  */
 export const OPTIONAL_PLACEHOLDERS: Record<string, readonly string[]> = {
   issue: ["VERBOSITY_INSTRUCTIONS", "CODING_GUIDELINES"],
@@ -259,19 +256,13 @@ export const OPTIONAL_PLACEHOLDERS: Record<string, readonly string[]> = {
   // verbosity block is substituted into the merge-conflict body.
   merge_conflict: ["VERBOSITY_INSTRUCTIONS"],
   // Issue #2439: `ATTRIBUTION_FOOTER` is the attribution-footer
-  // placeholder added in the v11 / v4 / v2 / v7 prompt bumps. It is
-  // *optional* so the immutability tests pinned to the previous
-  // versions (which do not carry the placeholder) continue to pass.
-  // The four idle-task templates always supply it at file time.
-  // Issue #3014 (v18): `LLM_GATE` carries the worker's deterministic
-  // LLM-usage verdict that gates the OWASP GenAI / LLM Top 10 taxonomy.
-  // Optional so the immutability tests pinned to v1–v17 (which do not
-  // carry the placeholder) continue to pass.
+  // placeholder the four idle-task templates always supply at file time.
+  // Issue #3014: `LLM_GATE` carries the worker's deterministic LLM-usage
+  // verdict that gates the OWASP GenAI / LLM Top 10 taxonomy.
   security_scan: ["ATTRIBUTION_FOOTER", "LLM_GATE", "OPEN_ISSUE_TITLES"],
-  // Issue #2916 (v4): `COVERAGE_GAPS` is the pre-computed
+  // Issue #2916: `COVERAGE_GAPS` is the pre-computed
   // untested-public-function list injected by the test-audit template at
-  // scan time. Optional so the immutability tests pinned to v1–v3 (which
-  // do not carry the placeholder) continue to pass.
+  // scan time.
   test_audit: ["ATTRIBUTION_FOOTER", "COVERAGE_GAPS", "OPEN_ISSUE_TITLES"],
   best_practices: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
   github_actions_audit: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
@@ -316,11 +307,22 @@ export const OPTIONAL_PLACEHOLDERS: Record<string, readonly string[]> = {
  * Uses PROMPTS_DIR environment variable if set, otherwise derives from
  * the worker directory structure.
  *
+ * Issue #968: `env` is the injected lookup seam. A test that wanted to see
+ * what a `PROMPTS_DIR` or `VIBE_BASE_DIR` override resolves to had to write
+ * those variables into the process, which races every other worker under
+ * `deno test --parallel` — and, worse, made `tests/support/repo_prompts.ts`
+ * delete them again at module scope for the thirty-odd suites that load a
+ * real template. Handing the lookup in as a parameter removes both.
+ *
  * @param workerDir - Optional worker directory path for deriving prompts dir
+ * @param env - Environment lookup; defaults to the real process environment
  * @returns Path to the prompts directory
  */
-export function getPromptsDir(workerDir?: string): string {
-  const envDir = Deno.env.get("PROMPTS_DIR");
+export function getPromptsDir(
+  workerDir?: string,
+  env: EnvLookup = processEnvLookup,
+): string {
+  const envDir = env("PROMPTS_DIR");
   if (envDir) {
     return envDir;
   }
@@ -334,7 +336,7 @@ export function getPromptsDir(workerDir?: string): string {
   // module-relative path would look for prompts/ under the staged copy —
   // observed live as "Prompt 'planning' not found in
   // ~/.worker-src/worker/deno/lib/../../../prompts".
-  const baseDir = Deno.env.get("VIBE_BASE_DIR");
+  const baseDir = env("VIBE_BASE_DIR");
   if (baseDir) {
     return `${baseDir}/prompts`;
   }
@@ -344,101 +346,22 @@ export function getPromptsDir(workerDir?: string): string {
   return `${moduleDir}../../../prompts`;
 }
 
+/** Filename every prompt type's template lives under (Issue #844). */
+export const PROMPT_FILENAME = "prompt.md";
+
 /**
- * List available versions for a prompt template.
+ * Load a prompt template by name.
  *
  * @param promptName - Name of the prompt (matches subdirectory in prompts/)
- * @param promptsDir - Path to the prompts directory
- * @returns Sorted array of version strings (e.g., ["v1", "v2"])
- */
-export async function listPromptVersions(
-  promptName: string,
-  promptsDir?: string,
-): Promise<Result<string[]>> {
-  const dir = promptsDir ?? getPromptsDir();
-  const promptDir = `${dir}/${promptName}`;
-
-  try {
-    const entries = [];
-    for await (const entry of Deno.readDir(promptDir)) {
-      if (entry.isFile && /^v\d+\.md$/.test(entry.name)) {
-        entries.push(entry.name.replace(/\.md$/, ""));
-      }
-    }
-
-    if (entries.length === 0) {
-      return {
-        ok: false,
-        error: new Error(`No versions found for prompt '${promptName}'`),
-      };
-    }
-
-    // Sort numerically by version number
-    entries.sort((a, b) => {
-      const numA = parseInt(a.replace("v", ""), 10);
-      const numB = parseInt(b.replace("v", ""), 10);
-      return numA - numB;
-    });
-
-    return { ok: true, value: entries };
-  } catch {
-    return {
-      ok: false,
-      error: new Error(
-        `Prompt '${promptName}' not found in ${dir}`,
-      ),
-    };
-  }
-}
-
-/**
- * Get the latest (highest) version for a prompt.
- *
- * @param promptName - Name of the prompt
- * @param promptsDir - Path to the prompts directory
- * @returns The latest version string (e.g., "v2")
- */
-export async function getLatestVersion(
-  promptName: string,
-  promptsDir?: string,
-): Promise<Result<string>> {
-  const result = await listPromptVersions(promptName, promptsDir);
-  if (!result.ok) {
-    return result;
-  }
-
-  const versions = result.value;
-  const latest = versions[versions.length - 1]!;
-  return { ok: true, value: latest };
-}
-
-/**
- * Load a prompt template by name and optional version.
- *
- * @param promptName - Name of the prompt (matches subdirectory in prompts/)
- * @param version - Version string (e.g., "v1"). Defaults to latest version.
  * @param promptsDir - Path to the prompts directory
  * @returns The prompt template content
  */
 export async function loadPrompt(
   promptName: string,
-  version?: string,
   promptsDir?: string,
 ): Promise<Result<string>> {
   const dir = promptsDir ?? getPromptsDir();
-  const promptDir = `${dir}/${promptName}`;
-
-  // Default to latest version if not specified
-  let resolvedVersion = version;
-  if (!resolvedVersion) {
-    const latestResult = await getLatestVersion(promptName, dir);
-    if (!latestResult.ok) {
-      return latestResult;
-    }
-    resolvedVersion = latestResult.value;
-  }
-
-  const templateFile = `${promptDir}/${resolvedVersion}.md`;
+  const templateFile = `${dir}/${promptName}/${PROMPT_FILENAME}`;
 
   try {
     const content = await Deno.readTextFile(templateFile);
@@ -447,28 +370,29 @@ export async function loadPrompt(
     return {
       ok: false,
       error: new Error(
-        `Version '${resolvedVersion}' not found for prompt '${promptName}'`,
+        `Prompt '${promptName}' not found at ${templateFile}`,
       ),
     };
   }
 }
 
 /**
- * Record which prompt version was used for traceability (Issue #212).
+ * Record which prompt revision a run used, for traceability (Issue #212,
+ * #844).
  *
- * Appends a timestamped entry to the specified log file.
+ * Versioned filenames are gone, so the checkout's git commit is what
+ * identifies the template text a run saw. Appends a timestamped entry to the
+ * specified log file.
  *
- * @param logFile - Path to the prompt versions log file
- * @param promptName - Name of the prompt that was used
- * @param version - Version string that was used
+ * @param logFile - Path to the prompt revision log file
+ * @param commit - Short commit hash of the checkout the templates came from
  */
-export async function recordPromptVersion(
+export async function recordPromptCommit(
   logFile: string,
-  promptName: string,
-  version: string,
+  commit: string,
 ): Promise<Result<void>> {
   const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-  const entry = `${timestamp} prompt=${promptName} version=${version}\n`;
+  const entry = `${timestamp} prompts_commit=${commit}\n`;
 
   try {
     await Deno.writeTextFile(logFile, entry, { append: true });
@@ -477,7 +401,58 @@ export async function recordPromptVersion(
     return {
       ok: false,
       error: new Error(
-        `Failed to record prompt version: ${
+        `Failed to record prompt commit: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
+    };
+  }
+}
+
+/**
+ * Resolve the short commit hash of a checkout (Issue #844).
+ *
+ * This is the replacement for the per-template version number: it identifies
+ * exactly which prompt text a run loaded. Fails loud rather than returning a
+ * placeholder, so a broken checkout is never logged as a clean revision.
+ *
+ * @param repoDir - Path inside the checkout. Defaults to the prompts
+ *   directory, which is what `git` is asked about.
+ * @returns The short commit hash (e.g. "2326b04")
+ */
+export async function getPromptsCommit(
+  repoDir?: string,
+): Promise<Result<string>> {
+  const dir = repoDir ?? getPromptsDir();
+  try {
+    const command = new Deno.Command("git", {
+      args: ["-C", dir, "rev-parse", "--short", "HEAD"],
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const output = await command.output();
+    if (!output.success) {
+      const stderr = new TextDecoder().decode(output.stderr).trim();
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to resolve prompts commit in ${dir}: ${stderr}`,
+        ),
+      };
+    }
+    const commit = new TextDecoder().decode(output.stdout).trim();
+    if (!commit) {
+      return {
+        ok: false,
+        error: new Error(`Empty commit hash resolved in ${dir}`),
+      };
+    }
+    return { ok: true, value: commit };
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to resolve prompts commit in ${dir}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       ),
@@ -591,7 +566,7 @@ export async function validateAllPromptTemplates(
   const errors: string[] = [];
 
   for (const templateType of templateTypes) {
-    const loadResult = await loadPrompt(templateType, undefined, promptsDir);
+    const loadResult = await loadPrompt(templateType, promptsDir);
     if (!loadResult.ok) {
       errors.push(
         `Failed to load template '${templateType}': ${loadResult.error.message}`,
@@ -610,94 +585,6 @@ export async function validateAllPromptTemplates(
 
   if (errors.length > 0) {
     return { ok: false, error: new Error(errors.join("\n")) };
-  }
-
-  return { ok: true, value: [] };
-}
-
-/**
- * Validate prompt immutability — check that no existing prompt versions
- * have been modified (Issue #235).
- *
- * Uses git to detect modifications to existing committed prompt version files.
- * New files (additions) are allowed — only modifications to existing files
- * are rejected.
- *
- * @param repoDir - Path to the git repository root
- * @param baseBranch - Base branch to compare against (optional)
- * @returns Result with list of modified files if any violations found
- */
-export async function validatePromptImmutability(
-  repoDir: string,
-  baseBranch?: string,
-): Promise<Result<string[]>> {
-  const promptsRelDir = "prompts";
-  const modifiedFiles: string[] = [];
-
-  // Helper to run git command and collect output
-  async function gitDiff(args: string[]): Promise<string> {
-    const command = new Deno.Command("git", {
-      args: ["-C", repoDir, ...args],
-      stdout: "piped",
-      stderr: "piped",
-    });
-    const output = await command.output();
-    return new TextDecoder().decode(output.stdout).trim();
-  }
-
-  // Check for unstaged modifications
-  const unstaged = await gitDiff([
-    "diff",
-    "--name-only",
-    "--",
-    `${promptsRelDir}/`,
-  ]);
-  if (unstaged) {
-    modifiedFiles.push(...unstaged.split("\n"));
-  }
-
-  // Check for staged modifications (exclude additions)
-  const staged = await gitDiff([
-    "diff",
-    "--cached",
-    "--diff-filter=M",
-    "--name-only",
-    "--",
-    `${promptsRelDir}/`,
-  ]);
-  if (staged) {
-    modifiedFiles.push(...staged.split("\n"));
-  }
-
-  // Check for committed modifications against base branch
-  if (baseBranch) {
-    const committed = await gitDiff([
-      "diff",
-      "--diff-filter=M",
-      "--name-only",
-      `${baseBranch}...HEAD`,
-      "--",
-      `${promptsRelDir}/`,
-    ]);
-    if (committed) {
-      modifiedFiles.push(...committed.split("\n"));
-    }
-  }
-
-  // Deduplicate and filter to only v*.md files
-  const versionFiles = [
-    ...new Set(modifiedFiles.filter((f) => /\/v\d+\.md$/.test(f))),
-  ];
-
-  if (versionFiles.length > 0) {
-    return {
-      ok: false,
-      error: new Error(
-        `Existing prompt versions must not be modified (Issue #235). Create a new version instead. Modified files: ${
-          versionFiles.join(", ")
-        }`,
-      ),
-    };
   }
 
   return { ok: true, value: [] };

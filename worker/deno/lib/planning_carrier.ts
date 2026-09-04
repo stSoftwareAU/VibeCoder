@@ -36,7 +36,7 @@ import type { Logger } from "../types.ts";
 /**
  * Descriptive label applied to a carrier sub-issue.
  *
- * Matches the prompt counterpart (`prompts/planning_critique/v3.md`, Issue
+ * Matches the prompt counterpart (`prompts/planning_critique/prompt.md`, Issue
  * #2994), which labels the carrier `enhancement`. A reserved workflow label
  * such as `work-on` cannot be used: the worker is not on the trusted-author
  * allowlist, so `label_security` (Issue #1344) strips any reserved label it

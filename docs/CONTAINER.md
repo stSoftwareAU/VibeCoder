@@ -862,10 +862,10 @@ Four boundaries hold now:
   `Feature work-volume` only when the volume has surfaced no I/O fault
   **and** its standing totals are measurable.
 - **Both signals blind marks the host unhealthy.** One blind signal is named
-  on the fleet-health payload; losing both is a health condition in its own
-  right — the iteration logs `[DISK_TELEMETRY_BLIND]` once, the host reports
-  unhealthy, and the payload says *which* host lost its disk telemetry. It
-  gates nothing: a monitoring fault must not stop the fleet working.
+  in the telemetry notes; losing both is a health condition in its own
+  right — the iteration logs `[DISK_TELEMETRY_BLIND]` once and the host
+  reports unhealthy. It gates nothing: a monitoring fault must not stop the
+  fleet working.
 - **Measure where the bytes are.** The cycle-start walk lands ~2 minutes in,
   before the clones a cycle creates exist, so it is sampled **again at end of
   run** — when the volume is at its fullest — as `Work volume (end of run):`.
@@ -1206,6 +1206,14 @@ are in Deployment, and the rule that no
 vendor's credential reaches another vendor's subprocess is in
 Quorum.
 
+`provider.env` is the only file `setup.sh` writes, but it is not necessarily
+the only file in the sub-directory: a host with several Claude subscriptions
+may hold hand-written `claude/provider-2.env`, `provider-3.env` … files as
+well ([Several Claude tokens](SETUP.md#several-claude-tokens)). The mount is
+the sub-directory, so every file in it is readable inside the container, while
+exactly one of them is exported into the run's environment — the worker picks
+the token with the most remaining budget at start and logs which one it chose.
+
 Codex was the first addition made purely through the seam. Two
 Codex facts shape its descriptor, and both are handled in the Codex-owned
 modules (`codex_executor.ts`, `codex_env.ts`, `codex_auth.ts`) rather than in
@@ -1361,9 +1369,8 @@ does — see Quorum.
 ## Deployer-supplied build-time tools
 
 The image carries the toolchains above because *this* fleet's monitored
-repositories need them. A deployment whose repositories need something else —
-Java and Maven are the first expected use — declares it as a top-level
-`container_tools` array in `.config.json`, and the build bakes it in. The
+repositories need them. A deployment whose repositories need something else
+declares it as a top-level `container_tools` array in `.config.json`, and the build bakes it in. The
 default is an empty selection: the fleet image installs nothing extra, so a
 deployment that wants nothing pays nothing.
 
@@ -1387,7 +1394,7 @@ set it is handed, so a bad entry never leaves a half-installed image behind.
 | `sha256` | yes | 64 hex characters per architecture. **Mandatory** — a `url` without a matching `sha256` (or the reverse) is rejected, because that would be an unverified download. |
 | `stripComponents` | no (default `0`) | Leading path components dropped on extraction, as `tar --strip-components`. Most distributions ship one top-level directory, so `1` is usual. |
 | `bin` | no (default none) | Directories, **relative to the install prefix**, prepended to PATH. `""` is the prefix root. |
-| `env` | no (default none) | Environment variables set at container start, each value **relative to the install prefix**. `""` is the prefix root — that is how `JAVA_HOME` is expressed. |
+| `env` | no (default none) | Environment variables set at container start, each value **relative to the install prefix**. `""` is the prefix root — that is how a `*_HOME` variable is expressed. |
 
 A deployment that builds for one architecture may supply only that
 architecture; the build resolves its own `amd64`/`arm64` and falls back to
@@ -1396,7 +1403,7 @@ architecture; the build resolves its own `amd64`/`arm64` and falls back to
 **The install prefix is fixed at `/opt/vibe-tools/<id>`**, and every `bin` and
 `env` value is relative to it. An absolute path, a `~`, or a `..` that walks
 above the prefix is refused at validation, so no selection can aim PATH or
-`JAVA_HOME` at an arbitrary host path — the worst a malformed spec can do is
+an environment variable at an arbitrary host path — the worst a malformed spec can do is
 fail the build.
 
 At container start `container/entrypoint.sh` reads the
@@ -1415,26 +1422,28 @@ flowchart LR
     I -->|download → verify SHA-256| P["/opt/vibe-tools/&lt;id&gt;"]
     I -->|digest mismatch| X2["❌ build aborts"]
     P --> E["/opt/vibe-tools/environment"]
-    E --> R["entrypoint.sh:<br/>PATH + JAVA_HOME"]
+    E --> R["entrypoint.sh:<br/>PATH + env"]
     style X fill:#c9184a,stroke:#800f2f,color:#fff
     style X2 fill:#c9184a,stroke:#800f2f,color:#fff
     style R fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-### A worked example — Java and Maven
+### A worked example
 
-Eclipse Temurin 25 (both architectures) and Apache Maven 3.9 (one
-architecture-independent archive):
+Two toolchains: one built for each architecture, one shipped as a single
+architecture-independent archive. The ids, versions, URLs and digests are
+placeholders — substitute whatever your deployment actually needs. Nothing in
+the mechanism inspects them.
 
 ```json
 {
   "container_tools": [
     {
-      "id": "java",
-      "version": "25.0.4+7",
+      "id": "tool-a",
+      "version": "25.0.4",
       "url": {
-        "amd64": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4%2B7/OpenJDK25U-jdk_x64_linux_hotspot_25.0.4_7.tar.gz",
-        "arm64": "https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4%2B7/OpenJDK25U-jdk_aarch64_linux_hotspot_25.0.4_7.tar.gz"
+        "amd64": "https://artefacts.example.com/tool-a-25.0.4-linux-x64.tar.gz",
+        "arm64": "https://artefacts.example.com/tool-a-25.0.4-linux-aarch64.tar.gz"
       },
       "sha256": {
         "amd64": "e58fcdcd637b25c03ca84cbbcefc70d11efb8f4b4cbd05decc9f661769d77f94",
@@ -1442,80 +1451,78 @@ architecture-independent archive):
       },
       "stripComponents": 1,
       "bin": ["bin"],
-      "env": { "JAVA_HOME": "" }
+      "env": { "TOOL_A_HOME": "" }
     },
     {
-      "id": "maven",
+      "id": "tool-b",
       "version": "3.9.16",
       "url": {
-        "noarch": "https://archive.apache.org/dist/maven/maven-3/3.9.16/binaries/apache-maven-3.9.16-bin.tar.gz"
+        "noarch": "https://artefacts.example.com/tool-b-3.9.16-bin.tar.gz"
       },
       "sha256": {
         "noarch": "80ffca22aed9e8b9713a232f3394fd81d7f20322df75efdb2b047dbd3e3a23bb"
       },
       "stripComponents": 1,
       "bin": ["bin"],
-      "env": { "MAVEN_HOME": "" }
+      "env": { "TOOL_B_HOME": "" }
     }
   ]
 }
 ```
 
-Maven finds its JDK through `JAVA_HOME`, which the `java` entry sets, so the
-order matters only for readability — both are applied before the worker starts.
-Inside a container built from that selection:
+Where one tool needs to find another, express that with an `env` entry — the
+example gives each a `*_HOME` pointing at its own prefix. Order matters only
+for readability; every entry is applied before the worker starts. Inside a
+container built from that selection:
 
 ```text
-$ echo "$JAVA_HOME"
-/opt/vibe-tools/java
-$ java -version
-openjdk version "25.0.4" 2026-07-21 LTS
-OpenJDK Runtime Environment Temurin-25.0.4+7 (build 25.0.4+7-LTS)
-$ mvn -version
-Apache Maven 3.9.16 (2bdd9fddda4b155ebf8000e807eb73fd829a51d5)
-Maven home: /opt/vibe-tools/maven
-Java version: 25.0.4, vendor: Eclipse Adoptium, runtime: /opt/vibe-tools/java
+$ echo "$TOOL_A_HOME"
+/opt/vibe-tools/tool-a
+$ echo "$TOOL_B_HOME"
+/opt/vibe-tools/tool-b
+$ command -v tool-a
+/opt/vibe-tools/tool-a/bin/tool-a
 ```
 
 The pins are the deployment's, not the fleet's: they are deliberately *not* in
 [`container/tools.json`](../container/tools.json), which pins what every image
-carries. Keep the version current the way you would any other dependency, and
+carries. Keep the versions current the way you would any other dependency, and
 observe the 24-hour quarantine in
 [Coding Standards](../CODING-STANDARDS.md) — do not pin a release published in
 the last day.
 
 ### Finding a published checksum for a new tool
 
-The digest must come from the **upstream project's own published checksum**,
-fetched over HTTPS — never from the copy you just downloaded, which would
-verify the bytes against themselves.
+The digest must come from the **publisher's own published checksum**, fetched
+over HTTPS — never from the copy you just downloaded, which would verify the
+bytes against themselves.
 
-- **Adoptium** publishes a SHA-256 per binary. The release page lists it, and
-  the API returns it directly:
+- **When the publisher publishes a SHA-256 per artefact**, take it directly.
+  Many publish a checksum file beside each download, or return one from a
+  release API; either is fine as long as you fetch it over HTTPS rather than
+  computing it from your own copy.
 
-  ```bash
-  curl -sS "https://api.adoptium.net/v3/assets/latest/25/hotspot?os=linux&image_type=jdk&vendor=eclipse" |
-    jq -r '.[] | [.binary.architecture, .binary.package.link, .binary.package.checksum] | @tsv'
-  ```
-
-- **Apache** publishes a `.sha512` beside each artefact — not a SHA-256. Verify
-  the download against the published SHA-512 first, then record the SHA-256 of
-  the file you just verified:
+- **When the publisher publishes a different digest** — a `.sha512` beside the
+  artefact, say — verify the download against *that* first, then record the
+  SHA-256 of the file you just verified:
 
   ```bash
-  curl -fsSLO https://archive.apache.org/dist/maven/maven-3/3.9.16/binaries/apache-maven-3.9.16-bin.tar.gz
-  published="$(curl -fsSL https://archive.apache.org/dist/maven/maven-3/3.9.16/binaries/apache-maven-3.9.16-bin.tar.gz.sha512)"
-  echo "${published}  apache-maven-3.9.16-bin.tar.gz" | sha512sum -c -
-  sha256sum apache-maven-3.9.16-bin.tar.gz
+  curl -fsSLO https://artefacts.example.com/tool-b-3.9.16-bin.tar.gz
+  published="$(curl -fsSL https://artefacts.example.com/tool-b-3.9.16-bin.tar.gz.sha512)"
+  echo "${published}  tool-b-3.9.16-bin.tar.gz" | sha512sum -c -
+  sha256sum tool-b-3.9.16-bin.tar.gz
   ```
 
   The `sha512sum -c` must print `OK` before the `sha256sum` output is worth
-  anything: unverified bytes produce a digest that pins exactly the artefact an
-  attacker served you.
+  recording — otherwise you are pinning bytes nobody vouched for.
 
-- Prefer a **permanent** URL over a mirror that moves. `archive.apache.org`
-  keeps every release; `dlcdn.apache.org` serves only current ones, so a pin
-  against it starts 404-ing when the version ages out.
+- **When the software you need is not published as an archive at all** —
+  it ships as a distribution package, or as source that must be compiled —
+  build or unpack it once yourself, produce a `.tar.gz` of the result, host it
+  where your build can reach it, and pin its digest like any other entry. The
+  installer does not care where an archive came from; it verifies the digest
+  you declared.
+
 
 ### When a checksum stops matching
 
@@ -1524,7 +1531,7 @@ rebuilt tarball, a mirror serving different bytes. The build then fails at the
 verify step, naming the tool:
 
 ```text
-install-tools: tool "java": SHA-256 mismatch — refusing to install.
+install-tools: tool "tool-a": SHA-256 mismatch — refusing to install.
 ```
 
 **That failure is the mechanism working, not a bug in it.** Nothing is

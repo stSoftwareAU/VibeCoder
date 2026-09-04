@@ -17,13 +17,40 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-/** Read an env var, tolerating a denied `--allow-env`. */
-function env(name: string): string | undefined {
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+
+/** Read an env var through `lookup`, tolerating a denied `--allow-env`. */
+function env(
+  name: string,
+  lookup: EnvLookup = processEnvLookup,
+): string | undefined {
   try {
-    return Deno.env.get(name) || undefined;
+    return lookup(name) || undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Where to look for the work volume root (Issue #960).
+ *
+ * Both fields exist so a test can name the directory instead of exporting
+ * `WORK_DIR` into the process, which races every other test in the run and
+ * is what keeps the gate's `deno test` stage serial (Issue #880, plan #944).
+ * Production passes neither and reads the process environment exactly as
+ * before.
+ */
+export interface WorkerCacheDirOptions {
+  /** The work volume root. Wins over any `WORK_DIR` in the environment. */
+  workDir?: string;
+  /** Environment lookup; defaults to the real process environment. */
+  env?: EnvLookup;
+  /**
+   * Home directory backing the legacy read-only fallback (Issue #966).
+   * Wins over any `HOME` in the environment, so a test can name the
+   * directory instead of exporting one into the process.
+   */
+  home?: string;
 }
 
 /**
@@ -37,8 +64,10 @@ function env(name: string): string | undefined {
  * HOME-derived default silently created a stray `~/auto-issue-work` on the
  * host (Issue #118).
  */
-export function workerCacheDir(): string | undefined {
-  const workDir = env("WORK_DIR");
+export function workerCacheDir(
+  options: WorkerCacheDirOptions = {},
+): string | undefined {
+  const workDir = options.workDir ?? env("WORK_DIR", options.env);
   return workDir ? `${workDir}/.vibe-cache` : undefined;
 }
 
@@ -46,8 +75,11 @@ export function workerCacheDir(): string | undefined {
  * Path of a named cache file in the worker cache directory, or `undefined`
  * when there is no cache directory (`WORK_DIR` unset — Issue #131).
  */
-export function workerCachePath(fileName: string): string | undefined {
-  const dir = workerCacheDir();
+export function workerCachePath(
+  fileName: string,
+  options: WorkerCacheDirOptions = {},
+): string | undefined {
+  const dir = workerCacheDir(options);
   return dir ? `${dir}/${fileName}` : undefined;
 }
 
@@ -55,8 +87,12 @@ export function workerCachePath(fileName: string): string | undefined {
  * The pre-#4318 location of a cache file, `$HOME/.vibe-coder/<file>` —
  * consulted read-only when the new file does not exist yet.
  */
-export function legacyHomeCachePath(fileName: string): string {
-  return `${env("HOME") ?? "."}/.vibe-coder/${fileName}`;
+export function legacyHomeCachePath(
+  fileName: string,
+  options: WorkerCacheDirOptions = {},
+): string {
+  const home = options.home ?? env("HOME", options.env);
+  return `${home ?? "."}/.vibe-coder/${fileName}`;
 }
 
 /**

@@ -22,26 +22,22 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 /** The families that state the pinning rule. */
 const SUBJECTS = ["github_actions_audit", "workflow_setup"] as const;
 
-/** The latest text of one family, collapsed for matching. */
+/** The text of one family's template, collapsed for matching. */
 async function latest(
   family: string,
-): Promise<{ version: string; text: string; collapsed: string }> {
-  const found = await getLatestVersion(family, PROMPTS_DIR);
-  assertEquals(found.ok, true, `no latest version for ${family}`);
-  if (!found.ok) throw new Error(found.error.message);
-  const loaded = await loadPrompt(family, found.value, PROMPTS_DIR);
-  assertEquals(loaded.ok, true);
+): Promise<{ text: string; collapsed: string }> {
+  const loaded = await loadPrompt(family, PROMPTS_DIR);
+  assertEquals(loaded.ok, true, `${family} failed to load`);
   if (!loaded.ok) throw new Error(loaded.error.message);
   return {
-    version: found.value,
     text: loaded.value,
     collapsed: loaded.value.replace(/\s+/g, " "),
   };
@@ -50,11 +46,11 @@ async function latest(
 Deno.test("action pinning - neither template says first-party any more (Issue #787)", async () => {
   // The term named two disjoint sets over exactly the rule it gated.
   for (const family of SUBJECTS) {
-    const { version, text } = await latest(family);
+    const { text } = await latest(family);
     assertEquals(
       /first-party/i.test(text),
       false,
-      `${family} ${version} still says "first-party", which means ` +
+      `${family} still says "first-party", which means ` +
         `GitHub-owned actions/* in one template and stSoftwareAU/* in the other`,
     );
   }
@@ -118,29 +114,4 @@ Deno.test("action pinning - the guidelines already stated the rule and are untou
     false,
     "the guidelines never used the term and must not gain it",
   );
-});
-
-Deno.test("action pinning - the new audit version declares its own number (Issue #787)", async () => {
-  // `github_actions_audit` carries its version in its H1, and v18 already
-  // declared (v17) — the defect class #792 sweeps. The file this change adds
-  // declares its own.
-  const { version, text } = await latest("github_actions_audit");
-  assertStringIncludes(text, `Workflow-Focused Review (${version})`);
-});
-
-Deno.test("action pinning - the retired versions stay immutable (Issue #787)", async () => {
-  for (
-    const [family, version] of [
-      ["github_actions_audit", "v18"],
-      ["workflow_setup", "v8"],
-    ] as const
-  ) {
-    const result = await loadPrompt(family, version, PROMPTS_DIR);
-    assertEquals(result.ok, true);
-    if (!result.ok) continue;
-    assert(
-      /first-party/i.test(result.value),
-      `${family} ${version} used the term and must keep reading as it did`,
-    );
-  }
 });

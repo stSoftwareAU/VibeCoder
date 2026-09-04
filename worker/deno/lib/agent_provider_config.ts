@@ -26,6 +26,7 @@ import {
   ENABLED_AGENT_PROVIDERS_CONFIG_KEY,
   enabledAgentProviders,
 } from "./agent_provider.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 
 /** A provider selection as `.config.json` spells it. */
 export interface AgentProviderConfigSelection {
@@ -104,6 +105,9 @@ export interface ConfiguredAgentProviderSet {
  * @param configFile - Host path of the worker configuration file.
  * @param imageDefault - The set a default image build installs, i.e.
  *   `container/tools.json` `installedProviders`.
+ * @param env - Environment lookup the `VIBE_AGENT_PROVIDER(S)` overrides and
+ *   the image stamp are read through (Issue #962). Defaults to the process
+ *   environment, so every existing caller resolves exactly as before.
  * @returns The enabled descriptors and the build-argument value they imply.
  * @throws When the configuration is unreadable, or names a provider that is
  *   not registered, is duplicated, or the running image did not install.
@@ -111,9 +115,13 @@ export interface ConfiguredAgentProviderSet {
 export async function readConfiguredAgentProviderSet(
   configFile: string,
   imageDefault: readonly string[],
+  env?: EnvLookup,
 ): Promise<ConfiguredAgentProviderSet> {
   const selection = await readAgentProviderSelection(configFile);
-  const providers = enabledAgentProviders(selection);
+  const providers = enabledAgentProviders({
+    ...selection,
+    ...(env ? { env } : {}),
+  });
   const buildValue = agentProvidersBuildValue(
     providers.map((provider) => provider.id),
     imageDefault,

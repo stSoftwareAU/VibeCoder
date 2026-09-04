@@ -720,7 +720,7 @@ Deno.test({
     const decoder = new TextDecoder();
     let console_ = "";
     try {
-      const deadline = Date.now() + 60_000;
+      const deadline = Date.now() + 120_000;
       while (!console_.includes(line) && Date.now() < deadline) {
         const read = await Promise.race([
           reader.read(),
@@ -728,7 +728,15 @@ Deno.test({
             setTimeout(() => resolve(null), 5_000)
           ),
         ]);
-        if (read === null || read.done) break;
+        // A quiet slice is not the end of the stream (Issue #971). The
+        // launcher inspects the image, prunes the store and creates two
+        // volumes before the container is ever started, which on a slower
+        // host is more than five seconds of silence — treating that silence
+        // as end-of-stream failed the test for the one thing it does not
+        // assert, how quickly the launcher gets as far as launching. Only the
+        // overall deadline above ends the wait.
+        if (read === null) continue;
+        if (read.done) break;
         console_ += decoder.decode(read.value, { stream: true });
       }
       assert(
@@ -799,22 +807,43 @@ Deno.test({
       VIBE_CONTAINER_REAP_GRACE_SECONDS: "2",
     });
     try {
-      const started = Date.now();
-      const outcome = await runLauncher(harness);
-      const elapsed = Date.now() - started;
+      // Timed from the container's first line to the reap, not across the
+      // whole launcher run (Issue #971). The run also covers image
+      // inspection, a store prune and two volume creations before the
+      // container starts, and the orphaned writer holds the stderr pipe open
+      // after it: on a slower host that padding alone outran the bound, so
+      // the test failed for everything except the deadline it names.
+      const child = spawnLauncher(harness);
+      const decoder = new TextDecoder();
+      let stderr = "";
+      let containerStarted = -1;
+      let reaped = -1;
+      for await (const chunk of child.stderr) {
+        stderr += decoder.decode(chunk, { stream: true });
+        if (containerStarted < 0 && stderr.includes("[stub] still working")) {
+          containerStarted = Date.now();
+        }
+        if (reaped < 0 && stderr.includes("watchdog:")) reaped = Date.now();
+      }
+      const status = await child.status;
+      await child.stdout.cancel();
 
-      assertEquals(outcome.code, CONTAINER_WEDGED_EXIT_STATUS, outcome.stderr);
-      assertStringIncludes(outcome.stderr, "watchdog");
+      assertEquals(status.code, CONTAINER_WEDGED_EXIT_STATUS, stderr);
+      assertStringIncludes(stderr, "watchdog");
       // The stream really was flowing across the deadline, so the reap was
       // not merely an idle timeout.
-      assertStringIncludes(outcome.stderr, "[stub] still working");
+      assertStringIncludes(stderr, "[stub] still working");
+      assert(containerStarted >= 0, `the container never wrote: ${stderr}`);
+      assert(reaped >= 0, `the watchdog never reported a reap: ${stderr}`);
       // Reaped on the deadline, not when the container happened to fall
       // quiet: a launcher that waits out the chatter takes the writer's whole
-      // ~30s, five times this bound.
+      // ~30s, three times this bound.
+      const elapsed = reaped - containerStarted;
       assert(
-        elapsed < 20_000,
-        `the wedge was reaped ${elapsed}ms in, long after the 2s deadline - ` +
-          `the container's own output postponed it`,
+        elapsed < 10_000,
+        `the wedge was reaped ${elapsed}ms after the container started ` +
+          `writing, long after the 2s deadline - the container's own output ` +
+          `postponed it`,
       );
     } finally {
       await harness.cleanup();

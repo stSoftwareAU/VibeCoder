@@ -27,6 +27,7 @@ import {
 } from "../lib/claim_runway.ts";
 import { OPERATIONAL_DEFAULTS } from "../lib/config_defaults.ts";
 import type { ConfigFile } from "../types.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 const BASE: ConfigFile = {
   allowed_authors: ["testuser"],
@@ -47,90 +48,76 @@ async function withTempConfig(
   }
 }
 
-/** Run `fn` with the legacy variable removed, then restore it. */
-async function withoutClaimEnv(fn: () => Promise<void>): Promise<void> {
-  const names = ["MIN_CLAIM_RUNWAY_SECONDS"];
-  const saved = names.map((n) => [n, Deno.env.get(n)] as const);
-  for (const n of names) Deno.env.delete(n);
-  try {
-    await fn();
-  } finally {
-    for (const [n, v] of saved) {
-      if (v === undefined) Deno.env.delete(n);
-      else Deno.env.set(n, v);
-    }
-  }
+/**
+ * The legacy variable, as `loadConfig` sees it (Issue #956).
+ *
+ * Injected rather than exported onto the process: the value under test is
+ * absent from the real environment, so a `loadConfig` that ignored the
+ * lookup and read `Deno.env` would return the default and fail the
+ * environment-wins cases below rather than passing on an ambient value.
+ */
+function claimEnv(value?: string) {
+  return value === undefined
+    ? emptyEnv
+    : envFrom({ MIN_CLAIM_RUNWAY_SECONDS: value });
 }
 
 Deno.test("claim runway #289 - the floor is read from .config.json with the environment unset", async () => {
-  await withoutClaimEnv(async () => {
-    await withTempConfig(
-      { ...BASE, min_claim_runway_seconds: 1800 },
-      async (configPath) => {
-        const config = await loadConfig(configPath);
-        assertEquals(config.minClaimRunwaySeconds, 1800);
-      },
-    );
-  });
+  await withTempConfig(
+    { ...BASE, min_claim_runway_seconds: 1800 },
+    async (configPath) => {
+      const config = await loadConfig(configPath, { env: claimEnv() });
+      assertEquals(config.minClaimRunwaySeconds, 1800);
+    },
+  );
 });
 
 Deno.test("claim runway #289 - absent keys and no environment give the documented defaults", async () => {
-  await withoutClaimEnv(async () => {
-    await withTempConfig({ ...BASE }, async (configPath) => {
-      const config = await loadConfig(configPath);
-      assertEquals(
-        config.minClaimRunwaySeconds,
-        OPERATIONAL_DEFAULTS.minClaimRunwaySeconds,
-      );
-    });
+  await withTempConfig({ ...BASE }, async (configPath) => {
+    const config = await loadConfig(configPath, { env: claimEnv() });
+    assertEquals(
+      config.minClaimRunwaySeconds,
+      OPERATIONAL_DEFAULTS.minClaimRunwaySeconds,
+    );
   });
 });
 
 Deno.test("claim runway #289 - the environment still wins on a native run when no key is set", async () => {
-  await withoutClaimEnv(async () => {
-    Deno.env.set("MIN_CLAIM_RUNWAY_SECONDS", "900");
-    await withTempConfig({ ...BASE }, async (configPath) => {
-      const config = await loadConfig(configPath);
-      assertEquals(config.minClaimRunwaySeconds, 900);
-    });
+  await withTempConfig({ ...BASE }, async (configPath) => {
+    const config = await loadConfig(configPath, { env: claimEnv("900") });
+    assertEquals(config.minClaimRunwaySeconds, 900);
   });
 });
 
 Deno.test("claim runway #289 - a config key overrides the environment", async () => {
-  await withoutClaimEnv(async () => {
-    Deno.env.set("MIN_CLAIM_RUNWAY_SECONDS", "900");
-    await withTempConfig(
-      { ...BASE, min_claim_runway_seconds: 1800 },
-      async (configPath) => {
-        const config = await loadConfig(configPath);
-        assertEquals(config.minClaimRunwaySeconds, 1800);
-      },
-    );
-  });
+  await withTempConfig(
+    { ...BASE, min_claim_runway_seconds: 1800 },
+    async (configPath) => {
+      const config = await loadConfig(configPath, { env: claimEnv("900") });
+      assertEquals(config.minClaimRunwaySeconds, 1800);
+    },
+  );
 });
 
 Deno.test("claim runway #289 - `0` disables the floor and is not mistaken for absent", async () => {
-  await withoutClaimEnv(async () => {
-    await withTempConfig(
-      { ...BASE, min_claim_runway_seconds: 0 },
-      async (configPath) => {
-        const config = await loadConfig(configPath);
-        assertEquals(config.minClaimRunwaySeconds, 0);
-      },
-    );
-  });
+  await withTempConfig(
+    { ...BASE, min_claim_runway_seconds: 0 },
+    async (configPath) => {
+      const config = await loadConfig(configPath, { env: claimEnv("900") });
+      // A configured `0` is a value, not an absence: the environment
+      // fallback must not step in behind it.
+      assertEquals(config.minClaimRunwaySeconds, 0);
+    },
+  );
 });
 
 Deno.test("claim runway #289 - a junk environment value falls back to the default rather than NaN", async () => {
-  await withoutClaimEnv(async () => {
-    Deno.env.set("MIN_CLAIM_RUNWAY_SECONDS", "soon");
-    await withTempConfig({ ...BASE }, async (configPath) => {
-      const config = await loadConfig(configPath);
-      assertEquals(
-        config.minClaimRunwaySeconds,
-        OPERATIONAL_DEFAULTS.minClaimRunwaySeconds,
-      );
-    });
+  await withTempConfig({ ...BASE }, async (configPath) => {
+    const config = await loadConfig(configPath, { env: claimEnv("soon") });
+    assertEquals(
+      config.minClaimRunwaySeconds,
+      OPERATIONAL_DEFAULTS.minClaimRunwaySeconds,
+    );
   });
 });
 
@@ -138,19 +125,29 @@ Deno.test("claim runway #425 - a configured floor refuses a claim inside it of t
   // The configured floor is now measured against the supervisor hard cap: a
   // claim with 904 s of runway to the cap is refused under an 1800 s floor,
   // whatever the cycle deadline says.
-  await withoutClaimEnv(async () => {
-    await withTempConfig(
-      { ...BASE, claude_timeout: 1800, min_claim_runway_seconds: 1800 },
-      async (configPath) => {
-        const config = await loadConfig(configPath);
-        const now = 1_000_000;
-        const floor = resolveClaimRunwayFloor({
-          minClaimRunwaySeconds: config.minClaimRunwaySeconds,
-          hardCap: { ceilingMs: now + 904_000, windowSeconds: 10800 },
-        });
-        assertEquals(floor.floorSeconds, 1800);
-        assertEquals(belowClaimRunwayFloor(floor, now), true);
-      },
+  await withTempConfig(
+    { ...BASE, claude_timeout: 1800, min_claim_runway_seconds: 1800 },
+    async (configPath) => {
+      const config = await loadConfig(configPath, { env: claimEnv() });
+      const now = 1_000_000;
+      const floor = resolveClaimRunwayFloor({
+        minClaimRunwaySeconds: config.minClaimRunwaySeconds,
+        hardCap: { ceilingMs: now + 904_000, windowSeconds: 10800 },
+      });
+      assertEquals(floor.floorSeconds, 1800);
+      assertEquals(belowClaimRunwayFloor(floor, now), true);
+    },
+  );
+});
+
+Deno.test("claim runway #289 - a negative environment value is refused, not applied (Issue #956)", async () => {
+  // `readNonNegativeNumberEnv` is the reader behind this key; a negative
+  // floor would make every claim pass the runway check.
+  await withTempConfig({ ...BASE }, async (configPath) => {
+    const config = await loadConfig(configPath, { env: claimEnv("-1") });
+    assertEquals(
+      config.minClaimRunwaySeconds,
+      OPERATIONAL_DEFAULTS.minClaimRunwaySeconds,
     );
   });
 });

@@ -19,7 +19,7 @@
  * shared untrusted-content boundary before it reaches a filed issue body
  * (Issue #3397, {@link fenceUntrustedAlertText}) — a downstream `work-on` /
  * planning run therefore reads it as data, never as an instruction. The prompt
- * at `prompts/alert_feed/v1.md` is used only as the human-style wrapper body
+ * at `prompts/alert_feed/prompt.md` is used only as the human-style wrapper body
  * (Issue #2077).
  *
  *   - **Outcome verified by snapshot-diff.** `runTask` snapshots the repo's

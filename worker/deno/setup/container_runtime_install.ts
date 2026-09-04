@@ -55,6 +55,7 @@ import {
   type HostPlatform,
   normaliseHostPlatform,
 } from "../lib/container_runtime.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import {
   type InstallPlan,
   type InstallStep,
@@ -178,6 +179,15 @@ export interface EnsureContainerRuntimeOptions {
   packageManagerAvailable?: (name: string) => Promise<boolean>;
   /** Apple kernel check. Defaults to {@link defaultAppleKernelStatus}. */
   kernelStatus?: AppleKernelStatusCheck;
+  /**
+   * Environment lookup for the `VIBE_NO_AUTO_INSTALL` opt-out (Issue #962).
+   *
+   * Defaults to the process environment, so an operator's real opt-out is
+   * honoured exactly as before. A test states the environment it is driving
+   * instead of setting the variable on the process, which races every other
+   * worker under `deno test --parallel` (Issue #880).
+   */
+  env?: EnvLookup;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,8 +211,10 @@ function renderCommand(step: InstallStep): string {
  * operator opted out of offers) or a stdin that is not a terminal (an
  * unattended run must never block on a prompt).
  */
-export function consentSuppressionReason(): string | null {
-  if (Deno.env.get("VIBE_NO_AUTO_INSTALL") === "true") {
+export function consentSuppressionReason(
+  env: EnvLookup = processEnvLookup,
+): string | null {
+  if (env("VIBE_NO_AUTO_INSTALL") === "true") {
     return "VIBE_NO_AUTO_INSTALL=true is set";
   }
   if (!Deno.stdin.isTerminal()) return "stdin is not a terminal";
@@ -239,13 +251,14 @@ export const defaultContainerInstallConsent: ContainerInstallConsent = (
 function operatorConsent(
   messages: string[],
   autoInstall: boolean,
+  env: EnvLookup,
 ): ContainerInstallConsent {
   return (request) => {
     if (autoInstall) {
       messages.push(`--auto-install consented to: ${request.question}`);
       return Promise.resolve(true);
     }
-    const reason = consentSuppressionReason();
+    const reason = consentSuppressionReason(env);
     if (reason !== null) {
       messages.push(
         `${request.displayName} could be installed automatically, but the ` +
@@ -613,7 +626,11 @@ export async function ensureContainerRuntime(
     detectContainerRuntime({ platform, ...(probe ? { probe } : {}) });
 
   const consent = options.consent ??
-    operatorConsent(messages, options.autoInstall === true);
+    operatorConsent(
+      messages,
+      options.autoInstall === true,
+      options.env ?? processEnvLookup,
+    );
   const kernelContext: KernelPhaseContext = {
     messages,
     commandsRun,

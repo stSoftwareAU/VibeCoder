@@ -40,6 +40,11 @@ export interface HomeWorkDirCheckResult {
    * after a removal are surfaced.
    */
   staleAllowlist: string[];
+  /**
+   * Entries naming a file that no longer exists (Issue #883). Reported so it
+   * gets tidied, but not fatal: a deleted file cannot hide a violation.
+   */
+  orphanedAllowlist: string[];
   filesScanned: number;
 }
 
@@ -74,11 +79,6 @@ export const HOME_WORKDIR_ALLOWLIST: ReadonlyMap<string, number> = new Map<
   // loader never creates the directory. Commands that create directories
   // must receive an explicit work dir (see commands/disk_space.ts).
   ["worker/deno/lib/config.ts", 1],
-
-  // Path construction only, feeding the IN-CONTAINER healthDir default
-  // (Issue #4165) where WORK_DIR is always set; the HOME arm is only
-  // reachable host-side, where healthDir ignores it. Nothing is created.
-  ["worker/deno/lib/fleet_health.ts", 1],
 
   // Read-only workDir hint for the setup sync auditors (workflow-sync,
   // best-practices-sync, gitignore-sync): they READ workflow files from a
@@ -199,6 +199,9 @@ export async function scanDirectoriesForHomeWorkDir(
   const root = repoRoot.replace(/\/$/, "");
   const violations: HomeWorkDirViolation[] = [];
   const countsByFile = new Map<string, number>();
+  // Issue #883: which files exist at all, so an entry for a deleted file is
+  // told apart from one whose file lost a construction.
+  const scannedFiles = new Set<string>();
   let filesScanned = 0;
 
   for (const relDir of relDirs) {
@@ -207,6 +210,7 @@ export async function scanDirectoriesForHomeWorkDir(
     ) {
       const repoRel = absFile.slice(root.length + 1);
       filesScanned++;
+      scannedFiles.add(repoRel);
       const content = await Deno.readTextFile(absFile);
       const hits = scanContentForHomeWorkDir(content, repoRel);
       if (hits.length === 0) continue;
@@ -220,18 +224,37 @@ export async function scanDirectoriesForHomeWorkDir(
     }
   }
 
-  // A stale entry (file gone, or fewer constructions than recorded) means
-  // the inventory no longer matches reality — demand a trim so the
-  // allowlist stays an exact, reviewable record.
+  // An entry whose file still exists but has fewer constructions than
+  // recorded means the inventory no longer matches reality — demand a trim so
+  // the allowlist stays an exact, reviewable record.
+  //
+  // Issue #883: an entry whose file is **gone** is reported separately and is
+  // not fatal. It cannot mask a violation — there is no file to construct a
+  // work dir in — so the safety property this check exists for is untouched,
+  // and failing the gate over it costs whole runs for a hygiene nit.
+  //
+  // That distinction is not academic. The invariant spans two files, so a
+  // branch that deletes the module and a branch that still carries its entry
+  // are each internally consistent while their merge is not — git resolves
+  // the deletion and the untouched entry independently, with no conflict.
+  // `main` and `milestone/fleet-logs` sat in exactly that state, and it cost
+  // #805 two runs and #808 two more, none of which had changed anything
+  // wrong.
   const staleAllowlist: string[] = [];
+  const orphanedAllowlist: string[] = [];
   for (const [file, allowed] of allowlist) {
     const found = countsByFile.get(file) ?? 0;
-    if (found < allowed) {
-      staleAllowlist.push(
-        `${file}: allowlist records ${allowed} construction(s) but ${found} found — trim the allowlist entry`,
+    if (found >= allowed) continue;
+    if (!scannedFiles.has(file)) {
+      orphanedAllowlist.push(
+        `${file}: allowlist entry for a file that no longer exists — trim it`,
       );
+      continue;
     }
+    staleAllowlist.push(
+      `${file}: allowlist records ${allowed} construction(s) but ${found} found — trim the allowlist entry`,
+    );
   }
 
-  return { violations, staleAllowlist, filesScanned };
+  return { violations, staleAllowlist, orphanedAllowlist, filesScanned };
 }

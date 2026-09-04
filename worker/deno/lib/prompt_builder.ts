@@ -108,7 +108,7 @@ export async function buildCodingGuidelines(
   promptsDir?: string,
   identity?: AgentIdentity,
 ): Promise<Result<string>> {
-  const result = await loadPrompt("coding_guidelines", undefined, promptsDir);
+  const result = await loadPrompt("coding_guidelines", promptsDir);
   if (!result.ok) return result;
 
   const overlay = await loadCodingGuidelinesOverlay(identity, promptsDir);
@@ -449,7 +449,7 @@ export async function buildIssuePrompt(
   } = options;
 
   // Load the issue template
-  const templateResult = await loadPrompt("issue", undefined, promptsDir);
+  const templateResult = await loadPrompt("issue", promptsDir);
   if (!templateResult.ok) return templateResult;
 
   // Build coding guidelines (goes into system prompt for caching)
@@ -693,7 +693,7 @@ export async function buildPlanningPrompt(
     verbosityLevel,
   } = options;
 
-  const templateResult = await loadPrompt("planning", undefined, promptsDir);
+  const templateResult = await loadPrompt("planning", promptsDir);
   if (!templateResult.ok) return templateResult;
 
   const guidelinesResult = await buildCodingGuidelines(
@@ -872,7 +872,6 @@ export async function buildPlanningCritiquePrompt(
 
   const templateResult = await loadPrompt(
     "planning_critique",
-    undefined,
     promptsDir,
   );
   if (!templateResult.ok) return templateResult;
@@ -1036,7 +1035,7 @@ export async function buildQuestionPrompt(
     verbosityLevel,
   } = options;
 
-  const templateResult = await loadPrompt("question", undefined, promptsDir);
+  const templateResult = await loadPrompt("question", promptsDir);
   if (!templateResult.ok) return templateResult;
 
   const guidelinesResult = await buildCodingGuidelines(
@@ -1265,7 +1264,7 @@ export async function buildPrFeedbackPrompt(
     additionalReviewComments,
   } = options;
 
-  const templateResult = await loadPrompt("pr_feedback", undefined, promptsDir);
+  const templateResult = await loadPrompt("pr_feedback", promptsDir);
   if (!templateResult.ok) return templateResult;
 
   const guidelinesResult = await buildCodingGuidelines(
@@ -1379,7 +1378,6 @@ export async function buildSpellingFixPrompt(
 
   const templateResult = await loadPrompt(
     "spelling_fix",
-    undefined,
     promptsDir,
   );
   if (!templateResult.ok) return templateResult;
@@ -1492,7 +1490,6 @@ export async function buildWorkflowSetupPrompt(
 
   const templateResult = await loadPrompt(
     "workflow_setup",
-    undefined,
     promptsDir,
   );
   if (!templateResult.ok) return templateResult;
@@ -1671,7 +1668,7 @@ export async function buildCiFixPrompt(
     prFailureActions,
   } = options;
 
-  const templateResult = await loadPrompt("ci_fix", undefined, promptsDir);
+  const templateResult = await loadPrompt("ci_fix", promptsDir);
   if (!templateResult.ok) return templateResult;
 
   const guidelinesResult = await buildCodingGuidelines(
@@ -1829,7 +1826,6 @@ export async function buildMergeConflictPrompt(
 
   const templateResult = await loadPrompt(
     "merge_conflict",
-    undefined,
     promptsDir,
   );
   if (!templateResult.ok) return templateResult;

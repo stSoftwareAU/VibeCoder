@@ -27,6 +27,7 @@ import {
 import { logInvocation } from "../lib/credit_tracker.ts";
 import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
 import { createLogger } from "../lib/logger.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -248,79 +249,91 @@ Deno.test("createSpendCeilingCheck - a missing log is genuine zero spend", async
 // Production wiring — the gap Issue #3684 closes
 // ---------------------------------------------------------------------------
 
-/** Run `fn` with the ceiling env vars set, restoring them afterwards. */
-async function withCeilingEnv(
-  vars: Record<string, string | undefined>,
-  fn: () => Promise<void>,
-): Promise<void> {
-  const previous = new Map<string, string | undefined>();
-  for (const [key, value] of Object.entries(vars)) {
-    previous.set(key, Deno.env.get(key));
-    if (value === undefined) Deno.env.delete(key);
-    else Deno.env.set(key, value);
-  }
-  try {
-    await fn();
-  } finally {
-    for (const [key, value] of previous) {
-      if (value === undefined) Deno.env.delete(key);
-      else Deno.env.set(key, value);
-    }
-  }
+/**
+ * Production options with the ceiling configuration supplied as a lookup.
+ *
+ * Issue #964: `createProductionRunCoreDeps` takes an `EnvLookup` for its own
+ * reads, so the factory's configuration is named here rather than exported
+ * into the process environment — a write that races every other worker under
+ * `deno test --parallel`, and what kept this suite in the gate's serial
+ * second pass. The map answers only what it carries, so a read that fell
+ * back to `Deno.env.get` sees an unset variable and fails.
+ */
+function productionOptions(
+  vars: Record<string, string> = {},
+): Parameters<typeof createProductionRunCoreDeps>[0] {
+  return {
+    repoDir: "/tmp/test-repo",
+    workDir: "/tmp/test-work",
+    githubUser: "test-user",
+    logger: createLogger({ write: () => {} }),
+    env: envFrom(vars),
+  };
 }
 
-const productionOptions = {
-  repoDir: "/tmp/test-repo",
-  workDir: "/tmp/test-work",
-  githubUser: "test-user",
-  logger: createLogger({ write: () => {} }),
-};
-
 Deno.test("production deps - no ceiling configured leaves the hook unwired", async () => {
-  await withCeilingEnv(
-    { [SPEND_CEILING_ENV]: undefined, [CREDIT_LOG_DIR_ENV]: undefined },
-    async () => {
-      const { deps } = await createProductionRunCoreDeps(productionOptions);
-      assertEquals(deps.checkSpendCeiling, undefined);
-    },
-  );
+  const { deps } = await createProductionRunCoreDeps(productionOptions());
+  assertEquals(deps.checkSpendCeiling, undefined);
 });
 
 Deno.test("production deps - a configured ceiling wires a working check", async () => {
   await withCreditLog(
     { inputTokens: 50_000_000, outputTokens: 10_000_000 },
     async (logDir) => {
-      await withCeilingEnv(
-        { [SPEND_CEILING_ENV]: "1", [CREDIT_LOG_DIR_ENV]: logDir },
-        async () => {
-          const { deps } = await createProductionRunCoreDeps(productionOptions);
-          assert(deps.checkSpendCeiling, "the hook must be wired");
+      const { deps } = await createProductionRunCoreDeps(
+        productionOptions({
+          [SPEND_CEILING_ENV]: "1",
+          [CREDIT_LOG_DIR_ENV]: logDir,
+        }),
+      );
+      assert(deps.checkSpendCeiling, "the hook must be wired");
 
-          const result = await deps.checkSpendCeiling();
+      const result = await deps.checkSpendCeiling();
 
-          assertEquals(result.exceeded, true);
-          assertStringIncludes(
-            result.message ?? "",
-            "Daily spend ceiling reached",
-          );
-        },
+      assertEquals(result.exceeded, true);
+      assertStringIncludes(
+        result.message ?? "",
+        "Daily spend ceiling reached",
       );
     },
   );
 });
 
 Deno.test("production deps - a malformed ceiling fails loudly at start-up", async () => {
-  await withCeilingEnv(
-    { [SPEND_CEILING_ENV]: "fifty-dollars", [CREDIT_LOG_DIR_ENV]: undefined },
-    async () => {
-      let thrown: Error | undefined;
-      try {
-        await createProductionRunCoreDeps(productionOptions);
-      } catch (error) {
-        thrown = error as Error;
-      }
-      assert(thrown, "a malformed ceiling must not be silently ignored");
-      assertStringIncludes(thrown.message, SPEND_CEILING_ENV);
+  let thrown: Error | undefined;
+  try {
+    await createProductionRunCoreDeps(
+      productionOptions({ [SPEND_CEILING_ENV]: "fifty-dollars" }),
+    );
+  } catch (error) {
+    thrown = error as Error;
+  }
+  assert(thrown, "a malformed ceiling must not be silently ignored");
+  assertStringIncludes(thrown.message, SPEND_CEILING_ENV);
+});
+
+Deno.test("production deps - the credit log directory comes from the lookup the caller hands in (Issue #964)", async () => {
+  await withCreditLog(
+    { inputTokens: 50_000_000, outputTokens: 10_000_000 },
+    async (logDir) => {
+      // The ceiling is high enough that only reading THIS log directory
+      // reports a breach; the default (`workDir`) holds no credit log at
+      // all, so a factory that ignored the lookup would report under-budget.
+      const { deps } = await createProductionRunCoreDeps(
+        productionOptions({
+          [SPEND_CEILING_ENV]: "1",
+          [CREDIT_LOG_DIR_ENV]: logDir,
+        }),
+      );
+      assert(deps.checkSpendCeiling);
+      assertEquals((await deps.checkSpendCeiling()).exceeded, true);
+
+      // Same ceiling, no directory named: nothing is over budget.
+      const { deps: blind } = await createProductionRunCoreDeps(
+        productionOptions({ [SPEND_CEILING_ENV]: "1" }),
+      );
+      assert(blind.checkSpendCeiling);
+      assertEquals((await blind.checkSpendCeiling()).exceeded, false);
     },
   );
 });

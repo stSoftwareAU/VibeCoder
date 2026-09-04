@@ -2,7 +2,7 @@
  * Quality gate orchestration (Issue #917).
  *
  * Orchestrates running quality checks (deno test/lint/check, mermaid,
- * markdownlint, docs prompt-version) in parallel or sequential mode. This
+ * markdownlint) in parallel or sequential mode. This
  * replaces the orchestration logic from quality.sh with a Deno TypeScript
  * implementation. Bash linting is delegated to each target repo's own CI
  * (Issue #3129), so the worker no longer runs shellcheck here.
@@ -39,9 +39,23 @@ import { runPagesLiquidCheck } from "./pages_liquid_check.ts";
 import { runMermaidCheck } from "./mermaid_check.ts";
 import { checkBuiltMermaidOutput } from "./mermaid_built_output_check.ts";
 import { runMarkdownlintCheck } from "./markdownlint_check.ts";
-import { runDocsPromptVersionCheck } from "./docs_prompt_version_check.ts";
 import { runSemgrepCheck } from "./semgrep_check.ts";
 import { posixSingleQuote } from "./shell_quote.ts";
+import {
+  summariseUnitTestPasses,
+  unitTestPasses,
+  type UnitTestPassOutcome,
+  unitTestStageVerdict,
+} from "./unit_test_passes.ts";
+
+/**
+ * The environment the `deno test` stage runs with (Issue #891).
+ *
+ * Re-exported from where the two passes are built (Issue #940) — the scrub
+ * and the passes that need it belong together, and the gate is where callers
+ * already look for it.
+ */
+export { testStageEnv } from "./unit_test_passes.ts";
 
 /** Result of a single check execution. */
 export interface CheckExecutionResult {
@@ -139,11 +153,12 @@ export interface QualityGateConfig {
  */
 async function runCommand(
   cmd: string[],
-  options?: { cwd?: string },
+  options?: { cwd?: string; env?: Record<string, string> },
 ): Promise<{ exitCode: number; output: string }> {
   const command = new Deno.Command(cmd[0]!, {
     args: cmd.slice(1),
     cwd: options?.cwd,
+    ...(options?.env === undefined ? {} : { env: options.env }),
     stdout: "piped",
     stderr: "piped",
   });
@@ -154,93 +169,6 @@ async function runCommand(
   const output = stdout + (stderr ? "\n" + stderr : "");
 
   return { exitCode: result.code, output: output.trim() };
-}
-
-/**
- * Run the prompt immutability check.
- *
- * Uses deno run to invoke the prompt-manager command with
- * validate-immutability operation.
- */
-async function runPromptImmutabilityCheck(
-  config: QualityGateConfig,
-  denoCmd: string,
-): Promise<CheckExecutionResult> {
-  const name = "prompt immutability";
-
-  // Detect base branch from the remote's HEAD rather than a hardcoded list
-  let baseBranch = "";
-  try {
-    const currentResult = await runCommand(
-      ["git", "-C", config.scriptDir, "rev-parse", "--abbrev-ref", "HEAD"],
-    );
-    const currentBranch = currentResult.output.trim();
-
-    // Resolve the remote's default branch via symbolic-ref
-    const remoteHeadResult = await runCommand(
-      [
-        "git",
-        "-C",
-        config.scriptDir,
-        "rev-parse",
-        "--abbrev-ref",
-        "refs/remotes/origin/HEAD",
-      ],
-    );
-    if (remoteHeadResult.exitCode === 0) {
-      const remoteBranch = remoteHeadResult.output.trim().replace(
-        /^origin\//,
-        "",
-      );
-      if (remoteBranch && remoteBranch !== currentBranch) {
-        baseBranch = remoteBranch;
-      }
-    }
-  } catch (err) {
-    console.warn(
-      `[quality-gate] Could not detect git branch: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-  }
-
-  // Check if we're inside a git work tree
-  const gitCheckResult = await runCommand(
-    ["git", "-C", config.scriptDir, "rev-parse", "--is-inside-work-tree"],
-  );
-  if (gitCheckResult.exitCode !== 0) {
-    return { name, status: "SKIPPED", output: "Not a git repository" };
-  }
-
-  const args = [
-    "run",
-    "--allow-env",
-    "--allow-read",
-    "--allow-run",
-    `${config.denoDir}/mod.ts`,
-    "prompt-manager",
-    "--operation",
-    "validate-immutability",
-    "--repo-dir",
-    config.scriptDir,
-    "--prompts-dir",
-    `${config.scriptDir}/prompts`,
-  ];
-
-  if (baseBranch) {
-    args.push("--base-branch", baseBranch);
-  }
-
-  const result = await runCommand([denoCmd, ...args]);
-  if (result.exitCode === 0) {
-    return { name, status: "PASSED", output: "prompt immutability: PASSED" };
-  }
-  return {
-    name,
-    status: "FAILED",
-    output:
-      "prompt immutability: FAILED\nExisting prompt versions are immutable. Create a new version (e.g., v2.md) instead.",
-  };
 }
 
 /**
@@ -554,11 +482,21 @@ async function runHomeWorkDirGuardCheck(
   );
 
   if (result.violations.length === 0 && result.staleAllowlist.length === 0) {
+    // Issue #883: an allowlist entry whose file is gone is reported, not
+    // fatal. It cannot mask a violation — there is no file to construct a
+    // work dir in — and failing over it cost #805 two runs and #808 two more,
+    // none of which had changed anything wrong. The note keeps it visible so
+    // the entry still gets trimmed.
+    const note = result.orphanedAllowlist.length === 0 ? "" : "\n" + [
+      ...result.orphanedAllowlist.map((s) => `ORPHANED ALLOWLIST: ${s}`),
+      "These entries name files that no longer exist. They cannot hide a",
+      "violation, so they do not fail the gate — trim them when convenient.",
+    ].join("\n");
     return {
       name,
       status: "PASSED",
       output:
-        `host work-dir guard: PASSED (${result.filesScanned} files scanned)`,
+        `host work-dir guard: PASSED (${result.filesScanned} files scanned)${note}`,
     };
   }
 
@@ -941,26 +879,6 @@ async function runMarkdownlintQualityCheck(
 }
 
 /**
- * Run the docs prompt-version freshness check (Issue #2286).
- *
- * Walks `CLAUDE.md`, `AGENTS.md`, and `docs/**\/*.md` (excluding the
- * historical `docs/archive/pr-summaries/` tree) and fails when any line
- * references `prompts/<type>/vN[.md]` for a version below the current
- * latest, unless the line carries an explicit "from vN onward" wording
- * or a `<!-- pinned: ... -->` marker.
- */
-async function runDocsPromptVersionQualityCheck(
-  config: QualityGateConfig,
-): Promise<CheckExecutionResult> {
-  const result = await runDocsPromptVersionCheck(config.scriptDir);
-  return {
-    name: "docs prompt versions",
-    status: result.status,
-    output: result.output,
-  };
-}
-
-/**
  * Run the semgrep SAST check over the branch's changed files (Issue #559).
  *
  * `semgrep ci --config p/default` blocks the PR, but nothing ran it locally,
@@ -976,7 +894,18 @@ async function runSemgrepQualityCheck(
 }
 
 /**
- * Run Deno tests.
+ * Run the unit suite as two `deno test` passes (Issue #940).
+ *
+ * One sequential invocation took 42+ minutes on a 10-core host against a
+ * 45-minute phase budget, so issues died here having changed nothing wrong
+ * (#805 twice, #808). The parallel-safe files now run under `--parallel` and
+ * the 97 process-state mutators (#880) run serially afterwards.
+ *
+ * The pair is one check. `PASSED` needs both passes green; either one red is
+ * `FAILED`, with that pass's output. The fast pass runs first and a failure
+ * stops the pair, so the common red is reported in minutes rather than after
+ * the slow pass has also finished — and the pass that never ran says so,
+ * rather than looking like a pass that passed.
  */
 async function runDenoTests(
   config: QualityGateConfig,
@@ -986,7 +915,8 @@ async function runDenoTests(
   // Content-addressed skip (Issue #86): reuse a cached PASS only when the
   // whole .ts input set is byte-identical to the last passing run. The digest
   // walk is skipped entirely when caching is off, so a host dev run pays
-  // nothing for it.
+  // nothing for it. It wraps the pair, not each pass — a cached PASS still
+  // means "both passes passed on this input set".
   const digest = config.cacheDir
     ? await computeQualityInputDigest(config.denoDir ?? ".")
     : null;
@@ -999,38 +929,47 @@ async function runDenoTests(
         `Deno tests: PASSED (cached — inputs unchanged since ${cachedAt})`,
     };
   }
-  const result = await runCommand(
-    [
-      denoCmd,
-      "test",
-      // The gate's own `deno check '**/*.ts'` stage type-checks the whole
-      // graph including tests/**, so `deno test` need not build a second
-      // full TypeScript program (Issue #4347). In parallel mode both used
-      // to start together and miss the shared cache — the memory spike
-      // quality.sh blames for the in-container SIGKILLs.
-      "--no-check",
-      "--allow-read",
-      "--allow-env",
-      "--allow-run",
-      "--allow-write",
-      "--allow-sys=hostname",
-    ],
-    { cwd: config.denoDir },
-  );
 
-  if (result.exitCode === 0) {
+  const passes = unitTestPasses({ denoCmd, env: Deno.env.toObject() });
+  const outcomes: UnitTestPassOutcome[] = [];
+  const transcript: string[] = [];
+
+  for (const pass of passes) {
+    // A failed pass stops the pair: the remaining pass costs minutes and
+    // cannot change the verdict.
+    if (unitTestStageVerdict(outcomes).failedPass !== null) {
+      outcomes.push({ pass, exitCode: null, durationMs: null });
+      continue;
+    }
+    const startedAt = Date.now();
+    const result = await runCommand([...pass.args], {
+      cwd: config.denoDir,
+      env: pass.env,
+    });
+    outcomes.push({
+      pass,
+      exitCode: result.exitCode,
+      durationMs: Date.now() - startedAt,
+    });
+    transcript.push(`=== deno tests: ${pass.label} pass ===`);
+    transcript.push(result.output);
+  }
+
+  const verdict = unitTestStageVerdict(outcomes);
+  const body = [...transcript, ...summariseUnitTestPasses(outcomes)].join("\n");
+
+  if (verdict.status === "PASSED") {
     await recordPass(config.cacheDir, name, digest, isoNow());
-    return {
-      name,
-      status: "PASSED",
-      output: `${result.output}\nDeno tests: PASSED`,
-    };
+    return { name, status: "PASSED", output: `${body}\nDeno tests: PASSED` };
   }
   await invalidate(config.cacheDir, name);
+  const which = verdict.failedPass === null
+    ? ""
+    : ` (${verdict.failedPass} pass)`;
   return {
     name,
     status: "FAILED",
-    output: `${result.output}\nDeno tests: FAILED`,
+    output: `${body}\nDeno tests: FAILED${which}`,
   };
 }
 
@@ -1230,6 +1169,13 @@ export async function runQualityGate(
   // Detect tools
   const denoResult = await detectTool("deno");
   if (!denoResult.ok) {
+    // Fail loud: four FAILED Deno checks with no stated reason cost a CI run
+    // to diagnose (PR #888). Say why, in the gate output and on stderr.
+    const why =
+      `[quality-gate] deno could not be located: ${denoResult.error.message} — every Deno check is reported FAILED`;
+    console.error(why);
+    allOutput.push(why);
+    config.onProgress?.(why);
     recordCheck(checks, "deno tests", "FAILED");
     recordCheck(checks, "deno lint", "FAILED");
     recordCheck(checks, "deno type check", "FAILED");
@@ -1243,30 +1189,6 @@ export async function runQualityGate(
   const denoCmd = denoResult.value;
 
   // --- Pre-checks (sequential) ---
-
-  // Prompt immutability — skip if prompts directory doesn't exist (non-VibeCoder repos)
-  let hasPromptsDir = false;
-  try {
-    const stat = await Deno.stat(`${config.scriptDir}/prompts`);
-    hasPromptsDir = stat.isDirectory;
-  } catch { /* directory doesn't exist */ }
-
-  if (hasPromptsDir && config.denoDir) {
-    const immutabilityResult = await runPromptImmutabilityCheck(
-      config,
-      denoCmd,
-    );
-    note(immutabilityResult);
-    if (immutabilityResult.status === "FAILED") {
-      const summary = formatSummary(checks, config.options.strict);
-      return {
-        ok: true,
-        value: { checks, summary, passed: false, output: allOutput.join("\n") },
-      };
-    }
-  } else {
-    recordCheck(checks, "prompt immutability", "SKIPPED");
-  }
 
   // Prompt placeholders (only with --validate-prompts)
   if (config.options.validatePrompts && config.denoDir) {
@@ -1358,12 +1280,6 @@ export async function runQualityGate(
   // pages-liquid and mermaid checks miss. Skipped when the linter
   // binary is not available locally.
   mainChecks.push(() => runMarkdownlintQualityCheck(config));
-
-  // Docs prompt versions (Issue #2286) — fails when CLAUDE.md, AGENTS.md,
-  // or anything under docs/ (except docs/archive/pr-summaries/) references
-  // a non-latest `prompts/<type>/vN[.md]` without "from vN onward" wording
-  // or a `<!-- pinned: --> ` marker.
-  mainChecks.push(() => runDocsPromptVersionQualityCheck(config));
 
   // Semgrep (Issue #559) — the same `p/default` ruleset the blocking
   // `semgrep.yml` PR check runs, over the branch's changed files only, so a

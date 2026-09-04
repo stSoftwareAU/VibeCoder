@@ -38,10 +38,12 @@
 
 import { getGhTokenForSubprocess } from "./github_app_auth.ts";
 import {
+  type EnsureGhConfigDirOptions,
   ensureUsableGhConfigDir,
   isGhAuthMissingFailure,
   MAX_RESTAGE_ATTEMPTS,
 } from "./gh_credential_stage.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import { enforceGhWriteAllowlist } from "./write_repo_allowlist.ts";
 import { auditGhMutation } from "./audit_hook.ts";
 import { redactGhBodyArgs } from "./gh_body_redaction.ts";
@@ -61,6 +63,22 @@ export interface GhSpawnOptions {
   env?: Record<string, string>;
   /** Abort signal — used by the timeout wrapper in `gh_wrapper.ts`. */
   signal?: AbortSignal;
+  /**
+   * Host roots the credential re-stage reads (Issue #967) — `GH_CONFIG_DIR`,
+   * `HOME`, `VIBE_STATE_DIR`, `VIBE_SCRATCH_DIR` and `TMPDIR`. Defaults to the
+   * process environment, so production callers pass nothing; a test hands in a
+   * fixed map rather than moving the roots every parallel worker shares.
+   *
+   * Unrelated to {@link GhSpawnOptions.env}, which is the subprocess's own
+   * environment.
+   */
+  hostEnv?: EnvLookup;
+  /**
+   * Establishes the re-staged `GH_CONFIG_DIR` in the run environment;
+   * defaults to `Deno.env.set`, which is what every later `gh` and `git`
+   * child inherits.
+   */
+  setHostEnv?: (name: string, value: string) => void;
 }
 
 /** Outcome of a `gh` invocation. */
@@ -176,9 +194,12 @@ export function resetGhRestageAttempts(): void {
  * Callers that pin the directory per call (`setup/*`, the escalation paths)
  * would otherwise retry against the same broken copy the re-stage replaced.
  */
-function withStagedGhConfigDir(options: GhSpawnOptions): GhSpawnOptions {
+function withStagedGhConfigDir(
+  options: GhSpawnOptions,
+  hostEnv: EnvLookup,
+): GhSpawnOptions {
   if (options.env?.GH_CONFIG_DIR === undefined) return options;
-  const staged = Deno.env.get("GH_CONFIG_DIR");
+  const staged = hostEnv("GH_CONFIG_DIR");
   if (staged === undefined) return options;
   return { ...options, env: { ...options.env, GH_CONFIG_DIR: staged } };
 }
@@ -214,8 +235,13 @@ export async function spawnGh(
     isGhAuthMissingFailure(result) && restageAttempts < MAX_RESTAGE_ATTEMPTS
   ) {
     restageAttempts++;
-    if (ensureUsableGhConfigDir()) {
-      result = await runner(redacted, withStagedGhConfigDir(options));
+    const hostEnv = options.hostEnv ?? processEnvLookup;
+    const staging: EnsureGhConfigDirOptions = {
+      env: hostEnv,
+      ...(options.setHostEnv ? { setEnv: options.setHostEnv } : {}),
+    };
+    if (ensureUsableGhConfigDir(staging)) {
+      result = await runner(redacted, withStagedGhConfigDir(options, hostEnv));
     }
   }
   // Best-effort — never lets journalling alter or abort the gh call.

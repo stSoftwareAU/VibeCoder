@@ -1,7 +1,7 @@
 /**
  * Tests for the grill-me frontier round-composition rules (Issue #658).
  *
- * `prompts/grill-me/v14.md` adds three mechanics borrowed from the
+ * `prompts/grill-me/prompt.md` carries three mechanics borrowed from the
  * mattpocock/skills grilling primitive (see `docs/REFERENCES.md`):
  *
  * 1. The design tree and its **frontier** — ask every question whose
@@ -13,15 +13,14 @@
  *    something a read of the repository, `gh`, or the filesystem answers.
  *
  * The tests load the template through the real `loadPrompt` /
- * `getLatestVersion` / `buildGrillMePrompt` functions rather than reading
- * files directly, so they exercise the same path the worker uses each
- * round. Committed versions are immutable, so v13 is pinned as unchanged.
+ * `buildGrillMePrompt` functions rather than reading files directly, so they
+ * exercise the same path the worker uses each round.
  *
  * Australian English throughout (behaviour, colour, organisation).
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 import { buildGrillMePrompt } from "../lib/grill_me_processor.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -37,7 +36,7 @@ const FRONTIER_POLICY = [
   "- [x]",
 ];
 
-/** Contracts inherited from v13 that the worker still depends on. */
+/** Long-standing contracts the worker still depends on. */
 const INHERITED_CONTRACT = [
   "{{ROUND_NUMBER}}",
   "{{MAX_ROUNDS}}",
@@ -63,20 +62,8 @@ const INHERITED_CONTRACT = [
   "Do not post the Ready comment while any flagged item is outstanding",
 ];
 
-Deno.test("grill-me - the latest version is v14 or newer", async () => {
-  const result = await getLatestVersion("grill-me", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (!result.ok) return;
-  const version = parseInt(result.value.replace("v", ""), 10);
-  assertEquals(
-    version >= 14,
-    true,
-    `Expected grill-me >= v14, got ${result.value}`,
-  );
-});
-
-Deno.test("grill-me v14 - states the frontier, recommendation and facts rules", async () => {
-  const result = await loadPrompt("grill-me", "v14", PROMPTS_DIR);
+Deno.test("grill-me - states the frontier, recommendation and facts rules", async () => {
+  const result = await loadPrompt("grill-me", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (!result.ok) return;
   for (const needle of FRONTIER_POLICY) {
@@ -84,19 +71,19 @@ Deno.test("grill-me v14 - states the frontier, recommendation and facts rules", 
   }
 });
 
-Deno.test("grill-me v14 - drops the smallest-set round rule", async () => {
-  const result = await loadPrompt("grill-me", "v14", PROMPTS_DIR);
+Deno.test("grill-me - no longer carries the smallest-set round rule", async () => {
+  const result = await loadPrompt("grill-me", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (!result.ok) return;
   assertEquals(
     result.value.includes("smallest set of clarifying choices"),
     false,
-    "v14 must replace the smallest-set instruction with the frontier rule",
+    "the frontier rule replaced the smallest-set instruction",
   );
 });
 
-Deno.test("grill-me v14 - resolves the frontier vs mobile-length conflict", async () => {
-  const result = await loadPrompt("grill-me", "v14", PROMPTS_DIR);
+Deno.test("grill-me - resolves the frontier vs mobile-length conflict", async () => {
+  const result = await loadPrompt("grill-me", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (!result.ok) return;
   // The frontier wins over the ~1500-character bound, with one explicit
@@ -105,8 +92,8 @@ Deno.test("grill-me v14 - resolves the frontier vs mobile-length conflict", asyn
   assertStringIncludes(result.value, "eight questions");
 });
 
-Deno.test("grill-me v14 - defines what a pre-ticked box means", async () => {
-  const result = await loadPrompt("grill-me", "v14", PROMPTS_DIR);
+Deno.test("grill-me - defines what a pre-ticked box means", async () => {
+  const result = await loadPrompt("grill-me", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (!result.ok) return;
   // Pre-ticking changes the meaning of a tick, so silence-as-consent must
@@ -116,23 +103,13 @@ Deno.test("grill-me v14 - defines what a pre-ticked box means", async () => {
   assertStringIncludes(result.value, "exactly one option");
 });
 
-Deno.test("grill-me v14 - keeps every contract inherited from v13", async () => {
-  const result = await loadPrompt("grill-me", "v14", PROMPTS_DIR);
+Deno.test("grill-me - keeps every long-standing contract", async () => {
+  const result = await loadPrompt("grill-me", PROMPTS_DIR);
   assertEquals(result.ok, true);
   if (!result.ok) return;
   for (const needle of INHERITED_CONTRACT) {
     assertStringIncludes(result.value, needle);
   }
-});
-
-Deno.test("grill-me v13 - stays immutable", async () => {
-  const result = await loadPrompt("grill-me", "v13", PROMPTS_DIR);
-  assertEquals(result.ok, true);
-  if (!result.ok) return;
-  // Committed versions never change: v13 keeps its smallest-set rule and
-  // never gained the frontier vocabulary.
-  assertStringIncludes(result.value, "smallest set of clarifying choices");
-  assertEquals(result.value.includes("frontier"), false);
 });
 
 Deno.test("buildGrillMePrompt - a built round carries the frontier rules and no placeholders", async () => {

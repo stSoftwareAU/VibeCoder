@@ -30,6 +30,10 @@ import {
   type WorkflowAnnotationFinding,
 } from "../lib/idle_task_templates/workflow_annotation_scan_template.ts";
 import type { WorkflowRunAnnotation } from "../lib/workflow_annotation_fetcher.ts";
+import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 // ---------------------------------------------------------------------------
 // Helpers

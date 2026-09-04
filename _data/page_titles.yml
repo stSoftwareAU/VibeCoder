@@ -31,6 +31,10 @@ docs/CONFIGURATION.md:
   title: "Vibe Coder: Configuration Reference"
   page_icon: "⚙️"
 
+docs/CALLBACKS.md:
+  title: "Vibe Coder: Post-Run Callbacks"
+  page_icon: "🪝"
+
 docs/SECURITY-SCAN.md:
   title: "Vibe Coder: Security Scans"
   page_icon: "🛡️"
@@ -50,6 +54,10 @@ docs/SECURITY-TREE-SWEEP.md:
 docs/RELEASE-TAGGING.md:
   title: "Vibe Coder: Release Tagging"
   page_icon: "🏷️"
+
+docs/RELEASE-NOTES.md:
+  title: "Vibe Coder: Release Notes"
+  page_icon: "📣"
 
 docs/security-fix-gate-feedback.md:
   title: "Vibe Coder: Security-fix Gate Feedback"
@@ -171,6 +179,10 @@ docs/EXTENDING.md:
   title: "Vibe Coder: Extending the Worker"
   page_icon: "🔧"
 
+docs/PRIVATE-EXTENSIONS.md:
+  title: "Vibe Coder: Private Extensions"
+  page_icon: "🧩"
+
 docs/PROMPTS.md:
   title: "Vibe Coder: Prompt goals (summary)"
   page_icon: "📝"
@@ -182,6 +194,10 @@ docs/QUORUM.md:
 docs/PROMPT-BEST-PRACTICES-CHECKLIST.md:
   title: "Vibe Coder: Prompt best-practices checklist"
   page_icon: "📐"
+
+docs/PROMPT-HOUSE-VOCABULARY.md:
+  title: "Vibe Coder: Prompt house vocabulary"
+  page_icon: "🗣️"
 
 docs/INTERNALS.md:
   title: "Vibe Coder: Worker Internals"

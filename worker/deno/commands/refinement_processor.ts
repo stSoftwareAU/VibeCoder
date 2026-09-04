@@ -11,6 +11,8 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import { resolveActingGithubUser } from "../lib/acting_github_user.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import {
   buildRefinementPrompt,
   getUnprocessedRefinementComments,
@@ -32,13 +34,38 @@ export {
 };
 export type { RefinementResult };
 
+/**
+ * The command, plus the environment seam it reads its identity through
+ * (Issue #965).
+ *
+ * Declared as a widening of {@link Command} — the extra parameter is
+ * optional and defaults to the process environment, so the registry and
+ * `mod.ts` see the interface they always did.
+ */
+export interface RefinementProcessorCommand extends Command {
+  execute(
+    args: Record<string, unknown>,
+    config: WorkerConfig,
+    env?: EnvLookup,
+  ): Promise<CommandResult<RefinementResult>>;
+}
+
 /** The refinement-processor command. */
-export const refinementProcessorCommand: Command = {
+export const refinementProcessorCommand: RefinementProcessorCommand = {
   name: "refinement-processor",
   description: "Process issue refinement requests (Issue #966, #1119)",
+  /**
+   * @param args - The operation and its inputs.
+   * @param config - The worker configuration.
+   * @param env - Where the acting `GITHUB_USER` is read from when
+   *   `--github-user` is absent (Issue #965). Defaults to the process
+   *   environment, so shell callers are unchanged; a test states the
+   *   identity instead of deleting the variable from the process.
+   */
   async execute(
     args: Record<string, unknown>,
     config: WorkerConfig,
+    env: EnvLookup = processEnvLookup,
   ): Promise<CommandResult<RefinementResult>> {
     const operation = String(args["operation"] ?? "");
 
@@ -76,9 +103,7 @@ export const refinementProcessorCommand: Command = {
       const repo = String(args["repo"] ?? "");
       const issueNumber = Number(args["issue-number"] ?? 0);
       const issueTitle = String(args["issue-title"] ?? "");
-      const githubUser = String(
-        args["github-user"] ?? Deno.env.get("GITHUB_USER") ?? "",
-      );
+      const githubUser = resolveActingGithubUser(args, env);
 
       if (!repo || !issueNumber || !githubUser) {
         return {

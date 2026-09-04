@@ -29,6 +29,8 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+
 /** Where one provider's routing values come from, in precedence order. */
 export interface PhaseRoutingSources {
   /** Log prefix for the fail-loud warning, e.g. `"codex-executor"`. */
@@ -42,6 +44,11 @@ export interface PhaseRoutingSources {
    * phase-specific escape hatch of step 1 is `${envVar}_${PHASE}`.
    */
   envVar: string;
+  /**
+   * Where steps 1 and 6 read their variables from (Issue #957). Defaults to
+   * the process environment, so a production caller supplies nothing.
+   */
+  env?: EnvLookup;
   /** Step 2 — the active repo's per-phase overrides. */
   repoPhaseOverrides: Readonly<Record<string, string>>;
   /** The config key naming step 2, e.g. `"codex_phase_model_overrides"`. */
@@ -102,11 +109,12 @@ export function resolvePhaseRoutedValue(
 ): string | undefined {
   const accept = (level: string, value: string): string =>
     sources.check ? sources.check(level, value) : value;
+  const env = sources.env ?? processEnvLookup;
 
   if (phase) {
     // 1. Phase-specific env var (explicit operator override for this phase)
     const phaseVar = `${sources.envVar}_${phase.toUpperCase()}`;
-    const fromPhaseEnv = Deno.env.get(phaseVar) ?? "";
+    const fromPhaseEnv = env(phaseVar) ?? "";
     if (fromPhaseEnv) return accept(`${phaseVar} env var`, fromPhaseEnv);
 
     // 2. Per-repo per-phase override
@@ -146,7 +154,7 @@ export function resolvePhaseRoutedValue(
   }
 
   // 6. Base env var (global fallback)
-  const fromBaseEnv = Deno.env.get(sources.envVar) ?? "";
+  const fromBaseEnv = env(sources.envVar) ?? "";
   if (fromBaseEnv) return accept(`${sources.envVar} env var`, fromBaseEnv);
 
   if (sources.fallback) return sources.fallback;

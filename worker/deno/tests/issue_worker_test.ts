@@ -3156,10 +3156,10 @@ Deno.test("clarityPhase - documentation label bypasses clarity assessment", asyn
 });
 
 // ============================================================================
-// Issue #1190 — Prompt version logging
+// Issue #1190, #844 — Prompt revision logging
 // ============================================================================
 
-Deno.test("executeClaude - logs prompt versions before execution", async () => {
+Deno.test("executeClaude - logs the prompts commit before execution", async () => {
   const ctx = makeContext();
   const state = makeState();
   const logMessages: string[] = [];
@@ -3180,11 +3180,13 @@ Deno.test("executeClaude - logs prompt versions before execution", async () => {
 
   await workOnIssueExecuteClaude(ctx, state, deps);
 
-  const versionLog = logMessages.find((m) => m.includes("prompt versions"));
+  // Issue #844: versions are gone; the checkout's commit hash is what pins
+  // the prompt text a run used.
+  const commitLog = logMessages.find((m) => m.includes("prompts from commit"));
   assertEquals(
-    versionLog !== undefined,
+    commitLog !== undefined,
     true,
-    "Should log prompt versions before Claude execution",
+    "Should log the prompts commit before Claude execution",
   );
 });
 

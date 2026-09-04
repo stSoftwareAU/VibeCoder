@@ -19,7 +19,7 @@
  * One block, printed by both, ends the contradiction by construction, and
  * `tests/review_block_template_test.ts` feeds it back through both validators
  * so it cannot drift from what either gate accepts. The shape is the one
- * `prompts/issue/v39.md` documents.
+ * `prompts/issue/prompt.md` documents.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */

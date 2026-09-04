@@ -2,7 +2,7 @@
  * Deterministic Failure-Detection presence gate for published planning
  * sub-issues (Issue #3246).
  *
- * The planning prompt (from `prompts/planning/v19.md`, Issue #3245) instructs
+ * The planning prompt (from `prompts/planning/prompt.md`, Issue #3245) instructs
  * the planner to emit a `## Failure Detection` section in every sub-issue body.
  * A prose rule alone is a "quality escape": the planner can silently omit it and
  * nothing catches the miss. This module closes that escape with a deterministic

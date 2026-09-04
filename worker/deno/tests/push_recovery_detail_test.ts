@@ -23,6 +23,10 @@ import type {
 } from "../lib/issue_worker_wiring.ts";
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
 import type { Logger } from "../types.ts";
+import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 interface CapturedLog {
   message: string;

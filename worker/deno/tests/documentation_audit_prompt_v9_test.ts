@@ -1,74 +1,41 @@
 /**
- * Tests for documentation-audit prompt v9 (Issue #685).
+ * Tests for the documentation-audit prompt's check 13 (Issue #685).
  *
- * v9 adds audit check 13 — **comment contradicts the code**: the source is
- * the single source of truth, so a comment stating something the adjacent
- * code does not do is removed by default. The one exception is a comment
- * describing deliberate behaviour the code never implements (a guard, a
- * limit, an error path); that is filed as a possible bug in the code, not
- * as a comment removal.
+ * Check 13 is **comment contradicts the code**: the source is the single
+ * source of truth, so a comment stating something the adjacent code does not
+ * do is removed by default. The one exception is a comment describing
+ * deliberate behaviour the code never implements (a guard, a limit, an error
+ * path); that is filed as a possible bug in the code, not as a comment
+ * removal.
  *
- * v8 stays immutable and serves as the negative control — every check-13
- * assertion asserts the gap is present in v8 and closed in v9, so the suite
- * fails against the unfixed prompt tree.
+ * The assertions run against the current `documentation_audit` template, so an
+ * edit that drops the check — or renumbers the catalogue without saying so —
+ * fails in CI.
  *
  * Australian English is used throughout (behaviour, colour, organisation).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 import { hasProjectConventionsStanza } from "../lib/project_conventions_stanza.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
 
-async function loadDocumentationAudit(version: string): Promise<string> {
-  const result = await loadPrompt("documentation_audit", version, PROMPTS_DIR);
-  assertEquals(
-    result.ok,
-    true,
-    `documentation_audit ${version} failed to load`,
-  );
+async function loadDocumentationAudit(): Promise<string> {
+  const result = await loadPrompt("documentation_audit", PROMPTS_DIR);
+  assertEquals(result.ok, true, "documentation_audit failed to load");
   if (!result.ok) {
-    throw new Error(`documentation_audit ${version} failed to load`);
+    throw new Error("documentation_audit failed to load");
   }
   return result.value;
 }
 
-const loadV8 = () => loadDocumentationAudit("v8");
-const loadV9 = () => loadDocumentationAudit("v9");
-
 const readDoc = (relPath: string) =>
   Deno.readTextFile(`${REPO_ROOT}${relPath}`);
 
-// --- Version resolution ---
-
-Deno.test("documentation_audit v9 - is the version the worker resolves", async () => {
-  const latest = await getLatestVersion("documentation_audit", PROMPTS_DIR);
-  assertEquals(latest.ok, true);
-  if (!latest.ok) return;
-  // Issue #790: v10 scopes the overflow-tracker prohibition to
-  // documentation-audit runs, so the resolved version moves. The contract
-  // under test is "the worker resolves the newest version and that is what
-  // it loads by name" — not a pinned number.
-  const latestNumber = Number(latest.value.slice(1));
-  assertEquals(
-    Number.isInteger(latestNumber) && latestNumber >= 9,
-    true,
-    `expected v9 or newer, got ${latest.value}`,
-  );
-
-  const [byName, byVersion] = await Promise.all([
-    loadPrompt("documentation_audit", undefined, PROMPTS_DIR),
-    loadDocumentationAudit(latest.value),
-  ]);
-  assertEquals(byName.ok, true);
-  if (!byName.ok) return;
-  assertEquals(byName.value, byVersion);
-});
-
-Deno.test("documentation_audit v9 - keeps the dedup and attribution placeholders", async () => {
-  const body = await loadV9();
+Deno.test("documentation_audit - keeps the dedup and attribution placeholders", async () => {
+  const body = await loadDocumentationAudit();
   for (
     const placeholder of [
       "{{SUPPRESSED_IDS}}",
@@ -81,37 +48,32 @@ Deno.test("documentation_audit v9 - keeps the dedup and attribution placeholders
   }
 });
 
-Deno.test("documentation_audit v9 - keeps the shared Phase 0 conventions stanza", async () => {
+Deno.test("documentation_audit - keeps the shared Phase 0 conventions stanza", async () => {
   assert(
-    hasProjectConventionsStanza(await loadV9()),
-    "v9 must carry the canonical Phase 0 stanza verbatim",
+    hasProjectConventionsStanza(await loadDocumentationAudit()),
+    "the template must carry the canonical Phase 0 stanza verbatim",
   );
 });
 
-Deno.test("documentation_audit v9 - the H1 names its own version", async () => {
-  const v9 = await loadV9();
-  const h1 = v9.split("\n")[0] ?? "";
+Deno.test("documentation_audit - the H1 names the audit", async () => {
+  const text = await loadDocumentationAudit();
+  const h1 = text.split("\n")[0] ?? "";
   assertStringIncludes(h1, "# Documentation Audit");
-  assertStringIncludes(h1, "(v9)");
 });
 
 // --- Check 13: comments that contradict the code ---
 
-Deno.test("documentation_audit v9 - adds check 13 for comments that contradict the code", async () => {
-  const [v8, v9] = await Promise.all([loadV8(), loadV9()]);
-  assert(
-    !/### 13\./.test(v8),
-    "v8 is the negative control: it must have no check 13",
-  );
-  assertStringIncludes(v9, "### 13. Comment contradicts the code");
-  assertStringIncludes(v9, "The source code is the truth");
+Deno.test("documentation_audit - carries check 13 for comments that contradict the code", async () => {
+  const text = await loadDocumentationAudit();
+  assertStringIncludes(text, "### 13. Comment contradicts the code");
+  assertStringIncludes(text, "The source code is the truth");
 });
 
-Deno.test("documentation_audit v9 - check 13 removes the comment by default, citing file and line", async () => {
-  const v9 = await loadV9();
-  const check = v9.slice(
-    v9.indexOf("### 13. Comment contradicts the code"),
-    v9.indexOf("<examples>"),
+Deno.test("documentation_audit - check 13 removes the comment by default, citing file and line", async () => {
+  const text = await loadDocumentationAudit();
+  const check = text.slice(
+    text.indexOf("### 13. Comment contradicts the code"),
+    text.indexOf("<examples>"),
   );
   assert(check.length > 0, "check 13 section not found before the examples");
   // The default remedy is deletion, evidenced by a file/line citation.
@@ -119,11 +81,11 @@ Deno.test("documentation_audit v9 - check 13 removes the comment by default, cit
   assertStringIncludes(check, "Cite the comment's file and line");
 });
 
-Deno.test("documentation_audit v9 - check 13 files a possible code bug when the comment documents absent behaviour", async () => {
-  const v9 = await loadV9();
-  const check = v9.slice(
-    v9.indexOf("### 13. Comment contradicts the code"),
-    v9.indexOf("<examples>"),
+Deno.test("documentation_audit - check 13 files a possible code bug when the comment documents absent behaviour", async () => {
+  const text = await loadDocumentationAudit();
+  const check = text.slice(
+    text.indexOf("### 13. Comment contradicts the code"),
+    text.indexOf("<examples>"),
   );
   assertStringIncludes(check, "possible bug in the code");
   // The three shapes the issue enumerates for deliberate-but-unimplemented
@@ -133,23 +95,19 @@ Deno.test("documentation_audit v9 - check 13 files a possible code bug when the 
   }
 });
 
-Deno.test("documentation_audit v9 - check 13 states the doc-coverage ownership boundary", async () => {
-  const [v8, v9] = await Promise.all([loadV8(), loadV9()]);
-  // v8 already draws the sibling boundary, but only over missing or
-  // paraphrase-only docstrings — it never claims contradicting comments.
-  assert(
-    !v8.includes("contradicts the code it sits beside"),
-    "v8 is the negative control: it claims no ownership of contradicting comments",
-  );
-  assertStringIncludes(v9, "contradicts the code it sits beside");
-  assertStringIncludes(v9, "paraphrase");
+Deno.test("documentation_audit - check 13 states the doc-coverage ownership boundary", async () => {
+  // The sibling boundary used to cover only missing or paraphrase-only
+  // docstrings; check 13 claims contradicting comments explicitly.
+  const text = await loadDocumentationAudit();
+  assertStringIncludes(text, "contradicts the code it sits beside");
+  assertStringIncludes(text, "paraphrase");
 });
 
-Deno.test("documentation_audit v9 - check 13 carves out the legitimate look-alikes", async () => {
-  const v9 = await loadV9();
-  const check = v9.slice(
-    v9.indexOf("### 13. Comment contradicts the code"),
-    v9.indexOf("<examples>"),
+Deno.test("documentation_audit - check 13 carves out the legitimate look-alikes", async () => {
+  const text = await loadDocumentationAudit();
+  const check = text.slice(
+    text.indexOf("### 13. Comment contradicts the code"),
+    text.indexOf("<examples>"),
   );
   const silent = check.slice(check.indexOf("**Stay silent**"));
   assert(silent.length > 0, "check 13 must carry a stay-silent carve-out");
@@ -160,52 +118,44 @@ Deno.test("documentation_audit v9 - check 13 carves out the legitimate look-alik
   }
 });
 
-Deno.test("documentation_audit v9 - check 13 collapses per source file", async () => {
-  const v9 = await loadV9();
-  const check = v9.slice(
-    v9.indexOf("### 13. Comment contradicts the code"),
-    v9.indexOf("<examples>"),
+Deno.test("documentation_audit - check 13 collapses per source file", async () => {
+  const text = await loadDocumentationAudit();
+  const check = text.slice(
+    text.indexOf("### 13. Comment contradicts the code"),
+    text.indexOf("<examples>"),
   );
   assertStringIncludes(check, "one finding per source file");
 });
 
-Deno.test("documentation_audit v9 - check 13 has worked examples for both verdicts", async () => {
-  const [v8, v9] = await Promise.all([loadV8(), loadV9()]);
+Deno.test("documentation_audit - check 13 has worked examples for both verdicts", async () => {
+  const text = await loadDocumentationAudit();
   assertStringIncludes(
-    v9,
+    text,
     '<example name="comment-contradicts-adjacent-code">',
   );
   assertStringIncludes(
-    v9,
+    text,
     '<example name="comment-documents-a-guard-the-code-lacks">',
   );
-  assertStringIncludes(v9, '<example name="comment-explaining-why">');
-  assert(
-    !v8.includes("check 13"),
-    "v8 is the negative control: no check 13 example",
-  );
+  assertStringIncludes(text, '<example name="comment-explaining-why">');
 });
 
-// --- Inventory and bookkeeping the new check depends on ---
+// --- Inventory and bookkeeping the check depends on ---
 
-Deno.test("documentation_audit v9 - Phase 1 inventories the source comments check 13 reads", async () => {
-  const [v8, v9] = await Promise.all([loadV8(), loadV9()]);
-  const inventory = v9.slice(
-    v9.indexOf("## Phase 1 — Inventory the documentation surface"),
-    v9.indexOf("## Phase 2"),
+Deno.test("documentation_audit - Phase 1 inventories the source comments check 13 reads", async () => {
+  const text = await loadDocumentationAudit();
+  const inventory = text.slice(
+    text.indexOf("## Phase 1 — Inventory the documentation surface"),
+    text.indexOf("## Phase 2"),
   );
   assertStringIncludes(inventory, "Source comments");
-  assert(
-    !v8.includes("Source comments"),
-    "v8 is the negative control: its inventory stops at prose",
-  );
 });
 
-Deno.test("documentation_audit v9 - the Phase 2 sweep bound cannot starve check 13", async () => {
-  const v9 = await loadV9();
-  const bound = v9.slice(
-    v9.indexOf("**Bound the sweep, not just the results.**"),
-    v9.indexOf("### 1. Unabsorbed PR-summary learnings"),
+Deno.test("documentation_audit - the Phase 2 sweep bound cannot starve check 13", async () => {
+  const text = await loadDocumentationAudit();
+  const bound = text.slice(
+    text.indexOf("**Bound the sweep, not just the results.**"),
+    text.indexOf("### 1. Unabsorbed PR-summary learnings"),
   );
   assert(bound.length > 0, "the Phase 2 sweep bound was not found");
   // The source-comment shortlist is ranked below the docs in the drift
@@ -215,45 +165,43 @@ Deno.test("documentation_audit v9 - the Phase 2 sweep bound cannot starve check 
   assertStringIncludes(bound, "as you open it");
 });
 
-Deno.test("documentation_audit v9 - an unresolved check-13 direction does not outrank a confirmed finding", async () => {
-  const v9 = await loadV9();
-  const check = v9.slice(
-    v9.indexOf("### 13. Comment contradicts the code"),
-    v9.indexOf("<examples>"),
+Deno.test("documentation_audit - an unresolved check-13 direction does not outrank a confirmed finding", async () => {
+  const text = await loadDocumentationAudit();
+  const check = text.slice(
+    text.indexOf("### 13. Comment contradicts the code"),
+    text.indexOf("<examples>"),
   );
   assertStringIncludes(check, "possible-bug shape at `severity:medium`");
 });
 
-Deno.test("documentation_audit v9 - renumbers the check counts consistently", async () => {
-  const [v8, v9] = await Promise.all([loadV8(), loadV9()]);
-  assertStringIncludes(v8, "twelve-check catalogue");
-  assertStringIncludes(v9, "## Phase 2 — Apply the thirteen-check catalogue");
+Deno.test("documentation_audit - states the check counts consistently", async () => {
+  const text = await loadDocumentationAudit();
+  assertStringIncludes(text, "## Phase 2 — Apply the thirteen-check catalogue");
   assert(
-    !v9.includes("twelve-check"),
-    "v9 must not still describe the catalogue as twelve checks",
+    !text.includes("twelve-check"),
+    "the template must not still describe the catalogue as twelve checks",
   );
 });
 
-Deno.test("documentation_audit v9 - the read-before-you-assert rule extends to check 13", async () => {
-  const [v8, v9] = await Promise.all([loadV8(), loadV9()]);
-  assertStringIncludes(v8, "This binds hardest on checks 10–12");
-  assertStringIncludes(v9, "This binds hardest on checks 10–13");
+Deno.test("documentation_audit - the read-before-you-assert rule extends to check 13", async () => {
+  const text = await loadDocumentationAudit();
+  assertStringIncludes(text, "This binds hardest on checks 10–13");
   assert(
-    !v9.includes("binds hardest on checks 10–12"),
-    "v9 must extend the read-before-you-assert range to check 13",
+    !text.includes("binds hardest on checks 10–12"),
+    "the read-before-you-assert range must extend to check 13",
   );
 });
 
-Deno.test("documentation_audit v9 - severity guidance covers a contradicting comment", async () => {
-  const v9 = await loadV9();
-  const severitySection = v9.slice(v9.indexOf("### Severity guidance"));
+Deno.test("documentation_audit - severity guidance covers a contradicting comment", async () => {
+  const text = await loadDocumentationAudit();
+  const severitySection = text.slice(text.indexOf("### Severity guidance"));
   assertStringIncludes(severitySection, "comment");
 });
 
-Deno.test("documentation_audit v9 - the suggested-fix guidance tells the filer what to write", async () => {
-  const v9 = await loadV9();
-  const phase4 = v9.slice(
-    v9.indexOf("## Phase 4 — File one issue per finding"),
+Deno.test("documentation_audit - the suggested-fix guidance tells the filer what to write", async () => {
+  const text = await loadDocumentationAudit();
+  const phase4 = text.slice(
+    text.indexOf("## Phase 4 — File one issue per finding"),
   );
   assertStringIncludes(phase4, "for a contradicting comment (check 13)");
 });

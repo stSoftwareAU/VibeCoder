@@ -2,7 +2,7 @@
  * GitHub Actions audit idle-task template (Issue #2256, parent #2243,
  * template #4).
  *
- * Runs the `prompts/github_actions_audit/v1.md` audit against the target
+ * Runs the `prompts/github_actions_audit/prompt.md` audit against the target
  * repository's GitHub Actions material, pre-files an actionlint-in-CI
  * finding (when actionlint is not invoked from CI), pre-files runner
  * deprecation findings surfaced by `runner_deprecation_scanner.ts`,
@@ -401,6 +401,14 @@ export interface GitHubActionsAuditTemplateDeps {
    */
   getDefaultBranchFn?: (repo: string) => Promise<Result<string>>;
   /**
+   * Where the persistent default-branch cache lives (Issue #964). Only
+   * consulted by the default `getDefaultBranchFn`. Defaults to the cache
+   * module's own resolution, so production passes nothing; a test names a
+   * throwaway path instead of pointing the whole process at one with
+   * `Deno.env.set`.
+   */
+  defaultBranchCachePath?: string;
+  /**
    * Audit scan runner — invokes Claude with the assembled prompt.
    * Defaults to the production `claude_runner` wrapper. Tests inject a
    * stub that returns success without invoking Claude.
@@ -451,7 +459,7 @@ export interface ScanError {
 
 /**
  * Substitute the four placeholders defined by
- * `prompts/github_actions_audit/v1.md`.
+ * `prompts/github_actions_audit/prompt.md`.
  *
  * Empty id lists render as `(none)` — same convention as
  * `assembleTestAuditPrompt` so wrappers read naturally standalone and
@@ -658,7 +666,7 @@ export function renderGitHubActionsAuditSummary(
 // ---------------------------------------------------------------------------
 
 /**
- * Default Claude runner. Loads `prompts/github_actions_audit/v1.md`,
+ * Default Claude runner. Loads `prompts/github_actions_audit/prompt.md`,
  * substitutes placeholders, and invokes Claude with the same write-tool
  * blocklist as `best_practices_template.defaultRunScan`.
  *
@@ -777,7 +785,8 @@ export function createGitHubActionsAuditTemplate(
   const requiredActionPatternsFn = deps.requiredActionPatternsFn ??
     defaultRequiredActionPatterns;
   const getDefaultBranchFn = deps.getDefaultBranchFn ??
-    ((repo) => getRepoDefaultBranch(repo, ghCommandFn));
+    ((repo) =>
+      getRepoDefaultBranch(repo, ghCommandFn, deps.defaultBranchCachePath));
   const runScanFn = deps.runScanFn ??
     ((opts) => runGitHubActionsAuditScan(opts, loadPromptFn));
   const logger = deps.logger ?? defaultLogger;

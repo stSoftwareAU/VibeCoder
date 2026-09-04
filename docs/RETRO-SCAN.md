@@ -114,7 +114,7 @@ candidate yields the same id across runs.
 | -------------------- | ----------------------------------------------------------------- |
 | Template name        | `retro`                                                            |
 | Wrapper title        | `Run a retro on a finished run`                                    |
-| Prompt               | `prompts/retro/vN.md` (latest version wins)                        |
+| Prompt               | `prompts/retro/prompt.md`                                          |
 | Output label         | `retro` + one `severity:<level>`                                   |
 | Issues per run       | **At most one**                                                    |
 | Cadence              | Once per repo per week (`cooldownHours: 168`)                      |

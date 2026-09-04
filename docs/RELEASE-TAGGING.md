@@ -2,7 +2,10 @@
 
 Every merge to `main` is tagged with the next patch semver, automatically
 (Issue #627). A host running in frozen mode pins to a released version, so
-without tags the only thing it could pin to is a raw commit SHA.
+without tags the only thing it could pin to is a raw commit SHA. A release that
+moves the series — a minor or a major — is minted from
+[the release floor](#the-release-floor) instead, and is written up in
+[Release notes](RELEASE-NOTES.md).
 
 ## What runs
 
@@ -18,7 +21,7 @@ it is exercised by unit tests rather than only by a real merge:
 ```bash
 git tag --list > all-tags.txt
 git tag --points-at "$GITHUB_SHA" > head-tags.txt
-.github/scripts/next-release-tag.sh all-tags.txt head-tags.txt
+.github/scripts/next-release-tag.sh all-tags.txt head-tags.txt .release-floor
 # should_tag=true
 # tag=1.0.1
 ```
@@ -31,17 +34,21 @@ flowchart TD
     A -- no --> N{"Any release tag<br/>in the repository?"}
     N -- no --> F["Mint 1.0.0"]
     N -- yes --> I["Increment the patch of<br/>the newest tag: 1.0.0 → 1.0.1"]
-    F --> T["Create the tag at the merge commit"]
-    I --> T
+    F --> B{".release-floor above<br/>that number?"}
+    I --> B
+    B -- no --> T["Create the tag at the merge commit"]
+    B -- yes --> R["Mint the floor instead:<br/>1.0.72 → 1.2.0"]
+    R --> T
     T --> V["Publish tool-versions.json<br/>on the release for that tag"]
     S --> V
 ```
 
 ## The rules
 
-- **Patch only.** The newest release tag decides the major and minor. A human
-  minting `1.1.0` or `2.0.0` by hand is the supported way to move the series —
-  the next merge then continues from there (`1.1.1`).
+- **Patch only, unless the floor says otherwise.** The newest release tag
+  decides the major and minor; a human moves the series by editing
+  [`.release-floor`](#the-release-floor), and the next merge continues from
+  there (`1.2.0` → `1.2.1`).
 - **First tag is `1.0.0`.** A repository with no release tag yet starts there.
 - **Numeric, not lexical.** `1.0.10` is newer than `1.0.9`.
 - **A release tag is a bare `MAJOR.MINOR.PATCH` triple**, optionally
@@ -55,6 +62,42 @@ flowchart TD
 - **Never blocks a merge.** The merge has already landed by the time this runs.
   A failed tag shows as a red run on the workflow and a missing tag on the
   commit — nothing downstream waits on it.
+
+## The release floor
+
+Only the patch number is automated, so a release that changes a contract —
+where semver asks for a minor or a major — needs a way to say so that the
+automation will honour. That is `.release-floor` at the repository root: **one
+line, one version**, `#` comments and blank lines ignored.
+
+```text
+# 1.2.0 releases the callback extension point and the removal of the
+# fleet_health_dir / fleet_health_repo configuration keys.
+1.2.0
+```
+
+The workflow passes the file to the same script that does the increment, and
+the minted tag is the **higher** of the floor and the automatic patch number:
+
+| Newest release | Floor   | Minted  | Why                                     |
+| -------------- | ------- | ------- | --------------------------------------- |
+| `1.0.71`       | `1.2.0` | `1.2.0` | the floor is above the patch (`1.0.72`) |
+| `1.2.0`        | `1.2.0` | `1.2.1` | the patch is already above the floor    |
+| `1.2.4`        | `1.2.0` | `1.2.5` | a floor below the series does nothing   |
+| _(none)_       | `1.2.0` | `1.2.0` | the floor decides the first tag too     |
+
+- **It raises, it never holds.** The floor cannot lower a version or re-mint
+  one, so it is inert the moment the release it names exists and the file can
+  be left in place until the next series move.
+- **It never re-tags.** A commit that already carries a release tag is still
+  left alone — idempotency comes first, floor or no floor.
+- **A malformed or ambiguous floor fails the step.** A version that is not a
+  bare triple, or two versions in the file, exits non-zero and mints nothing:
+  silently ignoring a typo would ship the release under the automatic patch
+  number, which is the exact mistake the floor exists to prevent. A file with
+  no version line at all is simply no floor.
+- **Editing it is the release decision.** The version, and the reason for it,
+  belong in the same commit as the entry in [Release notes](RELEASE-NOTES.md).
 
 ## The tool-version manifest
 
@@ -195,11 +238,14 @@ same commit publishes the manifest against that tag once the tool resolves.
 ## Tests
 
 - `worker/deno/tests/next_release_tag_test.ts` — the version selection and
-  increment logic, over tag lists.
+  increment logic, over tag lists, including the release floor: the merge that
+  mints it, the merges after it, and the malformed and ambiguous floors that
+  fail the step.
 - `worker/deno/tests/release_tag_workflow_test.ts` — the workflow structure
   (trigger, permissions, concurrency, SHA-pinned credential-free checkout, the
-  tag-before-publish order and the idempotent manifest publish) and the
-  plumbing between real `git tag` output and the script.
+  floor passed to the plan, the release-notes link, the tag-before-publish
+  order and the idempotent manifest publish) and the plumbing between real
+  `git tag` output and the script.
 - `worker/deno/tests/release_manifest_test.ts` — the manifest shape: the
   all-or-nothing build and the parser, over malformed and partial manifests.
 - `worker/deno/tests/release_check_test.ts` — the release check library: the

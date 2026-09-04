@@ -34,12 +34,13 @@ import {
   type Finding,
   type FreshStateFacts,
   type FreshStateVerdict,
+  readWorkaroundEnv,
   renderReport,
   type RunSummary,
   type StageRecord,
   verdictFor,
-  WORKAROUND_ENV_VARS,
 } from "../lib/first_run_verification.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 
 /** Stages whose output is classified: what setup, the launcher and the image said. */
@@ -125,10 +126,13 @@ function requireString(
 }
 
 /** Which file this host's configuration is, by the repository's own rule. */
-function configPath(args: Record<string, unknown>): CommandResult {
+function configPath(
+  args: Record<string, unknown>,
+  env: EnvLookup,
+): CommandResult {
   const path = resolveHostConfigPath({
     baseDir: requireString(args, "base-dir"),
-    env: (name) => Deno.env.get(name),
+    env,
   });
   return { success: true, message: path, data: { path } };
 }
@@ -144,15 +148,11 @@ function requireBoolean(args: Record<string, unknown>, key: string): boolean {
 /** Preflight: refuse a host that already carries a workaround. */
 async function preflight(
   args: Record<string, unknown>,
+  env: EnvLookup,
 ): Promise<CommandResult> {
   const configFile = requireString(args, "config-file");
-  const env: Record<string, string> = {};
-  for (const { name } of WORKAROUND_ENV_VARS) {
-    const value = Deno.env.get(name);
-    if (value !== undefined) env[name] = value;
-  }
   const facts: FreshStateFacts = {
-    env,
+    env: readWorkaroundEnv(env),
     configFile,
     configFileExists: await exists(configFile),
     claudeOnPath: requireBoolean(args, "claude-on-path"),
@@ -373,18 +373,48 @@ function dedupe(findings: Finding[]): Finding[] {
   });
 }
 
-export const firstRunVerifyCommand: Command = {
+/**
+ * The command, plus the environment seam two of its modes take (Issue #962).
+ *
+ * `preflight` judges the host environment and `config-path` resolves against
+ * it, so both need to be told what that environment holds. Declared as a
+ * widening of {@link Command} — the extra parameter is optional and defaults
+ * to the process environment, so the registry and `mod.ts` see the interface
+ * they always did.
+ */
+export interface FirstRunVerifyCommand extends Command {
+  execute(
+    args: Record<string, unknown>,
+    config?: unknown,
+    env?: EnvLookup,
+  ): Promise<CommandResult>;
+}
+
+export const firstRunVerifyCommand: FirstRunVerifyCommand = {
   name: "first-run-verify",
   description:
     "Judge one stage of the fresh first-run verification (Issue #736)",
-  async execute(args: Record<string, unknown>): Promise<CommandResult> {
+  /**
+   * @param args - The mode and its inputs.
+   * @param _config - The worker configuration, which no mode reads.
+   * @param env - The host environment the preflight judges and the config-path
+   *   rule resolves against (Issue #962). Defaults to the process
+   *   environment, so `mod.ts` and `infra/verify/first-run.sh` are unchanged;
+   *   a test states the host it is verifying instead of setting the very
+   *   variables the preflight refuses a host for.
+   */
+  async execute(
+    args: Record<string, unknown>,
+    _config?: unknown,
+    env: EnvLookup = processEnvLookup,
+  ): Promise<CommandResult> {
     const mode = args["mode"];
     try {
       switch (mode) {
         case "config-path":
-          return configPath(args);
+          return configPath(args, env);
         case "preflight":
-          return await preflight(args);
+          return await preflight(args, env);
         case "config":
           return await config(args);
         case "image":

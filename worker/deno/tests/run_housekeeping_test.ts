@@ -33,6 +33,7 @@ import {
   DEFAULT_HARD_CAP_COUNT,
   DEFAULT_MAX_AGE_DAYS,
 } from "../lib/worker_log_cleanup.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 function baseOptions(
   overrides: Partial<HousekeepingOptions> = {},
@@ -297,27 +298,15 @@ Deno.test("buildHousekeepingSteps - includes the worker-log-cleanup step", () =>
 });
 
 Deno.test("buildHousekeepingSteps - worker-log-cleanup honours env overrides", () => {
-  const previousAge = Deno.env.get("WORKER_LOG_MAX_AGE_DAYS");
-  const previousCap = Deno.env.get("WORKER_LOG_HARD_CAP_COUNT");
-  Deno.env.set("WORKER_LOG_MAX_AGE_DAYS", "7");
-  Deno.env.set("WORKER_LOG_HARD_CAP_COUNT", "50");
-  try {
-    const step = buildHousekeepingSteps(baseOptions())
-      .find((s) => s.id === "worker-log-cleanup");
-    assertEquals(step?.args["max-age-days"], 7);
-    assertEquals(step?.args["hard-cap-count"], 50);
-  } finally {
-    if (previousAge === undefined) {
-      Deno.env.delete("WORKER_LOG_MAX_AGE_DAYS");
-    } else {
-      Deno.env.set("WORKER_LOG_MAX_AGE_DAYS", previousAge);
-    }
-    if (previousCap === undefined) {
-      Deno.env.delete("WORKER_LOG_HARD_CAP_COUNT");
-    } else {
-      Deno.env.set("WORKER_LOG_HARD_CAP_COUNT", previousCap);
-    }
-  }
+  const step = buildHousekeepingSteps(
+    baseOptions(),
+    envFrom({
+      WORKER_LOG_MAX_AGE_DAYS: "7",
+      WORKER_LOG_HARD_CAP_COUNT: "50",
+    }),
+  ).find((s) => s.id === "worker-log-cleanup");
+  assertEquals(step?.args["max-age-days"], 7);
+  assertEquals(step?.args["hard-cap-count"], 50);
 });
 
 Deno.test("runStartupHousekeeping - deletes an over-age worker log end to end", async () => {
@@ -440,36 +429,20 @@ Deno.test("buildHousekeepingSteps - ages the work root's disposable tier out", (
 });
 
 Deno.test("buildHousekeepingSteps - work-volume-tiers honours the git cap override (Issue #387)", () => {
-  const previous = Deno.env.get("WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES");
-  Deno.env.set("WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES", "0");
-  try {
-    const step = buildHousekeepingSteps(baseOptions())
-      .find((s) => s.id === "work-volume-tiers");
-    // Zero is a deliberate opt-out, not a fall back to the default.
-    assertEquals(step?.args["max-git-bytes"], 0);
-  } finally {
-    if (previous === undefined) {
-      Deno.env.delete("WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES");
-    } else {
-      Deno.env.set("WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES", previous);
-    }
-  }
+  const step = buildHousekeepingSteps(
+    baseOptions(),
+    envFrom({ WORK_VOLUME_SIDE_REPO_MAX_GIT_BYTES: "0" }),
+  ).find((s) => s.id === "work-volume-tiers");
+  // Zero is a deliberate opt-out, not a fall back to the default.
+  assertEquals(step?.args["max-git-bytes"], 0);
 });
 
 Deno.test("buildHousekeepingSteps - work-volume-tiers honours its env override", () => {
-  const previous = Deno.env.get("WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS");
-  Deno.env.set("WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS", "7");
-  try {
-    const step = buildHousekeepingSteps(baseOptions())
-      .find((s) => s.id === "work-volume-tiers");
-    assertEquals(step?.args["max-age-days"], 7);
-  } finally {
-    if (previous === undefined) {
-      Deno.env.delete("WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS");
-    } else {
-      Deno.env.set("WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS", previous);
-    }
-  }
+  const step = buildHousekeepingSteps(
+    baseOptions(),
+    envFrom({ WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS: "7" }),
+  ).find((s) => s.id === "work-volume-tiers");
+  assertEquals(step?.args["max-age-days"], 7);
 });
 
 // ---------------------------------------------------------------------------
@@ -487,17 +460,55 @@ Deno.test("buildHousekeepingSteps - sweeps merged-PR issues last, wired to the w
 });
 
 Deno.test("buildHousekeepingSteps - merged-pr-issue-sweep honours its env override", () => {
-  const previous = Deno.env.get("MERGED_PR_SWEEP_ISSUE_LIMIT");
-  Deno.env.set("MERGED_PR_SWEEP_ISSUE_LIMIT", "50");
-  try {
-    const step = buildHousekeepingSteps(baseOptions())
-      .find((s) => s.id === "merged-pr-issue-sweep");
-    assertEquals(step?.args["issue-limit"], 50);
-  } finally {
-    if (previous === undefined) {
-      Deno.env.delete("MERGED_PR_SWEEP_ISSUE_LIMIT");
-    } else {
-      Deno.env.set("MERGED_PR_SWEEP_ISSUE_LIMIT", previous);
-    }
-  }
+  const step = buildHousekeepingSteps(
+    baseOptions(),
+    envFrom({ MERGED_PR_SWEEP_ISSUE_LIMIT: "50" }),
+  ).find((s) => s.id === "merged-pr-issue-sweep");
+  assertEquals(step?.args["issue-limit"], 50);
+});
+
+Deno.test("buildHousekeepingSteps - an empty environment gives every documented default (Issue #956)", () => {
+  // The injected lookup is authoritative: with nothing in it, every tunable
+  // falls back to the default the bash block used, whatever the host that
+  // runs the suite happens to export.
+  const steps = buildHousekeepingSteps(baseOptions(), emptyEnv);
+  const arg = (id: string, name: string) =>
+    steps.find((s) => s.id === id)?.args[name];
+
+  assertEquals(arg("disk-space", "threshold"), 90);
+  assertEquals(arg("disk-space", "gentle-threshold"), 80);
+  assertEquals(arg("worker-log-cleanup", "max-age-days"), DEFAULT_MAX_AGE_DAYS);
+  assertEquals(
+    arg("worker-log-cleanup", "hard-cap-count"),
+    DEFAULT_HARD_CAP_COUNT,
+  );
+  assertEquals(
+    arg("work-volume-tiers", "max-age-days"),
+    DEFAULT_SIDE_REPO_MAX_AGE_DAYS,
+  );
+  assertEquals(
+    arg("work-volume-tiers", "max-git-bytes"),
+    DEFAULT_SIDE_REPO_MAX_GIT_BYTES,
+  );
+  assertEquals(arg("merged-pr-issue-sweep", "issue-limit"), 200);
+});
+
+Deno.test("buildHousekeepingSteps - a non-numeric override falls back rather than passing NaN (Issue #956)", () => {
+  // A junk export must not reach a command as `NaN`, which would compare
+  // false against every threshold and silently disable the sweep.
+  const steps = buildHousekeepingSteps(
+    baseOptions(),
+    envFrom({
+      DISK_CLEANUP_THRESHOLD: "high",
+      MERGED_PR_SWEEP_ISSUE_LIMIT: "",
+    }),
+  );
+  assertEquals(
+    steps.find((s) => s.id === "disk-space")?.args["threshold"],
+    90,
+  );
+  assertEquals(
+    steps.find((s) => s.id === "merged-pr-issue-sweep")?.args["issue-limit"],
+    200,
+  );
 });

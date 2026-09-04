@@ -44,7 +44,10 @@ import {
   type QuotaPauseMarker,
   writeQuotaPauseMarker,
 } from "../lib/quota_pause.ts";
-import { containerRestartBackoffCommand } from "../commands/container_restart_backoff.ts";
+import {
+  containerRestartBackoffCommand,
+  resolveQuotaPauseSleepSeconds,
+} from "../commands/container_restart_backoff.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
   buildCrashMessage,
@@ -52,6 +55,7 @@ import {
   type CrashNotificationParams,
 } from "../lib/crash_notification.ts";
 import { summariseSelfHealEvents } from "../lib/self_heal_events.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 const TEST_FILE_PATH = new URL(import.meta.url).pathname;
 const REPO_ROOT = TEST_FILE_PATH.replace(/\/worker\/deno\/tests\/[^/]+$/, "");
@@ -793,32 +797,71 @@ Deno.test({
   },
 });
 
+Deno.test(
+  "container-restart-backoff command - the quota cadence is operator-configurable by environment",
+  () => {
+    // Issue #956: driven through the command's env seam rather than by
+    // exporting the variable onto the process, which races every other test
+    // under `deno test --parallel`. `VIBE_QUOTA_PAUSE_SLEEP_SECONDS` is not
+    // set on any host the suite runs on, so a resolver that ignored the
+    // injected lookup would return the default and fail here.
+    assertEquals(
+      resolveQuotaPauseSleepSeconds(
+        {},
+        envFrom({ VIBE_QUOTA_PAUSE_SLEEP_SECONDS: "1800" }),
+      ),
+      1800,
+    );
+  },
+);
+
+Deno.test(
+  "container-restart-backoff command - the quota cadence prefers the flag, then the environment, then the default (Issue #956)",
+  () => {
+    const env = envFrom({ VIBE_QUOTA_PAUSE_SLEEP_SECONDS: "1800" });
+    // The flag the launcher passes wins over an operator's export.
+    assertEquals(
+      resolveQuotaPauseSleepSeconds({ "quota-pause-sleep-seconds": 600 }, env),
+      600,
+    );
+    // Nothing anywhere: the documented cadence.
+    assertEquals(
+      resolveQuotaPauseSleepSeconds({}, emptyEnv),
+      CONTAINER_RESTART_DEFAULTS.quotaPauseSleepSeconds,
+    );
+    // A junk export is not a cadence — it falls through, never to NaN.
+    assertEquals(
+      resolveQuotaPauseSleepSeconds(
+        {},
+        envFrom({ VIBE_QUOTA_PAUSE_SLEEP_SECONDS: "soon" }),
+      ),
+      CONTAINER_RESTART_DEFAULTS.quotaPauseSleepSeconds,
+    );
+  },
+);
+
 Deno.test({
   name:
-    "container-restart-backoff command - the quota cadence is operator-configurable by environment",
+    "container-restart-backoff command - the resolved cadence is what the supervisor is told to sleep (Issue #956)",
   permissions: { read: true, write: true, env: true, run: true },
   async fn() {
+    // End to end, so the extracted resolver is provably the one `execute`
+    // uses: the flag goes in, the printed integer comes back out.
     const harness = await setupHarness();
     const logDir = join(harness.workDir, "logs");
-    const previous = Deno.env.get("VIBE_QUOTA_PAUSE_SLEEP_SECONDS");
     try {
       await Deno.mkdir(logDir, { recursive: true });
-      Deno.env.set("VIBE_QUOTA_PAUSE_SLEEP_SECONDS", "1800");
 
       const result = await containerRestartBackoffCommand.execute({
         "exit-status": QUOTA_PAUSE_EXIT_STATUS,
         "work-dir": harness.workDir,
         "log-dir": logDir,
         "state-dir": join(harness.workDir, "state"),
+        "quota-pause-sleep-seconds": 1800,
       }, buildDefaultWorkerConfig());
 
       assertEquals(result.message, "1800");
     } finally {
-      if (previous === undefined) {
-        Deno.env.delete("VIBE_QUOTA_PAUSE_SLEEP_SECONDS");
-      } else {
-        Deno.env.set("VIBE_QUOTA_PAUSE_SLEEP_SECONDS", previous);
-      }
       await harness.cleanup();
     }
   },
@@ -961,23 +1004,32 @@ Deno.test({
       );
       await Deno.chmod(join(binDir, "deno"), 0o755);
 
+      // Issue #906: the loop's output goes to a file, not a pipe. `SIGKILL`
+      // reaches `loop.sh` but not the descendants it spawned, and `loop.sh`
+      // backs off with a `sleep` that inherits stdout — so awaiting
+      // `child.output()` on a pipe waited for an EOF only that orphan could
+      // give, turning a 2.5-second assertion into a 2m2s test. A file has no
+      // reader to block, so the survivors are harmless.
+      const logPath = join(tmpDir, "loop-output.log");
       const child = new Deno.Command("bash", {
-        args: [join(tmpDir, "loop.sh")],
+        args: ["-c", `exec "${join(tmpDir, "loop.sh")}" > "${logPath}" 2>&1`],
         cwd: tmpDir,
         env: {
           LOOP_SLEEP_SECONDS: "1",
           PATH: `${binDir}:${Deno.env.get("PATH") ?? ""}`,
           HOME: tmpDir,
         },
-        stdout: "piped",
-        stderr: "piped",
+        stdout: "null",
+        stderr: "null",
       }).spawn();
 
       try {
         await new Promise((resolve) => setTimeout(resolve, 2500));
         child.kill("SIGKILL");
-        const output = await child.output();
-        const stdout = new TextDecoder().decode(output.stdout);
+        // Reap the leader so the process is not left a zombie; its exit
+        // status is irrelevant, and no pipe is being drained.
+        await child.status;
+        const stdout = await Deno.readTextFile(logPath).catch(() => "");
 
         assertStringIncludes(stdout, "out of quota");
         assert(

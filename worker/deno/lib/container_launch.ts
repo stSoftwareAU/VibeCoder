@@ -198,7 +198,7 @@ export interface ContainerLaunchInputs {
   containerToolsSpecJson?: string;
   /**
    * The host's own short hostname, passed into the container as
-   * VIBE_HOST_ID so fleet telemetry (private-repo-6) names the real machine
+   * VIBE_HOST_ID so fleet telemetry names the real machine
    * rather than the ephemeral container hostname. Optional: absent means
    * the worker falls back to its own hostname (native-mode behaviour).
    */
@@ -772,6 +772,33 @@ export function containerTargetPaths(
  * @returns The resolved host paths
  * @throws When no home directory can be resolved
  */
+/**
+ * The host directory logs are written to.
+ *
+ * Precedence matches `loop.sh:56` — `LAUNCH_LOG_DIR`, then `LOG_DIR`, then
+ * `$HOME/logs` — so the launcher, `run.sh` and the container mount agree.
+ * A blank value is treated as unset: an exported-but-empty variable meant the
+ * empty string here, which would have mounted the wrong path.
+ *
+ * The default is not a standard location; moving it is a breaking change
+ * tracked separately (Issue #873).
+ */
+export function resolveLogDir(
+  home: string,
+  env: (name: string) => string | undefined,
+  style: LauncherPathStyle,
+): string {
+  // Each level is checked for a non-blank value independently, matching
+  // bash's `${LAUNCH_LOG_DIR:-${LOG_DIR:-...}}` in loop.sh: `:-` treats an
+  // empty value as unset, so a blank LAUNCH_LOG_DIR falls through to LOG_DIR
+  // rather than skipping straight to the default. A `??` chain would not.
+  for (const name of ["LAUNCH_LOG_DIR", "LOG_DIR"]) {
+    const value = (env(name) ?? "").trim();
+    if (value !== "") return normalise(value, style);
+  }
+  return joinPath(home, "logs", style);
+}
+
 export function resolveContainerLaunchHostPaths(
   baseDir: string,
   env: (name: string) => string | undefined,
@@ -812,7 +839,13 @@ export function resolveContainerLaunchHostPaths(
     homeDir: home,
     baseDir: base,
     workDir: normalise(absolute(workDir), style),
-    logDir: joinPath(home, "logs", style),
+    // Issue #872: `LOG_DIR` was honoured by `loop.sh` but ignored here and in
+    // `run.sh`, so setting it split the logs across two directories with no
+    // warning — and the worker's own `worker-*.log` could not be relocated at
+    // all, because this value is the container's writable host mount. One
+    // resolution, shared by all three. `LAUNCH_LOG_DIR` is checked first to
+    // match `loop.sh`'s precedence exactly.
+    logDir: resolveLogDir(home, env, style),
     configFile,
     configStageDir: joinPath(home, ".vibe-coder/run-config", style),
     credentialDir: normalise(absolute(credentialDir), style),

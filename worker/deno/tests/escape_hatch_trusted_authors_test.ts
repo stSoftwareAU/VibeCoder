@@ -16,6 +16,7 @@ import {
 import { isTrustedFollowUpAuthor } from "../lib/escape_hatch_verify.ts";
 import type { WorkerDeps } from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 const silentLogger: Logger = {
   info: () => {},
@@ -31,7 +32,7 @@ const silentLogger: Logger = {
 
 /** Minimal WorkerDeps stub — only `config.loadConfig` is touched. */
 function makeStubDeps(
-  loadConfig: () => Promise<unknown>,
+  loadConfig: (path?: string) => Promise<unknown>,
 ): WorkerDeps {
   return { config: { loadConfig } } as unknown as WorkerDeps;
 }
@@ -85,66 +86,81 @@ Deno.test("resolveTrustedFollowUpAuthors - an arbitrary reviewer is not trusted"
   assertEquals(isTrustedFollowUpAuthor("drive-by-reviewer", authors), false);
 });
 
-/** Run `fn` with GITHUB_USER set to `value` (or unset when undefined). */
-async function withGithubUserEnv(
-  value: string | undefined,
-  fn: () => Promise<void>,
-): Promise<void> {
-  const previous = Deno.env.get("GITHUB_USER");
-  if (value === undefined) Deno.env.delete("GITHUB_USER");
-  else Deno.env.set("GITHUB_USER", value);
-  try {
-    await fn();
-  } finally {
-    if (previous === undefined) Deno.env.delete("GITHUB_USER");
-    else Deno.env.set("GITHUB_USER", previous);
-  }
-}
+// The environment reaches `loadTrustedFollowUpAuthors` as its fourth
+// parameter (Issue #965), so these tests state the ambient identity instead
+// of writing `GITHUB_USER` into the process — a write that races every other
+// test sharing the process. Each injected login is absent from every real
+// environment, so a fall back to `Deno.env.get` fails here rather than
+// passing on the host's own value.
 
 Deno.test("loadTrustedFollowUpAuthors - the passed worker login seeds the set (Issue #185)", async () => {
   // The env var is unset, so without the passed login the gate would fail
   // closed on a follow-up the worker filed itself.
-  await withGithubUserEnv(undefined, async () => {
-    const authors = await loadTrustedFollowUpAuthors(
-      makeStubDeps(() => Promise.resolve({ allowedAuthors: ["owner"] })),
-      silentLogger,
-      "vibe-bot",
-    );
-    assert(isTrustedFollowUpAuthor("vibe-bot", authors));
-    assert(isTrustedFollowUpAuthor("owner", authors));
-  });
+  const authors = await loadTrustedFollowUpAuthors(
+    makeStubDeps(() => Promise.resolve({ allowedAuthors: ["owner"] })),
+    silentLogger,
+    "vibe-bot",
+    emptyEnv,
+  );
+  assert(isTrustedFollowUpAuthor("vibe-bot", authors));
+  assert(isTrustedFollowUpAuthor("owner", authors));
 });
 
 Deno.test("loadTrustedFollowUpAuthors - the passed login wins over the env var", async () => {
-  await withGithubUserEnv("stale-login", async () => {
-    const authors = await loadTrustedFollowUpAuthors(
-      makeStubDeps(() => Promise.resolve({})),
-      silentLogger,
-      "vibe-bot",
-    );
-    assertEquals(authors, ["vibe-bot"]);
-  });
+  const authors = await loadTrustedFollowUpAuthors(
+    makeStubDeps(() => Promise.resolve({})),
+    silentLogger,
+    "vibe-bot",
+    envFrom({ GITHUB_USER: "stale-login" }),
+  );
+  assertEquals(authors, ["vibe-bot"]);
 });
 
 Deno.test("loadTrustedFollowUpAuthors - falls back to GITHUB_USER when no login is passed", async () => {
-  await withGithubUserEnv("env-bot", async () => {
-    const authors = await loadTrustedFollowUpAuthors(
-      makeStubDeps(() => Promise.resolve({})),
-      silentLogger,
-    );
-    assertEquals(authors, ["env-bot"]);
-  });
+  const authors = await loadTrustedFollowUpAuthors(
+    makeStubDeps(() => Promise.resolve({})),
+    silentLogger,
+    undefined,
+    envFrom({ GITHUB_USER: "seam-only-bot" }),
+  );
+  assertEquals(authors, ["seam-only-bot"]);
+});
+
+Deno.test("loadTrustedFollowUpAuthors - an empty environment yields an empty set", async () => {
+  // No passed login and no `GITHUB_USER` means "cannot verify", which the
+  // gate must treat as a rejection.
+  const authors = await loadTrustedFollowUpAuthors(
+    makeStubDeps(() => Promise.resolve({})),
+    silentLogger,
+    undefined,
+    emptyEnv,
+  );
+  assertEquals(authors, []);
+  assertEquals(isTrustedFollowUpAuthor("anyone", authors), false);
+});
+
+Deno.test("loadTrustedFollowUpAuthors - the config path comes from the injected environment", async () => {
+  const paths: string[] = [];
+  await loadTrustedFollowUpAuthors(
+    makeStubDeps((path?: string) => {
+      paths.push(String(path));
+      return Promise.resolve({});
+    }),
+    silentLogger,
+    "vibe-bot",
+    envFrom({ CONFIG_PATH: "/nowhere/seam-only.config.json" }),
+  );
+  assertEquals(paths, ["/nowhere/seam-only.config.json"]);
 });
 
 Deno.test("loadTrustedFollowUpAuthors - a config failure narrows to the worker login, never widens", async () => {
-  await withGithubUserEnv(undefined, async () => {
-    const errors: string[] = [];
-    const authors = await loadTrustedFollowUpAuthors(
-      makeStubDeps(() => Promise.reject(new Error("unreadable config"))),
-      { ...silentLogger, error: (msg: string) => errors.push(msg) },
-      "vibe-bot",
-    );
-    assertEquals(authors, ["vibe-bot"]);
-    assertEquals(errors.length, 1);
-  });
+  const errors: string[] = [];
+  const authors = await loadTrustedFollowUpAuthors(
+    makeStubDeps(() => Promise.reject(new Error("unreadable config"))),
+    { ...silentLogger, error: (msg: string) => errors.push(msg) },
+    "vibe-bot",
+    emptyEnv,
+  );
+  assertEquals(authors, ["vibe-bot"]);
+  assertEquals(errors.length, 1);
 });

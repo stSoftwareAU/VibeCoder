@@ -18,25 +18,26 @@ import {
   setCachedDefaultBranch,
 } from "../lib/default_branch_cache.ts";
 
-const CACHE_ENV = "VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH";
-
+/**
+ * Run `fn` against a throwaway persistent default-branch cache.
+ *
+ * Issue #964: the path is handed to `getRepoDefaultBranch` and
+ * `invalidateDefaultBranch` as an argument rather than exported into the
+ * process environment. Writing the process environment races every other
+ * worker under `deno test --parallel`, which is what kept this suite in the
+ * gate's serial second pass.
+ */
 async function withIsolatedCache<T>(
   fn: (path: string) => Promise<T>,
 ): Promise<T> {
   const dir = await Deno.makeTempDir({ prefix: "vibe-dbcache-shell-" });
   const path = `${dir}/cache.json`;
-  const previous = Deno.env.get(CACHE_ENV);
-  Deno.env.set(CACHE_ENV, path);
   clearDefaultBranchMemoryCache();
   try {
     return await fn(path);
   } finally {
-    if (previous === undefined) {
-      Deno.env.delete(CACHE_ENV);
-    } else {
-      Deno.env.set(CACHE_ENV, previous);
-    }
     clearDefaultBranchMemoryCache();
+    await Deno.remove(dir, { recursive: true }).catch(() => undefined);
   }
 }
 
@@ -118,10 +119,10 @@ Deno.test("shell_helpers - getRepoDefaultBranch rejects empty repo", async () =>
 });
 
 Deno.test("shell_helpers - getRepoDefaultBranch returns cached value without calling gh", async () => {
-  await withIsolatedCache(async () => {
-    await setCachedDefaultBranch("owner/repo", "main");
+  await withIsolatedCache(async (path) => {
+    await setCachedDefaultBranch("owner/repo", "main", path);
 
-    const result = await getRepoDefaultBranch("owner/repo");
+    const result = await getRepoDefaultBranch("owner/repo", undefined, path);
     assertEquals(result.ok, true);
     if (result.ok) {
       assertEquals(result.value, "main");
@@ -129,13 +130,54 @@ Deno.test("shell_helpers - getRepoDefaultBranch returns cached value without cal
   });
 });
 
+Deno.test("shell_helpers - getRepoDefaultBranch reads the cache path it is handed, not the ambient one (Issue #964)", async () => {
+  await withIsolatedCache(async (path) => {
+    // A branch name that exists nowhere but this throwaway file: a code
+    // path that fell back to the process default would miss the entry,
+    // call gh, and answer "main".
+    await setCachedDefaultBranch("owner/repo", "sentinel-964-branch", path);
+
+    let ghCalls = 0;
+    const result = await getRepoDefaultBranch(
+      "owner/repo",
+      () => {
+        ghCalls += 1;
+        return Promise.resolve("main");
+      },
+      path,
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value, "sentinel-964-branch");
+    assertEquals(ghCalls, 0, "the warm cache must answer without gh");
+  });
+});
+
+Deno.test("shell_helpers - getRepoDefaultBranch writes the branch back to the cache path it is handed (Issue #964)", async () => {
+  await withIsolatedCache(async (path) => {
+    const result = await getRepoDefaultBranch(
+      "owner/fresh-repo",
+      () => Promise.resolve("sentinel-964-written"),
+      path,
+    );
+    assertEquals(result.ok, true);
+
+    // Read the file back through a fresh lookup: the write landed on the
+    // named path, not on whatever the process environment points at.
+    assertEquals(
+      await getCachedDefaultBranch("owner/fresh-repo", path),
+      "sentinel-964-written",
+    );
+  });
+});
+
 Deno.test("shell_helpers - invalidateDefaultBranch removes the persistent entry", async () => {
   await withIsolatedCache(async (path) => {
-    await setCachedDefaultBranch("owner/repo", "main");
+    await setCachedDefaultBranch("owner/repo", "main", path);
     // Prime the in-memory cache too so we can prove it was cleared.
-    await getRepoDefaultBranch("owner/repo");
+    await getRepoDefaultBranch("owner/repo", undefined, path);
 
-    await invalidateDefaultBranch("owner/repo");
+    await invalidateDefaultBranch("owner/repo", path);
 
     const cached = await getCachedDefaultBranch("owner/repo", path);
     assertEquals(cached, null);

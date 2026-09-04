@@ -16,6 +16,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /**
  * Feature status — tracks whether a feature is available, degraded, or unknown.
@@ -26,7 +27,7 @@ export type FeatureStatus = "available" | "degraded" | "unknown";
  * A registered feature with its check function and metadata.
  */
 export interface Feature {
-  /** Unique feature identifier (e.g., "imgbb", "health-tracking") */
+  /** Unique feature identifier (e.g., "imgbb", "github-status") */
   name: string;
   /** Human-readable description for logging */
   description: string;
@@ -167,33 +168,29 @@ export function createFeatureRegistry(): FeatureRegistry {
  * Check if ImgBB API key is configured.
  *
  * Returns true if VIBE_IMGBB_API_KEY is set and non-empty.
- */
-export function checkImgbbAvailable(): boolean {
-  const key = Deno.env.get("VIBE_IMGBB_API_KEY");
-  return key !== undefined && key !== "";
-}
-
-/**
- * Check if health tracking is configured.
  *
- * Returns true if FLEET_HEALTH_DIR or FLEET_HEALTH_REPO is set and non-empty:
- * a repository alone is enough — the worker clones it itself (in container
- * mode there is no host directory to name).
+ * @param env - Environment lookup; defaults to the real process environment
+ *   (Issue #968, so a test names the key instead of exporting it)
  */
-export function checkHealthTrackingAvailable(): boolean {
-  const dir = Deno.env.get("FLEET_HEALTH_DIR");
-  const repo = Deno.env.get("FLEET_HEALTH_REPO");
-  return (dir !== undefined && dir !== "") ||
-    (repo !== undefined && repo !== "");
+export function checkImgbbAvailable(
+  env: EnvLookup = processEnvLookup,
+): boolean {
+  const key = env("VIBE_IMGBB_API_KEY");
+  return key !== undefined && key !== "";
 }
 
 /**
  * Check if GitHub user status updates are available.
  *
  * Returns true if UPDATE_GH_USER_STATUS is set to "true".
+ *
+ * @param env - Environment lookup; defaults to the real process environment
+ *   (Issue #968)
  */
-export function checkGithubStatusAvailable(): boolean {
-  const enabled = Deno.env.get("UPDATE_GH_USER_STATUS");
+export function checkGithubStatusAvailable(
+  env: EnvLookup = processEnvLookup,
+): boolean {
+  const enabled = env("UPDATE_GH_USER_STATUS");
   return enabled === "true";
 }
 
@@ -202,21 +199,24 @@ export function checkGithubStatusAvailable(): boolean {
  *
  * Call this at worker startup to register the built-in feature checks.
  * Note: Deno is a required dependency (Issue #518), not an optional feature.
+ *
+ * @param registry - Registry to register the built-in checks into
+ * @param env - Environment lookup the registered checks read; defaults to the
+ *   real process environment (Issue #968). Bound here rather than read at
+ *   check time so the whole registry answers from one declared environment.
  */
-export function registerBuiltinFeatures(registry: FeatureRegistry): void {
+export function registerBuiltinFeatures(
+  registry: FeatureRegistry,
+  env: EnvLookup = processEnvLookup,
+): void {
   registry.register(
     "imgbb",
-    checkImgbbAvailable,
+    () => checkImgbbAvailable(env),
     "ImgBB API for automatic screenshot uploads",
   );
   registry.register(
-    "health-tracking",
-    checkHealthTrackingAvailable,
-    "FLEET health tracking repository",
-  );
-  registry.register(
     "github-status",
-    checkGithubStatusAvailable,
+    () => checkGithubStatusAvailable(env),
     "GitHub user profile status updates",
   );
 }
