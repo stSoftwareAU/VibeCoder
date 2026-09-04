@@ -2705,6 +2705,11 @@ async function runIssueScanPool(
     claimFloor: poolRunwayFloor,
     deferredClaims: new Set<string>(),
     eligibilityScanCompleted: false,
+    // Issue #806: the cycle's exactly-once post-run callback guard, shared
+    // by every slot, the slot-level catch and the shutdown drain. Restored
+    // in this merge for the third time (Issues #928, #808) — `main` has no
+    // such field, so every sync merge that rewrites this literal drops it
+    // and nothing on `milestone/*` runs to notice.
     callbackGuard: new IssueCallbackGuard(),
     idleHooks,
   };
@@ -3080,10 +3085,14 @@ async function runSlot(
       /** Set by a successful claim so the settle sleep runs holding no repo. */
       let claimSucceeded = false;
       /**
-       * Whether the claim actually started running (Issue #806) — set the
-       * moment `processIssue` is entered. A throw *before* that point is an
-       * unclaimed cycle and reports no callbacks; the shared guard handles a
-       * throw after the run already reported.
+       * Whether the claim actually started running (Issue #806).
+       *
+       * A throw before `processIssue` is an unclaimed cycle, not a run, and
+       * must report nothing; a throw after it is a terminal failure that
+       * takes the failure/always path exactly once. Restored here for the
+       * third time (Issues #928, #808): `main` carries no callback layer, so
+       * every sync merge that rewrites this region drops it, and nothing on
+       * `milestone/*` runs to notice.
        */
       const runStarted = { value: false };
       try {
@@ -3175,9 +3184,8 @@ async function runSlot(
               : (Date.now() - since) / 1000,
           }),
           // An exception after a claim takes the failure/always path exactly
-          // once (Issue #806). Reported only when the run actually started —
-          // a throw before `processIssue` is an unclaimed cycle, not a run —
-          // and the shared guard refuses a repeat if the run already reported.
+          // once (Issue #806). Reported only when the run actually started,
+          // and the shared guard refuses a repeat if it already reported.
           runStarted.value
             ? {
               result: "failure" as const,
@@ -3413,15 +3421,8 @@ async function runSlotIssue(
   tracker: WorkProgressTracker,
   endTime: number,
   pool: SlotPoolState,
-  /**
-   * Set when the claim starts running, so a pre-claim throw reports nothing.
-   *
-   * Deliberately has no default (Issue #796): with one, dropping the
-   * argument at the sole call site still compiles, and the slot then watches
-   * a flag nobody sets — every thrown run looks unclaimed and reports no
-   * callbacks. Without one, that deletion fails `deno check`.
-   */
-  started: { value: boolean },
+  /** Set when the claim starts running, so a pre-claim throw reports nothing. */
+  started: { value: boolean } = { value: false },
 ): Promise<"success" | "skip" | "failure" | "exit"> {
   const prefix = formatSlotPrefix({
     slotId,

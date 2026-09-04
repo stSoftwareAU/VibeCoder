@@ -179,6 +179,10 @@ docs/EXTENDING.md:
   title: "Vibe Coder: Extending the Worker"
   page_icon: "🔧"
 
+docs/PRIVATE-EXTENSIONS.md:
+  title: "Vibe Coder: Private Extensions"
+  page_icon: "🧩"
+
 docs/PROMPTS.md:
   title: "Vibe Coder: Prompt goals (summary)"
   page_icon: "📝"

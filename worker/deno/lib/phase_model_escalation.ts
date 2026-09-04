@@ -30,6 +30,7 @@ import {
   MODEL_CONTEXT_WINDOWS,
 } from "./context_budget.ts";
 import { resolveCurrentModel } from "./model_fallback.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 
 /**
  * Default escalation target when the configured model's window is too
@@ -74,6 +75,11 @@ export interface SelectModelOptions {
   escalationTarget?: string;
   /** Override the threshold percentage (default: 80). */
   thresholdPercent?: number;
+  /**
+   * Environment lookup the phase's model resolution reads through
+   * (Issue #957); defaults to the process environment.
+   */
+  env?: EnvLookup;
 }
 
 /**
@@ -103,7 +109,12 @@ export function selectModelForLargeInput(
   estimatedInputTokens: number,
   overrides?: SelectModelOptions,
 ): ModelEscalationResult {
-  const resolved = resolveCurrentModel(undefined, phase);
+  const resolved = resolveCurrentModel(
+    undefined,
+    phase,
+    undefined,
+    overrides?.env,
+  );
   const target = overrides?.escalationTarget ?? DEFAULT_ESCALATION_TARGET;
   const thresholdPercent = overrides?.thresholdPercent ??
     HAIKU_ESCALATION_THRESHOLD_PERCENT;

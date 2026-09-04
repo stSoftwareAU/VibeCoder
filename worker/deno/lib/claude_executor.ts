@@ -19,6 +19,7 @@ import {
   PHASE_MODEL_DEFAULTS,
 } from "./config_defaults.ts";
 import { incrementCounter } from "./fault_tolerance_counters.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 import { resolvePhaseRoutedValue } from "./phase_routing.ts";
 import type { RepoConfig } from "../types.ts";
 import type { RunStats } from "./run_stats.ts";
@@ -985,15 +986,21 @@ function checkedModel(level: string, value: string): string {
  * returned verbatim so full model ids keep working.
  *
  * @param phase - Optional phase name (e.g., "planning")
+ * @param env - Environment lookup for steps 1 and 6 (Issue #957); defaults to
+ *   the process environment.
  * @returns The resolved model value, or undefined when no step supplies one —
  *   the CLI's own default then stands.
  */
-export function resolveClaudeModel(phase?: string): string | undefined {
+export function resolveClaudeModel(
+  phase?: string,
+  env?: EnvLookup,
+): string | undefined {
   return resolvePhaseRoutedValue({
     logPrefix: "claude-executor",
     what: "model",
     flag: "--model",
     envVar: "CLAUDE_MODEL",
+    env,
     repoPhaseOverrides: _repoPhaseModelOverrides,
     repoPhaseOverridesKey: "phase_model_overrides",
     repoBase: _repoClaudeModel,
@@ -1013,10 +1020,14 @@ export function resolveClaudeModel(phase?: string): string | undefined {
  * precedence chain.
  *
  * @param phase - Optional phase name (e.g., "planning")
+ * @param env - Environment lookup forwarded to the chain (Issue #957).
  * @returns Array of CLI args (e.g., ["--model", "claude-sonnet-4-6"]) or empty
  */
-export function buildClaudeModelArgs(phase?: string): string[] {
-  const model = resolveClaudeModel(phase);
+export function buildClaudeModelArgs(
+  phase?: string,
+  env?: EnvLookup,
+): string[] {
+  const model = resolveClaudeModel(phase, env);
   return model ? ["--model", model] : [];
 }
 
@@ -1072,14 +1083,20 @@ export function setPhaseEffortConfigOverrides(
  * DEFAULT_EFFORT constant are checked.
  *
  * @param phase - Optional phase name (e.g., "planning")
+ * @param env - Environment lookup for steps 1 and 5 (Issue #957); defaults to
+ *   the process environment.
  * @returns The resolved effort value; step 6 guarantees one.
  */
-export function resolveClaudeEffort(phase?: string): string {
+export function resolveClaudeEffort(
+  phase?: string,
+  env?: EnvLookup,
+): string {
   return resolvePhaseRoutedValue({
     logPrefix: "claude-executor",
     what: "effort",
     flag: "--effort",
     envVar: "CLAUDE_EFFORT",
+    env,
     repoPhaseOverrides: _repoPhaseEffortOverrides,
     repoPhaseOverridesKey: "phase_effort_overrides",
     // Effort has no per-repo base equivalent of `claude_model`.
@@ -1099,10 +1116,14 @@ export function resolveClaudeEffort(phase?: string): string {
  * precedence chain.
  *
  * @param phase - Optional phase name (e.g., "planning")
+ * @param env - Environment lookup forwarded to the chain (Issue #957).
  * @returns Array of CLI args (e.g., ["--effort", "max"])
  */
-export function buildClaudeEffortArgs(phase?: string): string[] {
-  return ["--effort", resolveClaudeEffort(phase)];
+export function buildClaudeEffortArgs(
+  phase?: string,
+  env?: EnvLookup,
+): string[] {
+  return ["--effort", resolveClaudeEffort(phase, env)];
 }
 
 // ---------------------------------------------------------------------------
@@ -1119,15 +1140,20 @@ export function buildClaudeEffortArgs(phase?: string): string[] {
  * for the pre-flight Fable reroute (#3231).
  *
  * @param phase - The phase name (undefined checks only the global env source).
+ * @param env - Environment lookup for the two env sources (Issue #957);
+ *   defaults to the process environment.
  * @returns true when an explicit effort override is present.
  */
-export function hasExplicitEffortOverride(phase?: string): boolean {
+export function hasExplicitEffortOverride(
+  phase?: string,
+  env: EnvLookup = (name) => Deno.env.get(name),
+): boolean {
   if (phase) {
-    if (Deno.env.get(`CLAUDE_EFFORT_${phase.toUpperCase()}`)) return true;
+    if (env(`CLAUDE_EFFORT_${phase.toUpperCase()}`)) return true;
     if (_repoPhaseEffortOverrides[phase]) return true;
     if (_phaseEffortConfigOverrides[phase]) return true;
   }
-  if (Deno.env.get("CLAUDE_EFFORT")) return true;
+  if (env("CLAUDE_EFFORT")) return true;
   return false;
 }
 

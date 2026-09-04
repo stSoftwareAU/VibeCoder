@@ -23,14 +23,16 @@
  *   shutdown reserve) the last grant is clamped to the runway left and the
  *   next check refuses, while no ceiling keeps the sequence unbounded.
  *
- * The agent is a stub script on PATH; the tree probe is injected, so no test
- * needs a git repository.
+ * The agent is a stub script named by path (Issue #959); the tree probe is
+ * injected, so no test needs a git repository and nothing here touches the
+ * process-wide `PATH`.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals } from "@std/assert";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
+import { type AgentStub, createAgentStub } from "./support/agent_stub.ts";
 import type { TreeProgressState } from "../lib/progress_extension.ts";
 import type { Logger } from "../types.ts";
 
@@ -39,14 +41,11 @@ const TOOL_LINE =
   `{"type":"assistant","message":{"content":[{"type":"tool_use",` +
   `"name":"Edit","input":{"file_path":"worker/deno/lib/x.ts"}}]}}`;
 
-/** A stub agent on PATH plus the temp dir holding it. */
-interface StubAgent {
-  dir: string;
-  restore: () => Promise<void>;
-}
-
 /**
- * Install a stub `claude` on PATH.
+ * Write a stub agent and return its path.
+ *
+ * Named by path rather than installed on the process-wide `PATH`
+ * (Issue #959), so the file no longer races the rest of the suite.
  *
  * The stub runs in the `deno test` process group — deliberately, so the
  * watchdog signals its PID and descendants and never a process GROUP
@@ -58,20 +57,8 @@ interface StubAgent {
  *
  * @param body - Bash body of the stub, after the shebang.
  */
-async function installStub(body: string): Promise<StubAgent> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_progress_ext_" });
-  const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(stubPath, `#!/usr/bin/env bash\n${body}`);
-  await Deno.chmod(stubPath, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  return {
-    dir,
-    restore: async () => {
-      Deno.env.set("PATH", originalPath);
-      await Deno.remove(dir, { recursive: true }).catch(() => undefined);
-    },
-  };
+function installStub(body: string): Promise<AgentStub> {
+  return createAgentStub(body, { prefix: "claude_progress_ext_" });
 }
 
 /** A stub that emits a tool call every `gapSeconds` for `count` iterations. */
@@ -119,6 +106,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -162,7 +150,7 @@ Deno.test({
         `the new deadline must be named: ${first}`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -183,6 +171,7 @@ Deno.test({
       const started = Date.now();
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -211,7 +200,7 @@ Deno.test({
         `the kill must land within one grant of the stall (took ${elapsedSeconds}s)`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -227,6 +216,7 @@ Deno.test({
       const started = Date.now();
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -251,7 +241,7 @@ Deno.test({
         `an unverifiable run dies on schedule (took ${elapsedSeconds}s)`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -271,6 +261,7 @@ Deno.test({
       const started = Date.now();
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -292,7 +283,7 @@ Deno.test({
         `the kill must land at the configured budget (took ${elapsedSeconds}s)`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -310,6 +301,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -332,7 +324,7 @@ Deno.test({
       );
       assertEquals(calls.length, 1, "one grant covers the rest of the run");
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -354,6 +346,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         noOutputTimeout: 2,
@@ -381,7 +374,7 @@ Deno.test({
         "the run must actually have been extended before it fell silent",
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -399,6 +392,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -436,7 +430,7 @@ Deno.test({
         );
       }
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -459,6 +453,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -490,7 +485,7 @@ Deno.test({
         `the refusal must name the cap: ${JSON.stringify(extensionLines)}`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -507,6 +502,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -519,12 +515,15 @@ Deno.test({
       assert(result.ok, "the runner must return a result");
       if (!result.ok) return;
       assertEquals(result.value.timedOut, false);
+      // Finishing on its own is the claim; without this a run that never
+      // spawned would satisfy every assertion here (Issue #959).
+      assertEquals(result.value.exitCode, 0);
       assert(
         !lines.some((l) => l.includes("hard cap")),
         `an uncapped run must never mention a cap: ${JSON.stringify(lines)}`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -551,6 +550,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 2,
         killAfterSeconds: 1,
         logger,
@@ -576,7 +576,7 @@ Deno.test({
         `the grant must name the stream clock: ${JSON.stringify(extensions)}`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });

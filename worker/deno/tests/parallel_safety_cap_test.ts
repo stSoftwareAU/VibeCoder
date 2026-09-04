@@ -14,12 +14,24 @@
  * Deno.env.set("VIBE_RUN_ID", "vibe-test-trailer-abc123");
  * ```
  *
- * Measured with `DENO_JOBS=4`: 48 failures, of which 32 were the pre-existing
- * pwsh failures and ~16 were genuine races. Only a handful collided — the
- * rest of the files below are latent. Bounding the worker count reduces the
- * probability of a collision without removing it, which is the worst outcome
- * for a gate: intermittent red on unrelated work trains everyone to re-run
- * rather than read the result.
+ * Measured with `DENO_JOBS=4`: 48 failures, of which ~16 were genuine races.
+ * Only a handful collided — the rest of the files below are latent. Bounding
+ * the worker count reduces the probability of a collision without removing
+ * it, which is the worst outcome for a gate: intermittent red on unrelated
+ * work trains everyone to re-run rather than read the result.
+ *
+ * The other 32 that trial saw were the pwsh suites, and quoting that number
+ * has been misleading ever since (Issue #971). The trial predates #907, which
+ * moved every PowerShell-driving suite into `INTEGRATION_TEST_FILES`: the
+ * gate's `deno test` stage has not loaded one since, so none of them can turn
+ * this migration red. Re-measured on a PowerShell-equipped host, those suites
+ * failed **18** times serially and 17 under `--parallel` — fewer in parallel,
+ * and every one reproducing when its file was run alone. They were never
+ * races. 16 were a suite resolving `pwsh` against one `PATH` and spawning it
+ * against another, and 2 were a test timing the whole launcher run against a
+ * bound meant for the container watchdog; all 18 are fixed.
+ * `pwsh_suites_outside_the_gate_test.ts` holds the evidence and keeps the
+ * exclusion true.
  *
  * So this test does not fix the 105 files. It **caps them**, so the debt
  * cannot grow while it is paid down. A new test that mutates process state
@@ -45,7 +57,6 @@ const PROCESS_STATE_MUTATORS: ReadonlySet<string> = new Set([
   "agent_mcp_config_test.ts",
   "agent_progress_test.ts",
   "agent_provider_per_invocation_test.ts",
-  "agent_provider_routing_seam_test.ts",
   "agent_run_termination_test.ts",
   "agent_transcript_test.ts",
   "audit_hook_test.ts",
@@ -58,30 +69,13 @@ const PROCESS_STATE_MUTATORS: ReadonlySet<string> = new Set([
   "ci_failure_issue_test.ts",
   "ci_log_provider_test.ts",
   "ci_provider_jenkins_target_url_test.ts",
-  "claim_runway_config_test.ts",
   "clarity_assessment_test.ts",
-  "claude_executor_test.ts",
-  "claude_runner_cache_telemetry_4282_test.ts",
-  "claude_runner_check_interval_4295_test.ts",
-  "claude_runner_external_progress_508_test.ts",
-  "claude_runner_invalid_session_id_204_test.ts",
-  "claude_runner_invocation_budget_3648_test.ts",
-  "claude_runner_kill_bound_test.ts",
-  "claude_runner_killed_test.ts",
   "claude_runner_model_unavailable_fallback_test.ts",
-  "claude_runner_oom_terminal_test.ts",
-  "claude_runner_progress_extension_4296_test.ts",
-  "claude_runner_rate_limit_fallback_test.ts",
-  "claude_runner_stdin_prompt_test.ts",
   "claude_runner_test.ts",
   "claude_runner_usage_limit_test.ts",
-  "codex_phase_routing_test.ts",
   "commit_and_push_pending_test.ts",
-  "config_test.ts",
   "container_entrypoint_test.ts",
   "container_image_selection_test.ts",
-  "container_restart_backoff_test.ts",
-  "deepseek_executor_test.ts",
   "deno_cache_guard_command_test.ts",
   "env_stub_test.ts",
   "escape_hatch_trusted_authors_test.ts",
@@ -92,7 +86,6 @@ const PROCESS_STATE_MUTATORS: ReadonlySet<string> = new Set([
   "feature_availability_test.ts",
   "fetch_jenkins_log_command_test.ts",
   "first_run_verify_command_test.ts",
-  "gemini_phase_routing_test.ts",
   "gh_guard_shim_test.ts",
   "gh_spawn_test.ts",
   "git_push_single_branch_clone_test.ts",
@@ -103,11 +96,8 @@ const PROCESS_STATE_MUTATORS: ReadonlySet<string> = new Set([
   "jenkins_log_fetcher_test.ts",
   "milestone_health_cache_test.ts",
   "milestone_health_test.ts",
-  "model_fallback_retry_test.ts",
-  "model_fallback_test.ts",
   "multi_provider_credentials_test.ts",
   "outbound_fetch_bounds_test.ts",
-  "phase_model_escalation_test.ts",
   "planning_processor_test.ts",
   "planning_run_stats_provider_test.ts",
   "pr_failure_actions_test.ts",
@@ -119,7 +109,6 @@ const PROCESS_STATE_MUTATORS: ReadonlySet<string> = new Set([
   "run_core_production_deps_test.ts",
   "run_core_rate_limit_resume_test.ts",
   "run_entrypoint_test.ts",
-  "run_housekeeping_test.ts",
   "run_id_test.ts",
   "self_heal_events_test.ts",
   "service_account_env_test.ts",
@@ -133,7 +122,6 @@ const PROCESS_STATE_MUTATORS: ReadonlySet<string> = new Set([
   "terminal_title_command_test.ts",
   "timeout_extension_report_768_test.ts",
   "timeout_extension_telemetry_4298_test.ts",
-  "trusted_review_bots_test.ts",
   "unpriced_spend_3870_test.ts",
   "work_volume_tiers_command_test.ts",
   "work_volume_tiers_test.ts",
