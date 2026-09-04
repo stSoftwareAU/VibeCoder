@@ -224,3 +224,13 @@ repository once an admin applies the payload — see the section above.
   `boy_scout_idle_tasks_test.ts`. Both were checked out at the milestone base
   `9776760` on their own and fail there too, and both pass at `main`
   (`a21441c`) — they are stale-base failures, not this change.
+- A later gate run reported the `host work-dir guard` failing on
+  `worker/deno/lib/fleet_health.ts:169`, the last `$HOME/auto-issue-work`
+  fallback in the tree (allowlisted since Milestone #118, and gone from `main`
+  with the file itself). It is now removed: the in-container `healthDir`
+  default engages only when `WORK_DIR` is set — the run driver exports it
+  (Issue #4370) — and otherwise the sibling default applies, so no work-dir
+  path is ever derived from a home directory. The allowlist entry is trimmed
+  to match, and
+  `buildFleetHealthConfig - container mode without WORK_DIR never derives the clone path from HOME (Issue #135)`
+  covers it.
