@@ -2,6 +2,8 @@
 
 The Vibe Coder worker is built on a **Deno TypeScript** architecture with 103 commands, 299 libraries, and 550 test files (counts as of June 2026 — see `worker/deno/` for the current set). All business logic lives in `worker/deno/`. For a quick overview, see the [main README](../README.md).
 
+Extending the worker **from outside** — reacting to a finished issue run without adding code here — is the [post-run callback contract](CALLBACKS.md), which ships a conformance fixture an extension can run against its own hooks.
+
 ## 📋 Table of Contents
 
 - [Architecture](#architecture)
@@ -502,7 +504,7 @@ Deno.test("module - behaviour description", async () => {
 
 The suite runs both on a developer host and inside the worker container, and
 the container exports its own runtime configuration — `WORK_DIR`,
-`VIBE_IMAGE_AGENT_PROVIDERS`, `FLEET_HEALTH_REPO`, `UPDATE_GH_USER_STATUS` — into
+`VIBE_IMAGE_AGENT_PROVIDERS`, `UPDATE_GH_USER_STATUS` — into
 every `deno test` invocation. A test that saves and restores only *some* of the
 variables its code path reads inherits the rest from the machine running it, so
 it passes on a host and fails in the container (or worse, hides a genuine
@@ -519,15 +521,9 @@ regression). Never hand-roll a per-variable save/restore; use
 ```typescript
 import { withCleanEnv } from "./support/env.ts";
 
-Deno.test("buildFleetHealthConfig - container mode clones under the work dir", async () => {
-  await withCleanEnv({
-    VIBE_IMAGE_AGENT_PROVIDERS: "claude",
-    WORK_DIR: "/home/vibe/auto-issue-work",
-  }, () => {
-    assertEquals(
-      buildFleetHealthConfig("/workspace").healthDir,
-      "/home/vibe/auto-issue-work/private-repo-6",
-    );
+Deno.test("checkImgbbAvailable - an unset key is unavailable, whatever the host exports", async () => {
+  await withCleanEnv({ VIBE_IMGBB_API_KEY: undefined }, () => {
+    assertEquals(checkImgbbAvailable(), false);
   });
 });
 ```

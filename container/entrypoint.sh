@@ -256,10 +256,10 @@ if [[ -f "${GH_CRED_DIR}/hosts.yml" ]]; then
   } || echo "Warning: could not stage the gh credential for runtime use" >&2
   # The staged copy is the container's gh configuration, for EVERY process
   # (Issue #4220): the worker's own plumbing pointed GH_CONFIG_DIR here
-  # per-call, but raw scripts — private-repo-6's repos.sh running plain `git
-  # push` — inherited an env without it, so the credential helper read an
-  # absent default config and every heartbeat push died unauthenticated
-  # behind the script's exit 0. Exported only when the staging succeeded.
+  # per-call, but raw scripts — a callback hook running plain `git push` —
+  # inherited an env without it, so the credential helper read an absent
+  # default config and every push died unauthenticated behind the script's
+  # exit 0. Exported only when the staging succeeded.
   if [[ -f "${GH_RUNTIME_DIR}/hosts.yml" ]]; then
     export GH_CONFIG_DIR="${GH_RUNTIME_DIR}"
   fi
@@ -288,10 +288,10 @@ if command -v git >/dev/null 2>&1 && [[ -f "${GH_CRED_DIR}/hosts.yml" ]]; then
   } || echo "Warning: could not configure the HTTPS git transport" >&2
   # A container-wide git identity from the mounted credential (Issue #4235):
   # the worker's own plumbing injects identity per call, but raw scripts —
-  # private-repo-6's repos.sh committing the heartbeat — inherit none, so their
-  # `git commit` died ("please tell me who you are"), exited 0, and the
-  # uncommitted local edit then satisfied the script's own rate limit on
-  # every retry. Observed live behind the #4219 did-not-land warning.
+  # a callback hook committing a file — inherit none, so their `git commit`
+  # died ("please tell me who you are"), exited 0, and the uncommitted local
+  # edit then satisfied the script's own rate limit on every retry. Observed
+  # live behind the #4219 did-not-land warning.
   GH_USER="$(sed -n 's/^[[:space:]]*user:[[:space:]]*//p' "${GH_CRED_DIR}/hosts.yml" | head -1)"
   if [[ -n "${GH_USER}" ]]; then
     {
@@ -455,7 +455,7 @@ export DISABLE_AUTOUPDATER=1
 cd "${BASE_DIR}"
 
 # --frozen + --lock fail closed on dependency drift (Issue #2896). The driver
-# needs env/read/write/run plus --allow-net (GitHub API, webhooks, FLEET health)
+# needs env/read/write/run plus --allow-net (GitHub API, webhooks, callbacks)
 # and --allow-sys=hostname (worker identity); the container boundary, not this
 # permission set, is what keeps the worker off the host.
 #

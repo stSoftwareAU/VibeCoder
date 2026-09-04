@@ -66,7 +66,12 @@ jobs:
           set -euo pipefail
           git tag --list > all-tags.txt
           git tag --points-at "${GITHUB_SHA}" > head-tags.txt
-          .github/scripts/next-release-tag.sh all-tags.txt head-tags.txt |
+          # Issue #808: `.release-floor` is the one line a human edits to move
+          # the series. The script mints the higher of that floor and the
+          # automatic patch increment, so the file is inert once the release
+          # it names exists.
+          .github/scripts/next-release-tag.sh \
+            all-tags.txt head-tags.txt .release-floor |
             tee -a "${GITHUB_OUTPUT}"
 
       - name: Create the tag
@@ -136,8 +141,13 @@ jobs:
           else
             # --verify-tag: publish against the tag that exists, never mint a
             # new one from a name that does not.
+            # Issue #808: point at the release notes for the tag being
+            # published, so a release that moves the series carries its
+            # migration steps rather than only its tool versions.
             gh release create "${TAG}" "${RUNNER_TEMP}/${ASSET}" \
               --repo "${GITHUB_REPOSITORY}" --title "${TAG}" --verify-tag \
-              --notes "Tool versions this release ships with are attached as ${ASSET}."
+              --notes "Tool versions this release ships with are attached as ${ASSET}.
+
+          Release notes: https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/docs/RELEASE-NOTES.md"
           fi
           echo "Published ${ASSET} on the ${TAG} release"

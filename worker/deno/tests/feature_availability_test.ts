@@ -8,7 +8,6 @@
 import { assertEquals } from "@std/assert";
 import {
   checkGithubStatusAvailable,
-  checkHealthTrackingAvailable,
   checkImgbbAvailable,
   createFeatureRegistry,
   registerBuiltinFeatures,
@@ -242,56 +241,6 @@ Deno.test("checkImgbbAvailable - returns false when API key is unset", () => {
   }
 });
 
-Deno.test("checkHealthTrackingAvailable - returns true when FLEET_HEALTH_DIR is set", () => {
-  const original = Deno.env.get("FLEET_HEALTH_DIR");
-  try {
-    Deno.env.set("FLEET_HEALTH_DIR", "/some/path");
-    assertEquals(checkHealthTrackingAvailable(), true);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("FLEET_HEALTH_DIR", original);
-    } else {
-      Deno.env.delete("FLEET_HEALTH_DIR");
-    }
-  }
-});
-
-Deno.test("checkHealthTrackingAvailable - a repository alone is enough (container mode has no host directory)", () => {
-  const savedDir = Deno.env.get("FLEET_HEALTH_DIR");
-  const savedRepo = Deno.env.get("FLEET_HEALTH_REPO");
-  try {
-    Deno.env.delete("FLEET_HEALTH_DIR");
-    Deno.env.set("FLEET_HEALTH_REPO", "git@github.com:org/h.git");
-    assertEquals(checkHealthTrackingAvailable(), true);
-    Deno.env.delete("FLEET_HEALTH_REPO");
-    assertEquals(checkHealthTrackingAvailable(), false);
-  } finally {
-    if (savedDir !== undefined) Deno.env.set("FLEET_HEALTH_DIR", savedDir);
-    else Deno.env.delete("FLEET_HEALTH_DIR");
-    if (savedRepo !== undefined) Deno.env.set("FLEET_HEALTH_REPO", savedRepo);
-    else Deno.env.delete("FLEET_HEALTH_REPO");
-  }
-});
-
-Deno.test("checkHealthTrackingAvailable - returns false when FLEET_HEALTH_DIR is empty", () => {
-  const original = Deno.env.get("FLEET_HEALTH_DIR");
-  const originalRepo = Deno.env.get("FLEET_HEALTH_REPO");
-  try {
-    Deno.env.set("FLEET_HEALTH_DIR", "");
-    Deno.env.delete("FLEET_HEALTH_REPO");
-    assertEquals(checkHealthTrackingAvailable(), false);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("FLEET_HEALTH_DIR", original);
-    } else {
-      Deno.env.delete("FLEET_HEALTH_DIR");
-    }
-    if (originalRepo !== undefined) {
-      Deno.env.set("FLEET_HEALTH_REPO", originalRepo);
-    }
-  }
-});
-
 Deno.test("checkGithubStatusAvailable - returns true when enabled", () => {
   const original = Deno.env.get("UPDATE_GH_USER_STATUS");
   try {
@@ -324,14 +273,22 @@ Deno.test("checkGithubStatusAvailable - returns false when disabled", () => {
 // Built-in registration
 // =============================================================================
 
-Deno.test("registerBuiltinFeatures - registers imgbb, health-tracking, and github-status", () => {
+Deno.test("registerBuiltinFeatures - registers imgbb and github-status", () => {
   const registry = createFeatureRegistry();
   registerBuiltinFeatures(registry);
 
-  // All three built-in features should be registered (status "unknown" until checked)
+  // Both built-in features should be registered (status "unknown" until checked)
   assertEquals(registry.getStatus("imgbb"), "unknown");
-  assertEquals(registry.getStatus("health-tracking"), "unknown");
   assertEquals(registry.getStatus("github-status"), "unknown");
+
+  // Issue #805: FLEET health tracking was removed — it is not a feature.
+  // `getStatus` returns "unknown" for any unregistered name, so `checkAll()`
+  // is what actually proves the registration is gone.
+  assertEquals(
+    registry.checkAll().some((r) => r.name === "health-tracking"),
+    false,
+    "health tracking must no longer be a registered feature",
+  );
 
   // Deno should NOT be registered (it is a required dependency, not optional)
   assertEquals(registry.getStatus("deno"), "unknown");
@@ -340,20 +297,18 @@ Deno.test("registerBuiltinFeatures - registers imgbb, health-tracking, and githu
 Deno.test("registerBuiltinFeatures - checkAll should check all built-in features", () => {
   const original = {
     imgbb: Deno.env.get("VIBE_IMGBB_API_KEY"),
-    health: Deno.env.get("FLEET_HEALTH_DIR"),
     status: Deno.env.get("UPDATE_GH_USER_STATUS"),
   };
 
   try {
     Deno.env.set("VIBE_IMGBB_API_KEY", "test-key");
-    Deno.env.set("FLEET_HEALTH_DIR", "/some/path");
     Deno.env.set("UPDATE_GH_USER_STATUS", "true");
 
     const registry = createFeatureRegistry();
     registerBuiltinFeatures(registry);
     const results = registry.checkAll();
 
-    assertEquals(results.length, 3);
+    assertEquals(results.length, 2);
     for (const result of results) {
       assertEquals(result.status, "available");
     }
@@ -362,7 +317,6 @@ Deno.test("registerBuiltinFeatures - checkAll should check all built-in features
     for (
       const [envKey, envVal] of [
         ["VIBE_IMGBB_API_KEY", original.imgbb],
-        ["FLEET_HEALTH_DIR", original.health],
         ["UPDATE_GH_USER_STATUS", original.status],
       ] as const
     ) {

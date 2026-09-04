@@ -16,6 +16,8 @@
 #  - unfenced_untrusted_text_test.ts (Issue #3705): a fake ghp_ token in
 #    an x-access-token clone URL asserting the quality-fix prompt
 #    redacts secrets echoed by the quality script.
+#  - run_callbacks_test.ts (Issue #806): a fake ghp_ token in hook stderr
+#    asserting the callback runner redacts captured output before logging.
 #  - secret_redaction_redos_test.ts (Issue #3942): fake ghp_ tokens, a
 #    fake hex API key and a fake JSON `api_key` value asserting the
 #    bounded `redactSecrets()` regexes still mask credentials.
@@ -68,6 +70,11 @@ paths = [
   # (Issue #4196). Earlier commits carried the literal in one piece.
   '''worker/deno/tests/export_scrub_gate_test\.ts''',
   '''worker/deno/tests/export_public_test\.ts''',
+  # Fake PAT-shaped fixture (now assembled from parts at runtime) fed to the
+  # callback runner to prove hook output is redacted before logging
+  # (Issue #806). Earlier commits in the PR range carry the literal in one
+  # piece, so only a path allowlist clears the range scan.
+  '''worker/deno/tests/run_callbacks_test\.ts''',
   # Fake AKIA/ghp_ values inside the gitleaks/trufflehog JSON fixtures the
   # full-history scanner tests parse and classify (Issue #4190).
   '''worker/deno/tests/secrets_history_scan_test\.ts''',
