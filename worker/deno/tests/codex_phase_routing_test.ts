@@ -34,42 +34,36 @@ import {
   PHASE_EFFORT_DEFAULTS,
   PHASE_MODEL_DEFAULTS,
 } from "../lib/config_defaults.ts";
+import type { EnvLookup } from "../lib/env_lookup.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 /** The Codex descriptor under test. */
 const codex = resolveAgentProvider(CODEX_PROVIDER_ID);
 
-/** Every Codex routing env var a test may set, cleared before each run. */
-const ROUTING_ENV_VARS = [
-  "CODEX_MODEL",
-  "CODEX_EFFORT",
-  "CODEX_MODEL_PLANNING",
-  "CODEX_EFFORT_PLANNING",
-  "CODEX_MODEL_TOTALLY_UNKNOWN_PHASE",
-  "CODEX_EFFORT_TOTALLY_UNKNOWN_PHASE",
-];
-
 /**
- * Run `fn` with the Codex routing state reset — no env vars, no config
- * overrides, no per-repo overrides — and restore the environment afterwards.
+ * Run `fn` with the Codex routing state reset — no config overrides, no
+ * per-repo overrides — and an environment holding exactly `vars`.
+ *
+ * The environment is a lookup handed to the resolvers (Issue #957), never the
+ * process: nothing here can race a test running beside it, and a `CODEX_*`
+ * variable the worker container exports cannot reach the chain either.
+ *
+ * @param vars - The Codex routing variables this test declares as set.
+ * @param fn - The test body, given the lookup to inject.
  */
-function withCleanRouting(fn: () => void): void {
-  const saved = new Map<string, string | undefined>(
-    ROUTING_ENV_VARS.map((name) => [name, Deno.env.get(name)]),
-  );
-  for (const name of ROUTING_ENV_VARS) Deno.env.delete(name);
+function withCleanRouting(
+  vars: Record<string, string>,
+  fn: (env: EnvLookup) => void,
+): void {
   setCodexPhaseModelConfigOverrides({});
   setCodexPhaseEffortConfigOverrides({});
   setActiveRepoCodexModelEffortOverrides(undefined);
   try {
-    fn();
+    fn(envFrom(vars));
   } finally {
     setCodexPhaseModelConfigOverrides({});
     setCodexPhaseEffortConfigOverrides({});
     setActiveRepoCodexModelEffortOverrides(undefined);
-    for (const [name, value] of saved) {
-      if (value === undefined) Deno.env.delete(name);
-      else Deno.env.set(name, value);
-    }
   }
 }
 
@@ -105,8 +99,12 @@ function modelArg(args: string[]): string | undefined {
 // ---------------------------------------------------------------------------
 
 Deno.test("codex routing - planning runs on the top tier at high effort", () => {
-  withCleanRouting(() => {
-    const args = codex.buildInvocation({ prompt: "PROMPT", phase: "planning" });
+  withCleanRouting({}, (env) => {
+    const args = codex.buildInvocation({
+      prompt: "PROMPT",
+      phase: "planning",
+      env,
+    });
 
     assertEquals(modelArg(args), DEFAULT_CODEX_MODEL_TOP_TIER);
     assertEquals(effortArg(args), "high");
@@ -115,9 +113,9 @@ Deno.test("codex routing - planning runs on the top tier at high effort", () => 
 });
 
 Deno.test("codex routing - every phase key reaches argv with its designed default", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     for (const phase of Object.keys(CODEX_PHASE_MODEL_DEFAULTS)) {
-      const args = codex.buildInvocation({ prompt: "PROMPT", phase });
+      const args = codex.buildInvocation({ prompt: "PROMPT", phase, env });
       assertEquals(
         modelArg(args),
         CODEX_PHASE_MODEL_DEFAULTS[phase],
@@ -154,14 +152,20 @@ Deno.test("codex routing - Codex effort values stay inside the CLI's four levels
 });
 
 Deno.test("codex routing - a cheap phase is cheaper than planning on both levers", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     for (const phase of ["spelling_fix", "summarise", "health"]) {
-      assertEquals(resolveCodexModel(phase), DEFAULT_CODEX_MODEL_CHEAP_TIER);
-      assertEquals(resolveCodexEffort(phase), "low");
+      assertEquals(
+        resolveCodexModel(phase, env),
+        DEFAULT_CODEX_MODEL_CHEAP_TIER,
+      );
+      assertEquals(resolveCodexEffort(phase, env), "low");
     }
 
-    assertEquals(resolveCodexModel("planning"), DEFAULT_CODEX_MODEL_TOP_TIER);
-    assertEquals(resolveCodexEffort("planning"), "high");
+    assertEquals(
+      resolveCodexModel("planning", env),
+      DEFAULT_CODEX_MODEL_TOP_TIER,
+    );
+    assertEquals(resolveCodexEffort("planning", env), "high");
     assert(
       (DEFAULT_CODEX_MODEL_CHEAP_TIER as string) !==
         (DEFAULT_CODEX_MODEL_TOP_TIER as string),
@@ -175,12 +179,13 @@ Deno.test("codex routing - a cheap phase is cheaper than planning on both levers
 // ---------------------------------------------------------------------------
 
 Deno.test("codex routing - an explicit model and effort beat the phase default", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     const args = codex.buildInvocation({
       prompt: "PROMPT",
       phase: "planning",
       model: "gpt-5-mini",
       effort: "minimal",
+      env,
     });
 
     assertEquals(modelArg(args), "gpt-5-mini");
@@ -193,10 +198,11 @@ Deno.test("codex routing - an explicit model and effort beat the phase default",
 // ---------------------------------------------------------------------------
 
 Deno.test("codex routing - a phase-specific env var beats every other source", () => {
-  withCleanRouting(() => {
-    Deno.env.set("CODEX_MODEL_PLANNING", "gpt-env");
-    Deno.env.set("CODEX_EFFORT_PLANNING", "minimal");
-    Deno.env.set("CODEX_MODEL", "gpt-base");
+  withCleanRouting({
+    CODEX_MODEL_PLANNING: "gpt-env",
+    CODEX_EFFORT_PLANNING: "minimal",
+    CODEX_MODEL: "gpt-base",
+  }, (env) => {
     setCodexPhaseModelConfigOverrides({ planning: "gpt-global" });
     setActiveRepoCodexModelEffortOverrides({
       codexModel: "gpt-repo-base",
@@ -204,68 +210,71 @@ Deno.test("codex routing - a phase-specific env var beats every other source", (
       codexPhaseEffortOverrides: { planning: "medium" },
     });
 
-    assertEquals(resolveCodexModel("planning"), "gpt-env");
-    assertEquals(resolveCodexEffort("planning"), "minimal");
+    assertEquals(resolveCodexModel("planning", env), "gpt-env");
+    assertEquals(resolveCodexEffort("planning", env), "minimal");
   });
 });
 
 Deno.test("codex routing - a per-repo phase override beats the per-repo base tier", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     setActiveRepoCodexModelEffortOverrides({
       codexModel: "gpt-repo-base",
       codexPhaseModelOverrides: { planning: "gpt-repo-phase" },
       codexPhaseEffortOverrides: { planning: "medium" },
     });
 
-    assertEquals(resolveCodexModel("planning"), "gpt-repo-phase");
-    assertEquals(resolveCodexEffort("planning"), "medium");
+    assertEquals(resolveCodexModel("planning", env), "gpt-repo-phase");
+    assertEquals(resolveCodexEffort("planning", env), "medium");
     // A phase the repo does not re-pin still takes the repo base tier.
-    assertEquals(resolveCodexModel("health"), "gpt-repo-base");
+    assertEquals(resolveCodexModel("health", env), "gpt-repo-base");
   });
 });
 
 Deno.test("codex routing - the per-repo base tier beats the global config override", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     setCodexPhaseModelConfigOverrides({ planning: "gpt-global" });
     setActiveRepoCodexModelEffortOverrides({ codexModel: "gpt-repo-base" });
 
-    assertEquals(resolveCodexModel("planning"), "gpt-repo-base");
+    assertEquals(resolveCodexModel("planning", env), "gpt-repo-base");
   });
 });
 
 Deno.test("codex routing - a global config override beats the phase default", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     setCodexPhaseModelConfigOverrides({ planning: "gpt-global" });
     setCodexPhaseEffortConfigOverrides({ planning: "low" });
 
-    assertEquals(resolveCodexModel("planning"), "gpt-global");
-    assertEquals(resolveCodexEffort("planning"), "low");
+    assertEquals(resolveCodexModel("planning", env), "gpt-global");
+    assertEquals(resolveCodexEffort("planning", env), "low");
   });
 });
 
 Deno.test("codex routing - per-repo overrides are replaced, never merged, on a repo switch", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     setActiveRepoCodexModelEffortOverrides({
       codexModel: "gpt-premium",
       codexPhaseModelOverrides: { planning: "gpt-premium-planning" },
     });
-    assertEquals(resolveCodexModel("planning"), "gpt-premium-planning");
+    assertEquals(resolveCodexModel("planning", env), "gpt-premium-planning");
 
     // The next repo configures no Codex routing: the premium tier must not
     // leak into it.
     setActiveRepoCodexModelEffortOverrides({});
-    assertEquals(resolveCodexModel("planning"), DEFAULT_CODEX_MODEL_TOP_TIER);
+    assertEquals(
+      resolveCodexModel("planning", env),
+      DEFAULT_CODEX_MODEL_TOP_TIER,
+    );
   });
 });
 
 Deno.test("codex routing - the base env var covers a phase with no table entry", () => {
-  withCleanRouting(() => {
-    Deno.env.set("CODEX_MODEL", "gpt-base");
-    Deno.env.set("CODEX_EFFORT", "medium");
-
+  withCleanRouting({
+    CODEX_MODEL: "gpt-base",
+    CODEX_EFFORT: "medium",
+  }, (env) => {
     const warnings = captureWarnings(() => {
-      assertEquals(resolveCodexModel("totally_unknown_phase"), "gpt-base");
-      assertEquals(resolveCodexEffort("totally_unknown_phase"), "medium");
+      assertEquals(resolveCodexModel("totally_unknown_phase", env), "gpt-base");
+      assertEquals(resolveCodexEffort("totally_unknown_phase", env), "medium");
     });
     assertEquals(
       warnings.length,
@@ -280,12 +289,13 @@ Deno.test("codex routing - the base env var covers a phase with no table entry",
 // ---------------------------------------------------------------------------
 
 Deno.test("codex routing - an unknown phase warns once per lever and adds no flags", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     let args: string[] = [];
     const warnings = captureWarnings(() => {
       args = codex.buildInvocation({
         prompt: "PROMPT",
         phase: "totally_unknown_phase",
+        env,
       });
     });
 
@@ -305,22 +315,28 @@ Deno.test("codex routing - an unknown phase warns once per lever and adds no fla
 });
 
 Deno.test("codex routing - a phase-less invocation resolves nothing and stays quiet", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     const warnings = captureWarnings(() => {
-      assertEquals(resolveCodexModel(), undefined);
-      assertEquals(resolveCodexEffort(), undefined);
+      assertEquals(resolveCodexModel(undefined, env), undefined);
+      assertEquals(resolveCodexEffort(undefined, env), undefined);
     });
     assertEquals(warnings.length, 0);
   });
 });
 
 Deno.test("codex routing - the descriptor's resolvers are the Codex chain", () => {
-  withCleanRouting(() => {
+  withCleanRouting({}, (env) => {
     for (
       const phase of [undefined, ...Object.keys(CODEX_PHASE_MODEL_DEFAULTS)]
     ) {
-      assertEquals(codex.resolveModel(phase), resolveCodexModel(phase));
-      assertEquals(codex.resolveEffort(phase), resolveCodexEffort(phase));
+      assertEquals(
+        codex.resolveModel(phase, env),
+        resolveCodexModel(phase, env),
+      );
+      assertEquals(
+        codex.resolveEffort(phase, env),
+        resolveCodexEffort(phase, env),
+      );
     }
   });
 });
@@ -349,4 +365,33 @@ Deno.test("codex routing - docs/MODEL-AND-CACHING.md states the routing the code
     assertStringIncludes(row, `\`${model}\``);
     assertStringIncludes(row, `\`${CODEX_PHASE_EFFORT_DEFAULTS[phase]}\``);
   }
+});
+
+// ---------------------------------------------------------------------------
+// The injected environment lookup (Issue #957)
+// ---------------------------------------------------------------------------
+
+Deno.test("codex routing - both env reads go through the injected lookup, never the process (Issue #957)", () => {
+  // The sentinel exists in no process environment, so a resolver that fell
+  // back to `Deno.env.get` would return the table default instead of it.
+  const sentinel = "gpt-957-sentinel";
+  withCleanRouting({}, () => {
+    const asked: string[] = [];
+    // An unknown phase misses steps 2-5, so one call covers step 1 (the
+    // phase-specific variable) and step 6 (the base variable).
+    const model = resolveCodexModel("totally_unknown_phase", (name) => {
+      asked.push(name);
+      return name === "CODEX_MODEL" ? sentinel : undefined;
+    });
+
+    assertEquals(model, sentinel);
+    assertEquals(asked, ["CODEX_MODEL_TOTALLY_UNKNOWN_PHASE", "CODEX_MODEL"]);
+    assertEquals(Deno.env.get("CODEX_MODEL"), undefined);
+  });
+
+  withCleanRouting({ CODEX_EFFORT_PLANNING: "minimal" }, (env) => {
+    // Step 1 beats the designed "high" for planning: the value came from the
+    // lookup, not from the table and not from the process.
+    assertEquals(resolveCodexEffort("planning", env), "minimal");
+  });
 });

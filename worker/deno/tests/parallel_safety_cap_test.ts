@@ -58,6 +58,7 @@ const DENO_DIR = new URL("..", import.meta.url).pathname;
  * that way; the other 4 delete a variable rather than setting one, which
  * #880's spelling did not match.
  */
+
 async function currentMutators(): Promise<string[]> {
   const sources = await readTestSourceGraph(DENO_DIR);
   return suiteFiles(sources).filter((file) =>

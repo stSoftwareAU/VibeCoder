@@ -64,7 +64,8 @@
  * `deno test` from — the same convention as `INTEGRATION_TEST_FILES`.
  *
  * This list may **shrink, never grow** — with one exception, which is what
- * took it from 92 entries to 135: correcting the classifier. #880 grepped
+ * took it from 92 entries to 135 at the time it was written: correcting
+ * the classifier. #880 grepped
  * each suite's own text, so a helper's mutation was invisible to every suite
  * that imported it. Forty-three files were already unsafe and are now named.
  * A new *test* still may not join them.
@@ -79,7 +80,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/agent_mcp_config_test.ts",
   "tests/agent_progress_test.ts",
   "tests/agent_provider_per_invocation_test.ts",
-  "tests/agent_provider_routing_seam_test.ts",
   "tests/agent_run_termination_test.ts",
   "tests/agent_transcript_test.ts",
   "tests/audit_hook_test.ts",
@@ -94,7 +94,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/ci_log_provider_test.ts",
   "tests/ci_provider_jenkins_target_url_test.ts",
   "tests/clarity_assessment_test.ts",
-  "tests/claude_executor_test.ts",
   "tests/claude_runner_cache_telemetry_4282_test.ts",
   "tests/claude_runner_check_interval_4295_test.ts",
   "tests/claude_runner_external_progress_508_test.ts",
@@ -109,7 +108,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/claude_runner_stdin_prompt_test.ts",
   "tests/claude_runner_test.ts",
   "tests/claude_runner_usage_limit_test.ts",
-  "tests/codex_phase_routing_test.ts",
   "tests/commit_and_push_pending_test.ts",
   "tests/container_entrypoint_test.ts",
   "tests/container_image_hash_test.ts",
@@ -117,7 +115,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/container_image_selection_test.ts",
   "tests/create_all_idle_task_wrappers_command_test.ts",
   "tests/create_all_idle_task_wrappers_test.ts",
-  "tests/deepseek_executor_test.ts",
   "tests/default_branch_cache_test.ts",
   "tests/deno_cache_guard_command_test.ts",
   "tests/env_stub_test.ts",
@@ -131,7 +128,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/first_run_verify_command_test.ts",
   "tests/fleet_health_test.ts",
   "tests/follow_up_label_strip_paths_test.ts",
-  "tests/gemini_phase_routing_test.ts",
   "tests/gh_guard_shim_test.ts",
   "tests/gh_spawn_test.ts",
   "tests/git_push_single_branch_clone_test.ts",
@@ -150,12 +146,9 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/maybe_file_idle_task_test.ts",
   "tests/milestone_health_cache_test.ts",
   "tests/milestone_health_test.ts",
-  "tests/model_fallback_retry_test.ts",
-  "tests/model_fallback_test.ts",
   "tests/multi_provider_credentials_test.ts",
   "tests/optional_feature_env_test.ts",
   "tests/outbound_fetch_bounds_test.ts",
-  "tests/phase_model_escalation_test.ts",
   "tests/phase_run_stats_test.ts",
   "tests/planning_processor_test.ts",
   "tests/planning_run_stats_provider_test.ts",
