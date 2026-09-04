@@ -31,6 +31,7 @@ import {
   IMAGE_AGENT_PROVIDERS_ENV,
   resolveEnabledAgentProviderIds,
 } from "../lib/agent_provider.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 
 /**
  * Environment lookup for the setup-time resolution.
@@ -42,9 +43,15 @@ import {
  * will install. Enforcing it here would refuse to configure Codex on a host
  * whose existing image predates that choice; the worker still enforces it at
  * run time, inside the image, where it means something.
+ *
+ * Wraps whatever lookup the caller supplies (Issue #962), so the stamp stays
+ * hidden whether the host environment or a test's own map is underneath.
+ *
+ * @param env - The lookup the host values come from.
+ * @returns A lookup answering as `env` does, except for the image stamp.
  */
-function setupEnv(name: string): string | undefined {
-  return name === IMAGE_AGENT_PROVIDERS_ENV ? undefined : Deno.env.get(name);
+export function setupEnv(env: EnvLookup = processEnvLookup): EnvLookup {
+  return (name) => name === IMAGE_AGENT_PROVIDERS_ENV ? undefined : env(name);
 }
 
 /** The provider selection as `.config.json` holds it. */
@@ -126,6 +133,9 @@ export async function readConfiguredAgentProviders(
  * Resolve every coding-agent provider this host is configured to run.
  *
  * @param configFile - Host path of the worker configuration file.
+ * @param env - Host environment the `VIBE_AGENT_PROVIDER(S)` overrides are
+ *   read from (Issue #962). Defaults to the process environment, so setup
+ *   itself resolves exactly as it did before the parameter existed.
  * @returns The enabled provider ids, active provider first when the set was
  *   left implicit — `["claude"]` on a host that configures nothing.
  * @throws When the file is broken, or the selection names a provider that is
@@ -133,10 +143,11 @@ export async function readConfiguredAgentProviders(
  */
 export async function resolveSetupAgentProviderIds(
   configFile: string,
+  env: EnvLookup = processEnvLookup,
 ): Promise<string[]> {
   const selection = await readConfiguredAgentProviders(configFile);
   return resolveEnabledAgentProviderIds({
-    env: setupEnv,
+    env: setupEnv(env),
     ...(selection.active === undefined ? {} : { configured: selection.active }),
     ...(selection.enabled === undefined
       ? {}

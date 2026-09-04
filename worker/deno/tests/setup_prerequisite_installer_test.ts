@@ -23,6 +23,7 @@ import type {
 import { checkAllPrerequisites } from "../setup/prerequisites.ts";
 import type { InstallPlan } from "../setup/prerequisite_install_plan.ts";
 import type { ContainerRuntimeProbe } from "../lib/container_runtime.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 // ── Fixtures ────────────────────────────────────────────────────────────
 
@@ -176,23 +177,41 @@ Deno.test("offerMissingPrerequisites - VIBE_NO_AUTO_INSTALL opts out of the offe
   assertStringIncludes(lines[0]!, "VIBE_NO_AUTO_INSTALL=true is set");
 });
 
-Deno.test("offerMissingPrerequisites - reads VIBE_NO_AUTO_INSTALL from the environment", async () => {
-  const original = Deno.env.get("VIBE_NO_AUTO_INSTALL");
-  Deno.env.set("VIBE_NO_AUTO_INSTALL", "true");
-  try {
-    const probe = probeOf(failed("deno"));
-    const { lines, reporter } = recorder();
-    const opts = baseOptions({ reporter });
-    delete opts.noAutoInstall;
-    const result = await offerMissingPrerequisites(probe, opts);
-    assertEquals(result.offered, false);
-    assertEquals(result.results, probe.results);
-    assertEquals(lines.length, 1);
-    assertStringIncludes(lines[0]!, "VIBE_NO_AUTO_INSTALL=true is set");
-  } finally {
-    if (original === undefined) Deno.env.delete("VIBE_NO_AUTO_INSTALL");
-    else Deno.env.set("VIBE_NO_AUTO_INSTALL", original);
-  }
+Deno.test("offerMissingPrerequisites - reads VIBE_NO_AUTO_INSTALL from the environment (Issue #962)", async () => {
+  const probe = probeOf(failed("deno"));
+  const { lines, reporter } = recorder();
+  const opts = baseOptions({ reporter });
+  delete opts.noAutoInstall;
+  // Stated through the injected lookup, which answers only from its own map:
+  // a driver that read `Deno.env.get` would see the variable absent, take the
+  // TTY branch, and never write the withheld-offer line asserted below.
+  opts.env = envFrom({ VIBE_NO_AUTO_INSTALL: "true" });
+  const result = await offerMissingPrerequisites(probe, opts);
+  assertEquals(result.offered, false);
+  assertEquals(result.results, probe.results);
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0]!, "VIBE_NO_AUTO_INSTALL=true is set");
+});
+
+Deno.test("offerMissingPrerequisites - an environment without the opt-out does not withhold the offer (Issue #962)", async () => {
+  // The other direction, on the same host: with the variable absent the offer
+  // is made, so the case above cannot pass on a driver that always withholds.
+  const probe = probeOf(failed("deno"));
+  const { lines, reporter } = recorder();
+  const opts = baseOptions({
+    reporter,
+    isTerminal: () => true,
+    confirm: () => Promise.resolve(false),
+  });
+  delete opts.noAutoInstall;
+  opts.env = emptyEnv;
+  const result = await offerMissingPrerequisites(probe, opts);
+  assertEquals(result.offered, true);
+  assertEquals(
+    lines.some((line) => line.includes("VIBE_NO_AUTO_INSTALL")),
+    false,
+    lines.join(" | "),
+  );
 });
 
 // ── --auto-install: the one sanctioned pre-consent (Issue #33) ──────────
