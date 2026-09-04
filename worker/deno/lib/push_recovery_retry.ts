@@ -30,6 +30,7 @@ export interface PushRecoveryGitDeps {
     options?: GitCommandOptions,
     allowDefaultBranch?: boolean,
     preFlight?: PreFlightGateSpec,
+    runId?: string,
   ) => Promise<Result<CommitAndPushPendingResult>>;
 }
 

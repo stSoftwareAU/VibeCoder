@@ -412,6 +412,49 @@ Deno.test("run_core callbacks - a throw after the run reported does not repeat t
   assertEquals(runs.map(key), ["o/a#1:failure"]);
 });
 
+Deno.test("run_core callbacks - a serial-loop throw reports the failed run before it propagates", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      throw new Error("the serial run exploded after the claim");
+    },
+  });
+
+  // One slot is the serial loop, which has no slot-level catch: its own
+  // `catch` around processIssue is the only thing that reports the thrown
+  // run before the throw unwinds to the cycle's fatal handler (Issue #796 —
+  // a `main` sync merge deleted that catch twice, and no test held it).
+  await runCycle(deps, 1);
+
+  assertEquals(runs.map(key), ["o/a#1:failure"]);
+});
+
+Deno.test("run_core callbacks - the exit-threshold branch reports the failed run before unwinding", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({ ok: true, value: { success: false } });
+    },
+    // The failure threshold trips, so the serial loop returns before it
+    // reaches the release that normally carries the dispatch.
+    shouldExitOnFailures: () => Promise.resolve(true),
+  });
+
+  await runCycle(deps, 1);
+
+  assertEquals(runs.map(key), ["o/a#1:failure"]);
+});
+
 Deno.test("run_core callbacks - a throw before the run starts reports nothing", async () => {
   const { runs, runIssueCallbacks } = recorder();
   const time = clock();
