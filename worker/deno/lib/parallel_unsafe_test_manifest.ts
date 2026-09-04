@@ -131,7 +131,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/maybe_file_idle_task_test.ts",
   "tests/milestone_health_cache_test.ts",
   "tests/milestone_health_test.ts",
-  "tests/multi_provider_credentials_test.ts",
   "tests/optional_feature_env_test.ts",
   "tests/outbound_fetch_bounds_test.ts",
   "tests/phase_run_stats_test.ts",
