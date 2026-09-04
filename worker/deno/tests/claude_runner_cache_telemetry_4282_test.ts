@@ -3,15 +3,17 @@
  * invocation (Issue #4282).
  *
  * The harness mirrors `claude_runner_invocation_budget_3648_test.ts`: a stub
- * `claude` on PATH that prints one stream-json result line carrying the usage
- * fields the API reports, so the assertions run against the real
- * `runClaudeWithTimeout` parsing and logging path.
+ * agent, named by path rather than installed on `PATH` (Issue #959), that
+ * prints one stream-json result line carrying the usage fields the API
+ * reports, so the assertions run against the real `runClaudeWithTimeout`
+ * parsing and logging path.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
+import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 
 /** Usage figures the stub reports on its result line. */
 interface StubUsage {
@@ -21,12 +23,11 @@ interface StubUsage {
   cacheRead: number;
 }
 
-/** Run `fn` with a stub `claude` on PATH that reports `usage`. */
-async function withUsageStub<T>(
+/** Run `fn` with a stub agent that reports `usage`. */
+function withUsageStub<T>(
   usage: StubUsage,
-  fn: () => Promise<T>,
+  fn: (stub: AgentStub) => Promise<T>,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_cache_stub_" });
   const body = [
     "#!/usr/bin/env bash",
     `printf '%s\\n' '${
@@ -44,16 +45,7 @@ async function withUsageStub<T>(
     "exit 0",
     "",
   ].join("\n");
-  await Deno.writeTextFile(`${dir}/claude`, body);
-  await Deno.chmod(`${dir}/claude`, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  try {
-    return await fn();
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
+  return withAgentStub(body, fn, { prefix: "claude_cache_stub_" });
 }
 
 /** Logger that records info and warn lines separately. */
@@ -80,9 +72,10 @@ Deno.test({
     const warn: string[] = [];
     const result = await withUsageStub(
       { input: 5_000, output: 1_000, cacheWrite: 15_000, cacheRead: 180_000 },
-      () =>
+      (stub) =>
         runClaudeWithTimeout({
           prompt: "test",
+          agentBinaryPath: stub.path,
           model: "claude-opus-4-8",
           repo: "owner/repo",
           phase: "issue",
@@ -111,9 +104,10 @@ Deno.test({
     const warn: string[] = [];
     const result = await withUsageStub(
       { input: 180_000, output: 1_000, cacheWrite: 0, cacheRead: 20_000 },
-      () =>
+      (stub) =>
         runClaudeWithTimeout({
           prompt: "test",
+          agentBinaryPath: stub.path,
           model: "claude-opus-4-8",
           repo: "owner/repo",
           phase: "issue",
@@ -139,9 +133,10 @@ Deno.test({
     const warn: string[] = [];
     const result = await withUsageStub(
       { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
-      () =>
+      (stub) =>
         runClaudeWithTimeout({
           prompt: "test",
+          agentBinaryPath: stub.path,
           model: "claude-opus-4-8",
           repo: "owner/repo",
           phase: "issue",
@@ -152,6 +147,11 @@ Deno.test({
     );
 
     assert(result.ok, "the stub run must succeed");
+    if (!result.ok) return;
+    // The absence of a cache line is only evidence if the stub actually ran
+    // (Issue #959): without this a run that never spawned would pass too.
+    assertEquals(result.value.exitCode, 0);
+    assertStringIncludes(result.value.output, "done");
     assertEquals(
       info.filter((msg) => msg.startsWith("Anthropic prompt cache:")),
       [],
