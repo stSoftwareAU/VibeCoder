@@ -30,6 +30,7 @@ import {
   GH_RUNTIME_CONFIG_SUFFIX,
   SCRATCH_DIR_ENV,
 } from "./credential_preflight.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /** Parse `owner/repo` out of a git origin URL (SSH or HTTPS). */
 export function parseOriginRepo(url: string): string | null {
@@ -39,11 +40,17 @@ export function parseOriginRepo(url: string): string | null {
   return match ? match[1]! : null;
 }
 
-/** The host's own identity, used in every escalation title. */
-export function escalationHostId(): string {
+/**
+ * The host's own identity, used in every escalation title.
+ *
+ * @param env - Reads `VIBE_HOST_ID`; defaults to the process environment, so
+ *   production callers pass nothing (Issue #967). A test hands in a fixed map
+ *   rather than mutating the environment every parallel worker shares.
+ */
+export function escalationHostId(env: EnvLookup = processEnvLookup): string {
   let fromEnv: string | undefined;
   try {
-    fromEnv = Deno.env.get("VIBE_HOST_ID")?.trim();
+    fromEnv = env("VIBE_HOST_ID")?.trim();
   } catch {
     fromEnv = undefined;
   }
@@ -63,14 +70,17 @@ export function escalationHostId(): string {
  * probed: the entrypoint moved its writable copy to the scratch root when the
  * container root filesystem became read-only (Issue #515), and the legacy
  * path remains for a host or an older image.
+ *
+ * @param env - Reads `GH_CONFIG_DIR`, `HOME` and the scratch root; defaults to
+ *   the process environment (Issue #967).
  */
-export async function resolveEscalationGhEnv(): Promise<
-  Record<string, string>
-> {
-  const env: Record<string, string> = {};
-  if (Deno.env.get("GH_CONFIG_DIR")) return env;
-  const home = Deno.env.get("HOME");
-  const scratch = Deno.env.get(SCRATCH_DIR_ENV);
+export async function resolveEscalationGhEnv(
+  env: EnvLookup = processEnvLookup,
+): Promise<Record<string, string>> {
+  const ghEnv: Record<string, string> = {};
+  if (env("GH_CONFIG_DIR")) return ghEnv;
+  const home = env("HOME");
+  const scratch = env(SCRATCH_DIR_ENV);
   const candidates = [
     scratch ? `${scratch}/${GH_CREDENTIAL_SUBDIR}` : undefined,
     home ? `${home}/${GH_RUNTIME_CONFIG_SUFFIX}` : undefined,
@@ -78,13 +88,13 @@ export async function resolveEscalationGhEnv(): Promise<
   for (const candidate of candidates) {
     try {
       await Deno.stat(`${candidate}/${GH_HOSTS_FILE}`);
-      env.GH_CONFIG_DIR = candidate;
+      ghEnv.GH_CONFIG_DIR = candidate;
       break;
     } catch {
       // No staged copy here — try the next, else let gh resolve its own.
     }
   }
-  return env;
+  return ghEnv;
 }
 
 /**

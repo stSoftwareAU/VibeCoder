@@ -114,6 +114,12 @@ export interface RunWorkerOptions {
   pid?: number;
   /** Reads an environment variable (tests inject a fixed map). */
   env?: (name: string) => string | undefined;
+  /**
+   * Establishes an environment variable (Issue #967). Defaults to
+   * `Deno.env.set`; a test hands in a recorder so a full production run
+   * writes nothing every parallel worker can see.
+   */
+  setEnv?: (name: string, value: string) => void;
 }
 
 /**
@@ -275,8 +281,28 @@ export async function checkWorkerCredentials(
   return null;
 }
 
-/** Build the production dependency set for {@link runWorker}. */
-export function createDefaultRunWorkerDeps(): RunWorkerDeps {
+/** Establish one variable in this process, tolerating a permission denial. */
+function processSetEnv(name: string, value: string): void {
+  try {
+    Deno.env.set(name, value);
+  } catch {
+    // Best-effort — a permission denial must not abort the run.
+  }
+}
+
+/**
+ * Build the production dependency set for {@link runWorker}.
+ *
+ * @param setEnv - Establishes a variable in the run environment; defaults to
+ *   `Deno.env.set`. It is the ONE place the driver writes the environment —
+ *   the prelude, the optional-feature settings and the token-scope summary
+ *   all route through it — so a caller that hands in a recorder drives the
+ *   whole run without mutating an environment every parallel worker shares
+ *   (Issue #967).
+ */
+export function createDefaultRunWorkerDeps(
+  setEnv: (name: string, value: string) => void = processSetEnv,
+): RunWorkerDeps {
   const logger = createLogger({ debug: Deno.env.get("DEBUG") === "true" });
   // Built ONCE per process (Issue #919): the selector remembers which token it
   // chose, so the run's coding-agent credential is fixed at startup and no
@@ -301,7 +327,7 @@ export function createDefaultRunWorkerDeps(): RunWorkerDeps {
         formatPidFileContent(pid, await readBootId()),
       );
     },
-    bootstrap: (options) => runBootstrap(options),
+    bootstrap: (options) => runBootstrap(options, { setEnv }),
     recordRunMode: ({ logDir, mode, host, runId }) =>
       appendRunCoreLogLine(logDir, formatRunModeRecord({ mode, host, runId })),
     validateConfig: (config) => validateWorkerConfig(config),
@@ -309,6 +335,7 @@ export function createDefaultRunWorkerDeps(): RunWorkerDeps {
       checkWorkerCredentials({
         log: (message) => logger.info(message),
         selectToken,
+        setEnv,
       }),
     resolveGithubUser: async () => {
       // Issue #949: retry a network-class failure before giving up. This is
@@ -391,9 +418,9 @@ export function createDefaultRunWorkerDeps(): RunWorkerDeps {
         // Issue #2382 (Rule of Two): tag with [SECURITY] so the worker's true
         // capability footprint is greppable in every run log.
         logger.info(`[SECURITY] gh token: ${summary}`);
-        Deno.env.set("GH_TOKEN_SCOPE_SUMMARY", summary);
+        setEnv("GH_TOKEN_SCOPE_SUMMARY", summary);
         if (!isAppAuth) {
-          Deno.env.set(
+          setEnv(
             "GH_TOKEN_HAS_WORKFLOW_SCOPE",
             hasWorkflowScope ? "true" : "false",
           );
@@ -448,21 +475,9 @@ export function createDefaultRunWorkerDeps(): RunWorkerDeps {
         maxWaitSeconds: cleanupWaitSeconds(liveSlots),
       });
     },
-    setEnv: (name, value) => {
-      try {
-        Deno.env.set(name, value);
-      } catch {
-        // Best-effort — a permission denial must not abort the run.
-      }
-    },
+    setEnv,
     applyOptionalFeatureEnv: (configPath) =>
-      applyOptionalFeatureEnv(configPath, (name, value) => {
-        try {
-          Deno.env.set(name, value);
-        } catch {
-          // Best-effort — a permission denial must not abort the run.
-        }
-      }),
+      applyOptionalFeatureEnv(configPath, setEnv),
     log: (message) => logger.info(message),
     logError: (message) => logger.error(message),
   };
@@ -501,7 +516,7 @@ export async function runWorker(
   depsOverride: Partial<RunWorkerDeps> = {},
 ): Promise<RunWorkerResult> {
   const deps: RunWorkerDeps = {
-    ...createDefaultRunWorkerDeps(),
+    ...createDefaultRunWorkerDeps(options.setEnv),
     ...depsOverride,
   };
 
