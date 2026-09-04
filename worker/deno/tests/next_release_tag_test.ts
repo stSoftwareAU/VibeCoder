@@ -11,6 +11,11 @@
  * Each test executes the script and asserts on its stdout and exit code —
  * no source-text inspection.
  *
+ * Issue #808 added the optional third input, the release floor: the one file
+ * a human edits to move the series off the automatic patch increment. The
+ * floor is only ever raised INTO the mint, never sticky, so the tests below
+ * cover both the merge that mints it and every merge after it.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
@@ -20,16 +25,24 @@ const SCRIPT_PATH =
   new URL("../../../.github/scripts/next-release-tag.sh", import.meta.url)
     .pathname;
 
+/** The repository's own release floor — the version the next release mints. */
+const FLOOR_PATH = new URL("../../../.release-floor", import.meta.url).pathname;
+
 interface PlanRun {
   code: number;
   stdout: string;
   stderr: string;
 }
 
-/** Run the script over the two tag lists, in a throwaway directory. */
+/**
+ * Run the script over the two tag lists, in a throwaway directory. When
+ * `floor` is given it is written to a third file and passed as the release
+ * floor (Issue #808); omitting it is the caller that names no floor at all.
+ */
 async function plan(
   allTags: string[],
   headTags: string[],
+  floor?: string,
 ): Promise<PlanRun> {
   const dir = await Deno.makeTempDir({ prefix: "next_release_tag_" });
   try {
@@ -37,8 +50,14 @@ async function plan(
     const headFile = `${dir}/head-tags.txt`;
     await Deno.writeTextFile(allFile, allTags.map((t) => `${t}\n`).join(""));
     await Deno.writeTextFile(headFile, headTags.map((t) => `${t}\n`).join(""));
+    const args = [SCRIPT_PATH, allFile, headFile];
+    if (floor !== undefined) {
+      const floorFile = `${dir}/release-floor`;
+      await Deno.writeTextFile(floorFile, floor);
+      args.push(floorFile);
+    }
     const out = await new Deno.Command("bash", {
-      args: [SCRIPT_PATH, allFile, headFile],
+      args,
       stdout: "piped",
       stderr: "piped",
     }).output();
@@ -170,4 +189,133 @@ Deno.test("next-release-tag - a missing argument fails loud", async () => {
   }).output();
   assert(out.code !== 0, "no arguments must fail the step");
   assertEquals(new TextDecoder().decode(out.stdout), "");
+});
+
+// --- The release floor (Issue #808) -----------------------------------
+
+Deno.test("next-release-tag - a floor above the series is minted instead of the patch", async () => {
+  // The 1.1.0 release itself: the newest tag is a 1.0.x patch, and the
+  // automatic increment (1.0.72) would ship the breaking callback contract
+  // as another patch.
+  const run = await plan(["1.0.70", "1.0.71"], [], "1.1.0\n");
+  assertEquals(run.code, 0);
+  assertEquals(outputs(run), { should_tag: "true", tag: "1.1.0" });
+  assertStringIncludes(run.stderr, "release floor 1.1.0 raises 1.0.72");
+});
+
+Deno.test("next-release-tag - the merge after the floor release continues from it", async () => {
+  // The floor is not sticky: once its release exists the patch increment is
+  // already above it, so the file can be left in place.
+  const run = await plan(["1.0.71", "1.1.0"], [], "1.1.0\n");
+  assertEquals(outputs(run), { should_tag: "true", tag: "1.1.1" });
+  assertEquals(run.stderr.includes("release floor"), false);
+});
+
+Deno.test("next-release-tag - a floor at or below the series changes nothing", async () => {
+  const at = await plan(["1.1.0"], [], "1.1.0\n");
+  assertEquals(outputs(at), { should_tag: "true", tag: "1.1.1" });
+  const below = await plan(["1.2.4"], [], "1.1.0\n");
+  assertEquals(outputs(below), { should_tag: "true", tag: "1.2.5" });
+});
+
+Deno.test("next-release-tag - a floor decides the first tag of an untagged repository", async () => {
+  const run = await plan([], [], "1.1.0\n");
+  assertEquals(outputs(run), { should_tag: "true", tag: "1.1.0" });
+});
+
+Deno.test("next-release-tag - a floor never re-tags a commit that already carries a release", async () => {
+  // Idempotency wins over the floor: the release the commit already carries
+  // is reported, so a re-run publishes for it rather than minting a second.
+  const run = await plan(["1.0.71"], ["1.0.71"], "1.1.0\n");
+  assertEquals(outputs(run), { should_tag: "false", tag: "1.0.71" });
+});
+
+Deno.test("next-release-tag - comments and blank lines in the floor file are ignored", async () => {
+  const run = await plan(
+    ["1.0.71"],
+    [],
+    "# why the series moves\n\n1.1.0  # the release\n",
+  );
+  assertEquals(outputs(run), { should_tag: "true", tag: "1.1.0" });
+});
+
+Deno.test("next-release-tag - a floor file with no version at all is no floor", async () => {
+  const run = await plan(["1.0.71"], [], "# the series moves by hand\n");
+  assertEquals(outputs(run), { should_tag: "true", tag: "1.0.72" });
+});
+
+Deno.test("next-release-tag - a malformed floor fails loud, it is not ignored", async () => {
+  // Silently ignoring a typo would ship the release under the automatic
+  // patch number, which is the exact mistake the floor exists to prevent.
+  for (const bad of ["1.1\n", "v1.1.0-rc1\n", "next\n"]) {
+    const run = await plan(["1.0.71"], [], bad);
+    assert(run.code !== 0, `a malformed floor must fail the step: ${bad}`);
+    assertEquals(run.stdout, "");
+    assertStringIncludes(run.stderr, "not a release version");
+  }
+});
+
+Deno.test("next-release-tag - a floor file naming two versions fails loud", async () => {
+  const run = await plan(["1.0.71"], [], "1.1.0\n2.0.0\n");
+  assert(run.code !== 0, "an ambiguous floor must fail the step");
+  assertEquals(run.stdout, "");
+  assertStringIncludes(run.stderr, "more than one version");
+});
+
+Deno.test("next-release-tag - a floor file that was named but is absent fails loud", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "next_release_tag_floor_" });
+  try {
+    const allFile = `${dir}/all-tags.txt`;
+    const headFile = `${dir}/head-tags.txt`;
+    await Deno.writeTextFile(allFile, "1.0.71\n");
+    await Deno.writeTextFile(headFile, "");
+    const out = await new Deno.Command("bash", {
+      args: [SCRIPT_PATH, allFile, headFile, `${dir}/absent`],
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assert(out.code !== 0, "a named-but-missing floor must fail the step");
+    assertEquals(new TextDecoder().decode(out.stdout), "");
+    assertStringIncludes(new TextDecoder().decode(out.stderr), "no such file");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("next-release-tag - the repository's own floor mints 1.1.0 over the 1.0.x series", async () => {
+  // Issue #808: the acceptance criterion itself. `.release-floor` is the one
+  // line that decides the number, so it is asserted through the real script
+  // against the series the fleet is actually on.
+  const dir = await Deno.makeTempDir({ prefix: "next_release_tag_repo_" });
+  try {
+    const allFile = `${dir}/all-tags.txt`;
+    const headFile = `${dir}/head-tags.txt`;
+    await Deno.writeTextFile(allFile, "1.0.70\n1.0.71\n");
+    await Deno.writeTextFile(headFile, "");
+    const out = await new Deno.Command("bash", {
+      args: [SCRIPT_PATH, allFile, headFile, FLOOR_PATH],
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));
+    assertEquals(
+      new TextDecoder().decode(out.stdout),
+      "should_tag=true\ntag=1.1.0\n",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("next-release-tag - the release floor is not ignored by git", async () => {
+  // `.gitignore` ignores every hidden file by default. The workflow reads the
+  // floor out of the checkout and fails the step when it is named but absent,
+  // so an ignored floor would turn every merge to `main` into a red run.
+  const out = await new Deno.Command("git", {
+    args: ["check-ignore", "-q", ".release-floor"],
+    cwd: new URL("../../../", import.meta.url).pathname,
+    stdout: "null",
+    stderr: "null",
+  }).output();
+  assertEquals(out.code, 1, ".release-floor must be committed, not ignored");
 });
