@@ -12,30 +12,65 @@
  * can be force-disabled with `VIBE_AUDIT_DISABLED=1`. Unit tests that do
  * not set `WORK_DIR` therefore incur no journalling side-effects.
  *
+ * Both gating variables, the worker partition and the run id are read through
+ * {@link AuditHookOptions} rather than straight off the process (Issue #963),
+ * so a test drives the hooks with a fixed map instead of mutating the process
+ * environment out from under every other test in the run (Issue #880).
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { recordMutation, resolveRunId } from "./audit_journal.ts";
+import {
+  recordMutation,
+  type RecordOptions,
+  resolveRunId,
+} from "./audit_journal.ts";
 import {
   classifyGhMutation,
   classifyGitMutation,
   type MutationInfo,
 } from "./audit_mutation_classifier.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+
+/**
+ * Everything the hooks read about *this* run, as parameters (Issue #963).
+ *
+ * The gating flags, the worker partition and the run id were all read
+ * straight from the process, so the only way to drive the hooks was to set
+ * `WORK_DIR`, `VIBE_AUDIT_DISABLED`, `WORKER_UNIQUE_ID` and `VIBE_RUN_ID` on
+ * the process — which races every other test running at that moment and is
+ * what keeps the gate's `deno test` stage serial (Issue #880). Every field is
+ * optional and defaults to exactly what the hook read before, so production
+ * call sites pass nothing and behave identically.
+ */
+export interface AuditHookOptions extends RecordOptions {
+  /**
+   * Explicit run id for the journal entry.
+   *
+   * Defaults to {@link resolveRunId} over {@link AuditHookOptions.env}.
+   */
+  runId?: string;
+}
 
 /**
  * True when audit journalling should run for the current process.
  *
  * Exported so other journalling call sites (e.g. `gh_guard_shim.ts`) share one
  * gating rule rather than each re-deriving it.
+ *
+ * @param env - Environment lookup for the two gating variables (Issue #963).
+ *   Defaults to the real process environment.
  */
-export function isAuditJournalEnabled(): boolean {
-  const disabled = Deno.env.get("VIBE_AUDIT_DISABLED");
+export function isAuditJournalEnabled(
+  env: EnvLookup = processEnvLookup,
+): boolean {
+  const disabled = env("VIBE_AUDIT_DISABLED");
   if (disabled && disabled !== "0" && disabled.toLowerCase() !== "false") {
     return false;
   }
   // Journalling is a production-runtime feature keyed to WORK_DIR. Without
   // it there is no stable out-of-tree location to write to, so stay inert.
-  return Boolean(Deno.env.get("WORK_DIR"));
+  return Boolean(env("WORK_DIR"));
 }
 
 /**
@@ -77,10 +112,11 @@ function resolveCaller(): string | undefined {
 async function record(
   info: MutationInfo,
   exitCode: number | undefined,
+  opts: AuditHookOptions,
 ): Promise<void> {
   try {
     const result = await recordMutation({
-      runId: resolveRunId(),
+      runId: opts.runId ?? resolveRunId(opts.env ?? processEnvLookup),
       verb: info.verb,
       outcome: exitCode === 0 ? "success" : "error",
       ...(info.repo ? { repo: info.repo } : {}),
@@ -90,7 +126,7 @@ async function record(
         const caller = resolveCaller();
         return caller ? { caller } : {};
       })(),
-    });
+    }, opts);
     if (!result.ok) {
       console.error(
         `[SECURITY] [AUDIT_JOURNAL_REFUSED] ${info.verb}: ${result.error.message}`,
@@ -111,15 +147,18 @@ async function record(
  *
  * @param args - Arguments passed to `gh`
  * @param exitCode - The gh process exit code (undefined if unknown)
+ * @param opts - Injected gating, identity and storage location (Issue #963).
+ *   Omit in production: every field defaults to the process environment.
  */
 export async function auditGhMutation(
   args: readonly string[],
   exitCode?: number,
+  opts: AuditHookOptions = {},
 ): Promise<void> {
-  if (!isAuditJournalEnabled()) return;
+  if (!isAuditJournalEnabled(opts.env ?? processEnvLookup)) return;
   const info = classifyGhMutation(args);
   if (!info) return;
-  await record(info, exitCode);
+  await record(info, exitCode, opts);
 }
 
 /**
@@ -127,13 +166,16 @@ export async function auditGhMutation(
  *
  * @param args - Arguments passed to `git`
  * @param exitCode - The git process exit code (undefined if unknown)
+ * @param opts - Injected gating, identity and storage location (Issue #963).
+ *   Omit in production: every field defaults to the process environment.
  */
 export async function auditGitMutation(
   args: readonly string[],
   exitCode?: number,
+  opts: AuditHookOptions = {},
 ): Promise<void> {
-  if (!isAuditJournalEnabled()) return;
+  if (!isAuditJournalEnabled(opts.env ?? processEnvLookup)) return;
   const info = classifyGitMutation(args);
   if (!info) return;
-  await record(info, exitCode);
+  await record(info, exitCode, opts);
 }

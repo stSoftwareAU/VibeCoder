@@ -463,6 +463,14 @@ export interface CommitAndPushPendingResult {
  *   non-zero exit (or a command that cannot be started, or a timeout) blocks
  *   BOTH the commit and the push. There is no override flag. Omit to leave the
  *   repo unaffected (zero added latency).
+ * @param runId - Run id stamped into the `Vibe-Coder-Run-Id` commit trailer
+ *   (Issue #963). Omit in production: it then falls back to {@link getRunId},
+ *   which reads `VIBE_RUN_ID` and generates-and-caches one when unset, exactly
+ *   as before. Supplying it is what lets a test prove the trailer without
+ *   setting `VIBE_RUN_ID` on the process — a mutation that races every other
+ *   test in the run (Issue #880). The value is stamped verbatim; the trailer's
+ *   format is `appendRunIdTrailer`'s and is unaffected by where the id came
+ *   from.
  * @returns Result with details of what was committed and pushed
  */
 export async function commitAndPushPending(
@@ -471,6 +479,7 @@ export async function commitAndPushPending(
   options: GitCommandOptions = {},
   allowDefaultBranch = false,
   preFlight?: PreFlightGateSpec,
+  runId?: string,
 ): Promise<Result<CommitAndPushPendingResult>> {
   // Read-only default-branch guard (Issue #2584) — refuse up front, before
   // staging or committing anything, when the target is the default branch.
@@ -544,7 +553,7 @@ export async function commitAndPushPending(
     // canonical run id so the push is attributable to a specific worker
     // run. assertRunIdTrailer is the pre-commit gate; appendRunIdTrailer
     // guarantees it passes for worker-authored commits.
-    const finalMessage = appendRunIdTrailer(commitMessage, getRunId());
+    const finalMessage = appendRunIdTrailer(commitMessage, runId ?? getRunId());
     const trailerGate = assertRunIdTrailer(finalMessage);
     if (!trailerGate.ok) {
       await runGitCommand(["reset", "--"], options);
