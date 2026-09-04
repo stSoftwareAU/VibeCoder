@@ -44,6 +44,7 @@ import {
   FORBIDDEN_RUN_FLAGS,
   resolveContainerLaunchHostPaths,
   SCRATCH_TMPFS_MOUNTS,
+  scratchTmpfsMounts,
   SECRETS_MOUNT_PATH,
 } from "../lib/container_launch.ts";
 import {
@@ -1495,4 +1496,94 @@ Deno.test("containment harness - the read-only root and its writable exceptions 
     runArgs: samplePlan().runArgs.filter((arg) => arg !== "--read-only"),
   };
   assertEquals(readOnlyRootProbes(writableRoot), []);
+});
+
+// ---------------------------------------------------------------------------
+// The operator's private layer (Issue #980, parent #933)
+// ---------------------------------------------------------------------------
+
+/** The sample plan, extended with an operator layer (Issue #980). */
+function sampleExtensionPlan(): ContainerLaunchPlan {
+  const candidate = CONTAINER_RUNTIMES.docker;
+  return buildContainerLaunchPlan({
+    descriptor: {
+      platform: "linux",
+      kind: "docker",
+      executable: candidate.executable,
+      displayName: candidate.displayName,
+      dialect: candidate.dialect,
+      probed: ["docker"],
+    },
+    manifest: MANIFEST,
+    image: "vibe-coder:0123456789ab",
+    containerName: "vibe-containment-sample",
+    watchdogSeconds: 11_400,
+    hostPaths: {
+      homeDir: "/home/operator",
+      baseDir: "/opt/VibeCoder",
+      workDir: "/home/operator/auto-issue-work",
+      logDir: "/home/operator/logs",
+      configFile: "/opt/VibeCoder/.config.json",
+      configStageDir: "/home/operator/.vibe-coder/run-config",
+      credentialDir: "/home/operator/.vibe-coder/credentials",
+    },
+    containerExtension: {
+      spec: {
+        path: "/srv/vibe-extension",
+        containerfile: "Containerfile",
+        start: "start.sh",
+      },
+      image: "vibe-coder:fedcba987654",
+      containerfileText: "ARG VIBE_BASE_IMAGE\nFROM ${VIBE_BASE_IMAGE}\n",
+    },
+  });
+}
+
+Deno.test("containment - the extension build exposes no host path and publishes no port (Issue #980)", () => {
+  const plan = sampleExtensionPlan();
+
+  for (const flag of FORBIDDEN_RUN_FLAGS) {
+    assert(
+      !plan.extensionBuildArgs.includes(flag),
+      `The extension build carries the forbidden flag ${flag}.`,
+    );
+  }
+  for (const flag of ["--volume", "--mount", "-v", "--publish", "-p"]) {
+    assert(
+      !plan.extensionBuildArgs.includes(flag),
+      `The extension build carries a host mount or published port (${flag}).`,
+    );
+  }
+  assert(
+    !plan.extensionBuildArgs.some((arg) =>
+      arg === "host" || arg.endsWith("=host")
+    ),
+    "The extension build asks for host namespace or network access.",
+  );
+
+  // The build context is the extension directory alone: no other host path
+  // reaches the build, and neither does the worker's own checkout.
+  assertEquals(
+    plan.extensionBuildArgs.filter((arg) => arg.startsWith("/")),
+    ["/srv/vibe-extension/Containerfile", "/srv/vibe-extension"],
+  );
+});
+
+Deno.test("containment - the extension tag still runs read-only with its scratch (Issue #980)", () => {
+  const plan = sampleExtensionPlan();
+
+  assertEquals(plan.runArgs.at(-1), "vibe-coder:fedcba987654");
+  assert(
+    plan.runArgs.includes("--read-only"),
+    "the layered image runs on an immutable root filesystem, like the base",
+  );
+  for (const mount of scratchTmpfsMounts(MANIFEST.user)) {
+    assert(
+      plan.runArgs.includes(mount),
+      `The layered image runs without its scratch tmpfs ${mount}.`,
+    );
+  }
+  // The layer changes what the image contains, never what the container may
+  // reach: the mount set is the base plan's, unchanged.
+  assertEquals(plan.mounts, samplePlan().mounts);
 });

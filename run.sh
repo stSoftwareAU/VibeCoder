@@ -457,6 +457,9 @@ claim_floor_percent=""
 claim_floor_origin=""
 exists_args=()
 build_args=()
+# The operator's private layer, built after the standard image (Issue #980).
+# Empty for every deployment that configures no container_extension.
+extension_build_args=()
 builder_stop_args=()
 builder_absent_patterns=()
 run_args=()
@@ -478,6 +481,7 @@ while IFS= read -r -d '' token; do
     claim-floor-origin) claim_floor_origin="${value}" ;;
     exists) exists_args+=("${value}") ;;
     build) build_args+=("${value}") ;;
+    extension-build) extension_build_args+=("${value}") ;;
     builder-stop) builder_stop_args+=("${value}") ;;
     builder-absent) builder_absent_patterns+=("${value}") ;;
     run) run_args+=("${value}") ;;
@@ -616,6 +620,25 @@ if ! "${RUNTIME}" "${exists_args[@]}" >/dev/null 2>&1; then
       # (Issue #709).
       EVIDENCE_LOG="${BUILD_LOG}"
       exit "${build_status}"
+    fi
+  fi
+
+  # The operator's private layer (Issue #980), built FROM the standard image
+  # the step above just produced. It is reached only when that build
+  # succeeded - a `FROM` naming a tag that does not exist cannot build - and a
+  # deployment that configures no extension carries no arguments here at all.
+  if [[ ${#extension_build_args[@]} -gt 0 ]]; then
+    echo "[run.sh] building the container extension for ${IMAGE}" >&2
+    extension_status=0
+    set +e
+    "${RUNTIME}" "${extension_build_args[@]}" </dev/null 2>&1 |
+      tee "${BUILD_LOG}" >&2
+    extension_status="${PIPESTATUS[0]}"
+    set -e
+    if ((extension_status != 0)); then
+      echo "Error: failed to build the container extension for ${IMAGE}" >&2
+      EVIDENCE_LOG="${BUILD_LOG}"
+      exit "${extension_status}"
     fi
   fi
 fi

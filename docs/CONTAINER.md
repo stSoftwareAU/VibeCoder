@@ -305,6 +305,40 @@ exits non-zero naming the entry rather than hashing a partial view. A
 deployment that configures no extension gets exactly the tag it got before, so
 no existing host rebuilds.
 
+**A configured extension is built as a second image, never instead of the first**
+(Issue #980). The launch plan then carries two builds, and both launchers run
+them in order:
+
+1. `build --file <checkout>/container/Containerfile --tag vibe-coder:<baseHash>
+   <checkout>/container` — the standard image, exactly as every host builds it;
+2. `build --file <extension>/<containerfile> --tag vibe-coder:<extensionHash>
+   --build-arg VIBE_BASE_IMAGE=vibe-coder:<baseHash> <extension>` — the
+   operator's own layer, whose build context is the extension directory alone.
+
+The container runs `vibe-coder:<extensionHash>`, and the image-presence check
+names it too: an absent layer runs both builds, a present one runs neither. A
+failed first build never reaches the second — the layer's `FROM` names a tag
+that was never produced — and either failure aborts the launch. The extension's
+Containerfile is required to open with `ARG VIBE_BASE_IMAGE` and
+`FROM ${VIBE_BASE_IMAGE}`; one that names its own base is refused while the plan
+is built, naming the file, so "layered on the standard image" is a guarantee
+rather than a comment. The layer changes what the image *contains*, never what
+the container may *reach*: no host path is mounted into the build, no port is
+published, and the run arguments are the same contained set (`--read-only` and
+its scratch tmpfs included) that the standard image runs under.
+
+```mermaid
+flowchart LR
+    C["📄 container/Containerfile"] --> B1["🐳 build<br/>vibe-coder:&lt;baseHash&gt;"]
+    B1 -->|"--build-arg VIBE_BASE_IMAGE"| B2["🐳 build<br/>vibe-coder:&lt;extensionHash&gt;"]
+    X["📁 container_extension/<br/>Containerfile"] --> B2
+    B1 -.->|"build fails"| F["🛑 launch aborts"]
+    B2 -.->|"build fails"| F
+    B2 --> R["🚀 run vibe-coder:&lt;extensionHash&gt;"]
+    style B2 fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style R fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
 **Every caller reads all three selections through one reader.** Because the tag is
 derived from the deployment's own configuration, anything that *names* the
 image must read that configuration too — otherwise it names a tag the launcher

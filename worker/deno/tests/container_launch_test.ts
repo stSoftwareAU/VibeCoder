@@ -19,8 +19,10 @@ import {
 import {
   APPROVAL_STATE_VOLUME_NAME,
   buildContainerLaunchPlan,
+  type ContainerExtensionLaunch,
   type ContainerLaunchInputs,
   containerTargetPaths,
+  FORBIDDEN_RUN_FLAGS,
   parseContainerLaunchPlanText,
   pathStyleFor,
   renderContainerLaunchPlan,
@@ -1432,4 +1434,195 @@ Deno.test("buildContainerLaunchPlan - no custom prompts leaves the plan exactly 
 Deno.test("containerTargetPaths - custom prompts land beside the staged config (Issue #850)", () => {
   const targets = containerTargetPaths(MANIFEST);
   assertEquals(targets.customPrompts, "/home/vibe/.vibe-coder/custom-prompts");
+});
+
+// ---------------------------------------------------------------------------
+// The operator's private layer (Issue #980, parent #933)
+//
+// A deployment that configures a `container_extension` gets two builds: the
+// standard image, then the operator's own Containerfile built `FROM` it. Every
+// case below asserts on the exact argument vectors, because "layered on the
+// standard image" is a guarantee only while the tags and the build argument
+// name each other precisely.
+// ---------------------------------------------------------------------------
+
+/** A Containerfile that keeps the `FROM ${VIBE_BASE_IMAGE}` contract. */
+const EXTENSION_CONTAINERFILE = `ARG VIBE_BASE_IMAGE
+FROM \${VIBE_BASE_IMAGE}
+RUN apt-get install -y postgresql
+`;
+
+/** Plan inputs carrying an extension, with the base tag left as it is. */
+function extensionInputs(
+  overrides: Partial<ContainerExtensionLaunch> = {},
+): ContainerLaunchInputs {
+  return inputs({
+    containerExtension: {
+      spec: { path: "/srv/vibe-extension", containerfile: "Containerfile" },
+      image: "vibe-coder:fedcba987654",
+      containerfileText: EXTENSION_CONTAINERFILE,
+      ...overrides,
+    },
+  });
+}
+
+Deno.test("buildContainerLaunchPlan - no extension leaves the plan exactly as it was (Issue #980)", () => {
+  const before = buildContainerLaunchPlan(inputs());
+
+  assertEquals(before.extensionBuildArgs, []);
+  assertEquals(before.image, "vibe-coder:0123456789ab");
+  assertEquals(before.buildArgs.filter((arg) => arg === "--tag").length, 1);
+  // The rendered stream carries no extension key at all, so a launcher reading
+  // it executes exactly the one build it always did.
+  const rendered = renderContainerLaunchPlan(before);
+  assert(
+    !rendered.includes("extension-build="),
+    "an unconfigured deployment emits no extension build",
+  );
+  assertEquals(parseContainerLaunchPlanText(rendered).extensionBuild, []);
+});
+
+Deno.test("buildContainerLaunchPlan - the extension is a second build, after the standard one (Issue #980)", () => {
+  const plan = buildContainerLaunchPlan(extensionInputs());
+
+  // The standard image is built first, under the base tag, exactly as before.
+  assertEquals(plan.buildArgs, [
+    "build",
+    "--file",
+    "/opt/VibeCoder/container/Containerfile",
+    "--tag",
+    "vibe-coder:0123456789ab",
+    "/opt/VibeCoder/container",
+  ]);
+  // Then the operator's own file, `FROM` the tag the first build produced,
+  // with the extension directory as the whole build context.
+  assertEquals(plan.extensionBuildArgs, [
+    "build",
+    "--file",
+    "/srv/vibe-extension/Containerfile",
+    "--tag",
+    "vibe-coder:fedcba987654",
+    "--build-arg",
+    "VIBE_BASE_IMAGE=vibe-coder:0123456789ab",
+    "/srv/vibe-extension",
+  ]);
+});
+
+Deno.test("buildContainerLaunchPlan - the container runs the extension tag (Issue #980)", () => {
+  const plan = buildContainerLaunchPlan(extensionInputs());
+
+  assertEquals(plan.image, "vibe-coder:fedcba987654");
+  // The image is the run's last argument, so the worker's own arguments can
+  // follow it.
+  assertEquals(plan.runArgs.at(-1), "vibe-coder:fedcba987654");
+  // The presence check names what runs: an absent layer runs both builds, a
+  // present one runs neither.
+  assertEquals(plan.imageInspectArgs.at(-1), "vibe-coder:fedcba987654");
+  // The volume-ownership init runs the same image the worker will.
+  assert(plan.initArgs.includes("vibe-coder:fedcba987654"));
+  assert(
+    !plan.runArgs.includes("vibe-coder:0123456789ab"),
+    "the standard image is the base of the layer, never what runs",
+  );
+});
+
+Deno.test("buildContainerLaunchPlan - a declared start script rides the extension build (Issue #980)", () => {
+  const plan = buildContainerLaunchPlan(
+    extensionInputs({
+      spec: {
+        path: "/srv/vibe-extension",
+        containerfile: "Containerfile",
+        start: "bin/start.sh",
+      },
+    }),
+  );
+
+  const startIndex = plan.extensionBuildArgs.indexOf(
+    "VIBE_EXTENSION_START=bin/start.sh",
+  );
+  assert(startIndex > 0, "the start contract path is passed to the build");
+  assertEquals(plan.extensionBuildArgs[startIndex - 1], "--build-arg");
+  // Options still precede the context path.
+  assertEquals(plan.extensionBuildArgs.at(-1), "/srv/vibe-extension");
+});
+
+Deno.test("buildContainerLaunchPlan - refuses a Containerfile that is not FROM the standard image (Issue #980)", () => {
+  const error = assertThrows(
+    () =>
+      buildContainerLaunchPlan(
+        extensionInputs({ containerfileText: "FROM ubuntu:24.04\nRUN id\n" }),
+      ),
+    Error,
+    "FROM ${VIBE_BASE_IMAGE}",
+  );
+  // Named, so the operator knows which file to fix — and refused while the
+  // plan is built, which is before any build runs.
+  assertStringIncludes(error.message, "/srv/vibe-extension/Containerfile");
+});
+
+Deno.test("buildContainerLaunchPlan - the extension build broadens nothing (Issue #980)", () => {
+  const plan = buildContainerLaunchPlan(extensionInputs());
+
+  for (const flag of FORBIDDEN_RUN_FLAGS) {
+    assert(
+      !plan.extensionBuildArgs.includes(flag),
+      `the extension build carries the forbidden flag ${flag}`,
+    );
+  }
+  for (const flag of ["--volume", "--mount", "--publish", "-v"]) {
+    assert(
+      !plan.extensionBuildArgs.includes(flag),
+      `the extension build carries a host mount or published port (${flag})`,
+    );
+  }
+  // The extension directory is the only host path the build sees at all.
+  const hostPathArgs = plan.extensionBuildArgs.filter((arg) =>
+    arg.startsWith("/")
+  );
+  assertEquals(hostPathArgs, [
+    "/srv/vibe-extension/Containerfile",
+    "/srv/vibe-extension",
+  ]);
+});
+
+Deno.test("buildContainerLaunchPlan - refuses an unframeable extension tag (Issue #980)", () => {
+  assertThrows(
+    () => buildContainerLaunchPlan(extensionInputs({ image: "vibe coder:1" })),
+    Error,
+    "is empty or unframeable",
+  );
+});
+
+Deno.test("renderContainerLaunchPlan - both builds reach the launchers in order (Issue #980)", () => {
+  const plan = buildContainerLaunchPlan(extensionInputs());
+  const rendered = renderContainerLaunchPlan(plan);
+  const parsed = parseContainerLaunchPlanText(rendered);
+
+  assertEquals(parsed.build, plan.buildArgs);
+  assertEquals(parsed.extensionBuild, plan.extensionBuildArgs);
+  assertEquals(parsed.image, "vibe-coder:fedcba987654");
+  // The standard build is emitted before the layer that builds `FROM` it, so a
+  // launcher executing the stream in order cannot invert them.
+  assert(
+    rendered.indexOf("build=build\0") <
+      rendered.indexOf("extension-build=build\0"),
+    "the standard build must be rendered before the extension build",
+  );
+});
+
+Deno.test("buildContainerLaunchPlan - a Windows deployment builds its layer with host separators (Issue #980)", () => {
+  const plan = buildContainerLaunchPlan({
+    ...inputs({ hostPaths: WINDOWS_HOST_PATHS }),
+    containerExtension: {
+      spec: { path: "D:\\vibe\\extension", containerfile: "Containerfile" },
+      image: "vibe-coder:fedcba987654",
+      containerfileText: EXTENSION_CONTAINERFILE,
+    },
+  });
+
+  assertEquals(
+    plan.extensionBuildArgs[2],
+    "D:\\vibe\\extension\\Containerfile",
+  );
+  assertEquals(plan.extensionBuildArgs.at(-1), "D:\\vibe\\extension");
 });

@@ -27,11 +27,13 @@
 import type { Command, CommandResult } from "../types.ts";
 import {
   buildContainerLaunchPlan,
+  type ContainerExtensionLaunch,
   type ContainerLaunchPlan,
   renderContainerLaunchPlan,
   resolveContainerLaunchHostPaths,
   resolveContainerResources,
 } from "../lib/container_launch.ts";
+import { joinPath, pathStyleFor } from "../lib/host_path_style.ts";
 import {
   stripContainerfile,
   STRIPPED_CONTAINERFILE_SUFFIX,
@@ -176,14 +178,56 @@ export async function buildLaunchPlanForCommand(
     );
   }
 
+  // The deployment's private extension is baked into the image too (Issue
+  // #979): its Containerfile builds `FROM` the standard one, so its contents
+  // are part of what the tag names.
+  const containerExtension = await readContainerExtensionSelection(
+    hostPaths.configFile,
+  );
+
   // The selected tools and providers are baked into the image, so they are part
   // of its identity (Issues #73, #729) — the plan must name the tag the build
-  // produces, not one another deployment's cache would satisfy.
+  // produces, not one another deployment's cache would satisfy. This is the
+  // **standard** image: the extension layers on top of it under its own tag
+  // (Issue #980), and both are content-derived.
   const image = await resolveContainerImageReference(baseDir, {
     containerTools: tools,
     ...(agentProviders ? { agentProviders } : {}),
-    ...(containerExtension ? { containerExtension } : {}),
   });
+
+  // The operator's private layer (Issue #980, parent #933): a second,
+  // content-derived tag covering the same inputs *plus* the extension digest,
+  // and the Containerfile text the plan refuses before any build runs when it
+  // does not derive `FROM ${VIBE_BASE_IMAGE}`.
+  let extension: ContainerExtensionLaunch | undefined;
+  if (containerExtension) {
+    const style = pathStyleFor(hostPaths.baseDir);
+    const containerfilePath = joinPath(
+      containerExtension.path,
+      containerExtension.containerfile,
+      style,
+    );
+    let containerfileText: string;
+    try {
+      containerfileText = await Deno.readTextFile(containerfilePath);
+    } catch (error) {
+      throw new Error(
+        `Cannot launch: the container_extension Containerfile ` +
+          `${containerfilePath} is unreadable (${(error as Error).message}). ` +
+          `The operator syncs their own extension into ` +
+          `${containerExtension.path}.`,
+      );
+    }
+    extension = {
+      spec: containerExtension,
+      image: await resolveContainerImageReference(baseDir, {
+        containerTools: tools,
+        ...(agentProviders ? { agentProviders } : {}),
+        containerExtension,
+      }),
+      containerfileText,
+    };
+  }
 
   // Stage the configuration into its own directory for the read-only mount.
   // Apple container cannot mount a single file (a file mount silently
@@ -297,6 +341,7 @@ export async function buildLaunchPlanForCommand(
     ...(runCap ? { runCap } : {}),
     resources,
     ...(containerfile ? { containerfile } : {}),
+    ...(extension ? { containerExtension: extension } : {}),
   });
 
   // Every read-only mount must exist on the host: a runtime asked to bind a
