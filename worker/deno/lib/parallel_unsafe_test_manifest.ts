@@ -267,7 +267,6 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   "tests/secret_transform_redaction_test.ts",
   "tests/suppression_comments_bounds_test.ts",
   "tests/suppression_comments_redos_test.ts",
-  "tests/timing_assertion_policy_test.ts",
 ];
 
 /**
@@ -289,8 +288,18 @@ export function measuresWallClock(source: string): boolean {
   return REAL_CLOCK.test(source) && ELAPSED_BOUND.test(source);
 }
 
-/** The shared ratio helper, which does its callers' timing for them. */
-const GROWTH_HELPER = /support\/growth\.ts|assertLinearGrowth/;
+/**
+ * The shared ratio helper, which does its callers' timing for them.
+ *
+ * Matched on the **import or the call**, never on the name alone. Issue #943
+ * added a suite that reads `support/growth.ts` with `Deno.readTextFile` to
+ * assert the audit prompt and the helper agree; matching the bare path
+ * claimed it, and a test that never starts a clock does not need the serial
+ * pass. Same asymmetry as the integration classifier: match the use, not the
+ * mention.
+ */
+const GROWTH_HELPER =
+  /from\s+"[^"\n]*support\/growth\.ts"|assertLinearGrowth\(/;
 
 /** A reading of the real clock. */
 const REAL_CLOCK = /performance\.now\(\)|Date\.now\(\)/;
