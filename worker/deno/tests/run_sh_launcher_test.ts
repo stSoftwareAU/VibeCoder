@@ -30,7 +30,11 @@ import {
 } from "../lib/container_launch.ts";
 import { CONTAINER_RUNTIMES } from "../lib/container_runtime.ts";
 import { executableLines } from "../lib/launcher_source.ts";
-import { CONTAINER_START_EXIT_CODES } from "../lib/container_restart_backoff.ts";
+import {
+  CONTAINER_START_EXIT_CODES,
+  isNetworkUnavailableLaunch,
+} from "../lib/container_restart_backoff.ts";
+import { NETWORK_UNAVAILABLE_MARKER } from "../lib/github_user_resolution.ts";
 import { CONTAINER_WEDGED_EXIT_STATUS } from "../lib/container_watchdog.ts";
 import { stripContainerfile } from "../lib/containerfile_strip.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
@@ -1539,14 +1543,31 @@ Deno.test("run.sh - the client's stderr reaches the console while the container 
   }
 });
 
-Deno.test("run.sh - a container that started is never quoted as failure evidence (Issue #711)", async () => {
-  // Exit status 1 is the worker reporting its own failure from inside a
-  // container that started perfectly well, so its console output says nothing
-  // about a launch that did not fail.
+// ---------------------------------------------------------------------------
+// The worker that stopped itself inside a container that started (Issue #1029)
+// ---------------------------------------------------------------------------
+//
+// Issue #711 read exit 1 as "a container that started, so its output says
+// nothing about the launch" and withheld the capture for it. Issue #1029 is
+// what that costs: `aerx` failed nine consecutive runs in `worker_run` and the
+// report carried the phase, the status and not one word of the worker's own
+// account — which was sitting in this capture the whole time. #994, #995 and
+// #996 are the same report from three more hosts; #945 is the same failure on
+// a host running loop.sh, whose supervisor passes its cycle log
+// unconditionally, and it named the cause.
+//
+// These two tests replace the Issue #711 assertion that the capture is
+// withheld for exit 1. The behaviour it pinned is the defect.
+
+Deno.test("run.sh - a worker that failed inside a started container is quoted as evidence (Issue #1029)", async () => {
+  // Exit status 1 is the worker reporting its own bootstrap, config,
+  // credential or loop failure — the lines saying which one are on the stream
+  // this capture holds, so they are exactly what the escalation is about.
+  const reason = "[run-worker] credential preflight failed: no Claude token";
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",
     STUB_RUN_EXIT: "1",
-    STUB_RUN_STDERR: "worker: the run failed for its own reasons",
+    STUB_RUN_STDERR: reason,
   }, { denoStub: true });
   try {
     const outcome = await runLauncher(harness);
@@ -1554,12 +1575,72 @@ Deno.test("run.sh - a container that started is never quoted as failure evidence
 
     const args = await recorded(harness, "container-restart-backoff");
     assert(args, "run.sh must record its own launcher outcome");
+    assert(
+      args.includes("--launch-log"),
+      `a worker_run escalation with no evidence: ${args.join(" ")}`,
+    );
+
+    // The launcher deletes the capture on its way out, so handing it over
+    // while it is still readable — with the worker's own words in it — is the
+    // behaviour, not naming the path.
+    const log = await recordedLaunchLog(harness);
+    assert(
+      log !== null,
+      "the run capture was deleted before the outcome was recorded",
+    );
+    assertStringIncludes(log, reason);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - the network-unavailable marker reaches the recorder (Issues #949, #1029)", async () => {
+  // Issue #949 has the recorder classify an unreachable GitHub as "not this
+  // host's fault" — and it reads that decision out of the log it is handed.
+  // A launcher that hands over nothing can never make it, so every transient
+  // outage climbs the failure ladder instead of re-probing at the base
+  // cadence. That is how a host reaches nine consecutive failures over a link
+  // that has since come back.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_EXIT: "1",
+    STUB_RUN_STDERR:
+      `[run-worker] ${NETWORK_UNAVAILABLE_MARKER} — GitHub was unreachable ` +
+      `for every attempt; not a host fault`,
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 1, outcome.stderr);
+
+    const log = await recordedLaunchLog(harness);
+    assert(log !== null, "no capture was handed to the outcome recorder");
+    assert(
+      isNetworkUnavailableLaunch(log),
+      `the recorder could not see the network marker in: ${log}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a launch that succeeded is never quoted as failure evidence (Issue #1029)", async () => {
+  // The other half of the rule: a clean run has no failure for its output to
+  // be the evidence of, and an alert is never filed for one anyway.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_EXIT: "0",
+    STUB_RUN_STDERR: "worker: nothing to do this cycle",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const args = await recorded(harness, "container-restart-backoff");
+    assert(args, "run.sh must record its own launcher outcome");
     assertEquals(
       args.includes("--launch-log"),
       false,
-      `a container that started must not be quoted as a refused start: ${
-        args.join(" ")
-      }`,
+      `a successful launch must not be quoted as a failure: ${args.join(" ")}`,
     );
   } finally {
     await harness.cleanup();
@@ -1593,22 +1674,6 @@ Deno.test("run.sh - a failed launch records exactly one outcome (Issue #711)", a
   } finally {
     await harness.cleanup();
   }
-});
-
-Deno.test("run.sh - the statuses it treats as a refused start are the recorder's own (Issue #711)", async () => {
-  // The launcher cannot import the recorder's list, so it carries a copy —
-  // and a copy nothing checks is a copy that drifts. Pinned in both
-  // directions: a status added to or removed from either side fails here.
-  const source = await Deno.readTextFile(RUN_SH);
-  const declaration = source.match(
-    /CONTAINER_START_EXIT_STATUSES=\(([^)]*)\)/,
-  );
-  assert(
-    declaration,
-    "run.sh must name the statuses it treats as a refused container start",
-  );
-  const statuses = (declaration[1] ?? "").trim().split(/\s+/).map(Number);
-  assertEquals(statuses, [...CONTAINER_START_EXIT_CODES]);
 });
 
 Deno.test("run.sh - the stderr capture leaves nothing behind in the temporary directory (Issue #711)", async () => {
