@@ -18,9 +18,13 @@ import {
   formatPidFileContent,
 } from "../lib/run_entrypoint.ts";
 import type { RunGuardResult } from "../lib/run_entrypoint.ts";
-import { runEntrypointCommand } from "../commands/run_entrypoint.ts";
+import {
+  runEntrypoint,
+  runEntrypointCommand,
+} from "../commands/run_entrypoint.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { runWorker } from "../lib/run_worker.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 // =============================================================================
 // evaluateRunGuard
@@ -226,39 +230,52 @@ Deno.test("run-entrypoint command - blocked guard yields exit 0 without a shadow
     await assertMissing(`${tmpDir}/.run.pid`);
 
     // The command wrapper must not surface a bash path. This invocation is
-    // the REAL command with production deps end-to-end, so HOME (and its
-    // Windows twin) is pointed at the fixture for the duration: the real
-    // bootstrap otherwise resolves logDir from the operator's actual HOME
-    // and litters the production ~/logs with worker-<pid>.log stubs and
-    // run_core.log entries (Issue #4209). The bootstrap no longer touches the
-    // checkout or the failure streak at all — that moved to the host-side
-    // update with Issue #513 — but the log pollution alone was enough:
-    // observed live on
-    // host-23: the leaked stubs were indistinguishable from a crash-looping
-    // worker and cost hours of misdirected diagnosis.
+    // the REAL production path end-to-end, so its host roots are handed in
+    // rather than exported (Issue #967): the real bootstrap otherwise
+    // resolves logDir from the operator's actual HOME and litters the
+    // production ~/logs with worker-<pid>.log stubs and run_core.log entries
+    // (Issue #4209). The bootstrap no longer touches the checkout or the
+    // failure streak at all — that moved to the host-side update with Issue
+    // #513 — but the log pollution alone was enough: observed live on
+    // host-23, where the leaked stubs were indistinguishable from a
+    // crash-looping worker and cost hours of misdirected diagnosis.
+    //
     // The real bootstrap also exports PATH, VIBE_RUN_ID, WORKER_LOG_FILE,
-    // LOG_FILE and WORK_DIR into this process (Issue #4189 follow-up): a
-    // leaked WORK_DIR pointed setup.sh's work-dir reminder at this fixture
-    // in a later test file of the same shard. Snapshot the whole
-    // environment and put it back exactly, whatever the command exported.
-    const originalEnv = Deno.env.toObject();
-    Deno.env.set("HOME", tmpDir);
-    Deno.env.set("USERPROFILE", tmpDir);
-    try {
-      const cmd = await runEntrypointCommand.execute(
-        { "base-dir": tmpDir },
-        buildDefaultWorkerConfig(),
-      );
-      assertEquals(typeof cmd.message, "string");
-      assertEquals(cmd.message.includes(".run_core.sh"), false);
-    } finally {
-      for (const key of Object.keys(Deno.env.toObject())) {
-        if (!(key in originalEnv)) Deno.env.delete(key);
-      }
-      for (const [key, value] of Object.entries(originalEnv)) {
-        if (Deno.env.get(key) !== value) Deno.env.set(key, value);
-      }
-    }
+    // LOG_FILE and WORK_DIR (Issue #4189 follow-up): a leaked WORK_DIR
+    // pointed setup.sh's work-dir reminder at this fixture in a later test
+    // file of the same shard. Those writes now land in `exported` — the one
+    // seam the whole driver writes through — so nothing this run establishes
+    // is visible to any other test.
+    //
+    // The fixture home appears in no real environment, so a step that read
+    // `Deno.env.get("HOME")` would resolve the operator's own directory and
+    // leave `${tmpDir}/logs` empty, failing the pollution guard below.
+    const exported: Record<string, string> = {};
+    const cmd = await runEntrypoint(
+      { "base-dir": tmpDir },
+      buildDefaultWorkerConfig(),
+      {
+        // PATH is read, never written, and the bootstrap resolves the real
+        // one from it — so it is passed through as the host has it.
+        env: envFrom({
+          HOME: tmpDir,
+          USERPROFILE: tmpDir,
+          PATH: Deno.env.get("PATH") ?? "",
+        }),
+        setEnv: (name, value) => {
+          exported[name] = value;
+        },
+      },
+    );
+    assertEquals(typeof cmd.message, "string");
+    assertEquals(cmd.message.includes(".run_core.sh"), false);
+    // The driver's own exports went to the injected map, not the process.
+    assertEquals(exported.WORK_DIR, `${tmpDir}/auto-issue-work`);
+    assertEquals(
+      Deno.env.get("WORK_DIR") === `${tmpDir}/auto-issue-work`,
+      false,
+      "the driver must not export this fixture's work dir into the process",
+    );
 
     // The pollution guard itself: everything the real run wrote must have
     // landed inside the fixture, never in the operator's log directory.

@@ -321,9 +321,13 @@ import { workVolumeFault } from "./work_volume_fault.ts";
 import { WorkVolumeMonitor } from "./work_volume_monitor.ts";
 import { describeGuestReclaimToHost } from "./work_volume_ratchet.ts";
 
-/** Home directory, in the order `agent_transcript.ts` resolves it. */
-function homeDirectory(): string | undefined {
-  return Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
+/**
+ * Home directory, in the order `agent_transcript.ts` resolves it.
+ *
+ * @param env - Reads `HOME` then `USERPROFILE` (Issue #967).
+ */
+function homeDirectory(env: EnvLookup): string | undefined {
+  return env("HOME") ?? env("USERPROFILE");
 }
 
 // ---------------------------------------------------------------------------
@@ -1040,7 +1044,7 @@ export async function createProductionRunCoreDeps(
       }
     },
     async rotateLogFiles() {
-      const logDir = `${Deno.env.get("HOME") ?? "~"}/logs`;
+      const logDir = `${env("HOME") ?? "~"}/logs`;
       const maxSizeBytes = 10 * 1024 * 1024; // 10 MB
       const maxRotations = 3;
       try {
@@ -2244,7 +2248,7 @@ export async function createProductionRunCoreDeps(
         return { ok: true, value: undefined };
       }
       try {
-        await syncMilestoneBranchesFn(repos, config, logger);
+        await syncMilestoneBranchesFn(repos, config, logger, env);
         return { ok: true, value: undefined };
       } catch (err) {
         return {
@@ -3110,7 +3114,7 @@ export async function createProductionRunCoreDeps(
           ...(config.agentProvider ? { provider: config.agentProvider } : {}),
           ...(sessionId ? { sessionId } : {}),
           // Same fallback order the transcript writer itself uses.
-          ...(homeDirectory() ? { home: homeDirectory()! } : {}),
+          ...(homeDirectory(env) ? { home: homeDirectory(env)! } : {}),
         }),
         log: (message) => logger.info(message),
         logError: (message) => logger.error(message),
@@ -3697,6 +3701,7 @@ async function syncMilestoneBranchesFn(
   repos: string[],
   config: WorkerConfig,
   logger: Logger,
+  env: EnvLookup,
 ): Promise<void> {
   const { syncMilestoneBranches } = await import("./milestone_branch_sync.ts");
   const { milestoneSyncStreakPath } = await import(
@@ -3709,7 +3714,7 @@ async function syncMilestoneBranchesFn(
   const { ensureMilestoneBranchExists } = await import("./git_branch.ts");
   const { ensureDefaultBranchCurrent } = await import("./git_push.ts");
 
-  const workDir = config.workDir || Deno.env.get("HOME") || ".";
+  const workDir = config.workDir || env("HOME") || ".";
 
   // Issue #1519: skip repos that have not been cloned locally.
   const localCloneExistsFn = async (repo: string): Promise<boolean> => {
