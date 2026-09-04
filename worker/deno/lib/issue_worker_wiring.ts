@@ -44,12 +44,15 @@ import {
 } from "./git_push.ts";
 import { resolveRebaseConflicts } from "./git_conflict_resolution.ts";
 import { recoverGitState } from "./git_state_recovery.ts";
-import { runGitCommand } from "./git_timeout.ts";
 import { syncFeatureBranchWithDefault } from "./git_pull.ts";
 import { recoverFromPushRejection } from "./git_push_recovery.ts";
 import { validateRepoState } from "./git_repo_validation.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import { setupRepo as setupRepoCommand } from "../commands/git_operations.ts";
+import { ensureRepoClone } from "./ensure_repo_clone.ts";
+import { ensureLaneWorktree } from "./lane_worktree.ts";
+import { runGitCommand } from "./git_timeout.ts";
+import { restoreSession } from "./session_manager.ts";
 import { branchHeadChanged, captureBranchHead } from "./branch_head_tracker.ts";
 
 // Issue operations
@@ -176,7 +179,19 @@ export interface GitHubDeps {
 
 /** Git operations — branching, push, conflict resolution, state recovery. */
 export interface GitDeps {
-  setupRepo: (repo: string, workDir: string) => Promise<Result<string>>;
+  /**
+   * Provide the working tree for a run.
+   *
+   * With `laneId` (Issue #923) the lane gets its own git worktree off the
+   * shared clone, so two slots working the same repository never share
+   * `HEAD`, the index or the checkout. Without it, the shared clone —
+   * unchanged, and still what the CLI single-issue path uses.
+   */
+  setupRepo: (
+    repo: string,
+    workDir: string,
+    laneId?: string,
+  ) => Promise<Result<string>>;
   createBranchName: typeof createBranchName;
   createFeatureBranchFromBase: typeof createFeatureBranchFromBase;
   resumeFeatureBranchFromRemote: typeof resumeFeatureBranchFromRemote;
@@ -353,7 +368,47 @@ export interface WorkerDeps {
 async function setupRepoFn(
   repo: string,
   workDir: string,
+  laneId?: string,
 ): Promise<Result<string>> {
+  // Issue #923: a lane works in its own worktree, never in the shared
+  // `${WORK_DIR}/<repo>` clone. `setupRepo` opens with `reset --hard` +
+  // `clean -fd`, so two slots pointed at one clone would each throw away
+  // the other's work; that is why slots were excluded from a repository a
+  // sibling held, and why only one slot could ever serve a backlog
+  // concentrated in one repository. `ensureRepoClone` clones only when the
+  // clone is genuinely missing, and the worktree gives the lane its own
+  // HEAD, index and checkout off the same object store — no second copy of
+  // history, which matters because the work volume only ever grows.
+  if (laneId !== undefined) {
+    const clone = await ensureRepoClone(repo, workDir);
+    if (!clone.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          clone.message ?? `Could not clone ${repo} into ${workDir}`,
+        ),
+      };
+    }
+    const worktree = await ensureLaneWorktree({
+      workDir,
+      repo,
+      laneId,
+      repoPath: clone.repoPath,
+    });
+    if (!worktree.ok) return worktree;
+
+    // Parity with `setupRepo`, which every run relied on to start clean.
+    // A lane's worktree is created once and reused across cycles, so
+    // without this a run inherits whatever the previous one left behind.
+    // `checkout <default>` is deliberately NOT part of that parity: the
+    // shared clone has the default branch checked out, git refuses to
+    // check the same branch out twice, and the feature branch is created
+    // from `origin/<base>` regardless.
+    await runGitCommand(["reset", "--hard", "HEAD"], { cwd: worktree.value });
+    await runGitCommand(["clean", "-fd"], { cwd: worktree.value });
+    await restoreSession(worktree.value, workDir, repo);
+    return worktree;
+  }
   const result = await setupRepoCommand(repo, workDir);
   if (!result.success) {
     return { ok: false, error: new Error(result.message) };
