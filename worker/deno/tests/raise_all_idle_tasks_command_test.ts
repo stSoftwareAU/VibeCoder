@@ -8,8 +8,9 @@
  *   - happy path -> seeds all ten wrappers per repo and reports the count.
  *
  * All dependencies are injected so the tests never touch the network. The real
- * template body builders resolve cwd-relative prompt paths, so the seeding
- * tests run with cwd at the repo root.
+ * template body builders read `prompts/<scan>/prompt.md`, so the seeding
+ * tests name this checkout with the builders' `rootDir` seam (Issue #1024)
+ * rather than moving the process's working directory.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -20,13 +21,7 @@ import { raiseAllIdleTasksCommand } from "../commands/raise_all_idle_tasks.ts";
 import type { RaiseAllIdleTasksResult } from "../lib/raise_all_idle_tasks.ts";
 import { IDLE_TASK_WRAPPER_TITLES } from "../lib/idle_task_backfill.ts";
 import type { Result, WorkerConfig } from "../types.ts";
-import {
-  pinPromptsToThisCheckout,
-  withRepoRootCwd,
-} from "./support/repo_prompts.ts";
-
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+import { REPO_ROOT } from "./support/repo_root.ts";
 
 const TEN = IDLE_TASK_WRAPPER_TITLES.length;
 
@@ -62,6 +57,7 @@ const testDeps = (fn: (args: string[]) => Promise<string>) => ({
   ensureLabelFn: labelOk,
   findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
   nowFn: stableNow,
+  rootDir: REPO_ROOT,
   log: () => {},
 });
 
@@ -72,35 +68,31 @@ Deno.test("raise-all-idle-tasks - no repos returns failure", async () => {
 });
 
 Deno.test("raise-all-idle-tasks - honours --monitored-repos CSV", async () => {
-  await withRepoRootCwd(async () => {
-    const { fn, created } = makeMockGh();
-    const result = await raiseAllIdleTasksCommand.execute(
-      {
-        "monitored-repos": "org/alpha, org/beta",
-        __testDeps: testDeps(fn),
-      },
-      EMPTY_CONFIG,
-    );
+  const { fn, created } = makeMockGh();
+  const result = await raiseAllIdleTasksCommand.execute(
+    {
+      "monitored-repos": "org/alpha, org/beta",
+      __testDeps: testDeps(fn),
+    },
+    EMPTY_CONFIG,
+  );
 
-    assertEquals(result.success, true);
-    assertEquals(dataOf(result)?.repos.length, 2);
-    assertEquals(dataOf(result)?.totalCreated, TEN * 2);
-    assertEquals(created.length, TEN * 2);
-  });
+  assertEquals(result.success, true);
+  assertEquals(dataOf(result)?.repos.length, 2);
+  assertEquals(dataOf(result)?.totalCreated, TEN * 2);
+  assertEquals(created.length, TEN * 2);
 });
 
 Deno.test("raise-all-idle-tasks - falls back to config.repos", async () => {
-  await withRepoRootCwd(async () => {
-    const { fn, created } = makeMockGh();
-    const config = { repos: ["org/gamma"] } as unknown as WorkerConfig;
-    const result = await raiseAllIdleTasksCommand.execute(
-      { __testDeps: testDeps(fn) },
-      config,
-    );
+  const { fn, created } = makeMockGh();
+  const config = { repos: ["org/gamma"] } as unknown as WorkerConfig;
+  const result = await raiseAllIdleTasksCommand.execute(
+    { __testDeps: testDeps(fn) },
+    config,
+  );
 
-    assertEquals(result.success, true);
-    assertEquals(dataOf(result)?.repos.length, 1);
-    assertEquals(dataOf(result)?.totalCreated, TEN);
-    assertEquals(created.every((c) => c.repo === "org/gamma"), true);
-  });
+  assertEquals(result.success, true);
+  assertEquals(dataOf(result)?.repos.length, 1);
+  assertEquals(dataOf(result)?.totalCreated, TEN);
+  assertEquals(created.every((c) => c.repo === "org/gamma"), true);
 });

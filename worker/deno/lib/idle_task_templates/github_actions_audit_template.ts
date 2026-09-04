@@ -110,6 +110,7 @@
 
 import {
   type IdleTaskBodyOptions,
+  idleTaskPromptsDir,
   type IdleTaskRunOptions,
   type IdleTaskRunResult,
   type IdleTaskShouldFileOptions,
@@ -291,7 +292,10 @@ export interface GitHubActionsAuditTemplateDeps {
   /** gh CLI runner used for snapshots, dedup, and pre-filing. */
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Prompt loader — defaults to `loadPrompt`. */
-  loadPromptFn?: (name: string) => Promise<Result<string>>;
+  loadPromptFn?: (
+    name: string,
+    promptsDir?: string,
+  ) => Promise<Result<string>>;
   /**
    * Ensure the `github-actions-audit` label exists in the target repo.
    * Defaults to `ensureLabelExists`.
@@ -750,7 +754,7 @@ export function createGitHubActionsAuditTemplate(
 ): IdleTaskTemplate {
   const ghCommandFn = deps.ghCommandFn ?? ((args) => defaultGhCommand(args));
   const loadPromptFn = deps.loadPromptFn ??
-    ((name) => defaultLoadPrompt(name));
+    ((name, promptsDir) => defaultLoadPrompt(name, promptsDir));
   const ensureLabelFn = deps.ensureLabelFn ??
     ((repo) =>
       defaultEnsureLabelExists(
@@ -814,8 +818,8 @@ export function createGitHubActionsAuditTemplate(
       }
     });
 
-  async function buildIssueBody(_opts: IdleTaskBodyOptions): Promise<string> {
-    const loaded = await loadPromptFn(PROMPT_NAME);
+  async function buildIssueBody(opts: IdleTaskBodyOptions): Promise<string> {
+    const loaded = await loadPromptFn(PROMPT_NAME, idleTaskPromptsDir(opts));
     if (!loaded.ok) {
       throw new Error(
         `github-actions-audit: failed to load prompt template ${PROMPT_NAME}: ` +
@@ -837,6 +841,7 @@ export function createGitHubActionsAuditTemplate(
     return await buildPromptPreviewBody(prompt, {
       promptName: PROMPT_NAME,
       scope: DESCRIPTION,
+      rootDir: opts.rootDir,
     });
   }
 

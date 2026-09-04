@@ -8,8 +8,9 @@
  *   - happy path -> seeds the four Boy Scout wrappers and reports the count.
  *
  * All dependencies are injected so the tests never touch the network. The real
- * template body builders resolve cwd-relative prompt paths, so the seeding
- * tests run with cwd at the repo root.
+ * template body builders read `prompts/<scan>/prompt.md`, so the seeding
+ * tests name this checkout with the builders' `rootDir` seam (Issue #1024)
+ * rather than moving the process's working directory.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -19,13 +20,7 @@ import { assert, assertEquals } from "@std/assert";
 import { raiseBoyScoutIdleTasksCommand } from "../commands/raise_boy_scout_idle_tasks.ts";
 import type { RaiseBoyScoutIdleTasksResult } from "../lib/boy_scout_idle_tasks.ts";
 import type { Result, WorkerConfig } from "../types.ts";
-import {
-  pinPromptsToThisCheckout,
-  withRepoRootCwd,
-} from "./support/repo_prompts.ts";
-
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+import { REPO_ROOT } from "./support/repo_root.ts";
 
 function dataOf(
   result: { data?: unknown },
@@ -59,6 +54,7 @@ const testDeps = (fn: (args: string[]) => Promise<string>) => ({
   ensureLabelFn: labelOk,
   findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
   nowFn: stableNow,
+  rootDir: REPO_ROOT,
   log: () => {},
 });
 
@@ -69,35 +65,31 @@ Deno.test("raise-boy-scout-idle-tasks - no repos returns failure", async () => {
 });
 
 Deno.test("raise-boy-scout-idle-tasks - honours --monitored-repos CSV", async () => {
-  await withRepoRootCwd(async () => {
-    const { fn, created } = makeMockGh();
-    const result = await raiseBoyScoutIdleTasksCommand.execute(
-      {
-        "monitored-repos": "org/alpha, org/beta",
-        __testDeps: testDeps(fn),
-      },
-      EMPTY_CONFIG,
-    );
+  const { fn, created } = makeMockGh();
+  const result = await raiseBoyScoutIdleTasksCommand.execute(
+    {
+      "monitored-repos": "org/alpha, org/beta",
+      __testDeps: testDeps(fn),
+    },
+    EMPTY_CONFIG,
+  );
 
-    assertEquals(result.success, true);
-    assertEquals(dataOf(result)?.repos.length, 2);
-    assertEquals(dataOf(result)?.totalCreated, 8);
-    assertEquals(created.length, 8);
-  });
+  assertEquals(result.success, true);
+  assertEquals(dataOf(result)?.repos.length, 2);
+  assertEquals(dataOf(result)?.totalCreated, 8);
+  assertEquals(created.length, 8);
 });
 
 Deno.test("raise-boy-scout-idle-tasks - falls back to config.repos", async () => {
-  await withRepoRootCwd(async () => {
-    const { fn, created } = makeMockGh();
-    const config = { repos: ["org/gamma"] } as unknown as WorkerConfig;
-    const result = await raiseBoyScoutIdleTasksCommand.execute(
-      { __testDeps: testDeps(fn) },
-      config,
-    );
+  const { fn, created } = makeMockGh();
+  const config = { repos: ["org/gamma"] } as unknown as WorkerConfig;
+  const result = await raiseBoyScoutIdleTasksCommand.execute(
+    { __testDeps: testDeps(fn) },
+    config,
+  );
 
-    assertEquals(result.success, true);
-    assertEquals(dataOf(result)?.repos.length, 1);
-    assertEquals(dataOf(result)?.totalCreated, 4);
-    assertEquals(created.every((c) => c.repo === "org/gamma"), true);
-  });
+  assertEquals(result.success, true);
+  assertEquals(dataOf(result)?.repos.length, 1);
+  assertEquals(dataOf(result)?.totalCreated, 4);
+  assertEquals(created.every((c) => c.repo === "org/gamma"), true);
 });
