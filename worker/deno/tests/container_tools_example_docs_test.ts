@@ -1,6 +1,7 @@
 /**
- * Tests for the worked Java + Maven `container_tools` example and the operator
- * documentation around it (Issue #75, closing slice of parent #5).
+ * Tests for the worked `container_tools` example and the operator
+ * documentation around it (Issue #75, closing slice of parent #5;
+ * de-vendored by Issue #985).
  *
  * The example in `docs/CONTAINER.md` is what a deployer copies into
  * `.config.json`, so it is checked the way a deployment would meet it rather
@@ -9,8 +10,12 @@
  * with its URLs swapped for local fixture archives of the same shape, so the
  * suite stays offline and fast — driven through the real installer
  * (`container/install-tools.sh`, #70) to prove the documented
- * `stripComponents` / `bin` / `env` really produce `java` on PATH and
- * `JAVA_HOME` pointing at the install prefix.
+ * `stripComponents` / `bin` / `env` really put the tool's binary on PATH and
+ * point its `*_HOME` at the install prefix.
+ *
+ * The ids are deliberately placeholders: the example must never name
+ * third-party software, because core does not know what a deployment installs
+ * (Issue #985).
  *
  * The remaining assertions cover the documentation surfaces this slice owes:
  * the `container_tools` row in the configuration table, the rebuild note in
@@ -93,26 +98,26 @@ Deno.test("container_tools example - the documented spec passes the real validat
   const tools = validatedExample();
   assertEquals(
     tools.map((tool) => tool.id),
-    ["java", "maven"],
-    "the worked example is the Java + Maven pair that motivated #5",
+    ["tool-a", "tool-b"],
+    "the worked example is a placeholder pair — it must name no real software",
   );
 });
 
-Deno.test("container_tools example - Java pins both architectures, Maven is noarch", () => {
-  const java = exampleTool("java");
-  const maven = exampleTool("maven");
+Deno.test("container_tools example - the first entry pins both architectures, the second is noarch", () => {
+  const java = exampleTool("tool-a");
+  const maven = exampleTool("tool-b");
 
   for (const arch of ["amd64", "arm64"] as const) {
-    assert(java.url[arch], `java must supply a ${arch} download`);
+    assert(java.url[arch], `tool-a must supply a ${arch} download`);
     assertEquals(
       java.sha256[arch]?.length,
       64,
-      `java must pin a ${arch} SHA-256`,
+      `tool-a must pin a ${arch} SHA-256`,
     );
   }
 
-  assert(maven.url.noarch, "maven ships one architecture-independent archive");
-  assertEquals(maven.sha256.noarch?.length, 64, "maven must pin its SHA-256");
+  assert(maven.url.noarch, "tool-b ships one architecture-independent archive");
+  assertEquals(maven.sha256.noarch?.length, 64, "tool-b must pin its SHA-256");
 });
 
 Deno.test("container_tools example - every download is https and an installable archive", () => {
@@ -136,15 +141,15 @@ Deno.test("container_tools example - every download is https and an installable 
 });
 
 Deno.test("container_tools example - bin and env stay inside the fixed prefix", () => {
-  const java = exampleTool("java");
-  const maven = exampleTool("maven");
+  const java = exampleTool("tool-a");
+  const maven = exampleTool("tool-b");
 
   assertEquals(java.bin, ["bin"]);
-  assertEquals(java.env["JAVA_HOME"], "", "JAVA_HOME is the prefix root");
+  assertEquals(java.env["TOOL_A_HOME"], "", "TOOL_A_HOME is the prefix root");
   assertEquals(maven.bin, ["bin"]);
   assertEquals(
     containerToolPrefix(java.id),
-    `${CONTAINER_TOOL_PREFIX_ROOT}/java`,
+    `${CONTAINER_TOOL_PREFIX_ROOT}/tool-a`,
   );
 });
 
@@ -191,7 +196,7 @@ async function fixtureArchive(
  * local so the suite needs no network.
  */
 async function exampleWithFixtures(workDir: string): Promise<unknown[]> {
-  const commands: Record<string, string> = { java: "java", maven: "mvn" };
+  const commands: Record<string, string> = {};
   const spec = documentedExample() as Record<string, unknown>[];
 
   for (const entry of spec) {
@@ -233,7 +238,7 @@ async function runInstaller(
 
 for (const arch of ["amd64", "arm64"]) {
   Deno.test(
-    `container_tools example - installs java and maven on ${arch}`,
+    `container_tools example - installs the documented tools on ${arch}`,
     async () => {
       const workDir = await Deno.makeTempDir({ prefix: "vibe-example-work-" });
       const prefix = await Deno.makeTempDir({ prefix: "vibe-example-prefix-" });
@@ -251,19 +256,22 @@ for (const arch of ["amd64", "arm64"]) {
 
         // stripComponents: 1 drops the distribution's top-level directory.
         assertEquals(
-          (await Deno.stat(`${prefix}/java/bin/java`)).isFile,
+          (await Deno.stat(`${prefix}/tool-a/bin/tool-a`)).isFile,
           true,
         );
-        assertEquals((await Deno.stat(`${prefix}/maven/bin/mvn`)).isFile, true);
+        assertEquals(
+          (await Deno.stat(`${prefix}/tool-b/bin/tool-b`)).isFile,
+          true,
+        );
 
         // The hand-off the entrypoint (#74) applies at container start.
         const environment = await Deno.readTextFile(`${prefix}/environment`);
         for (
           const line of [
-            `PATH=${prefix}/java/bin`,
-            `JAVA_HOME=${prefix}/java`,
-            `PATH=${prefix}/maven/bin`,
-            `MAVEN_HOME=${prefix}/maven`,
+            `PATH=${prefix}/tool-a/bin`,
+            `TOOL_A_HOME=${prefix}/tool-a`,
+            `PATH=${prefix}/tool-b/bin`,
+            `TOOL_B_HOME=${prefix}/tool-b`,
           ]
         ) {
           assertStringIncludes(environment, line);

@@ -201,7 +201,7 @@ with `--network none`.
 ## Deployer-supplied build-time tools
 
 A deployment whose monitored repositories need a toolchain the fleet image
-does not carry — Java and Maven are the first expected use — declares it in
+does not carry declares it in
 `.config.json` as `container_tools`. The build takes that validated array as
 the `VIBE_CONTAINER_TOOLS` build argument, writes it to a spec file and runs
 `container/install-tools.sh` over it, which downloads, SHA-256 verifies and
@@ -209,7 +209,7 @@ extracts each entry under `/opt/vibe-tools/<id>`. The whole set is validated
 before anything is downloaded, and any fault — a bad id, a missing digest for
 the build architecture, an unsupported archive extension, a checksum mismatch
 — aborts the build naming the tool, rather than producing an image that
-silently lacks it. The spec shape, a worked Java + Maven example and the
+silently lacks it. The spec shape, a worked example and the
 checksum rules a deployer needs are in
 [Container Image](CONTAINER.md#deployer-supplied-build-time-tools).
 
@@ -233,7 +233,7 @@ The selection is part of the image's **identity**, not just its build: the tag
 `container-image-hash` prints mixes in a canonical serialisation of the
 validated spec (see
 [Image identity](CONTAINER.md#image-identity--the-tag-is-the-definitions-hash)),
-so a host that selects Java and Maven cannot be satisfied by another host's
+so a host that selects extra tools cannot be satisfied by another host's
 cached tools-free image.
 
 These archives are deliberately *not* in `container/tools.json`: they are the
