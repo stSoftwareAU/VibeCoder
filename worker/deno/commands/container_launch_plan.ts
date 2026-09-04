@@ -45,6 +45,7 @@ import { emitSelfHealEventAuto } from "../lib/self_heal_events.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
+import { readContainerExtensionSelection } from "../lib/container_extension_config.ts";
 import { readContainerToolsSelection } from "../lib/container_tools_config.ts";
 import {
   readConfiguredDiskFloors,
@@ -154,12 +155,21 @@ export async function buildLaunchPlanForCommand(
     await readConfiguredDiskFloors(hostPaths.configFile),
   );
 
-  // The selected tools and providers are baked into the image, so they are part
-  // of its identity (Issues #73, #729) — the plan must name the tag the build
-  // produces, not one another deployment's cache would satisfy.
+  // The deployment's private extension is baked into the image too (Issue
+  // #979): its Containerfile builds `FROM` the standard one, so its contents
+  // are part of what the tag names.
+  const containerExtension = await readContainerExtensionSelection(
+    hostPaths.configFile,
+  );
+
+  // The selected tools, providers and extension are baked into the image, so
+  // they are part of its identity (Issues #73, #729, #979) — the plan must name
+  // the tag the build produces, not one another deployment's cache would
+  // satisfy.
   const image = await resolveContainerImageReference(baseDir, {
     containerTools: tools,
     ...(agentProviders ? { agentProviders } : {}),
+    ...(containerExtension ? { containerExtension } : {}),
   });
 
   // Stage the configuration into its own directory for the read-only mount.
