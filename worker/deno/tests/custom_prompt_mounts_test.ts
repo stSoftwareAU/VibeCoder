@@ -13,6 +13,7 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
+  assertCustomPromptSourceResolvable,
   CUSTOM_PROMPT_PATH_MAP_ENV,
   customPromptPathResolver,
   parseCustomPromptPathMap,
@@ -45,17 +46,73 @@ Deno.test("planCustomPromptMounts - prompts sharing a directory share one mount"
     [
       "/srv/vibe-prompts/one.md",
       "/srv/vibe-prompts/two.md",
-      // A trailing-separator spelling of the same directory is the same mount.
-      "/srv/vibe-prompts//three.md".replace("//", "/"),
+      // A doubled-separator spelling of the same directory is the same mount.
+      "/srv/vibe-prompts//three.md",
     ],
     TARGET_BASE,
   );
-  assertEquals(plan.mounts.length, 1);
+  assertEquals(plan.mounts, [
+    { source: "/srv/vibe-prompts", target: `${TARGET_BASE}/1` },
+  ]);
   assertEquals(Object.keys(plan.translations).length, 3);
   assertEquals(
     plan.translations["/srv/vibe-prompts/two.md"],
     `${TARGET_BASE}/1/two.md`,
   );
+  // Keyed by the path exactly as configured, so the worker can look up what
+  // it read from `.config.json`.
+  assertEquals(
+    plan.translations["/srv/vibe-prompts//three.md"],
+    `${TARGET_BASE}/1/three.md`,
+  );
+});
+
+Deno.test("assertCustomPromptSourceResolvable - a traversal segment is refused (Issue #850)", () => {
+  // The mount-source allowlist compares strings: `/srv/../home/operator` is
+  // not string-equal to the home directory but is exactly it once the runtime
+  // resolves the mount, so the spelling is refused before it gets there.
+  const error = assertThrows(
+    () =>
+      assertCustomPromptSourceResolvable(
+        "/srv/../home/operator/private.md",
+        (path) => path,
+      ),
+    Error,
+  );
+  assertStringIncludes(error.message, "..");
+  assertStringIncludes(error.message, "Refusing to launch");
+
+  assertThrows(
+    () =>
+      assertCustomPromptSourceResolvable("/srv/./prompts/a.md", (path) => path),
+    Error,
+  );
+});
+
+Deno.test("assertCustomPromptSourceResolvable - a symlinked path is refused, naming where it resolves (Issue #850)", () => {
+  const error = assertThrows(
+    () =>
+      assertCustomPromptSourceResolvable(
+        "/srv/prompts/a.md",
+        () => "/home/operator/a.md",
+      ),
+    Error,
+  );
+  assertStringIncludes(error.message, "/home/operator/a.md");
+
+  // An unresolvable path fails loudly too — never silently mounted.
+  const missing = assertThrows(
+    () =>
+      assertCustomPromptSourceResolvable("/srv/prompts/a.md", () => {
+        throw new Deno.errors.NotFound("no such file");
+      }),
+    Error,
+  );
+  assertStringIncludes(missing.message, "cannot be resolved");
+});
+
+Deno.test("assertCustomPromptSourceResolvable - a canonical path is accepted", () => {
+  assertCustomPromptSourceResolvable("/srv/prompts/a.md", (path) => path);
 });
 
 Deno.test("planCustomPromptMounts - distinct directories are numbered in configuration order", () => {
@@ -134,12 +191,12 @@ Deno.test("parseCustomPromptPathMap - malformed values fail loud", () => {
   assertStringIncludes(notStrings.message, "/srv/p/a.md");
 });
 
-Deno.test("customPromptPathResolver - native mode leaves the host path unchanged", () => {
+Deno.test("customPromptPathResolver - a host-side read leaves the path unchanged", () => {
   const resolve = customPromptPathResolver(undefined);
   assertEquals(resolve("/srv/vibe-prompts/a.md"), "/srv/vibe-prompts/a.md");
 });
 
-Deno.test("customPromptPathResolver - container mode resolves onto the mounted path", () => {
+Deno.test("customPromptPathResolver - inside the container it resolves onto the mount", () => {
   const plan = planCustomPromptMounts(
     ["/srv/vibe-prompts/a.md"],
     TARGET_BASE,

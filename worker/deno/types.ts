@@ -502,9 +502,9 @@ export interface WorkerConfig {
    * feature is off until an operator opts in, and no existing config changes
    * behaviour.
    *
-   * In container mode each `promptPath` is the path the launcher's read-only
-   * mount makes the operator's file readable at (Issue #850); natively it is
-   * the configured host path unchanged.
+   * Inside the container each `promptPath` is where the launcher's read-only
+   * mount makes the operator's file readable (Issue #850); read on the host it
+   * is the configured path unchanged.
    */
   customLabelPrompts: CustomLabelPromptMapping[];
   /**

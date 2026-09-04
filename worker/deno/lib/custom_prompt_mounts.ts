@@ -31,8 +31,10 @@
  * The same `.config.json` is used in both modes, so the configured path stays
  * the host path an operator wrote. The launcher passes the host → in-container
  * mapping in {@link CUSTOM_PROMPT_PATH_MAP_ENV}, and the config loader applies
- * it when it validates the mappings. Native mode sets no variable and resolves
- * the host path unchanged.
+ * it when it validates the mappings. A read outside the container — the
+ * launcher's own, setup, a dev run — sets no variable and resolves the host
+ * path unchanged. (`run_mode: native` was removed by Issue #4; this is about
+ * where the config is read, not a run mode.)
  *
  * Australian English spelling throughout (behaviour, organisation).
  */
@@ -68,6 +70,72 @@ export interface CustomPromptMountPlan {
   translations: Record<string, string>;
 }
 
+/**
+ * True when a path carries a `.` or `..` segment.
+ *
+ * The mount-source allowlist in `container_launch.ts` compares **strings**:
+ * it has no filesystem to consult and deliberately never had one. A
+ * `..` segment therefore walks straight past it —
+ * `/srv/../home/operator/x.md` yields the source `/srv/../home/operator`,
+ * which is not string-equal to the home directory but is exactly it once the
+ * runtime resolves the mount. Every other mount source is a path the worker
+ * itself derived; a configured prompt path is the first an operator writes
+ * by hand, so the traversal spelling is refused rather than trusted.
+ *
+ * @param path - A host path
+ * @returns Whether any segment is `.` or `..`
+ */
+export function hasTraversalSegment(path: string): boolean {
+  return path.split(/[/\\]/).some((segment) =>
+    segment === "." || segment === ".."
+  );
+}
+
+/**
+ * Refuse a configured prompt path the containment allowlist cannot be
+ * trusted to judge (Issue #850).
+ *
+ * Both faults are the same fault: the string the allowlist checks is not the
+ * path the runtime will mount. A `..` segment says so in the spelling; a
+ * symlink says so only once resolved. Either way the launch fails here, with
+ * the resolved path named so the operator can configure it directly, rather
+ * than a broadened mount reaching the runtime.
+ *
+ * @param promptPath - The configured absolute host path
+ * @param realPath - Resolver for symlinks and relative segments
+ * @throws When the path carries a `.`/`..` segment, cannot be resolved, or
+ *   resolves to somewhere other than itself
+ */
+export function assertCustomPromptSourceResolvable(
+  promptPath: string,
+  realPath: (path: string) => string,
+): void {
+  if (hasTraversalSegment(promptPath)) {
+    throw new Error(
+      `Refusing to launch: the custom prompt path ${promptPath} contains a ` +
+        `"." or ".." segment, so the mount it derives would not be the path ` +
+        `the containment allowlist checked. Configure the resolved path.`,
+    );
+  }
+
+  let resolved: string;
+  try {
+    resolved = realPath(promptPath);
+  } catch (error) {
+    throw new Error(
+      `Refusing to launch: the custom prompt path ${promptPath} cannot be ` +
+        `resolved (${(error as Error).message}).`,
+    );
+  }
+  if (resolved !== promptPath) {
+    throw new Error(
+      `Refusing to launch: the custom prompt path ${promptPath} resolves to ` +
+        `${resolved}, so the directory the runtime would mount is not the ` +
+        `one the containment allowlist checked. Configure ${resolved}.`,
+    );
+  }
+}
+
 /** Split a host path into its directory and file name, in the host's spelling. */
 function splitPath(
   path: string,
@@ -76,13 +144,15 @@ function splitPath(
   const lastSlash = path.lastIndexOf("/");
   const lastBackslash = style === "windows" ? path.lastIndexOf("\\") : -1;
   const index = Math.max(lastSlash, lastBackslash);
-  return {
-    // A path whose only separator is its first character keeps that separator
-    // as the directory: `/rogue.md` is in the filesystem root, and the launch
-    // plan's allowlist refuses to mount it.
-    directory: index <= 0 ? path.slice(0, index + 1) : path.slice(0, index),
-    name: path.slice(index + 1),
-  };
+  // A path whose only separator is its first character keeps that separator
+  // as the directory: `/rogue.md` is in the filesystem root, and the launch
+  // plan's allowlist refuses to mount it.
+  const directory = index <= 0
+    ? path.slice(0, index + 1)
+    // Trailing separators are stripped so `/srv/p//a.md` and `/srv/p/b.md`
+    // are recognised as one directory and share one mount.
+    : path.slice(0, index).replace(/[/\\]+$/, "");
+  return { directory, name: path.slice(index + 1) };
 }
 
 /**
@@ -125,7 +195,8 @@ export function planCustomPromptMounts(
  * Parse the launcher's translation map — fail loud, never partially applied.
  *
  * @param raw - The raw {@link CUSTOM_PROMPT_PATH_MAP_ENV} value
- * @returns The map; empty when the variable is unset or blank (native mode)
+ * @returns The map; empty when the variable is unset or blank — a read
+ *   outside the container, where the host path is the readable one
  * @throws When the value is not a JSON object of string → string entries: a
  *   mangled map would resolve a prompt onto the wrong file, or onto none.
  */

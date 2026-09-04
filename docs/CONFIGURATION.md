@@ -570,7 +570,8 @@ flowchart LR
   is bind-mounted into the container at
   `/home/vibe/.vibe-coder/custom-prompts/<n>`, read-only, and the worker
   resolves the configured host path onto that mount — so the same
-  `.config.json` works natively and containerised, and nothing inside the
+  `.config.json` serves the host-side launcher and the container alike, and
+  nothing inside the
   container can edit an operator's template. Keep the prompts in a directory of
   their own: everything beside them in that directory is readable inside the
   container too. A path the containment allowlist refuses — the host home

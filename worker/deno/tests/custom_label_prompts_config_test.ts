@@ -583,3 +583,32 @@ Deno.test("readConfiguredCustomPromptPaths - a malformed file stops the launch",
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("parseCustomLabelPrompts - a traversal segment in prompt_path is rejected (Issue #850)", async () => {
+  // The mount-source allowlist compares strings, so `/srv/../home/operator`
+  // is not string-equal to the home directory but *is* it once the runtime
+  // resolves the mount. Refused at the trust boundary rather than mounted.
+  const dir = await Deno.makeTempDir({ prefix: "custom-label-prompts-" });
+  try {
+    const promptPath = await writePromptFile(dir, "a.md");
+    for (
+      const spelling of [
+        `${dir}/../${dir.split("/").pop()}/a.md`,
+        `${dir}/./a.md`,
+      ]
+    ) {
+      assertRejected(
+        [{ label: "traversal-label", prompt_path: spelling }],
+        "custom_label_prompts[0].prompt_path",
+        '".." segment',
+      );
+    }
+    // The canonical spelling of the same file is still accepted.
+    const ok = parseCustomLabelPrompts([
+      { label: "canonical-label", prompt_path: promptPath },
+    ]);
+    assertEquals(ok.ok, true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

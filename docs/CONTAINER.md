@@ -964,7 +964,8 @@ The custom-prompt mounts exist **only** when an operator configures
 configured prompt file, read-only, one mount per distinct directory. The
 directory rather than the file, because Apple `container` cannot bind a single
 file. The staged `.config.json` still names the operator's *host* paths — one
-file works natively and containerised — so the plan also carries
+file serves the host-side launcher and the container alike — so the plan also
+carries
 `VIBE_CUSTOM_PROMPT_PATHS`, a JSON map from each configured host path to where
 the mount makes it readable, which the config loader applies. Every source goes
 through the same allowlist as any other mount, so a prompt path under the host

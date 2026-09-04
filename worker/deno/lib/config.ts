@@ -802,9 +802,9 @@ export async function loadConfig(
   //
   // In container mode the configured paths are *host* paths the container
   // cannot see, so the launcher hands over where it mounted each one
-  // (Issue #850) and the mapping resolves onto that. Native mode sets no
-  // variable and uses the configured path unchanged, so one `.config.json`
-  // works in both.
+  // (Issue #850) and the mapping resolves onto that. A read outside the
+  // container — the launcher's own, setup, a dev run — sets no variable and
+  // uses the configured path unchanged, so one `.config.json` serves both.
   const customLabelPrompts = assertCustomLabelPrompts(
     file.custom_label_prompts,
     { resolvePath: customPromptPathResolver(env(CUSTOM_PROMPT_PATH_MAP_ENV)) },

@@ -25,6 +25,7 @@
 import type { CustomLabelPromptMapping, Result } from "../types.ts";
 import { isReservedLabel } from "./config_defaults.ts";
 import { isWorkerAppliableLabel } from "./worker_label_guard.ts";
+import { hasTraversalSegment } from "./custom_prompt_mounts.ts";
 
 /** Keys a `custom_label_prompts` entry may carry. */
 const KNOWN_ENTRY_KEYS: ReadonlySet<string> = new Set([
@@ -75,10 +76,10 @@ function parseCleanString(raw: unknown, field: string): string {
 /**
  * How a configured prompt path is resolved to where it is readable.
  *
- * The identity by default — natively the operator's path *is* the path. In
- * container mode the launcher mounts each prompt directory read-only and hands
- * over the host → in-container translation (Issue #850), so the same
- * `.config.json` works on both sides of the boundary.
+ * The identity by default — read on the host, the operator's path *is* the
+ * path. Inside the container the launcher has mounted each prompt directory
+ * read-only and handed over the host → in-container translation (Issue #850),
+ * so the same `.config.json` serves both sides of the boundary.
  */
 export interface CustomLabelPromptOptions {
   /** Resolve a configured host path to where this run can read it. */
@@ -143,6 +144,17 @@ function parseEntry(
     reject(
       `${entryField}.prompt_path`,
       `must be an absolute path, got ${show(configuredPath)}`,
+    );
+  }
+  // Issue #850: in container mode the containing directory of this path is
+  // bind-mounted, and the mount-source allowlist compares strings — so a
+  // traversal segment would derive a source the allowlist never judged
+  // (`/srv/../home/operator` is the home directory once resolved). Refused at
+  // the trust boundary, in both run modes, rather than only at launch.
+  if (hasTraversalSegment(configuredPath)) {
+    reject(
+      `${entryField}.prompt_path`,
+      `must not contain a "." or ".." segment, got ${show(configuredPath)}`,
     );
   }
 
