@@ -691,14 +691,19 @@ function withGhLessStubClaude<T>(
     // gh-less, so the stub must reach for no external command at all.
     `printf 'ran\\n' > "\${0%/*}/${SPAWN_MARKER}"\n` +
       `printf 'stub-claude-ok\\n'`,
-    (stub) => {
+    async (stub) => {
       marker(`${stub.dir}/${SPAWN_MARKER}`);
-      return fn({
+      // A `PATH` built for this run rather than borrowed from the host: one
+      // directory holding `bash` and nothing else, so the stub's own
+      // `#!/usr/bin/env bash` resolves and the shim's `gh` lookup cannot.
+      // Naming a real system directory does not work — on a merged-/usr
+      // Linux `/bin` *is* `/usr/bin`, `gh` included.
+      const binDir = `${stub.dir}/bin`;
+      await Deno.mkdir(binDir);
+      await Deno.symlink("/bin/bash", `${binDir}/bash`);
+      return await fn({
         agentBinaryPath: stub.path,
-        // `/bin` alone: enough for the stub's own `#!/usr/bin/env bash`,
-        // and no host puts `gh` there — so the shim finds none. The stub
-        // itself is named by path, so it needs no `PATH` entry.
-        parentEnv: { PATH: "/bin" },
+        parentEnv: { PATH: binDir },
       });
     },
     { prefix: "claude_no_gh_" },
