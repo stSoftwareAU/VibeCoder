@@ -26,27 +26,27 @@ import {
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
+import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 
-/** Stub `claude` on PATH that records spawns and runs `body`. */
-async function withStubClaude<T>(
+/**
+ * Run `fn` with a stub agent that records spawns and runs `body`.
+ *
+ * The stub is named by path (`agentBinaryPath`, Issue #959) rather than
+ * installed on the process-wide `PATH`, which raced every other test in the
+ * run (Issue #960, plan #944). The spawn log lives in the stub's own temp
+ * directory, so disposing the stub takes the evidence with it.
+ */
+function withStubClaude<T>(
   body: string,
-  fn: (spawnLog: string) => Promise<T>,
+  fn: (spawnLog: string, stub: AgentStub) => Promise<T>,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_stub_term_" });
-  const spawnLog = `${dir}/spawns.log`;
-  await Deno.writeTextFile(
-    `${dir}/claude`,
-    `#!/usr/bin/env bash\necho spawn >> "${spawnLog}"\n${body}\n`,
+  return withAgentStub(
+    // `$0` is the stub's own path, so the log sits beside it without the
+    // body having to be built around a directory name.
+    `echo spawn >> "$(dirname "$0")/spawns.log"\n${body}\n`,
+    (stub) => fn(`${stub.dir}/spawns.log`, stub),
+    { prefix: "claude_stub_term_" },
   );
-  await Deno.chmod(`${dir}/claude`, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  try {
-    return await fn(spawnLog);
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
 }
 
 async function spawnCount(spawnLog: string): Promise<number> {
@@ -75,11 +75,12 @@ Deno.test({
       `kill -TERM $$`,
     ].join("\n");
     const startedAt = Date.now();
-    await withStubClaude(body, async (spawnLog) => {
+    await withStubClaude(body, async (spawnLog, stub) => {
       const result = await runClaudeWithRetry(
         {
           prompt: "P",
           model: "m",
+          agentBinaryPath: stub.path,
           timeoutSeconds: 30,
           killAfterSeconds: 2,
           cwd: await Deno.makeTempDir({ prefix: "term-cwd-" }),
@@ -112,11 +113,12 @@ Deno.test({
     try {
       await withStubClaude(
         `printf '%s\\n' '{"type":"result","result":"done"}'`,
-        async (spawnLog) => {
+        async (spawnLog, stub) => {
           const result = await runClaudeWithRetry(
             {
               prompt: "P",
               model: "m",
+              agentBinaryPath: stub.path,
               timeoutSeconds: 30,
               killAfterSeconds: 2,
               mcpConfig: false,
@@ -141,11 +143,12 @@ Deno.test({
   async fn() {
     resetAgentRunsTerminating();
     try {
-      await withStubClaude(`sleep 60`, async (spawnLog) => {
+      await withStubClaude(`sleep 60`, async (spawnLog, stub) => {
         const running = runClaudeWithRetry(
           {
             prompt: "P",
             model: "m",
+            agentBinaryPath: stub.path,
             timeoutSeconds: 120,
             killAfterSeconds: 2,
             mcpConfig: false,
@@ -469,11 +472,12 @@ Deno.test({
     // The next priority must actually spawn its agent, not be refused.
     await withStubClaude(
       `printf '%s\\n' '{"type":"result","result":"done"}'`,
-      async (spawnLog) => {
+      async (spawnLog, stub) => {
         const result = await runClaudeWithRetry(
           {
             prompt: "P",
             model: "m",
+            agentBinaryPath: stub.path,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
             cwd: await Deno.makeTempDir({ prefix: "post-abandon-" }),

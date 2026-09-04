@@ -17,6 +17,8 @@ import {
 } from "../lib/agent_provider.ts";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import { PLAYWRIGHT_MCP_VERSION } from "../setup/screenshot.ts";
+import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 Deno.test("agent mcp config - writes the Playwright server config to the worker cache (never the clone) with the clone's docs/evidence as output dir and the chromium channel (Issue #4355)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "mcp-cfg-" });
@@ -96,26 +98,21 @@ Deno.test("agent provider - Claude invocation carries --mcp-config when a config
   assertEquals(without.includes("--mcp-config"), false);
 });
 
-/** A stub `claude` on PATH that records its argv and answers like the CLI. */
-async function withStubClaude<T>(
+/**
+ * Run `fn` with a stub agent that records its argv and answers like the CLI.
+ *
+ * Named by path (`agentBinaryPath`, Issue #959) rather than installed on the
+ * process-wide `PATH`, which raced every other test in the run (Issue #960).
+ */
+function withStubClaude<T>(
   argvFile: string,
-  fn: () => Promise<T>,
+  fn: (stub: AgentStub) => Promise<T>,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_stub_mcp_" });
-  const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(
-    stubPath,
-    `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${argvFile}"\nprintf '%s\\n' '{"type":"result","result":"done"}'\nexit 0\n`,
+  return withAgentStub(
+    `printf '%s\\n' "$@" > "${argvFile}"\nprintf '%s\\n' '{"type":"result","result":"done"}'\nexit 0\n`,
+    fn,
+    { prefix: "claude_stub_mcp_" },
   );
-  await Deno.chmod(stubPath, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  try {
-    return await fn();
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
 }
 
 Deno.test({
@@ -125,17 +122,17 @@ Deno.test({
   async fn() {
     const workDir = await Deno.makeTempDir({ prefix: "mcp-run-" });
     const argvFile = `${workDir}/argv.txt`;
-    const prevWorkDir = Deno.env.get("WORK_DIR");
-    Deno.env.set("WORK_DIR", workDir);
     try {
       // Issue #192: the need signal, not the cwd, grants the browser. A run
       // that never asked for one is invoked with no MCP server at all.
-      await withStubClaude(argvFile, async () => {
+      await withStubClaude(argvFile, async (stub) => {
         await runClaudeWithRetry(
           {
             prompt: "P",
             model: "m",
             cwd: workDir,
+            workDir,
+            agentBinaryPath: stub.path,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
           },
@@ -150,12 +147,14 @@ Deno.test({
       );
 
       // mcpConfig: true — the explicit need signal (Issue #192).
-      await withStubClaude(argvFile, async () => {
+      await withStubClaude(argvFile, async (stub) => {
         await runClaudeWithRetry(
           {
             prompt: "P",
             model: "m",
             cwd: workDir,
+            workDir,
+            agentBinaryPath: stub.path,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
             mcpConfig: true,
@@ -178,12 +177,14 @@ Deno.test({
         false,
       );
 
-      await withStubClaude(argvFile, async () => {
+      await withStubClaude(argvFile, async (stub) => {
         await runClaudeWithRetry(
           {
             prompt: "P",
             model: "m",
             cwd: workDir,
+            workDir,
+            agentBinaryPath: stub.path,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
             mcpConfig: false,
@@ -196,11 +197,13 @@ Deno.test({
 
       // The need signal without a clone still wires nothing — the server is
       // configured per clone, so there is nothing to point it at.
-      await withStubClaude(argvFile, async () => {
+      await withStubClaude(argvFile, async (stub) => {
         await runClaudeWithRetry(
           {
             prompt: "P",
             model: "m",
+            workDir,
+            agentBinaryPath: stub.path,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
             mcpConfig: true,
@@ -211,31 +214,38 @@ Deno.test({
       const argv3 = (await Deno.readTextFile(argvFile)).split("\n");
       assertEquals(argv3.includes("--mcp-config"), false);
     } finally {
-      if (prevWorkDir === undefined) Deno.env.delete("WORK_DIR");
-      else Deno.env.set("WORK_DIR", prevWorkDir);
       await Deno.remove(workDir, { recursive: true });
     }
   },
 });
 
 Deno.test("agent mcp config - with no WORK_DIR the config lands under the OS temp dir, never under HOME (Issue #4370)", async () => {
-  const prevWork = Deno.env.get("WORK_DIR");
-  const prevTmp = Deno.env.get("TMPDIR");
   const tmp = await Deno.makeTempDir({ prefix: "mcp-tmpdir-" });
-  Deno.env.delete("WORK_DIR");
-  Deno.env.set("TMPDIR", tmp);
+  // The environment is handed over, not exported (Issue #960): `HOME` is
+  // present and `WORK_DIR` absent, which is the shape that produced the
+  // stray `~/auto-issue-work` this test was written for.
+  const env = envFrom({ TMPDIR: tmp, HOME: "/home/vibe" });
   try {
-    const path = await ensureAgentMcpConfig({ cwd: "/w/some-clone" });
+    const path = await ensureAgentMcpConfig({ cwd: "/w/some-clone", env });
     assert(path, "config path");
     assert(path.startsWith(`${tmp}/vibe-playwright-mcp/`), path);
-    const home = Deno.env.get("HOME") ?? "";
-    assert(!home || !path.startsWith(`${home}/auto-issue-work`), path);
-    assertEquals(defaultMcpConfigDir(), `${tmp}/vibe-playwright-mcp`);
+    assert(!path.startsWith("/home/vibe/auto-issue-work"), path);
+    assertEquals(defaultMcpConfigDir({ env }), `${tmp}/vibe-playwright-mcp`);
   } finally {
-    if (prevWork === undefined) Deno.env.delete("WORK_DIR");
-    else Deno.env.set("WORK_DIR", prevWork);
-    if (prevTmp === undefined) Deno.env.delete("TMPDIR");
-    else Deno.env.set("TMPDIR", prevTmp);
     await Deno.remove(tmp, { recursive: true });
   }
+});
+
+Deno.test("agent mcp config - a named work volume beats the environment (Issue #960)", () => {
+  // The seam is only worth having if the named directory wins. `WORK_DIR` in
+  // the lookup names a directory the assertion would notice.
+  const env = envFrom({ WORK_DIR: "/from-the-environment", TMPDIR: "/t" });
+  assertEquals(
+    defaultMcpConfigDir({ workDir: "/named/volume", env }),
+    "/named/volume/.vibe-cache/mcp",
+  );
+  assertEquals(
+    defaultMcpConfigDir({ env }),
+    "/from-the-environment/.vibe-cache/mcp",
+  );
 });
