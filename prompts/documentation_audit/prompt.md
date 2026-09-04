@@ -851,7 +851,10 @@ The filer attaches **only** these labels — never an operational workflow label
 - `documentation-audit`
 - one of `severity:high|severity:medium|severity:low`
 
-Before exiting, confirm: at most 6 `gh issue create` calls; every filed issue
+### Verification before exit
+
+Re-read every issue this run filed before exiting, and confirm: at most 6
+`gh issue create` calls; every filed issue
 carries `documentation-audit` and exactly one `severity:*` label and no
 operational label; no suppressed or known-open id was filed; no file was
 written — tracked, untracked, or scratch; and every body ends with the

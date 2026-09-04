@@ -537,7 +537,10 @@ label, never a `lang:*` label:
 - `orphan-deps`
 - one of `severity:high|severity:medium|severity:low`
 
-Before exiting, confirm: at most 6 `gh issue create` calls; every filed
+### Verification before exit
+
+Re-read every issue this run filed before exiting, and confirm: at most 6
+`gh issue create` calls; every filed
 issue carries `orphan-deps` and exactly one `severity:*` label, with no
 operational and no `lang:*` label; every finding names a suggested
 maintained replacement with a one-line migration note; no suppressed or

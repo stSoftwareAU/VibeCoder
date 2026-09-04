@@ -1794,7 +1794,10 @@ label:
 - one of `confidence:high|confidence:medium|confidence:low`
 - `security-scan-overflow` (only on the overflow tracker, when used)
 
-Before exiting, confirm: one `gh issue create` per surviving finding
+### Verification before exit
+
+Re-read every issue this run filed before exiting, and confirm: one
+`gh issue create` per surviving finding
 (capped at 6, plus one overflow tracker when more than 6 survived, or when
 the stopping rule left chunks unswept); every filed issue carries
 `security`, exactly one `severity:*`, and exactly one `confidence:*` label,

@@ -36,17 +36,18 @@ flowchart LR
    per surface, listing each gap as checklist item plus evidence plus a
    concrete suggested change.
 
-## Applicability — the two surface kinds
+## Applicability — the three surface kinds
 
-Both kinds are in scope for, but some rows are decided in only one of
+All three kinds are in scope for, but some rows are decided in only one of
 them, so state the kind before scoring.
 
 | Surface kind | What it is | Evidence looks like | Rows it owns |
 | --- | --- | --- | --- |
 | **Static template** — `prompts/<name>/prompt.md` | The prompt text itself: either a whole workflow prompt (`issue`, `security_scan`) or a fragment substituted into one (`coding_guidelines`) | `prompts/dead_code/prompt.md:210` | Everything the words say: rows 1–5, 8, 10–22, and the house rows H1–H3 |
 | **Code-assembled string** — `worker/deno/lib/prompt_builder.ts` | The builder functions that load a template, substitute placeholders, split system versus user turn, and fence untrusted content | `worker/deno/lib/prompt_builder.ts:148` | Everything the assembly decides: rows 4, 6, 7, 9, and the wrapper around any injected value |
+| **Wrapper issue body** — the `prompt.md` of a native scan | The same file, but no model ever reads it: a native template renders it as the filed idle-task issue body, and the scan itself runs in Deno. The four are `prompts/alert_feed/`, `prompts/bash_script_refs/`, `prompts/bash_syntax_audit/` and `prompts/workflow_annotation_scan/` | `worker/deno/lib/idle_task_templates/bash_syntax_audit_template.ts:486` — the `buildIssueBody()` that renders it | Only what the **document** must do for its human reader: rows 1, 2, 8 and the house rows H1–H3 |
 
-Two consequences worth stating once, so audits do not re-litigate them:
+Three consequences worth stating once, so audits do not re-litigate them:
 
 - **A fragment inherits its host.** `coding_guidelines` is substituted into
   eight templates by `buildCodingGuidelines()`, so a fragment may score ➖ on a
@@ -56,6 +57,15 @@ Two consequences worth stating once, so audits do not re-litigate them:
 - **A template cannot set message roles.** Row 9 (prefilled responses) is
   therefore ➖ for every `prompt.md` surface and is only ever scored in
   `prompt_builder.ts`.
+- **A wrapper issue body is scored as a document, not as a prompt** (Issue
+  #841). Every row that scores what a *model* does with the text — 3, 5, 6, 9
+  and 10–22 — is ➖ for the four surfaces above, because there is no model turn
+  to score. The evidence for the ➖ is the template's `buildIssueBody()` call
+  site, which is what makes the file an issue body rather than a prompt. Rows
+  1, 2, 8 and H1–H3 still bind: a human reads it, so it must be clear, say why,
+  and state its shape. The alternative — giving each of the four a persona so
+  row 5 passes — was rejected: a role line addressed to nobody is context paid
+  for no behaviour, which is exactly what H2 bans.
 
 ## Checklist
 
@@ -72,7 +82,7 @@ separately, as [House additions](#house-additions).
 | 2 | Add context to improve performance | Each non-obvious prohibition states its why: the incident, the cost, or the downstream consumer it protects | Bare "NEVER" or "MUST" rules with no rationale, which the model cannot generalise from to an unlisted near-miss case | Never — every surface carries at least one prohibition or preference |
 | 3 | Use examples effectively | The surface's hardest judgement calls carry a worked instance in `<example>` tags, including at least one negative or near-miss case | Only abstract category lists, title fragments, or rendered footers, with no `<example>` tag and no worked near-miss case | The surface asks for no judgement call — pure mechanical substitution with no branch the model can get wrong |
 | 4 | Structure prompts with XML tags | Instructions, injected repo content, and untrusted input each sit in distinctly named tags, and every substituted value is wrapped | Markdown-only structure where injected values share the same fences as prompt-authored code, or a fragment spliced into a host with no wrapper | The surface is a fragment whose caller demonstrably wraps it, with the wrapping call site cited |
-| 5 | Give Claude a role | Opens with a one-sentence persona naming the job and its stance, for example an evidence-backed static reviewer | No persona anywhere, so the role has to be inferred from the task body, or a "You are" match that is ordinary prose | The surface is a fragment and its host template sets the role, with the host line cited |
+| 5 | Give Claude a role | Opens with a one-sentence persona naming the job and its stance, for example an evidence-backed static reviewer | No persona anywhere, so the role has to be inferred from the task body, or a "You are" match that is ordinary prose | The surface is a fragment and its host template sets the role, with the host line cited, or it is a **wrapper issue body** no model reads, with its template's `buildIssueBody()` cited |
 | 6 | Long context prompting | Long substituted documents sit above the query, are wrapped in per-document tags with a source, and a quote-first step grounds the answer | A large or unbounded substituted body placed after the instructions, unwrapped, with no grounding step for a 20k-plus-token input | The surface is under the guide's 20k-token trigger and substitutes only short scalars, with the measured size stated |
 
 ### Output and formatting

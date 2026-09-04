@@ -83,6 +83,7 @@ column names the section; the house form is the exact heading text.
 | Per-finding filing sub-heading | `### For each surviving finding (skip silently if its id is in the suppressed or known-open list)` | bare `### For each surviving finding`, `### Filing the finding` | Seven templates carry the parenthetical, four the bare form and one `### Filing the finding`. The parenthetical is the suppression contract: without it the heading does not say that a suppressed finding is dropped without comment |
 | Issue-body fix slot | `## Suggested fix` | `## Suggested action`, `## Suggested replacement` | Nine against three and two. Every scan files a fix suggestion into the same slot, and a reader scanning filed issues across scans should not have to know which scan wrote the body |
 | Issue-body rationale slot | `## Why this matters` | `## Why this is a candidate`, `## Why this is flagged`, `## Why it is safe to remove`, `## Why it is a bug` | Nine against one each, the fourth being `prompts/security_scan/` (Issue #837). The slot answers the reader's question — why should I care — not the scanner's, and "why it is a bug" names the verdict rather than the stake |
+| Closing self-check | `### Verification before exit` | the same heading at H2; the check present as an unheaded tail paragraph under `### Required label set` | Seven templates carried the heading exactly and eight carried the same closing check as an unheaded paragraph folded into the label section, where a reader looking for the exit check does not find it. H3 keeps it a peer of the other Phase 4 sub-sections. Issue #841 raised the eight rather than dropping the section, so the heading now names one thing in all fifteen |
 | Phase 4 heading | keep the `(outcome-only)` suffix, e.g. `## Phase 4 — File one issue per finding (outcome-only)` | the unsuffixed form | The minority form wins this one row deliberately: the suffix is the verbosity contract for the phase, telling the run to emit outcomes rather than narrate the filing. Four templates carry it and ten dropped it; the fifteenth, `prompts/retro/`, has no filing phase at Phase 4 and is not counted either way. The unsuffixed majority is drift towards the less informative heading |
 
 `## Why this scan exists` is a **prompt-level** section — it tells the run what
@@ -113,8 +114,9 @@ Applies to the twelve interactive directories in [Families](#families).
   placeholder-carrying templates already held it under `## Inputs`. Four —
   `prompts/alert_feed/`, `prompts/bash_script_refs/`,
   `prompts/bash_syntax_audit/` and `prompts/workflow_annotation_scan/` — have no
-  `## Inputs` section at all; adding one to a lightweight audit is a presence
-  gap, not a naming variant, so it belongs to Issue #841 and those four are
+  `## Inputs` section at all, and Issue #841 settled that they never need one:
+  they are wrapper issue bodies, so the worker substitutes the footer as it
+  files and there is no Inputs section for the prose to cite. Those four stay
   outside this row.
 - **Finding-id placeholder.** The placeholder body uses the filing family's own
   prefix and the ellipsis form — `` `<!-- finding-id: BP-… -->` `` in the
@@ -155,9 +157,18 @@ keyword their scan honours.
 
 ## Out of scope
 
-- **Presence gaps.** Four templates open with no persona line and eight scans
-  have no `### Verification before exit` section. A missing section is not a
-  variant of a section, and the decision is one question, not eight (Issue #841).
+- **Presence gaps — settled by Issue #841, and settled both ways.** A missing
+  section is not a variant of a section, so the decision was taken separately
+  and is recorded in
+  [`docs/PROMPT-BEST-PRACTICES-CHECKLIST.md`](PROMPT-BEST-PRACTICES-CHECKLIST.md).
+  The eight scans that carried their closing check as an unheaded paragraph were
+  **raised**: all fifteen now carry `### Verification before exit`, which is why
+  the heading has a row above. The four templates with no persona line were
+  **narrowed out** instead — no model reads them, so the checklist scores them
+  as a third surface kind, the **wrapper issue body**, whose model-behaviour
+  rows are `n/a`. That is also why those four sit outside the attribution-footer
+  row in [Literals](#literals): a filed issue body needs no `## Inputs` section
+  to cite, because the worker substitutes the footer as it files.
 - **Worker-emitted marker shapes.** The `vibe-*` markers the worker emits from
   `stale_workflow_detector.ts`, `blocked_deferral.ts` and `analysis_only.ts` use
   shapes no prompt documents. They are code, not prompt vocabulary, and Issue

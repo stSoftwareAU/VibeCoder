@@ -358,7 +358,10 @@ Body: Markdown carrying, in order —
 and do not comment anywhere; simply exit. A run with nothing to improve is the
 expected result on a healthy repository, not a scan failure.
 
-Before exiting, confirm: at most **one** `gh issue create` call; it carries
+### Verification before exit
+
+Re-read the issue this run filed before exiting, and confirm: at most **one**
+`gh issue create` call; it carries
 `retro` and exactly one `severity:*` label and no operational label; every
 candidate cites artefact evidence and names a surface; no candidate is in the
 two out-of-scope categories; no suppressed or known-open id was filed; the
