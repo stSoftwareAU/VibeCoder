@@ -675,6 +675,18 @@ reaches the coding agent's environment. No other vendor takes extra files, and
 a metered `ANTHROPIC_API_KEY` is not one of these: a host with one credential —
 key or token — behaves exactly as it always has.
 
+What that guarantee does and does not cover: the coding agent's environment
+carries the selected token and no other, and a suffixed or indexed variant of
+an accepted variable name (`CLAUDE_CODE_OAUTH_TOKEN_2`) is refused rather than
+inherited. It is an **environment** guarantee. The whole `claude/`
+sub-directory is mounted read-only into the container, so a process with
+filesystem read access inside the container can read every token file there,
+selected or not — recorded as residual risk R9 in
+[the threat model](THREAT-MODEL.md#-residual-risks). That is the same exposure
+a single-token host has always carried; more tokens raise its count, not its
+kind. Add a second subscription knowing that its blast radius is the container,
+not the environment policy.
+
 ### Permissions
 
 On macOS and Linux, directories are owner-only `700` and files `600`
