@@ -28,6 +28,11 @@ import {
 } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { envFrom } from "./support/env_lookup.ts";
+import {
+  discardFixture,
+  makeExtensionDir,
+} from "./support/extension_fixture.ts";
+import { messageFrom } from "./support/thrown_message.ts";
 
 const REPO_ROOT = new URL(import.meta.url).pathname.replace(
   /\/worker\/deno\/tests\/[^/]+$/,
@@ -52,17 +57,6 @@ interface Fixture {
   cleanup: () => Promise<void>;
 }
 
-/** Write a file inside the extension, creating its parent directories. */
-async function write(
-  root: string,
-  relative: string,
-  contents: string,
-): Promise<void> {
-  const path = `${root}/${relative}`;
-  await Deno.mkdir(path.slice(0, path.lastIndexOf("/")), { recursive: true });
-  await Deno.writeTextFile(path, contents);
-}
-
 /**
  * A deployment declaring an extension, with a complete definition on disk.
  *
@@ -72,14 +66,8 @@ async function write(
 async function fixture(
   declaration: Record<string, unknown> = {},
 ): Promise<Fixture> {
-  const root = await Deno.makeTempDir({ prefix: "vibe-ext-launch-" });
+  const root = await makeExtensionDir();
   const home = await Deno.makeTempDir({ prefix: "vibe-ext-config-" });
-  await write(
-    root,
-    "Containerfile",
-    "ARG VIBE_BASE_IMAGE\nFROM ${VIBE_BASE_IMAGE}\nRUN id\n",
-  );
-  await write(root, "start.sh", "#!/bin/sh\nservice postgres start\n");
   const configFile = `${home}/.config.json`;
   await Deno.writeTextFile(
     configFile,
@@ -88,17 +76,9 @@ async function fixture(
   return {
     root,
     configFile,
-    cleanup: async () => {
-      // A case that removed the extension directory itself still cleans up
-      // the rest, rather than failing the test on its own tidying.
-      for (const path of [root, home]) {
-        try {
-          await Deno.remove(path, { recursive: true });
-        } catch (error) {
-          if (!(error instanceof Deno.errors.NotFound)) throw error;
-        }
-      }
-    },
+    // A case that removed the extension directory itself still cleans up the
+    // rest, rather than failing the test on its own tidying.
+    cleanup: () => discardFixture(root, home),
   };
 }
 
@@ -152,16 +132,6 @@ async function planFor(configFile: string): Promise<ContainerLaunchPlan> {
     },
     ...(extension ? { containerExtension: extension } : {}),
   });
-}
-
-/** The message a call threw, or `""` when it did not throw. */
-async function messageFrom(call: () => Promise<unknown>): Promise<string> {
-  try {
-    await call();
-    return "";
-  } catch (error) {
-    return (error as Error).message;
-  }
 }
 
 Deno.test("resolveContainerExtensionLaunch - a complete definition resolves the layered tag", async () => {
