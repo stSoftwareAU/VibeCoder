@@ -30,7 +30,13 @@ import {
   outcomeForThrown,
   type RunOutcome,
 } from "./run_outcome.ts";
-import type { GitHubClient, GitHubComment, Logger, Result } from "../types.ts";
+import type {
+  CustomLabelPromptMapping,
+  GitHubClient,
+  GitHubComment,
+  Logger,
+  Result,
+} from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import type { IssueContext } from "./issue_worker.ts";
 import {
@@ -38,7 +44,8 @@ import {
   startHeartbeat,
   stopHeartbeat,
 } from "./heartbeat.ts";
-import { loadPrompt } from "./prompt_manager.ts";
+import { resolvePromptTemplate } from "./prompt_override_resolver.ts";
+import { promptOverrideMappings } from "./custom_label_prompts_config.ts";
 import {
   buildCodingGuidelines,
   buildVerbosityBlock,
@@ -212,6 +219,11 @@ export interface BuildGrillMePromptOptions {
   commentBoundaryId?: string;
   /** Path to the prompts directory (defaults to repo prompts dir). */
   promptsDir?: string;
+  /**
+   * Validated `custom_label_prompts` mappings (Issue #849, part of #843). An
+   * entry overriding the `grill-me` phase replaces this template.
+   */
+  promptOverrides?: readonly CustomLabelPromptMapping[];
 }
 
 // ---------------------------------------------------------------------------
@@ -648,10 +660,13 @@ export function isNonWorkerRemovalAfterRound(
 export async function buildGrillMePrompt(
   opts: BuildGrillMePromptOptions,
 ): Promise<Result<string>> {
-  const templateResult = await loadPrompt(
-    "grill-me",
-    opts.promptsDir,
-  );
+  // Issue #849: an operator's `grill-me` mapping replaces this template; the
+  // file is read fresh, so a deletion between config load and this round fails
+  // loud rather than quietly reverting to the built-in prompt.
+  const templateResult = await resolvePromptTemplate("grill-me", {
+    promptsDir: opts.promptsDir,
+    overrides: opts.promptOverrides,
+  });
   if (!templateResult.ok) return templateResult;
 
   // Generate randomised delimiters per invocation and sanitise every
@@ -709,7 +724,7 @@ export async function buildGrillMePrompt(
   // The string form expands `$&`, `` $` ``, `$'` and `$$`, which would let an
   // attacker splice the already-rendered prefix — ending in a genuine, nonced
   // boundary marker — into the untrusted region without guessing the nonce.
-  let rendered = templateResult.value;
+  let rendered = templateResult.value.content;
   for (const [key, value] of Object.entries(replacements)) {
     rendered = rendered.replaceAll(`{{${key}}}`, () => value);
   }
@@ -1319,6 +1334,8 @@ async function _processGrillMeWithHeartbeat(
     issueTitle,
     codingGuidelines,
     verbosityInstructions,
+    // Issue #849: an operator's `grill-me` mapping replaces the template.
+    promptOverrides: promptOverrideMappings(config),
   });
 
   if (!promptResult.ok) {

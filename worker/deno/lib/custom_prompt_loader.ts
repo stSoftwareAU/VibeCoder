@@ -34,16 +34,20 @@ export const CUSTOM_PROMPT_TEMPLATE_TYPE = "issue";
  * Read and validate an operator's custom prompt template.
  *
  * Rejects — never repairs — a file that is missing, unreadable, empty (or
- * whitespace only), or short of a required `issue` placeholder
- * (`{{ISSUE_NUMBER}}`, `{{QUALITY_INSTRUCTIONS}}`).
+ * whitespace only), or short of a placeholder the phase it serves requires.
+ * The phase defaults to `issue` (a new custom label runs the implementation
+ * phase, Issue #848); an override of a built-in phase passes its own phase, so
+ * a `planning` override is held to the `planning` contract (Issue #849).
  *
  * @param promptPath - Absolute host path of the operator's template
  * @param label - Optional label the mapping dispatches, named in errors
+ * @param phase - Template type to validate against (default `issue`)
  * @returns The template content, or an error naming the path and the fault
  */
 export async function loadCustomPromptTemplate(
   promptPath: string,
   label?: string,
+  phase: string = CUSTOM_PROMPT_TEMPLATE_TYPE,
 ): Promise<Result<string>> {
   const subject = label
     ? `Custom prompt for label '${label}' at ${promptPath}`
@@ -67,10 +71,7 @@ export async function loadCustomPromptTemplate(
     return { ok: false, error: new Error(`${subject} is empty`) };
   }
 
-  const validation = validatePromptTemplate(
-    CUSTOM_PROMPT_TEMPLATE_TYPE,
-    content,
-  );
+  const validation = validatePromptTemplate(phase, content);
   if (!validation.ok) {
     return {
       ok: false,

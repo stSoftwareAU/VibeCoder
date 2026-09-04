@@ -20,6 +20,7 @@ import {
 } from "./run_outcome.ts";
 import type { GitHubClient, Logger, Result } from "../types.ts";
 import { maybeCreatePlanningMilestone } from "./planning_milestone.ts";
+import { promptOverrideMappings } from "./custom_label_prompts_config.ts";
 import { fetchNativeSubIssueNumbers } from "./native_sub_issues.ts";
 import {
   buildPlanningCritiquePrompt,
@@ -1165,6 +1166,8 @@ async function _processPlanningWithHeartbeat(
     complexityContext,
     milestoneTitle,
     repoContextContent,
+    // Issue #849: an operator's `planning` mapping replaces the template.
+    promptOverrides: promptOverrideMappings(config),
   });
 
   // Fall back to basic prompt if builder fails
@@ -1305,6 +1308,8 @@ async function _processPlanningWithHeartbeat(
       milestoneTitle,
       repoContextContent,
       draftPlan,
+      // Issue #849: the critique turn takes its own override entry.
+      promptOverrides: promptOverrideMappings(config),
     });
 
     if (!critiquePromptResult.ok) {

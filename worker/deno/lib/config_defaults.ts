@@ -1446,6 +1446,9 @@ export function buildDefaultWorkerConfig(
     idleTaskCadence: cloneCadencePolicy(DEFAULT_CADENCE_POLICY),
     // Issue #2622: per-tool minimum version floors for software auto-update.
     softwareMinVersions: { ...OPERATIONAL_DEFAULTS.softwareMinVersions },
+    // Issue #846 (part of #843): no custom label → prompt mappings until an
+    // operator opts in — the feature is off by default.
+    customLabelPrompts: [],
     // Issue #806: no hooks configured — an existing configuration without a
     // `callbacks` block behaves exactly as before.
     callbacks: noCallbacks(),

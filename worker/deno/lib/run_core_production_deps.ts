@@ -172,6 +172,7 @@ import { processIssuePlanning } from "./planning_processor.ts";
 import { processGrillMe } from "./grill_me_processor.ts";
 import { processQuorum } from "./quorum_processor.ts";
 import { dispatchCustomLabelPrompts } from "./custom_label_dispatch.ts";
+import { customDispatchMappings } from "./custom_label_prompts_config.ts";
 
 // Failure & circuit breaker
 import {
@@ -2372,13 +2373,18 @@ export async function createProductionRunCoreDeps(
     // tried in configuration order and the first issue found is worked; a
     // mapped prompt file that has gone missing throws from the processor
     // rather than falling back to the built-in template.
-    ...(config.customLabelPrompts.length > 0
+    // Issue #849: only mappings that dispatch a *new* label belong here. One
+    // that overrides a built-in label (`planning`, `grill-me`, …) replaces
+    // that phase's template and is worked by that phase's own handler —
+    // scanning for it here would run a planning issue through the
+    // implementation phase.
+    ...(customDispatchMappings(config).length > 0
       ? {
         async findAndProcessCustomLabelPrompts(
           opts?: { deadlineEpochMs: number },
         ) {
           const value = await dispatchCustomLabelPrompts(
-            config.customLabelPrompts,
+            customDispatchMappings(config),
             findAndProcessByLabel,
             {
               ...(opts?.deadlineEpochMs !== undefined

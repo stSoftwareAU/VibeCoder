@@ -20,6 +20,7 @@ import {
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { getPromptsCommit } from "../prompt_manager.ts";
+import { promptOverrideMappings } from "../custom_label_prompts_config.ts";
 import { LABEL_DEFAULTS } from "../config_defaults.ts";
 import { detectScreenshotRequired } from "../execute_claude_phase.ts";
 import {
@@ -330,6 +331,10 @@ async function executeClaudeBody(
     // dispatch handler stays the single place that decides a run is custom.
     customPromptPath: ctx.customPromptPath,
     customPromptLabel: ctx.customPromptLabel,
+    // An operator's `work-on` mapping overrides the built-in issue template
+    // for every implementation run (Issue #849); the per-run custom prompt
+    // above still wins when this run was dispatched by a custom label.
+    promptOverrides: promptOverrideMappings(config),
   });
   if (!promptResult.ok) {
     return {

@@ -33,6 +33,7 @@ import { parsePreFlightCommands } from "./repo_config.ts";
 import { parseIdleTaskCadence } from "./idle_task_cadence_config.ts";
 import { parseContainerTools } from "./container_tools_config.ts";
 import { assertCallbacksConfig } from "./run_callbacks_config.ts";
+import { assertCustomLabelPrompts } from "./custom_label_prompts_config.ts";
 import { validateUpdateModeSettings } from "./config_validator.ts";
 import {
   detectUnknownConfigKeys,
@@ -794,8 +795,18 @@ export async function loadConfig(
   // #843). Fail loud: assertCustomLabelPrompts throws naming the offending
   // entry rather than silently dropping a mapping — a silently ignored
   // mapping is exactly the failure #843 rules out.
+  // Issue #849: the configured label names decide which entries are overrides
+  // of a built-in phase, so they are passed in rather than assumed.
   const customLabelPrompts = assertCustomLabelPrompts(
     file.custom_label_prompts,
+    {
+      workOnLabel,
+      planningLabel,
+      questionLabel,
+      grillMeLabel,
+      quorumLabel,
+      refineIssueLabel,
+    },
   );
 
   // Recent activity settings (Issue #1326)
@@ -936,6 +947,7 @@ export async function loadConfig(
     idleTaskTemplateWeights,
     idleTaskCadence,
     softwareMinVersions,
+    customLabelPrompts,
     // Issue #806 (parent #796): `assertCallbacksConfig` is the only trusted
     // producer of the typed block, and it throws on any fault — a hook the
     // operator believes is wired, but that silently never runs, is the exact

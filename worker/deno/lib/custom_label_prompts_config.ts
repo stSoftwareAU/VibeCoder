@@ -25,11 +25,21 @@
 import type { CustomLabelPromptMapping, Result } from "../types.ts";
 import { isReservedLabel } from "./config_defaults.ts";
 import { isWorkerAppliableLabel } from "./worker_label_guard.ts";
+import type { BuiltInLabelNames } from "./builtin_prompt_overrides.ts";
+import {
+  DEFAULT_BUILTIN_LABEL_NAMES,
+  resolveOverridePhase,
+  validateOverrideTemplate,
+} from "./builtin_prompt_overrides.ts";
 
 /** Keys a `custom_label_prompts` entry may carry. */
 const KNOWN_ENTRY_KEYS: ReadonlySet<string> = new Set([
   "label",
   "prompt_path",
+  // Issue #849: which built-in phase this entry overrides. Only meaningful on
+  // a built-in label, and only needed for a phase whose label owns more than
+  // one template (`planning` also owns `planning_critique`).
+  "phase",
 ]);
 
 /** Whether a value is a plain (non-array, non-null) object. */
@@ -72,11 +82,20 @@ function parseCleanString(raw: unknown, field: string): string {
   return raw;
 }
 
-/** Validate one entry; `seenLabels` carries the labels already accepted. */
+/** Labels and phases already claimed by earlier entries. */
+interface SeenClaims {
+  /** Lower-cased `label::phase` keys. */
+  entries: Set<string>;
+  /** Overridden phase → the entry index that claimed it. */
+  phases: Map<string, number>;
+}
+
+/** Validate one entry; `seen` carries the claims already accepted. */
 function parseEntry(
   raw: unknown,
   index: number,
-  seenLabels: Set<string>,
+  seen: SeenClaims,
+  names: BuiltInLabelNames,
 ): CustomLabelPromptMapping {
   const entryField = `custom_label_prompts[${index}]`;
   if (!isPlainObject(raw)) {
@@ -95,10 +114,30 @@ function parseEntry(
   }
 
   const label = parseCleanString(raw.label, `${entryField}.label`);
+  const requestedPhase = raw.phase === undefined
+    ? undefined
+    : parseCleanString(raw.phase, `${entryField}.phase`);
+
+  // Issue #849: a label matching a built-in one overrides that phase's
+  // template rather than dispatching a new label. Resolved against the
+  // *configured* label names, because a fleet may have renamed `planning`.
+  const phaseResult = resolveOverridePhase(label, requestedPhase, names);
+  if (!phaseResult.ok) {
+    reject(
+      requestedPhase === undefined
+        ? `${entryField}.label`
+        : `${entryField}.phase`,
+      phaseResult.error,
+    );
+  }
+  const overridesPhase = phaseResult.value;
+
   // RESERVED_LABELS already contains the three hardwired discovery labels
   // (top-priority/work-on/low-priority), so isReservedLabel's case-
-  // insensitive check alone covers both lists the issue names.
-  if (isReservedLabel(label)) {
+  // insensitive check alone covers both lists the issue names. A built-in
+  // label an override names is reserved *by design* — that is what makes it
+  // an override — so the check only guards labels that dispatch anew.
+  if (overridesPhase === undefined && isReservedLabel(label)) {
     reject(
       `${entryField}.label`,
       `"${label}" is a reserved or discovery label and cannot be remapped`,
@@ -117,8 +156,18 @@ function parseEntry(
       `"${label}" is a label the worker applies itself and cannot be remapped`,
     );
   }
-  if (seenLabels.has(label.toLowerCase())) {
+  const claim = `${label.toLowerCase()}::${overridesPhase ?? ""}`;
+  if (seen.entries.has(claim)) {
     reject(`${entryField}.label`, `duplicate label ${show(label)}`);
+  }
+  // Fail loud on an ambiguous override: two entries cannot both supply the
+  // template for one phase, or the phase silently runs whichever came first.
+  if (overridesPhase !== undefined && seen.phases.has(overridesPhase)) {
+    reject(
+      `${entryField}.label`,
+      `phase "${overridesPhase}" is already overridden by ` +
+        `custom_label_prompts[${seen.phases.get(overridesPhase)}]`,
+    );
   }
 
   const promptPath = parseCleanString(
@@ -132,8 +181,9 @@ function parseEntry(
     );
   }
 
+  let content: string;
   try {
-    Deno.readTextFileSync(promptPath);
+    content = Deno.readTextFileSync(promptPath);
   } catch (error) {
     reject(
       `${entryField}.prompt_path`,
@@ -141,8 +191,22 @@ function parseEntry(
     );
   }
 
-  seenLabels.add(label.toLowerCase());
-  return { label, promptPath };
+  // An override answers to the placeholder contract of the phase it replaces,
+  // not to the `issue` one a new custom label runs (Issue #849).
+  if (overridesPhase !== undefined) {
+    const templateResult = validateOverrideTemplate(overridesPhase, content);
+    if (!templateResult.ok) {
+      reject(`${entryField}.prompt_path`, templateResult.error);
+    }
+  }
+
+  seen.entries.add(claim);
+  if (overridesPhase !== undefined) seen.phases.set(overridesPhase, index);
+  return {
+    label,
+    promptPath,
+    ...(overridesPhase !== undefined ? { overridesPhase } : {}),
+  };
 }
 
 /**
@@ -155,6 +219,7 @@ function parseEntry(
  */
 export function parseCustomLabelPrompts(
   raw: unknown,
+  names: BuiltInLabelNames = DEFAULT_BUILTIN_LABEL_NAMES,
 ): Result<CustomLabelPromptMapping[], string> {
   if (raw === undefined || raw === null) return { ok: true, value: [] };
   if (!Array.isArray(raw)) {
@@ -168,10 +233,10 @@ export function parseCustomLabelPrompts(
   }
 
   const mappings: CustomLabelPromptMapping[] = [];
-  const seenLabels = new Set<string>();
+  const seen: SeenClaims = { entries: new Set(), phases: new Map() };
   try {
     for (let index = 0; index < raw.length; index++) {
-      mappings.push(parseEntry(raw[index], index, seenLabels));
+      mappings.push(parseEntry(raw[index], index, seen, names));
     }
   } catch (error) {
     if (error instanceof MappingError) {
@@ -189,8 +254,9 @@ export function parseCustomLabelPrompts(
  */
 export function assertCustomLabelPrompts(
   raw: unknown,
+  names: BuiltInLabelNames = DEFAULT_BUILTIN_LABEL_NAMES,
 ): CustomLabelPromptMapping[] {
-  const result = parseCustomLabelPrompts(raw);
+  const result = parseCustomLabelPrompts(raw, names);
   if (!result.ok) {
     throw new Error(
       `Invalid custom_label_prompts in .config.json: ${result.error}`,
@@ -239,4 +305,40 @@ export function customLabelPromptPath(
   return config.customLabelPrompts.find((mapping) =>
     mapping.label.toLowerCase() === target
   )?.promptPath;
+}
+
+/**
+ * The mappings that dispatch a **new** label (Issue #849).
+ *
+ * An override names a built-in label, which already has its own priority
+ * handler; scanning for it again in the custom-label row would run, say, a
+ * `planning`-labelled issue through the implementation phase. Only new labels
+ * belong in that scan.
+ *
+ * @param config - Worker configuration (or any object carrying the list)
+ * @returns The mappings with no built-in phase to override
+ */
+export function customDispatchMappings(
+  config: { customLabelPrompts: CustomLabelPromptMapping[] },
+): CustomLabelPromptMapping[] {
+  return config.customLabelPrompts.filter(
+    (mapping) => mapping.overridesPhase === undefined,
+  );
+}
+
+/**
+ * The mappings that override a built-in phase's template (Issue #849).
+ *
+ * Handed to the prompt builders, which resolve the template for the phase they
+ * are building through `resolvePromptTemplate`.
+ *
+ * @param config - Worker configuration (or any object carrying the list)
+ * @returns The mappings that replace a built-in phase template
+ */
+export function promptOverrideMappings(
+  config: { customLabelPrompts: CustomLabelPromptMapping[] },
+): CustomLabelPromptMapping[] {
+  return config.customLabelPrompts.filter(
+    (mapping) => mapping.overridesPhase !== undefined,
+  );
 }

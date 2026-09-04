@@ -10,9 +10,13 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Result, VerbosityLevel } from "../types.ts";
+import type {
+  CustomLabelPromptMapping,
+  Result,
+  VerbosityLevel,
+} from "../types.ts";
 import { loadPrompt } from "./prompt_manager.ts";
-import { loadCustomPromptTemplate } from "./custom_prompt_loader.ts";
+import { resolvePromptTemplate } from "./prompt_override_resolver.ts";
 import {
   type AgentIdentity,
   loadCodingGuidelinesOverlay,
@@ -428,6 +432,13 @@ export interface IssuePromptOptions {
   customPromptPath?: string;
   /** Label the custom prompt dispatched, named in load failures (Issue #848). */
   customPromptLabel?: string;
+  /**
+   * Validated `custom_label_prompts` mappings (Issue #849, part of #843).
+   * An entry overriding the `issue` phase — an operator's `work-on` mapping —
+   * replaces the built-in template for this build. `customPromptPath` above,
+   * chosen per run by the Issue #848 dispatch, takes precedence.
+   */
+  promptOverrides?: readonly CustomLabelPromptMapping[];
 }
 
 /**
@@ -462,15 +473,29 @@ export async function buildIssuePrompt(
     securityGateBlock,
     customPromptPath,
     customPromptLabel,
+    promptOverrides,
   } = options;
 
-  // Load the issue template. An operator's custom prompt (Issue #848) replaces
-  // the built-in one for this run; it is read fresh at build time so an edit —
-  // or a deletion — between config load and dispatch is seen here, and fails
-  // loud instead of quietly reverting to the built-in template.
-  const templateResult = customPromptPath
-    ? await loadCustomPromptTemplate(customPromptPath, customPromptLabel)
-    : await loadPrompt("issue", promptsDir);
+  // Load the issue template. An operator's custom prompt replaces the built-in
+  // one — chosen per run by the custom-label dispatch (Issue #848), or by a
+  // `work-on` mapping overriding the phase (Issue #849). Either way it is read
+  // fresh at build time, so an edit — or a deletion — between config load and
+  // dispatch is seen here and fails loud instead of quietly reverting to the
+  // built-in template.
+  const templateResult = await resolvePromptTemplate("issue", {
+    promptsDir,
+    overrides: promptOverrides,
+    ...(customPromptPath
+      ? {
+        explicit: {
+          promptPath: customPromptPath,
+          ...(customPromptLabel !== undefined
+            ? { label: customPromptLabel }
+            : {}),
+        },
+      }
+      : {}),
+  });
   if (!templateResult.ok) return templateResult;
 
   // Build coding guidelines (goes into system prompt for caching)
@@ -486,7 +511,7 @@ export async function buildIssuePrompt(
   // (Issue #3813). Verbosity instructions are injected via the
   // {{VERBOSITY_INSTRUCTIONS}} placeholder (Issue #1332). `REPO` was missing
   // until #3813, so the escape-hatch `gh` commands shipped unfilled.
-  const issueSubstitution = substitute(templateResult.value, {
+  const issueSubstitution = substitute(templateResult.value.content, {
     REPO: repo,
     ISSUE_NUMBER: issueNumber,
     QUALITY_INSTRUCTIONS: qualityInstructions,
@@ -688,6 +713,8 @@ export interface PlanningPromptOptions {
   repoContextContent?: string;
   /** Verbosity level for controlling response detail (Issue #1332). */
   verbosityLevel?: VerbosityLevel;
+  /** Validated `custom_label_prompts` mappings (Issue #849). */
+  promptOverrides?: readonly CustomLabelPromptMapping[];
 }
 
 /**
@@ -712,9 +739,16 @@ export async function buildPlanningPrompt(
     promptsDir,
     repoContextContent,
     verbosityLevel,
+    promptOverrides,
   } = options;
 
-  const templateResult = await loadPrompt("planning", promptsDir);
+  // Issue #849: an operator's `planning` mapping replaces this template.
+  // Overriding `planning` does not touch `planning_critique` — that turn is a
+  // separate template and needs its own mapping entry.
+  const templateResult = await resolvePromptTemplate("planning", {
+    promptsDir,
+    overrides: promptOverrides,
+  });
   if (!templateResult.ok) return templateResult;
 
   const guidelinesResult = await buildCodingGuidelines(
@@ -747,7 +781,7 @@ export async function buildPlanningPrompt(
     delimiters,
   );
 
-  const planningSubstitution = substitute(templateResult.value, {
+  const planningSubstitution = substitute(templateResult.value.content, {
     REPO: repo,
     ISSUE_NUMBER: issueNumber,
     PLANNING_LABEL: planningLabel,
@@ -857,6 +891,8 @@ export interface PlanningCritiquePromptOptions {
    * the draft (Issue #1324).
    */
   draftPlan?: string;
+  /** Validated `custom_label_prompts` mappings (Issue #849). */
+  promptOverrides?: readonly CustomLabelPromptMapping[];
 }
 
 /**
@@ -889,12 +925,15 @@ export async function buildPlanningCritiquePrompt(
     repoContextContent,
     verbosityLevel,
     draftPlan,
+    promptOverrides,
   } = options;
 
-  const templateResult = await loadPrompt(
-    "planning_critique",
+  // Issue #849: the second planning turn has its own override entry
+  // (`phase: "planning_critique"`), never one inferred from `planning`.
+  const templateResult = await resolvePromptTemplate("planning_critique", {
     promptsDir,
-  );
+    overrides: promptOverrides,
+  });
   if (!templateResult.ok) return templateResult;
 
   const guidelinesResult = await buildCodingGuidelines(
@@ -921,7 +960,7 @@ export async function buildPlanningCritiquePrompt(
     delimiters,
   );
 
-  const critiqueSubstitution = substitute(templateResult.value, {
+  const critiqueSubstitution = substitute(templateResult.value.content, {
     REPO: repo,
     ISSUE_NUMBER: issueNumber,
     PLANNING_LABEL: planningLabel,
@@ -1032,6 +1071,8 @@ export interface QuestionPromptOptions {
   repoContextContent?: string;
   /** Verbosity level for controlling response detail (Issue #1332). */
   verbosityLevel?: VerbosityLevel;
+  /** Validated `custom_label_prompts` mappings (Issue #849). */
+  promptOverrides?: readonly CustomLabelPromptMapping[];
 }
 
 /**
@@ -1054,9 +1095,14 @@ export async function buildQuestionPrompt(
     promptsDir,
     repoContextContent,
     verbosityLevel,
+    promptOverrides,
   } = options;
 
-  const templateResult = await loadPrompt("question", promptsDir);
+  // Issue #849: an operator's `question` mapping replaces this template.
+  const templateResult = await resolvePromptTemplate("question", {
+    promptsDir,
+    overrides: promptOverrides,
+  });
   if (!templateResult.ok) return templateResult;
 
   const guidelinesResult = await buildCodingGuidelines(
@@ -1066,7 +1112,7 @@ export async function buildQuestionPrompt(
   );
   if (!guidelinesResult.ok) return guidelinesResult;
 
-  const questionSubstitution = substitute(templateResult.value, {
+  const questionSubstitution = substitute(templateResult.value.content, {
     REPO: repo,
     ISSUE_NUMBER: issueNumber,
     QUESTION_LABEL: questionLabel,
