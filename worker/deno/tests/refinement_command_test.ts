@@ -12,6 +12,7 @@ import { assertEquals } from "@std/assert";
 import { refinementProcessorCommand } from "../commands/refinement_processor.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { WorkerConfig } from "../types.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 
 function makeConfig(overrides?: Partial<WorkerConfig>): WorkerConfig {
   return { ...buildDefaultWorkerConfig(), ...overrides };
@@ -57,27 +58,27 @@ Deno.test("refinement-processor command - process-refinement rejects missing iss
   assertEquals(result.message.includes("Missing required"), true);
 });
 
+// The acting login reaches the command as its third parameter (Issue #965),
+// so this test states an empty environment instead of deleting `GITHUB_USER`
+// from the process — a write that races every other test sharing the
+// process. The command resolves the login through
+// `resolveActingGithubUser`, whose own suite
+// (`tests/acting_github_user_test.ts`) pins the accepting direction with a
+// login absent from every real environment; here the only observable is the
+// rejection, because accepting one sends the command on to GitHub.
 Deno.test("refinement-processor command - process-refinement rejects missing github-user", async () => {
   const config = makeConfig();
-  // Ensure GITHUB_USER env var is not set for this test
-  const originalUser = Deno.env.get("GITHUB_USER");
-  try {
-    Deno.env.delete("GITHUB_USER");
-    const result = await refinementProcessorCommand.execute(
-      {
-        operation: "process-refinement",
-        repo: "org/repo",
-        "issue-number": 42,
-      },
-      config,
-    );
-    assertEquals(result.success, false);
-    assertEquals(result.message.includes("Missing required"), true);
-  } finally {
-    if (originalUser !== undefined) {
-      Deno.env.set("GITHUB_USER", originalUser);
-    }
-  }
+  const result = await refinementProcessorCommand.execute(
+    {
+      operation: "process-refinement",
+      repo: "org/repo",
+      "issue-number": 42,
+    },
+    config,
+    emptyEnv,
+  );
+  assertEquals(result.success, false);
+  assertEquals(result.message.includes("Missing required"), true);
 });
 
 // ============================================================================

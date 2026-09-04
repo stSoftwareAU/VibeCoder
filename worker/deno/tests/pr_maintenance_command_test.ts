@@ -12,6 +12,7 @@ import { assertEquals } from "@std/assert";
 import { prMaintenanceCommand } from "../commands/pr_maintenance.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { WorkerConfig } from "../types.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 function makeConfig(overrides?: Partial<WorkerConfig>): WorkerConfig {
   return { ...buildDefaultWorkerConfig(), ...overrides };
@@ -23,22 +24,15 @@ function makeConfig(overrides?: Partial<WorkerConfig>): WorkerConfig {
 
 Deno.test("pr-maintenance command - find-pr-comments-to-fix rejects missing github-user", async () => {
   const config = makeConfig({ repos: ["org/repo"] });
-  const originalUser = Deno.env.get("GITHUB_USER");
-  try {
-    Deno.env.delete("GITHUB_USER");
-    const result = await prMaintenanceCommand.execute(
-      {
-        operation: "find-pr-comments-to-fix",
-      },
-      config,
-    );
-    assertEquals(result.success, false);
-    assertEquals(result.message.includes("Missing required"), true);
-  } finally {
-    if (originalUser !== undefined) {
-      Deno.env.set("GITHUB_USER", originalUser);
-    }
-  }
+  const result = await prMaintenanceCommand.execute(
+    {
+      operation: "find-pr-comments-to-fix",
+    },
+    config,
+    emptyEnv,
+  );
+  assertEquals(result.success, false);
+  assertEquals(result.message.includes("Missing required"), true);
 });
 
 Deno.test("pr-maintenance command - find-pr-comments-to-fix rejects empty repos", async () => {
@@ -82,20 +76,13 @@ Deno.test("pr-maintenance command - find-pr-comments-to-fix parses comma-separat
 
 Deno.test("pr-maintenance command - find-failed-pr-checks rejects missing github-user", async () => {
   const config = makeConfig({ repos: ["org/repo"] });
-  const originalUser = Deno.env.get("GITHUB_USER");
-  try {
-    Deno.env.delete("GITHUB_USER");
-    const result = await prMaintenanceCommand.execute(
-      { operation: "find-failed-pr-checks" },
-      config,
-    );
-    assertEquals(result.success, false);
-    assertEquals(result.message.includes("Missing required"), true);
-  } finally {
-    if (originalUser !== undefined) {
-      Deno.env.set("GITHUB_USER", originalUser);
-    }
-  }
+  const result = await prMaintenanceCommand.execute(
+    { operation: "find-failed-pr-checks" },
+    config,
+    emptyEnv,
+  );
+  assertEquals(result.success, false);
+  assertEquals(result.message.includes("Missing required"), true);
 });
 
 Deno.test("pr-maintenance command - find-failed-pr-checks rejects empty repos", async () => {
@@ -118,20 +105,13 @@ Deno.test("pr-maintenance command - find-failed-pr-checks rejects empty repos", 
 
 Deno.test("pr-maintenance command - find-failed-ci-checks rejects missing github-user", async () => {
   const config = makeConfig({ repos: ["org/repo"] });
-  const originalUser = Deno.env.get("GITHUB_USER");
-  try {
-    Deno.env.delete("GITHUB_USER");
-    const result = await prMaintenanceCommand.execute(
-      { operation: "find-failed-ci-checks" },
-      config,
-    );
-    assertEquals(result.success, false);
-    assertEquals(result.message.includes("Missing required"), true);
-  } finally {
-    if (originalUser !== undefined) {
-      Deno.env.set("GITHUB_USER", originalUser);
-    }
-  }
+  const result = await prMaintenanceCommand.execute(
+    { operation: "find-failed-ci-checks" },
+    config,
+    emptyEnv,
+  );
+  assertEquals(result.success, false);
+  assertEquals(result.message.includes("Missing required"), true);
 });
 
 Deno.test("pr-maintenance command - find-failed-ci-checks rejects empty repos", async () => {
@@ -172,20 +152,13 @@ Deno.test("pr-maintenance command - find-failed-ci-checks parses comma-separated
 
 Deno.test("pr-maintenance command - ensure-auto-merge-on-open-prs rejects missing github-user", async () => {
   const config = makeConfig({ repos: ["org/repo"] });
-  const originalUser = Deno.env.get("GITHUB_USER");
-  try {
-    Deno.env.delete("GITHUB_USER");
-    const result = await prMaintenanceCommand.execute(
-      { operation: "ensure-auto-merge-on-open-prs" },
-      config,
-    );
-    assertEquals(result.success, false);
-    assertEquals(result.message.includes("Missing required"), true);
-  } finally {
-    if (originalUser !== undefined) {
-      Deno.env.set("GITHUB_USER", originalUser);
-    }
-  }
+  const result = await prMaintenanceCommand.execute(
+    { operation: "ensure-auto-merge-on-open-prs" },
+    config,
+    emptyEnv,
+  );
+  assertEquals(result.success, false);
+  assertEquals(result.message.includes("Missing required"), true);
 });
 
 Deno.test("pr-maintenance command - ensure-auto-merge-on-open-prs rejects empty repos", async () => {
@@ -244,20 +217,13 @@ Deno.test("pr-maintenance command - ensure-auto-merge-on-open-prs parses comma-s
 
 Deno.test("pr-maintenance command - update-open-pr-branches rejects missing github-user", async () => {
   const config = makeConfig({ repos: ["org/repo"] });
-  const originalUser = Deno.env.get("GITHUB_USER");
-  try {
-    Deno.env.delete("GITHUB_USER");
-    const result = await prMaintenanceCommand.execute(
-      { operation: "update-open-pr-branches" },
-      config,
-    );
-    assertEquals(result.success, false);
-    assertEquals(result.message.includes("Missing required"), true);
-  } finally {
-    if (originalUser !== undefined) {
-      Deno.env.set("GITHUB_USER", originalUser);
-    }
-  }
+  const result = await prMaintenanceCommand.execute(
+    { operation: "update-open-pr-branches" },
+    config,
+    emptyEnv,
+  );
+  assertEquals(result.success, false);
+  assertEquals(result.message.includes("Missing required"), true);
 });
 
 Deno.test("pr-maintenance command - update-open-pr-branches rejects empty repos", async () => {
@@ -336,3 +302,39 @@ Deno.test("pr-maintenance command - unknown operation returns error", async () =
 Deno.test("pr-maintenance command - has correct name", () => {
   assertEquals(prMaintenanceCommand.name, "pr-maintenance");
 });
+
+// ============================================================================
+// The GITHUB_USER seam (Issue #965)
+//
+// The acting login reaches the command as its third parameter, so the tests
+// above state an empty environment instead of deleting `GITHUB_USER` from
+// the process — a write that races every other test sharing the process.
+//
+// This test asserts the other direction with a login that exists in no real
+// environment. Together the two directions pin the seam whichever way the
+// host's own `GITHUB_USER` happens to be set: ignore the injected lookup and
+// either the rejection above or the acceptance below goes red.
+// ============================================================================
+
+const USER_CHECKING_OPERATIONS = [
+  "find-pr-comments-to-fix",
+  "find-failed-pr-checks",
+  "find-failed-ci-checks",
+  "update-open-pr-branches",
+  "ensure-auto-merge-on-open-prs",
+] as const;
+
+for (const operation of USER_CHECKING_OPERATIONS) {
+  Deno.test(`pr-maintenance command - ${operation} accepts the injected GITHUB_USER`, async () => {
+    const config = makeConfig({ repos: [] });
+    const result = await prMaintenanceCommand.execute(
+      { operation },
+      config,
+      envFrom({ GITHUB_USER: "seam-only-bot" }),
+    );
+    // Past the identity check on the injected login, and stopped by the next
+    // guard instead — no repositories to scan.
+    assertEquals(result.success, false);
+    assertEquals(result.message, "No repositories configured");
+  });
+}
