@@ -325,6 +325,11 @@ async function executeClaudeBody(
     qualityInstructions,
     customInstructions,
     milestoneBranch: state.milestoneBranch,
+    // An operator's custom prompt replaces the built-in issue template for
+    // this run (Issue #848). Passed through rather than resolved here, so the
+    // dispatch handler stays the single place that decides a run is custom.
+    customPromptPath: ctx.customPromptPath,
+    customPromptLabel: ctx.customPromptLabel,
   });
   if (!promptResult.ok) {
     return {

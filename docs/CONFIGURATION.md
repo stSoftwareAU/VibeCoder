@@ -480,9 +480,8 @@ identically ($5 / $25 per MTok), so cost tracking is unaffected.
 `custom_label_prompts` maps a GitHub label to a **non-public prompt template
 file** — an absolute path on the host, outside the public repository — so an
 operator can extend the Vibe Coder with private prompts without publishing
-them. This is the key reference entry only; the worked extension guide,
-including how a custom label dispatches, lives in a separate document (part of
-#843).
+them. Add the file, add the mapping, apply the label — the Vibe Coder works the
+issue with that prompt and raises a PR.
 
 ```json
 {
@@ -526,6 +525,53 @@ Semantics:
   puts on an issue is still stripped at dispatch time, because a fleet worker
   login is never a trusted label adder. See
   [INTERNALS.md — Issue discovery](INTERNALS.md#-issue-discovery-modular-issue-finder).
+
+#### How a custom label dispatches (Issue #848)
+
+An issue carrying a configured label is worked at **priority 1.86**, between
+question answering (1.85) and stale-workflow detection (1.9). The handler runs
+the **generic implementation phase** — the same `workOnIssue` pipeline `work-on`
+runs — so the run produces a real branch, commits and a PR. Only the prompt
+body differs: the operator's file replaces `prompts/issue/prompt.md`.
+
+```mermaid
+flowchart LR
+    L["🏷️ custom label<br/>added by an allowlisted account"] --> D["Priority 1.86<br/>custom-label dispatch"]
+    D --> C{"prompt file<br/>readable, non-empty,<br/>placeholders present?"}
+    C -- no --> F["❌ fail loud<br/>naming label + path"]
+    C -- yes --> B["Build prompt<br/>operator's template +<br/>nonce-fenced issue text"]
+    B --> P["Implementation pipeline<br/>branch → commits → PR"]
+    style F fill:#d00000,stroke:#9d0208,color:#fff
+    style P fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+- **The template is an `issue` template.** It must carry `{{ISSUE_NUMBER}}` and
+  `{{QUALITY_INSTRUCTIONS}}`; `{{REPO}}` and `{{VERBOSITY_INSTRUCTIONS}}` are
+  also substituted. Any *other* `{{PLACEHOLDER}}` fails the build rather than
+  reaching the agent half-rendered. There is no `vN.md` versioning — the plain
+  path is read as-is.
+- **The issue text stays untrusted.** The operator's file is configuration, so
+  it is not fenced and its immutability is not checked — it is theirs to edit.
+  The issue title, labels and body it renders around **are** fenced in this
+  run's nonce boundary, with the same boundary-integrity instruction the
+  built-in template gets. (As for `work-on`, issue comments are not part of the
+  implementation prompt at all.)
+- **Fail loud at dispatch, never a fallback.** A file that has become missing,
+  unreadable, empty or invalid between config load and dispatch fails the run
+  with the label and path named. The built-in `issue` template is never
+  substituted for an operator's prompt, and the issue is never silently skipped.
+- **The file is part of the prompt-cache key.** Where a run builds through the
+  prompt cache, the file's content joins the SHA, so editing it invalidates the
+  cached system prompt rather than re-serving a stale one.
+- **A broken mapping never starves the others.** The remaining configured labels
+  are still scanned, each fault is logged as an error naming its label and path,
+  and the pass fails when nothing else was worked.
+- **Container run mode: the path must be reachable inside the container.** The
+  mount set is fixed (checkout, work dir, staged config, credentials), so put
+  the prompt file where one of those mounts reaches it — an arbitrary host path
+  is not visible to the worker and fails config load.
+- **Default = off.** With no mapping configured the priority row does not exist
+  and the ladder is unchanged.
 
 ### 🧭 Run Mode
 

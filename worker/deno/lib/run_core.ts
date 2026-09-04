@@ -510,6 +510,22 @@ export interface RunCoreDeps {
   // Priority 1.85: Question answering
   findAndProcessQuestion: () => Promise<Result<PriorityHandlerResult>>;
 
+  /**
+   * Priority 1.86: Custom label prompts (Issue #848, part of #843).
+   *
+   * Dispatches an issue carrying a configured `custom_label_prompts` label
+   * into the generic implementation phase with the operator's prompt file
+   * substituted for `prompts/issue/` — a real branch, commits and PR, exactly
+   * as `work-on` produces.
+   *
+   * Optional, and **absent when no mapping is configured**: the priority row
+   * is only added to the dispatch table when this dep is wired, so an operator
+   * who never opts in gets a byte-identical ladder.
+   */
+  findAndProcessCustomLabelPrompts?: (
+    opts?: HandlerExecuteOptions,
+  ) => Promise<Result<PriorityHandlerResult>>;
+
   // Priority 1.9: Stale workflow detection (Issue #1240)
   // Issue #1781: caller passes `shouldShutdown` so the rate-limit
   // pause-and-resume loop can abort cleanly on SIGTERM/SIGINT.
@@ -1482,6 +1498,20 @@ export function buildPriorityDispatchTable(
       agentBacked: true,
       execute: deps.findAndProcessQuestion,
     },
+    // Issue #848 (part of #843): an issue carrying a configured
+    // `custom_label_prompts` label runs the generic implementation phase with
+    // the operator's private prompt. It keeps the label-dispatch family
+    // contiguous and sits ahead of the generic scan, and — unlike the other
+    // optional priorities — the row exists only when a mapping is configured,
+    // so an operator who never opts in gets an unchanged ladder.
+    ...(deps.findAndProcessCustomLabelPrompts
+      ? [{
+        priority: 1.86,
+        name: "Custom Label Prompts",
+        agentBacked: true,
+        execute: deps.findAndProcessCustomLabelPrompts,
+      }]
+      : []),
     {
       priority: 1.9,
       name: "Stale Workflow Detection",

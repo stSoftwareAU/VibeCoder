@@ -249,9 +249,14 @@ function utilisationLine(logs: string[]): string {
   return lines[lines.length - 1]!;
 }
 
+/** Escape a literal term for use inside a RegExp. */
+function escapeRegExp(term: string): string {
+  return term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** Read `key=<n>s` (or `key=<n>`) out of a structured summary line. */
 function field(line: string, key: string): string {
-  const match = line.match(new RegExp(`(?:^| )${key}=([^ ]+)`));
+  const match = line.match(new RegExp(`(?:^| )${escapeRegExp(key)}=([^ ]+)`));
   assert(match !== null, `no ${key} in: ${line}`);
   return match[1]!;
 }

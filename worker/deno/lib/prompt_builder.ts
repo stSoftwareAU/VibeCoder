@@ -12,6 +12,7 @@
 
 import type { Result, VerbosityLevel } from "../types.ts";
 import { loadPrompt } from "./prompt_manager.ts";
+import { loadCustomPromptTemplate } from "./custom_prompt_loader.ts";
 import {
   type AgentIdentity,
   loadCodingGuidelinesOverlay,
@@ -414,6 +415,19 @@ export interface IssuePromptOptions {
    * UNTRUSTED on the retry.
    */
   securityGateBlock?: SecurityFixGateBlock;
+  /**
+   * Absolute host path of an operator's custom prompt template (Issue #848,
+   * part of #843). Supplied when a `custom_label_prompts` label dispatched
+   * this run: the file replaces the built-in `prompts/issue/` template, and
+   * everything else about the build is unchanged — the same substitution, the
+   * same nonce fences around the untrusted issue text, and the same
+   * boundary-integrity instruction. A file that has become missing,
+   * unreadable, empty or short of a required placeholder fails the build
+   * loudly rather than falling back to the built-in template.
+   */
+  customPromptPath?: string;
+  /** Label the custom prompt dispatched, named in load failures (Issue #848). */
+  customPromptLabel?: string;
 }
 
 /**
@@ -446,10 +460,17 @@ export async function buildIssuePrompt(
     ciFailureContext,
     ciFailureBoundaryId,
     securityGateBlock,
+    customPromptPath,
+    customPromptLabel,
   } = options;
 
-  // Load the issue template
-  const templateResult = await loadPrompt("issue", promptsDir);
+  // Load the issue template. An operator's custom prompt (Issue #848) replaces
+  // the built-in one for this run; it is read fresh at build time so an edit —
+  // or a deletion — between config load and dispatch is seen here, and fails
+  // loud instead of quietly reverting to the built-in template.
+  const templateResult = customPromptPath
+    ? await loadCustomPromptTemplate(customPromptPath, customPromptLabel)
+    : await loadPrompt("issue", promptsDir);
   if (!templateResult.ok) return templateResult;
 
   // Build coding guidelines (goes into system prompt for caching)

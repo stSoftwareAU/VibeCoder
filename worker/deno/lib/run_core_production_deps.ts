@@ -170,6 +170,7 @@ import { processIssueQuestion } from "./question_processor.ts";
 import { processIssuePlanning } from "./planning_processor.ts";
 import { processGrillMe } from "./grill_me_processor.ts";
 import { processQuorum } from "./quorum_processor.ts";
+import { dispatchCustomLabelPrompts } from "./custom_label_dispatch.ts";
 
 // Failure & circuit breaker
 import {
@@ -2419,6 +2420,32 @@ export async function createProductionRunCoreDeps(
       );
       return { ok: true, value: result };
     },
+
+    // -- Priority 1.86: Custom label prompts (Issue #848, part of #843) --
+    // Wired only when the operator configured a mapping, so an unconfigured
+    // fleet keeps a byte-identical priority ladder. Each configured label is
+    // tried in configuration order and the first issue found is worked; a
+    // mapped prompt file that has gone missing throws from the processor
+    // rather than falling back to the built-in template.
+    ...(config.customLabelPrompts.length > 0
+      ? {
+        async findAndProcessCustomLabelPrompts(
+          opts?: { deadlineEpochMs: number },
+        ) {
+          const value = await dispatchCustomLabelPrompts(
+            config.customLabelPrompts,
+            findAndProcessByLabel,
+            {
+              ...(opts?.deadlineEpochMs !== undefined
+                ? { deadlineEpochMs: opts.deadlineEpochMs }
+                : {}),
+              onFault: (fault) => logger.error(fault.message),
+            },
+          );
+          return { ok: true as const, value };
+        },
+      }
+      : {}),
 
     // -- Priority 1.9: Stale workflow detection (Issue #1240) --
     async scanStaleWorkflowIssues(opts) {
