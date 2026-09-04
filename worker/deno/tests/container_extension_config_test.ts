@@ -164,6 +164,32 @@ Deno.test("parseContainerExtension - rejects the home directory or an ancestor",
   assertRejected({ path: `${HOME}/` }, "path", "home directory");
 });
 
+Deno.test("parseContainerExtension - a Windows path is judged in its own spelling", () => {
+  const result = parseContainerExtension({
+    path: "C:\\srv\\vibe-extension",
+    containerfile: "build\\Containerfile",
+  }, { env: () => "C:\\Users\\operator" });
+  assert(result.ok, result.ok ? "" : result.error);
+  assertEquals(result.value?.containerfile, "build\\Containerfile");
+
+  for (const value of ["..\\..\\Containerfile", "D:\\evil\\Containerfile"]) {
+    const rejected = parseContainerExtension({
+      path: "C:\\srv\\vibe-extension",
+      containerfile: value,
+    }, { env: () => "C:\\Users\\operator" });
+    assertEquals(
+      rejected.ok,
+      false,
+      `expected ${value} to be refused, got ${JSON.stringify(rejected)}`,
+    );
+  }
+
+  const home = parseContainerExtension({ path: "C:\\Users\\Operator" }, {
+    env: () => "C:\\Users\\operator",
+  });
+  assertEquals(home.ok, false, "a Windows home directory must be refused");
+});
+
 Deno.test("parseContainerExtension - rejects the filesystem root", () => {
   assertRejected({ path: "/" }, "path", "filesystem root");
 });
@@ -173,12 +199,14 @@ Deno.test("parseContainerExtension - a directory below the home directory is fin
   assertEquals(spec?.path, `${HOME}/vibe-extension`);
 });
 
-Deno.test("parseContainerExtension - an unknown home directory leaves the path alone", () => {
-  const result = parseContainerExtension({ path: "/home" }, {
+Deno.test("parseContainerExtension - an unknown home directory is refused, not skipped", () => {
+  // A containment rule that cannot be evaluated has not passed: with neither
+  // HOME nor USERPROFILE set there is nothing to check the path against.
+  const result = parseContainerExtension({ path: "/srv/vibe-extension" }, {
     env: () => undefined,
   });
-  assert(result.ok, result.ok ? "" : result.error);
-  assertEquals(result.value?.path, "/home");
+  assertEquals(result.ok, false);
+  assertStringIncludes(result.ok ? "" : result.error, "HOME");
 });
 
 // ---------------------------------------------------------------------------
@@ -356,26 +384,29 @@ Deno.test("loadConfig - no container_extension key parses as today", async () =>
 // Reading the selection off disk (the launcher's reader)
 // ---------------------------------------------------------------------------
 
-Deno.test("readContainerExtensionSelection - returns the validated spec and the verbatim JSON", async () => {
+Deno.test("readContainerExtensionSelection - returns the validated declaration", async () => {
   await withConfig(
     {
       repos: ["stSoftwareAU/VibeCoder"],
       container_extension: validExtension(),
     },
     async (path) => {
-      const selection = await readContainerExtensionSelection(path, {
+      const extension = await readContainerExtensionSelection(path, {
         env: ENV,
       });
-      assertEquals(selection.extension?.path, "/srv/vibe-extension");
-      assertEquals(selection.extension?.start, "start.sh");
-      assertEquals(selection.specJson, JSON.stringify(validExtension()));
+      assertEquals(extension?.path, "/srv/vibe-extension");
+      assertEquals(extension?.containerfile, "Containerfile");
+      assertEquals(extension?.start, "start.sh");
     },
   );
 });
 
-Deno.test("readContainerExtensionSelection - no selection reads as empty", async () => {
+Deno.test("readContainerExtensionSelection - no declaration reads as none", async () => {
   await withConfig({ repos: ["stSoftwareAU/VibeCoder"] }, async (path) => {
-    assertEquals(await readContainerExtensionSelection(path, { env: ENV }), {});
+    assertEquals(
+      await readContainerExtensionSelection(path, { env: ENV }),
+      undefined,
+    );
   });
 });
 
@@ -386,7 +417,7 @@ Deno.test("readContainerExtensionSelection - an absent config selects no extensi
       await readContainerExtensionSelection(`${dir}/nowhere/.config.json`, {
         env: ENV,
       }),
-      {},
+      undefined,
     );
   } finally {
     await Deno.remove(dir, { recursive: true });

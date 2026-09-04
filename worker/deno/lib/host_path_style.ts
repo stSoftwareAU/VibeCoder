@@ -133,9 +133,48 @@ export function isAtOrAbove(
   path: string,
   style: LauncherPathStyle,
 ): boolean {
-  const left = comparablePath(normalisePath(ancestor, style), style);
-  const right = comparablePath(normalisePath(path, style), style);
+  const left = comparablePath(ancestor, style);
+  const right = comparablePath(path, style);
   return left === right || right.startsWith(`${left}/`);
+}
+
+/**
+ * Whether a relative path stays inside the directory it is relative to.
+ *
+ * The confinement rule shared by every operator-supplied relative value: the
+ * `container_tools` install prefix (`bin`/`env`) and the `container_extension`
+ * directory (`containerfile`/`start`). `""` is the directory itself. Anything
+ * absolute, `~`-anchored, NUL-bearing, or walking above the directory with
+ * `..` is out.
+ *
+ * @param value - The operator's relative value
+ * @param style - The host's path spelling; `windows` also treats `\` as a
+ *   separator and rejects a drive-absolute value
+ * @returns Whether the value stays inside the directory
+ */
+export function isConfinedRelativePath(
+  value: string,
+  style: LauncherPathStyle = "posix",
+): boolean {
+  if (value.includes("\0")) return false;
+  if (value.startsWith("~")) return false;
+  if (isAbsolutePath(value, style)) return false;
+  // A Windows host spells its separator `\`, so `..\..` escapes exactly as
+  // `../..` does; a `\`-anchored value is absolute there too.
+  if (style === "windows" && value.startsWith("\\")) return false;
+  if (style === "posix" && value.startsWith("/")) return false;
+
+  let depth = 0;
+  for (const segment of value.split(style === "windows" ? /[\\/]/ : "/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      depth--;
+      if (depth < 0) return false;
+      continue;
+    }
+    depth++;
+  }
+  return true;
 }
 
 /**

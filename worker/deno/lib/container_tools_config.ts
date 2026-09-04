@@ -39,6 +39,10 @@ import type {
   ContainerToolSpec,
   Result,
 } from "../types.ts";
+// The install prefix is an in-container POSIX path, so the shared confinement
+// rule is applied in its POSIX spelling — the same predicate the
+// `container_extension` validator uses (Issue #978).
+import { isConfinedRelativePath } from "./host_path_style.ts";
 
 /** Architectures a spec may supply a download for. */
 export const CONTAINER_TOOL_ARCHITECTURES:
@@ -88,29 +92,6 @@ class SpecError extends Error {}
 /** Throw a fault naming the field it came from. */
 function reject(field: string, detail: string): never {
   throw new SpecError(`${field}: ${detail}`);
-}
-
-/**
- * Whether a `bin`/`env` value stays inside the install prefix.
- *
- * `""` is the prefix root. Anything absolute, `~`-anchored, NUL-bearing, or
- * walking above the prefix with `..` is out.
- */
-function isConfinedRelativePath(value: string): boolean {
-  if (value.includes("\0")) return false;
-  if (value.startsWith("/") || value.startsWith("~")) return false;
-
-  let depth = 0;
-  for (const segment of value.split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") {
-      depth--;
-      if (depth < 0) return false;
-      continue;
-    }
-    depth++;
-  }
-  return true;
 }
 
 /** Validate one architecture-keyed block (`url` or `sha256`). */

@@ -36,6 +36,14 @@
  * `/srv/../home/operator` **is** the home directory once resolved and no
  * string comparison would see it.
  *
+ * The home directory compared against is the one **the reading process** is
+ * running as. Host-side — the launcher, through
+ * {@link readContainerExtensionSelection} — that is the operator's own home,
+ * which is where the rule genuinely binds. In-container the worker's config
+ * load compares against the container's `/home/vibe`, so the check there is a
+ * second line rather than the first; the launcher has already refused the
+ * declaration before any container starts.
+ *
  * The standard public Vibe Coder is unchanged: an unconfigured deployment
  * parses exactly as it does today and installs nothing.
  *
@@ -47,7 +55,10 @@ import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import {
   isAbsolutePath,
   isAtOrAbove,
+  isConfinedRelativePath,
   isRootPath,
+  type LauncherPathStyle,
+  normalisePath,
   pathStyleFor,
 } from "./host_path_style.ts";
 
@@ -107,27 +118,6 @@ function hasTraversalSegment(path: string): boolean {
   );
 }
 
-/**
- * Whether a `containerfile`/`start` value stays inside the extension
- * directory. Anything absolute, `~`-anchored, or walking above the directory
- * with `..` is out.
- */
-function isConfinedRelativePath(value: string): boolean {
-  if (value.startsWith("/") || value.startsWith("~")) return false;
-
-  let depth = 0;
-  for (const segment of value.split("/")) {
-    if (segment === "" || segment === ".") continue;
-    if (segment === "..") {
-      depth--;
-      if (depth < 0) return false;
-      continue;
-    }
-    depth++;
-  }
-  return true;
-}
-
 /** Validate a required non-empty string field, free of control characters. */
 function parseCleanString(raw: unknown, field: string): string {
   if (typeof raw !== "string" || raw.length === 0) {
@@ -139,9 +129,9 @@ function parseCleanString(raw: unknown, field: string): string {
   return raw;
 }
 
-/** The host home directory, or `""` when the environment does not say. */
+/** The home directory of the process reading the configuration. */
 function homeDirectory(env: EnvLookup): string {
-  return env("HOME") ?? env("USERPROFILE") ?? "";
+  return (env("HOME") ?? env("USERPROFILE") ?? "").trim();
 }
 
 /** Validate the absolute, contained `path`. */
@@ -167,13 +157,24 @@ function parsePath(raw: unknown, field: string, env: EnvLookup): string {
   }
 
   // Issue #850's containment rule for operator-supplied host paths: the
-  // Vibe Coder controls its own workspace, not the host's home directory.
-  // An unknown home directory disables the check rather than guessing one.
+  // Vibe Coder controls its own workspace, not the home directory of whoever
+  // runs it. A home directory the environment does not state is refused
+  // rather than skipped — a containment rule that cannot be evaluated is not
+  // a rule that passed (see `DESIGN-PRINCIPLES.md`, never fail silently).
   const home = homeDirectory(env);
-  if (home !== "" && isAtOrAbove(path, home, style)) {
+  if (home === "") {
     reject(
       field,
-      `must not be the host home directory (or an ancestor of it), got ` +
+      `cannot be checked for containment: neither HOME nor USERPROFILE is ` +
+        `set, so the home directory this path must stay out of is unknown`,
+    );
+  }
+  if (
+    isAtOrAbove(normalisePath(path, style), normalisePath(home, style), style)
+  ) {
+    reject(
+      field,
+      `must not be the home directory (or an ancestor of it), got ` +
         `${show(path)}`,
     );
   }
@@ -185,10 +186,11 @@ function parseConfinedPath(
   raw: unknown,
   field: string,
   extensionPath: string,
+  style: LauncherPathStyle,
 ): string | undefined {
   if (raw === undefined) return undefined;
   const value = parseCleanString(raw, field);
-  if (!isConfinedRelativePath(value)) {
+  if (!isConfinedRelativePath(value, style)) {
     reject(
       field,
       `must be relative to the extension directory ${extensionPath} — ` +
@@ -238,15 +240,21 @@ export function parseContainerExtension(
     }
 
     const path = parsePath(raw.path, "container_extension.path", env);
+    // The two relative fields are judged in the spelling their directory is
+    // written in, so a Windows deployment's `..\..` escapes as surely as a
+    // POSIX deployment's `../..`.
+    const style = pathStyleFor(path);
     const containerfile = parseConfinedPath(
       raw.containerfile,
       "container_extension.containerfile",
       path,
+      style,
     ) ?? DEFAULT_EXTENSION_CONTAINERFILE;
     const start = parseConfinedPath(
       raw.start,
       "container_extension.start",
       path,
+      style,
     );
 
     // `start` stays absent rather than empty: a toolchain-only extension has
@@ -286,24 +294,14 @@ export function assertContainerExtension(
   return result.value;
 }
 
-/** A deployment's extension selection, as read from its `.config.json`. */
-export interface ContainerExtensionSelection {
-  /** The validated declaration; absent when the deployment declares none. */
-  extension?: ContainerExtensionSpec;
-  /**
-   * The operator's own block, compact and verbatim — what a later sub-issue
-   * of #933 carries into the build, so the builder sees exactly what was
-   * written. Absent when no extension is declared.
-   */
-  specJson?: string;
-}
-
 /**
  * Read the `container_extension` selection out of a `.config.json`.
  *
  * The host-side callers (the launcher's plan, the extension digest) run
  * before the worker loads its configuration, so they read the file directly
- * through here rather than restating the parse.
+ * through here rather than restating the parse. Reading it host-side is also
+ * where the home-directory containment rule genuinely binds: in-container the
+ * home directory is the container's, not the operator's.
  *
  * Fail-loud, except for an absent file: the launchers run against checkouts
  * that have not been set up yet, and "no configuration" is genuinely "no
@@ -313,17 +311,17 @@ export interface ContainerExtensionSelection {
  *
  * @param configFile - Path to the deployment's `.config.json`
  * @param options - Environment lookup override (tests inject a fixed map)
- * @returns The validated declaration and the verbatim JSON the build carries
+ * @returns The validated declaration, or `undefined` when none is declared
  */
 export async function readContainerExtensionSelection(
   configFile: string,
   options: ContainerExtensionOptions = {},
-): Promise<ContainerExtensionSelection> {
+): Promise<ContainerExtensionSpec | undefined> {
   let text: string;
   try {
     text = await Deno.readTextFile(configFile);
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return {};
+    if (error instanceof Deno.errors.NotFound) return undefined;
     throw new Error(
       `Cannot read container_extension: ${configFile} is unreadable ` +
         `(${(error as Error).message}).`,
@@ -347,7 +345,5 @@ export async function readContainerExtensionSelection(
   }
 
   const raw = (parsed as Record<string, unknown>)["container_extension"];
-  const extension = assertContainerExtension(raw, options);
-  if (extension === undefined) return {};
-  return { extension, specJson: JSON.stringify(raw) };
+  return assertContainerExtension(raw, options);
 }
