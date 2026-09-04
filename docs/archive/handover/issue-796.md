@@ -5,7 +5,7 @@
 An earlier run working this issue was interrupted before it finished.
 The worker wrote this note — not the agent — so any host and any tooling
 can pick the work up from this branch. It carries nothing tied to one
-host, one conversation or one agent provider.
+host, one conversation or one agent provider
 
 ## This attempt
 
