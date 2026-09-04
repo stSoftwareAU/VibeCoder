@@ -28,6 +28,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /** Environment variable holding the canonical run id for this invocation. */
 export const RUN_ID_ENV_VAR = "VIBE_RUN_ID";
@@ -65,24 +66,77 @@ export function generateRunId(opts: GenerateRunIdOptions = {}): string {
   return `${RUN_ID_PREFIX}-${ts}-${suffix}`;
 }
 
-/** Read an environment variable, tolerating a denied `--allow-env`. */
-function readEnv(name: string): string | undefined {
+/**
+ * Read the run id already established for this invocation, without
+ * establishing one (Issue #963).
+ *
+ * This is the read half of {@link getRunId}, split out so a caller — and a
+ * test — can ask "what is the run id?" without the module writing anything
+ * into the process. Blank and whitespace-only values read as absent, which
+ * is what makes them regenerable rather than a run id of `"   "`.
+ *
+ * @param env - Environment lookup. Defaults to the real process environment,
+ *   so production callers pass nothing and behave exactly as before.
+ * @returns The trimmed run id, or `undefined` when none is set.
+ */
+export function readRunId(
+  env: EnvLookup = processEnvLookup,
+): string | undefined {
+  let raw: string | undefined;
   try {
-    return Deno.env.get(name);
+    raw = env(RUN_ID_ENV_VAR);
   } catch {
+    // A denied `--allow-env` is "no run id set", not a crash.
     return undefined;
   }
+  const trimmed = raw?.trim();
+  return trimmed !== undefined && trimmed.length > 0 ? trimmed : undefined;
 }
 
-/** Set an environment variable, tolerating a denied `--allow-env`. */
-function trySetEnv(name: string, value: string): void {
-  try {
-    Deno.env.set(name, value);
-  } catch {
-    // Permission denied — the caller still gets the generated id back,
-    // it just will not propagate to child processes on this run.
-  }
+/**
+ * Where {@link getRunId} caches the id it generates (Issue #963).
+ *
+ * The run id is genuinely process-scoped in production: it is cached into
+ * `VIBE_RUN_ID` so every child `deno` command inherits it. That write is the
+ * reason a test touching this module used to have to mutate the process
+ * environment — and a mutated process environment races every other test
+ * running at that moment (Issue #880). Naming the store as a parameter lets a
+ * test hand over a plain `Map`, so the generate-once-and-cache behaviour is
+ * still proven while nothing process-wide moves.
+ *
+ * A `Map<string, string>` satisfies this interface as-is.
+ */
+export interface RunIdStore {
+  /** Reads the cached run id — the same contract as {@link EnvLookup}. */
+  get: EnvLookup;
+  /** Caches a freshly generated run id. */
+  set(name: string, value: string): void;
 }
+
+/**
+ * The real process environment as a {@link RunIdStore}.
+ *
+ * The default for {@link getRunId}, so production is unchanged: the id is
+ * read from and cached into `VIBE_RUN_ID`. Both halves tolerate a denied
+ * `--allow-env` — the caller still gets an id back, it just will not
+ * propagate to child processes on this run.
+ */
+export const processRunIdStore: RunIdStore = {
+  get: (name) => {
+    try {
+      return processEnvLookup(name);
+    } catch {
+      return undefined;
+    }
+  },
+  set: (name, value) => {
+    try {
+      Deno.env.set(name, value);
+    } catch {
+      // Permission denied — see above.
+    }
+  },
+};
 
 /**
  * Resolve the canonical run id for the current worker invocation.
@@ -92,14 +146,15 @@ function trySetEnv(name: string, value: string): void {
  * path on the same invocation shares one id. Otherwise a fresh id is
  * generated, cached into `VIBE_RUN_ID` (so subsequent calls and child
  * processes reuse it), and returned.
+ *
+ * @param store - Where the id is read from and cached to. Defaults to
+ *   {@link processRunIdStore}, the real process environment (Issue #963).
  */
-export function getRunId(): string {
-  const existing = readEnv(RUN_ID_ENV_VAR);
-  if (existing !== undefined && existing.trim().length > 0) {
-    return existing.trim();
-  }
+export function getRunId(store: RunIdStore = processRunIdStore): string {
+  const existing = readRunId((name) => store.get(name));
+  if (existing !== undefined) return existing;
   const id = generateRunId();
-  trySetEnv(RUN_ID_ENV_VAR, id);
+  store.set(RUN_ID_ENV_VAR, id);
   return id;
 }
 

@@ -180,20 +180,23 @@ Deno.test({
   name: "subprocess_timeout - clearEnv keeps the parent environment out",
   ignore: Deno.build.os === "windows",
   fn: async () => {
-    Deno.env.set("VIBE_TEST_PARENT_ONLY", "leaked");
-    try {
-      const result = await runWithTimeout("/bin/sh", [
-        "-c",
-        'printf "%s" "${VIBE_TEST_PARENT_ONLY:-absent}"',
-      ], {
-        clearEnv: true,
-        env: { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin" },
-      });
-      assertEquals(result.ok, true);
-      assertEquals(result.ok && result.value.stdout, "absent");
-    } finally {
-      Deno.env.delete("VIBE_TEST_PARENT_ONLY");
-    }
+    // Reads the parent value, never sets one: mutating `Deno.env` races
+    // under `deno test --parallel` and the cap in
+    // `parallel_safety_cap_test.ts` (Issue #880) forbids new mutators.
+    const parentHome = Deno.env.get("HOME");
+    assert(
+      parentHome !== undefined && parentHome !== "",
+      "the test host must export HOME for this test to mean anything",
+    );
+    const result = await runWithTimeout("/bin/sh", [
+      "-c",
+      'printf "%s" "${HOME:-absent}"',
+    ], {
+      clearEnv: true,
+      env: { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin" },
+    });
+    assertEquals(result.ok, true);
+    assertEquals(result.ok && result.value.stdout, "absent");
   },
 });
 
@@ -202,16 +205,16 @@ Deno.test({
     "subprocess_timeout - without clearEnv the parent environment is inherited",
   ignore: Deno.build.os === "windows",
   fn: async () => {
-    Deno.env.set("VIBE_TEST_INHERITED", "present");
-    try {
-      const result = await runWithTimeout("/bin/sh", [
-        "-c",
-        'printf "%s" "${VIBE_TEST_INHERITED:-absent}"',
-      ]);
-      assertEquals(result.ok && result.value.stdout, "present");
-    } finally {
-      Deno.env.delete("VIBE_TEST_INHERITED");
-    }
+    const parentHome = Deno.env.get("HOME");
+    assert(
+      parentHome !== undefined && parentHome !== "",
+      "the test host must export HOME for this test to mean anything",
+    );
+    const result = await runWithTimeout("/bin/sh", [
+      "-c",
+      'printf "%s" "${HOME:-absent}"',
+    ]);
+    assertEquals(result.ok && result.value.stdout, parentHome);
   },
 });
 
