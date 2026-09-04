@@ -915,13 +915,35 @@ export async function createProductionRunCoreDeps(
     ) => Promise<R>,
     /** Watchdog deadline for the calling handler, epoch-ms (Issue #58). */
     handlerDeadlineEpochMs?: number,
+    /**
+     * Apply the `work-on` new-work eligibility gates (Issue #937).
+     *
+     * The built-in label routes answer an issue and remove their own label,
+     * so re-dispatch stops itself. A custom label route raises a PR and
+     * leaves its label in place, so without these gates the next cycle
+     * re-ran the whole implementation pipeline against the still-open PR.
+     */
+    gateNewWork = false,
   ): Promise<PriorityHandlerResult> {
+    // The retry cooldown this run holds over an issue, plus the issues this
+    // process has already worked — the same set the claim scan filters on
+    // (Issue #655). Loaded only for a gated scan; the label-removing routes
+    // never took it and must keep their behaviour.
+    const runLocalHold = gateNewWork ? await loadRunLocalHolds() : undefined;
+
     const result = await findIssuesByLabel(config, label, false, {
       githubUser,
       ghCommandFn: runGhCommand,
       cache: issueCache,
       timelineCache,
       timelineBatchRegistry,
+      ...(gateNewWork
+        ? {
+          gateNewWork: true,
+          isIssueInCooldown: runLocalHold!,
+          closedPrCooldownSeconds: config.closedPrCooldownSeconds,
+        }
+        : {}),
     });
 
     if (!result.found || !result.output) {
@@ -964,6 +986,14 @@ export async function createProductionRunCoreDeps(
 
     const processResult = await processFn(ctx, processorDeps);
     const processed = processResult?.ok ?? false;
+    // Issue #937: a gated route that did not produce work cools the issue
+    // down, so a persistently failing custom-labelled issue backs off
+    // instead of burning a full agent run every cycle. This is what the
+    // claim scan's skip/failure paths already do for `work-on`; the label
+    // routes run outside that path and recorded nothing.
+    if (gateNewWork && !processed) {
+      await cooldownRecordFn(cooldownConfig, repo, issueNumber);
+    }
     // Issue #859: every "Processing ..." line needs a matching outcome.
     // A declined pickup logged nothing at all, so a processor that looked at
     // an issue and correctly walked away was indistinguishable from one that
@@ -2389,7 +2419,15 @@ export async function createProductionRunCoreDeps(
         ) {
           const value = await dispatchCustomLabelPrompts(
             customDispatchMappings(config),
-            findAndProcessByLabel,
+            // Issue #937: the only PR-producing label route, so the only one
+            // that opts into the `work-on` eligibility gates.
+            (scanLabel, scanProcessFn, scanDeadlineEpochMs) =>
+              findAndProcessByLabel(
+                scanLabel,
+                scanProcessFn,
+                scanDeadlineEpochMs,
+                true,
+              ),
             {
               ...(opts?.deadlineEpochMs !== undefined
                 ? { deadlineEpochMs: opts.deadlineEpochMs }
