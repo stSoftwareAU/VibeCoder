@@ -164,9 +164,14 @@ export function buildFleetHealthConfig(repoDir: string): FleetHealthConfig {
   // '/workspace/../private-repo-6'" observed live), so the clone lands under the
   // writable work-dir mount instead. Disposable by design — the remote is
   // the repository of record. An explicit FLEET_HEALTH_DIR always wins.
+  // WORK_DIR only, never a HOME-derived default (Issue #135, parent #118):
+  // the run driver resolves the work dir once and exports it (Issue #4370),
+  // so anything that reaches this line inside the container has it set. With
+  // it unset the container arm simply does not engage and the sibling default
+  // applies — the same path a host run takes — instead of naming a work dir
+  // nobody asked for.
   const inContainer = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined;
-  const workDir = Deno.env.get("WORK_DIR") ??
-    `${Deno.env.get("HOME") ?? ""}/auto-issue-work`;
+  const workDir = Deno.env.get("WORK_DIR");
   const healthRepo = Deno.env.get("FLEET_HEALTH_REPO") || undefined;
   // The checkout is named after the repository (git@host:org/GRQ-health.git
   // -> GRQ-health), so the operator sees the name they know and no name is
@@ -176,7 +181,7 @@ export function buildFleetHealthConfig(repoDir: string): FleetHealthConfig {
     ? healthRepoCheckoutName(healthRepo)
     : "private-repo-6";
   const healthDir = Deno.env.get("FLEET_HEALTH_DIR") ??
-    (inContainer
+    (inContainer && workDir
       ? `${workDir}/${checkoutName}`
       : `${repoDir}/../${checkoutName}`);
 

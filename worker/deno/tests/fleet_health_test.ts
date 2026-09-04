@@ -937,6 +937,22 @@ Deno.test("buildFleetHealthConfig - container mode clones under the work-dir mou
   );
 });
 
+Deno.test("buildFleetHealthConfig - container mode without WORK_DIR never derives the clone path from HOME (Issue #135)", async () => {
+  // The run driver exports WORK_DIR (Issue #4370), so the container arm has
+  // it whenever the worker put us here. Without it there is no work dir to
+  // name — and inventing `$HOME/auto-issue-work` would plant a stray work dir
+  // under whatever home this process happens to have (parent #118). HOME
+  // survives withCleanEnv, so the assertion proves the HOME arm is gone
+  // rather than merely unset.
+  await withCleanEnv({
+    VIBE_IMAGE_AGENT_PROVIDERS: "claude",
+    WORK_DIR: undefined,
+  }, () => {
+    const config = buildFleetHealthConfig("/workspace");
+    assertEquals(config.healthDir, "/workspace/../private-repo-6");
+  });
+});
+
 Deno.test("buildFleetHealthConfig - an explicit FLEET_HEALTH_DIR wins even in container mode", async () => {
   await withCleanEnv({
     FLEET_HEALTH_DIR: "/mnt/telemetry/private-repo-6",
