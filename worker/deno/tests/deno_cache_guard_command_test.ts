@@ -4,11 +4,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import {
-  assertEquals,
-  assertRejects,
-  assertStringIncludes,
-} from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { denoCacheGuardCommand } from "../commands/deno_cache_guard.ts";
 import { denoCacheDir } from "../lib/deno_cache_guard.ts";
 import type { WorkerConfig } from "../types.ts";
