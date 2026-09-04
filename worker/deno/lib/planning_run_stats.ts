@@ -18,6 +18,7 @@
  */
 
 import { activeAgentProvider } from "./agent_provider.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import type { RunStats } from "./run_stats.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import {
@@ -214,8 +215,16 @@ export const UNRESOLVED_EXPECTED_MODEL = "(CLI default)";
  * equality check.
  */
 export interface ExpectedModelProvider {
-  /** The model this provider routes `phase` to, if any. */
-  resolveModel(phase?: string): string | undefined;
+  /**
+   * The model this provider routes `phase` to, if any.
+   *
+   * `env` is the lookup the provider's own routing chain reads its
+   * `*_MODEL_<PHASE>` overrides through (Issue #962) — the same optional
+   * second parameter `AgentProviderDescriptor.resolveModel` takes, so a real
+   * descriptor satisfies this interface unchanged and a provider a caller
+   * constructed itself may ignore it.
+   */
+  resolveModel(phase?: string, env?: EnvLookup): string | undefined;
 }
 
 /**
@@ -253,16 +262,21 @@ export interface ExpectedModelProvider {
  *   (default `"planning"`)
  * @param provider - The provider the invocation ran on; omit for the active
  *   provider, which is the one the run was dispatched to
+ * @param env - Environment lookup for the provider selection and the routing
+ *   chain's own overrides (Issue #962). Defaults to the process environment,
+ *   so every existing caller resolves exactly as before.
  * @returns The model identifier the run is expected to be served by
  */
 export function resolveExpectedPlanningModel(
   configuredBest?: string,
   phase: string = "planning",
   provider?: ExpectedModelProvider,
+  env: EnvLookup = processEnvLookup,
 ): string {
   const pinned = configuredBest?.trim();
   if (pinned) return pinned;
-  const routed = (provider ?? activeAgentProvider()).resolveModel(phase);
+  const routed = (provider ?? activeAgentProvider({ env }))
+    .resolveModel(phase, env);
   return routed?.trim() ? routed : UNRESOLVED_EXPECTED_MODEL;
 }
 
@@ -640,6 +654,8 @@ export function buildPlanningStatsSection(args: {
  *   published sub-issues
  * @param args.provider - The provider the invocations ran on (Issue #441); omit
  *   for the active provider, which is the one the run was dispatched to
+ * @param args.env - Environment lookup the expected model is derived through
+ *   (Issue #962); defaults to the process environment
  * @returns The resolved expected model, the verdict, and the stats section
  */
 export function buildDegradationReport(args: {
@@ -648,12 +664,14 @@ export function buildDegradationReport(args: {
   phase?: string;
   gate?: FailureDetectionGateStats;
   provider?: ExpectedModelProvider;
+  env?: EnvLookup;
 }): DegradationReport {
   const phase = args.phase ?? "planning";
   const expectedModel = resolveExpectedPlanningModel(
     args.configuredBestModel,
     phase,
     args.provider,
+    args.env ?? processEnvLookup,
   );
   const verdict = assessDegradation(args.invocations, expectedModel, phase);
   const section = buildPlanningStatsSection({

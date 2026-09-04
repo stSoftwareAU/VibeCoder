@@ -20,6 +20,8 @@ import {
 } from "./run_outcome.ts";
 import type { GitHubClient, Logger, Result } from "../types.ts";
 import { maybeCreatePlanningMilestone } from "./planning_milestone.ts";
+import { promptOverrideMappings } from "./custom_label_prompts_config.ts";
+import { refuseFallbackPastOverride } from "./prompt_override_resolver.ts";
 import { fetchNativeSubIssueNumbers } from "./native_sub_issues.ts";
 import {
   buildPlanningCritiquePrompt,
@@ -79,6 +81,7 @@ import {
 } from "./failure_detection_repair_label.ts";
 import { summariseCoverageGateFailure } from "./plan_coverage_gate.ts";
 import { ensureLabelExists } from "./label_operations.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import type { EscalateToHumanDeps } from "./needs_human_escalation.ts";
 
 // ---------------------------------------------------------------------------
@@ -140,6 +143,16 @@ export interface PlanningProcessorDeps {
   logger: Logger;
   /** Worker deps for cross-cutting concerns. */
   deps: WorkerDeps;
+  /**
+   * Environment lookup for the two variables the escalation path exports
+   * for this processor — `PLANNING_COMPLEXITY_CONTEXT` and
+   * `PLANNING_ESCALATION_REASON` (Issue #964). Defaults to the process
+   * environment, so production wiring passes nothing and behaves exactly as
+   * it did when this module read `Deno.env.get` itself. A test hands in a
+   * fixed map rather than mutating the environment every parallel worker
+   * shares.
+   */
+  env?: EnvLookup;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,15 +220,15 @@ export function extractSubIssueNumbers(
   claudeOutput: string,
   repo: string,
 ): number[] {
-  const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(
-    `https://github\\.com/${escapedRepo}/issues/(\\d+)`,
-    "g",
-  );
+  // A literal pattern that captures `owner/repo`, then an exact comparison —
+  // rather than a RegExp built from the caller's `repo`, which the ReDoS rule
+  // flags however carefully the value is escaped.
+  const pattern = /https:\/\/github\.com\/([^/]+\/[^/]+)\/issues\/(\d+)/g;
   const numbers = new Set<number>();
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(claudeOutput)) !== null) {
-    numbers.add(parseInt(match[1]!, 10));
+    if (match[1] !== repo) continue;
+    numbers.add(parseInt(match[2]!, 10));
   }
   return [...numbers].sort((a, b) => a - b);
 }
@@ -1017,6 +1030,7 @@ async function _processPlanningWithHeartbeat(
   ctx: IssueContext,
   processorDeps: PlanningProcessorDeps,
 ): Promise<Result<PlanningResult>> {
+  const env = processorDeps.env ?? processEnvLookup;
   const {
     repo,
     issueNumber,
@@ -1058,6 +1072,7 @@ async function _processPlanningWithHeartbeat(
       issueTitle,
       ctx.milestoneTitle,
       ctx.handlerDeadlineEpochMs,
+      env,
     );
   }
 
@@ -1089,6 +1104,7 @@ async function _processPlanningWithHeartbeat(
       issueTitle,
       ctx.milestoneTitle,
       ctx.handlerDeadlineEpochMs,
+      env,
     );
   }
 
@@ -1096,7 +1112,7 @@ async function _processPlanningWithHeartbeat(
   // If no complexity context was pre-set via environment variable (e.g. by
   // auto-escalation), run assess-clarity and extract relevant indicators.
   let complexityContext: string | undefined;
-  const envContext = Deno.env.get("PLANNING_COMPLEXITY_CONTEXT");
+  const envContext = env("PLANNING_COMPLEXITY_CONTEXT");
   if (envContext) {
     complexityContext = envContext;
   } else {
@@ -1151,12 +1167,21 @@ async function _processPlanningWithHeartbeat(
     complexityContext,
     milestoneTitle,
     repoContextContent,
+    // Issue #849: an operator's `planning` mapping replaces the template.
+    promptOverrides: promptOverrideMappings(config),
   });
 
   // Fall back to basic prompt if builder fails
   let prompt: string;
   let systemPrompt: string | undefined;
   if (!promptResult.ok) {
+    // Issue #849: the basic prompt rescues a broken *repository* template. An
+    // operator's override is never rescued that way — it fails the run loudly.
+    refuseFallbackPastOverride(
+      promptOverrideMappings(config),
+      "planning",
+      promptResult.error,
+    );
     logger.warn("Planning prompt builder failed, using basic planning prompt", {
       error: promptResult.error.message,
     });
@@ -1264,6 +1289,7 @@ async function _processPlanningWithHeartbeat(
         issueTitle,
         ctx.milestoneTitle,
         ctx.handlerDeadlineEpochMs,
+        env,
       );
     }
   }
@@ -1290,9 +1316,17 @@ async function _processPlanningWithHeartbeat(
       milestoneTitle,
       repoContextContent,
       draftPlan,
+      // Issue #849: the critique turn takes its own override entry.
+      promptOverrides: promptOverrideMappings(config),
     });
 
     if (!critiquePromptResult.ok) {
+      // Issue #849: never fall back past an operator's critique override.
+      refuseFallbackPastOverride(
+        promptOverrideMappings(config),
+        "planning_critique",
+        critiquePromptResult.error,
+      );
       logger.warn(
         "Planning critique prompt builder failed, using basic critique prompt",
         {
@@ -1551,6 +1585,7 @@ async function _processPlanningWithHeartbeat(
     issueTitle,
     ctx.milestoneTitle,
     ctx.handlerDeadlineEpochMs,
+    env,
   );
 }
 
@@ -1696,6 +1731,11 @@ async function closePlanningIssue(
    * the Failure-Detection self-repair below. Undefined: unbounded, as before.
    */
   handlerDeadlineEpochMs: number | undefined = undefined,
+  /**
+   * Environment lookup for `PLANNING_ESCALATION_REASON` (Issue #964).
+   * Defaults to the process environment.
+   */
+  env: EnvLookup = processEnvLookup,
 ): Promise<Result<PlanningResult>> {
   // Sub-issue numbers the run created — resolved once and reused below.
   // Issue #2900: union the text-extracted URLs with the parent's *native*
@@ -2170,7 +2210,7 @@ async function closePlanningIssue(
   }
 
   if (!alreadyClosed) {
-    const escalationReason = Deno.env.get("PLANNING_ESCALATION_REASON");
+    const escalationReason = env("PLANNING_ESCALATION_REASON");
     let summaryComment = buildPlanningSummaryComment(
       subIssueUrls,
       githubUser,

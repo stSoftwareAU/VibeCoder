@@ -29,6 +29,7 @@ import {
   WriteRepoBlockedError,
   WriteTargetUndeterminableError,
 } from "../lib/write_repo_allowlist.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 /** Record the arguments each spawn attempt would have used. */
 function recordingRunner(
@@ -259,9 +260,6 @@ Deno.test("spawnGh - a failed issue close marks nothing", async () => {
 // ---------------------------------------------------------------------------
 
 Deno.test("spawnGh - an auth failure re-stages the credential and retries once", async () => {
-  const previousHome = Deno.env.get("HOME");
-  const previousGh = Deno.env.get("GH_CONFIG_DIR");
-  const previousState = Deno.env.get("VIBE_STATE_DIR");
   const home = await Deno.makeTempDir();
   try {
     // The mount holds the credential; the staged copy is gone, exactly as it
@@ -271,9 +269,20 @@ Deno.test("spawnGh - an auth failure re-stages the credential and retries once",
       `${home}/.vibe-coder/credentials/gh/hosts.yml`,
       "github.com:\n",
     );
-    Deno.env.set("HOME", home);
-    Deno.env.set("VIBE_STATE_DIR", `${home}/state`);
-    Deno.env.set("GH_CONFIG_DIR", `${home}/gone`);
+    // The run environment as a map the chokepoint reads and writes, rather
+    // than the process every parallel worker shares (Issue #967). The roots
+    // are throwaway temporary directories that appear in no real environment,
+    // so a fall back to `Deno.env.get` fails here rather than passing on the
+    // ambient value.
+    const hostVars: Record<string, string> = {
+      HOME: home,
+      VIBE_STATE_DIR: `${home}/state`,
+      GH_CONFIG_DIR: `${home}/gone`,
+    };
+    const hostEnv = envFrom(hostVars);
+    const setHostEnv = (name: string, value: string) => {
+      hostVars[name] = value;
+    };
     resetGhRestageAttempts();
 
     const calls: string[][] = [];
@@ -291,29 +300,80 @@ Deno.test("spawnGh - an auth failure re-stages the credential and retries once",
       );
     });
 
-    const result = await spawnGh(["api", "user", "--jq", ".login"]);
+    const result = await spawnGh(["api", "user", "--jq", ".login"], {
+      hostEnv,
+      setHostEnv,
+    });
 
     assertEquals(result.success, true);
     assertEquals(result.stdout, "vibe-bot");
     assertEquals(calls.length, 2, "the call must be retried exactly once");
     // The retry ran against a rebuilt configuration, not the missing one.
-    assertEquals(Deno.env.get("GH_CONFIG_DIR"), `${home}/state/gh-config`);
+    assertEquals(hostVars.GH_CONFIG_DIR, `${home}/state/gh-config`);
     assertEquals(
       await Deno.readTextFile(`${home}/state/gh-config/hosts.yml`),
       "github.com:\n",
     );
+    // Nothing was written to the process: the re-stage went to the injected
+    // map, so this suite races no other worker.
+    assertEquals(
+      Deno.env.get("GH_CONFIG_DIR") === `${home}/state/gh-config`,
+      false,
+    );
   } finally {
     _resetGhSpawnRunner();
     resetGhRestageAttempts();
-    restoreGhEnv("HOME", previousHome);
-    restoreGhEnv("GH_CONFIG_DIR", previousGh);
-    restoreGhEnv("VIBE_STATE_DIR", previousState);
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("spawnGh - the injected roots are the only ones the re-stage reads", async () => {
+  // The state root exists only in the injected map. A code path that read
+  // the process environment instead would find no VIBE_STATE_DIR, stage into
+  // the scratch or TMPDIR candidate, and fail this assertion (Issue #967).
+  const home = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${home}/.vibe-coder/credentials/gh`, { recursive: true });
+    await Deno.writeTextFile(
+      `${home}/.vibe-coder/credentials/gh/hosts.yml`,
+      "github.com:\n",
+    );
+    const hostVars: Record<string, string> = {
+      HOME: home,
+      VIBE_STATE_DIR: `${home}/durable`,
+    };
+    resetGhRestageAttempts();
+    let attempt = 0;
+    _setGhSpawnRunner(() => {
+      attempt++;
+      return Promise.resolve(
+        attempt === 1
+          ? {
+            code: 4,
+            success: false,
+            stdout: "",
+            stderr: "no accounts configured",
+          }
+          : { code: 0, success: true, stdout: "ok", stderr: "" },
+      );
+    });
+
+    await spawnGh(["api", "user"], {
+      hostEnv: envFrom(hostVars),
+      setHostEnv: (name, value) => {
+        hostVars[name] = value;
+      },
+    });
+
+    assertEquals(hostVars.GH_CONFIG_DIR, `${home}/durable/gh-config`);
+  } finally {
+    _resetGhSpawnRunner();
+    resetGhRestageAttempts();
     await Deno.remove(home, { recursive: true });
   }
 });
 
 Deno.test("spawnGh - a non-auth failure is returned as-is, never retried", async () => {
-  const previousGh = Deno.env.get("GH_CONFIG_DIR");
   try {
     resetGhRestageAttempts();
     const calls: string[][] = [];
@@ -334,14 +394,5 @@ Deno.test("spawnGh - a non-auth failure is returned as-is, never retried", async
   } finally {
     _resetGhSpawnRunner();
     resetGhRestageAttempts();
-    restoreGhEnv("GH_CONFIG_DIR", previousGh);
   }
 });
-
-function restoreGhEnv(name: string, value: string | undefined): void {
-  if (value === undefined) {
-    Deno.env.delete(name);
-  } else {
-    Deno.env.set(name, value);
-  }
-}

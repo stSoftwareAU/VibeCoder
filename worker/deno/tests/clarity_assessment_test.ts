@@ -18,6 +18,7 @@ import {
   runClarityAssessment,
 } from "../lib/clarity_assessment.ts";
 import { createPromptDelimiters } from "../lib/prompt_delimiter.ts";
+import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 import type { ClaudeExecutionResult } from "../lib/claude_executor.ts";
 import type { Result } from "../types.ts";
 
@@ -522,32 +523,25 @@ Deno.test("runClarityAssessment - passes correct prompt parameters to Claude", a
 //
 // End-to-end: with NO injected runner, runClarityAssessment must route through
 // runClaudeWithRetry so the clarification phase inherits the model-unavailable
-// fallback (#2724). A stub `claude` returns a model-unavailable signature on
+// fallback (#2724). A stub agent returns a model-unavailable signature on
 // the default tier ("opus") and a valid CLEAR once the runner downgrades to the
 // cheaper tier ("sonnet"). Before #2739 the default runner was
 // runClaudeWithTimeout, which would have surfaced the exit-1 as a hard
 // "failed" with no fallback.
 
 /**
- * Create a temporary stub `claude` on PATH that runs the supplied bash body,
- * restoring PATH afterwards.
+ * Run `fn` with a stub agent that runs the supplied bash body.
+ *
+ * The stub is named by path — `ClarityAssessmentOptions.agentBinaryPath`,
+ * which the default runner hands to `runClaudeWithRetry` (Issue #960) —
+ * rather than prepended to the process-wide `PATH`, which raced every other
+ * test in the run (Issue #880, plan #944).
  */
-async function withStubClaude<T>(
+function withStubClaude<T>(
   bashBody: string,
-  fn: () => Promise<T>,
+  fn: (stub: AgentStub) => Promise<T>,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "clarity_claude_stub_" });
-  const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(stubPath, `#!/usr/bin/env bash\n${bashBody}\n`);
-  await Deno.chmod(stubPath, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  try {
-    return await fn();
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
+  return withAgentStub(bashBody, fn, { prefix: "clarity_claude_stub_" });
 }
 
 Deno.test({
@@ -571,7 +565,7 @@ Deno.test({
       `esac`,
     ].join("\n");
 
-    const result = await withStubClaude(stubBody, async () => {
+    const result = await withStubClaude(stubBody, async (stub) => {
       return await runClarityAssessment({
         params: {
           issueTitle: "Fix the login bug",
@@ -582,6 +576,7 @@ Deno.test({
         },
         timeoutSeconds: 30,
         killAfterSeconds: 2,
+        agentBinaryPath: stub.path,
       });
     });
 

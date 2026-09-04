@@ -4,17 +4,10 @@
  *
  * The bash-era conductor turned these keys into environment variables by
  * `eval`-ing the `load-config` export script; the Deno driver never did, so
- * `imgbb_api_key`, `fleet_health_dir`, `fleet_health_repo` and
- * `update_gh_user_status` in the config file reached nothing — natively or
- * in the container the worker logged "FLEET_HEALTH_REPO is not set" beside a
- * config that set it. This module is that missing step: the same variables,
- * the same "environment wins" precedence (`${VAR:-config}`), resolved purely
- * so it can be tested, applied once at worker start.
- *
- * Container mode (Issue #4165): a `fleet_health_dir` is a *host* path — it
- * has no meaning inside the container, where the worker clones the health
- * repository into its own work volume — so it is applied natively only.
- * `fleet_health_repo` is what container mode needs, and is always applied.
+ * `imgbb_api_key` and `update_gh_user_status` in the config file reached
+ * nothing. This module is that missing step: the same variables, the same
+ * "environment wins" precedence (`${VAR:-config}`), resolved purely so it can
+ * be tested, applied once at worker start.
  *
  * Australian English spelling throughout (behaviour, organisation).
  */
@@ -25,8 +18,6 @@ import type { ConfigFile } from "../types.ts";
 export interface OptionalFeatureEnvOptions {
   /** Read an environment variable; undefined when unset. */
   env: (name: string) => string | undefined;
-  /** True inside the worker container (a host path is meaningless there). */
-  inContainer: boolean;
 }
 
 /**
@@ -50,10 +41,6 @@ export function resolveOptionalFeatureEnv(
   };
 
   want("VIBE_IMGBB_API_KEY", raw.imgbb_api_key);
-  want("FLEET_HEALTH_REPO", raw.fleet_health_repo);
-  if (!options.inContainer) {
-    want("FLEET_HEALTH_DIR", raw.fleet_health_dir);
-  }
   // Documented default true (docs/CONFIGURATION.md) — exactly what
   // load-config exported.
   want(
@@ -94,7 +81,6 @@ export async function applyOptionalFeatureEnv(
         return undefined;
       }
     },
-    inContainer: Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined,
   });
   for (const [name, value] of Object.entries(resolved)) {
     setEnv(name, value);

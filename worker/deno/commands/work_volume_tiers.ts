@@ -24,6 +24,7 @@ import {
   summariseWorkVolumeTiers,
   type WorkVolumeTierResult,
 } from "../lib/work_volume_tiers.ts";
+import { resolveCommandWorkDir } from "../lib/command_work_dir.ts";
 
 function numberArg(
   args: Record<string, unknown>,
@@ -48,7 +49,7 @@ export function resolveMonitoredRepos(
   return config?.repos ?? [];
 }
 
-export const workVolumeTiersCommand: Command = {
+export const workVolumeTiersCommand = {
   name: "work-volume-tiers",
   description:
     "Tier the work root: monitored repos persist, sibling/data clones age out or are reclaimed largest-first when the host disk is low (Issue #242)",
@@ -56,11 +57,9 @@ export const workVolumeTiersCommand: Command = {
   async execute(
     args: Record<string, unknown>,
     config: WorkerConfig,
+    envWorkDir: string | undefined = Deno.env.get("WORK_DIR"),
   ): Promise<CommandResult<WorkVolumeTierResult>> {
-    const workDir =
-      typeof args["work-dir"] === "string" && args["work-dir"].length > 0
-        ? args["work-dir"]
-        : (config?.workDir || Deno.env.get("WORK_DIR") || "");
+    const workDir = resolveCommandWorkDir(args, config?.workDir, envWorkDir);
     if (!workDir) {
       return {
         success: false,
@@ -123,4 +122,7 @@ export const workVolumeTiersCommand: Command = {
       data: result,
     };
   },
-};
+  // `satisfies`, not an annotation: the registry only ever calls
+  // `execute(args, config)`, but the third parameter has to stay visible on
+  // this constant so a test can hand it an empty `WORK_DIR` (Issue #966).
+} satisfies Command;

@@ -14,13 +14,14 @@
 
 import { assertEquals } from "@std/assert";
 import {
-  applyServiceAccountEnv,
+  buildServiceAccountEnv,
   resolveServiceAccountEnv,
 } from "../lib/service_account_env.ts";
 import { loadConfig } from "../lib/config.ts";
 import type { ConfigFile } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { canEnforceUnwritableDir } from "./support/environment_capability.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 // Test helper to create a temporary config file
 async function withTempConfig(
@@ -149,48 +150,38 @@ Deno.test("buildDefaultWorkerConfig - includes empty service-account fields", ()
 });
 
 // ---------------------------------------------------------------------------
-// applyServiceAccountEnv — sets the process environment (config wins,
-// matching the bash-era `eval "$(load-config)"` behaviour)
+// buildServiceAccountEnv — the map applyServiceAccountEnv applies (config
+// wins, matching the bash-era `eval "$(load-config)"` behaviour)
+//
+// Issue #967: the cases below assert on the returned map rather than on the
+// process environment. Every root — the container stamp, the ambient
+// GH_CONFIG_DIR, HOME, TMPDIR and the scratch root — is handed in, so the
+// suite neither reads nor writes an environment the other parallel workers
+// share, and a code path that fell back to `Deno.env.get` would read the
+// wrong value rather than pass on the ambient one.
 // ---------------------------------------------------------------------------
 
-Deno.test("applyServiceAccountEnv - sets GH_CONFIG_DIR and GIT_SSH_COMMAND", () => {
-  const previousGh = Deno.env.get("GH_CONFIG_DIR");
-  const previousSsh = Deno.env.get("GIT_SSH_COMMAND");
-  // The quality gate runs this suite INSIDE the worker image, where the
-  // container stamp is set and the fixture paths do not exist — host
-  // semantics are what this test pins, so the stamp is cleared for it.
-  const previousStamp = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS");
-  try {
-    Deno.env.delete("VIBE_IMAGE_AGENT_PROVIDERS");
-    Deno.env.delete("GH_CONFIG_DIR");
-    Deno.env.delete("GIT_SSH_COMMAND");
-    const config = buildDefaultWorkerConfig({
-      ghConfigDir: "~/.config/gh-vibe",
-      sshKeyPath: "~/.ssh/worker_ed25519",
-    });
-    applyServiceAccountEnv(config, "/Users/worker");
-    assertEquals(
-      Deno.env.get("GH_CONFIG_DIR"),
-      "/Users/worker/.config/gh-vibe",
-    );
-    assertEquals(
-      Deno.env.get("GIT_SSH_COMMAND"),
-      "ssh -i '/Users/worker/.ssh/worker_ed25519' -o IdentitiesOnly=yes",
-    );
-  } finally {
-    restoreEnv("GH_CONFIG_DIR", previousGh);
-    restoreEnv("GIT_SSH_COMMAND", previousSsh);
-    restoreEnv("VIBE_IMAGE_AGENT_PROVIDERS", previousStamp);
-  }
+Deno.test("buildServiceAccountEnv - resolves GH_CONFIG_DIR and GIT_SSH_COMMAND", () => {
+  // No container stamp in the injected map, so this pins host semantics —
+  // which is what the gate needs even when it runs the suite INSIDE the
+  // worker image, where the real stamp is set and the fixture paths are
+  // absent.
+  const config = buildDefaultWorkerConfig({
+    ghConfigDir: "~/.config/gh-vibe",
+    sshKeyPath: "~/.ssh/worker_ed25519",
+  });
+  const applied = buildServiceAccountEnv(config, "/Users/worker", emptyEnv);
+  assertEquals(applied.GH_CONFIG_DIR, "/Users/worker/.config/gh-vibe");
+  assertEquals(
+    applied.GIT_SSH_COMMAND,
+    "ssh -i '/Users/worker/.ssh/worker_ed25519' -o IdentitiesOnly=yes",
+  );
 });
 
-Deno.test("applyServiceAccountEnv - the container stamp switches on the credential fallback", async () => {
-  // With the stamp set and a staged runtime copy on disk, apply() must point
-  // GH_CONFIG_DIR at the writable copy and omit GIT_SSH_COMMAND — the full
-  // production path of the in-container resolution.
-  const previousGh = Deno.env.get("GH_CONFIG_DIR");
-  const previousSsh = Deno.env.get("GIT_SSH_COMMAND");
-  const previousStamp = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS");
+Deno.test("buildServiceAccountEnv - the container stamp switches on the credential fallback", async () => {
+  // With the stamp set and a staged runtime copy on disk, the resolution must
+  // point GH_CONFIG_DIR at the writable copy and omit GIT_SSH_COMMAND — the
+  // full production path of the in-container resolution.
   const home = await Deno.makeTempDir();
   try {
     await Deno.mkdir(`${home}/.config/gh-runtime`, { recursive: true });
@@ -198,52 +189,55 @@ Deno.test("applyServiceAccountEnv - the container stamp switches on the credenti
       `${home}/.config/gh-runtime/hosts.yml`,
       "github.com:\n",
     );
-    Deno.env.set("VIBE_IMAGE_AGENT_PROVIDERS", "claude");
-    Deno.env.delete("GH_CONFIG_DIR");
-    Deno.env.delete("GIT_SSH_COMMAND");
     const config = buildDefaultWorkerConfig({
       ghConfigDir: "~/.config/gh-vibe",
       sshKeyPath: "~/.ssh/worker_ed25519",
     });
-    applyServiceAccountEnv(config, home);
-    assertEquals(Deno.env.get("GH_CONFIG_DIR"), `${home}/.config/gh-runtime`);
-    assertEquals(Deno.env.get("GIT_SSH_COMMAND"), undefined);
+    const applied = buildServiceAccountEnv(
+      config,
+      home,
+      envFrom({ VIBE_IMAGE_AGENT_PROVIDERS: "claude" }),
+    );
+    assertEquals(applied.GH_CONFIG_DIR, `${home}/.config/gh-runtime`);
+    assertEquals(applied.GIT_SSH_COMMAND, undefined);
   } finally {
-    restoreEnv("GH_CONFIG_DIR", previousGh);
-    restoreEnv("GIT_SSH_COMMAND", previousSsh);
-    restoreEnv("VIBE_IMAGE_AGENT_PROVIDERS", previousStamp);
     await Deno.remove(home, { recursive: true });
   }
 });
 
-Deno.test("applyServiceAccountEnv - configured value overrides ambient env (config wins)", () => {
-  const previousGh = Deno.env.get("GH_CONFIG_DIR");
-  try {
-    Deno.env.set("GH_CONFIG_DIR", "/ambient/gh");
-    const config = buildDefaultWorkerConfig({
-      ghConfigDir: "/operator/gh-vibe",
-    });
-    applyServiceAccountEnv(config, "/Users/worker");
-    assertEquals(Deno.env.get("GH_CONFIG_DIR"), "/operator/gh-vibe");
-  } finally {
-    restoreEnv("GH_CONFIG_DIR", previousGh);
-  }
+Deno.test("buildServiceAccountEnv - the configured value overrides ambient env (config wins)", () => {
+  const config = buildDefaultWorkerConfig({ ghConfigDir: "/operator/gh-vibe" });
+  const applied = buildServiceAccountEnv(
+    config,
+    "/Users/worker",
+    envFrom({ GH_CONFIG_DIR: "/ambient/gh" }),
+  );
+  assertEquals(applied.GH_CONFIG_DIR, "/operator/gh-vibe");
 });
 
-Deno.test("applyServiceAccountEnv - unconfigured fields leave ambient env untouched", () => {
-  const previousGh = Deno.env.get("GH_CONFIG_DIR");
-  const previousSsh = Deno.env.get("GIT_SSH_COMMAND");
-  try {
-    Deno.env.set("GH_CONFIG_DIR", "/ambient/gh");
-    Deno.env.set("GIT_SSH_COMMAND", "ssh -i /ambient/key");
-    const config = buildDefaultWorkerConfig();
-    applyServiceAccountEnv(config, "/Users/worker");
-    assertEquals(Deno.env.get("GH_CONFIG_DIR"), "/ambient/gh");
-    assertEquals(Deno.env.get("GIT_SSH_COMMAND"), "ssh -i /ambient/key");
-  } finally {
-    restoreEnv("GH_CONFIG_DIR", previousGh);
-    restoreEnv("GIT_SSH_COMMAND", previousSsh);
-  }
+Deno.test("buildServiceAccountEnv - unconfigured fields establish nothing", () => {
+  // Nothing to apply means the ambient values are left exactly as they are —
+  // an empty map is how that is expressed without writing the process.
+  const applied = buildServiceAccountEnv(
+    buildDefaultWorkerConfig(),
+    "/Users/worker",
+    envFrom({
+      GH_CONFIG_DIR: "/ambient/gh",
+      GIT_SSH_COMMAND: "ssh -i /ambient/key",
+    }),
+  );
+  assertEquals(applied, {});
+});
+
+Deno.test("buildServiceAccountEnv - the home root comes from the injected environment", () => {
+  // `/fixture-home` exists in no real environment, so a read of the process
+  // HOME would expand `~` to the operator's own directory and fail here.
+  const applied = buildServiceAccountEnv(
+    buildDefaultWorkerConfig({ ghConfigDir: "~/.config/gh-vibe" }),
+    undefined,
+    envFrom({ HOME: "/fixture-home" }),
+  );
+  assertEquals(applied.GH_CONFIG_DIR, "/fixture-home/.config/gh-vibe");
 });
 
 // ---------------------------------------------------------------------------
@@ -273,14 +267,6 @@ Deno.test("mod.ts - applies the service-account env after loading config", async
     );
   }
 });
-
-function restoreEnv(name: string, value: string | undefined): void {
-  if (value === undefined) {
-    Deno.env.delete(name);
-  } else {
-    Deno.env.set(name, value);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Container-aware fallback (Issue #4060): the configured paths are host
@@ -385,7 +371,7 @@ Deno.test("resolveServiceAccountEnv - a staged candidate without hosts.yml is sk
 
 Deno.test({
   name:
-    "applyServiceAccountEnv - an unwritable gh config dir is restaged writable",
+    "buildServiceAccountEnv - an unwritable gh config dir is restaged writable",
   // Issue #891: the container runs with privileges under which a chmod-ed
   // unwritable directory is still writable, so the branch this drives is
   // never taken and the assertion fails on every branch. Skipped explicitly
@@ -395,14 +381,6 @@ Deno.test({
     // The end of the live failure: the only hosts.yml the container can see is
     // on the read-only mount. gh migrates its config on first use, so handing
     // that directory over is a startup failure — a writable copy must be made.
-    const previousGh = Deno.env.get("GH_CONFIG_DIR");
-    const previousStamp = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS");
-    const previousTmp = Deno.env.get("TMPDIR");
-    const previousScratch = Deno.env.get("VIBE_SCRATCH_DIR");
-    // The durable state root outranks TMPDIR among the staging candidates, so
-    // the worker's own VIBE_STATE_DIR would decide this assertion whenever the
-    // suite runs inside a container that sets it.
-    const previousState = Deno.env.get("VIBE_STATE_DIR");
     const home = await Deno.makeTempDir();
     const tmp = await Deno.makeTempDir();
     const mounted = `${home}/.vibe-coder/credentials/gh`;
@@ -411,27 +389,24 @@ Deno.test({
       await Deno.writeTextFile(`${mounted}/hosts.yml`, "github.com:\n");
       // Read-only directory: writing the probe file inside it must fail.
       await Deno.chmod(mounted, 0o500);
-      Deno.env.set("VIBE_IMAGE_AGENT_PROVIDERS", "claude");
-      Deno.env.set("TMPDIR", tmp);
-      Deno.env.delete("VIBE_SCRATCH_DIR");
-      Deno.env.delete("VIBE_STATE_DIR");
-      Deno.env.delete("GH_CONFIG_DIR");
-      applyServiceAccountEnv(
+      // Neither a scratch root nor a state root in the map, so TMPDIR is the
+      // staging candidate — and it names a directory that exists in no real
+      // environment, so a read of the process TMPDIR would stage elsewhere
+      // and fail here.
+      const applied = buildServiceAccountEnv(
         buildDefaultWorkerConfig({ ghConfigDir: "~/.config/gh-vibe" }),
         home,
+        envFrom({ VIBE_IMAGE_AGENT_PROVIDERS: "claude", TMPDIR: tmp }),
       );
-      const applied = Deno.env.get("GH_CONFIG_DIR");
-      assertEquals(applied, `${tmp}/vibe-gh-config`);
+      assertEquals(applied.GH_CONFIG_DIR, `${tmp}/vibe-gh-config`);
       assertEquals(
-        await Deno.readTextFile(`${applied}/hosts.yml`),
+        await Deno.readTextFile(`${applied.GH_CONFIG_DIR}/hosts.yml`),
         "github.com:\n",
       );
+      const probe = `${applied.GH_CONFIG_DIR}/.writable-probe`;
+      await Deno.writeTextFile(probe, "");
+      await Deno.remove(probe);
     } finally {
-      restoreEnv("GH_CONFIG_DIR", previousGh);
-      restoreEnv("VIBE_IMAGE_AGENT_PROVIDERS", previousStamp);
-      restoreEnv("TMPDIR", previousTmp);
-      restoreEnv("VIBE_SCRATCH_DIR", previousScratch);
-      restoreEnv("VIBE_STATE_DIR", previousState);
       await Deno.chmod(mounted, 0o700);
       await Deno.remove(home, { recursive: true });
       await Deno.remove(tmp, { recursive: true });
@@ -439,25 +414,23 @@ Deno.test({
   },
 });
 
-Deno.test("applyServiceAccountEnv - a writable gh config dir is left alone", async () => {
-  const previousGh = Deno.env.get("GH_CONFIG_DIR");
-  const previousStamp = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS");
+Deno.test("buildServiceAccountEnv - a writable gh config dir is left alone", async () => {
   const home = await Deno.makeTempDir();
   try {
     const staged = `${home}/scratch/gh`;
     await Deno.mkdir(staged, { recursive: true });
     await Deno.writeTextFile(`${staged}/hosts.yml`, "github.com:\n");
-    Deno.env.set("VIBE_IMAGE_AGENT_PROVIDERS", "claude");
-    // What the entrypoint exports: the staged copy it made this launch.
-    Deno.env.set("GH_CONFIG_DIR", staged);
-    applyServiceAccountEnv(
+    const applied = buildServiceAccountEnv(
       buildDefaultWorkerConfig({ ghConfigDir: "~/.config/gh-vibe" }),
       home,
+      // What the entrypoint exports: the staged copy it made this launch.
+      envFrom({
+        VIBE_IMAGE_AGENT_PROVIDERS: "claude",
+        GH_CONFIG_DIR: staged,
+      }),
     );
-    assertEquals(Deno.env.get("GH_CONFIG_DIR"), staged);
+    assertEquals(applied.GH_CONFIG_DIR, staged);
   } finally {
-    restoreEnv("GH_CONFIG_DIR", previousGh);
-    restoreEnv("VIBE_IMAGE_AGENT_PROVIDERS", previousStamp);
     await Deno.remove(home, { recursive: true });
   }
 });

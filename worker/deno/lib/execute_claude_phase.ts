@@ -18,7 +18,12 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
-import type { Logger, RepoConfig, Result } from "../types.ts";
+import type {
+  CustomLabelPromptMapping,
+  Logger,
+  RepoConfig,
+  Result,
+} from "../types.ts";
 import {
   buildQualityInstructions,
   getCiFailureLabels,
@@ -149,6 +154,15 @@ export interface ExecuteClaudePhaseResult {
    * Undefined when git could not resolve it — the phase logs that loudly.
    */
   promptsCommit?: string;
+  /**
+   * The prompt template file this run read (Issue #849, part of #843).
+   *
+   * `prompts/issue/prompt.md` normally; an operator's file when a mapping
+   * dispatched or overrode the phase. The prompts commit identifies the
+   * repository's templates but says nothing about an operator file, so this
+   * is what makes such a run traceable.
+   */
+  promptTemplate?: string;
   /** SHA-256 hash of the static prompt content (Issue #1273). */
   promptSha?: string;
   /** Whether the prompt cache was hit (Issue #1273). */
@@ -183,6 +197,11 @@ export interface ExecuteClaudePhaseOptions {
   workDir: string;
   /** Per-repo configuration map. */
   repoConfigs?: Record<string, RepoConfig>;
+  /**
+   * Validated `custom_label_prompts` mappings (Issue #849, part of #843).
+   * An entry overriding the `issue` phase replaces the built-in template.
+   */
+  promptOverrides?: readonly CustomLabelPromptMapping[];
   /** Claude timeout in seconds. */
   claudeTimeout?: number;
   /**
@@ -701,6 +720,7 @@ export async function runExecuteClaudePhase(
     clarityStatus,
     workDir,
     repoConfigs,
+    promptOverrides,
     // Issue #1824: default sourced from OPERATIONAL_DEFAULTS so all timeout
     // defaults flow from a single source of truth.
     claudeTimeout = OPERATIONAL_DEFAULTS.claudeTimeout,
@@ -910,6 +930,10 @@ export async function runExecuteClaudePhase(
     cache: promptCache,
     logger,
     verbosityLevel,
+    // Issue #849: an operator's `work-on` mapping replaces the built-in issue
+    // template here too — this phase is a second entry point into the same
+    // build, and skipping the overrides would silently run the built-in one.
+    ...(promptOverrides ? { promptOverrides } : {}),
   });
 
   if (!promptResult.ok) {
@@ -929,7 +953,10 @@ export async function runExecuteClaudePhase(
     prompt: userPrompt,
     promptSha,
     cacheHit: promptCacheHit,
+    templateSource: promptTemplate,
   } = promptResult.value;
+  // Issue #849: the traceability record names the file, beside the commit.
+  deps.log(`Issue prompt template: ${promptTemplate ?? "unknown"}`);
 
   // --- Context budget monitoring and hard ceiling (Issues #1327, #3713) ---
   // Estimate token counts for each major prompt component and log the budget
@@ -1171,6 +1198,7 @@ export async function runExecuteClaudePhase(
         prNumber: selfHealResult.value.prNumber,
         elapsedSeconds,
         promptsCommit,
+        promptTemplate,
         promptSha,
         promptCacheHit,
       };
@@ -1182,6 +1210,7 @@ export async function runExecuteClaudePhase(
       failureMessage,
       elapsedSeconds,
       promptsCommit,
+      promptTemplate,
       promptSha,
       promptCacheHit,
     };
@@ -1216,6 +1245,7 @@ export async function runExecuteClaudePhase(
         prNumber: selfHealResult.value.prNumber,
         elapsedSeconds,
         promptsCommit,
+        promptTemplate,
         promptSha,
         promptCacheHit,
       };
@@ -1236,6 +1266,7 @@ export async function runExecuteClaudePhase(
       }),
       elapsedSeconds,
       promptsCommit,
+      promptTemplate,
       promptSha,
       promptCacheHit,
     };
@@ -1303,6 +1334,7 @@ export async function runExecuteClaudePhase(
         prNumber: selfHealResult.value.prNumber,
         elapsedSeconds,
         promptsCommit,
+        promptTemplate,
         promptSha,
         promptCacheHit,
       };
@@ -1315,6 +1347,7 @@ export async function runExecuteClaudePhase(
       diagnosticContext,
       elapsedSeconds,
       promptsCommit,
+      promptTemplate,
       promptSha,
       promptCacheHit,
     };
@@ -1360,6 +1393,7 @@ export async function runExecuteClaudePhase(
         prNumber: selfHealResult.value.prNumber,
         elapsedSeconds,
         promptsCommit,
+        promptTemplate,
         promptSha,
         promptCacheHit,
       };
@@ -1378,6 +1412,7 @@ export async function runExecuteClaudePhase(
         failureMessage: err instanceof Error ? err.message : String(err),
         elapsedSeconds,
         promptsCommit,
+        promptTemplate,
         promptSha,
         promptCacheHit,
       };
@@ -1408,6 +1443,7 @@ export async function runExecuteClaudePhase(
           hasNewCommits: true,
           elapsedSeconds,
           promptsCommit,
+          promptTemplate,
           promptSha,
           promptCacheHit,
         };
@@ -1421,6 +1457,7 @@ export async function runExecuteClaudePhase(
       hasNewCommits: false,
       elapsedSeconds,
       promptsCommit,
+      promptTemplate,
       promptSha,
       promptCacheHit,
     };
@@ -1433,6 +1470,7 @@ export async function runExecuteClaudePhase(
     hasNewCommits,
     elapsedSeconds,
     promptsCommit,
+    promptTemplate,
   };
 }
 

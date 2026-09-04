@@ -2,7 +2,7 @@
  * Per-repo access state for monitored repos (Issue #4036).
  *
  * Probe outcomes used to be logged per tick and discarded, so nothing in
- * the worker could answer the question the fleet health gate needs to
+ * the worker could answer the question the health gate needs to
  * ask: *are all monitored repos reachable right now?* During the host-3
  * incident (#4028) two repos 404'd for days while the worker stayed
  * green.
@@ -209,7 +209,7 @@ export const REPO_ACCESS_LOG_PREFIX = "[repo-access]";
  *
  * `lastHealthCheckPassed = false` on its own is not actionable: the fix
  * depends entirely on *which* repos went dark (#4031). This is the
- * string carried onto the private-repo-6 report payload.
+ * string a health-reporting callback carries as its reason.
  */
 export function formatInaccessibleReposReason(repos: string[]): string {
   return `repos inaccessible: ${repos.join(", ")}`;
@@ -267,7 +267,7 @@ let lastLoggedLine: string | null = null;
  * Emit the structured status line at most once per iteration.
  *
  * Several call sites observe the same condition in one iteration — the
- * health gate in `run_core.ts` and the private-repo-6 report — and logging
+ * health gate in `run_core.ts` and the repo scan — and logging
  * from each would turn one outage into per-call-site spam. The line is
  * therefore suppressed when it is byte-identical to the previous one;
  * {@link resetRepoAccessLogState} is called at the iteration boundary so

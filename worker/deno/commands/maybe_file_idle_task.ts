@@ -109,6 +109,7 @@ import {
   runGhCommand as defaultGhCommand,
 } from "../lib/github.ts";
 import { createLogger } from "../lib/logger.ts";
+import { customLabelPromptLabels } from "../lib/custom_label_prompts_config.ts";
 import { getRunId } from "../lib/run_id.ts";
 import { appendIdleTaskAttribution } from "../lib/idle_task_attribution.ts";
 import {
@@ -223,7 +224,7 @@ export interface MaybeFileIdleTaskData {
  * `lib/run_core_production_deps.ts` also injects `log` here to route
  * the structured progress lines (`[idle-task] ...`) through the shared
  * worker Logger instead of letting them sink into the inherited tty —
- * the same visibility fix #2016 applied to the private-repo-6 heartbeat.
+ * the same visibility fix #2016 applied to the fleet heartbeat.
  */
 interface TestDeps {
   /**
@@ -1281,6 +1282,9 @@ export const maybeFileIdleTaskCommand: Command = {
       [pickupLabel],
       `${targetRepo} idle-task filer`,
       labelLogger,
+      // Issue #847: a configured custom label dispatches a privileged phase —
+      // the worker must never self-apply one.
+      customLabelPromptLabels(config),
     );
 
     // Build the gh args, conditionally including `--milestone` only when

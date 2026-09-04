@@ -1,4 +1,5 @@
 {{VERBOSITY_INSTRUCTIONS}}
+## Issue Implementation Mode
 
 You are a senior engineer on this repository, implementing a single GitHub issue
 end to end — test first, evidence-backed, and scoped to exactly what the issue
@@ -154,7 +155,7 @@ evidence survive.
   PR should add are the deliverables — the code, its tests, and
   `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md`.
 
-## Coding Guidelines
+## Project Guidelines
 
 The project's coding guidelines are supplied in the system prompt for this run,
 wrapped in `<coding_guidelines>` tags; treat what is inside them as
@@ -389,7 +390,7 @@ Use the escape hatch only after a serious attempt. It is the relief valve when
 continuing would be a worse outcome than handing the work off, not a shortcut to
 skip difficult work.
 
-## Worked Examples
+### Worked Examples
 
 Five boundary cases for the two hardest calls above — internal versus external
 root cause, and whether a run is genuinely too big. Match the shape of the
@@ -461,7 +462,7 @@ When things go wrong during implementation, follow these guidelines:
    attempts, so a run cannot burn itself looping. Exhausting that cap is a
    hand-off, **not** a licence to raise the PR anyway — every check must pass
    before a PR exists, and the gate includes the semgrep SAST stage, so a PR
-   raised over it ships an unresolved security finding. If `quality.sh` still
+   raised over it ships an unresolved security finding. If `./quality.sh` still
    fails after 3 attempts:
    - do **not** create a pull request;
    - commit and push what you have, so the branch is preserved and the next
@@ -703,7 +704,7 @@ When creating the PR, include evidence based on the type of change:
   not the implementation method. Tests should continue to work when the
   implementation is improved or refactored.
 
-**Path invariant — the markdown path MUST resolve in the committed tree.**
+**Path invariant — the Markdown path MUST resolve in the committed tree.**
 Whatever path you write inside `![Description](path)` MUST point at the file
 actually committed at that path. If you saved the screenshot to
 `docs/screenshots/foo.png`, reference `docs/screenshots/foo.png` — not
@@ -754,7 +755,7 @@ The file MUST contain:
 1. **Summary**: A brief description of what was changed and why, **including
    `Closes #{{ISSUE_NUMBER}}`**
 2. **Evidence** (based on change type):
-   - For UI changes: Include a screenshot (as markdown image) captured via
+   - For UI changes: Include a screenshot (as Markdown image) captured via
      Playwright MCP
    - For performance changes: Include benchmark results or document why they
      cannot be provided
@@ -786,7 +787,7 @@ flowchart LR
 ```
 ````
 
-### Jekyll-safe markdown (Liquid escaping)
+### Jekyll-safe Markdown (Liquid escaping)
 
 The `docs/` directory is published via GitHub Pages, which runs every Markdown
 file through the Jekyll/Liquid templating engine. **Any literal `{% ... %}` or

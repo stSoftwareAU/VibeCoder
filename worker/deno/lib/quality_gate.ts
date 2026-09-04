@@ -41,7 +41,21 @@ import { checkBuiltMermaidOutput } from "./mermaid_built_output_check.ts";
 import { runMarkdownlintCheck } from "./markdownlint_check.ts";
 import { runSemgrepCheck } from "./semgrep_check.ts";
 import { posixSingleQuote } from "./shell_quote.ts";
-import { integrationTestIgnoreArg } from "./integration_test_manifest.ts";
+import {
+  summariseUnitTestPasses,
+  unitTestPasses,
+  type UnitTestPassOutcome,
+  unitTestStageVerdict,
+} from "./unit_test_passes.ts";
+
+/**
+ * The environment the `deno test` stage runs with (Issue #891).
+ *
+ * Re-exported from where the two passes are built (Issue #940) — the scrub
+ * and the passes that need it belong together, and the gate is where callers
+ * already look for it.
+ */
+export { testStageEnv } from "./unit_test_passes.ts";
 
 /** Result of a single check execution. */
 export interface CheckExecutionResult {
@@ -137,37 +151,6 @@ export interface QualityGateConfig {
  *
  * Returns the exit code and combined stdout/stderr.
  */
-/**
- * Ambient variables the container sets that the Deno suite must not inherit
- * (Issue #891).
- *
- * The container exports
- * `CONFIG_PATH=/home/vibe/.vibe-coder/run-config/.config.json`. Thirty-three
- * tests set their own `CONFIG_FILE` in a temp directory and then die on
- * `setup.sh`'s guard:
- *
- * ```text
- * ERROR: CONFIG_FILE and CONFIG_PATH are both set and name different files
- * ```
- *
- * The guard is right — two different config files named at once is a real
- * misconfiguration — and the tests are right to point at their own fixture.
- * What is wrong is the gate handing the suite an ambient variable that has
- * nothing to do with the change under test, so `deno tests FAILED` reported
- * the container rather than the code. A gate that fails on its own
- * environment teaches everyone to ignore it, which is the real cost.
- */
-const SCRUBBED_TEST_VARS: readonly string[] = ["CONFIG_PATH"];
-
-/** The environment the `deno test` stage runs with. */
-export function testStageEnv(
-  base: Record<string, string>,
-): Record<string, string> {
-  const env = { ...base };
-  for (const name of SCRUBBED_TEST_VARS) delete env[name];
-  return env;
-}
-
 async function runCommand(
   cmd: string[],
   options?: { cwd?: string; env?: Record<string, string> },
@@ -911,7 +894,18 @@ async function runSemgrepQualityCheck(
 }
 
 /**
- * Run Deno tests.
+ * Run the unit suite as two `deno test` passes (Issue #940).
+ *
+ * One sequential invocation took 42+ minutes on a 10-core host against a
+ * 45-minute phase budget, so issues died here having changed nothing wrong
+ * (#805 twice, #808). The parallel-safe files now run under `--parallel` and
+ * the 97 process-state mutators (#880) run serially afterwards.
+ *
+ * The pair is one check. `PASSED` needs both passes green; either one red is
+ * `FAILED`, with that pass's output. The fast pass runs first and a failure
+ * stops the pair, so the common red is reported in minutes rather than after
+ * the slow pass has also finished — and the pass that never ran says so,
+ * rather than looking like a pass that passed.
  */
 async function runDenoTests(
   config: QualityGateConfig,
@@ -921,7 +915,8 @@ async function runDenoTests(
   // Content-addressed skip (Issue #86): reuse a cached PASS only when the
   // whole .ts input set is byte-identical to the last passing run. The digest
   // walk is skipped entirely when caching is off, so a host dev run pays
-  // nothing for it.
+  // nothing for it. It wraps the pair, not each pass — a cached PASS still
+  // means "both passes passed on this input set".
   const digest = config.cacheDir
     ? await computeQualityInputDigest(config.denoDir ?? ".")
     : null;
@@ -934,45 +929,47 @@ async function runDenoTests(
         `Deno tests: PASSED (cached — inputs unchanged since ${cachedAt})`,
     };
   }
-  const result = await runCommand(
-    [
-      denoCmd,
-      "test",
-      // The gate's own `deno check '**/*.ts'` stage type-checks the whole
-      // graph including tests/**, so `deno test` need not build a second
-      // full TypeScript program (Issue #4347). In parallel mode both used
-      // to start together and miss the shared cache — the memory spike
-      // quality.sh blames for the in-container SIGKILLs.
-      "--no-check",
-      "--allow-read",
-      "--allow-env",
-      "--allow-run",
-      "--allow-write",
-      "--allow-sys=hostname",
-      // Issue #907: the suites that copy the repository's own `.sh`/`.ps1`
-      // into a temp tree, stub a PATH and spawn them are integration tests.
-      // They cost ~12 of the gate's ~36 minutes and run on every change,
-      // including changes that cannot reach them — #891 was found exactly
-      // that way, by a diff touching only `prompts/**`. CI runs them, where
-      // sharding absorbs the cost; the worker's gate does not.
-      `--ignore=${integrationTestIgnoreArg()}`,
-    ],
-    { cwd: config.denoDir, env: testStageEnv(Deno.env.toObject()) },
-  );
 
-  if (result.exitCode === 0) {
+  const passes = unitTestPasses({ denoCmd, env: Deno.env.toObject() });
+  const outcomes: UnitTestPassOutcome[] = [];
+  const transcript: string[] = [];
+
+  for (const pass of passes) {
+    // A failed pass stops the pair: the remaining pass costs minutes and
+    // cannot change the verdict.
+    if (unitTestStageVerdict(outcomes).failedPass !== null) {
+      outcomes.push({ pass, exitCode: null, durationMs: null });
+      continue;
+    }
+    const startedAt = Date.now();
+    const result = await runCommand([...pass.args], {
+      cwd: config.denoDir,
+      env: pass.env,
+    });
+    outcomes.push({
+      pass,
+      exitCode: result.exitCode,
+      durationMs: Date.now() - startedAt,
+    });
+    transcript.push(`=== deno tests: ${pass.label} pass ===`);
+    transcript.push(result.output);
+  }
+
+  const verdict = unitTestStageVerdict(outcomes);
+  const body = [...transcript, ...summariseUnitTestPasses(outcomes)].join("\n");
+
+  if (verdict.status === "PASSED") {
     await recordPass(config.cacheDir, name, digest, isoNow());
-    return {
-      name,
-      status: "PASSED",
-      output: `${result.output}\nDeno tests: PASSED`,
-    };
+    return { name, status: "PASSED", output: `${body}\nDeno tests: PASSED` };
   }
   await invalidate(config.cacheDir, name);
+  const which = verdict.failedPass === null
+    ? ""
+    : ` (${verdict.failedPass} pass)`;
   return {
     name,
     status: "FAILED",
-    output: `${result.output}\nDeno tests: FAILED`,
+    output: `${body}\nDeno tests: FAILED${which}`,
   };
 }
 

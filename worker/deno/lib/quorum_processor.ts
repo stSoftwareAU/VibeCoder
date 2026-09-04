@@ -52,6 +52,7 @@ import {
   stopHeartbeat,
 } from "./heartbeat.ts";
 import { buildVerbosityBlock } from "./prompt_builder.ts";
+import { promptOverrideMappings } from "./custom_label_prompts_config.ts";
 import { prepareTrustAnnotatedCommentList } from "./comment_trust_filter.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { releaseAllWorkerClaims } from "./claim_release.ts";
@@ -417,6 +418,9 @@ async function runQuorumForIssue(
       issueComments: history.formattedComments || "None.",
       commentBoundaryId: history.boundaryId,
       verbosityInstructions: buildVerbosityBlock(config.verbosity),
+      // Issue #849: an operator's `quorum` mapping replaces the drafting
+      // template; the judge turn takes its own entry.
+      promptOverrides: promptOverrideMappings(config),
     },
     providers: {
       planners: [config.quorumPlanners[0]!, config.quorumPlanners[1]!],

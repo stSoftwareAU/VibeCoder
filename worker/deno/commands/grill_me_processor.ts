@@ -24,6 +24,7 @@ import {
   processGrillMe,
 } from "../lib/grill_me_processor.ts";
 import { createDefaultDeps } from "../lib/issue_worker_wiring.ts";
+import { promptOverrideMappings } from "../lib/custom_label_prompts_config.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
 
 export {
@@ -87,6 +88,10 @@ export const grillMeProcessorCommand: Command = {
         issueTitle,
         codingGuidelines,
         verbosityInstructions,
+        // Issue #849: an operator's `grill-me` mapping replaces the template
+        // on this entry point too, or the CLI would silently render the
+        // built-in one.
+        promptOverrides: promptOverrideMappings(config),
       });
 
       if (!promptResult.ok) {

@@ -41,7 +41,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Result } from "../types.ts";
+import type { CustomLabelPromptMapping, Result } from "../types.ts";
 import type { RunStats } from "./run_stats.ts";
 import {
   type AgentProviderDescriptor,
@@ -49,7 +49,8 @@ import {
   type AgentProviderSelector,
   selectAgentProvider,
 } from "./agent_provider.ts";
-import { loadPrompt, validatePromptTemplate } from "./prompt_manager.ts";
+import { validatePromptTemplate } from "./prompt_manager.ts";
+import { resolvePromptTemplate } from "./prompt_override_resolver.ts";
 import {
   buildBoundaryIntegrityInstruction,
   createPromptDelimiters,
@@ -97,6 +98,11 @@ export interface QuorumIssueContext {
   verbosityInstructions?: string;
   /** Prompt directory override (tests). */
   promptsDir?: string;
+  /**
+   * Validated `custom_label_prompts` mappings (Issue #849, part of #843). An
+   * entry overriding `quorum` or `quorum_judge` replaces that template.
+   */
+  promptOverrides?: readonly CustomLabelPromptMapping[];
 }
 
 /** The three providers one quorum run uses. */
@@ -573,12 +579,20 @@ function issueSubstitutions(
 async function loadQuorumTemplate(
   type: string,
   promptsDir?: string,
+  overrides?: readonly CustomLabelPromptMapping[],
 ): Promise<Result<string>> {
-  const loaded = await loadPrompt(type, promptsDir);
+  // Issue #849: an operator's `quorum` / `quorum_judge` mapping replaces the
+  // built-in template. Both carry `{{BOUNDARY_INTEGRITY_INSTRUCTION}}` in
+  // their required set, so an override that dropped the fencing instruction
+  // was already refused at config load — this re-check catches an edit since.
+  const loaded = await resolvePromptTemplate(type, {
+    promptsDir,
+    overrides,
+  });
   if (!loaded.ok) return loaded;
-  const validated = validatePromptTemplate(type, loaded.value);
+  const validated = validatePromptTemplate(type, loaded.value.content);
   if (!validated.ok) return validated as Result<string>;
-  return { ok: true, value: loaded.value };
+  return { ok: true, value: loaded.value.content };
 }
 
 /**
@@ -597,6 +611,7 @@ async function buildDraftPrompt(
   const template = await loadQuorumTemplate(
     QUORUM_DRAFT_PHASE,
     issue.promptsDir,
+    issue.promptOverrides,
   );
   if (!template.ok) return template;
   const delimiters = createPromptDelimiters(issue.commentBoundaryId);
@@ -633,6 +648,7 @@ async function buildJudgePrompt(
   const template = await loadQuorumTemplate(
     QUORUM_JUDGE_PHASE,
     issue.promptsDir,
+    issue.promptOverrides,
   );
   if (!template.ok) return template;
   const delimiters = createPromptDelimiters(issue.commentBoundaryId);

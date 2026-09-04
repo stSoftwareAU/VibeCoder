@@ -193,6 +193,17 @@ export function parseGhCommentsJson(json: GhCommentJson[]): GitHubComment[] {
   }));
 }
 
+/** Injection points for {@link runGhCommandRaw} (Issue #966). */
+export interface GhCommandRawOptions {
+  /**
+   * Directory the shared rate-limit signal is written to when this call is
+   * the one that discovers a primary-GraphQL-quota outage. Defaults to the
+   * `WORK_DIR` the run driver exports; an empty string suppresses the
+   * write, exactly as an unset `WORK_DIR` always has.
+   */
+  workDir?: string;
+}
+
 /**
  * Run a gh CLI command and return the output (without retry).
  *
@@ -205,10 +216,16 @@ export function parseGhCommentsJson(json: GhCommentJson[]): GitHubComment[] {
  * the mutation afterwards.
  *
  * @param args - Arguments to pass to gh
+ * @param options - Work-directory override for the shared rate-limit
+ *   signal a primary-quota outage writes (Issue #966). Omitted in
+ *   production, where the `WORK_DIR` the run driver exports is read.
  * @returns Command output as string
  * @throws Error if command fails
  */
-export async function runGhCommandRaw(args: string[]): Promise<string> {
+export async function runGhCommandRaw(
+  args: string[],
+  options: GhCommandRawOptions = {},
+): Promise<string> {
   // Issue #42: once the primary GraphQL quota is exhausted, every further
   // GraphQL-backed call in the window is guaranteed to fail. Short-circuit
   // it here — before the spawn, the telemetry and the retry decision — so a
@@ -237,7 +254,7 @@ export async function runGhCommandRaw(args: string[]): Promise<string> {
     // existing Issue #1780 mid-cycle pause at the next priority-pass check.
     const message = err instanceof Error ? err.message : String(err);
     if (isPrimaryRateLimitMessage(message)) {
-      await notePrimaryQuotaExhaustion();
+      await notePrimaryQuotaExhaustion(options.workDir);
     }
     throw err;
   }
@@ -267,8 +284,13 @@ function primaryQuotaSkipMessage(): string {
  * workers and the Issue #1780 pause observe the same window. Idempotent and
  * cheap: once the latch is set, every later call short-circuits before
  * reaching this path, and a concurrent first detection is coalesced.
+ *
+ * @param workDirOverride - Where the signal is written. Defaults to the
+ *   `WORK_DIR` the run driver exports (Issue #966).
  */
-async function notePrimaryQuotaExhaustion(): Promise<void> {
+async function notePrimaryQuotaExhaustion(
+  workDirOverride?: string,
+): Promise<void> {
   if (quotaExhaustionNoteInFlight || isPrimaryQuotaLatched()) return;
   quotaExhaustionNoteInFlight = true;
   try {
@@ -276,7 +298,7 @@ async function notePrimaryQuotaExhaustion(): Promise<void> {
     const resetEpoch = await readGraphqlResetEpoch(now);
     latchPrimaryQuota(resetEpoch, now);
     const waitSeconds = Math.max(0, resetEpoch - now);
-    const workDir = Deno.env.get("WORK_DIR");
+    const workDir = workDirOverride ?? Deno.env.get("WORK_DIR");
     if (workDir) {
       await writeRateLimitSignal(workDir, waitSeconds, undefined, "github");
     }
@@ -373,6 +395,25 @@ export function isLabelNotFoundError(errorMessage: string): boolean {
 }
 
 /**
+ * Whether `label` is reserved, treating the operator's configured
+ * `custom_label_prompts` labels as reserved too (Issue #847, part of #843).
+ *
+ * A custom label dispatches a privileged automation phase, so the worker must
+ * never self-apply one — the same rule `RESERVED_LABELS` encodes for `planning`
+ * and friends. The custom set is config-driven, so it is passed in rather than
+ * baked into the static constant. Comparison is case-insensitive, matching
+ * `isReservedLabel`.
+ */
+function isReservedOrCustomLabel(
+  label: string,
+  extraReserved: readonly string[],
+): boolean {
+  if (isReservedLabel(label)) return true;
+  const lower = label.toLowerCase();
+  return extraReserved.some((extra) => extra.toLowerCase() === lower);
+}
+
+/**
  * Filter out reserved labels that must not be applied when creating issues.
  *
  * Reserved labels are used by the worker for operational purposes (issue
@@ -383,12 +424,20 @@ export function isLabelNotFoundError(errorMessage: string): boolean {
  * special operational labels.
  *
  * @param labels - Labels to filter
+ * @param extraReserved - Configured `custom_label_prompts` labels, reserved for
+ *   the same reason (Issue #847). Defaults to `[]` — no configured mappings,
+ *   no behaviour change.
  * @returns Labels with reserved labels removed
  */
-export function filterReservedLabels(labels: string[]): string[] {
+export function filterReservedLabels(
+  labels: string[],
+  extraReserved: readonly string[] = [],
+): string[] {
   // Issue #3088: compare case-insensitively so a non-lower-case canonical
   // label (e.g. `Planning`) is still stripped.
-  return labels.filter((label) => !isReservedLabel(label));
+  return labels.filter((label) =>
+    !isReservedOrCustomLabel(label, extraReserved)
+  );
 }
 
 /**
@@ -407,17 +456,20 @@ export function filterReservedLabels(labels: string[]): string[] {
  * @param labels - Labels to filter
  * @param context - Caller context for the warning (e.g. "owner/repo idle-task filer")
  * @param logger - Logger used to emit one WARNING per stripped label
+ * @param extraReserved - Configured `custom_label_prompts` labels, reserved for
+ *   the same reason (Issue #847)
  * @returns Labels with reserved labels removed
  */
 export function filterReservedLabelsWithWarning(
   labels: string[],
   context: string,
   logger: Logger,
+  extraReserved: readonly string[] = [],
 ): string[] {
   const kept: string[] = [];
   for (const label of labels) {
     // Issue #3088: case-insensitive match (see isReservedLabel).
-    if (isReservedLabel(label)) {
+    if (isReservedOrCustomLabel(label, extraReserved)) {
       logger.warn("Stripped reserved label from worker-created issue", {
         label,
         context,
@@ -449,6 +501,8 @@ export interface CreateIssuesResult {
  * @param repo - Target repository in "owner/repo" format
  * @param ghCommandFn - Function to run gh commands (injectable for testing)
  * @param logger - Logger used to warn on stripped reserved labels (Issue #2825)
+ * @param extraReservedLabels - Configured `custom_label_prompts` labels, which
+ *   the worker must never self-apply (Issue #847)
  * @returns Created issue numbers and any failures
  */
 export async function createGitHubIssuesWithPartialFailures(
@@ -456,6 +510,7 @@ export async function createGitHubIssuesWithPartialFailures(
   repo: string,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
   logger: Logger = defaultLogger,
+  extraReservedLabels: readonly string[] = [],
 ): Promise<CreateIssuesResult> {
   const createdIssues: number[] = [];
   const failures: Array<{ title: string; error: string }> = [];
@@ -468,6 +523,7 @@ export async function createGitHubIssuesWithPartialFailures(
         improvement.labels,
         `${repo} suggest-improvements`,
         logger,
+        extraReservedLabels,
       );
       const labelArgs = safeLabels.flatMap((l) => ["--label", l]);
 

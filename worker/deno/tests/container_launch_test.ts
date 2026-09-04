@@ -357,9 +357,9 @@ Deno.test("resolveContainerResources - host-aware defaults with operator overrid
 });
 
 Deno.test("buildContainerLaunchPlan - passes the host identity into the container", () => {
-  // private-repo-6 heartbeats must name the real host, not the ephemeral
-  // container hostname (a fresh name every cycle would leave the host
-  // permanently "dead" on the fleet board and add a phantom host per run).
+  // Fleet telemetry must name the real host, not the ephemeral container
+  // hostname (a fresh name every cycle would leave the host permanently
+  // "dead" on the fleet board and add a phantom host per run).
   const plan = buildContainerLaunchPlan(inputs({ hostId: "host-23" }));
   assertEquals(plan.runArgs.includes("VIBE_HOST_ID=host-23"), true);
   // Without a hostId the env is simply absent — the worker falls back to
@@ -1264,4 +1264,172 @@ Deno.test("buildContainerLaunchPlan - extra token files change no mount and add 
   } finally {
     await Deno.remove(root, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Operator custom prompt files (Issue #850, part of #843).
+//
+// `custom_label_prompts` names prompt templates on the host, and the container
+// sees the workspace rather than the host — so without these mounts every
+// custom prompt fails at dispatch inside the container. The addition is the
+// narrowest one consistent with that posture: read-only, derived only from
+// the paths the operator named, and still routed through the same mount-source
+// allowlist as every other mount.
+// ---------------------------------------------------------------------------
+
+Deno.test("buildContainerLaunchPlan - mounts the operator's custom prompt directories read-only (Issue #850)", () => {
+  const targets = containerTargetPaths(MANIFEST);
+  const plan = buildContainerLaunchPlan(inputs({
+    customPromptPaths: [
+      "/srv/vibe-prompts/private-label.md",
+      "/opt/other-prompts/second.md",
+      // A second prompt in a directory already mounted adds no second mount.
+      "/srv/vibe-prompts/third.md",
+    ],
+  }));
+
+  const promptMounts = plan.mounts.filter((mount) =>
+    mount.target.startsWith(targets.customPrompts)
+  );
+  assertEquals(
+    promptMounts.map((mount) => [mount.source, mount.target, !!mount.readOnly]),
+    [
+      ["/srv/vibe-prompts", `${targets.customPrompts}/1`, true],
+      ["/opt/other-prompts", `${targets.customPrompts}/2`, true],
+    ],
+  );
+
+  // Read-only in the argument list too: a write from inside the container to
+  // a mounted prompt file must fail.
+  const values = mountValues(plan.runArgs);
+  assert(values.includes(`/srv/vibe-prompts:${targets.customPrompts}/1:ro`));
+  assert(values.includes(`/opt/other-prompts:${targets.customPrompts}/2:ro`));
+
+  // The worker on the other side resolves each configured host path onto the
+  // path it is actually readable at.
+  const mapIndex = plan.runArgs.findIndex((arg) =>
+    arg.startsWith("VIBE_CUSTOM_PROMPT_PATHS=")
+  );
+  assert(mapIndex > 0, "the translation map is passed into the container");
+  assertEquals(plan.runArgs[mapIndex - 1], "--env");
+  assertEquals(
+    JSON.parse(
+      (plan.runArgs[mapIndex] ?? "").slice("VIBE_CUSTOM_PROMPT_PATHS=".length),
+    ),
+    {
+      "/srv/vibe-prompts/private-label.md":
+        `${targets.customPrompts}/1/private-label.md`,
+      "/opt/other-prompts/second.md": `${targets.customPrompts}/2/second.md`,
+      "/srv/vibe-prompts/third.md": `${targets.customPrompts}/1/third.md`,
+    },
+  );
+
+  // Read-only mounts are not the launcher's to create, so nothing conjures an
+  // empty prompt directory over a mistyped path.
+  assert(!plan.ensureDirectories.includes("/srv/vibe-prompts"));
+});
+
+Deno.test("buildContainerLaunchPlan - custom prompt mounts keep the containment guarantees (Issue #850)", () => {
+  for (const kind of ["docker", "podman", "apple-container"] as const) {
+    const descriptor = descriptorFor(kind);
+    const targets = containerTargetPaths(MANIFEST);
+    const plan = buildContainerLaunchPlan(inputs({
+      descriptor,
+      customPromptPaths: ["/srv/vibe-prompts/private-label.md"],
+    }));
+
+    // The runtime's own mount dialect, read-only suffix included.
+    assert(
+      mountValues(plan.runArgs).includes(
+        `/srv/vibe-prompts:${targets.customPrompts}/1` +
+          `${descriptor.dialect.readOnlyMountSuffix}`,
+      ),
+      `${kind} mounts the prompt directory read-only`,
+    );
+
+    // Nothing else moved: the read-only root, its scratch and the privilege
+    // flags are exactly what the runtime had without the prompt mount.
+    const baseline = buildContainerLaunchPlan(inputs({ descriptor }));
+    assertEquals(
+      plan.runArgs.includes("--read-only"),
+      baseline.runArgs.includes("--read-only"),
+    );
+    for (const mount of scratchTmpfsMounts(MANIFEST.user)) {
+      const value = tmpfsArgument(descriptor.dialect, mount);
+      assertEquals(
+        plan.runArgs.includes(value),
+        baseline.runArgs.includes(value),
+      );
+    }
+    assertEquals(
+      plan.runArgs.includes("--cap-drop"),
+      baseline.runArgs.includes("--cap-drop"),
+    );
+    assertEquals(
+      plan.runArgs.includes("no-new-privileges"),
+      baseline.runArgs.includes("no-new-privileges"),
+    );
+  }
+});
+
+Deno.test("buildContainerLaunchPlan - a custom prompt the allowlist refuses fails the launch (Issue #850)", () => {
+  // A prompt file sitting directly in the host home directory: mounting its
+  // containing directory would hand the container the whole home.
+  const home = assertThrows(
+    () =>
+      buildContainerLaunchPlan(inputs({
+        customPromptPaths: ["/home/operator/private-label.md"],
+      })),
+    Error,
+  );
+  assertStringIncludes(home.message, "host home directory");
+
+  // The filesystem root, via a prompt path with no directory of its own.
+  const root = assertThrows(
+    () =>
+      buildContainerLaunchPlan(inputs({ customPromptPaths: ["/rogue.md"] })),
+    Error,
+  );
+  assertStringIncludes(root.message, "host filesystem root");
+
+  // A runtime control socket directory is refused like any other mount source.
+  const socket = assertThrows(
+    () =>
+      buildContainerLaunchPlan(inputs({
+        customPromptPaths: ["/var/run/docker.sock/prompt.md"],
+      })),
+    Error,
+  );
+  assertStringIncludes(socket.message, "control socket");
+
+  // A relative path never reaches the runtime either.
+  const relative = assertThrows(
+    () =>
+      buildContainerLaunchPlan(inputs({
+        customPromptPaths: ["prompts/private-label.md"],
+      })),
+    Error,
+  );
+  assertStringIncludes(relative.message, "absolute host path");
+});
+
+Deno.test("buildContainerLaunchPlan - no custom prompts leaves the plan exactly as it was (Issue #850)", () => {
+  const before = buildContainerLaunchPlan(inputs());
+  for (const customPromptPaths of [undefined, []]) {
+    const after = buildContainerLaunchPlan(
+      inputs(customPromptPaths === undefined ? {} : { customPromptPaths }),
+    );
+    assertEquals(after.mounts, before.mounts);
+    assertEquals(after.runArgs, before.runArgs);
+    assertEquals(after.ensureDirectories, before.ensureDirectories);
+    assert(
+      !after.runArgs.some((arg) => arg.includes("VIBE_CUSTOM_PROMPT_PATHS")),
+      "an unconfigured deployment carries no translation map",
+    );
+  }
+});
+
+Deno.test("containerTargetPaths - custom prompts land beside the staged config (Issue #850)", () => {
+  const targets = containerTargetPaths(MANIFEST);
+  assertEquals(targets.customPrompts, "/home/vibe/.vibe-coder/custom-prompts");
 });

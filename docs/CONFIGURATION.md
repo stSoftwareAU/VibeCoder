@@ -297,7 +297,7 @@ explicitly overridden.
 | `pinned_tool_versions` | _(unset)_ | Exact `claude`, `gh` and `deno` versions a frozen host installs, e.g. `{"claude": "2.0.76", "gh": "2.62.0", "deno": "2.5.4"}`. All three are required under `update_mode: "frozen"` — a partially pinned host would silently drift on whichever tool was left out. Same character rules as `pinned_ref`; ignored in `dynamic` mode. |
 | `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` overrides it for one run. An unsupported id fails loudly at startup, naming the supported providers. |
 | `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) overrides it for one run. The set is also what the launcher builds the image with — it is passed as `--build-arg AGENT_PROVIDERS=<ids>` and mixed into the image tag (Issue #729), so a Codex-only deployment builds a Codex image instead of reusing the default Claude one. |
-| `container_tools` | `[]` | Extra build-time tools this deployment's image bakes in — Java and Maven are the first expected use. Each entry is a declarative archive install: `id`, `version`, per-architecture `url` and **mandatory** `sha256` (`amd64` / `arm64` / `noarch`), `stripComponents`, `bin` and `env`. The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin`/`env` value is relative to it, so no selection can point PATH or `JAVA_HOME` at an arbitrary host path. A malformed spec, or a `url` without a matching `sha256`, fails loudly at config load. The default empty selection installs nothing — the fleet image is unchanged. Changing it needs an image rebuild; see [the worked Java + Maven example](CONTAINER.md#deployer-supplied-build-time-tools). |
+| `container_tools` | `[]` | Extra build-time tools this deployment's image bakes in. Each entry is a declarative archive install: `id`, `version`, per-architecture `url` and **mandatory** `sha256` (`amd64` / `arm64` / `noarch`), `stripComponents`, `bin` and `env`. The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin`/`env` value is relative to it, so no selection can point PATH or an environment variable at an arbitrary host path. A malformed spec, or a `url` without a matching `sha256`, fails loudly at config load. The default empty selection installs nothing — the fleet image is unchanged. Changing it needs an image rebuild; see [the worked example](CONTAINER.md#deployer-supplied-build-time-tools) and [Private Extensions](PRIVATE-EXTENSIONS.md). |
 | `claude_model`               | `opus`                    | Claude model ID (Identifier) to use                                                                                                                                                                                                                                                              |
 | `best_planning_model` | `""` (derive from routing) | Configured best planning model for degraded-model detection. Empty derives the expected model from the `planning` routing chain; set it to pin a specific model the run is expected to be served by. A degraded run labels the parent + every sub-issue `degraded-model`. |
 | `phase_model_overrides`      | `{}`                      | Per-phase model tier overrides (see below)                                                                                                                                                                                                                                                       |
@@ -473,6 +473,196 @@ resolves to `claude-opus-5` once the CLI is at (or above) an Opus-5-resolving
 version; raising the floor to that release is tracked separately in. Until
 the floor is raised, an older CLI resolves `opus` to Opus 4.8 — still priced
 identically ($5 / $25 per MTok), so cost tracking is unaffected.
+
+### 🏷️ Custom Label Prompts
+
+`custom_label_prompts` maps a GitHub label to a **non-public prompt template
+file** — an absolute path on the host, outside the public repository — so an
+operator can extend the Vibe Coder with private prompts without publishing
+them. Add the file, add the mapping, apply the label — the Vibe Coder works the
+issue with that prompt and raises a PR.
+
+> **📚 The operator guide is [Custom Label Prompts](CUSTOM-PROMPTS.md)** — the
+> extension point, a worked example an operator can follow verbatim, the
+> placeholder contract, what a prompt author must never do with the fenced
+> issue text, container operation, and the exact symptom of every failure mode.
+> This entry is the key reference.
+
+```json
+{
+  "custom_label_prompts": [
+    {
+      "label": "my-custom-label",
+      "prompt_path": "/opt/vibe-secrets/prompts/my-custom-label.md"
+    }
+  ]
+}
+```
+
+Semantics:
+
+- **`label`** — the GitHub label the mapping dispatches, or the built-in label
+  whose prompt it overrides (see below). Must be a non-empty string with no NUL
+  or control characters, and — unless it names a built-in phase label — must
+  not be one of the reserved workflow labels or the `top-priority` /
+  `low-priority` discovery labels, which are never remappable. Each
+  label/phase pair may appear once: a plain mapping is unique on its label, and
+  a label owning two templates (`planning`, `quorum`) takes at most one entry
+  per phase.
+- **`prompt_path`** — the absolute host path of the prompt template file. Must
+  be a non-empty, control-character-free string starting with `/`, and must
+  name a file that exists and is readable **at config load time**.
+- **`phase`** (optional) — only on an override, and only where the label owns
+  more than one template: `planning_critique` for a `planning` mapping,
+  `quorum_judge` for a `quorum` one. Omitted, the mapping overrides the label's
+  first-turn template.
+- **Fail loud, always.** Every fault above — a non-array value, a malformed
+  entry, a relative or unreadable `prompt_path`, a duplicate or reserved
+  `label` — throws from config load naming the offending entry and field.
+  Nothing here is warned about and defaulted: a silently dropped mapping would
+  leave an operator believing their extension was live when it never
+  dispatched.
+- **Default = off.** The default empty list changes no existing behaviour —
+  an operator opts in by adding entries.
+- **Trust-gated like `planning` (Issue #847).** A configured label joins the
+  operational dispatch set, so the label **adder** must be on the
+  `allowed_authors` allowlist — a trusted issue *author* is not sufficient. An
+  add by an untrusted account is stripped, not honoured as a plain descriptive
+  label, and an add that cannot be attributed from the issue timeline fails
+  closed (the issue is skipped). The worker's own creation paths treat a
+  configured label as reserved and strip it, and a label the worker legitimately
+  raises itself (`idle-task`, `security`, `severity:…`) is refused at config
+  load rather than remapped — so the worker cannot self-apply a custom label
+  into a dispatch. A custom label that a model-driven `gh issue create` path
+  puts on an issue is still stripped at dispatch time, because a fleet worker
+  login is never a trusted label adder. See
+  [INTERNALS.md — Issue discovery](INTERNALS.md#-issue-discovery-modular-issue-finder).
+
+#### How a custom label dispatches (Issue #848)
+
+An issue carrying a configured label is worked at **priority 1.86**, between
+question answering (1.85) and stale-workflow detection (1.9). The handler runs
+the **generic implementation phase** — the same `workOnIssue` pipeline `work-on`
+runs — so the run produces a real branch, commits and a PR. Only the prompt
+body differs: the operator's file replaces `prompts/issue/prompt.md`.
+
+```mermaid
+flowchart LR
+    L["🏷️ custom label<br/>added by an allowlisted account"] --> D["Priority 1.86<br/>custom-label dispatch"]
+    D --> C{"prompt file<br/>readable, non-empty,<br/>placeholders present?"}
+    C -- no --> F["❌ fail loud<br/>naming label + path"]
+    C -- yes --> B["Build prompt<br/>operator's template +<br/>nonce-fenced issue text"]
+    B --> P["Implementation pipeline<br/>branch → commits → PR"]
+    style F fill:#d00000,stroke:#9d0208,color:#fff
+    style P fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+- **The template is an `issue` template.** It must carry `{{ISSUE_NUMBER}}` and
+  `{{QUALITY_INSTRUCTIONS}}`; `{{REPO}}` and `{{VERBOSITY_INSTRUCTIONS}}` are
+  also substituted. Any *other* `{{PLACEHOLDER}}` fails the build rather than
+  reaching the agent half-rendered. There is no `vN.md` versioning — the plain
+  path is read as-is.
+- **The issue text stays untrusted.** The operator's file is configuration, so
+  it is not fenced and its immutability is not checked — it is theirs to edit.
+  The issue title, labels and body it renders around **are** fenced in this
+  run's nonce boundary, with the same boundary-integrity instruction the
+  built-in template gets. (As for `work-on`, issue comments are not part of the
+  implementation prompt at all.)
+- **Fail loud at dispatch, never a fallback.** A file that has become missing,
+  unreadable, empty or invalid between config load and dispatch fails the run
+  with the label and path named. The built-in `issue` template is never
+  substituted for an operator's prompt, and the issue is never silently skipped.
+- **The file is part of the prompt-cache key.** Where a run builds through the
+  prompt cache, the file's content joins the SHA, so editing it invalidates the
+  cached system prompt rather than re-serving a stale one.
+- **A broken mapping never starves the others.** The remaining configured labels
+  are still scanned, each fault is logged as an error naming its label and path,
+  and the pass fails when nothing else was worked.
+- **Container run mode: the launcher mounts the prompt directory read-only**
+  (Issue #850). The **containing directory** of every configured `prompt_path`
+  is bind-mounted into the container at
+  `/home/vibe/.vibe-coder/custom-prompts/<n>`, read-only, and the worker
+  resolves the configured host path onto that mount — so the same
+  `.config.json` serves the host-side launcher and the container alike, and
+  nothing inside the
+  container can edit an operator's template. Keep the prompts in a directory of
+  their own: everything beside them in that directory is readable inside the
+  container too. A path the containment allowlist refuses — the host home
+  directory or an ancestor of it, the filesystem root, a runtime control
+  socket, a relative path — **fails the launch loudly** rather than starting a
+  container without the mount. See
+  [CONTAINMENT.md — the mount set](CONTAINMENT.md#the-mount-set).
+- **Default = off.** With no mapping configured the priority row does not exist
+  and the ladder is unchanged.
+
+#### Overriding a built-in label's prompt (Issue #849)
+
+A mapping whose label matches a **built-in** label does not add a new dispatch
+row — it replaces that phase's own template, so an operator can run a
+non-public `planning`, `grill-me`, `question`, `quorum` or implementation
+prompt. The label keeps its existing handler, priority and trust gate; only the
+template changes.
+
+```json
+{
+  "custom_label_prompts": [
+    {
+      "label": "planning",
+      "prompt_path": "/opt/vibe-secrets/prompts/planning.md"
+    },
+    {
+      "label": "planning",
+      "phase": "planning_critique",
+      "prompt_path": "/opt/vibe-secrets/prompts/planning-critique.md"
+    }
+  ]
+}
+```
+
+| Label (as configured) | Phase overridden | Template replaced |
+| --- | --- | --- |
+| `work_on_label` (`work-on`) | `issue` | `prompts/issue/prompt.md` |
+| `planning_label` | `planning`, or `planning_critique` with `phase` | `prompts/planning/prompt.md` |
+| `question_label` | `question` | `prompts/question/prompt.md` |
+| `grill_me_label` | `grill-me` | `prompts/grill-me/prompt.md` |
+| `quorum_label` | `quorum`, or `quorum_judge` with `phase` | `prompts/quorum/prompt.md` |
+
+- **The configured names are what match.** A fleet that renamed `planning` to
+  `plan-it` overrides the planning phase with a `plan-it` mapping; the literal
+  `planning` is then just an ordinary reserved label again.
+- **Validated against the phase it replaces, not against `issue`.** Overriding
+  `planning` requires `{{REPO}}`, `{{ISSUE_NUMBER}}` and `{{PLANNING_LABEL}}`;
+  overriding `quorum` additionally requires
+  `{{BOUNDARY_INTEGRITY_INSTRUCTION}}`, the placeholder that fences the
+  untrusted issue text. A template short of any of them is refused **at config
+  load**, with the phase and the missing placeholders named — the fault an
+  `issue`-shaped validation would have waved through.
+- **Two-turn phases need two entries.** Overriding `planning` does **not**
+  override `planning_critique`, and overriding `quorum` does not override
+  `quorum_judge`: each turn is a separate template with its own contract, so
+  each takes its own entry naming its `phase`. Nothing is inferred from the
+  first turn.
+- **`refine-issue` cannot be overridden.** The refinement phase builds its
+  prompt inline in `worker/deno/lib/refinement_processor.ts` and has no
+  template file, so a mapping naming it is refused by name with that reason.
+- **Overriding `work-on` overrides the implementation phase.** That template
+  serves every issue-phase pickup — `top-priority` and `low-priority` too — so
+  the override applies to all of them. A run dispatched by a *new* custom label
+  still uses that label's own file.
+- **Ambiguity fails loud.** Two entries claiming the same phase are refused at
+  config load rather than silently resolving to whichever came first.
+- **The run record names the file.** Every phase logs the template it loaded —
+  the operator's path, or `prompts/<phase>/prompt.md` — so a run can be traced
+  back to the file it actually ran. The implementation phase also reports it
+  structurally, as `promptTemplate` beside `promptsCommit` in the phase result:
+  the commit identifies the repository's templates and says nothing about an
+  operator file.
+- **An override does not change the label's trust gate.** Only a *new* label
+  joins the operational dispatch set (Issue #847). Overriding `work-on` swaps
+  its template and nothing else — the fleet's main discovery label keeps the
+  OR gate it has always had.
+- **Phases with no override are untouched.** They load the repository's
+  template exactly as before.
 
 ### 🧭 Run Mode
 
@@ -805,6 +995,37 @@ any of the four required values fails loudly naming the field, so a typo never
 silently drags the host back to the tip. Setup's prompts write the same fields;
 the only thing setup adds is validating the ref while you are still sitting
 there.
+
+#### Rolling back to an earlier release
+
+Rolling back is [moving a pin by hand](#moving-a-pin-by-hand) in the one
+direction `./run.sh upgrade` will not go — it only ever chooses the newest
+release. The mechanics are the three steps above, with one addition that is
+easy to miss: **a release that changed a configuration contract changes it back
+when you roll the ref back**, so the pin and the affected keys move in the same
+edit.
+
+1. Read what the release you are returning to shipped with, so the tool
+   versions go back with the ref rather than staying on the newer ones:
+
+   ```bash
+   gh release download 1.0.71 --repo stSoftwareAU/VibeCoder \
+     --pattern tool-versions.json
+   ```
+
+2. In one edit of `.config.json`, set `pinned_ref` to that tag, set all three
+   `pinned_tool_versions` to what the manifest names, and restore any keys the
+   older release requires. [Release notes](RELEASE-NOTES.md) states, per
+   release, exactly which keys those are — for 1.2.0 it is `fleet_health_repo`
+   and `fleet_health_dir`, which 1.2.0 refuses and 1.0.x needs.
+3. Relaunch. The checkout update moves the worker checkout back and the launch
+   installs exactly the pinned versions, one log line per tool.
+
+A key the older release does not recognise is only a warning there, so a
+forward-looking block such as `callbacks` can stay in place across the
+rollback; a key the newer release **removed** is a hard config-load failure on
+the way forward again, which is why the rollback restores it explicitly rather
+than leaving the host with a config neither version loads.
 
 #### `VIBE_SKIP_CHECKOUT_UPDATE` is not frozen mode
 
@@ -1228,8 +1449,6 @@ unless explicitly overridden.
 | Shuffle repos | `shuffle_repos` | `true` | Randomise repository scan order to prevent starvation. Scan order controls which repos are queried first; issue selection is always by globally oldest eligible issue across all repos. |
 | Update GitHub user status | `update_gh_user_status` | `true` | Update GitHub profile status with current activity |
 | ImgBB API key | `imgbb_api_key` | _(empty)_ | API key for automatic screenshot uploads to ImgBB. Get a free key from https://api.imgbb.com/ |
-| FLEET health directory | `fleet_health_dir` | _(empty)_ | Directory of the FLEET health tracking checkout, native mode only. Optional: unset, the worker clones `fleet_health_repo` beside its own checkout, named after the repository. Ignored inside the container, where the checkout lives in the work volume |
-| FLEET health repository          | `fleet_health_repo`                | _(empty)_  | Git URL of the FLEET health repository — the one setting health tracking needs. `setup.sh` / `setup.ps1` ask for it (optional); the worker clones it on its first run, natively and in the container. Never assumed: unset, the worker logs that health tracking is off |
 | Worker name | `worker_name` | _(empty)_ | Human-readable worker name for multi-worker visibility |
 | Issue retry cooldown | `issue_retry_cooldown` | `600` | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. See `min_claim_runway_seconds` below for the claim-runway floor that stops a late claim being taken at all. |
 | Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway **to the supervisor hard cap** (`VIBE_RUN_MAX_SECONDS`) a new implementation claim must have; `0` disables the floor. A claim taken below it would be killed by the supervisor before it could finish setup. Measured against the hard cap, not the cycle deadline: since Issue #420 a claim keeps its full `claude_timeout` budget however late in the cycle it is taken, so cycle runway no longer says anything about whether a claim can fit — see [The cycle-deadline model](#-the-cycle-deadline-model). On a run with no hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
@@ -1970,6 +2189,134 @@ flowchart TD
     G -- yes --> H[Stop before the next claim]
     G -- no --> I[Claim and process issue]
 ```
+
+## 🪝 Post-Run Callbacks
+
+Optional executables the worker runs after a terminal issue run, following
+Jenkins `post { success / failure / always }` and Azure Pipelines
+`succeeded() / failed() / always()` semantics (Issue #806). They are the public
+extension point for fleet-specific reporting — health records, session-log
+archival, spend accounting — so none of that policy has to live in VibeCoder.
+
+> **📚 The full contract is [Post-Run Callbacks](CALLBACKS.md)** — ordering and
+> exactly-once scope, the versioned context schema, container filesystem
+> visibility, session-log sensitivity, portable hook examples, the conformance
+> fixture an extension runs against its own hooks, and the migration from
+> `fleet_health_dir` / `fleet_health_repo`. This section is the configuration
+> surface only.
+
+```json
+{
+  "callbacks": {
+    "success": "/opt/vibe-hooks/success.sh",
+    "failure": "/opt/vibe-hooks/failure.sh",
+    "always": "/opt/vibe-hooks/always.sh",
+    "timeout_seconds": 60
+  }
+}
+```
+
+All four entries are optional, and a configuration without a `callbacks` block
+behaves exactly as before.
+
+```mermaid
+flowchart LR
+    R["Issue run terminates"] --> D{Result}
+    D -- success --> S["callbacks.success"]
+    D -- failure --> F["callbacks.failure"]
+    S --> A["callbacks.always"]
+    F --> A
+    A --> O["Original VibeCoder outcome — unchanged"]
+```
+
+### Ordering and scope
+
+- `success` runs only after a terminal **successful** issue run; `failure` only
+  after a terminal **failed** one. Exactly one of the two runs.
+- `always` runs after the applicable outcome hook, in both cases — including
+  when that hook exited non-zero, timed out or could not be spawned.
+- A missing hook is a no-op.
+- A claim that was **skipped** (rejected, or already held by another worker)
+  runs no callbacks: no run happened to report.
+- A shutdown or an exception after a claim takes the failure/`always` path
+  exactly once.
+- Concurrent issue slots each receive their own context; hooks never share
+  state between slots.
+
+### Invocation and path rules
+
+- The configured path is executed **directly** — no shell, no `sh -c`, no
+  arguments — so no issue or repository text can be parsed as a command.
+- Paths must be **absolute** and POSIX. A relative path is rejected at config
+  load, because the worker's working directory changes between runs.
+- The path is resolved on the filesystem the **worker process** sees. The
+  worker runs inside the container ([Run Mode](#-run-mode) has one member), so
+  the hook must exist at that absolute path **inside the container** — a host
+  path that is not mounted in is not visible to it.
+- Every hook is bounded by `timeout_seconds` (default `60`, maximum `3600`);
+  a hook that exceeds it is terminated with `SIGTERM` and recorded as
+  `timed_out` with exit code `124`. A hook that ignores `SIGTERM`, or that
+  forks a child holding its output pipes, can outlive that signal — write
+  hooks that terminate on it.
+- stdout, stderr, the exit code and the duration are captured, redacted and
+  logged — including whatever a timed-out hook printed before it was killed.
+  Streams are truncated to 4000 characters each.
+- **A callback failure never rewrites the run's own result.** It is reported
+  loudly and the VibeCoder outcome stands.
+- A malformed `callbacks` block fails the config load rather than leaving a
+  hook that silently never runs.
+
+### What a hook receives
+
+The environment is **cleared** before it is populated: only `PATH`, `HOME`,
+`LANG`, `TZ` and `TMPDIR` are inherited from the worker, so no credential
+crosses into a callback. Transcript **contents** are never exported — only the
+path, and reading it is the callback author's decision.
+
+`VIBECODER_CALLBACK_CONTEXT` names a versioned JSON document written for that
+invocation and removed after it exits:
+
+```json
+{
+  "schemaVersion": 1,
+  "event": "success",
+  "runId": "vibe-mtk92vcu-ebcc11",
+  "result": "success",
+  "repository": "owner/repo",
+  "issueNumber": 806,
+  "host": "worker-1",
+  "workerName": "fleet-a",
+  "provider": "claude",
+  "sessionId": "…",
+  "sessionLogPath": "/home/vibe/logs/agent-….log",
+  "startedAt": "2026-09-02T01:00:00.000Z",
+  "finishedAt": "2026-09-02T01:31:12.000Z",
+  "durationSeconds": 1872,
+  "exitCode": 0,
+  "telemetry": {
+    "inputTokens": 1200,
+    "outputTokens": 340,
+    "cacheCreationTokens": 90,
+    "cacheReadTokens": 20,
+    "estimatedCostUsd": 0.42
+  }
+}
+```
+
+The same facts are exported as scalars, one variable each:
+`VIBECODER_CALLBACK_SCHEMA_VERSION`, `VIBECODER_CALLBACK_EVENT`,
+`VIBECODER_CALLBACK_CONTEXT`, `VIBECODER_RUN_ID`, `VIBECODER_RESULT`,
+`VIBECODER_REPOSITORY`, `VIBECODER_ISSUE_NUMBER`, `VIBECODER_HOST`,
+`VIBECODER_WORKER_NAME`, `VIBECODER_PROVIDER`, `VIBECODER_SESSION_ID`,
+`VIBECODER_SESSION_LOG_PATH`, `VIBECODER_STARTED_AT`,
+`VIBECODER_FINISHED_AT`, `VIBECODER_DURATION_SECONDS`,
+`VIBECODER_EXIT_CODE`, `VIBECODER_INPUT_TOKENS`, `VIBECODER_OUTPUT_TOKENS`,
+`VIBECODER_CACHE_CREATION_TOKENS`, `VIBECODER_CACHE_READ_TOKENS` and
+`VIBECODER_ESTIMATED_COST_USD`.
+
+A fact the run could not supply — no provider, no session, no parseable token
+usage — is **omitted** from both the document and the environment rather than
+emitted empty, so a hook can test for presence truthfully.
 
 ## 🔄 Session Resume
 

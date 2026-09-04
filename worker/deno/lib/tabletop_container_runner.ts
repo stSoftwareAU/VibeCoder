@@ -45,6 +45,7 @@ import {
 import { resolveContainerImageReference } from "./container_image_hash.ts";
 import { readDeploymentImageSelection } from "./container_image_selection.ts";
 import { GH_CREDENTIAL_SUBDIR } from "./credential_preflight.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 import {
   HOSTILE_PRE_COMMIT_HOOK,
   type TabletopFixture,
@@ -89,6 +90,11 @@ export interface TabletopContainerRunnerOptions {
   readonly image?: string;
   /** Host the egress fixture probes. */
   readonly egressProbeUrl?: string;
+  /**
+   * Environment lookup the deployment's selections are read through
+   * (Issue #962). Defaults to the process environment.
+   */
+  readonly env?: EnvLookup;
 }
 
 interface CommandResult {
@@ -403,6 +409,7 @@ export async function resolveTabletopImage(
   if (override) return override;
   const selection = await readDeploymentImageSelection({
     repoRoot: options.repoRoot,
+    ...(options.env ? { env: options.env } : {}),
   });
   return await resolveContainerImageReference(
     options.repoRoot,

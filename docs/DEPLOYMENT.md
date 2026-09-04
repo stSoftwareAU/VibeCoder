@@ -783,7 +783,7 @@ For environments without Task Scheduler (e.g., containers), use the convenience 
 ## 🧰 Changing `container_tools` forces an image rebuild
 
 `container_tools` in `.config.json` lists the extra build-time tools this
-deployment's image bakes in — Java and Maven, say. The full spec, a worked
+deployment's image bakes in. The full spec, a worked
 example and the checksum rules are in
 [Container Image](CONTAINER.md#deployer-supplied-build-time-tools); what matters
 on a deployed host is that **the selection is baked into the image, not read at
@@ -818,7 +818,7 @@ run time**. Editing it changes nothing until the image is rebuilt.
   A default image installs nothing extra, so the prefix does not exist at all
   there and the command reports it missing. Inside a started container the
   entrypoint exports the applied ids as
-  `VIBE_IMAGE_CONTAINER_TOOLS`, alongside the PATH and `JAVA_HOME` the
+  `VIBE_IMAGE_CONTAINER_TOOLS`, alongside the PATH and environment entries the
   selection asked for.
 
 ## ♻️ Container restart self-healing

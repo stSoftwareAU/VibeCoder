@@ -2,11 +2,15 @@
 
 The Vibe Coder worker is built on a **Deno TypeScript** architecture with 103 commands, 299 libraries, and 550 test files (counts as of June 2026 — see `worker/deno/` for the current set). All business logic lives in `worker/deno/`. For a quick overview, see the [main README](../README.md).
 
+Extending the worker **from outside** — reacting to a finished issue run without adding code here — is the [post-run callback contract](CALLBACKS.md), which ships a conformance fixture an extension can run against its own hooks. Extending it with **prompts you do not publish** — a label mapped to a template on your own host — is [Custom Label Prompts](CUSTOM-PROMPTS.md).
+
 ## 📋 Table of Contents
 
 - [Architecture](#architecture)
 - [Adding a New Command](#adding-a-new-command)
 - [Adding a CI Log Provider](#adding-a-ci-log-provider)
+- [Custom Label Prompts](CUSTOM-PROMPTS.md) — the operator-side extension
+  point, on its own page
 - [Running Deno Commands](#running-deno-commands)
 - [Prompt Templates](#prompt-templates)
 - [Shell Integration (Internal)](#shell-integration-internal)
@@ -122,8 +126,22 @@ When a PR's CI fails, the worker feeds an authoritative log excerpt into the
 `{{PR_FAILURE_ACTIONS}}` slot of the `ci_fix` prompt. **GitHub Actions is the
 built-in default provider** — every repo gets job logs with no configuration.
 External CI/CD systems plug in through the `CiLogProvider` extension point in
-`worker/deno/lib/ci_log_provider.ts`; Jenkins
-(`worker/deno/lib/ci_provider_jenkins.ts`) is simply the first one.
+`worker/deno/lib/ci_log_provider.ts`.
+
+> **Which repository does your provider belong in?**
+>
+> A provider belongs *here* only when this project itself runs on that CI
+> system — GitHub Actions qualifies, because this repository's own CI is
+> GitHub Actions. A provider for the CI system **one deployment happens to
+> use** is a private extension and belongs in that deployment's own
+> repository, not in the shared tree. Core provides the extension point; it
+> does not learn what is plugged into it.
+>
+> See [Private Extensions](PRIVATE-EXTENSIONS.md) for the configuration-only
+> extension surface, and for the two reasons an out-of-tree provider cannot
+> register itself today. The sibling configuration-only extension point —
+> a label mapped to a prompt template on the operator's own host — is
+> [Custom Label Prompts](CUSTOM-PROMPTS.md).
 
 ```mermaid
 flowchart TD
@@ -167,7 +185,8 @@ To add a provider:
 
 2. Register it with `registerCiLogProvider(myCiLogProvider)` — the built-ins
    register themselves at the bottom of `ci_log_provider.ts`. Ids are unique;
-   re-registering one throws so a clash fails loudly.
+   re-registering one throws so a clash fails loudly. Registering in core is
+   for CI systems this project runs on; see the note above.
 3. Configure it per repo via `repo_config.<owner/repo>.ciProviders` (see
    [Per-repository configuration](CONFIGURATION.md#-per-repository-configuration)).
 
@@ -456,7 +475,7 @@ flowchart LR
 **CI fix enrichment**: The `ci_fix` template carries a
 `{{PR_FAILURE_ACTIONS}}` placeholder. The worker substitutes an authoritative
 CI log excerpt into that placeholder before invoking Claude — from a
-configured provider (e.g. a Jenkins console tail) or, failing that, from the
+configured provider or, failing that, from the
 built-in GitHub Actions provider. See
 [Adding a CI Log Provider](#adding-a-ci-log-provider) for the extension point
 and [Per-repository PR failure actions](per-repo-pr-failure-actions.md) for
@@ -465,8 +484,20 @@ troubleshooting symptoms.
 
 **To update a prompt**: edit `prompts/<type>/prompt.md` in place and commit.
 
+**To replace a prompt without publishing it**: map the phase's label to a
+non-public file with `custom_label_prompts`
+([Custom Label Prompts](CUSTOM-PROMPTS.md), key reference in
+[Configuration](CONFIGURATION.md#-custom-label-prompts)). The override is
+validated at config load against the placeholders of the phase it replaces, and
+each turn of a two-turn phase (`planning` / `planning_critique`, `quorum` /
+`quorum_judge`) needs its own entry. The same key maps a **new** label to a
+private prompt, which is the operator-side extension point the worked example
+in [Custom Label Prompts](CUSTOM-PROMPTS.md#-worked-example--end-to-end) walks
+through end to end.
+
 **Traceability**: the execute phase logs the checkout's short commit hash, which
-pins the exact prompt text a run used.
+pins the exact prompt text a run used, and every phase logs the template file it
+loaded — the operator's path when a mapping overrode it (Issue #849).
 
 **Custom prompts directory**: Set the `PROMPTS_DIR` environment variable to override the default prompts location.
 
@@ -502,7 +533,7 @@ Deno.test("module - behaviour description", async () => {
 
 The suite runs both on a developer host and inside the worker container, and
 the container exports its own runtime configuration — `WORK_DIR`,
-`VIBE_IMAGE_AGENT_PROVIDERS`, `FLEET_HEALTH_REPO`, `UPDATE_GH_USER_STATUS` — into
+`VIBE_IMAGE_AGENT_PROVIDERS`, `UPDATE_GH_USER_STATUS` — into
 every `deno test` invocation. A test that saves and restores only *some* of the
 variables its code path reads inherits the rest from the machine running it, so
 it passes on a host and fails in the container (or worse, hides a genuine
@@ -519,15 +550,9 @@ regression). Never hand-roll a per-variable save/restore; use
 ```typescript
 import { withCleanEnv } from "./support/env.ts";
 
-Deno.test("buildFleetHealthConfig - container mode clones under the work dir", async () => {
-  await withCleanEnv({
-    VIBE_IMAGE_AGENT_PROVIDERS: "claude",
-    WORK_DIR: "/home/vibe/auto-issue-work",
-  }, () => {
-    assertEquals(
-      buildFleetHealthConfig("/workspace").healthDir,
-      "/home/vibe/auto-issue-work/private-repo-6",
-    );
+Deno.test("checkImgbbAvailable - an unset key is unavailable, whatever the host exports", async () => {
+  await withCleanEnv({ VIBE_IMGBB_API_KEY: undefined }, () => {
+    assertEquals(checkImgbbAvailable(), false);
   });
 });
 ```

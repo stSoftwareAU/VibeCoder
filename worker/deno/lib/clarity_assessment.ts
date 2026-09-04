@@ -90,6 +90,16 @@ export interface ClarityAssessmentOptions {
   killAfterSeconds?: number;
   /** Working directory for the Claude process (repo root). */
   cwd?: string;
+  /**
+   * Absolute path to the agent binary for this assessment (Issue #960).
+   *
+   * Handed straight to `runClaudeWithRetry`, which spawns it verbatim. A
+   * test wanting a stub agent names it here instead of prepending a
+   * directory to the process-wide `PATH` and racing every other test in the
+   * run (Issue #880, plan #944). Omitted — every production caller — the
+   * provider's binary name is resolved on `PATH` exactly as before.
+   */
+  agentBinaryPath?: string;
 }
 
 /** Dependency injection for testing. */
@@ -100,6 +110,8 @@ export interface ClarityAssessmentDeps {
     killAfterSeconds: number;
     phase: string;
     cwd?: string;
+    /** Explicit agent binary path, when the caller named one (Issue #960). */
+    agentBinaryPath?: string;
   }) => Promise<Result<ClaudeExecutionResult>>;
 }
 
@@ -376,6 +388,7 @@ export async function runClarityAssessment(
     killAfterSeconds: number;
     phase: string;
     cwd?: string;
+    agentBinaryPath?: string;
   }): Promise<Result<ClaudeExecutionResult>> => {
     // Route through runClaudeWithRetry so the clarification phase inherits the
     // model-unavailable (#2724) and rate-limit (#1113) fallback paths — a
@@ -387,6 +400,9 @@ export async function runClarityAssessment(
       killAfterSeconds: opts.killAfterSeconds,
       phase: opts.phase,
       cwd: opts.cwd,
+      ...(opts.agentBinaryPath
+        ? { agentBinaryPath: opts.agentBinaryPath }
+        : {}),
     });
     if (!retryResult.ok) return retryResult;
     // Adapt ClaudeRunResult → ClaudeExecutionResult (the dep seam shape).
@@ -426,6 +442,9 @@ export async function runClarityAssessment(
     killAfterSeconds,
     phase: "clarification",
     cwd: options.cwd,
+    ...(options.agentBinaryPath
+      ? { agentBinaryPath: options.agentBinaryPath }
+      : {}),
   });
 
   if (!result.ok) {

@@ -15,10 +15,13 @@
  *     naming the installed set (Issue #3234);
  *   - the no-argument call is unchanged.
  *
- * The spawn tests put stub `claude` and `codex` scripts on PATH, so the real
- * agent CLIs are never invoked. Each stub records the argument list and the
- * two vendor credentials it was handed, which is what proves the per-invocation
- * environment did not cross-contaminate.
+ * The spawn tests name two stub scripts by path (`agentBinaryPath`,
+ * Issue #959), so the real agent CLIs are never invoked and no directory is
+ * pushed onto the process-wide `PATH`. Each stub records the argument list and
+ * the two vendor credentials it was handed, which is what proves the
+ * per-invocation environment did not cross-contaminate; the credentials are
+ * handed to the run as `parentEnv` (Issue #961) rather than exported into the
+ * process every other test in the run shares.
  *
  * Uses Australian English throughout (behaviour, organisation).
  */
@@ -32,6 +35,8 @@ import {
   selectAgentProvider,
 } from "../lib/agent_provider.ts";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
+import { withAgentStub } from "./support/agent_stub.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 // ---------------------------------------------------------------------------
 // Selection without spawning
@@ -200,6 +205,22 @@ interface StubRecord {
 }
 
 /**
+ * Basenames of the two stub executables.
+ *
+ * Deliberately not `claude` / `codex`: the runner is handed these paths
+ * explicitly, so if it ever fell back to resolving the provider's binary name
+ * on `PATH` the real CLI would run and the test would fail rather than pass on
+ * the ambient agent.
+ */
+const STUB_NAME = {
+  claude: "vibe-agent-stub-claude",
+  codex: "vibe-agent-stub-codex",
+} as const;
+
+/** The two providers these spawn tests drive. */
+type StubProvider = keyof typeof STUB_NAME;
+
+/**
  * Body of a stub agent CLI.
  *
  * Records its arguments and the two vendor credentials it inherited, then
@@ -231,69 +252,81 @@ exit 0
 `;
 }
 
+/** What a spawn test needs to drive and read the two stubs. */
+interface StubProviders {
+  /** Absolute path of one provider's stub — the run's `agentBinaryPath`. */
+  path: (provider: StubProvider) => string;
+  /** Whether a provider's stub ran at all. */
+  ran: (provider: StubProvider) => Promise<boolean>;
+  /** What one provider's stub recorded. Throws when it never ran. */
+  readRecord: (provider: StubProvider) => Promise<StubRecord>;
+  /**
+   * The parent environment a run is given as `parentEnv`, carrying one dummy
+   * credential per vendor. Each provider's allowlist admits only its own,
+   * which is what the per-invocation environment assertion turns on.
+   */
+  parentEnv: Record<string, string>;
+}
+
 /**
- * Run `fn` with stub `claude` and `codex` scripts on PATH and dummy vendor
- * credentials in the environment, restoring both afterwards.
+ * Run `fn` with two stub agent CLIs on disk, named by path.
+ *
+ * Nothing here touches process state: the stubs are addressed by
+ * `agentBinaryPath` (Issue #959) and the dummy vendor credentials travel as
+ * `RunClaudeOptions.parentEnv` (Issue #961), so neither `PATH` nor a
+ * credential-shaped variable is written into the shared process.
  */
-async function withStubProviders<T>(
+function withStubProviders<T>(
   rendezvous: boolean,
-  fn: (readRecord: (binary: string) => Promise<StubRecord>) => Promise<T>,
+  fn: (stubs: StubProviders) => Promise<T>,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "agent_provider_stub_" });
-  const pairs: ReadonlyArray<readonly [string, string]> = [
-    ["claude", "codex"],
-    ["codex", "claude"],
-  ];
-  for (const [binary, peer] of pairs) {
-    const path = `${dir}/${binary}`;
-    await Deno.writeTextFile(path, stubBody(peer, rendezvous));
-    await Deno.chmod(path, 0o755);
-  }
+  return withAgentStub(
+    stubBody(STUB_NAME.codex, rendezvous),
+    async (stub) => {
+      const codexPath = `${stub.dir}/${STUB_NAME.codex}`;
+      await Deno.writeTextFile(
+        codexPath,
+        stubBody(STUB_NAME.claude, rendezvous),
+      );
+      await Deno.chmod(codexPath, 0o755);
 
-  const saved = new Map<string, string | undefined>();
-  const setEnv = (name: string, value: string | undefined) => {
-    if (!saved.has(name)) saved.set(name, Deno.env.get(name));
-    if (value === undefined) Deno.env.delete(name);
-    else Deno.env.set(name, value);
-  };
+      const path = (provider: StubProvider) =>
+        `${stub.dir}/${STUB_NAME[provider]}`;
+      const readRecord = async (
+        provider: StubProvider,
+      ): Promise<StubRecord> => {
+        const base = path(provider);
+        const args = (await Deno.readTextFile(`${base}.args`))
+          .split("\n").filter((line) => line !== "");
+        const stdin = await Deno.readTextFile(`${base}.stdin`).catch(() => "");
+        const creds = await Deno.readTextFile(`${base}.creds`);
+        const value = (name: string) =>
+          creds.split("\n").find((l) => l.startsWith(`${name}=`))
+            ?.slice(name.length + 1) ?? "";
+        return {
+          args,
+          stdin,
+          anthropicKey: value("ANTHROPIC_API_KEY"),
+          openaiKey: value("OPENAI_API_KEY"),
+        };
+      };
 
-  setEnv("PATH", `${dir}:${Deno.env.get("PATH") ?? ""}`);
-  // Dummy credentials — one per vendor. Each provider's allowlist admits only
-  // its own, which is what the per-invocation environment assertion turns on.
-  setEnv("ANTHROPIC_API_KEY", "test-anthropic-key");
-  setEnv("OPENAI_API_KEY", "test-openai-key");
-  // No image stamp: these stubs stand in for both installed CLIs.
-  setEnv(IMAGE_AGENT_PROVIDERS_ENV, undefined);
-
-  const readRecord = async (binary: string): Promise<StubRecord> => {
-    const args = (await Deno.readTextFile(`${dir}/${binary}.args`))
-      .split("\n").filter((line) => line !== "");
-    const stdin = await Deno.readTextFile(`${dir}/${binary}.stdin`).catch(
-      () => "",
-    );
-    const creds = await Deno.readTextFile(`${dir}/${binary}.creds`);
-    const value = (name: string) =>
-      creds.split("\n").find((l) => l.startsWith(`${name}=`))
-        ?.slice(name.length + 1) ?? "";
-    return {
-      args,
-      stdin,
-      anthropicKey: value("ANTHROPIC_API_KEY"),
-      openaiKey: value("OPENAI_API_KEY"),
-    };
-  };
-
-  try {
-    return await fn(readRecord);
-  } finally {
-    for (const [name, value] of saved) {
-      if (value === undefined) Deno.env.delete(name);
-      else Deno.env.set(name, value);
-    }
-    await Deno.remove(dir, { recursive: true }).catch(
-      () => {/* best-effort */},
-    );
-  }
+      return await fn({
+        path,
+        ran: (provider) =>
+          Deno.stat(`${path(provider)}.args`).then(() => true, () => false),
+        readRecord,
+        parentEnv: {
+          // The stub is a bash script reaching for coreutils; the run's own
+          // `PATH` is read, never written.
+          PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
+          ANTHROPIC_API_KEY: "test-anthropic-key",
+          OPENAI_API_KEY: "test-openai-key",
+        },
+      });
+    },
+    { prefix: "agent_provider_stub_", name: STUB_NAME.claude },
+  );
 }
 
 Deno.test({
@@ -302,42 +335,42 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    await withStubProviders(false, async (readRecord) => {
-      Deno.env.set(AGENT_PROVIDER_ENV, "claude");
-      try {
-        const result = await runClaudeWithTimeout({
-          prompt: "draft the plan",
-          agentProvider: "codex",
-          timeoutSeconds: 30,
-          killAfterSeconds: 2,
-        });
+    // The active provider is Claude for this invocation's own environment,
+    // stated rather than exported (Issue #961).
+    const active = envFrom({ [AGENT_PROVIDER_ENV]: "claude" });
+    await withStubProviders(false, async (stubs) => {
+      const result = await runClaudeWithTimeout({
+        prompt: "draft the plan",
+        agentProvider: "codex",
+        agentBinaryPath: stubs.path("codex"),
+        env: active,
+        parentEnv: stubs.parentEnv,
+        timeoutSeconds: 30,
+        killAfterSeconds: 2,
+      });
 
-        assert(result.ok, !result.ok ? result.error.message : "");
-        if (!result.ok) return;
-        assertEquals(result.value.exitCode, 0);
-        // Attribution: the result names the agent that produced it.
-        assertEquals(result.value.provider, "codex");
-        assertEquals(result.value.runStats?.provider, "codex");
-        assertStringIncludes(result.value.output, "ran-codex");
+      assert(result.ok, !result.ok ? result.error.message : "");
+      if (!result.ok) return;
+      assertEquals(result.value.exitCode, 0);
+      // Attribution: the result names the agent that produced it.
+      assertEquals(result.value.provider, "codex");
+      assertEquals(result.value.runStats?.provider, "codex");
+      assertStringIncludes(result.value.output, `ran-${STUB_NAME.codex}`);
 
-        const codex = await readRecord("codex");
-        assertEquals(codex.args[0], "exec");
-        assert(codex.args.some((a) => a.includes("draft the plan")));
-        // Codex sees its own credential and never Anthropic's.
-        assertEquals(codex.openaiKey, "test-openai-key");
-        assertEquals(codex.anthropicKey, "");
+      const codex = await stubs.readRecord("codex");
+      assertEquals(codex.args[0], "exec");
+      assert(codex.args.some((a) => a.includes("draft the plan")));
+      // Codex sees its own credential and never Anthropic's.
+      assertEquals(codex.openaiKey, "test-openai-key");
+      assertEquals(codex.anthropicKey, "");
 
-        // The active provider never ran, and is still Claude afterwards.
-        await Deno.stat(`${Deno.env.get("PATH")!.split(":")[0]}/claude.args`)
-          .then(
-            () =>
-              assert(false, "the active provider must not have been spawned"),
-            () => {/* expected: no record */},
-          );
-        assertEquals(resolveAgentProviderId(), "claude");
-      } finally {
-        Deno.env.delete(AGENT_PROVIDER_ENV);
-      }
+      // The active provider never ran, and is still Claude afterwards.
+      assertEquals(
+        await stubs.ran("claude"),
+        false,
+        "the active provider must not have been spawned",
+      );
+      assertEquals(resolveAgentProviderId({ env: active }), "claude");
     });
   },
 });
@@ -348,11 +381,14 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    await withStubProviders(true, async (readRecord) => {
+    await withStubProviders(true, async (stubs) => {
       const [claudeResult, codexResult] = await Promise.all([
         runClaudeWithTimeout({
           prompt: "claude draft",
           agentProvider: "claude",
+          agentBinaryPath: stubs.path("claude"),
+          env: emptyEnv,
+          parentEnv: stubs.parentEnv,
           phase: "issue",
           timeoutSeconds: 60,
           killAfterSeconds: 2,
@@ -360,6 +396,9 @@ Deno.test({
         runClaudeWithTimeout({
           prompt: "codex draft",
           agentProvider: "codex",
+          agentBinaryPath: stubs.path("codex"),
+          env: emptyEnv,
+          parentEnv: stubs.parentEnv,
           timeoutSeconds: 60,
           killAfterSeconds: 2,
         }),
@@ -378,11 +417,14 @@ Deno.test({
       assertEquals(codexResult.value.exitCode, 0);
       assertEquals(claudeResult.value.provider, "claude");
       assertEquals(codexResult.value.provider, "codex");
-      assertStringIncludes(claudeResult.value.output, "ran-claude");
-      assertStringIncludes(codexResult.value.output, "ran-codex");
+      assertStringIncludes(
+        claudeResult.value.output,
+        `ran-${STUB_NAME.claude}`,
+      );
+      assertStringIncludes(codexResult.value.output, `ran-${STUB_NAME.codex}`);
 
-      const claude = await readRecord("claude");
-      const codex = await readRecord("codex");
+      const claude = await stubs.readRecord("claude");
+      const codex = await stubs.readRecord("codex");
 
       // Per-invocation arguments: each CLI got its own dialect and its own
       // prompt, with nothing from the other.
@@ -416,12 +458,15 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    await withStubProviders(false, async (readRecord) => {
+    await withStubProviders(false, async (stubs) => {
       const creditLogDir = await Deno.makeTempDir({ prefix: "credit_log_" });
       try {
         const result = await runClaudeWithTimeout({
           prompt: "default run",
           phase: "issue",
+          agentBinaryPath: stubs.path("claude"),
+          env: emptyEnv,
+          parentEnv: stubs.parentEnv,
           timeoutSeconds: 30,
           killAfterSeconds: 2,
           creditLogDir,
@@ -434,7 +479,7 @@ Deno.test({
         assertEquals(result.value.exitCode, 0);
         assertEquals(result.value.provider, "claude");
 
-        const claude = await readRecord("claude");
+        const claude = await stubs.readRecord("claude");
         assertEquals(claude.args[0], "--model");
         assert(claude.args.includes("--dangerously-skip-permissions"));
         assertEquals(claude.args.at(-1), "-p");
