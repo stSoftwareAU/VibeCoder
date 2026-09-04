@@ -83,32 +83,28 @@ Deno.test("screenshot strip - worked example keeps a non-screenshot evidence lin
 // Drift guards (Gaps 1 and 3)
 // ---------------------------------------------------------------------------
 
-Deno.test("screenshot strip - every rule matches the latest issue template", async () => {
-  const template = await loadPrompt("issue", undefined, PROMPTS_DIR);
+Deno.test("screenshot strip - every rule matches the issue template", async () => {
+  const template = await loadPrompt("issue", PROMPTS_DIR);
   assertEquals(template.ok, true);
   if (!template.ok) return;
   for (const rule of SCREENSHOT_STRIP_RULES) {
     assertEquals(
       rule.matches(template.value),
       true,
-      `strip rule "${rule.id}" no longer matches the latest issue template`,
+      `strip rule "${rule.id}" no longer matches the issue template`,
     );
   }
 });
 
-Deno.test("screenshot strip - every rule matches the latest coding guidelines", async () => {
-  const guidelines = await loadPrompt(
-    "coding_guidelines",
-    undefined,
-    PROMPTS_DIR,
-  );
+Deno.test("screenshot strip - every rule matches the coding guidelines", async () => {
+  const guidelines = await loadPrompt("coding_guidelines", PROMPTS_DIR);
   assertEquals(guidelines.ok, true);
   if (!guidelines.ok) return;
   for (const rule of PLAYWRIGHT_STRIP_RULES) {
     assertEquals(
       rule.matches(guidelines.value),
       true,
-      `strip rule "${rule.id}" no longer matches the latest coding guidelines`,
+      `strip rule "${rule.id}" no longer matches the coding guidelines`,
     );
   }
 });
@@ -148,11 +144,7 @@ Deno.test("screenshot strip - rendered issue prompt carries no screenshot mandat
 // ---------------------------------------------------------------------------
 
 Deno.test("screenshot strip - guidelines drop the orphaned Playwright references", async () => {
-  const guidelines = await loadPrompt(
-    "coding_guidelines",
-    undefined,
-    PROMPTS_DIR,
-  );
+  const guidelines = await loadPrompt("coding_guidelines", PROMPTS_DIR);
   assertEquals(guidelines.ok, true);
   if (!guidelines.ok) return;
   const stripped = stripPlaywrightSection(guidelines.value);

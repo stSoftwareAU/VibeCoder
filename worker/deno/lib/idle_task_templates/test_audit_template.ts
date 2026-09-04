@@ -10,7 +10,7 @@
  * `best_practices_template.ts`:
  *
  *   - **Outcome-only Claude contract.** The orchestrating prompt at
- *     `prompts/test_audit/v1.md` instructs Claude to file findings
+ *     `prompts/test_audit/prompt.md` instructs Claude to file findings
  *     directly via `gh issue create`. `runTask` verifies the outcome by
  *     snapshotting the repo's open `test-audit`-labelled issues before
  *     and after the scan and diffing them — no JSON parsing.
@@ -157,7 +157,7 @@ export interface ScanError {
 // ---------------------------------------------------------------------------
 
 /**
- * Substitute the two placeholders defined by `prompts/test_audit/v1.md`.
+ * Substitute the two placeholders defined by `prompts/test_audit/prompt.md`.
  *
  * Empty id lists render as `(none)` — same convention as
  * `buildSecurityScanPrompt` so wrappers read naturally both standalone
@@ -277,7 +277,7 @@ export function renderTestAuditSummary(newlyFiled: readonly number[]): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Default Claude runner. Loads `prompts/test_audit/v1.md`, substitutes
+ * Default Claude runner. Loads `prompts/test_audit/prompt.md`, substitutes
  * placeholders, and invokes Claude with the same write-tool blocklist as
  * `best_practices_template.defaultRunScan`.
  *

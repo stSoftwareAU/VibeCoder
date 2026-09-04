@@ -47,7 +47,6 @@ async function makeLogDir(): Promise<string> {
   );
   const worker = [
     `run_core pid=20 start=${ts} (Worker timestamps are UTC)`,
-    `[${d} 01:00:00Z] INFO: Reporting health as Vibe Coder:TESTHOST`,
     `[${d} 01:05:00Z] INFO: Processing issue org/repo#1: t [version=1.0.0 commit=unknown]`,
     `[${d} 01:30:00Z] INFO: Releasing claim org/repo#1 — outcome pr:#2`,
     `[${d} 02:00:00Z] [WORKER_SUMMARY] issues_processed=1 duration=3600s human=1h avg=3600s_per_issue`,

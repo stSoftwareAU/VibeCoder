@@ -156,6 +156,29 @@
  * {@link formatIdleDecisionCensus} as a `NOTE inversion_not_escalated` line,
  * so a deferral stays visible in the log instead of being silently dropped.
  *
+ * # A repo the scan was never shown (Issue #898)
+ *
+ * "Completed an eligibility pass" is one cycle-wide boolean, and the census
+ * applied it to every repo. The claim scan does not: `findOldestIssue` skips
+ * a repository outright when it appears in `excludeRepos` — the set of
+ * repositories held by an issue slot **or** by the maintenance lane
+ * (`InFlightRepoRegistry.heldRepos()`, Issues #4176 and #213) — so no
+ * collector runs for it and it records no per-issue skip reason at all.
+ *
+ * On stSoftwareAU/VibeCoder that filed an escalation naming nine `work-on`
+ * issues under an empty "what the claim scan did with them" section, on three
+ * consecutive cycles: the maintenance lane was servicing one of the repo's
+ * PRs, so the pool's scan could not see the repository, found nothing
+ * anywhere else, and set `eligibilityScanCompleted` — which the census read
+ * as "the scan looked at VibeCoder and refused it".
+ *
+ * Such a repo is recorded as `repo_held_in_flight` and reported as
+ * {@link IdleDecisionCensus.heldInversionRepos} — Issue #437's rule applied
+ * per repo rather than per cycle. It is kept out of
+ * {@link IdleDecisionCensus.deferredInversionRepos} so the note can name the
+ * hold rather than repeating "nothing refused this work", which is true but
+ * sends a reader looking at cycle duration (Issue #479).
+ *
  * The builder is **pure** — it takes already-fetched issues (read through
  * the existing per-iteration `IssueCache` so a quiet cycle costs no extra
  * `gh issue list` call) and returns a structured census. The caller wraps
@@ -303,6 +326,17 @@ export type RepoCensusSkipReason =
    */
   | "host_disk_low"
   | "work_volume_fault"
+  /**
+   * A slot on this host held the repository, so the claim scan skipped it
+   * entirely (Issue #898). `findOldestIssue` drops every repo in its
+   * `excludeRepos` set before any collector runs — the set of repositories
+   * an issue slot (Issue #4176) or the maintenance lane (Issue #213) holds
+   * — which is why such a repo produces no per-issue skip reason at all.
+   *
+   * Neither a refusal nor a host-level gate: the work was simply invisible
+   * to this cycle's scan, and returns the moment the hold clears.
+   */
+  | "repo_held_in_flight"
   | "unknown";
 
 /**
@@ -323,6 +357,45 @@ export function isClaimGateSkipReason(
   reason: RepoCensusSkipReason | undefined,
 ): boolean {
   return reason !== undefined && CLAIM_GATE_SKIP_REASONS.includes(reason);
+}
+
+/**
+ * Whether a skip reason means a slot on this host held the repository, so the
+ * claim scan was never shown it (Issue #898).
+ */
+export function isRepoHeldSkipReason(
+  reason: RepoCensusSkipReason | undefined,
+): boolean {
+  return reason === "repo_held_in_flight";
+}
+
+/**
+ * The census input for one repo's scan state (Issue #898).
+ *
+ * Three facts decide it, in this order:
+ *
+ *   1. the repo was excluded from the scan by an in-flight hold — it was
+ *      never evaluated, whatever the rest of the fleet did;
+ *   2. the scan completed an eligibility pass — the repo was evaluated;
+ *   3. otherwise the host-level reason the scan stopped (Issue #479).
+ *
+ * Extracted so the loop's wiring is testable on its own: the census can only
+ * be as honest as the scan state it is handed.
+ */
+export function resolveRepoScanState(opts: {
+  repo: string;
+  /** Whether the claim scan completed an eligibility pass (Issue #437). */
+  claimScanCompleted: boolean;
+  /** Repos the completed pass never looked at, because a slot held them. */
+  scanExcludedRepos: ReadonlySet<string>;
+  /** The host-level reason the scan stopped, when it did not complete. */
+  claimGateReason: () => RepoCensusSkipReason;
+}): { scannedThisCycle: boolean; skipReason?: RepoCensusSkipReason } {
+  if (opts.scanExcludedRepos.has(opts.repo)) {
+    return { scannedThisCycle: false, skipReason: "repo_held_in_flight" };
+  }
+  if (opts.claimScanCompleted) return { scannedThisCycle: true };
+  return { scannedThisCycle: false, skipReason: opts.claimGateReason() };
 }
 
 /** Availability verdict for a repo, derived from its open issues. */
@@ -498,6 +571,17 @@ export interface IdleDecisionCensus {
    * deferral is visible in the log, never escalated.
    */
   deferredInversionRepos: string[];
+  /**
+   * Repos with claimable work that a slot on this host held, so the claim
+   * scan skipped them before any collector ran (Issue #898).
+   *
+   * Kept apart from {@link deferredInversionRepos} — whose note explains a
+   * cycle that stopped early, which is not what happened — and out of
+   * {@link escalationRepos}: a repository the scan was never shown cannot
+   * have refused anything, which is exactly why the escalation it filed
+   * carried an empty "what the claim scan did with them" section.
+   */
+  heldInversionRepos: string[];
   /**
    * Repos with claimable work that a host-level claim gate refused this
    * cycle (Issue #479).
@@ -959,8 +1043,16 @@ export function buildIdleDecisionCensus(opts: {
   const gatedInversionRepos = inverted
     .filter((r) => !r.scannedThisCycle && isClaimGateSkipReason(r.skipReason))
     .map((r) => r.repo);
+  // Issue #898: a slot held this repo, so the scan skipped it before any
+  // collector ran. Neither refused nor merely unreached — invisible.
+  const heldInversionRepos = inverted
+    .filter((r) => !r.scannedThisCycle && isRepoHeldSkipReason(r.skipReason))
+    .map((r) => r.repo);
   const deferredInversionRepos = inverted
-    .filter((r) => !r.scannedThisCycle && !isClaimGateSkipReason(r.skipReason))
+    .filter((r) =>
+      !r.scannedThisCycle && !isClaimGateSkipReason(r.skipReason) &&
+      !isRepoHeldSkipReason(r.skipReason)
+    )
     .map((r) => r.repo);
   const servedInversionRepos = inverted
     .filter((r) => r.scannedThisCycle && served.has(r.repo))
@@ -974,6 +1066,7 @@ export function buildIdleDecisionCensus(opts: {
     inversionDetected: inversionRepos.length > 0,
     escalationRepos,
     deferredInversionRepos,
+    heldInversionRepos,
     gatedInversionRepos,
     servedInversionRepos,
   };
@@ -1037,6 +1130,20 @@ export function formatIdleDecisionCensus(
         `repos=${census.deferredInversionRepos.join(",")} — the claim scan ` +
         `did not complete an eligibility pass this cycle, so nothing ` +
         `refused this work`,
+    );
+  }
+  // Issue #898: a slot on this host held the repository, so the scan skipped
+  // it before any collector ran. Named, because the deferral note's "nothing
+  // refused this work" is true here and still sends the reader to the wrong
+  // place — the work returns when the hold clears, not when a cycle is longer.
+  if (census.heldInversionRepos.length > 0) {
+    lines.push(
+      `[idle-census]${hostField} decision_point=${census.decisionPoint} ` +
+        `NOTE inversion_repo_held ` +
+        `repos=${census.heldInversionRepos.join(",")} — a slot on this host ` +
+        `held these repositories, so the claim scan skipped them before any ` +
+        `eligibility check ran; this work was never evaluated, and returns ` +
+        `when the hold clears`,
     );
   }
   // Issue #479: a host-level gate refused this work. Said plainly, and with

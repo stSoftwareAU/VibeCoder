@@ -7,10 +7,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertExists } from "@std/assert";
 import { revisionProcessorCommand } from "../commands/revision_processor.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { WorkerConfig } from "../types.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 
 function makeConfig(overrides?: Partial<WorkerConfig>): WorkerConfig {
   return { ...buildDefaultWorkerConfig(), ...overrides };
@@ -36,9 +37,10 @@ Deno.test("revision-processor command - parse-response operation still works", a
     config,
   );
   assertEquals(result.success, true);
-  const data = result.data as Record<string, unknown>;
-  assertEquals(data?.bodyUpdated, true);
-  assertEquals(data?.summary, "Applied reviewer corrections");
+  const data = result.data;
+  assertExists(data);
+  assertEquals(data.bodyUpdated, true);
+  assertEquals(data.summary, "Applied reviewer corrections");
 });
 
 Deno.test("revision-processor command - build-prompt operation still works", async () => {
@@ -85,26 +87,27 @@ Deno.test("revision-processor command - process-revision rejects missing issue-n
   assertEquals(result.message.includes("Missing required"), true);
 });
 
+// The acting login reaches the command as its third parameter (Issue #965),
+// so this test states an empty environment instead of deleting `GITHUB_USER`
+// from the process — a write that races every other test sharing the
+// process. The command resolves the login through
+// `resolveActingGithubUser`, whose own suite
+// (`tests/acting_github_user_test.ts`) pins the accepting direction with a
+// login absent from every real environment; here the only observable is the
+// rejection, because accepting one sends the command on to GitHub.
 Deno.test("revision-processor command - process-revision rejects missing github-user", async () => {
   const config = makeConfig();
-  const originalUser = Deno.env.get("GITHUB_USER");
-  try {
-    Deno.env.delete("GITHUB_USER");
-    const result = await revisionProcessorCommand.execute(
-      {
-        operation: "process-revision",
-        repo: "org/repo",
-        "issue-number": 42,
-      },
-      config,
-    );
-    assertEquals(result.success, false);
-    assertEquals(result.message.includes("Missing required"), true);
-  } finally {
-    if (originalUser !== undefined) {
-      Deno.env.set("GITHUB_USER", originalUser);
-    }
-  }
+  const result = await revisionProcessorCommand.execute(
+    {
+      operation: "process-revision",
+      repo: "org/repo",
+      "issue-number": 42,
+    },
+    config,
+    emptyEnv,
+  );
+  assertEquals(result.success, false);
+  assertEquals(result.message.includes("Missing required"), true);
 });
 
 Deno.test("revision-processor command - unknown operation returns error", async () => {

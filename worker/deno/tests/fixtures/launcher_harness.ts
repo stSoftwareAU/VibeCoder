@@ -11,6 +11,8 @@
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
 
+import { resolvePowerShell } from "../support/pwsh.ts";
+
 const FIXTURE_PATH = new URL(import.meta.url).pathname;
 
 /** The repository checkout the launchers live in. */
@@ -705,24 +707,14 @@ export const BASH_LAUNCHER: LauncherInvocation = {
   args: [`${REPO_ROOT}/run.sh`],
 };
 
-/** Resolve PowerShell, which is not installed on every developer host. */
-async function resolvePowerShell(): Promise<string | null> {
-  for (const candidate of [Deno.env.get("VIBE_PWSH"), "pwsh"]) {
-    if (!candidate) continue;
-    try {
-      const output = await new Deno.Command(candidate, {
-        args: ["-NoProfile", "-NonInteractive", "-Command", "exit 0"],
-        stdout: "null",
-        stderr: "null",
-      }).output();
-      if (output.success) return candidate;
-    } catch { /* not installed — try the next candidate */ }
-  }
-  return null;
-}
-
-/** The PowerShell executable, or null when this host has none. */
-export const PWSH: string | null = await resolvePowerShell();
+/**
+ * The PowerShell executable, or null when this host has none.
+ *
+ * Only `pwsh`: `run.ps1` is PowerShell 7 script, so falling back to Windows
+ * PowerShell 5.1 under the name `powershell` would run it and fail, which
+ * reads as a launcher bug rather than a host without the interpreter.
+ */
+export const PWSH: string | null = await resolvePowerShell(["pwsh"]);
 
 /** `run.ps1`, run through PowerShell — null when PowerShell is absent. */
 export const POWERSHELL_LAUNCHER: LauncherInvocation | null = PWSH

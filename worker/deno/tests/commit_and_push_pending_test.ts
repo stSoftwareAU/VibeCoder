@@ -5,11 +5,51 @@
  * unpushed commits, and reports the final state honestly so callers can
  * detect "we forgot to push" scenarios.
  *
+ * Every call supplies the run id explicitly (Issue #963). It used to come
+ * from `VIBE_RUN_ID` on the process, which `lib/run_id.ts` *writes* when the
+ * variable is unset — so even the tests that never mentioned a run id mutated
+ * the process environment through the code under test, racing every other
+ * test in the run (Issue #880). {@link TEST_RUN_ID} exists in no real
+ * environment, so the trailer assertion below cannot pass on an ambient
+ * value.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals } from "@std/assert";
 import { commitAndPushPending } from "../lib/git_push.ts";
+import { RUN_ID_TRAILER_KEY } from "../lib/run_id.ts";
+
+/**
+ * Run id stamped on every commit these tests make (Issue #963).
+ *
+ * A sentinel, not a plausible id: if the parameter were ignored and the
+ * fallback to `VIBE_RUN_ID` ran instead, the trailer would carry something
+ * else and the assertion would fail rather than pass on the ambient run id.
+ */
+const TEST_RUN_ID = "vibe-963-commit-push-sentinel";
+
+/**
+ * Call the production chokepoint with the run id supplied as a parameter.
+ *
+ * Only the trailing arguments are fixed — the branch, message and cwd are the
+ * test's, and `allowDefaultBranch`/`preFlight` keep their production defaults.
+ */
+function commitAndPush(
+  branchName: string,
+  commitMessage: string,
+  cwd: string,
+  runId: string = TEST_RUN_ID,
+) {
+  return commitAndPushPending(
+    branchName,
+    commitMessage,
+    { cwd },
+    false,
+    undefined,
+    runId,
+  );
+}
 
 interface GitRunResult {
   code: number;
@@ -76,10 +116,10 @@ Deno.test("commitAndPushPending - commits and pushes uncommitted changes", async
     // Simulate Claude leaving uncommitted changes.
     await Deno.writeTextFile(`${downstream}/feature.txt`, "feature work\n");
 
-    const result = await commitAndPushPending(
+    const result = await commitAndPush(
       branch,
       "Auto-commit pending changes (Issue #1643)",
-      { cwd: downstream },
+      downstream,
     );
 
     assert(
@@ -116,10 +156,10 @@ Deno.test("commitAndPushPending - pushes existing local commits with no uncommit
     await runGit(["add", "."], downstream);
     await runGit(["commit", "-m", "implement feature"], downstream);
 
-    const result = await commitAndPushPending(
+    const result = await commitAndPush(
       branch,
       "Auto-commit pending changes",
-      { cwd: downstream },
+      downstream,
     );
 
     assert(result.ok);
@@ -140,10 +180,10 @@ Deno.test("commitAndPushPending - reports nothing to push when in sync", async (
     branch,
   );
   try {
-    const result = await commitAndPushPending(
+    const result = await commitAndPush(
       branch,
       "Auto-commit pending changes",
-      { cwd: downstream },
+      downstream,
     );
 
     assert(result.ok);
@@ -172,10 +212,10 @@ Deno.test("commitAndPushPending - commits uncommitted changes on top of existing
     // Plus uncommitted changes (Claude forgot to commit them).
     await Deno.writeTextFile(`${downstream}/b.txt`, "second\n");
 
-    const result = await commitAndPushPending(
+    const result = await commitAndPush(
       branch,
       "Auto-commit pending changes (Issue #1643)",
-      { cwd: downstream },
+      downstream,
     );
 
     assert(result.ok);
@@ -201,10 +241,10 @@ Deno.test("commitAndPushPending - refuses to push when a secret file is staged (
     await Deno.writeTextFile(`${downstream}/feature.txt`, "feature work\n");
     await Deno.writeTextFile(`${downstream}/.env`, "API_KEY=leak\n");
 
-    const result = await commitAndPushPending(
+    const result = await commitAndPush(
       branch,
       "Auto-commit pending changes",
-      { cwd: downstream },
+      downstream,
     );
 
     assert(!result.ok, "expected pre-commit safety gate to reject the commit");
@@ -243,15 +283,13 @@ Deno.test("commitAndPushPending - stamps the commit with the run-id trailer (Iss
     "commit_push_pending_trailer_",
     branch,
   );
-  const originalRunId = Deno.env.get("VIBE_RUN_ID");
   try {
-    Deno.env.set("VIBE_RUN_ID", "vibe-test-trailer-abc123");
     await Deno.writeTextFile(`${downstream}/feature.txt`, "feature work\n");
 
-    const result = await commitAndPushPending(
+    const result = await commitAndPush(
       branch,
       "Implement feature (Issue #2381)",
-      { cwd: downstream },
+      downstream,
     );
     assert(
       result.ok,
@@ -259,15 +297,26 @@ Deno.test("commitAndPushPending - stamps the commit with the run-id trailer (Iss
     );
 
     // The committed message must carry the run-id trailer so the push is
-    // traceable back to its originating worker run.
+    // traceable back to its originating worker run. Asserted on the trailer's
+    // exact shape — a whole line, key, one space, the id supplied as a
+    // parameter — because that line is the join key between the GitHub
+    // timeline and the worker logs, and `git log --format=` reads it as a
+    // trailer or not at all.
     const log = await runGit(["log", "-1", "--format=%B"], downstream);
+    const trailerLine = `${RUN_ID_TRAILER_KEY}: ${TEST_RUN_ID}`;
     assert(
-      log.stdout.includes("Vibe-Coder-Run-Id: vibe-test-trailer-abc123"),
-      `expected run-id trailer in commit message, got:\n${log.stdout}`,
+      log.stdout.split("\n").includes(trailerLine),
+      `expected the line "${trailerLine}" in the commit message, got:\n${log.stdout}`,
     );
+
+    // And git itself must read it as a trailer, not merely as text that
+    // happens to be in the body.
+    const trailer = await runGit(
+      ["log", "-1", `--format=%(trailers:key=${RUN_ID_TRAILER_KEY},valueonly)`],
+      downstream,
+    );
+    assertEquals(trailer.stdout.trim(), TEST_RUN_ID);
   } finally {
-    if (originalRunId === undefined) Deno.env.delete("VIBE_RUN_ID");
-    else Deno.env.set("VIBE_RUN_ID", originalRunId);
     await Deno.remove(tmp, { recursive: true });
   }
 });
@@ -322,10 +371,10 @@ Deno.test("commitAndPushPending - single-branch clone reports an honest 0 after 
   try {
     await Deno.writeTextFile(`${downstream}/fix.txt`, "ci fix\n");
 
-    const result = await commitAndPushPending(
+    const result = await commitAndPush(
       branch,
       "Fix CI failure: Quality Checks",
-      { cwd: downstream },
+      downstream,
     );
 
     assert(
@@ -357,10 +406,10 @@ Deno.test("commitAndPushPending - single-branch clone with nothing to do reports
     branch,
   );
   try {
-    const result = await commitAndPushPending(
+    const result = await commitAndPush(
       branch,
       "Fix CI failure: Quality Checks",
-      { cwd: downstream },
+      downstream,
     );
 
     assert(
@@ -388,10 +437,10 @@ Deno.test("commitAndPushPending - reports finalUnpushedCount=0 after successful 
   try {
     await Deno.writeTextFile(`${downstream}/x.txt`, "x\n");
 
-    const result = await commitAndPushPending(
+    const result = await commitAndPush(
       branch,
       "Auto-commit pending changes",
-      { cwd: downstream },
+      downstream,
     );
 
     assert(result.ok);

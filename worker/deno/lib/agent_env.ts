@@ -12,6 +12,12 @@
  * it comes from, has any use for the GitHub App PEM, the Jenkins API token or
  * the ImgBB key, all of which the worker uses in-process.
  *
+ * A host may hold a POOL of credentials for one vendor, of which a run selects
+ * exactly one (Issue #920). The unselected ones must not reach the child by
+ * any route, so the allowlist exemption is exact-match and a suffixed or
+ * indexed variant of any listed name is denied outright — see
+ * {@link isDeniedAgentEnvVar}.
+ *
  * Australian English spelling throughout (behaviour, organisation).
  */
 
@@ -49,12 +55,45 @@ export const WORKER_ONLY_SECRET_ENV_VARS: readonly string[] = [
 export const AGENT_ENV_SECRET_NAME_PATTERN =
   /(TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)/i;
 
+/**
+ * The first character of a suffixed or indexed variant of a credential name
+ * (Issue #920).
+ *
+ * A host that holds a pool of credentials for one vendor grows names by
+ * appending to the base one: `_2`, `2`, `_SECONDARY`, `-BACKUP`. Anything the
+ * lists below have an opinion about is decided for the *base* name, so a
+ * variant is a DIFFERENT credential wearing a familiar prefix — never the one
+ * the allowlist exempted.
+ */
+const ENV_VARIANT_SUFFIX_START = /^[_\-0-9]/;
+
+/**
+ * Report whether `name` is a suffixed or indexed variant of `base`.
+ *
+ * @param name - Environment variable name under test.
+ * @param base - A name one of the policy lists states an opinion about.
+ * @returns true when `name` is `base` plus a variant suffix.
+ */
+function isEnvVariantOf(name: string, base: string): boolean {
+  if (name.length <= base.length || !name.startsWith(base)) return false;
+  return ENV_VARIANT_SUFFIX_START.test(name.slice(base.length));
+}
+
 /** The per-provider lists that decide what its child inherits. */
 export interface AgentEnvPolicy {
   /** Names the child must never inherit, whatever they look like. */
   denylist: readonly string[];
   /** Secret-shaped names this provider's child genuinely needs. */
   secretAllowlist: readonly string[];
+  /**
+   * The credential-shape rule (defaults to
+   * {@link AGENT_ENV_SECRET_NAME_PATTERN}).
+   *
+   * Injectable so a test can prove a denial holds on its own rather than by
+   * accident of this pattern's current wording (Issue #920): narrow the
+   * pattern and the explicit rules above it must still deny.
+   */
+  secretNamePattern?: RegExp;
 }
 
 /**
@@ -63,17 +102,36 @@ export interface AgentEnvPolicy {
  * The denylist is checked first, so a cross-vendor credential stays denied
  * even when the other vendor's descriptor allowlists it.
  *
+ * A *variant* of any listed name — the name plus `_2`, `2`, `_SECONDARY`,
+ * `-BACKUP` — is denied outright, whichever list it extends (Issue #920).
+ * That closes the pooled-credential case in both directions: a host may hold
+ * several credentials for one vendor, and only the one the run selected is
+ * exported under the base name. A variant extending the denylist is another
+ * copy of something already refused; a variant extending the *allowlist* is
+ * the sharper case, because the allowlist is the only way out of this
+ * function — exempting it by prefix would hand the child a second, unselected
+ * credential. The exemption is therefore exact-match, and stated here rather
+ * than left to {@link AGENT_ENV_SECRET_NAME_PATTERN} to catch: a variant must
+ * stay denied even if that pattern is narrowed later.
+ *
  * @param name - Environment variable name.
  * @param policy - The provider's denylist and secret allowlist.
- * @returns true when the variable is denied by name or by secret-ish shape.
+ * @returns true when the variable is denied by name, as a variant of a named
+ *   one, or by secret-ish shape.
  */
 export function isDeniedAgentEnvVar(
   name: string,
   policy: AgentEnvPolicy,
 ): boolean {
   if (policy.denylist.includes(name)) return true;
+  for (const base of policy.denylist) {
+    if (isEnvVariantOf(name, base)) return true;
+  }
+  for (const base of policy.secretAllowlist) {
+    if (isEnvVariantOf(name, base)) return true;
+  }
   if (policy.secretAllowlist.includes(name)) return false;
-  return AGENT_ENV_SECRET_NAME_PATTERN.test(name);
+  return (policy.secretNamePattern ?? AGENT_ENV_SECRET_NAME_PATTERN).test(name);
 }
 
 /**

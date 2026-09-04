@@ -2,13 +2,15 @@
 
 The Vibe Coder worker is built on a **Deno TypeScript** architecture with 103 commands, 299 libraries, and 550 test files (counts as of June 2026 — see `worker/deno/` for the current set). All business logic lives in `worker/deno/`. For a quick overview, see the [main README](../README.md).
 
+Extending the worker **from outside** — reacting to a finished issue run without adding code here — is the [post-run callback contract](CALLBACKS.md), which ships a conformance fixture an extension can run against its own hooks.
+
 ## 📋 Table of Contents
 
 - [Architecture](#architecture)
 - [Adding a New Command](#adding-a-new-command)
 - [Adding a CI Log Provider](#adding-a-ci-log-provider)
 - [Running Deno Commands](#running-deno-commands)
-- [Prompt Versioning and Templates](#prompt-versioning-and-templates)
+- [Prompt Templates](#prompt-templates)
 - [Shell Integration (Internal)](#shell-integration-internal)
 - [Running Tests](#running-tests)
 
@@ -122,8 +124,20 @@ When a PR's CI fails, the worker feeds an authoritative log excerpt into the
 `{{PR_FAILURE_ACTIONS}}` slot of the `ci_fix` prompt. **GitHub Actions is the
 built-in default provider** — every repo gets job logs with no configuration.
 External CI/CD systems plug in through the `CiLogProvider` extension point in
-`worker/deno/lib/ci_log_provider.ts`; Jenkins
-(`worker/deno/lib/ci_provider_jenkins.ts`) is simply the first one.
+`worker/deno/lib/ci_log_provider.ts`.
+
+> **Which repository does your provider belong in?**
+>
+> A provider belongs *here* only when this project itself runs on that CI
+> system — GitHub Actions qualifies, because this repository's own CI is
+> GitHub Actions. A provider for the CI system **one deployment happens to
+> use** is a private extension and belongs in that deployment's own
+> repository, not in the shared tree. Core provides the extension point; it
+> does not learn what is plugged into it.
+>
+> See [Private Extensions](PRIVATE-EXTENSIONS.md) for the configuration-only
+> extension surface, and for the two reasons an out-of-tree provider cannot
+> register itself today.
 
 ```mermaid
 flowchart TD
@@ -167,7 +181,8 @@ To add a provider:
 
 2. Register it with `registerCiLogProvider(myCiLogProvider)` — the built-ins
    register themselves at the bottom of `ci_log_provider.ts`. Ids are unique;
-   re-registering one throws so a clash fails loudly.
+   re-registering one throws so a clash fails loudly. Registering in core is
+   for CI systems this project runs on; see the note above.
 3. Configure it per repo via `repo_config.<owner/repo>.ciProviders` (see
    [Per-repository configuration](CONFIGURATION.md#-per-repository-configuration)).
 
@@ -316,34 +331,34 @@ deno run --allow-all worker/deno/mod.ts \
   audit-default-branch-rulesets --repos owner/a,owner/b
 ```
 
-## 📝 Prompt Versioning and Templates
+## 📝 Prompt Templates
 
-Prompts sent to Claude are stored as versioned markdown templates in the `prompts/` directory. For a short summary of **the goal of each prompt type** (issue, planning, planning_critique, question, PR feedback, spelling fix, CI fix, coding guidelines, grill-me, workflow_setup, and the idle-task scans — security_scan, best_practices, test_audit, github_actions_audit, supply_chain_readiness, supply_chain_detection), see [Prompt goals (summary)](PROMPTS.md). The full prompt text is in the repo only.
+Prompts sent to Claude are stored as markdown templates in the `prompts/` directory. For a short summary of **the goal of each prompt type** (issue, planning, planning_critique, question, PR feedback, spelling fix, CI fix, coding guidelines, grill-me, workflow_setup, and the idle-task scans — security_scan, best_practices, test_audit, github_actions_audit, supply_chain_readiness, supply_chain_detection), see [Prompt goals (summary)](PROMPTS.md). The full prompt text is in the repo only.
 
-Each directory under `prompts/` holds one or more immutable `vN.md` files;
-the worker loads the highest-numbered version at runtime. Browse the
-directories on GitHub for the current list of versions.
+Each directory under `prompts/` holds exactly one editable `prompt.md`, which
+the worker loads at runtime. Edit it in place — git history is the record of how
+it evolved (`git log -p prompts/<type>/prompt.md`).
 
 ```mermaid
 graph TD
     root["📝 prompts/"]
 
-    cg["coding_guidelines/<br/>vN.md (one or more immutable versions)"]
-    iss["issue/<br/>vN.md (one or more immutable versions)"]
-    plan["planning/<br/>vN.md (one or more immutable versions)"]
-    pc["planning_critique/<br/>vN.md (one or more immutable versions)"]
-    prf["pr_feedback/<br/>vN.md (one or more immutable versions)"]
-    qst["question/<br/>vN.md (one or more immutable versions)"]
-    sf["spelling_fix/<br/>vN.md (one or more immutable versions)"]
-    cf["ci_fix/<br/>vN.md (one or more immutable versions)"]
-    gm["grill-me/<br/>vN.md (one or more immutable versions)"]
-    ws["workflow_setup/<br/>vN.md (one or more immutable versions)"]
-    ss["security_scan/<br/>vN.md (one or more immutable versions)"]
-    bp["best_practices/<br/>vN.md (one or more immutable versions)"]
-    ta["test_audit/<br/>vN.md (one or more immutable versions)"]
-    gaa["github_actions_audit/<br/>vN.md (one or more immutable versions)"]
-    scr["supply_chain_readiness/<br/>vN.md (one or more immutable versions)"]
-    scd["supply_chain_detection/<br/>vN.md (one or more immutable versions)"]
+    cg["coding_guidelines/<br/>prompt.md"]
+    iss["issue/<br/>prompt.md"]
+    plan["planning/<br/>prompt.md"]
+    pc["planning_critique/<br/>prompt.md"]
+    prf["pr_feedback/<br/>prompt.md"]
+    qst["question/<br/>prompt.md"]
+    sf["spelling_fix/<br/>prompt.md"]
+    cf["ci_fix/<br/>prompt.md"]
+    gm["grill-me/<br/>prompt.md"]
+    ws["workflow_setup/<br/>prompt.md"]
+    ss["security_scan/<br/>prompt.md"]
+    bp["best_practices/<br/>prompt.md"]
+    ta["test_audit/<br/>prompt.md"]
+    gaa["github_actions_audit/<br/>prompt.md"]
+    scr["supply_chain_readiness/<br/>prompt.md"]
+    scd["supply_chain_detection/<br/>prompt.md"]
 
     root --> cg
     root --> iss
@@ -381,14 +396,11 @@ graph TD
     style scd fill:#52489c,stroke:#36306b,color:#fff
 ```
 
-> **⚠️ Existing versions are immutable:** Do NOT modify an existing `v*.md` file. Once committed, a prompt version is frozen. This is enforced by `quality.sh`.
-
-> **⚠️ Reference prompt directories, never a pinned version:** write
-> `prompts/<type>/` in documentation, not `prompts/<type>/v7.md`. The
-> `docs prompt versions` check in `quality.sh` fails a doc that cites a version
-> older than the one on disk; the wording "from vN onward" or a
-> `<!-- pinned: reason -->` marker is the escape hatch when a specific
-> historical version genuinely must be cited.
+> **📌 Versioning was removed (Issue #844):** prompts used to be immutable
+> `vN.md` files, which only made sense while the repo was private and history
+> travelled in a zip. The repo is public, so git history is the record. Edit
+> `prompts/<type>/prompt.md` directly; reference it in documentation by that
+> path or by the directory alone, never by a version number.
 
 ### A new idle-task scan prompt inherits the dedup contract
 
@@ -411,7 +423,7 @@ skips it.
 
 The shared `coding_guidelines` template is model-agnostic, so genuinely
 model-specific working-style guidance lives in an **overlay** prompt type
-(Issue #374). An overlay is an ordinary versioned prompt directory named after
+(Issue #374). An overlay is an ordinary prompt directory named after
 the agent identity it applies to:
 
 | Directory | Applies to |
@@ -427,7 +439,7 @@ the winning overlay **behind** the agnostic baseline inside the single
 - **No identity, or no directory for it → the baseline, byte for byte.** That
   is the default and the common path; an unknown identity never throws and
   never emits an empty heading.
-- **A directory that exists but carries no `vN.md` fails loud** — it was
+- **A directory that exists but carries no `prompt.md` fails loud** — it was
   authored deliberately, so "no overlay" would mask the mistake.
 - Identity ids are slugged to a single path segment (`[a-z0-9-]`), so a
   malformed provider id cannot escape `prompts/`.
@@ -447,28 +459,29 @@ Which observed behaviour justifies a given overlay is recorded in
 
 ```mermaid
 flowchart LR
-    B["prompts/coding_guidelines/<br/>latest vN.md — agnostic baseline"] --> W
+    B["prompts/coding_guidelines/<br/>prompt.md — agnostic baseline"] --> W
     I["identity<br/>provider (+ model)"] --> O
-    O["prompts/coding_guidelines_&lt;id&gt;/<br/>latest vN.md — optional overlay"] -.appended when present.-> W
+    O["prompts/coding_guidelines_&lt;id&gt;/<br/>prompt.md — optional overlay"] -.appended when present.-> W
     W["&lt;coding_guidelines&gt; … &lt;/coding_guidelines&gt;"]
     style B fill:#40916c,stroke:#2d6a4f,color:#fff
     style O fill:#3a86ff,stroke:#023e8a,color:#fff
     style W fill:#5c4d7d,stroke:#3c2f5a,color:#fff
 ```
 
-**CI fix enrichment**: The latest `ci_fix` template carries a
+**CI fix enrichment**: The `ci_fix` template carries a
 `{{PR_FAILURE_ACTIONS}}` placeholder. The worker substitutes an authoritative
 CI log excerpt into that placeholder before invoking Claude — from a
-configured provider (e.g. a Jenkins console tail) or, failing that, from the
+configured provider or, failing that, from the
 built-in GitHub Actions provider. See
 [Adding a CI Log Provider](#adding-a-ci-log-provider) for the extension point
 and [Per-repository PR failure actions](per-repo-pr-failure-actions.md) for
 the config schema, env var contract, worked private-repo-12 example, and
 troubleshooting symptoms.
 
-**To update a prompt**: Create a new version file (e.g., `v2.md`). The latest version (highest number) is used automatically.
+**To update a prompt**: edit `prompts/<type>/prompt.md` in place and commit.
 
-**Traceability**: The worker logs which prompt version was used for each issue.
+**Traceability**: the execute phase logs the checkout's short commit hash, which
+pins the exact prompt text a run used.
 
 **Custom prompts directory**: Set the `PROMPTS_DIR` environment variable to override the default prompts location.
 
@@ -504,7 +517,7 @@ Deno.test("module - behaviour description", async () => {
 
 The suite runs both on a developer host and inside the worker container, and
 the container exports its own runtime configuration — `WORK_DIR`,
-`VIBE_IMAGE_AGENT_PROVIDERS`, `FLEET_HEALTH_REPO`, `UPDATE_GH_USER_STATUS` — into
+`VIBE_IMAGE_AGENT_PROVIDERS`, `UPDATE_GH_USER_STATUS` — into
 every `deno test` invocation. A test that saves and restores only *some* of the
 variables its code path reads inherits the rest from the machine running it, so
 it passes on a host and fails in the container (or worse, hides a genuine
@@ -521,15 +534,9 @@ regression). Never hand-roll a per-variable save/restore; use
 ```typescript
 import { withCleanEnv } from "./support/env.ts";
 
-Deno.test("buildFleetHealthConfig - container mode clones under the work dir", async () => {
-  await withCleanEnv({
-    VIBE_IMAGE_AGENT_PROVIDERS: "claude",
-    WORK_DIR: "/home/vibe/auto-issue-work",
-  }, () => {
-    assertEquals(
-      buildFleetHealthConfig("/workspace").healthDir,
-      "/home/vibe/auto-issue-work/private-repo-6",
-    );
+Deno.test("checkImgbbAvailable - an unset key is unavailable, whatever the host exports", async () => {
+  await withCleanEnv({ VIBE_IMGBB_API_KEY: undefined }, () => {
+    assertEquals(checkImgbbAvailable(), false);
   });
 });
 ```

@@ -426,47 +426,48 @@ Deno.test("baseline_quality_cache - legacy entries without a sequence still prun
   );
 });
 
-Deno.test("baseline_quality_cache - full no-op when WORK_DIR is unset: no path, no directory, no entry (Issue #133)", async () => {
-  const previousWorkDir = Deno.env.get("WORK_DIR");
-  const previousHome = Deno.env.get("HOME");
-  // A fresh, empty HOME: the old fallback wrote $HOME/auto-issue-work, so
-  // proving the directory ABSENT needs a HOME nothing else has touched.
+Deno.test("baseline_quality_cache - full no-op with no work directory: no path, no directory, no entry (Issue #133)", async () => {
+  // A fresh, empty home: the old fallback wrote $HOME/auto-issue-work, so
+  // proving the directory ABSENT needs a home nothing else has touched.
+  // Both roots are parameters now (Issue #966) — a `CacheRoots` with no
+  // `workDir` is "WORK_DIR is unset", said without deleting a variable
+  // every other worker in this process shares.
   const home = await Deno.makeTempDir({ prefix: "vibe-bqcache-home-" });
-  Deno.env.delete("WORK_DIR");
-  Deno.env.set("HOME", home);
+  const roots = { home };
   try {
     // No cache directory means no path at all — never a $HOME fallback.
-    assertEquals(baselineQualityCachePath(), undefined);
+    assertEquals(baselineQualityCachePath(roots), undefined);
 
     // The write is a silent no-op — it must neither throw nor create
     // anything (the caller treats a throw as a warning-worthy failure,
     // and an absent cache dir on a host run is expected, not a fault).
-    await writeBaselineQualityCache("owner/repo@sha", {
-      passed: true,
-      output: "gate output",
-    });
+    await writeBaselineQualityCache(
+      "owner/repo@sha",
+      {
+        passed: true,
+        output: "gate output",
+      },
+      undefined,
+      roots,
+    );
 
-    // Assert absence: HOME is still completely empty — no auto-issue-work,
-    // no .vibe-cache, no file of any kind was created.
+    // Assert absence: the home is still completely empty — no
+    // auto-issue-work, no .vibe-cache, no file of any kind was created.
     assertEquals([...Deno.readDirSync(home)], []);
 
     // The read reports no cached baseline, so the caller re-runs the gate.
-    assertEquals(await readBaselineQualityCache("owner/repo@sha"), null);
+    assertEquals(
+      await readBaselineQualityCache("owner/repo@sha", undefined, roots),
+      null,
+    );
   } finally {
-    if (previousWorkDir !== undefined) {
-      Deno.env.set("WORK_DIR", previousWorkDir);
-    } else Deno.env.delete("WORK_DIR");
-    if (previousHome !== undefined) Deno.env.set("HOME", previousHome);
-    else Deno.env.delete("HOME");
+    await Deno.remove(home, { recursive: true }).catch(() => undefined);
   }
 });
 
-Deno.test("baseline_quality_cache - with WORK_DIR unset even a warm legacy $HOME cache is a miss (Issue #133)", async () => {
-  const previousWorkDir = Deno.env.get("WORK_DIR");
-  const previousHome = Deno.env.get("HOME");
+Deno.test("baseline_quality_cache - with no work directory even a warm legacy $HOME cache is a miss (Issue #133)", async () => {
   const home = await Deno.makeTempDir({ prefix: "vibe-bqcache-home-" });
-  Deno.env.delete("WORK_DIR");
-  Deno.env.set("HOME", home);
+  const roots = { home };
   try {
     // A valid, current entry in the legacy $HOME/.vibe-coder location.
     await Deno.mkdir(`${home}/.vibe-coder`, { recursive: true });
@@ -482,29 +483,38 @@ Deno.test("baseline_quality_cache - with WORK_DIR unset even a warm legacy $HOME
       }),
     );
 
+    // The legacy entry really is readable when there IS a cache directory,
+    // so the miss below is the cache being off rather than a bad fixture.
+    assertEquals(
+      (await readBaselineQualityCache(
+        "owner/repo@sha",
+        undefined,
+        { workDir: `${home}/absent-volume`, home },
+      ))?.passed,
+      true,
+    );
+
     // No cache directory: the whole cache is off, so not even the
     // read-only legacy fallback is consulted — the baseline gate re-runs,
     // which is the correct uncached behaviour on a host-side run.
-    assertEquals(await readBaselineQualityCache("owner/repo@sha"), null);
+    assertEquals(
+      await readBaselineQualityCache("owner/repo@sha", undefined, roots),
+      null,
+    );
   } finally {
-    if (previousWorkDir !== undefined) {
-      Deno.env.set("WORK_DIR", previousWorkDir);
-    } else Deno.env.delete("WORK_DIR");
-    if (previousHome !== undefined) Deno.env.set("HOME", previousHome);
-    else Deno.env.delete("HOME");
+    await Deno.remove(home, { recursive: true }).catch(() => undefined);
   }
 });
 
 Deno.test("baseline_quality_cache - default path lives on the work volume, not root-owned ~/.vibe-coder (Issue #4318)", () => {
-  const previous = Deno.env.get("WORK_DIR");
-  Deno.env.set("WORK_DIR", "/vol/auto-issue-work");
-  try {
-    assertEquals(
-      baselineQualityCachePath(),
-      "/vol/auto-issue-work/.vibe-cache/baseline-quality-cache.json",
-    );
-  } finally {
-    if (previous !== undefined) Deno.env.set("WORK_DIR", previous);
-    else Deno.env.delete("WORK_DIR");
-  }
+  // The work root is a parameter (Issue #966), and the home beside it is
+  // the one the pre-#4318 location would have used — so a resolution that
+  // still preferred `$HOME/.vibe-coder` fails here.
+  assertEquals(
+    baselineQualityCachePath({
+      workDir: "/vol/auto-issue-work",
+      home: "/home/vibe",
+    }),
+    "/vol/auto-issue-work/.vibe-cache/baseline-quality-cache.json",
+  );
 });

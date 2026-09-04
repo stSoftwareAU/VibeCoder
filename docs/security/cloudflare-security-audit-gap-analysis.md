@@ -1,5 +1,11 @@
 # 🛡️ Cloudflare `security-audit-skill` vs VibeCoder idle-task detection coverage
 
+> **📌 Archival record.** The `vN.md` files and version numbers cited below were
+> removed in Issue #844 and now exist only in git history
+> (`git log -p prompts/<type>/prompt.md`). Each prompt type is a single editable
+> `prompts/<type>/prompt.md` today. The citations are left as taken so the
+> record stays faithful to what the prompts read at the time.
+
 **Status:** reference gap analysis (part of the gap-analysis epic).
 **Comparison unit:** the set of vulnerability / attack **classes** each side
 hunts for. Cloudflare's multi-agent six-phase orchestration is **explicitly out

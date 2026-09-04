@@ -38,6 +38,7 @@
  */
 
 import { resolveClaudeEffort, resolveClaudeModel } from "./claude_executor.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 import { getCheaperModel } from "./config_defaults.ts";
 import {
   buildClaudeChildEnv,
@@ -167,6 +168,35 @@ export const DEEPSEEK_PROVIDER_ID = "deepseek";
 /** The provider used when neither configuration nor environment selects one. */
 export const DEFAULT_AGENT_PROVIDER_ID = CLAUDE_PROVIDER_ID;
 
+/**
+ * A provider that accepts MORE than one credential file (Issue #917, parent
+ * #902).
+ *
+ * Only a vendor whose subscriptions can be held several at a time earns a
+ * pool: an operator with two Claude subscriptions wants the worker to spend
+ * them evenly, which needs every token visible at once. A vendor without this
+ * field keeps exactly one credential file, so registering a second provider
+ * gains nothing it did not ask for.
+ */
+export interface AgentProviderTokenPool {
+  /** Operator-facing filename pattern, e.g. `provider-*.env`. */
+  filePattern: string;
+  /**
+   * Matches an ADDITIONAL credential file's name, capturing its ordinal in
+   * group 1 so discovery can order the pool numerically rather than by the
+   * string order a directory listing happens to return (`provider-10.env`
+   * sorts before `provider-2.env` as text).
+   */
+  fileMatch: RegExp;
+  /**
+   * The credential variables whose files join the selection pool — the
+   * subscription OAuth tokens. A file carrying any other recognised variable
+   * (a metered `ANTHROPIC_API_KEY`) is still a valid credential, it simply
+   * has no budget to compare, so it stays on the single-credential path.
+   */
+  envVars: readonly string[];
+}
+
 /** Where a provider's credentials live inside the Vibe credential directory. */
 export interface AgentProviderCredentials {
   /** Sub-directory name, e.g. `claude`. */
@@ -177,6 +207,12 @@ export interface AgentProviderCredentials {
   envVars: readonly string[];
   /** The `setup.sh` variable that provisions the credential file. */
   provisionEnvVar: string;
+  /**
+   * Additional credential files beside {@link file}, when this provider
+   * supports a pool of tokens (Issue #917). Absent — the default — means the
+   * provider has exactly one credential file, as every vendor did before.
+   */
+  tokenPool?: AgentProviderTokenPool;
 }
 
 /** What the provider's child subprocess may and may not inherit. */
@@ -203,6 +239,12 @@ export interface AgentInvocationRequest {
   model?: string;
   /** Work phase driving model/effort routing. */
   phase?: string;
+  /**
+   * Environment lookup the phase routing reads its variables through
+   * (Issue #957). Defaults to the process environment, so a production
+   * caller supplies nothing.
+   */
+  env?: EnvLookup;
   /** Explicit reasoning effort; when absent the phase routing decides. */
   effort?: string;
   /** Tools the agent must not use. */
@@ -252,8 +294,11 @@ export interface AgentProviderDescriptor {
    *
    * `undefined` means the provider has no phase routing of its own, so the
    * CLI's configured default stands — what Codex and Gemini do today.
+   *
+   * `env` is the lookup the provider's routing chain reads its variables
+   * through (Issue #957); omitted means the process environment.
    */
-  resolveModel(phase?: string): string | undefined;
+  resolveModel(phase?: string, env?: EnvLookup): string | undefined;
   /**
    * The reasoning effort this provider routes `phase` to (Issue #362).
    *
@@ -261,8 +306,11 @@ export interface AgentProviderDescriptor {
    * whose CLI has no effort option at all (Gemini) still reports the effort the
    * phase was *asked* to run at, so `buildInvocation` can say loudly that it
    * cannot be honoured (Issue #364) instead of dropping it in silence.
+   *
+   * `env` is the lookup the provider's routing chain reads its variables
+   * through (Issue #957); omitted means the process environment.
    */
-  resolveEffort(phase?: string): string | undefined;
+  resolveEffort(phase?: string, env?: EnvLookup): string | undefined;
   /**
    * The next-cheaper model below `model`, when this provider has a
    * cheaper-model ladder (Issue #365).
@@ -313,8 +361,9 @@ export function resolveInvocationRouting(
   return {
     // A blank explicit value is no value: it falls through to phase routing,
     // exactly as the pre-seam `request.model ? … : …` test did.
-    model: request.model || provider.resolveModel(request.phase),
-    effort: request.effort || provider.resolveEffort(request.phase),
+    model: request.model || provider.resolveModel(request.phase, request.env),
+    effort: request.effort ||
+      provider.resolveEffort(request.phase, request.env),
   };
 }
 
@@ -405,6 +454,17 @@ const CLAUDE_PROVIDER: AgentProviderDescriptor = {
       "CLAUDE_CODE_OAUTH_TOKEN",
     ],
     provisionEnvVar: "VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY",
+    // An operator may hold several Claude subscriptions and wants them spent
+    // evenly (Issue #917, parent #902), so extra tokens live beside
+    // provider.env as provider-2.env, provider-3.env, ... Only the
+    // subscription OAuth token joins the pool: a metered ANTHROPIC_API_KEY
+    // has no per-token budget to weigh, and ANTHROPIC_AUTH_TOKEN is a bearer
+    // for a proxied endpoint rather than a subscription.
+    tokenPool: {
+      filePattern: "provider-*.env",
+      fileMatch: /^provider-(\d+)\.env$/,
+      envVars: ["CLAUDE_CODE_OAUTH_TOKEN"],
+    },
   },
   environment: {
     secretAllowlist: CLAUDE_ENV_SECRET_ALLOWLIST,
@@ -416,12 +476,12 @@ const CLAUDE_PROVIDER: AgentProviderDescriptor = {
 
   // Claude is the provider with phase routing today: both resolvers delegate
   // to the chain `claude_executor.ts` owns (Issue #362).
-  resolveModel(phase?: string): string | undefined {
-    return resolveClaudeModel(phase);
+  resolveModel(phase?: string, env?: EnvLookup): string | undefined {
+    return resolveClaudeModel(phase, env);
   },
 
-  resolveEffort(phase?: string): string | undefined {
-    return resolveClaudeEffort(phase);
+  resolveEffort(phase?: string, env?: EnvLookup): string | undefined {
+    return resolveClaudeEffort(phase, env);
   },
 
   // The tier ladder `config_defaults.ts` owns (fable → opus → sonnet → haiku),
@@ -475,12 +535,12 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
 
   // Codex routes `phase` through its own tables (Issue #363), the way Claude
   // does: the chain lives in `codex_executor.ts` and is never restated here.
-  resolveModel(phase?: string): string | undefined {
-    return resolveCodexModel(phase);
+  resolveModel(phase?: string, env?: EnvLookup): string | undefined {
+    return resolveCodexModel(phase, env);
   },
 
-  resolveEffort(phase?: string): string | undefined {
-    return resolveCodexEffort(phase);
+  resolveEffort(phase?: string, env?: EnvLookup): string | undefined {
+    return resolveCodexEffort(phase, env);
   },
 
   buildInvocation(request: AgentInvocationRequest): string[] {
@@ -541,8 +601,8 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
   // never restated here. The effort resolver reports what a phase was *asked*
   // to run at — the CLI has no effort option to honour it with, so the value
   // is warned about rather than turned into an argument.
-  resolveModel(phase?: string): string | undefined {
-    return resolveGeminiModel(phase);
+  resolveModel(phase?: string, env?: EnvLookup): string | undefined {
+    return resolveGeminiModel(phase, env);
   },
 
   resolveEffort(phase?: string): string | undefined {
@@ -627,8 +687,8 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
   // Every phase is pinned to a real DeepSeek model id: Claude's routing
   // resolves to Anthropic tier aliases the endpoint cannot resolve, and a
   // provider with no routing of its own would send one (Issue #413).
-  resolveModel(phase?: string): string | undefined {
-    return resolveDeepSeekModel(phase);
+  resolveModel(phase?: string, env?: EnvLookup): string | undefined {
+    return resolveDeepSeekModel(phase, env);
   },
 
   resolveEffort(phase?: string): string | undefined {

@@ -13,7 +13,7 @@
  * process-wide fault. The claim guards consult it the same way they
  * consult the host-disk status (Issue #226): a faulted volume claims
  * nothing new, the feature report shows `work-volume: degraded`, and the
- * fleet-health payload names it. The launcher's volume-init repairs or
+ * telemetry notes name it. The launcher's volume-init repairs or
  * recreates the volume on the next launch.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).

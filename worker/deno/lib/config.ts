@@ -15,6 +15,7 @@ import type {
   RepoConfig,
   WorkerConfig,
 } from "../types.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import {
   EXCLUSION_TEAM_PATTERN,
   validateConfigFileJson,
@@ -31,6 +32,7 @@ import { resolveEffectiveFleetPrAuthors } from "./fleet_authors.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
 import { parseIdleTaskCadence } from "./idle_task_cadence_config.ts";
 import { parseContainerTools } from "./container_tools_config.ts";
+import { assertCallbacksConfig } from "./run_callbacks_config.ts";
 import { validateUpdateModeSettings } from "./config_validator.ts";
 import {
   detectUnknownConfigKeys,
@@ -73,10 +75,18 @@ export const REPO_SLUG_PATTERN =
  *
  * @param name - Environment variable name
  * @param defaultValue - Default value if env var is not set
+ * @param env - Environment lookup (Issue #956). Defaults to the process
+ *   environment, so every existing caller is unchanged; a test injects a
+ *   fixed map instead of mutating `Deno.env`, which races under
+ *   `deno test --parallel`.
  * @returns The environment variable value or default
  */
-export function getEnvOrDefault(name: string, defaultValue: string): string {
-  return Deno.env.get(name) ?? defaultValue;
+export function getEnvOrDefault(
+  name: string,
+  defaultValue: string,
+  env: EnvLookup = processEnvLookup,
+): string {
+  return env(name) ?? defaultValue;
 }
 
 /**
@@ -84,13 +94,16 @@ export function getEnvOrDefault(name: string, defaultValue: string): string {
  *
  * @param name - Environment variable name
  * @param defaultValue - Default value if env var is not set
+ * @param env - Environment lookup (Issue #956); defaults to the process
+ *   environment.
  * @returns The environment variable value as number or default
  */
 export function getEnvNumberOrDefault(
   name: string,
   defaultValue: number,
+  env: EnvLookup = processEnvLookup,
 ): number {
-  const value = Deno.env.get(name);
+  const value = env(name);
   if (value === undefined) {
     return defaultValue;
   }
@@ -108,10 +121,15 @@ export function getEnvNumberOrDefault(
  * sentinel default standing in for an absent variable.
  *
  * @param name - Environment variable name
+ * @param env - Environment lookup (Issue #956); defaults to the process
+ *   environment.
  * @returns The parsed value, or `undefined` when there is no usable one
  */
-export function readNonNegativeNumberEnv(name: string): number | undefined {
-  const raw = Deno.env.get(name);
+export function readNonNegativeNumberEnv(
+  name: string,
+  env: EnvLookup = processEnvLookup,
+): number | undefined {
+  const raw = env(name);
   if (raw === undefined || raw.trim() === "") return undefined;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
@@ -122,13 +140,16 @@ export function readNonNegativeNumberEnv(name: string): number | undefined {
  *
  * @param name - Environment variable name
  * @param defaultValue - Default value if env var is not set
+ * @param env - Environment lookup (Issue #956); defaults to the process
+ *   environment.
  * @returns The environment variable value as array or default
  */
 export function getEnvArrayOrDefault(
   name: string,
   defaultValue: string[],
+  env: EnvLookup = processEnvLookup,
 ): string[] {
-  const value = Deno.env.get(name);
+  const value = env(name);
   if (value === undefined || value === "") {
     return defaultValue;
   }
@@ -311,6 +332,13 @@ async function loadConfigFile(configPath: string): Promise<ConfigFile> {
 export interface LoadConfigOptions {
   /** When true, validates required fields at load time (Issue #630) */
   validate?: boolean;
+  /**
+   * Environment lookup for the handful of variables that still override the
+   * file (Issue #956). Defaults to the process environment, so production
+   * behaviour is unchanged; a test injects a fixed map and needs no
+   * `Deno.env.set`.
+   */
+  env?: EnvLookup;
 }
 
 /**
@@ -329,6 +357,8 @@ export async function loadConfig(
   options?: LoadConfigOptions,
 ): Promise<WorkerConfig> {
   const file = await loadConfigFile(configPath);
+  // The one environment seam this loader reads through (Issue #956).
+  const env = options?.env ?? processEnvLookup;
 
   // Load allowed authors array (Issue #137)
   const allowedAuthors = file.allowed_authors ?? [];
@@ -371,23 +401,19 @@ export async function loadConfig(
 
   // Trusted review bots (Issue #1856). Precedence: TRUSTED_REVIEW_BOTS
   // env var > .config.json (`trusted_review_bots`) > built-in defaults.
-  const trustedReviewBotsEnv = Deno.env.get("TRUSTED_REVIEW_BOTS");
-  const trustedReviewBots: string[] = trustedReviewBotsEnv !== undefined &&
-      trustedReviewBotsEnv !== ""
-    ? trustedReviewBotsEnv.split(",").map((s) => s.trim()).filter((s) =>
-      s !== ""
-    )
-    : (file.trusted_review_bots ?? [...DEFAULT_TRUSTED_REVIEW_BOTS]);
+  const trustedReviewBots: string[] = getEnvArrayOrDefault(
+    "TRUSTED_REVIEW_BOTS",
+    file.trusted_review_bots ?? [...DEFAULT_TRUSTED_REVIEW_BOTS],
+    env,
+  );
 
   // Sibling fleet PR authors (fleet-aware PR maintenance). Precedence:
   // FLEET_PR_AUTHORS env var > .config.json (`fleet_pr_authors`) > [].
-  const fleetPrAuthorsEnv = Deno.env.get("FLEET_PR_AUTHORS");
-  const configuredFleetPrAuthors: string[] =
-    fleetPrAuthorsEnv !== undefined && fleetPrAuthorsEnv !== ""
-      ? fleetPrAuthorsEnv.split(",").map((s) => s.trim()).filter((s) =>
-        s !== ""
-      )
-      : (file.fleet_pr_authors ?? []);
+  const configuredFleetPrAuthors: string[] = getEnvArrayOrDefault(
+    "FLEET_PR_AUTHORS",
+    file.fleet_pr_authors ?? [],
+    env,
+  );
 
   // Issue #209: `service_accounts` names fleet accounts too, so the two
   // keys resolve to one effective sibling list here. A fleet that listed
@@ -424,7 +450,7 @@ export async function loadConfig(
   // Issue #1834: lowPriorityLabel is hardwired — `.config.json` may not override.
   const lowPriorityLabel = LABEL_DEFAULTS.lowPriorityLabel;
 
-  const home = Deno.env.get("HOME") ?? "/tmp";
+  const home = env("HOME") ?? "/tmp";
   const workDir = `${home}/auto-issue-work`;
 
   // Where this host runs the worker (Issue #4146). Container by default;
@@ -460,6 +486,11 @@ export async function loadConfig(
   // this one: the file in hand decides the set on its own.
   setConfiguredEnabledAgentProviderIds(undefined);
   const enabledAgentProviderIds = resolveEnabledAgentProviderIds({
+    // The same lookup the rest of the load reads through (Issue #962): the
+    // VIBE_AGENT_PROVIDER(S) overrides and the running image's stamp decide
+    // which agent this run dispatches to, so they must not come from a
+    // different environment to everything else on this path.
+    env,
     configured: file.agent_provider,
     configuredProviders: file.agent_providers,
   });
@@ -482,7 +513,7 @@ export async function loadConfig(
   // the five it sets itself), so on a containerised host the config key is
   // the only interface that works — hence the key, and hence config winning.
   const minClaimRunwaySeconds = file.min_claim_runway_seconds ??
-    readNonNegativeNumberEnv("MIN_CLAIM_RUNWAY_SECONDS") ??
+    readNonNegativeNumberEnv("MIN_CLAIM_RUNWAY_SECONDS", env) ??
     OPERATIONAL_DEFAULTS.minClaimRunwaySeconds;
   // Adaptive claim floor (Issue #245): labels that mark an issue as a long
   // job, alongside the preserved-WIP and prior-execute-timeout evidence.
@@ -897,6 +928,11 @@ export async function loadConfig(
     idleTaskTemplateWeights,
     idleTaskCadence,
     softwareMinVersions,
+    // Issue #806 (parent #796): `assertCallbacksConfig` is the only trusted
+    // producer of the typed block, and it throws on any fault — a hook the
+    // operator believes is wired, but that silently never runs, is the exact
+    // failure the contract exists to prevent.
+    callbacks: assertCallbacksConfig(file.callbacks),
     repoConfig: normaliseRepoConfigs(file.repo_config),
   };
 

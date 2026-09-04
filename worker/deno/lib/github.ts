@@ -193,6 +193,17 @@ export function parseGhCommentsJson(json: GhCommentJson[]): GitHubComment[] {
   }));
 }
 
+/** Injection points for {@link runGhCommandRaw} (Issue #966). */
+export interface GhCommandRawOptions {
+  /**
+   * Directory the shared rate-limit signal is written to when this call is
+   * the one that discovers a primary-GraphQL-quota outage. Defaults to the
+   * `WORK_DIR` the run driver exports; an empty string suppresses the
+   * write, exactly as an unset `WORK_DIR` always has.
+   */
+  workDir?: string;
+}
+
 /**
  * Run a gh CLI command and return the output (without retry).
  *
@@ -205,10 +216,16 @@ export function parseGhCommentsJson(json: GhCommentJson[]): GitHubComment[] {
  * the mutation afterwards.
  *
  * @param args - Arguments to pass to gh
+ * @param options - Work-directory override for the shared rate-limit
+ *   signal a primary-quota outage writes (Issue #966). Omitted in
+ *   production, where the `WORK_DIR` the run driver exports is read.
  * @returns Command output as string
  * @throws Error if command fails
  */
-export async function runGhCommandRaw(args: string[]): Promise<string> {
+export async function runGhCommandRaw(
+  args: string[],
+  options: GhCommandRawOptions = {},
+): Promise<string> {
   // Issue #42: once the primary GraphQL quota is exhausted, every further
   // GraphQL-backed call in the window is guaranteed to fail. Short-circuit
   // it here — before the spawn, the telemetry and the retry decision — so a
@@ -237,7 +254,7 @@ export async function runGhCommandRaw(args: string[]): Promise<string> {
     // existing Issue #1780 mid-cycle pause at the next priority-pass check.
     const message = err instanceof Error ? err.message : String(err);
     if (isPrimaryRateLimitMessage(message)) {
-      await notePrimaryQuotaExhaustion();
+      await notePrimaryQuotaExhaustion(options.workDir);
     }
     throw err;
   }
@@ -267,8 +284,13 @@ function primaryQuotaSkipMessage(): string {
  * workers and the Issue #1780 pause observe the same window. Idempotent and
  * cheap: once the latch is set, every later call short-circuits before
  * reaching this path, and a concurrent first detection is coalesced.
+ *
+ * @param workDirOverride - Where the signal is written. Defaults to the
+ *   `WORK_DIR` the run driver exports (Issue #966).
  */
-async function notePrimaryQuotaExhaustion(): Promise<void> {
+async function notePrimaryQuotaExhaustion(
+  workDirOverride?: string,
+): Promise<void> {
   if (quotaExhaustionNoteInFlight || isPrimaryQuotaLatched()) return;
   quotaExhaustionNoteInFlight = true;
   try {
@@ -276,9 +298,9 @@ async function notePrimaryQuotaExhaustion(): Promise<void> {
     const resetEpoch = await readGraphqlResetEpoch(now);
     latchPrimaryQuota(resetEpoch, now);
     const waitSeconds = Math.max(0, resetEpoch - now);
-    const workDir = Deno.env.get("WORK_DIR");
+    const workDir = workDirOverride ?? Deno.env.get("WORK_DIR");
     if (workDir) {
-      await writeRateLimitSignal(workDir, waitSeconds);
+      await writeRateLimitSignal(workDir, waitSeconds, undefined, "github");
     }
     defaultLogger.warn(
       `Primary GraphQL quota exhausted — latching all GraphQL-backed gh ` +

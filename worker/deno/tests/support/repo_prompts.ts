@@ -1,0 +1,74 @@
+/**
+ * Pin prompt-template resolution to *this* checkout (Issue #844).
+ *
+ * `getPromptsDir` resolves in this order: `PROMPTS_DIR`, then `VIBE_BASE_DIR`,
+ * then a path relative to `worker/deno/lib/`. A worker host exports the first
+ * two pointing at the *worker's own* checkout, so any test that reaches the
+ * real `loadPrompt` without naming a directory reads that tree's `prompts/`
+ * instead of the one under test — green or red depending on what some other
+ * clone happens to hold, which is no gate at all. It is the same hazard
+ * `tests/support/env.ts` was written for.
+ *
+ * {@link pinPromptsToThisCheckout} removes both overrides so resolution falls
+ * through to the module-relative path, which always names this checkout.
+ * `deno test` imports every test module before running any test, so calling it
+ * at module scope pins the whole process deterministically, whatever order the
+ * files run in.
+ *
+ * Issue #968 removed the *implicit* pin this module used to run on import.
+ * Every suite that needs it already calls {@link pinPromptsToThisCheckout}
+ * itself at module scope, so importing the module for {@link REPO_ROOT} alone
+ * no longer mutates the process. That is hygiene, not a graduation: the two
+ * exported bodies below still spell `Deno.env.delete` and `Deno.chdir`, which
+ * is what `mutatesProcessState` matches, so every importer remains in
+ * the serial pass until it names its prompts directory outright — the
+ * `promptsDir` parameter `getPromptsDir`, `loadPrompt` and now
+ * `processGrillMe` all accept. Issue #1024 tracks finishing that off and
+ * deleting this module.
+ *
+ * {@link withRepoRootCwd} adds the cwd the idle-task body builders need for
+ * their own cwd-relative reads.
+ *
+ * Both of those mutate process-wide state, so importing this module puts a
+ * suite in the gate's serial pass (Issues #880, #940). A suite that only needs
+ * the repo root — because it names its prompts directory explicitly — imports
+ * {@link REPO_ROOT} from `tests/support/repo_root.ts`, which has no side
+ * effects. It is re-exported here so existing callers keep one import.
+ *
+ * Australian English throughout (behaviour, colour, organisation).
+ */
+
+import { REPO_ROOT } from "./repo_root.ts";
+
+export { REPO_ROOT };
+
+/** Directory overrides `getPromptsDir` honours ahead of the module path. */
+const PROMPT_DIR_ENV_VARS = ["PROMPTS_DIR", "VIBE_BASE_DIR"] as const;
+
+/**
+ * Drop the prompt-directory overrides for this process, so prompts resolve
+ * against this checkout. Idempotent — safe to call from every test file that
+ * touches a real template.
+ */
+export function pinPromptsToThisCheckout(): void {
+  for (const name of PROMPT_DIR_ENV_VARS) Deno.env.delete(name);
+}
+
+/**
+ * Run `body` with cwd at the repo root and the prompt-directory overrides
+ * cleared, restoring the original cwd afterwards.
+ *
+ * @param body - The test body to run
+ * @returns Whatever `body` returns
+ */
+export async function withRepoRootCwd<T>(body: () => Promise<T>): Promise<T> {
+  // Re-pin: a test that set an override of its own must not leak it here.
+  pinPromptsToThisCheckout();
+  const original = Deno.cwd();
+  Deno.chdir(REPO_ROOT);
+  try {
+    return await body();
+  } finally {
+    Deno.chdir(original);
+  }
+}

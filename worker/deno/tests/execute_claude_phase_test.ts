@@ -322,7 +322,7 @@ function createMockDeps(
     },
     recordHeartbeat: async () => ({ ok: true, value: undefined }),
     clearHeartbeat: async () => ({ ok: true, value: undefined }),
-    getLatestVersion: async () => ({ ok: true, value: "v3" }),
+    getPromptsCommit: async () => ({ ok: true, value: "abc1234" }),
     log: () => {},
     ...overrides,
   };
@@ -360,7 +360,7 @@ Deno.test("runExecuteClaudePhase - success when Claude makes changes", async () 
   assertEquals(result.action, "success");
   assertEquals(result.hasUncommittedChanges, true);
   assertEquals(result.hasNewCommits, true);
-  assertEquals(result.promptVersions?.issue, "v3");
+  assertEquals(result.promptsCommit, "abc1234");
 });
 
 Deno.test("runExecuteClaudePhase - failure when repo validation fails", async () => {

@@ -114,9 +114,9 @@ deno run --allow-X worker/deno/mod.ts command-name --arg1 value1 --arg2 value2
 
 The quality gate is implemented in Deno TypeScript (`worker/deno/quality.ts` and
 `worker/deno/lib/quality_gate.ts`). The shell wrapper `quality.sh` is a thin
-launcher that locates Deno and delegates. The gate runs: prompt immutability,
-benchmark audit, `deno test`, `deno lint`, `deno check`, `deno fmt --check`,
-plus mermaid, markdownlint, semgrep, and the docs prompt-version checks.
+launcher that locates Deno and delegates. The gate runs: benchmark audit,
+`deno test`, `deno lint`, `deno check`, `deno fmt --check`, plus mermaid,
+markdownlint, and semgrep.
 Shell-script linting is **not** run by the worker — it is delegated to each
 target repo's own CI.
 
@@ -693,9 +693,10 @@ does not.
 
 The access condition reads the per-repo access store, which only reports a repo
 inaccessible after two consecutive access-denied probes, so a transient blip
-cannot flip the fleet. An unhealthy iteration suppresses the private-repo-6
-heartbeat, so the host goes stale on the dashboard instead of reporting green
-while its repos 404 (the signature). Recovery is automatic: one successful probe
+cannot flip the fleet. An unhealthy iteration sets `lastHealthCheckPassed`
+to `false` on the loop result, so the host is recorded as unhealthy rather
+than green while its repos 404 (the signature).
+Recovery is automatic: one successful probe
 clears the store and the next iteration reports healthy again — no operator
 action, no restart.
 
@@ -719,15 +720,15 @@ them:
   boundary (`resetIterationCaches`) re-arms it. A changed repo set is new
   information and logs immediately.
 
-- **private-repo-6 report payload** — `reportFleetHealth` appends
-  `--message "repos inaccessible: TitlePage/bar, TitlePage/foo"` to the
-  `helpers/repos.sh` invocation. Additive only: the identity argument is
-  unchanged, no `docs/repos.json` field is repurposed, and on a healthy host the
-  flag is omitted entirely so the invocation is byte-identical to the historical
-  one. Repos are listed in the store's stable lexicographic order, so the string
-  cannot churn between ticks.
+- **Reason string** — `formatInaccessibleReposReason()` in
+  `worker/deno/lib/monitored_repo_access.ts` renders the same set as
+  `repos inaccessible: TitlePage/bar, TitlePage/foo`. Repos are listed in the
+  store's stable lexicographic order, so the string cannot churn between
+  ticks. Built-in fleet health reporting was removed in Issue #805, so the
+  worker itself publishes this nowhere — it is the helper an out-of-tree
+  health reporter reads.
 
-Healthy hosts stay silent — no log line, no extra payload field. The operator
+Healthy hosts stay silent — no log line, no reason string. The operator
 runbook for this condition — what it means, what the worker keeps doing, and the
 identity checks to run first — is
 [Host reports unhealthy — `repos inaccessible`](TROUBLESHOOTING.md#-host-reports-unhealthy--repos-inaccessible).
@@ -746,6 +747,138 @@ flowchart TD
     U --> W[scan + priority dispatch]
     H --> W
 ```
+
+### 📈 Fleet telemetry — idle, blocked and success rate (Issue #855)
+
+Per-run telemetry said what a run did; it never said how much of the fleet's
+wall time was spent doing nothing, or why. `fleet_telemetry.ts` accumulates
+that across cycles and the loop emits one machine-readable line per cycle and
+at exit:
+
+```text
+fleet-summary: wall=92520s idle=39600s idle_pct=42.8 occupied=52920s
+  busy=52920s token_blocked=0s token_blocked_waits=0 rate_limited=0s
+  rate_limit_waits=0 claims=32 successes=17 failures=13 skips=2
+  success_rate=0.57
+  idle_by_reason=nothing_claimable_backlog=32000s,host_disk_low=7600s
+  failures_by_class=execute=9,timeout=3,setup=1 utilisation=serial=0.57
+```
+
+(The real line is one line; it is wrapped here for readability.)
+
+The run's wall time is partitioned into three non-overlapping spans, so
+`wall ≈ occupied + blocked + idle`:
+
+```mermaid
+flowchart LR
+    W["run wall time"] --> O["occupied<br/>≥1 stream holding a claim"]
+    W --> K["blocked<br/>rate_limited / token_blocked"]
+    W --> I["idle<br/>scan, maintenance, sleep"]
+    I --> R["attributed to the idle census's reason<br/>(nothing_claimable_backlog, dependency_blocked, host_disk_low, …)<br/>or 'served' when the cycle claimed work"]
+    style O fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style K fill:#9d0208,stroke:#6a040f,color:#fff
+    style I fill:#e9c46a,stroke:#b08968,color:#000
+```
+
+- **`occupied` is not the sum of per-stream busy time.** With an N-slot pool,
+  summing concurrent slots overshoots the wall clock, and subtracting that sum
+  would report a half-idle pool as fully busy — zero idle. `occupied` is
+  "at least one stream held a claim", so it can never exceed the wall clock.
+  `busy` and `utilisation` remain per-stream and do overlap each other; that
+  is the point of a per-stream number.
+- **Idle reasons** reuse the idle-decision census's own vocabulary. The census
+  only sets an explicit skip reason for the claim gates (`host_disk_low`,
+  `work_volume_fault`, `cycle_deadline`); a fleet that was genuinely scanned
+  is split further by the census's per-repo counts, so
+  `dependency_blocked`, `stream_occupied`, `pr_blocked`, `cooldown_local` and
+  `low_priority_suppressed` are reachable rather than merely declared. Idle
+  while unblocked priority work was open (`nothing_claimable_backlog`) is
+  reported separately from idle with nothing to claim
+  (`nothing_claimable_empty`) — the first is a fault, the second is not.
+- **A block inside a run** — the agent's own retry ladder sleeps in-process —
+  counts towards `token_blocked_seconds` but not towards `idle_by_reason`: the
+  fleet was holding a claim, not idle. This is the one deliberate overlap, and
+  it is why the blocked totals can exceed the blocked share of `idle_seconds`.
+- **`rate_limited` vs `token_blocked`** are separated by the shared
+  `.rate_limit_signal` file, which now records whether a GitHub API limit or a
+  model usage limit wrote it. Each carries a wait count alongside the total
+  backoff.
+- **Failure classes** are the phase a run died at (`setup`, `execute`,
+  `quality_gate`, …), with `timeout` taking precedence — so "13 failures" says
+  where. Skips (claim rejected, expected bounce) are excluded from
+  `success_rate`, which is `successes / (successes + failures)`.
+- **Utilisation** is `busy / wall` per work stream (`serial`, or `slot-N` in
+  the issue pool), so "idle should be near zero" is directly checkable.
+
+The totals are persisted to a per-host JSON sidecar
+`fleet_telemetry_<hostname>.json` in `WORK_DIR`, holding this run's totals
+under `run` and every run this host has recorded under `cumulative`. The
+hostname rides in the filename — as it does for the scan cursor — so workers on
+different hosts sharing a work volume never clobber one another. It is written
+after every cycle and again when the run ends, including the abnormal exits
+(quota pause, transient network failure, fatal error): those are precisely the
+runs whose idle and blocked seconds an operator needs. A sidecar that exists but
+cannot be read or parsed, or that carries a newer schema, is reported in the log
+before the cumulative totals restart from zero — it is never dropped silently.
+
+### 🎚️ Per-slot idle accounting — utilisation against capacity (Issue #925)
+
+`fleet-summary:` answers "was the **fleet** occupied?" — occupancy there is
+deliberately "at least one stream held a claim", so a two-slot pool with one
+slot working reads as fully occupied. That is right for the wall-clock
+partition above, and wrong for the question an operator asks of a pool: **is
+any slot doing nothing?**
+
+A two-slot fleet ran 47 minutes with `s1` working an issue and `s2` re-scanning
+every 30 seconds and finding nothing. It recorded zero idle seconds, emitted no
+`idle-detect` / `idle-census` / `idle-hooks` line and filed no idle-task,
+because every idle instrument was gated on the per-cycle, fleet-wide
+`tracker.foundClaimableIssue` flag that `s1`'s claim held true for the life of
+the cycle. Half the fleet was invisible.
+
+`slot_idle_accounting.ts` measures the same run against the capacity the
+operator configured, and the loop emits its line beside `fleet-summary:`:
+
+```text
+slot-utilisation: slots=2 wall=2820s available=5640s occupied=2820s
+  occupied_pct=50.0 idle=2820s idle_pct=50.0 blocked=0s unstaffed=0s
+  occupied_by_slot=s1=2820s idle_by_slot=s2=2820s
+  blocked_by_reason=none blocked_stops=none
+```
+
+(One line in the log; wrapped here for readability.)
+
+The denominator is capacity, not wall time — `available = configured slots ×
+run wall seconds` — against which four non-overlapping spans are booked:
+
+- **`occupied`** — slot-seconds a slot held a claim. Everything a claim does is
+  occupied: setup, the agent run, running tests, the quality gate, review. A
+  claim that sleeps on the agent's own rate-limit retry ladder is occupied too,
+  matching `fleet_telemetry`'s in-run rule — the slot is holding work, not
+  looking for it.
+- **`blocked`** — slot-seconds the whole fleet was paused waiting for a quota,
+  split by the same two reasons `fleet-summary:` uses: `rate_limited` (GitHub
+  API) and `token_blocked` (model usage), read from the shared
+  `.rate_limit_signal` file. Booked from the loop-level pauses, where the
+  waiting actually happens; a slot that meets an active signal at its pre-claim
+  guard drains the pool at once rather than waiting in the slot, and that stop
+  is counted per reason in `blocked_stops`.
+- **`idle`** — slot-seconds a live slot spent looking for work and not finding
+  any, **per slot**. This is the number that must stay near zero, and the
+  number that read as zero for 47 minutes.
+- **`unstaffed`** — the remainder: capacity that existed while no slot was
+  running at all (start-up, the serial priority ladder, the end-of-cycle
+  sleep). Reported rather than folded into idle, because a slot that does not
+  exist cannot be said to be looking for work.
+
+The same change moved the idle **hooks** — the idle-detect audit, the
+idle-decision census and the idle-task filer — to fire when *a slot* has no
+claimable work, not only when the whole fleet found nothing. The gate was
+**not** widened back to `scanHadSuccess` (Issue #2048): an adjacent repo's PR
+feedback still must not drive the decision. Only the scope of the question
+changed, from the fleet to the slot. See
+[the idle-task framework's coordination guards](IDLE-TASK-FRAMEWORK.md#coordination)
+for the single-flight latch that stops N idle slots filing N issues.
 
 ### 🚪 Exit conditions
 
@@ -2318,9 +2451,9 @@ guard, bootstrap, housekeeping, cleanup) and invokes the Deno `run-core` command
 for the loop — the bash `worker/run_core.sh` conductor was deleted. The Deno
 side creates production deps via `createProductionRunCoreDeps()` in
 [run_core_production_deps.ts](../worker/deno/lib/run_core_production_deps.ts)
-and runs `runCoreLoop()` with the full priority dispatch table. FLEET health
-reporting was also migrated to
-[fleet_health.ts](../worker/deno/lib/fleet_health.ts).
+and runs `runCoreLoop()` with the full priority dispatch table. Built-in
+fleet health reporting was removed in Issue #805 — report host health from a
+[post-run callback](CONFIGURATION.md#-post-run-callbacks) instead.
 
 ### 🔄 Shell business logic migrated to Deno
 
@@ -2805,9 +2938,9 @@ links to its issue for the full rationale.
   invoking Claude.
 - **Worker quality-gate baseline-aware push (generalised in ):** Pre-existing
   failures captured by the baseline are not blamed on the current change. The
-  bypass reasons over every diffable check at once — mermaid, markdownlint, and
-  the docs prompt-version check (`baseline_gate.ts`) — so a pre-existing failure
-  in an untouched mermaid/markdownlint/docs artefact no longer forces a
+  bypass reasons over every diffable check at once — mermaid and markdownlint
+  (`baseline_gate.ts`) — so a pre-existing failure in an untouched
+  mermaid/markdownlint artefact no longer forces a
   remediation loop, while a genuinely-new failure is never waved through.
 - **Pre-flight rate-limit check at startup:** the worker driver aborts cleanly
   when GitHub rate-limit headroom is too low to complete a scan cycle.
@@ -2964,7 +3097,6 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [run_core.ts](../worker/deno/lib/run_core.ts)                                                                     | Main loop and priority dispatch                                                                                                                                                      |
 |                             | [run_core_production_deps.ts](../worker/deno/lib/run_core_production_deps.ts)                                     | Production dependency wiring for run-core                                                                                                                                            |
 |                             | [run_entrypoint.ts](../worker/deno/lib/run_entrypoint.ts)                                                         | Run entrypoint logic                                                                                                                                                                 |
-|                             | [fleet_health.ts](../worker/deno/lib/fleet_health.ts)                                                             | FLEET health reporting                                                                                                                                                               |
 |                             | [heartbeat.ts](../worker/deno/lib/heartbeat.ts)                                                                   | Heartbeat tracking for stuck-issue detection                                                                                                                                         |
 |                             | [live_slot_holds.ts](../worker/deno/lib/live_slot_holds.ts)                                                       | Issues live slots own — recovery passes never touch them                                                                                                                             |
 |                             | [run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts)                                                     | Startup housekeeping orchestration and signal-driven cleanup (terminate descendants, remove PID file)                                                                                |

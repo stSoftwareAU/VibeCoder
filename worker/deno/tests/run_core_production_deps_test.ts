@@ -15,7 +15,6 @@ import { assertEquals, assertExists } from "@std/assert";
 import {
   createProductionRunCoreDeps,
   type ProductionDepsOptions,
-  runEndOfRunHealthReport,
 } from "../lib/run_core_production_deps.ts";
 import { createLogger } from "../lib/logger.ts";
 import {
@@ -23,6 +22,7 @@ import {
   writeRateLimitSignal,
 } from "../lib/rate_limit_signal.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -286,14 +286,6 @@ Deno.test("createProductionRunCoreDeps - checkDependencies returns ok", async ()
 });
 
 // ---------------------------------------------------------------------------
-// runEndOfRunHealthReport — structure test
-// ---------------------------------------------------------------------------
-
-Deno.test("runEndOfRunHealthReport - is exported and callable", () => {
-  assertEquals(typeof runEndOfRunHealthReport, "function");
-});
-
-// ---------------------------------------------------------------------------
 // ProductionDepsOptions — type tests
 // ---------------------------------------------------------------------------
 
@@ -469,15 +461,19 @@ Deno.test("createProductionRunCoreDeps - default logger writes to worker log fil
   const logsDir = `${tmpDir}/logs`;
   await Deno.mkdir(logsDir, { recursive: true });
 
-  const originalHome = Deno.env.get("HOME");
-  Deno.env.set("HOME", tmpDir);
   try {
     // Create production deps WITHOUT a custom logger so the default
     // file-writing logger is used.
+    //
+    // Issue #967: the home root is handed in rather than exported. It names a
+    // throwaway directory that appears in no real environment, so a factory
+    // that read `Deno.env.get("HOME")` would write to the operator's own
+    // `~/logs` and fail the assertion below.
     const options: ProductionDepsOptions = {
       repoDir: tmpDir,
       workDir: tmpDir,
       githubUser: "test-user",
+      env: envFrom({ HOME: tmpDir }),
       // No logger override — exercises the production file-writing path
     };
 
@@ -498,12 +494,6 @@ Deno.test("createProductionRunCoreDeps - default logger writes to worker log fil
       cleanup();
     }
   } finally {
-    // Restore HOME
-    if (originalHome !== undefined) {
-      Deno.env.set("HOME", originalHome);
-    } else {
-      Deno.env.delete("HOME");
-    }
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
@@ -516,16 +506,21 @@ Deno.test("createProductionRunCoreDeps - default logger writes to worker log fil
 // must return a promise the loop can await, so overlapping writes cannot
 // clobber each other (lost-update race) and a write failure is not silently
 // swallowed by a floating promise. The failure file lives at
-// `${TMPDIR}/vibe-repo-failures-${Deno.pid}`, so pointing TMPDIR at a temp dir
-// lets us observe the persisted state directly.
+// `${TMPDIR}/vibe-repo-failures-${Deno.pid}`, so handing the factory a TMPDIR
+// of our own lets us observe the persisted state directly.
+//
+// Issue #967: that root is a parameter, not an export. Each case names a
+// throwaway directory that appears in no real environment, so a factory that
+// read `Deno.env.get("TMPDIR")` would write to the host's own temporary
+// directory and the read-back below would find nothing.
 
 Deno.test("repo failure deps - recordRepoFailure returns an awaitable that persists the write", async () => {
   const tmpDir = await Deno.makeTempDir();
-  const originalTmp = Deno.env.get("TMPDIR");
-  Deno.env.set("TMPDIR", tmpDir);
   const failureFile = `${tmpDir}/vibe-repo-failures-${Deno.pid}`;
   try {
-    const { deps } = await createProductionRunCoreDeps(createTestOptions());
+    const { deps } = await createProductionRunCoreDeps(
+      createTestOptions({ env: envFrom({ TMPDIR: tmpDir }) }),
+    );
 
     // The method must return an awaitable (Promise) — a floating promise that
     // returned `undefined` would defeat the `await` at the call site.
@@ -536,19 +531,17 @@ Deno.test("repo failure deps - recordRepoFailure returns an awaitable that persi
     const contents = await Deno.readTextFile(failureFile);
     assertEquals(contents.includes("org/repo|42"), true);
   } finally {
-    if (originalTmp !== undefined) Deno.env.set("TMPDIR", originalTmp);
-    else Deno.env.delete("TMPDIR");
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
 
 Deno.test("repo failure deps - sequential awaited writes do not clobber (no lost update)", async () => {
   const tmpDir = await Deno.makeTempDir();
-  const originalTmp = Deno.env.get("TMPDIR");
-  Deno.env.set("TMPDIR", tmpDir);
   const failureFile = `${tmpDir}/vibe-repo-failures-${Deno.pid}`;
   try {
-    const { deps } = await createProductionRunCoreDeps(createTestOptions());
+    const { deps } = await createProductionRunCoreDeps(
+      createTestOptions({ env: envFrom({ TMPDIR: tmpDir }) }),
+    );
 
     // Awaiting each write serialises the read-modify-write cycles, so every
     // distinct failing issue is retained rather than races overwriting peers.
@@ -566,19 +559,17 @@ Deno.test("repo failure deps - sequential awaited writes do not clobber (no lost
     assertEquals(recorded.has("2"), true);
     assertEquals(recorded.has("3"), true);
   } finally {
-    if (originalTmp !== undefined) Deno.env.set("TMPDIR", originalTmp);
-    else Deno.env.delete("TMPDIR");
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
 
 Deno.test("repo failure deps - recordRepoSuccess and resetRepoFailures clear persisted state", async () => {
   const tmpDir = await Deno.makeTempDir();
-  const originalTmp = Deno.env.get("TMPDIR");
-  Deno.env.set("TMPDIR", tmpDir);
   const failureFile = `${tmpDir}/vibe-repo-failures-${Deno.pid}`;
   try {
-    const { deps } = await createProductionRunCoreDeps(createTestOptions());
+    const { deps } = await createProductionRunCoreDeps(
+      createTestOptions({ env: envFrom({ TMPDIR: tmpDir }) }),
+    );
 
     await deps.recordRepoFailure("org/one", 1);
     await deps.recordRepoFailure("org/two", 2);
@@ -596,8 +587,6 @@ Deno.test("repo failure deps - recordRepoSuccess and resetRepoFailures clear per
     contents = await Deno.readTextFile(failureFile);
     assertEquals(contents.trim(), "");
   } finally {
-    if (originalTmp !== undefined) Deno.env.set("TMPDIR", originalTmp);
-    else Deno.env.delete("TMPDIR");
     await Deno.remove(tmpDir, { recursive: true });
   }
 });

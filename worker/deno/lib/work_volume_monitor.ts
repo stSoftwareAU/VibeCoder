@@ -12,7 +12,7 @@
  *
  * This monitor holds the latest reading on a bounded cadence — mirroring
  * {@link HostDiskMonitor} (Issue #226) — so the same measurement feeds the
- * log line, the feature report and the fleet-health payload. A reading that
+ * log line and the feature report. A reading that
  * is not a measurement (see `workVolumeUnknownReason`) is `unknown`, never a
  * confident zero.
  *

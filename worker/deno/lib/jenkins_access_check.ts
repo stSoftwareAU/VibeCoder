@@ -26,6 +26,7 @@ import {
   withRequestTimeout,
 } from "./bounded_fetch.ts";
 import { getEnvOrDefault } from "./config.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 
 /** Injectable fetch function type (mirrors the log fetcher's seam). */
 export type FetchFn = (
@@ -71,8 +72,14 @@ export interface JenkinsCredentials {
   token: string;
 }
 
-/** Reads one environment variable — injectable so tests need no real env. */
-export type EnvReader = (name: string) => string | undefined;
+/**
+ * Reads one environment variable — injectable so tests need no real env.
+ *
+ * @deprecated Use {@link EnvLookup}, the canonical spelling of this seam
+ * (Issue #956). Kept as an alias because every caller in and out of this
+ * module still names it `EnvReader`.
+ */
+export type EnvReader = EnvLookup;
 
 const defaultEnvReader: EnvReader = (name) => {
   const value = getEnvOrDefault(name, "");

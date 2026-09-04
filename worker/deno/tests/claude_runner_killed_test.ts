@@ -24,44 +24,44 @@ import { assert, assertEquals } from "@std/assert";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import { TIMEOUT_EXIT_CODE } from "../lib/claude_executor.ts";
 import type { Logger } from "../types.ts";
+import { createAgentStub, withAgentStub } from "./support/agent_stub.ts";
 
 // ---------------------------------------------------------------------------
-// Stub harness — a fake `claude` on PATH that records how many times it ran,
-// prints a chosen final line, sleeps if asked, and exits with a chosen code.
+// Stub harness — a fake agent, named by path (Issue #959), that records how
+// many times it ran, prints a chosen final line, sleeps if asked, and exits
+// with a chosen code.
 // ---------------------------------------------------------------------------
+
+/** Basename of the file the stub appends one line to per invocation. */
+const RUN_LOG = "runs.log";
+
+/** Basename of the file the orphan stub records its child's pid in. */
+const PID_FILE = "child.pid";
 
 interface StubClaude {
-  dir: string;
+  /** Absolute path to the stub, passed to the runner as `agentBinaryPath`. */
+  path: string;
   runLog: string;
 }
 
-async function withStub<T>(
+function withStub<T>(
   lastLine: string,
   exitCode: number,
   fn: (stub: StubClaude) => Promise<T>,
   sleepSeconds = 0,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_killed_stub_" });
-  const runLog = `${dir}/runs.log`;
+  // The run log is located from `$0`, so no path is baked into the body.
   const body = [
-    `printf 'run\\n' >> '${runLog}'`,
+    `printf 'run\\n' >> "$(dirname "$0")/${RUN_LOG}"`,
     `printf '%s\\n' '{"type":"result","result":"${lastLine}"}'`,
     ...(sleepSeconds > 0 ? [`sleep ${sleepSeconds}`] : []),
     `exit ${exitCode}`,
   ].join("\n");
-  const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(stubPath, `#!/usr/bin/env bash\n${body}\n`);
-  await Deno.chmod(stubPath, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  try {
-    return await fn({ dir, runLog });
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    await Deno.remove(dir, { recursive: true }).catch(() => {
-      /* best-effort */
-    });
-  }
+  return withAgentStub(
+    body,
+    (stub) => fn({ path: stub.path, runLog: `${stub.dir}/${RUN_LOG}` }),
+    { prefix: "claude_killed_stub_" },
+  );
 }
 
 async function readRunCount(runLog: string): Promise<number> {
@@ -105,7 +105,10 @@ Deno.test({
       "Now wiring the production side",
       137,
       async (stub) => {
-        const result = await runClaudeWithRetry(COMMON_OPTS, SLOW_IF_RETRIED);
+        const result = await runClaudeWithRetry(
+          { ...COMMON_OPTS, agentBinaryPath: stub.path },
+          SLOW_IF_RETRIED,
+        );
         return { result, runs: await readRunCount(stub.runLog) };
       },
     );
@@ -141,7 +144,10 @@ Deno.test({
       "internal wrapper exited",
       124,
       async (stub) => {
-        const result = await runClaudeWithRetry(COMMON_OPTS, SLOW_IF_RETRIED);
+        const result = await runClaudeWithRetry(
+          { ...COMMON_OPTS, agentBinaryPath: stub.path },
+          SLOW_IF_RETRIED,
+        );
         return { result, runs: await readRunCount(stub.runLog) };
       },
     );
@@ -173,7 +179,12 @@ Deno.test({
       0,
       async (stub) => {
         const result = await runClaudeWithRetry(
-          { ...COMMON_OPTS, timeoutSeconds: 1, killAfterSeconds: 1 },
+          {
+            ...COMMON_OPTS,
+            agentBinaryPath: stub.path,
+            timeoutSeconds: 1,
+            killAfterSeconds: 1,
+          },
           SLOW_IF_RETRIED,
         );
         return { result, runs: await readRunCount(stub.runLog) };
@@ -207,17 +218,15 @@ Deno.test({
     // A V8 heap abort writes its FATAL ERROR to stderr; the killed
     // classification must carry that stream, not discard it — scanning
     // stdout alone misread the agent's own heap ceiling as an external kill.
-    const dir = await Deno.makeTempDir({ prefix: "claude_killed_stderr_" });
-    const stubPath = `${dir}/claude`;
-    await Deno.writeTextFile(
-      stubPath,
-      `#!/usr/bin/env bash\necho '{"type":"result","result":"working"}'\necho "last words on stderr" >&2\nexit 137\n`,
+    const stub = await createAgentStub(
+      `echo '{"type":"result","result":"working"}'\necho "last words on stderr" >&2\nexit 137\n`,
+      { prefix: "claude_killed_stderr_" },
     );
-    await Deno.chmod(stubPath, 0o755);
-    const originalPath = Deno.env.get("PATH") ?? "";
-    Deno.env.set("PATH", `${dir}:${originalPath}`);
     try {
-      const result = await runClaudeWithRetry(COMMON_OPTS, SLOW_IF_RETRIED);
+      const result = await runClaudeWithRetry(
+        { ...COMMON_OPTS, agentBinaryPath: stub.path },
+        SLOW_IF_RETRIED,
+      );
       assert(result.ok);
       if (!result.ok) return;
       assertEquals(result.value.killed, true);
@@ -226,8 +235,7 @@ Deno.test({
         `stderr evidence must survive: ${JSON.stringify(result.value.stderr)}`,
       );
     } finally {
-      Deno.env.set("PATH", originalPath);
-      await Deno.remove(dir, { recursive: true }).catch(() => {});
+      await stub.dispose();
     }
   },
 });
@@ -238,17 +246,15 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    const dir = await Deno.makeTempDir({ prefix: "claude_oom_stderr_" });
-    const stubPath = `${dir}/claude`;
-    await Deno.writeTextFile(
-      stubPath,
-      `#!/usr/bin/env bash\necho '{"type":"result","result":"working"}'\necho "FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory" >&2\nexit 137\n`,
+    const stub = await createAgentStub(
+      `echo '{"type":"result","result":"working"}'\necho "FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory" >&2\nexit 137\n`,
+      { prefix: "claude_oom_stderr_" },
     );
-    await Deno.chmod(stubPath, 0o755);
-    const originalPath = Deno.env.get("PATH") ?? "";
-    Deno.env.set("PATH", `${dir}:${originalPath}`);
     try {
-      const result = await runClaudeWithRetry(COMMON_OPTS, SLOW_IF_RETRIED);
+      const result = await runClaudeWithRetry(
+        { ...COMMON_OPTS, agentBinaryPath: stub.path },
+        SLOW_IF_RETRIED,
+      );
       assert(result.ok);
       if (!result.ok) return;
       assertEquals(
@@ -258,8 +264,7 @@ Deno.test({
       );
       assert(result.value.killed !== true);
     } finally {
-      Deno.env.set("PATH", originalPath);
-      await Deno.remove(dir, { recursive: true }).catch(() => {});
+      await stub.dispose();
     }
   },
 });
@@ -308,6 +313,7 @@ Deno.test({
         const result = await runClaudeWithRetry(
           {
             ...COMMON_OPTS,
+            agentBinaryPath: stub.path,
             logger,
             probeMemoryPressure: () => {
               probes++;
@@ -366,6 +372,7 @@ Deno.test({
       const result = await runClaudeWithRetry(
         {
           ...COMMON_OPTS,
+          agentBinaryPath: stub.path,
           logger,
           probeMemoryPressure: () => Promise.reject(new Error("no sysctl")),
         },
@@ -404,32 +411,28 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    const dir = await Deno.makeTempDir({ prefix: "claude_orphan_stub_" });
-    const pidFile = `${dir}/child.pid`;
     // The stub emits one chunk (so a snapshot is requested straight away),
     // spawns a detached child that outlives it, then SIGKILLs itself —
     // the OOM-killer shape: no watchdog, exit 137, an orphan left behind.
-    const stubPath = `${dir}/claude`;
-    await Deno.writeTextFile(
-      stubPath,
+    // The pid file sits beside the stub, located from `$0`.
+    const stub = await createAgentStub(
       [
-        "#!/usr/bin/env bash",
         `printf '%s\\n' '{"type":"result","result":"working"}'`,
         `sleep 300 >/dev/null 2>&1 &`,
-        `echo $! > '${pidFile}'`,
+        `echo $! > "$(dirname "$0")/${PID_FILE}"`,
         "sleep 1.5",
         "kill -9 $$",
-      ].join("\n") + "\n",
+      ].join("\n"),
+      { prefix: "claude_orphan_stub_" },
     );
-    await Deno.chmod(stubPath, 0o755);
-    const originalPath = Deno.env.get("PATH") ?? "";
-    Deno.env.set("PATH", `${dir}:${originalPath}`);
+    const pidFile = `${stub.dir}/${PID_FILE}`;
     let orphanPid = 0;
     try {
       const { logger, security, warns } = capturingLogger();
       const result = await runClaudeWithRetry(
         {
           ...COMMON_OPTS,
+          agentBinaryPath: stub.path,
           logger,
           descendantSnapshotIntervalMs: 200,
           probeMemoryPressure: () => Promise.resolve({ level: "ok" as const }),
@@ -471,7 +474,6 @@ Deno.test({
         `the diagnostics are logged at the kill: ${JSON.stringify(warns)}`,
       );
     } finally {
-      Deno.env.set("PATH", originalPath);
       if (orphanPid > 0) {
         await new Deno.Command("kill", {
           args: ["-9", String(orphanPid)],
@@ -479,7 +481,7 @@ Deno.test({
           stderr: "null",
         }).output().catch(() => {});
       }
-      await Deno.remove(dir, { recursive: true }).catch(() => {});
+      await stub.dispose();
     }
   },
 });
@@ -502,6 +504,7 @@ Deno.test({
       const result = await runClaudeWithRetry(
         {
           ...COMMON_OPTS,
+          agentBinaryPath: stub.path,
           logger,
           descendantSnapshotIntervalMs: 100,
           memoryWatchMinIntervalMs: 60_000,
@@ -550,28 +553,23 @@ Deno.test({
     // reports promptly however long the pipe stays open. This asserts the
     // timing property directly: the run must return in far less than the time
     // the descendant lives.
-    const dir = await Deno.makeTempDir({ prefix: "claude_pipe_holder_" });
-    const stubPath = `${dir}/claude`;
-    await Deno.writeTextFile(
-      stubPath,
+    const stub = await createAgentStub(
       [
-        "#!/usr/bin/env bash",
         `printf '%s\\n' '{"type":"result","result":"working"}'`,
         // The descendant inherits stdout and holds it for 60s. Crucially it
         // is NOT redirected, so the write end of the pipe stays open.
         "sleep 60 &",
         "exit 0",
-      ].join("\n") + "\n",
+      ].join("\n"),
+      { prefix: "claude_pipe_holder_" },
     );
-    await Deno.chmod(stubPath, 0o755);
-    const originalPath = Deno.env.get("PATH") ?? "";
-    Deno.env.set("PATH", `${dir}:${originalPath}`);
     const startedAt = Date.now();
     try {
       const { logger } = capturingLogger();
-      await runClaudeWithRetry(
+      const result = await runClaudeWithRetry(
         {
           ...COMMON_OPTS,
+          agentBinaryPath: stub.path,
           logger,
           streamDrainCapSeconds: 2,
           probeMemoryPressure: () => Promise.resolve({ level: "ok" as const }),
@@ -579,14 +577,20 @@ Deno.test({
         SLOW_IF_RETRIED,
       );
       const elapsedMs = Date.now() - startedAt;
+      // A fast return is only evidence if the agent ran (Issue #959).
+      assert(result.ok, "the runner must return a result");
+      if (!result.ok) return;
+      assert(
+        result.value.output.includes("working"),
+        `the stub must have run: ${JSON.stringify(result.value.output)}`,
+      );
       assert(
         elapsedMs < 30_000,
         `settling must not wait on the held pipe; took ${elapsedMs}ms while ` +
           `the descendant holds stdout for 60s`,
       );
     } finally {
-      Deno.env.set("PATH", originalPath);
-      await Deno.remove(dir, { recursive: true }).catch(() => {});
+      await stub.dispose();
     }
   },
 });

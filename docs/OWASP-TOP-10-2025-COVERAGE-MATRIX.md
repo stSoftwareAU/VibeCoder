@@ -82,8 +82,8 @@ supports A06).
 
 ## Per-category detail and citations
 
-Citations refer to prompt directories and the section headings within the
-latest version on disk (the worker always loads the latest version), per the
+Citations refer to prompt directories and the section headings within each
+directory's `prompt.md` (the one template the worker loads), per the
 documentation convention in `AGENTS.md`.
 
 ### A01:2025 — Broken Access Control (incl SSRF)
@@ -244,8 +244,8 @@ When a new idle-task template is added, add it to
 (or score it into the matrix if you assess its OWASP coverage); when a
 template's prompt gains/loses an OWASP-relevant check, update the matrix table
 and the affected per-category section. Cite prompt **directories** and section
-headings (not version filenames) so the matrix stays fresh as prompt versions
-advance.
+headings (not line numbers) so the matrix stays fresh as the prompts are
+edited.
 
 `worker/deno/tests/readme_docs_reachability_test.ts` asserts that **every**
 registered template appears in this document — scored or listed — so the

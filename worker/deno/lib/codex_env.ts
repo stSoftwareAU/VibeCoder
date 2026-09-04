@@ -20,6 +20,7 @@ import {
   isDeniedAgentEnvVar,
   WORKER_ONLY_SECRET_ENV_VARS,
 } from "./agent_env.ts";
+import { CLAUDE_CREDENTIAL_ENV_VARS } from "./claude_env.ts";
 
 /**
  * Environment variables the `codex` child must never inherit.
@@ -29,12 +30,17 @@ import {
  * DeepSeek's since Issue #412: Codex authenticates with its own key, so
  * another vendor's credential in its environment is only ever an exfiltration
  * target.
+ *
+ * The Anthropic names come from {@link CLAUDE_CREDENTIAL_ENV_VARS} rather than
+ * a second copy of them, so a name Anthropic adds later is denied here the day
+ * it is accepted there. A pooled host holds several Anthropic tokens
+ * (Issue #920, parent #902); this child sees none of them, selected or not,
+ * and `agent_env.ts` denies the suffixed and indexed variants too, so the
+ * denial does not rest on the shape pattern happening to match.
  */
 export const CODEX_ENV_DENYLIST: readonly string[] = [
   ...WORKER_ONLY_SECRET_ENV_VARS,
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "CLAUDE_CODE_OAUTH_TOKEN",
+  ...CLAUDE_CREDENTIAL_ENV_VARS,
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
   "DEEPSEEK_API_KEY",

@@ -224,6 +224,8 @@ The merged-PR carve-out is Issue #499. `stSoftwareAU/NEAT-AI-Rebase#48` carried 
 
 Issue #655 is the same shape one step later in the pipeline. After every collector has passed a candidate, `find_oldest_issue.ts` drops the ones `isIssueInCooldown` names — the persisted retry cooldown plus this run's processed-issue registry, whose entries live as long as the process. `stSoftwareAU/VibeCoder#622` and `#623` were both handed back earlier the same day, so the scan refused them silently on every later cycle while the census counted them claimable. The hold set is now resolved once and shared by both readers (`run_local_hold=<n>` in the census line), and the cooldown filters record their refusal in `blockedDetails` so the escalation can name the gate instead of listing the issues and nothing else.
 
+Issue #898 is the same disagreement one level up: not a gate the census missed, but a repository the scan was never shown. `find_oldest_issue.ts` skips every repo in its `excludeRepos` set — those an issue slot (Issue #4176) or the maintenance lane (Issue #213) holds — before any collector runs, so it records no skip reason for a single one of their issues. `stSoftwareAU/VibeCoder` escalated on three consecutive cycles with nine claimable `work-on` issues and an empty "what the claim scan did with them" section, while the lane was busy servicing one of its own PRs. The pool now keeps that exclusion set and hands it to both readers, which report the repo as `skip_reason=repo_held_in_flight` and raise neither the escalation nor the `mis_classification` ALERT for it (see [IDLE-TASK-FRAMEWORK.md](../IDLE-TASK-FRAMEWORK.md#a-repo-the-scan-was-never-shown-issue-898)).
+
 ### Why was X picked over Y? — diagnostic surfaces
 
 Two diagnostics answer the "why was this issue selected and not that one?" question without reading TypeScript:
@@ -612,9 +614,9 @@ the issue already resolved **and cites the evidence** — a commit and/or PR, pl
 how it checked — the worker closes the issue with that evidence in the comment.
 The agent declares it with
 `<!-- vibe-already-resolved commit="…" pr="…" verified="…" -->`
-(from `prompts/issue/v35.md` onwards); a broadened keyword list remains as a
-fallback for older prompt versions. A claim with no commit or PR behind it is
-*not* enough to close a live issue — that falls through to the analysis-only
+(`prompts/issue/prompt.md`); a broadened keyword list remains as a
+fallback for output that carries no marker. A claim with no commit or PR behind
+it is *not* enough to close a live issue — that falls through to the analysis-only
 hand-off below. See
 [already_resolved_outcome.ts](../../worker/deno/lib/already_resolved_outcome.ts).
 

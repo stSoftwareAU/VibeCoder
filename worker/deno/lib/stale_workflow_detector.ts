@@ -70,6 +70,12 @@ export interface StaleWorkflowScanResult {
 }
 
 /** Bot marker to prevent duplicate comments. */
+/**
+ * Issue #842: these two use a `vibe-coder-` prefix where every documented
+ * marker uses the bare `vibe-`. Frozen: `hasExistingStaleComment` matches
+ * them against comments already posted, so renaming would re-post a stale
+ * diagnostic on every issue that already carries one.
+ */
 const STALE_BOT_MARKER = "<!-- vibe-coder-stale-workflow -->";
 const STALE_DIAGNOSTIC_MARKER = "<!-- vibe-coder-stale-diagnostic -->";
 
