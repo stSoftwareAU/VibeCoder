@@ -12,6 +12,8 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import { resolveActingGithubUser } from "../lib/acting_github_user.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import {
   assertSafeGitRef,
   buildCheckoutArgs,
@@ -90,14 +92,39 @@ function parseRepos(
   return config.repos ?? [];
 }
 
+/**
+ * The command, plus the environment seam it reads its identity through
+ * (Issue #965).
+ *
+ * Declared as a widening of {@link Command} — the extra parameter is
+ * optional and defaults to the process environment, so the registry and
+ * `mod.ts` see the interface they always did.
+ */
+export interface PrMaintenanceCommand extends Command {
+  execute(
+    args: Record<string, unknown>,
+    config: WorkerConfig,
+    env?: EnvLookup,
+  ): Promise<CommandResult<PrCommentToFix | FailedCiCheck | null>>;
+}
+
 /** The pr-maintenance command. */
-export const prMaintenanceCommand: Command = {
+export const prMaintenanceCommand: PrMaintenanceCommand = {
   name: "pr-maintenance",
   description:
     "PR scanning and maintenance operations (Issue #967, #1119, #1120)",
+  /**
+   * @param args - The operation and its inputs.
+   * @param config - The worker configuration.
+   * @param env - Where the acting `GITHUB_USER` is read from when
+   *   `--github-user` is absent (Issue #965). Defaults to the process
+   *   environment, so shell callers are unchanged; a test states the
+   *   identity instead of deleting the variable from the process.
+   */
   async execute(
     args: Record<string, unknown>,
     config: WorkerConfig,
+    env: EnvLookup = processEnvLookup,
   ): Promise<CommandResult<PrCommentToFix | FailedCiCheck | null>> {
     const operation = String(args["operation"] ?? "");
 
@@ -111,9 +138,7 @@ export const prMaintenanceCommand: Command = {
     }
 
     if (operation === "find-pr-comments-to-fix") {
-      const githubUser = String(
-        args["github-user"] ?? Deno.env.get("GITHUB_USER") ?? "",
-      );
+      const githubUser = resolveActingGithubUser(args, env);
       const repos = parseRepos(args, config);
 
       if (!githubUser) {
@@ -166,9 +191,7 @@ export const prMaintenanceCommand: Command = {
 
     // --- find-failed-pr-checks (spelling check failures) — Issue #1120 ---
     if (operation === "find-failed-pr-checks") {
-      const githubUser = String(
-        args["github-user"] ?? Deno.env.get("GITHUB_USER") ?? "",
-      );
+      const githubUser = resolveActingGithubUser(args, env);
       const repos = parseRepos(args, config);
 
       if (!githubUser) {
@@ -214,9 +237,7 @@ export const prMaintenanceCommand: Command = {
 
     // --- find-failed-ci-checks (non-spelling CI failures) — Issue #1120 ---
     if (operation === "find-failed-ci-checks") {
-      const githubUser = String(
-        args["github-user"] ?? Deno.env.get("GITHUB_USER") ?? "",
-      );
+      const githubUser = resolveActingGithubUser(args, env);
       const repos = parseRepos(args, config);
       const maxRetries = Number(args["max-retries"] ?? 3);
       const stateDir = String(
@@ -274,9 +295,7 @@ export const prMaintenanceCommand: Command = {
 
     // --- update-open-pr-branches (scan + execute) — Issue #1122, #1233 ---
     if (operation === "update-open-pr-branches") {
-      const githubUser = String(
-        args["github-user"] ?? Deno.env.get("GITHUB_USER") ?? "",
-      );
+      const githubUser = resolveActingGithubUser(args, env);
       const repos = parseRepos(args, config);
       const workDir = String(
         args["work-dir"] ?? config.workDir ?? Deno.env.get("WORK_DIR") ?? "",
@@ -545,9 +564,7 @@ export const prMaintenanceCommand: Command = {
 
     // --- ensure-auto-merge-on-open-prs — Issue #1234 ---
     if (operation === "ensure-auto-merge-on-open-prs") {
-      const githubUser = String(
-        args["github-user"] ?? Deno.env.get("GITHUB_USER") ?? "",
-      );
+      const githubUser = resolveActingGithubUser(args, env);
       const repos = parseRepos(args, config);
       const needsScreenshotLabel = String(
         args["needs-screenshot-label"] ??
