@@ -27,6 +27,7 @@ import {
 } from "../lib/container_restart_backoff.ts";
 import { NETWORK_UNAVAILABLE_MARKER } from "../lib/github_user_resolution.ts";
 import { CONTAINER_WEDGED_EXIT_STATUS } from "../lib/container_watchdog.ts";
+import { executableLines } from "../lib/launcher_source.ts";
 import { stripContainerfile } from "../lib/containerfile_strip.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
@@ -932,6 +933,30 @@ Deno.test({
       await harness.cleanup();
     }
   },
+});
+
+Deno.test("run.ps1 - carries no copy of the recorder's refused-start statuses (Issue #1029)", async () => {
+  // The evidence rule is now one rule — a launch that failed hands its
+  // capture over — so the launcher has no reason to know which statuses mean
+  // "the runtime refused the start". That distinction still exists, once, in
+  // CONTAINER_START_EXIT_CODES, where the recorder uses it to choose between
+  // the container_start and worker_run phases. A copy reappearing here is the
+  // special case coming back, and with it the empty worker_run reports
+  // (#994, #995, #996, #1029) it produced. Runs everywhere, PowerShell or
+  // not: it is the contract that is asserted.
+  const source = executableLines(
+    await Deno.readTextFile(`${REPO_ROOT}/run.ps1`),
+    "powershell",
+  ).join("\n");
+  for (const status of CONTAINER_START_EXIT_CODES) {
+    // Whole numbers only: a bound of 1250 seconds is not a copy of 125.
+    assertEquals(
+      new RegExp(`(?<!\\d)${status}(?!\\d)`).test(source),
+      false,
+      `run.ps1 must leave the refused-start statuses to the recorder, ` +
+        `found ${status}`,
+    );
+  }
 });
 
 Deno.test({

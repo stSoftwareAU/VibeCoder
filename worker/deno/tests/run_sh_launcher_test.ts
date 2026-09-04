@@ -1676,6 +1676,27 @@ Deno.test("run.sh - a failed launch records exactly one outcome (Issue #711)", a
   }
 });
 
+Deno.test("run.sh - carries no copy of the recorder's refused-start statuses (Issue #1029)", async () => {
+  // The evidence rule is now one rule — a launch that failed hands its
+  // capture over — so the launcher has no reason to know which statuses mean
+  // "the runtime refused the start". That distinction still exists, once, in
+  // CONTAINER_START_EXIT_CODES, where the recorder uses it to choose between
+  // the container_start and worker_run phases. A copy reappearing here is the
+  // special case coming back, and with it the empty worker_run reports
+  // (#994, #995, #996, #1029) it produced.
+  const source = executableLines(await Deno.readTextFile(RUN_SH), "bash")
+    .join("\n");
+  for (const status of CONTAINER_START_EXIT_CODES) {
+    // Whole numbers only: a bound of 1250 seconds is not a copy of 125.
+    assertEquals(
+      new RegExp(`(?<!\\d)${status}(?!\\d)`).test(source),
+      false,
+      `run.sh must leave the refused-start statuses to the recorder, ` +
+        `found ${status}`,
+    );
+  }
+});
+
 Deno.test("run.sh - the stderr capture leaves nothing behind in the temporary directory (Issue #711)", async () => {
   const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
   const tmp = `${harness.tmpDir}/tmp`;
