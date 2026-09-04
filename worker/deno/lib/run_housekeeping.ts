@@ -49,6 +49,8 @@ import {
   DEFAULT_HARD_CAP_COUNT,
   DEFAULT_MAX_AGE_DAYS,
 } from "./worker_log_cleanup.ts";
+import { getEnvNumberOrDefault } from "./config.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import { terminateDescendants } from "./pid_guard.ts";
 import { createLogger } from "./logger.ts";
 
@@ -200,22 +202,22 @@ export async function sweepVolatileCliState(
     : "no dead-run CLI state to sweep";
 }
 
-/** Read an integer environment variable, falling back to a default. */
-function envInt(name: string, fallback: number): number {
-  const raw = Deno.env.get(name);
-  if (raw === undefined || raw === "") return fallback;
-  const n = parseInt(raw, 10);
-  return Number.isNaN(n) ? fallback : n;
-}
-
 /**
  * Build the ordered list of housekeeping steps from the supplied options,
  * resolving the same tunable thresholds (and their defaults) that the bash
  * `run_core.sh` block used via environment variables.
+ *
+ * @param options - Housekeeping inputs (directories, branch, user).
+ * @param env - Environment lookup for the tunables (Issue #956). Defaults to
+ *   the process environment, so the production call is unchanged; a test
+ *   passes a fixed map rather than mutating `Deno.env`.
  */
 export function buildHousekeepingSteps(
   options: HousekeepingOptions,
+  env: EnvLookup = processEnvLookup,
 ): HousekeepingStep[] {
+  const envInt = (name: string, fallback: number): number =>
+    getEnvNumberOrDefault(name, fallback, env);
   return [
     {
       id: "audit-chain-verify",
@@ -444,7 +446,7 @@ export async function runStartupHousekeeping(
   };
   // Volatile CLI runtime state first (Issue #4245): the registries must be
   // gone before anything can spawn the agent this cycle.
-  const envFn = deps.env ?? ((name: string) => Deno.env.get(name));
+  const envFn = deps.env ?? processEnvLookup;
   try {
     const summary = await sweepVolatileCliState(options.workDir, envFn);
     deps.log(`[housekeeping] cli-state-sweep: ${summary}`);
@@ -456,7 +458,7 @@ export async function runStartupHousekeeping(
     );
   }
 
-  const steps = buildHousekeepingSteps(options);
+  const steps = buildHousekeepingSteps(options, envFn);
   const stepsRun: HousekeepingStepId[] = [];
   const results: HousekeepingStepResult[] = [];
   const failures: HousekeepingStepId[] = [];
