@@ -63,6 +63,13 @@ command and points it at `https://api.deepseek.com/anthropic`. Its credential
 is therefore a **DeepSeek** key, and Anthropic's own credentials are withheld
 from it — no vendor's secret reaches another vendor's agent.
 
+One credential file per vendor is the rule, with one optional exception: a host
+holding several Claude **subscriptions** may add `claude/provider-2.env`,
+`provider-3.env` and so on by hand, and each run starts on whichever of them
+has the most budget left, naming its choice in the startup log. Nothing changes
+for a host with a single credential
+([Several Claude tokens](docs/SETUP.md#several-claude-tokens)).
+
 Select one with the `agent_provider` key in `.config.json`:
 
 ```json
