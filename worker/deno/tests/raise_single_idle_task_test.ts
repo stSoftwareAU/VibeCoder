@@ -18,8 +18,9 @@
  *     failure, and an off-allowlist repo aborts before any gh call.
  *
  * All dependencies are injected so the tests never touch the network. The real
- * template body builders resolve cwd-relative prompt paths, so the seeding
- * tests run with cwd at the repo root.
+ * template body builders read `prompts/<scan>/prompt.md`, so the seeding
+ * tests name this checkout with the builders' `rootDir` seam (Issue #1024)
+ * rather than moving the process's working directory.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -34,13 +35,7 @@ import {
   seedWriteRepoAllowlist,
 } from "../lib/write_repo_allowlist.ts";
 import type { Result } from "../types.ts";
-import {
-  pinPromptsToThisCheckout,
-  withRepoRootCwd,
-} from "./support/repo_prompts.ts";
-
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+import { REPO_ROOT } from "./support/repo_root.ts";
 
 const labelOk = (): Promise<Result<void>> =>
   Promise.resolve({ ok: true, value: undefined });
@@ -87,6 +82,7 @@ Deno.test("raiseSingleIdleTask - unknown template name fails loud", async () => 
     ensureLabelFn: labelOk,
     findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
     nowFn: stableNow,
+    rootDir: REPO_ROOT,
   });
   assertEquals(result.ok, false);
   // Nothing was filed — the failure is loud, not a silent empty result.
@@ -94,95 +90,91 @@ Deno.test("raiseSingleIdleTask - unknown template name fails loud", async () => 
 });
 
 Deno.test("raiseSingleIdleTask - seeds exactly the one named wrapper per repo", async () => {
-  await withRepoRootCwd(async () => {
-    const { fn, created } = makeMockGh();
-    const repos = ["org/alpha", "org/beta"];
-    const result = await raiseSingleIdleTask({
-      template: "documentation-audit",
-      repos,
-      ghCommandFn: fn,
-      ensureLabelFn: labelOk,
-      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
-      nowFn: stableNow,
-    });
-
-    assert(result.ok);
-    if (!result.ok) return;
-    assertEquals(result.value.template, "documentation-audit");
-    assertEquals(result.value.totalCreated, 2); // 1 per repo x 2 repos
-    assertEquals(result.value.totalSkipped, 0);
-    assertEquals(result.value.failedRepos, 0);
-
-    // Only the documentation-audit wrapper was filed — none of the other twelve.
-    for (const c of created) {
-      assertEquals(c.title, DOCUMENTATION_AUDIT_ISSUE_TITLE);
-    }
-    assertEquals(created.length, 2);
+  const { fn, created } = makeMockGh();
+  const repos = ["org/alpha", "org/beta"];
+  const result = await raiseSingleIdleTask({
+    template: "documentation-audit",
+    repos,
+    ghCommandFn: fn,
+    ensureLabelFn: labelOk,
+    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    nowFn: stableNow,
+    rootDir: REPO_ROOT,
   });
+
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(result.value.template, "documentation-audit");
+  assertEquals(result.value.totalCreated, 2); // 1 per repo x 2 repos
+  assertEquals(result.value.totalSkipped, 0);
+  assertEquals(result.value.failedRepos, 0);
+
+  // Only the documentation-audit wrapper was filed — none of the other twelve.
+  for (const c of created) {
+    assertEquals(c.title, DOCUMENTATION_AUDIT_ISSUE_TITLE);
+  }
+  assertEquals(created.length, 2);
 });
 
 Deno.test("raiseSingleIdleTask - honours a different template name", async () => {
-  await withRepoRootCwd(async () => {
-    const { fn, created } = makeMockGh();
-    const result = await raiseSingleIdleTask({
-      template: "security-scan",
-      repos: ["org/alpha"],
-      ghCommandFn: fn,
-      ensureLabelFn: labelOk,
-      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
-      nowFn: stableNow,
-    });
-
-    assert(result.ok);
-    if (!result.ok) return;
-    assertEquals(created.length, 1);
-    assertEquals(created[0]!.title, SECURITY_SCAN_ISSUE_TITLE);
+  const { fn, created } = makeMockGh();
+  const result = await raiseSingleIdleTask({
+    template: "security-scan",
+    repos: ["org/alpha"],
+    ghCommandFn: fn,
+    ensureLabelFn: labelOk,
+    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    nowFn: stableNow,
+    rootDir: REPO_ROOT,
   });
+
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(created.length, 1);
+  assertEquals(created[0]!.title, SECURITY_SCAN_ISSUE_TITLE);
 });
 
 Deno.test("raiseSingleIdleTask - skips a wrapper already open", async () => {
-  await withRepoRootCwd(async () => {
-    const { fn, created } = makeMockGh();
-    const result = await raiseSingleIdleTask({
-      template: "documentation-audit",
-      repos: ["org/alpha"],
-      ghCommandFn: fn,
-      ensureLabelFn: labelOk,
-      findExistingWrapperTitlesFn: () =>
-        Promise.resolve(new Set<string>([DOCUMENTATION_AUDIT_ISSUE_TITLE])),
-      nowFn: stableNow,
-    });
-
-    assert(result.ok);
-    if (!result.ok) return;
-    assertEquals(result.value.totalCreated, 0);
-    assertEquals(result.value.totalSkipped, 1);
-    assertEquals(created.length, 0);
+  const { fn, created } = makeMockGh();
+  const result = await raiseSingleIdleTask({
+    template: "documentation-audit",
+    repos: ["org/alpha"],
+    ghCommandFn: fn,
+    ensureLabelFn: labelOk,
+    findExistingWrapperTitlesFn: () =>
+      Promise.resolve(new Set<string>([DOCUMENTATION_AUDIT_ISSUE_TITLE])),
+    nowFn: stableNow,
+    rootDir: REPO_ROOT,
   });
+
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(result.value.totalCreated, 0);
+  assertEquals(result.value.totalSkipped, 1);
+  assertEquals(created.length, 0);
 });
 
 Deno.test("raiseSingleIdleTask - a failing repo never aborts the sweep", async () => {
-  await withRepoRootCwd(async () => {
-    const { fn, created } = makeMockGh({ failRepos: new Set(["org/alpha"]) });
-    const result = await raiseSingleIdleTask({
-      template: "documentation-audit",
-      repos: ["org/alpha", "org/beta"],
-      ghCommandFn: fn,
-      ensureLabelFn: labelOk,
-      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
-      nowFn: stableNow,
-    });
-
-    assert(result.ok);
-    if (!result.ok) return;
-    assertEquals(result.value.failedRepos, 1);
-    const alpha = result.value.repos.find((r) => r.repo === "org/alpha");
-    const beta = result.value.repos.find((r) => r.repo === "org/beta");
-    assert(alpha?.error !== undefined);
-    assertEquals(beta?.error, undefined);
-    assertEquals(beta?.created.length, 1);
-    assertEquals(created.filter((c) => c.repo === "org/beta").length, 1);
+  const { fn, created } = makeMockGh({ failRepos: new Set(["org/alpha"]) });
+  const result = await raiseSingleIdleTask({
+    template: "documentation-audit",
+    repos: ["org/alpha", "org/beta"],
+    ghCommandFn: fn,
+    ensureLabelFn: labelOk,
+    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    nowFn: stableNow,
+    rootDir: REPO_ROOT,
   });
+
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(result.value.failedRepos, 1);
+  const alpha = result.value.repos.find((r) => r.repo === "org/alpha");
+  const beta = result.value.repos.find((r) => r.repo === "org/beta");
+  assert(alpha?.error !== undefined);
+  assertEquals(beta?.error, undefined);
+  assertEquals(beta?.created.length, 1);
+  assertEquals(created.filter((c) => c.repo === "org/beta").length, 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -193,16 +185,15 @@ Deno.test("raiseSingleIdleTask - an off-allowlist repo aborts in preflight witho
   const { fn, created } = makeMockGh();
   seedWriteRepoAllowlist("org/beta");
   try {
-    const result = await withRepoRootCwd(() =>
-      raiseSingleIdleTask({
-        template: "documentation-audit",
-        repos: ["org/alpha", "org/beta"],
-        ghCommandFn: fn,
-        ensureLabelFn: labelOk,
-        findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
-        nowFn: stableNow,
-      })
-    );
+    const result = await raiseSingleIdleTask({
+      template: "documentation-audit",
+      repos: ["org/alpha", "org/beta"],
+      ghCommandFn: fn,
+      ensureLabelFn: labelOk,
+      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+      nowFn: stableNow,
+      rootDir: REPO_ROOT,
+    });
 
     assert(result.ok);
     if (!result.ok) return;
@@ -220,24 +211,23 @@ Deno.test("raiseSingleIdleTask - an off-allowlist repo aborts in preflight witho
 });
 
 Deno.test("raiseSingleIdleTask - a failed repo reports the failure per template", async () => {
-  await withRepoRootCwd(async () => {
-    const { fn } = makeMockGh({ failRepos: new Set(["org/alpha"]) });
-    const result = await raiseSingleIdleTask({
-      template: "documentation-audit",
-      repos: ["org/alpha"],
-      ghCommandFn: fn,
-      ensureLabelFn: labelOk,
-      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
-      nowFn: stableNow,
-    });
-
-    assert(result.ok);
-    if (!result.ok) return;
-
-    const alpha = result.value.repos.find((r) => r.repo === "org/alpha");
-    assertEquals(alpha?.created.length, 0);
-    assertEquals(alpha?.failed?.length, 1);
-    assertEquals(alpha?.failed?.[0]?.template, "documentation-audit");
-    assertEquals(alpha?.terminal, false);
+  const { fn } = makeMockGh({ failRepos: new Set(["org/alpha"]) });
+  const result = await raiseSingleIdleTask({
+    template: "documentation-audit",
+    repos: ["org/alpha"],
+    ghCommandFn: fn,
+    ensureLabelFn: labelOk,
+    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    nowFn: stableNow,
+    rootDir: REPO_ROOT,
   });
+
+  assert(result.ok);
+  if (!result.ok) return;
+
+  const alpha = result.value.repos.find((r) => r.repo === "org/alpha");
+  assertEquals(alpha?.created.length, 0);
+  assertEquals(alpha?.failed?.length, 1);
+  assertEquals(alpha?.failed?.[0]?.template, "documentation-audit");
+  assertEquals(alpha?.terminal, false);
 });

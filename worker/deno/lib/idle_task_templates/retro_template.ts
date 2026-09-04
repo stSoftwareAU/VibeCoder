@@ -38,6 +38,7 @@
 
 import {
   type IdleTaskBodyOptions,
+  idleTaskPromptsDir,
   type IdleTaskRunOptions,
   type IdleTaskRunResult,
   type IdleTaskShouldFileOptions,
@@ -112,7 +113,10 @@ export interface RetroTemplateDeps {
   /** gh CLI runner used for snapshots, dedup, and the wrapper veto. */
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Prompt loader — defaults to `loadPrompt`. */
-  loadPromptFn?: (name: string) => Promise<Result<string>>;
+  loadPromptFn?: (
+    name: string,
+    promptsDir?: string,
+  ) => Promise<Result<string>>;
   /**
    * Ensure the `retro` label exists in the target repo. Defaults to
    * `ensureLabelExists`.
@@ -329,7 +333,8 @@ export function createRetroTemplate(
   deps: RetroTemplateDeps = {},
 ): IdleTaskTemplate {
   const ghCommandFn = deps.ghCommandFn ?? ((args) => defaultGhCommand(args));
-  const loadPromptFn = deps.loadPromptFn ?? ((name) => defaultLoadPrompt(name));
+  const loadPromptFn = deps.loadPromptFn ??
+    ((name, promptsDir) => defaultLoadPrompt(name, promptsDir));
   const ensureLabelFn = deps.ensureLabelFn ??
     ((repo) =>
       defaultEnsureLabelExists(
@@ -341,13 +346,13 @@ export function createRetroTemplate(
   const runScanFn = deps.runScanFn ??
     ((opts) => defaultRunScan(opts, loadPromptFn));
 
-  async function buildIssueBody(_opts: IdleTaskBodyOptions): Promise<string> {
+  async function buildIssueBody(opts: IdleTaskBodyOptions): Promise<string> {
     // The wrapper body IS the prompt — fully substituted at file time so a
     // developer reading the issue sees concrete values rather than
     // `{{...}}` placeholders. The repo is not cloned yet, so both dedup
     // lists render as `(none)`; they are rebuilt from live issues at claim
     // time.
-    const loaded = await loadPromptFn(PROMPT_NAME);
+    const loaded = await loadPromptFn(PROMPT_NAME, idleTaskPromptsDir(opts));
     if (!loaded.ok) {
       throw new Error(
         `retro: failed to load prompt template ${PROMPT_NAME}: ` +

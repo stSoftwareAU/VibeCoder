@@ -37,6 +37,7 @@
 
 import {
   type IdleTaskBodyOptions,
+  idleTaskPromptsDir,
   type IdleTaskRunOptions,
   type IdleTaskRunResult,
   type IdleTaskShouldFileOptions,
@@ -115,12 +116,21 @@ export function bucketGuidePath(bucket: string): string {
  * started from the repository root.
  *
  * @param path - Repo-root-relative guide path from {@link bucketGuidePath}.
+ * @param promptsDir - Prompts directory to read from. Omit for the production
+ *   resolution ({@link getPromptsDir}); a caller that named a root directory
+ *   passes `${rootDir}/prompts` so the read depends on neither the working
+ *   directory nor the environment (Issue #1024).
  * @returns The guide's text.
  */
-export async function readBucketGuide(path: string): Promise<string> {
+export async function readBucketGuide(
+  path: string,
+  promptsDir?: string,
+): Promise<string> {
   const prefix = "prompts/";
   const relative = path.startsWith(prefix) ? path.slice(prefix.length) : path;
-  return await Deno.readTextFile(`${getPromptsDir()}/${relative}`);
+  return await Deno.readTextFile(
+    `${promptsDir ?? getPromptsDir()}/${relative}`,
+  );
 }
 
 /**
@@ -179,13 +189,16 @@ export interface BestPracticesTemplateDeps {
   /** RNG forwarded to `pickBucketFn` — defaults to `Math.random`. */
   rng?: () => number;
   /** Prompt loader — defaults to `loadPrompt`. */
-  loadPromptFn?: (name: string) => Promise<Result<string>>;
+  loadPromptFn?: (
+    name: string,
+    promptsDir?: string,
+  ) => Promise<Result<string>>;
   /**
    * Read a bucket-guide markdown file relative to the repo root.
    * Defaults to `Deno.readTextFile`. Tests inject a stub so the
    * filesystem stays untouched.
    */
-  readBucketGuideFn?: (path: string) => Promise<string>;
+  readBucketGuideFn?: (path: string, promptsDir?: string) => Promise<string>;
   /** gh CLI runner used for snapshots, dedup, and issue filing. */
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Linter-in-CI pre-check — defaults to the real check. */
@@ -640,7 +653,7 @@ export function createBestPracticesTemplate(
   const pickBucketFn = deps.pickBucketFn ?? defaultPickBucket;
   const rng = deps.rng;
   const loadPromptFn = deps.loadPromptFn ??
-    ((name) => defaultLoadPrompt(name));
+    ((name, promptsDir) => defaultLoadPrompt(name, promptsDir));
   const readBucketGuideFn = deps.readBucketGuideFn ?? readBucketGuide;
   const ghCommandFn = deps.ghCommandFn ?? ((args) => defaultGhCommand(args));
   const checkLinterInCIFn = deps.checkLinterInCIFn ??
@@ -660,7 +673,10 @@ export function createBestPracticesTemplate(
     const bucket = bucketSlug(pick);
 
     // 3. Load the prompt template.
-    const promptResult = await loadPromptFn(PROMPT_NAME);
+    const promptResult = await loadPromptFn(
+      PROMPT_NAME,
+      idleTaskPromptsDir(opts),
+    );
     if (!promptResult.ok) {
       throw new Error(
         `best-practices: failed to load prompt template ${PROMPT_NAME}: ` +
@@ -672,7 +688,10 @@ export function createBestPracticesTemplate(
     const guidePath = bucketGuidePath(bucket);
     let bucketGuide: string;
     try {
-      bucketGuide = await readBucketGuideFn(guidePath);
+      bucketGuide = await readBucketGuideFn(
+        guidePath,
+        idleTaskPromptsDir(opts),
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(

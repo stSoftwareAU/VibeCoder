@@ -42,13 +42,7 @@ import {
   classifyGhMutation,
   type MutationInfo,
 } from "../lib/audit_mutation_classifier.ts";
-import {
-  pinPromptsToThisCheckout,
-  withRepoRootCwd,
-} from "./support/repo_prompts.ts";
-
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+import { REPO_ROOT } from "./support/repo_root.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -146,19 +140,18 @@ Deno.test(
     const gh = makeMockGh();
     const ensureCalls: string[] = [];
 
-    const result = await withRepoRootCwd(() =>
-      createAllIdleTaskWrappers("org/fresh", {
-        ghCommandFn: gh.fn,
-        ensureLabelFn: (r) => {
-          ensureCalls.push(r);
-          return labelOk();
-        },
-        findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
-        nowFn: stableNow,
-        runId: "vibe-test-aaaaaa",
-        workerUser: "vibe-bot",
-      })
-    );
+    const result = await createAllIdleTaskWrappers("org/fresh", {
+      ghCommandFn: gh.fn,
+      ensureLabelFn: (r) => {
+        ensureCalls.push(r);
+        return labelOk();
+      },
+      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+      nowFn: stableNow,
+      rootDir: REPO_ROOT,
+      runId: "vibe-test-aaaaaa",
+      workerUser: "vibe-bot",
+    });
 
     assert(result.ok, "expected ok result");
     if (!result.ok) return;
@@ -204,16 +197,15 @@ Deno.test(
   async () => {
     const gh = makeMockGh();
 
-    const result = await withRepoRootCwd(() =>
-      createAllIdleTaskWrappers("org/single-footer", {
-        ghCommandFn: gh.fn,
-        ensureLabelFn: () => labelOk(),
-        findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
-        nowFn: stableNow,
-        runId: "vibe-test-eeeeee",
-        workerUser: "vibe-bot",
-      })
-    );
+    const result = await createAllIdleTaskWrappers("org/single-footer", {
+      ghCommandFn: gh.fn,
+      ensureLabelFn: () => labelOk(),
+      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+      nowFn: stableNow,
+      rootDir: REPO_ROOT,
+      runId: "vibe-test-eeeeee",
+      workerUser: "vibe-bot",
+    });
 
     assert(result.ok, "expected ok result");
     if (!result.ok) return;
@@ -252,17 +244,16 @@ Deno.test(
     const gh = makeMockGh();
     const logLines: string[] = [];
 
-    const result = await withRepoRootCwd(() =>
-      createAllIdleTaskWrappers("org/body-limit", {
-        ghCommandFn: gh.fn,
-        ensureLabelFn: () => labelOk(),
-        findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
-        nowFn: stableNow,
-        runId: "vibe-test-ffffff",
-        workerUser: "vibe-bot",
-        log: (line) => logLines.push(line),
-      })
-    );
+    const result = await createAllIdleTaskWrappers("org/body-limit", {
+      ghCommandFn: gh.fn,
+      ensureLabelFn: () => labelOk(),
+      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+      nowFn: stableNow,
+      rootDir: REPO_ROOT,
+      runId: "vibe-test-ffffff",
+      workerUser: "vibe-bot",
+      log: (line) => logLines.push(line),
+    });
 
     assert(result.ok, "expected ok result");
     if (!result.ok) return;
@@ -303,15 +294,14 @@ Deno.test(
       IDLE_TASK_WRAPPER_TITLES[1]!,
     ]);
 
-    const result = await withRepoRootCwd(() =>
-      createAllIdleTaskWrappers("org/partial", {
-        ghCommandFn: gh.fn,
-        ensureLabelFn: () => labelOk(),
-        findExistingWrapperTitlesFn: () => Promise.resolve(alreadyOpen),
-        nowFn: stableNow,
-        runId: "vibe-test-bbbbbb",
-      })
-    );
+    const result = await createAllIdleTaskWrappers("org/partial", {
+      ghCommandFn: gh.fn,
+      ensureLabelFn: () => labelOk(),
+      findExistingWrapperTitlesFn: () => Promise.resolve(alreadyOpen),
+      nowFn: stableNow,
+      rootDir: REPO_ROOT,
+      runId: "vibe-test-bbbbbb",
+    });
 
     assert(result.ok);
     if (!result.ok) return;
@@ -344,6 +334,7 @@ Deno.test(
       ensureLabelFn: () => labelOk(),
       findExistingWrapperTitlesFn: () => Promise.resolve(allOpen),
       nowFn: stableNow,
+      rootDir: REPO_ROOT,
       runId: "vibe-test-cccccc",
     });
 
@@ -422,15 +413,14 @@ Deno.test(
       error: new Error("gh issue create exploded"),
     });
 
-    const result = await withRepoRootCwd(() =>
-      createAllIdleTaskWrappers("org/partial-progress", {
-        ghCommandFn: gh.fn,
-        ensureLabelFn: () => labelOk(),
-        findExistingWrapperTitlesFn: () => Promise.resolve(alreadyOpen),
-        nowFn: stableNow,
-        runId: "vibe-test-partial",
-      })
-    );
+    const result = await createAllIdleTaskWrappers("org/partial-progress", {
+      ghCommandFn: gh.fn,
+      ensureLabelFn: () => labelOk(),
+      findExistingWrapperTitlesFn: () => Promise.resolve(alreadyOpen),
+      nowFn: stableNow,
+      rootDir: REPO_ROOT,
+      runId: "vibe-test-partial",
+    });
 
     assert(!result.ok, "a failed template must fail the sweep loudly");
     if (result.ok) return;
@@ -465,6 +455,7 @@ Deno.test(
         },
         findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
         nowFn: stableNow,
+        rootDir: REPO_ROOT,
         runId: "vibe-test-blocked",
       });
 
@@ -496,15 +487,14 @@ Deno.test(
       error: new WriteRepoBlockedError("org/blocked-mid", "issue-create"),
     });
 
-    const result = await withRepoRootCwd(() =>
-      createAllIdleTaskWrappers("org/blocked-mid", {
-        ghCommandFn: gh.fn,
-        ensureLabelFn: () => labelOk(),
-        findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
-        nowFn: stableNow,
-        runId: "vibe-test-blocked-mid",
-      })
-    );
+    const result = await createAllIdleTaskWrappers("org/blocked-mid", {
+      ghCommandFn: gh.fn,
+      ensureLabelFn: () => labelOk(),
+      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+      nowFn: stableNow,
+      rootDir: REPO_ROOT,
+      runId: "vibe-test-blocked-mid",
+    });
 
     assert(!result.ok);
     if (result.ok) return;
@@ -551,6 +541,7 @@ Deno.test(
       ensureLabelFn: () => labelOk(),
       findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
       nowFn: stableNow,
+      rootDir: REPO_ROOT,
       runId: "vibe-test-dddddd",
     });
     assert(!result.ok);
@@ -578,14 +569,13 @@ Deno.test("createAllIdleTaskWrappers - every write classifies against the target
     return Promise.resolve("[]");
   };
 
-  const result = await withRepoRootCwd(() =>
-    createAllIdleTaskWrappers(target, {
-      ghCommandFn: gh,
-      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
-      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
-      nowFn: () => new Date("2026-01-01T00:00:00Z"),
-    })
-  );
+  const result = await createAllIdleTaskWrappers(target, {
+    ghCommandFn: gh,
+    ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    nowFn: () => new Date("2026-01-01T00:00:00Z"),
+    rootDir: REPO_ROOT,
+  });
 
   assert(result.ok, "sweep must succeed");
   assertEquals(
