@@ -44,14 +44,14 @@ import { joinPath, type LauncherPathStyle } from "./host_path_style.ts";
  * Framework plumbing, not an operator-facing setting: the operator's surface
  * is the `.config.json` `container_extension` block alone.
  */
-export const VIBE_BASE_IMAGE_BUILD_ARG = "VIBE_BASE_IMAGE";
+export const BASE_IMAGE_BUILD_ARG = "VIBE_BASE_IMAGE";
 
 /**
  * Build argument recording the declared start script's extension-relative
  * path, so the built image states the contract path the sandbox start reads.
  * Passed only when the declaration states one.
  */
-export const VIBE_EXTENSION_START_BUILD_ARG = "VIBE_EXTENSION_START";
+export const EXTENSION_START_BUILD_ARG = "VIBE_EXTENSION_START";
 
 /** Strip trailing separators so a directory joins (and is passed) cleanly. */
 function trimDirectory(path: string): string {
@@ -91,14 +91,14 @@ function declaresBaseImage(rest: string): boolean {
   // `ARG VIBE_BASE_IMAGE` and `ARG VIBE_BASE_IMAGE=<default>` both declare it;
   // the plan always passes the argument, so a default never decides the base.
   const name = rest.split("=")[0]?.trim();
-  return name === VIBE_BASE_IMAGE_BUILD_ARG;
+  return name === BASE_IMAGE_BUILD_ARG;
 }
 
 /** Whether a `FROM` instruction derives its image from the build argument. */
 function derivesFromBaseImage(rest: string): boolean {
   const image = rest.split(/\s+/)[0] ?? "";
-  return image === `\${${VIBE_BASE_IMAGE_BUILD_ARG}}` ||
-    image === `$${VIBE_BASE_IMAGE_BUILD_ARG}`;
+  return image === `\${${BASE_IMAGE_BUILD_ARG}}` ||
+    image === `$${BASE_IMAGE_BUILD_ARG}`;
 }
 
 /**
@@ -117,8 +117,8 @@ export function assertExtensionLayersOnBaseImage(
   const refuse = (detail: string): never => {
     throw new Error(
       `Refusing to launch: the container_extension Containerfile ${path} ` +
-        `${detail}. It must open with \`ARG ${VIBE_BASE_IMAGE_BUILD_ARG}\` ` +
-        `and \`FROM \${${VIBE_BASE_IMAGE_BUILD_ARG}}\` so the operator's ` +
+        `${detail}. It must open with \`ARG ${BASE_IMAGE_BUILD_ARG}\` ` +
+        `and \`FROM \${${BASE_IMAGE_BUILD_ARG}}\` so the operator's ` +
         `layer is built on the standard Vibe Coder image (Issue #980).`,
     );
   };
@@ -128,7 +128,7 @@ export function assertExtensionLayersOnBaseImage(
     if (directive.keyword === "FROM") {
       if (!declared) {
         refuse(
-          `states no \`ARG ${VIBE_BASE_IMAGE_BUILD_ARG}\` before its ` +
+          `states no \`ARG ${BASE_IMAGE_BUILD_ARG}\` before its ` +
             `first FROM`,
         );
       }
@@ -194,12 +194,12 @@ export function extensionBuildArguments(
     "--tag",
     extensionImage,
     "--build-arg",
-    `${VIBE_BASE_IMAGE_BUILD_ARG}=${baseImage}`,
+    `${BASE_IMAGE_BUILD_ARG}=${baseImage}`,
   ];
   // The start script's contract path (Issue #980): framework plumbing the
   // sandbox-start sub-issue reads back, never an operator-facing setting.
   if (spec.start !== undefined) {
-    args.push("--build-arg", `${VIBE_EXTENSION_START_BUILD_ARG}=${spec.start}`);
+    args.push("--build-arg", `${EXTENSION_START_BUILD_ARG}=${spec.start}`);
   }
   args.push(directory);
   return args;

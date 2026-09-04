@@ -414,6 +414,17 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "launch_plumbing",
     note: "the build argument selecting extra tools (Issue #71)",
   },
+  VIBE_BASE_IMAGE: {
+    role: "launch_plumbing",
+    note:
+      "the build argument naming the image the operator's layer builds FROM " +
+      "(Issue #980)",
+  },
+  VIBE_EXTENSION_START: {
+    role: "launch_plumbing",
+    note: "the build argument recording the extension's start-script path " +
+      "(Issue #980)",
+  },
   VIBE_UPDATE_MODE: {
     role: "launch_plumbing",
     note:

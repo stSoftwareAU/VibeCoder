@@ -12,9 +12,9 @@
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
   assertExtensionLayersOnBaseImage,
+  BASE_IMAGE_BUILD_ARG,
+  EXTENSION_START_BUILD_ARG,
   extensionBuildArguments,
-  VIBE_BASE_IMAGE_BUILD_ARG,
-  VIBE_EXTENSION_START_BUILD_ARG,
 } from "../lib/container_extension_build.ts";
 
 /** A Containerfile that keeps the contract. */
@@ -120,7 +120,7 @@ Deno.test("extensionBuildArguments - options precede the context, which is the e
       "--tag",
       "vibe-coder:fedcba987654",
       "--build-arg",
-      `${VIBE_BASE_IMAGE_BUILD_ARG}=vibe-coder:0123456789ab`,
+      `${BASE_IMAGE_BUILD_ARG}=vibe-coder:0123456789ab`,
       "/srv/vibe-extension",
     ],
   );
@@ -148,9 +148,9 @@ Deno.test("extensionBuildArguments - a declared start script rides the build as 
     "--tag",
     "vibe-coder:fedcba987654",
     "--build-arg",
-    `${VIBE_BASE_IMAGE_BUILD_ARG}=vibe-coder:0123456789ab`,
+    `${BASE_IMAGE_BUILD_ARG}=vibe-coder:0123456789ab`,
     "--build-arg",
-    `${VIBE_EXTENSION_START_BUILD_ARG}=bin/start.sh`,
+    `${EXTENSION_START_BUILD_ARG}=bin/start.sh`,
     "/srv/vibe-extension",
   ]);
 });
