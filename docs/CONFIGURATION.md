@@ -578,6 +578,18 @@ flowchart LR
 - **A broken mapping never starves the others.** The remaining configured labels
   are still scanned, each fault is logged as an error naming its label and path,
   and the pass fails when nothing else was worked.
+- **The dispatch is held by the `work-on` eligibility gates** (Issue #937). A
+  custom label is not removed when the run finishes and
+  `unassign_on_pr_created` hands the issue back unassigned, so without a gate
+  the next cycle re-ran the whole pipeline against the still-open PR. The scan
+  therefore applies the same gates the claim scan applies to `work-on`: a
+  blocking label (`failed` among them), the retry cooldown, milestone
+  occupancy, a closed or merged fleet PR, an open fleet PR, and an open
+  dependency. A run that produces no work puts the issue into the retry
+  cooldown, so a persistently failing issue backs off. The label-removing
+  routes — `planning`, `question`, `grill-me`, `refine-issue` — are unchanged:
+  removing their own label already stops re-dispatch. See
+  [CUSTOM-PROMPTS.md — When a labelled issue is dispatched](CUSTOM-PROMPTS.md#-when-a-labelled-issue-is-dispatched).
 - **Container run mode: the launcher mounts the prompt directory read-only**
   (Issue #850). The **containing directory** of every configured `prompt_path`
   is bind-mounted into the container at

@@ -26,6 +26,7 @@ and the full semantics of dispatch and override, live in
 - [The placeholders a prompt must carry](#-the-placeholders-a-prompt-must-carry)
 - [What a prompt author must never do](#-what-a-prompt-author-must-never-do)
 - [Trust — who may add the label](#-trust--who-may-add-the-label)
+- [When a labelled issue is dispatched](#-when-a-labelled-issue-is-dispatched)
 - [Container operation](#-container-operation)
 - [No versioning convention](#-no-versioning-convention)
 - [Failure modes and their exact symptoms](#-failure-modes-and-their-exact-symptoms)
@@ -65,7 +66,9 @@ flowchart TD
 
 - **A new label adds a dispatch row.** The issue is worked at priority 1.86 by
   the same `workOnIssue` pipeline `work-on` runs — a real branch, real commits
-  and a PR. Only the prompt body differs.
+  and a PR. Only the prompt body differs, and — because it raises a PR — it is
+  held by the same eligibility gates `work-on` is
+  ([When a labelled issue is dispatched](#-when-a-labelled-issue-is-dispatched)).
 - **A built-in label overrides that phase's template.** A mapping naming
   `planning`, `question`, `grill-me`, `quorum` or `work-on` (which owns the
   implementation phase, and so covers `top-priority` and `low-priority`
@@ -320,6 +323,36 @@ the same one those labels get:
   reserved by the worker's own creation paths and stripped, and a label the
   worker legitimately raises itself (`idle-task`, `security`, `severity:…`) is
   refused at config load rather than remapped.
+
+## 🚦 When a labelled issue is dispatched
+
+A custom label is **not removed** when the run finishes, and
+`unassign_on_pr_created` (default `true`) hands the issue back unassigned. On
+its own that is a loop: the next cycle would see an unassigned issue still
+carrying the label and re-run the whole implementation pipeline while the
+previous cycle's PR was still open, at the cost of a full agent run each time
+(Issue #937). `planning`, `question`, `grill-me` and `refine-issue` have no
+such loop — each removes its own label when it is done.
+
+So a custom label is held by the **same new-work eligibility gates `work-on`
+is**, checked in this order after the trust gate above:
+
+| Gate | The issue is skipped when |
+| --- | --- |
+| Blocking label | It carries `failed`, `needs-human`, `needs-revision`, `refine-issue`, `planning` or `question`, or it is a milestone-tracking issue. A `failed` label applied before the issue was reopened is cleared first, so reopening the issue is enough to make it workable again. |
+| Retry cooldown | This host recently failed on it, or has already worked it this run. |
+| Milestone occupancy | Another fleet account already holds an issue in the same milestone. |
+| Closed or merged PR | A fleet PR for this issue closed inside `closed_pr_cooldown_seconds` (default one hour), or merged at any time in the past. A trusted re-add of the custom label dated **after** the PR closed lifts either. |
+| Open PR | A fleet PR is open against the issue's work stream. Add `ignore-open-prs` from an allowlisted account to override. |
+| Dependency | The issue names an open dependency, or has an open sub-issue. |
+
+A run that produces no work also puts the issue into the retry cooldown, so a
+persistently failing custom-labelled issue backs off instead of burning an
+agent run every cycle.
+
+**Overrides are unaffected.** A mapping that names a built-in label replaces
+that phase's template and nothing else — the handler's own gating is whatever
+that phase always had.
 
 ## 📦 Container operation
 
