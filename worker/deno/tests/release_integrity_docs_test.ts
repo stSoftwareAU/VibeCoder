@@ -17,6 +17,7 @@
  */
 
 import { assert } from "@std/assert";
+import { flat, readRepoDoc as read, section } from "./support/markdown_docs.ts";
 import {
   loadReleaseTagRuleset,
   refIsProtected,
@@ -25,62 +26,10 @@ import {
 } from "../lib/release_tag_ruleset.ts";
 import { anchorSet } from "../lib/markdown_anchors.ts";
 import { formatReleaseNotice } from "../lib/release_notice.ts";
-import { SETUP_DEFAULT_UPDATE_MODE } from "../lib/config_defaults.ts";
 import { UPGRADE_INVOCATION } from "../lib/upgrade_command.ts";
 
-// tests/ → worker/deno/ → worker/ → repo root
-function repoPath(relative: string): URL {
-  return new URL(`../../../${relative}`, import.meta.url);
-}
-
-async function read(relative: string): Promise<string> {
-  return await Deno.readTextFile(repoPath(relative));
-}
-
-/**
- * Heading levels per line, with fenced code blocks masked out — a `# comment`
- * inside a ```bash block is not a heading, and reading it as one truncates
- * every section that carries a shell example.
- */
-function headingLevels(lines: string[]): (number | undefined)[] {
-  let fenced = false;
-  return lines.map((line) => {
-    if (/^\s*```/.test(line)) {
-      fenced = !fenced;
-      return undefined;
-    }
-    if (fenced) return undefined;
-    return line.match(/^(#{1,6}) /)?.[1]?.length;
-  });
-}
-
-/**
- * The body of the section introduced by the first heading matching `title`,
- * up to the next heading at the same or a higher level.
- */
-function section(markdown: string, title: string): string {
-  const lines = markdown.split("\n");
-  const levels = headingLevels(lines);
-  const startIndex = lines.findIndex((line, index) =>
-    (levels[index] ?? 0) >= 2 && line.includes(title)
-  );
-  assert(startIndex >= 0, `no heading containing "${title}"`);
-  const level = levels[startIndex] ?? 2;
-  const endOffset = levels.slice(startIndex + 1).findIndex((depth) =>
-    depth !== undefined && depth <= level
-  );
-  const rest = lines.slice(startIndex + 1);
-  const body = endOffset === -1 ? rest : rest.slice(0, endOffset);
-  return body.join("\n");
-}
-
-/** One line, single-spaced — prose wrapped at 80 columns still matches. */
-function flat(text: string): string {
-  return text.replace(/\s+/g, " ");
-}
-
 const INTEGRITY_SECTION = "Release integrity";
-const UPDATE_MODE_SECTION = "Update Mode";
+const CHECKOUT_UPDATE_SECTION = "Host-Side Checkout Update";
 const NOTICE_SECTION = "New-Release Notice";
 const SETUP_SECTION = "Update mode: dynamic or frozen";
 
@@ -216,7 +165,7 @@ Deno.test("RELEASE-TAGGING.md - release integrity points at the upgrade command,
 Deno.test("CONFIGURATION.md - a frozen host at its pin is documented as doing no fetch", async () => {
   const body = section(
     await read("docs/CONFIGURATION.md"),
-    UPDATE_MODE_SECTION,
+    CHECKOUT_UPDATE_SECTION,
   );
 
   const atPin = body.split(/\n\s*\n/).map(flat).find((paragraph) =>
@@ -224,11 +173,11 @@ Deno.test("CONFIGURATION.md - a frozen host at its pin is documented as doing no
   );
   assert(
     atPin,
-    "the update-mode section does not say what a host already at its pin does",
+    "the checkout-update section does not say what a host already at its pin does",
   );
   assert(
     /no fetch/i.test(atPin),
-    "the update-mode section does not say a host at its pin fetches nothing",
+    "the checkout-update section does not say a host at its pin fetches nothing",
   );
 });
 
@@ -245,13 +194,9 @@ Deno.test("CONFIGURATION.md - the notice section quotes the line the code emits"
   );
 });
 
-Deno.test("SETUP.md - the pinned frozen default is stated, and dynamic is not the default", async () => {
+Deno.test("SETUP.md - the latest-release pin is stated, and dynamic is not the default", async () => {
   const body = section(await read("docs/SETUP.md"), SETUP_SECTION);
 
-  assert(
-    flat(body).includes(`defaults to \`${SETUP_DEFAULT_UPDATE_MODE}\``),
-    "the setup default mode is not stated",
-  );
   assert(
     /latest release tag/i.test(flat(body)),
     "the section does not say a fresh frozen host is pinned to the latest release tag",

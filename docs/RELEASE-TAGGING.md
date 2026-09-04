@@ -244,7 +244,7 @@ and is refused.
 
 ```mermaid
 flowchart LR
-    C["Create 1.2.10<br/>(release-tag.yml)"] --> A["✅ allowed<br/>no creation rule"]
+    C["Create 1.2.20<br/>(release-tag.yml)"] --> A["✅ allowed<br/>no creation rule"]
     D["Delete 1.0.49"] --> R1["❌ deletion rule"]
     B["Move 1.0.49 backwards"] --> R2["❌ non_fast_forward rule"]
     F["Move 1.0.49 forwards"] --> R3["❌ update rule"]
@@ -274,9 +274,12 @@ gh api repos/stSoftwareAU/VibeCoder/releases --paginate \
 
 ### The release-tag ruleset
 
-The ruleset targets **tags**, is enforced actively, and carries no bypass
+The payload targets **tags**, is enforced actively, and carries no bypass
 actors — the release workflow's own scoped `contents: write` grant cannot
-delete or move a tag either, which is the point.
+delete or move a tag either, which is the point. It describes what the ruleset
+**specifies**; what the repository is enforcing right now is whatever
+[the verification commands](#verifying-it) print, so check before relying on
+it.
 
 **What it blocks:**
 
@@ -293,7 +296,9 @@ delete or move a tag either, which is the point.
 
 - **Creating a new tag.** There is **no `creation` rule**, so
   `release-tag.yml` keeps minting the next patch on every merge to `main`, and
-  a human can still mint a series-moving `1.1.0` by hand (Issue #808).
+  a series-moving release — the `1.2.0` a raised
+  [release floor](#the-release-floor) mints, or a tag pushed by hand — is
+  still accepted (Issue #808). Only *existing* tags are frozen.
 
 **What it covers.** The ref condition includes bare and `v`-prefixed
 `MAJOR.MINOR.PATCH` tags and excludes pre-releases (`*-*`) and build metadata
@@ -305,7 +310,7 @@ Branches are untouched.
 Run these as part of the release checklist; they are also how drift is caught
 when someone edits the ruleset in the GitHub UI. **The checked-in payload is
 the source of truth** — a live ruleset that disagrees with it is drift, and the
-repair is the `PUT` below, never an edit in the UI.
+repair is the `PUT` in [Applying it](#applying-it), never an edit in the UI.
 
 ```bash
 # 1. A tag ruleset exists and is enforced. (Note the id for the next command.)
@@ -313,14 +318,21 @@ gh api repos/stSoftwareAU/VibeCoder/rulesets \
   --jq '.[] | select(.target == "tag") | {id, name, enforcement, source}'
 
 # 2. Its rules match the checked-in payload: deletion, update and
-#    non_fast_forward, no creation rule, and an empty bypass list.
+#    non_fast_forward, no creation rule, and no bypass actors (the API prints
+#    `null` for an empty bypass list).
 gh api repos/stSoftwareAU/VibeCoder/rulesets/RULESET_ID \
   --jq '{enforcement, bypass: .bypass_actors, rules: [.rules[].type],
          refs: .conditions.ref_name}'
 ```
 
-The behavioural proof is the refused delete — GitHub rejects the push and the
-tag is left exactly where it was:
+**A rule the payload carries and command 2 does not print is not enforced.**
+The `update` rule was added to the payload after the ruleset was first created
+and needs an admin to apply it (Issue #869); until that `PUT` runs, a release
+tag is still forward-movable however this section reads. Read the rule list,
+do not assume it.
+
+The behavioural proof is the refused delete — with the `deletion` rule live,
+GitHub rejects the push and the tag is left exactly where it was:
 
 ```bash
 git push origin :refs/tags/1.0.49
@@ -329,10 +341,11 @@ git push origin :refs/tags/1.0.49
 #  ! [remote rejected] 1.0.49 (push declined due to repository rule violations)
 ```
 
-⚠️ **Do not try the move against a ruleset that lacks the `update` rule.** The
-tag really moves, and the rewind that would undo it is then refused by
-`non_fast_forward`, so restoring it takes an admin disabling the ruleset first.
-Check the rule list (command 2 above) before attempting it.
+⚠️ **Both destructive proofs are real pushes — run command 2 first.** Against a
+ruleset that has drifted or been deleted, the delete above really deletes the
+tag. And against one that lacks the `update` rule, the move really moves it,
+with the rewind then refused by `non_fast_forward` — restoring it takes an
+admin disabling the ruleset first.
 
 ### Applying it
 

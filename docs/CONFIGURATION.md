@@ -624,10 +624,6 @@ because an absent `update_mode` resolves to `dynamic`:
   (Issue #624) — see [Host-Side Checkout Update](#-host-side-checkout-update).
   Because the container image reference is derived from the checkout's
   content, a frozen checkout holds the image steady too.
-- **A host already at its pin does not touch git at all.** With `HEAD` already
-  resolving to `pinned_ref` the launch does **no fetch**, no checkout and no
-  clean — one log line and nothing else — so a frozen host neither churns its
-  tree nor depends on GitHub being reachable to start.
 - **Frozen says when it is behind.** A pin holds the host still; it does not
   hide that the world moved on. When a release newer than `pinned_ref` exists,
   each launch prints one notice line naming both versions and the command that
@@ -687,10 +683,10 @@ frozen host has something meaningful to name. `"pinned_ref": "1.0.7"` says what
 the host is running in a way that a raw SHA does not, and `git log 1.0.6..1.0.7`
 says what moving to the next tag would bring in.
 
-A release tag is also the pin with a guarantee behind it: the release record is
-immutable, and a repository tag ruleset refuses to delete or re-point the tag,
-so what `1.0.7` names today is what it names next year — see
-[Release integrity](RELEASE-TAGGING.md#release-integrity).
+A release tag is also the pin with a guarantee behind it: a repository tag
+ruleset refuses to delete or re-point a release tag, and releases from `1.0.50`
+onward are immutable records besides, so what a tag names today is what it names
+next year — see [Release integrity](RELEASE-TAGGING.md#release-integrity).
 
 A commit SHA is still accepted, and is the right answer when the state you want
 is not a tagged one — a specific merge you are bisecting, for example. Either
