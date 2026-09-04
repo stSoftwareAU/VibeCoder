@@ -161,9 +161,9 @@ keyword their scan honours.
   section is not a variant of a section, so the decision was taken separately
   and is recorded in
   [`docs/PROMPT-BEST-PRACTICES-CHECKLIST.md`](PROMPT-BEST-PRACTICES-CHECKLIST.md).
-  The eight scans that carried their closing check as an unheaded paragraph were
-  **raised**: all fifteen now carry `### Verification before exit`, which is why
-  the heading has a row above. The four templates with no persona line were
+  Every scan that carried its closing check as an unheaded paragraph was
+  **raised**: the whole family now carries `### Verification before exit`, which
+  is why the heading has a row above. The four templates with no persona line were
   **narrowed out** instead — no model reads them, so the checklist scores them
   as a third surface kind, the **wrapper issue body**, whose model-behaviour
   rows are `n/a`. That is also why those four sit outside the attribution-footer
