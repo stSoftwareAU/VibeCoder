@@ -138,7 +138,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/outbound_fetch_bounds_test.ts",
   "tests/phase_run_stats_test.ts",
   "tests/planning_processor_test.ts",
-  "tests/planning_run_stats_provider_test.ts",
   "tests/planning_run_stats_test.ts",
   "tests/pr_ci_processor_auto_fix_cap_test.ts",
   "tests/pr_ci_processor_failure_actions_test.ts",
