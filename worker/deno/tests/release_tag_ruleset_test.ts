@@ -21,11 +21,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   loadReleaseTagRuleset,
   parseTagRuleset,
   refIsProtected,
+  refPatternMatches,
   ruleTypes,
 } from "../lib/release_tag_ruleset.ts";
 
@@ -88,7 +89,10 @@ Deno.test("release-tags ruleset - grants no bypass actor", async () => {
 Deno.test("release-tags ruleset - protects the release tags this repository mints", async () => {
   const ruleset = await loadReleaseTagRuleset();
   for (const ref of PROTECTED_REFS) {
-    assert(refIsProtected(ruleset, ref), `${ref} is not covered by the ruleset`);
+    assert(
+      refIsProtected(ruleset, ref),
+      `${ref} is not covered by the ruleset`,
+    );
   }
 });
 
@@ -131,6 +135,40 @@ Deno.test("release-tags ruleset - a malformed payload fails loud", () => {
       ),
     Error,
     "conditions.ref_name",
+  );
+});
+
+Deno.test("release-tags ruleset - a missing payload fails loud", async () => {
+  const empty = await Deno.makeTempDir();
+  await assertRejects(
+    () => loadReleaseTagRuleset(empty),
+    Deno.errors.NotFound,
+  );
+  await Deno.remove(empty);
+});
+
+Deno.test("release-tags ruleset - ref patterns match GitHub's fnmatch classes", () => {
+  // The include pattern the payload actually ships.
+  const release = "refs/tags/[0-9]*.[0-9]*.[0-9]*";
+  assert(refPatternMatches(release, "refs/tags/1.0.49"));
+  assert(refPatternMatches(release, "refs/tags/10.20.30"));
+  assertEquals(refPatternMatches(release, "refs/tags/latest"), false);
+  assertEquals(refPatternMatches(release, "refs/tags/v1.0.0"), false);
+  // A negated class, and a range that excludes the character.
+  assert(refPatternMatches("refs/tags/[!0-9]*", "refs/tags/latest"));
+  assertEquals(
+    refPatternMatches("refs/tags/[!0-9]*", "refs/tags/1.0.0"),
+    false,
+  );
+  assertEquals(refPatternMatches("refs/tags/[a-c]", "refs/tags/d"), false);
+  // An unclosed bracket is a literal bracket, not a class.
+  assert(refPatternMatches("refs/tags/[x", "refs/tags/[x"));
+  assertEquals(refPatternMatches("refs/tags/[x", "refs/tags/x"), false);
+  // `**` spans separators, `*` does not.
+  assert(refPatternMatches("refs/heads/**", "refs/heads/milestone/863"));
+  assertEquals(
+    refPatternMatches("refs/heads/*", "refs/heads/milestone/863"),
+    false,
   );
 });
 

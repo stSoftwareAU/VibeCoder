@@ -234,7 +234,9 @@ gh api --method PUT repos/stSoftwareAU/VibeCoder/rulesets/RULESET_ID \
 ### Verifying it
 
 Run these as part of the release checklist — they are also how drift is caught
-when someone edits the ruleset in the GitHub UI:
+when someone edits the ruleset in the GitHub UI. The checked-in payload is the
+source of truth: a live ruleset that disagrees with it is drift, and the repair
+is the `PUT` above, never an edit in the UI.
 
 ```bash
 # A tag ruleset exists and is enforced.

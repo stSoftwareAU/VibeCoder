@@ -95,8 +95,14 @@ export function parseTagRuleset(text: string): TagRuleset {
   if (typeof refName !== "object" || refName === null) {
     reject("conditions.ref_name must be an object");
   }
-  const include = assertStringArray(refName.include, "conditions.ref_name.include");
-  const exclude = assertStringArray(refName.exclude, "conditions.ref_name.exclude");
+  const include = assertStringArray(
+    refName.include,
+    "conditions.ref_name.include",
+  );
+  const exclude = assertStringArray(
+    refName.exclude,
+    "conditions.ref_name.exclude",
+  );
 
   return {
     name: obj.name as string,
@@ -110,7 +116,7 @@ export function parseTagRuleset(text: string): TagRuleset {
 
 /** Repository root, resolved from this module's location. */
 function repoRoot(): string {
-  return new URL("../../../", import.meta.url).pathname;
+  return decodeURIComponent(new URL("../../../", import.meta.url).pathname);
 }
 
 /** Read and validate the checked-in payload. Throws if it is missing or bad. */
@@ -126,45 +132,131 @@ export function ruleTypes(ruleset: TagRuleset): string[] {
   return ruleset.rules.map((rule) => rule.type);
 }
 
-/**
- * Translate one GitHub ruleset ref pattern into a regular expression.
- *
- * GitHub matches ref-name conditions with fnmatch: `*` spans one path segment,
- * `**` spans separators too, `?` is a single character and `[...]` is a
- * character class (`[!...]` negates).
- */
-export function refPatternToRegExp(pattern: string): RegExp {
-  let source = "^";
-  for (let i = 0; i < pattern.length; i++) {
-    const char = pattern[i] as string;
-    if (char === "*") {
-      if (pattern[i + 1] === "*") {
-        source += ".*";
-        i++;
-      } else {
-        source += "[^/]*";
-      }
-    } else if (char === "?") {
-      source += "[^/]";
-    } else if (char === "[") {
-      const close = pattern.indexOf("]", i + 1);
-      if (close === -1) {
-        source += "\\[";
-      } else {
-        const body = pattern.slice(i + 1, close).replace(/\\/g, "\\\\");
-        source += `[${body.startsWith("!") ? `^${body.slice(1)}` : body}]`;
-        i = close;
-      }
-    } else {
-      source += char.replace(/[.+^${}()|\\]/g, "\\$&");
+/** A single token in a compiled ref pattern. */
+type RefToken =
+  | { kind: "globstar" } // `**` — any run of characters including `/`
+  | { kind: "star" } // `*`  — any run of characters except `/`
+  | { kind: "any" } // `?`  — a single character except `/`
+  | { kind: "class"; negated: boolean; body: string } // `[0-9]`, `[!a-z]`
+  | { kind: "lit"; ch: string };
+
+/** Whether `ch` falls inside a `[...]` class body such as `0-9abc`. */
+function classMatches(body: string, negated: boolean, ch: string): boolean {
+  let hit = false;
+  for (let i = 0; i < body.length; i++) {
+    const from = body[i] as string;
+    if (body[i + 1] === "-" && i + 2 < body.length) {
+      const to = body[i + 2] as string;
+      if (ch >= from && ch <= to) hit = true;
+      i += 2;
+    } else if (ch === from) {
+      hit = true;
     }
   }
-  return new RegExp(`${source}$`);
+  return negated ? !hit : hit;
+}
+
+/**
+ * Tokenise a GitHub ruleset ref pattern.
+ *
+ * Ref-name conditions are matched with fnmatch, so `*` spans one path segment,
+ * `**` spans separators too, `?` is a single character and `[...]` is a
+ * character class (`[!...]` negates). An unclosed `[` is a literal bracket.
+ *
+ * This is deliberately not `branchPatternMatches()` from
+ * `workflow_branch_glob.ts`: that matcher answers for GitHub Actions branch
+ * filters and has no character class, which every include pattern here uses.
+ */
+function tokeniseRefPattern(pattern: string): RefToken[] {
+  const tokens: RefToken[] = [];
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i] as string;
+    if (ch === "*") {
+      if (pattern[i + 1] === "*") {
+        tokens.push({ kind: "globstar" });
+        i++;
+      } else {
+        tokens.push({ kind: "star" });
+      }
+    } else if (ch === "?") {
+      tokens.push({ kind: "any" });
+    } else if (ch === "[" && pattern.indexOf("]", i + 1) > i + 1) {
+      const close = pattern.indexOf("]", i + 1);
+      const body = pattern.slice(i + 1, close);
+      tokens.push({
+        kind: "class",
+        negated: body.startsWith("!"),
+        body: body.startsWith("!") ? body.slice(1) : body,
+      });
+      i = close;
+    } else {
+      tokens.push({ kind: "lit", ch });
+    }
+  }
+  return tokens;
+}
+
+/**
+ * Match one ruleset ref pattern against a full ref such as
+ * `refs/tags/1.0.49`.
+ *
+ * Matching never builds a `RegExp` from the pattern — a memo over
+ * `(tokenIndex, refIndex)` keeps it linear-ish and leaves no
+ * catastrophic-backtrack surface, the same choice `workflow_branch_glob.ts`
+ * made for the branch-filter matcher.
+ */
+export function refPatternMatches(pattern: string, ref: string): boolean {
+  const tokens = tokeniseRefPattern(pattern);
+  const failed = new Set<number>();
+  const stride = ref.length + 1;
+
+  const match = (ti: number, ri: number): boolean => {
+    if (ti === tokens.length) return ri === ref.length;
+    const key = ti * stride + ri;
+    if (failed.has(key)) return false;
+
+    const token = tokens[ti] as RefToken;
+    let ok = false;
+    switch (token.kind) {
+      case "lit":
+        ok = ref[ri] === token.ch && match(ti + 1, ri + 1);
+        break;
+      case "any":
+        ok = ri < ref.length && ref[ri] !== "/" && match(ti + 1, ri + 1);
+        break;
+      case "class":
+        ok = ri < ref.length && ref[ri] !== "/" &&
+          classMatches(token.body, token.negated, ref[ri] as string) &&
+          match(ti + 1, ri + 1);
+        break;
+      case "star":
+        for (let k = ri;; k++) {
+          if (match(ti + 1, k)) {
+            ok = true;
+            break;
+          }
+          if (k >= ref.length || ref[k] === "/") break;
+        }
+        break;
+      case "globstar":
+        for (let k = ri; k <= ref.length; k++) {
+          if (match(ti + 1, k)) {
+            ok = true;
+            break;
+          }
+        }
+        break;
+    }
+    if (!ok) failed.add(key);
+    return ok;
+  };
+
+  return match(0, 0);
 }
 
 /** Whether `ref` (a full ref such as `refs/tags/1.0.49`) is covered. */
 export function refIsProtected(ruleset: TagRuleset, ref: string): boolean {
   const { include, exclude } = ruleset.conditions.ref_name;
-  const matches = (pattern: string) => refPatternToRegExp(pattern).test(ref);
+  const matches = (pattern: string) => refPatternMatches(pattern, ref);
   return include.some(matches) && !exclude.some(matches);
 }
