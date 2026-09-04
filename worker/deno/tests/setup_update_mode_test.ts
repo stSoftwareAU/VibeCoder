@@ -19,6 +19,7 @@ import {
   runUpdateModeSetup,
   type UpdateModeSetupDeps,
 } from "../setup/update_mode_setup.ts";
+import { createConsoleStyler, terminalStyler } from "../lib/console_style.ts";
 import type { DynamicVersionCandidate } from "../lib/software_updates.ts";
 import { RELEASE_MANIFEST_ASSET } from "../lib/release_manifest.ts";
 
@@ -95,6 +96,10 @@ function harness(
       return Promise.resolve(queue.length > 0 ? queue.shift()! : null);
     },
     say: (message) => said.push(message),
+    // Named, not inherited from the process: the glyphs are asserted on, so
+    // the conversation must not depend on whether this run has a terminal
+    // (Issue #870).
+    style: createConsoleStyler({ tty: false }),
     interactive: () => true,
     fetchOrigin: () => {
       state.fetches++;
@@ -770,4 +775,275 @@ Deno.test("setup.sh - delegates the update mode to the Deno command and keeps no
     false,
     "setup.sh must not merge update-mode fields itself",
   );
+});
+
+// ---------------------------------------------------------------------------
+// House style — glyphs and bracketed defaults (Issue #870)
+// ---------------------------------------------------------------------------
+
+/** The line as a terminal without colour would show it. */
+function unstyled(line: string): string {
+  // deno-lint-ignore no-control-regex
+  return line.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+/** Lines that begin with `glyph`, stripped of any colour. */
+function glyphLines(said: string[], glyph: string): string[] {
+  return said.map(unstyled).filter((line) => line.startsWith(`${glyph}  `));
+}
+
+Deno.test("runUpdateModeSetup - explanatory lines carry the info glyph", async () => {
+  const { dir, path } = await tempConfig({});
+  try {
+    const h = harness(["", "", "", "", ""]);
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    const info = glyphLines(h.said, "ℹ");
+    assert(
+      info.some((line) => line.startsWith("ℹ  Update mode: 'dynamic' tracks")),
+      `the mode explanation must print with ℹ — got ${JSON.stringify(info)}`,
+    );
+    assert(
+      info.some((line) => line.startsWith("ℹ  Pinned ref: the commit SHA")),
+      "the pinned-ref explanation must print with ℹ",
+    );
+    assert(
+      info.some((line) => line.startsWith("ℹ  Tool versions: the exact")),
+      "the tool-versions explanation must print with ℹ",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateModeSetup - a rejected answer carries the warning glyph", async () => {
+  const { dir, path } = await tempConfig({});
+  try {
+    const h = harness([
+      "sideways",
+      "frozen",
+      "v9.9.9-nope",
+      "v1.4.0",
+      "",
+      "",
+      "",
+    ]);
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    const warnings = glyphLines(h.said, "⚠");
+    assert(
+      warnings.some((line) => line.includes("is not an update mode")),
+      `a rejected mode must print with ⚠ — got ${JSON.stringify(warnings)}`,
+    );
+    assert(
+      warnings.some((line) => line.includes("does not resolve to a commit")),
+      "a rejected ref must print with ⚠",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateModeSetup - a failed fetch and a missing manifest carry the warning glyph", async () => {
+  const { dir, path } = await tempConfig({});
+  try {
+    const h = harness(["", "", "", "", ""], {
+      ...NO_MANIFEST,
+      fetchOrigin: () =>
+        Promise.resolve({ ok: false, error: new Error("offline") }),
+    });
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    const warnings = glyphLines(h.said, "⚠");
+    assert(
+      warnings.some((line) => line.includes("Could not fetch origin")),
+      "a failed fetch must print with ⚠",
+    );
+    assert(
+      warnings.some((line) => line.includes("Falling back")),
+      "the manifest fallback must print with ⚠",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateModeSetup - a confirmed answer carries the success glyph", async () => {
+  const { dir, path } = await tempConfig({});
+  try {
+    const h = harness(["frozen", "v1.4.0", "", "", ""]);
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    const confirmed = glyphLines(h.said, "✓");
+    assert(
+      confirmed.includes("✓  Update mode: frozen."),
+      `the chosen mode must be confirmed with ✓ — got ${
+        JSON.stringify(confirmed)
+      }`,
+    );
+    assert(
+      confirmed.some((line) => line.startsWith("✓  v1.4.0 resolves to ")),
+      "the resolved ref must be confirmed with ✓",
+    );
+    assert(
+      confirmed.some((line) => line.startsWith("✓  Pinned Claude CLI ")),
+      "the pinned versions must be confirmed with ✓",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateModeSetup - every question shows its default in brackets", async () => {
+  const { dir, path } = await tempConfig({});
+  try {
+    const h = harness(["", "", "", "", ""]);
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    assertEquals(h.asked.length, 5);
+    const defaults = [
+      "frozen",
+      LATEST_RELEASE,
+      ...Object.values(RELEASE_TOOLS),
+    ];
+    for (const [index, question] of h.asked.entries()) {
+      assertStringIncludes(question, `[${defaults[index]}]`);
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateModeSetup - a question with no default never renders a stray []", async () => {
+  const { dir, path } = await tempConfig({});
+  try {
+    // No release to default the ref from, and nothing dynamic mode can offer:
+    // every pin question therefore has no default at all.
+    const h = harness(["frozen", "v1.4.0", "2.0.5", "2.61.1", "2.5.3"], {
+      ...NO_RELEASE,
+      dynamicVersions: () =>
+        Promise.resolve(
+          DYNAMIC_VERSIONS.map((candidate) => ({
+            ...candidate,
+            version: null,
+            eligible: false,
+            reason: `${candidate.tool}: the registry did not answer.`,
+          })),
+        ),
+    });
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    for (const question of h.asked) {
+      assert(
+        !question.includes("[]"),
+        `a defaultless question must render bare — got "${question}"`,
+      );
+    }
+    // The ref and version questions carried no default; only the mode did.
+    assertEquals(
+      h.asked.filter((question) => question.includes("[")).length,
+      1,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateModeSetup - a coloured styler reaches every line of the conversation", async () => {
+  const { dir, path } = await tempConfig({});
+  try {
+    const h = harness(["sideways", "", "", "", "", ""], {
+      style: createConsoleStyler({ tty: true }),
+    });
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    // Blue for the explanation, yellow for the rejection, green for the
+    // confirmation: the conversation carries the colour it was handed.
+    assert(
+      h.said.some((line) => line.startsWith("\x1b[0;34mℹ\x1b[0m  ")),
+      "an explanatory line must carry the blue info escape",
+    );
+    assert(
+      h.said.some((line) => line.startsWith("\x1b[1;33m⚠\x1b[0m  ")),
+      "a rejected answer must carry the yellow warning escape",
+    );
+    assert(
+      h.said.some((line) => line.startsWith("\x1b[0;32m✓\x1b[0m  ")),
+      "a confirmed answer must carry the green success escape",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateModeSetup - NO_COLOR keeps every line of the conversation byte-clean", async () => {
+  const { dir, path } = await tempConfig({});
+  try {
+    // The worker exports NO_COLOR=true into every child process, and many
+    // worker tests assert on that captured stdout byte for byte — a stray
+    // escape here would corrupt them (Issue #870).
+    const h = harness(["sideways", "", "v9.9.9", "", "", "", ""], {
+      style: terminalStyler(
+        { isTerminal: () => true },
+        (name) => name === "NO_COLOR" ? "true" : undefined,
+      ),
+    });
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    // deno-lint-ignore no-control-regex
+    const escape = /\x1b\[[0-9;]*m/;
+    for (const line of [...h.said, ...h.asked]) {
+      assert(
+        !escape.test(line),
+        `NO_COLOR output must be byte-clean — got ${JSON.stringify(line)}`,
+      );
+    }
+    // …and the glyphs still arrive, so "byte-clean" is not "unstyled".
+    assert(
+      h.said.some((line) => line.startsWith("ℹ  ")),
+      "the glyphs survive NO_COLOR; only the colour is dropped",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

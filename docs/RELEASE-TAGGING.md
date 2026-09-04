@@ -5,7 +5,9 @@ Every merge to `main` is tagged with the next patch semver, automatically
 without tags the only thing it could pin to is a raw commit SHA. A release that
 moves the series — a minor or a major — is minted from
 [the release floor](#the-release-floor) instead, and is written up in
-[Release notes](RELEASE-NOTES.md).
+[Release notes](RELEASE-NOTES.md). What a released tag guarantees once it
+exists — an immutable release record, and a tag that cannot be deleted or moved
+— is [Release integrity](#release-integrity).
 
 ## What runs
 
@@ -222,6 +224,144 @@ flowchart LR
   and no network. There is no caching: one check per call, callers choose the
   cadence.
 
+## Release integrity
+
+Frozen hosts fetch code **by release tag**, so a tag that could be moved would
+let a compromise replace an already-released version in place — every host
+pinned to it would pull the new content under the old name at its next launch.
+Two guarantees stop that, and both are verifiable from any checkout:
+
+- **Immutable releases** freeze the release record GitHub publishes for a tag.
+- A repository **tag ruleset** refuses to delete or re-point the tag underneath
+  it (Issue #869), checked in at
+  [`infra/rulesets/release-tags.json`](../infra/rulesets/release-tags.json) so
+  the live configuration has a reviewable source of truth.
+
+Neither of them is how a host moves forward: the supported way to take a newer
+release is [`./run.sh upgrade`](CONFIGURATION.md#the-upgrade-loop), which
+rewrites the pins in `.config.json`. Editing a released tag is never the answer,
+and is refused.
+
+```mermaid
+flowchart LR
+    C["Create 1.2.20<br/>(release-tag.yml)"] --> A["✅ allowed<br/>no creation rule"]
+    D["Delete 1.0.49"] --> R1["❌ deletion rule"]
+    B["Move 1.0.49 backwards"] --> R2["❌ non_fast_forward rule"]
+    F["Move 1.0.49 forwards"] --> R3["❌ update rule"]
+    U["Move a host forward<br/>(./run.sh upgrade)"] --> A2["✅ the supported path —<br/>rewrites the pins, not the tag"]
+```
+
+### Immutable releases
+
+The repository has GitHub's **immutable releases** setting enabled, so a
+published release's tag and assets are frozen at publication: the release
+record for `1.0.50` names the same commit and ships the same
+`tool-versions.json` a year from now as it did on the day it was cut.
+
+- **From `1.0.50` onward, a release reports `immutable: true`.** That is every
+  release cut after the setting was turned on.
+- **The 31 releases published before it report `immutable: false`, and stay
+  that way.** The setting applies at publication and is **not retroactive** —
+  no re-publish makes an old release immutable. What protects those releases
+  now is the tag ruleset below, which covers the whole series regardless of
+  when a tag was minted.
+
+```bash
+# Which side of the boundary a release sits on.
+gh api repos/stSoftwareAU/VibeCoder/releases --paginate \
+  --jq '.[] | {tag_name, immutable}'
+```
+
+### The release-tag ruleset
+
+The payload targets **tags**, is enforced actively, and carries no bypass
+actors — the release workflow's own scoped `contents: write` grant cannot
+delete or move a tag either, which is the point. It describes what the ruleset
+**specifies**; what the repository is enforcing right now is whatever
+[the verification commands](#verifying-it) print, so check before relying on
+it.
+
+**What it blocks:**
+
+- **Deleting a release tag** — the `deletion` rule.
+- **Moving one, in either direction** — the `update` rule ("Restrict updates")
+  refuses *any* re-point of an existing tag, and `non_fast_forward` refuses a
+  rewind. Both are needed: `non_fast_forward` blocks only *non*-fast-forward
+  updates, so re-pointing a tag **forwards** onto a newer commit
+  (`git push --force origin <newer-sha>:refs/tags/1.0.49`) is a fast-forward
+  and sails through a ruleset that carries only `deletion` and
+  `non_fast_forward`. That was observed, not theorised.
+
+**What it deliberately does not block:**
+
+- **Creating a new tag.** There is **no `creation` rule**, so
+  `release-tag.yml` keeps minting the next patch on every merge to `main`, and
+  a series-moving release — the `1.2.0` a raised
+  [release floor](#the-release-floor) mints, or a tag pushed by hand — is
+  still accepted (Issue #808). Only *existing* tags are frozen.
+
+**What it covers.** The ref condition includes bare and `v`-prefixed
+`MAJOR.MINOR.PATCH` tags and excludes pre-releases (`*-*`) and build metadata
+(`*+*`) — the same definition of a release tag the rest of this document uses.
+Branches are untouched.
+
+### Verifying it
+
+Run these as part of the release checklist; they are also how drift is caught
+when someone edits the ruleset in the GitHub UI. **The checked-in payload is
+the source of truth** — a live ruleset that disagrees with it is drift, and the
+repair is the `PUT` in [Applying it](#applying-it), never an edit in the UI.
+
+```bash
+# 1. A tag ruleset exists and is enforced. (Note the id for the next command.)
+gh api repos/stSoftwareAU/VibeCoder/rulesets \
+  --jq '.[] | select(.target == "tag") | {id, name, enforcement, source}'
+
+# 2. Its rules match the checked-in payload: deletion, update and
+#    non_fast_forward, no creation rule, and no bypass actors (the API prints
+#    `null` for an empty bypass list).
+gh api repos/stSoftwareAU/VibeCoder/rulesets/RULESET_ID \
+  --jq '{enforcement, bypass: .bypass_actors, rules: [.rules[].type],
+         refs: .conditions.ref_name}'
+```
+
+**A rule the payload carries and command 2 does not print is not enforced.**
+The `update` rule was added to the payload after the ruleset was first created
+and needs an admin to apply it (Issue #869); until that `PUT` runs, a release
+tag is still forward-movable however this section reads. Read the rule list,
+do not assume it.
+
+The behavioural proof is the refused delete — with the `deletion` rule live,
+GitHub rejects the push and the tag is left exactly where it was:
+
+```bash
+git push origin :refs/tags/1.0.49
+# remote: error: GH013: Repository rule violations found for refs/tags/1.0.49.
+# remote: - Cannot delete this tag
+#  ! [remote rejected] 1.0.49 (push declined due to repository rule violations)
+```
+
+⚠️ **Both destructive proofs are real pushes — run command 2 first.** Against a
+ruleset that has drifted or been deleted, the delete above really deletes the
+tag. And against one that lacks the `update` rule, the move really moves it,
+with the rewind then refused by `non_fast_forward` — restoring it takes an
+admin disabling the ruleset first.
+
+### Applying it
+
+Creating the ruleset for the first time, and updating an existing one, both
+need an account with **admin** rights on the repository:
+
+```bash
+# First time — create it.
+gh api --method POST repos/stSoftwareAU/VibeCoder/rulesets \
+  --input infra/rulesets/release-tags.json
+
+# Already exists — update it in place (RULESET_ID from the list command above).
+gh api --method PUT repos/stSoftwareAU/VibeCoder/rulesets/RULESET_ID \
+  --input infra/rulesets/release-tags.json
+```
+
 ## When a run goes red
 
 The step output names the newest tag it found and the tag it tried to mint. The
@@ -241,6 +381,15 @@ same commit publishes the manifest against that tag once the tool resolves.
   increment logic, over tag lists, including the release floor: the merge that
   mints it, the merges after it, and the malformed and ambiguous floors that
   fail the step.
+- `worker/deno/tests/release_tag_ruleset_test.ts` — the checked-in tag-ruleset
+  payload: deletion, update and non-fast-forward blocked, no creation rule,
+  active enforcement, no bypass actors, and the ref condition evaluated against
+  real release tags, branches and pre-releases.
+- `worker/deno/tests/release_integrity_docs_test.ts` — the
+  [Release integrity](#release-integrity) section against that same payload:
+  every rule it carries is named, the allowances it does not carry are stated,
+  the worked tags are ones the ruleset really matches, and the upgrade
+  cross-link resolves.
 - `worker/deno/tests/release_tag_workflow_test.ts` — the workflow structure
   (trigger, permissions, concurrency, SHA-pinned credential-free checkout, the
   floor passed to the plan, the release-notes link, the tag-before-publish
