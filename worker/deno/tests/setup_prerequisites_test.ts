@@ -26,6 +26,8 @@ import {
 } from "../setup/prerequisites.ts";
 import type { PrerequisiteOptions } from "../setup/prerequisites.ts";
 import type { ContainerRuntimeProbe } from "../lib/container_runtime.ts";
+import type { EnvLookup } from "../lib/env_lookup.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 // ── Mock command runner ─────────────────────────────────────────────────
 
@@ -426,17 +428,27 @@ Deno.test("checkAllPrerequisites - a host with no container runtime fails: there
   assertEquals(runtime.informational, undefined);
 });
 
-Deno.test("checkAllPrerequisites - VIBE_SKIP_PREREQ_CHECK skips the probe", async () => {
-  const original = Deno.env.get("VIBE_SKIP_PREREQ_CHECK");
-  try {
-    Deno.env.set("VIBE_SKIP_PREREQ_CHECK", "true");
-    // A bare host — nothing installed, no runtime — passes on the flag alone.
-    const result = await checkAllPrerequisites(noRuntimeOpts([]));
-    assertEquals(result.ok, true, "the skip flag must be honoured");
-  } finally {
-    if (original) Deno.env.set("VIBE_SKIP_PREREQ_CHECK", original);
-    else Deno.env.delete("VIBE_SKIP_PREREQ_CHECK");
-  }
+Deno.test("checkAllPrerequisites - VIBE_SKIP_PREREQ_CHECK skips the probe (Issue #962)", async () => {
+  // A bare host — nothing installed, no runtime — passes on the flag alone.
+  // The flag is stated through the injected lookup, which answers only from
+  // its own map: a probe that read `Deno.env.get` instead would see the
+  // variable absent and fail this bare host, so the pass proves the seam.
+  const result = await checkAllPrerequisites({
+    ...noRuntimeOpts([]),
+    env: envFrom({ VIBE_SKIP_PREREQ_CHECK: "true" }),
+  });
+  assertEquals(result.ok, true, "the skip flag must be honoured");
+});
+
+Deno.test("checkAllPrerequisites - an environment without the flag still probes (Issue #962)", async () => {
+  // The other direction: the same bare host, an empty environment, and the
+  // probe must fail. Without this a seam that always skipped would pass the
+  // case above.
+  const result = await checkAllPrerequisites({
+    ...noRuntimeOpts([]),
+    env: emptyEnv,
+  });
+  assertEquals(result.ok, false, "an unset flag must not skip the probe");
 });
 
 Deno.test("recheckPrerequisite - jq is informational, present or not: the image provides it", async () => {
@@ -702,38 +714,52 @@ Deno.test("configureGitIdentity - generates noreply email when email is empty", 
 
 // ── Environment variable integration ──────────────────────────────────
 
-Deno.test("checkAllPrerequisites - reads VIBE_SKIP_PREREQ_CHECK from env", async () => {
-  const original = Deno.env.get("VIBE_SKIP_PREREQ_CHECK");
-  try {
-    Deno.env.set("VIBE_SKIP_PREREQ_CHECK", "true");
-    // Call without explicit skipPrereqCheck — should read from env
-    const result = await checkAllPrerequisites({});
-    assertEquals(result.ok, true);
-  } finally {
-    if (original) {
-      Deno.env.set("VIBE_SKIP_PREREQ_CHECK", original);
-    } else {
-      Deno.env.delete("VIBE_SKIP_PREREQ_CHECK");
-    }
-  }
+Deno.test("checkAllPrerequisites - reads VIBE_SKIP_PREREQ_CHECK from env (Issue #962)", async () => {
+  // No explicit skipPrereqCheck and no probe overrides: the gate comes from
+  // the injected lookup alone. Asserted on the single "Skipped" result rather
+  // than on `ok`, because a host that happens to satisfy every prerequisite
+  // would report `ok` either way — only the short-circuit proves the gate
+  // was read.
+  const result = await checkAllPrerequisites({
+    env: envFrom({ VIBE_SKIP_PREREQ_CHECK: "true" }),
+  });
+  assertEquals(result.ok, true);
+  assertEquals(result.results.length, 1);
+  assertEquals(result.results[0]!.message, "Skipped prerequisite checks");
 });
 
-Deno.test("checkAllPrerequisites - reads VIBE_SKIP_AUTH_CHECK from env", async () => {
-  const original = Deno.env.get("VIBE_SKIP_AUTH_CHECK");
-  try {
-    Deno.env.set("VIBE_SKIP_AUTH_CHECK", "true");
-    // With all tools available but auth would fail without skip
-    const allTools = ["git", "deno", "jq", "timeout"];
-    // gh is in the list but won't pass auth without the skip flag
-    const result = await checkAllPrerequisites(
-      containerReadyOpts([...allTools, "gh", "claude"]),
-    );
-    assertEquals(result.ok, true);
-  } finally {
-    if (original) {
-      Deno.env.set("VIBE_SKIP_AUTH_CHECK", original);
-    } else {
-      Deno.env.delete("VIBE_SKIP_AUTH_CHECK");
-    }
-  }
+Deno.test("checkAllPrerequisites - reads VIBE_SKIP_AUTH_CHECK from env (Issue #962)", async () => {
+  // A host carrying every tool except `gh`: the auth check is the only thing
+  // between it and a pass, so the flag alone decides the outcome.
+  const unauthenticated = ["git", "deno", "jq", "timeout", "claude"];
+  const result = await checkAllPrerequisites({
+    ...containerReadyOpts(unauthenticated),
+    env: envFrom({ VIBE_SKIP_AUTH_CHECK: "true" }),
+  });
+  assertEquals(result.ok, true);
+
+  // Prove the flag is what carried it: the identical host with an empty
+  // environment fails on the very check the flag skipped.
+  const unskipped = await checkAllPrerequisites({
+    ...containerReadyOpts(unauthenticated),
+    env: emptyEnv,
+  });
+  assertEquals(unskipped.ok, false, "without the flag the auth check runs");
+});
+
+Deno.test("checkAllPrerequisites - the gates are read through the injected lookup alone (Issue #962)", async () => {
+  // The names asked for, recorded. A module that read either gate off the
+  // process would never ask this lookup for it, and the assertions below name
+  // exactly which gate went missing.
+  const asked: string[] = [];
+  const recording: EnvLookup = (name) => {
+    asked.push(name);
+    return undefined;
+  };
+  await checkAllPrerequisites({
+    ...containerReadyOpts(["git", "deno", "jq", "timeout"]),
+    env: recording,
+  });
+  assertEquals(asked.includes("VIBE_SKIP_PREREQ_CHECK"), true, asked.join(","));
+  assertEquals(asked.includes("VIBE_SKIP_AUTH_CHECK"), true, asked.join(","));
 });

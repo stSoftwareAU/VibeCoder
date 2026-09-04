@@ -46,6 +46,7 @@ import {
   CLAUDE_PROVIDER_ID,
 } from "../lib/agent_provider.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import { readDeploymentImageSelection } from "../lib/container_image_selection.ts";
 import {
   type ContainerRuntimeDescriptor,
@@ -116,11 +117,23 @@ export interface PrerequisiteOptions {
    * default provider alone applies, so every existing caller is unchanged.
    */
   agentProviders?: readonly string[];
+  /**
+   * Environment lookup for the `VIBE_*` gates (Issue #962).
+   *
+   * `VIBE_SKIP_PREREQ_CHECK`, `VIBE_SKIP_AUTH_CHECK` and the run mode's own
+   * `VIBE_RUN_MODE` are read through this rather than off the process, so a
+   * test states the host environment it is probing instead of mutating the
+   * one every parallel worker shares (Issue #880, plan in #944). Defaults to
+   * the process environment, so every production caller is unchanged.
+   */
+  env?: EnvLookup;
 }
 
 /** Probe options with the run mode resolved — what the checks work from. */
 interface ResolvedPrerequisiteOptions extends PrerequisiteOptions {
   runMode: RunMode;
+  /** The lookup the gates were read through — never undefined once resolved. */
+  env: EnvLookup;
 }
 
 interface CommandOutput {
@@ -184,13 +197,15 @@ async function defaultRunCommand(cmd: string[]): Promise<CommandOutput> {
 function resolveOptions(
   opts: PrerequisiteOptions,
 ): ResolvedPrerequisiteOptions {
+  const env = opts.env ?? processEnvLookup;
   return {
     ...opts,
+    env,
     skipPrereqCheck: opts.skipPrereqCheck ??
-      (Deno.env.get("VIBE_SKIP_PREREQ_CHECK") === "true"),
+      (env("VIBE_SKIP_PREREQ_CHECK") === "true"),
     skipAuthCheck: opts.skipAuthCheck ??
-      (Deno.env.get("VIBE_SKIP_AUTH_CHECK") === "true"),
-    runMode: opts.runMode ?? resolveRunMode(),
+      (env("VIBE_SKIP_AUTH_CHECK") === "true"),
+    runMode: opts.runMode ?? resolveRunMode({ env }),
   };
 }
 
@@ -534,7 +549,8 @@ export async function checkContainerPrerequisites(
     // providers ever builds, and reports a built image as missing (#743).
     image = await resolveContainerImageReference(
       repoRoot,
-      (await readDeploymentImageSelection({ repoRoot })).options,
+      (await readDeploymentImageSelection({ repoRoot, env: resolved.env }))
+        .options,
     );
   } catch (error) {
     return [runtimeResult, {
