@@ -455,27 +455,30 @@ Deno.test("branch cleanup - cleanupMergedPrBranches with cache reuses fetchMerge
 // ---------------------------------------------------------------------------
 
 /**
- * Run a test body with WORK_DIR pointed at a throwaway directory so
- * emitSelfHealEventAuto cannot forge events into the production
- * self-heal log (Issue #4250).
+ * Run a test body against a throwaway work directory, which the sweep is
+ * told about through `CleanupOptions.workDir` so `emitSelfHealEventAuto`
+ * cannot forge events into the production self-heal log (Issue #4250).
+ *
+ * The directory used to be set on the process as `WORK_DIR`, which raced
+ * every other worker sharing it — and, since #4250 made the sink explicit,
+ * sandboxed nothing at all: the emitter stopped reading the environment,
+ * so the variable this helper set was no longer consulted by anything.
+ * Passing the directory is both parallel-safe and an actual sandbox
+ * (Issue #966).
  */
 async function withSandboxedWorkDir(
   body: (tempDir: string) => Promise<void>,
 ): Promise<void> {
   const tempDir = await Deno.makeTempDir();
-  const oldWorkDir = Deno.env.get("WORK_DIR");
-  Deno.env.set("WORK_DIR", tempDir);
   try {
     await body(tempDir);
   } finally {
-    if (oldWorkDir === undefined) Deno.env.delete("WORK_DIR");
-    else Deno.env.set("WORK_DIR", oldWorkDir);
     await Deno.remove(tempDir, { recursive: true });
   }
 }
 
 Deno.test("branch cleanup - a missing branch is skipped before any open-PR assessment (Issue #4255)", async () => {
-  await withSandboxedWorkDir(async () => {
+  await withSandboxedWorkDir(async (workDir) => {
     // The ref probe 404s: the branch was deleted on an earlier cycle. The
     // two-GraphQL-call assessment must never run for it.
     const { ghCommandFn, calls } = createMockGh({
@@ -488,7 +491,7 @@ Deno.test("branch cleanup - a missing branch is skipped before any open-PR asses
     const result = await cleanupMergedPrBranches(
       ["org/repo"],
       "testuser",
-      { ghCommandFn },
+      { ghCommandFn, workDir },
     );
 
     assertEquals(result.ok, true);
@@ -510,7 +513,7 @@ Deno.test("branch cleanup - a missing branch is skipped before any open-PR asses
 });
 
 Deno.test("branch cleanup - the ref probe runs before the assessment for a live branch (Issue #4255)", async () => {
-  await withSandboxedWorkDir(async () => {
+  await withSandboxedWorkDir(async (workDir) => {
     const { ghCommandFn, calls } = createMockGh({
       "--state merged": JSON.stringify([
         { number: 8, title: "Fix issue 8", headRefName: "issue-8-fix" },
@@ -523,7 +526,7 @@ Deno.test("branch cleanup - the ref probe runs before the assessment for a live 
     const result = await cleanupMergedPrBranches(
       ["org/repo"],
       "testuser",
-      { ghCommandFn },
+      { ghCommandFn, workDir },
     );
 
     assertEquals(result.ok, true);
@@ -546,6 +549,62 @@ Deno.test("branch cleanup - the ref probe runs before the assessment for a live 
   });
 });
 
+Deno.test("branch cleanup - the sweep's self-heal events land in the injected work dir (Issue #966)", async () => {
+  const { setSelfHealEventsWorkDir } = await import(
+    "../lib/self_heal_events.ts"
+  );
+  await withSandboxedWorkDir(async (workDir) => {
+    // Unwired sink: without the option the sweep emits nothing at all
+    // (Issue #4250), so anything that appears under `workDir` got there
+    // through the parameter and through nothing else.
+    setSelfHealEventsWorkDir(undefined);
+    try {
+      const { ghCommandFn } = createMockGh({
+        "--state merged": JSON.stringify([
+          { number: 9, title: "Fix issue 9", headRefName: "issue-9-fix" },
+        ]),
+        "--state open": "",
+        "git/ref/heads/issue-9-fix": '{"ref": "refs/heads/issue-9-fix"}',
+        "-X DELETE": "",
+      });
+      const result = await cleanupMergedPrBranches(
+        ["org/repo"],
+        "testuser",
+        { ghCommandFn, workDir },
+      );
+      assertEquals(result.ok, true);
+
+      const log = await Deno.readTextFile(`${workDir}/logs/self-heal.jsonl`);
+      assertStringIncludes(log, "merged_branch_delete");
+      assertStringIncludes(log, "issue-9-fix");
+    } finally {
+      setSelfHealEventsWorkDir(undefined);
+    }
+  });
+
+  // And with no directory passed and no sink wired, the same sweep writes
+  // nowhere — the guarantee #4250 bought, which the parameter must not
+  // quietly undo.
+  await withSandboxedWorkDir(async (workDir) => {
+    setSelfHealEventsWorkDir(undefined);
+    const { ghCommandFn } = createMockGh({
+      "--state merged": JSON.stringify([
+        { number: 9, title: "Fix issue 9", headRefName: "issue-9-fix" },
+      ]),
+      "--state open": "",
+      "git/ref/heads/issue-9-fix": '{"ref": "refs/heads/issue-9-fix"}',
+      "-X DELETE": "",
+    });
+    const result = await cleanupMergedPrBranches(
+      ["org/repo"],
+      "testuser",
+      { ghCommandFn },
+    );
+    assertEquals(result.ok, true);
+    assertEquals([...Deno.readDirSync(workDir)], []);
+  });
+});
+
 Deno.test("branch cleanup - the sweep watermark suppresses per-branch calls on the next cycle (Issue #4255)", async () => {
   await withSandboxedWorkDir(async (tempDir) => {
     const watermarkPath = `${tempDir}/merged_sweep_watermarks.json`;
@@ -562,6 +621,7 @@ Deno.test("branch cleanup - the sweep watermark suppresses per-branch calls on t
     const r1 = await cleanupMergedPrBranches(["org/repo"], "testuser", {
       ghCommandFn: first.ghCommandFn,
       watermarkPath,
+      workDir: tempDir,
     });
     assertEquals(r1.ok, true);
     if (r1.ok) assertEquals(r1.value.deletedCount, 1);
@@ -572,6 +632,7 @@ Deno.test("branch cleanup - the sweep watermark suppresses per-branch calls on t
     const r2 = await cleanupMergedPrBranches(["org/repo"], "testuser", {
       ghCommandFn: second.ghCommandFn,
       watermarkPath,
+      workDir: tempDir,
     });
     assertEquals(r2.ok, true);
     if (r2.ok) {
@@ -607,6 +668,7 @@ Deno.test("branch cleanup - an unsafe skip holds the watermark back so the branc
     const r1 = await cleanupMergedPrBranches(["org/repo"], "testuser", {
       ghCommandFn: first.ghCommandFn,
       watermarkPath,
+      workDir: tempDir,
     });
     assertEquals(r1.ok, true);
     if (r1.ok) {
@@ -639,6 +701,7 @@ Deno.test("branch cleanup - a corrupt watermark file is treated as empty (Issue 
     const result = await cleanupMergedPrBranches(["org/repo"], "testuser", {
       ghCommandFn,
       watermarkPath,
+      workDir: tempDir,
     });
     assertEquals(result.ok, true);
     if (result.ok) assertEquals(result.value.deletedCount, 1);

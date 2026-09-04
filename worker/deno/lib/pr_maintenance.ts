@@ -248,9 +248,17 @@ export interface CiCheckScanOptions extends PrScanOptions {
   /** Maximum retries per check failure (default: 3). */
   maxRetries?: number;
   /**
+   * Work-volume root the default {@link stateDir} is resolved inside
+   * (Issue #966). Omitted in production, where `resolveCiCheckStateDir`
+   * falls back to `WORK_DIR` then `$HOME/auto-issue-work` as it always
+   * has. Ignored when `stateDir` is given.
+   */
+  workDir?: string;
+  /**
    * State directory for retry tracking. Defaults to
-   * {@link resolveCiCheckStateDir} — an absolute path inside the work
-   * directory, never relative to the process cwd (Issue #552).
+   * {@link resolveCiCheckStateDir} of {@link workDir} — an absolute path
+   * inside the work directory, never relative to the process cwd
+   * (Issue #552).
    */
   stateDir?: string;
   /** Function to get a repo's default branch. */
@@ -1034,9 +1042,12 @@ export async function findFailedCiChecks(
     ghCommandFn,
     shuffleRepos,
     maxRetries = 3,
+    // Issue #966: the work directory is a parameter; `WORK_DIR` remains
+    // only as its default, inside `resolveCiCheckStateDir`.
+    workDir,
     // Issue #552: absolute, inside the writable work directory — the old
     // relative default resolved against a read-only cwd in container mode.
-    stateDir = resolveCiCheckStateDir(),
+    stateDir = resolveCiCheckStateDir(workDir),
     getDefaultBranch,
     prAuthors,
     allowedAuthors,

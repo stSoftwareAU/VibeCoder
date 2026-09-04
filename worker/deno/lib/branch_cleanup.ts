@@ -71,6 +71,18 @@ export interface CleanupOptions {
    * callers): every PR in the window is considered, as before.
    */
   watermarkPath?: string;
+  /**
+   * Work-volume root the self-heal events of this sweep are written under
+   * (Issue #966): `${workDir}/logs/self-heal.jsonl`.
+   *
+   * Omitted in production, where the sink the run driver wired once at
+   * entry (`setSelfHealEventsWorkDir`) supplies it. Passing it is how a
+   * caller — a test above all — keeps its events in its own directory
+   * without touching process-wide state; passing nothing emits exactly
+   * what it did before (Issue #4250: an unwired sink emits nothing at all,
+   * never a fallback to the environment).
+   */
+  workDir?: string;
 }
 
 /** Default gh command runner — routed through the shared chokepoint. */
@@ -233,7 +245,7 @@ export async function cleanupMergedPrBranches(
           reason: `${repo} branch ${branchName} not deleted: ` +
             assessment.reason,
           result: "skipped",
-        });
+        }, cleanupOptions.workDir);
         continue;
       }
 
@@ -270,7 +282,7 @@ export async function cleanupMergedPrBranches(
           action: "merged_branch_delete",
           reason: `${repo} branch ${branchName} (PR merged)`,
           result: "failed",
-        });
+        }, cleanupOptions.workDir);
       }
     }
 
@@ -281,7 +293,7 @@ export async function cleanupMergedPrBranches(
         reason: `${repo}: deleted ${mergedDeletedNames.length} merged-PR ` +
           `branch(es): ${summariseBranches(mergedDeletedNames)}`,
         result: "ok",
-      });
+      }, cleanupOptions.workDir);
     }
 
     if (watermarkPath && windowMax > 0) {
@@ -575,7 +587,7 @@ export async function cleanupStaleRemoteBranches(
           reason: `${repo} branch ${branchName} not deleted: ` +
             assessment.reason,
           result: "skipped",
-        });
+        }, cleanupOptions.workDir);
         continue;
       }
 
@@ -643,7 +655,7 @@ export async function cleanupStaleRemoteBranches(
             action: "stale_remote_delete",
             reason: `${repo} branch ${branchName} (merged PR #${mergedPr})`,
             result: "failed",
-          });
+          }, cleanupOptions.workDir);
         }
       }
     }
@@ -655,7 +667,7 @@ export async function cleanupStaleRemoteBranches(
         reason: `${repo}: deleted ${staleDeletedNames.length} stale remote ` +
           `branch(es): ${summariseBranches(staleDeletedNames)}`,
         result: "ok",
-      });
+      }, cleanupOptions.workDir);
     }
   }
 
