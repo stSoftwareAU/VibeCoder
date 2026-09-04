@@ -304,6 +304,13 @@ rewrites `pinned_ref` and all three `pinned_tool_versions` to that release, and
 the next launch installs exactly them. Setup is not part of that loop — see
 [Configuration — The upgrade loop](CONFIGURATION.md#the-upgrade-loop).
 
+**`dynamic` is not the default, and it is for a particular reader.** It stays
+available and supported — typed in at the first prompt — but a host that takes
+the defaults ends up frozen on a tag that cannot afterwards be deleted or moved
+([Release integrity](RELEASE-TAGGING.md#release-integrity)). Choose `dynamic`
+when you are testing Vibe Coder itself, or running a fleet that should move
+together at every launch.
+
 **The setup default is not the load-time default.** Setup offers `frozen` to a
 host being configured; a `.config.json` with **no** `update_mode` key still
 loads as `dynamic`, unchanged — see
