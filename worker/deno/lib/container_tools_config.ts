@@ -2,8 +2,9 @@
  * `.config.json` surface for deployer-supplied container build-time tools
  * (Issue #69, parent #5).
  *
- * A deployment declares the extra tools its container image bakes in — Java and
- * Maven are the first expected use — as a top-level `container_tools` array.
+ * A deployment declares the extra tools its container image bakes in as a
+ * top-level `container_tools` array. The module never learns what they are:
+ * an id, a version, a URL and a digest are all it reads.
  * Each entry is a **declarative archive install**: download → verify SHA-256 →
  * extract → expose `bin` directories on PATH → set `env`. No install commands,
  * no apt packages, no installer scripts.
@@ -27,8 +28,8 @@
  * The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin` entry
  * and `env` value is **relative to that prefix** (`""` is the prefix root). The
  * confinement is enforced here — an absolute path, a `~` prefix, or a `..` that
- * walks above the prefix is rejected — so no spec can aim PATH or `JAVA_HOME`
- * at an arbitrary host path.
+ * walks above the prefix is rejected — so no spec can aim PATH or an
+ * environment variable at an arbitrary host path.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Install deployer-supplied build-time tools (Issue #70, parent #5).
 #
-# The container image can carry extra build-time tools (Java, Maven, …) chosen
-# per deployment via the `.config.json` `container_tools` array. Issue #71
+# The container image can carry extra build-time tools chosen per deployment
+# via the `.config.json` `container_tools` array. This script never learns what
+# they are: an id, a URL and a digest are all it reads. Issue #71
 # already wired the Containerfile to hand that array to this script as a spec
 # file; this script is the generic install step it invokes.
 #
