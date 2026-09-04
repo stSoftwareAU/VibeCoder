@@ -2,10 +2,11 @@
  * One reader for the deployment selections that name the worker image
  * (Issues #743, #749).
  *
- * The image tag is content-derived: `container_tools` (Issue #73) and the
- * enabled `agent_providers` set (Issue #729) are both baked into the image, so
- * both are hashed into its name. The launcher passes both when it resolves the
- * tag to build and run — and two other callers passed neither:
+ * The image tag is content-derived: `container_tools` (Issue #73), the enabled
+ * `agent_providers` set (Issue #729) and the private `container_extension`
+ * directory (Issue #979) are all baked into the image, so all three are hashed
+ * into its name. The launcher passes them when it resolves the tag to build
+ * and run — and two other callers passed none:
  *
  *   - `setup/prerequisites.ts` reported "Worker image vibe-coder:<tag> is not
  *     built yet" on a host whose image *was* built, because it asked for a tag
@@ -18,6 +19,7 @@
  * selections"; each simply had no way to ask. This is that one way to ask, and
  * `container_image_selection_test.ts` pins its answer to the launcher's, so a
  * third input added to the hash later cannot be added to the launcher alone.
+ * `container_extension` (Issue #979) is that third input, and it is read here.
  *
  * Fail-loud, except for an absent configuration: a checkout that has not been
  * set up selects nothing, which is exactly the tag the enumerated files alone
@@ -28,10 +30,11 @@
  */
 
 import { readConfiguredAgentProviderSet } from "./agent_provider_config.ts";
+import { readContainerExtensionSelection } from "./container_extension_config.ts";
 import type { ContainerImageHashOptions } from "./container_image_hash.ts";
 import { parseContainerManifest } from "./container_manifest.ts";
 import { readContainerToolsSelection } from "./container_tools_config.ts";
-import type { ContainerToolSpec } from "../types.ts";
+import type { ContainerExtensionSpec, ContainerToolSpec } from "../types.ts";
 import { resolveHostConfigPath } from "./host_config_path.ts";
 
 /** What one deployment selects, and the image options it implies. */
@@ -46,6 +49,8 @@ export interface DeploymentImageSelection {
   tools: ContainerToolSpec[];
   /** The `AGENT_PROVIDERS` build value, absent for the image's own default. */
   agentProviders?: string;
+  /** The validated extension declaration, absent when none is configured. */
+  containerExtension?: ContainerExtensionSpec;
   /** The configuration file the selections were read from. */
   configFile: string;
 }
@@ -99,12 +104,20 @@ export async function readDeploymentImageSelection(
   options: DeploymentImageSelectionOptions,
 ): Promise<DeploymentImageSelection> {
   const repoRoot = trimRoot(options.repoRoot);
+  const env = options.env ?? ((name: string) => Deno.env.get(name));
   const configFile = options.configFile ?? resolveHostConfigPath({
     baseDir: repoRoot,
-    env: options.env ?? ((name) => Deno.env.get(name)),
+    env,
   });
 
   const { tools } = await readContainerToolsSelection(configFile);
+
+  // The private extension (Issue #979). Read here rather than in each caller
+  // for the same reason the other two are: a caller that skipped it would name
+  // the standard image on a host that builds an extended one.
+  const containerExtension = await readContainerExtensionSelection(configFile, {
+    env,
+  });
 
   // The provider set is stated relative to what the image installs by default,
   // so the manifest is needed to say whether a selection differs from it at
@@ -125,9 +138,11 @@ export async function readDeploymentImageSelection(
     options: {
       containerTools: tools,
       ...(agentProviders ? { agentProviders } : {}),
+      ...(containerExtension ? { containerExtension } : {}),
     },
     tools,
     ...(agentProviders ? { agentProviders } : {}),
+    ...(containerExtension ? { containerExtension } : {}),
     configFile,
   };
 }

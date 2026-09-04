@@ -12,22 +12,26 @@
  * genuinely change what the image contains belong in the list.
  *
  * Not every input is a committed file. The deployer-selected `container_tools`
- * spec (Issue #73, parent #5) and the deployment's coding-agent provider set
- * (Issue #729) are both baked into the image by the build, so they are mixed
+ * spec (Issue #73, parent #5), the deployment's coding-agent provider set
+ * (Issue #729) and its private `container_extension` directory (Issue #979,
+ * parent #933) are all baked into the image by the build, so they are mixed
  * into the hash alongside the enumerated files — two deployments that select
- * different tool sets or different agents must build different images, or one
- * host's cached `vibe-coder:<hash>` silently satisfies another host's
- * requirement and the selected tool, or the selected agent, is quietly
- * missing.
+ * different tool sets, different agents or different extensions must build
+ * different images, or one host's cached `vibe-coder:<hash>` silently
+ * satisfies another host's requirement and the selected tool, the selected
+ * agent, or the operator's own extension is quietly missing.
  *
- * Fails loud: a missing enumerated input throws with the path named, and a
- * malformed tool spec throws with the offending field named, rather than
- * hashing a shorter list and silently producing a different tag.
+ * Fails loud: a missing enumerated input throws with the path named, a
+ * malformed tool spec throws with the offending field named, and an absent or
+ * unreadable extension directory throws with the offending entry named, rather
+ * than hashing a shorter list and silently producing a different tag.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
+import { computeContainerExtensionDigest } from "./container_extension_digest.ts";
 import { assertContainerTools } from "./container_tools_config.ts";
+import type { ContainerExtensionSpec } from "../types.ts";
 
 /** Image name every launcher and test agrees on. */
 export const CONTAINER_IMAGE_NAME = "vibe-coder";
@@ -88,6 +92,18 @@ export const CONTAINER_TOOLS_HASH_INPUT = "container_tools";
  */
 export const AGENT_PROVIDERS_HASH_INPUT = "agent_providers";
 
+/**
+ * Label the deployment's private extension is hashed under (Issue #979).
+ *
+ * Its contents are an operator-owned host directory, not a committed file, so
+ * like the tool spec and the provider set it sits beside
+ * {@link CONTAINER_IMAGE_INPUTS} rather than inside it. What is hashed under
+ * the label is the digest `container_extension_digest.ts` derives from the
+ * directory, so editing any file in it — a `.sql` dump included — moves the
+ * tag and the host rebuilds.
+ */
+export const CONTAINER_EXTENSION_HASH_INPUT = "container_extension";
+
 /** What a caller may mix into the hash beyond the enumerated files. */
 export interface ContainerImageHashOptions {
   /**
@@ -111,6 +127,17 @@ export interface ContainerImageHashOptions {
    * reusing the cached Claude image under an identical tag.
    */
   agentProviders?: string;
+  /**
+   * The deployment's validated `container_extension` declaration (Issue #979),
+   * as `container_extension_config.ts` produces it.
+   *
+   * Absent means this deployment configures no extension, and produces exactly
+   * the tag the enumerated files alone produce — so a fleet that configures
+   * none does not rebuild on upgrade. Any declaration is a different image:
+   * the extension's `Containerfile` builds `FROM` the standard one, so its
+   * contents are part of what the resulting image contains.
+   */
+  containerExtension?: ContainerExtensionSpec;
 }
 
 const encoder = new TextEncoder();
@@ -196,19 +223,21 @@ export function canonicalContainerToolsSpec(raw: unknown): string {
 }
 
 /**
- * Hash the enumerated container-definition inputs and the selected tool spec.
+ * Hash the enumerated container-definition inputs and the deployment's own
+ * selections.
  *
  * Each input contributes its path and byte length as well as its bytes, so
  * moving content between two inputs changes the digest rather than cancelling
- * out. The tool spec contributes under the same framing, and only when the
- * deployment selects tools — the empty case hashes exactly the byte stream it
- * did before Issue #73, so no existing host rebuilds on upgrade.
+ * out. The tool spec, the provider set and the extension digest contribute
+ * under the same framing, each only when the deployment states it — a
+ * deployment that states none hashes exactly the byte stream it did before
+ * Issue #73, so no existing host rebuilds on upgrade.
  *
  * @param repoRoot - Repository root the inputs are resolved against
- * @param options - The deployment's `container_tools` selection, if any
+ * @param options - The deployment's own selections, if any
  * @returns Lowercase hex SHA-256 of the definition
- * @throws When an enumerated input is missing or unreadable, or the tool spec
- *         is malformed
+ * @throws When an enumerated input is missing or unreadable, the tool spec is
+ *         malformed, or the extension directory cannot be hashed
  */
 export async function computeContainerImageHash(
   repoRoot: string,
@@ -244,6 +273,18 @@ export async function computeContainerImageHash(
     push(AGENT_PROVIDERS_HASH_INPUT, encoder.encode(providers));
   }
 
+  // The private extension (Issue #979), last again and only when one is
+  // configured, so a deployment that configures none hashes exactly the byte
+  // stream it did before this issue and no existing host rebuilds.
+  if (options.containerExtension) {
+    push(
+      CONTAINER_EXTENSION_HASH_INPUT,
+      encoder.encode(
+        await computeContainerExtensionDigest(options.containerExtension),
+      ),
+    );
+  }
+
   const total = parts.reduce((sum, part) => sum + part.length, 0);
   const buffer = new Uint8Array(total);
   let offset = 0;
@@ -265,10 +306,10 @@ export async function computeContainerImageHash(
  * tests all call it rather than restating `vibe-coder:<hash>` themselves.
  *
  * @param repoRoot - Repository root the inputs are resolved against
- * @param options - The deployment's `container_tools` selection, if any
+ * @param options - The deployment's own selections, if any
  * @returns `vibe-coder:<short hash>`
- * @throws When an enumerated input is missing or unreadable, or the tool spec
- *         is malformed
+ * @throws When an enumerated input is missing or unreadable, the tool spec is
+ *         malformed, or the extension directory cannot be hashed
  */
 export async function resolveContainerImageReference(
   repoRoot: string,

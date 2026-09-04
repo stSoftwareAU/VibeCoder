@@ -262,8 +262,9 @@ it would invalidate the image on every commit:
 | `worker/deno/deno.lock`   | The dependency set the image caches          |
 | `container_tools` (`.config.json`) | The extra tools this deployment bakes in |
 | `agent_providers` (`.config.json`) | The coding-agent CLIs this deployment bakes in |
+| `container_extension` (`.config.json`) | The private extension directory this deployment builds on top |
 
-The last two are not committed files. `container_tools` is the deployment's own
+The last three are not committed files. `container_tools` is the deployment's own
 selection (see
 [Deployer-supplied build-time tools](CONTAINER-IMAGE.md#deployer-supplied-build-time-tools)),
 and the
@@ -285,7 +286,26 @@ that is already the image's default (`container/tools.json`
 `installedProviders`) passes no argument and leaves the tag exactly where it
 was.
 
-**Every caller reads both selections through one reader.** Because the tag is
+`container_extension` is a whole **directory**, not a value (Issue #979). The
+operator syncs their own private repository into it — a `Containerfile` built
+`FROM` the standard image, optionally a start script, and whatever the build
+copies in beside them. `container_extension_digest.ts` reduces the directory to
+one digest and the tag mixes that digest in, so editing **any** file under it
+— a `.sql` dump or a `Jenkinsfile` included — rebuilds, which is the point:
+those bytes end up in the image. The digest covers the declared `containerfile`
+and `start` too, since pointing the same directory at `Containerfile.dev` is a
+different image; it does **not** cover the directory's *path*, so two hosts that
+sync the same extension to different directories share one image. Entries are
+sorted byte-wise and framed by path, mode and length, so adding, deleting,
+renaming, moving bytes between two files, or making `start.sh` executable each
+move the tag, and file bytes reach the digest in 64 KiB chunks so a
+multi-gigabyte dump costs one buffer rather than the worker's heap. An absent
+directory, an unreadable file or a symlink resolving outside the extension
+exits non-zero naming the entry rather than hashing a partial view. A
+deployment that configures no extension gets exactly the tag it got before, so
+no existing host rebuilds.
+
+**Every caller reads all three selections through one reader.** Because the tag is
 derived from the deployment's own configuration, anything that *names* the
 image must read that configuration too — otherwise it names a tag the launcher
 never builds. Setup's worker-image check and the security tabletop runner did
@@ -295,12 +315,15 @@ provider set (Issues #743, #749). Both now call
 as does `container-image-hash` itself, and
 `container_image_selection_test.ts` pins their answer to the launcher's — so a
 fourth input added to the hash cannot be added to the launcher alone.
+`container_extension` was that fourth input, and it went in through the reader.
 
 ```mermaid
 flowchart LR
     I["container/Containerfile<br/>container/entrypoint.sh<br/>container/tools.json<br/>container/install-*.sh<br/>container/providers/*.sh<br/>worker/deno/deno.lock"] --> H["container_image_hash.ts<br/>SHA-256"]
     C["container_tools<br/>(.config.json)"] --> H
     G["agent_providers<br/>(.config.json)"] --> H
+    X["container_extension<br/>(.config.json)"] --> E["container_extension_digest.ts<br/>streaming SHA-256"]
+    E --> H
     W["docs/, worker/ sources,<br/>cloned repos"] -.ignored.-> H
     H --> R["vibe-coder:&lt;short hash&gt;"]
     R --> D{"image present<br/>locally?"}
