@@ -5,6 +5,15 @@
  * allowed-author checks, local cooldowns, and cross-worker cooldowns.
  * Returns candidates sorted oldest-first.
  *
+ * New-work gating (Issue #937): the label routes that *answer* an issue —
+ * `planning`, `question`, `refine-issue`, `grill-me` — remove their own label
+ * when they finish, so re-dispatch is self-limiting and they need no further
+ * gate. A route that *raises a pull request* has no such stop: the label
+ * stays on the issue, `unassign_on_pr_created` unassigns it, and the next
+ * cycle re-runs the whole implementation pipeline against the open PR. Such a
+ * route opts in with `gateNewWork`, which applies the same eligibility gates
+ * `work-on` gets through `lib/new_work_eligibility.ts`.
+ *
  * Authorship gate (Issue #3083): for operational dispatch labels
  * (planning/question/refine-issue/grill-me/needs-revision, plus the operator's
  * `custom_label_prompts` labels — Issue #847) the label *adder* must always be
@@ -41,14 +50,43 @@ import {
   type FindIssuesResult,
   isRateLimitError,
 } from "./issue_finder_common.ts";
+import {
+  buildNewWorkGateContext,
+  filterNewWorkEligible,
+} from "./new_work_eligibility.ts";
+import type { BlockedCandidateInfo } from "./issue_finder_logger.ts";
 import { shuffleArray } from "./array_utils.ts";
+
+/**
+ * Options for {@link findIssuesByLabel}.
+ *
+ * Extends the shared finder options with the opt-in gating switch, which is
+ * meaningful only on this entry point — `findOldestIssue` gates
+ * unconditionally through its candidate collectors.
+ */
+export interface FindIssuesByLabelOptions extends FindIssuesOptions {
+  /**
+   * Apply the `work-on` new-work eligibility gates to this scan
+   * (Issue #937).
+   *
+   * Opt-in, and required of every label route that raises a pull request:
+   * issues carrying a blocking label (`failed` among them) are dropped, and
+   * each survivor must clear milestone occupancy, the closed/merged-PR
+   * block, the open-PR block and dependency blocking before it is
+   * dispatched. Left unset the scan behaves exactly as it did, which is what
+   * the label-removing routes want.
+   */
+  gateNewWork?: boolean;
+}
 
 /**
  * Find issues by a specific label across all configured repositories.
  *
  * @param config - Worker configuration
  * @param label - Label to search for
- * @param filterFailed - Whether to filter out issues with the failed label
+ * @param filterFailed - Whether to filter out issues with the failed label.
+ *   Implied by `options.gateNewWork`, which drops every blocking label
+ *   (Issue #937)
  * @param options - Search options
  * @returns Array of formatted candidate strings (one per line)
  */
@@ -56,7 +94,7 @@ export async function findIssuesByLabel(
   config: WorkerConfig,
   label: string,
   filterFailed: boolean,
-  options: FindIssuesOptions,
+  options: FindIssuesByLabelOptions,
 ): Promise<FindIssuesResult> {
   const ghFn = options.ghCommandFn ?? runGhCommand;
   const cache = options.cache ?? new IssueCache();
@@ -76,6 +114,8 @@ export async function findIssuesByLabel(
     : [...config.repos];
 
   const candidates: IssueCandidate[] = [];
+  /** Issue #937: one entry per issue a gate refused, and which gate. */
+  const blockedDetails: BlockedCandidateInfo[] = [];
 
   // Issue #3083: operational dispatch labels (planning/question/refine-issue/
   // grill-me/needs-revision) drive privileged automation phases. For these the
@@ -108,7 +148,10 @@ export async function findIssuesByLabel(
       continue;
     }
 
-    if (filterFailed) {
+    // Issue #937: a gated scan leaves this to `filterAndSort`, which runs
+    // *after* `cleanStaleLabels` has shed the stale `failed` label a reopened
+    // issue still carries — filtering here first would strand it.
+    if (filterFailed && !options.gateNewWork) {
       issues = issues.filter((i) => !i.labels.includes(config.failedLabel));
     }
 
@@ -142,7 +185,13 @@ export async function findIssuesByLabel(
           (a) => a.toLowerCase() === i.author.toLowerCase(),
         ),
     );
-    const needsCheckNumbers = needsCheck.map((i) => i.number);
+    // Issue #937: a gated scan asks the timeline for every survivor too —
+    // the closed-PR re-label escape hatch and the `ignore-open-prs` check
+    // both read it — so batch the whole set rather than issuing REST calls
+    // per issue behind the gates.
+    const needsCheckNumbers = options.gateNewWork
+      ? issues.map((i) => i.number)
+      : needsCheck.map((i) => i.number);
     const batchedGh = options.timelineBatchRegistry
       ? await options.timelineBatchRegistry.getBatchedGh(
         repo,
@@ -150,6 +199,8 @@ export async function findIssuesByLabel(
         ghFn,
       )
       : await buildBatchedGh(repo, needsCheckNumbers, ghFn);
+
+    const trusted: FilterableIssue[] = [];
 
     for (const issue of issues) {
       // Check author or label authorship
@@ -173,6 +224,27 @@ export async function findIssuesByLabel(
         if (!labelAdded) continue;
       }
 
+      trusted.push(issue);
+    }
+
+    // Issue #937: a PR-producing label route runs the same eligibility gates
+    // `work-on` runs, so an issue whose PR is still open is not dispatched
+    // again and a failing one cools down. The label-removing routes opt out
+    // and keep their historical behaviour.
+    let eligible = trusted;
+    if (options.gateNewWork && trusted.length > 0) {
+      const gateContext = await buildNewWorkGateContext(
+        repo,
+        config,
+        options,
+        batchedGh,
+      );
+      const verdict = await filterNewWorkEligible(trusted, label, gateContext);
+      eligible = verdict.eligible;
+      blockedDetails.push(...verdict.blocked);
+    }
+
+    for (const issue of eligible) {
       candidates.push({
         repo,
         number: issue.number,
@@ -203,7 +275,9 @@ export async function findIssuesByLabel(
   }
 
   if (filtered.length === 0) {
-    return noResult;
+    return blockedDetails.length > 0
+      ? { ...noResult, blockedDetails }
+      : noResult;
   }
 
   // Issue #2775: order `nice`-tier ascending first, then within-tier fair /
@@ -222,5 +296,6 @@ export async function findIssuesByLabel(
     output,
     found: true,
     summary: `Found ${ordered.length} issue(s) with label '${label}'`,
+    ...(blockedDetails.length > 0 ? { blockedDetails } : {}),
   };
 }
