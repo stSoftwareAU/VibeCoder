@@ -25,6 +25,7 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildIssuePrompt } from "../lib/prompt_builder.ts";
 import { workOnIssueExecuteClaude } from "../lib/phases/execute_phase.ts";
 import { buildPriorityDispatchTable } from "../lib/run_core.ts";
+import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
 import type { RunCoreDeps } from "../lib/run_core.ts";
 import type {
   IssueContext,
@@ -112,8 +113,9 @@ Deno.test("custom label dispatch - runs the implementation pipeline with the ope
     assertEquals(seen.length, 1);
     assertEquals(seen[0]!.customPromptPath, path);
     assertEquals(seen[0]!.customPromptLabel, "my-custom-label");
-    // The phase string is untouched — routing and cache hashing stay `issue`.
+    // The rest of the context is handed on untouched.
     assertEquals(seen[0]!.issueNumber, 848);
+    assertEquals(seen[0]!.repo, "org/repo");
   } finally {
     await Deno.remove(path);
   }
@@ -246,23 +248,24 @@ Deno.test("custom label scan - no configured mappings scans nothing", async () =
   assertEquals(scans, 0);
 });
 
+/** A scanner that drives `processFn` for every label and finds no work. */
+const drivingScan: LabelScanner = async (_label, processFn) => {
+  await processFn(issueContext(buildDefaultWorkerConfig()), {
+    ghClient: {} as never,
+    logger: recordingLogger([]),
+    deps: createMockDeps(),
+  });
+  return { processed: false };
+};
+
 Deno.test("custom label scan - each label is wired to its own mapping's prompt", async () => {
   const first = await writeTempPrompt(CUSTOM_TEMPLATE);
   const second = await writeTempPrompt(CUSTOM_TEMPLATE);
+  await Deno.remove(second);
   try {
-    const scan: LabelScanner = async (_label, processFn) => {
-      await processFn(issueContext(buildDefaultWorkerConfig()), {
-        ghClient: {} as never,
-        logger: recordingLogger([]),
-        deps: createMockDeps(),
-      });
-      return { processed: false };
-    };
-
     // The orchestrator is not injectable through the scanner, so assert the
     // wiring through the prompt each dispatch loaded: a deleted file names its
     // own label and path in the throw.
-    await Deno.remove(second);
     const error = await assertRejects(
       () =>
         dispatchCustomLabelPrompts(
@@ -270,7 +273,7 @@ Deno.test("custom label scan - each label is wired to its own mapping's prompt",
             { label: "second-label", promptPath: second },
             { label: "first-label", promptPath: first },
           ],
-          scan,
+          drivingScan,
         ),
       Error,
     );
@@ -279,6 +282,97 @@ Deno.test("custom label scan - each label is wired to its own mapping's prompt",
   } finally {
     await Deno.remove(first);
   }
+});
+
+Deno.test("custom label scan - a broken prompt does not starve the labels behind it", async () => {
+  const broken = await writeTempPrompt(CUSTOM_TEMPLATE);
+  const healthy = await writeTempPrompt(CUSTOM_TEMPLATE);
+  await Deno.remove(broken);
+  try {
+    const scanned: string[] = [];
+    const faults: string[] = [];
+    const scan: LabelScanner = async (label, processFn) => {
+      scanned.push(label);
+      await processFn(issueContext(buildDefaultWorkerConfig()), {
+        ghClient: {} as never,
+        logger: recordingLogger([]),
+        deps: createMockDeps(),
+      });
+      return { processed: false };
+    };
+
+    await assertRejects(
+      () =>
+        dispatchCustomLabelPrompts(
+          [
+            { label: "broken-label", promptPath: broken },
+            { label: "healthy-label", promptPath: healthy },
+          ],
+          scan,
+          { onFault: (fault) => faults.push(fault.message) },
+        ),
+      Error,
+    );
+
+    assertEquals(scanned, ["broken-label", "healthy-label"]);
+    assertEquals(faults.length, 1);
+    assertStringIncludes(faults[0]!, "broken-label");
+  } finally {
+    await Deno.remove(healthy);
+  }
+});
+
+Deno.test("custom label scan - work done elsewhere still reports processed, with the fault surfaced", async () => {
+  const broken = await writeTempPrompt(CUSTOM_TEMPLATE);
+  await Deno.remove(broken);
+
+  const faults: string[] = [];
+  const scan: LabelScanner = async (label, processFn) => {
+    if (label === "broken-label") {
+      await processFn(issueContext(buildDefaultWorkerConfig()), {
+        ghClient: {} as never,
+        logger: recordingLogger([]),
+        deps: createMockDeps(),
+      });
+      return { processed: false };
+    }
+    return { processed: true };
+  };
+
+  const result = await dispatchCustomLabelPrompts(
+    [
+      { label: "broken-label", promptPath: broken },
+      { label: "working-label", promptPath: "/opt/prompts/working.md" },
+    ],
+    scan,
+    { onFault: (fault) => faults.push(fault.message) },
+  );
+
+  assertEquals(result, { processed: true });
+  assertEquals(faults.length, 1, "the fault must still be reported loudly");
+});
+
+Deno.test("custom label scan - a non-prompt failure propagates immediately", async () => {
+  const scanned: string[] = [];
+  const scan: LabelScanner = (label) => {
+    scanned.push(label);
+    return Promise.reject(new Error("API rate limit exceeded"));
+  };
+
+  const error = await assertRejects(
+    () =>
+      dispatchCustomLabelPrompts(
+        [
+          { label: "first-label", promptPath: "/opt/prompts/first.md" },
+          { label: "second-label", promptPath: "/opt/prompts/second.md" },
+        ],
+        scan,
+      ),
+    Error,
+    "API rate limit exceeded",
+  );
+  assertEquals(error.name, "Error");
+  assertEquals(scanned, ["first-label"], "the scan stops at the fault");
 });
 
 // --- Execute phase pass-through -------------------------------------------
@@ -376,6 +470,53 @@ function tableDeps(
     ...extra,
   } as RunCoreDeps;
 }
+
+Deno.test("production wiring - the handler is wired only when a mapping is configured", async () => {
+  const path = await writeTempPrompt(CUSTOM_TEMPLATE);
+  try {
+    const baseOptions = {
+      repoDir: "/tmp/test-repo",
+      workDir: "/tmp/test-work",
+      githubUser: "test-user",
+      logger: recordingLogger([]),
+    };
+
+    const unconfigured = await createProductionRunCoreDeps({
+      ...baseOptions,
+      config: buildDefaultWorkerConfig(),
+    });
+    try {
+      assertEquals(
+        unconfigured.deps.findAndProcessCustomLabelPrompts,
+        undefined,
+        "an unconfigured fleet must not gain the priority",
+      );
+    } finally {
+      unconfigured.cleanup();
+    }
+
+    const withMapping = buildDefaultWorkerConfig();
+    withMapping.customLabelPrompts = [
+      { label: "my-custom-label", promptPath: path },
+    ];
+    const configured = await createProductionRunCoreDeps({
+      ...baseOptions,
+      config: withMapping,
+    });
+    try {
+      assertEquals(
+        typeof configured.deps.findAndProcessCustomLabelPrompts,
+        "function",
+      );
+      const table = buildPriorityDispatchTable(configured.deps);
+      assert(table.some((h) => h.name === "Custom Label Prompts"));
+    } finally {
+      configured.cleanup();
+    }
+  } finally {
+    await Deno.remove(path);
+  }
+});
 
 Deno.test("priority table - no custom label mappings leaves the ladder unchanged", () => {
   const table = buildPriorityDispatchTable(tableDeps());

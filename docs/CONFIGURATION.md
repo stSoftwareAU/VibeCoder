@@ -480,8 +480,8 @@ identically ($5 / $25 per MTok), so cost tracking is unaffected.
 `custom_label_prompts` maps a GitHub label to a **non-public prompt template
 file** — an absolute path on the host, outside the public repository — so an
 operator can extend the Vibe Coder with private prompts without publishing
-them. Add the file, add the mapping, apply the label — the Vibe Coder runs it
-end to end.
+them. Add the file, add the mapping, apply the label — the Vibe Coder works the
+issue with that prompt and raises a PR.
 
 ```json
 {
@@ -552,15 +552,24 @@ flowchart LR
   path is read as-is.
 - **The issue text stays untrusted.** The operator's file is configuration, so
   it is not fenced and its immutability is not checked — it is theirs to edit.
-  The issue title, labels, body and comments it renders around **are** fenced
-  in this run's nonce boundary, with the same boundary-integrity instruction the
-  built-in template gets.
+  The issue title, labels and body it renders around **are** fenced in this
+  run's nonce boundary, with the same boundary-integrity instruction the
+  built-in template gets. (As for `work-on`, issue comments are not part of the
+  implementation prompt at all.)
 - **Fail loud at dispatch, never a fallback.** A file that has become missing,
   unreadable, empty or invalid between config load and dispatch fails the run
   with the label and path named. The built-in `issue` template is never
   substituted for an operator's prompt, and the issue is never silently skipped.
-- **The file is part of the prompt-cache key.** Editing it changes the cached
-  system prompt, so a stale prompt is never re-served.
+- **The file is part of the prompt-cache key.** Where a run builds through the
+  prompt cache, the file's content joins the SHA, so editing it invalidates the
+  cached system prompt rather than re-serving a stale one.
+- **A broken mapping never starves the others.** The remaining configured labels
+  are still scanned, each fault is logged as an error naming its label and path,
+  and the pass fails when nothing else was worked.
+- **Container run mode: the path must be reachable inside the container.** The
+  mount set is fixed (checkout, work dir, staged config, credentials), so put
+  the prompt file where one of those mounts reaches it — an arbitrary host path
+  is not visible to the worker and fails config load.
 - **Default = off.** With no mapping configured the priority row does not exist
   and the ladder is unchanged.
 

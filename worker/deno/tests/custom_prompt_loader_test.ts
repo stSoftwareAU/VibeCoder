@@ -44,19 +44,17 @@ Deno.test("custom prompt loader - a missing file fails loud naming path and labe
   assertStringIncludes(result.error.message, "missing or unreadable");
 });
 
-Deno.test("custom prompt loader - an unreadable file fails loud", async () => {
-  const path = await writeTempPrompt(VALID_TEMPLATE);
+Deno.test("custom prompt loader - a path that is not a readable file fails loud", async () => {
+  // A directory, not a permission bit: running as root defeats `chmod 000`,
+  // and a test that asserts nothing under root is not a test.
+  const path = await Deno.makeTempDir();
   try {
-    await Deno.chmod(path, 0o000);
-    const result = await loadCustomPromptTemplate(path);
-    // Running as root defeats the permission bit; only assert when the read
-    // genuinely failed, so the suite is deterministic in both containers.
-    if (!result.ok) {
-      assertStringIncludes(result.error.message, path);
-      assertStringIncludes(result.error.message, "missing or unreadable");
-    }
+    const result = await loadCustomPromptTemplate(path, "my-custom-label");
+    assertEquals(result.ok, false);
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, path);
+    assertStringIncludes(result.error.message, "missing or unreadable");
   } finally {
-    await Deno.chmod(path, 0o600);
     await Deno.remove(path);
   }
 });

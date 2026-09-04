@@ -31,6 +31,21 @@ import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { workOnIssue } from "./issue_worker.ts";
 import { loadCustomPromptTemplate } from "./custom_prompt_loader.ts";
 
+/**
+ * A mapped prompt file that is missing, unreadable, empty or invalid.
+ *
+ * Typed so the scan loop can tell "this operator's file is broken" from any
+ * other failure (a `gh` fault, a rate limit) and keep the two apart: the first
+ * is reported per mapping and re-raised once the scan finishes, the second
+ * propagates immediately to the dispatcher that knows how to handle it.
+ */
+export class CustomPromptDispatchError extends Error {
+  constructor(message: string, readonly label: string) {
+    super(message);
+    this.name = "CustomPromptDispatchError";
+  }
+}
+
 /** Dependencies for one custom-label dispatch. */
 export interface CustomLabelDispatchDeps {
   logger: Logger;
@@ -77,11 +92,12 @@ export async function processCustomLabelIssue(
     mapping.label,
   );
   if (!template.ok) {
-    throw new Error(
+    throw new CustomPromptDispatchError(
       `Refusing to dispatch ${ctx.repo}#${ctx.issueNumber} for custom label ` +
         `'${mapping.label}': ${template.error.message}. The built-in issue ` +
         `template is never substituted for an operator's prompt — fix ` +
         `${mapping.promptPath} or remove the mapping from .config.json.`,
+      mapping.label,
     );
   }
 
@@ -125,24 +141,65 @@ export type LabelScanner = (
  * nothing and reports `processed: false`, which is why the priority row itself
  * is only wired when the operator configured at least one.
  *
+ * A broken prompt file does not starve the labels behind it: the fault is
+ * reported through `onFault` as it happens, the remaining mappings are still
+ * scanned, and — when nothing else was worked — it is raised so the handler
+ * fails rather than reporting a quiet idle pass. What it must never do is let
+ * one operator's typo silently block every other custom label.
+ *
  * @param mappings - The validated `custom_label_prompts` list
  * @param scan - The label finder (production: `findAndProcessByLabel`)
- * @param deadlineEpochMs - Watchdog deadline for the calling handler
+ * @param options.deadlineEpochMs - Watchdog deadline for the calling handler
+ * @param options.onFault - Reports each broken mapping as it is found
  * @returns Whether an issue was found and worked
+ * @throws When a mapped prompt file could not be dispatched and no other
+ *   custom label produced work this pass
  */
 export async function dispatchCustomLabelPrompts(
   mappings: readonly CustomLabelPromptMapping[],
   scan: LabelScanner,
-  deadlineEpochMs?: number,
+  options: {
+    deadlineEpochMs?: number;
+    onFault?: (fault: CustomPromptDispatchError) => void;
+  } = {},
 ): Promise<{ processed: boolean }> {
+  const faults: CustomPromptDispatchError[] = [];
+
   for (const mapping of mappings) {
-    const result = await scan(
-      mapping.label,
-      (ctx, processorDeps) =>
-        processCustomLabelIssue(ctx, mapping, processorDeps),
-      deadlineEpochMs,
-    );
+    let result: { processed: boolean };
+    try {
+      result = await scan(
+        mapping.label,
+        (ctx, processorDeps) =>
+          processCustomLabelIssue(ctx, mapping, processorDeps),
+        options.deadlineEpochMs,
+      );
+    } catch (error) {
+      // Only a broken operator prompt is held over; anything else — a `gh`
+      // fault, a primary rate limit — belongs to the dispatcher, now.
+      if (!(error instanceof CustomPromptDispatchError)) throw error;
+      faults.push(error);
+      options.onFault?.(error);
+      continue;
+    }
+    // Work done this pass wins the return value; the faults above were already
+    // reported, and an unfixed file surfaces again on the next pass.
     if (result.processed) return { processed: true };
   }
+
+  if (faults.length > 0) throw aggregateFault(faults);
   return { processed: false };
+}
+
+/** One error naming every mapping whose prompt file could not be dispatched. */
+function aggregateFault(
+  faults: readonly CustomPromptDispatchError[],
+): CustomPromptDispatchError {
+  if (faults.length === 1) return faults[0]!;
+  return new CustomPromptDispatchError(
+    `${faults.length} custom label prompts could not be dispatched: ${
+      faults.map((fault) => fault.message).join(" | ")
+    }`,
+    faults.map((fault) => fault.label).join(","),
+  );
 }

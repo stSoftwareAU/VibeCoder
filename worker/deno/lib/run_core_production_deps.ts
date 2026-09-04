@@ -2435,7 +2435,12 @@ export async function createProductionRunCoreDeps(
           const value = await dispatchCustomLabelPrompts(
             config.customLabelPrompts,
             findAndProcessByLabel,
-            opts?.deadlineEpochMs,
+            {
+              ...(opts?.deadlineEpochMs !== undefined
+                ? { deadlineEpochMs: opts.deadlineEpochMs }
+                : {}),
+              onFault: (fault) => logger.error(fault.message),
+            },
           );
           return { ok: true as const, value };
         },
