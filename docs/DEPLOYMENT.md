@@ -493,6 +493,8 @@ VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY="sk-ant-your_key" \
 
 Set only the variables for the vendors you use: an unset provisioning variable leaves that provider unprovisioned and never disturbs an existing credential file.
 
+`setup.sh` writes exactly one credential file per vendor, and there is no provisioning variable for a second one. A host holding several Claude subscriptions may add `claude/provider-2.env`, `provider-3.env` … by hand — each run then starts on whichever has the most budget left — but that is an operator's own edit, with no launcher, crontab or `VIBE_LAUNCHAGENT_*` change behind it ([Several Claude tokens](SETUP.md#several-claude-tokens)).
+
 | Variable | Description |
 |----------|-------------|
 | `VIBE_CREDENTIAL_DIR` | Credential directory (default: `~/.vibe-coder/credentials`) |
