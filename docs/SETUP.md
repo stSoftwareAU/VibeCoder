@@ -663,6 +663,30 @@ table mirrors `vibe_provider_credential_table` in `setup.sh` and the
 descriptors in `worker/deno/lib/agent_provider.ts`, which remain the source of
 truth — a quality-gate test fails when they drift.
 
+#### Several Claude tokens
+
+An operator holding more than one Claude subscription may add extra token
+files beside `claude/provider.env`, named `provider-2.env`, `provider-3.env`
+and so on, each holding a `CLAUDE_CODE_OAUTH_TOKEN`. They are ordinary
+credential files: the same `600` permissions, the same read-only mount, and
+every one of them is permission-checked by the preflight. The worker exports
+exactly **one** of them into a run, so an unused subscription's token never
+reaches the coding agent's environment. No other vendor takes extra files, and
+a metered `ANTHROPIC_API_KEY` is not one of these: a host with one credential —
+key or token — behaves exactly as it always has.
+
+What that guarantee does and does not cover: the coding agent's environment
+carries the selected token and no other, and a suffixed or indexed variant of
+an accepted variable name (`CLAUDE_CODE_OAUTH_TOKEN_2`) is refused rather than
+inherited. It is an **environment** guarantee. The whole `claude/`
+sub-directory is mounted read-only into the container, so a process with
+filesystem read access inside the container can read every token file there,
+selected or not — recorded as residual risk R9 in
+[the threat model](THREAT-MODEL.md#-residual-risks). That is the same exposure
+a single-token host has always carried; more tokens raise its count, not its
+kind. Add a second subscription knowing that its blast radius is the container,
+not the environment policy.
+
 ### Permissions
 
 On macOS and Linux, directories are owner-only `700` and files `600`
@@ -727,6 +751,7 @@ each failure it can name maps to a specific hand-editing mistake:
 | `github-credentials-missing` | `gh/hosts.yml` is absent, or present without a usable inline token: copied from a macOS Keychain-backed `gh` install (no `oauth_token:` line), a blank or empty-quoted token value, or the file/token line otherwise malformed. |
 | `provider-credentials-missing` | The named vendor's `provider.env` is absent, uses a variable name that vendor does not accept (see the table above), or carries a blank value. The failure names the vendor and the variable that provisions it, so a multi-vendor host knows which file to fix. |
 | `credential-permissions-too-open` | A credential file is group- or world-readable — `chmod 600` was skipped, or the file was created with a default umask (e.g. mode `644`). The message names the file and the exact `chmod` to run. |
+| `provider-token-file-unrecognised` | An additional token file (`claude/provider-2.env` and friends) holds no variable name the vendor accepts — a typo in the variable, or a bare token with no `NAME=` at all. The message names the file and the variables it could have used. It is reported rather than skipped, so a token you added is never silently ignored. |
 | `unexpected-credential-material` | A stray entry sits directly inside the credential directory: a backup copy, a notes file, or a sub-directory for a vendor that is not enabled. Only `gh/` and the enabled providers' sub-directories belong there (`.DS_Store` is ignored). |
 
 Two notes on reading a result. First, `github-credentials-missing` and

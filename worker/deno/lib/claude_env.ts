@@ -17,6 +17,28 @@
  * somebody notices. Root-cause fix: the secret is not exposed to the agent at
  * all, so it cannot be exfiltrated regardless of any downstream redaction.
  *
+ * ## One token reaches the child, never the pool (Issue #920, parent #902)
+ *
+ * A host may now hold several Anthropic subscription tokens as separate files;
+ * the worker exports exactly ONE of them (`credential_preflight.ts`, chosen by
+ * `claude_token_selection.ts`), under the base variable name. So the child's
+ * environment carries at most one Anthropic credential per accepted name, and
+ * anything *else* Anthropic-shaped in the parent — an operator's second token
+ * parked in `CLAUDE_CODE_OAUTH_TOKEN_2`, a spare `ANTHROPIC_API_KEY_BACKUP` —
+ * is a credential this run did not select. {@link CLAUDE_ENV_SECRET_ALLOWLIST}
+ * exempts the base names and ONLY the base names: `agent_env.ts` denies every
+ * suffixed or indexed variant of a listed name outright, so no allowlist edit
+ * and no narrowing of the shape pattern can hand the child a second token.
+ *
+ * Residual risk (accepted, R9 in `docs/THREAT-MODEL.md`): the container mounts
+ * the provider's whole credential sub-directory read-only, so a process with
+ * filesystem read access inside the container can read the unselected token
+ * FILES regardless of this environment policy. Several tokens raise the count
+ * of that exposure, not its class — it is equally true of the single token a
+ * one-token host has always mounted. Isolating the credential mount from the
+ * agent subprocess is deliberately out of scope here and belongs in its own
+ * issue.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -61,19 +83,40 @@ export const CLAUDE_ENV_DENYLIST: readonly string[] = [
 export const CLAUDE_ENV_SECRET_NAME_PATTERN = AGENT_ENV_SECRET_NAME_PATTERN;
 
 /**
+ * The variable names the `claude` CLI reads its own credential from.
+ *
+ * The same three the provider descriptor accepts in a credential file
+ * (`agent_provider.ts`), stated once here because they are also the only
+ * Anthropic names the child may inherit. Exactly one of them carries the
+ * token this run selected; every variant of them is somebody else's
+ * (Issue #920).
+ */
+export const CLAUDE_CREDENTIAL_ENV_VARS: readonly string[] = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+];
+
+/**
  * Secret-shaped names the child genuinely needs (Issue #3707).
  *
  * `GH_TOKEN` / `GITHUB_TOKEN` authenticate the agent's `gh` calls; the
  * Anthropic credentials authenticate the `claude` CLI itself. Without these
  * the child cannot do its job at all, so they are exempt from the
  * shape-based denial above.
+ *
+ * The exemption is exact-match and nothing more (Issue #920). A pooled host
+ * holds several Anthropic tokens and the run selected one of them, so a name
+ * that merely *starts* with one of these — `CLAUDE_CODE_OAUTH_TOKEN_2`,
+ * `ANTHROPIC_API_KEY_BACKUP` — names a credential the run did not select and
+ * is denied by {@link isDeniedClaudeEnvVar}. That denial is explicit in
+ * `agent_env.ts`, not a side effect of the shape pattern happening to contain
+ * `TOKEN` and `API_KEY`.
  */
 export const CLAUDE_ENV_SECRET_ALLOWLIST: readonly string[] = [
   "GH_TOKEN",
   "GITHUB_TOKEN",
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "CLAUDE_CODE_OAUTH_TOKEN",
+  ...CLAUDE_CREDENTIAL_ENV_VARS,
 ];
 
 /**
