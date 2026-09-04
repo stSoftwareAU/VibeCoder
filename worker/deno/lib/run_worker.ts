@@ -66,6 +66,10 @@ import {
 import type { AgentProviderDescriptor } from "./agent_provider.ts";
 import { createClaudeBudgetTokenSelector } from "./claude_token_selection.ts";
 import { getGithubUser } from "./claude_runner.ts";
+import {
+  NETWORK_UNAVAILABLE_MARKER,
+  resolveGithubUserWithRetry,
+} from "./github_user_resolution.ts";
 import { formatRunModeRecord, resolveRunHostId } from "./run_mode_record.ts";
 import { assertWorkerIdentity } from "./identity_guard.ts";
 import { getGhTokenScopes } from "./gh_auth.ts";
@@ -308,20 +312,54 @@ export function createDefaultRunWorkerDeps(): RunWorkerDeps {
         selectToken,
       }),
     resolveGithubUser: async () => {
-      const result = await getGithubUser();
-      if (result.ok && result.value) return result.value;
+      // Issue #949: retry a network-class failure before giving up. This is
+      // the first GitHub call of the run, made seconds after the container
+      // comes up, and it used to end the run on one dropped packet — which
+      // on a host behind an intermittent link cost sixteen minutes of
+      // backoff per blip. An auth failure still fails on the first attempt,
+      // because only a human can fix that one.
+      const outcome = await resolveGithubUserWithRetry({
+        onRetry: (attempt, attempts, reason, delayMs) => {
+          logger.warn(
+            `[run-worker] could not resolve the authenticated GitHub user ` +
+              `(attempt ${attempt}/${attempts}): ${reason} — retrying in ` +
+              `${Math.round(delayMs / 1000)}s`,
+          );
+        },
+      });
+      if (outcome.ok) {
+        if (outcome.attempts > 1) {
+          logger.info(
+            `[run-worker] resolved the authenticated GitHub user on attempt ` +
+              `${outcome.attempts}`,
+          );
+        }
+        return outcome.login;
+      }
       // Say WHY, with the configuration that produced it (Issue #509): the
       // read-only-root milestone moved the staged gh config and every run
       // died here reporting only "could not resolve authenticated GitHub
       // user" — gh's own "failed to write config after migration: … read-only
       // file system" reached no log at all.
-      const reason = result.ok
-        ? "gh returned an empty login"
-        : result.error.message;
+      //
+      // Issue #949: name the class too. `network` tells the supervisor to
+      // re-probe soon rather than serve the long backoff meant for a host
+      // that needs a human.
       logger.error(
-        `[run-worker] gh could not resolve the authenticated user: ${reason} ` +
+        `[run-worker] gh could not resolve the authenticated user ` +
+          `(${outcome.kind}, ${outcome.attempts} attempt(s)): ` +
+          `${outcome.reason} ` +
           `(GH_CONFIG_DIR=${Deno.env.get("GH_CONFIG_DIR") ?? "<unset>"})`,
       );
+      if (outcome.kind === "network") {
+        // Read by the supervisor's backoff off the launch log: this host is
+        // not broken, its link is, so the next attempt is due at the base
+        // cadence rather than up the failure ladder.
+        logger.error(
+          `[run-worker] ${NETWORK_UNAVAILABLE_MARKER} — GitHub was ` +
+            `unreachable for every attempt; not a host fault`,
+        );
+      }
       return null;
     },
     assertIdentity: (githubUser, config) => {
