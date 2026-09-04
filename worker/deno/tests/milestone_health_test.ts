@@ -15,6 +15,7 @@ import {
   type MilestoneIssueStatus,
 } from "../lib/milestone_health.ts";
 import { clearDefaultBranchMemoryCache } from "../lib/shell_helpers.ts";
+import { setCachedDefaultBranch } from "../lib/default_branch_cache.ts";
 
 // Issue #1805: milestone_health now reads default-branch through the
 // shared in-process + persistent cache. Reset the in-process cache
@@ -117,6 +118,37 @@ Deno.test("getMilestoneHealth - returns empty report when no repos configured", 
   if (result.ok) {
     assertEquals(result.value.repos.length, 0);
   }
+});
+
+Deno.test("getMilestoneHealth - resolves the default branch from the cache path it is given (Issue #964)", async () => {
+  await withFreshCaches(async (cachePath) => {
+    // A branch name that exists nowhere but this throwaway file. A code
+    // path that ignored `defaultBranchCachePath` and fell back to the
+    // process default would miss the warm entry and ask gh instead.
+    await setCachedDefaultBranch("owner/repo", "sentinel-964-main", cachePath);
+
+    let defaultBranchCalls = 0;
+    const deps: MilestoneHealthDeps = {
+      defaultBranchCachePath: cachePath,
+      repos: ["owner/repo"],
+      ghCommandFn: (args: string[]) => {
+        const key = args.join(" ");
+        if (key.includes(".default_branch")) {
+          defaultBranchCalls += 1;
+          return Promise.resolve("main");
+        }
+        return Promise.resolve("[]");
+      },
+    };
+
+    const result = await getMilestoneHealth(deps);
+    assertEquals(result.ok, true);
+    assertEquals(
+      defaultBranchCalls,
+      0,
+      "the branch must come from the cache path the deps named, not gh",
+    );
+  });
 });
 
 Deno.test("getMilestoneHealth - returns empty report when repo has no milestones", async () => {
