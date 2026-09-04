@@ -258,19 +258,28 @@ the first:
    worked out — no network, or the release-age quarantine has nothing eligible
    yet — the reason is printed and the version is typed by hand.
 
+The conversation prints in the same house style as the rest of setup
+(Issue #870): `ℹ` in blue explains, `✓` in green confirms an answer, `⚠` in
+yellow reports a rejected answer or a fallback taken, and a question that has a
+default shows it in brackets. A question with no default to offer renders bare
+— never a stray `[]`. Colour is emitted only to a terminal, and never when
+`NO_COLOR` is set, so a captured, unstyled run stays byte-clean.
+
 ```text
-  Update mode: 'dynamic' tracks the tip of the default branch and installs the latest tools;
-  'frozen' holds this host at a pinned ref with exact tool versions.
-  Update mode (dynamic/frozen) [frozen]
+ℹ  Update mode: 'dynamic' tracks the tip of the default branch and installs the latest tools;
+   'frozen' holds this host at a pinned ref with exact tool versions.
+   Update mode (dynamic/frozen) [frozen]
+✓  Update mode: frozen.
 
-  Pinned ref: the commit SHA or tag this host is held at.
-  Pinned ref [1.0.7]
-  1.0.7 resolves to 3f2a1b9c4d5e6f708192a3b4c5d6e7f809a1b2c3.
+ℹ  Pinned ref: the commit SHA or tag this host is held at.
+   Pinned ref [1.0.7]
+✓  1.0.7 resolves to 3f2a1b9c4d5e6f708192a3b4c5d6e7f809a1b2c3.
 
-  Tool versions: the exact version this host installs while frozen.
-  Claude CLI version [2.0.76]
-  GitHub CLI (gh) version [2.62.0]
-  Deno version [2.5.4]
+ℹ  Tool versions: the exact version this host installs while frozen.
+   Claude CLI version [2.0.76]
+   GitHub CLI (gh) version [2.62.0]
+   Deno version [2.5.4]
+✓  Pinned Claude CLI 2.0.76, GitHub CLI (gh) 2.62.0, Deno 2.5.4.
 ```
 
 A question that never gets a usable answer after five attempts, or input that
@@ -294,6 +303,13 @@ installs it (`Run ./run.sh upgrade to install it.`). Running `./run.sh upgrade`
 rewrites `pinned_ref` and all three `pinned_tool_versions` to that release, and
 the next launch installs exactly them. Setup is not part of that loop — see
 [Configuration — The upgrade loop](CONFIGURATION.md#the-upgrade-loop).
+
+**`dynamic` is not the default, and it is for a particular reader.** It stays
+available and supported — typed in at the first prompt — but a host that takes
+the defaults ends up frozen on a tag that cannot afterwards be deleted or moved
+([Release integrity](RELEASE-TAGGING.md#release-integrity)). Choose `dynamic`
+when you are testing Vibe Coder itself, or running a fleet that should move
+together at every launch.
 
 **The setup default is not the load-time default.** Setup offers `frozen` to a
 host being configured; a `.config.json` with **no** `update_mode` key still

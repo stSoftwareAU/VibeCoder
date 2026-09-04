@@ -39,6 +39,7 @@ import {
   type HostPlatform,
   normaliseHostPlatform,
 } from "../lib/container_runtime.ts";
+import { terminalStyler } from "../lib/console_style.ts";
 import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import { resolveRunMode, type RunMode } from "../lib/run_mode.ts";
 import {
@@ -201,11 +202,17 @@ async function defaultRunStep(step: InstallStep): Promise<StepResult> {
   }
 }
 
-/** Console reporter used when setup does not supply its own printers. */
+/**
+ * Console reporter used when setup does not supply its own printers.
+ *
+ * The glyphs come from the shared styler (Issue #870) rather than a third
+ * hand-rolled copy of the pairing, so this surface cannot drift from the rest
+ * of setup — and it now colours on a terminal, as the rest of setup does.
+ */
 const consoleReporter: InstallerReporter = {
-  info: (msg) => console.log(`ℹ  ${msg}`),
-  success: (msg) => console.log(`✓  ${msg}`),
-  error: (msg) => console.error(`✗  ${msg}`),
+  info: (msg) => console.log(terminalStyler().info(msg)),
+  success: (msg) => console.log(terminalStyler().success(msg)),
+  error: (msg) => console.error(terminalStyler(Deno.stderr).error(msg)),
 };
 
 /** The host platform, or `null` when it is not one plans are written for. */

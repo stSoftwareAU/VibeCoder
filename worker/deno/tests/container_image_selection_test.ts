@@ -103,9 +103,6 @@ async function launcherImage(root: string): Promise<string> {
     manifest.installedProviders,
     HOST_ENV,
   );
-  const containerExtension = await readContainerExtensionSelection(
-    `${root}/.config.json`,
-  );
   return await resolveContainerImageReference(root, {
     containerTools: tools,
     ...(buildValue ? { agentProviders: buildValue } : {}),
