@@ -12,10 +12,16 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  checkWorkerCredentials,
   cleanupWaitSeconds,
   runWorker,
   type RunWorkerDeps,
 } from "../lib/run_worker.ts";
+import { createClaudeBudgetTokenSelector } from "../lib/claude_token_selection.ts";
+import {
+  CLAUDE_PROVIDER_ID,
+  resolveAgentProvider,
+} from "../lib/agent_provider.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type {
   BootstrapOptions,
@@ -702,4 +708,232 @@ Deno.test("runWorker - records the resolved run mode with the host and run id af
   assert(
     rec.calls.indexOf("bootstrap") < rec.calls.indexOf("record-run-mode"),
   );
+});
+
+// ---------------------------------------------------------------------------
+// Credential preflight wiring: budget-based token selection at worker start
+// (Issue #919, parent #902)
+//
+// What was broken: worker start always exported whichever Claude token
+// discovery listed first, so a host with two subscriptions burned one to
+// exhaustion while the other sat idle. These tests pin the wiring — the winner
+// of the budget probe is the token the run actually carries, the decision is
+// taken exactly once per process start, a single-token host still makes no
+// request at all, and no token value reaches a log line.
+// ---------------------------------------------------------------------------
+
+/** A `200` carrying one well-formed five-hour window, per Issue #918. */
+function budgetHeaders(utilisation: number): Response {
+  return new Response(JSON.stringify({ content: [] }), {
+    headers: {
+      "anthropic-ratelimit-unified-5h-utilization": String(utilisation),
+      "anthropic-ratelimit-unified-5h-reset": "1788483600",
+      "anthropic-ratelimit-unified-representative-claim": "five_hour",
+    },
+  });
+}
+
+/**
+ * Provision a credential directory holding a gh token and the given Claude
+ * token files, then run `fn` against it. Nothing here mutates process state:
+ * the directory, the environment lookup and the setter are all injected.
+ */
+async function withClaudeTokenPool(
+  files: Record<string, string>,
+  fn: (dir: string) => Promise<void>,
+): Promise<void> {
+  const root = await Deno.makeTempDir({ prefix: "run_worker_919_" });
+  const dir = `${root}/credentials`;
+  await Deno.mkdir(`${dir}/gh`, { recursive: true });
+  await Deno.mkdir(`${dir}/claude`, { recursive: true });
+  await Deno.writeTextFile(
+    `${dir}/gh/hosts.yml`,
+    "github.com:\n    oauth_token: gho_worker\n",
+  );
+  for (const [name, content] of Object.entries(files)) {
+    await Deno.writeTextFile(`${dir}/claude/${name}`, content);
+  }
+  if (Deno.build.os !== "windows") {
+    await Deno.chmod(`${dir}/gh/hosts.yml`, 0o600);
+    for (const name of Object.keys(files)) {
+      await Deno.chmod(`${dir}/claude/${name}`, 0o600);
+    }
+  }
+  try {
+    await fn(dir);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+/** An OAuth credential file for the pool. */
+const oauthFile = (value: string) => `CLAUDE_CODE_OAUTH_TOKEN=${value}\n`;
+
+/** Count probe requests and answer each bearer with its own utilisation. */
+function poolFetch(utilisation: Record<string, number>) {
+  const bearers: string[] = [];
+  return {
+    calls: () => bearers.length,
+    fetchFn: (_url: string, init: RequestInit) => {
+      const headers = (init.headers ?? {}) as Record<string, string>;
+      const bearer = (headers["authorization"] ?? "").replace("Bearer ", "");
+      bearers.push(bearer);
+      return Promise.resolve(budgetHeaders(utilisation[bearer] ?? 1));
+    },
+  };
+}
+
+Deno.test("worker start exports the Claude token with the most remaining budget (Issue #919)", async () => {
+  await withClaudeTokenPool({
+    "provider.env": oauthFile("tok-primary"),
+    "provider-2.env": oauthFile("tok-second"),
+    "provider-3.env": oauthFile("tok-third"),
+  }, async (dir) => {
+    // The primary is nearly spent; provider-3 has the most headroom left.
+    const fetcher = poolFetch({
+      "tok-primary": 0.97,
+      "tok-second": 0.55,
+      "tok-third": 0.11,
+    });
+    const exported: Record<string, string> = {};
+    const logs: string[] = [];
+
+    const failure = await checkWorkerCredentials({
+      dir,
+      env: () => undefined,
+      setEnv: (name, value) => {
+        exported[name] = value;
+      },
+      providers: [resolveAgentProvider(CLAUDE_PROVIDER_ID)],
+      log: (line) => logs.push(line),
+      selectToken: createClaudeBudgetTokenSelector({
+        fetchFn: fetcher.fetchFn,
+        now: () => Date.UTC(2026, 8, 4),
+        log: (line) => logs.push(line),
+      }),
+    });
+
+    assertEquals(failure, null, "the preflight passed");
+    assertEquals(exported["CLAUDE_CODE_OAUTH_TOKEN"], "tok-third");
+    assertEquals(fetcher.calls(), 3, "exactly one request per token");
+    assert(
+      logs.some((line) => line.includes("selected provider-3 (#3) of 3")),
+      `the decision was logged: ${logs.join("\n")}`,
+    );
+  });
+});
+
+Deno.test("worker start selects the token once and never re-selects during the run (Issue #919)", async () => {
+  await withClaudeTokenPool({
+    "provider.env": oauthFile("tok-primary"),
+    "provider-2.env": oauthFile("tok-second"),
+  }, async (dir) => {
+    const fetcher = poolFetch({ "tok-primary": 0.9, "tok-second": 0.2 });
+    const logs: string[] = [];
+    const selectToken = createClaudeBudgetTokenSelector({
+      fetchFn: fetcher.fetchFn,
+      now: () => Date.UTC(2026, 8, 4),
+      log: (line) => logs.push(line),
+    });
+    const run = async () => {
+      const exported: Record<string, string> = {};
+      await checkWorkerCredentials({
+        dir,
+        env: () => undefined,
+        setEnv: (name, value) => {
+          exported[name] = value;
+        },
+        providers: [resolveAgentProvider(CLAUDE_PROVIDER_ID)],
+        selectToken,
+      });
+      return exported["CLAUDE_CODE_OAUTH_TOKEN"];
+    };
+
+    assertEquals(await run(), "tok-second");
+    const afterStartup = fetcher.calls();
+    const decisions = logs.filter((l) => l.includes("selected")).length;
+    // Anything later in the run reuses the startup decision: no second round
+    // of probes, and the same token for the whole run.
+    assertEquals(await run(), "tok-second");
+    assertEquals(fetcher.calls(), afterStartup, "no second round of probes");
+    assertEquals(decisions, 1, "selection happened exactly once");
+    assertEquals(
+      logs.filter((l) => l.includes("selected")).length,
+      1,
+      "and still exactly once after the second call",
+    );
+  });
+});
+
+Deno.test("a single-token host makes no budget request at worker start (Issue #919)", async () => {
+  await withClaudeTokenPool({
+    "provider.env": oauthFile("tok-only"),
+  }, async (dir) => {
+    const fetcher = poolFetch({ "tok-only": 0.5 });
+    const exported: Record<string, string> = {};
+    const logs: string[] = [];
+
+    const failure = await checkWorkerCredentials({
+      dir,
+      env: () => undefined,
+      setEnv: (name, value) => {
+        exported[name] = value;
+      },
+      providers: [resolveAgentProvider(CLAUDE_PROVIDER_ID)],
+      log: (line) => logs.push(line),
+      selectToken: createClaudeBudgetTokenSelector({
+        fetchFn: fetcher.fetchFn,
+        now: () => Date.UTC(2026, 8, 4),
+        log: (line) => logs.push(line),
+      }),
+    });
+
+    assertEquals(failure, null);
+    assertEquals(exported["CLAUDE_CODE_OAUTH_TOKEN"], "tok-only");
+    assertEquals(fetcher.calls(), 0, "nothing to choose between — no request");
+    assertEquals(
+      logs.filter((l) => l.includes("claude token")).length,
+      0,
+      "startup is byte-for-byte what it was",
+    );
+  });
+});
+
+Deno.test("no Claude token value reaches worker-start logs (Issue #919)", async () => {
+  const alpha = "sk-ant-oat01-ALPHA-STARTUP-TOKEN-919";
+  const beta = "sk-ant-oat01-BETA-STARTUP-TOKEN-919";
+  await withClaudeTokenPool({
+    "provider.env": oauthFile(alpha),
+    "provider-2.env": oauthFile(beta),
+  }, async (dir) => {
+    const fetcher = poolFetch({ [alpha]: 0.8, [beta]: 0.1 });
+    const logs: string[] = [];
+
+    await checkWorkerCredentials({
+      dir,
+      env: () => undefined,
+      setEnv: () => {},
+      providers: [resolveAgentProvider(CLAUDE_PROVIDER_ID)],
+      log: (line) => logs.push(line),
+      selectToken: createClaudeBudgetTokenSelector({
+        fetchFn: fetcher.fetchFn,
+        now: () => Date.UTC(2026, 8, 4),
+        log: (line) => logs.push(line),
+      }),
+    });
+
+    const captured = logs.join("\n");
+    assert(captured.includes("selected provider-2"), captured);
+    for (const value of [alpha, beta]) {
+      assert(!captured.includes(value), `a token value leaked: ${captured}`);
+      assert(
+        !captured.includes(value.slice(0, 20)),
+        `a token prefix leaked: ${captured}`,
+      );
+      assert(
+        !captured.includes(value.slice(-20)),
+        `a token suffix leaked: ${captured}`,
+      );
+    }
+  });
 });
