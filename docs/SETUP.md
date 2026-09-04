@@ -606,7 +606,10 @@ writes, not a login the worker performs.
 ```text
 ~/.vibe-coder/credentials/        (override with VIBE_CREDENTIAL_DIR)
 ├── gh/hosts.yml                  the worker's GitHub token
-└── <provider>/provider.env       one file per enabled agent vendor
+├── <provider>/provider.env       one file per enabled agent vendor
+└── claude/provider-2.env         optional, written by hand: a second Claude
+                                  subscription token (advanced — see
+                                  "Several Claude tokens" below)
 ```
 
 Nothing else belongs in that directory. Build only the vendors you use: an
@@ -663,7 +666,18 @@ table mirrors `vibe_provider_credential_table` in `setup.sh` and the
 descriptors in `worker/deno/lib/agent_provider.ts`, which remain the source of
 truth — a quality-gate test fails when they drift.
 
+One file per vendor is the rule, and Claude is its one exception: a host
+holding more than one Claude **subscription** may add
+`claude/provider-2.env`, `provider-3.env` and so on, of which each run uses
+exactly one ([Several Claude tokens](#several-claude-tokens) below). Every
+other vendor takes exactly the one file its row names.
+
 #### Several Claude tokens
+
+> **Advanced, and optional.** Everything above is complete on its own. A host
+> with one Claude credential needs nothing from this section: it makes no
+> extra request, writes no extra log line, and behaves exactly as it did
+> before the option existed.
 
 An operator holding more than one Claude subscription may add extra token
 files beside `claude/provider.env`, named `provider-2.env`, `provider-3.env`
@@ -686,6 +700,135 @@ selected or not — recorded as residual risk R9 in
 a single-token host has always carried; more tokens raise its count, not its
 kind. Add a second subscription knowing that its blast radius is the container,
 not the environment policy.
+
+**Writing the files is your own step.** `setup.sh` provisions
+`claude/provider.env` and nothing else: there is no `VIBE_LAUNCHAGENT_*`
+variable for a second token, no launcher change and no crontab change. The
+extra files are an operator's edit on the host, made with the permissions the
+primary file already carries:
+
+```bash
+umask 077
+printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$SECOND_TOKEN" \
+    > ~/.vibe-coder/credentials/claude/provider-2.env
+chmod 600 ~/.vibe-coder/credentials/claude/provider-2.env
+```
+
+Three rules the file has to satisfy:
+
+- **The name is `provider-<number>.env`.** `provider-2.env`, `provider-3.env`,
+  `provider-10.env`. The number orders them — numerically, so `provider-10.env`
+  comes after `provider-2.env` rather than before it — and gaps in the
+  numbering are harmless. A name outside that pattern (`provider-backup.env`,
+  `provider.env.old`) is not a token file at all: it is never read, never
+  selected, and never reported, so a token parked under such a name is simply
+  invisible to the worker.
+- **The variable is `CLAUDE_CODE_OAUTH_TOKEN`.** Only a subscription token has
+  a budget to compare. A numbered file holding `ANTHROPIC_API_KEY` or
+  `ANTHROPIC_AUTH_TOKEN` is still read and still permission-checked, but it
+  joins no pool and is never weighed against a subscription — a metered key is
+  priced, not rationed, so it stays on the single-credential path it has always
+  taken.
+- **The mode is `600`, inside the `700` directory.** Every discovered token
+  file is permission-checked, not only the primary one, so a `provider-2.env`
+  left group-readable fails the startup preflight with
+  `credential-permissions-too-open` naming that file and the `chmod` to run.
+
+#### Which Claude token a run uses
+
+The choice is made **once per worker start**, before any work begins, and holds
+for the whole run. Nothing re-selects mid-run: a subscription that runs out
+part-way through fails exactly as it always has, and the next process start
+decides again.
+
+With **fewer than two** subscription tokens there is nothing to choose between,
+so nothing is done — no request, no delay, no log line, and the same token file
+the worker has always used. That covers every single-token host and every other
+vendor.
+
+With two or more, worker start measures each of them. One request per token,
+issued concurrently and each bounded by a ten-second timeout, goes to
+Anthropic's `POST /v1/messages` asking for `max_tokens: 0` — the cheapest valid
+request there is, because the figures the worker needs come back in the
+response's `anthropic-ratelimit-unified-*` headers and a *rejected* request
+carries none of them. Each probe bills the handful of input tokens in a
+one-character prompt and generates nothing.
+
+Anthropic reports two windows, a five-hour and a seven-day one, and names one
+of them representative. The worker ranks on the **most constrained** of the two
+rather than the one named representative: a token whose five-hour window is
+fresh but whose seven-day window is at 99% has almost no budget to spend, and
+ranking it first would start the run on a subscription that stalls immediately.
+
+The candidates are then ordered:
+
+1. **A measured budget beats an unmeasured one.** A token whose probe failed
+   ranks behind every token whose probe answered.
+2. **Most remaining budget wins**, each token measured against its own window.
+   Comparing shares rather than absolute totals is what makes subscriptions
+   whose windows reset on different days at different times comparable at all.
+   A window whose reset instant has already passed counts as **full**: the
+   figure describes the window that was current when it was measured, and once
+   that instant is behind us the window has rolled over.
+3. **A tie on remaining budget goes to the soonest reset**, so budget is spent
+   before it lapses rather than left to expire.
+4. **A remaining tie goes to discovery order** — `provider.env` first, then the
+   numbered files in ascending numeric order.
+
+A probe can fail in ordinary ways: the host cannot reach the endpoint, the
+token has been revoked (`http-401`), the probe is itself throttled
+(`http-429`), or the response carries no rate-limit headers
+(`unrecognised-response-shape`). That token's budget is *unknown*. It ranks
+last, but it is never dropped and it never blocks a start — a probe failure
+must not make a configured subscription disappear. When **every** budget is
+unknown, discovery order decides and the run starts on `provider.env`, which is
+exactly what a host with no network path to the endpoint does today.
+
+**What the operator sees.** The decision is logged at `INFO`, one line per
+candidate, best first, then the winner:
+
+```text
+[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider-2 (#2): remaining=75.0% window=five_hour resets=2026-09-05T02:00:00.000Z host=vibe-host:5312
+[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider (#1): remaining=25.0% window=seven_day resets=2026-09-11T05:00:00.000Z host=vibe-host:5312
+[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token candidate provider-3 (#3): remaining=unknown reason=http-401 host=vibe-host:5312
+[2026-09-04 22:10:07Z] INFO: [SECURITY] claude token selected provider-2 (#2) of 3: most-remaining-budget remaining=75.0% resets=2026-09-05T02:00:00.000Z host=vibe-host:5312
+```
+
+`(#2)` is the discovery position, so `provider-2 (#2)` is the second file
+found; `of 3` is how many candidates were ranked. The `[SECURITY]` prefix and
+the trailing `host=` field belong to the logger, not to this decision — every
+worker line carries them. A candidate whose window had already rolled over
+reads `remaining=100.0% … (window already elapsed, counted as full)`.
+
+Tokens are named by **file stem** — `provider`, `provider-2` — and never by
+value: no part of a token, not even a prefix, is an input to these lines, so an
+operator can read which subscription a run consumed without the log ever
+carrying the credential. The last line names why the winner won:
+
+| Reason | What it means |
+|--------|---------------|
+| `most-remaining-budget` | Strictly more remaining budget than every other candidate. |
+| `equal-remaining-budget-soonest-reset` | Level on remaining budget; won on the sooner reset. |
+| `tied-discovery-order` | Level on both budget and reset; won on discovery order. |
+| `budget-unknown-discovery-order` | No candidate's budget could be measured; discovery order decided. |
+
+Absence of these lines is itself informative: a host with one token, or with
+one token plus a metered key, logs none of them, because it makes no probe.
+
+**What the choice isolates.** Selection decides what the run's *environment*
+carries — one token file's variables, and no other subscription's. It decides
+nothing about the credential *mount*, which still exposes every token file in
+`claude/` to the container. That boundary, and the residual risk R9 that
+records the part of it which is not closed, are stated under
+[Several Claude tokens](#several-claude-tokens) above and in
+[the threat model](THREAT-MODEL.md#-residual-risks).
+
+One last precedence note: a `CLAUDE_CODE_OAUTH_TOKEN` already present in the
+worker's own environment is never overwritten by a file, so an
+environment-supplied token wins — the probes still run and the decision is
+still logged, but the export is skipped. On a contained host that case does not
+arise: the container is started with no token variables passed through, so the
+credential directory is the only route in.
 
 ### Permissions
 
@@ -751,7 +894,7 @@ each failure it can name maps to a specific hand-editing mistake:
 | `github-credentials-missing` | `gh/hosts.yml` is absent, or present without a usable inline token: copied from a macOS Keychain-backed `gh` install (no `oauth_token:` line), a blank or empty-quoted token value, or the file/token line otherwise malformed. |
 | `provider-credentials-missing` | The named vendor's `provider.env` is absent, uses a variable name that vendor does not accept (see the table above), or carries a blank value. The failure names the vendor and the variable that provisions it, so a multi-vendor host knows which file to fix. |
 | `credential-permissions-too-open` | A credential file is group- or world-readable — `chmod 600` was skipped, or the file was created with a default umask (e.g. mode `644`). The message names the file and the exact `chmod` to run. |
-| `provider-token-file-unrecognised` | An additional token file (`claude/provider-2.env` and friends) holds no variable name the vendor accepts — a typo in the variable, or a bare token with no `NAME=` at all. The message names the file and the variables it could have used. It is reported rather than skipped, so a token you added is never silently ignored. |
+| `provider-token-file-unrecognised` | An additional token file (`claude/provider-2.env` and friends) holds no variable name the vendor accepts — a typo in the variable, or a bare token with no `NAME=` at all. The message names the file and the variables it could have used. It is reported rather than skipped, so a token you added is never silently ignored. It applies to the **numbered** files only: an empty or unrecognised primary `provider.env` is reported as `provider-credentials-missing` instead, and a file whose name is outside the `provider-<number>.env` pattern is not a token file, so it raises nothing at all. |
 | `unexpected-credential-material` | A stray entry sits directly inside the credential directory: a backup copy, a notes file, or a sub-directory for a vendor that is not enabled. Only `gh/` and the enabled providers' sub-directories belong there (`.DS_Store` is ignored). |
 
 Two notes on reading a result. First, `github-credentials-missing` and
