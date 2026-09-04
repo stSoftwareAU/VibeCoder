@@ -132,11 +132,16 @@ repository once an admin applies the payload — see the section above.
   `worker/deno/tests/release_tag_ruleset_test.ts::release-tags ruleset - protects the release tags this repository mints`
   covers the series — reviewer: partial — reason: they are covered, but
   forward-movable until `update` is applied live
-- **met** — the new unit test and `./quality.sh` pass — evidence: 10 tests in
-  `worker/deno/tests/release_tag_ruleset_test.ts`, and a full `./quality.sh`
-  run after the final edit — reviewer: missing — reason: the reviewer saw the
-  diff mid-run, when `deno fmt --check` was still failing; the formatting was
-  fixed and the gate re-run here
+- **partial** — the new unit test and `./quality.sh` pass — evidence: 10 tests
+  in `worker/deno/tests/release_tag_ruleset_test.ts`, and a full `./quality.sh`
+  run after the final edit in which every stage passes except `deno tests` —
+  reviewer: missing — reason: the reviewer saw the diff mid-run, when
+  `deno fmt --check` was still failing; that is fixed. The remaining five test
+  failures (`best_practices_bucket_guides_consumer_test.ts`,
+  `boy_scout_idle_tasks_test.ts`) are pre-existing on the milestone base
+  `9776760` — they fail there with none of this branch's files present, and
+  pass on current `main` (`a21441c`), so the milestone branch simply needs
+  refreshing from `main`
 - **unrequested** — the `update` rule in the payload — reviewer: unrequested —
   reason: the issue specified `deletion` + `non_fast_forward`, which the live
   test showed do not block a move; `update` is what makes the issue's own
@@ -212,4 +217,10 @@ repository once an admin applies the payload — see the section above.
   - `a malformed payload fails loud` / `a missing payload fails loud`
   - `ref patterns match GitHub's fnmatch classes` and
     `ref matching honours fnmatch wildcards`
-- `./quality.sh` run in full after the final edit.
+- `./quality.sh` run in full after the final edit: every stage passes
+  (`semgrep`, `deno lint`, `deno check`, `deno fmt`, markdownlint, mermaid, the
+  chokepoint checks) except `deno tests`, which reports five failures in
+  `best_practices_bucket_guides_consumer_test.ts` and
+  `boy_scout_idle_tasks_test.ts`. Both were checked out at the milestone base
+  `9776760` on their own and fail there too, and both pass at `main`
+  (`a21441c`) — they are stale-base failures, not this change.
