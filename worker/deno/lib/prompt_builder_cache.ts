@@ -110,16 +110,18 @@ export async function buildCachedIssuePrompt(
     promptsDir,
     repoContextContent,
     verbosityLevel,
+    customPromptPath,
   } = issueOptions;
 
   // Step 1: Compute SHA of static prompt components (including repo context — Issue #1325,
-  // verbosity level — Issue #1332)
+  // verbosity level — Issue #1332, an operator's custom prompt — Issue #848)
   const shaResult = await computeStaticPromptHash(
     promptsDir ?? "prompts",
     repo,
     customInstructions,
     repoContextContent,
     verbosityLevel,
+    customPromptPath,
   );
   if (!shaResult.ok) {
     return {

@@ -58,6 +58,17 @@ export interface IssueContext {
    * (tests, CLI single-issue runs): that work is unbounded, as before.
    */
   handlerDeadlineEpochMs?: number;
+  /**
+   * Absolute host path of the operator's custom prompt template (Issue #848,
+   * part of #843). Set when a `custom_label_prompts` label dispatched this
+   * run: the execute phase builds the prompt from that file instead of the
+   * built-in `prompts/issue/` template, with everything else — the untrusted
+   * fences, the boundary-integrity instruction, the branch/commit/PR flow —
+   * unchanged. Absent for every other route, which behaves exactly as before.
+   */
+  customPromptPath?: string;
+  /** The custom label that dispatched this run, named in errors (Issue #848). */
+  customPromptLabel?: string;
 }
 
 /** Mutable state set by early phases, consumed by later phases. */

@@ -17,6 +17,7 @@
 
 import type { Result } from "../types.ts";
 import { loadPrompt } from "./prompt_manager.ts";
+import { loadCustomPromptTemplate } from "./custom_prompt_loader.ts";
 
 /** Static prompt component names whose content forms the hash input. */
 const STATIC_PROMPT_COMPONENTS = ["coding_guidelines", "issue"] as const;
@@ -54,6 +55,11 @@ export async function computePromptHash(content: string): Promise<string> {
  * @param customInstructions - Optional per-repo custom instructions
  * @param repoContextContent - Optional CLAUDE.md/AGENTS.md content (Issue #1325)
  * @param verbosityLevel - Optional verbosity level for cache differentiation (Issue #1332)
+ * @param customPromptPath - Optional operator custom prompt template path
+ *   (Issue #848). Its **content** joins the hash input, so editing the
+ *   operator's file invalidates the cached system prompt exactly as editing a
+ *   built-in template does. A file that cannot be loaded fails the hash rather
+ *   than silently hashing the built-in templates alone.
  * @returns Result containing the 64-character hex SHA-256 digest, or an error
  */
 export async function computeStaticPromptHash(
@@ -62,6 +68,7 @@ export async function computeStaticPromptHash(
   customInstructions?: string,
   repoContextContent?: string,
   verbosityLevel?: string,
+  customPromptPath?: string,
 ): Promise<Result<string>> {
   const parts: string[] = [];
 
@@ -83,6 +90,23 @@ export async function computeStaticPromptHash(
     }
 
     parts.push(`${component}:${loadResult.value}`);
+  }
+
+  // The operator's custom prompt replaces the built-in `issue` template for
+  // this run (Issue #848), so its content belongs in the key: an edit to the
+  // file must invalidate the cached prompt, and two labels pointing at
+  // different files must not share one cache entry.
+  if (customPromptPath) {
+    const customResult = await loadCustomPromptTemplate(customPromptPath);
+    if (!customResult.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to load the custom prompt: ${customResult.error.message}`,
+        ),
+      };
+    }
+    parts.push(`custom-prompt:${customPromptPath}:${customResult.value}`);
   }
 
   // Append per-repo custom instructions if provided
