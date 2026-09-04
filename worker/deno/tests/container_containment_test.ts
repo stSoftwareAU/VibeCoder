@@ -61,6 +61,7 @@ import {
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
 import { GH_CREDENTIAL_SUBDIR } from "../lib/credential_preflight.ts";
+import { isAtOrAbove } from "../lib/host_path_style.ts";
 
 const REPO_ROOT = new URL(import.meta.url).pathname.replace(
   /\/worker\/deno\/tests\/[^/]+$/,
@@ -1586,4 +1587,96 @@ Deno.test("containment - the extension tag still runs read-only with its scratch
   // The layer changes what the image contains, never what the container may
   // reach: the mount set is the base plan's, unchanged.
   assertEquals(plan.mounts, samplePlan().mounts);
+});
+
+// ---------------------------------------------------------------------------
+// The extension reaches the sandbox through the image, not the host
+// (Issue #982, parent #933)
+// ---------------------------------------------------------------------------
+
+/** The extension directory `sampleExtensionPlan` declares. */
+const EXTENSION_DIR = "/srv/vibe-extension";
+
+/** Every argument of a plan that could name a host path or a privilege. */
+function everyArgument(plan: ContainerLaunchPlan): string[] {
+  return [
+    ...plan.runArgs,
+    ...plan.initArgs,
+    ...plan.buildArgs,
+    ...plan.extensionBuildArgs,
+    ...plan.imageInspectArgs,
+    ...plan.builderStopArgs,
+    ...plan.volumeRemoveArgs,
+  ];
+}
+
+Deno.test("containment - the extension directory is never mounted into the running container (Issue #982)", () => {
+  const plan = sampleExtensionPlan();
+
+  for (const mount of plan.mounts) {
+    assert(
+      !isAtOrAbove(EXTENSION_DIR, mount.source, "posix"),
+      `The extension directory reaches the container through the mount ` +
+        `${mount.source} instead of through the image.`,
+    );
+  }
+  // Nor through any other argument of the run: the build context is the only
+  // place the extension directory is ever named.
+  for (const argument of [...plan.runArgs, ...plan.initArgs]) {
+    assert(
+      !argument.includes(EXTENSION_DIR),
+      `The run names the extension directory (${argument}).`,
+    );
+  }
+});
+
+Deno.test("containment - configuring an extension adds no writable host path (Issue #982)", () => {
+  const plan = sampleExtensionPlan();
+
+  // The launcher creates exactly the directories it created before: an
+  // extension is built, never written to.
+  assertEquals(plan.ensureDirectories, samplePlan().ensureDirectories);
+  assertEquals(plan.volumes, samplePlan().volumes);
+  for (const directory of plan.ensureDirectories) {
+    assert(
+      !isAtOrAbove(EXTENSION_DIR, directory, "posix"),
+      `The launcher would create ${directory} inside the extension directory.`,
+    );
+  }
+});
+
+Deno.test("containment - no extension-related argument publishes a port or asks for the host (Issue #982)", () => {
+  const plan = sampleExtensionPlan();
+  const extensionArguments = everyArgument(plan).filter((argument) =>
+    argument.includes("vibe-coder:fedcba987654") ||
+    argument.includes(EXTENSION_DIR) ||
+    argument.startsWith("VIBE_BASE_IMAGE=") ||
+    argument.startsWith("VIBE_EXTENSION_START=")
+  );
+  assert(
+    extensionArguments.length > 0,
+    "the sample plan carries no extension arguments to judge",
+  );
+
+  for (const argument of extensionArguments) {
+    for (const flag of FORBIDDEN_RUN_FLAGS) {
+      assert(
+        argument !== flag,
+        `An extension argument carries the forbidden flag ${flag}.`,
+      );
+    }
+    assert(
+      argument !== "host" && !argument.endsWith("=host"),
+      `An extension argument asks for host namespace or network access ` +
+        `(${argument}).`,
+    );
+  }
+
+  // And the run itself publishes nothing, extension or not.
+  for (const flag of ["--publish", "-p", "--publish-all", "-P"]) {
+    assert(
+      !plan.runArgs.includes(flag),
+      `The extension deployment's run publishes a port (${flag}).`,
+    );
+  }
 });

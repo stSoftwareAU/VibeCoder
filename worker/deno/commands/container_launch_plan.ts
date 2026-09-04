@@ -27,13 +27,11 @@
 import type { Command, CommandResult } from "../types.ts";
 import {
   buildContainerLaunchPlan,
-  type ContainerExtensionLaunch,
   type ContainerLaunchPlan,
   renderContainerLaunchPlan,
   resolveContainerLaunchHostPaths,
   resolveContainerResources,
 } from "../lib/container_launch.ts";
-import { joinPath, pathStyleFor } from "../lib/host_path_style.ts";
 import {
   stripContainerfile,
   STRIPPED_CONTAINERFILE_SUFFIX,
@@ -47,7 +45,7 @@ import { emitSelfHealEventAuto } from "../lib/self_heal_events.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
-import { readContainerExtensionSelection } from "../lib/container_extension_config.ts";
+import { resolveContainerExtensionLaunch } from "../lib/container_extension_launch.ts";
 import { readContainerToolsSelection } from "../lib/container_tools_config.ts";
 import { readConfiguredCustomPromptPaths } from "../lib/custom_label_prompts_config.ts";
 import { assertCustomPromptSourceResolvable } from "../lib/custom_prompt_mounts.ts";
@@ -178,12 +176,19 @@ export async function buildLaunchPlanForCommand(
     );
   }
 
-  // The deployment's private extension is baked into the image too (Issue
-  // #979): its Containerfile builds `FROM` the standard one, so its contents
-  // are part of what the tag names.
-  const containerExtension = await readContainerExtensionSelection(
-    hostPaths.configFile,
-  );
+  // The operator's private layer (Issues #979, #980, #982, parent #933): the
+  // declaration is read, what it names is proved to be on the host, and the
+  // layered image's own content-derived tag is resolved — all before either
+  // build. A fault throws here, naming the path, so the launch never spends
+  // minutes reaching the same conclusion.
+  const extension = await resolveContainerExtensionLaunch({
+    baseDir,
+    configFile: hostPaths.configFile,
+    imageOptions: {
+      containerTools: tools,
+      ...(agentProviders ? { agentProviders } : {}),
+    },
+  });
 
   // The selected tools and providers are baked into the image, so they are part
   // of its identity (Issues #73, #729) — the plan must name the tag the build
@@ -194,40 +199,6 @@ export async function buildLaunchPlanForCommand(
     containerTools: tools,
     ...(agentProviders ? { agentProviders } : {}),
   });
-
-  // The operator's private layer (Issue #980, parent #933): a second,
-  // content-derived tag covering the same inputs *plus* the extension digest,
-  // and the Containerfile text the plan refuses before any build runs when it
-  // does not derive `FROM ${VIBE_BASE_IMAGE}`.
-  let extension: ContainerExtensionLaunch | undefined;
-  if (containerExtension) {
-    const style = pathStyleFor(hostPaths.baseDir);
-    const containerfilePath = joinPath(
-      containerExtension.path,
-      containerExtension.containerfile,
-      style,
-    );
-    let containerfileText: string;
-    try {
-      containerfileText = await Deno.readTextFile(containerfilePath);
-    } catch (error) {
-      throw new Error(
-        `Cannot launch: the container_extension Containerfile ` +
-          `${containerfilePath} is unreadable (${(error as Error).message}). ` +
-          `The operator syncs their own extension into ` +
-          `${containerExtension.path}.`,
-      );
-    }
-    extension = {
-      spec: containerExtension,
-      image: await resolveContainerImageReference(baseDir, {
-        containerTools: tools,
-        ...(agentProviders ? { agentProviders } : {}),
-        containerExtension,
-      }),
-      containerfileText,
-    };
-  }
 
   // Stage the configuration into its own directory for the read-only mount.
   // Apple container cannot mount a single file (a file mount silently

@@ -339,6 +339,40 @@ flowchart LR
     style R fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
+**The definition is proved to be there before either build runs** (Issue #982).
+The validator checks what the operator *wrote*; the launch preflight checks
+what is actually *there*, while the plan is built — so a definition that is not
+on the host costs a sentence rather than the minutes a build takes to reach the
+same conclusion. Every refusal opens with `Cannot launch: the
+container_extension`, names the offending path, and says what was expected:
+
+| Fault | What the launcher prints |
+| ----- | ------------------------ |
+| The directory is absent | `Cannot launch: the container_extension directory <path> does not exist. The operator syncs their own extension into it — the Vibe Coder clones nothing.` |
+| The path is a file, not a directory | `Cannot launch: the container_extension path <path> is not a directory.` |
+| The directory cannot be read | `Cannot launch: the container_extension directory <path> is unreadable (<reason>).` |
+| The declared `containerfile` is absent | `Cannot launch: the container_extension Containerfile <path> does not exist. container_extension.containerfile names it, relative to <directory>.` |
+| The declared `start` is absent | `Cannot launch: the container_extension start script <path> does not exist. container_extension.start names it, relative to <directory>.` |
+| A symlink points out of the directory | `Cannot launch: the container_extension symlink <entry> escapes the extension directory: it resolves to <target>, outside <directory>. Copy what the build needs into the extension directory — a link out of it would fold host content the operator never synced into the image.` |
+| A directory loops back into itself | `Cannot launch: the container_extension directory loops: <entry> resolves to <target>, a directory it is already inside — the build would never finish copying it.` |
+
+The escaping-symlink case is the one the digest also refuses; the preflight runs
+first so the operator hears it **once, early, with the remedy attached** instead
+of as a hashing failure. What is inside the *built* image — `/opt/vibe-extension/<start>`
+present and executable — is not checked here: nothing host-side can see inside
+an image that has not been built, so that contract is enforced at sandbox start.
+
+**`./setup.sh` reports the extension beside the runtime and the image.** A
+deployment that configures one gets a third line naming the configured path,
+whether the definition is readable, and the layered tag — `container_extension
+/srv/vibe-extension is readable — the layered image is vibe-coder:<extensionHash>`
+— so the `Worker image vibe-coder:<tag> is not built yet` line beneath it names
+the tag that *includes* the extension rather than one no extension deployment
+ever builds. A definition that is not there fails setup with the same preflight
+text the launcher prints, rather than being reported as an unbuildable image.
+A deployment that configures no extension sees exactly the two lines it saw
+before.
+
 **Every caller reads all three selections through one reader.** Because the tag is
 derived from the deployment's own configuration, anything that *names* the
 image must read that configuration too — otherwise it names a tag the launcher
