@@ -105,6 +105,34 @@ export function hitsIn(text: string, pattern: RegExp): string[] {
   );
 }
 
+/**
+ * The contents of every fenced block in `text`, fence lines excluded.
+ *
+ * Lives beside {@link flattenProse} because both encode the same fact — where
+ * a fenced block starts and stops — and a second copy of that knowledge is
+ * how the two would drift apart.
+ *
+ * @param text - The template's full text
+ * @returns One entry per fenced block, in source order
+ */
+export function fencedBlocks(text: string): string[] {
+  const blocks: string[] = [];
+  let current: string[] | null = null;
+  for (const line of text.split("\n")) {
+    if (/^\s*```/.test(line)) {
+      if (current) {
+        blocks.push(current.join("\n"));
+        current = null;
+      } else {
+        current = [];
+      }
+      continue;
+    }
+    current?.push(line);
+  }
+  return blocks;
+}
+
 /** One ATX heading, as written. */
 export interface Heading extends SourceLine {
   /** Number of leading `#` characters. */

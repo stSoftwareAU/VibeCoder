@@ -45,7 +45,12 @@ import { findSuppressions } from "../lib/suppression_comments.ts";
 // worker host's PROMPTS_DIR cannot point the gate at another tree. REPO_ROOT
 // is the decoded form of `new URL("../../../", import.meta.url).pathname`.
 import { REPO_ROOT } from "./support/repo_prompts.ts";
-import { type Heading, headings, hitsIn } from "./support/prompt_prose.ts";
+import {
+  fencedBlocks,
+  type Heading,
+  headings,
+  hitsIn,
+} from "./support/prompt_prose.ts";
 
 const PROMPTS_DIR = `${REPO_ROOT}prompts`;
 const VOCABULARY_PATH = `${REPO_ROOT}docs/PROMPT-HOUSE-VOCABULARY.md`;
@@ -59,11 +64,18 @@ async function promptDirectories(): Promise<string[]> {
   const names: string[] = [];
   for await (const entry of Deno.readDir(PROMPTS_DIR)) {
     if (!entry.isDirectory) continue;
+    const template = `${PROMPTS_DIR}/${entry.name}/${PROMPT_FILENAME}`;
     try {
-      await Deno.stat(`${PROMPTS_DIR}/${entry.name}/${PROMPT_FILENAME}`);
+      await Deno.stat(template);
       names.push(entry.name);
-    } catch {
-      // A directory with no template is not a prompt type. Nothing to govern.
+    } catch (error) {
+      // A directory with no template is not a prompt type, and nothing to
+      // govern. Anything else — a permissions or I/O fault — would silently
+      // drop a directory out of a gate whose whole property is that it
+      // covers every one of them, so it is raised rather than swallowed.
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw new Error(`cannot read ${template}: ${String(error)}`);
+      }
     }
   }
   return names.sort();
@@ -688,25 +700,6 @@ function showsIssueBody(text: string): boolean {
   return fencedBlocks(text).some((block) => block.includes("<!-- finding-id:"));
 }
 
-/** The contents of every fenced block in `text`. */
-function fencedBlocks(text: string): string[] {
-  const blocks: string[] = [];
-  let current: string[] | null = null;
-  for (const line of text.split("\n")) {
-    if (/^\s*```/.test(line)) {
-      if (current) {
-        blocks.push(current.join("\n"));
-        current = null;
-      } else {
-        current = [];
-      }
-      continue;
-    }
-    current?.push(line);
-  }
-  return blocks;
-}
-
 // ---------------------------------------------------------------------------
 // One heading per shared section — interactive family
 // ---------------------------------------------------------------------------
@@ -899,14 +892,25 @@ Deno.test("house vocabulary - the attribution footer is cited from the Inputs se
   // citation is only true if the placement matches it. A template that cites
   // a *different* source — the end of the prompt, a marker, an XML tag — sends
   // the run looking somewhere the footer may not be.
+  //
+  // The `from` clause can sit a clause away from the words "attribution
+  // footer" — "end every body with the attribution footer as its final line —
+  // preceded by a blank line and reproduced **verbatim** from …" — so the
+  // window runs to the end of the sentence rather than a couple of words.
+  // A tight window silently passed that phrasing while reporting green.
   const citation =
-    /attribution\s+footer\**\s*(?:line\s+)?from\s+\S+(?:\s+\S+){0,2}/gi;
+    /attribution\s+footer[^.]{0,140}?\bfrom\s+\S+(?:\s+\S+){0,3}/gi;
   const house = /from\s+the\s+\*{0,2}Inputs\*{0,2}\s+section/i;
 
+  // Non-vacuity: the rule is only worth anything if the matcher sees the
+  // citation in most of the templates that carry the placeholder. A window
+  // that stopped matching would otherwise report green over an unchecked set.
+  let carriers = 0;
   const violations: string[] = [];
   let cited = 0;
   for (const [name, text] of await templates()) {
     if (!text.includes("{{ATTRIBUTION_FOOTER}}")) continue;
+    carriers++;
     for (const hit of hitsIn(text, citation)) {
       if (house.test(hit)) {
         cited++;
@@ -920,9 +924,10 @@ Deno.test("house vocabulary - the attribution footer is cited from the Inputs se
   }
   assertEquals(violations, [], violations.join("\n"));
   assert(
-    cited > 0,
-    "no template cites the attribution footer at all — the matcher has gone " +
-      "stale and this rule is vacuous",
+    cited * 2 >= carriers,
+    `only ${cited} of the ${carriers} templates carrying ` +
+      "`{{ATTRIBUTION_FOOTER}}` were seen citing it; the matcher has gone " +
+      "stale and this rule is passing over templates it never read",
   );
 
   // The phrasing the canon names outright, asserted absent across the set.
