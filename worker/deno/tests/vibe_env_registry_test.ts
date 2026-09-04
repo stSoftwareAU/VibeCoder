@@ -21,10 +21,12 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   OPERATOR_CONFIG_BYPASS_CAP,
+  unkeyedOperatorSettings,
   VIBE_ENV_REGISTRY,
   vibeEnvNamesByRole,
   type VibeEnvRole,
 } from "../lib/vibe_env_registry.ts";
+import { KNOWN_CONFIG_KEYS } from "../lib/config_unknown_keys.ts";
 import { REPO_ROOT } from "./support/repo_root.ts";
 
 /**
@@ -120,14 +122,16 @@ Deno.test("VIBE_ENV_REGISTRY - holds no name the source has dropped", async () =
 });
 
 Deno.test("VIBE_ENV_REGISTRY - the .config.json bypass count only falls", () => {
-  const bypassing = vibeEnvNamesByRole("operator_config");
+  const bypassing = unkeyedOperatorSettings();
 
   assert(
     bypassing.length <= OPERATOR_CONFIG_BYPASS_CAP,
-    `${bypassing.length} operator settings bypass .config.json, above the ` +
-      `cap of ${OPERATOR_CONFIG_BYPASS_CAP}. This list may shrink, never ` +
-      "grow (Issue #874): a new operator setting belongs in .config.json, " +
-      "where it is validated, diffable and visible in one place.",
+    `${bypassing.length} operator settings have no .config.json key, above ` +
+      `the cap of ${OPERATOR_CONFIG_BYPASS_CAP}. This may shrink, never grow ` +
+      "(Issue #874): a new operator setting belongs in .config.json, where " +
+      `it is validated, diffable and visible in one place:\n${
+        bypassing.join("\n")
+      }`,
   );
 
   assertEquals(
@@ -137,6 +141,34 @@ Deno.test("VIBE_ENV_REGISTRY - the .config.json bypass count only falls", () => 
       "OPERATOR_CONFIG_BYPASS_CAP to the new count in the same PR, so the " +
       "cap records progress instead of leaving slack for a regression.",
   );
+});
+
+// The count above is measured against the real config surface rather than
+// taken from the classification, because the first cut of this registry got
+// it wrong in exactly that way: five operator_config entries already had a
+// key and were counted as debt anyway.
+Deno.test("VIBE_ENV_REGISTRY - a keyed setting is not counted as debt", () => {
+  const keyed = vibeEnvNamesByRole("operator_config")
+    .filter((name) => {
+      const key = VIBE_ENV_REGISTRY[name]?.configKey;
+      return key !== undefined && KNOWN_CONFIG_KEYS.has(key);
+    });
+
+  assert(
+    keyed.length > 0,
+    "no operator_config entry is keyed, so the cross-check against " +
+      "KNOWN_CONFIG_KEYS is proving nothing — it would pass just as well if " +
+      "the two lists never met",
+  );
+
+  const debt = new Set(unkeyedOperatorSettings());
+  for (const name of keyed) {
+    assertEquals(
+      debt.has(name),
+      false,
+      `${name} has a .config.json key and is still counted as a bypass`,
+    );
+  }
 });
 
 Deno.test("VIBE_ENV_REGISTRY - every configurable name states its config key", () => {
