@@ -152,14 +152,17 @@ of them.
 - **met** — cross-checks named suppression keywords against
   `worker/deno/lib/suppression_comments.ts` — evidence: `markerLiterals()` and
   `findSuppressions()` at `:826-884` — reviewer: met
-- **met** — `./quality.sh` passes — evidence: full gate run after the final
-  edit; the 12 `setup_provider_credential_flow_test.ts` /
-  `setup_workdir_reminder_test.ts` failures reproduce identically on the base
-  branch in a clean worktree and are host-environment faults (`CONFIG_PATH`
-  exported by the worker host, and a container image without the `codex`
-  provider), not this diff — reviewer: missing — reason: the reviewer's own
-  run hit a 590s sandbox timeout before the test stage finished, so it could
-  not judge; it verified `deno fmt`, `deno lint` and `deno check` clean on
+- **partial** — `./quality.sh` passes — evidence: full gate run after the final
+  edit — every check passes but `deno tests`, which reports
+  `16875 passed | 2 failed`; both failures
+  (`service_account_env_test.ts::applyServiceAccountEnv - an unwritable gh
+  config dir is restaged writable` and
+  `setup_prerequisites_test.ts::checkContainerPrerequisites - fails when the
+  image is not buildable`) reproduce identically on the milestone base branch
+  in a clean worktree, are in files this diff does not touch, and read host
+  state (`GH_CONFIG_DIR`, the container image) — reviewer: missing — reason:
+  the reviewer's run hit a 590s sandbox timeout before the test stage
+  finished; it verified `deno fmt`, `deno lint` and `deno check` clean on
   every changed file
 - **unrequested** — `worker/deno/tests/support/prompt_prose.ts` and
   `worker/deno/tests/prompt_prose_test.ts` — reviewer: unrequested — reason:
@@ -242,7 +245,10 @@ of them.
 - `worker/deno/tests/security_scan_house_vocabulary_test.ts` now imports those
   helpers instead of holding its own copy; its ten tests are unchanged and
   still pass, including its "the prose matcher is not vacuous" control.
-- `./quality.sh` run in full: every check passes except the pre-existing
-  `setup_*` host-environment failures documented above, which reproduce
-  unchanged on the base branch.
+- Merged the milestone branch (28 commits, including the #841 prompt sweeps)
+  into this branch; the gate still passes over the updated templates, which is
+  the point of computing families and versions dynamically.
+- `./quality.sh` run in full: every check passes except two pre-existing
+  host-environment test failures documented above, which reproduce unchanged
+  on the milestone base branch.
 </content>
