@@ -205,9 +205,12 @@ $RunLog = ""
     report can be traced to a machine (Issues #633, #709, #710).
 
     $EvidenceLog carries the failing step's own output - the build's, when a
-    build is what failed (Issue #709), or the run client's refusal, when the
-    container never started (Issue #720) - so the escalation names a cause
-    instead of only naming the phase and the exit status.
+    build is what failed (Issue #709), or the container capture, for every
+    launch that started one and did not exit 0 (Issues #720, #1029): the run
+    client's refusal when the container never started, and the worker's own
+    error lines when it started and the worker stopped itself - so the
+    escalation names a cause instead of only naming the phase and the exit
+    status.
 #>
 function Write-RestartOutcome {
     param([Parameter(Mandatory = $true)][int] $Status)
@@ -795,15 +798,6 @@ try {
 
 Write-LaunchPhase "container_run"
 
-# Statuses the runtime client reports when it refused to start the container at
-# all - no such image, an argument it would not accept, an entrypoint it could
-# not execute. They are exactly the statuses the recorder turns into a
-# container_start escalation, so they are the ones whose evidence is the
-# client's own refusal (Issues #711, #720). Pinned against
-# CONTAINER_START_EXIT_CODES in worker/deno/lib/container_restart_backoff.ts by
-# the launcher tests: that list is the contract, this is its copy.
-$ContainerStartExitStatuses = @(125, 126, 127)
-
 # How long the capture is given to drain once the client has exited, before it
 # is quoted as far as it got. Seconds, because end-of-file arrives with the
 # client's last write; the bound is only there so a runtime helper still
@@ -1065,13 +1059,31 @@ if ($wedged) {
     Exit-Launcher $ContainerWedgedExitStatus
 }
 
-# A status only the runtime client produces means the container never started,
-# so its stderr is what the escalation is about (Issue #720). Any other status
-# came from a container that ran: its output is the worker's own console, not
-# an account of a launch that failed, and quoting it would point the reader at
-# the wrong thing.
+# A launch that failed hands this capture over as its evidence, whatever the
+# status (Issue #1029).
+#
+# Issue #720 restricted it to the three statuses only the runtime client
+# produces, reasoning that any other status came from a container that started
+# and so said nothing about the launch. That does not survive a worker_run
+# escalation. Exit 1 IS the worker reporting its own bootstrap, config,
+# credential or loop failure, and the lines naming which one are on the stream
+# this capture holds - so the one status whose cause is most knowable was the
+# one reported with nothing at all. Issues #994, #995, #996 and #1029 all
+# arrived that way, naming a phase and a status; Issue #945 is the same
+# failure on a host running loop.sh, which passes its cycle log
+# unconditionally, and it carried the cause.
+#
+# It also restores the network-unavailable suppression (Issue #949) on this
+# path: the recorder reads the VIBE-NETWORK-UNAVAILABLE marker out of the log
+# it is handed, so a launcher that hands over nothing can never classify a
+# transient GitHub outage as one. Every blip then climbs the failure ladder
+# instead of re-probing at the base cadence, which is how a host reaches nine
+# consecutive failures over a link that has since come back.
+#
+# A launch that succeeded is still never quoted: there is no failure for its
+# output to be the evidence of.
 $runStatus = $container.ExitCode
-if ($RunLog -and $ContainerStartExitStatuses -contains $runStatus) {
+if ($RunLog -and $runStatus -ne 0) {
     $EvidenceLog = $RunLog
 }
 
