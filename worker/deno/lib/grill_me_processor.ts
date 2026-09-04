@@ -167,6 +167,16 @@ export interface GrillMeProcessorDeps {
   logger: Logger;
   /** Worker deps for cross-cutting concerns. */
   deps: WorkerDeps;
+  /**
+   * Prompts directory the round's templates are read from (Issue #968).
+   *
+   * Defaults to `getPromptsDir()`, which is what production wants. A test
+   * names this instead of exporting `PROMPTS_DIR`, so pointing the loader at
+   * a directory that does not exist — the prompt-build failure path of
+   * #2727 — no longer mutates the process environment every other parallel
+   * worker shares.
+   */
+  promptsDir?: string;
 }
 
 /** Options for building the grill-me prompt. */
@@ -844,7 +854,7 @@ async function _processGrillMeWithHeartbeat(
   processorDeps: GrillMeProcessorDeps,
 ): Promise<Result<GrillMeResult>> {
   const { repo, issueNumber, issueTitle, issueBody, githubUser, config } = ctx;
-  const { ghClient, logger, deps } = processorDeps;
+  const { ghClient, logger, deps, promptsDir } = processorDeps;
 
   const grillMeLabel = config.grillMeLabel;
   const needsHumanLabel = config.needsHumanLabel;
@@ -1290,7 +1300,7 @@ async function _processGrillMeWithHeartbeat(
   // 5) Build the prompt.
   // The active provider keys the per-model guidelines overlay (Issue #374);
   // without one authored for it the block is the agnostic baseline.
-  const guidelinesResult = await buildCodingGuidelines(false, undefined, {
+  const guidelinesResult = await buildCodingGuidelines(false, promptsDir, {
     provider: config.agentProvider,
   });
   const codingGuidelines = guidelinesResult.ok ? guidelinesResult.value : "";
@@ -1319,6 +1329,7 @@ async function _processGrillMeWithHeartbeat(
     issueTitle,
     codingGuidelines,
     verbosityInstructions,
+    promptsDir,
   });
 
   if (!promptResult.ok) {

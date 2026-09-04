@@ -7,6 +7,7 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 import {
   getOptionalPlaceholders,
   getPromptsCommit,
@@ -351,20 +352,55 @@ Deno.test("prompt manager - validates all prompt templates pass", async () => {
   assertEquals(result.ok, true);
 });
 
+// --- getPromptsDir tests (Issue #4302, #968) ---
+//
+// The environment is handed in (Issue #968). Every value below is absent from
+// the real process environment, so a resolution order that quietly fell back
+// to `Deno.env.get` would read the *ambient* worker configuration and fail
+// these assertions rather than pass on it.
+
 Deno.test("getPromptsDir - VIBE_BASE_DIR names the checkout when the driver runs from a staged copy (Issue #4302)", () => {
-  const savedBase = Deno.env.get("VIBE_BASE_DIR");
-  const savedPrompts = Deno.env.get("PROMPTS_DIR");
-  Deno.env.delete("PROMPTS_DIR");
-  Deno.env.set("VIBE_BASE_DIR", "/workspace");
-  try {
-    assertEquals(getPromptsDir(), "/workspace/prompts");
-    // PROMPTS_DIR still wins outright.
-    Deno.env.set("PROMPTS_DIR", "/elsewhere/prompts");
-    assertEquals(getPromptsDir(), "/elsewhere/prompts");
-  } finally {
-    if (savedBase !== undefined) Deno.env.set("VIBE_BASE_DIR", savedBase);
-    else Deno.env.delete("VIBE_BASE_DIR");
-    if (savedPrompts !== undefined) Deno.env.set("PROMPTS_DIR", savedPrompts);
-    else Deno.env.delete("PROMPTS_DIR");
-  }
+  assertEquals(
+    getPromptsDir(undefined, envFrom({ VIBE_BASE_DIR: "/workspace" })),
+    "/workspace/prompts",
+  );
+});
+
+Deno.test("getPromptsDir - PROMPTS_DIR wins outright over VIBE_BASE_DIR (Issue #4302)", () => {
+  const env = envFrom({
+    PROMPTS_DIR: "/elsewhere/prompts",
+    VIBE_BASE_DIR: "/workspace",
+  });
+  assertEquals(getPromptsDir(undefined, env), "/elsewhere/prompts");
+  // …and over an explicit worker directory too.
+  assertEquals(getPromptsDir("/staged/worker/deno", env), "/elsewhere/prompts");
+});
+
+Deno.test("getPromptsDir - a worker directory beats VIBE_BASE_DIR", () => {
+  assertEquals(
+    getPromptsDir(
+      "/staged/worker/deno",
+      envFrom({ VIBE_BASE_DIR: "/workspace" }),
+    ),
+    "/staged/worker/deno/../prompts",
+  );
+});
+
+Deno.test("getPromptsDir - falls back to this module's checkout when nothing is set", () => {
+  // The injected environment carries neither override, so the result must be
+  // the module-relative path — the same directory these tests load from. The
+  // fallback is spelled with `..` segments, so compare the resolved paths.
+  assertEquals(
+    Deno.realPathSync(getPromptsDir(undefined, emptyEnv)),
+    Deno.realPathSync(PROMPTS_DIR),
+  );
+});
+
+Deno.test("getPromptsDir - an empty override is not an override", () => {
+  assertEquals(
+    Deno.realPathSync(
+      getPromptsDir(undefined, envFrom({ PROMPTS_DIR: "", VIBE_BASE_DIR: "" })),
+    ),
+    Deno.realPathSync(PROMPTS_DIR),
+  );
 });
