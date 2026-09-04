@@ -198,16 +198,40 @@ Deno.test("work-volume-tiers - an empty monitored list fails loud, removing noth
 });
 
 Deno.test("work-volume-tiers - a missing work dir is refused", async () => {
-  const previous = Deno.env.get("WORK_DIR");
-  Deno.env.delete("WORK_DIR");
+  // "WORK_DIR is not set" is the empty string handed in, not the variable
+  // deleted from the process (Issue #966): the delete raced every other
+  // worker sharing this process, and the assertion only meant anything
+  // when the ambient variable happened to be set in the first place.
+  const result = await workVolumeTiersCommand.execute(
+    {},
+    config({ workDir: "" }),
+    "",
+  );
+  assertEquals(result.success, false);
+  assert(result.message.includes("--work-dir"), result.message);
+});
+
+Deno.test("work-volume-tiers - tiers the injected work root, never the ambient WORK_DIR (Issue #966)", async () => {
+  // The root arrives through the parameter and nowhere else. A code path
+  // that fell back to `Deno.env.get("WORK_DIR")` would tier some other
+  // directory, leave this disposable clone standing, and fail here rather
+  // than passing on the ambient value.
+  const injected = await Deno.makeTempDir({ prefix: "wvt_injected_" });
   try {
+    await makeClone(injected, "VibeCoder", 0);
+    await makeClone(injected, "sibling-data", 30);
+
     const result = await workVolumeTiersCommand.execute(
-      {},
-      config({ workDir: "" }),
+      { "mode": "age", "max-age-days": 7 },
+      config({ repos: ["stSoftwareAU/VibeCoder"], workDir: "" }),
+      injected,
     );
-    assertEquals(result.success, false);
-    assert(result.message.includes("--work-dir"), result.message);
+
+    assertEquals(result.success, true);
+    // Tier 1 persists, tier 2 aged out — in the injected root.
+    assertEquals(await exists(`${injected}/VibeCoder`), true);
+    assertEquals(await exists(`${injected}/sibling-data`), false);
   } finally {
-    if (previous !== undefined) Deno.env.set("WORK_DIR", previous);
+    await Deno.remove(injected, { recursive: true }).catch(() => undefined);
   }
 });
