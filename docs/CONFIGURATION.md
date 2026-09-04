@@ -495,14 +495,18 @@ issue with that prompt and raises a PR.
 
 Semantics:
 
-- **`label`** — the GitHub label the mapping dispatches. Must be a non-empty
-  string with no NUL or control characters, unique within the list, and must
-  not be one of the reserved workflow labels or the three hardwired discovery
-  labels (`top-priority`, `work-on`, `low-priority`) — those are never
-  remappable.
+- **`label`** — the GitHub label the mapping dispatches, or the built-in label
+  whose prompt it overrides (see below). Must be a non-empty string with no NUL
+  or control characters, unique within the list, and — unless it names a
+  built-in phase label — must not be one of the reserved workflow labels or the
+  `top-priority` / `low-priority` discovery labels, which are never remappable.
 - **`prompt_path`** — the absolute host path of the prompt template file. Must
   be a non-empty, control-character-free string starting with `/`, and must
   name a file that exists and is readable **at config load time**.
+- **`phase`** (optional) — only on an override, and only where the label owns
+  more than one template: `planning_critique` for a `planning` mapping,
+  `quorum_judge` for a `quorum` one. Omitted, the mapping overrides the label's
+  first-turn template.
 - **Fail loud, always.** Every fault above — a non-array value, a malformed
   entry, a relative or unreadable `prompt_path`, a duplicate or reserved
   `label` — throws from config load naming the offending entry and field.
@@ -571,6 +575,68 @@ flowchart LR
   is not visible to the worker and fails config load.
 - **Default = off.** With no mapping configured the priority row does not exist
   and the ladder is unchanged.
+
+#### Overriding a built-in label's prompt (Issue #849)
+
+A mapping whose label matches a **built-in** label does not add a new dispatch
+row — it replaces that phase's own template, so an operator can run a
+non-public `planning`, `grill-me`, `question`, `quorum` or implementation
+prompt. The label keeps its existing handler, priority and trust gate; only the
+template changes.
+
+```json
+{
+  "custom_label_prompts": [
+    {
+      "label": "planning",
+      "prompt_path": "/opt/vibe-secrets/prompts/planning.md"
+    },
+    {
+      "label": "planning",
+      "phase": "planning_critique",
+      "prompt_path": "/opt/vibe-secrets/prompts/planning-critique.md"
+    }
+  ]
+}
+```
+
+| Label (as configured) | Phase overridden | Template replaced |
+| --- | --- | --- |
+| `work_on_label` (`work-on`) | `issue` | `prompts/issue/prompt.md` |
+| `planning_label` | `planning`, or `planning_critique` with `phase` | `prompts/planning/prompt.md` |
+| `question_label` | `question` | `prompts/question/prompt.md` |
+| `grill_me_label` | `grill-me` | `prompts/grill-me/prompt.md` |
+| `quorum_label` | `quorum`, or `quorum_judge` with `phase` | `prompts/quorum/prompt.md` |
+
+- **The configured names are what match.** A fleet that renamed `planning` to
+  `plan-it` overrides the planning phase with a `plan-it` mapping; the literal
+  `planning` is then just an ordinary reserved label again.
+- **Validated against the phase it replaces, not against `issue`.** Overriding
+  `planning` requires `{{REPO}}`, `{{ISSUE_NUMBER}}` and `{{PLANNING_LABEL}}`;
+  overriding `quorum` additionally requires
+  `{{BOUNDARY_INTEGRITY_INSTRUCTION}}`, the placeholder that fences the
+  untrusted issue text. A template short of any of them is refused **at config
+  load**, with the phase and the missing placeholders named — the fault an
+  `issue`-shaped validation would have waved through.
+- **Two-turn phases need two entries.** Overriding `planning` does **not**
+  override `planning_critique`, and overriding `quorum` does not override
+  `quorum_judge`: each turn is a separate template with its own contract, so
+  each takes its own entry naming its `phase`. Nothing is inferred from the
+  first turn.
+- **`refine-issue` cannot be overridden.** The refinement phase builds its
+  prompt inline in `worker/deno/lib/refinement_processor.ts` and has no
+  template file, so a mapping naming it is refused by name with that reason.
+- **Overriding `work-on` overrides the implementation phase.** That template
+  serves every issue-phase pickup — `top-priority` and `low-priority` too — so
+  the override applies to all of them. A run dispatched by a *new* custom label
+  still uses that label's own file.
+- **Ambiguity fails loud.** Two entries claiming the same phase are refused at
+  config load rather than silently resolving to whichever came first.
+- **The run record names the file.** Every phase logs the template it loaded —
+  the operator's path, or `prompts/<phase>/prompt.md` — so a run can be traced
+  back to the file it actually ran.
+- **Phases with no override are untouched.** They load the repository's
+  template exactly as before.
 
 ### 🧭 Run Mode
 

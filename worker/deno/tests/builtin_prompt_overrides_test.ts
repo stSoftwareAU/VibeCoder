@@ -188,9 +188,7 @@ Deno.test("resolveOverridePhase - rejects refine-issue, with the reason", () => 
   assertEquals(result.ok, false);
   assert(
     !result.ok && result.error.includes("refinement_processor.ts"),
-    `expected the inline-prompt reason, got: ${
-      result.ok ? "" : result.error
-    }`,
+    `expected the inline-prompt reason, got: ${result.ok ? "" : result.error}`,
   );
 });
 
@@ -352,7 +350,11 @@ Deno.test("parseCustomLabelPrompts - rejects phase on a label that is not built-
   await withDir(async (dir) => {
     const promptPath = await writeTemplate(dir, "a.md", VALID.planning);
     assertRejected(
-      [{ label: "my-custom-label", prompt_path: promptPath, phase: "planning" }],
+      [{
+        label: "my-custom-label",
+        prompt_path: promptPath,
+        phase: "planning",
+      }],
       undefined,
       "custom_label_prompts[0].phase",
     );
@@ -380,7 +382,10 @@ Deno.test("assertCustomLabelPrompts - throws naming the phase and the missing pl
     const promptPath = await writeTemplate(dir, "a.md", "Nothing useful.\n");
     let thrown = "";
     try {
-      assertCustomLabelPrompts([{ label: "question", prompt_path: promptPath }]);
+      assertCustomLabelPrompts([{
+        label: "question",
+        prompt_path: promptPath,
+      }]);
     } catch (error) {
       thrown = (error as Error).message;
     }
@@ -446,7 +451,10 @@ Deno.test("loadConfig - an override short of its phase's placeholders fails loud
       () =>
         loadWith(dir, {
           repos: ["stSoftwareAU/VibeCoder"],
-          custom_label_prompts: [{ label: "planning", prompt_path: promptPath }],
+          custom_label_prompts: [{
+            label: "planning",
+            prompt_path: promptPath,
+          }],
         }),
       Error,
       "planning",

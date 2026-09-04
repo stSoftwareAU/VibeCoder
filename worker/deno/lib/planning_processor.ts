@@ -219,15 +219,15 @@ export function extractSubIssueNumbers(
   claudeOutput: string,
   repo: string,
 ): number[] {
-  const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(
-    `https://github\\.com/${escapedRepo}/issues/(\\d+)`,
-    "g",
-  );
+  // A literal pattern that captures `owner/repo`, then an exact comparison —
+  // rather than a RegExp built from the caller's `repo`, which the ReDoS rule
+  // flags however carefully the value is escaped.
+  const pattern = /https:\/\/github\.com\/([^/]+\/[^/]+)\/issues\/(\d+)/g;
   const numbers = new Set<number>();
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(claudeOutput)) !== null) {
-    numbers.add(parseInt(match[1]!, 10));
+    if (match[1] !== repo) continue;
+    numbers.add(parseInt(match[2]!, 10));
   }
   return [...numbers].sort((a, b) => a - b);
 }

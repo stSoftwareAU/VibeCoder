@@ -480,8 +480,16 @@ troubleshooting symptoms.
 
 **To update a prompt**: edit `prompts/<type>/prompt.md` in place and commit.
 
+**To replace a prompt without publishing it**: map the phase's label to a
+non-public file with `custom_label_prompts`
+([Custom Label Prompts](CONFIGURATION.md#-custom-label-prompts)). The override
+is validated at config load against the placeholders of the phase it replaces,
+and each turn of a two-turn phase (`planning` / `planning_critique`, `quorum` /
+`quorum_judge`) needs its own entry.
+
 **Traceability**: the execute phase logs the checkout's short commit hash, which
-pins the exact prompt text a run used.
+pins the exact prompt text a run used, and every phase logs the template file it
+loaded — the operator's path when a mapping overrode it (Issue #849).
 
 **Custom prompts directory**: Set the `PROMPTS_DIR` environment variable to override the default prompts location.
 

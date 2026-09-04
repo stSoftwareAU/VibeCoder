@@ -131,14 +131,15 @@ function record(
   logger: Logger,
   resolved: ResolvedPromptTemplate,
 ): Result<ResolvedPromptTemplate> {
-  logger.info(`Prompt template for phase '${resolved.phase}': ${
-    resolved.source
-  }`, {
-    phase: resolved.phase,
-    template: resolved.source,
-    ...(resolved.overrideLabel !== undefined
-      ? { overrideLabel: resolved.overrideLabel }
-      : {}),
-  });
+  logger.info(
+    `Prompt template for phase '${resolved.phase}': ${resolved.source}`,
+    {
+      phase: resolved.phase,
+      template: resolved.source,
+      ...(resolved.overrideLabel !== undefined
+        ? { overrideLabel: resolved.overrideLabel }
+        : {}),
+    },
+  );
   return { ok: true, value: resolved };
 }
