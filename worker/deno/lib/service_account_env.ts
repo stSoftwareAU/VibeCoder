@@ -33,6 +33,7 @@ import {
   isGhConfigDirUsable,
   restageGhConfigDir,
 } from "./gh_credential_stage.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /** Resolved env entries; absent when the operator did not configure them. */
 export interface ServiceAccountEnv {
@@ -163,37 +164,70 @@ export function resolveServiceAccountEnv(
 }
 
 /**
+ * Build the service-account environment **without writing the process**
+ * (Issue #967).
+ *
+ * The staging half still touches the filesystem — an unwritable
+ * `GH_CONFIG_DIR` is rebuilt from the read-only mount, which is the whole
+ * point of it — but the resulting variables are returned rather than applied,
+ * so a test can assert on the map without mutating an environment every
+ * parallel worker shares. {@link applyServiceAccountEnv} is this function
+ * plus the application step.
+ *
+ * @param config - The `ghConfigDir` / `sshKeyPath` operator values.
+ * @param home - Home directory override (defaults to the environment's `HOME`).
+ * @param env - Reads `HOME`, the container stamp and the staged `gh` roots;
+ *   defaults to the process environment.
+ * @returns The entries to establish; empty when nothing is configured.
+ */
+export function buildServiceAccountEnv(
+  config: Pick<WorkerConfig, "ghConfigDir" | "sshKeyPath">,
+  home?: string,
+  env: EnvLookup = processEnvLookup,
+): ServiceAccountEnv {
+  const inContainer = env("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined;
+  const homeDir = home ?? env("HOME") ?? "";
+  const resolved = resolveServiceAccountEnv(config, homeDir, {
+    probe: fsProbe,
+    inContainer,
+    stagedGhConfigDirs: stagedGhConfigDirsFromEnv(env),
+  });
+  const applied: ServiceAccountEnv = {};
+  if (resolved.GH_CONFIG_DIR !== undefined) {
+    // gh writes its config migration on first use, so a read-only directory
+    // here is a startup failure, not a degraded mode (Issue #509): stage a
+    // writable copy rather than hand gh a directory it cannot write.
+    applied.GH_CONFIG_DIR = inContainer
+      ? ensureWritableGhConfigDir(resolved.GH_CONFIG_DIR, homeDir, env)
+      : resolved.GH_CONFIG_DIR;
+  }
+  if (resolved.GIT_SSH_COMMAND !== undefined) {
+    applied.GIT_SSH_COMMAND = resolved.GIT_SSH_COMMAND;
+  }
+  return applied;
+}
+
+/**
  * Apply the service-account env to the current process so child `gh` and
  * `git` processes inherit it. Configured values override ambient env
  * (config wins — parity with the bash-era behaviour); unconfigured fields
  * leave the ambient env untouched.
  *
  * @param config - The loaded worker config.
- * @param home - Home directory override (defaults to `$HOME`).
+ * @param home - Home directory override (defaults to the environment's `HOME`).
+ * @param env - Environment lookup (defaults to the process environment).
  */
 export function applyServiceAccountEnv(
   config: Pick<WorkerConfig, "ghConfigDir" | "sshKeyPath">,
-  home: string = Deno.env.get("HOME") ?? "",
+  home?: string,
+  env: EnvLookup = processEnvLookup,
 ): void {
-  const inContainer = Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined;
-  const env = resolveServiceAccountEnv(config, home, {
-    probe: fsProbe,
-    inContainer,
-    stagedGhConfigDirs: stagedGhConfigDirsFromEnv(),
-  });
-  if (env.GH_CONFIG_DIR !== undefined) {
-    // gh writes its config migration on first use, so a read-only directory
-    // here is a startup failure, not a degraded mode (Issue #509): stage a
-    // writable copy rather than hand gh a directory it cannot write.
-    Deno.env.set(
-      "GH_CONFIG_DIR",
-      inContainer
-        ? ensureWritableGhConfigDir(env.GH_CONFIG_DIR, home)
-        : env.GH_CONFIG_DIR,
-    );
-  }
-  if (env.GIT_SSH_COMMAND !== undefined) {
-    Deno.env.set("GIT_SSH_COMMAND", env.GIT_SSH_COMMAND);
+  for (
+    const [name, value] of Object.entries(
+      buildServiceAccountEnv(config, home, env),
+    )
+  ) {
+    Deno.env.set(name, value);
   }
 }
 
@@ -203,10 +237,10 @@ export function applyServiceAccountEnv(
  * The container entrypoint exports both variables; on the host neither is set
  * and the list is empty, so nothing changes there.
  */
-function stagedGhConfigDirsFromEnv(): string[] {
-  const scratch = Deno.env.get(SCRATCH_DIR_ENV);
+function stagedGhConfigDirsFromEnv(env: EnvLookup): string[] {
+  const scratch = env(SCRATCH_DIR_ENV);
   return [
-    Deno.env.get("GH_CONFIG_DIR"),
+    env("GH_CONFIG_DIR"),
     scratch ? `${scratch}/${GH_CREDENTIAL_SUBDIR}` : undefined,
   ].filter((dir): dir is string => dir !== undefined && dir.length > 0);
 }
@@ -231,7 +265,11 @@ function stagedGhConfigDirsFromEnv(): string[] {
  * already deleted it created empty directories and gave up, while the intact
  * credential sat on the mount unread and the run died.
  */
-function ensureWritableGhConfigDir(dir: string, home: string): string {
+function ensureWritableGhConfigDir(
+  dir: string,
+  home: string,
+  env: EnvLookup,
+): string {
   if (isGhConfigDirUsable(dir)) return dir;
-  return restageGhConfigDir({ home }) ?? dir;
+  return restageGhConfigDir({ home, env }) ?? dir;
 }

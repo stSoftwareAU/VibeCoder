@@ -252,8 +252,9 @@ function utilisationLine(logs: string[]): string {
 /**
  * Read `key=<n>s` (or `key=<n>`) out of a structured summary line.
  *
- * Space-separated token scan rather than a RegExp built from `key`, which the
- * ReDoS rule flags however carefully the term is escaped.
+ * Split rather than a constructed `RegExp`: the fields are space-separated,
+ * so a plain scan reads them without building a pattern from a variable —
+ * which is what semgrep's `detect-non-literal-regexp` rule flags.
  */
 function field(line: string, key: string): string {
   const prefix = `${key}=`;

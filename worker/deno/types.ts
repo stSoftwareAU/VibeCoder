@@ -501,6 +501,10 @@ export interface WorkerConfig {
    * `lib/custom_label_prompts_config.ts`. Defaults to an empty list: the
    * feature is off until an operator opts in, and no existing config changes
    * behaviour.
+   *
+   * Inside the container each `promptPath` is where the launcher's read-only
+   * mount makes the operator's file readable (Issue #850); read on the host it
+   * is the configured path unchanged.
    */
   customLabelPrompts: CustomLabelPromptMapping[];
   /**

@@ -31,6 +31,7 @@ import {
   resolveOverridePhase,
   validateOverrideTemplate,
 } from "./builtin_prompt_overrides.ts";
+import { hasTraversalSegment } from "./custom_prompt_mounts.ts";
 
 /** Keys a `custom_label_prompts` entry may carry. */
 const KNOWN_ENTRY_KEYS: ReadonlySet<string> = new Set([
@@ -91,12 +92,29 @@ function parseCleanString(raw: unknown, field: string): string {
  */
 type SeenClaims = Map<string, number>;
 
+/**
+ * What the parse needs beyond the raw block: the configured built-in label
+ * names, and how a configured prompt path is resolved to where it is readable.
+ *
+ * The label names decide which entries override a built-in phase (Issue #849)
+ * and default to the stock ones. Path resolution is the identity by default —
+ * read on the host, the operator's path *is* the path. Inside the container the
+ * launcher has mounted each prompt directory read-only and handed over the
+ * host → in-container translation (Issue #850), so the same `.config.json`
+ * serves both sides of the boundary.
+ */
+export interface CustomLabelPromptOptions extends Partial<BuiltInLabelNames> {
+  /** Resolve a configured host path to where this run can read it. */
+  resolvePath?: (promptPath: string) => string;
+}
+
 /** Validate one entry; `seen` carries the claims already accepted. */
 function parseEntry(
   raw: unknown,
   index: number,
   seen: SeenClaims,
   names: BuiltInLabelNames,
+  resolvePath: (promptPath: string) => string,
 ): CustomLabelPromptMapping {
   const entryField = `custom_label_prompts[${index}]`;
   if (!isPlainObject(raw)) {
@@ -170,16 +188,35 @@ function parseEntry(
     );
   }
 
-  const promptPath = parseCleanString(
+  const configuredPath = parseCleanString(
     raw.prompt_path,
     `${entryField}.prompt_path`,
   );
-  if (!promptPath.startsWith("/")) {
+  if (!configuredPath.startsWith("/")) {
     reject(
       `${entryField}.prompt_path`,
-      `must be an absolute path, got ${show(promptPath)}`,
+      `must be an absolute path, got ${show(configuredPath)}`,
     );
   }
+  // Issue #850: in container mode the containing directory of this path is
+  // bind-mounted, and the mount-source allowlist compares strings — so a
+  // traversal segment would derive a source the allowlist never judged
+  // (`/srv/../home/operator` is the home directory once resolved). Refused at
+  // the trust boundary, in both run modes, rather than only at launch.
+  if (hasTraversalSegment(configuredPath)) {
+    reject(
+      `${entryField}.prompt_path`,
+      `must not contain a "." or ".." segment, got ${show(configuredPath)}`,
+    );
+  }
+
+  // Validated — and, from here on, used — at the path this run can actually
+  // read it at: inside the container that is the launcher's read-only mount
+  // of the operator's directory (Issue #850).
+  const promptPath = resolvePath(configuredPath);
+  const origin = promptPath === configuredPath
+    ? ""
+    : ` (mounted from ${configuredPath})`;
 
   let content: string;
   try {
@@ -187,7 +224,9 @@ function parseEntry(
   } catch (error) {
     reject(
       `${entryField}.prompt_path`,
-      `is not a readable file: ${promptPath} (${(error as Error).message})`,
+      `is not a readable file: ${promptPath}${origin} (${
+        (error as Error).message
+      })`,
     );
   }
 
@@ -217,15 +256,16 @@ function parseEntry(
  * is never partially accepted.
  *
  * @param raw - The `custom_label_prompts` value from `.config.json`
- * @param names - The configured built-in label names, which decide whether an
- *   entry overrides a built-in phase (Issue #849). Callers holding a
- *   `WorkerConfig` must pass its resolved names: the stock defaults used
- *   otherwise would resolve a renamed label to the wrong phase, or to none.
+ * @param options - The configured built-in label names, which decide whether an
+ *   entry overrides a built-in phase (Issue #849), and the host → container
+ *   path translation (Issue #850). Callers holding a `WorkerConfig` must pass
+ *   its resolved label names: the stock defaults used otherwise would resolve a
+ *   renamed label to the wrong phase, or to none.
  * @returns The validated mappings, or the first fault
  */
 export function parseCustomLabelPrompts(
   raw: unknown,
-  names: BuiltInLabelNames = DEFAULT_BUILTIN_LABEL_NAMES,
+  options: CustomLabelPromptOptions = {},
 ): Result<CustomLabelPromptMapping[], string> {
   if (raw === undefined || raw === null) return { ok: true, value: [] };
   if (!Array.isArray(raw)) {
@@ -240,9 +280,14 @@ export function parseCustomLabelPrompts(
 
   const mappings: CustomLabelPromptMapping[] = [];
   const seen: SeenClaims = new Map();
+  const { resolvePath = (path: string) => path, ...configuredNames } = options;
+  const names: BuiltInLabelNames = {
+    ...DEFAULT_BUILTIN_LABEL_NAMES,
+    ...configuredNames,
+  };
   try {
     for (let index = 0; index < raw.length; index++) {
-      mappings.push(parseEntry(raw[index], index, seen, names));
+      mappings.push(parseEntry(raw[index], index, seen, names, resolvePath));
     }
   } catch (error) {
     if (error instanceof MappingError) {
@@ -259,22 +304,73 @@ export function parseCustomLabelPrompts(
  * the worker before a custom label could ever dispatch silently.
  *
  * @param raw - The `custom_label_prompts` value from `.config.json`
- * @param names - The configured built-in label names (see
- *   {@link parseCustomLabelPrompts})
+ * @param options - The configured built-in label names and path translation
+ *   (see {@link parseCustomLabelPrompts})
  * @returns The validated mappings
  * @throws When any entry is invalid
  */
 export function assertCustomLabelPrompts(
   raw: unknown,
-  names: BuiltInLabelNames = DEFAULT_BUILTIN_LABEL_NAMES,
+  options: CustomLabelPromptOptions = {},
 ): CustomLabelPromptMapping[] {
-  const result = parseCustomLabelPrompts(raw, names);
+  const result = parseCustomLabelPrompts(raw, options);
   if (!result.ok) {
     throw new Error(
       `Invalid custom_label_prompts in .config.json: ${result.error}`,
     );
   }
   return result.value;
+}
+
+/**
+ * The configured prompt paths, read straight from a `.config.json` on disk
+ * (Issue #850, part of #843).
+ *
+ * Used by the container launcher, which must know which host directories to
+ * mount before any worker has loaded a configuration. Absent file → no
+ * mappings, which is what an unconfigured host has always had. A file that
+ * exists but cannot be read, is not JSON, or states a malformed mapping is
+ * **not** treated as unconfigured: it throws, because launching without the
+ * mount would leave every custom label failing at dispatch inside the
+ * container.
+ *
+ * @param configFile - Host path of the worker configuration file
+ * @returns The configured absolute host prompt paths, in configuration order
+ * @throws When the file exists but is unreadable, is not a JSON object, or
+ *   carries an invalid `custom_label_prompts` block
+ */
+export async function readConfiguredCustomPromptPaths(
+  configFile: string,
+): Promise<string[]> {
+  let text: string;
+  try {
+    text = await Deno.readTextFile(configFile);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return [];
+    throw new Error(
+      `Cannot read the custom prompt mappings: ${configFile} is unreadable ` +
+        `(${(error as Error).message}).`,
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(
+      `Cannot read the custom prompt mappings: ${configFile} is not valid ` +
+        `JSON (${(error as Error).message}).`,
+    );
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(
+      `Cannot read the custom prompt mappings: ${configFile} is not a JSON ` +
+        `object.`,
+    );
+  }
+
+  const raw = (parsed as Record<string, unknown>)["custom_label_prompts"];
+  return assertCustomLabelPrompts(raw).map((mapping) => mapping.promptPath);
 }
 
 /**

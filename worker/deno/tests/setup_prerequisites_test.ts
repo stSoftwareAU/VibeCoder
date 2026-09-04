@@ -334,7 +334,13 @@ Deno.test("checkContainerPrerequisites - fails when the image is not buildable",
     });
     assertEquals(results[0]!.ok, true);
     assertEquals(results[1]!.ok, false);
-    assertStringIncludes(results[1]!.message, "Containerfile");
+    // The message names whichever build input was missing first — since the
+    // check began reading the deployment's own selections that is
+    // `tools.json`, not the Containerfile — and the hint names the container
+    // definition the operator has to restore. Asserted on the outcome rather
+    // than on which file is read first.
+    assertStringIncludes(results[1]!.message, "not buildable");
+    assertStringIncludes(String(results[1]!.hint), "Containerfile");
   } finally {
     await Deno.remove(emptyRoot, { recursive: true });
   }

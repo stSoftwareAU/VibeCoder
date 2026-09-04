@@ -86,6 +86,10 @@ function launchInputs(): ContainerLaunchInputs {
       configStageDir: "/home/operator/.vibe-coder/run-config",
       credentialDir: "/home/operator/.vibe-coder/credentials",
     },
+    // One configured custom prompt (Issue #850), so the documented
+    // `custom-prompts/<n>` row is checked against a plan that really carries
+    // it. Unconfigured deployments get no such mount at all.
+    customPromptPaths: ["/srv/vibe-prompts/private-label.md"],
   };
 }
 
@@ -94,9 +98,12 @@ function launchInputs(): ContainerLaunchInputs {
  *
  * The active provider's credential sub-directory is written as `<provider>` in
  * the docs, because registering another provider changes it without changing
- * the boundary.
+ * the boundary. A custom prompt directory is numbered per configured directory
+ * and written as `<n>` for the same reason (Issue #850).
  */
 function documentedTarget(target: string): string {
+  const custom = target.match(/^(.*\/custom-prompts\/)\d+$/);
+  if (custom) return `${custom[1]}<n>`;
   const subdir = activeAgentProvider().credentials.subdir;
   return target.endsWith(`/${subdir}`)
     ? `${target.slice(0, -subdir.length)}<provider>`
