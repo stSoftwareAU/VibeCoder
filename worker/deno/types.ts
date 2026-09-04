@@ -1260,6 +1260,17 @@ export interface ConfigFile {
    */
   container_tools?: ContainerToolSpec[];
   /**
+   * This deployment's private environment extension (Issue #978, parent
+   * #933).
+   *
+   * Deliberately untyped here: the block arrives untrusted from the
+   * operator's file, and only `parseContainerExtension()` /
+   * `assertContainerExtension()` in `lib/container_extension_config.ts` may be
+   * trusted to produce a {@link ContainerExtensionSpec}. They fail loud on any
+   * fault rather than repairing it.
+   */
+  container_extension?: unknown;
+  /**
    * Custom GitHub label → non-public prompt file mappings (Issue #846, part
    * of #843).
    *

@@ -32,6 +32,7 @@ import { resolveEffectiveFleetPrAuthors } from "./fleet_authors.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
 import { parseIdleTaskCadence } from "./idle_task_cadence_config.ts";
 import { parseContainerTools } from "./container_tools_config.ts";
+import { parseContainerExtension } from "./container_extension_config.ts";
 import { assertCallbacksConfig } from "./run_callbacks_config.ts";
 import { assertCustomLabelPrompts } from "./custom_label_prompts_config.ts";
 import {

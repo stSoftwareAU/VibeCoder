@@ -34,7 +34,7 @@ import { readContainerExtensionSelection } from "./container_extension_config.ts
 import type { ContainerImageHashOptions } from "./container_image_hash.ts";
 import { parseContainerManifest } from "./container_manifest.ts";
 import { readContainerToolsSelection } from "./container_tools_config.ts";
-import type { ContainerToolSpec } from "../types.ts";
+import type { ContainerExtensionSpec, ContainerToolSpec } from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import { resolveHostConfigPath } from "./host_config_path.ts";
 

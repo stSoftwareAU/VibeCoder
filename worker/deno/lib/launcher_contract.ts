@@ -45,6 +45,10 @@ export const LAUNCH_PLAN_KEYS: readonly ContainerLaunchPlanKey[] = [
   "ensure",
   "exists",
   "build",
+  // The operator's private layer (Issue #980): a launcher that ignored it
+  // would run the standard image under the extension's tag on a deployment
+  // that configures one — the same parity fault as dropping any other key.
+  "extension-build",
   "run",
 ];
 
