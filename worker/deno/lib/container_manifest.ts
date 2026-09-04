@@ -829,6 +829,50 @@ const FETCH_RE = /\b(?:curl|wget)\b/;
 /** A checksum verification in the same build step as the fetch. */
 const CHECKSUM_RE = /\bsha256sum\s+-c\b/;
 
+/**
+ * Build argument carrying the retry policy every network fetch must use
+ * (Issue #1014).
+ *
+ * A single-attempt `curl` turns one dropped connection into a failed image
+ * build, and a host that cannot rebuild the image cannot reconstruct its
+ * environment at all: `aerx` lost the 70 MB semgrep wheel eight launches
+ * running. The policy lives in one `ARG` so it is stated once, and the rule
+ * below makes it unskippable — a fetch added later without it fails the gate
+ * rather than waiting for a flaky link to find it.
+ */
+export const CURL_RETRY_ARG = "CURL_RETRY";
+
+/**
+ * Build argument carrying pip's own retry policy (Issue #1014).
+ *
+ * `${CURL_RETRY}` cannot cover the semgrep wheel, which pip downloads itself.
+ * pip's default of six resume attempts is what ran out on `aerx`.
+ */
+export const PIP_RETRY_ARG = "PIP_RETRY";
+
+/** A fetch carrying the shared retry policy. */
+const RETRY_POLICY_RE = /\$\{CURL_RETRY\}/;
+
+/** A step that has pip fetch from the index. */
+const PIP_FETCH_RE = /\/pip["']?\s+(?:download|install)\b/;
+
+/** A pip fetch carrying the shared retry policy. */
+const PIP_RETRY_RE = /\$\{PIP_RETRY\}/;
+
+/**
+ * The policy must actually retry. Guards the case where the argument survives
+ * as a name but is emptied out, which would satisfy {@link RETRY_POLICY_RE}
+ * at every call site while restoring the single-attempt behaviour.
+ */
+const RETRY_POLICY_VALUE_RE = /--retry\b/;
+
+/**
+ * pip's policy must resume, not merely retry. Restarting a 70 MB download from
+ * zero never completes on the link that produced Issue #1014, however many
+ * attempts it is given, so `--resume-retries` is the setting that matters.
+ */
+const PIP_RETRY_VALUE_RE = /--resume-retries\b/;
+
 /** A download piped straight into a shell, verified by nothing. */
 const PIPE_TO_SHELL_RE = /\b(?:curl|wget)\b[^|]*\|\s*(?:ba)?sh\b/;
 
@@ -920,6 +964,29 @@ function findInstallStepViolations(containerfile: string): string[] {
     if (FETCH_RE.test(run) && !CHECKSUM_RE.test(run)) {
       violations.push(
         `build step downloads without verifying a checksum: ${run}`,
+      );
+    }
+
+    // A fetch that cannot survive a dropped connection fails the whole image
+    // build (Issue #1014). The step delegating to install-tools.sh is excused
+    // for the same reason it is excused the checksum: the installer owns its
+    // own fetches.
+    if (
+      FETCH_RE.test(run) && !run.includes(TOOLS_INSTALLER) &&
+      !RETRY_POLICY_RE.test(run)
+    ) {
+      violations.push(
+        `build step downloads without the \${${CURL_RETRY_ARG}} retry ` +
+          `policy, so one dropped connection fails the image build: ${run}`,
+      );
+    }
+
+    // curl's policy cannot cover a download pip makes for itself, and pip's
+    // own default of six resume attempts is what ran out on aerx.
+    if (PIP_FETCH_RE.test(run) && !PIP_RETRY_RE.test(run)) {
+      violations.push(
+        `build step has pip fetch from the index without the ` +
+          `\${${PIP_RETRY_ARG}} retry policy: ${run}`,
       );
     }
   }
@@ -1018,6 +1085,46 @@ export function findContainerfileViolations(
     for (const pkg of unpinnedPackages(line)) {
       violations.push(`unpinned package install: "${pkg}" in: ${line}`);
     }
+  }
+
+  // A step referencing a retry policy the file never declares expands it to
+  // nothing and is back to one attempt, which is the failure the per-step rule
+  // above cannot see (Issue #1014). Checked only where the build actually
+  // fetches, so a Containerfile that downloads nothing needs neither argument.
+  const runs = [...runInstructions(containerfile)];
+  const curlFetches = runs.some((run) =>
+    FETCH_RE.test(run) && !run.includes(TOOLS_INSTALLER)
+  );
+  const pipFetches = runs.some((run) => PIP_FETCH_RE.test(run));
+
+  const retryPolicy = args.get(CURL_RETRY_ARG);
+  if (curlFetches && retryPolicy === undefined) {
+    violations.push(
+      `ARG ${CURL_RETRY_ARG} is missing: the build's fetches reference it, so ` +
+        "it would expand to nothing and one dropped connection would fail the " +
+        "image build",
+    );
+  } else if (
+    retryPolicy !== undefined && !RETRY_POLICY_VALUE_RE.test(retryPolicy)
+  ) {
+    violations.push(
+      `ARG ${CURL_RETRY_ARG} is "${retryPolicy}", which carries no --retry: ` +
+        "the fetches reference a policy that does not retry",
+    );
+  }
+
+  const pipRetry = args.get(PIP_RETRY_ARG);
+  if (pipFetches && pipRetry === undefined) {
+    violations.push(
+      `ARG ${PIP_RETRY_ARG} is missing: pip fetches the semgrep wheel itself, ` +
+        "outside curl's policy",
+    );
+  } else if (pipRetry !== undefined && !PIP_RETRY_VALUE_RE.test(pipRetry)) {
+    violations.push(
+      `ARG ${PIP_RETRY_ARG} is "${pipRetry}", which carries no ` +
+        "--resume-retries: a restarted 70 MB download never finishes on the " +
+        "link that produced Issue #1014",
+    );
   }
 
   for (const image of manifest.images) {
