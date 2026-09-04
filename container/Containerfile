@@ -15,6 +15,29 @@ FROM ${DENO_IMAGE} AS deno
 
 FROM ${BASE_IMAGE}
 
+# Retry policy for every network fetch in this build (Issue #1014).
+#
+# A build step that fetches once and gives up turns a dropped connection into a
+# failed image build, and a host that cannot rebuild the image cannot
+# reconstruct its environment at all — `aerx` failed eight launches running,
+# every one of them on the 70 MB semgrep wheel, on a link that died every few
+# megabytes.
+#
+# Both policies resume rather than restart. That is the load-bearing part: on a
+# link that cannot hold a connection long enough for one clean pass, restarting
+# from zero never finishes, however many attempts it is given. curl's `-C -`
+# picks up from what is already on disk; pip's `--resume-retries` is the
+# setting whose absence produced "Download failed after 6 attempts" on aerx,
+# where 6 was pip's default and there was no policy above it to raise.
+# `--retry-all-errors` is needed because a mid-body drop is a transfer error,
+# not the 5xx/timeout class plain `--retry` covers.
+#
+# Both are unquoted at their call sites on purpose — they are flag lists that
+# must word-split. `container_manifest.ts` fails the gate on a fetch that omits
+# them, so a step added later cannot quietly go back to one attempt.
+ARG CURL_RETRY="--retry 8 --retry-delay 3 --retry-all-errors --connect-timeout 20 -C -"
+ARG PIP_RETRY="--retries 8 --resume-retries 20 --timeout 60"
+
 ARG GH_VERSION="2.97.0"
 ARG GH_SHA256_AMD64="a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112"
 ARG GH_SHA256_ARM64="73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5"
@@ -42,11 +65,11 @@ RUN set -eu; \
       *) echo "Unsupported build architecture: ${arch}" >&2; exit 1 ;; \
     esac; \
     gh_dir="gh_${GH_VERSION}_linux_${goarch}"; \
-    curl -fsSL -o /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${gh_dir}.tar.gz"; \
+    curl -fsSL ${CURL_RETRY} -o /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${gh_dir}.tar.gz"; \
     echo "${gh_sha}  /tmp/gh.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/gh.tar.gz -C /tmp; \
     install -m 0755 "/tmp/${gh_dir}/bin/gh" /usr/local/bin/gh; \
-    curl -fsSL -o /tmp/jq "https://github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-linux-${goarch}"; \
+    curl -fsSL ${CURL_RETRY} -o /tmp/jq "https://github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-linux-${goarch}"; \
     echo "${jq_sha}  /tmp/jq" | sha256sum -c -; \
     install -m 0755 /tmp/jq /usr/local/bin/jq; \
     rm -rf /tmp/gh.tar.gz /tmp/jq "/tmp/${gh_dir}"
@@ -67,7 +90,7 @@ RUN set -eu; \
       aarch64) nodearch="arm64"; node_sha="${NODE_SHA256_ARM64}" ;; \
       *) echo "Unsupported build architecture: ${arch}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${nodearch}.tar.xz"; \
+    curl -fsSL ${CURL_RETRY} -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${nodearch}.tar.xz"; \
     echo "${node_sha}  /tmp/node.tar.xz" | sha256sum -c -; \
     tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner; \
     rm -f /tmp/node.tar.xz /usr/local/CHANGELOG.md /usr/local/LICENSE /usr/local/README.md; \
@@ -84,7 +107,7 @@ ARG NPM_SHA256_NOARCH="5dbb86c71d07a1957f2e90734092dd6a58bdcd9ebc2d8d41ca1c6e6a2
 
 RUN set -eu; \
     tarball="/tmp/npm.tgz"; \
-    curl -fsSL -o "${tarball}" "https://registry.npmjs.org/npm/-/npm-${NPM_VERSION}.tgz"; \
+    curl -fsSL ${CURL_RETRY} -o "${tarball}" "https://registry.npmjs.org/npm/-/npm-${NPM_VERSION}.tgz"; \
     echo "${NPM_SHA256_NOARCH}  ${tarball}" | sha256sum -c -; \
     npm install -g --ignore-scripts "${tarball}"; \
     npm cache clean --force; \
@@ -156,16 +179,16 @@ RUN set -eu; \
         cd_sha="${CARGO_DENY_SHA256_ARM64}" ;; \
       *) echo "Unsupported build architecture: ${arch}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /tmp/shellcheck.tar.xz "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.${arch}.tar.xz"; \
+    curl -fsSL ${CURL_RETRY} -o /tmp/shellcheck.tar.xz "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.${arch}.tar.xz"; \
     echo "${sc_sha}  /tmp/shellcheck.tar.xz" | sha256sum -c -; \
     tar -xJf /tmp/shellcheck.tar.xz -C /tmp; \
     install -m 0755 "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck; \
-    curl -fsSL -o /tmp/actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_${goarch}.tar.gz"; \
+    curl -fsSL ${CURL_RETRY} -o /tmp/actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_${goarch}.tar.gz"; \
     echo "${al_sha}  /tmp/actionlint.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint; \
     install -m 0755 /tmp/actionlint /usr/local/bin/actionlint; \
     cargo_deny_dir="cargo-deny-${CARGO_DENY_VERSION}-${arch}-unknown-linux-musl"; \
-    curl -fsSL -o /tmp/cargo-deny.tar.gz "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${cargo_deny_dir}.tar.gz"; \
+    curl -fsSL ${CURL_RETRY} -o /tmp/cargo-deny.tar.gz "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${cargo_deny_dir}.tar.gz"; \
     echo "${cd_sha}  /tmp/cargo-deny.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/cargo-deny.tar.gz -C /tmp; \
     install -m 0755 "/tmp/${cargo_deny_dir}/cargo-deny" /usr/local/bin/cargo-deny; \
@@ -180,7 +203,7 @@ RUN set -eu; \
 # as root during the build.
 RUN set -eu; \
     tarball="/tmp/markdownlint-cli2.tgz"; \
-    curl -fsSL -o "${tarball}" "https://registry.npmjs.org/markdownlint-cli2/-/markdownlint-cli2-${MARKDOWNLINT_CLI2_VERSION}.tgz"; \
+    curl -fsSL ${CURL_RETRY} -o "${tarball}" "https://registry.npmjs.org/markdownlint-cli2/-/markdownlint-cli2-${MARKDOWNLINT_CLI2_VERSION}.tgz"; \
     echo "${MARKDOWNLINT_CLI2_SHA256_NOARCH}  ${tarball}" | sha256sum -c -; \
     npm install -g --ignore-scripts "${tarball}"; \
     npm cache clean --force; \
@@ -208,7 +231,7 @@ RUN set -eu; \
     esac; \
     install_rust_pkg() { \
       dir="$1-${RUST_VERSION}-${target}"; \
-      curl -fsSL -o /tmp/rust-pkg.tar.gz "https://static.rust-lang.org/dist/${dir}.tar.gz"; \
+      curl -fsSL ${CURL_RETRY} -o /tmp/rust-pkg.tar.gz "https://static.rust-lang.org/dist/${dir}.tar.gz"; \
       echo "$2  /tmp/rust-pkg.tar.gz" | sha256sum -c -; \
       tar -xzf /tmp/rust-pkg.tar.gz -C /tmp; \
       shift 2; \
@@ -253,12 +276,14 @@ RUN set -eu; \
       *) echo "Unsupported build architecture: $(uname -m)" >&2; exit 1 ;; \
     esac; \
     pip="/tmp/pip-${PIP_VERSION}-py3-none-any.whl"; py=/opt/semgrep/bin/python; \
-    curl -fsSL -o "${pip}" "https://files.pythonhosted.org/packages/py3/p/pip/pip-${PIP_VERSION}-py3-none-any.whl"; \
+    curl -fsSL ${CURL_RETRY} -o "${pip}" "https://files.pythonhosted.org/packages/py3/p/pip/pip-${PIP_VERSION}-py3-none-any.whl"; \
     echo "${PIP_SHA256_NOARCH}  ${pip}" | sha256sum -c -; \
     python3 -m venv --without-pip /opt/semgrep; \
-    "${py}" "${pip}/pip" download --no-deps --only-binary=:all: --no-cache-dir -q -d /tmp/sg "semgrep==${SEMGREP_VERSION}"; \
+    "${py}" "${pip}/pip" download --no-deps --only-binary=:all: --no-cache-dir -q \
+      ${PIP_RETRY} -d /tmp/sg "semgrep==${SEMGREP_VERSION}"; \
     whl="$(echo /tmp/sg/*.whl)"; echo "${sg_sha}  ${whl}" | sha256sum -c -; \
-    "${py}" "${pip}/pip" install --only-binary=:all: --no-cache-dir -q "${whl}"; \
+    "${py}" "${pip}/pip" install --only-binary=:all: --no-cache-dir -q \
+      ${PIP_RETRY} "${whl}"; \
     ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep; \
     rm -rf "${pip}" /tmp/sg; chmod -R a+rX /opt/semgrep; \
     semgrep --version | grep -qxF "${SEMGREP_VERSION}"
@@ -279,7 +304,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH="/opt/playwright-browsers"
 # Chromium zip is downloaded and SHA-256 verified before install (Issue #274).
 RUN set -eu; \
     tarball="/tmp/playwright-core.tgz"; \
-    curl -fsSL -o "${tarball}" "https://registry.npmjs.org/playwright-core/-/playwright-core-${PLAYWRIGHT_VERSION}.tgz"; \
+    curl -fsSL ${CURL_RETRY} -o "${tarball}" "https://registry.npmjs.org/playwright-core/-/playwright-core-${PLAYWRIGHT_VERSION}.tgz"; \
     echo "${PLAYWRIGHT_SHA256_NOARCH}  ${tarball}" | sha256sum -c -; \
     npm install -g --ignore-scripts "${tarball}"; \
     npm cache clean --force; \
@@ -297,7 +322,7 @@ RUN set -eu; \
         chromium_url="https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/${chromium_rev}/chromium-linux-arm64.zip" ;; \
       *) echo "Unsupported build architecture: ${arch}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /tmp/chromium.zip "${chromium_url}"; \
+    curl -fsSL ${CURL_RETRY} -o /tmp/chromium.zip "${chromium_url}"; \
     echo "${chromium_sha}  /tmp/chromium.zip" | sha256sum -c -; \
     dest="${PLAYWRIGHT_BROWSERS_PATH}/chromium-${chromium_rev}"; \
     mkdir -p "${dest}"; \
