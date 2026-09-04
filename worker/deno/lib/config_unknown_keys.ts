@@ -195,6 +195,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
 
   // Deployer-supplied container build-time tools (Issue #69, parent #5)
   "container_tools",
+
+  // This deployment's private environment extension (Issue #978, parent #933)
+  "container_extension",
 ]);
 
 /**

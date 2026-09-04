@@ -102,6 +102,43 @@ export function isRootPath(path: string, style: LauncherPathStyle): boolean {
 }
 
 /**
+ * A path reduced to a comparable form.
+ *
+ * Windows paths are matched case-insensitively and either separator, so
+ * `C:\Users\Vibe` and `c:/users/vibe` are recognised as the same directory.
+ *
+ * @param path - The path to reduce
+ * @param style - The host's path spelling
+ * @returns The comparable form
+ */
+function comparablePath(path: string, style: LauncherPathStyle): string {
+  return style === "windows" ? path.replace(/\\/g, "/").toLowerCase() : path;
+}
+
+/**
+ * True when `ancestor` is `path` itself or a directory above it.
+ *
+ * The containment predicate behind "never expose the host home directory, or
+ * an ancestor of it" — shared by the launcher's mount-source allowlist
+ * (Issue #4060) and the `container_extension` validator (Issue #978), so the
+ * two cannot drift apart.
+ *
+ * @param ancestor - The candidate ancestor path
+ * @param path - The path being protected
+ * @param style - The host's path spelling
+ * @returns Whether `ancestor` is at or above `path`
+ */
+export function isAtOrAbove(
+  ancestor: string,
+  path: string,
+  style: LauncherPathStyle,
+): boolean {
+  const left = comparablePath(normalisePath(ancestor, style), style);
+  const right = comparablePath(normalisePath(path, style), style);
+  return left === right || right.startsWith(`${left}/`);
+}
+
+/**
  * Join a relative path onto a base in the host's own spelling.
  *
  * @param base - The base directory
