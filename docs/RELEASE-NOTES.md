@@ -12,7 +12,7 @@ major, are minted from [the release floor](RELEASE-TAGGING.md#the-release-floor)
 rather than from the automatic increment, and are recorded here newest first,
 with the exact migration and the exact rollback.
 
-## 1.1.0 — the post-run callback extension point
+## 1.2.0 — the post-run callback extension point
 
 **Configuration contract change. Read the migration before upgrading a host.**
 
@@ -44,13 +44,13 @@ both keys and the replacement; the worker stops and claims no issue. This is
 deliberate (Issue #805): a key that reads as live and quietly does nothing is
 the silent failure the config load exists to prevent. It is also why the
 release moves the minor rather than the patch — a 1.0.x configuration is not
-loadable by 1.1.0 until it is migrated.
+loadable by 1.2.0 until it is migrated.
 
 The asymmetry matters for the ordering below:
 
 - **`callbacks` is safe to add early.** A 1.0.x worker does not recognise the
   key, so it logs one unknown-key warning at config load and ignores the block.
-- **`fleet_health_*` is not safe to leave.** A 1.1.0 worker refuses the config
+- **`fleet_health_*` is not safe to leave.** A 1.2.0 worker refuses the config
   outright.
 
 So the block can be staged ahead of the upgrade, and the two removed keys have
@@ -62,9 +62,9 @@ to go in the same edit window as the pin move.
 flowchart TD
     H["Write the hook<br/>absolute path, container-visible"] --> P["deno task callback-conformance<br/>--always &lt;path&gt;"]
     P --> A["Add the callbacks block<br/>1.0.x: one unknown-key warning"]
-    A --> U["./run.sh upgrade<br/>pinned_ref → 1.1.0 + tool versions"]
+    A --> U["./run.sh upgrade<br/>pinned_ref → 1.2.0 + tool versions"]
     U --> R["Same edit: remove fleet_health_repo<br/>and fleet_health_dir"]
-    R --> L["Relaunch — first 1.1.0 run"]
+    R --> L["Relaunch — first 1.2.0 run"]
     L --> O["Observe: success health record<br/>AND always log archival"]
     O --> F["Only then: the rest of the fleet"]
 ```
@@ -89,12 +89,12 @@ flowchart TD
    1.0.x this changes nothing but a warning line, so it can land first and be
    reviewed on its own.
 4. **Move the pins.** On a frozen host, `./run.sh upgrade` rewrites
-   `pinned_ref` and all three `pinned_tool_versions` to 1.1.0 and the versions
+   `pinned_ref` and all three `pinned_tool_versions` to 1.2.0 and the versions
    its manifest records. It installs nothing and moves no checkout — see
    [The upgrade loop](CONFIGURATION.md#the-upgrade-loop).
 5. **In the same edit, delete `fleet_health_repo` and `fleet_health_dir`.**
    Re-running `./setup.sh` also strips them, warning once per key. Both must be
-   gone before the first 1.1.0 launch, or the config load fails and the host
+   gone before the first 1.2.0 launch, or the config load fails and the host
    claims nothing.
 6. **Relaunch and watch the first run.** A hook that could not be spawned, that
    exited non-zero or that timed out is reported loudly in `run_core.log` —
@@ -116,12 +116,12 @@ Until both are seen on the canary, the rest of the fleet stays on 1.0.x. A
 fleet migrated on the strength of the success path alone would lose exactly the
 records it needs on the day something fails.
 
-### Pinning to 1.1.0
+### Pinning to 1.2.0
 
 ```json
 {
   "update_mode": "frozen",
-  "pinned_ref": "1.1.0",
+  "pinned_ref": "1.2.0",
   "pinned_tool_versions": { "claude": "…", "gh": "…", "deno": "…" }
 }
 ```

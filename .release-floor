@@ -4,9 +4,9 @@
 # file is the one line a human edits to move the series: a floor above the
 # newest release tag makes the next merge to `main` mint the floor exactly,
 # and once that release exists the floor is below the series again and patch
-# increments continue from it (1.1.0 -> 1.1.1).
+# increments continue from it (1.2.0 -> 1.2.1).
 #
-# 1.1.0 releases the callback extension point and the removal of the
+# 1.2.0 releases the callback extension point and the removal of the
 # fleet_health_dir / fleet_health_repo configuration keys (Issues #805, #806,
 # #807) -- see docs/RELEASE-NOTES.md.
-1.1.0
+1.2.0
