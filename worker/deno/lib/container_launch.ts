@@ -100,6 +100,7 @@ import {
   enabledAgentProviders,
 } from "./agent_provider.ts";
 import { extensionBuildArguments } from "./container_extension_build.ts";
+import { EXTENSION_START_ENV } from "./container_extension_start.ts";
 import type { ContainerExtensionSpec } from "../types.ts";
 import { resolveContentApprovalStateDir } from "./content_approval_state_dir.ts";
 import {
@@ -1113,6 +1114,17 @@ export function buildContainerLaunchPlan(
     : undefined;
   if (customPromptMap) {
     runArgs.push("--env", `${CUSTOM_PROMPT_PATH_MAP_ENV}=${customPromptMap}`);
+  }
+  // The deployment's extension start script (Issue #981, parent #933): the
+  // entrypoint runs `${EXTENSION_PREFIX}/<start>` before the driver and
+  // aborts the sandbox start when it does not succeed. Emitted only when the
+  // declaration states a `start`, so an extension that starts nothing — and
+  // the public Vibe Coder — hands the container no such environment and the
+  // entrypoint's block stays inert. No port is published for it: the services
+  // are container-internal and the agent reaches them from inside.
+  const extensionStart = inputs.containerExtension?.spec.start;
+  if (extensionStart !== undefined) {
+    runArgs.push("--env", `${EXTENSION_START_ENV}=${extensionStart}`);
   }
   // Fleet telemetry names the real host, not the per-run container name.
   if (inputs.hostId) {

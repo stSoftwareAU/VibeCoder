@@ -1546,6 +1546,43 @@ Deno.test("buildContainerLaunchPlan - a declared start script rides the extensio
   assertEquals(plan.extensionBuildArgs.at(-1), "/srv/vibe-extension");
 });
 
+Deno.test("buildContainerLaunchPlan - a declared start script is handed to the container (Issue #981)", () => {
+  const plan = buildContainerLaunchPlan(
+    extensionInputs({
+      spec: {
+        path: "/srv/vibe-extension",
+        containerfile: "Containerfile",
+        start: "bin/start.sh",
+      },
+    }),
+  );
+
+  // The entrypoint runs ${EXTENSION_PREFIX}/<start> before the driver, so the
+  // container is handed the declared path — and nothing else about it.
+  const index = plan.runArgs.indexOf("VIBE_EXTENSION_START=bin/start.sh");
+  assert(index > 0, `the start path is not in the run arguments`);
+  assertEquals(plan.runArgs[index - 1], "--env");
+  // Still before the image, which stays last so the worker's own arguments
+  // can follow it.
+  assert(index < plan.runArgs.length - 1);
+});
+
+Deno.test("buildContainerLaunchPlan - an extension that starts nothing hands over no start env (Issue #981)", () => {
+  // A toolchain-only extension declares no `start`, so the entrypoint's block
+  // must stay inert — as it does for every unconfigured deployment.
+  for (
+    const plan of [
+      buildContainerLaunchPlan(extensionInputs()),
+      buildContainerLaunchPlan(inputs()),
+    ]
+  ) {
+    assertEquals(
+      plan.runArgs.filter((arg) => arg.startsWith("VIBE_EXTENSION_START=")),
+      [],
+    );
+  }
+});
+
 Deno.test("buildContainerLaunchPlan - refuses a Containerfile that is not FROM the standard image (Issue #980)", () => {
   const error = assertThrows(
     () =>
