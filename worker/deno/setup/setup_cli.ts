@@ -32,6 +32,7 @@
  * Issue #923: Migrate setup scripts to Deno TypeScript.
  */
 
+import { terminalStyler } from "../lib/console_style.ts";
 import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 import {
   type AllPrerequisitesResult,
@@ -99,23 +100,20 @@ import { readConfiguredRunMode } from "../commands/run_mode.ts";
 
 // ── Colour helpers ──────────────────────────────────────────────────────
 
-const isTty = Deno.stdout.isTerminal();
-const RED = isTty ? "\x1b[0;31m" : "";
-const GREEN = isTty ? "\x1b[0;32m" : "";
-const YELLOW = isTty ? "\x1b[1;33m" : "";
-const BLUE = isTty ? "\x1b[0;34m" : "";
-const NC = isTty ? "\x1b[0m" : "";
+/** Glyphs and colour come from the one shared module (Issue #870). */
+const out = terminalStyler();
+const err = terminalStyler(Deno.stderr);
 
 function printInfo(msg: string): void {
-  console.log(`${BLUE}ℹ${NC}  ${msg}`);
+  console.log(out.info(msg));
 }
 
 function printSuccess(msg: string): void {
-  console.log(`${GREEN}✓${NC}  ${msg}`);
+  console.log(out.success(msg));
 }
 
 function printWarning(msg: string): void {
-  console.log(`${YELLOW}⚠${NC}  ${msg}`);
+  console.log(out.warning(msg));
 }
 
 /**
@@ -169,9 +167,11 @@ async function askCreateMilestoneRuleset(repo: string): Promise<boolean> {
 
   await Deno.stdout.write(
     new TextEncoder().encode(
-      `${YELLOW}?${NC}  ${repo}: no ruleset covers \`milestone/**\`, so ` +
-        `GitHub cannot arm auto-merge on a milestone PR.\n` +
-        `   Create one mirroring the default-branch checks? [y/N] `,
+      out.question(
+        `${repo}: no ruleset covers \`milestone/**\`, so GitHub cannot arm ` +
+          `auto-merge on a milestone PR.`,
+      ) + "\n" +
+        out.plain("Create one mirroring the default-branch checks? [y/N] "),
     ),
   );
   const buffer = new Uint8Array(16);
@@ -183,7 +183,7 @@ async function askCreateMilestoneRuleset(repo: string): Promise<boolean> {
 }
 
 function printError(msg: string): void {
-  console.error(`${RED}✗${NC}  ${msg}`);
+  console.error(err.error(msg));
 }
 
 // ── Subcommand handlers ─────────────────────────────────────────────────
