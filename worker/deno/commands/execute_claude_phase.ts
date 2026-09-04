@@ -31,7 +31,7 @@
  * Output: JSON with the phase result:
  *   { action, failureType?, failureMessage?, diagnosticContext?,
  *     prUrl?, prNumber?, hasUncommittedChanges?, hasNewCommits?,
- *     promptsCommit?, elapsedSeconds? }
+ *     promptsCommit?, promptTemplate?, elapsedSeconds? }
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */

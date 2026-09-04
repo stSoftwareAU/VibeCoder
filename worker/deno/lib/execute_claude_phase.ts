@@ -154,6 +154,15 @@ export interface ExecuteClaudePhaseResult {
    * Undefined when git could not resolve it — the phase logs that loudly.
    */
   promptsCommit?: string;
+  /**
+   * The prompt template file this run read (Issue #849, part of #843).
+   *
+   * `prompts/issue/prompt.md` normally; an operator's file when a mapping
+   * dispatched or overrode the phase. The prompts commit identifies the
+   * repository's templates but says nothing about an operator file, so this
+   * is what makes such a run traceable.
+   */
+  promptTemplate?: string;
   /** SHA-256 hash of the static prompt content (Issue #1273). */
   promptSha?: string;
   /** Whether the prompt cache was hit (Issue #1273). */
@@ -944,7 +953,10 @@ export async function runExecuteClaudePhase(
     prompt: userPrompt,
     promptSha,
     cacheHit: promptCacheHit,
+    templateSource: promptTemplate,
   } = promptResult.value;
+  // Issue #849: the traceability record names the file, beside the commit.
+  deps.log(`Issue prompt template: ${promptTemplate ?? "unknown"}`);
 
   // --- Context budget monitoring and hard ceiling (Issues #1327, #3713) ---
   // Estimate token counts for each major prompt component and log the budget
@@ -1186,6 +1198,7 @@ export async function runExecuteClaudePhase(
         prNumber: selfHealResult.value.prNumber,
         elapsedSeconds,
         promptsCommit,
+        promptTemplate,
         promptSha,
         promptCacheHit,
       };
@@ -1197,6 +1210,7 @@ export async function runExecuteClaudePhase(
       failureMessage,
       elapsedSeconds,
       promptsCommit,
+      promptTemplate,
       promptSha,
       promptCacheHit,
     };
@@ -1231,6 +1245,7 @@ export async function runExecuteClaudePhase(
         prNumber: selfHealResult.value.prNumber,
         elapsedSeconds,
         promptsCommit,
+        promptTemplate,
         promptSha,
         promptCacheHit,
       };
@@ -1251,6 +1266,7 @@ export async function runExecuteClaudePhase(
       }),
       elapsedSeconds,
       promptsCommit,
+      promptTemplate,
       promptSha,
       promptCacheHit,
     };
@@ -1318,6 +1334,7 @@ export async function runExecuteClaudePhase(
         prNumber: selfHealResult.value.prNumber,
         elapsedSeconds,
         promptsCommit,
+        promptTemplate,
         promptSha,
         promptCacheHit,
       };
@@ -1330,6 +1347,7 @@ export async function runExecuteClaudePhase(
       diagnosticContext,
       elapsedSeconds,
       promptsCommit,
+      promptTemplate,
       promptSha,
       promptCacheHit,
     };
@@ -1375,6 +1393,7 @@ export async function runExecuteClaudePhase(
         prNumber: selfHealResult.value.prNumber,
         elapsedSeconds,
         promptsCommit,
+        promptTemplate,
         promptSha,
         promptCacheHit,
       };
@@ -1393,6 +1412,7 @@ export async function runExecuteClaudePhase(
         failureMessage: err instanceof Error ? err.message : String(err),
         elapsedSeconds,
         promptsCommit,
+        promptTemplate,
         promptSha,
         promptCacheHit,
       };
@@ -1423,6 +1443,7 @@ export async function runExecuteClaudePhase(
           hasNewCommits: true,
           elapsedSeconds,
           promptsCommit,
+          promptTemplate,
           promptSha,
           promptCacheHit,
         };
@@ -1436,6 +1457,7 @@ export async function runExecuteClaudePhase(
       hasNewCommits: false,
       elapsedSeconds,
       promptsCommit,
+      promptTemplate,
       promptSha,
       promptCacheHit,
     };
@@ -1448,6 +1470,7 @@ export async function runExecuteClaudePhase(
     hasNewCommits,
     elapsedSeconds,
     promptsCommit,
+    promptTemplate,
   };
 }
 

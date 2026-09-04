@@ -52,14 +52,12 @@ Backend/CLI change — no web interface to screenshot. Verified by tests and the
 full quality gate.
 
 - `./quality.sh` → **PASSED** (semgrep, markdownlint, mermaid, deno tests, lint,
-  type check, fmt). Three unrelated suites are sensitive to the worker's own
-  environment (`CONFIG_PATH`, `VIBE_STATE_DIR`, `WORK_DIR` are set for the run
-  and those tests assert on their absence), so the gate was run as
-  `env -u CONFIG_PATH -u VIBE_STATE_DIR -u WORK_DIR ./quality.sh` — confirmed
-  pre-existing and unrelated to this diff
-  (`tests/setup_credential_provisioning_test.ts`,
-  `tests/service_account_env_test.ts`, `tests/baseline_quality_cache_test.ts`).
-- `deno task test` → 1905+ passed, 0 failed.
+  type check, fmt). Several unrelated suites assert on the *absence* of
+  variables the worker sets for its own run (`CONFIG_PATH`, `VIBE_STATE_DIR`,
+  `WORK_DIR`, `DISABLE_AUTOUPDATER`, the provider variables), so the gate was
+  run under a scrubbed environment — they pass in CI, which has none of them
+  set.
+- `deno task test` → 17 500+ passed, 0 failed.
 
 ```mermaid
 flowchart LR
@@ -135,6 +133,17 @@ flowchart LR
   and its pre-existing ReDoS finding blocked the gate; the rewrite is
   behaviour-equivalent (it captures `owner/repo` from a literal pattern and
   compares it exactly) and keeps its existing coverage.
+- **unrequested** — three fixes to code this issue does not own:
+  `worker/deno/tests/service_account_env_test.ts` (an unused `assert` import
+  failing `deno lint`, and `${applied}` interpolated into a path where
+  `${applied.GH_CONFIG_DIR}` was meant) and `worker/deno/lib/vibe_env_registry.ts`
+  (`VIBE_CUSTOM_PROMPT_PATHS` undeclared) — reviewer: unrequested — reason: all
+  three fail on the milestone branch itself, verified against `18ab36a` in a
+  clean environment, and each one fails the gate this PR has to pass. The two
+  remaining base-branch failures — `container_entrypoint_test.ts` and
+  `setup_provider_credential_flow_test.ts` — are driven by the worker's own
+  environment (`DISABLE_AUTOUPDATER`, the provider variables), pass under
+  `env -i`, and are left untouched.
 - **unrequested** — `quorum_judge` override support and the `grill-me`
   placeholder registration — reviewer: unrequested — reason: the issue names
   `quorumLabel` and the quorum placeholder rule, so the judge turn follows the

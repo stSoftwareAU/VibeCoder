@@ -647,7 +647,14 @@ template changes.
   config load rather than silently resolving to whichever came first.
 - **The run record names the file.** Every phase logs the template it loaded —
   the operator's path, or `prompts/<phase>/prompt.md` — so a run can be traced
-  back to the file it actually ran.
+  back to the file it actually ran. The implementation phase also reports it
+  structurally, as `promptTemplate` beside `promptsCommit` in the phase result:
+  the commit identifies the repository's templates and says nothing about an
+  operator file.
+- **An override does not change the label's trust gate.** Only a *new* label
+  joins the operational dispatch set (Issue #847). Overriding `work-on` swaps
+  its template and nothing else — the fleet's main discovery label keeps the
+  OR gate it has always had.
 - **Phases with no override are untouched.** They load the repository's
   template exactly as before.
 

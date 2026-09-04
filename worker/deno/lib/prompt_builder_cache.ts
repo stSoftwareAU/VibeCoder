@@ -222,6 +222,11 @@ async function buildWithCache(
     value: {
       systemPrompt: cachedSystemPrompt.value,
       prompt: dynamicResult.value.prompt,
+      // Issue #849: the template the dynamic half actually read, carried
+      // through the cache so the run record names it either way.
+      ...(dynamicResult.value.templateSource !== undefined
+        ? { templateSource: dynamicResult.value.templateSource }
+        : {}),
       promptSha: sha,
       cacheHit,
     },
@@ -243,6 +248,9 @@ async function buildWithoutCache(
     value: {
       systemPrompt: fullResult.value.systemPrompt,
       prompt: fullResult.value.prompt,
+      ...(fullResult.value.templateSource !== undefined
+        ? { templateSource: fullResult.value.templateSource }
+        : {}),
       promptSha: sha,
       cacheHit: false,
     },

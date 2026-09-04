@@ -25,9 +25,15 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   assertCustomLabelPrompts,
   customDispatchMappings,
+  customLabelPromptLabels,
   parseCustomLabelPrompts,
   promptOverrideMappings,
+  readConfiguredCustomPromptPaths,
 } from "../lib/custom_label_prompts_config.ts";
+import {
+  operationalDispatchLabels,
+  requiresLabelAdderTrust,
+} from "../lib/operational_dispatch_labels.ts";
 import {
   type BuiltInLabelNames,
   DEFAULT_BUILTIN_LABEL_NAMES,
@@ -491,5 +497,62 @@ Deno.test("loadConfig - a mapping on a renamed planning label overrides planning
       custom_label_prompts: [{ label: "plan-it", prompt_path: promptPath }],
     });
     assertEquals(config.customLabelPrompts[0]?.overridesPhase, "planning");
+  });
+});
+
+Deno.test("readConfiguredCustomPromptPaths - the launcher reads the same renamed label the worker does", async () => {
+  await withDir(async (dir) => {
+    const first = await writeTemplate(dir, "plan.md", VALID.planning);
+    const second = await writeTemplate(
+      dir,
+      "critique.md",
+      VALID.planning_critique,
+    );
+    const path = `${dir}/.config.json`;
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({
+        repos: ["stSoftwareAU/VibeCoder"],
+        planning_label: "plan-it",
+        custom_label_prompts: [
+          { label: "plan-it", prompt_path: first },
+          {
+            label: "plan-it",
+            phase: "planning_critique",
+            prompt_path: second,
+          },
+        ],
+      }),
+    );
+    // The launcher parses before any config is loaded. Reading the stock
+    // names instead of the file's own would reject "plan-it" as not built-in
+    // and refuse to launch a configuration the worker itself accepts.
+    assertEquals(await readConfiguredCustomPromptPaths(path), [first, second]);
+  });
+});
+
+Deno.test("customLabelPromptLabels - an override never joins the trust-gated dispatch set", async () => {
+  await withDir(async (dir) => {
+    const overridePath = await writeTemplate(dir, "work-on.md", VALID.issue);
+    const dispatchPath = await writeTemplate(dir, "new.md", VALID.issue);
+    const config = await loadWith(dir, {
+      repos: ["stSoftwareAU/VibeCoder"],
+      custom_label_prompts: [
+        { label: "work-on", prompt_path: overridePath },
+        { label: "my-custom-label", prompt_path: dispatchPath },
+      ],
+    });
+
+    // Only the new label dispatches a privileged phase. `work-on` keeps the
+    // OR gate it has always had — overriding its template must not flip the
+    // fleet's main discovery label onto the label-adder AND gate.
+    assertEquals(customLabelPromptLabels(config), ["my-custom-label"]);
+    assertEquals(
+      operationalDispatchLabels(config).includes("work-on"),
+      false,
+      "an override must not become an operational dispatch label",
+    );
+    assertEquals(requiresLabelAdderTrust(config, "work-on"), false);
+    assertEquals(requiresLabelAdderTrust(config, "my-custom-label"), true);
   });
 });

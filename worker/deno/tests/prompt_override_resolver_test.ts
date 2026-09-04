@@ -35,6 +35,7 @@ import {
   buildIssuePrompt,
   buildPlanningCritiquePrompt,
   buildPlanningPrompt,
+  buildQuestionPrompt,
 } from "../lib/prompt_builder.ts";
 import { buildGrillMePrompt } from "../lib/grill_me_processor.ts";
 
@@ -384,4 +385,121 @@ Deno.test("buildGrillMePrompt - no override renders the built-in template", asyn
   });
   assert(result.ok, result.ok ? "" : result.error.message);
   assertEquals(result.value.includes(OPERATOR_MARKER), false);
+});
+
+Deno.test("buildQuestionPrompt - a question override replaces the template", async () => {
+  await withDir(async (dir) => {
+    const mapping = await override(
+      dir,
+      "question.md",
+      "question",
+      "question",
+      `${OPERATOR_MARKER}\n{{REPO}} #{{ISSUE_NUMBER}} {{QUESTION_LABEL}}\n`,
+    );
+    const result = await buildQuestionPrompt({
+      repo: "owner/repo",
+      issueNumber: "12",
+      issueTitle: "A title",
+      issueBody: "A body",
+      issueLabels: "question",
+      promptOverrides: [mapping],
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertStringIncludes(result.value.prompt, OPERATOR_MARKER);
+    assertStringIncludes(result.value.prompt, "owner/repo #12 question");
+    // The untrusted issue text is still fenced by this run's nonce.
+    assertStringIncludes(result.value.prompt, "BOUNDARY_");
+  });
+});
+
+Deno.test("buildQuestionPrompt - no override renders the built-in template", async () => {
+  const result = await buildQuestionPrompt({
+    repo: "owner/repo",
+    issueNumber: "12",
+    issueTitle: "A title",
+    issueBody: "A body",
+    issueLabels: "question",
+  });
+  assert(result.ok, result.ok ? "" : result.error.message);
+  assertEquals(result.value.prompt.includes(OPERATOR_MARKER), false);
+});
+
+// ---------------------------------------------------------------------------
+// The run's traceability record (Issue #849)
+// ---------------------------------------------------------------------------
+
+Deno.test("buildIssuePrompt - the result names the template file the build read", async () => {
+  await withDir(async (dir) => {
+    const mapping = await override(
+      dir,
+      "work-on.md",
+      "work-on",
+      "issue",
+      `${OPERATOR_MARKER}\nIssue {{ISSUE_NUMBER}}\n{{QUALITY_INSTRUCTIONS}}\n`,
+    );
+    const overridden = await buildIssuePrompt({
+      repo: "owner/repo",
+      issueNumber: "42",
+      issueTitle: "A title",
+      issueBody: "A body",
+      issueLabels: "work-on",
+      qualityInstructions: "run the gate",
+      promptOverrides: [mapping],
+    });
+    assert(overridden.ok, overridden.ok ? "" : overridden.error.message);
+    assertEquals(overridden.value.templateSource, mapping.promptPath);
+
+    // With no override the record names the repository's own template, so a
+    // run is traceable either way.
+    const builtIn = await buildIssuePrompt({
+      repo: "owner/repo",
+      issueNumber: "42",
+      issueTitle: "A title",
+      issueBody: "A body",
+      issueLabels: "work-on",
+      qualityInstructions: "run the gate",
+    });
+    assert(builtIn.ok, builtIn.ok ? "" : builtIn.error.message);
+    assertStringIncludes(
+      builtIn.value.templateSource ?? "",
+      "prompts/issue/prompt.md",
+    );
+  });
+});
+
+Deno.test("buildPlanningPrompt - the record names each turn's own template", async () => {
+  await withDir(async (dir) => {
+    const mapping = await override(
+      dir,
+      "plan.md",
+      "planning",
+      "planning",
+      `${OPERATOR_MARKER}\n{{REPO}} #{{ISSUE_NUMBER}} {{PLANNING_LABEL}}\n`,
+    );
+    const planning = await buildPlanningPrompt({
+      repo: "owner/repo",
+      issueNumber: "7",
+      issueTitle: "A title",
+      issueBody: "A body",
+      issueLabels: "planning",
+      promptOverrides: [mapping],
+    });
+    assert(planning.ok, planning.ok ? "" : planning.error.message);
+    assertEquals(planning.value.templateSource, mapping.promptPath);
+
+    const critique = await buildPlanningCritiquePrompt({
+      repo: "owner/repo",
+      issueNumber: "7",
+      issueTitle: "A title",
+      issueBody: "A body",
+      issueLabels: "planning",
+      draftPlan: "A draft",
+      promptOverrides: [mapping],
+    });
+    assert(critique.ok, critique.ok ? "" : critique.error.message);
+    assertStringIncludes(
+      critique.value.templateSource ?? "",
+      "prompts/planning_critique/prompt.md",
+    );
+  });
 });

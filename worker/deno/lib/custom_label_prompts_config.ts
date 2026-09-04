@@ -334,6 +334,11 @@ export function assertCustomLabelPrompts(
  * mount would leave every custom label failing at dispatch inside the
  * container.
  *
+ * The label names are read from the same file (Issue #849), so the launcher
+ * resolves an override exactly as `loadConfig` will inside the container. Left
+ * to the stock defaults it would reject a fleet that renamed `planning` — a
+ * valid configuration that the worker itself accepts.
+ *
  * @param configFile - Host path of the worker configuration file
  * @returns The configured absolute host prompt paths, in configuration order
  * @throws When the file exists but is unreadable, is not a JSON object, or
@@ -369,12 +374,37 @@ export async function readConfiguredCustomPromptPaths(
     );
   }
 
-  const raw = (parsed as Record<string, unknown>)["custom_label_prompts"];
-  return assertCustomLabelPrompts(raw).map((mapping) => mapping.promptPath);
+  const file = parsed as Record<string, unknown>;
+  return assertCustomLabelPrompts(
+    file["custom_label_prompts"],
+    configuredLabelNames(file),
+  ).map((mapping) => mapping.promptPath);
+}
+
+/** The configurable built-in label names a raw `.config.json` object states. */
+function configuredLabelNames(
+  file: Record<string, unknown>,
+): Partial<BuiltInLabelNames> {
+  // `work_on_label` is deliberately absent: the three discovery labels are
+  // hardwired in `lib/config_defaults.ts` and cannot be renamed (Issue #1834).
+  const fields: [keyof BuiltInLabelNames, string][] = [
+    ["planningLabel", "planning_label"],
+    ["questionLabel", "question_label"],
+    ["grillMeLabel", "grill_me_label"],
+    ["quorumLabel", "quorum_label"],
+    ["refineIssueLabel", "refine_issue_label"],
+  ];
+  const names: Partial<BuiltInLabelNames> = {};
+  for (const [field, key] of fields) {
+    const value = file[key];
+    if (typeof value === "string" && value.length > 0) names[field] = value;
+  }
+  return names;
 }
 
 /**
- * The label names of every configured mapping (Issue #847, part of #843).
+ * The label names that **dispatch** a configured mapping (Issue #847, part of
+ * #843).
  *
  * The trust gate (`operationalDispatchLabels`), the operational-label
  * verification in `label_security.ts`, and the reserved-label filters in
@@ -382,13 +412,21 @@ export async function readConfiguredCustomPromptPaths(
  * from this one helper keeps those guards in step with the validated config
  * rather than each rebuilding the list.
  *
+ * An **override** is excluded (Issue #849): it names a built-in label that
+ * already carries its own gate, so adding it here would change that label's
+ * trust posture as a side effect of swapping its template. `work-on` is the
+ * sharp case — it sits deliberately outside the AND-gated set, and an operator
+ * who overrode its prompt would otherwise find the fleet's main discovery
+ * label newly stripped on every untrusted or unattributable add. Only a new
+ * label brings a new privileged dispatch with it.
+ *
  * @param config - Worker configuration (or any object carrying the resolved list)
- * @returns The configured labels, in configuration order and original case
+ * @returns The dispatching labels, in configuration order and original case
  */
 export function customLabelPromptLabels(
   config: { customLabelPrompts: CustomLabelPromptMapping[] },
 ): string[] {
-  return config.customLabelPrompts.map((mapping) => mapping.label);
+  return customDispatchMappings(config).map((mapping) => mapping.label);
 }
 
 /**

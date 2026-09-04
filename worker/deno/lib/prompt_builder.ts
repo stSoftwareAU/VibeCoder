@@ -78,6 +78,16 @@ export interface PromptParts {
   systemPrompt: string;
   /** Dynamic user prompt for -p. */
   prompt: string;
+  /**
+   * The template file this build actually read (Issue #849, part of #843).
+   *
+   * The run's traceability record: with an operator override configured this
+   * names their file rather than `prompts/<phase>/prompt.md`, so a run can be
+   * traced back to the text it ran with and not only to the prompts commit.
+   * Set by the phases a mapping can override; absent on the rest, which always
+   * read the repository template the prompts commit already identifies.
+   */
+  templateSource?: string;
 }
 
 // Conditional stripping lives in screenshot_strip.ts (Issue #3812); re-exported
@@ -678,7 +688,16 @@ ${issueTemplate}
 ${agentsMdInstruction}
 `;
 
-  return { ok: true, value: { systemPrompt, prompt } };
+  return {
+    ok: true,
+    // Issue #849: name the file this phase actually ran with, so a run is
+    // traceable to the operator's template and not only to the prompts commit.
+    value: {
+      systemPrompt,
+      prompt,
+      templateSource: templateResult.value.source,
+    },
+  };
 }
 
 /**
@@ -848,7 +867,16 @@ ${repoContextSection}
 ${planningTemplate}
 `;
 
-  return { ok: true, value: { systemPrompt, prompt } };
+  return {
+    ok: true,
+    // Issue #849: name the file this phase actually ran with, so a run is
+    // traceable to the operator's template and not only to the prompts commit.
+    value: {
+      systemPrompt,
+      prompt,
+      templateSource: templateResult.value.source,
+    },
+  };
 }
 
 /**
@@ -1045,7 +1073,16 @@ ${
 ${critiqueTemplate}
 `;
 
-  return { ok: true, value: { systemPrompt, prompt } };
+  return {
+    ok: true,
+    // Issue #849: name the file this phase actually ran with, so a run is
+    // traceable to the operator's template and not only to the prompts commit.
+    value: {
+      systemPrompt,
+      prompt,
+      templateSource: templateResult.value.source,
+    },
+  };
 }
 
 /**
@@ -1181,7 +1218,16 @@ ${repoContextSection}
 ${questionTemplate}
 `;
 
-  return { ok: true, value: { systemPrompt, prompt } };
+  return {
+    ok: true,
+    // Issue #849: name the file this phase actually ran with, so a run is
+    // traceable to the operator's template and not only to the prompts commit.
+    value: {
+      systemPrompt,
+      prompt,
+      templateSource: templateResult.value.source,
+    },
+  };
 }
 
 /**
