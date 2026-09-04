@@ -10,15 +10,25 @@
  *
  * These tests drive real git repositories end to end.
  *
+ * The run id is supplied as a parameter (Issue #963). It used to be set on
+ * the process as `VIBE_RUN_ID`, which races every other test running at that
+ * moment and pinned this file into the gate's serial pass (Issue #880).
+ * {@link TEST_RUN_ID} exists in no real environment, so a fall back to
+ * `Deno.env.get` would stamp a different id rather than pass unnoticed.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assertEquals } from "@std/assert";
 import { commitAndPushPending, pushUnpushedCommits } from "../lib/git_push.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import { RUN_ID_TRAILER_KEY } from "../lib/run_id.ts";
 
 const DEFAULT_BRANCH = "Develop";
 const FEATURE_BRANCH = "issue-556-single-branch";
+
+/** Run id stamped on the commits these tests make (Issue #963). */
+const TEST_RUN_ID = "vibe-963-single-branch-sentinel";
 
 /** Run a git command in a repo, failing loudly on a non-zero exit. */
 async function git(args: string[], cwd: string): Promise<string> {
@@ -101,8 +111,6 @@ async function cleanup(tmpDir: string): Promise<void> {
 
 Deno.test("commitAndPushPending - reports a clean post-condition on a single-branch clone", async () => {
   const { tmpDir, remotePath, workerPath } = await setupRepos();
-  const runIdBefore = Deno.env.get("VIBE_RUN_ID");
-  Deno.env.set("VIBE_RUN_ID", "test-run-211");
   try {
     // Three commits made during the run, plus uncommitted work for the
     // final-mile commit to pick up.
@@ -117,6 +125,9 @@ Deno.test("commitAndPushPending - reports a clean post-condition on a single-bra
       FEATURE_BRANCH,
       "Fix CI failure: Quality Checks\n\nAutomated final-mile commit.",
       { cwd: workerPath },
+      false,
+      undefined,
+      TEST_RUN_ID,
     );
 
     if (!result.ok) throw result.error;
@@ -128,20 +139,21 @@ Deno.test("commitAndPushPending - reports a clean post-condition on a single-bra
 
     const localHead = await git(["rev-parse", "HEAD"], workerPath);
     assertEquals(await remoteTip(remotePath, FEATURE_BRANCH), localHead);
+
+    // The commit that landed carries the run id it was given, so the pushed
+    // work stays attributable to the run that made it (Issue #963).
+    const trailer = await git(
+      ["log", "-1", `--format=%(trailers:key=${RUN_ID_TRAILER_KEY},valueonly)`],
+      workerPath,
+    );
+    assertEquals(trailer, TEST_RUN_ID);
   } finally {
-    if (runIdBefore === undefined) {
-      Deno.env.delete("VIBE_RUN_ID");
-    } else {
-      Deno.env.set("VIBE_RUN_ID", runIdBefore);
-    }
     await cleanup(tmpDir);
   }
 });
 
 Deno.test("commitAndPushPending - still reports unpushed commits when the push genuinely fails", async () => {
   const { tmpDir, remotePath, workerPath } = await setupRepos();
-  const runIdBefore = Deno.env.get("VIBE_RUN_ID");
-  Deno.env.set("VIBE_RUN_ID", "test-run-211");
   try {
     await Deno.writeTextFile(`${workerPath}/only.txt`, "only\n");
     await git(["add", "only.txt"], workerPath);
@@ -157,16 +169,14 @@ Deno.test("commitAndPushPending - still reports unpushed commits when the push g
       FEATURE_BRANCH,
       "Fix CI failure: Quality Checks\n\nAutomated final-mile commit.",
       { cwd: workerPath },
+      false,
+      undefined,
+      TEST_RUN_ID,
     );
 
     assertEquals(result.ok, false);
     assertEquals(await remoteTip(remotePath, FEATURE_BRANCH), null);
   } finally {
-    if (runIdBefore === undefined) {
-      Deno.env.delete("VIBE_RUN_ID");
-    } else {
-      Deno.env.set("VIBE_RUN_ID", runIdBefore);
-    }
     await cleanup(tmpDir);
   }
 });

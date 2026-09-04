@@ -12,6 +12,7 @@ import {
   maybeCreateAgentTranscriptWriter,
 } from "../lib/agent_transcript.ts";
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
+import { createAgentStub } from "./support/agent_stub.ts";
 import type { Logger } from "../types.ts";
 
 Deno.test("agent_transcript - enabled by VIBE_AGENT_TRANSCRIPT=true or DEBUG=true only", () => {
@@ -160,8 +161,6 @@ Deno.test({
   sanitizeResources: false,
   sanitizeOps: false,
   fn: async () => {
-    const dir = await Deno.makeTempDir({ prefix: "agent_transcript_stub_" });
-    const stubPath = `${dir}/claude`;
     const toolLine = JSON.stringify({
       type: "assistant",
       message: {
@@ -172,17 +171,14 @@ Deno.test({
         }],
       },
     });
-    await Deno.writeTextFile(
-      stubPath,
-      "#!/usr/bin/env bash\n" +
-        `printf '%s\\n' '${toolLine}'\n` +
+    // Named by path, never installed on the process-wide `PATH` (Issue #960).
+    const stub = await createAgentStub(
+      `printf '%s\\n' '${toolLine}'\n` +
         `printf '%s\\n' '{"type":"result","result":"done"}'\n`,
+      { prefix: "agent_transcript_stub_" },
     );
-    await Deno.chmod(stubPath, 0o755);
-    const originalPath = Deno.env.get("PATH") ?? "";
-    Deno.env.set("PATH", `${dir}:${originalPath}`);
 
-    const transcriptPath = `${dir}/agent-e2e.jsonl`;
+    const transcriptPath = `${stub.dir}/agent-e2e.jsonl`;
     const logs: string[] = [];
     const logger = {
       info: (m: string) => logs.push(m),
@@ -196,6 +192,7 @@ Deno.test({
       );
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         phase: "execute",
         timeoutSeconds: 30,
         killAfterSeconds: 1,
@@ -207,8 +204,7 @@ Deno.test({
       assertStringIncludes(written, '"tool_use"');
       assertStringIncludes(written, '"type":"result"');
     } finally {
-      Deno.env.set("PATH", originalPath);
-      await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+      await stub.dispose();
     }
   },
 });

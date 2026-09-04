@@ -124,8 +124,20 @@ When a PR's CI fails, the worker feeds an authoritative log excerpt into the
 `{{PR_FAILURE_ACTIONS}}` slot of the `ci_fix` prompt. **GitHub Actions is the
 built-in default provider** — every repo gets job logs with no configuration.
 External CI/CD systems plug in through the `CiLogProvider` extension point in
-`worker/deno/lib/ci_log_provider.ts`; Jenkins
-(`worker/deno/lib/ci_provider_jenkins.ts`) is simply the first one.
+`worker/deno/lib/ci_log_provider.ts`.
+
+> **Which repository does your provider belong in?**
+>
+> A provider belongs *here* only when this project itself runs on that CI
+> system — GitHub Actions qualifies, because this repository's own CI is
+> GitHub Actions. A provider for the CI system **one deployment happens to
+> use** is a private extension and belongs in that deployment's own
+> repository, not in the shared tree. Core provides the extension point; it
+> does not learn what is plugged into it.
+>
+> See [Private Extensions](PRIVATE-EXTENSIONS.md) for the configuration-only
+> extension surface, and for the two reasons an out-of-tree provider cannot
+> register itself today.
 
 ```mermaid
 flowchart TD
@@ -169,7 +181,8 @@ To add a provider:
 
 2. Register it with `registerCiLogProvider(myCiLogProvider)` — the built-ins
    register themselves at the bottom of `ci_log_provider.ts`. Ids are unique;
-   re-registering one throws so a clash fails loudly.
+   re-registering one throws so a clash fails loudly. Registering in core is
+   for CI systems this project runs on; see the note above.
 3. Configure it per repo via `repo_config.<owner/repo>.ciProviders` (see
    [Per-repository configuration](CONFIGURATION.md#-per-repository-configuration)).
 
@@ -458,7 +471,7 @@ flowchart LR
 **CI fix enrichment**: The `ci_fix` template carries a
 `{{PR_FAILURE_ACTIONS}}` placeholder. The worker substitutes an authoritative
 CI log excerpt into that placeholder before invoking Claude — from a
-configured provider (e.g. a Jenkins console tail) or, failing that, from the
+configured provider or, failing that, from the
 built-in GitHub Actions provider. See
 [Adding a CI Log Provider](#adding-a-ci-log-provider) for the extension point
 and [Per-repository PR failure actions](per-repo-pr-failure-actions.md) for
