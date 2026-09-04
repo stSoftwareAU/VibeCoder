@@ -79,6 +79,7 @@ import {
 } from "./failure_detection_repair_label.ts";
 import { summariseCoverageGateFailure } from "./plan_coverage_gate.ts";
 import { ensureLabelExists } from "./label_operations.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import type { EscalateToHumanDeps } from "./needs_human_escalation.ts";
 
 // ---------------------------------------------------------------------------
@@ -140,6 +141,16 @@ export interface PlanningProcessorDeps {
   logger: Logger;
   /** Worker deps for cross-cutting concerns. */
   deps: WorkerDeps;
+  /**
+   * Environment lookup for the two variables the escalation path exports
+   * for this processor — `PLANNING_COMPLEXITY_CONTEXT` and
+   * `PLANNING_ESCALATION_REASON` (Issue #964). Defaults to the process
+   * environment, so production wiring passes nothing and behaves exactly as
+   * it did when this module read `Deno.env.get` itself. A test hands in a
+   * fixed map rather than mutating the environment every parallel worker
+   * shares.
+   */
+  env?: EnvLookup;
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,6 +1028,7 @@ async function _processPlanningWithHeartbeat(
   ctx: IssueContext,
   processorDeps: PlanningProcessorDeps,
 ): Promise<Result<PlanningResult>> {
+  const env = processorDeps.env ?? processEnvLookup;
   const {
     repo,
     issueNumber,
@@ -1058,6 +1070,7 @@ async function _processPlanningWithHeartbeat(
       issueTitle,
       ctx.milestoneTitle,
       ctx.handlerDeadlineEpochMs,
+      env,
     );
   }
 
@@ -1089,6 +1102,7 @@ async function _processPlanningWithHeartbeat(
       issueTitle,
       ctx.milestoneTitle,
       ctx.handlerDeadlineEpochMs,
+      env,
     );
   }
 
@@ -1096,7 +1110,7 @@ async function _processPlanningWithHeartbeat(
   // If no complexity context was pre-set via environment variable (e.g. by
   // auto-escalation), run assess-clarity and extract relevant indicators.
   let complexityContext: string | undefined;
-  const envContext = Deno.env.get("PLANNING_COMPLEXITY_CONTEXT");
+  const envContext = env("PLANNING_COMPLEXITY_CONTEXT");
   if (envContext) {
     complexityContext = envContext;
   } else {
@@ -1264,6 +1278,7 @@ async function _processPlanningWithHeartbeat(
         issueTitle,
         ctx.milestoneTitle,
         ctx.handlerDeadlineEpochMs,
+        env,
       );
     }
   }
@@ -1551,6 +1566,7 @@ async function _processPlanningWithHeartbeat(
     issueTitle,
     ctx.milestoneTitle,
     ctx.handlerDeadlineEpochMs,
+    env,
   );
 }
 
@@ -1696,6 +1712,11 @@ async function closePlanningIssue(
    * the Failure-Detection self-repair below. Undefined: unbounded, as before.
    */
   handlerDeadlineEpochMs: number | undefined = undefined,
+  /**
+   * Environment lookup for `PLANNING_ESCALATION_REASON` (Issue #964).
+   * Defaults to the process environment.
+   */
+  env: EnvLookup = processEnvLookup,
 ): Promise<Result<PlanningResult>> {
   // Sub-issue numbers the run created — resolved once and reused below.
   // Issue #2900: union the text-extracted URLs with the parent's *native*
@@ -2170,7 +2191,7 @@ async function closePlanningIssue(
   }
 
   if (!alreadyClosed) {
-    const escalationReason = Deno.env.get("PLANNING_ESCALATION_REASON");
+    const escalationReason = env("PLANNING_ESCALATION_REASON");
     let summaryComment = buildPlanningSummaryComment(
       subIssueUrls,
       githubUser,

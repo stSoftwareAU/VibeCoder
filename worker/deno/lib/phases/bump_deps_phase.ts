@@ -48,6 +48,7 @@ import { assertNever } from "../assert_never.ts";
 import type { Result } from "../../types.ts";
 import { detectTool } from "../quality_helpers.ts";
 import { prependExecutableDir } from "../path_bootstrap.ts";
+import { type EnvLookup, processEnvLookup } from "../env_lookup.ts";
 
 /**
  * Build the subprocess environment for `bump-deps.sh`, guaranteeing the
@@ -260,9 +261,15 @@ export function createBumpDepsRuntimeDeps(
  * `run_core.sh`. Treats anything other than `"true"` (case-insensitive)
  * as `false` — including the unset case — so a missing scope never
  * accidentally lets a script attempt workflow edits.
+ *
+ * @param env - Environment lookup (Issue #964); defaults to the process
+ *   environment. Exported so the "anything but `true`" rule can be asserted
+ *   directly against an injected map.
  */
-function readWorkflowScopeFromEnv(): boolean {
-  const raw = Deno.env.get("GH_TOKEN_HAS_WORKFLOW_SCOPE");
+export function readWorkflowScopeFromEnv(
+  env: EnvLookup = processEnvLookup,
+): boolean {
+  const raw = env("GH_TOKEN_HAS_WORKFLOW_SCOPE");
   return typeof raw === "string" && raw.toLowerCase() === "true";
 }
 
@@ -277,9 +284,15 @@ function readWorkflowScopeFromEnv(): boolean {
  * `parseInt` also swallowed trailing garbage, so `"0.5"` and `"0abc"` were
  * two more routes to the same zero. Only a bare positive integer is now
  * accepted; everything else is rejected loudly.
+ *
+ * @param env - Environment lookup (Issue #964); defaults to the process
+ *   environment. Exported so the rejection rule can be asserted directly
+ *   against an injected map.
  */
-function readQuarantineHoursFromEnv(): number {
-  const raw = Deno.env.get("VIBE_BUMP_QUARANTINE_HOURS");
+export function readQuarantineHoursFromEnv(
+  env: EnvLookup = processEnvLookup,
+): number {
+  const raw = env("VIBE_BUMP_QUARANTINE_HOURS");
   if (typeof raw !== "string" || raw.length === 0) {
     return DEFAULT_BUMP_QUARANTINE_HOURS;
   }
@@ -398,6 +411,11 @@ async function trackScriptRejection(
  * (Issue #207) is persisted; it defaults to the worker's work directory and
  * an empty value disables streak tracking entirely (tests, CLI runs with no
  * work directory configured).
+ *
+ * `env` is the lookup for the two variables `run_core.sh` exports for this
+ * phase (Issue #964). It defaults to the process environment, so production
+ * wiring passes nothing; a test hands in a fixed map rather than mutating
+ * the environment every parallel worker shares.
  */
 export async function workOnIssueBumpDeps(
   ctx: IssueContext,
@@ -407,12 +425,13 @@ export async function workOnIssueBumpDeps(
   streakStatePath: string = ctx.config.workDir
     ? bumpScriptStreakPath(ctx.config.workDir)
     : "",
+  env: EnvLookup = processEnvLookup,
 ): Promise<PhaseResult> {
   const info = await runBumpDeps(
     {
       repoPath: state.repoPath,
-      hasWorkflowScope: readWorkflowScopeFromEnv(),
-      quarantineHours: readQuarantineHoursFromEnv(),
+      hasWorkflowScope: readWorkflowScopeFromEnv(env),
+      quarantineHours: readQuarantineHoursFromEnv(env),
       issueNumber: ctx.issueNumber,
     },
     bumpDeps,
