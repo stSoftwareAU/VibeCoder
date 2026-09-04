@@ -13,8 +13,9 @@
  *     export-redact --tree DIR --redactions FILE --identifiers FILE \
  *       [--report FILE]
  *
- * `rename:` rules also rename files and directories (case-preserving), so the
- * fleet-health module ships under its public name and imports keep resolving.
+ * `rename:` rules also rename files and directories (case-preserving), so a
+ * privately-named module ships under its public name and imports keep
+ * resolving.
  *
  * `--identifiers` is the scrub-gate identifiers file: its `public-repo:`
  * declarations are the repositories the private-repository mapping leaves
