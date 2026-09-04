@@ -147,8 +147,11 @@ change touches, is green.
   and a template with no opening persona now asserts rather than skips
 - **violation** — the test re-implemented `tests/support/repo_prompts.ts`
   (DRY) — evidence: `worker/deno/tests/prompt_presence_gaps_test.ts:45` —
-  reason: fixed here; it imports `REPO_ROOT` and takes the helper's
-  `PROMPTS_DIR`/`VIBE_BASE_DIR` pin as an import side effect
+  reason: fixed here; it imports `REPO_ROOT` from the side-effect-free
+  `tests/support/repo_root.ts` and pins `prompts/` by naming the directory in
+  each load, rather than by clearing `PROMPTS_DIR`/`VIBE_BASE_DIR` as an import
+  side effect — mutating the process would push the suite into the gate's
+  serial pass (Issues #880, #940)
 - **violation** — the canon row claimed all eight unheaded checks sat under
   `### Required label set`, which is false for `prompts/retro/` — evidence:
   `docs/PROMPT-HOUSE-VOCABULARY.md:86` — reason: fixed here; the rationale

@@ -35,9 +35,12 @@ import "../lib/idle_task_templates/alert_feed_template.ts";
 import "../lib/idle_task_templates/bash_script_refs_template.ts";
 import "../lib/idle_task_templates/bash_syntax_audit_template.ts";
 import "../lib/idle_task_templates/workflow_annotation_scan_template.ts";
-// Importing this pins prompt resolution to this checkout, so a worker host's
-// `PROMPTS_DIR` cannot point the registered templates at another clone.
-import { REPO_ROOT } from "./support/repo_prompts.ts";
+// Every read of a template below names this directory explicitly, so it is
+// pinned to this checkout (Issue #844) by the parameter rather than by
+// clearing a worker host's `PROMPTS_DIR`. The constant comes from the
+// side-effect-free module so this suite stays in the gate's parallel pass
+// (Issues #880, #940).
+import { REPO_ROOT } from "./support/repo_root.ts";
 
 const PROMPTS_DIR = `${REPO_ROOT}prompts`;
 const CHECKLIST_PATH = "docs/PROMPT-BEST-PRACTICES-CHECKLIST.md";
@@ -278,7 +281,12 @@ Deno.test("the exempt prompts really are rendered as the filed issue body", asyn
     const template = getTemplate(slug);
     assert(template, `no idle-task template is registered as "${slug}"`);
 
-    const loaded = await loadPrompt(directory, PROMPTS_DIR);
+    // The registered template loads through `getPromptsDir()`, so the
+    // comparison side resolves the same way — the contract under test is
+    // "the body IS the template's own prompt.md", and reading the two through
+    // different resolutions would test the environment instead. The other
+    // tests in this file pin `prompts/` to this checkout by parameter.
+    const loaded = await loadPrompt(directory);
     assert(loaded.ok, `could not load prompts/${directory}/${PROMPT_FILENAME}`);
     const [head, tail] = loaded.value.split("{{ATTRIBUTION_FOOTER}}");
     assert(

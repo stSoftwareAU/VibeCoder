@@ -41,10 +41,12 @@
 import { assert, assertEquals } from "@std/assert";
 import { loadPrompt, PROMPT_FILENAME } from "../lib/prompt_manager.ts";
 import { findSuppressions } from "../lib/suppression_comments.ts";
-// Importing this pins prompt resolution to *this* checkout (Issue #844), so a
-// worker host's PROMPTS_DIR cannot point the gate at another tree. REPO_ROOT
-// is the decoded form of `new URL("../../../", import.meta.url).pathname`.
-import { REPO_ROOT } from "./support/repo_prompts.ts";
+// Every load below names its prompts directory explicitly, so resolution is
+// pinned to *this* checkout (Issue #844) by that parameter — a worker host's
+// PROMPTS_DIR is never consulted and no environment variable is touched. The
+// constant comes from the side-effect-free module so this suite stays in the
+// gate's parallel pass (Issues #880, #940).
+import { REPO_ROOT } from "./support/repo_root.ts";
 import {
   fencedBlocks,
   flattenProse,

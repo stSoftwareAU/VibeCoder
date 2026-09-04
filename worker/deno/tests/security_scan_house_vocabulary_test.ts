@@ -24,9 +24,12 @@ import {
   findSuppressions,
   type SupportedLanguage,
 } from "../lib/suppression_comments.ts";
-// Importing this pins prompt resolution to *this* checkout (Issue #844), so a
-// worker host's PROMPTS_DIR cannot point the gate at another tree.
-import { REPO_ROOT } from "./support/repo_prompts.ts";
+// `loadPrompt` below is given this directory explicitly, so resolution is
+// pinned to *this* checkout (Issue #844) by that parameter rather than by
+// clearing a worker host's PROMPTS_DIR. The constant comes from the
+// side-effect-free module so this suite stays in the gate's parallel pass
+// (Issues #880, #940).
+import { REPO_ROOT } from "./support/repo_root.ts";
 // The prose projection and its matcher moved to a shared module when the
 // all-directory gate (Issue #840) needed the same two projections; a second
 // copy would drift from this one the way the templates drifted from each
