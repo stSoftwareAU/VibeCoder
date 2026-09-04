@@ -339,6 +339,52 @@ flowchart LR
     style R fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
+**A declared start script runs before the worker, or the run fails**
+(Issue #981). An extension's services — a Postgres server, a Jenkins — have to
+be running before the agent starts work, so the framework supervises exactly
+one thing and makes its failure loud. The operator's Containerfile copies the
+extension into the image at the fixed path `/opt/vibe-extension/` (the posture
+`/opt/vibe-tools/<id>` already takes for `container_tools`), the launch plan
+hands the container `VIBE_EXTENSION_START=<start>` when — and only when — the
+block declares one, and `container/entrypoint.sh` runs
+`/opt/vibe-extension/<start>` as the container's own unprivileged worker
+account, after the writable-path policy and the tools PATH, before the Deno
+driver.
+
+Every way that start can fail *and return* aborts the launch with exit status
+**76** and never runs the driver: a script that is absent from the image, one
+that is not executable, and one that exits non-zero — the last naming its own
+status. A start that **hangs** is the exception: it is not time-bounded here,
+because how long a Postgres may take to come up is the operator's call, so the
+launcher's watchdog ends the container and reports it as wedged (87). The
+script's stdout and stderr are inherited, so a Postgres that refused to come up
+is diagnosable from the container log. The status is the framework's own so it
+cannot be confused with a deliberate quota pause (75) or the runtime's
+container-start range (125–127); the worker records the abort as a **failed
+run**, backs off and escalates like any other run failure, and
+`launcher_failure_evidence.ts` names it rather than sending the reader to the
+container runtime. Service ports stay container-internal — nothing is published
+to the host, the agent reaches the services inside the sandbox, and the
+operator observes the work through GitHub. With no `start` declared the block
+is inert, so the public Vibe Coder's entrypoint behaves exactly as it did.
+
+```mermaid
+sequenceDiagram
+    participant L as 🚀 run.sh
+    participant E as 📜 entrypoint.sh
+    participant S as 🐘 start.sh
+    participant D as 🤖 worker driver
+    L->>E: run … --env VIBE_EXTENSION_START=start.sh
+    E->>S: /opt/vibe-extension/start.sh
+    alt exits 0
+        S-->>E: services up
+        E->>D: deno run mod.ts run-entrypoint
+    else missing, not executable, or non-zero
+        S-->>E: status + path on the container log
+        E-->>L: exit 76 — driver never launched, run reported failed
+    end
+```
+
 **Every caller reads all three selections through one reader.** Because the tag is
 derived from the deployment's own configuration, anything that *names* the
 image must read that configuration too — otherwise it names a tag the launcher

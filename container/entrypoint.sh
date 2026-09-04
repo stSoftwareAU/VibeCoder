@@ -452,6 +452,61 @@ fi
 # principle to the agent.
 export DISABLE_AUTOUPDATER=1
 
+# --- The deployment's extension start script (Issue #981, parent #933) ------
+# An extension's services — a Postgres server, a Jenkins — have to be running
+# before the agent starts work, so the declared start script runs here: after
+# the writable-path policy and the deployer's tool PATH (a start script may
+# need a JDK the tools layer installed), and before the driver, as the
+# container's own unprivileged worker account.
+#
+# Deliberately last of the environment setup and first of the work: the driver
+# is launched ONLY after the script exits zero. A half-started environment —
+# an agent working against a Postgres that never came up — is the failure this
+# block exists to make loud, so every way the start can fail exits without the
+# driver, naming the path and the status (see `DESIGN-PRINCIPLES.md`, never
+# fail silently). Service ports stay container-internal: nothing here
+# publishes anything to the host.
+#
+# A start that never RETURNS is the one failure this block cannot name: the
+# script is not time-bounded here (deciding how long a Postgres may take to
+# come up is the operator's, not the framework's), so a hung start is ended by
+# the launcher's own watchdog and reported as a wedged container rather than
+# as an extension fault. Bounding it belongs with the health-checking this
+# slice put out of scope.
+#
+# VIBE_EXTENSION_START holds the script's path relative to the fixed prefix
+# the operator's Containerfile copies the extension to, and the launch plan
+# sets it only when the `container_extension` block declares a start. Unset —
+# the public Vibe Coder, and any extension that starts nothing — skips the
+# whole block, so the entrypoint behaves exactly as it did before.
+EXTENSION_PREFIX="${VIBE_EXTENSION_PREFIX:-/opt/vibe-extension}"
+# Keep in step with EXTENSION_START_ABORT_EXIT_STATUS in
+# worker/deno/lib/container_extension_start.ts, which the worker reads to
+# report the abort as a failed run; the entrypoint tests assert on it.
+EXTENSION_START_ABORT_STATUS=76
+if [[ -n "${VIBE_EXTENSION_START:-}" ]]; then
+  EXTENSION_START_SCRIPT="${EXTENSION_PREFIX}/${VIBE_EXTENSION_START}"
+  if [[ ! -f "${EXTENSION_START_SCRIPT}" ]]; then
+    echo "Error: the container_extension declares the start script ${VIBE_EXTENSION_START}, but ${EXTENSION_START_SCRIPT} does not exist in the image — the extension's Containerfile must copy the extension to ${EXTENSION_PREFIX}/ (Issue #981)" >&2
+    exit "${EXTENSION_START_ABORT_STATUS}"
+  fi
+  if [[ ! -x "${EXTENSION_START_SCRIPT}" ]]; then
+    echo "Error: the container_extension start script ${EXTENSION_START_SCRIPT} is not executable — the extension's Containerfile must copy it in with the executable bit set (Issue #981)" >&2
+    exit "${EXTENSION_START_ABORT_STATUS}"
+  fi
+  echo "entrypoint: starting the deployment's extension services via ${EXTENSION_START_SCRIPT} (Issue #981)" >&2
+  # stdout and stderr are inherited, so whatever the script says lands in the
+  # container log and a Postgres or Jenkins startup failure is diagnosable.
+  # stdin is /dev/null: nothing is watching this container.
+  extension_start_status=0
+  "${EXTENSION_START_SCRIPT}" </dev/null || extension_start_status=$?
+  if [[ "${extension_start_status}" -ne 0 ]]; then
+    echo "Error: ${EXTENSION_START_SCRIPT} exited ${extension_start_status} — aborting the sandbox start; the worker driver was not launched (Issue #981)" >&2
+    exit "${EXTENSION_START_ABORT_STATUS}"
+  fi
+  echo "entrypoint: the extension start script completed; starting the worker driver (Issue #981)" >&2
+fi
+
 cd "${BASE_DIR}"
 
 # --frozen + --lock fail closed on dependency drift (Issue #2896). The driver

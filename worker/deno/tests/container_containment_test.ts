@@ -1569,6 +1569,41 @@ Deno.test("containment - the extension build exposes no host path and publishes 
   );
 });
 
+Deno.test("containment - an extension-configured launch publishes no port (Issue #981)", () => {
+  // The extension's services are container-internal: the agent reaches them
+  // inside the sandbox and the operator observes the work through GitHub, so
+  // nothing is exposed on the dedicated host. Every argument list the launch
+  // executes is checked, not just the run.
+  const plan = sampleExtensionPlan();
+
+  for (
+    const [label, args] of [
+      ["run", plan.runArgs],
+      ["build", plan.buildArgs],
+      ["extension build", plan.extensionBuildArgs],
+      ["volume init", plan.initArgs],
+    ] as const
+  ) {
+    for (const flag of ["--publish", "-p", "--publish-all", "-P"]) {
+      assert(
+        !args.includes(flag),
+        `The ${label} arguments publish a port (${flag}).`,
+      );
+    }
+    assert(
+      !args.some((arg) => arg.startsWith("--publish=")),
+      `The ${label} arguments publish a port.`,
+    );
+  }
+
+  // And the start script the entrypoint runs is carried as an environment
+  // value alone — a path, never a port mapping.
+  assert(
+    plan.runArgs.includes("VIBE_EXTENSION_START=start.sh"),
+    "the declared start script is handed to the container",
+  );
+});
+
 Deno.test("containment - the extension tag still runs read-only with its scratch (Issue #980)", () => {
   const plan = sampleExtensionPlan();
 
