@@ -23,28 +23,11 @@ import {
   agentProviderIds,
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
+import { resolvePowerShell } from "./support/pwsh.ts";
 
 const SETUP_PS1 = new URL("../../../setup.ps1", import.meta.url).pathname;
 
-/** The PowerShell interpreter to drive, or null when there is none. */
-async function findPowerShell(): Promise<string | null> {
-  for (const candidate of [Deno.env.get("VIBE_PWSH"), "pwsh", "powershell"]) {
-    if (!candidate) continue;
-    try {
-      const output = await new Deno.Command(candidate, {
-        args: ["-NoProfile", "-NonInteractive", "-Command", "exit 0"],
-        stdout: "null",
-        stderr: "null",
-      }).output();
-      if (output.success) return candidate;
-    } catch {
-      // Try the next candidate.
-    }
-  }
-  return null;
-}
-
-const PWSH = await findPowerShell();
+const PWSH = await resolvePowerShell();
 
 /** What one PowerShell harness run reported. */
 interface PwshRun {
