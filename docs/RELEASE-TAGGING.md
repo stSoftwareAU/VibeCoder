@@ -250,8 +250,11 @@ gh api repos/stSoftwareAU/VibeCoder/rulesets/RULESET_ID \
          refs: .conditions.ref_name}'
 ```
 
-Both destructive operations can be attempted directly — GitHub refuses them and
-the tag is left where it was:
+With the payload applied, both destructive operations can be attempted directly
+— GitHub refuses them and the tag is left where it was. **Do not try the move
+against a ruleset that lacks the `update` rule**: the tag really moves, and the
+rewind that would undo it is then refused by `non_fast_forward`, so restoring it
+takes an admin disabling the ruleset.
 
 ```bash
 # → remote: - Cannot delete this tag
