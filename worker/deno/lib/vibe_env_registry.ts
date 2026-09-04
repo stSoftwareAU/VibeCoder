@@ -36,6 +36,8 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import { KNOWN_CONFIG_KEYS } from "./config_unknown_keys.ts";
+
 /** What a `VIBE_*` name is, which decides whether it belongs in a config file. */
 export type VibeEnvRole =
   /** Operator policy or a tunable. Belongs in `.config.json`; Issue #874. */
@@ -682,10 +684,35 @@ export function vibeEnvNamesByRole(role: VibeEnvRole): string[] {
 }
 
 /**
- * How many operator settings still bypass `.config.json`.
+ * Operator settings whose `.config.json` key **does not exist yet**.
  *
- * The number Issue #874 is measured by. It may shrink, never grow: each
- * migration to a config key takes one off this count, and a new
- * `operator_config` entry fails {@link ./../tests/vibe_env_registry_test.ts}.
+ * This is the real debt of Issue #874, and it is measured rather than
+ * declared: an entry graduates the moment its key appears in
+ * {@link KNOWN_CONFIG_KEYS}, so the count cannot be talked down by editing
+ * this file. Five of the twenty-one `operator_config` entries were already
+ * keyed when the registry was written — `host_disk_low_floor_gb`,
+ * `host_disk_low_floor_percent`, `imgbb_api_key`, `agent_provider` and
+ * `agent_providers` — which the first cut of this module counted as debt
+ * because it took the classification's word for it.
+ *
+ * @returns The names still with nowhere in `.config.json` to go, sorted.
  */
-export const OPERATOR_CONFIG_BYPASS_CAP = 21;
+export function unkeyedOperatorSettings(): string[] {
+  return Object.entries(VIBE_ENV_REGISTRY)
+    .filter(([, entry]) =>
+      entry.role === "operator_config" &&
+      (entry.configKey === undefined || !KNOWN_CONFIG_KEYS.has(entry.configKey))
+    )
+    .map(([name]) => name)
+    .sort();
+}
+
+/**
+ * How many operator settings still have no `.config.json` key.
+ *
+ * The number Issue #874 is measured by. It may shrink, never grow: adding the
+ * key lowers it, and a new `operator_config` entry — or a key deleted from
+ * `KNOWN_CONFIG_KEYS` — fails
+ * {@link ./../tests/vibe_env_registry_test.ts}.
+ */
+export const OPERATOR_CONFIG_BYPASS_CAP = 16;
