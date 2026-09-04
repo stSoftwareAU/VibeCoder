@@ -430,10 +430,13 @@ Deno.test("baseline_quality_cache - full no-op with no work directory: no path, 
   // A fresh, empty home: the old fallback wrote $HOME/auto-issue-work, so
   // proving the directory ABSENT needs a home nothing else has touched.
   // Both roots are parameters now (Issue #966) — a `CacheRoots` with no
-  // `workDir` is "WORK_DIR is unset", said without deleting a variable
-  // every other worker in this process shares.
+  // `workDir` and an empty env lookup is "WORK_DIR is unset", said without
+  // deleting a variable every other worker in this process shares. The
+  // lookup has to be stubbed too: an absent `workDir` still falls through
+  // to the real environment, so a host that exports `WORK_DIR` (every
+  // container run does) would otherwise resolve a real cache path here.
   const home = await Deno.makeTempDir({ prefix: "vibe-bqcache-home-" });
-  const roots = { home };
+  const roots = { home, env: () => undefined };
   try {
     // No cache directory means no path at all — never a $HOME fallback.
     assertEquals(baselineQualityCachePath(roots), undefined);
@@ -467,7 +470,9 @@ Deno.test("baseline_quality_cache - full no-op with no work directory: no path, 
 
 Deno.test("baseline_quality_cache - with no work directory even a warm legacy $HOME cache is a miss (Issue #133)", async () => {
   const home = await Deno.makeTempDir({ prefix: "vibe-bqcache-home-" });
-  const roots = { home };
+  // The env lookup is stubbed for the same reason as above: without it a
+  // host that exports `WORK_DIR` reads its real cache instead of no cache.
+  const roots = { home, env: () => undefined };
   try {
     // A valid, current entry in the legacy $HOME/.vibe-coder location.
     await Deno.mkdir(`${home}/.vibe-coder`, { recursive: true });
