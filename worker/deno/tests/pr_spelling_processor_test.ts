@@ -25,10 +25,11 @@ import type {
   GitDeps,
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
 
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+// Prompts resolve against this checkout, never the worker host's (Issue #844)
+// — named as a parameter on every call rather than pinned by deleting the
+// host's overrides from the shared process environment (Issue #1024).
+const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -170,6 +171,7 @@ Deno.test("processSpellingFailure - succeeds with mock Claude output", async () 
   });
 
   const processorDeps: SpellingProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
@@ -198,6 +200,7 @@ Deno.test("processSpellingFailure - handles Claude timeout", async () => {
   const deps = createMockDeps({ claude: mockClaude, github: mockGithub });
 
   const processorDeps: SpellingProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
   };
@@ -255,6 +258,7 @@ Deno.test("processSpellingFailure - starts and stops heartbeat during processing
   });
 
   const processorDeps: SpellingProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
@@ -304,6 +308,7 @@ Deno.test("processSpellingFailure - stops heartbeat even when Claude fails", asy
   });
 
   const processorDeps: SpellingProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
@@ -337,6 +342,7 @@ Deno.test("processSpellingFailure - reports no changes for empty output", async 
   const deps = createMockDeps({ claude: mockClaude, github: mockGithub });
 
   const processorDeps: SpellingProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
   };
@@ -443,6 +449,7 @@ Deno.test("processSpellingFailure - pushes commits after Claude makes changes (I
   });
 
   const processorDeps: SpellingProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
@@ -503,6 +510,7 @@ Deno.test("processSpellingFailure - reports no changes when Claude does nothing 
   });
 
   const processorDeps: SpellingProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
   };
@@ -565,6 +573,7 @@ Deno.test("processSpellingFailure - reports push failure accurately (Issue #1412
   });
 
   const processorDeps: SpellingProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
@@ -642,6 +651,7 @@ Deno.test("processSpellingFailure - retries push after recovery from rejection (
   });
 
   const processorDeps: SpellingProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
@@ -721,6 +731,7 @@ Deno.test("processSpellingFailure - Claude self-pushed: HEAD moved triggers succ
   });
 
   const processorDeps: SpellingProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
@@ -794,6 +805,7 @@ Deno.test("processSpellingFailure - genuine no-changes when HEAD unchanged still
   });
 
   const processorDeps: SpellingProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
@@ -858,6 +870,7 @@ Deno.test("processSpellingFailure - checks out PR branch before running Claude (
     });
 
     const processorDeps: SpellingProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       workDir: tmpDir,

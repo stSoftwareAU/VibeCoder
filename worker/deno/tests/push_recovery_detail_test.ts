@@ -23,10 +23,11 @@ import type {
 } from "../lib/issue_worker_wiring.ts";
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
 import type { Logger } from "../types.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
 
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+// Prompts resolve against this checkout, never the worker host's (Issue #844)
+// — named as a parameter on every call rather than pinned by deleting the
+// host's overrides from the shared process environment (Issue #1024).
+const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 interface CapturedLog {
   message: string;
@@ -93,6 +94,7 @@ Deno.test("processCiFailure - logs the recovery failure reason, not just 'push f
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeCapturingLogger(logs),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,

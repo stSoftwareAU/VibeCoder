@@ -27,10 +27,11 @@ import type {
   GitHubDeps,
   PrDeps,
 } from "../lib/issue_worker_wiring.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
 
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+// Prompts resolve against this checkout, never the worker host's (Issue #844)
+// — named as a parameter on every call rather than pinned by deleting the
+// host's overrides from the shared process environment (Issue #1024).
+const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -153,6 +154,7 @@ Deno.test("processCiFailure - succeeds with mock Claude output", async () => {
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -189,6 +191,7 @@ Deno.test("processCiFailure - skips when max retries exceeded", async () => {
     const deps = createMockDeps({ github: mockGithub });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir,
@@ -243,6 +246,7 @@ Deno.test("processCiFailure - increments retry count", async () => {
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir,
@@ -319,6 +323,7 @@ Deno.test("processCiFailure - starts and stops heartbeat during processing", asy
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -374,6 +379,7 @@ Deno.test("processCiFailure - stops heartbeat even when Claude fails", async () 
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -413,6 +419,7 @@ Deno.test("processCiFailure - handles Claude failure", async () => {
     const deps = createMockDeps({ claude: mockClaude, github: mockGithub });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -466,6 +473,7 @@ Deno.test("processCiFailure - pushes commits even when Claude output is empty (I
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -527,6 +535,7 @@ Deno.test("processCiFailure - reports push failure when commits remain unpushed 
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -630,6 +639,7 @@ Deno.test("processCiFailure - pushes commits after Claude makes changes (Issue #
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -708,6 +718,7 @@ Deno.test("processCiFailure - checks out PR branch before running Claude (Issue 
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -796,6 +807,7 @@ Deno.test("processCiFailure - uses .pr_response_message as comment body when pre
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -862,6 +874,7 @@ Deno.test("processCiFailure - falls back to default message when .pr_response_me
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -941,6 +954,7 @@ Deno.test("processCiFailure - recovers from push rejection and reports success (
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -1015,6 +1029,7 @@ Deno.test("processCiFailure - reports accurate failure when push cannot be recov
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -1083,6 +1098,7 @@ Deno.test("processCiFailure - reports no changes when Claude does nothing (Issue
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -1176,6 +1192,7 @@ Deno.test("processCiFailure - skips quality check when no uncommitted changes (I
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -1255,6 +1272,7 @@ Deno.test("processCiFailure - runs quality check and commits uncommitted changes
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -1346,6 +1364,7 @@ Deno.test("processCiFailure - retries Claude when quality check fails (Issue #14
 
     const qualityOutput = "Deno type check failed: src/broken.ts:3 TS2304";
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -1420,6 +1439,7 @@ Deno.test("processCiFailure - a PR whose branch no longer exists on origin (merg
       },
     });
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,

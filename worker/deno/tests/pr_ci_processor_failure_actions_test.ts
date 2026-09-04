@@ -33,10 +33,11 @@ import type {
   runPrFailureActions,
 } from "../lib/pr_failure_actions.ts";
 import type { fetchGithubActionsLogExcerpt } from "../lib/github_actions_log_fetcher.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
 
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+// Prompts resolve against this checkout, never the worker host's (Issue #844)
+// — named as a parameter on every call rather than pinned by deleting the
+// host's overrides from the shared process environment (Issue #1024).
+const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -143,6 +144,7 @@ async function makeRig(opts: {
   const logger = makeCapturingLogger();
 
   const processorDeps: CiProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger,
     deps,
     workDir: tmpDir,
