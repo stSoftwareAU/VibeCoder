@@ -176,8 +176,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/run_mode_test.ts",
   "tests/self_heal_events_test.ts",
   "tests/service_account_env_test.ts",
-  "tests/setup_agent_provider_gating_test.ts",
-  "tests/setup_container_runtime_install_test.ts",
   "tests/shell_helpers_test.ts",
   "tests/spend_ceiling_3684_test.ts",
   "tests/stale_workdir_command_test.ts",

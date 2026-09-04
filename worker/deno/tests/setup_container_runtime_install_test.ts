@@ -17,7 +17,12 @@
  * suite stays hermetic on a host with no `container` binary at all.
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   candidatesForPlatform,
   type ContainerRuntimeProbe,
@@ -30,6 +35,7 @@ import {
 } from "../setup/container_runtime_install.ts";
 import type { InstallStep } from "../setup/prerequisite_install_plan.ts";
 import type { AllPrerequisitesResult } from "../setup/prerequisites.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 /** Probe answers, replayed one per call so a re-probe can differ. */
 function scriptedProbe(
@@ -337,52 +343,50 @@ Deno.test("ensureContainerRuntime - --auto-install consents without a prompt and
   );
 });
 
-Deno.test("ensureContainerRuntime - a withheld offer is reported, never silent", async () => {
+Deno.test("ensureContainerRuntime - a withheld offer is reported, never silent (Issue #962)", async () => {
   // Pin the suppression to the environment variable rather than the ambient
   // TTY, so the case is deterministic whether the suite runs under CI or an
   // interactive terminal (where the default consent would otherwise prompt).
-  const original = Deno.env.get("VIBE_NO_AUTO_INSTALL");
-  Deno.env.set("VIBE_NO_AUTO_INSTALL", "true");
-  try {
-    const outcome = await ensureContainerRuntime({
-      platform: "darwin",
-      probe: scriptedProbe([BINARY_ABSENT]),
-      runStep: () => {
-        throw new Error("no step may run without consent");
-      },
-      packageManagerAvailable: brewPresent,
-    });
+  // The variable is stated through the injected lookup, which answers only
+  // from its own map: a flow that read `Deno.env.get` instead would find it
+  // absent and fall through to the TTY branch, so this message proves the
+  // seam rather than the host.
+  const outcome = await ensureContainerRuntime({
+    platform: "darwin",
+    probe: scriptedProbe([BINARY_ABSENT]),
+    runStep: () => {
+      throw new Error("no step may run without consent");
+    },
+    packageManagerAvailable: brewPresent,
+    env: envFrom({ VIBE_NO_AUTO_INSTALL: "true" }),
+  });
 
-    assertEquals(outcome.ok, false);
-    assertEquals(outcome.status, "declined");
-    const withheld = outcome.messages.find((m) =>
-      m.includes("offer was withheld")
-    );
-    assert(
-      withheld,
-      `no withheld-offer message in: ${outcome.messages.join(" | ")}`,
-    );
-    assertStringIncludes(withheld!, "Apple container");
-    assertStringIncludes(withheld!, "VIBE_NO_AUTO_INSTALL=true is set");
-    assertStringIncludes(withheld!, "--auto-install");
-  } finally {
-    if (original === undefined) Deno.env.delete("VIBE_NO_AUTO_INSTALL");
-    else Deno.env.set("VIBE_NO_AUTO_INSTALL", original);
-  }
+  assertEquals(outcome.ok, false);
+  assertEquals(outcome.status, "declined");
+  const withheld = outcome.messages.find((m) =>
+    m.includes("offer was withheld")
+  );
+  assert(
+    withheld,
+    `no withheld-offer message in: ${outcome.messages.join(" | ")}`,
+  );
+  assertStringIncludes(withheld!, "Apple container");
+  assertStringIncludes(withheld!, "VIBE_NO_AUTO_INSTALL=true is set");
+  assertStringIncludes(withheld!, "--auto-install");
 });
 
-Deno.test("consentSuppressionReason - names the environment opt-out", () => {
-  const original = Deno.env.get("VIBE_NO_AUTO_INSTALL");
-  Deno.env.set("VIBE_NO_AUTO_INSTALL", "true");
-  try {
-    assertEquals(
-      consentSuppressionReason(),
-      "VIBE_NO_AUTO_INSTALL=true is set",
-    );
-  } finally {
-    if (original === undefined) Deno.env.delete("VIBE_NO_AUTO_INSTALL");
-    else Deno.env.set("VIBE_NO_AUTO_INSTALL", original);
-  }
+Deno.test("consentSuppressionReason - names the environment opt-out (Issue #962)", () => {
+  assertEquals(
+    consentSuppressionReason(envFrom({ VIBE_NO_AUTO_INSTALL: "true" })),
+    "VIBE_NO_AUTO_INSTALL=true is set",
+  );
+  // A value that is not exactly "true" is not the opt-out, so the reason
+  // falls through to the TTY gate rather than reporting a variable nobody
+  // set to the documented value.
+  assertNotEquals(
+    consentSuppressionReason(envFrom({ VIBE_NO_AUTO_INSTALL: "yes" })),
+    "VIBE_NO_AUTO_INSTALL=true is set",
+  );
 });
 
 // ---------------------------------------------------------------------------
