@@ -149,8 +149,15 @@ export async function workOnIssueSetupBranch(
     return { status: "early_exit", reason: "claim_churn_escalation" };
   }
 
-  // Clone or update the repo into the work directory
-  const setupResult = await deps.git.setupRepo(repo, config.workDir);
+  // Clone or update the repo into the work directory. With a lane id
+  // (Issue #923) this is the lane's own worktree off that clone, so a
+  // sibling slot working the same repository cannot move HEAD underneath
+  // this run.
+  const setupResult = await deps.git.setupRepo(
+    repo,
+    config.workDir,
+    ctx.laneId,
+  );
   if (!setupResult.ok) {
     return {
       status: "failure",
