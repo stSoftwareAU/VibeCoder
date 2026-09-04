@@ -34,6 +34,11 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
+import {
+  isNonNegative,
+  parseNumber,
+  resolveSetting,
+} from "./config_precedence.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
 import {
   classifyWorkVolumeRatchet,
@@ -150,17 +155,6 @@ function envNumber(value: string | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-/** A finite, in-range number, or null when the value cannot be used. */
-function usableNumber(
-  value: number | null | undefined,
-  max?: number,
-): number | null {
-  if (value === null || value === undefined) return null;
-  if (!Number.isFinite(value) || value < 0) return null;
-  if (max !== undefined && value > max) return null;
-  return value;
-}
-
 /**
  * Resolve the claiming floor's two terms, and say where each came from.
  *
@@ -184,27 +178,34 @@ export function resolveDiskFloors(
   env: (name: string) => string | undefined,
   configured: ConfiguredDiskFloors = {},
 ): DiskFloors {
-  const configGb = usableNumber(configured.hostDiskLowFloorGb);
-  const envGb = usableNumber(envNumber(env(HOST_DISK_LOW_FLOOR_GB_ENV)));
-  const configPercent = usableNumber(configured.hostDiskLowFloorPercent, 100);
-  const envPercent = usableNumber(
-    envNumber(env(HOST_DISK_LOW_FLOOR_PERCENT_ENV)),
-    100,
-  );
+  // The rule itself now lives in config_precedence.ts (Issue #874), so this
+  // site states which sources it has rather than re-deciding which one wins.
+  // Behaviour is unchanged: config, then environment, then default, with an
+  // unusable value in either treated as absent.
+  const gb = resolveSetting<number>({
+    configKey: "host_disk_low_floor_gb",
+    envVar: HOST_DISK_LOW_FLOOR_GB_ENV,
+    env,
+    configured: configured.hostDiskLowFloorGb,
+    fallback: DEFAULT_LOW_FLOOR_GB,
+    parse: parseNumber,
+    accept: isNonNegative,
+  });
+  const percent = resolveSetting<number>({
+    configKey: "host_disk_low_floor_percent",
+    envVar: HOST_DISK_LOW_FLOOR_PERCENT_ENV,
+    env,
+    configured: configured.hostDiskLowFloorPercent,
+    fallback: DEFAULT_LOW_FLOOR_PERCENT,
+    parse: parseNumber,
+    accept: (value) => isNonNegative(value) && value <= 100,
+  });
 
   return {
-    lowFloorGb: configGb ?? envGb ?? DEFAULT_LOW_FLOOR_GB,
-    lowFloorGbSource: configGb !== null
-      ? "config"
-      : envGb !== null
-      ? "env"
-      : "default",
-    lowFloorPercent: configPercent ?? envPercent ?? DEFAULT_LOW_FLOOR_PERCENT,
-    lowFloorPercentSource: configPercent !== null
-      ? "config"
-      : envPercent !== null
-      ? "env"
-      : "default",
+    lowFloorGb: gb.value,
+    lowFloorGbSource: gb.source,
+    lowFloorPercent: percent.value,
+    lowFloorPercentSource: percent.source,
   };
 }
 

@@ -14,6 +14,7 @@ import { collectLabelCandidates } from "../lib/collect_label_candidates.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { resolveContentApprovalStateDir } from "../lib/content_approval_state_dir.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { createDiagnostics } from "../lib/issue_finder_logger.ts";
 import {
   createIssueFetcher,
   type FindIssuesOptions,
@@ -449,5 +450,84 @@ Deno.test(
     );
 
     assertEquals(result.candidates, []);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// custom_label_prompts labels are trust-gated here too (Issue #847, part of #843)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collect_label_candidates - strips a custom_label_prompts label added by an untrusted actor (Issue #847)",
+  async () => {
+    const config = makeConfig({
+      customLabelPrompts: [
+        { label: "deploy-review", promptPath: "/srv/prompts/deploy-review.md" },
+      ],
+    });
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 60,
+          title: "Custom label smuggled in",
+          url: "https://github.com/owner/repo/issues/60",
+          assignees: [],
+          labels: [{ name: "top-priority" }, { name: "deploy-review" }],
+          createdAt: "2024-03-03T00:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "top-priority" },
+          actor: { login: "alice" },
+          created_at: "2024-03-03T00:00:00Z",
+        },
+        // The custom label came from a non-allowlisted triage collaborator.
+        {
+          event: "labeled",
+          label: { name: "deploy-review" },
+          actor: { login: "mallory" },
+          created_at: "2024-03-03T01:00:00Z",
+        },
+      ],
+      issueView: { title: "Custom label smuggled in", body: "" },
+    });
+
+    const lines: string[] = [];
+    const cache = createTestCache();
+    const result = await collectLabelCandidates(
+      "owner/repo",
+      config,
+      {
+        ...buildOptions(mockGh, cache),
+        diagnostics: createDiagnostics({
+          enabled: true,
+          write: (line) => lines.push(line),
+        }),
+      },
+      [],
+      [],
+      createIssueFetcher(mockGh),
+      [],
+    );
+
+    // The issue still qualifies on its trusted `top-priority` label …
+    assertEquals(result.candidates.length, 1);
+    // … but the untrusted custom label was stripped and audited.
+    assertEquals(
+      lines.some(
+        (l) =>
+          l.includes("issue=#60") &&
+          l.includes("untrusted-operational-label") &&
+          l.includes("deploy-review(mallory)"),
+      ),
+      true,
+      `expected an untrusted-operational-label diagnostic, got: ${
+        lines.join("\n")
+      }`,
+    );
   },
 );

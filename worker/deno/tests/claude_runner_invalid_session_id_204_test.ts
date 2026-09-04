@@ -8,9 +8,10 @@
  * draft → publish structure and succeeded only via a legacy sessionless retry.
  *
  * The runner now recognises that refusal, drops the session flags, and retries
- * once at WARNING level. These tests drive a stub `claude` on PATH that refuses
- * any invocation carrying `--session-id`, so the recorded argument sequence
- * proves the second invocation carried no session flags and the run recovered.
+ * once at WARNING level. These tests drive a stub agent — named by path rather
+ * than installed on `PATH` (Issue #959) — that refuses any invocation carrying
+ * `--session-id`, so the recorded argument sequence proves the second
+ * invocation carried no session flags and the run recovered.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -19,6 +20,7 @@ import { assert, assertEquals } from "@std/assert";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import { detectInvalidSessionId } from "../lib/claude_executor.ts";
 import type { Logger } from "../types.ts";
+import { withAgentStub } from "./support/agent_stub.ts";
 
 // ---------------------------------------------------------------------------
 // Pure detection
@@ -48,13 +50,25 @@ Deno.test("detectInvalidSessionId - ignores unrelated failures (Issue #204)", ()
 });
 
 // ---------------------------------------------------------------------------
-// Stub harness — a fake `claude` on PATH that records every invocation's args
-// and refuses any invocation carrying `--session-id`, exactly as the real CLI
-// does for a non-UUID id.
+// Stub harness — a fake agent, named by path (Issue #959), that records every
+// invocation's args and refuses any invocation carrying `--session-id`,
+// exactly as the real CLI does for a non-UUID id.
 // ---------------------------------------------------------------------------
 
-function buildSessionRejectingStubBody(argLog: string): string {
+/** Basename of the file the stub records each invocation's flags in. */
+const ARG_LOG = "args.log";
+
+/** A stub agent plus the log it writes beside itself. */
+interface SessionStub {
+  /** Absolute path to the stub, passed to the runner as `agentBinaryPath`. */
+  path: string;
+  /** Where the stub records one line per invocation. */
+  argLog: string;
+}
+
+function buildSessionRejectingStubBody(): string {
   return [
+    `argLog="$(dirname "$0")/${ARG_LOG}"`,
     `has_session=0`,
     `line=""`,
     `for arg in "$@"; do`,
@@ -64,7 +78,7 @@ function buildSessionRejectingStubBody(argLog: string): string {
     `done`,
     // The marker prefix keeps a flagless invocation from vanishing as a
     // blank line.
-    `printf 'session-flags:%s\\n' "$line" >> '${argLog}'`,
+    `printf 'session-flags:%s\\n' "$line" >> "$argLog"`,
     `if [ "$has_session" = "1" ]; then`,
     `  printf '%s\\n' 'Error: Invalid session ID. Must be a valid UUID.' >&2`,
     `  exit 1`,
@@ -74,23 +88,15 @@ function buildSessionRejectingStubBody(argLog: string): string {
   ].join("\n");
 }
 
-async function withStub<T>(
-  body: (argLog: string) => string,
-  fn: (argLog: string) => Promise<T>,
+function withStub<T>(
+  body: () => string,
+  fn: (stub: SessionStub) => Promise<T>,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_session_stub_" });
-  const argLog = `${dir}/args.log`;
-  const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(stubPath, `#!/usr/bin/env bash\n${body(argLog)}\n`);
-  await Deno.chmod(stubPath, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  try {
-    return await fn(argLog);
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
+  return withAgentStub(
+    body(),
+    (stub) => fn({ path: stub.path, argLog: `${stub.dir}/${ARG_LOG}` }),
+    { prefix: "claude_session_stub_" },
+  );
 }
 
 async function readInvocations(argLog: string): Promise<string[]> {
@@ -150,11 +156,12 @@ Deno.test({
     const { warnings, securityEvents, logger } = collectingLogger();
     const { result, invocations } = await withStub(
       buildSessionRejectingStubBody,
-      async (argLog) => {
+      async (stub) => {
         const result = await runClaudeWithRetry(
           {
             prompt: "test",
             phase: "issue",
+            agentBinaryPath: stub.path,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
             logger,
@@ -165,7 +172,7 @@ Deno.test({
           },
           FAST_RETRY,
         );
-        return { result, invocations: await readInvocations(argLog) };
+        return { result, invocations: await readInvocations(stub.argLog) };
       },
     );
 
@@ -196,27 +203,28 @@ Deno.test({
   async fn() {
     // This stub refuses *every* invocation with the same message, so a runner
     // that retried unconditionally would loop.
-    const alwaysRefuses = (argLog: string) =>
+    const alwaysRefuses = () =>
       [
-        `printf '%s\\n' "invoked" >> '${argLog}'`,
+        `printf '%s\\n' "invoked" >> "$(dirname "$0")/${ARG_LOG}"`,
         `printf '%s\\n' 'Error: Invalid session ID. Must be a valid UUID.' >&2`,
         `exit 1`,
       ].join("\n");
 
     const { result, invocations } = await withStub(
       alwaysRefuses,
-      async (argLog) => {
+      async (stub) => {
         const result = await runClaudeWithRetry(
           {
             prompt: "test",
             phase: "issue",
+            agentBinaryPath: stub.path,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
             sessionResumeState: { sessionId: "bad-id", phaseCount: 0 },
           },
           FAST_RETRY,
         );
-        return { result, invocations: await readInvocations(argLog) };
+        return { result, invocations: await readInvocations(stub.argLog) };
       },
     );
 
@@ -235,17 +243,18 @@ Deno.test({
   async fn() {
     const { result, invocations } = await withStub(
       buildSessionRejectingStubBody,
-      async (argLog) => {
+      async (stub) => {
         const result = await runClaudeWithRetry(
           {
             prompt: "test",
             phase: "issue",
+            agentBinaryPath: stub.path,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
           },
           FAST_RETRY,
         );
-        return { result, invocations: await readInvocations(argLog) };
+        return { result, invocations: await readInvocations(stub.argLog) };
       },
     );
 

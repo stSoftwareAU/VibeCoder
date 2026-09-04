@@ -6,6 +6,12 @@
  * themselves are exercised through their callers' injected seams, the way
  * every other worker write is.
  *
+ * Issue #967: every case hands the module its own environment map instead of
+ * moving `HOME`, `GH_CONFIG_DIR` and the scratch root for every other test in
+ * the process. The injected values are throwaway temporary directories that
+ * appear in no real environment, so a fall back to `Deno.env.get` fails here
+ * rather than passing on the ambient value.
+ *
  * Australian English spelling throughout (behaviour, organisation).
  */
 
@@ -15,14 +21,7 @@ import {
   parseOriginRepo,
   resolveEscalationGhEnv,
 } from "../lib/host_escalation.ts";
-
-function restoreEnv(name: string, value: string | undefined): void {
-  if (value === undefined) {
-    Deno.env.delete(name);
-  } else {
-    Deno.env.set(name, value);
-  }
-}
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 Deno.test("parseOriginRepo - reads owner/repo from SSH and HTTPS origins", () => {
   assertEquals(
@@ -37,54 +36,43 @@ Deno.test("parseOriginRepo - reads owner/repo from SSH and HTTPS origins", () =>
 });
 
 Deno.test("escalationHostId - the fleet host id wins over the machine name", () => {
-  const previous = Deno.env.get("VIBE_HOST_ID");
-  try {
-    Deno.env.set("VIBE_HOST_ID", "GRQ-23");
-    assertEquals(escalationHostId(), "GRQ-23");
-  } finally {
-    restoreEnv("VIBE_HOST_ID", previous);
-  }
+  assertEquals(escalationHostId(envFrom({ VIBE_HOST_ID: "GRQ-23" })), "GRQ-23");
+});
+
+Deno.test("escalationHostId - no host id falls back to the machine name", () => {
+  // The injected map carries no VIBE_HOST_ID, so the hostname branch runs —
+  // and a read of the ambient variable (set on every fleet host) would give
+  // the fleet id instead and fail here.
+  assertEquals(escalationHostId(emptyEnv), Deno.hostname().split(".")[0]);
 });
 
 Deno.test("resolveEscalationGhEnv - an established GH_CONFIG_DIR is left alone", async () => {
-  const previous = Deno.env.get("GH_CONFIG_DIR");
-  try {
-    Deno.env.set("GH_CONFIG_DIR", "/staged/gh");
-    assertEquals(await resolveEscalationGhEnv(), {});
-  } finally {
-    restoreEnv("GH_CONFIG_DIR", previous);
-  }
+  assertEquals(
+    await resolveEscalationGhEnv(envFrom({ GH_CONFIG_DIR: "/staged/gh" })),
+    {},
+  );
 });
 
 Deno.test("resolveEscalationGhEnv - finds the scratch copy the entrypoint stages", async () => {
   // Issue #515 moved the writable copy to the scratch root; an escalation
   // runs before the configuration load, so it must know both locations.
-  const previousGh = Deno.env.get("GH_CONFIG_DIR");
-  const previousScratch = Deno.env.get("VIBE_SCRATCH_DIR");
-  const previousHome = Deno.env.get("HOME");
   const root = await Deno.makeTempDir();
   try {
     const scratch = `${root}/scratch`;
     await Deno.mkdir(`${scratch}/gh`, { recursive: true });
     await Deno.writeTextFile(`${scratch}/gh/hosts.yml`, "github.com:\n");
-    Deno.env.delete("GH_CONFIG_DIR");
-    Deno.env.set("VIBE_SCRATCH_DIR", scratch);
-    Deno.env.set("HOME", root);
-    assertEquals(await resolveEscalationGhEnv(), {
-      GH_CONFIG_DIR: `${scratch}/gh`,
-    });
+    assertEquals(
+      await resolveEscalationGhEnv(
+        envFrom({ VIBE_SCRATCH_DIR: scratch, HOME: root }),
+      ),
+      { GH_CONFIG_DIR: `${scratch}/gh` },
+    );
   } finally {
-    restoreEnv("GH_CONFIG_DIR", previousGh);
-    restoreEnv("VIBE_SCRATCH_DIR", previousScratch);
-    restoreEnv("HOME", previousHome);
     await Deno.remove(root, { recursive: true });
   }
 });
 
 Deno.test("resolveEscalationGhEnv - falls back to the legacy runtime copy", async () => {
-  const previousGh = Deno.env.get("GH_CONFIG_DIR");
-  const previousScratch = Deno.env.get("VIBE_SCRATCH_DIR");
-  const previousHome = Deno.env.get("HOME");
   const home = await Deno.makeTempDir();
   try {
     await Deno.mkdir(`${home}/.config/gh-runtime`, { recursive: true });
@@ -92,34 +80,20 @@ Deno.test("resolveEscalationGhEnv - falls back to the legacy runtime copy", asyn
       `${home}/.config/gh-runtime/hosts.yml`,
       "github.com:\n",
     );
-    Deno.env.delete("GH_CONFIG_DIR");
-    Deno.env.delete("VIBE_SCRATCH_DIR");
-    Deno.env.set("HOME", home);
-    assertEquals(await resolveEscalationGhEnv(), {
-      GH_CONFIG_DIR: `${home}/.config/gh-runtime`,
-    });
+    assertEquals(
+      await resolveEscalationGhEnv(envFrom({ HOME: home })),
+      { GH_CONFIG_DIR: `${home}/.config/gh-runtime` },
+    );
   } finally {
-    restoreEnv("GH_CONFIG_DIR", previousGh);
-    restoreEnv("VIBE_SCRATCH_DIR", previousScratch);
-    restoreEnv("HOME", previousHome);
     await Deno.remove(home, { recursive: true });
   }
 });
 
 Deno.test("resolveEscalationGhEnv - no staged copy leaves gh to resolve its own", async () => {
-  const previousGh = Deno.env.get("GH_CONFIG_DIR");
-  const previousScratch = Deno.env.get("VIBE_SCRATCH_DIR");
-  const previousHome = Deno.env.get("HOME");
   const home = await Deno.makeTempDir();
   try {
-    Deno.env.delete("GH_CONFIG_DIR");
-    Deno.env.delete("VIBE_SCRATCH_DIR");
-    Deno.env.set("HOME", home);
-    assertEquals(await resolveEscalationGhEnv(), {});
+    assertEquals(await resolveEscalationGhEnv(envFrom({ HOME: home })), {});
   } finally {
-    restoreEnv("GH_CONFIG_DIR", previousGh);
-    restoreEnv("VIBE_SCRATCH_DIR", previousScratch);
-    restoreEnv("HOME", previousHome);
     await Deno.remove(home, { recursive: true });
   }
 });

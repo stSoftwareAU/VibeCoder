@@ -193,9 +193,9 @@ Deno.test("parseRedactions - a rename rule takes a bare lower-case word and repl
 });
 
 Deno.test("redactText - rename preserves case shape: lower, Capitalised, UPPER â€” inside identifiers too", () => {
-  const input = `${TELEM}_health_dir report${TELEM.charAt(0).toUpperCase()}${
+  const input = `${TELEM}_metrics_dir report${TELEM.charAt(0).toUpperCase()}${
     TELEM.slice(1)
-  }HealthHeartbeat VIBE_${TELEM.toUpperCase()}_HEALTH_DIR ./${TELEM}_health.ts`;
+  }MetricsBeat VIBE_${TELEM.toUpperCase()}_METRICS_DIR ./${TELEM}_metrics.ts`;
   const out = redactText(input, [], {
     privateRepoTemplate: null,
     privateRepoIndex: new Map(),
@@ -203,7 +203,7 @@ Deno.test("redactText - rename preserves case shape: lower, Capitalised, UPPER â
   });
   assertEquals(
     out.text,
-    "fleet_health_dir reportFleetHealthHeartbeat VIBE_FLEET_HEALTH_DIR ./fleet_health.ts",
+    "fleet_metrics_dir reportFleetMetricsBeat VIBE_FLEET_METRICS_DIR ./fleet_metrics.ts",
   );
   assertEquals(out.counts.get("rename"), 4);
 });
@@ -213,12 +213,12 @@ Deno.test("redactTree - rename rules also rename files and directories whose pat
   try {
     await Deno.mkdir(`${root}/lib`, { recursive: true });
     await Deno.writeTextFile(
-      `${root}/lib/${TELEM}_health.ts`,
-      `export const ${TELEM}HealthDir = "x";\n`,
+      `${root}/lib/${TELEM}_metrics.ts`,
+      `export const ${TELEM}MetricsDir = "x";\n`,
     );
     await Deno.writeTextFile(
       `${root}/mod.ts`,
-      `import { ${TELEM}HealthDir } from "./lib/${TELEM}_health.ts";\nconsole.log(${TELEM}HealthDir);\n`,
+      `import { ${TELEM}MetricsDir } from "./lib/${TELEM}_metrics.ts";\nconsole.log(${TELEM}MetricsDir);\n`,
     );
     const report = await redactTree(root, {
       rules: [],
@@ -227,21 +227,21 @@ Deno.test("redactTree - rename rules also rename files and directories whose pat
     });
     assertEquals(
       await Deno.readTextFile(`${root}/mod.ts`),
-      `import { fleetHealthDir } from "./lib/fleet_health.ts";\nconsole.log(fleetHealthDir);\n`,
+      `import { fleetMetricsDir } from "./lib/fleet_metrics.ts";\nconsole.log(fleetMetricsDir);\n`,
     );
     assertEquals(
-      await Deno.readTextFile(`${root}/lib/fleet_health.ts`),
-      `export const fleetHealthDir = "x";\n`,
+      await Deno.readTextFile(`${root}/lib/fleet_metrics.ts`),
+      `export const fleetMetricsDir = "x";\n`,
     );
-    const stillThere = await Deno.stat(`${root}/lib/${TELEM}_health.ts`).then(
+    const stillThere = await Deno.stat(`${root}/lib/${TELEM}_metrics.ts`).then(
       () => true,
       () => false,
     );
     assertEquals(stillThere, false, "the old path must be gone");
     assertEquals(report.pathsRenamed, [
-      { from: `lib/${TELEM}_health.ts`, to: "lib/fleet_health.ts" },
+      { from: `lib/${TELEM}_metrics.ts`, to: "lib/fleet_metrics.ts" },
     ]);
-    assertStringIncludes(renderRedactionReport(report), "lib/fleet_health.ts");
+    assertStringIncludes(renderRedactionReport(report), "lib/fleet_metrics.ts");
   } finally {
     await Deno.remove(root, { recursive: true });
   }

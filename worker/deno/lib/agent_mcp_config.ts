@@ -26,6 +26,7 @@
 import { generateMcpConfig } from "../setup/screenshot.ts";
 import { workerCacheDir } from "./worker_cache_dir.ts";
 import { EVIDENCE_DIR } from "./screenshot_validation.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 export interface AgentMcpConfigOptions {
   /** The agent's working directory — the target-repo clone. */
@@ -39,6 +40,16 @@ export interface AgentMcpConfigOptions {
   /** Injectable config generator (tests). */
   generate?: (cwd: string, screenshotDir: string) => string;
   log?: (message: string) => void;
+  /**
+   * The work volume root for the default config directory (Issue #960).
+   *
+   * Named here, a test no longer has to export `WORK_DIR` into the process
+   * to say where the cache lives. Omitted, `WORK_DIR` is read exactly as
+   * before.
+   */
+  workDir?: string;
+  /** Environment lookup for the default config directory (Issue #960). */
+  env?: EnvLookup;
 }
 
 /** Stable, filesystem-safe name for a clone path. */
@@ -51,13 +62,28 @@ export function mcpConfigFileName(cwd: string): string {
   return `playwright-mcp-${hash.toString(16).padStart(8, "0")}.json`;
 }
 
-/** Read an env var, tolerating a denied `--allow-env`. */
-function env(name: string): string | undefined {
+/** Read an env var through `lookup`, tolerating a denied `--allow-env`. */
+function env(name: string, lookup: EnvLookup): string | undefined {
   try {
-    return Deno.env.get(name) || undefined;
+    return lookup(name) || undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Where {@link defaultMcpConfigDir} looks for the work volume and the temp
+ * directory (Issue #960).
+ *
+ * A test that needs a particular `WORK_DIR` or `TMPDIR` hands them over
+ * rather than writing them into the process environment, which races every
+ * other test in the run (Issue #880, plan #944).
+ */
+export interface McpConfigDirOptions {
+  /** The work volume root. Wins over any `WORK_DIR` in the environment. */
+  workDir?: string;
+  /** Environment lookup; defaults to the real process environment. */
+  env?: EnvLookup;
 }
 
 /**
@@ -66,12 +92,19 @@ function env(name: string): string | undefined {
  * `$HOME` (Issue #4370: a dev-machine test run wrote
  * `~/auto-issue-work/.vibe-cache/mcp/…` through the HOME fallback).
  */
-export function defaultMcpConfigDir(): string {
+export function defaultMcpConfigDir(
+  options: McpConfigDirOptions = {},
+): string {
+  const lookup = options.env ?? processEnvLookup;
   // `workerCacheDir()` is undefined exactly when WORK_DIR is unset
   // (Issue #131), so no separate env guard is needed any more.
-  const cacheDir = workerCacheDir();
+  const cacheDir = workerCacheDir({
+    ...(options.workDir ? { workDir: options.workDir } : {}),
+    env: lookup,
+  });
   if (cacheDir) return `${cacheDir}/mcp`;
-  const tmp = env("TMPDIR") ?? env("TEMP") ?? env("TMP") ?? "/tmp";
+  const tmp = env("TMPDIR", lookup) ?? env("TEMP", lookup) ??
+    env("TMP", lookup) ?? "/tmp";
   return `${tmp.replace(/[\\/]+$/, "")}/vibe-playwright-mcp`;
 }
 
@@ -103,7 +136,10 @@ export async function ensureAgentMcpConfig(
     });
   try {
     const content = generate(options.cwd, screenshotDir);
-    const dir = options.configDir ?? defaultMcpConfigDir();
+    const dir = options.configDir ?? defaultMcpConfigDir({
+      ...(options.workDir ? { workDir: options.workDir } : {}),
+      ...(options.env ? { env: options.env } : {}),
+    });
     const path = `${dir}/${mcpConfigFileName(options.cwd)}`;
     await writeFile(path, content);
     return path;

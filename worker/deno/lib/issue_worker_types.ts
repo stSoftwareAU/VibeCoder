@@ -19,6 +19,9 @@ import type { PhaseClaudeResult } from "./phase_run_stats.ts";
 import type { MemoryPressureReading } from "./memory_pressure.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import type { PreservedWip } from "./preserved_wip_branch.ts";
+// Lost in the 1f2c10e merge into this milestone branch, leaving `deno check`
+// red on a type this file still uses (added by Issue #806).
+import type { CallbackRunTelemetry } from "./run_callbacks.ts";
 
 /** Data shared across phases within a single workOnIssue invocation. */
 export interface IssueContext {
@@ -58,6 +61,17 @@ export interface IssueContext {
    * (tests, CLI single-issue runs): that work is unbounded, as before.
    */
   handlerDeadlineEpochMs?: number;
+  /**
+   * Absolute host path of the operator's custom prompt template (Issue #848,
+   * part of #843). Set when a `custom_label_prompts` label dispatched this
+   * run: the execute phase builds the prompt from that file instead of the
+   * built-in `prompts/issue/` template, with everything else — the untrusted
+   * fences, the boundary-integrity instruction, the branch/commit/PR flow —
+   * unchanged. Absent for every other route, which behaves exactly as before.
+   */
+  customPromptPath?: string;
+  /** The custom label that dispatched this run, named in errors (Issue #848). */
+  customPromptLabel?: string;
   /**
    * Stable id of the lane running this issue (Issue #923) — `s1`, `s2`, or
    * `serial`. The setup phase gives the lane its own git worktree off the
@@ -249,6 +263,12 @@ export interface WorkOnIssueResult {
    * `WORKER_SUMMARY` — so one unresolvable issue cannot livelock the pool.
    */
   expectedSkip?: boolean;
+  /**
+   * Token and cost telemetry summed across the run's agent invocations
+   * (Issue #806), for the post-run callback context. Absent when no
+   * invocation reported usage the worker could parse.
+   */
+  telemetry?: CallbackRunTelemetry;
 }
 
 /**

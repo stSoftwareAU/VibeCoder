@@ -8,13 +8,20 @@ extend prompts, see
 [Extending the Worker](EXTENDING.md#prompt-templates). For the
 rubric used to audit a prompt against Anthropic's prompting best-practices
 guide, see
-[Prompt best-practices checklist](PROMPT-BEST-PRACTICES-CHECKLIST.md). For
+[Prompt best-practices checklist](PROMPT-BEST-PRACTICES-CHECKLIST.md). For the
+house form of every term and shared section heading the templates share, see
+[Prompt house vocabulary](PROMPT-HOUSE-VOCABULARY.md). For
 coding standards (TDD — Test-Driven Development, real tests, quality gates) that
 are embedded in these prompts, see [AGENTS.md](../AGENTS.md).
 
 ---
 
 ## Prompt types and goals
+
+The rows below are the templates **this repository ships**. An operator can
+add a row — a new GitHub label mapped to a prompt file on their own host — or
+replace the template behind an existing one, without publishing either: see
+[Custom Label Prompts](CUSTOM-PROMPTS.md).
 
 | Prompt                     | Goal                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

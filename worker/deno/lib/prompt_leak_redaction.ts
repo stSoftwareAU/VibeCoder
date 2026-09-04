@@ -85,7 +85,7 @@ const RAW_LEAK_PHRASES: readonly string[] = [
   "you run unattended with no operator present",
   "your output is posted verbatim as the github comment",
   "never self-apply these reserved workflow labels",
-  "you are an experienced software engineer working autonomously",
+  "you are a senior engineer working autonomously",
 ];
 
 /**

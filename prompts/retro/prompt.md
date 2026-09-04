@@ -52,7 +52,7 @@ The scan runs in five phases, each producing the input to the next:
 
 ## Inputs
 
-The executor substitutes the values below at file time. The `(none)` sentinel
+The worker substitutes the values below at file time. The `(none)` sentinel
 means the list is empty for this run.
 
 **Suppressed finding IDs** (skip if a candidate's stable id matches):
@@ -251,7 +251,7 @@ Apply these rules in order to every candidate from Phase 3:
 6. **Drop governed in-source suppressions — and only governed ones.** A
    suppression is a waiver on a real finding, so it counts only when it
    records who waived it, until when, and why. If a cited file carries a
-   marker recognised by the shared suppression-comment grammar (e.g.
+   marker written with this scan's own `best-practice-ignore` keyword (e.g.
    `<!-- best-practice-ignore: BP-… -->` in Markdown,
    `// best-practice-ignore: BP-…` in code) whose id matches, check all
    three governance fields before honouring it:
@@ -279,7 +279,7 @@ Apply these rules in order to every candidate from Phase 3:
 - **`severity:low`** — a papercut: a pointer that would have saved a search, a
   clarification worth making next time someone is in the file.
 
-### Stable finding ID recipe
+## Stable finding ID recipe
 
 Compute each candidate's stable id as `BP-<12 hex>` from the inputs
 
@@ -294,10 +294,10 @@ other scans' findings for the same file. The category name is one of
 so the same recurring candidate yields the same id across runs and is deduped
 rather than re-filed.
 
-## Phase 5 — File one issue
+## Phase 5 — File one issue (outcome-only)
 
 Phase 5 is **outcome-only**: the deliverable is the GitHub issue filed against
-the current repository. Your printed reply is irrelevant; the executor measures
+the current repository. Your printed reply is irrelevant; the worker measures
 success by diffing the repository's open `retro`-labelled issues before and
 after the run. File the issue and exit — no JSON block, no Markdown report, no
 summary.
@@ -339,7 +339,7 @@ Body: Markdown carrying, in order —
   `#<number>`), and the number of candidates;
 - one `## <n>. <category> — <one-line proposal>` section per surviving
   candidate, **most severe first**, each carrying:
-  - the hidden HTML marker `<!-- finding-id: <id> -->` on its own line at the
+  - the hidden HTML marker `<!-- finding-id: BP-… -->` on its own line at the
     top of the section — one marker per candidate, so each is deduped
     independently on the next run;
   - **Severity** — the triaged level;
@@ -350,17 +350,20 @@ Body: Markdown carrying, in order —
 - a closing line stating plainly that this issue is a set of suggestions, that
   nothing was changed, and that each candidate should be accepted or rejected
   on its own merits;
-- the literal **attribution footer** line from the input above as the final
-  line, separated by a blank line and reproduced verbatim — backticks and emoji
-  intact.
+- the literal **attribution footer** line from the Inputs section as the
+  final line, separated by a blank line and reproduced verbatim — backticks
+  and emoji intact.
 
 **Zero surviving candidates = file nothing.** Do not file an "all clear" issue
 and do not comment anywhere; simply exit. A run with nothing to improve is the
 expected result on a healthy repository, not a scan failure.
 
-Before exiting, confirm: at most **one** `gh issue create` call; it carries
-`retro` and exactly one `severity:*` label and no operational label; every
-candidate cites artefact evidence and names a surface; no candidate is in the
-two out-of-scope categories; no suppressed or known-open id was filed; the
-sections are ordered most severe first; and the body ends with the attribution
-footer verbatim. Fix any deviation with `gh issue edit` before exiting.
+### Verification before exit
+
+Re-read the issue this run filed before exiting, and confirm: at most **one**
+`gh issue create` call; it carries `retro` and exactly one `severity:*` label
+and no operational label; every candidate cites artefact evidence and names a
+surface; no candidate is in the two out-of-scope categories; no suppressed or
+known-open id was filed; the sections are ordered most severe first; and the
+body ends with the attribution footer verbatim. Fix any deviation with
+`gh issue edit` before exiting.

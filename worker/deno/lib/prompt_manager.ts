@@ -13,6 +13,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /**
  * Known template types and their required placeholders.
@@ -66,6 +67,23 @@ const REQUIRED_PLACEHOLDERS: Record<string, readonly string[]> = {
     "REPO",
     "ISSUE_NUMBER",
     "QUESTION_LABEL",
+  ],
+  // Issue #849 (parent #843): the grill-me interrogation rounds. The type was
+  // unregistered, so an operator override of the phase had no placeholder
+  // contract to validate against. Like the Quorum prompts, this template
+  // fences the untrusted issue text itself, so
+  // `BOUNDARY_INTEGRITY_INSTRUCTION` is required rather than
+  // builder-appended: a grill-me template rendered without it would hand an
+  // agent unfenced GitHub text.
+  "grill-me": [
+    "REPO",
+    "ISSUE_NUMBER",
+    "ISSUE_TITLE",
+    "ISSUE_BODY",
+    "COMMENT_HISTORY",
+    "ROUND_NUMBER",
+    "MAX_ROUNDS",
+    "BOUNDARY_INTEGRITY_INSTRUCTION",
   ],
   ci_fix: ["PR_NUMBER", "QUALITY_INSTRUCTIONS"],
   // Issue #84: the conflict-resolution pass. The template names the PR, the
@@ -244,6 +262,14 @@ export const OPTIONAL_PLACEHOLDERS: Record<string, readonly string[]> = {
   quorum: ["VERBOSITY_INSTRUCTIONS"],
   quorum_judge: ["VERBOSITY_INSTRUCTIONS"],
   question: ["VERBOSITY_INSTRUCTIONS", "CODING_GUIDELINES"],
+  // Issue #849: the grill-me builder always substitutes the guidelines, the
+  // verbosity block and the deterministic requirements rubric, but an
+  // operator's override is free to omit any of them.
+  "grill-me": [
+    "VERBOSITY_INSTRUCTIONS",
+    "CODING_GUIDELINES",
+    "RUBRIC_FINDINGS",
+  ],
   ci_fix: [
     "VERBOSITY_INSTRUCTIONS",
     "FAILURE_CLASSIFICATION",
@@ -306,11 +332,22 @@ export const OPTIONAL_PLACEHOLDERS: Record<string, readonly string[]> = {
  * Uses PROMPTS_DIR environment variable if set, otherwise derives from
  * the worker directory structure.
  *
+ * Issue #968: `env` is the injected lookup seam. A test that wanted to see
+ * what a `PROMPTS_DIR` or `VIBE_BASE_DIR` override resolves to had to write
+ * those variables into the process, which races every other worker under
+ * `deno test --parallel` — and, worse, made `tests/support/repo_prompts.ts`
+ * delete them again at module scope for the thirty-odd suites that load a
+ * real template. Handing the lookup in as a parameter removes both.
+ *
  * @param workerDir - Optional worker directory path for deriving prompts dir
+ * @param env - Environment lookup; defaults to the real process environment
  * @returns Path to the prompts directory
  */
-export function getPromptsDir(workerDir?: string): string {
-  const envDir = Deno.env.get("PROMPTS_DIR");
+export function getPromptsDir(
+  workerDir?: string,
+  env: EnvLookup = processEnvLookup,
+): string {
+  const envDir = env("PROMPTS_DIR");
   if (envDir) {
     return envDir;
   }
@@ -324,7 +361,7 @@ export function getPromptsDir(workerDir?: string): string {
   // module-relative path would look for prompts/ under the staged copy —
   // observed live as "Prompt 'planning' not found in
   // ~/.worker-src/worker/deno/lib/../../../prompts".
-  const baseDir = Deno.env.get("VIBE_BASE_DIR");
+  const baseDir = env("VIBE_BASE_DIR");
   if (baseDir) {
     return `${baseDir}/prompts`;
   }
@@ -338,6 +375,24 @@ export function getPromptsDir(workerDir?: string): string {
 export const PROMPT_FILENAME = "prompt.md";
 
 /**
+ * The file a built-in prompt type is loaded from (Issue #849).
+ *
+ * Named separately from {@link loadPrompt} because the override resolver
+ * records *which* file a phase used, and a run's traceability record must name
+ * the built-in path as precisely as it names an operator's.
+ *
+ * @param promptName - Name of the prompt (matches subdirectory in prompts/)
+ * @param promptsDir - Path to the prompts directory
+ * @returns Absolute or caller-relative path of the template file
+ */
+export function promptTemplatePath(
+  promptName: string,
+  promptsDir?: string,
+): string {
+  return `${promptsDir ?? getPromptsDir()}/${promptName}/${PROMPT_FILENAME}`;
+}
+
+/**
  * Load a prompt template by name.
  *
  * @param promptName - Name of the prompt (matches subdirectory in prompts/)
@@ -348,8 +403,7 @@ export async function loadPrompt(
   promptName: string,
   promptsDir?: string,
 ): Promise<Result<string>> {
-  const dir = promptsDir ?? getPromptsDir();
-  const templateFile = `${dir}/${promptName}/${PROMPT_FILENAME}`;
+  const templateFile = promptTemplatePath(promptName, promptsDir);
 
   try {
     const content = await Deno.readTextFile(templateFile);

@@ -8,10 +8,11 @@
  * Issue #900: Migrate terminal_title.sh to Deno.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertExists } from "@std/assert";
 import { terminalTitleCommand } from "../commands/terminal_title.ts";
 import type { WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 function createMockConfig(): WorkerConfig {
   return buildDefaultWorkerConfig({
@@ -43,22 +44,51 @@ Deno.test("terminal-title command - has a description", () => {
 // ---------------------------------------------------------------------------
 
 Deno.test("terminal-title command - data contains all fields", async () => {
-  const original = Deno.env.get("SET_WINDOW_TITLE");
-  Deno.env.set("SET_WINDOW_TITLE", "false");
-  try {
-    const result = await terminalTitleCommand.execute(
-      { action: "set", title: "Test" },
-      createMockConfig(),
-    );
-    const data = result.data as Record<string, unknown>;
-    assertEquals(typeof data.title, "string");
-    assertEquals(typeof data.sequence, "string");
-    assertEquals(typeof data.enabled, "boolean");
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("SET_WINDOW_TITLE", original);
-    } else {
-      Deno.env.delete("SET_WINDOW_TITLE");
-    }
-  }
+  const result = await terminalTitleCommand.execute(
+    { action: "set", title: "Test" },
+    createMockConfig(),
+    envFrom({ SET_WINDOW_TITLE: "false" }),
+  );
+  const data = result.data;
+  assertExists(data);
+  assertEquals(typeof data.title, "string");
+  assertEquals(typeof data.sequence, "string");
+  assertEquals(typeof data.enabled, "boolean");
+});
+
+// ---------------------------------------------------------------------------
+// CLI-specific: the SET_WINDOW_TITLE seam (Issue #965)
+//
+// The flag reaches the command as its third parameter, so these tests state
+// it instead of writing it into the process — a write that races every other
+// test sharing the process. Both directions are asserted: whichever way the
+// host's own `SET_WINDOW_TITLE` happens to be set, a code path that fell
+// back to `Deno.env.get` fails one of them.
+// ---------------------------------------------------------------------------
+
+Deno.test("terminal-title command - the injected SET_WINDOW_TITLE enables the title", async () => {
+  const result = await terminalTitleCommand.execute(
+    { action: "set", title: "Working on #965" },
+    createMockConfig(),
+    envFrom({ SET_WINDOW_TITLE: "true" }),
+  );
+  const data = result.data;
+  assertExists(data);
+  assertEquals(data.enabled, true);
+  assertEquals(data.title, "Working on #965");
+  assertEquals(data.sequence.includes("Working on #965"), true);
+  assertEquals(result.message, "Title set: Working on #965");
+});
+
+Deno.test("terminal-title command - an empty environment disables the title", async () => {
+  const result = await terminalTitleCommand.execute(
+    { action: "set", title: "Working on #965" },
+    createMockConfig(),
+    emptyEnv,
+  );
+  const data = result.data;
+  assertExists(data);
+  assertEquals(data.enabled, false);
+  assertEquals(data.sequence, "");
+  assertEquals(result.message, "Title setting disabled");
 });

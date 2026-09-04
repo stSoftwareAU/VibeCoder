@@ -1,7 +1,7 @@
 # Workflow-Run Annotation Scan — Passing-Run Warnings & Notices
 **A native fetcher and a version-agnostic classifier perform this scan; no model
 turn is involved.** This issue is the wrapper that records what they filed. Do
-not implement anything from this body: the executor runs the scan, closes this
+not implement anything from this body: the worker runs the scan, closes this
 wrapper with a summary comment, and the only outstanding work is the human step
 under [What a human does next](#what-a-human-does-next).
 
@@ -127,7 +127,7 @@ outcome — an incomplete scan is never reconciled as "no findings".
 
 ## What a human does next
 
-1. Read the summary comment the executor leaves on this wrapper. `no findings`
+1. Read the summary comment the worker leaves on this wrapper. `no findings`
    means there is nothing to triage.
 2. Triage each filed `workflow-annotation-scan` issue. Every one is
    self-contained — verbatim message, example run URL, affected workflow path,

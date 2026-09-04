@@ -100,6 +100,11 @@ import {
   enabledAgentProviders,
 } from "./agent_provider.ts";
 import { resolveContentApprovalStateDir } from "./content_approval_state_dir.ts";
+import {
+  CUSTOM_PROMPT_PATH_MAP_ENV,
+  CUSTOM_PROMPTS_TARGET_SUBDIR,
+  planCustomPromptMounts,
+} from "./custom_prompt_mounts.ts";
 
 /**
  * Named volume holding the worker's work directory (Issue #4186): repo
@@ -198,7 +203,7 @@ export interface ContainerLaunchInputs {
   containerToolsSpecJson?: string;
   /**
    * The host's own short hostname, passed into the container as
-   * VIBE_HOST_ID so fleet telemetry (private-repo-6) names the real machine
+   * VIBE_HOST_ID so fleet telemetry names the real machine
    * rather than the ephemeral container hostname. Optional: absent means
    * the worker falls back to its own hostname (native-mode behaviour).
    */
@@ -236,6 +241,17 @@ export interface ContainerLaunchInputs {
    * the defaults, so the override cannot smuggle in a host path.
    */
   volumes?: { work: string; approvalState: string };
+  /**
+   * Absolute host paths of the operator's `custom_label_prompts` templates
+   * (Issue #850, part of #843), in configuration order.
+   *
+   * Their containing directories are mounted **read-only** and the plan
+   * carries the host → in-container translation the worker applies when it
+   * loads the same `.config.json` inside the container. Absent or empty — the
+   * deployment configured none — adds no mount and no variable, so the plan
+   * is byte-identical to what an unconfigured host had before.
+   */
+  customPromptPaths?: readonly string[];
 }
 
 /**
@@ -328,6 +344,11 @@ export interface ContainerTargetPaths {
   logs: string;
   config: string;
   credentials: string;
+  /**
+   * Where the operator's own prompt directories are mounted (Issue #850).
+   * Each configured directory lands in a numbered sub-directory of this one.
+   */
+  customPrompts: string;
 }
 
 /** The launch plan `run.sh` executes. */
@@ -737,6 +758,9 @@ export function containerTargetPaths(
     // CONFIG_PATH to the staged copy instead.
     config: `${home}/.vibe-coder/run-config`,
     credentials: `${home}/${DEFAULT_CREDENTIAL_DIR_SUFFIX}`,
+    // The operator's `custom_label_prompts` templates (Issue #850), beside
+    // the staged configuration rather than inside the read-only checkout.
+    customPrompts: `${home}/${CUSTOM_PROMPTS_TARGET_SUBDIR}`,
   };
 }
 
@@ -931,6 +955,27 @@ export function buildContainerLaunchPlan(
     })),
   ];
 
+  // The operator's own prompt templates (Issue #850, part of #843): the
+  // directories named by `custom_label_prompts`, read-only, one mount per
+  // distinct directory and nothing else from the host. Derived only from
+  // paths the operator explicitly configured — never a general-purpose
+  // host-path mount — and each source is checked against the same allowlist
+  // as every other mount below.
+  // The translation is keyed by the path exactly as configured, so the worker
+  // inside the container can look up what it read from `.config.json`.
+  const customPrompts = planCustomPromptMounts(
+    inputs.customPromptPaths ?? [],
+    targets.customPrompts,
+    style,
+  );
+  for (const mount of customPrompts.mounts) {
+    mounts.push({
+      source: normalise(mount.source, style),
+      target: mount.target,
+      readOnly: true,
+    });
+  }
+
   const home = normalise(hostPaths.homeDir, style);
   for (const mount of mounts) {
     if (mount.volume) {
@@ -1007,6 +1052,16 @@ export function buildContainerLaunchPlan(
   // this points every command inside the container at the staged read-only
   // copy rather than the writable one in the checkout mount.
   runArgs.push("--env", `CONFIG_PATH=${targets.config}/.config.json`);
+  // The staged configuration still names the operator's *host* prompt paths —
+  // one `.config.json` works in both modes — so the worker is handed the map
+  // from each of those paths to where the mount above makes it readable
+  // (Issue #850). Emitted only when mappings are configured.
+  const customPromptMap = Object.keys(customPrompts.translations).length > 0
+    ? JSON.stringify(customPrompts.translations)
+    : undefined;
+  if (customPromptMap) {
+    runArgs.push("--env", `${CUSTOM_PROMPT_PATH_MAP_ENV}=${customPromptMap}`);
+  }
   // Fleet telemetry names the real host, not the per-run container name.
   if (inputs.hostId) {
     runArgs.push("--env", `VIBE_HOST_ID=${inputs.hostId}`);

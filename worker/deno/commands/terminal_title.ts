@@ -9,6 +9,7 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import {
   resetWindowTitle,
   setWindowTitle,
@@ -16,6 +17,22 @@ import {
   setWindowTitleForPr,
   type TerminalTitleData,
 } from "../lib/terminal_title.ts";
+
+/**
+ * The command, plus the environment seam it reads `SET_WINDOW_TITLE`
+ * through (Issue #965).
+ *
+ * Declared as a widening of {@link Command} — the extra parameter is
+ * optional and defaults to the process environment, so the registry and
+ * `mod.ts` see the interface they always did.
+ */
+export interface TerminalTitleCommand extends Command {
+  execute(
+    args: Record<string, unknown>,
+    config: WorkerConfig,
+    env?: EnvLookup,
+  ): Promise<CommandResult<TerminalTitleData>>;
+}
 
 /**
  * Terminal title command implementation.
@@ -27,18 +44,27 @@ import {
  *   --number <string>  Issue or PR number (for "issue" and "pr" actions)
  *   --description <string>  Issue title or task description
  */
-export const terminalTitleCommand: Command = {
+export const terminalTitleCommand: TerminalTitleCommand = {
   name: "terminal-title",
   description: "Set the terminal window title for current task visibility",
 
+  /**
+   * @param args - The action and its inputs.
+   * @param _config - The worker configuration, which no action reads.
+   * @param env - Where `SET_WINDOW_TITLE` is read from (Issue #965).
+   *   Defaults to the process environment, so shell callers are unchanged;
+   *   a test states whether titles are enabled instead of setting the
+   *   variable on the process.
+   */
   async execute(
     args: Record<string, unknown>,
     _config: WorkerConfig,
+    env: EnvLookup = processEnvLookup,
   ): Promise<CommandResult<TerminalTitleData>> {
     const action = typeof args["action"] === "string" ? args["action"] : "set";
 
     // Check SET_WINDOW_TITLE env var for backward compatibility with shell
-    const envEnabled = Deno.env.get("SET_WINDOW_TITLE") === "true";
+    const envEnabled = env("SET_WINDOW_TITLE") === "true";
     const options = { enabled: envEnabled };
 
     let sequence: string;

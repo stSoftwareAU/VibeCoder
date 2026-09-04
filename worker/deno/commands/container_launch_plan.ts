@@ -47,6 +47,8 @@ import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
 import { readContainerExtensionSelection } from "../lib/container_extension_config.ts";
 import { readContainerToolsSelection } from "../lib/container_tools_config.ts";
+import { readConfiguredCustomPromptPaths } from "../lib/custom_label_prompts_config.ts";
+import { assertCustomPromptSourceResolvable } from "../lib/custom_prompt_mounts.ts";
 import {
   readConfiguredDiskFloors,
   resolveDiskFloors,
@@ -155,17 +157,28 @@ export async function buildLaunchPlanForCommand(
     await readConfiguredDiskFloors(hostPaths.configFile),
   );
 
-  // The deployment's private extension is baked into the image too (Issue
-  // #979): its Containerfile builds `FROM` the standard one, so its contents
-  // are part of what the tag names.
-  const containerExtension = await readContainerExtensionSelection(
+  // The operator's own prompt templates live on the host (Issue #850), so the
+  // launcher reads the mappings here — before any worker has loaded a
+  // configuration — and the plan mounts each containing directory read-only.
+  // A malformed block stops the launch rather than starting a container in
+  // which every custom label would fail at dispatch.
+  const customPromptPaths = await readConfiguredCustomPromptPaths(
     hostPaths.configFile,
   );
+  // The mount-source allowlist compares strings, and a configured prompt path
+  // is the only mount source an operator writes by hand — so a `..` segment or
+  // a symlink would hand the runtime a directory the allowlist never judged.
+  // Refused here, naming where it resolves, rather than mounted.
+  for (const promptPath of customPromptPaths) {
+    assertCustomPromptSourceResolvable(
+      promptPath,
+      (path) => Deno.realPathSync(path),
+    );
+  }
 
-  // The selected tools, providers and extension are baked into the image, so
-  // they are part of its identity (Issues #73, #729, #979) — the plan must name
-  // the tag the build produces, not one another deployment's cache would
-  // satisfy.
+  // The selected tools and providers are baked into the image, so they are part
+  // of its identity (Issues #73, #729) — the plan must name the tag the build
+  // produces, not one another deployment's cache would satisfy.
   const image = await resolveContainerImageReference(baseDir, {
     containerTools: tools,
     ...(agentProviders ? { agentProviders } : {}),
@@ -277,6 +290,7 @@ export async function buildLaunchPlanForCommand(
     watchdogSeconds,
     hostPaths,
     agentProviders: providers,
+    ...(customPromptPaths.length > 0 ? { customPromptPaths } : {}),
     ...(containerToolsSpecJson ? { containerToolsSpecJson } : {}),
     ...(hostId ? { hostId } : {}),
     ...(hostDisk ? { hostDisk } : {}),

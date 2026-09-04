@@ -16,6 +16,7 @@
  */
 
 import { ensureAgentMcpConfig } from "./agent_mcp_config.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 import { formatCoarseDuration } from "./rate_limit_wait.ts";
 import {
   describeMemoryPressure,
@@ -519,6 +520,61 @@ export interface RunClaudeOptions {
    * the installed set (Issue #3234).
    */
   agentProvider?: AgentProviderSelector;
+  /**
+   * Absolute path to the agent binary for this invocation (Issue #959).
+   *
+   * Omitted — every production caller — the runner spawns the provider's
+   * binary *name* and the operating system resolves it on the inherited
+   * `PATH`, exactly as before.
+   *
+   * Supplied, that path is spawned verbatim and no `PATH` lookup happens.
+   * The child environment was never the leak here: it is already built
+   * explicitly (`clearEnv: true`, `provider.buildChildEnv()`). What leaked
+   * was *binary resolution*, which is process-wide, so a test wanting a stub
+   * agent had to prepend a directory to `Deno.env.get("PATH")` and race every
+   * other test in the process. With this it names the stub instead.
+   */
+  agentBinaryPath?: string;
+  /**
+   * The durable work volume root for this invocation (Issue #960).
+   *
+   * Two things are derived from it and both used to be read straight off the
+   * process: where the fleet-wide rate/usage-limit signal is written, and
+   * where the per-run Playwright MCP config lives. Omitted — every
+   * production caller — `WORK_DIR` is read exactly as before.
+   *
+   * Supplied, it wins over `WORK_DIR`, so a test names the directory instead
+   * of exporting one into the process environment and racing every other
+   * test in the run (Issue #880, plan #944).
+   */
+  workDir?: string;
+  /**
+   * Environment lookup this invocation makes its own process-level reads
+   * through (Issue #961).
+   *
+   * One lookup covers every variable the *worker side* of a run consults:
+   * the phase-routing chain behind `--model`/`--effort` (the `env` field
+   * `AgentInvocationRequest` and `PhaseRoutingSources` already carry), the
+   * provider selection's image stamp, and the gh-guard shim's operator
+   * opt-in and audit gate. Omitted — every production caller — each is read
+   * from the process environment exactly as before.
+   *
+   * It is deliberately **not** the child's environment: that is
+   * {@link parentEnv}, a map rather than a lookup, and no credential-shaped
+   * value belongs here.
+   */
+  env?: EnvLookup;
+  /**
+   * The parent environment the agent's child environment is built from
+   * (Issue #961).
+   *
+   * `provider.buildChildEnv(parentEnv)` already takes one; this exposes it
+   * at the run options so a test can name the `PATH` the child sees — and
+   * hand it dummy vendor credentials — without exporting either into the
+   * process every other test in the run shares. Omitted, the provider reads
+   * the process environment exactly as before.
+   */
+  parentEnv?: Record<string, string>;
 }
 
 /** Options for retry behaviour. */
@@ -568,8 +624,17 @@ export const USAGE_LIMIT_MAX_WAIT_SECONDS = 3600;
  * durable WORK_DIR every worker on the volume reads, never the per-issue
  * clone the agent happens to run in. Falls back to cwd only when WORK_DIR
  * is unset (tests, ad-hoc CLI use).
+ *
+ * `explicitWorkDir` — `RunClaudeOptions.workDir` (Issue #960) — wins over the
+ * environment, so a test names the volume rather than exporting `WORK_DIR`
+ * into a process it shares with every other test in the run.
  */
-function resolveSignalDir(cwd: string | undefined): string | undefined {
+function resolveSignalDir(
+  cwd: string | undefined,
+  explicitWorkDir?: string,
+): string | undefined {
+  const named = explicitWorkDir?.trim() || undefined;
+  if (named) return named;
   let workDir: string | undefined;
   try {
     workDir = Deno.env.get("WORK_DIR")?.trim() || undefined;
@@ -855,7 +920,10 @@ export async function runClaudeWithTimeout(
   // descriptor is held as a local for the whole call, so a concurrent
   // invocation naming a different provider cannot change this one's binary,
   // arguments or child environment mid-run.
-  const provider = selectAgentProvider(options.agentProvider);
+  const provider = selectAgentProvider(
+    options.agentProvider,
+    options.env ? { env: options.env } : {},
+  );
   // The Playwright MCP server for this run (Issue #4355): written per clone
   // to the worker cache and passed as --mcp-config. Wired only when the
   // caller declares the browser needed (Issue #192) — a cwd alone no longer
@@ -865,6 +933,7 @@ export async function runClaudeWithTimeout(
     ? await ensureAgentMcpConfig({
       cwd,
       log: (message) => logger?.warn?.(message),
+      ...(options.workDir ? { workDir: options.workDir } : {}),
     })
     : undefined;
   // The prompt travels on stdin when the provider can read it there
@@ -877,6 +946,7 @@ export async function runClaudeWithTimeout(
     systemPrompt,
     model,
     phase,
+    ...(options.env ? { env: options.env } : {}),
     effort: options.effort,
     disallowedTools,
     sessionResumeState: options.sessionResumeState,
@@ -925,7 +995,7 @@ export async function runClaudeWithTimeout(
     // Sanitise the child environment (Issue #3203): clear it and pass an
     // explicit copy with the GitHub App private-key material dropped, so a
     // prompt-injected model running unrestricted bash cannot read the PEM.
-    const baseEnv = provider.buildChildEnv();
+    const baseEnv = provider.buildChildEnv(options.parentEnv);
     // Interpose the `gh` guard on the child's PATH (Issue #3643): the agent
     // holds GH_TOKEN and runs unrestricted bash, so without this its own `gh`
     // writes bypass the write-repo allowlist and the reserved-label guard the
@@ -937,6 +1007,7 @@ export async function runClaudeWithTimeout(
     const shimOutcome = await prepareGhGuardShim(
       baseEnv,
       (m) => (logger?.warn(m) ?? console.error(m)),
+      options.env,
     );
     if (shimOutcome.status === "blocked") {
       return {
@@ -976,9 +1047,15 @@ export async function runClaudeWithTimeout(
       ? undefined
       : resolveNiceBinary();
     const wrapped = agentNice !== undefined && niceBinary !== undefined;
-    const spawnBinary = wrapped ? niceBinary! : provider.binary;
+    // The binary this invocation runs (Issue #959). An explicit path is
+    // spawned verbatim; without one the provider's name goes to the OS and
+    // is resolved on `PATH`, which is the production path and is unchanged.
+    // Either way `nice` wraps the same binary, because it `execvp`s its
+    // argument and the child PID stays the agent's.
+    const agentBinary = options.agentBinaryPath ?? provider.binary;
+    const spawnBinary = wrapped ? niceBinary! : agentBinary;
     const spawnArgs = wrapped
-      ? ["-n", String(agentNice), provider.binary, ...args]
+      ? ["-n", String(agentNice), agentBinary, ...args]
       : args;
 
     const command = new Deno.Command(spawnBinary, {
@@ -2144,7 +2221,10 @@ export async function runClaudeWithRetry(
   if (isFablePreferringPhase(options.phase)) {
     // The provider for *this* invocation (Issue #4109), not the process-wide
     // active one: a Quorum round drives three invocations naming their own.
-    const preflightProvider = selectAgentProvider(options.agentProvider);
+    const preflightProvider = selectAgentProvider(
+      options.agentProvider,
+      options.env ? { env: options.env } : {},
+    );
     // Detect a genuine operator override so the probe never second-guesses a
     // pinned phase. Model overrides cannot be detected by env-var presence:
     // `load_config` exports the *default* fable routing as `CLAUDE_MODEL_<PHASE>`,
@@ -2153,17 +2233,18 @@ export async function runClaudeWithRetry(
     // no default env export, so a call-site or env/config effort value is a
     // genuine pin.
     const effectiveModel = options.model ??
-      preflightProvider.resolveModel(options.phase) ?? "";
+      preflightProvider.resolveModel(options.phase, options.env) ?? "";
     const routedToFable = modelFamily(effectiveModel) === "fable";
     const hasExplicitOverride = !routedToFable ||
       options.effort != null ||
-      hasExplicitEffortOverride(options.phase);
+      hasExplicitEffortOverride(options.phase, options.env);
     const fableVerdict = readFableAvailability(options.cwd ?? ".");
     const applied = applyFablePreflightRouting(
       options,
       fableVerdict,
       hasExplicitOverride,
       preflightProvider,
+      options.env,
     );
     options = applied.options;
     preflightDegraded = applied.routing.degraded;
@@ -2182,6 +2263,7 @@ export async function runClaudeWithRetry(
       options.phase,
       fableVerdict,
       options.logger,
+      options.env,
     );
   }
 
@@ -2602,7 +2684,10 @@ export async function runClaudeWithRetry(
           "USAGE_LIMIT",
           `exit_code=${exitCode} wait_seconds=${waitSeconds}`,
         );
-        const signalDir = resolveSignalDir(currentOptions.cwd);
+        const signalDir = resolveSignalDir(
+          currentOptions.cwd,
+          currentOptions.workDir,
+        );
         if (signalDir) {
           // Issue #333: carry the true reset beside the capped wait, so the
           // FLEET report can say "no quota until Tuesday" rather than only
@@ -2724,7 +2809,10 @@ export async function runClaudeWithRetry(
         // signal lives in WORK_DIR (Issue #4315): it used to be written to
         // cwd — the per-issue clone — which run_core never reads, and the
         // main execute path passed no cwd at all, so it was never written.
-        const rateSignalDir = resolveSignalDir(currentOptions.cwd);
+        const rateSignalDir = resolveSignalDir(
+          currentOptions.cwd,
+          currentOptions.workDir,
+        );
         if (rateSignalDir) {
           const signalResult = await writeRateLimitSignal(
             rateSignalDir,
@@ -2811,12 +2899,15 @@ export async function runClaudeWithRetry(
  * @param logger - Optional logger
  * @param agentProvider - Provider to probe for this call only (Issue #4109);
  *   omit for the active provider.
+ * @param agentBinaryPath - Explicit path to the agent binary (Issue #959);
+ *   omit and the provider's binary name is resolved on `PATH`, as before.
  * @returns Health check result
  */
 export async function checkClaudeHealth(
   timeoutSeconds: number = 30,
   logger?: Logger,
   agentProvider?: AgentProviderSelector,
+  agentBinaryPath?: string,
 ): Promise<HealthCheckResult> {
   // Resolve once, per call: the probe, the auth message and the log lines all
   // describe the same agent even while another provider is probed
@@ -2834,6 +2925,7 @@ export async function checkClaudeHealth(
     logger,
     disallowedTools: [],
     agentProvider: provider,
+    ...(agentBinaryPath ? { agentBinaryPath } : {}),
   });
 
   if (!result.ok) {
@@ -3213,17 +3305,35 @@ export async function summariseLargeContent(
  * The agent binary comes from the provider seam (Issue #4067), so selecting a
  * different provider checks for that provider's binary instead.
  */
-function requiredTools(): string[] {
-  return ["gh", "git", activeAgentProvider().binary, "jq"];
+function requiredTools(agentBinaryPath?: string): string[] {
+  return [
+    "gh",
+    "git",
+    agentBinaryPath ?? activeAgentProvider().binary,
+    "jq",
+  ];
 }
 
 /**
  * Check whether a CLI tool is available.
  *
- * @param tool - The tool name to check
- * @returns true if the tool is found in PATH
+ * @param tool - The tool name to look up on `PATH`, or an explicit path to
+ *   the tool (Issue #959).
+ * @returns true if the tool is found
  */
 async function isCommandAvailable(tool: string): Promise<boolean> {
+  // An explicit path is checked where it is, not searched for (Issue #959):
+  // `PATH` has nothing to say about a binary the caller already located, and
+  // a `which` probe here is what forced a test holding a stub agent to
+  // prepend its directory to the process-wide `PATH`.
+  if (tool.includes("/")) {
+    try {
+      const info = await Deno.stat(tool);
+      return info.isFile && ((info.mode ?? 0o111) & 0o111) !== 0;
+    } catch {
+      return false;
+    }
+  }
   try {
     const command = new Deno.Command("which", {
       args: [tool],
@@ -3237,6 +3347,16 @@ async function isCommandAvailable(tool: string): Promise<boolean> {
   }
 }
 
+/** Options for {@link checkDependencies} (Issue #959). */
+export interface DependencyCheckOptions {
+  /**
+   * Explicit path to the agent binary. Given, the agent is checked at that
+   * path rather than looked up by name on `PATH`; omitted, the active
+   * provider's binary name is resolved on `PATH` exactly as before.
+   */
+  agentBinaryPath?: string;
+}
+
 /**
  * Validate that required CLI tools are installed.
  *
@@ -3246,10 +3366,12 @@ async function isCommandAvailable(tool: string): Promise<boolean> {
  * @returns Result with the timeout command name on success, or error describing
  *          missing dependencies
  */
-export async function checkDependencies(): Promise<Result<string>> {
+export async function checkDependencies(
+  options: DependencyCheckOptions = {},
+): Promise<Result<string>> {
   const missing: string[] = [];
 
-  for (const tool of requiredTools()) {
+  for (const tool of requiredTools(options.agentBinaryPath)) {
     if (!(await isCommandAvailable(tool))) {
       missing.push(tool);
     }

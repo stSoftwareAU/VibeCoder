@@ -18,6 +18,7 @@ import { DEFAULT_LONG_JOB_LABELS } from "./claim_runway_evidence.ts";
 import { DEFAULT_CADENCE_POLICY } from "./idle_task_cadence.ts";
 import { DEFAULT_RUN_MODE } from "./run_mode.ts";
 import { cloneCadencePolicy } from "./idle_task_cadence_config.ts";
+import { noCallbacks } from "./run_callbacks_config.ts";
 
 /**
  * Default label values used across shell and TypeScript configuration.
@@ -1445,6 +1446,12 @@ export function buildDefaultWorkerConfig(
     idleTaskCadence: cloneCadencePolicy(DEFAULT_CADENCE_POLICY),
     // Issue #2622: per-tool minimum version floors for software auto-update.
     softwareMinVersions: { ...OPERATIONAL_DEFAULTS.softwareMinVersions },
+    // Issue #846 (part of #843): no custom label → prompt mappings until an
+    // operator opts in — the feature is off by default.
+    customLabelPrompts: [],
+    // Issue #806: no hooks configured — an existing configuration without a
+    // `callbacks` block behaves exactly as before.
+    callbacks: noCallbacks(),
     ...overrides,
   };
 }

@@ -21,8 +21,8 @@
  *     vCPU-scheduling sensitivity.
  *
  * Every step is best-effort and reports its own failure; a missing tool
- * never fails the whole run. Results are one JSON line so private-repo-6 can
- * trend them per host and per mode.
+ * never fails the whole run. Results are one JSON line so an external
+ * dashboard can trend them per host and per mode.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */

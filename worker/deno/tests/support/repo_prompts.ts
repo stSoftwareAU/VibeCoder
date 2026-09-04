@@ -15,14 +15,32 @@
  * at module scope pins the whole process deterministically, whatever order the
  * files run in.
  *
+ * Issue #968 removed the *implicit* pin this module used to run on import.
+ * Every suite that needs it already calls {@link pinPromptsToThisCheckout}
+ * itself at module scope, so importing the module for {@link REPO_ROOT} alone
+ * no longer mutates the process. That is hygiene, not a graduation: the two
+ * exported bodies below still spell `Deno.env.delete` and `Deno.chdir`, which
+ * is what `mutatesProcessState` matches, so every importer remains in
+ * the serial pass until it names its prompts directory outright — the
+ * `promptsDir` parameter `getPromptsDir`, `loadPrompt` and now
+ * `processGrillMe` all accept. Issue #1024 tracks finishing that off and
+ * deleting this module.
+ *
  * {@link withRepoRootCwd} adds the cwd the idle-task body builders need for
  * their own cwd-relative reads.
+ *
+ * Both of those mutate process-wide state, so importing this module puts a
+ * suite in the gate's serial pass (Issues #880, #940). A suite that only needs
+ * the repo root — because it names its prompts directory explicitly — imports
+ * {@link REPO_ROOT} from `tests/support/repo_root.ts`, which has no side
+ * effects. It is re-exported here so existing callers keep one import.
  *
  * Australian English throughout (behaviour, colour, organisation).
  */
 
-/** Repo root — `worker/deno/tests/support/` is four levels down. */
-export const REPO_ROOT = new URL("../../../../", import.meta.url).pathname;
+import { REPO_ROOT } from "./repo_root.ts";
+
+export { REPO_ROOT };
 
 /** Directory overrides `getPromptsDir` honours ahead of the module path. */
 const PROMPT_DIR_ENV_VARS = ["PROMPTS_DIR", "VIBE_BASE_DIR"] as const;
@@ -35,10 +53,6 @@ const PROMPT_DIR_ENV_VARS = ["PROMPTS_DIR", "VIBE_BASE_DIR"] as const;
 export function pinPromptsToThisCheckout(): void {
   for (const name of PROMPT_DIR_ENV_VARS) Deno.env.delete(name);
 }
-
-// Importing this module is itself the pin: a test process must never read
-// another checkout's prompts/.
-pinPromptsToThisCheckout();
 
 /**
  * Run `body` with cwd at the repo root and the prompt-directory overrides

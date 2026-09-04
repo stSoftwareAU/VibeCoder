@@ -60,6 +60,7 @@ import {
   resolveSpendCeilingUsd,
   SPEND_CEILING_ENV,
 } from "./spend_ceiling.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import {
   invalidateHealthCache,
   isHealthCacheValid,
@@ -170,6 +171,8 @@ import { processIssueQuestion } from "./question_processor.ts";
 import { processIssuePlanning } from "./planning_processor.ts";
 import { processGrillMe } from "./grill_me_processor.ts";
 import { processQuorum } from "./quorum_processor.ts";
+import { dispatchCustomLabelPrompts } from "./custom_label_dispatch.ts";
+import { customDispatchMappings } from "./custom_label_prompts_config.ts";
 
 // Failure & circuit breaker
 import {
@@ -241,8 +244,13 @@ import {
 } from "./stuck_issue_detector.ts";
 import {
   deleteResumeState,
+  loadResumeState,
   resumeStateSurvivesRelease,
 } from "./resume_state_store.ts";
+import { invokeRunCallbacks } from "./run_callbacks.ts";
+import { hasAnyCallback } from "./run_callbacks_config.ts";
+import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
+import { getRunId } from "./run_id.ts";
 import {
   type FleetAuthorSetInput,
   resolveFleetPrAuthorSet,
@@ -255,15 +263,6 @@ import {
 } from "./idle_inversion_streak.ts";
 import { resolveRunId } from "./audit_journal.ts";
 import { createTrustSnapshotHolder } from "./trust_snapshot.ts";
-import { readQuotaOutage } from "./rate_limit_signal.ts";
-import { formatCoarseDuration } from "./rate_limit_wait.ts";
-/**
- * A quota outage at least this long makes the host unhealthy (Issue #333).
- * Six hours: longer than the five-hour subscription window, so an ordinary
- * mid-cycle lapse never flags a host, and any weekly limit always does.
- */
-const QUOTA_OUTAGE_UNHEALTHY_SECONDS = 6 * 3600;
-
 import {
   formatDerivedAuthorsFoldSummary,
   intersectDerivedAuthors,
@@ -324,14 +323,14 @@ import { workVolumeFault } from "./work_volume_fault.ts";
 import { WorkVolumeMonitor } from "./work_volume_monitor.ts";
 import { describeGuestReclaimToHost } from "./work_volume_ratchet.ts";
 
-// FLEET health
-import { claimSuppressedNote } from "./claim_gate_health_note.ts";
-import {
-  buildFleetHealthConfig,
-  createProductionFleetHealthDeps,
-  fleetHealthCheckoutDirName,
-  runFleetHealthReporting,
-} from "./fleet_health.ts";
+/**
+ * Home directory, in the order `agent_transcript.ts` resolves it.
+ *
+ * @param env - Reads `HOME` then `USERPROFILE` (Issue #967).
+ */
+function homeDirectory(env: EnvLookup): string | undefined {
+  return env("HOME") ?? env("USERPROFILE");
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -357,6 +356,15 @@ export interface ProductionDepsOptions {
    * real `gh` call fail would prove nothing on a host where `gh` works.
    */
   resolveTrustedAuthors?: typeof resolveDerivedAuthors;
+  /**
+   * Environment lookup for this factory's own reads (Issue #964) —
+   * `CONFIG_PATH`, `HOME`, `DEBUG`, `TMPDIR` and the spend-ceiling pair.
+   * Defaults to the process environment, so production wiring passes
+   * nothing and behaves exactly as it did when the factory read
+   * `Deno.env.get` itself. A test hands in a fixed map rather than mutating
+   * the environment every parallel worker shares.
+   */
+  env?: EnvLookup;
 }
 
 // ---------------------------------------------------------------------------
@@ -396,9 +404,10 @@ export async function createProductionRunCoreDeps(
   options: ProductionDepsOptions,
 ): Promise<{ deps: RunCoreDeps; config: RunCoreConfig; cleanup: () => void }> {
   const { repoDir, workDir, githubUser } = options;
+  const env = options.env ?? processEnvLookup;
 
   // Load config
-  const configPath = Deno.env.get("CONFIG_PATH") ?? `${repoDir}/.config.json`;
+  const configPath = env("CONFIG_PATH") ?? `${repoDir}/.config.json`;
   let config: WorkerConfig;
   try {
     config = options.config ?? await loadConfig(configPath);
@@ -428,7 +437,7 @@ export async function createProductionRunCoreDeps(
   if (options.logger) {
     logger = options.logger;
   } else {
-    const home = Deno.env.get("HOME") ?? "~";
+    const home = env("HOME") ?? "~";
     const workerLogPath = `${home}/logs/worker.log`;
     try {
       logFileHandle = await Deno.open(workerLogPath, {
@@ -440,7 +449,7 @@ export async function createProductionRunCoreDeps(
     const encoder = new TextEncoder();
     const handle = logFileHandle;
     logger = createLogger({
-      debug: Deno.env.get("DEBUG") === "true",
+      debug: env("DEBUG") === "true",
       write: handle
         ? (msg: string) => {
           console.error(msg);
@@ -457,11 +466,11 @@ export async function createProductionRunCoreDeps(
   // malformed value throws here, failing the run at start-up rather than
   // silently disabling the guard.
   const spendCeilingUsd = resolveSpendCeilingUsd(
-    Deno.env.get(SPEND_CEILING_ENV),
+    env(SPEND_CEILING_ENV),
   );
   const creditLogDir = resolveCreditLogDir(
     workDir,
-    Deno.env.get(CREDIT_LOG_DIR_ENV),
+    env(CREDIT_LOG_DIR_ENV),
   );
   const checkSpendCeiling = createSpendCeilingCheck({
     logDir: creditLogDir,
@@ -514,7 +523,7 @@ export async function createProductionRunCoreDeps(
     },
   });
   // Work-volume standing totals (Issues #244, #345): one shared reading feeds
-  // the log line, the feature report and the fleet-health payload, so a probe
+  // the log line and the feature report, so a probe
   // that cannot produce a value can never be advertised as `available`.
   const workVolume = new WorkVolumeMonitor({
     workDir,
@@ -555,7 +564,7 @@ export async function createProductionRunCoreDeps(
   };
 
   const repoFailureFile = `${
-    Deno.env.get("TMPDIR") ?? "/tmp"
+    env("TMPDIR") ?? "/tmp"
   }/vibe-repo-failures-${Deno.pid}`;
   const repoFailureConfig: RepoFailureTrackerConfig = {
     failureFile: repoFailureFile,
@@ -576,6 +585,13 @@ export async function createProductionRunCoreDeps(
 
   // Stable machine identifier used by GitHub heartbeat markers (Issue #1454)
   const machineId = await getMachineId(workDir);
+  /**
+   * CLI session id per released claim, keyed `owner/repo#number` (Issue
+   * #806). Captured at release — before the resume state that holds it is
+   * deleted — and consumed by that claim's callbacks, so concurrent slots
+   * never read each other's session.
+   */
+  const releasedSessionIds = new Map<string, string>();
   // Issue #253: trusted-author sets are a per-cycle snapshot, not values
   // captured once at start-up. The production refresh still copies the
   // static config arrays, so observable behaviour is unchanged; the
@@ -810,6 +826,10 @@ export async function createProductionRunCoreDeps(
     // budget with it rather than being clipped by the flat 600 s.
     planningTimeoutSeconds: config.planningTimeout ??
       runCoreConfig.planningTimeoutSeconds,
+    // Issue #966: the loop's lane-rotation cursor lives on the work volume.
+    // The resolved directory travels in the config rather than being read
+    // back out of `WORK_DIR` at the point of use.
+    workDir,
   };
 
   const repos = config.repos ?? [];
@@ -837,22 +857,6 @@ export async function createProductionRunCoreDeps(
       issueCache,
     );
 
-  // Issue #1935: build the private-repo-6 config + deps once so the
-  // per-iteration heartbeat does not re-resolve env vars / hostname on
-  // every loop. The heartbeat itself is registered below in the deps
-  // object so it can be replaced under test.
-  //
-  // Issue #2015: pass the shared worker logger into the private-repo-6 deps so
-  // heartbeat info/warning lines land in `~/logs/worker-*.log` alongside
-  // the rest of the loop. Without this the deps log via raw `console.log`,
-  // which goes to the inherited tty and is silently lost — masking any
-  // failure mode (the original 17h-stale-dashboard symptom that prompted
-  // this fix).
-  const fleetHealthConfig = buildFleetHealthConfig(repoDir);
-  // Issue #226: name a low host disk on the fleet-health payload.
-  // Issue #333: the quota outage is read once per cycle rather than inside
-  // `hostNotes`, which is synchronous. A stale reading is harmless — the note
-  // exists to name a multi-day outage, not to be second-accurate.
   /**
    * The claim scan's per-issue skip reasons from the most recent scan
    * (Issue #460). Read once at the idle-task filing decision point so the
@@ -862,21 +866,6 @@ export async function createProductionRunCoreDeps(
    * reading names a gate one scan out of date, never blocks a claim.
    */
   let lastScanBlockedDetails: BlockedCandidateInfo[] = [];
-
-  let quotaOutageNote: string | null = null;
-  const refreshQuotaOutageNote = async () => {
-    const outage = await readQuotaOutage(workDir);
-    // Only a *long* outage is a health condition. A five-hour window that
-    // lapses mid-cycle is ordinary operation and must not flag the host.
-    quotaOutageNote = outage !== null &&
-        outage.remainingSeconds >= QUOTA_OUTAGE_UNHEALTHY_SECONDS
-      ? `out of Claude quota for ${
-        formatCoarseDuration(outage.remainingSeconds)
-      } — the window reopens at ${
-        new Date(outage.resetEpochMs).toISOString()
-      }; this host needs a different account or a topped-up plan`
-      : null;
-  };
 
   /**
    * The two disk signals' shared verdict (Issue #345). A work-volume probe
@@ -895,54 +884,16 @@ export async function createProductionRunCoreDeps(
   /**
    * Why the claim scan stopped, for the census (Issue #479).
    *
-   * Reads the same two host-level gates the fleet-board note does, so the
-   * board and the census can never disagree about why this host is idle.
-   * Neither gate active means the scan really did run out of cycle, which is
-   * #437's deferral and keeps its historical reason.
+   * Reads the two host-level gates that make the cycle skip the claim scan
+   * outright, so a host declining every issue in the fleet says which gate
+   * held it back. Neither gate active means the scan really did run out of
+   * cycle, which is #437's deferral and keeps its historical reason.
    */
   const claimGateReason = (): RepoCensusSkipReason => {
     if (hostDisk.status.level === "low") return "host_disk_low";
     if (workVolumeFault() !== null) return "work_volume_fault";
     return "cycle_deadline";
   };
-
-  fleetHealthConfig.hostNotes = () => {
-    const notes: string[] = [];
-    const status = hostDisk.status;
-    const fault = workVolumeFault();
-    // Issue #477: lead with the consequence. These are exactly the two gates
-    // that make the cycle skip the claim scan outright ("claiming no new
-    // issues this cycle"), so a host reporting either is declining every
-    // issue in the fleet — an outage, not the housekeeping note that
-    // `host-disk low: …` alone reads as. The gate detail is carried inside
-    // the note, so nothing #226 or #229 reported is lost.
-    const gateNote = claimSuppressedNote([
-      ...(status.level === "low"
-        ? [{ id: "host-disk-low", detail: status.detail }]
-        : []),
-      ...(fault !== null
-        ? [{ id: "work-volume-fault", detail: fault.detail }]
-        : []),
-    ]);
-    if (gateNote !== null) notes.push(gateNote);
-    // Issue #345: a host that has lost its disk telemetry says so on the
-    // fleet board *before* it fills up, not after the crash.
-    notes.push(...diskTelemetry().notes);
-    // Issue #333: "unhealthy" alone does not say which host to fix.
-    if (quotaOutageNote !== null) notes.push(quotaOutageNote);
-    return notes;
-  };
-  // Issue #410: the health checkout is gated on the host figure this monitor
-  // already maintains — never on a `df` taken inside the guest, which
-  // describes the thin-provisioned work volume and reports plenty of room
-  // while the host is full. `status` is the last sampled verdict, so the gate
-  // costs nothing and cannot disagree with the reclaimer acting on the same
-  // monitor. `unknown` is not `low`: an unprobed host must not silently
-  // switch health reporting off.
-  const fleetHealthDeps = createProductionFleetHealthDeps(
-    logger,
-    () => Promise.resolve(hostDisk.status.level === "low"),
-  );
 
   /**
    * Helper: wrap find-by-label + process into PriorityHandlerResult.
@@ -1095,7 +1046,7 @@ export async function createProductionRunCoreDeps(
       }
     },
     async rotateLogFiles() {
-      const logDir = `${Deno.env.get("HOME") ?? "~"}/logs`;
+      const logDir = `${env("HOME") ?? "~"}/logs`;
       const maxSizeBytes = 10 * 1024 * 1024; // 10 MB
       const maxRotations = 3;
       try {
@@ -2299,7 +2250,7 @@ export async function createProductionRunCoreDeps(
         return { ok: true, value: undefined };
       }
       try {
-        await syncMilestoneBranchesFn(repos, config, logger);
+        await syncMilestoneBranchesFn(repos, config, logger, env);
         return { ok: true, value: undefined };
       } catch (err) {
         return {
@@ -2419,6 +2370,37 @@ export async function createProductionRunCoreDeps(
       );
       return { ok: true, value: result };
     },
+
+    // -- Priority 1.86: Custom label prompts (Issue #848, part of #843) --
+    // Wired only when the operator configured a mapping, so an unconfigured
+    // fleet keeps a byte-identical priority ladder. Each configured label is
+    // tried in configuration order and the first issue found is worked; a
+    // mapped prompt file that has gone missing throws from the processor
+    // rather than falling back to the built-in template.
+    // Issue #849: only mappings that dispatch a *new* label belong here. One
+    // that overrides a built-in label (`planning`, `grill-me`, …) replaces
+    // that phase's template and is worked by that phase's own handler —
+    // scanning for it here would run a planning issue through the
+    // implementation phase.
+    ...(customDispatchMappings(config).length > 0
+      ? {
+        async findAndProcessCustomLabelPrompts(
+          opts?: { deadlineEpochMs: number },
+        ) {
+          const value = await dispatchCustomLabelPrompts(
+            customDispatchMappings(config),
+            findAndProcessByLabel,
+            {
+              ...(opts?.deadlineEpochMs !== undefined
+                ? { deadlineEpochMs: opts.deadlineEpochMs }
+                : {}),
+              onFault: (fault) => logger.error(fault.message),
+            },
+          );
+          return { ok: true as const, value };
+        },
+      }
+      : {}),
 
     // -- Priority 1.9: Stale workflow detection (Issue #1240) --
     async scanStaleWorkflowIssues(opts) {
@@ -2553,15 +2535,6 @@ export async function createProductionRunCoreDeps(
         monitoredRepos: config.repos,
         mode: "disk-low",
         bytesNeeded: hostDisk.shortfallBytes,
-        // Issue #477: the fleet-health checkout is a side clone by shape, so
-        // this sweep used to delete it to win back space — after which #410
-        // refused to clone it back while the host stayed below the floor, and
-        // the host reported nothing to the fleet board for as long as the
-        // condition lasted. It is the instrument that reports this fault, and
-        // megabytes never buy back a floor measured in gigabytes.
-        protectedNames: [
-          fleetHealthCheckoutDirName(fleetHealthConfig.healthDir),
-        ],
         log: (message: string) => logger.info(message),
       });
       const after = await hostDisk.check({ force: true });
@@ -2873,6 +2846,11 @@ export async function createProductionRunCoreDeps(
           ...(result.outcome && !isExpectedSkip
             ? { outcome: result.outcome }
             : {}),
+          // Token and cost telemetry for the post-run callbacks (Issue
+          // #806); a skip never ran an agent, so it reports none.
+          ...(result.telemetry && !isExpectedSkip
+            ? { telemetry: result.telemetry }
+            : {}),
         },
       };
     },
@@ -3064,6 +3042,32 @@ export async function createProductionRunCoreDeps(
       issueNumber: number,
       outcome?: RunOutcome,
     ) {
+      // Issue #806: the run's CLI session id is read *before* the resume
+      // state is deleted below, so the post-run callbacks can identify the
+      // session even on the ordinary path that clears it.
+      if (hasAnyCallback(config.callbacks)) {
+        try {
+          const resume = await loadResumeState(workDir, repo, issueNumber);
+          const key = `${repo}#${issueNumber}`;
+          // Set OR clear: a later claim on the same issue with no session of
+          // its own must never be handed the previous run's id, and a skip
+          // (which fires no callbacks) must not leave an entry behind.
+          if (resume?.sessionId) {
+            releasedSessionIds.set(key, resume.sessionId);
+          } else {
+            releasedSessionIds.delete(key);
+          }
+        } catch (error) {
+          // Never silent: the hook simply sees no session id, and the log
+          // says why rather than leaving an unexplained gap in the context.
+          logger.warn(
+            `Could not read the session id for ${repo}#${issueNumber}'s ` +
+              `post-run callbacks: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+          );
+        }
+      }
       try {
         await libReleaseClaim(workDir, repo, issueNumber, {
           githubUser,
@@ -3118,6 +3122,36 @@ export async function createProductionRunCoreDeps(
       } else {
         await deleteResumeState(workDir, repo, issueNumber);
       }
+    },
+
+    /**
+     * Post-run callbacks for one terminal issue run (Issue #806, parent
+     * #796).
+     *
+     * Builds the versioned context from what this host can state truthfully —
+     * absent facts are omitted, never guessed — and hands it to
+     * `invokeRunCallbacks`, which bounds, captures and reports each hook
+     * without ever altering the run's own outcome.
+     */
+    async runIssueCallbacks(run) {
+      if (!hasAnyCallback(config.callbacks)) return;
+      const key = `${run.repo}#${run.issueNumber}`;
+      const sessionId = releasedSessionIds.get(key);
+      releasedSessionIds.delete(key);
+      await invokeRunCallbacks({
+        callbacks: config.callbacks,
+        context: buildIssueRunCallbackContext(run, {
+          runId: getRunId(),
+          host: Deno.hostname(),
+          ...(config.workerName ? { workerName: config.workerName } : {}),
+          ...(config.agentProvider ? { provider: config.agentProvider } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          // Same fallback order the transcript writer itself uses.
+          ...(homeDirectory(env) ? { home: homeDirectory(env)! } : {}),
+        }),
+        log: (message) => logger.info(message),
+        logError: (message) => logger.error(message),
+      });
     },
     async cleanupInProgressIssue() {
       try {
@@ -3269,23 +3303,6 @@ export async function createProductionRunCoreDeps(
       return { ok: true as const };
     },
 
-    // Issue #1935: per-iteration private-repo-6 heartbeat. The end-of-run
-    // call in `commands/run_core.ts` was silently lost when the parent
-    // shell sent SIGTERM during the post-loop block, leaving the host
-    // flagged dead on the dashboard. Reporting from the top of every
-    // priority-loop iteration keeps the heartbeat alive for the lifetime
-    // of the run. Best-effort — `runFleetHealthReporting` already swallows
-    // its own errors, but we additionally guard here so any unexpected
-    // throw is logged and the loop continues.
-    reportFleetHealthHeartbeat: async () => {
-      try {
-        // Issue #333: refresh before reporting so a multi-day quota outage is
-        // named on the heartbeat that carries it.
-        await refreshQuotaOutageNote();
-        await runFleetHealthReporting(fleetHealthConfig, fleetHealthDeps);
-      } catch { /* best-effort */ }
-    },
-
     // Issue #2005, #2023: idle-task issue filer. Invoked from the main
     // loop after a fully-idle pass (no priority work and no claimable
     // issue). The filer shuffles the monitored-repo list, picks the
@@ -3326,8 +3343,7 @@ export async function createProductionRunCoreDeps(
                 // inherits from the parent shell's tty and never reaches
                 // the worker log — making "filer never fires" indistinguishable
                 // from "filer fired but silently failed". Same root cause
-                // and same fix shape as PR #2016 for the private-repo-6
-                // heartbeat.
+                // and same fix shape as PR #2016 for the fleet heartbeat.
                 __testDeps: { log: (line: string) => logger.info(line) },
               },
               config,
@@ -3646,7 +3662,7 @@ export async function createProductionRunCoreDeps(
     // implementations; we thread the shared logger so the `[liveness] ALERT`
     // line and the per-tick decision line land in `~/logs/worker-*.log`
     // rather than the inherited tty (same fix shape as the idle-task filer
-    // and private-repo-6 heartbeat). Best-effort: any throw is caught here and
+    // and the fleet heartbeat). Best-effort: any throw is caught here and
     // logged so a guard failure never reaches the loop's catch.
     checkLivenessWindow: async ({ tick }: { tick: number }) => {
       try {
@@ -3718,6 +3734,7 @@ async function syncMilestoneBranchesFn(
   repos: string[],
   config: WorkerConfig,
   logger: Logger,
+  env: EnvLookup,
 ): Promise<void> {
   const { syncMilestoneBranches } = await import("./milestone_branch_sync.ts");
   const { milestoneSyncStreakPath } = await import(
@@ -3730,7 +3747,7 @@ async function syncMilestoneBranchesFn(
   const { ensureMilestoneBranchExists } = await import("./git_branch.ts");
   const { ensureDefaultBranchCurrent } = await import("./git_push.ts");
 
-  const workDir = config.workDir || Deno.env.get("HOME") || ".";
+  const workDir = config.workDir || env("HOME") || ".";
 
   // Issue #1519: skip repos that have not been cloned locally.
   const localCloneExistsFn = async (repo: string): Promise<boolean> => {
@@ -3913,18 +3930,6 @@ async function scanStaleWorkflowIssuesFn(
       },
     },
   );
-}
-
-/**
- * Run FLEET health reporting at the end of a worker run.
- *
- * This is called after the main loop exits, replacing the shell
- * implementation at lines 1118–1141 of run_core.sh.
- */
-export async function runEndOfRunHealthReport(repoDir: string): Promise<void> {
-  const fleetConfig = buildFleetHealthConfig(repoDir);
-  const fleetDeps = createProductionFleetHealthDeps();
-  await runFleetHealthReporting(fleetConfig, fleetDeps);
 }
 
 // ---------------------------------------------------------------------------

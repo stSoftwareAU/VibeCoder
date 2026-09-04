@@ -28,6 +28,7 @@ import {
 } from "../lib/claude_runner.ts";
 import { TIMEOUT_EXIT_CODE } from "../lib/claude_executor.ts";
 import type { Logger } from "../types.ts";
+import { createAgentStub } from "./support/agent_stub.ts";
 
 Deno.test("killCompletionCapMs - scales with the grace period but never below the floor (Issue #4254)", () => {
   assertEquals(
@@ -50,21 +51,16 @@ Deno.test({
   sanitizeResources: false,
   sanitizeOps: false,
   fn: async () => {
-    const dir = await Deno.makeTempDir({ prefix: "claude_kill_bound_stub_" });
     // Double-fork: the subshell exits immediately, so the sleeper re-parents
     // to init before the watchdog's descendant sweep runs — it survives the
     // kill and keeps the inherited stdout pipe open, exactly the host-25
     // hang shape.
-    const stubPath = `${dir}/claude`;
-    await Deno.writeTextFile(
-      stubPath,
-      "#!/usr/bin/env bash\n( sleep 15 & )\n" +
+    const stub = await createAgentStub(
+      "( sleep 15 & )\n" +
         `printf '%s\\n' '{"type":"result","result":"working"}'\n` +
         "sleep 60\n",
+      { prefix: "claude_kill_bound_stub_" },
     );
-    await Deno.chmod(stubPath, 0o755);
-    const originalPath = Deno.env.get("PATH") ?? "";
-    Deno.env.set("PATH", `${dir}:${originalPath}`);
 
     const logs: string[] = [];
     const logger = {
@@ -81,6 +77,7 @@ Deno.test({
         killAfterSeconds: 1,
         killCompletionCapSeconds: 2,
         logger,
+        agentBinaryPath: stub.path,
       });
       const elapsedSeconds = (Date.now() - started) / 1000;
 
@@ -103,8 +100,7 @@ Deno.test({
         "abandoning the wait must be logged with evidence",
       );
     } finally {
-      Deno.env.set("PATH", originalPath);
-      await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+      await stub.dispose();
     }
   },
 });
@@ -115,17 +111,11 @@ Deno.test({
   sanitizeResources: false,
   sanitizeOps: false,
   fn: async () => {
-    const dir = await Deno.makeTempDir({ prefix: "claude_kill_clean_stub_" });
-    const stubPath = `${dir}/claude`;
-    await Deno.writeTextFile(
-      stubPath,
-      "#!/usr/bin/env bash\n" +
-        `printf '%s\\n' '{"type":"result","result":"working"}'\n` +
+    const stub = await createAgentStub(
+      `printf '%s\\n' '{"type":"result","result":"working"}'\n` +
         "sleep 60\n",
+      { prefix: "claude_kill_clean_stub_" },
     );
-    await Deno.chmod(stubPath, 0o755);
-    const originalPath = Deno.env.get("PATH") ?? "";
-    Deno.env.set("PATH", `${dir}:${originalPath}`);
 
     try {
       const result = await runClaudeWithTimeout({
@@ -134,6 +124,7 @@ Deno.test({
         killAfterSeconds: 1,
         killCompletionCapSeconds: 30,
         logger: undefined,
+        agentBinaryPath: stub.path,
       });
       assert(result.ok);
       if (!result.ok) return;
@@ -144,8 +135,7 @@ Deno.test({
         "a kill that completes must not be flagged as incomplete",
       );
     } finally {
-      Deno.env.set("PATH", originalPath);
-      await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+      await stub.dispose();
     }
   },
 });
@@ -158,22 +148,17 @@ Deno.test({
   sanitizeResources: false,
   sanitizeOps: false,
   fn: async () => {
-    const dir = await Deno.makeTempDir({ prefix: "claude_reaped_pid_stub_" });
     // The agent exits straight away, so it is REAPED almost immediately. A
     // double-forked orphan inherits stdout and holds it open, so the runner
     // is still in its bounded stream drain when the 1s hard deadline expires.
     // That is the window in which the watchdog used to fire at a pid the
     // kernel was already free to reuse — and the stray group signal is what
     // took the CI runner down mid-suite.
-    const stubPath = `${dir}/claude`;
-    await Deno.writeTextFile(
-      stubPath,
-      "#!/usr/bin/env bash\n( sleep 4 & )\n" +
+    const stub = await createAgentStub(
+      "( sleep 4 & )\n" +
         `printf '%s\\n' '{"type":"result","result":"done"}'\n`,
+      { prefix: "claude_reaped_pid_stub_" },
     );
-    await Deno.chmod(stubPath, 0o755);
-    const originalPath = Deno.env.get("PATH") ?? "";
-    Deno.env.set("PATH", `${dir}:${originalPath}`);
 
     const logs: string[] = [];
     const logger = {
@@ -190,6 +175,7 @@ Deno.test({
         killAfterSeconds: 1,
         streamDrainCapSeconds: 3,
         logger,
+        agentBinaryPath: stub.path,
       });
 
       assert(result.ok, "the runner must return a result, not an error");
@@ -207,8 +193,7 @@ Deno.test({
         "no kill may be attempted against the reaped pid",
       );
     } finally {
-      Deno.env.set("PATH", originalPath);
-      await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+      await stub.dispose();
     }
   },
 });

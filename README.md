@@ -147,6 +147,13 @@ host builds and runs a Codex image rather than reusing the default one.
   (The Anthropic Batch API was evaluated but deliberately not wired in — its
   async turnaround is incompatible with the worker's bounded interactive run;
   see [Model, Caching & Batching](docs/MODEL-AND-CACHING.md#batch-api).)
+- **Post-run callbacks** — Optional `success` / `failure` / `always`
+  executables run after a terminal issue run, following Jenkins and Azure
+  Pipelines outcome semantics. The public extension point for fleet-specific
+  reporting; a hook failure never rewrites the run's own result. The contract —
+  ordering, the versioned context, the security boundary, portable examples and
+  a conformance fixture an extension can run against its own hooks — is
+  [Post-Run Callbacks](docs/CALLBACKS.md).
 - **Per-repo configuration** — Operator-side `repo_config` in `.config.json`
   customises worker behaviour per repository (e.g., skip screenshots for
   CLI-only projects). Configuration is operator-side only — target repos carry
@@ -418,14 +425,18 @@ flowchart LR
 | — [Resilience & Concurrency](docs/workflows/resilience-and-concurrency.md)     | Self-healing behaviour, restart model, issue claiming, multi-worker coexistence                                                                        |
 | **[Quorum](docs/QUORUM.md)**                                                   | Operator manual for the `quorum` plan-off: the trigger, the two-draft/one-judge sequence, the result comment, every degradation path, the per-run cost, and the config keys |
 | **[Configuration Reference](docs/CONFIGURATION.md)**                           | Config file (`.config.json`), per-repo settings, authorised commenters                                                                                 |
+| **[Post-Run Callbacks](docs/CALLBACKS.md)**                                    | The extension contract: `success`/`failure`/`always` ordering, the versioned context and every `VIBECODER_*` variable, path and container-visibility rules, session-log sensitivity, portable hook examples, the conformance fixture, and the health-tracking migration |
 | **[Setup Guide](docs/SETUP.md)**                                               | Setup manual: what the automated setup script does, and the from-scratch manual path for macOS, Linux and Windows                                      |
 | **[Deployment Guide](docs/DEPLOYMENT.md)**                                     | Installation, cron/systemd/launchd setup, logs, screenshot support                                                                                     |
 | **[Linux Verification Host](docs/EC2-LINUX-VERIFICATION.md)**                  | The CloudFormation stack that confirms the Linux/podman launch path: an SSM-only Ubuntu EC2 host, the launch/verify/tear-down commands, and the faults it deliberately reproduces |
 | **[Containment](docs/CONTAINMENT.md)**                                         | The containment boundary: the mount set, the host resources deliberately kept outside it, the disposable container root filesystem, the network boundary, and GitHub as the control plane |
 | **[Container Image](docs/CONTAINER.md)**                                       | The `container/` definition: pinned toolchain manifest (worker runtime plus the monitored repos' build/test toolchains), non-root user, entrypoint, and the CI job that builds it and runs the quality gate inside it    |
 | **[Extending the Worker](docs/EXTENDING.md)**                                  | Adding Deno/TypeScript commands, editing prompt templates, shell integration                                                                                  |
+| **[Private Extensions](docs/PRIVATE-EXTENSIONS.md)**                           | Extending a deployment with software this repository does not ship — installing arbitrary toolchains, configuring them, and directing an agent across them, all from gitignored configuration rather than a fork |
+| **[Custom Label Prompts](docs/CUSTOM-PROMPTS.md)**                             | The operator-side extension point: mapping a GitHub label to a prompt template that lives outside this repository, with a worked example, the placeholder contract, the trust gate, the read-only container mount, and every failure mode's exact symptom |
 | **[Prompt goals (summary)](docs/PROMPTS.md)**                                  | Goals of each prompt type (issue, planning, question, PR feedback, spelling, CI fix); full prompts are in the repo                                     |
 | **[Prompt best-practices checklist](docs/PROMPT-BEST-PRACTICES-CHECKLIST.md)** | The shared rubric for auditing a prompt surface against Anthropic's Claude prompting best-practices guide: 22 checklist rows plus 3 house rows, verdict table, gap-issue template |
+| **[Prompt house vocabulary](docs/PROMPT-HOUSE-VOCABULARY.md)**                 | The house form of every term and shared section heading across the prompt set: banned variants, why each form won, and the deliberate exceptions |
 | **[Model, Caching & Batching](docs/MODEL-AND-CACHING.md)**                     | Model selection per phase, prompt caching (disk + Claude), why the Batch API was not wired in, token usage tracking, cost estimation                   |
 | **[GitHub API Optimisation](docs/GH-API-OPTIMISATION.md)**                     | `gh` cache layers, list-then-filter pattern, GraphQL batch path, invalidation rules, per-iteration call telemetry                                      |
 | **[Worker Internals](docs/INTERNALS.md)**                                      | Run loop, issue selection, PR monitoring, milestone/dependency handling — for implementers and contributors                                            |
@@ -460,7 +471,8 @@ flowchart LR
 | **[OWASP Top 10 2025 Coverage Matrix](docs/OWASP-TOP-10-2025-COVERAGE-MATRIX.md)** | Which idle-task template covers which OWASP Top 10 2025 category — the point-in-time matrix from plus templates registered since |
 | **[Cross-repo Fix](docs/CROSS-REPO-FIX.md)**                                   | Raising a PR in an internal `stSoftwareAU` dependency's own repo: the "can access" classification, PR plumbing, the agent→worker declaration bridge, and release-gating boundaries |
 | **[Merge Enforcement](docs/MERGE.md)**                                         | Operator manual for the dual-layer pre-merge gate: required checks, defer-and-retry, read-only default branch                                          |
-| **[Release Tagging](docs/RELEASE-TAGGING.md)**                                 | How every merge to `main` is tagged with the next patch semver: the patch-only rule, hand-minted minor/major tags, idempotency, concurrency, and the `tool-versions.json` manifest each release ships |
+| **[Release Tagging](docs/RELEASE-TAGGING.md)**                                 | How every merge to `main` is tagged with the next patch semver: the patch-only rule, the `.release-floor` that moves the series, idempotency, concurrency, and the `tool-versions.json` manifest each release ships |
+| **[Release Notes](docs/RELEASE-NOTES.md)**                                     | Notes for the releases that change a configuration contract: what moved, the migration, the canary gate, and how to pin and roll back                  |
 | **[Human-authored PR Policy](docs/HUMAN-PR-POLICY.md)**                        | What the worker will and will not do to a PR it did not author: the two author lists, inviting it onto your PR, revoking, and the blocked-issue nudge  |
 | **[Add-repo Onboarding](docs/ADD-REPO.md)**                                    | Onboarding a new repository to the monitored set via an `add-repo:` issue: validation, label/branch-protection sync                                    |
 | **Switching Identity**                           | Migrating an existing deployment to a new worker GitHub identity                                                                                       |

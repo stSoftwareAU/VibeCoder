@@ -292,7 +292,7 @@ Deno.test("out-of-scope table names every excluded guide heading", async () => {
   }
 });
 
-Deno.test("applicability note covers both surface kinds", async () => {
+Deno.test("applicability note covers all three surface kinds", async () => {
   const body = section(await readChecklist(), "Applicability");
 
   assert(
@@ -302,6 +302,16 @@ Deno.test("applicability note covers both surface kinds", async () => {
   assert(
     body.includes("worker/deno/lib/prompt_builder.ts"),
     "code-assembled kind missing",
+  );
+  // Issue #841: a native scan's prompt.md is a filed issue body, so the
+  // rows that score a model's behaviour have no model to score.
+  assert(
+    body.includes("Wrapper issue body"),
+    "wrapper-issue-body kind missing",
+  );
+  assert(
+    body.includes("buildIssueBody"),
+    "the wrapper-issue-body kind cites no evidence for the exemption",
   );
 });
 

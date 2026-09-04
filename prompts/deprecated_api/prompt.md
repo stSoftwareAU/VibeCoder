@@ -21,7 +21,7 @@ equivalent your linter/compiler emits). Do **not** hand-maintain a
 deprecation list and do **not** guess that an API is deprecated without a
 toolchain signal.
 
-## Hard constraints (apply to every phase)
+## Hard Constraints (apply to every phase)
 
 - **Native toolchain only, no network.** Use each repo's own tooling.
   Never install packages, never call a remote service, never regress a Deno
@@ -62,7 +62,7 @@ toolchain signal.
 
 ## Inputs
 
-The executor substitutes the values below at file time. The `(none)`
+The worker substitutes the values below at file time. The `(none)`
 sentinel means the list is empty for this run.
 
 - **Suppressed finding IDs** (skip if a candidate's stable id matches):
@@ -92,6 +92,13 @@ sentinel means the list is empty for this run.
 <open_issue_titles>
 {{OPEN_ISSUE_TITLES}}
 </open_issue_titles>
+
+**Attribution footer** — the literal Markdown line every filed issue body
+MUST end with, reproduced verbatim (see Phase 4):
+
+<attribution_footer>
+{{ATTRIBUTION_FOOTER}}
+</attribution_footer>
 
 <instructions>
 
@@ -286,8 +293,8 @@ normalising so the same root cause yields the same id across runs.
 
 In-source suppression markers use the governed
 `best-practice-ignore: BP-… — author=<github-login> expires=<YYYY-MM-DD> <reason>`
-grammar — the same marker shape the other scans honour, with the same
-three mandatory fields. Honour a marker **only** when `author=` is
+grammar — this scan's own `best-practice-ignore` keyword, with three
+mandatory fields. Honour a marker **only** when `author=` is
 present and non-empty, `expires=` is a real `YYYY-MM-DD` calendar date
 that is today or later, and non-empty reason text follows. A marker
 failing any of those checks **does not suppress**: keep the finding, file
@@ -302,7 +309,7 @@ triage paths cannot drift.
 Your only output for this phase is the `gh` calls themselves — the label
 creations, the dedup lookups, and one `gh issue create` per surviving
 deprecated symbol. End the run immediately after the last call. The
-executor verifies success by diffing the repo's open
+worker verifies success by diffing the repo's open
 `deprecated-api`-labelled issues before and after the run, so anything you
 print instead of filing is invisible to it.
 
@@ -322,7 +329,7 @@ gh label create severity:low    --description "Low severity"                 --c
 
 The `|| true` swallows the "already exists" error so re-runs are safe.
 
-### For each surviving finding
+### For each surviving finding (skip silently if its id is in the suppressed or known-open list)
 
 1. **Re-check the dedup lists** declared in the **Inputs** section. Skip
    the finding silently if its stable id appears in either the suppressed
@@ -359,23 +366,22 @@ The `|| true` swallows the "already exists" error so re-runs are safe.
 - `src/b.ts:29`
 - `src/c.ts:103`
 
-## Suggested replacement
-
-`newHelper()`, named in the symbol's own `@deprecated` tag. (When the tag
-names no replacement, write `none stated` here instead.)
-
-## Why this is flagged
+## Why this matters
 
 `deno check` reports `'oldHelper' is deprecated. Use 'newHelper' instead.`
 at each of the three call sites above.
 
-## Suggested action
+## Suggested fix
+
+**Replacement:** `newHelper()`, named in the symbol's own `@deprecated`
+tag. (When the tag names no replacement, write `none stated` after that
+label instead.)
 
 Replace each `oldHelper(...)` call with `newHelper(...)`, starting with
 `src/a.ts:14`. Auto-rewriting is out of scope for this scan — a human
 reviews and migrates each call site.
 
-<the attribution footer line from the end of this prompt, verbatim>
+<the attribution footer line from the Inputs section, verbatim>
 ```
 
 4. **Cap at 6 issues.** Never file more than 6 issues from a single run.
@@ -408,7 +414,7 @@ Before exiting Phase 4, verify your own work:
   **Inputs** section) was filed.
 - Every filed issue's body contains the `<!-- finding-id: BP-… -->` marker
   on its own line at the top, and ends with the attribution footer line
-  below.
+  from the **Inputs** section verbatim.
 - Every filed call site is one you opened and read.
 - No pull request was opened and no file was written — tracked, untracked,
   or scratch.
@@ -417,7 +423,3 @@ If any of these checks fail, fix the offending issue with `gh issue edit`
 before exiting.
 
 </instructions>
-
----
-
-{{ATTRIBUTION_FOOTER}}

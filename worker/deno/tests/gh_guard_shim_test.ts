@@ -19,7 +19,9 @@ import {
   installGhGuardShim,
   prepareGhGuardShim,
   UNGUARDED_AGENT_GH_ENV,
+  unguardedOptInFromEnv,
 } from "../lib/gh_guard_shim.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 import {
   _resetWriteRepoAllowlistSinks,
   _setWriteRepoAllowlistSinks,
@@ -495,39 +497,68 @@ Deno.test({
 
 Deno.test({
   name:
-    "gh-guard-shim - reads the operator opt-in from the environment by default",
+    "gh-guard-shim - reads the operator opt-in from the environment lookup it is given (Issue #964)",
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
     const empty = await Deno.makeTempDir({ prefix: "gh_guard_empty_" });
-    const previous = Deno.env.get(UNGUARDED_AGENT_GH_ENV);
     try {
-      Deno.env.set(UNGUARDED_AGENT_GH_ENV, "1");
       const optedIn = await installGhGuardShim({
         baseEnv: { ...Deno.env.toObject(), PATH: empty },
         active: true,
         allowedRepos: ["stSoftwareAU/VibeCoder"],
         warn: () => {},
         record: () => Promise.resolve(),
+        env: envFrom({ [UNGUARDED_AGENT_GH_ENV]: "1" }),
       });
       assertEquals(optedIn.status, "degraded");
 
       // A falsey value is not an opt-in — the run still fails closed.
-      Deno.env.set(UNGUARDED_AGENT_GH_ENV, "false");
       const notOptedIn = await installGhGuardShim({
         baseEnv: { ...Deno.env.toObject(), PATH: empty },
         active: true,
         allowedRepos: ["stSoftwareAU/VibeCoder"],
         warn: () => {},
         record: () => Promise.resolve(),
+        env: envFrom({ [UNGUARDED_AGENT_GH_ENV]: "false" }),
       });
       assertEquals(notOptedIn.status, "blocked");
+
+      // And an environment that carries the variable at all is what makes
+      // the difference: the same call with an empty one fails closed.
+      const absent = await installGhGuardShim({
+        baseEnv: { ...Deno.env.toObject(), PATH: empty },
+        active: true,
+        allowedRepos: ["stSoftwareAU/VibeCoder"],
+        warn: () => {},
+        record: () => Promise.resolve(),
+        env: emptyEnv,
+      });
+      assertEquals(absent.status, "blocked");
     } finally {
-      if (previous === undefined) Deno.env.delete(UNGUARDED_AGENT_GH_ENV);
-      else Deno.env.set(UNGUARDED_AGENT_GH_ENV, previous);
       await Deno.remove(empty, { recursive: true });
     }
   },
+});
+
+Deno.test("gh-guard-shim - the opt-in spelling is read from the injected lookup, never the process (Issue #964)", () => {
+  // A value the real environment does not carry: a read that fell back to
+  // `Deno.env.get` would answer `false` for every one of these.
+  for (const raw of ["1", "true", "YES", "on", "sentinel-964"]) {
+    assertEquals(
+      unguardedOptInFromEnv(envFrom({ [UNGUARDED_AGENT_GH_ENV]: raw })),
+      true,
+      `"${raw}" is an opt-in`,
+    );
+  }
+  for (const raw of ["", "  ", "0", "false", "No"]) {
+    assertEquals(
+      unguardedOptInFromEnv(envFrom({ [UNGUARDED_AGENT_GH_ENV]: raw })),
+      false,
+      `"${raw}" is not an opt-in`,
+    );
+  }
+  assertEquals(unguardedOptInFromEnv(emptyEnv), false);
 });
 
 Deno.test({

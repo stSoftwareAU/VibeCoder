@@ -19,6 +19,7 @@ import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { DEFAULT_MAX_RUN_SECONDS } from "../lib/run_entrypoint.ts";
 import { runWorker, type RunWorkerOutcome } from "../lib/run_worker.ts";
 import { setSelfHealEventsWorkDir } from "../lib/self_heal_events.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 
 /** Data returned by the run-entrypoint command. */
 interface RunEntrypointData {
@@ -28,6 +29,96 @@ interface RunEntrypointData {
   exitCode: number;
   /** Human-readable reason for the outcome. */
   reason: string;
+}
+
+/** Injected roots and writers for {@link runEntrypoint} (Issue #967). */
+export interface RunEntrypointSeams {
+  /**
+   * Reads the host roots the driver resolves from — `HOME`, `USERPROFILE`,
+   * `WORK_DIR`, `TMPDIR`, `PATH`, `CONFIG_PATH`. Defaults to the process
+   * environment, so production passes nothing.
+   */
+  env?: EnvLookup;
+  /**
+   * Establishes a variable in the run environment; defaults to
+   * `Deno.env.set`. A test hands in a recorder so driving the real command
+   * end to end writes nothing every parallel worker shares.
+   */
+  setEnv?: (name: string, value: string) => void;
+}
+
+/**
+ * Drive the full worker run, with every host root injectable.
+ *
+ * The command wrapper below is this function with the process defaults; the
+ * body lives here so a test can exercise the REAL production path against a
+ * fixture home instead of moving `HOME` for every other test in the process
+ * (Issue #967).
+ *
+ * @param args - `--base-dir` (required) and `--max-run-seconds`.
+ * @param config - The loaded worker configuration.
+ * @param seams - Environment reader and writer; both default to the process.
+ */
+export async function runEntrypoint(
+  args: Record<string, unknown>,
+  config: WorkerConfig,
+  seams: RunEntrypointSeams = {},
+): Promise<CommandResult<RunEntrypointData>> {
+  const env = seams.env ?? processEnvLookup;
+  const baseDir = String(args["base-dir"] ?? "");
+  if (!baseDir) {
+    return {
+      success: false,
+      message: "BLOCKED: No --base-dir specified",
+      data: {
+        outcome: "config-invalid",
+        exitCode: 1,
+        reason: "No --base-dir specified",
+      },
+    };
+  }
+
+  const maxRunSeconds = typeof args["max-run-seconds"] === "number"
+    ? args["max-run-seconds"]
+    : typeof args["max-run-seconds"] === "string"
+    ? parseInt(args["max-run-seconds"], 10)
+    : DEFAULT_MAX_RUN_SECONDS;
+
+  // Wire the self-heal event sink (Issue #4250). This is the one place
+  // production supplies it — the resolution the sink itself used to
+  // apply (WORK_DIR, then HOME), moved here so importing an emitting
+  // module in a test can never write to the operator's real log. The
+  // location is unchanged: ~/logs/self-heal.jsonl when WORK_DIR is
+  // unset, exactly as before.
+  setSelfHealEventsWorkDir(env("WORK_DIR") ?? env("HOME") ?? undefined);
+
+  const result = await runWorker({
+    baseDir,
+    config,
+    maxRunSeconds,
+    env,
+    ...(seams.setEnv ? { setEnv: seams.setEnv } : {}),
+  });
+
+  // A zero exit code is a successful outcome (including a clean "blocked" —
+  // another instance is running). A non-zero exit code (bootstrap failure,
+  // invalid config, unresolvable user, or a failed loop) fails loud so the
+  // command framework surfaces exit 1 (Issue #3234).
+  //
+  // Issue #342: a quota pause is the third case — a clean, deliberate stop
+  // that must reach the supervisor under its own status, so the exit code
+  // is named here rather than collapsed into the 0/1 default.
+  const quotaPaused = result.outcome === "quota-paused";
+  return {
+    success: result.exitCode === 0 || quotaPaused,
+    message: `${result.outcome.toUpperCase()}: ${result.reason}`,
+    exitCode: result.exitCode,
+    data: {
+      outcome: result.outcome,
+      exitCode: result.exitCode,
+      reason: result.reason,
+    },
+  };
 }
 
 /**
@@ -44,59 +135,5 @@ export const runEntrypointCommand: Command = {
     "Full worker driver: PID guard, bootstrap, housekeeping, and main loop " +
     "(Issue #3504)",
 
-  async execute(
-    args: Record<string, unknown>,
-    config: WorkerConfig,
-  ): Promise<CommandResult<RunEntrypointData>> {
-    const baseDir = String(args["base-dir"] ?? "");
-    if (!baseDir) {
-      return {
-        success: false,
-        message: "BLOCKED: No --base-dir specified",
-        data: {
-          outcome: "config-invalid",
-          exitCode: 1,
-          reason: "No --base-dir specified",
-        },
-      };
-    }
-
-    const maxRunSeconds = typeof args["max-run-seconds"] === "number"
-      ? args["max-run-seconds"]
-      : typeof args["max-run-seconds"] === "string"
-      ? parseInt(args["max-run-seconds"], 10)
-      : DEFAULT_MAX_RUN_SECONDS;
-
-    // Wire the self-heal event sink (Issue #4250). This is the one place
-    // production supplies it — the resolution the sink itself used to
-    // apply (WORK_DIR, then HOME), moved here so importing an emitting
-    // module in a test can never write to the operator's real log. The
-    // location is unchanged: ~/logs/self-heal.jsonl when WORK_DIR is
-    // unset, exactly as before.
-    setSelfHealEventsWorkDir(
-      Deno.env.get("WORK_DIR") ?? Deno.env.get("HOME") ?? undefined,
-    );
-
-    const result = await runWorker({ baseDir, config, maxRunSeconds });
-
-    // A zero exit code is a successful outcome (including a clean "blocked" —
-    // another instance is running). A non-zero exit code (bootstrap failure,
-    // invalid config, unresolvable user, or a failed loop) fails loud so the
-    // command framework surfaces exit 1 (Issue #3234).
-    //
-    // Issue #342: a quota pause is the third case — a clean, deliberate stop
-    // that must reach the supervisor under its own status, so the exit code
-    // is named here rather than collapsed into the 0/1 default.
-    const quotaPaused = result.outcome === "quota-paused";
-    return {
-      success: result.exitCode === 0 || quotaPaused,
-      message: `${result.outcome.toUpperCase()}: ${result.reason}`,
-      exitCode: result.exitCode,
-      data: {
-        outcome: result.outcome,
-        exitCode: result.exitCode,
-        reason: result.reason,
-      },
-    };
-  },
+  execute: (args, config) => runEntrypoint(args, config),
 };

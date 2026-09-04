@@ -13,14 +13,16 @@
  * - a run approaching the hard cap is handed its remaining budget before the
  *   kill, and a notice sink that throws never decides whether the run lives.
  *
- * The agent is a stub script on PATH and both probes are injected, so no test
- * needs a git repository or a real workload.
+ * The agent is a stub script named by path (Issue #959) and both probes are
+ * injected, so no test needs a git repository or a real workload, and
+ * nothing here touches the process-wide `PATH`.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals } from "@std/assert";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
+import { type AgentStub, createAgentStub } from "./support/agent_stub.ts";
 import type {
   ExternalProgressState,
   TreeProgressState,
@@ -33,26 +35,12 @@ const TOOL_LINE =
   `{"type":"assistant","message":{"content":[{"type":"tool_use",` +
   `"name":"Bash","input":{"command":"ps --ppid 10946"}}]}}`;
 
-interface StubAgent {
-  dir: string;
-  restore: () => Promise<void>;
-}
-
-/** Install a stub `claude` on PATH (see the #4296 suite for the rationale). */
-async function installStub(body: string): Promise<StubAgent> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_external_508_" });
-  const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(stubPath, `#!/usr/bin/env bash\n${body}`);
-  await Deno.chmod(stubPath, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  return {
-    dir,
-    restore: async () => {
-      Deno.env.set("PATH", originalPath);
-      await Deno.remove(dir, { recursive: true }).catch(() => undefined);
-    },
-  };
+/**
+ * Write a stub agent and return its path (see the #4296 suite for the
+ * rationale). Named by path, never installed on `PATH` (Issue #959).
+ */
+function installStub(body: string): Promise<AgentStub> {
+  return createAgentStub(body, { prefix: "claude_external_508_" });
 }
 
 /**
@@ -91,6 +79,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -127,7 +116,7 @@ Deno.test({
         }`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -142,6 +131,7 @@ Deno.test({
       const started = Date.now();
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -168,7 +158,7 @@ Deno.test({
         `the refusal must name both stalled signals: ${JSON.stringify(lines)}`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -182,6 +172,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -200,7 +191,7 @@ Deno.test({
         "an unmeasurable signal must not become a way to buy time",
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -215,6 +206,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -259,7 +251,7 @@ Deno.test({
         `the wind-down must be visible in the log: ${JSON.stringify(lines)}`,
       );
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
@@ -274,6 +266,7 @@ Deno.test({
     try {
       const result = await runClaudeWithTimeout({
         prompt: "test",
+        agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
@@ -291,9 +284,15 @@ Deno.test({
 
       assert(result.ok, "the runner must return a result");
       if (!result.ok) return;
+      // The absence of a notice is only evidence if the agent actually ran
+      // (Issue #959): a run that never spawned emits no notice either.
+      assert(
+        result.value.output.length > 0,
+        "the stub must have produced output",
+      );
       assertEquals(notices.length, 0, "no premature wind-down");
     } finally {
-      await stub.restore();
+      await stub.dispose();
     }
   },
 });
