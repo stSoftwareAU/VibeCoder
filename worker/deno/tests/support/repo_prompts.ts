@@ -18,11 +18,18 @@
  * {@link withRepoRootCwd} adds the cwd the idle-task body builders need for
  * their own cwd-relative reads.
  *
+ * Both of those mutate process-wide state, so importing this module puts a
+ * suite in the gate's serial pass (Issues #880, #940). A suite that only needs
+ * the repo root — because it names its prompts directory explicitly — imports
+ * {@link REPO_ROOT} from `tests/support/repo_root.ts`, which has no side
+ * effects. It is re-exported here so existing callers keep one import.
+ *
  * Australian English throughout (behaviour, colour, organisation).
  */
 
-/** Repo root — `worker/deno/tests/support/` is four levels down. */
-export const REPO_ROOT = new URL("../../../../", import.meta.url).pathname;
+import { REPO_ROOT } from "./repo_root.ts";
+
+export { REPO_ROOT };
 
 /** Directory overrides `getPromptsDir` honours ahead of the module path. */
 const PROMPT_DIR_ENV_VARS = ["PROMPTS_DIR", "VIBE_BASE_DIR"] as const;
