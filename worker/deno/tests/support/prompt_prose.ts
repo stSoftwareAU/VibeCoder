@@ -73,17 +73,46 @@ function assertFencesBalanced(text: string): void {
  * @returns The flattened prose and its line map
  */
 export function flattenProse(text: string): FlatProse {
+  return flatten(text, false);
+}
+
+/**
+ * The same flattening with the code kept — fenced blocks, fence lines and
+ * inline code spans all included.
+ *
+ * A rule about what a template *says* wants the prose projection. A rule about
+ * a contract the template also spells out inside a fenced example — the shape
+ * of the issue body it files — wants this one, or the example escapes the
+ * rule that governs the prose beside it.
+ *
+ * @param text - The template's full text
+ * @returns The flattened text and its line map
+ */
+export function flattenAll(text: string): FlatProse {
+  return flatten(text, true);
+}
+
+/**
+ * Flatten `text` to one string with a map from offset back to source line.
+ *
+ * @param text - The template's full text
+ * @param keepCode - Keep fenced blocks and code spans rather than dropping them
+ * @returns The flattened text and its line map
+ */
+function flatten(text: string, keepCode: boolean): FlatProse {
   assertFencesBalanced(text);
   let inFence = false;
   const parts: string[] = [];
   const lines: number[] = [];
   text.split("\n").forEach((raw, index) => {
-    if (/^\s*```/.test(raw)) {
-      inFence = !inFence;
-      return;
+    if (!keepCode) {
+      if (/^\s*```/.test(raw)) {
+        inFence = !inFence;
+        return;
+      }
+      if (inFence) return;
     }
-    if (inFence) return;
-    const content = raw.replace(/`[^`]*`/g, "``") + "\n";
+    const content = (keepCode ? raw : raw.replace(/`[^`]*`/g, "``")) + "\n";
     parts.push(content);
     for (let i = 0; i < content.length; i++) lines.push(index + 1);
   });
@@ -113,9 +142,14 @@ export function flattenProse(text: string): FlatProse {
  *
  * @param text - The template's full text
  * @param pattern - A global pattern with no literal space in its source
+ * @param keepCode - Search the fenced examples and code spans too
  * @returns One `line N: <phrase>` entry per match, in source order
  */
-export function hitsIn(text: string, pattern: RegExp): string[] {
+export function hitsIn(
+  text: string,
+  pattern: RegExp,
+  keepCode = false,
+): string[] {
   if (!pattern.global) {
     throw new Error(
       `prose pattern ${pattern} must be global, or only the first hit is found`,
@@ -127,7 +161,7 @@ export function hitsIn(text: string, pattern: RegExp): string[] {
         "matches when the hard wrap splits the phrase",
     );
   }
-  const { flat, lineAt } = flattenProse(text);
+  const { flat, lineAt } = keepCode ? flattenAll(text) : flattenProse(text);
   return [...flat.matchAll(pattern)].map((m) =>
     `line ${lineAt(m.index ?? 0)}: ${m[0].replace(/\s+/g, " ").trim()}`
   );

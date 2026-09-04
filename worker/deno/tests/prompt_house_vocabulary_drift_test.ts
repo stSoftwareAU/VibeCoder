@@ -565,7 +565,6 @@ Deno.test("house vocabulary - the scan family's banned heading variants are abse
   // not just the family that owns the section — so a scan heading cannot be
   // reintroduced by copying it into a template of another family.
   const BANNED = [
-    "## Hard constraints (apply to every phase)",
     "## Hard Constraints (apply throughout)",
     "### Stable finding ID recipe",
     "### For each surviving finding",
@@ -577,10 +576,21 @@ Deno.test("house vocabulary - the scan family's banned heading variants are abse
     "## Why it is safe to remove",
     "## Why it is a bug",
   ];
+  // Matched case-insensitively, with the house spellings exempted first, so
+  // `## Hard constraints (apply to every phase)` — the canon's own lower-case
+  // row — is banned by the same entry that permits the house form, and no
+  // re-cased variant of a house heading slips past the list.
+  const fold = (heading: string) => heading.toLowerCase();
+  const house = new Set(
+    [...SCAN_SECTIONS, ...INTERACTIVE_SECTIONS].map((rule) => rule.house),
+  );
+  const banned = new Set([...BANNED, ...house].map(fold));
+
   const violations: string[] = [];
   for (const [name, text] of await templates()) {
     for (const heading of headings(text)) {
-      if (BANNED.includes(heading.written)) {
+      if (house.has(heading.written)) continue;
+      if (banned.has(fold(heading.written))) {
         violations.push(
           `${fileOf(name)}:${heading.line} — "${heading.written}" is a ` +
             "banned variant; see docs/PROMPT-HOUSE-VOCABULARY.md",
@@ -589,6 +599,15 @@ Deno.test("house vocabulary - the scan family's banned heading variants are abse
     }
   }
   assertEquals(violations, [], violations.join("\n"));
+
+  // The rule is proved on both edges: a re-cased house heading is caught, the
+  // house spelling itself is not.
+  assert(
+    banned.has(fold("## Hard constraints (apply to every phase)")) &&
+      !house.has("## Hard constraints (apply to every phase)"),
+    "a re-cased house heading must be banned",
+  );
+  assert(house.has("## Hard Constraints (apply to every phase)"));
 });
 
 Deno.test("house vocabulary - `## Why this scan exists` is not treated as the rationale slot (Issue #840)", async () => {
@@ -927,13 +946,17 @@ Deno.test("house vocabulary - the attribution footer is cited from the Inputs se
   // that stopped matching would otherwise report green over an unchecked set.
   let carriers = 0;
   const violations: string[] = [];
-  let cited = 0;
+  const cited = new Set<string>();
   for (const [name, text] of await templates()) {
     if (!text.includes("{{ATTRIBUTION_FOOTER}}")) continue;
     carriers++;
-    for (const hit of hitsIn(text, citation)) {
+    // Searched with the code kept, because most scans state the citation
+    // *inside* the fenced issue body they file — `<the attribution footer
+    // line from the Inputs section, verbatim>`. Read as prose only, those
+    // templates cite the footer in a place the rule never looked.
+    for (const hit of hitsIn(text, citation, true)) {
       if (house.test(hit)) {
-        cited++;
+        cited.add(name);
         continue;
       }
       violations.push(
@@ -943,9 +966,14 @@ Deno.test("house vocabulary - the attribution footer is cited from the Inputs se
     }
   }
   assertEquals(violations, [], violations.join("\n"));
+  // Two of every three carriers must be seen citing the footer. The rest are
+  // the lightweight audits that name no source at all — a presence gap the
+  // canon puts out of scope (Issue #841), not a variant — so the floor is set
+  // where they sit today rather than by listing them, and a matcher that
+  // stopped reading the fenced bodies would drop straight through it.
   assert(
-    cited * 2 >= carriers,
-    `only ${cited} of the ${carriers} templates carrying ` +
+    cited.size * 3 >= carriers * 2,
+    `only ${cited.size} of the ${carriers} templates carrying ` +
       "`{{ATTRIBUTION_FOOTER}}` were seen citing it; the matcher has gone " +
       "stale and this rule is passing over templates it never read",
   );

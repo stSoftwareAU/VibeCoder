@@ -20,6 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   fencedBlocks,
+  flattenAll,
   flattenProse,
   headings,
   hitsIn,
@@ -45,6 +46,15 @@ Deno.test("prompt prose - fences and code spans are dropped from the prose", () 
   assertEquals(flat.includes("./quality.sh"), false, "code span kept");
   assertEquals(flat.includes("## Why this matters"), false, "fence kept");
   assertEquals(flat.includes("Run "), true, "surrounding prose lost");
+});
+
+Deno.test("prompt prose - the fenced example is searched only when the code is kept", () => {
+  // A scan states the footer contract inside the issue body it files, so a
+  // rule about that contract has to read the fence the prose projection drops.
+  assertEquals(hitsIn(TEMPLATE, /\bfence\b/g), []);
+  assertEquals(hitsIn(TEMPLATE, /\bfence\b/g, true), ["line 9: fence"]);
+  // Kept means kept: the code span the prose projection blanks out is back.
+  assertEquals(flattenAll(TEMPLATE).flat.includes("./quality.sh"), true);
 });
 
 Deno.test("prompt prose - the line map reports the source line a hit came from", () => {
