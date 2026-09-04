@@ -17,6 +17,8 @@
  *     call site, so styling is testable without capturing stdout.
  */
 
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+
 /** A severity the setup surfaces speak in. */
 export type ConsoleSeverity =
   | "info"
@@ -120,15 +122,21 @@ export interface TerminalStream {
  * The styler for a real process stream, reading `NO_COLOR` from the
  * environment.
  *
+ * The lookup is a parameter (Issue #956) so a test names the value instead of
+ * setting it on the process, which would race every other test running beside
+ * it (Issue #880).
+ *
  * @param stream - The destination stream; defaults to `Deno.stdout`
+ * @param env - Environment lookup; defaults to the real process environment
  * @returns Formatters that colour only an uncoloured-by-`NO_COLOR` terminal
  */
 export function terminalStyler(
   stream: TerminalStream = Deno.stdout,
+  env: EnvLookup = processEnvLookup,
 ): ConsoleStyler {
   return createConsoleStyler({
     tty: stream.isTerminal(),
-    noColor: Deno.env.get("NO_COLOR") ?? null,
+    noColor: env("NO_COLOR") ?? null,
   });
 }
 

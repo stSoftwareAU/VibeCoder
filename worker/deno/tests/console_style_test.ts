@@ -17,7 +17,7 @@ import {
   createConsoleStyler,
   terminalStyler,
 } from "../lib/console_style.ts";
-import { withEnv } from "./support/env.ts";
+import type { EnvLookup } from "../lib/env_lookup.ts";
 
 /** Does this text carry an ANSI escape sequence? */
 function hasEscapes(text: string): boolean {
@@ -136,15 +136,22 @@ Deno.test("bracketedDefault - no default never renders a stray []", () => {
 // The process styler
 // ---------------------------------------------------------------------------
 
-Deno.test("terminalStyler - reads NO_COLOR from the environment", async () => {
-  await withEnv({ NO_COLOR: "true" }, () => {
-    const style = terminalStyler({ isTerminal: () => true });
-    assertEquals(style.coloured, false);
-    assertStringIncludes(style.info("hi"), "ℹ  hi");
-  });
+Deno.test("terminalStyler - reads NO_COLOR through the injected lookup", () => {
+  // The lookup is a parameter, so nothing here touches the process
+  // environment that every parallel test shares (Issues #880, #956).
+  const set: EnvLookup = (name) => name === "NO_COLOR" ? "true" : undefined;
+  const unset: EnvLookup = () => undefined;
 
-  await withEnv({ NO_COLOR: undefined }, () => {
-    assertEquals(terminalStyler({ isTerminal: () => true }).coloured, true);
-    assertEquals(terminalStyler({ isTerminal: () => false }).coloured, false);
-  });
+  const suppressed = terminalStyler({ isTerminal: () => true }, set);
+  assertEquals(suppressed.coloured, false);
+  assertStringIncludes(suppressed.info("hi"), "ℹ  hi");
+
+  assertEquals(
+    terminalStyler({ isTerminal: () => true }, unset).coloured,
+    true,
+  );
+  assertEquals(
+    terminalStyler({ isTerminal: () => false }, unset).coloured,
+    false,
+  );
 });

@@ -334,7 +334,12 @@ Deno.test("checkContainerPrerequisites - fails when the image is not buildable",
     });
     assertEquals(results[0]!.ok, true);
     assertEquals(results[1]!.ok, false);
-    assertStringIncludes(results[1]!.message, "Containerfile");
+    // The message names the file that was actually missing — which of the
+    // container definition's files is read first is an implementation
+    // detail — and the hint names the definition the operator must restore.
+    assertStringIncludes(results[1]!.message, "not buildable");
+    assertStringIncludes(results[1]!.message, emptyRoot);
+    assertStringIncludes(String(results[1]!.hint), "Containerfile");
   } finally {
     await Deno.remove(emptyRoot, { recursive: true });
   }
