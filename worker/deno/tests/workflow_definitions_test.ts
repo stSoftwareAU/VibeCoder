@@ -1563,8 +1563,8 @@ Deno.test(
 // task in worker/deno/deno.json both invoke `deno test` with
 // `--allow-sys=hostname`. Production code paths exercised by the suite call
 // `Deno.hostname()` (worker_identity.ts, idle_detect_diagnostics.ts,
-// fault_tolerance_counters.ts, fleet_health.ts), so any test that drives them
-// needs the permission in CI as well. The simplest way to keep them aligned
+// fault_tolerance_counters.ts), so any test that drives them needs the
+// permission in CI as well. The simplest way to keep them aligned
 // is to invoke `deno task test` from CI; this test guards against drift.
 
 Deno.test(

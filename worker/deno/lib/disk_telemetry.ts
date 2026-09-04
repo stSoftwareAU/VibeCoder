@@ -38,7 +38,7 @@ export interface DiskTelemetryVerdict {
   blind: boolean;
   /** One line naming what cannot be seen. */
   detail: string;
-  /** Notes for the fleet-health payload — empty when both signals read. */
+  /** Notes naming what is blind — empty when both signals read. */
   notes: string[];
 }
 
