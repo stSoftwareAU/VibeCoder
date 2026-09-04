@@ -29,13 +29,15 @@
  * published, and the finished argument list goes through the same containment
  * assertion the run and init lists do (`container_launch.ts`). The only values
  * that cross into the build are the two build arguments below — the base tag
- * the layer must derive from, and the contract path of the start script the
- * sandbox-start sub-issue reads back out of the built image.
+ * the layer must derive from, and the contract path of the start script,
+ * recorded in the image as provenance — the launch plan hands the container
+ * the same path at run time (Issue #981).
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
 import type { ContainerExtensionSpec } from "../types.ts";
+import { EXTENSION_START_ENV } from "./container_extension_start.ts";
 import { joinPath, type LauncherPathStyle } from "./host_path_style.ts";
 
 /**
@@ -48,10 +50,15 @@ export const BASE_IMAGE_BUILD_ARG = "VIBE_BASE_IMAGE";
 
 /**
  * Build argument recording the declared start script's extension-relative
- * path, so the built image states the contract path the sandbox start reads.
- * Passed only when the declaration states one.
+ * path, so the built image states the contract path. Passed only when the
+ * declaration states one.
+ *
+ * One literal with the environment variable the entrypoint reads at sandbox
+ * start ({@link EXTENSION_START_ENV}, Issue #981): they state the same
+ * contract path on the two sides of the image, so a rename must not be able
+ * to move one without the other.
  */
-export const EXTENSION_START_BUILD_ARG = "VIBE_EXTENSION_START";
+export const EXTENSION_START_BUILD_ARG = EXTENSION_START_ENV;
 
 /** Strip trailing separators so a directory joins (and is passed) cleanly. */
 function trimDirectory(path: string): string {
@@ -273,8 +280,8 @@ export function extensionBuildArguments(
     "--build-arg",
     `${BASE_IMAGE_BUILD_ARG}=${baseImage}`,
   ];
-  // The start script's contract path (Issue #980): framework plumbing the
-  // sandbox-start sub-issue reads back, never an operator-facing setting.
+  // The start script's contract path (Issue #980): framework plumbing, never
+  // an operator-facing setting.
   if (spec.start !== undefined) {
     args.push("--build-arg", `${EXTENSION_START_BUILD_ARG}=${spec.start}`);
   }

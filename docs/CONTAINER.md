@@ -351,9 +351,12 @@ block declares one, and `container/entrypoint.sh` runs
 account, after the writable-path policy and the tools PATH, before the Deno
 driver.
 
-Every way that start can fail aborts the launch with exit status **76** and
-never runs the driver: a script that is absent from the image, one that is not
-executable, and one that exits non-zero — the last naming its own status. The
+Every way that start can fail *and return* aborts the launch with exit status
+**76** and never runs the driver: a script that is absent from the image, one
+that is not executable, and one that exits non-zero — the last naming its own
+status. A start that **hangs** is the exception: it is not time-bounded here,
+because how long a Postgres may take to come up is the operator's call, so the
+launcher's watchdog ends the container and reports it as wedged (87). The
 script's stdout and stderr are inherited, so a Postgres that refused to come up
 is diagnosable from the container log. The status is the framework's own so it
 cannot be confused with a deliberate quota pause (75) or the runtime's

@@ -15,7 +15,10 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { QUOTA_PAUSE_EXIT_STATUS } from "../lib/quota_pause.ts";
-import { EXTENSION_START_ABORT_EXIT_STATUS } from "../lib/container_extension_start.ts";
+import {
+  EXTENSION_PREFIX,
+  EXTENSION_START_ABORT_EXIT_STATUS,
+} from "../lib/container_extension_start.ts";
 
 const ENTRYPOINT = new URL("../../../container/entrypoint.sh", import.meta.url)
   .pathname;
@@ -1671,6 +1674,34 @@ Deno.test("entrypoint - the start script's stdout and stderr reach the container
     assertEquals(code, 0, stderr);
     assertStringIncludes(stdout, "postgres ready");
     assertStringIncludes(stderr, "jenkins warming up");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - the prefix defaults to the contract path, not the tests' fixture (Issue #981)", async () => {
+  // Every other case overrides VIBE_EXTENSION_PREFIX, because /opt is not
+  // writable from a test. This one leaves it unset, so the production default
+  // — the one fixed path the operator's Containerfile copies the extension to
+  // — is the value the entrypoint resolves, and the TypeScript constant and
+  // the shell literal cannot drift apart unnoticed.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const argvFile = await stubDeno(dir);
+    await fakeRepo(dir);
+
+    const { code, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin`,
+      env: {
+        VIBE_BASE_DIR: `${dir}/repo`,
+        VIBE_EXTENSION_START: "bin/start.sh",
+      },
+    });
+
+    assertEquals(code, EXTENSION_START_ABORT_EXIT_STATUS);
+    assertStringIncludes(stderr, `${EXTENSION_PREFIX}/bin/start.sh`);
+    await assertRejects(() => Deno.stat(argvFile), Deno.errors.NotFound);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

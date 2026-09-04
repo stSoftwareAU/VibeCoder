@@ -467,6 +467,13 @@ export DISABLE_AUTOUPDATER=1
 # fail silently). Service ports stay container-internal: nothing here
 # publishes anything to the host.
 #
+# A start that never RETURNS is the one failure this block cannot name: the
+# script is not time-bounded here (deciding how long a Postgres may take to
+# come up is the operator's, not the framework's), so a hung start is ended by
+# the launcher's own watchdog and reported as a wedged container rather than
+# as an extension fault. Bounding it belongs with the health-checking this
+# slice put out of scope.
+#
 # VIBE_EXTENSION_START holds the script's path relative to the fixed prefix
 # the operator's Containerfile copies the extension to, and the launch plan
 # sets it only when the `container_extension` block declares a start. Unset —
