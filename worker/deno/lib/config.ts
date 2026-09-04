@@ -33,6 +33,11 @@ import { parsePreFlightCommands } from "./repo_config.ts";
 import { parseIdleTaskCadence } from "./idle_task_cadence_config.ts";
 import { parseContainerTools } from "./container_tools_config.ts";
 import { assertCallbacksConfig } from "./run_callbacks_config.ts";
+import { assertCustomLabelPrompts } from "./custom_label_prompts_config.ts";
+import {
+  CUSTOM_PROMPT_PATH_MAP_ENV,
+  customPromptPathResolver,
+} from "./custom_prompt_mounts.ts";
 import { validateUpdateModeSettings } from "./config_validator.ts";
 import {
   detectUnknownConfigKeys,
@@ -794,8 +799,15 @@ export async function loadConfig(
   // #843). Fail loud: assertCustomLabelPrompts throws naming the offending
   // entry rather than silently dropping a mapping — a silently ignored
   // mapping is exactly the failure #843 rules out.
+  //
+  // In container mode the configured paths are *host* paths the container
+  // cannot see, so the launcher hands over where it mounted each one
+  // (Issue #850) and the mapping resolves onto that. A read outside the
+  // container — the launcher's own, setup, a dev run — sets no variable and
+  // uses the configured path unchanged, so one `.config.json` serves both.
   const customLabelPrompts = assertCustomLabelPrompts(
     file.custom_label_prompts,
+    { resolvePath: customPromptPathResolver(env(CUSTOM_PROMPT_PATH_MAP_ENV)) },
   );
 
   // Recent activity settings (Issue #1326)
@@ -936,6 +948,7 @@ export async function loadConfig(
     idleTaskTemplateWeights,
     idleTaskCadence,
     softwareMinVersions,
+    customLabelPrompts,
     // Issue #806 (parent #796): `assertCallbacksConfig` is the only trusted
     // producer of the typed block, and it throws on any fault — a hook the
     // operator believes is wired, but that silently never runs, is the exact

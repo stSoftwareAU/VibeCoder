@@ -249,16 +249,18 @@ function utilisationLine(logs: string[]): string {
   return lines[lines.length - 1]!;
 }
 
-/** Escape a literal term for use inside a RegExp. */
-function escapeRegExp(term: string): string {
-  return term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** Read `key=<n>s` (or `key=<n>`) out of a structured summary line. */
+/**
+ * Read `key=<n>s` (or `key=<n>`) out of a structured summary line.
+ *
+ * Split rather than a constructed `RegExp`: the fields are space-separated,
+ * so a plain scan reads them without building a pattern from a variable —
+ * which is what semgrep's `detect-non-literal-regexp` rule flags.
+ */
 function field(line: string, key: string): string {
-  const match = line.match(new RegExp(`(?:^| )${escapeRegExp(key)}=([^ ]+)`));
-  assert(match !== null, `no ${key} in: ${line}`);
-  return match[1]!;
+  const prefix = `${key}=`;
+  const token = line.split(" ").find((part) => part.startsWith(prefix));
+  assert(token !== undefined, `no ${key} in: ${line}`);
+  return token.slice(prefix.length);
 }
 
 // ---------------------------------------------------------------------------

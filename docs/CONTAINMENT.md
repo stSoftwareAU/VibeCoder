@@ -60,7 +60,9 @@ nothing to opt out to.
 
 ## The mount set
 
-Seven mounts cross the boundary by default and nothing else. Three host
+Seven mounts cross the boundary by default and nothing else — plus, only when
+an operator configures `custom_label_prompts`, one read-only mount per
+directory holding their prompt templates (Issue #850). Three host
 resources are exposed — the worker's own checkout, its logs and its
 configuration — plus two runtime-managed named volumes for the worker's
 workspace, plus one credential sub-directory per credential the
@@ -75,6 +77,7 @@ worker actually uses: `gh`, and one per *enabled* coding-agent provider:
 | staged `.config.json` dir    | `/home/vibe/.vibe-coder/run-config`             | `ro` |
 | `…/credentials/gh`           | `/home/vibe/.vibe-coder/credentials/gh`         | `ro` |
 | `…/credentials/<provider>`   | `/home/vibe/.vibe-coder/credentials/<provider>` | `ro` |
+| each `custom_label_prompts` directory | `/home/vibe/.vibe-coder/custom-prompts/<n>` | `ro` |
 
 - **The checkout is the worker's own code**, not host data: the image ships
   only the entrypoint, so without it there is no driver to run. It is mounted
@@ -114,8 +117,25 @@ worker actually uses: `gh`, and one per *enabled* coding-agent provider:
   sub-directory names come from the provider descriptors, so the enabled set
   decides which directories are mounted without touching the mount
   construction.
+- **Custom prompt directories are mounted only when configured, and only
+  read-only** (Issue #850). `custom_label_prompts` names prompt templates that
+  live on the host, and the container sees the workspace rather than the host —
+  so without a mount every custom label fails at dispatch. The addition is the
+  narrowest one consistent with this page: derived **only** from paths the
+  operator explicitly named in `.config.json`, one mount per distinct
+  containing directory, **read-only** (nothing inside the container has any
+  business editing the operator's templates), and each source still routed
+  through the same allowlist as every other mount — a prompt in the host home
+  directory fails the launch rather than mounting it. The containing directory
+  is mounted rather than the file because Apple `container` cannot bind a
+  single file, so keep the prompts in a directory of their own. With nothing
+  configured there is no mount and no variable, and the plan is exactly what it
+  was. This is not a general-purpose host-path mount and must not become one.
 - **The in-container paths are the ones the worker resolves for itself** from
-  `HOME`, so no environment plumbing points it at them.
+  `HOME`, so no environment plumbing points it at them. The one exception is
+  the custom prompt map: the staged `.config.json` still names the operator's
+  *host* paths, so one file works in both modes, and `VIBE_CUSTOM_PROMPT_PATHS`
+  carries the host → in-container translation the config loader applies.
 
 Building a plan **fails loud** rather than emitting a broadened
 one when a mount source is the host home directory or an ancestor of it, a

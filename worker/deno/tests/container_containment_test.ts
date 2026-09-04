@@ -412,6 +412,9 @@ interface HostFixture {
   plan: ContainerLaunchPlan;
 }
 
+/** The operator's custom prompt template the fixture plants (Issue #850). */
+const CUSTOM_PROMPT_PROBE_FILE = "containment-probe-prompt.md";
+
 /** Create a directory every user can traverse (the container runs as uid 1000). */
 async function makeSharedDir(path: string, mode = 0o755): Promise<void> {
   await Deno.mkdir(path, { recursive: true });
@@ -508,6 +511,15 @@ async function buildHostFixture(
     approvalState: `vibe-test-approval-${token}`,
   };
 
+  // An operator's custom prompt directory (Issue #850): world-writable on the
+  // host, so only the mount flag can make the write probe inside the container
+  // fail. Outside the synthetic home, which the allowlist would refuse.
+  const customPromptDir = `${root}/custom-prompts`;
+  await makeSharedDir(customPromptDir, 0o777);
+  const customPromptFile = `${customPromptDir}/${CUSTOM_PROMPT_PROBE_FILE}`;
+  await Deno.writeTextFile(customPromptFile, `custom prompt ${token}\n`);
+  await Deno.chmod(customPromptFile, 0o666);
+
   const plan = buildContainerLaunchPlan({
     descriptor: context.descriptor,
     manifest: MANIFEST,
@@ -516,6 +528,7 @@ async function buildHostFixture(
     watchdogSeconds: 11_400,
     hostPaths,
     volumes,
+    customPromptPaths: [customPromptFile],
   });
 
   // The volume lifecycle, exactly as run.sh performs it: create what is
@@ -729,6 +742,20 @@ function mountProbes(fixture: HostFixture): Probe[] {
       id: "provider-credentials",
       target: `${targets.credentials}/${provider.credentials.subdir}`,
       why: `the ${provider.id} credential directory is mounted read-only`,
+    },
+    {
+      // Issue #850: the operator's own prompt template crosses the boundary
+      // read-only — a write to it from inside the container must fail.
+      kind: "ro-file",
+      id: "custom-prompt-file",
+      target: `${targets.customPrompts}/1/${CUSTOM_PROMPT_PROBE_FILE}`,
+      why: "the operator's custom prompt file is mounted read-only",
+    },
+    {
+      kind: "ro-dir",
+      id: "custom-prompt-directory",
+      target: `${targets.customPrompts}/1`,
+      why: "the operator's custom prompt directory is mounted read-only",
     },
     {
       kind: "canary",
@@ -1415,6 +1442,27 @@ Deno.test("containment harness - the worker checkout and its .git are probed rea
         `code it is running.`,
     );
   }
+});
+
+Deno.test("containment harness - the operator's custom prompt mount is probed read-only (Issue #850)", () => {
+  // Runs without a container runtime, so the probe itself is guarded even
+  // where the live run is skipped: the read-only guarantee for an operator's
+  // own template cannot become untested by accident.
+  const targets = containerTargetPaths(MANIFEST);
+  const probes = mountProbes({ canaryName: "canary.txt" } as HostFixture);
+
+  const file = probes.find((candidate) =>
+    candidate.target ===
+      `${targets.customPrompts}/1/${CUSTOM_PROMPT_PROBE_FILE}`
+  );
+  assert(file, "the mounted custom prompt file has no containment probe.");
+  assertEquals(file.kind, "ro-file");
+
+  const directory = probes.find((candidate) =>
+    candidate.target === `${targets.customPrompts}/1`
+  );
+  assert(directory, "the mounted custom prompt directory has no probe.");
+  assertEquals(directory.kind, "ro-dir");
 });
 
 Deno.test("containment harness - the read-only root and its writable exceptions are probed (Issue #516)", () => {
