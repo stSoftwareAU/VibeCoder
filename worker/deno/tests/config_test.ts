@@ -5,6 +5,7 @@
  */
 
 import {
+  assert,
   assertEquals,
   assertRejects,
   assertStringIncludes,
@@ -16,11 +17,13 @@ import {
   getEnvOrDefault,
   isAllowedAuthor,
   loadConfig,
+  readNonNegativeNumberEnv,
   REPO_SLUG_PATTERN,
   validateConfig,
 } from "../lib/config.ts";
 import type { ConfigFile, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 // Test helper to create a temporary config file
 async function withTempConfig(
@@ -38,17 +41,20 @@ async function withTempConfig(
 }
 
 Deno.test("config - getEnvOrDefault returns env var when set", () => {
-  Deno.env.set("TEST_VAR_CONFIG", "from_env");
-  try {
-    const result = getEnvOrDefault("TEST_VAR_CONFIG", "default_value");
-    assertEquals(result, "from_env");
-  } finally {
-    Deno.env.delete("TEST_VAR_CONFIG");
-  }
+  const result = getEnvOrDefault(
+    "TEST_VAR_CONFIG",
+    "default_value",
+    envFrom({ TEST_VAR_CONFIG: "from_env" }),
+  );
+  assertEquals(result, "from_env");
 });
 
 Deno.test("config - getEnvOrDefault returns default when env var not set", () => {
-  const result = getEnvOrDefault("NONEXISTENT_VAR_12345", "default_value");
+  const result = getEnvOrDefault(
+    "NONEXISTENT_VAR_12345",
+    "default_value",
+    emptyEnv,
+  );
   assertEquals(result, "default_value");
 });
 
@@ -207,16 +213,13 @@ Deno.test("config - loadConfig ignores env vars and uses config file values (Iss
     repos: ["org/repo1"],
   };
 
-  Deno.env.set("ALLOWED_AUTHOR", "envuser");
-  try {
-    await withTempConfig(testConfig, async (configPath) => {
-      const config = await loadConfig(configPath);
-      // Config file value should be used, NOT env var (Issue #266)
-      assertEquals(config.allowedAuthor, "configuser");
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath, {
+      env: envFrom({ ALLOWED_AUTHOR: "envuser" }),
     });
-  } finally {
-    Deno.env.delete("ALLOWED_AUTHOR");
-  }
+    // Config file value should be used, NOT env var (Issue #266)
+    assertEquals(config.allowedAuthor, "configuser");
+  });
 });
 
 Deno.test("config - loadConfig uses repos from config file, not environment (Issue #266)", async () => {
@@ -225,16 +228,13 @@ Deno.test("config - loadConfig uses repos from config file, not environment (Iss
     repos: ["config/repo"],
   };
 
-  Deno.env.set("REPOS", "env/repo1,env/repo2");
-  try {
-    await withTempConfig(testConfig, async (configPath) => {
-      const config = await loadConfig(configPath);
-      // Config file value should be used, NOT env var (Issue #266)
-      assertEquals(config.repos, ["config/repo"]);
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath, {
+      env: envFrom({ REPOS: "env/repo1,env/repo2" }),
     });
-  } finally {
-    Deno.env.delete("REPOS");
-  }
+    // Config file value should be used, NOT env var (Issue #266)
+    assertEquals(config.repos, ["config/repo"]);
+  });
 });
 
 Deno.test("config - issueLabels stays hardwired even when no config file is present (Issue #1834)", async () => {
@@ -442,48 +442,44 @@ Deno.test("config - loadConfig throws for config with invalid structure", async 
 // =============================================================================
 
 Deno.test("config - getEnvNumberOrDefault returns env var as number when set", () => {
-  Deno.env.set("TEST_NUM_VAR", "42");
-  try {
-    const result = getEnvNumberOrDefault("TEST_NUM_VAR", 0);
-    assertEquals(result, 42);
-  } finally {
-    Deno.env.delete("TEST_NUM_VAR");
-  }
+  const result = getEnvNumberOrDefault(
+    "TEST_NUM_VAR",
+    0,
+    envFrom({ TEST_NUM_VAR: "42" }),
+  );
+  assertEquals(result, 42);
 });
 
 Deno.test("config - getEnvNumberOrDefault returns default when env var not set", () => {
-  const result = getEnvNumberOrDefault("NONEXISTENT_NUM_12345", 99);
+  const result = getEnvNumberOrDefault("NONEXISTENT_NUM_12345", 99, emptyEnv);
   assertEquals(result, 99);
 });
 
 Deno.test("config - getEnvNumberOrDefault returns default for non-numeric env var", () => {
-  Deno.env.set("TEST_NAN_VAR", "not-a-number");
-  try {
-    const result = getEnvNumberOrDefault("TEST_NAN_VAR", 50);
-    assertEquals(result, 50);
-  } finally {
-    Deno.env.delete("TEST_NAN_VAR");
-  }
+  const result = getEnvNumberOrDefault(
+    "TEST_NAN_VAR",
+    50,
+    envFrom({ TEST_NAN_VAR: "not-a-number" }),
+  );
+  assertEquals(result, 50);
 });
 
 Deno.test("config - getEnvNumberOrDefault handles zero correctly", () => {
-  Deno.env.set("TEST_ZERO_VAR", "0");
-  try {
-    const result = getEnvNumberOrDefault("TEST_ZERO_VAR", 100);
-    assertEquals(result, 0);
-  } finally {
-    Deno.env.delete("TEST_ZERO_VAR");
-  }
+  const result = getEnvNumberOrDefault(
+    "TEST_ZERO_VAR",
+    100,
+    envFrom({ TEST_ZERO_VAR: "0" }),
+  );
+  assertEquals(result, 0);
 });
 
 Deno.test("config - getEnvNumberOrDefault handles negative numbers", () => {
-  Deno.env.set("TEST_NEG_VAR", "-5");
-  try {
-    const result = getEnvNumberOrDefault("TEST_NEG_VAR", 10);
-    assertEquals(result, -5);
-  } finally {
-    Deno.env.delete("TEST_NEG_VAR");
-  }
+  const result = getEnvNumberOrDefault(
+    "TEST_NEG_VAR",
+    10,
+    envFrom({ TEST_NEG_VAR: "-5" }),
+  );
+  assertEquals(result, -5);
 });
 
 // =============================================================================
@@ -491,58 +487,150 @@ Deno.test("config - getEnvNumberOrDefault handles negative numbers", () => {
 // =============================================================================
 
 Deno.test("config - getEnvArrayOrDefault returns env var as array when set", () => {
-  Deno.env.set("TEST_ARR_VAR", "a,b,c");
-  try {
-    const result = getEnvArrayOrDefault("TEST_ARR_VAR", []);
-    assertEquals(result, ["a", "b", "c"]);
-  } finally {
-    Deno.env.delete("TEST_ARR_VAR");
-  }
+  const result = getEnvArrayOrDefault(
+    "TEST_ARR_VAR",
+    [],
+    envFrom({ TEST_ARR_VAR: "a,b,c" }),
+  );
+  assertEquals(result, ["a", "b", "c"]);
 });
 
 Deno.test("config - getEnvArrayOrDefault returns default when env var not set", () => {
-  const result = getEnvArrayOrDefault("NONEXISTENT_ARR_12345", ["x", "y"]);
+  const result = getEnvArrayOrDefault(
+    "NONEXISTENT_ARR_12345",
+    ["x", "y"],
+    emptyEnv,
+  );
   assertEquals(result, ["x", "y"]);
 });
 
 Deno.test("config - getEnvArrayOrDefault returns default for empty env var", () => {
-  Deno.env.set("TEST_EMPTY_ARR", "");
-  try {
-    const result = getEnvArrayOrDefault("TEST_EMPTY_ARR", ["default"]);
-    assertEquals(result, ["default"]);
-  } finally {
-    Deno.env.delete("TEST_EMPTY_ARR");
-  }
+  const result = getEnvArrayOrDefault(
+    "TEST_EMPTY_ARR",
+    ["default"],
+    envFrom({ TEST_EMPTY_ARR: "" }),
+  );
+  assertEquals(result, ["default"]);
 });
 
 Deno.test("config - getEnvArrayOrDefault trims whitespace from values", () => {
-  Deno.env.set("TEST_SPACE_ARR", " alpha , beta , gamma ");
-  try {
-    const result = getEnvArrayOrDefault("TEST_SPACE_ARR", []);
-    assertEquals(result, ["alpha", "beta", "gamma"]);
-  } finally {
-    Deno.env.delete("TEST_SPACE_ARR");
-  }
+  const result = getEnvArrayOrDefault(
+    "TEST_SPACE_ARR",
+    [],
+    envFrom({ TEST_SPACE_ARR: " alpha , beta , gamma " }),
+  );
+  assertEquals(result, ["alpha", "beta", "gamma"]);
 });
 
 Deno.test("config - getEnvArrayOrDefault filters out empty entries", () => {
-  Deno.env.set("TEST_EMPTY_ENTRIES", "a,,b,,c");
-  try {
-    const result = getEnvArrayOrDefault("TEST_EMPTY_ENTRIES", []);
-    assertEquals(result, ["a", "b", "c"]);
-  } finally {
-    Deno.env.delete("TEST_EMPTY_ENTRIES");
-  }
+  const result = getEnvArrayOrDefault(
+    "TEST_EMPTY_ENTRIES",
+    [],
+    envFrom({ TEST_EMPTY_ENTRIES: "a,,b,,c" }),
+  );
+  assertEquals(result, ["a", "b", "c"]);
 });
 
 Deno.test("config - getEnvArrayOrDefault handles single value", () => {
-  Deno.env.set("TEST_SINGLE_ARR", "onlyone");
-  try {
-    const result = getEnvArrayOrDefault("TEST_SINGLE_ARR", []);
-    assertEquals(result, ["onlyone"]);
-  } finally {
-    Deno.env.delete("TEST_SINGLE_ARR");
-  }
+  const result = getEnvArrayOrDefault(
+    "TEST_SINGLE_ARR",
+    [],
+    envFrom({ TEST_SINGLE_ARR: "onlyone" }),
+  );
+  assertEquals(result, ["onlyone"]);
+});
+
+// =============================================================================
+// The injected environment seam itself (Issue #956)
+// =============================================================================
+//
+// The readers above are now driven with a fixed map rather than by mutating
+// `Deno.env`, which is what removes this file from `PROCESS_STATE_MUTATORS`.
+// Two properties have to hold for that migration to be honest, and neither
+// is asserted by the tests above:
+//
+//   1. Omitting the lookup still reads the real process environment, so no
+//      production caller changed behaviour.
+//   2. Supplying one is authoritative — a reader that quietly fell back to
+//      `Deno.env.get` would pass every test above on ambient values.
+//
+// `PATH` is the probe: it is always set in the process environment and never
+// set in the injected maps, so the two directions are distinguishable
+// without writing to the process.
+
+Deno.test("config - the env readers default to the process environment (Issue #956)", () => {
+  const path = Deno.env.get("PATH");
+  assert(
+    path !== undefined && path !== "",
+    "PATH must be set for this probe to mean anything",
+  );
+
+  assertEquals(getEnvOrDefault("PATH", "fallback"), path);
+  // The array reader splits on commas, not on the path separator — a
+  // colon-separated PATH arrives as one entry, and that entry is the real
+  // one, which is the point being made here.
+  assertEquals(getEnvArrayOrDefault("PATH", ["fallback"]), path.split(","));
+  // Absent from the process environment either way — the default lookup is
+  // consulted and finds nothing.
+  assertEquals(
+    getEnvOrDefault("VIBE_ABSENT_PROBE_956", "fallback"),
+    "fallback",
+  );
+  assertEquals(getEnvNumberOrDefault("VIBE_ABSENT_PROBE_956", 7), 7);
+  assertEquals(readNonNegativeNumberEnv("VIBE_ABSENT_PROBE_956"), undefined);
+});
+
+Deno.test("config - an injected lookup replaces the process environment (Issue #956)", () => {
+  // Every reader must answer from the map alone. If any of them still
+  // consulted `Deno.env`, `PATH` would come back as the real one.
+  const env = envFrom({ PATH: "/injected/only", VIBE_ONLY_956: "12" });
+
+  assertEquals(getEnvOrDefault("PATH", "fallback", env), "/injected/only");
+  assertEquals(
+    getEnvArrayOrDefault("PATH", ["fallback"], env),
+    ["/injected/only"],
+  );
+  assertEquals(getEnvNumberOrDefault("VIBE_ONLY_956", 0, env), 12);
+  assertEquals(readNonNegativeNumberEnv("VIBE_ONLY_956", env), 12);
+
+  // And a name the map does not carry reads as absent even when the process
+  // has it — HOME is set on every host the suite runs on.
+  assertEquals(getEnvOrDefault("HOME", "fallback", env), "fallback");
+});
+
+Deno.test("config - readNonNegativeNumberEnv rejects blanks and negatives through the seam (Issue #956)", () => {
+  assertEquals(readNonNegativeNumberEnv("V", envFrom({ V: "0" })), 0);
+  assertEquals(readNonNegativeNumberEnv("V", envFrom({ V: "  " })), undefined);
+  assertEquals(readNonNegativeNumberEnv("V", envFrom({ V: "-1" })), undefined);
+  assertEquals(
+    readNonNegativeNumberEnv("V", envFrom({ V: "soon" })),
+    undefined,
+  );
+  assertEquals(readNonNegativeNumberEnv("V", emptyEnv), undefined);
+});
+
+Deno.test("config - loadConfig reads its overrides through the injected lookup (Issue #956)", async () => {
+  // TRUSTED_REVIEW_BOTS, FLEET_PR_AUTHORS, MIN_CLAIM_RUNWAY_SECONDS and HOME
+  // are the four variables `loadConfig` still consults. None of them is set
+  // in this process, so a reader that ignored the injected lookup would
+  // return the built-in defaults here instead of these values.
+  await withTempConfig({
+    allowed_authors: ["testuser"],
+    repos: ["org/repo"],
+  }, async (configPath) => {
+    const config = await loadConfig(configPath, {
+      env: envFrom({
+        TRUSTED_REVIEW_BOTS: "seam-bot[bot]",
+        FLEET_PR_AUTHORS: "sibling-a, sibling-b",
+        MIN_CLAIM_RUNWAY_SECONDS: "1234",
+        HOME: "/seam/home",
+      }),
+    });
+    assertEquals(config.trustedReviewBots, ["seam-bot[bot]"]);
+    assertEquals(config.fleetPrAuthors, ["sibling-a", "sibling-b"]);
+    assertEquals(config.minClaimRunwaySeconds, 1234);
+    assertEquals(config.workDir, "/seam/home/auto-issue-work");
+  });
 });
 
 // =============================================================================
@@ -886,16 +974,13 @@ Deno.test("config - loadConfig uses config file allowed_authors, ignores env (Is
     repos: ["org/repo"],
   };
 
-  Deno.env.set("ALLOWED_AUTHORS", "env-user1,env-user2");
-  try {
-    await withTempConfig(testConfig, async (configPath) => {
-      const config = await loadConfig(configPath);
-      // Config file value should be used, NOT env var (Issue #266)
-      assertEquals(config.allowedAuthors, ["config-user"]);
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath, {
+      env: envFrom({ ALLOWED_AUTHORS: "env-user1,env-user2" }),
     });
-  } finally {
-    Deno.env.delete("ALLOWED_AUTHORS");
-  }
+    // Config file value should be used, NOT env var (Issue #266)
+    assertEquals(config.allowedAuthors, ["config-user"]);
+  });
 });
 
 Deno.test("config - loadConfig sets authorisedCommenters from allowedAuthor when not specified", async () => {
@@ -946,16 +1031,13 @@ Deno.test("config - loadConfig uses config file claude_model, ignores env (Issue
     claude_model: "claude-sonnet-4-7",
   };
 
-  Deno.env.set("CLAUDE_MODEL", "claude-opus-4-7");
-  try {
-    await withTempConfig(testConfig, async (configPath) => {
-      const config = await loadConfig(configPath);
-      // Config file value should be used, NOT env var (Issue #266)
-      assertEquals(config.claudeModel, "claude-sonnet-4-7");
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath, {
+      env: envFrom({ CLAUDE_MODEL: "claude-opus-4-7" }),
     });
-  } finally {
-    Deno.env.delete("CLAUDE_MODEL");
-  }
+    // Config file value should be used, NOT env var (Issue #266)
+    assertEquals(config.claudeModel, "claude-sonnet-4-7");
+  });
 });
 
 // =============================================================================

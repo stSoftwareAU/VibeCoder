@@ -93,16 +93,20 @@ Deno.test("test_audit - check 11 has a worked example and a silent near-miss", a
 Deno.test("test_audit - the stable-id recipe registers the tautological slug", async () => {
   const body = await loadTestAudit();
   assertStringIncludes(body, "`tautological-expected-value`");
-  assertStringIncludes(body, "which of the eleven checks");
+  assertStringIncludes(body, "which of the thirteen checks");
 });
 
 Deno.test("test_audit - the check counts are numbered consistently", async () => {
   const body = await loadTestAudit();
-  assertStringIncludes(body, "## Phase 2 — Apply the eleven audit checks");
+  assertStringIncludes(body, "## Phase 2 — Apply the thirteen audit checks");
   assertStringIncludes(body, "the ten test-maintainability smells");
   assert(
     !body.includes("the ten audit checks"),
     "the checklist must not still be described as ten checks",
+  );
+  assert(
+    !body.includes("the eleven audit checks"),
+    "the checklist must not still be described as eleven checks",
   );
   assert(
     !body.includes("the nine test-maintainability smells"),
