@@ -663,6 +663,39 @@ table mirrors `vibe_provider_credential_table` in `setup.sh` and the
 descriptors in `worker/deno/lib/agent_provider.ts`, which remain the source of
 truth — a quality-gate test fails when they drift.
 
+#### Several Claude tokens
+
+An operator holding more than one Claude subscription may add extra token
+files beside `claude/provider.env`, named `provider-2.env`, `provider-3.env`
+and so on, each holding a `CLAUDE_CODE_OAUTH_TOKEN`. They are ordinary
+credential files: the same `600` permissions, the same read-only mount, and
+every one of them is permission-checked by the preflight. The worker exports
+exactly **one** of them into a run, so an unused subscription's token never
+reaches the coding agent's environment. No other vendor takes extra files, and
+a metered `ANTHROPIC_API_KEY` is not one of these: a host with one credential —
+key or token — behaves exactly as it always has.
+
+Which one is exported is decided at the **start of each run**: the worker asks
+Anthropic for each token's remaining budget, one request per token, and starts
+on whichever has the most headroom left in its own reset window. Level tokens
+go to the one whose window resets soonest, so budget is spent before it lapses,
+and a token whose budget could not be measured is ranked last but never
+dropped — if none can be measured the run starts on `provider.env`, exactly as
+it would have. The chosen token serves the whole run; the next run chooses
+again. Two subscriptions are therefore consumed evenly with no intervention
+between runs.
+
+The run log names the decision, by file stem only:
+
+```text
+[SECURITY] claude token candidate provider-2 (#2): remaining=75.0% window=five_hour resets=2026-09-04T02:00:00.000Z
+[SECURITY] claude token candidate provider (#1): remaining=25.0% window=seven_day resets=2026-09-04T05:00:00.000Z
+[SECURITY] claude token selected provider-2 (#2) of 2: most-remaining-budget remaining=75.0% resets=2026-09-04T02:00:00.000Z
+```
+
+With a single token file there is nothing to choose between, so no request is
+made and no such line appears.
+
 ### Permissions
 
 On macOS and Linux, directories are owner-only `700` and files `600`
@@ -727,6 +760,7 @@ each failure it can name maps to a specific hand-editing mistake:
 | `github-credentials-missing` | `gh/hosts.yml` is absent, or present without a usable inline token: copied from a macOS Keychain-backed `gh` install (no `oauth_token:` line), a blank or empty-quoted token value, or the file/token line otherwise malformed. |
 | `provider-credentials-missing` | The named vendor's `provider.env` is absent, uses a variable name that vendor does not accept (see the table above), or carries a blank value. The failure names the vendor and the variable that provisions it, so a multi-vendor host knows which file to fix. |
 | `credential-permissions-too-open` | A credential file is group- or world-readable — `chmod 600` was skipped, or the file was created with a default umask (e.g. mode `644`). The message names the file and the exact `chmod` to run. |
+| `provider-token-file-unrecognised` | An additional token file (`claude/provider-2.env` and friends) holds no variable name the vendor accepts — a typo in the variable, or a bare token with no `NAME=` at all. The message names the file and the variables it could have used. It is reported rather than skipped, so a token you added is never silently ignored. |
 | `unexpected-credential-material` | A stray entry sits directly inside the credential directory: a backup copy, a notes file, or a sub-directory for a vendor that is not enabled. Only `gh/` and the enabled providers' sub-directories belong there (`.DS_Store` is ignored). |
 
 Two notes on reading a result. First, `github-credentials-missing` and
