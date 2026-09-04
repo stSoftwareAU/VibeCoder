@@ -14,12 +14,24 @@
  * Deno.env.set("VIBE_RUN_ID", "vibe-test-trailer-abc123");
  * ```
  *
- * Measured with `DENO_JOBS=4`: 48 failures, of which 32 were the pre-existing
- * pwsh failures and ~16 were genuine races. Only a handful collided — the
- * rest of the files below are latent. Bounding the worker count reduces the
- * probability of a collision without removing it, which is the worst outcome
- * for a gate: intermittent red on unrelated work trains everyone to re-run
- * rather than read the result.
+ * Measured with `DENO_JOBS=4`: 48 failures, of which ~16 were genuine races.
+ * Only a handful collided — the rest of the files below are latent. Bounding
+ * the worker count reduces the probability of a collision without removing
+ * it, which is the worst outcome for a gate: intermittent red on unrelated
+ * work trains everyone to re-run rather than read the result.
+ *
+ * The other 32 that trial saw were the pwsh suites, and quoting that number
+ * has been misleading ever since (Issue #971). The trial predates #907, which
+ * moved every PowerShell-driving suite into `INTEGRATION_TEST_FILES`: the
+ * gate's `deno test` stage has not loaded one since, so none of them can turn
+ * this migration red. Re-measured on a PowerShell-equipped host, those suites
+ * failed **18** times serially and 17 under `--parallel` — fewer in parallel,
+ * and every one reproducing when its file was run alone. They were never
+ * races. 16 were a suite resolving `pwsh` against one `PATH` and spawning it
+ * against another, and 2 were a test timing the whole launcher run against a
+ * bound meant for the container watchdog; all 18 are fixed.
+ * `pwsh_suites_outside_the_gate_test.ts` holds the evidence and keeps the
+ * exclusion true.
  *
  * So this test does not fix the 105 files. It **caps them**, so the debt
  * cannot grow while it is paid down. A new test that mutates process state
