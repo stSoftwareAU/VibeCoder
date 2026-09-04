@@ -954,13 +954,87 @@ Deno.test("findContainerfileViolations - the allowance does not excuse an arbitr
 Deno.test("findContainerfileViolations - a checksum-verified download is not reported", () => {
   const violations = findContainerfileViolations(
     `${GOOD_CONTAINERFILE}\n` +
+      'ARG CURL_RETRY="--retry 8 --retry-all-errors -C -"\n' +
+      "RUN set -eu; \\\n" +
+      '    curl -fsSL ${CURL_RETRY} -o /tmp/tool.tgz "https://example.invalid/tool.tgz"; \\\n' +
+      '    echo "${GH_SHA256_AMD64}  /tmp/tool.tgz" | sha256sum -c -\n',
+    parseContainerManifest(manifestText()),
+  );
+
+  assertEquals(violations, []);
+});
+
+// Issue #1014: `aerx` failed eight launches running because one fetch made one
+// attempt on a link that could not hold a connection. The rule is what stops a
+// fetch added later from quietly going back to that.
+Deno.test("findContainerfileViolations - flags a fetch with no retry policy", () => {
+  const violations = findContainerfileViolations(
+    `${GOOD_CONTAINERFILE}\n` +
+      'ARG CURL_RETRY="--retry 8 --retry-all-errors -C -"\n' +
       "RUN set -eu; \\\n" +
       '    curl -fsSL -o /tmp/tool.tgz "https://example.invalid/tool.tgz"; \\\n' +
       '    echo "${GH_SHA256_AMD64}  /tmp/tool.tgz" | sha256sum -c -\n',
     parseContainerManifest(manifestText()),
   );
 
-  assertEquals(violations, []);
+  assertEquals(violations.length, 1);
+  assert(violations[0]!.includes("CURL_RETRY"));
+});
+
+// The argument surviving as a name while losing its value would satisfy every
+// call site and restore the single-attempt behaviour at each of them.
+Deno.test("findContainerfileViolations - flags a retry policy that does not retry", () => {
+  const violations = findContainerfileViolations(
+    `${GOOD_CONTAINERFILE}\n` +
+      'ARG CURL_RETRY="--connect-timeout 20"\n' +
+      "RUN set -eu; \\\n" +
+      '    curl -fsSL ${CURL_RETRY} -o /tmp/tool.tgz "https://example.invalid/tool.tgz"; \\\n' +
+      '    echo "${GH_SHA256_AMD64}  /tmp/tool.tgz" | sha256sum -c -\n',
+    parseContainerManifest(manifestText()),
+  );
+
+  assertEquals(violations.length, 1);
+  assert(violations[0]!.includes("--retry"));
+});
+
+// A fetch referencing an argument the file never declares expands it to
+// nothing, so the call site looks compliant and makes one attempt anyway.
+Deno.test("findContainerfileViolations - flags a fetch referencing an undeclared policy", () => {
+  const violations = findContainerfileViolations(
+    `${GOOD_CONTAINERFILE}\n` +
+      "RUN set -eu; \\\n" +
+      '    curl -fsSL ${CURL_RETRY} -o /tmp/tool.tgz "https://example.invalid/tool.tgz"; \\\n' +
+      '    echo "${GH_SHA256_AMD64}  /tmp/tool.tgz" | sha256sum -c -\n',
+    parseContainerManifest(manifestText()),
+  );
+
+  assertEquals(violations.length, 1);
+  assert(violations[0]!.includes("is missing"));
+});
+
+// pip fetches the semgrep wheel itself, so curl's policy cannot cover it. Six
+// resume attempts was pip's default, and what ran out on aerx.
+Deno.test("findContainerfileViolations - flags a pip fetch with no resume policy", () => {
+  const base = `${GOOD_CONTAINERFILE}\n` +
+    'ARG CURL_RETRY="--retry 8 --retry-all-errors -C -"\n';
+  const step = "RUN set -eu; \\\n" +
+    '    "${py}" "${pip}/pip" download --no-deps -d /tmp/sg "semgrep==1.173.0"; \\\n' +
+    '    echo "${GH_SHA256_AMD64}  /tmp/sg/x.whl" | sha256sum -c -\n';
+
+  const missing = findContainerfileViolations(
+    base + step,
+    parseContainerManifest(manifestText()),
+  );
+  assertEquals(missing.length, 2);
+  assert(missing.some((v) => v.includes("PIP_RETRY")));
+
+  const noResume = findContainerfileViolations(
+    `${base}ARG PIP_RETRY="--retries 8"\n` +
+      step.replace("--no-deps", "--no-deps ${PIP_RETRY}"),
+    parseContainerManifest(manifestText()),
+  );
+  assertEquals(noResume.length, 1);
+  assert(noResume[0]!.includes("--resume-retries"));
 });
 
 Deno.test("findContainerfileViolations - reports a tools step that ignores the build argument", () => {
