@@ -15,6 +15,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { readRepoDoc as read, section } from "./support/markdown_docs.ts";
 import { SKIP_CHECKOUT_UPDATE_ENV } from "../commands/worker_checkout_update.ts";
 import {
   DEFAULT_UPDATE_MODE,
@@ -32,35 +33,6 @@ import {
   UPGRADE_COMMAND_NAME,
   UPGRADE_INVOCATION,
 } from "../lib/upgrade_command.ts";
-
-// tests/ → worker/deno/ → worker/ → repo root
-function repoPath(relative: string): URL {
-  return new URL(`../../../${relative}`, import.meta.url);
-}
-
-async function read(relative: string): Promise<string> {
-  return await Deno.readTextFile(repoPath(relative));
-}
-
-/**
- * The body of the section introduced by the first heading matching `title`,
- * up to the next heading at the same or a higher level.
- */
-function section(markdown: string, title: string): string {
-  const lines = markdown.split("\n");
-  const startIndex = lines.findIndex((line) =>
-    /^#{2,6} /.test(line) && line.includes(title)
-  );
-  assert(startIndex >= 0, `no heading containing "${title}"`);
-  const level = (lines[startIndex]?.match(/^#+/)?.[0] ?? "##").length;
-  const rest = lines.slice(startIndex + 1);
-  const endOffset = rest.findIndex((line) => {
-    const hashes = line.match(/^(#{1,6}) /)?.[1];
-    return hashes !== undefined && hashes.length <= level;
-  });
-  const body = endOffset === -1 ? rest : rest.slice(0, endOffset);
-  return body.join("\n");
-}
 
 /** Every fenced ```json block body in `markdown`. */
 function jsonBlocks(markdown: string): string[] {
