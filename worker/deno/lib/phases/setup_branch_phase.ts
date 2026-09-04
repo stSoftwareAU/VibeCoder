@@ -38,6 +38,11 @@ import {
   describeResumeOutcome,
   resumeIssueBranch,
 } from "../issue_branch_resume.ts";
+import {
+  claimRepoLevelRejectionReport,
+  describeRepoLevelRejection,
+  isRepoLevelBranchRejection,
+} from "../milestone_branch_rejection.ts";
 
 /**
  * What a human must do when a milestone branch cannot be ensured
@@ -144,8 +149,15 @@ export async function workOnIssueSetupBranch(
     return { status: "early_exit", reason: "claim_churn_escalation" };
   }
 
-  // Clone or update the repo into the work directory
-  const setupResult = await deps.git.setupRepo(repo, config.workDir);
+  // Clone or update the repo into the work directory. With a lane id
+  // (Issue #923) this is the lane's own worktree off that clone, so a
+  // sibling slot working the same repository cannot move HEAD underneath
+  // this run.
+  const setupResult = await deps.git.setupRepo(
+    repo,
+    config.workDir,
+    ctx.laneId,
+  );
   if (!setupResult.ok) {
     return {
       status: "failure",
@@ -242,6 +254,35 @@ export async function workOnIssueSetupBranch(
           error: detail,
         },
       );
+      // Issue #853: a ruleset or protection that refuses this branch refuses
+      // it identically for every issue in the milestone. Escalating each one
+      // turned a single configuration fault into nine `needs-human` parks,
+      // none of which clear themselves (Issue #854). Report it once per run
+      // and leave the rest claimable, so they resume on their own once the
+      // repository is fixed.
+      const repoLevel = isRepoLevelBranchRejection(detail);
+      const shouldEscalate = !repoLevel ||
+        claimRepoLevelRejectionReport(repo, state.milestoneBranch);
+      if (repoLevel && !shouldEscalate) {
+        logger.error(
+          "Milestone branch refused by the repository — already reported this run, leaving the issue claimable (Issue #853)",
+          {
+            repo,
+            issueNumber,
+            milestoneBranch: state.milestoneBranch,
+          },
+        );
+        return {
+          status: "failure",
+          reason:
+            `Failed to ensure milestone branch '${state.milestoneBranch}' for milestone ` +
+            `'${milestoneTitle}': ${detail}`,
+        };
+      }
+      const repoLevelNote = describeRepoLevelRejection(
+        detail,
+        state.milestoneBranch,
+      );
       const ghClient = deps.github.createClient(logger);
       const escalation = await escalateToHuman({
         ghClient,
@@ -251,7 +292,8 @@ export async function workOnIssueSetupBranch(
         heading: "Milestone branch unavailable",
         reason:
           `This issue belongs to milestone '${milestoneTitle}', but its milestone branch ` +
-          `\`${state.milestoneBranch}\` could not be created or fetched: ${detail}`,
+          `\`${state.milestoneBranch}\` could not be created or fetched: ${detail}` +
+          (repoLevelNote === null ? "" : `\n\n${repoLevelNote}`),
         nextStep: MILESTONE_BRANCH_NEXT_STEP,
         dedupKey: `milestone-branch-${state.milestoneBranch}`,
         githubUser,

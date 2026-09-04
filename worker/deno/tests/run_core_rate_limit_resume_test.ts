@@ -25,6 +25,8 @@ import {
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
+import { InFlightRepoRegistry } from "../lib/in_flight_repos.ts";
+import { LANE_ROTATION_FILE } from "../lib/lane_rotation.ts";
 
 // ---------------------------------------------------------------------------
 // Mock deps factory — minimal happy-path defaults plus per-test overrides.
@@ -569,13 +571,14 @@ Deno.test(
     // went red on main with `29 passed | 32 failed`.
     //
     // The window's width is set by `readLaneRotation`, which returns
-    // immediately when `WORK_DIR` is unset and does real file I/O when it is.
-    // Every other test in this file leaves it unset, so the window was a
-    // couple of microtasks and the race never fired locally. The worker always
-    // runs with it set. Setting it here reproduces the fleet's conditions.
+    // immediately when there is no work directory and does real file I/O
+    // when there is one. Every other test in this file leaves it unset, so
+    // the window was a couple of microtasks and the race never fired
+    // locally. The worker always runs with one. Setting it here reproduces
+    // the fleet's conditions — through `config.workDir` (Issue #966), which
+    // is where `createProductionRunCoreDeps` now puts the directory it has
+    // already resolved, rather than through the process environment.
     const workDir = await Deno.makeTempDir();
-    const previous = Deno.env.get("WORK_DIR");
-    Deno.env.set("WORK_DIR", workDir);
     try {
       let findCalls = 0;
       let nowValue = 0;
@@ -602,6 +605,7 @@ Deno.test(
 
       const config = createDefaultRunCoreConfig();
       config.runDurationSeconds = 3600;
+      config.workDir = workDir;
 
       // Reaching this line at all is the assertion: without the early
       // rejection handler the module aborts before the loop returns.
@@ -611,11 +615,55 @@ Deno.test(
         `the scan should have run and rejected, findCalls=${findCalls}`,
       );
     } finally {
-      if (previous === undefined) {
-        Deno.env.delete("WORK_DIR");
-      } else {
-        Deno.env.set("WORK_DIR", previous);
-      }
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// 5. Issue #966: the lane-rotation cursor follows `config.workDir`.
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "run_core - the lane-rotation cursor is persisted in config.workDir (Issue #966)",
+  async () => {
+    // The cursor used to be addressed by reading `WORK_DIR` at the point of
+    // use, which is why the test above had to set it on the process. The
+    // resolved directory now travels in the config, and this is the
+    // assertion that says so: the cursor file appears in the injected
+    // directory, which no environment variable names. A code path that fell
+    // back to `Deno.env.get("WORK_DIR")` would write elsewhere (or, with the
+    // variable unset, not at all) and leave this directory empty.
+    const workDir = await Deno.makeTempDir({ prefix: "lane_rotation_param_" });
+    try {
+      let nowValue = 0;
+      const deps = createMockDeps({
+        // The lane only defers passes when it has a registry to lease
+        // repositories against and more than one issue slot.
+        inFlightRepos: new InFlightRepoRegistry(),
+        findNextIssue: () => Promise.resolve({ ok: true, value: null }),
+        now: () => nowValue,
+        // A mocked clock the sleep advances, so one cycle runs and the loop
+        // then retires on its own deadline rather than on wall time.
+        sleep: (ms?: number) => {
+          nowValue += Math.max(ms ?? 30_000, 3_600_000);
+          return Promise.resolve();
+        },
+      });
+
+      const config = createDefaultRunCoreConfig();
+      config.runDurationSeconds = 3600;
+      config.maxConcurrentIssues = 2;
+      config.workDir = workDir;
+
+      await runCoreLoop(config, deps);
+
+      assertEquals(
+        (await Deno.readTextFile(`${workDir}/${LANE_ROTATION_FILE}`)).trim(),
+        "1",
+        "the cycle must advance the cursor inside the configured work dir",
+      );
+    } finally {
       await Deno.remove(workDir, { recursive: true });
     }
   },

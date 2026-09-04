@@ -41,14 +41,14 @@ resourcing or isolation decision should follow it:
 or I/O stalls the whole fleet silently (the overnight stall), which
 costs far more than any runaway cycle a timeout will reap anyway.
 
-### Prompt-version references
+### Prompt template references
 
-The worker always loads the latest version of each prompt template at runtime.
-Documentation should refer to prompts by directory (e.g.
-`prompts/coding_guidelines/`) rather than by version number, unless naming a
-specific historical version is required — in which case use textual "from vN
-onward" wording alongside the directory reference, never a literal
-`prompts/<type>/vN.md` filename.
+Each prompt type has one editable template, `prompts/<type>/prompt.md`, which
+the worker loads at runtime. Versioned `vN.md` files were removed once the repo
+went public: git history is the record of how a template evolved, and the
+checkout's commit hash — logged by the execute phase — is what ties a run to the
+text it used. Documentation refers to prompts by directory (e.g.
+`prompts/coding_guidelines/`) or by that path, never by a version number.
 
 ### Repository isolation — no cross-repo coupling
 
@@ -458,9 +458,6 @@ to `git clone`.
   falling back to `git fetch --unshallow` as a last resort. On a full clone the
   helper is a no-op.
 
-**Precedent:** private-repo-6 already clones with `git clone --depth=1` successfully
-(see `worker/deno/lib/fleet_health.ts`).
-
 **Implementation:** `buildShallowCloneArgs()` in
 `worker/deno/commands/git_operations.ts` produces the argument list for the
 `gh repo clone` invocation. The integration test in
@@ -748,9 +745,8 @@ worker defer internal-dependency fixes by filing follow-up issues.
   "Too big for one run" is almost never a valid reason to *fully* defer.
 
 The behaviour lives in the `prompts/issue/` and `prompts/coding_guidelines/`
-escape-hatch sections (latest versions; the worker always loads the latest at
-runtime). The actual cross-repo PR plumbing, the one-follow-up dedup cap
-, and the release-gating boundary are sibling issues under parent.
+escape-hatch sections. The actual cross-repo PR plumbing, the one-follow-up
+dedup cap, and the release-gating boundary are sibling issues under parent.
 
 ### Escape hatch for out-of-scope work
 
@@ -1054,7 +1050,7 @@ measured coverage. There is no bucket — a single run inspects every test
 ecosystem present (Deno/TypeScript, JavaScript, Rust, Java, Go, Python,
 shell/BATS, Cypress, Playwright).
 
-**Eleven audit checks.** Phase 2 of `prompts/test_audit/` walks every test file
+**Thirteen audit checks.** Phase 2 of `prompts/test_audit/` walks every test file
 against ten **test-maintainability smells**: (1) implementation-coupled
 assertions (call-order, internal-call mocks, private-symbol assertions — mock /
 interaction assertions are flagged only when not part of the public contract),
@@ -1070,6 +1066,22 @@ performs, so the test passes by construction and can never disagree with the
 implementation. **Rewrite or delete** are both valid resolutions — a
 counter-productive test should never have been written, so deleting one is an
 acceptable PR outcome.
+
+**Unit-suite classification.** Checks (12) parallel-unsafe unit tests — a unit
+test that mutates process-wide state (an environment variable, the working
+directory, a module-level singleton) rather than taking it as a parameter or an
+injected seam — and (13) slow unit tests, whose *shape* shows they cannot meet
+the unit budget `CODING-STANDARDS.md` sets: a wall-clock sleep, a retry loop
+with real backoff, a polling wait, or a spawned repository script. Both are
+static, source-shape checks — the audit never runs a test, so it never reports a
+measured or estimated duration, and neither check keys on whether a test passes.
+Files already on the repository's parallel-unsafe manifest are known debt and
+excluded from check 12 (the check exists to stop that list growing, not to
+re-report it); files on the integration-test manifest are excluded from both.
+The remedy is the seam, never a `--no-parallel` flag, or reclassification into
+the integration manifest. Each is reported as a **single** finding listing the
+affected files, so a suite-wide habit across a hundred files cannot become a
+hundred issues.
 
 **Coverage-gap detection.** Check (7), *potentially untested public
 API*, is a **potential behavioural coverage gap**: public API functions where no
@@ -1110,7 +1122,7 @@ into the `{{SUPPRESSED_IDS}}` placeholder so the LLM drops the finding in Phase
 3 triage on the next run.
 
 See [`docs/TEST-AUDIT-SCAN.md`](docs/TEST-AUDIT-SCAN.md) for the operator manual
-(idle-trigger sequence diagram, the eleven audit checks, the coverage-gap
+(idle-trigger sequence diagram, the thirteen audit checks, the coverage-gap
 pre-pass, label scheme, id recipe, suppression syntax, no-PR rule).
 
 ### GitHub Actions audit scans (template #4)
@@ -2111,7 +2123,7 @@ actually used.
 Detection is now a structured marker the agent emits —
 `<!-- vibe-already-resolved commit="…" pr="…" verified="…" -->`, parsed
 deterministically like `vibe-cross-repo-pr` — with the broadened keyword list
-kept as a fallback for older prompt versions.
+kept as a fallback for agents that phrase it in prose.
 
 **Closing requires cited evidence.** A commit and/or PR reference, plus (on the
 marker path) how the fix was verified. Without it the run falls back to the

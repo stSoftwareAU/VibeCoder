@@ -16,6 +16,7 @@ import {
   loadExistingConfig,
   mergeNonInteractive,
   pruneOrphanRepoConfig,
+  stripRemovedConfigKeys,
   writeConfigFile,
 } from "./config_setup.ts";
 import { UPDATE_MODES } from "../lib/config_defaults.ts";
@@ -30,6 +31,7 @@ export {
   parseCsv,
   pruneOrphanRepoConfig,
   runNonInteractive,
+  stripRemovedConfigKeys,
   writeConfigFile,
 } from "./config_setup.ts";
 
@@ -160,7 +162,13 @@ export async function runConfigSetup(
       );
     }
 
-    await writeConfigFile(configPath, final);
+    // Issue #805: a key the worker has removed must not survive the rewrite,
+    // and must not disappear without a word either.
+    const { config: migrated, warnings: removedKeyWarnings } =
+      stripRemovedConfigKeys(final);
+    warnings.push(...removedKeyWarnings);
+
+    await writeConfigFile(configPath, migrated);
     return {
       ok: true,
       message: `Configuration written to: ${configPath}`,

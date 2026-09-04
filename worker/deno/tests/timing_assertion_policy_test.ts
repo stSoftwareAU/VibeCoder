@@ -26,7 +26,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { getLatestVersion, loadPrompt } from "../lib/prompt_manager.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
 const PROMPTS_DIR = `${REPO_ROOT}prompts`;
@@ -38,21 +38,12 @@ const HELPER = "assertLinearGrowth";
 const RULE =
   /compare two readings of the same work|another reading\s+of the same work/i;
 
-/** The latest text of one prompt family, collapsed for matching. */
-async function latestCollapsed(
-  family: string,
-): Promise<{ version: string; text: string; collapsed: string }> {
-  const latest = await getLatestVersion(family, PROMPTS_DIR);
-  assertEquals(latest.ok, true, `no latest version for ${family}`);
-  if (!latest.ok) throw new Error(latest.error.message);
-  const loaded = await loadPrompt(family, latest.value, PROMPTS_DIR);
-  assertEquals(loaded.ok, true);
+/** The text of one prompt family, collapsed for matching. */
+async function promptCollapsed(family: string): Promise<string> {
+  const loaded = await loadPrompt(family, PROMPTS_DIR);
+  assertEquals(loaded.ok, true, `cannot load ${family}`);
   if (!loaded.ok) throw new Error(loaded.error.message);
-  return {
-    version: latest.value,
-    text: loaded.value,
-    collapsed: loaded.value.replace(/\s+/g, " "),
-  };
+  return loaded.value.replace(/\s+/g, " ");
 }
 
 /** `CODING-STANDARDS.md`, collapsed. */
@@ -62,14 +53,14 @@ async function standardsCollapsed(): Promise<string> {
 }
 
 Deno.test("timing policy - all three surfaces state the same rule (Issue #786)", async () => {
-  const guidelines = await latestCollapsed("coding_guidelines");
-  const audit = await latestCollapsed("test_audit");
+  const guidelines = await promptCollapsed("coding_guidelines");
+  const audit = await promptCollapsed("test_audit");
   const standards = await standardsCollapsed();
 
   for (
     const [name, text] of [
-      [`coding_guidelines ${guidelines.version}`, guidelines.collapsed],
-      [`test_audit ${audit.version}`, audit.collapsed],
+      ["coding_guidelines", guidelines],
+      ["test_audit", audit],
       ["CODING-STANDARDS.md", standards],
     ] as const
   ) {
@@ -82,19 +73,19 @@ Deno.test("timing policy - all three surfaces state the same rule (Issue #786)",
 });
 
 Deno.test("timing policy - the guidelines no longer ban measuring outright (Issue #786)", async () => {
-  const { version, collapsed } = await latestCollapsed("coding_guidelines");
+  const collapsed = await promptCollapsed("coding_guidelines");
   assertEquals(
     collapsed.includes("Do not measure performance inside unit tests"),
     false,
-    `coding_guidelines ${version} still carries the flat ban, which forbids ` +
-      `the ratio assertions CODING-STANDARDS.md requires`,
+    "coding_guidelines still carries the flat ban, which forbids the ratio " +
+      "assertions CODING-STANDARDS.md requires",
   );
   // …and it names the helper, so a reader knows what is permitted.
   assertStringIncludes(collapsed, HELPER);
 });
 
 Deno.test("timing policy - the auditor exempts ratio assertions (Issue #786)", async () => {
-  const { version, collapsed } = await latestCollapsed("test_audit");
+  const collapsed = await promptCollapsed("test_audit");
   // It still flags the real defect …
   assertStringIncludes(collapsed, "Absolute");
   assertStringIncludes(collapsed, "against a constant as a finding");
@@ -107,7 +98,7 @@ Deno.test("timing policy - the auditor exempts ratio assertions (Issue #786)", a
   assertEquals(
     collapsed.includes("Flag any wall-clock comparison inside a unit test"),
     false,
-    `test_audit ${version} still flags every comparison without exception`,
+    "test_audit still flags every comparison without exception",
   );
 });
 
@@ -130,36 +121,4 @@ Deno.test("timing policy - the helper the carve-out names still exists and is us
     callers.length > 0,
     "no unit test calls the helper the carve-out was written for",
   );
-});
-
-Deno.test("timing policy - the new audit version declares its own number (Issue #786)", async () => {
-  // `test_audit` carries its version in its H1, so a copied file inherits the
-  // predecessor's number — the defect class #792 sweeps. This is the one file
-  // this change adds, so it is checked here.
-  const { version, text } = await latestCollapsed("test_audit");
-  assertStringIncludes(text, `Coverage-Gap Audit (${version})`);
-});
-
-Deno.test("timing policy - the retired versions stay immutable (Issue #786)", async () => {
-  const guidelines = await loadPrompt(
-    "coding_guidelines",
-    "v45",
-    PROMPTS_DIR,
-  );
-  assertEquals(guidelines.ok, true);
-  if (guidelines.ok) {
-    assertStringIncludes(
-      guidelines.value,
-      "Do not measure performance inside unit tests",
-    );
-  }
-
-  const audit = await loadPrompt("test_audit", "v12", PROMPTS_DIR);
-  assertEquals(audit.ok, true);
-  if (audit.ok) {
-    assertStringIncludes(
-      audit.value.replace(/\s+/g, " "),
-      "Flag any wall-clock comparison inside a unit test",
-    );
-  }
 });

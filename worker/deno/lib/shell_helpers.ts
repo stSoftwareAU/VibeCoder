@@ -12,6 +12,7 @@ import {
   runWithTimeout,
 } from "./subprocess_timeout.ts";
 import {
+  defaultBranchCachePath,
   getCachedDefaultBranch,
   invalidateCachedDefaultBranch,
   setCachedDefaultBranch,
@@ -75,12 +76,19 @@ export function clearDefaultBranchMemoryCache(): void {
  * `git fetch origin/<cached-branch>` failure after a remote rename.
  *
  * @param repo - Repository in "owner/repo" format
+ * @param cachePath - Where the persistent cache lives (Issue #964).
+ *   Defaults to {@link defaultBranchCachePath}, so production callers pass
+ *   nothing; a test names a throwaway path instead of pointing the whole
+ *   process at one with `Deno.env.set`.
  */
-export async function invalidateDefaultBranch(repo: string): Promise<void> {
+export async function invalidateDefaultBranch(
+  repo: string,
+  cachePath: string | undefined = defaultBranchCachePath(),
+): Promise<void> {
   if (!repo) return;
   defaultBranchCache.delete(repo);
   try {
-    await invalidateCachedDefaultBranch(repo);
+    await invalidateCachedDefaultBranch(repo, cachePath);
   } catch {
     // Persistent cache removal is best-effort.
   }
@@ -108,11 +116,16 @@ export async function invalidateDefaultBranch(repo: string): Promise<void> {
  *   (Issue #1805). When provided, supersedes the default
  *   `runWithTimeout`-based REST call so the API layer can be exercised
  *   from unit tests without invoking a real subprocess.
+ * @param cachePath - Where the persistent (layer 2) cache lives
+ *   (Issue #964). Defaults to {@link defaultBranchCachePath}, so production
+ *   callers pass nothing; a test names a throwaway path instead of pointing
+ *   the whole process at one with `Deno.env.set`.
  * @returns Result with the default branch name
  */
 export async function getRepoDefaultBranch(
   repo: string,
   ghCommandFn?: (args: string[]) => Promise<string>,
+  cachePath: string | undefined = defaultBranchCachePath(),
 ): Promise<Result<string>> {
   if (!repo) {
     return { ok: false, error: new Error("Repository name is required") };
@@ -126,7 +139,7 @@ export async function getRepoDefaultBranch(
 
   // Layer 2: persistent disk cache (7-day TTL).
   try {
-    const persisted = await getCachedDefaultBranch(repo);
+    const persisted = await getCachedDefaultBranch(repo, cachePath);
     if (persisted) {
       defaultBranchCache.set(repo, persisted);
       return { ok: true, value: persisted };
@@ -203,7 +216,7 @@ export async function getRepoDefaultBranch(
 
   defaultBranchCache.set(repo, branch);
   try {
-    await setCachedDefaultBranch(repo, branch);
+    await setCachedDefaultBranch(repo, branch, cachePath);
   } catch {
     // Persistent cache write is best-effort.
   }

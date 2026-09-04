@@ -10,7 +10,7 @@
  *
  * Each sibling sub-issue carries its own unit tests; what was missing — and
  * what this file adds — is a single regression that drives the **real** fallback
- * subsystem (a stubbed `claude` on PATH, exactly as the sibling tests do) and
+ * subsystem (a stub agent named by path, exactly as the sibling tests do) and
  * feeds its **real** `ClaudeRunResult` (`fallbackModel` + `runStats`) into the
  * **real** flagging subsystem, for **both** top-tier phases (`planning` and
  * `grill_me`) and a per-repo `claude_model: "fable"` base-tier pin. So the whole
@@ -39,30 +39,39 @@ import {
   DEGRADED_MODEL_LABEL,
 } from "../lib/planning_degraded_label.ts";
 import { reportGrillMeDegradation } from "../lib/grill_me_run_stats.ts";
+import { withAgentStub } from "./support/agent_stub.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 
 // ---------------------------------------------------------------------------
-// Stub harness — a fake `claude` on PATH that records each invocation's
+// Stub harness — a fake agent, named by path (`agentBinaryPath`, Issue #959)
+// rather than put on the process-wide `PATH`, that records each invocation's
 // `--model` arg, so the recorded sequence proves the exact tier hop.
 // ---------------------------------------------------------------------------
 
 interface StubClaude {
-  dir: string;
+  /** Absolute path to the stub, passed to the runner as `agentBinaryPath`. */
+  path: string;
+  /** Path the stub appends each invocation's `--model` value to. */
   modelLog: string;
 }
+
+/** Basename of the file the stub records each invocation's model in. */
+const MODEL_LOG = "models.log";
 
 /**
  * Stub body for the **globally-disabled** case: while the requested model is
  * `fable` it emits the Fable export-disable signature (matched by
  * `detectModelUnavailable`) and exits non-zero; for any other tier it succeeds.
  */
-function disabledStubBody(modelLog: string): string {
+function disabledStubBody(): string {
   return [
+    `log="$(dirname "$0")/${MODEL_LOG}"`,
     `model=""`,
     `prev=""`,
     `for arg in "$@"; do`,
     `  if [ "$prev" = "--model" ]; then`,
     `    model="$arg"`,
-    `    printf '%s\\n' "$arg" >> '${modelLog}'`,
+    `    printf '%s\\n' "$arg" >> "$log"`,
     `  fi`,
     `  prev="$arg"`,
     `done`,
@@ -81,14 +90,15 @@ function disabledStubBody(modelLog: string): string {
  * though Fable was requested. No unavailable signal → no fallback fires; the
  * run already ran on Opus, so only the served-model mismatch surfaces it.
  */
-function silentSubstitutionStubBody(modelLog: string): string {
+function silentSubstitutionStubBody(): string {
   return [
+    `log="$(dirname "$0")/${MODEL_LOG}"`,
     `model=""`,
     `prev=""`,
     `for arg in "$@"; do`,
     `  if [ "$prev" = "--model" ]; then`,
     `    model="$arg"`,
-    `    printf '%s\\n' "$arg" >> '${modelLog}'`,
+    `    printf '%s\\n' "$arg" >> "$log"`,
     `  fi`,
     `  prev="$arg"`,
     `done`,
@@ -104,12 +114,13 @@ function silentSubstitutionStubBody(modelLog: string): string {
  * Stub body for the **self-heal** case: Fable is available again. Records the
  * requested model, declares Fable as the served model, and exits 0 regardless.
  */
-function selfHealStubBody(modelLog: string): string {
+function selfHealStubBody(): string {
   return [
+    `log="$(dirname "$0")/${MODEL_LOG}"`,
     `prev=""`,
     `for arg in "$@"; do`,
     `  if [ "$prev" = "--model" ]; then`,
-    `    printf '%s\\n' "$arg" >> '${modelLog}'`,
+    `    printf '%s\\n' "$arg" >> "$log"`,
     `  fi`,
     `  prev="$arg"`,
     `done`,
@@ -119,26 +130,19 @@ function selfHealStubBody(modelLog: string): string {
   ].join("\n");
 }
 
-async function withStub<T>(
-  body: (modelLog: string) => string,
+/**
+ * Create the stub for the duration of `fn`, then clean up. The runner is
+ * handed the stub's path (Issue #959), so nothing here touches `PATH`.
+ */
+function withStub<T>(
+  body: string,
   fn: (stub: StubClaude) => Promise<T>,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "fable_cycle_stub_" });
-  const modelLog = `${dir}/models.log`;
-  const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(
-    stubPath,
-    `#!/usr/bin/env bash\n${body(modelLog)}\n`,
+  return withAgentStub(
+    body,
+    (stub) => fn({ path: stub.path, modelLog: `${stub.dir}/${MODEL_LOG}` }),
+    { prefix: "fable_cycle_stub_" },
   );
-  await Deno.chmod(stubPath, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  try {
-    return await fn({ dir, modelLog });
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
 }
 
 async function readModelSequence(modelLog: string): Promise<string[]> {
@@ -158,30 +162,21 @@ const FAST_RETRY = {
   initialWaitInterval: 0,
 } as const;
 
-/** Clear env + per-repo state so a phase resolves purely from its default. */
-function withCleanModelEnv<T>(fn: () => Promise<T>): Promise<T> {
-  const saved = new Map<string, string | undefined>();
-  for (
-    const key of [
-      "CLAUDE_MODEL",
-      "CLAUDE_MODEL_PLANNING",
-      "CLAUDE_MODEL_GRILL_ME",
-      "CLAUDE_MODEL_ISSUE",
-    ]
-  ) {
-    saved.set(key, Deno.env.get(key));
-    Deno.env.delete(key);
-  }
+/**
+ * Clear the per-repo routing state so a phase resolves purely from its default.
+ *
+ * The env half of the old spelling is gone: both the run and the flagging read
+ * {@link emptyEnv} (Issue #961), so a `CLAUDE_MODEL*` the worker session
+ * exports is invisible to either and nothing has to be deleted from — and
+ * restored to — a process every other test in the run shares.
+ */
+function withCleanModelState<T>(fn: () => Promise<T>): Promise<T> {
   setActiveRepoModelEffortOverrides(undefined);
   return (async () => {
     try {
       return await fn();
     } finally {
       setActiveRepoModelEffortOverrides(undefined);
-      for (const [key, value] of saved) {
-        if (value !== undefined) Deno.env.set(key, value);
-        else Deno.env.delete(key);
-      }
     }
   })();
 }
@@ -283,6 +278,7 @@ async function flagPlanning(
       fallbackModel: result.fallbackModel,
     }],
     phase,
+    env: emptyEnv,
   });
   if (report.verdict.degraded) {
     await applyDegradedModelLabel({
@@ -317,6 +313,7 @@ async function flagGrillMe(
     runGhCommand: ghCommandFn,
     logger: recordingLogger(),
     cacheDir: await Deno.makeTempDir({ prefix: "fable_cycle_grill_" }),
+    env: emptyEnv,
   });
   return { verdict, section: "", labelledIssues: addLabelCalls, comments };
 }
@@ -338,12 +335,14 @@ Deno.test({
   permissions: TEST_PERMS,
   ignore: Deno.build.os === "windows",
   async fn() {
-    const { result, models, flag } = await withCleanModelEnv(() =>
-      withStub(disabledStubBody, async (stub) => {
+    const { result, models, flag } = await withCleanModelState(() =>
+      withStub(disabledStubBody(), async (stub) => {
         const result = await runClaudeWithRetry(
           {
             prompt: "plan",
             phase: "planning",
+            agentBinaryPath: stub.path,
+            env: emptyEnv,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
@@ -390,12 +389,14 @@ Deno.test({
   permissions: TEST_PERMS,
   ignore: Deno.build.os === "windows",
   async fn() {
-    const { result, models, flag } = await withCleanModelEnv(() =>
-      withStub(disabledStubBody, async (stub) => {
+    const { result, models, flag } = await withCleanModelState(() =>
+      withStub(disabledStubBody(), async (stub) => {
         const result = await runClaudeWithRetry(
           {
             prompt: "grill",
             phase: "grill_me",
+            agentBinaryPath: stub.path,
+            env: emptyEnv,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
@@ -437,12 +438,14 @@ Deno.test({
   permissions: TEST_PERMS,
   ignore: Deno.build.os === "windows",
   async fn() {
-    const { result, models, flag } = await withCleanModelEnv(() =>
-      withStub(silentSubstitutionStubBody, async (stub) => {
+    const { result, models, flag } = await withCleanModelState(() =>
+      withStub(silentSubstitutionStubBody(), async (stub) => {
         const result = await runClaudeWithRetry(
           {
             prompt: "plan",
             phase: "planning",
+            agentBinaryPath: stub.path,
+            env: emptyEnv,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
@@ -485,12 +488,14 @@ Deno.test({
   permissions: TEST_PERMS,
   ignore: Deno.build.os === "windows",
   async fn() {
-    const { result, models, flag } = await withCleanModelEnv(() =>
-      withStub(silentSubstitutionStubBody, async (stub) => {
+    const { result, models, flag } = await withCleanModelState(() =>
+      withStub(silentSubstitutionStubBody(), async (stub) => {
         const result = await runClaudeWithRetry(
           {
             prompt: "grill",
             phase: "grill_me",
+            agentBinaryPath: stub.path,
+            env: emptyEnv,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
@@ -527,12 +532,14 @@ Deno.test({
   permissions: TEST_PERMS,
   ignore: Deno.build.os === "windows",
   async fn() {
-    const { result, models, flag } = await withCleanModelEnv(() =>
-      withStub(selfHealStubBody, async (stub) => {
+    const { result, models, flag } = await withCleanModelState(() =>
+      withStub(selfHealStubBody(), async (stub) => {
         const result = await runClaudeWithRetry(
           {
             prompt: "plan",
             phase: "planning",
+            agentBinaryPath: stub.path,
+            env: emptyEnv,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
@@ -570,12 +577,14 @@ Deno.test({
   permissions: TEST_PERMS,
   ignore: Deno.build.os === "windows",
   async fn() {
-    const { result, models, flag } = await withCleanModelEnv(() =>
-      withStub(selfHealStubBody, async (stub) => {
+    const { result, models, flag } = await withCleanModelState(() =>
+      withStub(selfHealStubBody(), async (stub) => {
         const result = await runClaudeWithRetry(
           {
             prompt: "grill",
             phase: "grill_me",
+            agentBinaryPath: stub.path,
+            env: emptyEnv,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
@@ -613,16 +622,18 @@ Deno.test({
   permissions: TEST_PERMS,
   ignore: Deno.build.os === "windows",
   async fn() {
-    const { result, models, flag } = await withCleanModelEnv(() => {
+    const { result, models, flag } = await withCleanModelState(() => {
       // The repo pins Fable as the base tier for every phase. `issue` defaults
       // to opus, so a Fable request here proves it came from the base tier
       // (buildClaudeModelArgs step 3), not a per-phase default.
       setActiveRepoModelEffortOverrides({ claudeModel: "fable" });
-      return withStub(disabledStubBody, async (stub) => {
+      return withStub(disabledStubBody(), async (stub) => {
         const result = await runClaudeWithRetry(
           {
             prompt: "work the issue",
             phase: "issue",
+            agentBinaryPath: stub.path,
+            env: emptyEnv,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,

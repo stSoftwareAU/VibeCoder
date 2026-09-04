@@ -17,6 +17,7 @@ import {
   DEFAULT_LOG_MAX_ROTATIONS,
   rotateAllLogs,
 } from "../lib/log_rotation.ts";
+import { stripComments } from "../lib/parallel_unsafe_test_manifest.ts";
 
 async function makeTmp(): Promise<string> {
   return await Deno.makeTempDir({ prefix: "self_heal_events_" });
@@ -324,16 +325,12 @@ Deno.test("self_heal_events - events log is rotated by rotateAllLogs", async () 
 // The sink requires explicit wiring (Issue #4250)
 // ---------------------------------------------------------------------------
 
-Deno.test("emitSelfHealEventAuto - emits nothing without production wiring, whatever the env says (Issue #4250)", async () => {
+Deno.test("emitSelfHealEventAuto - emits nothing without production wiring (Issue #4250)", async () => {
   // ~350 fabricated entries reached the operator's real self-heal.jsonl
   // because the sink fell back to WORK_DIR, then HOME — leaking was
   // opt-out. A test that forgets to sandbox must now emit nothing.
   const dir = await Deno.makeTempDir({ prefix: "self_heal_unwired_" });
-  const savedWorkDir = Deno.env.get("WORK_DIR");
-  const savedHome = Deno.env.get("HOME");
   setSelfHealEventsWorkDir(undefined);
-  Deno.env.set("WORK_DIR", dir);
-  Deno.env.set("HOME", dir);
   try {
     const ok = await emitSelfHealEventAuto({
       module: "test",
@@ -342,20 +339,31 @@ Deno.test("emitSelfHealEventAuto - emits nothing without production wiring, what
       result: "ok",
     });
     assertEquals(ok, false, "an unwired sink must refuse to emit");
-    let exists = true;
-    try {
-      await Deno.stat(`${dir}/logs/self-heal.jsonl`);
-    } catch {
-      exists = false;
-    }
-    assertEquals(exists, false, "no file may appear under the env dirs");
+    assertEquals([...Deno.readDirSync(dir)], [], "no file may appear");
   } finally {
-    if (savedWorkDir === undefined) Deno.env.delete("WORK_DIR");
-    else Deno.env.set("WORK_DIR", savedWorkDir);
-    if (savedHome === undefined) Deno.env.delete("HOME");
-    else Deno.env.set("HOME", savedHome);
     await Deno.remove(dir, { recursive: true }).catch(() => undefined);
   }
+});
+
+Deno.test("self_heal_events - the sink reads no environment variable at all (Issue #4250, Issue #966)", async () => {
+  // The half of #4250 the test above used to carry by setting WORK_DIR and
+  // HOME on the process and watching nothing appear under them. Naming two
+  // variables only ever caught those two, and the mutation raced every
+  // other worker in the process — which is why this module was in the
+  // serial pass. The invariant is stronger and cheaper stated directly:
+  // this module resolves its sink from its parameters and its explicit
+  // wiring, and consults the environment for nothing whatsoever. Re-adding
+  // any fallback — WORK_DIR, HOME, XDG_STATE_HOME, anything — fails here.
+  const source = stripComments(
+    await Deno.readTextFile(
+      new URL("../lib/self_heal_events.ts", import.meta.url),
+    ),
+  );
+  assertEquals(
+    source.includes("Deno.env"),
+    false,
+    "self_heal_events.ts must not read the process environment",
+  );
 });
 
 Deno.test("emitSelfHealEventAuto - the production wiring supplies the sink (Issue #4250)", async () => {

@@ -2,7 +2,10 @@
 
 Every merge to `main` is tagged with the next patch semver, automatically
 (Issue #627). A host running in frozen mode pins to a released version, so
-without tags the only thing it could pin to is a raw commit SHA.
+without tags the only thing it could pin to is a raw commit SHA. A release that
+moves the series — a minor or a major — is minted from
+[the release floor](#the-release-floor) instead, and is written up in
+[Release notes](RELEASE-NOTES.md).
 
 ## What runs
 
@@ -18,7 +21,7 @@ it is exercised by unit tests rather than only by a real merge:
 ```bash
 git tag --list > all-tags.txt
 git tag --points-at "$GITHUB_SHA" > head-tags.txt
-.github/scripts/next-release-tag.sh all-tags.txt head-tags.txt
+.github/scripts/next-release-tag.sh all-tags.txt head-tags.txt .release-floor
 # should_tag=true
 # tag=1.0.1
 ```
@@ -31,17 +34,21 @@ flowchart TD
     A -- no --> N{"Any release tag<br/>in the repository?"}
     N -- no --> F["Mint 1.0.0"]
     N -- yes --> I["Increment the patch of<br/>the newest tag: 1.0.0 → 1.0.1"]
-    F --> T["Create the tag at the merge commit"]
-    I --> T
+    F --> B{".release-floor above<br/>that number?"}
+    I --> B
+    B -- no --> T["Create the tag at the merge commit"]
+    B -- yes --> R["Mint the floor instead:<br/>1.0.72 → 1.2.0"]
+    R --> T
     T --> V["Publish tool-versions.json<br/>on the release for that tag"]
     S --> V
 ```
 
 ## The rules
 
-- **Patch only.** The newest release tag decides the major and minor. A human
-  minting `1.1.0` or `2.0.0` by hand is the supported way to move the series —
-  the next merge then continues from there (`1.1.1`).
+- **Patch only, unless the floor says otherwise.** The newest release tag
+  decides the major and minor; a human moves the series by editing
+  [`.release-floor`](#the-release-floor), and the next merge continues from
+  there (`1.2.0` → `1.2.1`).
 - **First tag is `1.0.0`.** A repository with no release tag yet starts there.
 - **Numeric, not lexical.** `1.0.10` is newer than `1.0.9`.
 - **A release tag is a bare `MAJOR.MINOR.PATCH` triple**, optionally
@@ -55,6 +62,42 @@ flowchart TD
 - **Never blocks a merge.** The merge has already landed by the time this runs.
   A failed tag shows as a red run on the workflow and a missing tag on the
   commit — nothing downstream waits on it.
+
+## The release floor
+
+Only the patch number is automated, so a release that changes a contract —
+where semver asks for a minor or a major — needs a way to say so that the
+automation will honour. That is `.release-floor` at the repository root: **one
+line, one version**, `#` comments and blank lines ignored.
+
+```text
+# 1.2.0 releases the callback extension point and the removal of the
+# fleet_health_dir / fleet_health_repo configuration keys.
+1.2.0
+```
+
+The workflow passes the file to the same script that does the increment, and
+the minted tag is the **higher** of the floor and the automatic patch number:
+
+| Newest release | Floor   | Minted  | Why                                     |
+| -------------- | ------- | ------- | --------------------------------------- |
+| `1.0.71`       | `1.2.0` | `1.2.0` | the floor is above the patch (`1.0.72`) |
+| `1.2.0`        | `1.2.0` | `1.2.1` | the patch is already above the floor    |
+| `1.2.4`        | `1.2.0` | `1.2.5` | a floor below the series does nothing   |
+| _(none)_       | `1.2.0` | `1.2.0` | the floor decides the first tag too     |
+
+- **It raises, it never holds.** The floor cannot lower a version or re-mint
+  one, so it is inert the moment the release it names exists and the file can
+  be left in place until the next series move.
+- **It never re-tags.** A commit that already carries a release tag is still
+  left alone — idempotency comes first, floor or no floor.
+- **A malformed or ambiguous floor fails the step.** A version that is not a
+  bare triple, or two versions in the file, exits non-zero and mints nothing:
+  silently ignoring a typo would ship the release under the automatic patch
+  number, which is the exact mistake the floor exists to prevent. A file with
+  no version line at all is simply no floor.
+- **Editing it is the release decision.** The version, and the reason for it,
+  belong in the same commit as the entry in [Release notes](RELEASE-NOTES.md).
 
 ## The tool-version manifest
 
@@ -179,92 +222,6 @@ flowchart LR
   and no network. There is no caching: one check per call, callers choose the
   cadence.
 
-## Tag protection
-
-A frozen host pulls code by release tag, so a released tag must never be
-deletable or movable — that is what stops a successful compromise replacing an
-old version in place (Issue #869). GitHub's immutable-releases setting protects
-the *release record*; the tag underneath it is protected by a repository **tag
-ruleset**, checked in at
-[`infra/rulesets/release-tags.json`](../infra/rulesets/release-tags.json) so
-the live configuration has a reviewable source of truth.
-
-```mermaid
-flowchart LR
-    C["Create 1.2.10<br/>(release-tag.yml)"] --> A["✅ allowed<br/>no creation rule"]
-    D["Delete 1.0.49"] --> R1["❌ deletion rule"]
-    B["Move 1.0.49 backwards"] --> R2["❌ non_fast_forward rule"]
-    F["Move 1.0.49 forwards"] --> R3["❌ update rule"]
-```
-
-### The rules
-
-- **Covers the release series, and only it.** The ref condition includes bare
-  and `v`-prefixed `MAJOR.MINOR.PATCH` tags and excludes pre-releases (`*-*`)
-  and build metadata (`*+*`) — the same definition of a release tag the rest of
-  this document uses. Branches are untouched: the ruleset targets tags.
-- **Deleting and moving are both blocked, creating is not.** There is no
-  `creation` rule, so `release-tag.yml` keeps minting the next patch on every
-  merge and a hand-minted `1.1.0` is still accepted (Issue #808).
-- **`non_fast_forward` alone does not stop a move.** It blocks only
-  *non*-fast-forward updates, so re-pointing a tag **forwards** onto a newer
-  commit — `git push --force origin <newer-sha>:refs/tags/1.0.49` — is a
-  fast-forward and sails through. That was observed against a ruleset carrying
-  only `deletion` and `non_fast_forward`. The `update` rule ("Restrict
-  updates") is the one that refuses any re-point of an existing tag; the
-  payload carries all three.
-- **No bypass actors.** The release workflow's scoped `contents: write` grant
-  cannot delete or move a tag either, which is the point.
-
-### Applying it
-
-Creating the ruleset for the first time, and updating an existing one, both
-need an account with **admin** rights on the repository:
-
-```bash
-# First time — create it.
-gh api --method POST repos/stSoftwareAU/VibeCoder/rulesets \
-  --input infra/rulesets/release-tags.json
-
-# Already exists — update it in place (RULESET_ID from the list command below).
-gh api --method PUT repos/stSoftwareAU/VibeCoder/rulesets/RULESET_ID \
-  --input infra/rulesets/release-tags.json
-```
-
-### Verifying it
-
-Run these as part of the release checklist — they are also how drift is caught
-when someone edits the ruleset in the GitHub UI. The checked-in payload is the
-source of truth: a live ruleset that disagrees with it is drift, and the repair
-is the `PUT` above, never an edit in the UI.
-
-```bash
-# A tag ruleset exists and is enforced.
-gh api repos/stSoftwareAU/VibeCoder/rulesets \
-  --jq '.[] | select(.target == "tag") | {id, name, enforcement, source}'
-
-# Its rules match the checked-in payload: deletion, update and
-# non_fast_forward, no creation rule, and an empty bypass list.
-gh api repos/stSoftwareAU/VibeCoder/rulesets/RULESET_ID \
-  --jq '{enforcement, bypass: .bypass_actors, rules: [.rules[].type],
-         refs: .conditions.ref_name}'
-```
-
-With the payload applied, both destructive operations can be attempted directly
-— GitHub refuses them and the tag is left where it was. **Do not try the move
-against a ruleset that lacks the `update` rule**: the tag really moves, and the
-rewind that would undo it is then refused by `non_fast_forward`, so restoring it
-takes an admin disabling the ruleset.
-
-```bash
-# → remote: - Cannot delete this tag
-git push origin :refs/tags/1.0.49
-
-# → refused by the update rule (an older <sha> is refused by non_fast_forward
-#   as "Cannot force-push to this tag")
-git push --force origin <sha>:refs/tags/1.0.49
-```
-
 ## When a run goes red
 
 The step output names the newest tag it found and the tag it tried to mint. The
@@ -281,15 +238,14 @@ same commit publishes the manifest against that tag once the tool resolves.
 ## Tests
 
 - `worker/deno/tests/next_release_tag_test.ts` — the version selection and
-  increment logic, over tag lists.
-- `worker/deno/tests/release_tag_ruleset_test.ts` — the checked-in tag-ruleset
-  payload: deletion, update and non-fast-forward blocked, no creation rule,
-  active enforcement, no bypass actors, and the ref condition evaluated against
-  real release tags, branches and pre-releases.
+  increment logic, over tag lists, including the release floor: the merge that
+  mints it, the merges after it, and the malformed and ambiguous floors that
+  fail the step.
 - `worker/deno/tests/release_tag_workflow_test.ts` — the workflow structure
   (trigger, permissions, concurrency, SHA-pinned credential-free checkout, the
-  tag-before-publish order and the idempotent manifest publish) and the
-  plumbing between real `git tag` output and the script.
+  floor passed to the plan, the release-notes link, the tag-before-publish
+  order and the idempotent manifest publish) and the plumbing between real
+  `git tag` output and the script.
 - `worker/deno/tests/release_manifest_test.ts` — the manifest shape: the
   all-or-nothing build and the parser, over malformed and partial manifests.
 - `worker/deno/tests/release_check_test.ts` — the release check library: the

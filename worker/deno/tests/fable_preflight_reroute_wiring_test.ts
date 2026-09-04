@@ -10,8 +10,12 @@
  * override lives at the invocation layer, not in PHASE_MODEL_DEFAULTS — the
  * #2720 served-vs-expected check must keep working).
  *
- * A stub `claude` on PATH records the `--model`/`--effort` args and exits 0, so
- * no real model is called and the run stays well under the unit-test budget.
+ * A stub agent — named by path (`agentBinaryPath`, Issue #959) rather than put
+ * on the process-wide `PATH` — records the `--model`/`--effort` args and exits
+ * 0, so no real model is called and the run stays well under the unit-test
+ * budget. Every run reads an injected environment (`RunClaudeOptions.env`,
+ * Issue #961), so an operator pin is stated by the test rather than exported
+ * into the process every other test in the run shares.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -28,18 +32,27 @@ import {
 } from "../lib/claude_executor.ts";
 import { FABLE_PREFLIGHT_DEGRADED_REASON } from "../lib/fable_routing.ts";
 import { recordFableAvailability } from "../lib/health_check_cache.ts";
+import { withAgentStub } from "./support/agent_stub.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+
+/** Basename of the file the stub records its routing args in. */
+const ARG_LOG = "args.log";
 
 /**
- * A stub `claude` that records the value following `--model` and `--effort`
- * (one `key=value` per line) to `argLog`, prints a minimal stream-json success
- * line, and exits 0.
+ * A stub agent that records the value following `--model` and `--effort`
+ * (one `key=value` per line) beside itself, prints a minimal stream-json
+ * success line, and exits 0.
+ *
+ * The log is located from `$0`, so no path is baked into the body and the
+ * helper needs no temp directory of its own.
  */
-function buildArgRecordingStub(argLog: string): string {
+function buildArgRecordingStub(): string {
   return [
+    `log="$(dirname "$0")/${ARG_LOG}"`,
     `prev=""`,
     `for arg in "$@"; do`,
-    `  if [ "$prev" = "--model" ]; then printf 'model=%s\\n' "$arg" >> '${argLog}'; fi`,
-    `  if [ "$prev" = "--effort" ]; then printf 'effort=%s\\n' "$arg" >> '${argLog}'; fi`,
+    `  if [ "$prev" = "--model" ]; then printf 'model=%s\\n' "$arg" >> "$log"; fi`,
+    `  if [ "$prev" = "--effort" ]; then printf 'effort=%s\\n' "$arg" >> "$log"; fi`,
     `  prev="$arg"`,
     `done`,
     `printf '%s\\n' '{"type":"result","result":"OK"}'`,
@@ -48,6 +61,8 @@ function buildArgRecordingStub(argLog: string): string {
 }
 
 interface Stub {
+  /** Absolute path to the stub, passed to the runner as `agentBinaryPath`. */
+  path: string;
   /** Working directory (also holds the `.health_cache_fable` file). */
   cwd: string;
   /** Path the stub appends `model=…` / `effort=…` lines to. */
@@ -55,52 +70,28 @@ interface Stub {
 }
 
 /**
- * Run `fn` with a stub `claude` on PATH and a fresh working directory. The
- * stub records its `--model`/`--effort` args; PATH and the temp dir are
- * restored/cleaned afterwards.
+ * Run `fn` with a stub agent and a fresh working directory.
+ *
+ * Nothing here touches process state: the stub is named by path (Issue #959)
+ * and each test states the environment its run resolves against (Issue #961),
+ * so the ambient `CLAUDE_MODEL*` / `CLAUDE_EFFORT*` of the worker session can
+ * no longer perturb the reroute. The module-level repo/config overrides are
+ * still reset, since Deno shares one process across the files of a run.
  */
-// Env vars whose ambient values would perturb model/effort resolution. Cleared
-// for the duration of each test and restored afterwards, so the reroute is
-// exercised against the designed defaults (planning ⇒ fable @ its default
-// effort), independent of the worker session's own environment.
-const MANAGED_ENV = [
-  "CLAUDE_EFFORT",
-  "CLAUDE_EFFORT_PLANNING",
-  "CLAUDE_MODEL",
-  "CLAUDE_MODEL_PLANNING",
-] as const;
-
-async function withStub<T>(fn: (stub: Stub) => Promise<T>): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "fable_preflight_" });
-  const argLog = `${dir}/args.log`;
-  const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(
-    stubPath,
-    `#!/usr/bin/env bash\n${buildArgRecordingStub(argLog)}\n`,
-  );
-  await Deno.chmod(stubPath, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  const savedEnv = new Map<string, string | undefined>();
-  for (const key of MANAGED_ENV) {
-    savedEnv.set(key, Deno.env.get(key));
-    Deno.env.delete(key);
-  }
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  // Reset module-level repo/config overrides so state set by a sibling test
-  // file (Deno shares one process across files) cannot perturb resolution.
+function withStub<T>(fn: (stub: Stub) => Promise<T>): Promise<T> {
   setActiveRepoModelEffortOverrides(undefined);
   setPhaseModelConfigOverrides({});
   setPhaseEffortConfigOverrides({});
-  try {
-    return await fn({ cwd: dir, argLog });
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    for (const [key, value] of savedEnv) {
-      if (value === undefined) Deno.env.delete(key);
-      else Deno.env.set(key, value);
-    }
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
+  return withAgentStub(
+    buildArgRecordingStub(),
+    (stub) =>
+      fn({
+        path: stub.path,
+        cwd: stub.dir,
+        argLog: `${stub.dir}/${ARG_LOG}`,
+      }),
+    { prefix: "fable_preflight_" },
+  );
 }
 
 /** Parse the recorded `key=value` lines into an object. */
@@ -135,6 +126,8 @@ Deno.test({
           prompt: "plan it",
           phase: "planning",
           cwd: stub.cwd,
+          agentBinaryPath: stub.path,
+          env: emptyEnv,
           timeoutSeconds: 30,
         },
         { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 },
@@ -157,7 +150,10 @@ Deno.test({
     );
 
     // Regression guard: the expected-model derivation is untouched.
-    assertEquals(buildClaudeModelArgs("planning"), ["--model", "fable"]);
+    assertEquals(buildClaudeModelArgs("planning", emptyEnv), [
+      "--model",
+      "fable",
+    ]);
   },
 });
 
@@ -176,6 +172,8 @@ Deno.test({
           prompt: "plan it",
           phase: "planning",
           cwd: stub.cwd,
+          agentBinaryPath: stub.path,
+          env: emptyEnv,
           timeoutSeconds: 30,
         },
         { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 },
@@ -203,14 +201,14 @@ Deno.test({
     const { result, args } = await withStub(async (stub) => {
       const rec = recordFableAvailability(stub.cwd, false);
       assert(rec.ok);
-      // An operator pinned planning off the Fable tier.
-      Deno.env.set("CLAUDE_MODEL_PLANNING", "sonnet");
-
       const result = await runClaudeWithRetry(
         {
           prompt: "plan it",
           phase: "planning",
           cwd: stub.cwd,
+          agentBinaryPath: stub.path,
+          // An operator pinned planning off the Fable tier.
+          env: envFrom({ CLAUDE_MODEL_PLANNING: "sonnet" }),
           timeoutSeconds: 30,
         },
         { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 },
@@ -236,14 +234,15 @@ Deno.test({
     const { result, args } = await withStub(async (stub) => {
       const rec = recordFableAvailability(stub.cwd, false);
       assert(rec.ok);
-      // An operator pinned planning effort — the probe must not bump to max.
-      Deno.env.set("CLAUDE_EFFORT_PLANNING", "high");
-
       const result = await runClaudeWithRetry(
         {
           prompt: "plan it",
           phase: "planning",
           cwd: stub.cwd,
+          agentBinaryPath: stub.path,
+          // An operator pinned planning effort — the probe must not bump to
+          // max.
+          env: envFrom({ CLAUDE_EFFORT_PLANNING: "high" }),
           timeoutSeconds: 30,
         },
         { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 },
@@ -277,6 +276,8 @@ Deno.test({
           prompt: "code it",
           phase: "issue",
           cwd: stub.cwd,
+          agentBinaryPath: stub.path,
+          env: emptyEnv,
           timeoutSeconds: 30,
         },
         { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 },

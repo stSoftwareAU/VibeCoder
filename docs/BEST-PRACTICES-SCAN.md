@@ -266,7 +266,7 @@ identically.
 - **Title:** the literal string `Run a best-practices scan`. Dispatch
   matches the title to
   [`bestPracticesTemplate.buildIssueTitle(repo)`](../worker/deno/lib/idle_task_templates/best_practices_template.ts).
-- **Body:** the latest `prompts/best_practices/vN.md` template with
+- **Body:** the `prompts/best_practices/prompt.md` template with
   the four placeholders substituted at file time — `{{BUCKET}}`,
   `{{SUPPRESSED_IDS}}`, `{{KNOWN_OPEN_FINDING_IDS}}` and
   `{{OPEN_ISSUE_TITLES}}` (the two dedup lists render as `(none)` on the

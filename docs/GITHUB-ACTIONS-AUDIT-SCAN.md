@@ -610,7 +610,8 @@ as a quoted shell variable (`"$TITLE"`) — moves the expression out of the
 appears as plain shell text (outside a `${{ … }}` block) is ignored.
 
 A finding is raised **per affected step** at `severity:high` (the
-direct-RCE class — v7.md ~line 539) via the shared `fileWorkflowFinding`
+direct-RCE class, per `prompts/github_actions_audit/prompt.md`) via the
+shared `fileWorkflowFinding`
 helper, deduplicated against the existing known-open ids plus the
 actionlint, runner, SHA-pin, and permissions pre-files. An in-source
 `best-practice-ignore: BP-INJECTION-…` marker on (or immediately above)

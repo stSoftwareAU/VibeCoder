@@ -130,8 +130,6 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
     sleep: () => Promise.resolve(),
     now: () => Date.now(),
 
-    reportFleetHealthHeartbeat: () => Promise.resolve(),
-
     ...overrides,
   };
 }
@@ -226,13 +224,8 @@ Deno.test("run_core - samples the work volume again at end of run, where the byt
 
 Deno.test("run_core - two blind disk signals mark the host unhealthy, once per cycle (Issue #345)", async () => {
   const errors: string[] = [];
-  let heartbeats = 0;
   const deps = oneCycleDeps({
     logError: (m: string) => errors.push(m),
-    reportFleetHealthHeartbeat: () => {
-      heartbeats++;
-      return Promise.resolve();
-    },
     checkDiskTelemetry: () => ({
       blind: true,
       detail:
@@ -249,7 +242,6 @@ Deno.test("run_core - two blind disk signals mark the host unhealthy, once per c
     false,
     "a host that cannot see its own disk is not healthy",
   );
-  assertEquals(heartbeats, 0, "an unhealthy host reports no healthy heartbeat");
   const blind = errors.filter((m) => m.includes("[DISK_TELEMETRY_BLIND]"));
   assertEquals(
     blind.length,

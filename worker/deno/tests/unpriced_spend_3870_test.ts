@@ -28,6 +28,8 @@ import {
 } from "../lib/credit_tracker.ts";
 import { createSpendCeilingCheck } from "../lib/spend_ceiling.ts";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
+import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -364,34 +366,21 @@ Deno.test("spend_ceiling - unpriced spend is reported even when under the ceilin
 // claude_runner — the credit log records a real, priceable model id
 // ---------------------------------------------------------------------------
 
-/** Run `fn` with a stub `claude` on PATH emitting `bashBody`'s output. */
-async function withStubClaude<T>(
+/**
+ * Run `fn` with a stub agent emitting `bashBody`'s output.
+ *
+ * The stub is named by path (`agentBinaryPath`, Issue #959) and the run reads
+ * an injected environment (`RunClaudeOptions.env`, Issue #961), so neither
+ * `PATH` nor `CLAUDE_MODEL` is touched on the process every other test in the
+ * run shares. An empty lookup is what forces the routing chain to resolve no
+ * `--model` arg — the case that used to log the unpriceable "default"
+ * sentinel.
+ */
+function withStubClaude<T>(
   bashBody: string,
-  fn: () => Promise<T>,
+  fn: (stub: AgentStub) => Promise<T>,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_stub_3870_" });
-  await Deno.writeTextFile(
-    `${dir}/claude`,
-    `#!/usr/bin/env bash\n${bashBody}\n`,
-  );
-  await Deno.chmod(`${dir}/claude`, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  // Force the routing chain to resolve no `--model` arg — the case that used
-  // to log the unpriceable "default" sentinel.
-  Deno.env.delete("CLAUDE_MODEL");
-  try {
-    return await fn();
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    if (originalModel !== undefined) {
-      Deno.env.set("CLAUDE_MODEL", originalModel);
-    }
-    await Deno.remove(dir, { recursive: true }).catch(
-      () => {/* best-effort */},
-    );
-  }
+  return withAgentStub(bashBody, fn, { prefix: "claude_stub_3870_" });
 }
 
 Deno.test({
@@ -407,15 +396,20 @@ Deno.test({
     ].join("\n");
 
     try {
-      const result = await withStubClaude(stub, () =>
-        runClaudeWithTimeout({
-          prompt: "test",
-          timeoutSeconds: 30,
-          killAfterSeconds: 2,
-          creditLogDir: logDir,
-          workerName: "worker-test",
-          repo: "owner/repo",
-        }));
+      const result = await withStubClaude(
+        stub,
+        (agent) =>
+          runClaudeWithTimeout({
+            prompt: "test",
+            agentBinaryPath: agent.path,
+            env: emptyEnv,
+            timeoutSeconds: 30,
+            killAfterSeconds: 2,
+            creditLogDir: logDir,
+            workerName: "worker-test",
+            repo: "owner/repo",
+          }),
+      );
       assert(result.ok, "the stub run must succeed");
 
       // The credit-log write is fire-and-forget, so poll rather than race it.

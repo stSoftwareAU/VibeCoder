@@ -19,10 +19,13 @@
  * (Opus 4.8) downgrade, and that absent the signal Fable is requested and used
  * unchanged (self-heal).
  *
- * The stub `claude` on PATH emits the Fable export-disable error and exits
- * non-zero only while the requested `--model` is `fable`; for any other tier it
- * succeeds. So the recorded `--model` sequence proves the precise hop and that
- * the run then succeeds on Opus.
+ * The stub agent — named by path (`agentBinaryPath`, Issue #959) rather than
+ * put on the process-wide `PATH` — emits the Fable export-disable error and
+ * exits non-zero only while the requested `--model` is `fable`; for any other
+ * tier it succeeds. So the recorded `--model` sequence proves the precise hop
+ * and that the run then succeeds on Opus. The routing chain reads an injected
+ * environment (`RunClaudeOptions.env`, Issue #961), so the phase resolves from
+ * `PHASE_MODEL_DEFAULTS` whatever the worker session exports.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -30,33 +33,43 @@
 import { assert, assertEquals } from "@std/assert";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import { setActiveRepoModelEffortOverrides } from "../lib/claude_executor.ts";
+import { withAgentStub } from "./support/agent_stub.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 
 // ---------------------------------------------------------------------------
-// Stub harness — a fake `claude` on PATH that records its --model arg. While
-// the requested model is `fable` it emits a Fable export-disable error and
-// exits non-zero; for any other model it emits a success result and exits 0.
-// This makes the recorded sequence prove the fable → opus hop AND that the run
-// recovers on Opus rather than continuing down the chain.
+// Stub harness — a fake agent, named by path (Issue #959), that records its
+// --model arg. While the requested model is `fable` it emits a Fable
+// export-disable error and exits non-zero; for any other model it emits a
+// success result and exits 0. This makes the recorded sequence prove the
+// fable → opus hop AND that the run recovers on Opus rather than continuing
+// down the chain.
 // ---------------------------------------------------------------------------
 
 interface StubClaude {
-  dir: string;
+  /** Absolute path to the stub, passed to the runner as `agentBinaryPath`. */
+  path: string;
+  /** Path the stub appends each invocation's --model value to. */
   modelLog: string;
 }
 
+/** Basename of the file the stub records each invocation's model in. */
+const MODEL_LOG = "models.log";
+
 /**
- * Build a stub `claude` body. It records each invocation's `--model` value to
- * `modelLog`. If that value is `fable` it prints the export-disable error and
- * exits `failExit`; otherwise it prints a success result and exits 0.
+ * Build a stub agent body. It records each invocation's `--model` value beside
+ * the stub, located from `$0` so no path is baked in. If that value is `fable`
+ * it prints the export-disable error and exits `failExit`; otherwise it prints
+ * a success result and exits 0.
  */
-function buildUnavailableStubBody(modelLog: string, failExit: number): string {
+function buildUnavailableStubBody(failExit: number): string {
   return [
+    `log="$(dirname "$0")/${MODEL_LOG}"`,
     `model=""`,
     `prev=""`,
     `for arg in "$@"; do`,
     `  if [ "$prev" = "--model" ]; then`,
     `    model="$arg"`,
-    `    printf '%s\\n' "$arg" >> '${modelLog}'`,
+    `    printf '%s\\n' "$arg" >> "$log"`,
     `  fi`,
     `  prev="$arg"`,
     `done`,
@@ -71,15 +84,16 @@ function buildUnavailableStubBody(modelLog: string, failExit: number): string {
 }
 
 /**
- * Build a stub `claude` body that ALWAYS succeeds (Fable available again) — the
+ * Build a stub agent body that ALWAYS succeeds (Fable available again) — the
  * self-heal case. Records the `--model` value and exits 0 regardless of tier.
  */
-function buildAlwaysOkStubBody(modelLog: string): string {
+function buildAlwaysOkStubBody(): string {
   return [
+    `log="$(dirname "$0")/${MODEL_LOG}"`,
     `prev=""`,
     `for arg in "$@"; do`,
     `  if [ "$prev" = "--model" ]; then`,
-    `    printf '%s\\n' "$arg" >> '${modelLog}'`,
+    `    printf '%s\\n' "$arg" >> "$log"`,
     `  fi`,
     `  prev="$arg"`,
     `done`,
@@ -88,26 +102,19 @@ function buildAlwaysOkStubBody(modelLog: string): string {
   ].join("\n");
 }
 
-async function withStub<T>(
-  body: (modelLog: string) => string,
+/**
+ * Create the stub for the duration of `fn`, then clean up. The runner is
+ * handed the stub's path (Issue #959), so nothing here touches `PATH`.
+ */
+function withStub<T>(
+  body: string,
   fn: (stub: StubClaude) => Promise<T>,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_unavail_stub_" });
-  const modelLog = `${dir}/models.log`;
-  const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(
-    stubPath,
-    `#!/usr/bin/env bash\n${body(modelLog)}\n`,
+  return withAgentStub(
+    body,
+    (stub) => fn({ path: stub.path, modelLog: `${stub.dir}/${MODEL_LOG}` }),
+    { prefix: "claude_unavail_stub_" },
   );
-  await Deno.chmod(stubPath, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  try {
-    return await fn({ dir, modelLog });
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
 }
 
 async function readModelSequence(modelLog: string): Promise<string[]> {
@@ -127,30 +134,23 @@ const FAST_RETRY = {
   initialWaitInterval: 0,
 } as const;
 
-/** Clear env/per-repo state so `phase` resolves purely from PHASE_MODEL_DEFAULTS. */
-function withCleanModelEnv<T>(fn: () => Promise<T>): Promise<T> {
-  const saved = new Map<string, string | undefined>();
-  for (
-    const key of [
-      "CLAUDE_MODEL",
-      "CLAUDE_MODEL_PLANNING",
-      "CLAUDE_MODEL_GRILL_ME",
-      "CLAUDE_MODEL_ISSUE",
-    ]
-  ) {
-    saved.set(key, Deno.env.get(key));
-    Deno.env.delete(key);
-  }
+/**
+ * Clear the per-repo routing state so `phase` resolves purely from
+ * `PHASE_MODEL_DEFAULTS`.
+ *
+ * The env half of the old spelling is gone: every run below injects
+ * {@link emptyEnv} as `RunClaudeOptions.env` (Issue #961), so a
+ * `CLAUDE_MODEL*` the worker session happens to export is invisible to the
+ * routing chain and nothing has to be deleted from — and restored to — a
+ * process every other test in the run shares.
+ */
+function withCleanModelState<T>(fn: () => Promise<T>): Promise<T> {
   setActiveRepoModelEffortOverrides(undefined);
   return (async () => {
     try {
       return await fn();
     } finally {
       setActiveRepoModelEffortOverrides(undefined);
-      for (const [key, value] of saved) {
-        if (value !== undefined) Deno.env.set(key, value);
-        else Deno.env.delete(key);
-      }
     }
   })();
 }
@@ -167,14 +167,16 @@ for (const phase of ["planning", "grill_me"] as const) {
     permissions: { run: true, read: true, write: true, env: true },
     ignore: Deno.build.os === "windows",
     async fn() {
-      const { result, models } = await withCleanModelEnv(() =>
+      const { result, models } = await withCleanModelState(() =>
         withStub(
-          (log) => buildUnavailableStubBody(log, 1),
+          buildUnavailableStubBody(1),
           async (stub) => {
             const result = await runClaudeWithRetry(
               {
                 prompt: "test",
                 phase,
+                agentBinaryPath: stub.path,
+                env: emptyEnv,
                 enableModelFallback: true,
                 timeoutSeconds: 30,
                 killAfterSeconds: 2,
@@ -209,16 +211,18 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    const { result, models } = await withCleanModelEnv(() => {
+    const { result, models } = await withCleanModelState(() => {
       // Repo pins fable as the base tier for every phase.
       setActiveRepoModelEffortOverrides({ claudeModel: "fable" });
       return withStub(
-        (log) => buildUnavailableStubBody(log, 1),
+        buildUnavailableStubBody(1),
         async (stub) => {
           const result = await runClaudeWithRetry(
             {
               prompt: "test",
               phase: "issue",
+              agentBinaryPath: stub.path,
+              env: emptyEnv,
               enableModelFallback: true,
               timeoutSeconds: 30,
               killAfterSeconds: 2,
@@ -249,14 +253,16 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    const { result, models } = await withCleanModelEnv(() =>
+    const { result, models } = await withCleanModelState(() =>
       withStub(
-        (log) => buildAlwaysOkStubBody(log),
+        buildAlwaysOkStubBody(),
         async (stub) => {
           const result = await runClaudeWithRetry(
             {
               prompt: "test",
               phase: "planning",
+              agentBinaryPath: stub.path,
+              env: emptyEnv,
               enableModelFallback: true,
               timeoutSeconds: 30,
               killAfterSeconds: 2,
@@ -288,14 +294,16 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    const { result, models } = await withCleanModelEnv(() =>
+    const { result, models } = await withCleanModelState(() =>
       withStub(
-        (log) => buildUnavailableStubBody(log, 1),
+        buildUnavailableStubBody(1),
         async (stub) => {
           const result = await runClaudeWithRetry(
             {
               prompt: "test",
               phase: "grill_me",
+              agentBinaryPath: stub.path,
+              env: emptyEnv,
               enableModelFallback: false,
               timeoutSeconds: 30,
               killAfterSeconds: 2,

@@ -17,6 +17,17 @@ import type { Result } from "../types.ts";
 /** Signal file name. */
 const SIGNAL_FILENAME = ".rate_limit_signal";
 
+/**
+ * What blocked the worker (Issue #855). `github` is a GitHub API rate
+ * limit; `usage` is a model usage/quota limit. Fleet telemetry needs the
+ * two apart — "we ran out of GitHub calls" and "we ran out of tokens" are
+ * different faults with different fixes.
+ */
+export type RateLimitBlockKind = "github" | "usage";
+
+/** Assumed block kind when a signal predates the `kind` field. */
+export const DEFAULT_RATE_LIMIT_BLOCK_KIND: RateLimitBlockKind = "github";
+
 /** Data stored in the signal file. */
 export interface RateLimitSignalData {
   /** Unix timestamp (seconds) when the rate limit was detected. */
@@ -33,6 +44,12 @@ export interface RateLimitSignalData {
    * Optional so an older signal file still parses.
    */
   resetEpochMs?: number;
+  /**
+   * What blocked the worker (Issue #855). Optional so a signal written by
+   * an older worker still parses; readers fall back to
+   * {@link DEFAULT_RATE_LIMIT_BLOCK_KIND}.
+   */
+  kind?: RateLimitBlockKind;
 }
 
 /** Result of checking whether a rate limit is currently active. */
@@ -55,18 +72,22 @@ export function rateLimitSignalPath(workDir: string): string {
  *
  * @param workDir - Directory for the signal file
  * @param waitSeconds - How long the worker intends to wait
+ * @param resetEpochMs - When the window actually reopens, in epoch ms
+ * @param kind - What blocked the worker (Issue #855)
  * @returns Result indicating success or failure
  */
 export async function writeRateLimitSignal(
   workDir: string,
   waitSeconds: number,
   resetEpochMs?: number,
+  kind: RateLimitBlockKind = DEFAULT_RATE_LIMIT_BLOCK_KIND,
 ): Promise<Result<void>> {
   try {
     const data: RateLimitSignalData = {
       timestamp: Math.floor(Date.now() / 1000),
       waitSeconds,
       ...(resetEpochMs !== undefined ? { resetEpochMs } : {}),
+      kind,
     };
     await Deno.writeTextFile(
       rateLimitSignalPath(workDir),
@@ -139,6 +160,23 @@ export async function isRateLimitActive(
   }
 
   return { ok: true, value: { active: false, remainingSeconds: 0 } };
+}
+
+/**
+ * What the active signal says blocked the worker (Issue #855). Falls back
+ * to {@link DEFAULT_RATE_LIMIT_BLOCK_KIND} when the signal is missing,
+ * unreadable, or predates the `kind` field — a GitHub rate limit is the
+ * long-standing meaning of this file, so an unlabelled signal keeps it.
+ */
+export async function readRateLimitBlockKind(
+  workDir: string,
+): Promise<RateLimitBlockKind> {
+  const signalResult = await readRateLimitSignal(workDir);
+  if (!signalResult.ok) return DEFAULT_RATE_LIMIT_BLOCK_KIND;
+  const kind = signalResult.value.kind;
+  return kind === "github" || kind === "usage"
+    ? kind
+    : DEFAULT_RATE_LIMIT_BLOCK_KIND;
 }
 
 /**

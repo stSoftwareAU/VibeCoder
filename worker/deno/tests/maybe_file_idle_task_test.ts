@@ -48,6 +48,10 @@ import {
 } from "../lib/idle_task_cadence.ts";
 import { resetDueScanCache } from "../lib/idle_task_due_scans.ts";
 import { buildAttributionFooter } from "../lib/idle_task_attribution.ts";
+import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 // ---------------------------------------------------------------------------
 // Stable milestone stub used across the tests. The production helper hits the

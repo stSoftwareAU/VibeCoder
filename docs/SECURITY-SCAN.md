@@ -403,10 +403,10 @@ strictly as **data** — never interpreted as instructions.
 `<!-- cwe: CWE-<n> -->` marker directly after the `<!-- finding-id: SEC-… -->`
 marker, and those tags are what a future vulnerability-chaining pass (gap G3 of
 the [gap analysis](security/idle-task-scans-vs-anthropic-visa-harnesses-gap-analysis.md))
-consumes. The `security_scan` prompt emits that marker from **v28** onward
-, so rules built from a v28-or-later run carry both `security` and
-`external/cwe/cwe-<n>`. Findings filed by an earlier prompt version carry the
-`security` tag only; uploads are unaffected either way.
+consumes. The `security_scan` prompt emits that marker, so rules built from a
+current run carry both `security` and `external/cwe/cwe-<n>`. Findings filed
+before the marker was added to the prompt carry the `security` tag only;
+uploads are unaffected either way.
 
 ### Upload mechanics
 
@@ -641,7 +641,7 @@ is still outstanding.
 in the same scan invocation that filed the first batch, but only when
 the post-triage survivors list contains more than six items.
 
-From `prompts/security_scan/v30.md` onward there is a second
+`prompts/security_scan/prompt.md` carries a second
 trigger: Phase 2 stops sweeping lower-exposure chunks once the candidate set
 already exceeds roughly twice the cap, so a run may finish with chunks
 unswept. The tracker then also carries a `## Chunks not reached` section
@@ -858,7 +858,6 @@ enforcement (LLM06, `label_security.ts`), and secret handling (LLM02).
 For deeper internals (e.g. modifying the prompt, raising the
 six-finding cap, adding a new vulnerability class) read
 [`prompts/security_scan/`](../prompts/security_scan/) and
-the modules linked above, then follow the prompt-immutability rule
-from `AGENTS.md` — never edit a published prompt version, always
-create a new `v*.md` file. The cap, label set, and per-finding body
-shape all live in the prompt, not in Deno code.
+the modules linked above. Edit `prompts/security_scan/prompt.md` in
+place — git history is the record. The cap, label set, and
+per-finding body shape all live in the prompt, not in Deno code.

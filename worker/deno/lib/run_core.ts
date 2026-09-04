@@ -47,6 +47,18 @@ import {
   recordStepDuration,
   startCycleTimings,
 } from "./cycle_timings.ts";
+import {
+  beginBusy,
+  endBusy,
+  type FleetIdleReason,
+  formatFleetSummary,
+  recordBlockedSeconds,
+  recordClaim as recordFleetClaim,
+  recordCycleIdle,
+  recordOutcome as recordFleetOutcome,
+  startFleetCycle,
+  startFleetTelemetry,
+} from "./fleet_telemetry.ts";
 import type { HeartbeatLiveKey } from "./heartbeat.ts";
 import { formatInFlightHold, InFlightRepoRegistry } from "./in_flight_repos.ts";
 import type {
@@ -55,10 +67,24 @@ import type {
 } from "./processed_issue_registry.ts";
 import type { SlotCeiling } from "./slot_governor.ts";
 import {
+  formatSlotUtilisationSummary,
+  IdleFilerLatch,
+  noteSlotActivity,
+  noteSlotRetired,
+  recordBlockedSlotSeconds,
+  recordSlotBlockedStop,
+  startSlotIdleAccounting,
+} from "./slot_idle_accounting.ts";
+import {
   deriveRunOutcome,
   describeRunOutcome,
   type RunOutcome,
 } from "./run_outcome.ts";
+import type {
+  CallbackRunTelemetry,
+  TerminalIssueRun,
+} from "./run_callbacks.ts";
+import { IssueCallbackGuard } from "./issue_callback_guard.ts";
 import {
   formatSlotPrefix,
   renderSlotStatus,
@@ -153,6 +179,18 @@ export interface RunCoreConfig {
    * `PLANNING_TAIL_SECONDS` for the post-publish gate and self-repair.
    */
   planningTimeoutSeconds: number;
+  /**
+   * Directory the worker clones repositories into — the work volume root
+   * (Issue #966).
+   *
+   * The lane-rotation cursor lives beside the other worker state on the
+   * volume, so the loop needs the work directory. It used to read
+   * `WORK_DIR` at the point of use; the resolved value now arrives here
+   * from `createProductionRunCoreDeps`, which already has it, and the
+   * environment read remains only as the default for a caller that does
+   * not set it.
+   */
+  workDir?: string;
 }
 
 /** Result of a single priority handler execution. */
@@ -261,8 +299,9 @@ export interface RunCoreResult {
   quotaResetEpochMs?: number;
   /**
    * Issue #2602: whether the most recent health checks (Claude + GitHub auth)
-   * passed. Used to gate the end-of-run private-repo-6 report — a worker that
-   * could not authenticate must not report itself healthy.
+   * passed. Reported on the loop result so the caller can tell a healthy
+   * exit from an unhealthy one — a worker that could not authenticate must
+   * not be recorded as healthy.
    */
   lastHealthCheckPassed: boolean;
   /**
@@ -538,6 +577,14 @@ export interface RunCoreDeps {
      * single-issue path omits it.
      */
     cycleDeadlineEpochMs?: number,
+    /**
+     * Stable id of the lane running this issue (Issue #923) — `s1`, `s2`,
+     * or `serial` for the single-stream loop. The issue pipeline works in
+     * a git worktree named for it, so two slots in one repository never
+     * share a working tree, a Claude session or resume state. Absent (CLI
+     * single-issue runs, tests): the shared clone, exactly as before.
+     */
+    laneId?: string,
   ) => Promise<
     Result<{
       success: boolean;
@@ -549,10 +596,22 @@ export interface RunCoreDeps {
        */
       failureKind?: "timeout";
       /**
+       * Which phase the run failed at (Issue #855) — `setup`, `execute`,
+       * `quality_gate`, … It is the failure class fleet telemetry reports,
+       * so "13 failures" says *where*. Absent on success/skip.
+       */
+      failurePhase?: string;
+      /**
        * What the run achieved (Issue #4325, part of #4291) — carried to the
        * claim-release comment. Absent on skip (the run never ran).
        */
       outcome?: RunOutcome;
+      /**
+       * Token and cost telemetry for the post-run callback context
+       * (Issue #806). Absent when no agent invocation reported parseable
+       * usage.
+       */
+      telemetry?: CallbackRunTelemetry;
     }>
   >;
 
@@ -708,6 +767,21 @@ export interface RunCoreDeps {
   getRateLimitRemainingSeconds: () => Promise<number>;
 
   /**
+   * What the active rate-limit signal says blocked the worker — a GitHub
+   * API limit or a model usage/quota limit (Issue #855). Only the shared
+   * signal file can tell them apart at the mid-loop pause, and fleet
+   * telemetry reports the two separately. Optional: when absent the pause
+   * is attributed to GitHub, the signal's long-standing meaning.
+   */
+  getRateLimitBlockKind?: () => Promise<"github" | "usage">;
+
+  /**
+   * Persist the fleet-telemetry sidecar (Issue #855). Best-effort — a
+   * failure is logged, never fatal. Optional so test deps can omit it.
+   */
+  writeFleetTelemetrySummary?: () => Promise<void>;
+
+  /**
    * Fetch the current GitHub rate-limit reset epoch (Unix seconds) via
    * the free `gh api rate_limit` endpoint. Used by the pre-flight and
    * outer-catch pause-and-resume paths (Issue #1780).
@@ -751,6 +825,21 @@ export interface RunCoreDeps {
     issueNumber: number,
     outcome?: RunOutcome,
   ) => Promise<void>;
+
+  /**
+   * Run the operator's post-run callbacks for one terminal issue run
+   * (Issue #806, parent #796).
+   *
+   * Called once per claim that actually ran, after the claim is released:
+   * `success` or `failure`, then `always`. Never called for a skip (the run
+   * never ran). Must never throw and must never alter the run's outcome —
+   * the production wiring hands this to `invokeRunCallbacks`, which reports
+   * a hook fault rather than propagating it.
+   *
+   * Optional: absent — or configured with no hooks — means no callbacks,
+   * which is the behaviour of every configuration that predates the contract.
+   */
+  runIssueCallbacks?: (run: TerminalIssueRun) => Promise<void>;
 
   // Status
   setStatusIdle: () => Promise<void>;
@@ -884,24 +973,6 @@ export interface RunCoreDeps {
   refreshTrustedAuthors?: () => Promise<RefreshOutcome>;
 
   /**
-   * Report worker health to the private-repo-6 repository (Issue #1935).
-   *
-   * Invoked at the top of every priority-loop iteration as a heartbeat,
-   * so the host's `last_commit_ts` row in `private-repo-6/docs/repos.json`
-   * advances at least once per iteration. The previous end-of-run-only
-   * heartbeat in `commands/run_core.ts` was silently lost when the
-   * parent shell sent SIGTERM during the post-loop best-effort block,
-   * leaving hosts flagged dead on the dashboard.
-   *
-   * Best-effort — failures are caught by the loop and never abort the
-   * run. The underlying `helpers/repos.sh` script enforces its own 1h
-   * rate-limit, so frequent calls are cheap no-ops between real pushes.
-   *
-   * Optional so test deps can omit it.
-   */
-  reportFleetHealthHeartbeat?: () => Promise<void>;
-
-  /**
    * Fire the idle-task issue filer (Issue #2005).
    *
    * Invoked after a scan cycle ends with no claimed work. The hook
@@ -937,12 +1008,21 @@ export interface RunCoreDeps {
    * `mis_classification` alert when its own probe disagrees with the
    * scan loop.
    *
+   * Issue #898: `scanExcludedRepos` names the repos the scan was never
+   * shown, because a slot or the maintenance lane held them. The scan
+   * cannot disagree about a repository it was not allowed to see, so those
+   * repos raise no alert — their claimable counts are unchanged.
+   *
    * Best-effort — any throw is caught by the loop and logged so an
    * audit failure never aborts the main loop. Optional so test deps
    * can omit it.
    */
   runIdleDetectAudit?: (
-    info: { tick: number; scanFoundClaimable: boolean },
+    info: {
+      tick: number;
+      scanFoundClaimable: boolean;
+      scanExcludedRepos: readonly string[];
+    },
   ) => Promise<{ claimableTotal: number } | void>;
 
   /**
@@ -982,14 +1062,32 @@ export interface RunCoreDeps {
    * from four minutes earlier, so "the claim scan keeps refusing this work"
    * was already false when it was written. A served repo never feeds the
    * escalation streak.
+   *
+   * Issue #898: `scanExcludedRepos` names the repos that completed pass was
+   * never shown, because an issue slot (Issue #4176) or the maintenance lane
+   * (Issue #213) held them. The scan skips those before any collector runs,
+   * so `claimScanCompleted` says nothing about them and they must not
+   * escalate as work the scan refused.
    */
   runIdleDecisionCensus?: (
     info: {
       decisionPoint: "filing" | "selection";
       claimScanCompleted: boolean;
       claimedRepos: readonly string[];
+      scanExcludedRepos: readonly string[];
     },
-  ) => Promise<{ inversionDetected: boolean } | void>;
+  ) => Promise<
+    {
+      inversionDetected: boolean;
+      /**
+       * The one reason the fleet was idle this cycle (Issue #855),
+       * reduced from the same census rows. Fleet telemetry attributes the
+       * cycle's idle seconds to it. Absent when the census could not
+       * derive one.
+       */
+      idleReason?: FleetIdleReason;
+    } | void
+  >;
 
   /**
    * Combined liveness-guard observation hook (Issue #2479, the wiring for
@@ -1521,6 +1619,7 @@ async function releaseIssueClaim(
   repo: string,
   issueNumber: number,
   outcome?: RunOutcome,
+  ran?: TerminalRun,
 ): Promise<void> {
   // Log the resolved outcome kind (Issue #4325) so a worker-log grep tells
   // "outcome never computed" from "computed but not rendered".
@@ -1533,6 +1632,68 @@ async function releaseIssueClaim(
     await deps.releaseClaim(repo, issueNumber, outcome);
   } else {
     await deps.clearHeartbeat();
+  }
+  // The callbacks run after the release, on every path where a claim
+  // actually ran (Issue #806). A skip passes no `ran`, so an unclaimed or
+  // rejected candidate never triggers a hook.
+  if (ran) await dispatchIssueCallbacks(deps, repo, issueNumber, ran);
+}
+
+/**
+ * What a terminal run reports to the callback layer: the original result and
+ * when the claim started (Issue #806).
+ */
+interface TerminalRun {
+  result: "success" | "failure";
+  startedAtEpochMs: number;
+  /** Token and cost telemetry the run reported, when it reported any. */
+  telemetry?: CallbackRunTelemetry;
+  /**
+   * The cycle's exactly-once guard. Every dispatch site for a claim shares
+   * one, so a run reported by its own release is not reported again by the
+   * slot catch or the shutdown drain.
+   */
+  guard: IssueCallbackGuard;
+}
+
+/**
+ * Fire the operator's post-run callbacks for one terminal issue run
+ * (Issue #806, parent #796).
+ *
+ * Never throws and never alters the run's outcome: a hook that fails is one
+ * more thing to report, not a reason to rewrite what VibeCoder achieved.
+ */
+async function dispatchIssueCallbacks(
+  deps: RunCoreDeps,
+  repo: string,
+  issueNumber: number,
+  ran: TerminalRun,
+): Promise<void> {
+  if (!deps.runIssueCallbacks) return;
+  if (!ran.guard.tryClaim(repo, issueNumber)) {
+    // Said out loud: "already reported" is a very different fact from
+    // "never ran", and only the log can tell them apart afterwards.
+    deps.log(
+      `Post-run callbacks for ${repo}#${issueNumber} already ran for this ` +
+        `claim — not repeating them (Issue #806).`,
+    );
+    return;
+  }
+  try {
+    await deps.runIssueCallbacks({
+      repo,
+      issueNumber,
+      result: ran.result,
+      startedAtEpochMs: ran.startedAtEpochMs,
+      finishedAtEpochMs: deps.now(),
+      ...(ran.telemetry ? { telemetry: ran.telemetry } : {}),
+    });
+  } catch (error) {
+    deps.logError(
+      `Post-run callbacks for ${repo}#${issueNumber} faulted: ${
+        error instanceof Error ? error.message : String(error)
+      }. The original VibeCoder result (${ran.result}) is unchanged.`,
+    );
   }
 }
 
@@ -1547,8 +1708,24 @@ function noteIssueProcessed(
   deps: RunCoreDeps,
   issue: DiscoveredIssue,
   reason: ProcessedIssueReason,
+  /** Failing phase, or `timeout` — the fleet failure class (Issue #855). */
+  failureClass?: string,
 ): void {
   deps.processedIssues?.record(issue.repo, issue.issueNumber, reason);
+  // Issue #855: the single seam every terminal outcome passes through in
+  // both the serial loop and the slot pool, so the fleet success rate is
+  // counted once and cannot drift from the registry.
+  if (reason !== "closed") recordFleetOutcome(reason, failureClass);
+}
+
+/**
+ * The fleet failure class for a finished run (Issue #855): a timeout-class
+ * failure first, otherwise the phase it failed at.
+ */
+function fleetFailureClass(
+  result: { failureKind?: "timeout"; failurePhase?: string } | undefined,
+): string | undefined {
+  return result?.failureKind ?? result?.failurePhase;
 }
 
 /**
@@ -1686,6 +1863,8 @@ async function runIssueScanLoop(
   tracker: WorkProgressTracker,
   endTime: number,
   shouldShutdown: () => boolean = () => false,
+  /** The run's shared idle instruments (Issue #925). */
+  idleHooks?: IdleHookState,
 ): Promise<
   {
     exitOuterLoop: boolean;
@@ -1700,8 +1879,22 @@ async function runIssueScanLoop(
      * it and the idle-inversion escalation must not fire.
      */
     eligibilityScanCompleted?: boolean;
+    /**
+     * The repositories that pass was never shown (Issue #898). Always empty
+     * for the serial loop — one slot shares no clone, so it excludes
+     * nothing; the pool sets it from its in-flight registry.
+     */
+    scanExcludedRepos?: readonly string[];
   }
 > {
+  /**
+   * One exactly-once post-run callback guard per scan (Issue #806). The
+   * serial loop dispatches from three places — the success release, the
+   * failure release, and the pre-release exit-threshold branch — and each
+   * claim must reach the callback layer once.
+   */
+  const callbackGuard = new IssueCallbackGuard();
+
   // Concurrent slots (Issue #4177, part of #4168): above one slot the pool
   // takes over. At the default of 1 the serial loop below runs unchanged —
   // exactly today's call sequence, including its shutdown timing (Issue
@@ -1713,9 +1906,15 @@ async function runIssueScanLoop(
       tracker,
       endTime,
       shouldShutdown,
+      idleHooks,
     );
   }
   await deps.resetRepoFailures();
+  // Issue #925: the serial loop is a one-slot pool, so it opens the same
+  // idle span its pooled siblings do — scanning and finding nothing is idle
+  // here too. Closed on every exit below, so the span never outlives the
+  // scan, and never books time spent elsewhere in the cycle against it.
+  noteSlotActivity("serial", "idle", deps.now());
 
   /** Consecutive failures within this scan loop, for the back-off. */
   let consecutiveFailures = 0;
@@ -1836,13 +2035,52 @@ async function runIssueScanLoop(
     // Issue #460: record the claim before the run, not after it. The
     // outcome does not change the fact that this repo was served.
     tracker.recordClaim(issue.repo);
+    // Process the issue. The claim time bounds the post-run callback
+    // context (Issue #806); a throw takes the failure/always path exactly
+    // once and then propagates as before.
+    const claimedAtEpochMs = deps.now();
+    // Issue #855: fleet-level claim/busy/outcome counters. The claim is
+    // recorded before the run, matching `tracker.recordClaim` above.
+    recordFleetClaim();
     // Process the issue
-    const processResult = await deps.processIssue(issue, endTime);
+    beginBusy("serial", deps.now());
+    // Issue #925: the serial loop is a one-slot pool, so it books its
+    // occupied slot-seconds the same way the pool's slots do.
+    noteSlotActivity("serial", "claim", deps.now());
+    let processResult;
+    try {
+      processResult = await deps.processIssue(issue, endTime, "serial");
+    } catch (thrown) {
+      // A throw is a terminal run, so the failure and always callbacks fire
+      // exactly once before it propagates (Issue #806). Covered by
+      // `run_core_callbacks_test.ts` — a sync merge has collapsed this
+      // `catch` into the `finally` below twice, silently.
+      await dispatchIssueCallbacks(deps, issue.repo, issue.issueNumber, {
+        result: "failure",
+        startedAtEpochMs: claimedAtEpochMs,
+        guard: callbackGuard,
+      });
+      throw thrown;
+    } finally {
+      // In a `finally` so a throw cannot leave the stream marked busy
+      // for the rest of the run, which would read as 100% utilisation.
+      endBusy("serial", deps.now());
+      noteSlotActivity("serial", "idle", deps.now());
+    }
     // The run outcome (Issue #4325) rides the claim release so the comment
     // states what happened; absent when the run never ran (skip).
     const runOutcome = processResult.ok
       ? processResult.value.outcome
       : undefined;
+    /** What this run reports to the post-run callbacks (Issue #806). */
+    const ran = (result: "success" | "failure"): TerminalRun => ({
+      result,
+      startedAtEpochMs: claimedAtEpochMs,
+      guard: callbackGuard,
+      ...(processResult.ok && processResult.value.telemetry
+        ? { telemetry: processResult.value.telemetry }
+        : {}),
+    });
 
     if (processResult.ok && processResult.value.success) {
       // Success path
@@ -1872,6 +2110,7 @@ async function runIssueScanLoop(
         issue.repo,
         issue.issueNumber,
         runOutcome,
+        ran("success"),
       );
       deps.log(`Successfully processed ${issue.repo}#${issue.issueNumber}`);
       break; // Exit inner loop, earn normal sleep
@@ -1894,7 +2133,12 @@ async function runIssueScanLoop(
     // Failure path (detailed reason already logged by processIssue).
     // Timeout-class failures feed the escalating cooldown (Issue #4304) so
     // the same doomed issue cannot burn consecutive hourly cycles.
-    noteIssueProcessed(deps, issue, "failure");
+    noteIssueProcessed(
+      deps,
+      issue,
+      "failure",
+      fleetFailureClass(processResult.ok ? processResult.value : undefined),
+    );
     await deps.recordIssueCooldown(
       issue.repo,
       issue.issueNumber,
@@ -1907,6 +2151,15 @@ async function runIssueScanLoop(
     // Check exit threshold
     const shouldExit = await deps.shouldExitOnFailures();
     if (shouldExit) {
+      // The run still terminated in failure, so its callbacks fire before
+      // the loop unwinds (Issue #806).
+      await dispatchIssueCallbacks(
+        deps,
+        issue.repo,
+        issue.issueNumber,
+        ran("failure"),
+      );
+      noteSlotRetired("serial", deps.now());
       return { exitOuterLoop: true, eligibilityScanCompleted };
     }
 
@@ -1919,6 +2172,7 @@ async function runIssueScanLoop(
       issue.repo,
       issue.issueNumber,
       runOutcome,
+      ran("failure"),
     );
 
     // Scan continuation (Issue #3648): the failure path used to `continue`
@@ -1944,6 +2198,7 @@ async function runIssueScanLoop(
             `. Stopping claims for this cycle; the next cycle's health ` +
             `gate re-checks automatically.`,
         );
+        noteSlotRetired("serial", deps.now());
         return { exitOuterLoop: true, eligibilityScanCompleted };
       }
     }
@@ -1960,6 +2215,7 @@ async function runIssueScanLoop(
     continue;
   }
 
+  noteSlotRetired("serial", deps.now());
   return { exitOuterLoop: false, eligibilityScanCompleted };
 }
 
@@ -2358,6 +2614,30 @@ interface SlotPoolState {
    * idle-inversion escalation has no evidence to escalate.
    */
   eligibilityScanCompleted: boolean;
+  /**
+   * The cycle's exactly-once post-run callback guard (Issue #806), shared by
+   * every slot, the slot-level catch and the shutdown drain.
+   */
+  callbackGuard: IssueCallbackGuard;
+  /**
+   * The repositories the completed eligibility pass was never shown
+   * (Issue #898) — `findOldestIssue`'s `excludeRepos` set at the moment a
+   * scan came up empty, i.e. every repo an issue slot (Issue #4176) or the
+   * maintenance lane (Issue #213) held.
+   *
+   * The scan skips those before any collector runs, so it records no
+   * per-issue skip reason for them and the census must not read
+   * {@link SlotPoolState.eligibilityScanCompleted} as covering them.
+   */
+  scanExcludedRepos?: ReadonlySet<string>;
+  /**
+   * The run's shared idle instruments (Issue #925). A slot that scans and
+   * finds nothing runs the same audit / census / filer the end-of-cycle gate
+   * runs, against the same tick counter, the same disagreement streak and
+   * the same single-flight filer latch. Absent only when the caller supplied
+   * none, in which case the slot logs its idle observation and nothing else.
+   */
+  idleHooks?: IdleHookState;
 }
 
 /**
@@ -2402,6 +2682,8 @@ async function runIssueScanPool(
   tracker: WorkProgressTracker,
   endTime: number,
   shouldShutdown: () => boolean = () => false,
+  /** The run's shared idle instruments (Issue #925). */
+  idleHooks?: IdleHookState,
 ): Promise<
   {
     exitOuterLoop: boolean;
@@ -2410,6 +2692,8 @@ async function runIssueScanPool(
     workVolumeFaulted: boolean;
     /** See the serial loop's field of the same name (Issue #437). */
     eligibilityScanCompleted: boolean;
+    /** See {@link SlotPoolState.scanExcludedRepos} (Issue #898). */
+    scanExcludedRepos: readonly string[];
   }
 > {
   await deps.resetRepoFailures();
@@ -2433,6 +2717,13 @@ async function runIssueScanPool(
     claimFloor: poolRunwayFloor,
     deferredClaims: new Set<string>(),
     eligibilityScanCompleted: false,
+    // Issue #806: the cycle's exactly-once post-run callback guard, shared
+    // by every slot, the slot-level catch and the shutdown drain. Restored
+    // in this merge for the third time (Issues #928, #808) — `main` has no
+    // such field, so every sync merge that rewrites this literal drops it
+    // and nothing on `milestone/*` runs to notice.
+    callbackGuard: new IssueCallbackGuard(),
+    idleHooks,
   };
   // Effective slots = min(configured, memory-pressure ceiling) (Issue
   // #4179): under pressure the pool STARTS fewer slots; it never cancels
@@ -2463,6 +2754,7 @@ async function runIssueScanPool(
     hostDiskLow: pool.hostDiskLow === true,
     workVolumeFaulted: pool.workVolumeFaulted === true,
     eligibilityScanCompleted: pool.eligibilityScanCompleted,
+    scanExcludedRepos: [...(pool.scanExcludedRepos ?? [])],
   };
 }
 
@@ -2551,6 +2843,15 @@ async function drainSlots(
           }s) elapsed while the slot was still running`,
           elapsedSeconds: (Date.now() - hold.sinceMs) / 1000,
         }),
+        // A shutdown after a claim is a terminal failure for that run, so it
+        // takes the failure/always path exactly once (Issue #806). The
+        // abandoned slot keeps running and may still reach its own release,
+        // so the shared guard — not the ordering — is what makes it once.
+        {
+          result: "failure",
+          startedAtEpochMs: hold.sinceMs,
+          guard: pool.callbackGuard,
+        },
       );
     }
   }
@@ -2573,269 +2874,366 @@ async function runSlot(
   const rescanMs = Math.max(1, config.sleepInterval) * 1000;
   /** Consecutive scans that re-offered an issue the pool already deferred. */
   let reofferedDeferred = 0;
-  while (true) {
-    const stop = await slotShouldStop(deps, endTime, pool);
-    if (stop) {
-      // Every slot exit states its reason (Issue #219) — a slot that stops
-      // silently is indistinguishable from one that is still working.
-      if (stop === "deadline") {
-        pool.draining = true;
-        log(
-          "stop reason=deadline — reached the cycle deadline; stopping " +
-            "before the next claim (in-flight claims keep their full " +
-            "budget, Issue #397).",
-        );
-      } else if (stop === "hard-cap") {
-        pool.draining = true;
-        log(
-          `stop reason=hard-cap — ${
-            hardCapRunwaySeconds(pool.claimFloor, deps.now())
-          }s of runway left to the supervisor hard cap, below the ` +
-            `${pool.claimFloor.floorSeconds}s claim floor; stopping before ` +
-            `the next claim (Issues #4304/#425).`,
-        );
-      } else if (stop === "shutdown") {
-        pool.draining = true;
-        log("stop reason=shutdown — no further claims (Issue #4182).");
-      } else if (stop === "exit") {
-        log("stop reason=exit — the cycle is ending; no further claims.");
-      } else {
-        log("stop reason=drain — the pool is draining; no further claims.");
-      }
-      return;
-    }
-
-    // Host-wide guards before EVERY claim (Issue #4180): the serial loop
-    // consults the spend ceiling and rate-limit signal once per cycle; N
-    // slots re-checking between claims would otherwise let a ceiling hit
-    // during slot A's run go unnoticed by slot B's next claim. A tripped
-    // guard drains the whole pool — running slots finish, nobody claims.
-    if (await slotPreClaimGuardTripped(slotId, deps, pool)) return;
-
-    // Memory-pressure ceiling (Issue #4179): when it has dropped below this
-    // slot's index, the slot stops before its next claim — the pool shrinks
-    // by idling, never by cancelling running work.
-    const ceiling = await effectiveSlotCeiling(
-      deps,
-      Math.max(1, config.maxConcurrentIssues),
-    );
-    if (slotIndex >= ceiling) {
-      log(
-        `memory-pressure slot ceiling is ${ceiling} — this slot stops before its next claim.`,
-      );
-      return;
-    }
-
-    // Find the next issue outside the repositories siblings hold.
-    let scanSummary: DiagnosticSummary | undefined;
-    const findResult = await deps.findNextIssue({
-      excludeRepos: pool.registry.heldRepos(),
-      // Issues this cycle already deferred for the adaptive floor (#245).
-      excludeIssues: pool.deferredClaims,
-      onScanSummary: (summary) => {
-        scanSummary = summary;
-      },
-    });
-    if (!findResult.ok) {
-      deps.logError(
-        `[${slotId}] stop reason=find-error — Issue scanning error: ${findResult.error.message}`,
-      );
-      return;
-    }
-    const issue = findResult.value;
-    if (issue === null) {
-      // The backlog was evaluated and refused (Issue #437) — the pool-wide
-      // record the idle-inversion escalation reads to tell "the scan said
-      // no" from "the scan never looked".
-      pool.eligibilityScanCompleted = true;
-      // Issue #219: an empty scan is reported with its counts, and the slot
-      // retires only when nothing else is running. Returning on the first
-      // null parked the slot until the whole pool drained — a two-slot pool
-      // ran as one for an hour with a dozen eligible issues waiting, and
-      // the log said nothing at all.
-      const detail = scanSummary
-        ? formatScanSummary(scanSummary)
-        : "scan summary unavailable";
-      // Sibling *slots* only (Issue #213): a maintenance pass running beside
-      // the pool is not a reason for an idle slot to keep re-scanning for an
-      // hour, so it does not count.
-      const siblings = pool.registry.slotHolds()
-        .filter((h) => h.slotId !== slotId).length;
-      if (siblings === 0) {
-        log(
-          `stop reason=no-work — no eligible work: ${detail}; ` +
-            "no sibling slot is running, so the pool drains and the cycle continues.",
-        );
+  // Issue #925: a live slot is idle until it claims. The `finally` below
+  // closes the span on every exit path, so a slot that stops for the
+  // deadline, a drain or a find error cannot leave an idle span open and
+  // accrue idle seconds for the rest of the run.
+  noteSlotActivity(slotId, "idle", deps.now());
+  try {
+    while (true) {
+      const stop = await slotShouldStop(deps, endTime, pool);
+      if (stop) {
+        // Every slot exit states its reason (Issue #219) — a slot that stops
+        // silently is indistinguishable from one that is still working.
+        if (stop === "deadline") {
+          pool.draining = true;
+          log(
+            "stop reason=deadline — reached the cycle deadline; stopping " +
+              "before the next claim (in-flight claims keep their full " +
+              "budget, Issue #397).",
+          );
+        } else if (stop === "hard-cap") {
+          pool.draining = true;
+          log(
+            `stop reason=hard-cap — ${
+              hardCapRunwaySeconds(pool.claimFloor, deps.now())
+            }s of runway left to the supervisor hard cap, below the ` +
+              `${pool.claimFloor.floorSeconds}s claim floor; stopping before ` +
+              `the next claim (Issues #4304/#425).`,
+          );
+        } else if (stop === "shutdown") {
+          pool.draining = true;
+          log("stop reason=shutdown — no further claims (Issue #4182).");
+        } else if (stop === "exit") {
+          log("stop reason=exit — the cycle is ending; no further claims.");
+        } else {
+          log("stop reason=drain — the pool is draining; no further claims.");
+        }
         return;
       }
-      log(
-        `no eligible work: ${detail} — re-scanning in ${
-          rescanMs / 1000
-        }s while ${siblings} sibling slot(s) work (Issue #219).`,
-      );
-      await deps.sleep(rescanMs);
-      await yieldToEventLoop();
-      continue;
-    }
 
-    // Adaptive claim floor (Issue #245): an issue with evidence that it is
-    // not a short job needs a runway that can host a real execute. Deferred
-    // rather than claimed, the slot looks for another candidate (#219).
-    if (pool.deferredClaims.has(issueClaimKey(issue.repo, issue.issueNumber))) {
-      reofferedDeferred++;
-      if (reofferedDeferred > MAX_DEFERRED_REOFFERS) {
-        deps.logError(
-          `[${slotId}] stop reason=deferred-reoffered — the scan re-offered ` +
-            `deferred issue ${issue.repo}#${issue.issueNumber} ` +
-            `${reofferedDeferred} times, so the adaptive claim floor ` +
-            `(Issue #245) cannot advance to another candidate.`,
-        );
-        return;
-      }
-      await deps.sleep(rescanMs);
-      await yieldToEventLoop();
-      continue;
-    }
-    reofferedDeferred = 0;
-    if (
-      await deferClaimForAdaptiveFloor(
+      // Host-wide guards before EVERY claim (Issue #4180): the serial loop
+      // consults the spend ceiling and rate-limit signal once per cycle; N
+      // slots re-checking between claims would otherwise let a ceiling hit
+      // during slot A's run go unnoticed by slot B's next claim. A tripped
+      // guard drains the whole pool — running slots finish, nobody claims.
+      if (await slotPreClaimGuardTripped(slotId, deps, pool)) return;
+
+      // Memory-pressure ceiling (Issue #4179): when it has dropped below this
+      // slot's index, the slot stops before its next claim — the pool shrinks
+      // by idling, never by cancelling running work.
+      const ceiling = await effectiveSlotCeiling(
         deps,
-        issue,
-        pool.claimFloor,
-        pool.deferredClaims,
-        log,
-      )
-    ) {
-      await yieldToEventLoop();
-      continue;
-    }
-
-    // Atomic against sibling starts (Issue #4176): exactly one slot wins a
-    // repository; a loser looks again.
-    if (!pool.registry.tryAcquire(issue.repo, issue.issueNumber, slotId)) {
-      // Issue #219: the ranking this scan produced has already lost, so
-      // drop the repository's cached issue list before looking again —
-      // otherwise the next scan can be served the same stale list.
-      log(
-        `lost the acquire race for ${issue.repo}#${issue.issueNumber} — ` +
-          "invalidating its cached issue list before re-scanning (Issue #219).",
+        Math.max(1, config.maxConcurrentIssues),
       );
-      await invalidateRepoIssueCache(deps, slotId, issue.repo);
-      await yieldToEventLoop();
-      continue;
-    }
+      if (slotIndex >= ceiling) {
+        log(
+          `memory-pressure slot ceiling is ${ceiling} — this slot stops before its next claim.`,
+        );
+        return;
+      }
 
-    /** Set by a successful claim so the settle sleep runs holding no repo. */
-    let claimSucceeded = false;
-    try {
-      // Every claim gets its OWN write-repo allowlist (Issue #183). The
-      // per-slot context exists (#4175) but nothing wired it up here, so
-      // both slots fell through to the process-wide default context:
-      // `seedWriteRepoAllowlist` clears `allowed` on every claim, so the
-      // slot that claimed second clobbered its sibling's allowlist and the
-      // loser's agent shim was baked with the wrong repo — every GitHub
-      // write from that agent was refused, including writes to its own
-      // claim repo and its `needs-human` escalation.
-      //
-      // Per CLAIM, not per slot: each claim seeds and resets its own
-      // allowlist, so a fresh context per claim keeps a heartbeat pin
-      // (Issue #3760) scoped to the claim that took it.
-      //
-      // Every line written on behalf of this claim — the pool's own, the
-      // issue phases, the agent's progress heartbeats — is attributed to
-      // `[sN repo#issue]` (Issue #4181).
-      const outcome = await withWriteRepoAllowlistContext(
-        createWriteRepoAllowlistContext(),
-        () =>
-          runInSlotContext(
-            {
+      // Find the next issue outside the repositories siblings hold.
+      let scanSummary: DiagnosticSummary | undefined;
+      // Issue #898: kept, because it is the census's only record of what this
+      // pass was not allowed to see.
+      const excludedRepos = pool.registry.heldRepos();
+      const findResult = await deps.findNextIssue({
+        excludeRepos: excludedRepos,
+        // Issues this cycle already deferred for the adaptive floor (#245).
+        excludeIssues: pool.deferredClaims,
+        onScanSummary: (summary) => {
+          scanSummary = summary;
+        },
+      });
+      if (!findResult.ok) {
+        deps.logError(
+          `[${slotId}] stop reason=find-error — Issue scanning error: ${findResult.error.message}`,
+        );
+        return;
+      }
+      const issue = findResult.value;
+      if (issue === null) {
+        // The backlog was evaluated and refused (Issue #437) — the pool-wide
+        // record the idle-inversion escalation reads to tell "the scan said
+        // no" from "the scan never looked".
+        pool.eligibilityScanCompleted = true;
+        // Issue #898: and the repos this pass was never shown, so the census
+        // does not read "refused" over a repository a slot had made invisible.
+        pool.scanExcludedRepos = excludedRepos;
+        // Issue #219: an empty scan is reported with its counts, and the slot
+        // retires only when nothing else is running. Returning on the first
+        // null parked the slot until the whole pool drained — a two-slot pool
+        // ran as one for an hour with a dozen eligible issues waiting, and
+        // the log said nothing at all.
+        const detail = scanSummary
+          ? formatScanSummary(scanSummary)
+          : "scan summary unavailable";
+        // Sibling *slots* only (Issue #213): a maintenance pass running beside
+        // the pool is not a reason for an idle slot to keep re-scanning for an
+        // hour, so it does not count.
+        const siblings = pool.registry.slotHolds()
+          .filter((h) => h.slotId !== slotId).length;
+        if (siblings === 0) {
+          log(
+            `stop reason=no-work — no eligible work: ${detail}; ` +
+              "no sibling slot is running, so the pool drains and the cycle continues.",
+          );
+          return;
+        }
+        log(
+          `no eligible work: ${detail} — re-scanning in ${
+            rescanMs / 1000
+          }s while ${siblings} sibling slot(s) work (Issue #219).`,
+        );
+        // --- Per-slot idle accounting and idle hooks (Issue #925) ---
+        //
+        // This slot has considered the backlog and been refused. That a
+        // sibling is busy says nothing about THIS slot, which is doing
+        // nothing at all — yet until #925 every idle instrument was gated on
+        // the fleet-wide, per-cycle `tracker.foundClaimableIssue`, which the
+        // sibling's claim held true for the life of the cycle. A two-slot
+        // fleet ran 47 minutes with one slot in exactly this branch, 74 times
+        // over, and recorded zero idle seconds and filed zero idle-tasks.
+        //
+        // The slot's idle seconds are booked as idle even while siblings
+        // work, and the hooks run here so an idle slot leaves the fleet
+        // better supplied than it found it.
+        //
+        // The gate is deliberately NOT widened back to `scanHadSuccess`
+        // (Issue #2048, symptom in #2046): an adjacent repo's PR-feedback
+        // work must still not drive this decision. What changed is only the
+        // *scope* of the question — this slot, rather than the whole fleet.
+        noteSlotActivity(slotId, "idle", deps.now());
+        // The latch, not the re-scan, is the unit of filing: 74 empty scans
+        // in one cycle must not become 74 idle-tasks, and N slots idling
+        // together must not become N. The first observer of an idle episode
+        // wins; `tryConsume` sets the flag synchronously, before the first
+        // `await` below, so two slots cannot both win it.
+        if (pool.idleHooks && pool.idleHooks.filerLatch.tryConsume()) {
+          // Issue #898, extended by Issue #925: the repos this pass was
+          // never shown. `excludedRepos` was read before the scan, and a
+          // sibling can acquire a repository between that read and this
+          // observation, so the registry's current holds are unioned in.
+          // Union, never replacement — a repo the scan was not shown stays
+          // excluded even if its holder has since released it. Both
+          // directions only ever REMOVE repositories from the audit's
+          // comparison, so this cannot invent a `mis_classification`; it can
+          // only avoid one the scan never had a chance to disagree about.
+          const hookExcludedRepos = new Set<string>([
+            ...excludedRepos,
+            ...pool.registry.heldRepos(),
+          ]);
+          await runIdleWorkHooks(deps, pool.idleHooks, {
+            // `[sN] ` prefixed, so the `[idle-hooks]` line names the slot.
+            log,
+            // Per slot, not per fleet — the whole point of Issue #925.
+            scanFoundClaimable: false,
+            scanHadSuccess: tracker.scanHadSuccess,
+            // This slot completed an eligibility pass: `findNextIssue`
+            // returned null after considering the backlog (Issue #437).
+            claimScanCompleted: true,
+            claimedRepos: [...tracker.claimedRepos],
+            // The repos a sibling held, which this pass was never shown.
+            // Without them the audit would call a sibling's in-flight
+            // repository a mis-classification on every observation.
+            scanExcludedRepos: [...hookExcludedRepos],
+          });
+        }
+        await deps.sleep(rescanMs);
+        await yieldToEventLoop();
+        continue;
+      }
+
+      // Adaptive claim floor (Issue #245): an issue with evidence that it is
+      // not a short job needs a runway that can host a real execute. Deferred
+      // rather than claimed, the slot looks for another candidate (#219).
+      if (
+        pool.deferredClaims.has(issueClaimKey(issue.repo, issue.issueNumber))
+      ) {
+        reofferedDeferred++;
+        if (reofferedDeferred > MAX_DEFERRED_REOFFERS) {
+          deps.logError(
+            `[${slotId}] stop reason=deferred-reoffered — the scan re-offered ` +
+              `deferred issue ${issue.repo}#${issue.issueNumber} ` +
+              `${reofferedDeferred} times, so the adaptive claim floor ` +
+              `(Issue #245) cannot advance to another candidate.`,
+          );
+          return;
+        }
+        await deps.sleep(rescanMs);
+        await yieldToEventLoop();
+        continue;
+      }
+      reofferedDeferred = 0;
+      if (
+        await deferClaimForAdaptiveFloor(
+          deps,
+          issue,
+          pool.claimFloor,
+          pool.deferredClaims,
+          log,
+        )
+      ) {
+        await yieldToEventLoop();
+        continue;
+      }
+
+      // Atomic against sibling starts (Issue #4176): exactly one slot wins a
+      // repository; a loser looks again.
+      if (!pool.registry.tryAcquire(issue.repo, issue.issueNumber, slotId)) {
+        // Issue #219: the ranking this scan produced has already lost, so
+        // drop the repository's cached issue list before looking again —
+        // otherwise the next scan can be served the same stale list.
+        log(
+          `lost the acquire race for ${issue.repo}#${issue.issueNumber} — ` +
+            "invalidating its cached issue list before re-scanning (Issue #219).",
+        );
+        await invalidateRepoIssueCache(deps, slotId, issue.repo);
+        await yieldToEventLoop();
+        continue;
+      }
+
+      /** Set by a successful claim so the settle sleep runs holding no repo. */
+      let claimSucceeded = false;
+      /**
+       * Whether the claim actually started running (Issue #806).
+       *
+       * A throw before `processIssue` is an unclaimed cycle, not a run, and
+       * must report nothing; a throw after it is a terminal failure that
+       * takes the failure/always path exactly once. Restored here for the
+       * third time (Issues #928, #808): `main` carries no callback layer, so
+       * every sync merge that rewrites this region drops it, and nothing on
+       * `milestone/*` runs to notice.
+       */
+      const runStarted = { value: false };
+      try {
+        // Every claim gets its OWN write-repo allowlist (Issue #183). The
+        // per-slot context exists (#4175) but nothing wired it up here, so
+        // both slots fell through to the process-wide default context:
+        // `seedWriteRepoAllowlist` clears `allowed` on every claim, so the
+        // slot that claimed second clobbered its sibling's allowlist and the
+        // loser's agent shim was baked with the wrong repo — every GitHub
+        // write from that agent was refused, including writes to its own
+        // claim repo and its `needs-human` escalation.
+        //
+        // Per CLAIM, not per slot: each claim seeds and resets its own
+        // allowlist, so a fresh context per claim keeps a heartbeat pin
+        // (Issue #3760) scoped to the claim that took it.
+        //
+        // Every line written on behalf of this claim — the pool's own, the
+        // issue phases, the agent's progress heartbeats — is attributed to
+        // `[sN repo#issue]` (Issue #4181).
+        const outcome = await withWriteRepoAllowlistContext(
+          createWriteRepoAllowlistContext(),
+          () =>
+            runInSlotContext(
+              {
+                slotId,
+                repo: issue.repo,
+                issueNumber: issue.issueNumber,
+                // The run publishes the deadline it is working to (Issue
+                // #4297), including every progress extension, so the shutdown
+                // drain sees a legitimately extended run as in-flight rather
+                // than as a hang.
+                onRunDeadline: (deadline) => {
+                  pool.registry.noteRunDeadline(issue.repo, deadline);
+                },
+              },
+              () =>
+                runSlotIssue(
+                  slotId,
+                  issue,
+                  config,
+                  deps,
+                  tracker,
+                  endTime,
+                  pool,
+                  runStarted,
+                ),
+            ),
+        );
+        if (outcome === "exit") {
+          pool.exitOuterLoop = true;
+          pool.draining = true;
+          return;
+        }
+        // A success must NOT retire the slot (Issue #178). The serial loop's
+        // `break` hands back to the outer loop, which runs the maintenance
+        // ladder and re-scans seconds later — cheap. In the pool a return
+        // parks the slot until EVERY sibling drains, so one long execute
+        // next door left `max_concurrent_issues: 2` running as one slot plus
+        // an idle one for the rest of the cycle. The slot claims again after
+        // the settle sleep below, re-gated by `slotShouldStop` and the
+        // pre-claim guards at the top of the loop; the maintenance ladder
+        // runs when the pool next drains.
+        claimSucceeded = outcome === "success";
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        deps.logError(
+          `${
+            formatSlotPrefix({
               slotId,
               repo: issue.repo,
               issueNumber: issue.issueNumber,
-              // The run publishes the deadline it is working to (Issue
-              // #4297), including every progress extension, so the shutdown
-              // drain sees a legitimately extended run as in-flight rather
-              // than as a hang.
-              onRunDeadline: (deadline) => {
-                pool.registry.noteRunDeadline(issue.repo, deadline);
-              },
-            },
-            () =>
-              runSlotIssue(
-                slotId,
-                issue,
-                config,
-                deps,
-                tracker,
-                endTime,
-                pool,
-              ),
-          ),
-      );
-      if (outcome === "exit") {
-        pool.exitOuterLoop = true;
-        pool.draining = true;
-        return;
-      }
-      // A success must NOT retire the slot (Issue #178). The serial loop's
-      // `break` hands back to the outer loop, which runs the maintenance
-      // ladder and re-scans seconds later — cheap. In the pool a return
-      // parks the slot until EVERY sibling drains, so one long execute
-      // next door left `max_concurrent_issues: 2` running as one slot plus
-      // an idle one for the rest of the cycle. The slot claims again after
-      // the settle sleep below, re-gated by `slotShouldStop` and the
-      // pre-claim guards at the top of the loop; the maintenance ladder
-      // runs when the pool next drains.
-      claimSucceeded = outcome === "success";
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      deps.logError(
-        `${
-          formatSlotPrefix({
-            slotId,
-            repo: issue.repo,
-            issueNumber: issue.issueNumber,
-          })
-        } slot threw: ${message}`,
-      );
-      // A thrown slot must not leak its claim (Issue #4178); the release
-      // still states what happened (Issue #4325).
-      const since = pool.registry.holds().find((h) => h.repo === issue.repo)
-        ?.sinceMs;
-      await releaseIssueClaim(
-        deps,
-        issue.repo,
-        issue.issueNumber,
-        deriveRunOutcome({
-          success: false,
-          phase: "slot",
-          reason: message,
-          elapsedSeconds: since === undefined ? 0 : (Date.now() - since) / 1000,
-        }),
-      );
-      // A primary rate limit is pool-wide (Issue #4180): stop every slot
-      // from claiming and let the pool re-throw once drained so the cycle
-      // pauses until reset instead of N slots each discovering it.
-      if (isPrimaryRateLimitMessage(message)) {
-        pool.draining = true;
-        pool.rateLimitError ??= err instanceof Error ? err : new Error(message);
-        log(
-          "primary rate limit hit — draining the pool before the cycle pauses.",
+            })
+          } slot threw: ${message}`,
         );
+        // A thrown slot must not leak its claim (Issue #4178); the release
+        // still states what happened (Issue #4325).
+        const since = pool.registry.holds().find((h) => h.repo === issue.repo)
+          ?.sinceMs;
+        await releaseIssueClaim(
+          deps,
+          issue.repo,
+          issue.issueNumber,
+          deriveRunOutcome({
+            success: false,
+            phase: "slot",
+            reason: message,
+            elapsedSeconds: since === undefined
+              ? 0
+              : (Date.now() - since) / 1000,
+          }),
+          // An exception after a claim takes the failure/always path exactly
+          // once (Issue #806). Reported only when the run actually started,
+          // and the shared guard refuses a repeat if it already reported.
+          runStarted.value
+            ? {
+              result: "failure" as const,
+              startedAtEpochMs: since ?? deps.now(),
+              guard: pool.callbackGuard,
+            }
+            : undefined,
+        );
+        // A primary rate limit is pool-wide (Issue #4180): stop every slot
+        // from claiming and let the pool re-throw once drained so the cycle
+        // pauses until reset instead of N slots each discovering it.
+        if (isPrimaryRateLimitMessage(message)) {
+          pool.draining = true;
+          pool.rateLimitError ??= err instanceof Error
+            ? err
+            : new Error(message);
+          log(
+            "primary rate limit hit — draining the pool before the cycle pauses.",
+          );
+        }
+      } finally {
+        pool.registry.release(issue.repo);
       }
-    } finally {
-      pool.registry.release(issue.repo);
-    }
 
-    // Settle sleep after a success (Issue #178): the same `sleepInterval`
-    // the serial loop earns between issues, so a slot paces its claims
-    // instead of hot-looping. Taken AFTER the registry hold is released so
-    // a sibling is never locked out of the repository while this slot
-    // idles.
-    if (claimSucceeded) {
-      const settleMs = Math.max(0, config.sleepInterval) * 1000;
-      if (settleMs > 0) await deps.sleep(settleMs);
+      // Settle sleep after a success (Issue #178): the same `sleepInterval`
+      // the serial loop earns between issues, so a slot paces its claims
+      // instead of hot-looping. Taken AFTER the registry hold is released so
+      // a sibling is never locked out of the repository while this slot
+      // idles.
+      if (claimSucceeded) {
+        const settleMs = Math.max(0, config.sleepInterval) * 1000;
+        if (settleMs > 0) await deps.sleep(settleMs);
+      }
     }
+  } finally {
+    noteSlotRetired(slotId, deps.now());
   }
 }
 
@@ -2943,6 +3341,16 @@ async function slotPreClaimGuardTripped(
       }
     }
     if (await deps.isRateLimitActive()) {
+      // Issue #925: a slot that stops here is blocked, not idle. Which
+      // quota ran out matters — "no GitHub calls left" and "no model tokens
+      // left" are different faults — so the signal's own kind
+      // (`rate_limit_signal.ts`) names the stop. Counted rather than timed:
+      // the pool drains at once and the waiting happens at the loop level,
+      // where `recordBlockedSlotSeconds` books the seconds.
+      const signalKind = await deps.getRateLimitBlockKind?.() ?? "github";
+      recordSlotBlockedStop(
+        signalKind === "usage" ? "token_blocked" : "rate_limited",
+      );
       deps.log(
         `[${slotId}] Rate limit signal active — no further claims; draining the pool.`,
       );
@@ -2951,6 +3359,8 @@ async function slotPreClaimGuardTripped(
     }
     const preflight = await deps.preflightGitHubRateLimit();
     if (preflight.rateLimited) {
+      // Issue #925: the GitHub preflight names its own quota.
+      recordSlotBlockedStop("rate_limited");
       deps.log(
         `[${slotId}] GitHub preflight rate-limited (${preflight.message}) — draining the pool.`,
       );
@@ -3023,6 +3433,8 @@ async function runSlotIssue(
   tracker: WorkProgressTracker,
   endTime: number,
   pool: SlotPoolState,
+  /** Set when the claim starts running, so a pre-claim throw reports nothing. */
+  started: { value: boolean } = { value: false },
 ): Promise<"success" | "skip" | "failure" | "exit"> {
   const prefix = formatSlotPrefix({
     slotId,
@@ -3070,8 +3482,43 @@ async function runSlotIssue(
 
   // Issue #460: see the sibling call site — the claim, not the outcome.
   tracker.recordClaim(issue.repo);
-  const processResult = await deps.processIssue(issue, endTime);
+  // Each slot bounds its own callback context (Issue #806), so concurrent
+  // slots never share a start time or a result.
+  const claimedAtEpochMs = deps.now();
+  // Issue #806: from here a throw is a *run* that failed, not an unclaimed
+  // cycle, so the slot-level catch reports it. Restored in Issue #928 — a
+  // `main` sync merge dropped this line, leaving `runStarted` permanently
+  // false and every thrown slot run silently reporting nothing.
+  started.value = true;
+  recordFleetClaim();
+  // Issue #855: busy time is per work stream, so a pool slot's utilisation
+  // is reported separately from its siblings'. Fleet occupancy is "any
+  // slot busy", never the sum, so a half-idle pool still reports idle.
+  beginBusy(slotId, deps.now());
+  // Issue #925: this slot's occupied slot-seconds — everything a claim does
+  // (setup, the agent run, tests, the quality gate) is occupied, not idle.
+  noteSlotActivity(slotId, "claim", deps.now());
+  // Issue #925: the fleet has work again, so a later idle episode in this
+  // same cycle may file again. Without this a long cycle that alternates
+  // between work and idle would file only for its first idle episode.
+  pool.idleHooks?.filerLatch.release();
+  let processResult;
+  try {
+    processResult = await deps.processIssue(issue, endTime, slotId);
+  } finally {
+    endBusy(slotId, deps.now());
+    noteSlotActivity(slotId, "idle", deps.now());
+  }
   const runOutcome = processResult.ok ? processResult.value.outcome : undefined;
+  /** What this slot's run reports to the post-run callbacks (Issue #806). */
+  const ran = (result: "success" | "failure"): TerminalRun => ({
+    result,
+    startedAtEpochMs: claimedAtEpochMs,
+    guard: pool.callbackGuard,
+    ...(processResult.ok && processResult.value.telemetry
+      ? { telemetry: processResult.value.telemetry }
+      : {}),
+  });
 
   if (processResult.ok && processResult.value.success) {
     noteIssueProcessed(deps, issue, "success");
@@ -3096,6 +3543,7 @@ async function runSlotIssue(
       issue.repo,
       issue.issueNumber,
       runOutcome,
+      ran("success"),
     );
     log(`Successfully processed ${issue.repo}#${issue.issueNumber}`);
     return "success";
@@ -3114,7 +3562,12 @@ async function runSlotIssue(
     return "skip";
   }
 
-  noteIssueProcessed(deps, issue, "failure");
+  noteIssueProcessed(
+    deps,
+    issue,
+    "failure",
+    fleetFailureClass(processResult.ok ? processResult.value : undefined),
+  );
   await deps.recordIssueCooldown(
     issue.repo,
     issue.issueNumber,
@@ -3130,6 +3583,7 @@ async function runSlotIssue(
       issue.repo,
       issue.issueNumber,
       runOutcome,
+      ran("failure"),
     );
     return "exit";
   }
@@ -3138,6 +3592,7 @@ async function runSlotIssue(
     issue.repo,
     issue.issueNumber,
     runOutcome,
+    ran("failure"),
   );
 
   // Pool-wide consecutive-failure policy (Issue #4180 keeps thresholds
@@ -3199,6 +3654,294 @@ async function logWorkVolumeUsage(
 }
 
 /**
+ * Shared mutable state for the idle hooks (Issue #925).
+ *
+ * The audit tick and the disagreement streak used to be closure variables
+ * in `runCoreLoop`, reachable only from the end-of-cycle gate. Now that an
+ * idle *slot* runs the same hooks mid-cycle, both instruments must be the
+ * same instruments — a slot with its own tick counter would break the
+ * correlation ids log scrapers group on, and a slot with its own streak
+ * would sidestep the Issue #2475 bound.
+ */
+interface IdleHookState {
+  /** Monotonic idle-detect correlation id (Issue #2106). */
+  idleDetectTick: number;
+  /** Consecutive audit/scan disagreement iterations (Issue #2475). */
+  auditDisagreementStreak: number;
+  /**
+   * Single-flight guard so N idle slots file at most one idle-task per idle
+   * episode (Issue #925). Reset at the start of every cycle — preserving
+   * today's at-most-once-per-cycle filing — and released whenever a slot
+   * takes a claim, so a long cycle that keeps cycling between work and idle
+   * can still supply the fleet.
+   */
+  filerLatch: IdleFilerLatch;
+}
+
+/** One observation of "there is no claimable work here" (Issue #925). */
+interface IdleHookRequest {
+  /**
+   * Where to write the hooks' decision lines. The cycle gate passes
+   * `deps.log`; an idle slot passes its own `[sN] `-prefixed logger, so the
+   * `[idle-hooks]` line names the slot that had nothing to do.
+   */
+  log: (message: string) => void;
+  /**
+   * Whether the scan that produced this observation found claimable work.
+   * Always `false` at both call sites — it is forwarded verbatim to the
+   * audit, which raises `mis_classification` when its own probe disagrees.
+   * Per **observer**, not per fleet: a sibling slot's claim is not evidence
+   * that *this* slot had work, which is the whole of Issue #925.
+   */
+  scanFoundClaimable: boolean;
+  /** The fleet-wide flag, reported unchanged in the `[idle-hooks]` line. */
+  scanHadSuccess: boolean;
+  /** See `runIdleDecisionCensus`'s `claimScanCompleted` (Issue #437). */
+  claimScanCompleted: boolean;
+  /** Repos the scan claimed from this cycle (Issue #460). */
+  claimedRepos: readonly string[];
+  /**
+   * Repos this pass was never shown (Issue #898). For a slot these are the
+   * repositories its siblings hold: the scan cannot disagree with the audit
+   * about a repository it was not allowed to see, and without this a slot
+   * idling beside a busy sibling would raise `mis_classification` on every
+   * observation.
+   */
+  scanExcludedRepos: readonly string[];
+}
+
+/** What the hooks decided. */
+interface IdleHookOutcome {
+  /** The census's fleet idle reason, when it derived one (Issue #855). */
+  idleReason?: FleetIdleReason;
+  /** Whether the idle-task filer was invoked. */
+  filed: boolean;
+}
+
+/**
+ * Run the idle-detect audit, the idle-decision census and the idle-task
+ * filer for one "no claimable work" observation (Issues #2005, #2018,
+ * #2023, #2048, #2106, #2475, #2811, #2813, #3526, #437, #460, #898).
+ *
+ * Extracted from the end-of-cycle gate by Issue #925 so an idle slot can
+ * run exactly the same three instruments, in the same order, against the
+ * same shared state. Running the audit anywhere the filer runs is not
+ * optional: the audit compares its own probe against what the scan saw and
+ * raises `mis_classification` when they disagree, so a per-slot filer with
+ * a fleet-only audit would alert on every cycle.
+ *
+ * Best-effort throughout — every hook's throw is caught and logged so a
+ * failure here can never abort the loop.
+ */
+async function runIdleWorkHooks(
+  deps: RunCoreDeps,
+  state: IdleHookState,
+  req: IdleHookRequest,
+): Promise<IdleHookOutcome> {
+  const outcome: IdleHookOutcome = { filed: false };
+  const flagFragment =
+    `foundClaimableIssue=${req.scanFoundClaimable} scanHadSuccess=${req.scanHadSuccess}`;
+  // Issue #2106: run the idle-detect audit at the same gate
+  // as the filer so its `[idle-detect] ...` lines (and the
+  // `mis_classification` ALERT when the probe disagrees with
+  // the scan) appear in the log immediately before the filer
+  // makes its decision. Best-effort — any throw is caught
+  // and logged so an audit failure never aborts the loop.
+  let auditClaimableTotal: number | null = null;
+  if (deps.runIdleDetectAudit) {
+    state.idleDetectTick += 1;
+    try {
+      const auditResult = await deps.runIdleDetectAudit({
+        tick: state.idleDetectTick,
+        scanFoundClaimable: req.scanFoundClaimable,
+        // Issue #898: the scan and the audit cannot disagree about
+        // a repository the scan was never shown.
+        scanExcludedRepos: req.scanExcludedRepos,
+      });
+      if (
+        auditResult !== undefined &&
+        typeof auditResult.claimableTotal === "number"
+      ) {
+        auditClaimableTotal = auditResult.claimableTotal;
+      }
+    } catch (auditErr) {
+      const msg = auditErr instanceof Error
+        ? auditErr.message
+        : String(auditErr);
+      req.log(`Idle-detect audit failed (continuing): ${msg}`);
+    }
+  }
+  // Issue #2811: emit the per-repo claimable-work census at the
+  // idle-task filing decision point so the idle-vs-work-on
+  // inversion is observable from the log alone. Best-effort —
+  // any throw is caught and logged, never aborting the loop
+  // (mirrors the `Idle-task filer failed (continuing)` pattern).
+  // Issue #2813: capture the census's fleet-global inversion
+  // verdict (cache-backed — no extra issue-list call) so it can
+  // suppress the filer below when real work exists anywhere in
+  // the monitored set, even when it was only deferred this cycle.
+  //
+  // Issue #437: the census is also told whether the scan
+  // completed an eligibility pass this cycle. Every VibeCoder
+  // inversion alert on 2026-08-26 followed a `stop reason=deadline`
+  // line by about a minute — the scan had stopped before its next
+  // claim and never evaluated the backlog — yet three such cycles
+  // escalated to a human as "the claim scan keeps refusing" work
+  // nothing had refused.
+  let censusInversionDetected = false;
+  if (deps.runIdleDecisionCensus) {
+    try {
+      const censusResult = await deps.runIdleDecisionCensus({
+        decisionPoint: "filing",
+        claimScanCompleted: req.claimScanCompleted,
+        // Issue #460: a repo the scan served is not one it refused.
+        claimedRepos: [...req.claimedRepos],
+        // Issue #898: nor is one it was never shown. A slot or the
+        // maintenance lane holding a repo makes it invisible to
+        // the scan, which then records no reason for any of its
+        // issues — the empty section in every escalation filed.
+        scanExcludedRepos: req.scanExcludedRepos,
+      });
+      if (
+        censusResult !== undefined &&
+        censusResult.inversionDetected === true
+      ) {
+        censusInversionDetected = true;
+      }
+      // Issue #855: the census already knows why every repo was
+      // passed over, so it names the reason the fleet's idle
+      // seconds are booked against.
+      if (censusResult?.idleReason !== undefined) {
+        outcome.idleReason = censusResult.idleReason;
+      }
+    } catch (censusErr) {
+      const msg = censusErr instanceof Error
+        ? censusErr.message
+        : String(censusErr);
+      req.log(`Idle-decision census failed (continuing): ${msg}`);
+    }
+  }
+  // Budget guard: when the audit's independent probe already
+  // sees claimable work somewhere in the monitored set, the
+  // scan loop's `foundClaimableIssue=false` is almost
+  // certainly mis-classification (see Issue #2106 and the
+  // private-repo-10 #45-#48 incident). Filing more `idle-task`
+  // wrappers won't help and burns GraphQL budget the next
+  // iteration needs to actually claim the existing ones, so
+  // skip the filer this iteration. The next iteration's
+  // scan gets a fresh chance to pick up the existing
+  // claimable issues.
+  //
+  // Issue #2475: bound the short-circuit so a *persistent*
+  // disagreement cannot suppress filing indefinitely. Each
+  // disagreement iteration increments a streak and emits a
+  // structured diagnostic; while the streak stays within
+  // AUDIT_DISAGREEMENT_SKIP_LIMIT the filer is skipped as
+  // before, but once it exceeds the bound exactly ONE filer
+  // attempt is forced through and the streak resets — so a
+  // durable disagreement still produces wrappers without
+  // re-introducing the #2106 wrapper flooding.
+  const auditDisagrees = auditClaimableTotal !== null &&
+    auditClaimableTotal > 0;
+  if (censusInversionDetected) {
+    // Issue #2813: the cache-backed census found an open,
+    // unblocked top-priority/work-on/low-priority issue
+    // somewhere in the monitored set — even if it was only
+    // deferred this cycle by nice/rotation/cooldown. The fleet
+    // has real work, so filing an idle-task would invert
+    // priority (#2806). Suppress the filer this iteration.
+    //
+    // Issue #3526: the suppression participates in the same
+    // #2475 bound as the audit disagreement instead of clearing
+    // the streak. The census does not model every rule the scan
+    // applies (open-PR blocking, milestone occupancy, TOCTOU,
+    // cooldowns), so its "there is work" verdict can be wrong
+    // about work the scan will never claim — in the host-23
+    // incident one open PR made the whole low-priority backlog
+    // unclaimable while the census counted it as available, and
+    // the then-unconditional streak reset suppressed the filer
+    // for hours. Once the streak exceeds the bound, exactly ONE
+    // filer attempt is forced through and the streak resets, so
+    // a durable census/scan divergence still produces wrappers
+    // without re-introducing the #2106 wrapper flooding.
+    state.auditDisagreementStreak += 1;
+    if (
+      state.auditDisagreementStreak > AUDIT_DISAGREEMENT_SKIP_LIMIT &&
+      deps.runIdleTaskFiler
+    ) {
+      req.log(
+        `[idle-hooks] ${flagFragment} invoking=idle-task-filer reason=census_inversion_bound_exceeded streak=${state.auditDisagreementStreak} limit=${AUDIT_DISAGREEMENT_SKIP_LIMIT}`,
+      );
+      state.auditDisagreementStreak = 0;
+      try {
+        outcome.filed = true;
+        await deps.runIdleTaskFiler();
+      } catch (filerErr) {
+        const msg = filerErr instanceof Error
+          ? filerErr.message
+          : String(filerErr);
+        req.log(`Idle-task filer failed (continuing): ${msg}`);
+      }
+    } else {
+      req.log(
+        `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=unblocked_work_exists streak=${state.auditDisagreementStreak} limit=${AUDIT_DISAGREEMENT_SKIP_LIMIT}`,
+      );
+    }
+  } else if (auditDisagrees && deps.runIdleTaskFiler) {
+    state.auditDisagreementStreak += 1;
+    // Structured diagnostic on every disagreement so the
+    // scan/probe mismatch is observable per iteration.
+    req.log(
+      `[idle-hooks] ${flagFragment} action=audit_scan_disagreement claimable_total=${auditClaimableTotal} streak=${state.auditDisagreementStreak} limit=${AUDIT_DISAGREEMENT_SKIP_LIMIT}`,
+    );
+    if (state.auditDisagreementStreak > AUDIT_DISAGREEMENT_SKIP_LIMIT) {
+      // Bound exceeded: force a single filer attempt, then
+      // reset the streak so we do not file again until the
+      // disagreement persists for another full bound.
+      req.log(
+        `[idle-hooks] ${flagFragment} invoking=idle-task-filer reason=audit_disagreement_bound_exceeded streak=${state.auditDisagreementStreak} limit=${AUDIT_DISAGREEMENT_SKIP_LIMIT}`,
+      );
+      state.auditDisagreementStreak = 0;
+      try {
+        outcome.filed = true;
+        await deps.runIdleTaskFiler();
+      } catch (filerErr) {
+        const msg = filerErr instanceof Error
+          ? filerErr.message
+          : String(filerErr);
+        req.log(`Idle-task filer failed (continuing): ${msg}`);
+      }
+    } else {
+      req.log(
+        `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=audit_found_claimable claimable_total=${auditClaimableTotal} streak=${state.auditDisagreementStreak}`,
+      );
+    }
+  } else if (deps.runIdleTaskFiler) {
+    // No disagreement (probe agreed, audit unavailable, or no
+    // positive claimable total) — reset the streak and file as
+    // usual.
+    state.auditDisagreementStreak = 0;
+    req.log(
+      `[idle-hooks] ${flagFragment} invoking=idle-task-filer`,
+    );
+    try {
+      outcome.filed = true;
+      await deps.runIdleTaskFiler();
+    } catch (filerErr) {
+      const msg = filerErr instanceof Error
+        ? filerErr.message
+        : String(filerErr);
+      req.log(`Idle-task filer failed (continuing): ${msg}`);
+    }
+  } else {
+    req.log(
+      `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=no_hook`,
+    );
+  }
+  return outcome;
+}
+
+/**
  * Run the main worker event loop.
  *
  * This is the top-level orchestration: PID locking, initialisation, the
@@ -3214,15 +3957,21 @@ export async function runCoreLoop(
   deps: RunCoreDeps,
 ): Promise<RunCoreResult> {
   const tracker = createWorkProgressTracker();
-  // Issue #2106: monotonic tick counter passed to the idle-detect audit
-  // so its per-repo lines and per-tick summary share a correlation id
-  // log scrapers can group on.
-  let idleDetectTick = 0;
-  // Issue #2475: count consecutive audit/scan disagreement iterations
-  // (probe found claimable work while the scan reported none) so the
-  // #2106 budget-guard short-circuit cannot suppress the idle-task filer
-  // forever. Reset to 0 on any non-disagreement pass.
-  let auditDisagreementStreak = 0;
+  // Issue #925: one set of idle instruments for the whole run, shared by
+  // the end-of-cycle gate and by every idle slot.
+  //
+  // `idleDetectTick` (Issue #2106) is the monotonic correlation id the
+  // idle-detect audit stamps on its per-repo lines and per-tick summary.
+  // `auditDisagreementStreak` (Issue #2475) counts consecutive audit/scan
+  // disagreement iterations — probe found claimable work while the scan
+  // reported none — so the #2106 budget-guard short-circuit cannot suppress
+  // the idle-task filer forever; it resets to 0 on any non-disagreement
+  // pass. `filerLatch` is the Issue #925 single-flight guard.
+  const idleHookState: IdleHookState = {
+    idleDetectTick: 0,
+    auditDisagreementStreak: 0,
+    filerLatch: new IdleFilerLatch(),
+  };
   // Issue #2479: monotonic per-cycle counter so the liveness guard runs on
   // a bounded cadence (see LIVENESS_CHECK_CADENCE) instead of every cycle.
   let livenessTick = 0;
@@ -3271,6 +4020,45 @@ export async function runCoreLoop(
   let quotaPaused = false;
   /** Reset the quota pause was waiting on, in Unix seconds (Issue #342). */
   let quotaResetEpochSeconds = 0;
+  /**
+   * Why the fleet was idle this cycle (Issue #855). Set from the idle
+   * census when the scan claimed nothing, and used to attribute the
+   * cycle's idle seconds — and the run's trailing segment.
+   */
+  let fleetIdleReason: FleetIdleReason = "unknown";
+  /** Set once the fleet summary has been emitted, so `finally` is a no-op. */
+  let fleetSummaryEmitted = false;
+
+  // Issue #855: open the fleet accumulation window. Everything from here
+  // is either occupied, blocked, or idle for a recorded reason.
+  startFleetTelemetry(startTime);
+  // Issue #925: and the per-slot window beside it. Fleet occupancy is "at
+  // least one stream busy", which reads a half-idle pool as fully occupied;
+  // this measures the same run against the capacity the operator configured,
+  // so `1 of 2 slots busy` is 50% rather than 100%.
+  startSlotIdleAccounting(startTime, config.maxConcurrentIssues);
+
+  /**
+   * Close the current segment, log the fleet summary and persist the
+   * sidecar (Issue #855). Best-effort — a telemetry failure is reported
+   * but never aborts or fails the run.
+   */
+  async function emitFleetSummary(reason: FleetIdleReason): Promise<void> {
+    recordCycleIdle(reason, deps.now());
+    deps.log(formatFleetSummary(deps.now()));
+    // Issue #925: occupied slot-seconds against available slot-seconds, so
+    // an idle slot beside a busy sibling is a number an operator can trend.
+    deps.log(formatSlotUtilisationSummary(deps.now()));
+    if (!deps.writeFleetTelemetrySummary) return;
+    try {
+      await deps.writeFleetTelemetrySummary();
+    } catch (telemetryErr) {
+      const msg = telemetryErr instanceof Error
+        ? telemetryErr.message
+        : String(telemetryErr);
+      deps.log(`Fleet telemetry write failed (continuing): ${msg}`);
+    }
+  }
 
   // Build result helper
   function buildResult(reason: string): RunCoreResult {
@@ -3300,6 +4088,11 @@ export async function runCoreLoop(
   async function pauseUntilRateLimitReset(
     resetEpoch: number,
     source: string,
+    /**
+     * What the fleet was blocked on (Issue #855). Every caller but the
+     * mid-loop signal branch knows statically that it is GitHub.
+     */
+    blockKind: "rate_limited" | "token_blocked" = "rate_limited",
   ): Promise<{ outcome: "ok" | "shutdown" | "cap" | "duration" | "error" }> {
     // Refuse to wait past the run-duration cap — exit cleanly so the
     // supervisor can respawn for the next window.
@@ -3334,6 +4127,13 @@ export async function runCoreLoop(
       );
       return { outcome: "error" };
     }
+    // Issue #855: the seconds the fleet actually spent blocked, whatever
+    // ended the wait. A wait cut short by shutdown still cost that time.
+    recordBlockedSeconds(blockKind, waitResult.value.waited);
+    // Issue #925: no slot is idle while the fleet waits for a quota to
+    // refresh — every configured slot is blocked, so the capacity the pause
+    // consumed is booked to the block, by reason, and never to idle.
+    recordBlockedSlotSeconds(blockKind, waitResult.value.waited);
     if (waitResult.value.aborted === "shutdown") {
       deps.log(`${source}: shutdown during rate-limit wait — exiting cleanly`);
       return { outcome: "shutdown" };
@@ -3484,6 +4284,15 @@ export async function runCoreLoop(
           resetGhCallMetrics();
           // Issue #4299: per-cycle wall-time telemetry starts here.
           startCycleTimings(deps.now());
+          // Issue #855: fleet accumulators are deliberately NOT reset per
+          // cycle — they accumulate for the run. This only opens the cycle
+          // and clears last cycle's idle reason.
+          startFleetCycle(deps.now());
+          fleetIdleReason = "unknown";
+          // Issue #925: a new cycle is a new idle episode. Releasing the
+          // latch here preserves the pre-#925 cadence — at most one
+          // idle-task filed per cycle — whichever path files it.
+          idleHookState.filerLatch.release();
           // Issue #1783: drop the timeline-batch registry's accumulated
           // entries so the next iteration starts with a clean in-memory
           // map. Production wiring sets this; test deps may omit it.
@@ -3611,6 +4420,14 @@ export async function runCoreLoop(
           // backoff when the signal lacks a remaining-seconds value.
           const rateLimited = await deps.isRateLimitActive();
           if (rateLimited) {
+            // Issue #855: "no GitHub calls left" and "no model tokens left"
+            // share this signal but are different faults, so the pause is
+            // attributed to whichever the signal names.
+            const signalKind = await deps.getRateLimitBlockKind?.() ??
+              "github";
+            const blockKind = signalKind === "usage"
+              ? "token_blocked" as const
+              : "rate_limited" as const;
             const remaining = await deps.getRateLimitRemainingSeconds();
             if (remaining > 0) {
               const resetEpoch = Math.floor(deps.now() / 1000) + remaining;
@@ -3625,6 +4442,7 @@ export async function runCoreLoop(
               const wait = await pauseUntilRateLimitReset(
                 resetEpoch,
                 "Mid-loop signal",
+                blockKind,
               );
               if (wait.outcome === "shutdown" || wait.outcome === "duration") {
                 break;
@@ -3632,6 +4450,9 @@ export async function runCoreLoop(
             } else {
               deps.log("Rate limit active — backing off");
               await deps.sleep(config.rateLimitBackoff * 1000);
+              recordBlockedSeconds(blockKind, config.rateLimitBackoff);
+              // Issue #925: the backoff is blocked capacity, not idle.
+              recordBlockedSlotSeconds(blockKind, config.rateLimitBackoff);
             }
             continue;
           }
@@ -3667,9 +4488,9 @@ export async function runCoreLoop(
           }
 
           // --- Health checks ---
-          // Issue #2602: a failed check marks the worker unhealthy so neither
-          // the per-iteration heartbeat below nor the end-of-run report
-          // (gated on `lastHealthCheckPassed`) reports the host as healthy.
+          // Issue #2602: a failed check marks the worker unhealthy, so the
+          // loop result carries `lastHealthCheckPassed: false` and the host
+          // is never recorded as healthy for this run.
           const claudeHealth = await deps.checkClaudeHealth();
           if (!claudeHealth.ok || !claudeHealth.value.healthy) {
             lastHealthCheckPassed = false;
@@ -3704,8 +4525,8 @@ export async function runCoreLoop(
             // `[repo-access] host=… status=inaccessible repos=… consecutive=…`
             // — so the outage is recoverable from the log after the fact.
             // `logRepoAccessOnce` suppresses the identical line from the
-            // other call sites in the same iteration (the private-repo-6
-            // report), and the iteration boundary resets it.
+            // other call sites in the same iteration, and the iteration
+            // boundary resets it.
             logRepoAccessOnce(
               inaccessibleRepos,
               (line) => deps.logError(line),
@@ -3761,35 +4582,6 @@ export async function runCoreLoop(
                     : String(fableErr)
                 }`,
               );
-            }
-          }
-
-          // Issue #1935: emit a private-repo-6 heartbeat once per iteration so the
-          // host's row in `private-repo-6/docs/repos.json` advances even when the
-          // end-of-run path is killed by SIGTERM. `helpers/repos.sh`
-          // rate-limits to one push/hour, so frequent invocations are cheap
-          // no-ops.
-          //
-          // Issue #2602: the heartbeat is reported only AFTER the Claude and
-          // GitHub auth health checks pass. A worker that cannot authenticate
-          // (e.g. Claude 401) must NOT report itself healthy — skipping the
-          // heartbeat lets the host go stale on the dashboard so the failure
-          // is visible instead of being masked by a green "healthy" row.
-          // Best-effort — wrapped so a heartbeat failure cannot abort the loop.
-          //
-          // Issue #4038: the `lastHealthCheckPassed` guard is explicit because
-          // the monitored-repo access check above falls through instead of
-          // skipping the cycle. Without it, a host that cannot see its repos
-          // would keep heartbeating green — the exact #4028 false-healthy
-          // signature this gate exists to end.
-          if (lastHealthCheckPassed && deps.reportFleetHealthHeartbeat) {
-            try {
-              await deps.reportFleetHealthHeartbeat();
-            } catch (heartbeatErr) {
-              const msg = heartbeatErr instanceof Error
-                ? heartbeatErr.message
-                : String(heartbeatErr);
-              deps.log(`FLEET heartbeat failed (continuing): ${msg}`);
             }
           }
 
@@ -3908,6 +4700,7 @@ export async function runCoreLoop(
                       tracker,
                       endTime,
                       () => shutdownRequested,
+                      idleHookState,
                     ),
                 );
             } finally {
@@ -3932,10 +4725,12 @@ export async function runCoreLoop(
           // open-PR gate that also holds new issue claims. Rotating costs
           // nothing and changes no resource bound: still one agent-backed
           // pass at a time, just not always the same one first.
-          // `WORK_DIR` rather than a dep: the lane's own state belongs beside
-          // the other worker state on the volume, and `run_core` carries no
-          // work-directory of its own.
-          const laneWorkDir = Deno.env.get("WORK_DIR")?.trim() || undefined;
+          // The lane's own state belongs beside the other worker state on
+          // the volume. `config.workDir` carries the resolved work
+          // directory (Issue #966); `WORK_DIR` remains only as its default,
+          // for a caller that builds a config without one.
+          const laneWorkDir = config.workDir?.trim() ||
+            Deno.env.get("WORK_DIR")?.trim() || undefined;
           const laneOffset = await readLaneRotation(laneWorkDir);
           const rotatedLanePasses = rotate(deferredLanePasses, laneOffset);
           if (rotatedLanePasses.length > 1) {
@@ -4028,196 +4823,41 @@ export async function runCoreLoop(
           // whether the filer was invoked or skipped. Both flags appear
           // in every line so operators can tell at a glance which
           // signal drove the decision.
-          const flagFragment =
-            `foundClaimableIssue=${tracker.foundClaimableIssue} scanHadSuccess=${tracker.scanHadSuccess}`;
+          // Issue #925: the cycle gate keeps its fleet-wide question —
+          // "did the fleet claim anything?" — because at this point every
+          // slot has drained and the answer is the same either way. What
+          // changed is that it is no longer the ONLY place the hooks run:
+          // an idle slot runs them mid-cycle (see `runSlot`), and the
+          // shared latch stops the two paths filing twice for one episode.
           if (!tracker.foundClaimableIssue) {
-            // Issue #2106: run the idle-detect audit at the same gate
-            // as the filer so its `[idle-detect] ...` lines (and the
-            // `mis_classification` ALERT when the probe disagrees with
-            // the scan) appear in the log immediately before the filer
-            // makes its decision. Best-effort — any throw is caught
-            // and logged so an audit failure never aborts the loop.
-            let auditClaimableTotal: number | null = null;
-            if (deps.runIdleDetectAudit) {
-              idleDetectTick += 1;
-              try {
-                const auditResult = await deps.runIdleDetectAudit({
-                  tick: idleDetectTick,
-                  scanFoundClaimable: tracker.foundClaimableIssue,
-                });
-                if (
-                  auditResult !== undefined &&
-                  typeof auditResult.claimableTotal === "number"
-                ) {
-                  auditClaimableTotal = auditResult.claimableTotal;
-                }
-              } catch (auditErr) {
-                const msg = auditErr instanceof Error
-                  ? auditErr.message
-                  : String(auditErr);
-                deps.log(`Idle-detect audit failed (continuing): ${msg}`);
-              }
-            }
-            // Issue #2811: emit the per-repo claimable-work census at the
-            // idle-task filing decision point so the idle-vs-work-on
-            // inversion is observable from the log alone. Best-effort —
-            // any throw is caught and logged, never aborting the loop
-            // (mirrors the `Idle-task filer failed (continuing)` pattern).
-            // Issue #2813: capture the census's fleet-global inversion
-            // verdict (cache-backed — no extra issue-list call) so it can
-            // suppress the filer below when real work exists anywhere in
-            // the monitored set, even when it was only deferred this cycle.
-            //
-            // Issue #437: the census is also told whether the scan
-            // completed an eligibility pass this cycle. Every VibeCoder
-            // inversion alert on 2026-08-26 followed a `stop reason=deadline`
-            // line by about a minute — the scan had stopped before its next
-            // claim and never evaluated the backlog — yet three such cycles
-            // escalated to a human as "the claim scan keeps refusing" work
-            // nothing had refused.
-            let censusInversionDetected = false;
-            if (deps.runIdleDecisionCensus) {
-              try {
-                const censusResult = await deps.runIdleDecisionCensus({
-                  decisionPoint: "filing",
-                  claimScanCompleted:
-                    scanResult.eligibilityScanCompleted === true,
-                  // Issue #460: a repo the scan served is not one it refused.
-                  claimedRepos: [...tracker.claimedRepos],
-                });
-                if (
-                  censusResult !== undefined &&
-                  censusResult.inversionDetected === true
-                ) {
-                  censusInversionDetected = true;
-                }
-              } catch (censusErr) {
-                const msg = censusErr instanceof Error
-                  ? censusErr.message
-                  : String(censusErr);
-                deps.log(`Idle-decision census failed (continuing): ${msg}`);
-              }
-            }
-            // Budget guard: when the audit's independent probe already
-            // sees claimable work somewhere in the monitored set, the
-            // scan loop's `foundClaimableIssue=false` is almost
-            // certainly mis-classification (see Issue #2106 and the
-            // private-repo-10 #45-#48 incident). Filing more `idle-task`
-            // wrappers won't help and burns GraphQL budget the next
-            // iteration needs to actually claim the existing ones, so
-            // skip the filer this iteration. The next iteration's
-            // scan gets a fresh chance to pick up the existing
-            // claimable issues.
-            //
-            // Issue #2475: bound the short-circuit so a *persistent*
-            // disagreement cannot suppress filing indefinitely. Each
-            // disagreement iteration increments a streak and emits a
-            // structured diagnostic; while the streak stays within
-            // AUDIT_DISAGREEMENT_SKIP_LIMIT the filer is skipped as
-            // before, but once it exceeds the bound exactly ONE filer
-            // attempt is forced through and the streak resets — so a
-            // durable disagreement still produces wrappers without
-            // re-introducing the #2106 wrapper flooding.
-            const auditDisagrees = auditClaimableTotal !== null &&
-              auditClaimableTotal > 0;
-            if (censusInversionDetected) {
-              // Issue #2813: the cache-backed census found an open,
-              // unblocked top-priority/work-on/low-priority issue
-              // somewhere in the monitored set — even if it was only
-              // deferred this cycle by nice/rotation/cooldown. The fleet
-              // has real work, so filing an idle-task would invert
-              // priority (#2806). Suppress the filer this iteration.
-              //
-              // Issue #3526: the suppression participates in the same
-              // #2475 bound as the audit disagreement instead of clearing
-              // the streak. The census does not model every rule the scan
-              // applies (open-PR blocking, milestone occupancy, TOCTOU,
-              // cooldowns), so its "there is work" verdict can be wrong
-              // about work the scan will never claim — in the host-23
-              // incident one open PR made the whole low-priority backlog
-              // unclaimable while the census counted it as available, and
-              // the then-unconditional streak reset suppressed the filer
-              // for hours. Once the streak exceeds the bound, exactly ONE
-              // filer attempt is forced through and the streak resets, so
-              // a durable census/scan divergence still produces wrappers
-              // without re-introducing the #2106 wrapper flooding.
-              auditDisagreementStreak += 1;
-              if (
-                auditDisagreementStreak > AUDIT_DISAGREEMENT_SKIP_LIMIT &&
-                deps.runIdleTaskFiler
-              ) {
-                deps.log(
-                  `[idle-hooks] ${flagFragment} invoking=idle-task-filer reason=census_inversion_bound_exceeded streak=${auditDisagreementStreak} limit=${AUDIT_DISAGREEMENT_SKIP_LIMIT}`,
-                );
-                auditDisagreementStreak = 0;
-                try {
-                  await deps.runIdleTaskFiler();
-                } catch (filerErr) {
-                  const msg = filerErr instanceof Error
-                    ? filerErr.message
-                    : String(filerErr);
-                  deps.log(`Idle-task filer failed (continuing): ${msg}`);
-                }
-              } else {
-                deps.log(
-                  `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=unblocked_work_exists streak=${auditDisagreementStreak} limit=${AUDIT_DISAGREEMENT_SKIP_LIMIT}`,
-                );
-              }
-            } else if (auditDisagrees && deps.runIdleTaskFiler) {
-              auditDisagreementStreak += 1;
-              // Structured diagnostic on every disagreement so the
-              // scan/probe mismatch is observable per iteration.
-              deps.log(
-                `[idle-hooks] ${flagFragment} action=audit_scan_disagreement claimable_total=${auditClaimableTotal} streak=${auditDisagreementStreak} limit=${AUDIT_DISAGREEMENT_SKIP_LIMIT}`,
-              );
-              if (auditDisagreementStreak > AUDIT_DISAGREEMENT_SKIP_LIMIT) {
-                // Bound exceeded: force a single filer attempt, then
-                // reset the streak so we do not file again until the
-                // disagreement persists for another full bound.
-                deps.log(
-                  `[idle-hooks] ${flagFragment} invoking=idle-task-filer reason=audit_disagreement_bound_exceeded streak=${auditDisagreementStreak} limit=${AUDIT_DISAGREEMENT_SKIP_LIMIT}`,
-                );
-                auditDisagreementStreak = 0;
-                try {
-                  await deps.runIdleTaskFiler();
-                } catch (filerErr) {
-                  const msg = filerErr instanceof Error
-                    ? filerErr.message
-                    : String(filerErr);
-                  deps.log(`Idle-task filer failed (continuing): ${msg}`);
-                }
-              } else {
-                deps.log(
-                  `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=audit_found_claimable claimable_total=${auditClaimableTotal} streak=${auditDisagreementStreak}`,
-                );
-              }
-            } else if (deps.runIdleTaskFiler) {
-              // No disagreement (probe agreed, audit unavailable, or no
-              // positive claimable total) — reset the streak and file as
-              // usual.
-              auditDisagreementStreak = 0;
-              deps.log(
-                `[idle-hooks] ${flagFragment} invoking=idle-task-filer`,
-              );
-              try {
-                await deps.runIdleTaskFiler();
-              } catch (filerErr) {
-                const msg = filerErr instanceof Error
-                  ? filerErr.message
-                  : String(filerErr);
-                deps.log(`Idle-task filer failed (continuing): ${msg}`);
+            if (idleHookState.filerLatch.tryConsume()) {
+              const hookOutcome = await runIdleWorkHooks(deps, idleHookState, {
+                log: (message) => deps.log(message),
+                scanFoundClaimable: tracker.foundClaimableIssue,
+                scanHadSuccess: tracker.scanHadSuccess,
+                claimScanCompleted:
+                  scanResult.eligibilityScanCompleted === true,
+                claimedRepos: [...tracker.claimedRepos],
+                scanExcludedRepos: scanResult.scanExcludedRepos ?? [],
+              });
+              // Issue #855: the census already knows why every repo was
+              // passed over, so it names the reason the fleet's idle
+              // seconds are booked against.
+              if (hookOutcome.idleReason !== undefined) {
+                fleetIdleReason = hookOutcome.idleReason;
               }
             } else {
+              // An idle slot already filed for this episode (Issue #925).
               deps.log(
-                `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=no_hook`,
+                `[idle-hooks] foundClaimableIssue=${tracker.foundClaimableIssue} scanHadSuccess=${tracker.scanHadSuccess} skipping=idle-task-filer reason=slot_already_filed`,
               );
             }
           } else {
             // Issue #2475: the scan found claimable work, so there is no
             // disagreement to bound — clear the streak.
-            auditDisagreementStreak = 0;
+            idleHookState.auditDisagreementStreak = 0;
             deps.log(
-              `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=found-issue`,
+              `[idle-hooks] foundClaimableIssue=${tracker.foundClaimableIssue} scanHadSuccess=${tracker.scanHadSuccess} skipping=idle-task-filer reason=found-issue`,
             );
           }
 
@@ -4270,6 +4910,15 @@ export async function runCoreLoop(
             const jitteredSleep = sleepWithJitter(backoffInterval);
             await deps.sleep(jitteredSleep * 1000);
           }
+
+          // --- Fleet telemetry (Issue #855) ---
+          // After the sleep, so the cycle's idle seconds include it. A
+          // cycle that served work books its unoccupied remainder against
+          // `served`; a cycle that claimed nothing books the whole of it
+          // against the census's reason. The reason is retained so the
+          // run's trailing segment is attributed, not left `unknown`.
+          if (tracker.foundClaimableIssue) fleetIdleReason = "served";
+          await emitFleetSummary(fleetIdleReason);
 
           // Issue #2427: the resume skip applies once. After a full sweep
           // completes, subsequent iterations dispatch from Priority 1.
@@ -4350,6 +4999,14 @@ export async function runCoreLoop(
     }
     await deps.writeFaultToleranceSummary();
 
+    // Fleet telemetry for the whole run (Issue #855). Closes the trailing
+    // segment — the shutdown work after the last cycle is idle too — then
+    // logs the run's totals and persists them for the next run to add to.
+    // The `finally` below repeats this for every abnormal exit; a quota
+    // pause is exactly the run whose numbers matter most.
+    await emitFleetSummary(fleetIdleReason);
+    fleetSummaryEmitted = true;
+
     deps.logWorkerSummary(
       tracker.issuesProcessed,
       (deps.now() - startTime) / 1000,
@@ -4417,6 +5074,17 @@ export async function runCoreLoop(
     fatalError = true;
     return buildResult(`Fatal error: ${message}`);
   } finally {
+    // Issue #855: a run that exits through the quota-pause, transient-network
+    // or fatal-error path is exactly the run whose idle and blocked seconds
+    // an operator needs, so the summary and the sidecar are emitted here too
+    // — once, guarded by the flag the normal path sets.
+    if (!fleetSummaryEmitted) {
+      fleetSummaryEmitted = true;
+      try {
+        await emitFleetSummary(fleetIdleReason);
+      } catch { /* best-effort */ }
+    }
+
     // --- Cleanup ---
     // Issue #2670 (shutdown/rate-limit path): the per-issue claim is released
     // inside the scan loop (success/failure/skip). For an issue interrupted

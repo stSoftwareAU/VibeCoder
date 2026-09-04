@@ -5,6 +5,8 @@
   "exports": "./mod.ts",
   "tasks": {
     "test": "deno test --frozen --lock=deno.lock --allow-read --allow-env --allow-run --allow-write --allow-sys=hostname",
+    "test:unit": "deno run --frozen --lock=deno.lock --allow-env --allow-read --allow-run unit_test_runner.ts",
+    "test:integration": "deno run --frozen --lock=deno.lock --allow-env --allow-read --allow-run unit_test_runner.ts --integration",
     "test:run-mode": "deno task test tests/run_sh_launcher_test.ts tests/run_ps1_launcher_test.ts tests/launcher_parity_test.ts tests/launcher_source_test.ts tests/run_mode_test.ts tests/run_mode_ci_coverage_test.ts tests/container_launch_test.ts tests/container_runtime_test.ts tests/setup_prerequisites_test.ts",
     "audit": "deno audit",
     "check": "deno check --frozen --lock=deno.lock '**/*.ts'",
@@ -15,6 +17,7 @@
     "audit-log-tail": "deno run --frozen --lock=deno.lock --allow-read --allow-env mod.ts audit-log-tail",
     "audit-chain-verify": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env mod.ts audit-chain-verify",
     "backlog-report": "deno run --frozen --lock=deno.lock --allow-read --allow-env --allow-run mod.ts backlog-report",
+    "callback-conformance": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-run --allow-env mod.ts callback-conformance",
     "green-gate-report": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname mod.ts green-gate-report",
     "security-tabletop": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname mod.ts security-tabletop",
     "publish-decision-check": "deno run --frozen --lock=deno.lock --allow-read --allow-env mod.ts publish-decision-check --repo ../..",

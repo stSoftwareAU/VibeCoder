@@ -60,9 +60,9 @@ Deno.test("withEnv - restores the environment when the body throws", async () =>
 });
 
 Deno.test("withCleanEnv - hides an ambient variable the caller did not name", async () => {
-  // This is the whole point of Issue #378: FLEET_HEALTH_REPO and friends are
-  // set inside the worker container, and a code path under test must not see
-  // them unless the test asked for them.
+  // This is the whole point of Issue #378: the worker container sets its own
+  // variables, and a code path under test must not see them unless the test
+  // asked for them.
   Deno.env.set(PROBE, "from-the-worker-container");
   try {
     await withCleanEnv({ [ABSENT]: "declared" }, () => {

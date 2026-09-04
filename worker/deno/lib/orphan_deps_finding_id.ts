@@ -16,7 +16,7 @@
  *      (best-practices, test-audit, github-actions-audit,
  *      supply-chain-readiness) for the same package — see
  *      {@link computeOrphanDepsFindingId}. This mirrors the recipe the
- *      prompt (`prompts/orphan_deps/v1.md`) tells Claude to emit and the
+ *      prompt (`prompts/orphan_deps/prompt.md`) tells Claude to emit and the
  *      `BP-` prefix is load-bearing: `listKnownOpenFindingIds` defaults
  *      its prefix filter to `BP-`, so a non-`BP-` id silently breaks the
  *      known-open dedup.

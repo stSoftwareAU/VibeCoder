@@ -23,6 +23,7 @@ import {
   type CredentialFailureCode,
   credentialPreflightMessage,
   DEFAULT_CREDENTIAL_DIR_SUFFIX,
+  discoverProviderTokenFiles,
   extractGhToken,
   parseProviderCredentials,
   resolveCredentialDir,
@@ -34,6 +35,7 @@ import {
   CLAUDE_PROVIDER_ID,
   DEEPSEEK_PROVIDER_ID,
   enabledAgentProviders,
+  resolveAgentProvider,
 } from "../lib/agent_provider.ts";
 import { isGhAuthError } from "../lib/gh_auth.ts";
 
@@ -62,6 +64,11 @@ async function withCredentialDir(
   options: {
     ghToken?: string | null;
     providerKey?: string | null;
+    /**
+     * Write `provider.env` as an OAuth subscription token instead of an API
+     * key — the credential the token pool of Issue #917 is made of.
+     */
+    oauthToken?: string;
     fileMode?: number;
   } = {},
 ): Promise<void> {
@@ -86,11 +93,13 @@ async function withCredentialDir(
   const providerKey = options.providerKey === undefined
     ? "sk-ant-test"
     : options.providerKey;
-  if (providerKey !== null) {
-    await Deno.writeTextFile(
-      `${dir}/claude/provider.env`,
-      `ANTHROPIC_API_KEY=${providerKey}\n`,
-    );
+  const providerLine = options.oauthToken !== undefined
+    ? `CLAUDE_CODE_OAUTH_TOKEN=${options.oauthToken}\n`
+    : providerKey !== null
+    ? `ANTHROPIC_API_KEY=${providerKey}\n`
+    : null;
+  if (providerLine !== null) {
+    await Deno.writeTextFile(`${dir}/claude/provider.env`, providerLine);
     if (Deno.build.os !== "windows") {
       await Deno.chmod(`${dir}/claude/provider.env`, mode);
     }
@@ -509,4 +518,230 @@ Deno.test("applyProviderCredentialEnv - a missing credential file exports nothin
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Multiple Claude token files (Issue #917, parent #902).
+//
+// An operator may hold several Claude subscriptions and wants them spent
+// evenly, so extra tokens sit beside claude/provider.env as provider-2.env,
+// provider-3.env, ... This sub-issue only finds them, checks them and exports
+// exactly one; the budget probe (#918) and the budget-based selection (#919)
+// replace the deterministic first-in-order selector. A host with zero or one
+// token file must be indistinguishable from before.
+// ---------------------------------------------------------------------------
+
+const CLAUDE = resolveAgentProvider(CLAUDE_PROVIDER_ID);
+
+/** Write one Claude token file at owner-only permissions. */
+async function writeTokenFile(
+  dir: string,
+  name: string,
+  body: string,
+  mode = 0o600,
+): Promise<void> {
+  const path = `${dir}/claude/${name}`;
+  await Deno.writeTextFile(path, body);
+  if (Deno.build.os !== "windows") await Deno.chmod(path, mode);
+}
+
+Deno.test("discoverProviderTokenFiles - an empty provider directory yields nothing", async () => {
+  await withCredentialDir(async (dir) => {
+    assertEquals(await discoverProviderTokenFiles(dir, CLAUDE), []);
+  }, { providerKey: null });
+});
+
+Deno.test("discoverProviderTokenFiles - one token file is the single record it always was", async () => {
+  await withCredentialDir(async (dir) => {
+    const tokens = await discoverProviderTokenFiles(dir, CLAUDE);
+    assertEquals(tokens.length, 1);
+    assertEquals(tokens[0]?.label, "provider");
+    assertEquals(tokens[0]?.path, `${dir}/claude/provider.env`);
+    assertEquals(tokens[0]?.name, "CLAUDE_CODE_OAUTH_TOKEN");
+    assertEquals(tokens[0]?.primary, true);
+    // An OAuth subscription token is what the budget selection weighs.
+    assertEquals(tokens[0]?.poolMember, true);
+  }, { providerKey: null, oauthToken: "sk-ant-oat01-one" });
+});
+
+Deno.test("discoverProviderTokenFiles - numbered files follow the primary in ascending numeric order", async () => {
+  await withCredentialDir(async (dir) => {
+    // Written out of order, and with a two-digit ordinal, because a text sort
+    // of the directory listing would put provider-10 before provider-2.
+    await writeTokenFile(
+      dir,
+      "provider-10.env",
+      "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-ten\n",
+    );
+    await writeTokenFile(
+      dir,
+      "provider-2.env",
+      "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-two\n",
+    );
+    const tokens = await discoverProviderTokenFiles(dir, CLAUDE);
+    assertEquals(tokens.map((token) => token.label), [
+      "provider",
+      "provider-2",
+      "provider-10",
+    ]);
+    assertEquals(tokens.map((token) => token.primary), [true, false, false]);
+    assertEquals(tokens.map((token) => token.poolMember), [true, true, true]);
+    // Files that are not the pattern are not tokens: no README, backup copy
+    // or editor swap file becomes a candidate credential.
+    await writeTokenFile(dir, "notes.txt", "not a credential\n");
+    await writeTokenFile(
+      dir,
+      "provider-two.env",
+      "CLAUDE_CODE_OAUTH_TOKEN=x\n",
+    );
+    assertEquals((await discoverProviderTokenFiles(dir, CLAUDE)).length, 3);
+  }, { providerKey: null, oauthToken: "sk-ant-oat01-one" });
+});
+
+Deno.test("discoverProviderTokenFiles - a provider without a pool never gains extra files", async () => {
+  const deepseek = resolveAgentProvider(DEEPSEEK_PROVIDER_ID);
+  assertEquals(deepseek.credentials.tokenPool, undefined);
+  await withCredentialDir(async (dir) => {
+    await Deno.mkdir(`${dir}/deepseek`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/deepseek/provider.env`,
+      "DEEPSEEK_API_KEY=sk-deepseek-one\n",
+    );
+    await Deno.writeTextFile(
+      `${dir}/deepseek/provider-2.env`,
+      "DEEPSEEK_API_KEY=sk-deepseek-two\n",
+    );
+    const tokens = await discoverProviderTokenFiles(dir, deepseek);
+    assertEquals(tokens.map((token) => token.label), ["provider"]);
+  });
+});
+
+Deno.test("checkCredentialPreflight - a numbered token file is permission-checked too", async () => {
+  if (Deno.build.os === "windows") return;
+  await withCredentialDir(async (dir) => {
+    await writeTokenFile(
+      dir,
+      "provider-2.env",
+      "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-two\n",
+      0o644,
+    );
+    const result = await checkCredentialPreflight({ dir, env: envOf() });
+    assertEquals(result.ok, false);
+    const open = result.failures.filter(
+      (f) => f.code === "credential-permissions-too-open",
+    );
+    assertEquals(open.length, 1);
+    assertEquals(open[0]?.path, `${dir}/claude/provider-2.env`);
+    assert(credentialPreflightMessage(result).includes("chmod 600"));
+  });
+});
+
+Deno.test("checkCredentialPreflight - a numbered token file with no recognised variable fails by name", async () => {
+  await withCredentialDir(async (dir) => {
+    await writeTokenFile(
+      dir,
+      "provider-2.env",
+      "# a hand-typed mistake\nANTHROPIC_TOKEN=sk-ant-oat01-two\n",
+    );
+    const result = await checkCredentialPreflight({ dir, env: envOf() });
+    assertEquals(result.ok, false);
+    assertEquals(codesOf(result.failures), [
+      "provider-token-file-unrecognised",
+    ]);
+    const failure = result.failures[0];
+    assertEquals(failure?.path, `${dir}/claude/provider-2.env`);
+    assertEquals(failure?.provider, CLAUDE_PROVIDER_ID);
+    // Names the file and the variables it could have used — never a silent
+    // skip that leaves the operator with a token the worker ignores.
+    assert(failure?.message.includes("provider-2.env"), failure?.message);
+    assert(
+      failure?.message.includes("CLAUDE_CODE_OAUTH_TOKEN"),
+      failure?.message,
+    );
+    // The token value itself never reaches the operator-facing message.
+    assert(!credentialPreflightMessage(result).includes("sk-ant-oat01-two"));
+  });
+});
+
+Deno.test("checkCredentialPreflight - an API-key-only numbered file passes and stays out of the pool", async () => {
+  await withCredentialDir(async (dir) => {
+    await writeTokenFile(
+      dir,
+      "provider-2.env",
+      "ANTHROPIC_API_KEY=sk-ant-metered\n",
+    );
+    const result = await checkCredentialPreflight({ dir, env: envOf() });
+    assertEquals(result.failures, []);
+    assertEquals(result.ok, true);
+    const tokens = await discoverProviderTokenFiles(dir, CLAUDE);
+    assertEquals(tokens.map((token) => token.poolMember), [false, false]);
+  });
+});
+
+Deno.test("checkCredentialPreflight - three token files still pass and still report one source", async () => {
+  await withCredentialDir(async (dir) => {
+    await writeTokenFile(
+      dir,
+      "provider-2.env",
+      "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-two\n",
+    );
+    await writeTokenFile(
+      dir,
+      "provider-3.env",
+      "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-three\n",
+    );
+    const result = await checkCredentialPreflight({ dir, env: envOf() });
+    assertEquals(result.failures, []);
+    assertEquals(result.ok, true);
+    assertEquals(result.providerSource, "directory");
+    assert(credentialPreflightMessage(result).includes("claude=directory"));
+  }, { providerKey: null, oauthToken: "sk-ant-oat01-one" });
+});
+
+Deno.test("applyProviderCredentialEnv - exports exactly one token however many exist", async () => {
+  await withCredentialDir(async (dir) => {
+    await writeTokenFile(
+      dir,
+      "provider-2.env",
+      "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-two\n",
+    );
+    await writeTokenFile(
+      dir,
+      "provider-3.env",
+      "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-three\n",
+    );
+    const set: Array<[string, string]> = [];
+    const exported = await applyProviderCredentialEnv({
+      dir,
+      env: () => undefined,
+      setEnv: (name, value) => set.push([name, value]),
+      providers: [CLAUDE],
+    });
+    // One variable, and it is the first in discovery order — the seam #919
+    // replaces with the most-remaining-budget token.
+    assertEquals(exported, ["CLAUDE_CODE_OAUTH_TOKEN"]);
+    assertEquals(set, [["CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-one"]]);
+  }, { providerKey: null, oauthToken: "sk-ant-oat01-one" });
+});
+
+Deno.test("applyProviderCredentialEnv - the selector seam decides which token is exported", async () => {
+  await withCredentialDir(async (dir) => {
+    await writeTokenFile(
+      dir,
+      "provider-2.env",
+      "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-two\n",
+    );
+    const set: Array<[string, string]> = [];
+    // What #918/#919 plug in: a selector that ranks the discovered pool.
+    const exported = await applyProviderCredentialEnv({
+      dir,
+      env: () => undefined,
+      setEnv: (name, value) => set.push([name, value]),
+      providers: [CLAUDE],
+      selectToken: (tokens) =>
+        tokens.find((token) => token.label === "provider-2") ?? null,
+    });
+    assertEquals(exported, ["CLAUDE_CODE_OAUTH_TOKEN"]);
+    assertEquals(set, [["CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-two"]]);
+  }, { providerKey: null, oauthToken: "sk-ant-oat01-one" });
 });

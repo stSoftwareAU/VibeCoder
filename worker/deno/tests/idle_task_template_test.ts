@@ -26,6 +26,10 @@ import {
 
 // Import the security-scan template module for its registration side-effect.
 import "../lib/idle_task_templates/security_scan_template.ts";
+import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
+
+// Prompts resolve against this checkout, never the worker host's (Issue #844).
+pinPromptsToThisCheckout();
 
 function makeTemplate(name: string): IdleTaskTemplate {
   return {

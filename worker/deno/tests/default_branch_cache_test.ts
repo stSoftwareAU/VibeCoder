@@ -5,11 +5,27 @@
  * we don't re-query the GitHub API every run_core cycle. Stale entries
  * can be invalidated when callers detect a branch has been renamed.
  *
+ * **Deferred from the Issue #964 migration, deliberately.** The other four
+ * branch-cache suites moved onto the cache-path parameter and left the
+ * manifest; this one cannot yet. What it asserts is the *resolution of the
+ * default path itself* — that `WORK_DIR` unset means no cache directory at
+ * all (Issue #132) and that the legacy `$HOME/.vibe-coder` location is not
+ * even read. Those two variables are read by `lib/worker_cache_dir.ts`,
+ * which `worker_cache_dir_test.ts` (a different batch of #944) also covers,
+ * so draining them belongs to that module's batch rather than to this one.
+ * Until then this suite keeps `tests/support/env.ts` and stays in
+ * `PROCESS_STATE_MUTATOR_TEST_FILES`.
+ *
+ * The half that *can* move has: `defaultBranchCachePath` takes an
+ * `EnvLookup`, asserted directly below.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assertEquals } from "@std/assert";
 import {
+  DEFAULT_BRANCH_CACHE_FILE,
+  DEFAULT_BRANCH_CACHE_PATH_ENV,
   DEFAULT_BRANCH_CACHE_TTL_MS,
   defaultBranchCachePath,
   getCachedDefaultBranch,
@@ -19,11 +35,36 @@ import {
   setCachedDefaultBranch,
 } from "../lib/default_branch_cache.ts";
 import { withEnv } from "./support/env.ts";
+import { workerCachePath } from "../lib/worker_cache_dir.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 async function tempCachePath(): Promise<string> {
   const dir = await Deno.makeTempDir({ prefix: "vibe-dbcache-" });
   return `${dir}/default-branch-cache.json`;
 }
+
+Deno.test("default_branch_cache - defaultBranchCachePath answers from the lookup it is given (Issue #964)", () => {
+  // A path no host exports: a read that fell back to `Deno.env.get` would
+  // return the worker cache path (or undefined) instead.
+  const sentinel = "/tmp/sentinel-964/default-branch-cache.json";
+  assertEquals(
+    defaultBranchCachePath(
+      envFrom({ [DEFAULT_BRANCH_CACHE_PATH_ENV]: sentinel }),
+    ),
+    sentinel,
+  );
+
+  // No override in the map means the worker cache directory decides, and an
+  // empty override is not an override.
+  assertEquals(
+    defaultBranchCachePath(emptyEnv),
+    workerCachePath(DEFAULT_BRANCH_CACHE_FILE),
+  );
+  assertEquals(
+    defaultBranchCachePath(envFrom({ [DEFAULT_BRANCH_CACHE_PATH_ENV]: "" })),
+    workerCachePath(DEFAULT_BRANCH_CACHE_FILE),
+  );
+});
 
 Deno.test("default_branch_cache - TTL constant is 7 days", () => {
   const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;

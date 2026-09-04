@@ -20,6 +20,7 @@ import {
   warnTrustedReviewBots,
 } from "../lib/config_validator.ts";
 import type { ConfigFile } from "../types.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 async function withTempConfig(
   config: ConfigFile,
@@ -70,11 +71,12 @@ Deno.test(
 Deno.test(
   "trustedReviewBots - loadConfig uses defaults when not configured",
   async () => {
-    Deno.env.delete("TRUSTED_REVIEW_BOTS");
     await withTempConfig(
       { allowed_authors: ["alice"], repos: ["org/repo"] },
       async (configPath) => {
-        const config = await loadConfig(configPath);
+        // No TRUSTED_REVIEW_BOTS anywhere — injected, so the real process
+        // environment cannot decide this (Issue #956).
+        const config = await loadConfig(configPath, { env: emptyEnv });
         assertEquals(
           config.trustedReviewBots,
           [...DEFAULT_TRUSTED_REVIEW_BOTS],
@@ -89,7 +91,6 @@ Deno.test(
 Deno.test(
   "trustedReviewBots - loadConfig honours JSON override",
   async () => {
-    Deno.env.delete("TRUSTED_REVIEW_BOTS");
     await withTempConfig(
       {
         allowed_authors: ["alice"],
@@ -97,7 +98,7 @@ Deno.test(
         trusted_review_bots: ["custom-bot[bot]", "linter-x[bot]"],
       },
       async (configPath) => {
-        const config = await loadConfig(configPath);
+        const config = await loadConfig(configPath, { env: emptyEnv });
         assertEquals(
           config.trustedReviewBots,
           ["custom-bot[bot]", "linter-x[bot]"],
@@ -110,7 +111,6 @@ Deno.test(
 Deno.test(
   "trustedReviewBots - empty JSON array overrides defaults to empty",
   async () => {
-    Deno.env.delete("TRUSTED_REVIEW_BOTS");
     await withTempConfig(
       {
         allowed_authors: ["alice"],
@@ -118,7 +118,7 @@ Deno.test(
         trusted_review_bots: [],
       },
       async (configPath) => {
-        const config = await loadConfig(configPath);
+        const config = await loadConfig(configPath, { env: emptyEnv });
         assertEquals(config.trustedReviewBots, []);
       },
     );
@@ -130,28 +130,47 @@ Deno.test(
 Deno.test(
   "trustedReviewBots - TRUSTED_REVIEW_BOTS env var overrides JSON",
   async () => {
-    Deno.env.set(
-      "TRUSTED_REVIEW_BOTS",
-      "env-bot[bot], another-bot[bot]",
+    await withTempConfig(
+      {
+        allowed_authors: ["alice"],
+        repos: ["org/repo"],
+        trusted_review_bots: ["json-bot[bot]"],
+      },
+      async (configPath) => {
+        const config = await loadConfig(configPath, {
+          env: envFrom({
+            TRUSTED_REVIEW_BOTS: "env-bot[bot], another-bot[bot]",
+          }),
+        });
+        assertEquals(
+          config.trustedReviewBots,
+          ["env-bot[bot]", "another-bot[bot]"],
+        );
+      },
     );
-    try {
-      await withTempConfig(
-        {
-          allowed_authors: ["alice"],
-          repos: ["org/repo"],
-          trusted_review_bots: ["json-bot[bot]"],
-        },
-        async (configPath) => {
-          const config = await loadConfig(configPath);
-          assertEquals(
-            config.trustedReviewBots,
-            ["env-bot[bot]", "another-bot[bot]"],
-          );
-        },
-      );
-    } finally {
-      Deno.env.delete("TRUSTED_REVIEW_BOTS");
-    }
+  },
+);
+
+Deno.test(
+  "trustedReviewBots - a blank TRUSTED_REVIEW_BOTS defers to JSON (Issue #956)",
+  async () => {
+    // The env leg is "set and non-empty wins", not "set wins": an exported
+    // but empty variable must not blank the list out. Only reachable now
+    // that the lookup is injected — the previous spelling could not tell an
+    // empty export from an absent one without touching the process.
+    await withTempConfig(
+      {
+        allowed_authors: ["alice"],
+        repos: ["org/repo"],
+        trusted_review_bots: ["json-bot[bot]"],
+      },
+      async (configPath) => {
+        const config = await loadConfig(configPath, {
+          env: envFrom({ TRUSTED_REVIEW_BOTS: "" }),
+        });
+        assertEquals(config.trustedReviewBots, ["json-bot[bot]"]);
+      },
+    );
   },
 );
 
@@ -160,7 +179,10 @@ Deno.test(
 Deno.test(
   "trustedReviewBots - load-config exports TRUSTED_REVIEW_BOTS bash array",
   async () => {
-    Deno.env.delete("TRUSTED_REVIEW_BOTS");
+    // The command owns its own config load, so this one asserts the shell
+    // formatting rather than the env precedence (covered above). Nothing in
+    // the suite sets TRUSTED_REVIEW_BOTS any more (Issue #956), so there is
+    // no longer a racing writer to guard against.
     await withTempConfig(
       {
         allowed_authors: ["alice"],

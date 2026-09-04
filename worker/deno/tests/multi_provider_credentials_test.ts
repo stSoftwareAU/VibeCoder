@@ -15,7 +15,7 @@
  * Australian English spelling throughout (behaviour, authorised, organisation).
  */
 
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   type AgentProviderDescriptor,
   agentProviderIds,
@@ -48,6 +48,7 @@ import {
   credentialPreflightMessage,
 } from "../lib/credential_preflight.ts";
 import { loadConfig } from "../lib/config.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 const REPO_ROOT = new URL(import.meta.url).pathname.replace(
   /\/worker\/deno\/tests\/[^/]+$/,
@@ -62,11 +63,6 @@ const MANIFEST: ContainerManifest = parseContainerManifest(
 const ALL_PROVIDERS: AgentProviderDescriptor[] = agentProviderIds().map(
   resolveAgentProvider,
 );
-
-/** An environment lookup over a plain map. */
-function envOf(map: Record<string, string> = {}) {
-  return (name: string): string | undefined => map[name];
-}
 
 /** Launch inputs for a fixed set of host paths. */
 function launchInputs(
@@ -140,12 +136,12 @@ async function withCredentialDir(
 
 Deno.test("resolveEnabledAgentProviderIds - defaults to the active provider alone", () => {
   setConfiguredEnabledAgentProviderIds(undefined);
-  assertEquals(resolveEnabledAgentProviderIds({ env: envOf() }), [
+  assertEquals(resolveEnabledAgentProviderIds({ env: envFrom() }), [
     CLAUDE_PROVIDER_ID,
   ]);
   // The descriptor form the preflight and the launcher consume.
   assertEquals(
-    enabledAgentProviders({ env: envOf() }).map((provider) => provider.id),
+    enabledAgentProviders({ env: envFrom() }).map((provider) => provider.id),
     [CLAUDE_PROVIDER_ID],
   );
 });
@@ -154,7 +150,7 @@ Deno.test("resolveEnabledAgentProviderIds - configuration enables a multi-vendor
   const ids = agentProviderIds();
   assertEquals(
     resolveEnabledAgentProviderIds({
-      env: envOf(),
+      env: envFrom(),
       configuredProviders: ids,
     }),
     ids,
@@ -165,7 +161,7 @@ Deno.test("resolveEnabledAgentProviderIds - the environment overrides configurat
   const ids = agentProviderIds();
   assertEquals(
     resolveEnabledAgentProviderIds({
-      env: envOf({ [ENABLED_AGENT_PROVIDERS_ENV]: ` ${ids.join(" , ")} ` }),
+      env: envFrom({ [ENABLED_AGENT_PROVIDERS_ENV]: ` ${ids.join(" , ")} ` }),
       configuredProviders: [CLAUDE_PROVIDER_ID],
     }),
     ids,
@@ -176,7 +172,7 @@ Deno.test("resolveEnabledAgentProviderIds - an unusable set fails loudly", () =>
   const unknown = assertThrows(
     () =>
       resolveEnabledAgentProviderIds({
-        env: envOf(),
+        env: envFrom(),
         configuredProviders: [CLAUDE_PROVIDER_ID, "aider"],
       }),
     Error,
@@ -190,7 +186,7 @@ Deno.test("resolveEnabledAgentProviderIds - an unusable set fails loudly", () =>
   assertThrows(
     () =>
       resolveEnabledAgentProviderIds({
-        env: envOf(),
+        env: envFrom(),
         configuredProviders: [CLAUDE_PROVIDER_ID, CLAUDE_PROVIDER_ID],
       }),
     Error,
@@ -199,7 +195,10 @@ Deno.test("resolveEnabledAgentProviderIds - an unusable set fails loudly", () =>
 
   assertThrows(
     () =>
-      resolveEnabledAgentProviderIds({ env: envOf(), configuredProviders: [] }),
+      resolveEnabledAgentProviderIds({
+        env: envFrom(),
+        configuredProviders: [],
+      }),
     Error,
     "no coding-agent provider",
   );
@@ -211,7 +210,7 @@ Deno.test("resolveEnabledAgentProviderIds - a set excluding the active provider 
   const error = assertThrows(
     () =>
       resolveEnabledAgentProviderIds({
-        env: envOf(),
+        env: envFrom(),
         configured: CLAUDE_PROVIDER_ID,
         configuredProviders: [other.id],
       }),
@@ -224,15 +223,17 @@ Deno.test("resolveEnabledAgentProviderIds - a set excluding the active provider 
   );
 });
 
-Deno.test("loadConfig - the enabled set comes from .config.json", async () => {
+Deno.test("loadConfig - the enabled set comes from .config.json (Issue #962)", async () => {
   const dir = await Deno.makeTempDir();
-  // loadConfig reads the process environment, so the image stamp has to be the
-  // one this test states rather than whatever the host carries: inside the
-  // container image the stamp is "claude" alone, and the multi-provider set
-  // below would fail the installed-provider check for reasons that have
-  // nothing to do with what is under test.
-  const stamp = Deno.env.get(IMAGE_AGENT_PROVIDERS_ENV);
-  Deno.env.set(IMAGE_AGENT_PROVIDERS_ENV, agentProviderIds().join(","));
+  // The image stamp has to be the one this test states rather than whatever
+  // the host carries: inside the container image the stamp is "claude" alone,
+  // and the multi-provider set below would fail the installed-provider check
+  // for reasons that have nothing to do with what is under test. Stated
+  // through the injected lookup, which answers only from its own map — a load
+  // that read `Deno.env.get` would be judged against the host's stamp.
+  const imageEnv = envFrom({
+    [IMAGE_AGENT_PROVIDERS_ENV]: agentProviderIds().join(","),
+  });
   try {
     const path = `${dir}/.config.json`;
     await Deno.writeTextFile(
@@ -243,7 +244,7 @@ Deno.test("loadConfig - the enabled set comes from .config.json", async () => {
         [ENABLED_AGENT_PROVIDERS_CONFIG_KEY]: agentProviderIds(),
       }),
     );
-    const config = await loadConfig(path);
+    const config = await loadConfig(path, { env: imageEnv });
     assertEquals(config.enabledAgentProviders, agentProviderIds());
 
     // Default configuration is unchanged: Claude alone.
@@ -252,16 +253,43 @@ Deno.test("loadConfig - the enabled set comes from .config.json", async () => {
       plain,
       JSON.stringify({ allowed_authors: ["operator"], repos: ["owner/repo"] }),
     );
-    assertEquals((await loadConfig(plain)).enabledAgentProviders, [
-      CLAUDE_PROVIDER_ID,
-    ]);
+    assertEquals(
+      (await loadConfig(plain, { env: imageEnv })).enabledAgentProviders,
+      [CLAUDE_PROVIDER_ID],
+    );
   } finally {
     setConfiguredEnabledAgentProviderIds(undefined);
-    if (stamp === undefined) {
-      Deno.env.delete(IMAGE_AGENT_PROVIDERS_ENV);
-    } else {
-      Deno.env.set(IMAGE_AGENT_PROVIDERS_ENV, stamp);
-    }
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("loadConfig - the image stamp is read through the injected lookup (Issue #962)", async () => {
+  // The stamp decides which agents this image will run at all, so a load that
+  // read it from the wrong environment would either refuse a provider the
+  // image carries or accept one it does not. `codex` alone is a stamp the
+  // suite's own process does not hold, so only the injected map can supply it.
+  const dir = await Deno.makeTempDir();
+  try {
+    const path = `${dir}/.config.json`;
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({
+        allowed_authors: ["operator"],
+        repos: ["owner/repo"],
+        [ENABLED_AGENT_PROVIDERS_CONFIG_KEY]: [CLAUDE_PROVIDER_ID],
+      }),
+    );
+    const error = await assertRejects(
+      () =>
+        loadConfig(path, {
+          env: envFrom({ [IMAGE_AGENT_PROVIDERS_ENV]: "codex" }),
+        }),
+      Error,
+    );
+    assert(error.message.includes(CLAUDE_PROVIDER_ID), error.message);
+    assert(error.message.includes("codex"), error.message);
+  } finally {
+    setConfiguredEnabledAgentProviderIds(undefined);
     await Deno.remove(dir, { recursive: true });
   }
 });
@@ -331,7 +359,7 @@ Deno.test("checkCredentialPreflight - accepts a multi-provider credential direct
   await withCredentialDir(ALL_PROVIDERS, async (dir) => {
     const result = await checkCredentialPreflight({
       dir,
-      env: envOf(),
+      env: envFrom(),
       providers: ALL_PROVIDERS,
     });
     assertEquals(result.failures, [], credentialPreflightMessage(result));
@@ -356,7 +384,7 @@ Deno.test("checkCredentialPreflight - a multi-provider directory still rejects u
     await Deno.writeTextFile(`${dir}/aws-secret-key`, "AKIA...\n");
     const result = await checkCredentialPreflight({
       dir,
-      env: envOf(),
+      env: envFrom(),
       providers: ALL_PROVIDERS,
     });
     assertEquals(result.ok, false);
@@ -376,7 +404,7 @@ Deno.test("checkCredentialPreflight - a disabled provider's directory is unrelat
   await withCredentialDir(ALL_PROVIDERS, async (dir) => {
     const result = await checkCredentialPreflight({
       dir,
-      env: envOf(),
+      env: envFrom(),
       providers: [active],
     });
     assertEquals(
@@ -399,7 +427,7 @@ Deno.test("checkCredentialPreflight - a missing credential names the provider th
   await withCredentialDir([first], async (dir) => {
     const result = await checkCredentialPreflight({
       dir,
-      env: envOf(),
+      env: envFrom(),
       providers: [first, second],
     });
     assertEquals(result.ok, false);
@@ -440,7 +468,7 @@ Deno.test("checkCredentialPreflight - an environment fallback satisfies one prov
   try {
     const result = await checkCredentialPreflight({
       dir: `${root}/absent`,
-      env: envOf({
+      env: envFrom({
         GH_TOKEN: "gho_env",
         [second.credentials.envVars[0]!]: "secret",
       }),

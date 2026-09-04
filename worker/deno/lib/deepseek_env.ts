@@ -30,6 +30,7 @@ import {
   isDeniedAgentEnvVar,
   WORKER_ONLY_SECRET_ENV_VARS,
 } from "./agent_env.ts";
+import { CLAUDE_CREDENTIAL_ENV_VARS } from "./claude_env.ts";
 
 /**
  * DeepSeek's Anthropic-compatible endpoint.
@@ -69,12 +70,17 @@ const DEEPSEEK_CONFIG_DIR_NAME = ".claude-config-deepseek";
  * `GH_TOKEN` is deliberately not denied — it is the short-lived installation
  * token the model legitimately uses via `gh`, constrained by the `gh` PATH shim
  * (`gh_guard_shim.ts`, Issue #3643).
+ *
+ * The Anthropic names come from {@link CLAUDE_CREDENTIAL_ENV_VARS} rather than
+ * a second copy of them, so a name Anthropic adds later is denied here the day
+ * it is accepted there. A pooled host holds several Anthropic tokens
+ * (Issue #920, parent #902); this child sees none of them, selected or not,
+ * and `agent_env.ts` denies the suffixed and indexed variants too, so the
+ * denial does not rest on the shape pattern happening to match.
  */
 export const DEEPSEEK_ENV_DENYLIST: readonly string[] = [
   ...WORKER_ONLY_SECRET_ENV_VARS,
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_AUTH_TOKEN",
-  "CLAUDE_CODE_OAUTH_TOKEN",
+  ...CLAUDE_CREDENTIAL_ENV_VARS,
   "OPENAI_API_KEY",
   "CODEX_API_KEY",
   "GEMINI_API_KEY",

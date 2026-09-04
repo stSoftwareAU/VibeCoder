@@ -8,7 +8,7 @@
  * Design notes:
  *
  *   - **Outcome-only Claude contract.** Mirrors `security_scan_template`
- *     (#2097): the orchestrating prompt at `prompts/best_practices/v3.md`
+ *     (#2097): the orchestrating prompt at `prompts/best_practices/prompt.md`
  *     instructs Claude to file findings directly via `gh issue create`.
  *     `runTask` verifies success by snapshotting the repo's open
  *     `best-practices`-labelled issues before and after the scan and
@@ -268,7 +268,7 @@ export function isLanguageBucket(slug: string): slug is SupportedLanguage {
 
 /**
  * Substitute the three placeholders defined by
- * `prompts/best_practices/v3.md` and append the inlined bucket guide
+ * `prompts/best_practices/prompt.md` and append the inlined bucket guide
  * under a dedicated section so the wrapper is self-contained.
  *
  * Empty id lists render as `(none)` — same convention as
@@ -526,7 +526,7 @@ async function fileMissingCIGateIssue(
 // ---------------------------------------------------------------------------
 
 /**
- * Default Claude runner. Loads `prompts/best_practices/v3.md`, inlines
+ * Default Claude runner. Loads `prompts/best_practices/prompt.md`, inlines
  * the matching bucket guide, substitutes placeholders, and invokes
  * Claude with the same write-tool blocklist as `security_scanner`.
  *

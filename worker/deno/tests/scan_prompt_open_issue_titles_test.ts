@@ -1,18 +1,15 @@
 /**
- * The latest version of every judgement-bearing scan prompt must carry the
- * cross-label dedup block (Issue #538, parent #523).
+ * Every judgement-bearing scan prompt must carry the cross-label dedup block
+ * (Issue #538, parent #523).
  *
  * `{{KNOWN_OPEN_FINDING_IDS}}` only sees findings already open under the
  * scanning task's *own* label, which is how `github-actions-audit` re-filed a
  * CODEOWNERS finding that had been open for days under another label.
  * `{{OPEN_ISSUE_TITLES}}` is the repo-wide second line of dedup, and it is only
  * worth anything if every scan prompt actually carries it, with the same rule
- * attached — so these tests read the latest shipped version of each prompt (the
- * one `loadPrompt` resolves at runtime) and assert the contract on the text
- * that will actually reach the model.
- *
- * `loadPrompt` always resolves the highest version in a directory, so a new
- * version bump inherits these assertions automatically.
+ * attached — so these tests read the shipped template of each prompt (the one
+ * `loadPrompt` resolves at runtime) and assert the contract on the text that
+ * will actually reach the model.
  *
  * Australian English is used throughout (behaviour, colour, organisation).
  */
@@ -79,12 +76,12 @@ function normalise(text: string): string {
   return text.replace(/^[-*]\s+/gm, "").replace(/\s+/g, " ").trim();
 }
 
-/** Load the latest shipped version of a prompt, failing loudly if absent. */
-async function loadLatest(promptType: string): Promise<string> {
-  const result = await loadPrompt(promptType, undefined, PROMPTS_DIR);
+/** Load the shipped template of a prompt, failing loudly if absent. */
+async function loadTemplate(promptType: string): Promise<string> {
+  const result = await loadPrompt(promptType, PROMPTS_DIR);
   assert(
     result.ok,
-    `failed to load latest ${promptType} prompt: ${
+    `failed to load ${promptType} prompt: ${
       result.ok ? "" : result.error.message
     }`,
   );
@@ -92,11 +89,11 @@ async function loadLatest(promptType: string): Promise<string> {
 }
 
 for (const promptType of SCAN_PROMPT_TYPES) {
-  Deno.test(`${promptType} - latest prompt carries the open-issue title list`, async () => {
-    const template = await loadLatest(promptType);
+  Deno.test(`${promptType} - the prompt carries the open-issue title list`, async () => {
+    const template = await loadTemplate(promptType);
     assert(
       template.includes("{{OPEN_ISSUE_TITLES}}"),
-      `${promptType}: latest version is missing {{OPEN_ISSUE_TITLES}}`,
+      `${promptType}: the template is missing {{OPEN_ISSUE_TITLES}}`,
     );
     assert(
       /<open_issue_titles[^>]*>\n\{\{OPEN_ISSUE_TITLES\}\}\n<\/open_issue_titles>/
@@ -105,8 +102,8 @@ for (const promptType of SCAN_PROMPT_TYPES) {
     );
   });
 
-  Deno.test(`${promptType} - latest prompt states the skip rule verbatim`, async () => {
-    const normalised = normalise(await loadLatest(promptType));
+  Deno.test(`${promptType} - the prompt states the skip rule verbatim`, async () => {
+    const normalised = normalise(await loadTemplate(promptType));
     for (const sentence of BLOCK_SENTENCES) {
       assert(
         normalised.includes(normalise(sentence)),
@@ -115,14 +112,14 @@ for (const promptType of SCAN_PROMPT_TYPES) {
     }
   });
 
-  Deno.test(`${promptType} - latest prompt keeps its required placeholders`, async () => {
-    const template = await loadLatest(promptType);
+  Deno.test(`${promptType} - the prompt keeps its required placeholders`, async () => {
+    const template = await loadTemplate(promptType);
     const required = getRequiredPlaceholders(promptType);
     assert(required.ok, `${promptType}: unknown template type`);
     for (const placeholder of required.value) {
       assert(
         template.includes(`{{${placeholder}}}`),
-        `${promptType}: latest version dropped {{${placeholder}}}`,
+        `${promptType}: the template dropped {{${placeholder}}}`,
       );
     }
     const validation = validatePromptTemplate(promptType, template);
@@ -139,7 +136,7 @@ for (const promptType of SCAN_PROMPT_TYPES) {
     assert(
       optional.value.includes("OPEN_ISSUE_TITLES"),
       `${promptType}: OPEN_ISSUE_TITLES is not registered as optional, so a ` +
-        `version carrying it would fail placeholder validation`,
+        `template carrying it would fail placeholder validation`,
     );
   });
 }

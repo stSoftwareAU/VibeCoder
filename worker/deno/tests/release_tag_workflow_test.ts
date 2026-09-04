@@ -111,6 +111,31 @@ Deno.test("release-tag.yml - the tag is created only when the plan says so", asy
   );
 });
 
+Deno.test("release-tag.yml - the plan is given the repository's release floor", async () => {
+  const steps = tagJob(await loadWorkflow()).steps ?? [];
+  const plan = steps.find((s) => s.id === "plan");
+  assert(plan, "the job must plan the tag before creating it");
+  // Issue #808: without the floor the workflow can only ever mint the next
+  // patch, so a release that moves the series would have to be tagged by
+  // hand and the automation would fight it on the following merge.
+  assert(
+    plan.run?.includes(".release-floor"),
+    "the plan step must pass the repository's release floor to the script",
+  );
+});
+
+Deno.test("release-tag.yml - a created release points at the release notes", async () => {
+  const publish = publishStep(tagJob(await loadWorkflow()).steps ?? []);
+  const run = publish.run ?? "";
+  // Issue #808: the notes are where a breaking release states the removed
+  // configuration keys and the migration; a release body naming only the
+  // tool-version asset leaves an operator nothing to read before upgrading.
+  assert(
+    run.includes("docs/RELEASE-NOTES.md"),
+    "the release body must link the release notes",
+  );
+});
+
 /** The step that publishes the tool-version manifest (Issue #688). */
 function publishStep(steps: Step[]): Step {
   const publish = steps.find((s) => s.run?.includes("release-manifest"));

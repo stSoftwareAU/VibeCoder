@@ -32,6 +32,7 @@ import {
   SKIP_CHECKOUT_UPDATE_ENV,
   updateWorkerCheckout,
 } from "../commands/worker_checkout_update.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 /** A bare remote on `trunk` plus a clone of it, in a fresh temp directory. */
 async function makeCheckout(): Promise<{
@@ -261,17 +262,18 @@ Deno.test("worker-checkout-update - requires --base-dir", async () => {
 
 Deno.test(`worker-checkout-update - ${SKIP_CHECKOUT_UPDATE_ENV} leaves the checkout untouched`, async () => {
   const { tmp, remote, seed, clone, logDir } = await makeCheckout();
-  const previous = Deno.env.get(SKIP_CHECKOUT_UPDATE_ENV);
   try {
     await pushSecondCommit(seed, remote);
     await Deno.writeTextFile(`${clone}/uncommitted.txt`, "work in progress\n");
     const before = await headSha(clone);
-    Deno.env.set(SKIP_CHECKOUT_UPDATE_ENV, "1");
 
-    const result = await updateWorkerCheckout({
-      "base-dir": clone,
-      "log-dir": logDir,
-    });
+    const result = await updateWorkerCheckout(
+      {
+        "base-dir": clone,
+        "log-dir": logDir,
+      },
+      envFrom({ [SKIP_CHECKOUT_UPDATE_ENV]: "1" }),
+    );
 
     // A skip is a stated outcome, not a silent one.
     assertEquals(result.success, true, result.message);
@@ -280,36 +282,57 @@ Deno.test(`worker-checkout-update - ${SKIP_CHECKOUT_UPDATE_ENV} leaves the check
     assertEquals(await headSha(clone), before, "the checkout must not move");
     assertEquals(await exists(`${clone}/uncommitted.txt`), true);
   } finally {
-    if (previous === undefined) {
-      Deno.env.delete(SKIP_CHECKOUT_UPDATE_ENV);
-    } else {
-      Deno.env.set(SKIP_CHECKOUT_UPDATE_ENV, previous);
-    }
     await Deno.remove(tmp, { recursive: true });
   }
 });
 
 Deno.test(`worker-checkout-update - ${SKIP_CHECKOUT_UPDATE_ENV}=0 does not turn the update off`, async () => {
   const { tmp, remote, seed, clone, logDir } = await makeCheckout();
-  const previous = Deno.env.get(SKIP_CHECKOUT_UPDATE_ENV);
   try {
     await pushSecondCommit(seed, remote);
-    Deno.env.set(SKIP_CHECKOUT_UPDATE_ENV, "0");
 
-    const result = await updateWorkerCheckout({
-      "base-dir": clone,
-      "log-dir": logDir,
-    });
+    const result = await updateWorkerCheckout(
+      {
+        "base-dir": clone,
+        "log-dir": logDir,
+      },
+      envFrom({ [SKIP_CHECKOUT_UPDATE_ENV]: "0" }),
+    );
 
     assertEquals(result.success, true, result.message);
     assertEquals(result.data?.updated, true);
     assertEquals(await Deno.readTextFile(`${clone}/file.txt`), "two\n");
   } finally {
-    if (previous === undefined) {
-      Deno.env.delete(SKIP_CHECKOUT_UPDATE_ENV);
-    } else {
-      Deno.env.set(SKIP_CHECKOUT_UPDATE_ENV, previous);
-    }
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test(`worker-checkout-update - the skip flag is read from the lookup it is handed, not the process (Issue #964)`, async () => {
+  const { tmp, remote, seed, clone, logDir } = await makeCheckout();
+  try {
+    await pushSecondCommit(seed, remote);
+    const before = await headSha(clone);
+
+    // A value the real environment does not carry. Any non-falsey spelling
+    // is an opt-out, so a read that fell back to `Deno.env.get` would see
+    // nothing, update the checkout, and fail the HEAD assertion below.
+    const skipped = await updateWorkerCheckout(
+      { "base-dir": clone, "log-dir": logDir },
+      envFrom({ [SKIP_CHECKOUT_UPDATE_ENV]: "sentinel-964" }),
+    );
+    assertEquals(skipped.success, true, skipped.message);
+    assertEquals(skipped.data?.updated, false);
+    assertEquals(await headSha(clone), before, "the checkout must not move");
+
+    // And an environment that carries nothing at all updates as usual.
+    const updated = await updateWorkerCheckout(
+      { "base-dir": clone, "log-dir": logDir },
+      emptyEnv,
+    );
+    assertEquals(updated.success, true, updated.message);
+    assertEquals(updated.data?.updated, true);
+    assertEquals(await Deno.readTextFile(`${clone}/file.txt`), "two\n");
+  } finally {
     await Deno.remove(tmp, { recursive: true });
   }
 });
@@ -584,7 +607,6 @@ Deno.test("worker-checkout-update - a pinned_ref carrying shell metacharacters i
 
 Deno.test(`worker-checkout-update - ${SKIP_CHECKOUT_UPDATE_ENV} wins over frozen mode (Issue #624)`, async () => {
   const { tmp, remote, seed, clone, logDir } = await makeCheckout();
-  const previous = Deno.env.get(SKIP_CHECKOUT_UPDATE_ENV);
   try {
     await pushTag(seed, remote, "v1.0.0");
     await pushSecondCommit(seed, remote);
@@ -593,12 +615,14 @@ Deno.test(`worker-checkout-update - ${SKIP_CHECKOUT_UPDATE_ENV} wins over frozen
       pinned_ref: "v1.0.0",
     });
     const before = await headSha(clone);
-    Deno.env.set(SKIP_CHECKOUT_UPDATE_ENV, "1");
 
-    const result = await updateWorkerCheckout({
-      "base-dir": clone,
-      "log-dir": logDir,
-    });
+    const result = await updateWorkerCheckout(
+      {
+        "base-dir": clone,
+        "log-dir": logDir,
+      },
+      envFrom({ [SKIP_CHECKOUT_UPDATE_ENV]: "1" }),
+    );
 
     assertEquals(result.success, true, result.message);
     assertEquals(result.data?.updated, false);
@@ -610,11 +634,6 @@ Deno.test(`worker-checkout-update - ${SKIP_CHECKOUT_UPDATE_ENV} wins over frozen
       "the skip does not touch the checkout at all",
     );
   } finally {
-    if (previous === undefined) {
-      Deno.env.delete(SKIP_CHECKOUT_UPDATE_ENV);
-    } else {
-      Deno.env.set(SKIP_CHECKOUT_UPDATE_ENV, previous);
-    }
     await Deno.remove(tmp, { recursive: true });
   }
 });
