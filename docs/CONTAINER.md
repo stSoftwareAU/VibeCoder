@@ -954,9 +954,24 @@ flowchart TD
 | `.config.json`               | `/workspace/.config.json`            | ro   |
 | `…/credentials/gh`           | `/home/vibe/.vibe-coder/credentials/gh` | ro |
 | `…/credentials/<provider>`   | `/home/vibe/.vibe-coder/credentials/<provider>` | ro |
+| each `custom_label_prompts` directory | `/home/vibe/.vibe-coder/custom-prompts/<n>` | ro |
 
 One credential mount per **enabled** provider, so a
 multi-provider run carries three of them and a default run exactly one.
+
+The custom-prompt mounts exist **only** when an operator configures
+`custom_label_prompts` (Issue #850): the containing directory of each
+configured prompt file, read-only, one mount per distinct directory. The
+directory rather than the file, because Apple `container` cannot bind a single
+file. The staged `.config.json` still names the operator's *host* paths — one
+file serves the host-side launcher and the container alike — so the plan also
+carries
+`VIBE_CUSTOM_PROMPT_PATHS`, a JSON map from each configured host path to where
+the mount makes it readable, which the config loader applies. Every source goes
+through the same allowlist as any other mount, so a prompt path under the host
+home directory (or the filesystem root, or a runtime control socket) fails the
+launch loudly instead of launching without it. With nothing configured there is
+no mount and no variable.
 
 The checkout is the worker's own code, not host data: the image ships only the
 entrypoint, so without it there is no driver to run. It is mounted

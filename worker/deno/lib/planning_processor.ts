@@ -20,6 +20,8 @@ import {
 } from "./run_outcome.ts";
 import type { GitHubClient, Logger, Result } from "../types.ts";
 import { maybeCreatePlanningMilestone } from "./planning_milestone.ts";
+import { promptOverrideMappings } from "./custom_label_prompts_config.ts";
+import { refuseFallbackPastOverride } from "./prompt_override_resolver.ts";
 import { fetchNativeSubIssueNumbers } from "./native_sub_issues.ts";
 import {
   buildPlanningCritiquePrompt,
@@ -218,15 +220,15 @@ export function extractSubIssueNumbers(
   claudeOutput: string,
   repo: string,
 ): number[] {
-  const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(
-    `https://github\\.com/${escapedRepo}/issues/(\\d+)`,
-    "g",
-  );
+  // A literal pattern that captures `owner/repo`, then an exact comparison —
+  // rather than a RegExp built from the caller's `repo`, which the ReDoS rule
+  // flags however carefully the value is escaped.
+  const pattern = /https:\/\/github\.com\/([^/]+\/[^/]+)\/issues\/(\d+)/g;
   const numbers = new Set<number>();
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(claudeOutput)) !== null) {
-    numbers.add(parseInt(match[1]!, 10));
+    if (match[1] !== repo) continue;
+    numbers.add(parseInt(match[2]!, 10));
   }
   return [...numbers].sort((a, b) => a - b);
 }
@@ -1165,12 +1167,21 @@ async function _processPlanningWithHeartbeat(
     complexityContext,
     milestoneTitle,
     repoContextContent,
+    // Issue #849: an operator's `planning` mapping replaces the template.
+    promptOverrides: promptOverrideMappings(config),
   });
 
   // Fall back to basic prompt if builder fails
   let prompt: string;
   let systemPrompt: string | undefined;
   if (!promptResult.ok) {
+    // Issue #849: the basic prompt rescues a broken *repository* template. An
+    // operator's override is never rescued that way — it fails the run loudly.
+    refuseFallbackPastOverride(
+      promptOverrideMappings(config),
+      "planning",
+      promptResult.error,
+    );
     logger.warn("Planning prompt builder failed, using basic planning prompt", {
       error: promptResult.error.message,
     });
@@ -1305,9 +1316,17 @@ async function _processPlanningWithHeartbeat(
       milestoneTitle,
       repoContextContent,
       draftPlan,
+      // Issue #849: the critique turn takes its own override entry.
+      promptOverrides: promptOverrideMappings(config),
     });
 
     if (!critiquePromptResult.ok) {
+      // Issue #849: never fall back past an operator's critique override.
+      refuseFallbackPastOverride(
+        promptOverrideMappings(config),
+        "planning_critique",
+        critiquePromptResult.error,
+      );
       logger.warn(
         "Planning critique prompt builder failed, using basic critique prompt",
         {

@@ -75,3 +75,45 @@ Deno.test("requiresLabelAdderTrust - honours custom configured label names", () 
   // … and the default name no longer matches.
   assertEquals(requiresLabelAdderTrust(config, "planning"), false);
 });
+
+// ---------------------------------------------------------------------------
+// custom_label_prompts labels (Issue #847, part of #843)
+// ---------------------------------------------------------------------------
+
+Deno.test("operationalDispatchLabels - includes every custom_label_prompts label (Issue #847)", () => {
+  const config = makeConfig({
+    customLabelPrompts: [
+      { label: "deploy-review", promptPath: "/srv/prompts/deploy-review.md" },
+      { label: "Ops-Audit", promptPath: "/srv/prompts/ops-audit.md" },
+    ],
+  });
+  assertEquals(operationalDispatchLabels(config), [
+    "refine-issue",
+    "grill-me",
+    "quorum",
+    "planning",
+    "question",
+    "needs-revision",
+    "deploy-review",
+    "Ops-Audit",
+  ]);
+});
+
+Deno.test("operationalDispatchLabels - unchanged when no custom labels are configured (Issue #847)", () => {
+  const config = makeConfig();
+  assertEquals(config.customLabelPrompts, []);
+  assertEquals(operationalDispatchLabels(config).length, 6);
+});
+
+Deno.test("requiresLabelAdderTrust - true for a custom_label_prompts label, case-insensitively (Issue #847)", () => {
+  const config = makeConfig({
+    customLabelPrompts: [
+      { label: "deploy-review", promptPath: "/srv/prompts/deploy-review.md" },
+    ],
+  });
+  assertEquals(requiresLabelAdderTrust(config, "deploy-review"), true);
+  assertEquals(requiresLabelAdderTrust(config, "DEPLOY-REVIEW"), true);
+  assertEquals(requiresLabelAdderTrust(config, "Deploy-Review"), true);
+  // An unconfigured label keeps the OR semantics.
+  assertEquals(requiresLabelAdderTrust(config, "deploy-audit"), false);
+});

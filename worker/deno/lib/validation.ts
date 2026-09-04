@@ -807,6 +807,27 @@ export function validateConfigFileJson(
     }
   }
 
+  // custom_label_prompts is optional and must be an array of objects when
+  // present (Issue #846). Field-level checks happen in
+  // parseCustomLabelPrompts()/assertCustomLabelPrompts() — this is only the
+  // shallow JSON-shape gate every other config key gets here.
+  if (data.custom_label_prompts !== undefined) {
+    if (!Array.isArray(data.custom_label_prompts)) {
+      return fail(
+        "custom_label_prompts",
+        `Expected array, got ${typeof data.custom_label_prompts}`,
+      );
+    }
+    for (let i = 0; i < data.custom_label_prompts.length; i++) {
+      if (!isObject(data.custom_label_prompts[i])) {
+        return fail(
+          `custom_label_prompts[${i}]`,
+          `Expected object, got ${typeof data.custom_label_prompts[i]}`,
+        );
+      }
+    }
+  }
+
   return ok(data as unknown as ConfigFileJson);
 }
 

@@ -474,6 +474,196 @@ version; raising the floor to that release is tracked separately in. Until
 the floor is raised, an older CLI resolves `opus` to Opus 4.8 — still priced
 identically ($5 / $25 per MTok), so cost tracking is unaffected.
 
+### 🏷️ Custom Label Prompts
+
+`custom_label_prompts` maps a GitHub label to a **non-public prompt template
+file** — an absolute path on the host, outside the public repository — so an
+operator can extend the Vibe Coder with private prompts without publishing
+them. Add the file, add the mapping, apply the label — the Vibe Coder works the
+issue with that prompt and raises a PR.
+
+> **📚 The operator guide is [Custom Label Prompts](CUSTOM-PROMPTS.md)** — the
+> extension point, a worked example an operator can follow verbatim, the
+> placeholder contract, what a prompt author must never do with the fenced
+> issue text, container operation, and the exact symptom of every failure mode.
+> This entry is the key reference.
+
+```json
+{
+  "custom_label_prompts": [
+    {
+      "label": "my-custom-label",
+      "prompt_path": "/opt/vibe-secrets/prompts/my-custom-label.md"
+    }
+  ]
+}
+```
+
+Semantics:
+
+- **`label`** — the GitHub label the mapping dispatches, or the built-in label
+  whose prompt it overrides (see below). Must be a non-empty string with no NUL
+  or control characters, and — unless it names a built-in phase label — must
+  not be one of the reserved workflow labels or the `top-priority` /
+  `low-priority` discovery labels, which are never remappable. Each
+  label/phase pair may appear once: a plain mapping is unique on its label, and
+  a label owning two templates (`planning`, `quorum`) takes at most one entry
+  per phase.
+- **`prompt_path`** — the absolute host path of the prompt template file. Must
+  be a non-empty, control-character-free string starting with `/`, and must
+  name a file that exists and is readable **at config load time**.
+- **`phase`** (optional) — only on an override, and only where the label owns
+  more than one template: `planning_critique` for a `planning` mapping,
+  `quorum_judge` for a `quorum` one. Omitted, the mapping overrides the label's
+  first-turn template.
+- **Fail loud, always.** Every fault above — a non-array value, a malformed
+  entry, a relative or unreadable `prompt_path`, a duplicate or reserved
+  `label` — throws from config load naming the offending entry and field.
+  Nothing here is warned about and defaulted: a silently dropped mapping would
+  leave an operator believing their extension was live when it never
+  dispatched.
+- **Default = off.** The default empty list changes no existing behaviour —
+  an operator opts in by adding entries.
+- **Trust-gated like `planning` (Issue #847).** A configured label joins the
+  operational dispatch set, so the label **adder** must be on the
+  `allowed_authors` allowlist — a trusted issue *author* is not sufficient. An
+  add by an untrusted account is stripped, not honoured as a plain descriptive
+  label, and an add that cannot be attributed from the issue timeline fails
+  closed (the issue is skipped). The worker's own creation paths treat a
+  configured label as reserved and strip it, and a label the worker legitimately
+  raises itself (`idle-task`, `security`, `severity:…`) is refused at config
+  load rather than remapped — so the worker cannot self-apply a custom label
+  into a dispatch. A custom label that a model-driven `gh issue create` path
+  puts on an issue is still stripped at dispatch time, because a fleet worker
+  login is never a trusted label adder. See
+  [INTERNALS.md — Issue discovery](INTERNALS.md#-issue-discovery-modular-issue-finder).
+
+#### How a custom label dispatches (Issue #848)
+
+An issue carrying a configured label is worked at **priority 1.86**, between
+question answering (1.85) and stale-workflow detection (1.9). The handler runs
+the **generic implementation phase** — the same `workOnIssue` pipeline `work-on`
+runs — so the run produces a real branch, commits and a PR. Only the prompt
+body differs: the operator's file replaces `prompts/issue/prompt.md`.
+
+```mermaid
+flowchart LR
+    L["🏷️ custom label<br/>added by an allowlisted account"] --> D["Priority 1.86<br/>custom-label dispatch"]
+    D --> C{"prompt file<br/>readable, non-empty,<br/>placeholders present?"}
+    C -- no --> F["❌ fail loud<br/>naming label + path"]
+    C -- yes --> B["Build prompt<br/>operator's template +<br/>nonce-fenced issue text"]
+    B --> P["Implementation pipeline<br/>branch → commits → PR"]
+    style F fill:#d00000,stroke:#9d0208,color:#fff
+    style P fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+- **The template is an `issue` template.** It must carry `{{ISSUE_NUMBER}}` and
+  `{{QUALITY_INSTRUCTIONS}}`; `{{REPO}}` and `{{VERBOSITY_INSTRUCTIONS}}` are
+  also substituted. Any *other* `{{PLACEHOLDER}}` fails the build rather than
+  reaching the agent half-rendered. There is no `vN.md` versioning — the plain
+  path is read as-is.
+- **The issue text stays untrusted.** The operator's file is configuration, so
+  it is not fenced and its immutability is not checked — it is theirs to edit.
+  The issue title, labels and body it renders around **are** fenced in this
+  run's nonce boundary, with the same boundary-integrity instruction the
+  built-in template gets. (As for `work-on`, issue comments are not part of the
+  implementation prompt at all.)
+- **Fail loud at dispatch, never a fallback.** A file that has become missing,
+  unreadable, empty or invalid between config load and dispatch fails the run
+  with the label and path named. The built-in `issue` template is never
+  substituted for an operator's prompt, and the issue is never silently skipped.
+- **The file is part of the prompt-cache key.** Where a run builds through the
+  prompt cache, the file's content joins the SHA, so editing it invalidates the
+  cached system prompt rather than re-serving a stale one.
+- **A broken mapping never starves the others.** The remaining configured labels
+  are still scanned, each fault is logged as an error naming its label and path,
+  and the pass fails when nothing else was worked.
+- **Container run mode: the launcher mounts the prompt directory read-only**
+  (Issue #850). The **containing directory** of every configured `prompt_path`
+  is bind-mounted into the container at
+  `/home/vibe/.vibe-coder/custom-prompts/<n>`, read-only, and the worker
+  resolves the configured host path onto that mount — so the same
+  `.config.json` serves the host-side launcher and the container alike, and
+  nothing inside the
+  container can edit an operator's template. Keep the prompts in a directory of
+  their own: everything beside them in that directory is readable inside the
+  container too. A path the containment allowlist refuses — the host home
+  directory or an ancestor of it, the filesystem root, a runtime control
+  socket, a relative path — **fails the launch loudly** rather than starting a
+  container without the mount. See
+  [CONTAINMENT.md — the mount set](CONTAINMENT.md#the-mount-set).
+- **Default = off.** With no mapping configured the priority row does not exist
+  and the ladder is unchanged.
+
+#### Overriding a built-in label's prompt (Issue #849)
+
+A mapping whose label matches a **built-in** label does not add a new dispatch
+row — it replaces that phase's own template, so an operator can run a
+non-public `planning`, `grill-me`, `question`, `quorum` or implementation
+prompt. The label keeps its existing handler, priority and trust gate; only the
+template changes.
+
+```json
+{
+  "custom_label_prompts": [
+    {
+      "label": "planning",
+      "prompt_path": "/opt/vibe-secrets/prompts/planning.md"
+    },
+    {
+      "label": "planning",
+      "phase": "planning_critique",
+      "prompt_path": "/opt/vibe-secrets/prompts/planning-critique.md"
+    }
+  ]
+}
+```
+
+| Label (as configured) | Phase overridden | Template replaced |
+| --- | --- | --- |
+| `work_on_label` (`work-on`) | `issue` | `prompts/issue/prompt.md` |
+| `planning_label` | `planning`, or `planning_critique` with `phase` | `prompts/planning/prompt.md` |
+| `question_label` | `question` | `prompts/question/prompt.md` |
+| `grill_me_label` | `grill-me` | `prompts/grill-me/prompt.md` |
+| `quorum_label` | `quorum`, or `quorum_judge` with `phase` | `prompts/quorum/prompt.md` |
+
+- **The configured names are what match.** A fleet that renamed `planning` to
+  `plan-it` overrides the planning phase with a `plan-it` mapping; the literal
+  `planning` is then just an ordinary reserved label again.
+- **Validated against the phase it replaces, not against `issue`.** Overriding
+  `planning` requires `{{REPO}}`, `{{ISSUE_NUMBER}}` and `{{PLANNING_LABEL}}`;
+  overriding `quorum` additionally requires
+  `{{BOUNDARY_INTEGRITY_INSTRUCTION}}`, the placeholder that fences the
+  untrusted issue text. A template short of any of them is refused **at config
+  load**, with the phase and the missing placeholders named — the fault an
+  `issue`-shaped validation would have waved through.
+- **Two-turn phases need two entries.** Overriding `planning` does **not**
+  override `planning_critique`, and overriding `quorum` does not override
+  `quorum_judge`: each turn is a separate template with its own contract, so
+  each takes its own entry naming its `phase`. Nothing is inferred from the
+  first turn.
+- **`refine-issue` cannot be overridden.** The refinement phase builds its
+  prompt inline in `worker/deno/lib/refinement_processor.ts` and has no
+  template file, so a mapping naming it is refused by name with that reason.
+- **Overriding `work-on` overrides the implementation phase.** That template
+  serves every issue-phase pickup — `top-priority` and `low-priority` too — so
+  the override applies to all of them. A run dispatched by a *new* custom label
+  still uses that label's own file.
+- **Ambiguity fails loud.** Two entries claiming the same phase are refused at
+  config load rather than silently resolving to whichever came first.
+- **The run record names the file.** Every phase logs the template it loaded —
+  the operator's path, or `prompts/<phase>/prompt.md` — so a run can be traced
+  back to the file it actually ran. The implementation phase also reports it
+  structurally, as `promptTemplate` beside `promptsCommit` in the phase result:
+  the commit identifies the repository's templates and says nothing about an
+  operator file.
+- **An override does not change the label's trust gate.** Only a *new* label
+  joins the operational dispatch set (Issue #847). Overriding `work-on` swaps
+  its template and nothing else — the fleet's main discovery label keeps the
+  OR gate it has always had.
+- **Phases with no override are untouched.** They load the repository's
+  template exactly as before.
+
 ### 🧭 Run Mode
 
 `run_mode` names where the worker runs, and there is one answer: `container`

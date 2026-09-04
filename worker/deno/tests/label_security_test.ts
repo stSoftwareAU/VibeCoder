@@ -850,3 +850,125 @@ Deno.test("label_security - needs-human by worker stays trusted despite fleet-wo
   assertEquals(result.trustedLabels, ["needs-human"]);
   assertEquals(result.untrustedLabels, []);
 });
+
+// =============================================================================
+// custom_label_prompts labels (Issue #847, part of #843)
+// =============================================================================
+
+Deno.test("label_security - isOperationalLabel treats a supplied custom label as operational, case-insensitively (Issue #847)", () => {
+  const custom = ["deploy-review"];
+  assertEquals(isOperationalLabel("deploy-review", custom), true);
+  assertEquals(isOperationalLabel("DEPLOY-REVIEW", custom), true);
+  // Without the custom list the label stays descriptive …
+  assertEquals(isOperationalLabel("deploy-review"), false);
+  // … and an unconfigured label is descriptive either way.
+  assertEquals(isOperationalLabel("bug", custom), false);
+});
+
+Deno.test("label_security - a custom label added by an untrusted actor is stripped (Issue #847)", async () => {
+  const mockGh = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([
+      {
+        event: "labeled",
+        label: { name: "deploy-review" },
+        actor: { login: "mallory" },
+      },
+    ]));
+
+  const result = await verifyOperationalLabels(
+    "owner/repo",
+    91,
+    ["deploy-review", "bug"],
+    ["alice"],
+    mockGh,
+    undefined,
+    [],
+    ["deploy-review"],
+  );
+
+  assertEquals(result.trustedLabels, []);
+  assertEquals(result.untrustedLabels, [{
+    label: "deploy-review",
+    addedBy: "mallory",
+  }]);
+  // Stripped, not left to fall through to another handler as a plain label.
+  assertEquals(filterTrustedLabels(["deploy-review", "bug"], result), ["bug"]);
+});
+
+Deno.test("label_security - a custom label added by a trusted actor is kept (Issue #847)", async () => {
+  const mockGh = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([
+      {
+        event: "labeled",
+        label: { name: "deploy-review" },
+        actor: { login: "alice" },
+      },
+    ]));
+
+  const result = await verifyOperationalLabels(
+    "owner/repo",
+    92,
+    ["deploy-review"],
+    ["alice"],
+    mockGh,
+    undefined,
+    [],
+    ["deploy-review"],
+  );
+
+  assertEquals(result.trustedLabels, ["deploy-review"]);
+  assertEquals(result.untrustedLabels, []);
+});
+
+Deno.test("label_security - a custom label with no attributable adder fails closed (Issue #847)", async () => {
+  // No `labeled` event for the custom label — dispatch must not be reachable.
+  const mockGh = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([]));
+
+  const result = await verifyOperationalLabels(
+    "owner/repo",
+    93,
+    ["deploy-review"],
+    ["alice"],
+    mockGh,
+    undefined,
+    [],
+    ["deploy-review"],
+  );
+
+  assertEquals(result.trustedLabels, []);
+  assertEquals(result.untrustedLabels, [{
+    label: "deploy-review",
+    addedBy: "unknown",
+  }]);
+});
+
+Deno.test("label_security - a custom label the worker applied itself is stripped (Issue #847)", async () => {
+  // The fleet-worker exclusion covers custom labels too: a label the worker
+  // applied directly must never dispatch a privileged phase.
+  const mockGh = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([
+      {
+        event: "labeled",
+        label: { name: "deploy-review" },
+        actor: { login: "stsvcbot" },
+      },
+    ]));
+
+  const result = await verifyOperationalLabels(
+    "owner/repo",
+    94,
+    ["deploy-review"],
+    ["alice", "stsvcbot"],
+    mockGh,
+    "stsvcbot",
+    ["stsvcbot"],
+    ["deploy-review"],
+  );
+
+  assertEquals(result.trustedLabels, []);
+  assertEquals(result.untrustedLabels, [{
+    label: "deploy-review",
+    addedBy: "stsvcbot",
+  }]);
+});

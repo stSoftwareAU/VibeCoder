@@ -62,6 +62,17 @@ export interface IssueContext {
    */
   handlerDeadlineEpochMs?: number;
   /**
+   * Absolute host path of the operator's custom prompt template (Issue #848,
+   * part of #843). Set when a `custom_label_prompts` label dispatched this
+   * run: the execute phase builds the prompt from that file instead of the
+   * built-in `prompts/issue/` template, with everything else — the untrusted
+   * fences, the boundary-integrity instruction, the branch/commit/PR flow —
+   * unchanged. Absent for every other route, which behaves exactly as before.
+   */
+  customPromptPath?: string;
+  /** The custom label that dispatched this run, named in errors (Issue #848). */
+  customPromptLabel?: string;
+  /**
    * Stable id of the lane running this issue (Issue #923) — `s1`, `s2`, or
    * `serial`. The setup phase gives the lane its own git worktree off the
    * shared clone, so two slots working one repository never share a working

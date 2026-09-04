@@ -28,6 +28,7 @@ import {
   buildSpellingFixPrompt,
   buildWorkflowSetupPrompt,
 } from "../lib/prompt_builder.ts";
+import { promptOverrideMappings } from "../lib/custom_label_prompts_config.ts";
 
 export const promptBuilderCommand: Command = {
   name: "prompt-builder",
@@ -41,6 +42,10 @@ export const promptBuilderCommand: Command = {
     const promptsDir = args["prompts-dir"]
       ? String(args["prompts-dir"])
       : undefined;
+    // Issue #849: the operator's built-in-phase overrides. Passed on every
+    // operation whose phase can be overridden, or this entry point would
+    // silently render the built-in template instead of the operator's.
+    const promptOverrides = promptOverrideMappings(config);
 
     switch (operation) {
       case "build-issue-prompt": {
@@ -62,6 +67,7 @@ export const promptBuilderCommand: Command = {
             ? String(args["milestone-branch"])
             : undefined,
           promptsDir,
+          promptOverrides,
         });
         if (!result.ok) {
           return { success: false, message: result.error.message };
@@ -87,6 +93,7 @@ export const promptBuilderCommand: Command = {
             ? String(args["complexity-context"])
             : undefined,
           promptsDir,
+          promptOverrides,
         });
         if (!result.ok) {
           return { success: false, message: result.error.message };
@@ -108,6 +115,7 @@ export const promptBuilderCommand: Command = {
             ? String(args["question-label"])
             : undefined,
           promptsDir,
+          promptOverrides,
         });
         if (!result.ok) {
           return { success: false, message: result.error.message };
