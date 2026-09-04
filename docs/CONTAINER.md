@@ -1206,6 +1206,14 @@ are in Deployment, and the rule that no
 vendor's credential reaches another vendor's subprocess is in
 Quorum.
 
+`provider.env` is the only file `setup.sh` writes, but it is not necessarily
+the only file in the sub-directory: a host with several Claude subscriptions
+may hold hand-written `claude/provider-2.env`, `provider-3.env` … files as
+well ([Several Claude tokens](SETUP.md#several-claude-tokens)). The mount is
+the sub-directory, so every file in it is readable inside the container, while
+exactly one of them is exported into the run's environment — the worker picks
+the token with the most remaining budget at start and logs which one it chose.
+
 Codex was the first addition made purely through the seam. Two
 Codex facts shape its descriptor, and both are handled in the Codex-owned
 modules (`codex_executor.ts`, `codex_env.ts`, `codex_auth.ts`) rather than in

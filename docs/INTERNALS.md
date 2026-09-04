@@ -821,6 +821,65 @@ runs whose idle and blocked seconds an operator needs. A sidecar that exists but
 cannot be read or parsed, or that carries a newer schema, is reported in the log
 before the cumulative totals restart from zero — it is never dropped silently.
 
+### 🎚️ Per-slot idle accounting — utilisation against capacity (Issue #925)
+
+`fleet-summary:` answers "was the **fleet** occupied?" — occupancy there is
+deliberately "at least one stream held a claim", so a two-slot pool with one
+slot working reads as fully occupied. That is right for the wall-clock
+partition above, and wrong for the question an operator asks of a pool: **is
+any slot doing nothing?**
+
+A two-slot fleet ran 47 minutes with `s1` working an issue and `s2` re-scanning
+every 30 seconds and finding nothing. It recorded zero idle seconds, emitted no
+`idle-detect` / `idle-census` / `idle-hooks` line and filed no idle-task,
+because every idle instrument was gated on the per-cycle, fleet-wide
+`tracker.foundClaimableIssue` flag that `s1`'s claim held true for the life of
+the cycle. Half the fleet was invisible.
+
+`slot_idle_accounting.ts` measures the same run against the capacity the
+operator configured, and the loop emits its line beside `fleet-summary:`:
+
+```text
+slot-utilisation: slots=2 wall=2820s available=5640s occupied=2820s
+  occupied_pct=50.0 idle=2820s idle_pct=50.0 blocked=0s unstaffed=0s
+  occupied_by_slot=s1=2820s idle_by_slot=s2=2820s
+  blocked_by_reason=none blocked_stops=none
+```
+
+(One line in the log; wrapped here for readability.)
+
+The denominator is capacity, not wall time — `available = configured slots ×
+run wall seconds` — against which four non-overlapping spans are booked:
+
+- **`occupied`** — slot-seconds a slot held a claim. Everything a claim does is
+  occupied: setup, the agent run, running tests, the quality gate, review. A
+  claim that sleeps on the agent's own rate-limit retry ladder is occupied too,
+  matching `fleet_telemetry`'s in-run rule — the slot is holding work, not
+  looking for it.
+- **`blocked`** — slot-seconds the whole fleet was paused waiting for a quota,
+  split by the same two reasons `fleet-summary:` uses: `rate_limited` (GitHub
+  API) and `token_blocked` (model usage), read from the shared
+  `.rate_limit_signal` file. Booked from the loop-level pauses, where the
+  waiting actually happens; a slot that meets an active signal at its pre-claim
+  guard drains the pool at once rather than waiting in the slot, and that stop
+  is counted per reason in `blocked_stops`.
+- **`idle`** — slot-seconds a live slot spent looking for work and not finding
+  any, **per slot**. This is the number that must stay near zero, and the
+  number that read as zero for 47 minutes.
+- **`unstaffed`** — the remainder: capacity that existed while no slot was
+  running at all (start-up, the serial priority ladder, the end-of-cycle
+  sleep). Reported rather than folded into idle, because a slot that does not
+  exist cannot be said to be looking for work.
+
+The same change moved the idle **hooks** — the idle-detect audit, the
+idle-decision census and the idle-task filer — to fire when *a slot* has no
+claimable work, not only when the whole fleet found nothing. The gate was
+**not** widened back to `scanHadSuccess` (Issue #2048): an adjacent repo's PR
+feedback still must not drive the decision. Only the scope of the question
+changed, from the fleet to the slot. See
+[the idle-task framework's coordination guards](IDLE-TASK-FRAMEWORK.md#coordination)
+for the single-flight latch that stops N idle slots filing N issues.
+
 ### 🚪 Exit conditions
 
 The worker exits when any of these occur:
