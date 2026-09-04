@@ -46,6 +46,7 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
+import { NETWORK_UNAVAILABLE_MARKER } from "./github_user_resolution.ts";
 import type { Result } from "../types.ts";
 import {
   type CrashNotificationConfig,
@@ -311,7 +312,26 @@ export function resolveContainerRestartConfig(
 // ---------------------------------------------------------------------------
 
 /** What one launcher invocation actually was. */
-export type LauncherOutcomeKind = "success" | "quota_pause" | "failure";
+export type LauncherOutcomeKind =
+  | "success"
+  | "quota_pause"
+  | "network_unavailable"
+  | "failure";
+
+/**
+ * Whether the launch died because GitHub was unreachable (Issue #949).
+ *
+ * The run prints {@link NETWORK_UNAVAILABLE_MARKER} when every attempt at
+ * the first GitHub call failed on a network-class error. That is not a host
+ * fault and climbing the failure ladder for it is actively wrong: five
+ * consecutive blips on a mobile hotspot took the sleep from 60s to 960s, so
+ * a link that was down for half an hour cost an hour of fleet time.
+ */
+export function isNetworkUnavailableLaunch(
+  logTail: string | null | undefined,
+): boolean {
+  return (logTail ?? "").includes(NETWORK_UNAVAILABLE_MARKER);
+}
 
 /**
  * Classify a launcher outcome.
@@ -329,10 +349,15 @@ export type LauncherOutcomeKind = "success" | "quota_pause" | "failure";
 export function classifyLauncherOutcome(
   exitStatus: number,
   quotaPause?: QuotaPauseMarker | null,
+  networkUnavailable?: boolean,
 ): LauncherOutcomeKind {
   if (quotaPause) return "quota_pause";
   if (exitStatus === QUOTA_PAUSE_EXIT_STATUS) return "quota_pause";
-  return exitStatus === 0 ? "success" : "failure";
+  if (exitStatus === 0) return "success";
+  // Checked after success so a run that reached the end is never reclassified
+  // by a marker left earlier in the same log (Issue #949).
+  if (networkUnavailable === true) return "network_unavailable";
+  return "failure";
 }
 
 /**
@@ -469,8 +494,38 @@ export function nextContainerRestartDecision(
   config: ContainerRestartConfig,
   now: () => number = nowSeconds,
   quotaPause?: QuotaPauseMarker | null,
+  networkUnavailable?: boolean,
 ): ContainerRestartDecision {
-  const kind = classifyLauncherOutcome(exitStatus, quotaPause);
+  const kind = classifyLauncherOutcome(
+    exitStatus,
+    quotaPause,
+    networkUnavailable,
+  );
+
+  // Issue #949: an unreachable GitHub is not this host misbehaving, so it
+  // does not climb the ladder. The streak resets and the wait is the base
+  // cadence — the same treatment a quota pause gets, for the same reason:
+  // waiting longer does not make the condition clear any sooner, and the
+  // fleet should be ready the moment it does. Nothing escalates, because
+  // there is nothing for a human to fix.
+  if (kind === "network_unavailable") {
+    return {
+      state: {
+        consecutiveFailures: 0,
+        lastPhase: null,
+        lastExitStatus: exitStatus,
+        lastUpdated: now(),
+        streakStartedAt: 0,
+        escalation: null,
+      },
+      kind,
+      phase: null,
+      backoffSeconds: config.baseSleepSeconds,
+      escalate: false,
+      recovered: false,
+      threshold: 0,
+    };
+  }
 
   // A quota pause is a scheduled outcome, not an error (Issue #342): the
   // streak resets rather than growing, nothing escalates, and the wait is the
@@ -1107,6 +1162,7 @@ export async function recordContainerRestartOutcome(
     config,
     now,
     options.quotaPause,
+    isNetworkUnavailableLaunch(options.logTail),
   );
 
   const persisted = await persistContainerRestartState(
