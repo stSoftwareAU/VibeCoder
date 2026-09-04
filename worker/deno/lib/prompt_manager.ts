@@ -13,6 +13,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /**
  * Known template types and their required placeholders.
@@ -306,11 +307,22 @@ export const OPTIONAL_PLACEHOLDERS: Record<string, readonly string[]> = {
  * Uses PROMPTS_DIR environment variable if set, otherwise derives from
  * the worker directory structure.
  *
+ * Issue #968: `env` is the injected lookup seam. A test that wanted to see
+ * what a `PROMPTS_DIR` or `VIBE_BASE_DIR` override resolves to had to write
+ * those variables into the process, which races every other worker under
+ * `deno test --parallel` — and, worse, made `tests/support/repo_prompts.ts`
+ * delete them again at module scope for the thirty-odd suites that load a
+ * real template. Handing the lookup in as a parameter removes both.
+ *
  * @param workerDir - Optional worker directory path for deriving prompts dir
+ * @param env - Environment lookup; defaults to the real process environment
  * @returns Path to the prompts directory
  */
-export function getPromptsDir(workerDir?: string): string {
-  const envDir = Deno.env.get("PROMPTS_DIR");
+export function getPromptsDir(
+  workerDir?: string,
+  env: EnvLookup = processEnvLookup,
+): string {
+  const envDir = env("PROMPTS_DIR");
   if (envDir) {
     return envDir;
   }
@@ -324,7 +336,7 @@ export function getPromptsDir(workerDir?: string): string {
   // module-relative path would look for prompts/ under the staged copy —
   // observed live as "Prompt 'planning' not found in
   // ~/.worker-src/worker/deno/lib/../../../prompts".
-  const baseDir = Deno.env.get("VIBE_BASE_DIR");
+  const baseDir = env("VIBE_BASE_DIR");
   if (baseDir) {
     return `${baseDir}/prompts`;
   }

@@ -10,14 +10,15 @@
  * environment, so a test that mutates it races whatever else is running:
  *
  * ```ts
- * // prompt_manager_test.ts
- * Deno.env.set("VIBE_BASE_DIR", "/workspace");
+ * // container_entrypoint_test.ts
+ * Deno.env.set("VIBE_SCRATCH_DIR", hostScratch);
  * ```
  *
- * (The example used to be `commit_and_push_pending_test.ts` setting
- * `VIBE_RUN_ID`. Issue #963 gave the run id and the audit trailer explicit
- * parameters and drained that file, so the illustration moved to one still on
- * the list — which is the whole point of the list going down.)
+ * (The example has now moved twice. It was `commit_and_push_pending_test.ts`
+ * setting `VIBE_RUN_ID` until #963 gave the run id an explicit parameter, then
+ * `prompt_manager_test.ts` setting `VIBE_BASE_DIR` until #968 gave
+ * `getPromptsDir` an injected environment lookup — which is the whole point of
+ * the list going down.)
  *
  * Measured with `DENO_JOBS=4`: 48 failures, of which 32 were the pre-existing
  * pwsh failures and ~16 were genuine races. Only a handful collided — the
