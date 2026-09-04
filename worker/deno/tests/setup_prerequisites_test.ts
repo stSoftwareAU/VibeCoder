@@ -29,6 +29,10 @@ import type { ContainerRuntimeProbe } from "../lib/container_runtime.ts";
 import type { EnvLookup } from "../lib/env_lookup.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
+import {
+  discardFixture,
+  makeExtensionDir,
+} from "./support/extension_fixture.ts";
 
 // ── Mock command runner ─────────────────────────────────────────────────
 
@@ -353,29 +357,14 @@ Deno.test("checkContainerPrerequisites - fails when the image is not buildable",
 async function extensionDeployment(
   declaration: Record<string, unknown> = {},
 ): Promise<{ root: string; home: string; configFile: string }> {
-  const root = await Deno.makeTempDir({ prefix: "vibe-setup-ext-" });
+  const root = await makeExtensionDir();
   const home = await Deno.makeTempDir({ prefix: "vibe-setup-config-" });
-  await Deno.writeTextFile(
-    `${root}/Containerfile`,
-    "ARG VIBE_BASE_IMAGE\nFROM ${VIBE_BASE_IMAGE}\n",
-  );
   const configFile = `${home}/.config.json`;
   await Deno.writeTextFile(
     configFile,
     JSON.stringify({ container_extension: { path: root, ...declaration } }),
   );
   return { root, home, configFile };
-}
-
-/** Remove a fixture, tolerating a directory the case itself removed. */
-async function discard(...paths: string[]): Promise<void> {
-  for (const path of paths) {
-    try {
-      await Deno.remove(path, { recursive: true });
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
-    }
-  }
 }
 
 Deno.test("checkContainerPrerequisites - reports the extension and the tag that includes it", async () => {
@@ -405,7 +394,7 @@ Deno.test("checkContainerPrerequisites - reports the extension and the tag that 
       "setup named the standard tag on a deployment that builds a layered one",
     );
   } finally {
-    await discard(deployment.root, deployment.home);
+    await discardFixture(deployment.root, deployment.home);
   }
 });
 
@@ -427,7 +416,7 @@ Deno.test("checkContainerPrerequisites - an absent extension directory is named,
     // launch as ready.
     assertEquals(aggregatePrerequisiteOk(results, "container"), false);
   } finally {
-    await discard(deployment.root, deployment.home);
+    await discardFixture(deployment.root, deployment.home);
   }
 });
 
@@ -447,7 +436,7 @@ Deno.test("checkContainerPrerequisites - a deployment with no extension sees tod
       "worker image",
     ]);
   } finally {
-    await discard(home);
+    await discardFixture(home);
   }
 });
 

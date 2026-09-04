@@ -16,30 +16,11 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { preflightContainerExtension } from "../lib/container_extension_preflight.ts";
 import type { ContainerExtensionSpec } from "../types.ts";
-
-/** Write a file inside the extension, creating its parent directories. */
-async function write(
-  root: string,
-  relative: string,
-  contents: string,
-): Promise<void> {
-  const path = `${root}/${relative}`;
-  await Deno.mkdir(path.slice(0, path.lastIndexOf("/")), { recursive: true });
-  await Deno.writeTextFile(path, contents);
-}
-
-/** A throwaway extension directory carrying a complete definition. */
-async function extensionDir(): Promise<string> {
-  const root = await Deno.makeTempDir({ prefix: "vibe-preflight-" });
-  await write(
-    root,
-    "Containerfile",
-    "ARG VIBE_BASE_IMAGE\nFROM $VIBE_BASE_IMAGE\n",
-  );
-  await write(root, "start.sh", "#!/bin/sh\nservice postgres start\n");
-  await write(root, "seed/schema.sql", "CREATE TABLE jobs (id int);\n");
-  return root;
-}
+import {
+  makeExtensionDir as extensionDir,
+  writeExtensionFile as write,
+} from "./support/extension_fixture.ts";
+import { messageFrom } from "./support/thrown_message.ts";
 
 /** The declaration for a directory, with the parser's own defaults. */
 function spec(
@@ -47,16 +28,6 @@ function spec(
   overrides: Partial<ContainerExtensionSpec> = {},
 ): ContainerExtensionSpec {
   return { path, containerfile: "Containerfile", ...overrides };
-}
-
-/** The message a call threw, or `""` when it did not throw. */
-async function messageFrom(call: () => Promise<unknown>): Promise<string> {
-  try {
-    await call();
-    return "";
-  } catch (error) {
-    return (error as Error).message;
-  }
 }
 
 Deno.test("preflightContainerExtension - a complete definition passes", async () => {

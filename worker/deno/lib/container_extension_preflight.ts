@@ -45,6 +45,7 @@ import type { ContainerExtensionSpec } from "../types.ts";
 import {
   isAtOrAbove,
   joinPath,
+  type LauncherPathStyle,
   normalisePath,
   pathStyleFor,
 } from "./host_path_style.ts";
@@ -142,6 +143,7 @@ async function assertDeclaredFile(
  * @param prefix - Its path relative to the extension root
  * @param realRoot - The extension root's resolved real path
  * @param ancestors - Real paths of the directories on the current chain
+ * @param style - How this host spells its paths
  * @throws When an entry cannot be read, escapes the root, or loops
  */
 async function assertNoEscape(
@@ -149,8 +151,8 @@ async function assertNoEscape(
   prefix: string,
   realRoot: string,
   ancestors: Set<string>,
+  style: LauncherPathStyle,
 ): Promise<void> {
-  const style = pathStyleFor(realRoot);
   const entries: Deno.DirEntry[] = [];
   try {
     for await (const entry of Deno.readDir(directory)) entries.push(entry);
@@ -162,7 +164,7 @@ async function assertNoEscape(
   }
 
   for (const entry of entries) {
-    const path = `${directory}/${entry.name}`;
+    const path = joinPath(directory, entry.name, style);
     const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
 
     let real: string;
@@ -211,6 +213,7 @@ async function assertNoEscape(
       relative,
       realRoot,
       new Set([...ancestors, real]),
+      style,
     );
   }
 }
@@ -219,6 +222,10 @@ async function assertNoEscape(
  * Prove the declared extension is actually on the host, before any build.
  *
  * @param spec - The validated declaration (Issue #978)
+ * @param style - How this host spells its paths. The launcher passes the
+ *   spelling its own checkout uses, so the file this proves is there is
+ *   byte-for-byte the one the build's `--file` names; it defaults to the
+ *   declaration's own spelling for a caller that only reports.
  * @throws Naming the offending path and what was expected, when the directory
  *   is absent, unreadable or not a directory; when the declared
  *   `containerfile` or `start` is absent under it; or when the directory
@@ -226,8 +233,8 @@ async function assertNoEscape(
  */
 export async function preflightContainerExtension(
   spec: ContainerExtensionSpec,
+  style: LauncherPathStyle = pathStyleFor(spec.path),
 ): Promise<void> {
-  const style = pathStyleFor(spec.path);
   const directory = normalisePath(spec.path, style);
   const realRoot = await assertDirectory(directory);
 
@@ -246,5 +253,5 @@ export async function preflightContainerExtension(
     );
   }
 
-  await assertNoEscape(directory, "", realRoot, new Set([realRoot]));
+  await assertNoEscape(directory, "", realRoot, new Set([realRoot]), style);
 }

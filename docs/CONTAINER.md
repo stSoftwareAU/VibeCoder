@@ -352,9 +352,20 @@ container_extension`, names the offending path, and says what was expected:
 | The path is a file, not a directory | `Cannot launch: the container_extension path <path> is not a directory.` |
 | The directory cannot be read | `Cannot launch: the container_extension directory <path> is unreadable (<reason>).` |
 | The declared `containerfile` is absent | `Cannot launch: the container_extension Containerfile <path> does not exist. container_extension.containerfile names it, relative to <directory>.` |
+| The declared `containerfile` is not a file | `Cannot launch: the container_extension Containerfile <path> is not a file. container_extension.containerfile names it, relative to <directory>.` |
+| The declared `containerfile` cannot be read | `Cannot launch: the container_extension Containerfile <path> is unreadable (<reason>).` — the launcher appends `The operator syncs their own extension into <directory>.` when the read itself failed |
 | The declared `start` is absent | `Cannot launch: the container_extension start script <path> does not exist. container_extension.start names it, relative to <directory>.` |
+| The declared `start` is not a file | `Cannot launch: the container_extension start script <path> is not a file. container_extension.start names it, relative to <directory>.` |
+| An entry cannot be resolved (a dangling symlink) | `Cannot launch: the container_extension entry <entry> (<path>) cannot be resolved (<reason>).` |
 | A symlink points out of the directory | `Cannot launch: the container_extension symlink <entry> escapes the extension directory: it resolves to <target>, outside <directory>. Copy what the build needs into the extension directory — a link out of it would fold host content the operator never synced into the image.` |
 | A directory loops back into itself | `Cannot launch: the container_extension directory loops: <entry> resolves to <target>, a directory it is already inside — the build would never finish copying it.` |
+
+Three further refusals share those shapes: `Cannot launch: the
+container_extension directory <path> cannot be resolved (<reason>)` when the
+directory's own real path cannot be read, `Cannot launch: the
+container_extension entry <entry> (<path>) is unreadable (<reason>)` when a
+stat under it fails, and the same `is unreadable` wording for a declared
+`start script`.
 
 The escaping-symlink case is the one the digest also refuses; the preflight runs
 first so the operator hears it **once, early, with the remedy attached** instead

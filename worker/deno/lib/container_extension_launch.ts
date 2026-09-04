@@ -68,10 +68,12 @@ export async function resolveContainerExtensionLaunch(
   if (!spec) return undefined;
 
   // Before the digest, before either build: the operator hears "the directory
-  // is not there" rather than a build failure minutes later.
-  await preflightContainerExtension(spec);
-
+  // is not there" rather than a build failure minutes later. The host's own
+  // spelling is passed, which is the spelling the plan's build arguments use,
+  // so the file proved to be there is the file `--file` will name.
   const style = pathStyleFor(options.baseDir);
+  await preflightContainerExtension(spec, style);
+
   const containerfilePath = joinPath(
     normalisePath(spec.path, style),
     spec.containerfile,

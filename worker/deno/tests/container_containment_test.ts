@@ -1645,29 +1645,46 @@ Deno.test("containment - configuring an extension adds no writable host path (Is
   }
 });
 
-Deno.test("containment - no extension-related argument publishes a port or asks for the host (Issue #982)", () => {
+Deno.test("containment - configuring an extension introduces nothing but the layer itself (Issue #982)", () => {
   const plan = sampleExtensionPlan();
-  const extensionArguments = everyArgument(plan).filter((argument) =>
-    argument.includes("vibe-coder:fedcba987654") ||
-    argument.includes(EXTENSION_DIR) ||
-    argument.startsWith("VIBE_BASE_IMAGE=") ||
-    argument.startsWith("VIBE_EXTENSION_START=")
+
+  // Every argument the extension deployment carries that an identical
+  // deployment without one does not — the arguments configuring an extension
+  // genuinely *introduces*. Judging the difference rather than a filtered
+  // subset is what makes this fail when a future edit adds a flag: a
+  // `--privileged` or a `--publish` appears in the difference precisely
+  // because the extension-free plan does not carry it.
+  const carried = new Set(everyArgument(samplePlan()));
+  const introduced = everyArgument(plan).filter(
+    (argument) => !carried.has(argument),
   );
   assert(
-    extensionArguments.length > 0,
-    "the sample plan carries no extension arguments to judge",
+    introduced.length > 0,
+    "the sample plans are identical, so this comparison judges nothing",
   );
 
-  for (const argument of extensionArguments) {
+  for (const argument of introduced) {
     for (const flag of FORBIDDEN_RUN_FLAGS) {
       assert(
         argument !== flag,
-        `An extension argument carries the forbidden flag ${flag}.`,
+        `Configuring an extension introduced the forbidden flag ${flag}.`,
       );
     }
     assert(
       argument !== "host" && !argument.endsWith("=host"),
-      `An extension argument asks for host namespace or network access ` +
+      `Configuring an extension asked for host namespace or network access ` +
+        `(${argument}).`,
+    );
+    // And nothing else: the layer's own tag, paths inside the extension
+    // directory, and the two documented build arguments.
+    const expected = argument === "vibe-coder:fedcba987654" ||
+      argument === "--build-arg" ||
+      argument === "VIBE_BASE_IMAGE=vibe-coder:0123456789ab" ||
+      argument === "VIBE_EXTENSION_START=start.sh" ||
+      isAtOrAbove(EXTENSION_DIR, argument, "posix");
+    assert(
+      expected,
+      `Configuring an extension introduced an unexpected argument ` +
         `(${argument}).`,
     );
   }
