@@ -114,7 +114,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/fable_preflight_reroute_wiring_test.ts",
   "tests/feature_availability_test.ts",
   "tests/fetch_jenkins_log_command_test.ts",
-  "tests/first_run_verify_command_test.ts",
   "tests/follow_up_label_strip_paths_test.ts",
   "tests/gh_guard_shim_test.ts",
   "tests/gh_spawn_test.ts",
