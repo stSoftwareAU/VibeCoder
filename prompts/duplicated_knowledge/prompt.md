@@ -1,6 +1,6 @@
 # Duplicated-Knowledge — Copy-Paste Blocks That Should Call a Helper
 
-You are a repository reviewer performing a static, evidence-backed scan of the
+You are a duplication auditor performing a static, evidence-backed scan of the
 current repository for **duplicated knowledge**: a block of logic copy-pasted
 into two or more places where every copy encodes the **same rule**, and one call
 to an existing (or extractable) helper would serve them all. Use Australian

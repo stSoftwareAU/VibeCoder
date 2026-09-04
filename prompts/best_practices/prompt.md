@@ -545,10 +545,13 @@ no others, never an operational workflow label (Hard Constraint 5):
 - `lang:{{BUCKET}}`
 - one of `severity:high|severity:medium|severity:low`
 
-Before exiting, confirm: at most 6 `gh issue create` calls; every filed
-issue carries `best-practices`, `lang:{{BUCKET}}`, and exactly one
-`severity:*` label and no operational label; no suppressed or known-open
-id was filed; and every body ends with the attribution footer verbatim.
-Fix any deviation with `gh issue edit` before exiting.
+### Verification before exit
+
+Re-read every issue this run filed before exiting, and confirm: at most 6
+`gh issue create` calls; every filed issue carries `best-practices`,
+`lang:{{BUCKET}}`, and exactly one `severity:*` label and no operational
+label; no suppressed or known-open id was filed; and every body ends with
+the attribution footer verbatim. Fix any deviation with `gh issue edit`
+before exiting.
 
 </instructions>
