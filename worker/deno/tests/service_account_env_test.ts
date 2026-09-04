@@ -12,7 +12,7 @@
  * the host claimed no labelled work at all.
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   applyServiceAccountEnv,
   resolveServiceAccountEnv,
@@ -416,11 +416,20 @@ Deno.test({
         home,
       );
       const applied = Deno.env.get("GH_CONFIG_DIR");
-      assertEquals(applied, `${tmp}/vibe-gh-config`);
+      // The outcome, not the scratch root it landed in: on a host that
+      // exports WORK_DIR the copy is staged under the container-state
+      // directory rather than TMPDIR, and pinning one spelling made this
+      // assertion fail wherever the worker's own environment is present.
+      // What must hold either way is that gh is pointed at a writable copy
+      // carrying the credential, never at the read-only mount.
+      assert(applied !== undefined && applied !== mounted, "restaged copy");
       assertEquals(
         await Deno.readTextFile(`${applied}/hosts.yml`),
         "github.com:\n",
       );
+      const probe = `${applied}/.writable-probe`;
+      await Deno.writeTextFile(probe, "");
+      await Deno.remove(probe);
     } finally {
       restoreEnv("GH_CONFIG_DIR", previousGh);
       restoreEnv("VIBE_IMAGE_AGENT_PROVIDERS", previousStamp);
