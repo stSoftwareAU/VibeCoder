@@ -258,19 +258,27 @@ the first:
    worked out — no network, or the release-age quarantine has nothing eligible
    yet — the reason is printed and the version is typed by hand.
 
+The conversation prints in the same house style as the rest of setup
+(Issue #870): `ℹ` in blue explains, `✓` in green confirms an answer, `⚠` in
+yellow reports a rejected answer or a fallback taken, and every question shows
+its default in brackets. Colour is emitted only to a terminal, and never when
+`NO_COLOR` is set.
+
 ```text
-  Update mode: 'dynamic' tracks the tip of the default branch and installs the latest tools;
-  'frozen' holds this host at a pinned ref with exact tool versions.
-  Update mode (dynamic/frozen) [frozen]
+ℹ  Update mode: 'dynamic' tracks the tip of the default branch and installs the latest tools;
+   'frozen' holds this host at a pinned ref with exact tool versions.
+   Update mode (dynamic/frozen) [frozen]
+✓  Update mode: frozen.
 
-  Pinned ref: the commit SHA or tag this host is held at.
-  Pinned ref [1.0.7]
-  1.0.7 resolves to 3f2a1b9c4d5e6f708192a3b4c5d6e7f809a1b2c3.
+ℹ  Pinned ref: the commit SHA or tag this host is held at.
+   Pinned ref [1.0.7]
+✓  1.0.7 resolves to 3f2a1b9c4d5e6f708192a3b4c5d6e7f809a1b2c3.
 
-  Tool versions: the exact version this host installs while frozen.
-  Claude CLI version [2.0.76]
-  GitHub CLI (gh) version [2.62.0]
-  Deno version [2.5.4]
+ℹ  Tool versions: the exact version this host installs while frozen.
+   Claude CLI version [2.0.76]
+   GitHub CLI (gh) version [2.62.0]
+   Deno version [2.5.4]
+✓  Pinned Claude CLI 2.0.76, GitHub CLI (gh) 2.62.0, Deno 2.5.4.
 ```
 
 A question that never gets a usable answer after five attempts, or input that
