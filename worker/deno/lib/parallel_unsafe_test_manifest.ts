@@ -175,10 +175,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/run_id_test.ts",
   "tests/run_mode_test.ts",
   "tests/self_heal_events_test.ts",
-  // Arrived with the fleet-logs milestone merge (1.2.0). Both mutate the
-  // process and were never on `main`, so no entry existed for them.
-  "tests/run_callbacks_integration_test.ts",
-  "tests/subprocess_timeout_test.ts",
   "tests/service_account_env_test.ts",
   "tests/setup_agent_provider_gating_test.ts",
   "tests/setup_container_runtime_install_test.ts",
