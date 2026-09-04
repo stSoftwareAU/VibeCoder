@@ -618,19 +618,24 @@ Deno.test("entrypoint - never reaches the host's own scratch root, whatever the 
   // let it through deleted the running worker's own staged source — the gh
   // guard's CLI among it, so every subsequent `gh` call in that run failed
   // closed — and left this file's `// stub` repo in its place.
+  //
+  // `clearEnv` in {@link spawnEntrypoint} is what stops that, so this case
+  // proves the clearing itself rather than exporting a host scratch root to
+  // stand in for it (Issue #967): the child's environment is captured and
+  // matched against this process's own, and a variable of ours that reached
+  // it fails here. That covers every leaked root at once, VIBE_SCRATCH_DIR
+  // included, without moving a variable nine other test workers can see.
   const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
   const hostScratch = await Deno.makeTempDir({ prefix: "vibe-host-scratch-" });
   const guard = `${hostScratch}/worker-src/worker/deno/lib/gh_guard_cli.ts`;
   const guardSource = "// the live run's guard\n";
-  const previous = Deno.env.get("VIBE_SCRATCH_DIR");
   try {
     await Deno.mkdir(`${hostScratch}/worker-src/worker/deno/lib`, {
       recursive: true,
     });
     await Deno.writeTextFile(guard, guardSource);
-    Deno.env.set("VIBE_SCRATCH_DIR", hostScratch);
 
-    await stubDeno(dir);
+    const envFile = await stubDenoDumpingWholeEnv(dir);
     await fakeRepo(dir);
     // A real PATH, like the live container's: the entrypoint clears its
     // scratch root with `rm -rf`, and a stub-only PATH cannot resolve `rm`,
@@ -641,18 +646,63 @@ Deno.test("entrypoint - never reaches the host's own scratch root, whatever the 
       env: { VIBE_BASE_DIR: `${dir}/repo` },
     }).output();
 
+    const childEnv = parseEnvDump(await Deno.readTextFile(envFile));
+    // The scratch root the entrypoint resolved is the fixture's, derived from
+    // the isolated TMPDIR — never anything outside it.
+    assertEquals(childEnv.VIBE_SCRATCH_DIR, scratchRoot(dir));
+    const leaked = Object.entries(Deno.env.toObject())
+      .filter(([name]) => !SHELL_OWNED_ENV.has(name))
+      .filter(([name, value]) => childEnv[name] === value)
+      .map(([name]) => name)
+      .sort();
+    assertEquals(
+      leaked,
+      [],
+      "the entrypoint must never see this process's environment: " +
+        leaked.join(", "),
+    );
     assertEquals(
       await Deno.readTextFile(guard),
       guardSource,
       "the entrypoint must never resolve its scratch root from the host's environment",
     );
   } finally {
-    if (previous === undefined) Deno.env.delete("VIBE_SCRATCH_DIR");
-    else Deno.env.set("VIBE_SCRATCH_DIR", previous);
     await Deno.remove(dir, { recursive: true });
     await Deno.remove(hostScratch, { recursive: true });
   }
 });
+
+/**
+ * Variables the child's own shell establishes, whatever it inherited.
+ *
+ * `bash` sets these from its own state — the working directory it was started
+ * in among them — so a match with this process is not evidence of a leak.
+ */
+const SHELL_OWNED_ENV = new Set([
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "PWD",
+  "OLDPWD",
+  "SHLVL",
+  "_",
+]);
+
+/**
+ * Stub `deno` that dumps its WHOLE environment, not a named subset — the
+ * leak this case looks for could be any variable at all.
+ */
+async function stubDenoDumpingWholeEnv(dir: string): Promise<string> {
+  const binDir = `${dir}/bin`;
+  const envFile = `${dir}/driver-env.txt`;
+  await Deno.mkdir(binDir, { recursive: true });
+  await Deno.writeTextFile(
+    `${binDir}/deno`,
+    `#!/bin/bash\nenv > "${envFile}"\nexit 0\n`,
+  );
+  await Deno.chmod(`${binDir}/deno`, 0o755);
+  return envFile;
+}
 
 Deno.test("entrypoint - disables the agent CLI's self-updater (Issue #4248)", async () => {
   // The CLI's auto-updater restarts (SIGKILLs) the running process when an
