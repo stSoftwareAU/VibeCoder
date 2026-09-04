@@ -491,6 +491,23 @@ export interface WorkerConfig {
    */
   softwareMinVersions: Record<string, string>;
   /**
+   * Custom GitHub label → non-public prompt file mappings (Issue #846, part
+   * of #843).
+   *
+   * An operator extends the Vibe Coder with a private prompt template — a
+   * local file path on the host outside the public repository — without
+   * publishing it. Read from the `.config.json` `custom_label_prompts` block
+   * and validated fail-loud by `assertCustomLabelPrompts()` in
+   * `lib/custom_label_prompts_config.ts`. Defaults to an empty list: the
+   * feature is off until an operator opts in, and no existing config changes
+   * behaviour.
+   *
+   * In container mode each `promptPath` is the path the launcher's read-only
+   * mount makes the operator's file readable at (Issue #850); natively it is
+   * the configured host path unchanged.
+   */
+  customLabelPrompts: CustomLabelPromptMapping[];
+  /**
    * Post-run callbacks — the public extension contract (Issue #806).
    *
    * Optional absolute executable paths run after a terminal issue run:
@@ -1242,6 +1259,17 @@ export interface ConfigFile {
    * they fail loud on any fault rather than repairing it.
    */
   container_tools?: ContainerToolSpec[];
+  /**
+   * Custom GitHub label → non-public prompt file mappings (Issue #846, part
+   * of #843).
+   *
+   * Deliberately `unknown`: the block arrives untrusted from the operator's
+   * file, and only `parseCustomLabelPrompts()` / `assertCustomLabelPrompts()`
+   * in `lib/custom_label_prompts_config.ts` may be trusted to produce the
+   * typed {@link CustomLabelPromptMapping} form — they fail loud on any fault
+   * rather than repairing or dropping it.
+   */
+  custom_label_prompts?: unknown;
   /**
    * Post-run callback hooks (Issue #806, parent #796).
    *
