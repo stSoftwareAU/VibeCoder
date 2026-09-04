@@ -25,6 +25,8 @@ import {
   AGENT_PROVIDER_ENV,
   IMAGE_AGENT_PROVIDERS_ENV,
 } from "../lib/agent_provider.ts";
+import type { EnvLookup } from "../lib/phase_routing.ts";
+import { envLookup, NO_ENV } from "./support/env_lookup.ts";
 
 // =============================================================================
 // MODEL_FALLBACK_MAP structure
@@ -140,43 +142,29 @@ Deno.test("model_fallback - getCheaperModel is case-sensitive (uppercase returns
 // =============================================================================
 
 Deno.test("model_fallback - planning phase resolves to fable then degrades to opus (Issue #2621)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_PLANNING");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_PLANNING");
-  try {
-    const current = resolveCurrentModel(undefined, "planning");
-    assertEquals(current, "fable");
-    const fallback = attemptModelFallback(current, true);
-    assertEquals(fallback, { ok: true, cheaperModel: "opus" });
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_PLANNING", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_PLANNING");
-  }
+  // The empty environment is injected (Issue #957), so this pins the *designed*
+  // planning default rather than whatever the host exports.
+  const current = resolveCurrentModel(undefined, "planning", undefined, NO_ENV);
+  assertEquals(current, "fable");
+  const fallback = attemptModelFallback(current, true, undefined, NO_ENV);
+  assertEquals(fallback, { ok: true, cheaperModel: "opus" });
 });
 
 // Confirms resolveCurrentModel delegates to the full buildClaudeModelArgs
 // chain — including the per-repo override level (#2625) that the previous
 // JSDoc omitted (Issue #2713). Behavioural, not a docstring grep.
 Deno.test("model_fallback - resolveCurrentModel honours per-repo override (Issue #2713)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_PLANNING");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_PLANNING");
   try {
     // Per-repo phase override sits above the phase default in the chain.
     setActiveRepoModelEffortOverrides({
       phaseModelOverrides: { planning: "opus" },
     });
-    assertEquals(resolveCurrentModel(undefined, "planning"), "opus");
+    assertEquals(
+      resolveCurrentModel(undefined, "planning", undefined, NO_ENV),
+      "opus",
+    );
   } finally {
     setActiveRepoModelEffortOverrides(undefined);
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_PLANNING", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_PLANNING");
   }
 });
 
@@ -184,41 +172,34 @@ Deno.test("model_fallback - resolveCurrentModel honours per-repo override (Issue
 // step 3) is another way Fable gets requested — for *every* phase, not only the
 // per-phase defaults. The unavailable-fallback must cover that path too.
 Deno.test("model_fallback - per-repo claude_model:fable base tier resolves to fable then degrades to opus (Issue #2735)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL");
   try {
     setActiveRepoModelEffortOverrides({ claudeModel: "fable" });
     // Base tier applies to all phases (and phase-less calls).
-    assertEquals(resolveCurrentModel(undefined, "issue"), "fable");
-    assertEquals(resolveCurrentModel(undefined, undefined), "fable");
+    assertEquals(
+      resolveCurrentModel(undefined, "issue", undefined, NO_ENV),
+      "fable",
+    );
+    assertEquals(
+      resolveCurrentModel(undefined, undefined, undefined, NO_ENV),
+      "fable",
+    );
     const fallback = attemptModelFallback(
-      resolveCurrentModel(undefined, "issue"),
+      resolveCurrentModel(undefined, "issue", undefined, NO_ENV),
       true,
+      undefined,
+      NO_ENV,
     );
     assertEquals(fallback, { ok: true, cheaperModel: "opus" });
   } finally {
     setActiveRepoModelEffortOverrides(undefined);
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
   }
 });
 
 Deno.test("model_fallback - grill_me phase resolves to fable then degrades to opus (Issue #2621)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_GRILL_ME");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_GRILL_ME");
-  try {
-    const current = resolveCurrentModel(undefined, "grill_me");
-    assertEquals(current, "fable");
-    const fallback = attemptModelFallback(current, true);
-    assertEquals(fallback, { ok: true, cheaperModel: "opus" });
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_GRILL_ME", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_GRILL_ME");
-  }
+  const current = resolveCurrentModel(undefined, "grill_me", undefined, NO_ENV);
+  assertEquals(current, "fable");
+  const fallback = attemptModelFallback(current, true, undefined, NO_ENV);
+  assertEquals(fallback, { ok: true, cheaperModel: "opus" });
 });
 
 // =============================================================================
@@ -231,79 +212,78 @@ Deno.test("model_fallback - grill_me phase resolves to fable then degrades to op
 // =============================================================================
 
 /**
- * Run `body` with every provider marked installed, optionally forcing the
- * active one.
+ * Run `body` against an environment with every provider marked installed,
+ * optionally forcing the active one.
  *
  * The image these tests run under installs Claude alone, and
  * `selectAgentProvider` refuses a provider the image did not install, so a
- * Codex/Gemini scenario has to stamp the set it describes.
+ * Codex/Gemini scenario has to stamp the set it describes. The stamp is a
+ * lookup handed to the code under test (Issue #957), not a variable set on the
+ * process — that stamp used to be visible to every test running beside this
+ * one.
+ *
+ * @param body - The test body, given the environment to inject.
+ * @param activeId - Provider id to force through `VIBE_AGENT_PROVIDER`.
  */
 function withProviders(
-  body: () => void,
+  body: (env: EnvLookup) => void,
   activeId?: string,
 ): void {
-  const originalImage = Deno.env.get(IMAGE_AGENT_PROVIDERS_ENV);
-  const originalActive = Deno.env.get(AGENT_PROVIDER_ENV);
-  Deno.env.set(IMAGE_AGENT_PROVIDERS_ENV, "claude,codex,gemini");
-  if (activeId) Deno.env.set(AGENT_PROVIDER_ENV, activeId);
-  try {
-    body();
-  } finally {
-    if (originalImage) Deno.env.set(IMAGE_AGENT_PROVIDERS_ENV, originalImage);
-    else Deno.env.delete(IMAGE_AGENT_PROVIDERS_ENV);
-    if (originalActive) Deno.env.set(AGENT_PROVIDER_ENV, originalActive);
-    else Deno.env.delete(AGENT_PROVIDER_ENV);
-  }
+  body(envLookup({
+    [IMAGE_AGENT_PROVIDERS_ENV]: "claude,codex,gemini",
+    ...(activeId ? { [AGENT_PROVIDER_ENV]: activeId } : {}),
+  }));
 }
 
 Deno.test("model_fallback - resolveCurrentModel uses the Codex chain under Codex (Issue #365)", () => {
-  withProviders(() => {
-    const resolved = resolveCurrentModel(undefined, "issue", "codex");
-    assertEquals(resolved, resolveCodexModel("issue"));
+  withProviders((env) => {
+    const resolved = resolveCurrentModel(undefined, "issue", "codex", env);
+    assertEquals(resolved, resolveCodexModel("issue", env));
     // The bug: the Claude chain answered for every provider.
     assertEquals(
-      resolved === resolveCurrentModel(undefined, "issue", "claude"),
+      resolved === resolveCurrentModel(undefined, "issue", "claude", env),
       false,
     );
   });
 });
 
 Deno.test("model_fallback - resolveCurrentModel uses the Gemini chain under Gemini (Issue #365)", () => {
-  withProviders(() => {
-    const resolved = resolveCurrentModel(undefined, "planning", "gemini");
-    assertEquals(resolved, resolveGeminiModel("planning"));
+  withProviders((env) => {
+    const resolved = resolveCurrentModel(undefined, "planning", "gemini", env);
+    assertEquals(resolved, resolveGeminiModel("planning", env));
     assertEquals(
-      resolved === resolveCurrentModel(undefined, "planning", "claude"),
+      resolved === resolveCurrentModel(undefined, "planning", "claude", env),
       false,
     );
   });
 });
 
 Deno.test("model_fallback - resolveCurrentModel follows the active provider from the environment (Issue #365)", () => {
-  withProviders(() => {
+  withProviders((env) => {
     assertEquals(
-      resolveCurrentModel(undefined, "issue"),
-      resolveCodexModel("issue"),
+      resolveCurrentModel(undefined, "issue", undefined, env),
+      resolveCodexModel("issue", env),
     );
   }, "codex");
 });
 
 Deno.test("model_fallback - an explicit model still wins under any provider (Issue #365)", () => {
-  withProviders(() => {
+  withProviders((env) => {
     assertEquals(
-      resolveCurrentModel("gpt-5.1-codex", "issue", "codex"),
+      resolveCurrentModel("gpt-5.1-codex", "issue", "codex", env),
       "gpt-5.1-codex",
     );
-    assertEquals(resolveCurrentModel("opus", "issue", "claude"), "opus");
+    assertEquals(resolveCurrentModel("opus", "issue", "claude", env), "opus");
   });
 });
 
 Deno.test("model_fallback - Codex reports no-ladder-for-provider, not already-cheapest (Issue #365)", () => {
-  withProviders(() => {
+  withProviders((env) => {
     const result = attemptModelFallback(
-      resolveCurrentModel(undefined, "issue", "codex"),
+      resolveCurrentModel(undefined, "issue", "codex", env),
       true,
       "codex",
+      env,
     );
     const expected: ModelFallbackResult = {
       ok: false,
@@ -315,11 +295,12 @@ Deno.test("model_fallback - Codex reports no-ladder-for-provider, not already-ch
 });
 
 Deno.test("model_fallback - Gemini reports no-ladder-for-provider, not already-cheapest (Issue #365)", () => {
-  withProviders(() => {
+  withProviders((env) => {
     const result = attemptModelFallback(
-      resolveCurrentModel(undefined, "planning", "gemini"),
+      resolveCurrentModel(undefined, "planning", "gemini", env),
       true,
       "gemini",
+      env,
     );
     const expected: ModelFallbackResult = {
       ok: false,
@@ -331,8 +312,8 @@ Deno.test("model_fallback - Gemini reports no-ladder-for-provider, not already-c
 });
 
 Deno.test("model_fallback - disabled still beats the missing ladder (Issue #365)", () => {
-  withProviders(() => {
-    const result = attemptModelFallback("gpt-5.1-codex", false, "codex");
+  withProviders((env) => {
+    const result = attemptModelFallback("gpt-5.1-codex", false, "codex", env);
     assertEquals(result, { ok: false, reason: "disabled" });
   });
 });
@@ -361,8 +342,8 @@ Deno.test("model_fallback - the missing ladder is warned about once, naming the 
     captured.push(args.map(String).join(" "));
   };
   try {
-    withProviders(() => {
-      const result = attemptModelFallback("gpt-5.1-codex", true, "codex");
+    withProviders((env) => {
+      const result = attemptModelFallback("gpt-5.1-codex", true, "codex", env);
       warnNoModelLadder(result, "gpt-5.1-codex");
       // A rate-limited run reaches the same branch on every retry: still once.
       warnNoModelLadder(result, "gpt-5.1-codex");
@@ -400,8 +381,8 @@ Deno.test("model_fallback - the warning goes to the run logger when one is suppl
   clearModelLadderWarnings();
   const messages: string[] = [];
   try {
-    withProviders(() => {
-      const result = attemptModelFallback("gemini-3-pro", true, "gemini");
+    withProviders((env) => {
+      const result = attemptModelFallback("gemini-3-pro", true, "gemini", env);
       warnNoModelLadder(result, "gemini-3-pro", {
         warn: (message: string) => messages.push(message),
       });
@@ -412,4 +393,38 @@ Deno.test("model_fallback - the warning goes to the run logger when one is suppl
 
   assertEquals(messages.length, 1);
   assertEquals(messages[0]!.includes("gemini"), true);
+});
+
+// ---------------------------------------------------------------------------
+// The injected environment lookup (Issue #957)
+// ---------------------------------------------------------------------------
+
+Deno.test("model_fallback - the phase-specific variable is read through the injected lookup (Issue #957)", () => {
+  // A sentinel no process environment carries: precedence step 1 must supply
+  // it, so a chain reading `Deno.env.get` would answer "fable" instead.
+  const sentinel = "claude-957-sentinel";
+  assertEquals(
+    resolveCurrentModel(
+      undefined,
+      "planning",
+      undefined,
+      envLookup({ CLAUDE_MODEL_PLANNING: sentinel }),
+    ),
+    sentinel,
+  );
+  assertEquals(Deno.env.get("CLAUDE_MODEL_PLANNING"), undefined);
+
+  // And the ladder still reads the provider stamp through the same lookup.
+  const stamped: EnvLookup = envLookup({
+    [IMAGE_AGENT_PROVIDERS_ENV]: "claude,codex,gemini",
+    [AGENT_PROVIDER_ENV]: "codex",
+  });
+  assertEquals(
+    attemptModelFallback("gpt-5.1-codex", true, undefined, stamped),
+    {
+      ok: false,
+      reason: "no-ladder-for-provider",
+      provider: "codex",
+    },
+  );
 });

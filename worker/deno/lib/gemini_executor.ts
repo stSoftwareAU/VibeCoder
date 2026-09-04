@@ -37,7 +37,7 @@ import {
   GEMINI_PHASE_MODEL_DEFAULTS,
   PHASE_EFFORT_DEFAULTS,
 } from "./config_defaults.ts";
-import { resolvePhaseRoutedValue } from "./phase_routing.ts";
+import { type EnvLookup, resolvePhaseRoutedValue } from "./phase_routing.ts";
 import type { RepoConfig } from "../types.ts";
 
 /**
@@ -125,15 +125,21 @@ export function setActiveRepoGeminiModelOverrides(
  *   6. Base `GEMINI_MODEL` env var — global fallback
  *
  * @param phase - Optional phase name (e.g. `"planning"`).
+ * @param env - Environment lookup for steps 1 and 6 (Issue #957); defaults to
+ *   the process environment.
  * @returns The resolved model, or `undefined` when no step supplies one — the
  *   CLI's configured default then stands, and a non-empty phase warns.
  */
-export function resolveGeminiModel(phase?: string): string | undefined {
+export function resolveGeminiModel(
+  phase?: string,
+  env?: EnvLookup,
+): string | undefined {
   return resolvePhaseRoutedValue({
     logPrefix: "gemini-executor",
     what: "model",
     flag: "--model",
     envVar: "GEMINI_MODEL",
+    env,
     repoPhaseOverrides: _repoGeminiPhaseModelOverrides,
     repoPhaseOverridesKey: "gemini_phase_model_overrides",
     repoBase: _repoGeminiModel,

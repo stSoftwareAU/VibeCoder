@@ -20,6 +20,7 @@ import {
   type AgentProviderSelector,
   selectAgentProvider,
 } from "./agent_provider.ts";
+import type { EnvLookup } from "./phase_routing.ts";
 
 /** Successful fallback result — a cheaper model is available. */
 export interface ModelFallbackSuccess {
@@ -69,16 +70,19 @@ export type ModelFallbackResult =
  * @param model - Explicit model option from RunClaudeOptions
  * @param phase - Phase name for model selection
  * @param provider - Provider for this invocation; omit for the active one
+ * @param env - Environment lookup for provider selection and phase routing
+ *   (Issue #957); defaults to the process environment.
  * @returns The resolved model string
  */
 export function resolveCurrentModel(
   model: string | undefined,
   phase: string | undefined,
   provider?: AgentProviderSelector,
+  env?: EnvLookup,
 ): string {
   if (model) return model;
 
-  return selectAgentProvider(provider).resolveModel(phase) ?? "";
+  return selectAgentProvider(provider, { env }).resolveModel(phase, env) ?? "";
 }
 
 /**
@@ -87,18 +91,21 @@ export function resolveCurrentModel(
  * @param currentModel - The model currently in use
  * @param enabled - Whether model fallback is enabled
  * @param provider - Provider for this invocation; omit for the active one
+ * @param env - Environment lookup for provider selection (Issue #957);
+ *   defaults to the process environment.
  * @returns The fallback result
  */
 export function attemptModelFallback(
   currentModel: string,
   enabled: boolean,
   provider?: AgentProviderSelector,
+  env?: EnvLookup,
 ): ModelFallbackResult {
   if (!enabled) {
     return { ok: false, reason: "disabled" };
   }
 
-  const descriptor = selectAgentProvider(provider);
+  const descriptor = selectAgentProvider(provider, { env });
 
   // No ladder at all: report it as its own outcome (Issue #365). Returning
   // "already-cheapest" here would tell an operator the run was on the cheapest

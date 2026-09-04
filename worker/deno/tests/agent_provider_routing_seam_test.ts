@@ -39,6 +39,7 @@ import {
   PHASE_EFFORT_DEFAULTS,
   PHASE_MODEL_DEFAULTS,
 } from "../lib/config_defaults.ts";
+import { envLookup, NO_ENV } from "./support/env_lookup.ts";
 
 /** Every phase either routing table names, in a stable order. */
 const ROUTED_PHASES: string[] = [
@@ -58,22 +59,10 @@ const CLAUDE_TAIL = [
   "PROMPT",
 ];
 
-/** Run `fn` with `name` set to `value` (or deleted), then restore it. */
-function withEnv(
-  name: string,
-  value: string | undefined,
-  fn: () => void,
-): void {
-  const original = Deno.env.get(name);
-  if (value === undefined) Deno.env.delete(name);
-  else Deno.env.set(name, value);
-  try {
-    fn();
-  } finally {
-    if (original === undefined) Deno.env.delete(name);
-    else Deno.env.set(name, original);
-  }
-}
+// The routing env is injected rather than set on the process (Issue #957):
+// `NO_ENV` is an environment where nothing is set, and `envLookup` states the
+// variables one scenario declares. Clearing a base variable used to mean
+// deleting it process-wide, which every test running beside this one saw.
 
 // ---------------------------------------------------------------------------
 // Every descriptor implements the seam
@@ -103,13 +92,13 @@ Deno.test("routing seam - Claude's resolvers are the existing precedence chain",
 
   for (const phase of [undefined, ...ROUTED_PHASES]) {
     assertEquals(
-      claude.resolveModel(phase),
-      resolveClaudeModel(phase),
+      claude.resolveModel(phase, NO_ENV),
+      resolveClaudeModel(phase, NO_ENV),
       `Claude's model resolver must match the chain for phase ${phase}`,
     );
     assertEquals(
-      claude.resolveEffort(phase),
-      resolveClaudeEffort(phase),
+      claude.resolveEffort(phase, NO_ENV),
+      resolveClaudeEffort(phase, NO_ENV),
       `Claude's effort resolver must match the chain for phase ${phase}`,
     );
   }
@@ -121,46 +110,50 @@ Deno.test("routing seam - Gemini resolves every routed phase through its own tab
   // effort *flag*, so its effort resolver reports the effort the phase was
   // asked for — the value the descriptor then warns about rather than applies.
   const gemini = resolveAgentProvider(GEMINI_PROVIDER_ID);
-  // A base env var is precedence step 6 and would mask the table, so clear it.
-  withEnv("GEMINI_MODEL", undefined, () => {
-    for (const phase of ROUTED_PHASES) {
-      assertEquals(
-        gemini.resolveModel(phase),
-        GEMINI_PHASE_MODEL_DEFAULTS[phase],
-        `gemini model for phase ${phase}`,
-      );
-      assertEquals(
-        gemini.resolveEffort(phase),
-        PHASE_EFFORT_DEFAULTS[phase],
-        `gemini requested effort for phase ${phase}`,
-      );
-    }
+  // A base env var is precedence step 6 and would mask the table, so the
+  // injected environment holds none.
+  for (const phase of ROUTED_PHASES) {
+    assertEquals(
+      gemini.resolveModel(phase, NO_ENV),
+      GEMINI_PHASE_MODEL_DEFAULTS[phase],
+      `gemini model for phase ${phase}`,
+    );
+    assertEquals(
+      gemini.resolveEffort(phase, NO_ENV),
+      PHASE_EFFORT_DEFAULTS[phase],
+      `gemini requested effort for phase ${phase}`,
+    );
+  }
 
-    // A phase-less invocation is deliberate: nothing routes, nothing warns.
-    assertEquals(gemini.resolveModel(undefined), undefined, "gemini model");
-    assertEquals(gemini.resolveEffort(undefined), undefined, "gemini effort");
-  });
+  // A phase-less invocation is deliberate: nothing routes, nothing warns.
+  assertEquals(
+    gemini.resolveModel(undefined, NO_ENV),
+    undefined,
+    "gemini model",
+  );
+  assertEquals(
+    gemini.resolveEffort(undefined, NO_ENV),
+    undefined,
+    "gemini effort",
+  );
 });
 
 Deno.test("routing seam - Codex resolves every routed phase through its own tables (Issue #363)", () => {
   const codex = resolveAgentProvider(CODEX_PROVIDER_ID);
-  // A base env var is precedence step 6 and would mask the tables, so clear it.
-  withEnv("CODEX_MODEL", undefined, () => {
-    withEnv("CODEX_EFFORT", undefined, () => {
-      for (const phase of ROUTED_PHASES) {
-        assertEquals(
-          codex.resolveModel(phase),
-          CODEX_PHASE_MODEL_DEFAULTS[phase],
-          `codex model for phase ${phase}`,
-        );
-        assertEquals(
-          codex.resolveEffort(phase),
-          CODEX_PHASE_EFFORT_DEFAULTS[phase],
-          `codex effort for phase ${phase}`,
-        );
-      }
-    });
-  });
+  // The base env vars are precedence step 6 and would mask the tables, so the
+  // injected environment holds neither.
+  for (const phase of ROUTED_PHASES) {
+    assertEquals(
+      codex.resolveModel(phase, NO_ENV),
+      CODEX_PHASE_MODEL_DEFAULTS[phase],
+      `codex model for phase ${phase}`,
+    );
+    assertEquals(
+      codex.resolveEffort(phase, NO_ENV),
+      CODEX_PHASE_EFFORT_DEFAULTS[phase],
+      `codex effort for phase ${phase}`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -175,6 +168,7 @@ Deno.test("routing seam - an explicit model and effort beat the phase resolver",
     phase: "planning",
     model: "claude-opus-4-1",
     effort: "low",
+    env: NO_ENV,
   });
 
   assertEquals(routing, { model: "claude-opus-4-1", effort: "low" });
@@ -188,10 +182,11 @@ Deno.test("routing seam - a blank explicit value falls through to the resolver",
     phase: "planning",
     model: "",
     effort: "",
+    env: NO_ENV,
   });
 
-  assertEquals(routing.model, resolveClaudeModel("planning"));
-  assertEquals(routing.effort, resolveClaudeEffort("planning"));
+  assertEquals(routing.model, resolveClaudeModel("planning", NO_ENV));
+  assertEquals(routing.effort, resolveClaudeEffort("planning", NO_ENV));
 });
 
 Deno.test("routing seam - an explicit value beats a provider's own phase routing", () => {
@@ -202,22 +197,25 @@ Deno.test("routing seam - an explicit value beats a provider's own phase routing
     phase: "planning",
     model: "gemini-pinned",
     effort: "low",
+    env: NO_ENV,
   });
 
   assertEquals(routing, { model: "gemini-pinned", effort: "low" });
 
   // With nothing explicit, Gemini's own table decides the model (Issue #364),
   // and a phase-less call still leaves the CLI on its own default.
-  withEnv("GEMINI_MODEL", undefined, () => {
-    const routed = resolveInvocationRouting(gemini, {
-      prompt: "PROMPT",
-      phase: "planning",
-    });
-    assertEquals(routed.model, GEMINI_PHASE_MODEL_DEFAULTS.planning);
-
-    const unrouted = resolveInvocationRouting(gemini, { prompt: "PROMPT" });
-    assertEquals(unrouted, { model: undefined, effort: undefined });
+  const routed = resolveInvocationRouting(gemini, {
+    prompt: "PROMPT",
+    phase: "planning",
+    env: NO_ENV,
   });
+  assertEquals(routed.model, GEMINI_PHASE_MODEL_DEFAULTS.planning);
+
+  const unrouted = resolveInvocationRouting(gemini, {
+    prompt: "PROMPT",
+    env: NO_ENV,
+  });
+  assertEquals(unrouted, { model: undefined, effort: undefined });
 });
 
 // ---------------------------------------------------------------------------
@@ -230,10 +228,10 @@ Deno.test("routing seam - Claude argv per phase is what the pre-seam builders pr
   for (const phase of [undefined, ...ROUTED_PHASES]) {
     // (a) No model/effort: the phase routing decides, exactly as before.
     assertEquals(
-      claude.buildInvocation({ prompt: "PROMPT", phase }),
+      claude.buildInvocation({ prompt: "PROMPT", phase, env: NO_ENV }),
       [
-        ...buildClaudeModelArgs(phase),
-        ...buildClaudeEffortArgs(phase),
+        ...buildClaudeModelArgs(phase, NO_ENV),
+        ...buildClaudeEffortArgs(phase, NO_ENV),
         ...CLAUDE_TAIL,
       ],
       `phase ${phase} must route through the unchanged model/effort builders`,
@@ -246,6 +244,7 @@ Deno.test("routing seam - Claude argv per phase is what the pre-seam builders pr
         phase,
         model: "claude-opus-4-1",
         effort: "max",
+        env: NO_ENV,
       }),
       [
         "--model",
@@ -264,20 +263,27 @@ Deno.test("routing seam - Claude argv carries each phase's designed defaults", (
 
   // A phase-specific env var is precedence step 1 for both model and effort,
   // so this pins the whole chain without disturbing config or repo overrides.
-  withEnv("CLAUDE_MODEL_PLANNING", "opus", () => {
-    withEnv("CLAUDE_EFFORT_PLANNING", "medium", () => {
-      assertEquals(
-        claude.buildInvocation({ prompt: "PROMPT", phase: "planning" }),
-        ["--model", "opus", "--effort", "medium", ...CLAUDE_TAIL],
-      );
-    });
-  });
+  assertEquals(
+    claude.buildInvocation({
+      prompt: "PROMPT",
+      phase: "planning",
+      env: envLookup({
+        CLAUDE_MODEL_PLANNING: "opus",
+        CLAUDE_EFFORT_PLANNING: "medium",
+      }),
+    }),
+    ["--model", "opus", "--effort", "medium", ...CLAUDE_TAIL],
+  );
 
   // The designed defaults still reach argv when no override is set: the
   // resolver and the built argv agree phase by phase.
   for (const phase of ROUTED_PHASES) {
-    const args = claude.buildInvocation({ prompt: "PROMPT", phase });
-    const model = claude.resolveModel(phase);
+    const args = claude.buildInvocation({
+      prompt: "PROMPT",
+      phase,
+      env: NO_ENV,
+    });
+    const model = claude.resolveModel(phase, NO_ENV);
     if (model) {
       assertEquals(args[args.indexOf("--model") + 1], model);
     } else {
@@ -285,7 +291,7 @@ Deno.test("routing seam - Claude argv carries each phase's designed defaults", (
     }
     assertEquals(
       args[args.indexOf("--effort") + 1],
-      claude.resolveEffort(phase),
+      claude.resolveEffort(phase, NO_ENV),
     );
   }
 });
@@ -303,87 +309,135 @@ Deno.test("routing seam - Codex argv carries each phase's designed defaults (Iss
   // Issue #363 replaced the pre-seam pass-through this test used to pin: a
   // phase now reaches argv as `--model` + `-c model_reasoning_effort`, and a
   // phase-less call is the only one that still adds no routing flags. The base
-  // env vars are precedence step 6 and would mask the tables, so clear them.
-  withEnv("CODEX_MODEL", undefined, () => {
-    withEnv("CODEX_EFFORT", undefined, () => {
+  // env vars are precedence step 6 and would mask the tables, so the injected
+  // environment holds neither.
+  assertEquals(
+    codex.buildInvocation({ prompt: "PROMPT", env: NO_ENV }),
+    [...base, "PROMPT"],
+    "a phase-less invocation leaves Codex on its configured default",
+  );
+
+  for (const phase of [undefined, ...ROUTED_PHASES]) {
+    if (phase) {
       assertEquals(
-        codex.buildInvocation({ prompt: "PROMPT" }),
-        [...base, "PROMPT"],
-        "a phase-less invocation leaves Codex on its configured default",
+        codex.buildInvocation({ prompt: "PROMPT", phase, env: NO_ENV }),
+        [
+          ...base,
+          "--model",
+          CODEX_PHASE_MODEL_DEFAULTS[phase],
+          "-c",
+          `model_reasoning_effort="${CODEX_PHASE_EFFORT_DEFAULTS[phase]}"`,
+          "PROMPT",
+        ],
+        `phase ${phase} must carry its designed Codex model and effort`,
       );
+    }
 
-      for (const phase of [undefined, ...ROUTED_PHASES]) {
-        if (phase) {
-          assertEquals(
-            codex.buildInvocation({ prompt: "PROMPT", phase }),
-            [
-              ...base,
-              "--model",
-              CODEX_PHASE_MODEL_DEFAULTS[phase],
-              "-c",
-              `model_reasoning_effort="${CODEX_PHASE_EFFORT_DEFAULTS[phase]}"`,
-              "PROMPT",
-            ],
-            `phase ${phase} must carry its designed Codex model and effort`,
-          );
-        }
-
-        assertEquals(
-          codex.buildInvocation({
-            prompt: "PROMPT",
-            phase,
-            model: "gpt-5-codex",
-            effort: "high",
-          }),
-          [
-            ...base,
-            "--model",
-            "gpt-5-codex",
-            "-c",
-            'model_reasoning_effort="high"',
-            "PROMPT",
-          ],
-          `phase ${phase} must not disturb an explicit Codex model/effort`,
-        );
-      }
-    });
-  });
+    assertEquals(
+      codex.buildInvocation({
+        prompt: "PROMPT",
+        phase,
+        model: "gpt-5-codex",
+        effort: "high",
+        env: NO_ENV,
+      }),
+      [
+        ...base,
+        "--model",
+        "gpt-5-codex",
+        "-c",
+        'model_reasoning_effort="high"',
+        "PROMPT",
+      ],
+      `phase ${phase} must not disturb an explicit Codex model/effort`,
+    );
+  }
 });
 
 Deno.test("routing seam - Gemini argv carries each phase's designed model (Issue #364)", () => {
   const gemini = resolveAgentProvider(GEMINI_PROVIDER_ID);
 
-  // The base env var is precedence step 6 and would mask the table.
-  withEnv("GEMINI_MODEL", undefined, () => {
+  // The base env var is precedence step 6 and would mask the table, so the
+  // injected environment holds none.
+  assertEquals(
+    gemini.buildInvocation({ prompt: "PROMPT", env: NO_ENV }).includes(
+      "--model",
+    ),
+    false,
+    "a phase-less invocation leaves Gemini on its configured default",
+  );
+
+  for (const phase of ROUTED_PHASES) {
+    const routed = gemini.buildInvocation({
+      prompt: "PROMPT",
+      phase,
+      env: NO_ENV,
+    });
     assertEquals(
-      gemini.buildInvocation({ prompt: "PROMPT" }).includes("--model"),
-      false,
-      "a phase-less invocation leaves Gemini on its configured default",
+      routed[routed.indexOf("--model") + 1],
+      GEMINI_PHASE_MODEL_DEFAULTS[phase],
+      `phase ${phase} must carry its designed Gemini model`,
+    );
+    assert(
+      !routed.some((arg) => arg.includes("effort")),
+      "the Gemini CLI has no reasoning-effort option to carry",
     );
 
-    for (const phase of ROUTED_PHASES) {
-      const routed = gemini.buildInvocation({ prompt: "PROMPT", phase });
-      assertEquals(
-        routed[routed.indexOf("--model") + 1],
-        GEMINI_PHASE_MODEL_DEFAULTS[phase],
-        `phase ${phase} must carry its designed Gemini model`,
-      );
-      assert(
-        !routed.some((arg) => arg.includes("effort")),
-        "the Gemini CLI has no reasoning-effort option to carry",
-      );
+    const explicit = gemini.buildInvocation({
+      prompt: "PROMPT",
+      phase,
+      model: "gemini-pinned",
+      effort: "high",
+      env: NO_ENV,
+    });
+    assertEquals(explicit[explicit.indexOf("--model") + 1], "gemini-pinned");
+    assert(
+      !explicit.includes("--effort"),
+      "the Gemini CLI has no reasoning-effort option to carry",
+    );
+  }
+});
 
-      const explicit = gemini.buildInvocation({
-        prompt: "PROMPT",
-        phase,
-        model: "gemini-pinned",
-        effort: "high",
-      });
-      assertEquals(explicit[explicit.indexOf("--model") + 1], "gemini-pinned");
-      assert(
-        !explicit.includes("--effort"),
-        "the Gemini CLI has no reasoning-effort option to carry",
-      );
-    }
-  });
+// ---------------------------------------------------------------------------
+// The injected environment lookup reaches every descriptor (Issue #957)
+// ---------------------------------------------------------------------------
+
+Deno.test("routing seam - every provider's resolvers and argv read the injected lookup (Issue #957)", () => {
+  // One sentinel per provider, under that provider's own base variable. None
+  // exists in a real process environment, so a descriptor that resolved through
+  // `Deno.env.get` would fall through to its table (or to nothing) instead.
+  const sentinels: Record<string, { envVar: string; value: string }> = {
+    [CLAUDE_PROVIDER_ID]: {
+      envVar: "CLAUDE_MODEL",
+      value: "claude-957-sentinel",
+    },
+    [CODEX_PROVIDER_ID]: { envVar: "CODEX_MODEL", value: "gpt-957-sentinel" },
+    [GEMINI_PROVIDER_ID]: {
+      envVar: "GEMINI_MODEL",
+      value: "gemini-957-sentinel",
+    },
+  };
+
+  for (const [id, { envVar, value }] of Object.entries(sentinels)) {
+    const provider = resolveAgentProvider(id);
+    const env = envLookup({ [envVar]: value });
+    // Step 6 (the base variable) covers a phase with no table entry.
+    assertEquals(
+      provider.resolveModel("totally_unknown_phase", env),
+      value,
+      `${id} must resolve the model through the injected lookup`,
+    );
+    // ...and `buildInvocation` forwards the same lookup to that resolver.
+    const args = provider.buildInvocation({
+      prompt: "PROMPT",
+      phase: "totally_unknown_phase",
+      env,
+    });
+    assertEquals(
+      args[args.indexOf("--model") + 1],
+      value,
+      `${id} must carry the injected model into argv`,
+    );
+    assertEquals(Deno.env.get(envVar), undefined);
+  }
 });

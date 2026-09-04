@@ -29,6 +29,19 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
+/**
+ * Read one environment variable (Issue #957).
+ *
+ * The seam that lets routing be driven by a value rather than by the process:
+ * a caller — the worker in production, a test with a fixed map — supplies the
+ * lookup, so resolving a phase never reads `Deno.env` on its own behalf and two
+ * tests can route different phases concurrently.
+ */
+export type EnvLookup = (name: string) => string | undefined;
+
+/** Reads the process environment — what a caller that injects nothing gets. */
+const processEnv: EnvLookup = (name) => Deno.env.get(name);
+
 /** Where one provider's routing values come from, in precedence order. */
 export interface PhaseRoutingSources {
   /** Log prefix for the fail-loud warning, e.g. `"codex-executor"`. */
@@ -42,6 +55,11 @@ export interface PhaseRoutingSources {
    * phase-specific escape hatch of step 1 is `${envVar}_${PHASE}`.
    */
   envVar: string;
+  /**
+   * Where steps 1 and 6 read their variables from (Issue #957). Defaults to
+   * the process environment, so a production caller supplies nothing.
+   */
+  env?: EnvLookup;
   /** Step 2 — the active repo's per-phase overrides. */
   repoPhaseOverrides: Readonly<Record<string, string>>;
   /** The config key naming step 2, e.g. `"codex_phase_model_overrides"`. */
@@ -102,11 +120,12 @@ export function resolvePhaseRoutedValue(
 ): string | undefined {
   const accept = (level: string, value: string): string =>
     sources.check ? sources.check(level, value) : value;
+  const env = sources.env ?? processEnv;
 
   if (phase) {
     // 1. Phase-specific env var (explicit operator override for this phase)
     const phaseVar = `${sources.envVar}_${phase.toUpperCase()}`;
-    const fromPhaseEnv = Deno.env.get(phaseVar) ?? "";
+    const fromPhaseEnv = env(phaseVar) ?? "";
     if (fromPhaseEnv) return accept(`${phaseVar} env var`, fromPhaseEnv);
 
     // 2. Per-repo per-phase override
@@ -146,7 +165,7 @@ export function resolvePhaseRoutedValue(
   }
 
   // 6. Base env var (global fallback)
-  const fromBaseEnv = Deno.env.get(sources.envVar) ?? "";
+  const fromBaseEnv = env(sources.envVar) ?? "";
   if (fromBaseEnv) return accept(`${sources.envVar} env var`, fromBaseEnv);
 
   if (sources.fallback) return sources.fallback;

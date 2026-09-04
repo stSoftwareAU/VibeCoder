@@ -14,6 +14,7 @@ import {
   type ModelFallbackResult,
   resolveCurrentModel,
 } from "../lib/model_fallback.ts";
+import { envLookup, NO_ENV } from "./support/env_lookup.ts";
 
 // ---------------------------------------------------------------------------
 // resolveCurrentModel — determines which model is in use
@@ -25,46 +26,25 @@ Deno.test("resolveCurrentModel - returns explicit model option when provided", (
 });
 
 Deno.test("resolveCurrentModel - returns phase default when no explicit model", () => {
-  const original = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_HEALTH");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_HEALTH");
-  try {
-    const result = resolveCurrentModel(undefined, "health");
-    assertEquals(result, "haiku"); // health phase defaults to haiku
-  } finally {
-    if (original) Deno.env.set("CLAUDE_MODEL", original);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_HEALTH", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_HEALTH");
-  }
+  // The environment is injected (Issue #957): an empty one is what makes this
+  // the *phase default*, not whatever `CLAUDE_MODEL_HEALTH` the host exports.
+  const result = resolveCurrentModel(undefined, "health", undefined, NO_ENV);
+  assertEquals(result, "haiku"); // health phase defaults to haiku
 });
 
 Deno.test("resolveCurrentModel - returns CLAUDE_MODEL env var when no phase", () => {
-  const original = Deno.env.get("CLAUDE_MODEL");
-  Deno.env.set("CLAUDE_MODEL", "opus");
-  try {
-    const result = resolveCurrentModel(undefined, undefined);
-    assertEquals(result, "opus");
-  } finally {
-    if (original) {
-      Deno.env.set("CLAUDE_MODEL", original);
-    } else {
-      Deno.env.delete("CLAUDE_MODEL");
-    }
-  }
+  const result = resolveCurrentModel(
+    undefined,
+    undefined,
+    undefined,
+    envLookup({ CLAUDE_MODEL: "opus" }),
+  );
+  assertEquals(result, "opus");
 });
 
 Deno.test("resolveCurrentModel - returns empty string when no model info available", () => {
-  const original = Deno.env.get("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL");
-  try {
-    const result = resolveCurrentModel(undefined, undefined);
-    assertEquals(result, "");
-  } finally {
-    if (original) Deno.env.set("CLAUDE_MODEL", original);
-    else Deno.env.delete("CLAUDE_MODEL");
-  }
+  const result = resolveCurrentModel(undefined, undefined, undefined, NO_ENV);
+  assertEquals(result, "");
 });
 
 Deno.test("resolveCurrentModel - explicit model takes priority over phase", () => {
@@ -199,4 +179,24 @@ Deno.test("RunClaudeOptions - enableModelFallback field compiles", () => {
     enableModelFallback: false,
   };
   assertEquals(_options.enableModelFallback, false);
+});
+
+// ---------------------------------------------------------------------------
+// The injected environment lookup (Issue #957)
+// ---------------------------------------------------------------------------
+
+Deno.test("resolveCurrentModel - resolves through the injected lookup, not the process (Issue #957)", () => {
+  // The sentinel exists in no process environment, so a chain that fell back
+  // to `Deno.env.get` would return "" (phase-less) instead of it.
+  const sentinel = "claude-957-sentinel";
+  assertEquals(
+    resolveCurrentModel(
+      undefined,
+      undefined,
+      undefined,
+      envLookup({ CLAUDE_MODEL: sentinel }),
+    ),
+    sentinel,
+  );
+  assertEquals(Deno.env.get("CLAUDE_MODEL"), undefined);
 });

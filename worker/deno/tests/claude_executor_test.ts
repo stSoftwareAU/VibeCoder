@@ -18,12 +18,14 @@ import {
   extractFailureSummary,
   extractStreamJsonText,
   getTokenEstimate,
+  hasExplicitEffortOverride,
   setActiveRepoModelEffortOverrides,
   setPhaseEffortConfigOverrides,
   setPhaseModelConfigOverrides,
   stripEscapeCodes,
   TIMEOUT_EXIT_CODE,
 } from "../lib/claude_executor.ts";
+import { envLookup, NO_ENV } from "./support/env_lookup.ts";
 
 // ---------------------------------------------------------------------------
 // TIMEOUT_EXIT_CODE
@@ -418,19 +420,11 @@ Deno.test("claude executor - detectOutOfMemory only checks tail lines", () => {
 
 Deno.test("claude executor - buildClaudeModelArgs returns empty when no model set", () => {
   // Clear any existing env var
-  const original = Deno.env.get("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL");
-  try {
-    const args = buildClaudeModelArgs();
-    assertEquals(args.length, 0);
-  } finally {
-    if (original) Deno.env.set("CLAUDE_MODEL", original);
-  }
+  const args = buildClaudeModelArgs(undefined, NO_ENV);
+  assertEquals(args.length, 0);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs warns when a non-empty phase resolves to no model (Issue #2712)", () => {
-  const original = Deno.env.get("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL");
   // Clear repo + global overrides so the unknown phase falls all the way through.
   setActiveRepoModelEffortOverrides(undefined);
   setPhaseModelConfigOverrides({});
@@ -441,20 +435,17 @@ Deno.test("claude executor - buildClaudeModelArgs warns when a non-empty phase r
   };
   try {
     // A phase absent from PHASE_MODEL_DEFAULTS (typo / new phase, no default).
-    const args = buildClaudeModelArgs("totally_unknown_phase");
+    const args = buildClaudeModelArgs("totally_unknown_phase", NO_ENV);
     assertEquals(args.length, 0);
     assertEquals(warnings.length, 1);
     assertStringIncludes(warnings[0] ?? "", "totally_unknown_phase");
     assertStringIncludes(warnings[0] ?? "", "no --model arg");
   } finally {
     console.warn = originalWarn;
-    if (original) Deno.env.set("CLAUDE_MODEL", original);
   }
 });
 
 Deno.test("claude executor - buildClaudeModelArgs stays silent for a phase-less call (Issue #2712)", () => {
-  const original = Deno.env.get("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL");
   setActiveRepoModelEffortOverrides(undefined);
   setPhaseModelConfigOverrides({});
   const warnings: string[] = [];
@@ -463,28 +454,26 @@ Deno.test("claude executor - buildClaudeModelArgs stays silent for a phase-less 
     warnings.push(args.map(String).join(" "));
   };
   try {
-    const args = buildClaudeModelArgs();
+    const args = buildClaudeModelArgs(undefined, NO_ENV);
     assertEquals(args.length, 0);
     assertEquals(warnings.length, 0);
   } finally {
     console.warn = originalWarn;
-    if (original) Deno.env.set("CLAUDE_MODEL", original);
   }
 });
 
 Deno.test("claude executor - buildClaudeModelArgs warns on an unrecognised model alias (typo) (Issue #2711)", () => {
-  const original = Deno.env.get("CLAUDE_MODEL_PLANNING");
   setActiveRepoModelEffortOverrides(undefined);
   setPhaseModelConfigOverrides({});
   // A typo of the `fable` alias — must still be forwarded, but warned about.
-  Deno.env.set("CLAUDE_MODEL_PLANNING", "fabel");
   const warnings: string[] = [];
   const originalWarn = console.warn;
   console.warn = (...args: unknown[]) => {
     warnings.push(args.map(String).join(" "));
   };
+  const env = envLookup({ CLAUDE_MODEL_PLANNING: "fabel" });
   try {
-    const args = buildClaudeModelArgs("planning");
+    const args = buildClaudeModelArgs("planning", env);
     // Value is still forwarded verbatim (CLI is the authority).
     assertEquals(args, ["--model", "fabel"]);
     // Exactly one warning, naming the level and the value.
@@ -493,461 +482,210 @@ Deno.test("claude executor - buildClaudeModelArgs warns on an unrecognised model
     assertStringIncludes(warnings[0] ?? "", "CLAUDE_MODEL_PLANNING");
   } finally {
     console.warn = originalWarn;
-    if (original) Deno.env.set("CLAUDE_MODEL_PLANNING", original);
-    else Deno.env.delete("CLAUDE_MODEL_PLANNING");
   }
 });
 
 Deno.test("claude executor - buildClaudeModelArgs stays silent for a known alias (Issue #2711)", () => {
-  const original = Deno.env.get("CLAUDE_MODEL_PLANNING");
   setActiveRepoModelEffortOverrides(undefined);
   setPhaseModelConfigOverrides({});
-  Deno.env.set("CLAUDE_MODEL_PLANNING", "opus");
   const warnings: string[] = [];
   const originalWarn = console.warn;
   console.warn = (...args: unknown[]) => {
     warnings.push(args.map(String).join(" "));
   };
+  const env = envLookup({ CLAUDE_MODEL_PLANNING: "opus" });
   try {
-    const args = buildClaudeModelArgs("planning");
+    const args = buildClaudeModelArgs("planning", env);
     assertEquals(args, ["--model", "opus"]);
     assertEquals(warnings.length, 0);
   } finally {
     console.warn = originalWarn;
-    if (original) Deno.env.set("CLAUDE_MODEL_PLANNING", original);
-    else Deno.env.delete("CLAUDE_MODEL_PLANNING");
   }
 });
 
 Deno.test("claude executor - buildClaudeModelArgs stays silent for a full claude-* model id (Issue #2711)", () => {
-  const original = Deno.env.get("CLAUDE_MODEL_PLANNING");
   setActiveRepoModelEffortOverrides(undefined);
   setPhaseModelConfigOverrides({});
-  Deno.env.set("CLAUDE_MODEL_PLANNING", "claude-opus-4-7-20250101");
   const warnings: string[] = [];
   const originalWarn = console.warn;
   console.warn = (...args: unknown[]) => {
     warnings.push(args.map(String).join(" "));
   };
+  const env = envLookup({ CLAUDE_MODEL_PLANNING: "claude-opus-4-7-20250101" });
   try {
-    const args = buildClaudeModelArgs("planning");
+    const args = buildClaudeModelArgs("planning", env);
     assertEquals(args, ["--model", "claude-opus-4-7-20250101"]);
     assertEquals(warnings.length, 0);
   } finally {
     console.warn = originalWarn;
-    if (original) Deno.env.set("CLAUDE_MODEL_PLANNING", original);
-    else Deno.env.delete("CLAUDE_MODEL_PLANNING");
   }
 });
 
 Deno.test("claude executor - buildClaudeModelArgs returns model args when set", () => {
-  const original = Deno.env.get("CLAUDE_MODEL");
-  Deno.env.set("CLAUDE_MODEL", "claude-sonnet-4-7");
-  try {
-    const args = buildClaudeModelArgs();
-    assertEquals(args, ["--model", "claude-sonnet-4-7"]);
-  } finally {
-    if (original) {
-      Deno.env.set("CLAUDE_MODEL", original);
-    } else {
-      Deno.env.delete("CLAUDE_MODEL");
-    }
-  }
+  const env = envLookup({ CLAUDE_MODEL: "claude-sonnet-4-7" });
+  const args = buildClaudeModelArgs(undefined, env);
+  assertEquals(args, ["--model", "claude-sonnet-4-7"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses phase-specific override", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_PLANNING");
-  Deno.env.set("CLAUDE_MODEL", "claude-sonnet-4-7");
-  Deno.env.set("CLAUDE_MODEL_PLANNING", "claude-opus-4-7");
-  try {
-    const args = buildClaudeModelArgs("planning");
-    assertEquals(args, ["--model", "claude-opus-4-7"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_PLANNING", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_PLANNING");
-  }
+  const env = envLookup({
+    CLAUDE_MODEL: "claude-sonnet-4-7",
+    CLAUDE_MODEL_PLANNING: "claude-opus-4-7",
+  });
+  const args = buildClaudeModelArgs("planning", env);
+  assertEquals(args, ["--model", "claude-opus-4-7"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses health phase override (Issue #1069)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalHealth = Deno.env.get("CLAUDE_MODEL_HEALTH");
-  Deno.env.set("CLAUDE_MODEL", "opus");
-  Deno.env.set("CLAUDE_MODEL_HEALTH", "haiku");
-  try {
-    const args = buildClaudeModelArgs("health");
-    assertEquals(args, ["--model", "haiku"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalHealth) Deno.env.set("CLAUDE_MODEL_HEALTH", originalHealth);
-    else Deno.env.delete("CLAUDE_MODEL_HEALTH");
-  }
+  const env = envLookup({ CLAUDE_MODEL: "opus", CLAUDE_MODEL_HEALTH: "haiku" });
+  const args = buildClaudeModelArgs("health", env);
+  assertEquals(args, ["--model", "haiku"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs health phase default overrides CLAUDE_MODEL", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalHealth = Deno.env.get("CLAUDE_MODEL_HEALTH");
-  Deno.env.set("CLAUDE_MODEL", "sonnet");
-  Deno.env.delete("CLAUDE_MODEL_HEALTH");
-  try {
-    // Phase default (haiku, secondary tier) takes priority over CLAUDE_MODEL (Issue #1270)
-    const args = buildClaudeModelArgs("health");
-    assertEquals(args, ["--model", "haiku"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalHealth) Deno.env.set("CLAUDE_MODEL_HEALTH", originalHealth);
-    else Deno.env.delete("CLAUDE_MODEL_HEALTH");
-  }
+  const env = envLookup({ CLAUDE_MODEL: "sonnet" });
+  // Phase default (haiku, secondary tier) takes priority over CLAUDE_MODEL (Issue #1270)
+  const args = buildClaudeModelArgs("health", env);
+  assertEquals(args, ["--model", "haiku"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses refinement phase default (planning-shaped, Issue #3229)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_REFINEMENT");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_REFINEMENT");
-  try {
-    // Issue #3229: refinement is a planning-shaped phase → Fable 5 top tier.
-    const args = buildClaudeModelArgs("refinement");
-    assertEquals(args, ["--model", "fable"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_REFINEMENT", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_REFINEMENT");
-  }
+  // Issue #3229: refinement is a planning-shaped phase → Fable 5 top tier.
+  const args = buildClaudeModelArgs("refinement", NO_ENV);
+  assertEquals(args, ["--model", "fable"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses issue phase default opus (Issue #2709)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_ISSUE");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_ISSUE");
-  try {
-    // The coding phase routes through `phase: "issue"`, which now carries the
-    // Opus base-tier default (Issue #2709) rather than falling through to the
-    // CLI default.
-    const args = buildClaudeModelArgs("issue");
-    assertEquals(args, ["--model", "opus"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_ISSUE", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_ISSUE");
-  }
+  // The coding phase routes through `phase: "issue"`, which now carries the
+  // Opus base-tier default (Issue #2709) rather than falling through to the
+  // CLI default.
+  const args = buildClaudeModelArgs("issue", NO_ENV);
+  assertEquals(args, ["--model", "opus"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_ISSUE env override beats issue phase default (Issue #2709)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_ISSUE");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.set("CLAUDE_MODEL_ISSUE", "sonnet");
-  try {
-    // The operator escape hatch must now actually take effect for the coding
-    // phase (it was inert before #2709).
-    const args = buildClaudeModelArgs("issue");
-    assertEquals(args, ["--model", "sonnet"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_ISSUE", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_ISSUE");
-  }
+  const env = envLookup({ CLAUDE_MODEL_ISSUE: "sonnet" });
+  // The operator escape hatch must now actually take effect for the coding
+  // phase (it was inert before #2709).
+  const args = buildClaudeModelArgs("issue", env);
+  assertEquals(args, ["--model", "sonnet"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses spelling_fix phase default haiku (effort-first secondary tier, Issue #2391)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_SPELLING_FIX");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_SPELLING_FIX");
-  try {
-    // Effort-first (#2391): spelling_fix stays on the cheaper Haiku tier
-    // (secondary lever) — the trivial task does not justify the Opus premium.
-    const args = buildClaudeModelArgs("spelling_fix");
-    assertEquals(args, ["--model", "haiku"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_SPELLING_FIX", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_SPELLING_FIX");
-  }
+  // Effort-first (#2391): spelling_fix stays on the cheaper Haiku tier
+  // (secondary lever) — the trivial task does not justify the Opus premium.
+  const args = buildClaudeModelArgs("spelling_fix", NO_ENV);
+  assertEquals(args, ["--model", "haiku"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses ci_fix phase default (effort-first, Issue #2391)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_CI_FIX");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_CI_FIX");
-  try {
-    // Effort-first (#2391): ci_fix defaults to the single top tier.
-    const args = buildClaudeModelArgs("ci_fix");
-    assertEquals(args, ["--model", "opus"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_CI_FIX", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_CI_FIX");
-  }
+  // Effort-first (#2391): ci_fix defaults to the single top tier.
+  const args = buildClaudeModelArgs("ci_fix", NO_ENV);
+  assertEquals(args, ["--model", "opus"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_CI_FIX env override (Issue #1079)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_CI_FIX");
-  Deno.env.delete("CLAUDE_MODEL");
   // Use a value distinct from the top-tier default so the override is provable.
-  Deno.env.set("CLAUDE_MODEL_CI_FIX", "haiku");
-  try {
-    const args = buildClaudeModelArgs("ci_fix");
-    assertEquals(args, ["--model", "haiku"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_CI_FIX", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_CI_FIX");
-  }
+  const env = envLookup({ CLAUDE_MODEL_CI_FIX: "haiku" });
+  const args = buildClaudeModelArgs("ci_fix", env);
+  assertEquals(args, ["--model", "haiku"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs ci_fix phase default overrides CLAUDE_MODEL (Issue #1079)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_CI_FIX");
   // CLAUDE_MODEL set to a non-default value so the phase default is provable.
-  Deno.env.set("CLAUDE_MODEL", "haiku");
-  Deno.env.delete("CLAUDE_MODEL_CI_FIX");
-  try {
-    // Phase default (top tier) takes priority over CLAUDE_MODEL (Issue #1270, #2391)
-    const args = buildClaudeModelArgs("ci_fix");
-    assertEquals(args, ["--model", "opus"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_CI_FIX", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_CI_FIX");
-  }
+  const env = envLookup({ CLAUDE_MODEL: "haiku" });
+  // Phase default (top tier) takes priority over CLAUDE_MODEL (Issue #1270, #2391)
+  const args = buildClaudeModelArgs("ci_fix", env);
+  assertEquals(args, ["--model", "opus"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses question phase default (Issue #1071)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_QUESTION");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_QUESTION");
-  try {
-    // Issue #3229: question is a planning-shaped phase → Fable 5 top tier.
-    const args = buildClaudeModelArgs("question");
-    assertEquals(args, ["--model", "fable"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_QUESTION", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_QUESTION");
-  }
+  // Issue #3229: question is a planning-shaped phase → Fable 5 top tier.
+  const args = buildClaudeModelArgs("question", NO_ENV);
+  assertEquals(args, ["--model", "fable"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses summarise phase default (Issue #1071)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_SUMMARISE");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_SUMMARISE");
-  try {
-    // Effort-first (#2391): summarise stays on the cheaper Haiku tier
-    // (secondary lever); #2393 escalation lifts it when an input would truncate.
-    const args = buildClaudeModelArgs("summarise");
-    assertEquals(args, ["--model", "haiku"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_SUMMARISE", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_SUMMARISE");
-  }
+  // Effort-first (#2391): summarise stays on the cheaper Haiku tier
+  // (secondary lever); #2393 escalation lifts it when an input would truncate.
+  const args = buildClaudeModelArgs("summarise", NO_ENV);
+  assertEquals(args, ["--model", "haiku"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses health phase default haiku (effort-first secondary tier, Issue #2391)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_HEALTH");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_HEALTH");
-  try {
-    // Effort-first (#2391): health stays on the cheaper Haiku tier (secondary
-    // lever) — a frequent, trivial pre-flight does not justify the Opus premium.
-    const args = buildClaudeModelArgs("health");
-    assertEquals(args, ["--model", "haiku"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_HEALTH", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_HEALTH");
-  }
+  // Effort-first (#2391): health stays on the cheaper Haiku tier (secondary
+  // lever) — a frequent, trivial pre-flight does not justify the Opus premium.
+  const args = buildClaudeModelArgs("health", NO_ENV);
+  assertEquals(args, ["--model", "haiku"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs planning phase defaults to fable (Issue #2621)", () => {
   // Issue #2621 moved planning from opus to the Fable 5 top tier: a better
   // plan compounds across every downstream sub-issue.
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_PLANNING");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_PLANNING");
-  try {
-    const args = buildClaudeModelArgs("planning");
-    assertEquals(args, ["--model", "fable"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_PLANNING", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_PLANNING");
-  }
+  const args = buildClaudeModelArgs("planning", NO_ENV);
+  assertEquals(args, ["--model", "fable"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs env override takes precedence over phase default (Issue #1071)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_REFINEMENT");
-  Deno.env.delete("CLAUDE_MODEL");
   // Distinct from the top-tier default so the env override is provable.
-  Deno.env.set("CLAUDE_MODEL_REFINEMENT", "haiku");
-  try {
-    const args = buildClaudeModelArgs("refinement");
-    assertEquals(args, ["--model", "haiku"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_REFINEMENT", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_REFINEMENT");
-  }
+  const env = envLookup({ CLAUDE_MODEL_REFINEMENT: "haiku" });
+  const args = buildClaudeModelArgs("refinement", env);
+  assertEquals(args, ["--model", "haiku"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs refinement phase default overrides CLAUDE_MODEL (Issue #1071)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_REFINEMENT");
   // CLAUDE_MODEL set to a non-default value so the phase default is provable.
-  Deno.env.set("CLAUDE_MODEL", "haiku");
-  Deno.env.delete("CLAUDE_MODEL_REFINEMENT");
-  try {
-    // Phase default (Fable top tier) takes priority over CLAUDE_MODEL (#3229)
-    const args = buildClaudeModelArgs("refinement");
-    assertEquals(args, ["--model", "fable"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_REFINEMENT", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_REFINEMENT");
-  }
+  const env = envLookup({ CLAUDE_MODEL: "haiku" });
+  // Phase default (Fable top tier) takes priority over CLAUDE_MODEL (#3229)
+  const args = buildClaudeModelArgs("refinement", env);
+  assertEquals(args, ["--model", "fable"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs unknown phase with no env returns empty (Issue #1071)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL");
-  try {
-    const args = buildClaudeModelArgs("unknown_phase");
-    assertEquals(args.length, 0);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-  }
+  const args = buildClaudeModelArgs("unknown_phase", NO_ENV);
+  assertEquals(args.length, 0);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses revision phase default (effort-first, Issue #2391)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_REVISION");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_REVISION");
-  try {
-    // Issue #3229: revision is a planning-shaped phase → Fable 5 top tier.
-    const args = buildClaudeModelArgs("revision");
-    assertEquals(args, ["--model", "fable"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_REVISION", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_REVISION");
-  }
+  // Issue #3229: revision is a planning-shaped phase → Fable 5 top tier.
+  const args = buildClaudeModelArgs("revision", NO_ENV);
+  assertEquals(args, ["--model", "fable"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_REVISION env override (Issue #1081)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_REVISION");
-  Deno.env.delete("CLAUDE_MODEL");
   // Distinct from the top-tier default so the env override is provable.
-  Deno.env.set("CLAUDE_MODEL_REVISION", "haiku");
-  try {
-    const args = buildClaudeModelArgs("revision");
-    assertEquals(args, ["--model", "haiku"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_REVISION", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_REVISION");
-  }
+  const env = envLookup({ CLAUDE_MODEL_REVISION: "haiku" });
+  const args = buildClaudeModelArgs("revision", env);
+  assertEquals(args, ["--model", "haiku"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs revision phase default overrides CLAUDE_MODEL (Issue #1081)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_REVISION");
   // CLAUDE_MODEL set to a non-default value so the phase default is provable.
-  Deno.env.set("CLAUDE_MODEL", "haiku");
-  Deno.env.delete("CLAUDE_MODEL_REVISION");
-  try {
-    // Phase default (Fable top tier) takes priority over CLAUDE_MODEL (#3229)
-    const args = buildClaudeModelArgs("revision");
-    assertEquals(args, ["--model", "fable"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_REVISION", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_REVISION");
-  }
+  const env = envLookup({ CLAUDE_MODEL: "haiku" });
+  // Phase default (Fable top tier) takes priority over CLAUDE_MODEL (#3229)
+  const args = buildClaudeModelArgs("revision", env);
+  assertEquals(args, ["--model", "fable"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses pr_feedback phase default (effort-first, Issue #2391)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_PR_FEEDBACK");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_PR_FEEDBACK");
-  try {
-    // Effort-first (#2391): pr_feedback defaults to the single top tier.
-    const args = buildClaudeModelArgs("pr_feedback");
-    assertEquals(args, ["--model", "opus"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_PR_FEEDBACK", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_PR_FEEDBACK");
-  }
+  // Effort-first (#2391): pr_feedback defaults to the single top tier.
+  const args = buildClaudeModelArgs("pr_feedback", NO_ENV);
+  assertEquals(args, ["--model", "opus"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_PR_FEEDBACK env override (Issue #1080)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_PR_FEEDBACK");
-  Deno.env.delete("CLAUDE_MODEL");
   // Distinct from the top-tier default so the env override is provable.
-  Deno.env.set("CLAUDE_MODEL_PR_FEEDBACK", "haiku");
-  try {
-    const args = buildClaudeModelArgs("pr_feedback");
-    assertEquals(args, ["--model", "haiku"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_PR_FEEDBACK", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_PR_FEEDBACK");
-  }
+  const env = envLookup({ CLAUDE_MODEL_PR_FEEDBACK: "haiku" });
+  const args = buildClaudeModelArgs("pr_feedback", env);
+  assertEquals(args, ["--model", "haiku"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs pr_feedback phase default overrides CLAUDE_MODEL (Issue #1080)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_PR_FEEDBACK");
   // CLAUDE_MODEL set to a non-default value so the phase default is provable.
-  Deno.env.set("CLAUDE_MODEL", "haiku");
-  Deno.env.delete("CLAUDE_MODEL_PR_FEEDBACK");
-  try {
-    // Phase default (top tier) takes priority over CLAUDE_MODEL (Issue #1270, #2391)
-    const args = buildClaudeModelArgs("pr_feedback");
-    assertEquals(args, ["--model", "opus"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_PR_FEEDBACK", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_PR_FEEDBACK");
-  }
+  const env = envLookup({ CLAUDE_MODEL: "haiku" });
+  // Phase default (top tier) takes priority over CLAUDE_MODEL (Issue #1270, #2391)
+  const args = buildClaudeModelArgs("pr_feedback", env);
+  assertEquals(args, ["--model", "opus"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -955,84 +693,41 @@ Deno.test("claude executor - buildClaudeModelArgs pr_feedback phase default over
 // ---------------------------------------------------------------------------
 
 Deno.test("claude executor - buildClaudeModelArgs phase default overrides CLAUDE_MODEL (Issue #1270)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_REFINEMENT");
-  Deno.env.set("CLAUDE_MODEL", "haiku");
-  Deno.env.delete("CLAUDE_MODEL_REFINEMENT");
-  try {
-    // Phase default (Fable top tier) should take priority over CLAUDE_MODEL (haiku) (#3229)
-    const args = buildClaudeModelArgs("refinement");
-    assertEquals(args, ["--model", "fable"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_REFINEMENT", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_REFINEMENT");
-  }
+  const env = envLookup({ CLAUDE_MODEL: "haiku" });
+  // Phase default (Fable top tier) should take priority over CLAUDE_MODEL (haiku) (#3229)
+  const args = buildClaudeModelArgs("refinement", env);
+  assertEquals(args, ["--model", "fable"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs ci_fix phase default overrides CLAUDE_MODEL (Issue #1270)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_CI_FIX");
-  Deno.env.set("CLAUDE_MODEL", "haiku");
-  Deno.env.delete("CLAUDE_MODEL_CI_FIX");
-  try {
-    // ci_fix default (top tier) should take priority over CLAUDE_MODEL (haiku)
-    const args = buildClaudeModelArgs("ci_fix");
-    assertEquals(args, ["--model", "opus"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_CI_FIX", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_CI_FIX");
-  }
+  const env = envLookup({ CLAUDE_MODEL: "haiku" });
+  // ci_fix default (top tier) should take priority over CLAUDE_MODEL (haiku)
+  const args = buildClaudeModelArgs("ci_fix", env);
+  assertEquals(args, ["--model", "opus"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs health phase default overrides CLAUDE_MODEL (Issue #1270)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_HEALTH");
-  Deno.env.set("CLAUDE_MODEL", "sonnet");
-  Deno.env.delete("CLAUDE_MODEL_HEALTH");
-  try {
-    // health default (haiku, secondary tier) should take priority over CLAUDE_MODEL (sonnet)
-    const args = buildClaudeModelArgs("health");
-    assertEquals(args, ["--model", "haiku"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_HEALTH", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_HEALTH");
-  }
+  const env = envLookup({ CLAUDE_MODEL: "sonnet" });
+  // health default (haiku, secondary tier) should take priority over CLAUDE_MODEL (sonnet)
+  const args = buildClaudeModelArgs("health", env);
+  assertEquals(args, ["--model", "haiku"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL used as fallback for unknown phase (Issue #1270)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  Deno.env.set("CLAUDE_MODEL", "sonnet");
-  try {
-    // Unknown phase has no default, so CLAUDE_MODEL should be used as fallback
-    const args = buildClaudeModelArgs("unknown_phase");
-    assertEquals(args, ["--model", "sonnet"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-  }
+  const env = envLookup({ CLAUDE_MODEL: "sonnet" });
+  // Unknown phase has no default, so CLAUDE_MODEL should be used as fallback
+  const args = buildClaudeModelArgs("unknown_phase", env);
+  assertEquals(args, ["--model", "sonnet"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs phase env var still overrides phase default (Issue #1270)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_SPELLING_FIX");
-  Deno.env.set("CLAUDE_MODEL", "opus");
-  Deno.env.set("CLAUDE_MODEL_SPELLING_FIX", "sonnet");
-  try {
-    // Phase env var (sonnet) overrides both phase default (haiku) and CLAUDE_MODEL (opus)
-    const args = buildClaudeModelArgs("spelling_fix");
-    assertEquals(args, ["--model", "sonnet"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_SPELLING_FIX", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_SPELLING_FIX");
-  }
+  const env = envLookup({
+    CLAUDE_MODEL: "opus",
+    CLAUDE_MODEL_SPELLING_FIX: "sonnet",
+  });
+  // Phase env var (sonnet) overrides both phase default (haiku) and CLAUDE_MODEL (opus)
+  const args = buildClaudeModelArgs("spelling_fix", env);
+  assertEquals(args, ["--model", "sonnet"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -1067,55 +762,24 @@ Deno.test("claude executor - captureTimeoutDiagnostics handles empty output", ()
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses quality_fix phase default (effort-first, Issue #2391)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_QUALITY_FIX");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_QUALITY_FIX");
-  try {
-    // Effort-first (#2391): quality_fix defaults to the single top tier.
-    const args = buildClaudeModelArgs("quality_fix");
-    assertEquals(args, ["--model", "opus"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_QUALITY_FIX", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_QUALITY_FIX");
-  }
+  // Effort-first (#2391): quality_fix defaults to the single top tier.
+  const args = buildClaudeModelArgs("quality_fix", NO_ENV);
+  assertEquals(args, ["--model", "opus"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_QUALITY_FIX env override (Issue #1082)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_QUALITY_FIX");
-  Deno.env.delete("CLAUDE_MODEL");
   // Distinct from the top-tier default so the env override is provable.
-  Deno.env.set("CLAUDE_MODEL_QUALITY_FIX", "haiku");
-  try {
-    const args = buildClaudeModelArgs("quality_fix");
-    assertEquals(args, ["--model", "haiku"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_QUALITY_FIX", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_QUALITY_FIX");
-  }
+  const env = envLookup({ CLAUDE_MODEL_QUALITY_FIX: "haiku" });
+  const args = buildClaudeModelArgs("quality_fix", env);
+  assertEquals(args, ["--model", "haiku"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs quality_fix phase default overrides CLAUDE_MODEL (Issue #1082)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_QUALITY_FIX");
   // CLAUDE_MODEL set to a non-default value so the phase default is provable.
-  Deno.env.set("CLAUDE_MODEL", "haiku");
-  Deno.env.delete("CLAUDE_MODEL_QUALITY_FIX");
-  try {
-    // Phase default (top tier) takes priority over CLAUDE_MODEL (Issue #1270, #2391)
-    const args = buildClaudeModelArgs("quality_fix");
-    assertEquals(args, ["--model", "opus"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_QUALITY_FIX", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_QUALITY_FIX");
-  }
+  const env = envLookup({ CLAUDE_MODEL: "haiku" });
+  // Phase default (top tier) takes priority over CLAUDE_MODEL (Issue #1270, #2391)
+  const args = buildClaudeModelArgs("quality_fix", env);
+  assertEquals(args, ["--model", "opus"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -1123,41 +787,24 @@ Deno.test("claude executor - buildClaudeModelArgs quality_fix phase default over
 // ---------------------------------------------------------------------------
 
 Deno.test("claude executor - buildClaudeModelArgs uses clarification phase default (effort-first, Issue #2391)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_CLARIFICATION");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_CLARIFICATION");
   try {
     setPhaseModelConfigOverrides({});
     // Issue #3229: clarification is a planning-shaped phase → Fable 5 top tier.
-    const args = buildClaudeModelArgs("clarification");
+    const args = buildClaudeModelArgs("clarification", NO_ENV);
     assertEquals(args, ["--model", "fable"]);
   } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) {
-      Deno.env.set("CLAUDE_MODEL_CLARIFICATION", originalPhase);
-    } else Deno.env.delete("CLAUDE_MODEL_CLARIFICATION");
     setPhaseModelConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_CLARIFICATION env override (Issue #1265)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_CLARIFICATION");
-  Deno.env.delete("CLAUDE_MODEL");
   // Distinct from the top-tier default so the env override is provable.
-  Deno.env.set("CLAUDE_MODEL_CLARIFICATION", "haiku");
+  const env = envLookup({ CLAUDE_MODEL_CLARIFICATION: "haiku" });
   try {
     setPhaseModelConfigOverrides({});
-    const args = buildClaudeModelArgs("clarification");
+    const args = buildClaudeModelArgs("clarification", env);
     assertEquals(args, ["--model", "haiku"]);
   } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) {
-      Deno.env.set("CLAUDE_MODEL_CLARIFICATION", originalPhase);
-    } else Deno.env.delete("CLAUDE_MODEL_CLARIFICATION");
     setPhaseModelConfigOverrides({});
   }
 });
@@ -1167,104 +814,60 @@ Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_CLARIFICATION env
 // ---------------------------------------------------------------------------
 
 Deno.test("claude executor - config override takes precedence over PHASE_MODEL_DEFAULTS (Issue #1265)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_HEALTH");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_HEALTH");
   try {
     setPhaseModelConfigOverrides({ health: "sonnet" });
-    const args = buildClaudeModelArgs("health");
+    const args = buildClaudeModelArgs("health", NO_ENV);
     assertEquals(args, ["--model", "sonnet"]);
   } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_HEALTH", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_HEALTH");
     setPhaseModelConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - env var override takes precedence over config override (Issue #1265)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_HEALTH");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.set("CLAUDE_MODEL_HEALTH", "opus");
+  const env = envLookup({ CLAUDE_MODEL_HEALTH: "opus" });
   try {
     setPhaseModelConfigOverrides({ health: "sonnet" });
-    const args = buildClaudeModelArgs("health");
+    const args = buildClaudeModelArgs("health", env);
     assertEquals(args, ["--model", "opus"]);
   } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_HEALTH", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_HEALTH");
     setPhaseModelConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - config override takes precedence over CLAUDE_MODEL env var (Issue #1265)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_REFINEMENT");
-  Deno.env.set("CLAUDE_MODEL", "opus");
-  Deno.env.delete("CLAUDE_MODEL_REFINEMENT");
+  const env = envLookup({ CLAUDE_MODEL: "opus" });
   try {
     setPhaseModelConfigOverrides({ refinement: "haiku" });
-    const args = buildClaudeModelArgs("refinement");
+    const args = buildClaudeModelArgs("refinement", env);
     assertEquals(args, ["--model", "haiku"]);
   } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_REFINEMENT", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_REFINEMENT");
     setPhaseModelConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - fable flows through via phase_model_overrides (Issue #2619)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_PLANNING");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_PLANNING");
   try {
     setPhaseModelConfigOverrides({ planning: "fable" });
-    const args = buildClaudeModelArgs("planning");
+    const args = buildClaudeModelArgs("planning", NO_ENV);
     assertEquals(args, ["--model", "fable"]);
   } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_PLANNING", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_PLANNING");
     setPhaseModelConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - fable flows through via CLAUDE_MODEL env var (Issue #2619)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  Deno.env.set("CLAUDE_MODEL", "fable");
-  try {
-    const args = buildClaudeModelArgs();
-    assertEquals(args, ["--model", "fable"]);
-  } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-  }
+  const env = envLookup({ CLAUDE_MODEL: "fable" });
+  const args = buildClaudeModelArgs(undefined, env);
+  assertEquals(args, ["--model", "fable"]);
 });
 
 Deno.test("claude executor - empty config overrides falls back to PHASE_MODEL_DEFAULTS (Issue #1265)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_SPELLING_FIX");
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_MODEL_SPELLING_FIX");
   try {
     setPhaseModelConfigOverrides({});
     // spelling_fix is one of the three Haiku-tier phases under effort-first (#2391).
-    const args = buildClaudeModelArgs("spelling_fix");
+    const args = buildClaudeModelArgs("spelling_fix", NO_ENV);
     assertEquals(args, ["--model", "haiku"]);
   } finally {
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_SPELLING_FIX", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_SPELLING_FIX");
     setPhaseModelConfigOverrides({});
   }
 });
@@ -1274,210 +877,129 @@ Deno.test("claude executor - empty config overrides falls back to PHASE_MODEL_DE
 // ---------------------------------------------------------------------------
 
 Deno.test("claude executor - buildClaudeEffortArgs returns phase default for planning (Issue #1403)", () => {
-  const originalEffort = Deno.env.get("CLAUDE_EFFORT");
-  const originalPhase = Deno.env.get("CLAUDE_EFFORT_PLANNING");
-  Deno.env.delete("CLAUDE_EFFORT");
-  Deno.env.delete("CLAUDE_EFFORT_PLANNING");
   try {
     setPhaseEffortConfigOverrides({});
     // Issue #3229: planning-shaped phases run at "high" (the `max` bump is
     // reserved for the #3217 pre-flight reroute to Opus).
-    const args = buildClaudeEffortArgs("planning");
+    const args = buildClaudeEffortArgs("planning", NO_ENV);
     assertEquals(args, ["--effort", "high"]);
   } finally {
-    if (originalEffort) Deno.env.set("CLAUDE_EFFORT", originalEffort);
-    else Deno.env.delete("CLAUDE_EFFORT");
-    if (originalPhase) Deno.env.set("CLAUDE_EFFORT_PLANNING", originalPhase);
-    else Deno.env.delete("CLAUDE_EFFORT_PLANNING");
     setPhaseEffortConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - buildClaudeEffortArgs phase-specific env var overrides all (Issue #1403)", () => {
-  const originalEffort = Deno.env.get("CLAUDE_EFFORT");
-  const originalPhase = Deno.env.get("CLAUDE_EFFORT_PLANNING");
-  Deno.env.delete("CLAUDE_EFFORT");
-  Deno.env.set("CLAUDE_EFFORT_PLANNING", "low");
+  const env = envLookup({ CLAUDE_EFFORT_PLANNING: "low" });
   try {
     setPhaseEffortConfigOverrides({ planning: "medium" });
-    const args = buildClaudeEffortArgs("planning");
+    const args = buildClaudeEffortArgs("planning", env);
     assertEquals(args, ["--effort", "low"]);
   } finally {
-    if (originalEffort) Deno.env.set("CLAUDE_EFFORT", originalEffort);
-    else Deno.env.delete("CLAUDE_EFFORT");
-    if (originalPhase) Deno.env.set("CLAUDE_EFFORT_PLANNING", originalPhase);
-    else Deno.env.delete("CLAUDE_EFFORT_PLANNING");
     setPhaseEffortConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - buildClaudeEffortArgs config override takes precedence over phase default (Issue #1403)", () => {
-  const originalEffort = Deno.env.get("CLAUDE_EFFORT");
-  const originalPhase = Deno.env.get("CLAUDE_EFFORT_HEALTH");
-  Deno.env.delete("CLAUDE_EFFORT");
-  Deno.env.delete("CLAUDE_EFFORT_HEALTH");
   try {
     setPhaseEffortConfigOverrides({ health: "max" });
-    const args = buildClaudeEffortArgs("health");
+    const args = buildClaudeEffortArgs("health", NO_ENV);
     assertEquals(args, ["--effort", "max"]);
   } finally {
-    if (originalEffort) Deno.env.set("CLAUDE_EFFORT", originalEffort);
-    else Deno.env.delete("CLAUDE_EFFORT");
-    if (originalPhase) Deno.env.set("CLAUDE_EFFORT_HEALTH", originalPhase);
-    else Deno.env.delete("CLAUDE_EFFORT_HEALTH");
     setPhaseEffortConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - buildClaudeEffortArgs env var overrides config override (Issue #1403)", () => {
-  const originalEffort = Deno.env.get("CLAUDE_EFFORT");
-  const originalPhase = Deno.env.get("CLAUDE_EFFORT_HEALTH");
-  Deno.env.delete("CLAUDE_EFFORT");
-  Deno.env.set("CLAUDE_EFFORT_HEALTH", "max");
+  const env = envLookup({ CLAUDE_EFFORT_HEALTH: "max" });
   try {
     setPhaseEffortConfigOverrides({ health: "medium" });
-    const args = buildClaudeEffortArgs("health");
+    const args = buildClaudeEffortArgs("health", env);
     assertEquals(args, ["--effort", "max"]);
   } finally {
-    if (originalEffort) Deno.env.set("CLAUDE_EFFORT", originalEffort);
-    else Deno.env.delete("CLAUDE_EFFORT");
-    if (originalPhase) Deno.env.set("CLAUDE_EFFORT_HEALTH", originalPhase);
-    else Deno.env.delete("CLAUDE_EFFORT_HEALTH");
     setPhaseEffortConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - buildClaudeEffortArgs config override takes precedence over global CLAUDE_EFFORT (Issue #1403)", () => {
-  const originalEffort = Deno.env.get("CLAUDE_EFFORT");
-  const originalPhase = Deno.env.get("CLAUDE_EFFORT_REFINEMENT");
-  Deno.env.set("CLAUDE_EFFORT", "max");
-  Deno.env.delete("CLAUDE_EFFORT_REFINEMENT");
+  const env = envLookup({ CLAUDE_EFFORT: "max" });
   try {
     setPhaseEffortConfigOverrides({ refinement: "low" });
-    const args = buildClaudeEffortArgs("refinement");
+    const args = buildClaudeEffortArgs("refinement", env);
     assertEquals(args, ["--effort", "low"]);
   } finally {
-    if (originalEffort) Deno.env.set("CLAUDE_EFFORT", originalEffort);
-    else Deno.env.delete("CLAUDE_EFFORT");
-    if (originalPhase) Deno.env.set("CLAUDE_EFFORT_REFINEMENT", originalPhase);
-    else Deno.env.delete("CLAUDE_EFFORT_REFINEMENT");
     setPhaseEffortConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - buildClaudeEffortArgs phase_effort_overrides accepts xhigh (Issue #2620)", () => {
-  const originalEffort = Deno.env.get("CLAUDE_EFFORT");
-  const originalPhase = Deno.env.get("CLAUDE_EFFORT_ISSUE");
-  Deno.env.delete("CLAUDE_EFFORT");
-  Deno.env.delete("CLAUDE_EFFORT_ISSUE");
   try {
     setPhaseEffortConfigOverrides({ issue: "xhigh" });
-    const args = buildClaudeEffortArgs("issue");
+    const args = buildClaudeEffortArgs("issue", NO_ENV);
     assertEquals(args, ["--effort", "xhigh"]);
   } finally {
-    if (originalEffort) Deno.env.set("CLAUDE_EFFORT", originalEffort);
-    else Deno.env.delete("CLAUDE_EFFORT");
-    if (originalPhase) Deno.env.set("CLAUDE_EFFORT_ISSUE", originalPhase);
-    else Deno.env.delete("CLAUDE_EFFORT_ISSUE");
     setPhaseEffortConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - buildClaudeEffortArgs CLAUDE_EFFORT_ISSUE env var accepts xhigh (Issue #2620)", () => {
-  const originalPhase = Deno.env.get("CLAUDE_EFFORT_ISSUE");
-  Deno.env.set("CLAUDE_EFFORT_ISSUE", "xhigh");
+  const env = envLookup({ CLAUDE_EFFORT_ISSUE: "xhigh" });
   try {
     setPhaseEffortConfigOverrides({});
-    const args = buildClaudeEffortArgs("issue");
+    const args = buildClaudeEffortArgs("issue", env);
     assertEquals(args, ["--effort", "xhigh"]);
   } finally {
-    if (originalPhase) Deno.env.set("CLAUDE_EFFORT_ISSUE", originalPhase);
-    else Deno.env.delete("CLAUDE_EFFORT_ISSUE");
     setPhaseEffortConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - buildClaudeEffortArgs falls back to global CLAUDE_EFFORT without phase (Issue #1403)", () => {
-  const originalEffort = Deno.env.get("CLAUDE_EFFORT");
-  Deno.env.set("CLAUDE_EFFORT", "low");
+  const env = envLookup({ CLAUDE_EFFORT: "low" });
   try {
     setPhaseEffortConfigOverrides({});
-    const args = buildClaudeEffortArgs();
+    const args = buildClaudeEffortArgs(undefined, env);
     assertEquals(args, ["--effort", "low"]);
   } finally {
-    if (originalEffort) Deno.env.set("CLAUDE_EFFORT", originalEffort);
-    else Deno.env.delete("CLAUDE_EFFORT");
     setPhaseEffortConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - buildClaudeEffortArgs falls back to DEFAULT_EFFORT without env or phase (Issue #1403)", () => {
-  const originalEffort = Deno.env.get("CLAUDE_EFFORT");
-  Deno.env.delete("CLAUDE_EFFORT");
   try {
     setPhaseEffortConfigOverrides({});
-    const args = buildClaudeEffortArgs();
+    const args = buildClaudeEffortArgs(undefined, NO_ENV);
     assertEquals(args, ["--effort", "high"]);
   } finally {
-    if (originalEffort) Deno.env.set("CLAUDE_EFFORT", originalEffort);
-    else Deno.env.delete("CLAUDE_EFFORT");
     setPhaseEffortConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - buildClaudeEffortArgs spelling_fix phase defaults to low (Issue #1403)", () => {
-  const originalEffort = Deno.env.get("CLAUDE_EFFORT");
-  const originalPhase = Deno.env.get("CLAUDE_EFFORT_SPELLING_FIX");
-  Deno.env.delete("CLAUDE_EFFORT");
-  Deno.env.delete("CLAUDE_EFFORT_SPELLING_FIX");
   try {
     setPhaseEffortConfigOverrides({});
-    const args = buildClaudeEffortArgs("spelling_fix");
+    const args = buildClaudeEffortArgs("spelling_fix", NO_ENV);
     assertEquals(args, ["--effort", "low"]);
   } finally {
-    if (originalEffort) Deno.env.set("CLAUDE_EFFORT", originalEffort);
-    else Deno.env.delete("CLAUDE_EFFORT");
-    if (originalPhase) {
-      Deno.env.set("CLAUDE_EFFORT_SPELLING_FIX", originalPhase);
-    } else Deno.env.delete("CLAUDE_EFFORT_SPELLING_FIX");
     setPhaseEffortConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - buildClaudeEffortArgs unknown phase falls back to global CLAUDE_EFFORT (Issue #1403)", () => {
-  const originalEffort = Deno.env.get("CLAUDE_EFFORT");
-  const originalPhase = Deno.env.get("CLAUDE_EFFORT_UNKNOWN_PHASE");
-  Deno.env.set("CLAUDE_EFFORT", "medium");
-  Deno.env.delete("CLAUDE_EFFORT_UNKNOWN_PHASE");
+  const env = envLookup({ CLAUDE_EFFORT: "medium" });
   try {
     setPhaseEffortConfigOverrides({});
-    const args = buildClaudeEffortArgs("unknown_phase");
+    const args = buildClaudeEffortArgs("unknown_phase", env);
     assertEquals(args, ["--effort", "medium"]);
   } finally {
-    if (originalEffort) Deno.env.set("CLAUDE_EFFORT", originalEffort);
-    else Deno.env.delete("CLAUDE_EFFORT");
-    if (originalPhase) {
-      Deno.env.set("CLAUDE_EFFORT_UNKNOWN_PHASE", originalPhase);
-    } else Deno.env.delete("CLAUDE_EFFORT_UNKNOWN_PHASE");
     setPhaseEffortConfigOverrides({});
   }
 });
 
 Deno.test("claude executor - buildClaudeEffortArgs unknown phase without global falls back to DEFAULT_EFFORT (Issue #1403)", () => {
-  const originalEffort = Deno.env.get("CLAUDE_EFFORT");
-  const originalPhase = Deno.env.get("CLAUDE_EFFORT_UNKNOWN_PHASE");
-  Deno.env.delete("CLAUDE_EFFORT");
-  Deno.env.delete("CLAUDE_EFFORT_UNKNOWN_PHASE");
   try {
     setPhaseEffortConfigOverrides({});
-    const args = buildClaudeEffortArgs("unknown_phase");
+    const args = buildClaudeEffortArgs("unknown_phase", NO_ENV);
     assertEquals(args, ["--effort", "high"]);
   } finally {
-    if (originalEffort) Deno.env.set("CLAUDE_EFFORT", originalEffort);
-    else Deno.env.delete("CLAUDE_EFFORT");
-    if (originalPhase) {
-      Deno.env.set("CLAUDE_EFFORT_UNKNOWN_PHASE", originalPhase);
-    } else Deno.env.delete("CLAUDE_EFFORT_UNKNOWN_PHASE");
     setPhaseEffortConfigOverrides({});
   }
 });
@@ -1486,79 +1008,81 @@ Deno.test("claude executor - buildClaudeEffortArgs unknown phase without global 
 // Per-repo model/effort overrides (Issue #2625)
 // ---------------------------------------------------------------------------
 
-/** Clear every routing input so a precedence test starts from a clean slate. */
-function clearRoutingState(phases: string[]): void {
-  Deno.env.delete("CLAUDE_MODEL");
-  Deno.env.delete("CLAUDE_EFFORT");
-  for (const p of phases) {
-    Deno.env.delete(`CLAUDE_MODEL_${p.toUpperCase()}`);
-    Deno.env.delete(`CLAUDE_EFFORT_${p.toUpperCase()}`);
-  }
+/**
+ * Clear the module-level routing overrides so a precedence test starts from a
+ * clean slate.
+ *
+ * The environment half of that slate is the injected lookup each test passes
+ * (Issue #957) — `NO_ENV` where the test wants nothing set — so there is
+ * nothing here to delete from the process, and no list of phase names to keep
+ * in step with the tests below.
+ */
+function resetRoutingOverrides(): void {
   setPhaseModelConfigOverrides({});
   setPhaseEffortConfigOverrides({});
   setActiveRepoModelEffortOverrides(undefined);
 }
 
 Deno.test("claude executor - per-repo claude_model overrides global base and phase defaults (Issue #2625)", () => {
-  const originalModel = Deno.env.get("CLAUDE_MODEL");
-  clearRoutingState(["issue", "planning"]);
+  resetRoutingOverrides();
   try {
     setActiveRepoModelEffortOverrides({ claudeModel: "fable" });
     // Base tier wins over a phase that has a built-in PHASE_MODEL_DEFAULTS entry.
-    assertEquals(buildClaudeModelArgs("planning"), ["--model", "fable"]);
+    assertEquals(buildClaudeModelArgs("planning", NO_ENV), [
+      "--model",
+      "fable",
+    ]);
     // ...and over a phase-less call.
-    assertEquals(buildClaudeModelArgs(), ["--model", "fable"]);
+    assertEquals(buildClaudeModelArgs(undefined, NO_ENV), ["--model", "fable"]);
     // ...and over the issue phase's built-in PHASE_MODEL_DEFAULTS entry
     // (Opus, Issue #2709).
-    assertEquals(buildClaudeModelArgs("issue"), ["--model", "fable"]);
+    assertEquals(buildClaudeModelArgs("issue", NO_ENV), ["--model", "fable"]);
   } finally {
     setActiveRepoModelEffortOverrides(undefined);
-    if (originalModel) Deno.env.set("CLAUDE_MODEL", originalModel);
-    else Deno.env.delete("CLAUDE_MODEL");
   }
 });
 
 Deno.test("claude executor - per-repo phase_model_overrides beats per-repo base (Issue #2625)", () => {
-  clearRoutingState(["issue"]);
+  resetRoutingOverrides();
   try {
     setActiveRepoModelEffortOverrides({
       claudeModel: "sonnet",
       phaseModelOverrides: { issue: "fable" },
     });
     // Most-specific (per-repo phase) wins for the issue phase.
-    assertEquals(buildClaudeModelArgs("issue"), ["--model", "fable"]);
+    assertEquals(buildClaudeModelArgs("issue", NO_ENV), ["--model", "fable"]);
     // A phase with no per-repo phase override falls back to the per-repo base.
-    assertEquals(buildClaudeModelArgs("planning"), ["--model", "sonnet"]);
+    assertEquals(buildClaudeModelArgs("planning", NO_ENV), [
+      "--model",
+      "sonnet",
+    ]);
   } finally {
     setActiveRepoModelEffortOverrides(undefined);
   }
 });
 
 Deno.test("claude executor - phase-specific env var beats per-repo overrides (Issue #2625)", () => {
-  const originalPhase = Deno.env.get("CLAUDE_MODEL_ISSUE");
-  clearRoutingState(["issue"]);
-  Deno.env.set("CLAUDE_MODEL_ISSUE", "opus");
+  resetRoutingOverrides();
+  const env = envLookup({ CLAUDE_MODEL_ISSUE: "opus" });
   try {
     setActiveRepoModelEffortOverrides({
       claudeModel: "sonnet",
       phaseModelOverrides: { issue: "fable" },
     });
     // Operator escape hatch (env var) is highest precedence.
-    assertEquals(buildClaudeModelArgs("issue"), ["--model", "opus"]);
+    assertEquals(buildClaudeModelArgs("issue", env), ["--model", "opus"]);
   } finally {
     setActiveRepoModelEffortOverrides(undefined);
-    if (originalPhase) Deno.env.set("CLAUDE_MODEL_ISSUE", originalPhase);
-    else Deno.env.delete("CLAUDE_MODEL_ISSUE");
   }
 });
 
 Deno.test("claude executor - per-repo base beats global phase_model_overrides (Issue #2625)", () => {
-  clearRoutingState(["health"]);
+  resetRoutingOverrides();
   try {
     setPhaseModelConfigOverrides({ health: "haiku" });
     setActiveRepoModelEffortOverrides({ claudeModel: "fable" });
     // Per-repo base (precedence 3) wins over global phase override (precedence 4).
-    assertEquals(buildClaudeModelArgs("health"), ["--model", "fable"]);
+    assertEquals(buildClaudeModelArgs("health", NO_ENV), ["--model", "fable"]);
   } finally {
     setActiveRepoModelEffortOverrides(undefined);
     setPhaseModelConfigOverrides({});
@@ -1566,16 +1090,19 @@ Deno.test("claude executor - per-repo base beats global phase_model_overrides (I
 });
 
 Deno.test("claude executor - per-repo phase_effort_overrides beats global and defaults (Issue #2625)", () => {
-  clearRoutingState(["issue", "planning"]);
+  resetRoutingOverrides();
   try {
     setPhaseEffortConfigOverrides({ issue: "low" });
     setActiveRepoModelEffortOverrides({
       phaseEffortOverrides: { issue: "xhigh", planning: "high" },
     });
     // Per-repo phase effort beats the global phase override...
-    assertEquals(buildClaudeEffortArgs("issue"), ["--effort", "xhigh"]);
+    assertEquals(buildClaudeEffortArgs("issue", NO_ENV), ["--effort", "xhigh"]);
     // ...and beats the PHASE_EFFORT_DEFAULTS entry for planning ("max").
-    assertEquals(buildClaudeEffortArgs("planning"), ["--effort", "high"]);
+    assertEquals(buildClaudeEffortArgs("planning", NO_ENV), [
+      "--effort",
+      "high",
+    ]);
   } finally {
     setActiveRepoModelEffortOverrides(undefined);
     setPhaseEffortConfigOverrides({});
@@ -1583,48 +1110,51 @@ Deno.test("claude executor - per-repo phase_effort_overrides beats global and de
 });
 
 Deno.test("claude executor - phase-specific effort env var beats per-repo effort override (Issue #2625)", () => {
-  const originalPhase = Deno.env.get("CLAUDE_EFFORT_ISSUE");
-  clearRoutingState(["issue"]);
-  Deno.env.set("CLAUDE_EFFORT_ISSUE", "medium");
+  resetRoutingOverrides();
+  const env = envLookup({ CLAUDE_EFFORT_ISSUE: "medium" });
   try {
     setActiveRepoModelEffortOverrides({
       phaseEffortOverrides: { issue: "xhigh" },
     });
-    assertEquals(buildClaudeEffortArgs("issue"), ["--effort", "medium"]);
+    assertEquals(buildClaudeEffortArgs("issue", env), ["--effort", "medium"]);
   } finally {
     setActiveRepoModelEffortOverrides(undefined);
-    if (originalPhase) Deno.env.set("CLAUDE_EFFORT_ISSUE", originalPhase);
-    else Deno.env.delete("CLAUDE_EFFORT_ISSUE");
   }
 });
 
 Deno.test("claude executor - switching repos replaces overrides without leaking (Issue #2625)", () => {
-  clearRoutingState(["issue"]);
+  resetRoutingOverrides();
   try {
     // Repo A: premium tier.
     setActiveRepoModelEffortOverrides({
       claudeModel: "fable",
       phaseEffortOverrides: { issue: "xhigh" },
     });
-    assertEquals(buildClaudeModelArgs("issue"), ["--model", "fable"]);
-    assertEquals(buildClaudeEffortArgs("issue"), ["--effort", "xhigh"]);
+    assertEquals(buildClaudeModelArgs("issue", NO_ENV), ["--model", "fable"]);
+    assertEquals(buildClaudeEffortArgs("issue", NO_ENV), ["--effort", "xhigh"]);
 
     // Repo B: economy tier — must fully replace repo A's routing.
     setActiveRepoModelEffortOverrides({
       claudeModel: "sonnet",
       phaseEffortOverrides: { issue: "medium" },
     });
-    assertEquals(buildClaudeModelArgs("issue"), ["--model", "sonnet"]);
-    assertEquals(buildClaudeEffortArgs("issue"), ["--effort", "medium"]);
+    assertEquals(buildClaudeModelArgs("issue", NO_ENV), ["--model", "sonnet"]);
+    assertEquals(buildClaudeEffortArgs("issue", NO_ENV), [
+      "--effort",
+      "medium",
+    ]);
 
     // Repo C: no per-repo config — routing falls back to defaults, with no
     // leftover from A or B. "issue" now carries the Opus base-tier default
     // (Issue #2709); planning carries the Fable 5 top-tier default (Issue
     // #2621).
     setActiveRepoModelEffortOverrides(undefined);
-    assertEquals(buildClaudeModelArgs("issue"), ["--model", "opus"]);
-    assertEquals(buildClaudeModelArgs("planning"), ["--model", "fable"]);
-    assertEquals(buildClaudeEffortArgs("issue"), ["--effort", "high"]);
+    assertEquals(buildClaudeModelArgs("issue", NO_ENV), ["--model", "opus"]);
+    assertEquals(buildClaudeModelArgs("planning", NO_ENV), [
+      "--model",
+      "fable",
+    ]);
+    assertEquals(buildClaudeEffortArgs("issue", NO_ENV), ["--effort", "high"]);
   } finally {
     setActiveRepoModelEffortOverrides(undefined);
   }
@@ -1697,4 +1227,78 @@ Deno.test("setActiveRepoModelEffortOverrides - logs base-tier reroute once on re
     console.info = originalInfo;
     setActiveRepoModelEffortOverrides(undefined);
   }
+});
+
+// ---------------------------------------------------------------------------
+// The injected environment lookup (Issue #957)
+// ---------------------------------------------------------------------------
+//
+// These are the direct tests of the seam itself. Each drives it with a value
+// that is **absent from the real process environment**, so a code path that
+// quietly fell back to `Deno.env.get` would fail here rather than pass on the
+// ambient value — which is the failure the rest of this file could not detect
+// on its own once its 318 process mutations were removed.
+
+/** A value no process environment carries, so only the seam can supply it. */
+const SENTINEL = "vibe-957-sentinel-model";
+
+Deno.test("claude executor - both env reads go through the injected lookup, never the process (Issue #957)", () => {
+  resetRoutingOverrides();
+  const asked: string[] = [];
+  // An unknown phase misses steps 2-5, so one call exercises step 1 (the
+  // phase-specific variable) *and* step 6 (the base variable).
+  const args = buildClaudeModelArgs("totally_unknown_phase", (name) => {
+    asked.push(name);
+    return name === "CLAUDE_MODEL" ? SENTINEL : undefined;
+  });
+
+  assertEquals(args, ["--model", SENTINEL]);
+  assertEquals(asked, ["CLAUDE_MODEL_TOTALLY_UNKNOWN_PHASE", "CLAUDE_MODEL"]);
+  // The sentinel is not something the process could have supplied.
+  assertEquals(Deno.env.get("CLAUDE_MODEL"), undefined);
+});
+
+Deno.test("claude executor - the effort chain reads both variables through the lookup (Issue #957)", () => {
+  resetRoutingOverrides();
+  const asked: string[] = [];
+  const args = buildClaudeEffortArgs("totally_unknown_phase", (name) => {
+    asked.push(name);
+    return name === "CLAUDE_EFFORT" ? "xhigh" : undefined;
+  });
+
+  assertEquals(args, ["--effort", "xhigh"]);
+  assertEquals(asked, ["CLAUDE_EFFORT_TOTALLY_UNKNOWN_PHASE", "CLAUDE_EFFORT"]);
+});
+
+Deno.test("claude executor - the injected lookup decides, not the process (Issue #957)", () => {
+  resetRoutingOverrides();
+  // The phase-specific variable is precedence step 1, so an injected value
+  // wins over the designed default — proving the value came from the lookup.
+  assertEquals(
+    buildClaudeModelArgs(
+      "planning",
+      envLookup({ CLAUDE_MODEL_PLANNING: SENTINEL }),
+    ),
+    ["--model", SENTINEL],
+  );
+  // ...and an empty lookup falls through to the designed default.
+  assertEquals(buildClaudeModelArgs("planning", NO_ENV), ["--model", "fable"]);
+});
+
+Deno.test("claude executor - hasExplicitEffortOverride reads the injected lookup (Issue #957)", () => {
+  resetRoutingOverrides();
+  assertEquals(hasExplicitEffortOverride("issue", NO_ENV), false);
+  assertEquals(
+    hasExplicitEffortOverride(
+      "issue",
+      envLookup({ CLAUDE_EFFORT_ISSUE: "low" }),
+    ),
+    true,
+  );
+  // The global variable is the phase-less source.
+  assertEquals(
+    hasExplicitEffortOverride(undefined, envLookup({ CLAUDE_EFFORT: "low" })),
+    true,
+  );
+  assertEquals(hasExplicitEffortOverride(undefined, NO_ENV), false);
 });
