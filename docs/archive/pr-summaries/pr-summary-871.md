@@ -53,13 +53,16 @@ enforced."*
 tests/update_mode_docs_test.ts tests/release_tag_ruleset_test.ts` → 38 passed,
 0 failed.
 
-**Quality gate** — `./quality.sh` passes every stage except `deno tests`, which
-is red on the **base branch** for an unrelated reason: the milestone branch
-resurrects `worker/deno/tests/fleet_health_test.ts`, a file `main` deleted in
-1.2.0, and it mutates `Deno.env` without a manifest entry. Reproduced on the
-untouched milestone tip `d5e0389`, and #1039 (Issue #870) was merged into this
-branch with the same shard red. Raised as **#1042** with the root cause and the
-fix; nothing in this diff touches it.
+**Quality gate** — re-run after merging the current milestone tip (`ffcb98b`)
+into the branch: every stage PASSED except `deno tests`, at
+`16104 passed | 1 failed`. That one failure is red on the **base branch** for an
+unrelated reason: the milestone branch resurrects
+`worker/deno/tests/fleet_health_test.ts`, a file `main` deleted in 1.2.0, and it
+mutates `Deno.env` without a manifest entry, so
+`parallel_safety_cap_test.ts` reports it as new debt. Reproduced on the
+untouched milestone tips `d5e0389` and `ffcb98b`, and #1039 (Issue #870) was
+merged into this branch with the same shard red. Raised as **#1042** with the
+root cause and the fix; nothing in this diff touches it.
 
 ## Acceptance Criteria
 
