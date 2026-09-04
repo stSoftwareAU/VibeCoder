@@ -14,6 +14,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   CALLBACK_SCHEMA_VERSION,
+  INHERITED_ENV_VARS,
   invokeRunCallbacks,
   type IssueRunCallbackContext,
 } from "../lib/run_callbacks.ts";
@@ -353,23 +354,33 @@ Deno.test({
   ignore: Deno.build.os === "windows",
   fn: async () => {
     await withHookDir(async (dir) => {
-      Deno.env.set("VIBE_CALLBACK_TEST_TOKEN", "ghp_must_not_reach_the_hook");
-      try {
-        const callbacks: CallbacksConfig = {
-          success: await writeHook(dir, "success.sh", `env > "${dir}/env.txt"`),
-          timeoutSeconds: 30,
-        };
-        await run(callbacks, context());
+      const callbacks: CallbacksConfig = {
+        success: await writeHook(dir, "success.sh", `env > "${dir}/env.txt"`),
+        timeoutSeconds: 30,
+      };
+      await run(callbacks, context());
 
-        const childEnv = await Deno.readTextFile(`${dir}/env.txt`);
-        assert(
-          !childEnv.includes("ghp_must_not_reach_the_hook"),
-          "the worker's environment must not cross into a callback",
+      const childEnv = await Deno.readTextFile(`${dir}/env.txt`);
+      // Every name the child actually carries, rather than one planted
+      // token: the worker's own environment holds real credentials, and an
+      // allowlist proves none of them — named or not — crossed over.
+      // Planting one would mutate the process environment, which races
+      // under `deno test --parallel` (Issue #880).
+      const leaked = childEnv.split("\n")
+        .map((line) => /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(line)?.[1])
+        .filter((name): name is string => name !== undefined)
+        .filter((name) =>
+          !name.startsWith("VIBECODER_") &&
+          !INHERITED_ENV_VARS.includes(name) &&
+          // `/bin/sh` sets these itself; they carry nothing of the worker's.
+          !["PWD", "OLDPWD", "SHLVL", "IFS", "PS1", "_"].includes(name)
         );
-        assert(childEnv.includes("VIBECODER_CALLBACK_EVENT=success"));
-      } finally {
-        Deno.env.delete("VIBE_CALLBACK_TEST_TOKEN");
-      }
+      assertEquals(
+        leaked,
+        [],
+        "the worker's environment must not cross into a callback",
+      );
+      assert(childEnv.includes("VIBECODER_CALLBACK_EVENT=success"));
     });
   },
 });

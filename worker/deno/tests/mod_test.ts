@@ -194,8 +194,10 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issue #691 added `upgrade` (count 144 → 145).
   // Issue #665 added `references-refresh` (count 145 → 146).
   // Issue #736 added `first-run-verify` (count 146 → 147).
-  // Issue #807 added `callback-conformance` (count 147 → 148).
-  assertEquals(commands.length, 148);
+  // Issue #805 removed `fleet-health` — the private integration moved out
+  // to a callback (count 147 → 146).
+  // Issue #807 added `callback-conformance` (count 146 → 147).
+  assertEquals(commands.length, 147);
   assertEquals(commands.includes("callback-conformance"), true);
   assertEquals(commands.includes("first-run-verify"), true);
   assertEquals(commands.includes("references-refresh"), true);
