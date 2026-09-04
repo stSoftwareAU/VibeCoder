@@ -19,23 +19,23 @@ import { clearDefaultBranchMemoryCache } from "../lib/shell_helpers.ts";
 // Issue #1805: milestone_health now reads default-branch through the
 // shared in-process + persistent cache. Reset the in-process cache
 // before each test so scenarios stay isolated. The persistent cache is
-// stubbed via the env var below so it never reaches the real disk.
-const CACHE_ENV = "VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH";
+// pointed at a throwaway file so it never reaches the real disk.
+//
+// Issue #964: the path is handed to `getMilestoneHealth` as
+// `defaultBranchCachePath` rather than exported into the process
+// environment — a `Deno.env.set` here races every other worker under
+// `deno test --parallel` and is what kept this suite in the gate's serial
+// second pass.
 
-async function withFreshCaches<T>(fn: () => Promise<T>): Promise<T> {
+async function withFreshCaches<T>(
+  fn: (cachePath: string) => Promise<T>,
+): Promise<T> {
   const dir = await Deno.makeTempDir({ prefix: "milestone-health-test-" });
   const path = `${dir}/cache.json`;
-  const previous = Deno.env.get(CACHE_ENV);
-  Deno.env.set(CACHE_ENV, path);
   clearDefaultBranchMemoryCache();
   try {
-    return await fn();
+    return await fn(path);
   } finally {
-    if (previous === undefined) {
-      Deno.env.delete(CACHE_ENV);
-    } else {
-      Deno.env.set(CACHE_ENV, previous);
-    }
     clearDefaultBranchMemoryCache();
     await Deno.remove(dir, { recursive: true });
   }
@@ -120,8 +120,9 @@ Deno.test("getMilestoneHealth - returns empty report when no repos configured", 
 });
 
 Deno.test("getMilestoneHealth - returns empty report when repo has no milestones", async () => {
-  await withFreshCaches(async () => {
+  await withFreshCaches(async (cachePath) => {
     const deps: MilestoneHealthDeps = {
+      defaultBranchCachePath: cachePath,
       repos: ["owner/repo"],
       // Issue #1805: default-branch resolves via `--jq .default_branch`.
       ghCommandFn: buildMockGhFn({
@@ -140,7 +141,7 @@ Deno.test("getMilestoneHealth - returns empty report when repo has no milestones
 });
 
 Deno.test("getMilestoneHealth - reports milestone with mixed issue states", async () => {
-  await withFreshCaches(async () => {
+  await withFreshCaches(async (cachePath) => {
     // Issue #1805: open issues now flow through `fetchAllIssues` (the
     // shared `issues_all` cache) and branch info via GraphQL.
     const milestones = [{ title: "OIDC", number: 1 }];
@@ -199,6 +200,7 @@ Deno.test("getMilestoneHealth - reports milestone with mixed issue states", asyn
     };
 
     const deps: MilestoneHealthDeps = {
+      defaultBranchCachePath: cachePath,
       repos: ["owner/repo"],
       ghCommandFn: ghFn,
     };
@@ -240,7 +242,7 @@ Deno.test("getMilestoneHealth - reports milestone with mixed issue states", asyn
 });
 
 Deno.test("getMilestoneHealth - handles missing milestone branch gracefully", async () => {
-  await withFreshCaches(async () => {
+  await withFreshCaches(async (cachePath) => {
     const milestones = [{ title: "v2.0", number: 2 }];
     // Issue #1908: closed-batch payload tags each issue with milestone.
     const closedIssues = [{
@@ -270,6 +272,7 @@ Deno.test("getMilestoneHealth - handles missing milestone branch gracefully", as
     };
 
     const deps: MilestoneHealthDeps = {
+      defaultBranchCachePath: cachePath,
       repos: ["owner/repo"],
       ghCommandFn: ghFn,
     };
@@ -284,7 +287,7 @@ Deno.test("getMilestoneHealth - handles missing milestone branch gracefully", as
 });
 
 Deno.test("getMilestoneHealth - pending issue has no assignee and no dependencies", async () => {
-  await withFreshCaches(async () => {
+  await withFreshCaches(async (cachePath) => {
     const milestones = [{ title: "Alpha", number: 3 }];
     const openIssues = [
       buildAllIssuesItem({
@@ -296,6 +299,7 @@ Deno.test("getMilestoneHealth - pending issue has no assignee and no dependencie
     ];
 
     const deps: MilestoneHealthDeps = {
+      defaultBranchCachePath: cachePath,
       repos: ["owner/repo"],
       ghCommandFn: buildMockGhFn({
         "repos/owner/repo/milestones": JSON.stringify(milestones),
@@ -326,7 +330,7 @@ Deno.test("getMilestoneHealth - pending issue has no assignee and no dependencie
 // ============================================================================
 
 Deno.test("getMilestoneHealth - handles multiple repos", async () => {
-  await withFreshCaches(async () => {
+  await withFreshCaches(async (cachePath) => {
     const ghFn = async (args: string[]): Promise<string> => {
       const key = args.join(" ");
       if (key.includes("repos/org/repo1/milestones")) {
@@ -356,6 +360,7 @@ Deno.test("getMilestoneHealth - handles multiple repos", async () => {
     };
 
     const deps: MilestoneHealthDeps = {
+      defaultBranchCachePath: cachePath,
       repos: ["org/repo1", "org/repo2"],
       ghCommandFn: ghFn,
     };
@@ -375,7 +380,7 @@ Deno.test("getMilestoneHealth - handles multiple repos", async () => {
 // ============================================================================
 
 Deno.test("getMilestoneHealth - continues when one repo fails", async () => {
-  await withFreshCaches(async () => {
+  await withFreshCaches(async (cachePath) => {
     const ghFn = async (args: string[]): Promise<string> => {
       const key = args.join(" ");
       if (key.includes("repos/org/bad-repo")) {
@@ -391,6 +396,7 @@ Deno.test("getMilestoneHealth - continues when one repo fails", async () => {
     };
 
     const deps: MilestoneHealthDeps = {
+      defaultBranchCachePath: cachePath,
       repos: ["org/bad-repo", "org/good-repo"],
       ghCommandFn: ghFn,
     };
@@ -588,8 +594,9 @@ function driftGhFn(graphqlWorks: boolean): (a: string[]) => Promise<string> {
 async function driftFor(
   graphqlWorks: boolean,
 ): Promise<{ aheadBy: number; behindBy: number }> {
-  return await withFreshCaches(async () => {
+  return await withFreshCaches(async (cachePath) => {
     const result = await getMilestoneHealth({
+      defaultBranchCachePath: cachePath,
       repos: ["owner/repo"],
       ghCommandFn: driftGhFn(graphqlWorks),
     });

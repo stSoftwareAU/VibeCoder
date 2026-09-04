@@ -401,6 +401,14 @@ export interface GitHubActionsAuditTemplateDeps {
    */
   getDefaultBranchFn?: (repo: string) => Promise<Result<string>>;
   /**
+   * Where the persistent default-branch cache lives (Issue #964). Only
+   * consulted by the default `getDefaultBranchFn`. Defaults to the cache
+   * module's own resolution, so production passes nothing; a test names a
+   * throwaway path instead of pointing the whole process at one with
+   * `Deno.env.set`.
+   */
+  defaultBranchCachePath?: string;
+  /**
    * Audit scan runner — invokes Claude with the assembled prompt.
    * Defaults to the production `claude_runner` wrapper. Tests inject a
    * stub that returns success without invoking Claude.
@@ -777,7 +785,8 @@ export function createGitHubActionsAuditTemplate(
   const requiredActionPatternsFn = deps.requiredActionPatternsFn ??
     defaultRequiredActionPatterns;
   const getDefaultBranchFn = deps.getDefaultBranchFn ??
-    ((repo) => getRepoDefaultBranch(repo, ghCommandFn));
+    ((repo) =>
+      getRepoDefaultBranch(repo, ghCommandFn, deps.defaultBranchCachePath));
   const runScanFn = deps.runScanFn ??
     ((opts) => runGitHubActionsAuditScan(opts, loadPromptFn));
   const logger = deps.logger ?? defaultLogger;
