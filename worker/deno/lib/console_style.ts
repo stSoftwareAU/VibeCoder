@@ -1,12 +1,18 @@
 /**
- * The one place setup speaks in glyphs and colour (Issue #870, part of #863).
+ * The one place the Deno setup surfaces speak in glyphs and colour (Issue
+ * #870, part of #863).
  *
  * `setup.sh` has printed `ℹ`/`✓`/`⚠`/`✗` in blue/green/yellow/red since it was
- * written, and `setup_cli.ts` grew its own copy of the same escape constants.
- * Two copies is how the two surfaces drift, and the conversation delegated to
- * `update_mode_setup.ts` never had either — it printed plain text beside styled
- * output. This module holds the pairing once, so a surface can only be styled
- * the house way.
+ * written; `setup_cli.ts` grew its own copy of the same escape constants, and
+ * `prerequisite_installer.ts` a third copy of the glyphs with no colour at
+ * all. Copies are how the surfaces drift, and the conversation delegated to
+ * `update_mode_setup.ts` had none of them — it printed plain text beside
+ * styled output. This module holds the pairing once for the Deno side, so a
+ * surface can only be styled the house way.
+ *
+ * `setup.sh` necessarily keeps its own bash copy: it prints before Deno is
+ * installed, so it cannot import this. The colours and glyphs here are the
+ * same ones it defines, and `docs/SETUP.md` records the pairing for both.
  *
  * Two rules the formatters must never break:
  *   - Colour is emitted only when the destination stream is a terminal, and

@@ -260,9 +260,10 @@ the first:
 
 The conversation prints in the same house style as the rest of setup
 (Issue #870): `ℹ` in blue explains, `✓` in green confirms an answer, `⚠` in
-yellow reports a rejected answer or a fallback taken, and every question shows
-its default in brackets. Colour is emitted only to a terminal, and never when
-`NO_COLOR` is set.
+yellow reports a rejected answer or a fallback taken, and a question that has a
+default shows it in brackets. A question with no default to offer renders bare
+— never a stray `[]`. Colour is emitted only to a terminal, and never when
+`NO_COLOR` is set, so a captured, unstyled run stays byte-clean.
 
 ```text
 ℹ  Update mode: 'dynamic' tracks the tip of the default branch and installs the latest tools;

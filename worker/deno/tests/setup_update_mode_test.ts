@@ -19,6 +19,7 @@ import {
   runUpdateModeSetup,
   type UpdateModeSetupDeps,
 } from "../setup/update_mode_setup.ts";
+import { createConsoleStyler, terminalStyler } from "../lib/console_style.ts";
 import type { DynamicVersionCandidate } from "../lib/software_updates.ts";
 import { RELEASE_MANIFEST_ASSET } from "../lib/release_manifest.ts";
 
@@ -95,6 +96,10 @@ function harness(
       return Promise.resolve(queue.length > 0 ? queue.shift()! : null);
     },
     say: (message) => said.push(message),
+    // Named, not inherited from the process: the glyphs are asserted on, so
+    // the conversation must not depend on whether this run has a terminal
+    // (Issue #870).
+    style: createConsoleStyler({ tty: false }),
     interactive: () => true,
     fetchOrigin: () => {
       state.fetches++;
@@ -968,6 +973,75 @@ Deno.test("runUpdateModeSetup - a question with no default never renders a stray
     assertEquals(
       h.asked.filter((question) => question.includes("[")).length,
       1,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateModeSetup - a coloured styler reaches every line of the conversation", async () => {
+  const { dir, path } = await tempConfig({});
+  try {
+    const h = harness(["sideways", "", "", "", "", ""], {
+      style: createConsoleStyler({ tty: true }),
+    });
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    // Blue for the explanation, yellow for the rejection, green for the
+    // confirmation: the conversation carries the colour it was handed.
+    assert(
+      h.said.some((line) => line.startsWith("\x1b[0;34mℹ\x1b[0m  ")),
+      "an explanatory line must carry the blue info escape",
+    );
+    assert(
+      h.said.some((line) => line.startsWith("\x1b[1;33m⚠\x1b[0m  ")),
+      "a rejected answer must carry the yellow warning escape",
+    );
+    assert(
+      h.said.some((line) => line.startsWith("\x1b[0;32m✓\x1b[0m  ")),
+      "a confirmed answer must carry the green success escape",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateModeSetup - NO_COLOR keeps every line of the conversation byte-clean", async () => {
+  const { dir, path } = await tempConfig({});
+  try {
+    // The worker exports NO_COLOR=true into every child process, and many
+    // worker tests assert on that captured stdout byte for byte — a stray
+    // escape here would corrupt them (Issue #870).
+    const h = harness(["sideways", "", "v9.9.9", "", "", "", ""], {
+      style: terminalStyler(
+        { isTerminal: () => true },
+        (name) => name === "NO_COLOR" ? "true" : undefined,
+      ),
+    });
+    const result = await runUpdateModeSetup({
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    // deno-lint-ignore no-control-regex
+    const escape = /\x1b\[[0-9;]*m/;
+    for (const line of [...h.said, ...h.asked]) {
+      assert(
+        !escape.test(line),
+        `NO_COLOR output must be byte-clean — got ${JSON.stringify(line)}`,
+      );
+    }
+    // …and the glyphs still arrive, so "byte-clean" is not "unstyled".
+    assert(
+      h.said.some((line) => line.startsWith("ℹ  ")),
+      "the glyphs survive NO_COLOR; only the colour is dropped",
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
