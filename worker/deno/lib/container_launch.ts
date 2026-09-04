@@ -564,6 +564,7 @@ const CONTAINER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 // The two names container_launch has always published are re-exported here.
 import {
   isAbsolutePath,
+  isAtOrAbove,
   isRootPath,
   joinPath,
   type LauncherPathStyle,
@@ -580,16 +581,6 @@ import {
 export { type LauncherPathStyle, pathStyleFor };
 
 /**
- * A path reduced to a comparable form.
- *
- * Windows paths are matched case-insensitively and either separator, so
- * `C:\Users\Vibe` and `c:/users/vibe` are recognised as the same directory.
- */
-function comparablePath(path: string, style: LauncherPathStyle): string {
-  return style === "windows" ? path.replace(/\\/g, "/").toLowerCase() : path;
-}
-
-/**
  * True when a value carries a character the launcher's framing cannot pass.
  *
  * Scanned by code point rather than by regular expression so the check is
@@ -601,17 +592,6 @@ function hasControlCharacter(value: string): boolean {
     if (code < 0x20 || code === 0x7f) return true;
   }
   return false;
-}
-
-/** True when `ancestor` is `path` or a directory above it. */
-function isAtOrAbove(
-  ancestor: string,
-  path: string,
-  style: LauncherPathStyle,
-): boolean {
-  const left = comparablePath(ancestor, style);
-  const right = comparablePath(path, style);
-  return left === right || right.startsWith(`${left}/`);
 }
 
 /**
