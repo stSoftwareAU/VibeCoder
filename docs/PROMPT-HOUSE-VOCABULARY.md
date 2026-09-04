@@ -7,11 +7,13 @@ two, and "Worked Examples" five — the drift catalogued in the cross-prompt aud
 (Issue #794).
 
 This page is the canon the sweeps apply, and the source of truth the drift test
-reads. That test is Issue #840 and has **not** landed yet, so a banned variant
-fails nothing except in `prompts/security_scan/`, whose own sweep (Issue #837)
-pinned its forms in
-`worker/deno/tests/security_scan_house_vocabulary_test.ts`.
-Everywhere else this page is the agreement, not the gate.
+reads. That test is
+`worker/deno/tests/prompt_house_vocabulary_drift_test.ts` (Issue #840): it reads
+every directory's template through the real `loadPrompt()`, computes the
+families below from template content, and fails — naming the file, the line and
+the house form — when a banned variant reappears. `prompts/security_scan/` is
+additionally pinned by its own sweep's test
+(`worker/deno/tests/security_scan_house_vocabulary_test.ts`, Issue #837).
 It records **why** each form won and which exceptions are deliberate, so the next
 person bumping a template picks the agreed form instead of re-litigating it. It
 changes no template on its own.
@@ -20,8 +22,8 @@ changes no template on its own.
 flowchart LR
     A["📐 This canon<br/>docs/PROMPT-HOUSE-VOCABULARY.md"] --> B["🧹 Sweeps<br/>one edit per directory"]
     B --> C["📄 Templates<br/>prompts/&lt;type&gt;/prompt.md"]
-    A --> D["🧪 Drift test<br/>Issue #840, not yet landed"]
-    D -. "will fail on a banned variant" .-> C
+    A --> D["🧪 Drift test<br/>prompt_house_vocabulary_drift_test.ts"]
+    D -- "fails on a banned variant" --> C
     style A fill:#2d6a4f,stroke:#1b4332,color:#fff
     style D fill:#5319e7,stroke:#3d13ad,color:#fff
 ```
@@ -120,7 +122,13 @@ Applies to the twelve interactive directories in [Families](#families).
   `## Inputs` section at all, and Issue #841 settled that they never need one:
   they are wrapper issue bodies, so the worker substitutes the footer as it
   files and there is no Inputs section for the prose to cite. Those four stay
-  outside this row.
+  outside this row. The rule is about the **source named**, so citing any other
+  source is the same drift: `` from `<attribution_footer>` `` (the XML tag the
+  Inputs section wraps it in) and "from the input above" were swept to the
+  house form when the drift test landed (Issue #840). The citation is governed
+  wherever it is written, fenced issue-body skeletons included; a template that
+  names no source at all is a presence gap, not a variant, and is not governed
+  here.
 - **Finding-id placeholder.** The placeholder body uses the filing family's own
   prefix and the ellipsis form — `` `<!-- finding-id: BP-… -->` `` in the
   best-practices family, `` `<!-- finding-id: SEC-… -->` `` in the security-scan
@@ -181,8 +189,8 @@ keyword their scan honours.
 
 A row here is changed the same way it was set: with the evidence. State the count
 on the `prompt.md` of every directory, name the form that wins and why, and
-change this page **first** — the sweeps read it, and the drift test will once
-Issue #840 lands, so a template edited ahead of the canon reads as drift.
+change this page **first** — the sweeps read it and the drift test enforces it,
+so a template edited ahead of the canon reads as drift.
 Because the change is a name, it lands as an edit to each affected directory's
 `prompt.md`, with git history as the record of what changed.
 

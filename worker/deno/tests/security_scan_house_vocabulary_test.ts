@@ -27,6 +27,11 @@ import {
 // Importing this pins prompt resolution to *this* checkout (Issue #844), so a
 // worker host's PROMPTS_DIR cannot point the gate at another tree.
 import { REPO_ROOT } from "./support/repo_prompts.ts";
+// The prose projection and its matcher moved to a shared module when the
+// all-directory gate (Issue #840) needed the same two projections; a second
+// copy would drift from this one the way the templates drifted from each
+// other.
+import { flattenProse, hitsIn } from "./support/prompt_prose.ts";
 
 const PROMPTS_DIR = `${REPO_ROOT}prompts`;
 
@@ -34,67 +39,6 @@ async function securityScanPrompt(): Promise<string> {
   const result = await loadPrompt("security_scan", PROMPTS_DIR);
   assert(result.ok, "security_scan prompt failed to load");
   return result.value;
-}
-
-/**
- * The template's prose with fenced blocks and inline code spans blanked out,
- * so a prose rule never fires on a shell snippet, a marker literal or a
- * filename, joined into one string so a banned phrase cannot hide across the
- * ~70-column hard wrap. `lines[i]` is the source line each character came
- * from, so a hit still reports where it lives.
- */
-function prose(text: string): { flat: string; lineAt: (at: number) => number } {
-  let inFence = false;
-  const parts: string[] = [];
-  const lines: number[] = [];
-  text.split("\n").forEach((raw, index) => {
-    if (/^\s*```/.test(raw)) {
-      inFence = !inFence;
-      return;
-    }
-    if (inFence) return;
-    const content = raw.replace(/`[^`]*`/g, "``") + "\n";
-    parts.push(content);
-    for (let i = 0; i < content.length; i++) lines.push(index + 1);
-  });
-  return {
-    flat: parts.join(""),
-    // An index off the end means the flattened text and its line map have
-    // diverged, which would silently mislabel every hit. Fail loudly instead.
-    lineAt: (at: number) => {
-      const line = lines[at];
-      if (line === undefined) {
-        throw new Error(`prose line map has no entry for offset ${at}`);
-      }
-      return line;
-    },
-  };
-}
-
-/**
- * Every prose match for `pattern` in `text`, rendered as `line N: <phrase>`.
- *
- * The prose is flattened across the template's ~70-column hard wrap, so a
- * banned phrase can straddle a newline. Patterns must therefore spell inner
- * whitespace `\s+` rather than a literal space — `/idle\s+task/` catches
- * `idle\ntask`, `/idle task/` would not, and a wrapped variant is drift, not
- * an exemption. Both rules are enforced here rather than by rewriting the
- * pattern at runtime, which keeps every regex in this file a literal.
- */
-function hitsIn(text: string, pattern: RegExp): string[] {
-  assert(
-    pattern.global,
-    `prose pattern ${pattern} must be global, or only the first hit is found`,
-  );
-  assert(
-    !pattern.source.includes(" "),
-    `prose pattern ${pattern} has a literal space; use \\s+ so it still ` +
-      "matches when the hard wrap splits the phrase",
-  );
-  const { flat, lineAt } = prose(text);
-  return [...flat.matchAll(pattern)].map((m) =>
-    `line ${lineAt(m.index ?? 0)}: ${m[0].replace(/\s+/g, " ").trim()}`
-  );
 }
 
 /** {@link hitsIn} over the live template. */
@@ -118,7 +62,7 @@ function languageFor(marker: string): SupportedLanguage {
  */
 Deno.test("security_scan - the prose matcher is not vacuous (Issue #837)", async () => {
   const template = await securityScanPrompt();
-  const { flat } = prose(template);
+  const { flat } = flattenProse(template);
   assert(
     flat.length > template.length / 2,
     `prose projection kept only ${flat.length} of ${template.length} chars — ` +

@@ -1074,8 +1074,8 @@ project test.
      issue body rather than filing an issue per file.
    - Any `Rejected suppression: <file>:<line> <id> — <failed check>` line
      from Phase 3 step 5 goes at the end of `## Suggested fix`.
-   - The final line is the literal **attribution footer** from
-     `<attribution_footer>`, separated by a blank line and reproduced
+   - The final line is the literal **attribution footer** line from
+     the Inputs section, separated by a blank line and reproduced
      verbatim — backticks and emoji intact.
 
 3. **Cap at 6 issues.** Never file more than 6 issues from a single run.

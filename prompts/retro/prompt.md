@@ -350,9 +350,9 @@ Body: Markdown carrying, in order —
 - a closing line stating plainly that this issue is a set of suggestions, that
   nothing was changed, and that each candidate should be accepted or rejected
   on its own merits;
-- the literal **attribution footer** line from the input above as the final
-  line, separated by a blank line and reproduced verbatim — backticks and emoji
-  intact.
+- the literal **attribution footer** line from the Inputs section as the
+  final line, separated by a blank line and reproduced verbatim — backticks
+  and emoji intact.
 
 **Zero surviving candidates = file nothing.** Do not file an "all clear" issue
 and do not comment anywhere; simply exit. A run with nothing to improve is the

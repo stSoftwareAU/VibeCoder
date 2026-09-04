@@ -459,8 +459,8 @@ private repo, where the clone target is visible and the test can actually run.
 
    Keep the marker line, the prose lead, and the two `##` sections in that
    order, and end every body with the attribution footer as its final line —
-   preceded by a blank line and reproduced **verbatim** from
-   `<attribution_footer>`, backticks and emoji intact. The footer shown in the
+   preceded by a blank line and reproduced **verbatim** from the Inputs
+   section, backticks and emoji intact. The footer shown in the
    skeleton is an example rendering; substitute the literal line you were given.
 
    The marker is the `BP-<12 hex>` value from the recipe, on its own line at the
