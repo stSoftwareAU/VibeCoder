@@ -11,6 +11,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { resolveBaseDir } from "../lib/audit_journal.ts";
+import { envFrom } from "./support/env_lookup.ts";
 import {
   anySlotMidExecute,
   classifyWorkRootEntry,
@@ -108,18 +109,18 @@ Deno.test("classifyWorkRootEntry - the audit trail is state, never disposable (I
   const monitored = monitoredDirNames(MONITORED);
   assertEquals(classifyWorkRootEntry("audit", monitored), "state");
   // The name is not a guess: whatever the audit journal resolves its base
-  // directory to under WORK_DIR is the name that must tier as state, so a
-  // rename on either side fails here rather than on a swept host.
-  const previous = Deno.env.get("WORK_DIR");
-  try {
-    Deno.env.set("WORK_DIR", "/work");
-    const baseDir = resolveBaseDir();
-    const auditDirName = baseDir.slice(baseDir.lastIndexOf("/") + 1);
-    assertEquals(classifyWorkRootEntry(auditDirName, monitored), "state");
-  } finally {
-    if (previous === undefined) Deno.env.delete("WORK_DIR");
-    else Deno.env.set("WORK_DIR", previous);
-  }
+  // directory to under the work root is the name that must tier as state,
+  // so a rename on either side fails here rather than on a swept host.
+  //
+  // The work root is handed to `resolveBaseDir` through #956's injected
+  // env lookup rather than set on the process (Issue #966). The lookup
+  // answers only from its own map, so a resolution that reached past it to
+  // `Deno.env.get` would see no WORK_DIR, fall through to the TMPDIR
+  // branch, and fail here rather than pass on the ambient value.
+  const baseDir = resolveBaseDir(undefined, envFrom({ WORK_DIR: "/work" }));
+  assertEquals(baseDir, "/work/audit");
+  const auditDirName = baseDir.slice(baseDir.lastIndexOf("/") + 1);
+  assertEquals(classifyWorkRootEntry(auditDirName, monitored), "state");
 });
 
 Deno.test("classifyWorkRootEntry - a monitored repo whose name matches a sibling stays monitored", () => {

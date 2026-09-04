@@ -11,6 +11,7 @@ import {
   type DenoCacheGuardResult,
   guardDenoCache,
 } from "../lib/deno_cache_guard.ts";
+import { resolveCommandWorkDir } from "../lib/command_work_dir.ts";
 
 /**
  * Args:
@@ -18,7 +19,7 @@ import {
  *                         Defaults to config.workDir or WORK_DIR env.
  *   --max-bytes <num>     Size cap in bytes (default: 2147483648).
  */
-export const denoCacheGuardCommand: Command = {
+export const denoCacheGuardCommand = {
   name: "deno-cache-guard",
   description:
     "Wipe the durable Deno cache when it exceeds its size cap (Issue #4302)",
@@ -26,11 +27,9 @@ export const denoCacheGuardCommand: Command = {
   async execute(
     args: Record<string, unknown>,
     config: WorkerConfig,
+    envWorkDir: string | undefined = Deno.env.get("WORK_DIR"),
   ): Promise<CommandResult<DenoCacheGuardResult>> {
-    const workDir =
-      typeof args["work-dir"] === "string" && args["work-dir"].length > 0
-        ? args["work-dir"]
-        : (config.workDir || Deno.env.get("WORK_DIR") || "");
+    const workDir = resolveCommandWorkDir(args, config.workDir, envWorkDir);
     if (!workDir) {
       return {
         success: false,
@@ -55,4 +54,7 @@ export const denoCacheGuardCommand: Command = {
     const result = await guardDenoCache({ workDir, maxBytes });
     return { success: true, message: result.message, data: result };
   },
-};
+  // `satisfies`, not an annotation: the registry only ever calls
+  // `execute(args, config)`, but the third parameter has to stay visible on
+  // this constant so a test can hand it an empty `WORK_DIR` (Issue #966).
+} satisfies Command;
