@@ -34,8 +34,8 @@ import {
   GITHUB_ACTIONS_AUDIT_BODY_FINGERPRINT,
   GITHUB_ACTIONS_AUDIT_ISSUE_TITLE,
   GITHUB_ACTIONS_AUDIT_LABEL,
-  type GitHubActionsAuditTemplateDeps,
   githubActionsAuditTemplate,
+  type GitHubActionsAuditTemplateDeps,
   renderGitHubActionsAuditSummary,
   runGitHubActionsAuditScan,
 } from "../lib/idle_task_templates/github_actions_audit_template.ts";
@@ -982,7 +982,11 @@ Deno.test(
     const dir = await Deno.makeTempDir({ prefix: "gha-audit-964-" });
     const cachePath = `${dir}/default-branch-cache.json`;
     clearDefaultBranchMemoryCache();
-    await setCachedDefaultBranch("org/seam964", "sentinel-964-trunk", cachePath);
+    await setCachedDefaultBranch(
+      "org/seam964",
+      "sentinel-964-trunk",
+      cachePath,
+    );
 
     try {
       const { gh, creates } = makeGhStub({

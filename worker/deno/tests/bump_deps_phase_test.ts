@@ -320,7 +320,9 @@ Deno.test(
 
     // A window value no host exports, so an ambient read cannot supply it.
     assertEquals(
-      readQuarantineHoursFromEnv(envFrom({ VIBE_BUMP_QUARANTINE_HOURS: "964" })),
+      readQuarantineHoursFromEnv(
+        envFrom({ VIBE_BUMP_QUARANTINE_HOURS: "964" }),
+      ),
       964,
     );
     assertEquals(readQuarantineHoursFromEnv(emptyEnv), 24);
@@ -350,9 +352,7 @@ async function quarantineHoursFor(raw: string | undefined): Promise<string> {
       },
     }),
     "",
-    raw === undefined
-      ? emptyEnv
-      : envFrom({ VIBE_BUMP_QUARANTINE_HOURS: raw }),
+    raw === undefined ? emptyEnv : envFrom({ VIBE_BUMP_QUARANTINE_HOURS: raw }),
   );
   return recorded[0]!["VIBE_BUMP_QUARANTINE_HOURS"]!;
 }
