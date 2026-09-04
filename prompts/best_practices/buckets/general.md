@@ -346,3 +346,75 @@ Canonical guides — link, do not restate:
     the six-issue cap like any other — no special exemption. A repo
     whose production paths do the work they claim is silent on this
     check.
+
+## Test classification — unit, integration, benchmark
+
+`CODING-STANDARDS.md` holds the normative unit / integration /
+benchmark definition. Read it and cite it in the finding rather than
+restating the taxonomy here, so the standard and the scan cannot drift
+into two different definitions. These three checks are the
+language-neutral form of the rule; a language bucket that carries a
+**Test classification** section of its own (the `typescript` guide
+does) owns that ecosystem's detections, so raise a finding here about
+the repository's suite arrangement, never about one language's test
+idioms.
+
+The classification is worth enforcing because the cost of getting it
+wrong is measured: this repository's sequential gate took 42+ minutes
+against a 45-minute phase budget, while the same suite run in parallel
+took 2m23s.
+
+**Hard constraint — static evidence only**, like the rest of this
+bucket. Read the test sources and the task, script and workflow
+definitions that run them; never run a suite or time a test to produce
+the evidence. Every finding cites a path and a line range, and is filed
+at `severity:low`, or `severity:medium` where the offending test sits
+in the suite the repo runs on every change. A file the repository
+already records as known debt — a shrink-only parallel-unsafe list, an
+integration manifest excluded from the every-change suite — is debt
+already accepted and bounded, so it is silent on these checks. How a
+test asserts belongs to the `test-audit` scan, not here.
+
+16. **Unit tests are parallel-safe.** A unit test must be safe to run
+    concurrently with every other unit test, because the suite that
+    runs on every change is only affordable in parallel. Flag a test
+    in the every-change suite that mutates process-wide or host-wide
+    state: environment variables, the working directory, a global
+    singleton or static, a fixed network port, a fixed shared temp
+    path, or a fixture file another test also writes. Restoring the value in a teardown does not make it safe —
+    the window before the restore is the race, and the failure it
+    produces is intermittent and lands on an unrelated change.
+
+    Suggested fix: take the value as a parameter or through an
+    injected seam — an environment reader, a clock, a directory
+    handed in by the caller — so the test configures the code under
+    test without touching anything outside it. Where the code has no
+    such seam, adding the parameter is the fix.
+
+17. **A unit test finishes within 10 seconds.** Flag a test in the
+    every-change suite that cannot hold to that budget: it spawns a
+    process or drives one of the repository's own scripts, waits on
+    wall-clock time, reaches the network, stands up a real server,
+    database or container, or iterates enough work that the runtime is
+    the point. A test that is slow or cannot run in parallel is not a
+    unit test — it is an integration test or a benchmark.
+
+    Suggested fix: move the file into the repository's integration
+    suite so pre-merge CI keeps running it, or replace the real
+    process, clock or socket with an injected seam and keep it in the
+    every-change suite. Never reduce an iteration count to squeeze a
+    timing test under the budget; that leaves a test that is still
+    slow and no longer measures anything.
+
+18. **Benchmarks run on demand, on a quiet machine.** A benchmark's
+    output is a duration rather than a pass or a fail, and a duration
+    is only worth reading when the host is otherwise idle. Flag a
+    benchmark wired into the every-change gate or into a CI job that
+    shares a runner with other work, and flag benchmark run
+    instructions that do not state the quiet-host requirement.
+
+    Suggested fix: leave the benchmark reachable only through an
+    on-demand task or command, and record in its documentation that it
+    is run on an otherwise idle machine, never while parallel jobs
+    occupy the host. A number taken under concurrent load is not
+    merely a slow result — it is a result nobody can act on.
