@@ -13,37 +13,23 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { firstRunVerifyCommand } from "../commands/first_run_verify.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { WORKAROUND_ENV_VARS } from "../lib/first_run_verification.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 /** The command takes a worker config it never reads; the default stands in. */
 const CONFIG = buildDefaultWorkerConfig();
 
 /**
- * Run `body` with every workaround-shaped variable cleared, restoring what was
- * there afterwards.
+ * A fresh host: not one workaround-shaped variable set (Issue #962).
  *
- * The preflight reads the real environment on purpose — that is the host state
- * it judges — so a test of it must say what that environment holds rather than
- * inherit whatever the suite was launched with.
+ * The preflight judges the environment it is handed — that is the whole point
+ * of it — so a test of it must say what that environment holds rather than
+ * inherit whatever the suite was launched with. Stating it through the
+ * injected lookup rather than clearing the process is what lets these cases
+ * run beside every other suite: the old helper deleted VIBE_SKIP_PREREQ_CHECK
+ * from the process, which under `--parallel` would turn some other worker's
+ * prerequisite check into a skip.
  */
-async function withoutWorkaroundEnv(body: () => Promise<void>): Promise<void> {
-  const saved = new Map<string, string>();
-  for (const { name } of WORKAROUND_ENV_VARS) {
-    const value = Deno.env.get(name);
-    if (value !== undefined) saved.set(name, value);
-    Deno.env.delete(name);
-  }
-  try {
-    await body();
-  } finally {
-    // Clear first, then restore: a variable the body set must not survive into
-    // the next test. Deno runs a file's tests in one process, and a leaked
-    // VIBE_SKIP_PREREQ_CHECK would silently turn every later prerequisite
-    // check into a skip.
-    for (const { name } of WORKAROUND_ENV_VARS) Deno.env.delete(name);
-    for (const [name, value] of saved) Deno.env.set(name, value);
-  }
-}
+const FRESH_HOST = emptyEnv;
 
 /** A sandbox directory removed however the test ends. */
 async function withTempDir(
@@ -105,22 +91,26 @@ Deno.test("first-run-verify - config reports a Codex-only file as the pass it is
   });
 });
 
-Deno.test("first-run-verify - a workaround on the host refuses the run before setup", async () => {
-  await withoutWorkaroundEnv(async () => {
-    await withTempDir(async (dir) => {
-      await Deno.writeTextFile(`${dir}/images.txt`, "");
-      await Deno.writeTextFile(`${dir}/status.txt`, "");
-      Deno.env.set("VIBE_SKIP_PREREQ_CHECK", "true");
-      const result = await firstRunVerifyCommand.execute({
+Deno.test("first-run-verify - a workaround on the host refuses the run before setup (Issue #962)", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(`${dir}/images.txt`, "");
+    await Deno.writeTextFile(`${dir}/status.txt`, "");
+    // The workaround is stated through the injected lookup, which answers only
+    // from its own map: a preflight that read `Deno.env.get` would see a host
+    // carrying nothing and report the pass the case below asserts.
+    const result = await firstRunVerifyCommand.execute(
+      {
         mode: "preflight",
         "config-file": `${dir}/.config.json`,
         "claude-on-path": "false",
         images: `${dir}/images.txt`,
         "checkout-status": `${dir}/status.txt`,
-      }, CONFIG);
-      assertEquals(result.success, false);
-      assertStringIncludes(result.message, "VIBE_SKIP_PREREQ_CHECK");
-    });
+      },
+      CONFIG,
+      envFrom({ VIBE_SKIP_PREREQ_CHECK: "true" }),
+    );
+    assertEquals(result.success, false);
+    assertStringIncludes(result.message, "VIBE_SKIP_PREREQ_CHECK");
   });
 });
 
@@ -140,13 +130,13 @@ Deno.test("first-run-verify - a boolean flag given as prose is refused", async (
   });
 });
 
-Deno.test("first-run-verify - preflight writes the verdict the report reads back", async () => {
-  await withoutWorkaroundEnv(async () => {
-    await withTempDir(async (dir) => {
-      await Deno.writeTextFile(`${dir}/images.txt`, "");
-      await Deno.writeTextFile(`${dir}/status.txt`, "");
-      const out = `${dir}/fresh-state.json`;
-      const result = await firstRunVerifyCommand.execute({
+Deno.test("first-run-verify - preflight writes the verdict the report reads back (Issue #962)", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(`${dir}/images.txt`, "");
+    await Deno.writeTextFile(`${dir}/status.txt`, "");
+    const out = `${dir}/fresh-state.json`;
+    const result = await firstRunVerifyCommand.execute(
+      {
         mode: "preflight",
         "config-file": `${dir}/.config.json`,
         "claude-on-path": "false",
@@ -154,14 +144,38 @@ Deno.test("first-run-verify - preflight writes the verdict the report reads back
         images: `${dir}/images.txt`,
         "checkout-status": `${dir}/status.txt`,
         out,
-      }, CONFIG);
-      assertEquals(result.success, true, result.message);
-      const written = JSON.parse(await Deno.readTextFile(out));
-      assertEquals(written.violations, []);
-      assertEquals(written.notes.length, 1);
-      assertStringIncludes(written.notes[0], "VIBE_AGENT_PROVIDER=codex");
-    });
+      },
+      CONFIG,
+      FRESH_HOST,
+    );
+    assertEquals(result.success, true, result.message);
+    const written = JSON.parse(await Deno.readTextFile(out));
+    assertEquals(written.violations, []);
+    assertEquals(written.notes.length, 1);
+    assertStringIncludes(written.notes[0], "VIBE_AGENT_PROVIDER=codex");
   });
+});
+
+Deno.test("first-run-verify - config-path resolves against the injected environment (Issue #962)", async () => {
+  // The other mode that reads the host environment. `vibe-962-sentinel.json`
+  // is a name no real host carries, so a resolution that read `Deno.env.get`
+  // would answer the default `.config.json` instead.
+  const named = await firstRunVerifyCommand.execute(
+    { mode: "config-path", "base-dir": "/srv/vibe" },
+    CONFIG,
+    envFrom({ CONFIG_FILE: "vibe-962-sentinel.json" }),
+  );
+  assertEquals(named.success, true, named.message);
+  assertEquals(named.message, "/srv/vibe/vibe-962-sentinel.json");
+
+  // And with nothing set, the repository's own default — so the case above
+  // cannot pass on a resolver that ignores the environment entirely.
+  const fallback = await firstRunVerifyCommand.execute(
+    { mode: "config-path", "base-dir": "/srv/vibe" },
+    CONFIG,
+    FRESH_HOST,
+  );
+  assertEquals(fallback.message, "/srv/vibe/.config.json");
 });
 
 Deno.test("first-run-verify - claim reads the worker log the run actually wrote", async () => {
