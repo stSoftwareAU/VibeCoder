@@ -1053,7 +1053,7 @@ measured coverage. There is no bucket — a single run inspects every test
 ecosystem present (Deno/TypeScript, JavaScript, Rust, Java, Go, Python,
 shell/BATS, Cypress, Playwright).
 
-**Eleven audit checks.** Phase 2 of `prompts/test_audit/` walks every test file
+**Thirteen audit checks.** Phase 2 of `prompts/test_audit/` walks every test file
 against ten **test-maintainability smells**: (1) implementation-coupled
 assertions (call-order, internal-call mocks, private-symbol assertions — mock /
 interaction assertions are flagged only when not part of the public contract),
@@ -1069,6 +1069,22 @@ performs, so the test passes by construction and can never disagree with the
 implementation. **Rewrite or delete** are both valid resolutions — a
 counter-productive test should never have been written, so deleting one is an
 acceptable PR outcome.
+
+**Unit-suite classification.** Checks (12) parallel-unsafe unit tests — a unit
+test that mutates process-wide state (an environment variable, the working
+directory, a module-level singleton) rather than taking it as a parameter or an
+injected seam — and (13) slow unit tests, whose *shape* shows they cannot meet
+the unit budget `CODING-STANDARDS.md` sets: a wall-clock sleep, a retry loop
+with real backoff, a polling wait, or a spawned repository script. Both are
+static, source-shape checks — the audit never runs a test, so it never reports a
+measured or estimated duration, and neither check keys on whether a test passes.
+Files already on the repository's parallel-unsafe manifest are known debt and
+excluded from check 12 (the check exists to stop that list growing, not to
+re-report it); files on the integration-test manifest are excluded from both.
+The remedy is the seam, never a `--no-parallel` flag, or reclassification into
+the integration manifest. Each is reported as a **single** finding listing the
+affected files, so a suite-wide habit across a hundred files cannot become a
+hundred issues.
 
 **Coverage-gap detection.** Check (7), *potentially untested public
 API*, is a **potential behavioural coverage gap**: public API functions where no
@@ -1109,7 +1125,7 @@ into the `{{SUPPRESSED_IDS}}` placeholder so the LLM drops the finding in Phase
 3 triage on the next run.
 
 See [`docs/TEST-AUDIT-SCAN.md`](docs/TEST-AUDIT-SCAN.md) for the operator manual
-(idle-trigger sequence diagram, the eleven audit checks, the coverage-gap
+(idle-trigger sequence diagram, the thirteen audit checks, the coverage-gap
 pre-pass, label scheme, id recipe, suppression syntax, no-PR rule).
 
 ### GitHub Actions audit scans (template #4)
