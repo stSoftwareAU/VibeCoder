@@ -499,11 +499,21 @@ async function runHomeWorkDirGuardCheck(
   );
 
   if (result.violations.length === 0 && result.staleAllowlist.length === 0) {
+    // Issue #883: an allowlist entry whose file is gone is reported, not
+    // fatal. It cannot mask a violation — there is no file to construct a
+    // work dir in — and failing over it cost #805 two runs and #808 two more,
+    // none of which had changed anything wrong. The note keeps it visible so
+    // the entry still gets trimmed.
+    const note = result.orphanedAllowlist.length === 0 ? "" : "\n" + [
+      ...result.orphanedAllowlist.map((s) => `ORPHANED ALLOWLIST: ${s}`),
+      "These entries name files that no longer exist. They cannot hide a",
+      "violation, so they do not fail the gate — trim them when convenient.",
+    ].join("\n");
     return {
       name,
       status: "PASSED",
       output:
-        `host work-dir guard: PASSED (${result.filesScanned} files scanned)`,
+        `host work-dir guard: PASSED (${result.filesScanned} files scanned)${note}`,
     };
   }
 
