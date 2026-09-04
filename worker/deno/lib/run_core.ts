@@ -2686,6 +2686,12 @@ async function runIssueScanPool(
     claimFloor: poolRunwayFloor,
     deferredClaims: new Set<string>(),
     eligibilityScanCompleted: false,
+    // Issue #806: the cycle's exactly-once post-run callback guard, shared
+    // by every slot, the slot-level catch and the shutdown drain. Restored
+    // in this merge for the third time (Issues #928, #808) — `main` has no
+    // such field, so every sync merge that rewrites this literal drops it
+    // and nothing on `milestone/*` runs to notice.
+    callbackGuard: new IssueCallbackGuard(),
     idleHooks,
   };
   // Effective slots = min(configured, memory-pressure ceiling) (Issue
@@ -3059,6 +3065,17 @@ async function runSlot(
 
       /** Set by a successful claim so the settle sleep runs holding no repo. */
       let claimSucceeded = false;
+      /**
+       * Whether the claim actually started running (Issue #806).
+       *
+       * A throw before `processIssue` is an unclaimed cycle, not a run, and
+       * must report nothing; a throw after it is a terminal failure that
+       * takes the failure/always path exactly once. Restored here for the
+       * third time (Issues #928, #808): `main` carries no callback layer, so
+       * every sync merge that rewrites this region drops it, and nothing on
+       * `milestone/*` runs to notice.
+       */
+      const runStarted = { value: false };
       try {
         // Every claim gets its OWN write-repo allowlist (Issue #183). The
         // per-slot context exists (#4175) but nothing wired it up here, so
@@ -3101,6 +3118,7 @@ async function runSlot(
                   tracker,
                   endTime,
                   pool,
+                  runStarted,
                 ),
             ),
         );
@@ -3146,6 +3164,16 @@ async function runSlot(
               ? 0
               : (Date.now() - since) / 1000,
           }),
+          // An exception after a claim takes the failure/always path exactly
+          // once (Issue #806). Reported only when the run actually started,
+          // and the shared guard refuses a repeat if it already reported.
+          runStarted.value
+            ? {
+              result: "failure" as const,
+              startedAtEpochMs: since ?? deps.now(),
+              guard: pool.callbackGuard,
+            }
+            : undefined,
         );
         // A primary rate limit is pool-wide (Issue #4180): stop every slot
         // from claiming and let the pool re-throw once drained so the cycle
