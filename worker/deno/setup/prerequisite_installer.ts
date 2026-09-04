@@ -39,6 +39,7 @@ import {
   type HostPlatform,
   normaliseHostPlatform,
 } from "../lib/container_runtime.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import { resolveRunMode, type RunMode } from "../lib/run_mode.ts";
 import {
   CONTAINER_RUNTIME_TOOL,
@@ -129,6 +130,13 @@ export interface PrerequisiteInstallerOptions {
   runMode?: RunMode;
   /** Where operator-facing lines go. Defaults to the console. */
   reporter?: InstallerReporter;
+  /**
+   * Environment lookup for `VIBE_NO_AUTO_INSTALL` and the run mode
+   * (Issue #962). Defaults to the process environment, so an operator's real
+   * opt-out is honoured exactly as before; a test states the environment it
+   * is driving instead of mutating the one every parallel worker shares.
+   */
+  env?: EnvLookup;
 }
 
 /** Outcome of the whole offer. */
@@ -344,8 +352,9 @@ export async function offerMissingPrerequisites(
 ): Promise<PrerequisiteInstallerResult> {
   const reporter = opts.reporter ?? consoleReporter;
   const isTerminal = opts.isTerminal ?? (() => Deno.stdin.isTerminal());
+  const env = opts.env ?? processEnvLookup;
   const noAutoInstall = opts.noAutoInstall ??
-    (Deno.env.get("VIBE_NO_AUTO_INSTALL") === "true");
+    (env("VIBE_NO_AUTO_INSTALL") === "true");
   const autoInstall = opts.autoInstall === true;
 
   const untouched: PrerequisiteInstallerResult = {
@@ -359,7 +368,7 @@ export async function offerMissingPrerequisites(
 
   const platform = resolvePlatform(opts.platform);
   const runMode = opts.runMode ?? opts.probeOptions?.runMode ??
-    resolveRunMode();
+    resolveRunMode({ env });
   const resolvePlan = opts.resolvePlan ??
     ((tool: string, target: HostPlatform) =>
       resolveInstallPlan(tool, target, { runMode }));
@@ -396,7 +405,7 @@ export async function offerMissingPrerequisites(
   const runStep = opts.runStep ?? defaultRunStep;
   const recheck = opts.recheck ??
     ((tool: string) =>
-      recheckPrerequisite(tool, { ...opts.probeOptions, runMode }));
+      recheckPrerequisite(tool, { env, ...opts.probeOptions, runMode }));
 
   const results = [...probe.results];
   const outcomes: InstallOutcome[] = [];
