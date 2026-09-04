@@ -38,6 +38,7 @@
  */
 
 import { resolveClaudeEffort, resolveClaudeModel } from "./claude_executor.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 import { getCheaperModel } from "./config_defaults.ts";
 import {
   buildClaudeChildEnv,
@@ -238,6 +239,12 @@ export interface AgentInvocationRequest {
   model?: string;
   /** Work phase driving model/effort routing. */
   phase?: string;
+  /**
+   * Environment lookup the phase routing reads its variables through
+   * (Issue #957). Defaults to the process environment, so a production
+   * caller supplies nothing.
+   */
+  env?: EnvLookup;
   /** Explicit reasoning effort; when absent the phase routing decides. */
   effort?: string;
   /** Tools the agent must not use. */
@@ -287,8 +294,11 @@ export interface AgentProviderDescriptor {
    *
    * `undefined` means the provider has no phase routing of its own, so the
    * CLI's configured default stands — what Codex and Gemini do today.
+   *
+   * `env` is the lookup the provider's routing chain reads its variables
+   * through (Issue #957); omitted means the process environment.
    */
-  resolveModel(phase?: string): string | undefined;
+  resolveModel(phase?: string, env?: EnvLookup): string | undefined;
   /**
    * The reasoning effort this provider routes `phase` to (Issue #362).
    *
@@ -296,8 +306,11 @@ export interface AgentProviderDescriptor {
    * whose CLI has no effort option at all (Gemini) still reports the effort the
    * phase was *asked* to run at, so `buildInvocation` can say loudly that it
    * cannot be honoured (Issue #364) instead of dropping it in silence.
+   *
+   * `env` is the lookup the provider's routing chain reads its variables
+   * through (Issue #957); omitted means the process environment.
    */
-  resolveEffort(phase?: string): string | undefined;
+  resolveEffort(phase?: string, env?: EnvLookup): string | undefined;
   /**
    * The next-cheaper model below `model`, when this provider has a
    * cheaper-model ladder (Issue #365).
@@ -348,8 +361,9 @@ export function resolveInvocationRouting(
   return {
     // A blank explicit value is no value: it falls through to phase routing,
     // exactly as the pre-seam `request.model ? … : …` test did.
-    model: request.model || provider.resolveModel(request.phase),
-    effort: request.effort || provider.resolveEffort(request.phase),
+    model: request.model || provider.resolveModel(request.phase, request.env),
+    effort: request.effort ||
+      provider.resolveEffort(request.phase, request.env),
   };
 }
 
@@ -462,12 +476,12 @@ const CLAUDE_PROVIDER: AgentProviderDescriptor = {
 
   // Claude is the provider with phase routing today: both resolvers delegate
   // to the chain `claude_executor.ts` owns (Issue #362).
-  resolveModel(phase?: string): string | undefined {
-    return resolveClaudeModel(phase);
+  resolveModel(phase?: string, env?: EnvLookup): string | undefined {
+    return resolveClaudeModel(phase, env);
   },
 
-  resolveEffort(phase?: string): string | undefined {
-    return resolveClaudeEffort(phase);
+  resolveEffort(phase?: string, env?: EnvLookup): string | undefined {
+    return resolveClaudeEffort(phase, env);
   },
 
   // The tier ladder `config_defaults.ts` owns (fable → opus → sonnet → haiku),
@@ -521,12 +535,12 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
 
   // Codex routes `phase` through its own tables (Issue #363), the way Claude
   // does: the chain lives in `codex_executor.ts` and is never restated here.
-  resolveModel(phase?: string): string | undefined {
-    return resolveCodexModel(phase);
+  resolveModel(phase?: string, env?: EnvLookup): string | undefined {
+    return resolveCodexModel(phase, env);
   },
 
-  resolveEffort(phase?: string): string | undefined {
-    return resolveCodexEffort(phase);
+  resolveEffort(phase?: string, env?: EnvLookup): string | undefined {
+    return resolveCodexEffort(phase, env);
   },
 
   buildInvocation(request: AgentInvocationRequest): string[] {
@@ -587,8 +601,8 @@ const GEMINI_PROVIDER: AgentProviderDescriptor = {
   // never restated here. The effort resolver reports what a phase was *asked*
   // to run at — the CLI has no effort option to honour it with, so the value
   // is warned about rather than turned into an argument.
-  resolveModel(phase?: string): string | undefined {
-    return resolveGeminiModel(phase);
+  resolveModel(phase?: string, env?: EnvLookup): string | undefined {
+    return resolveGeminiModel(phase, env);
   },
 
   resolveEffort(phase?: string): string | undefined {
@@ -673,8 +687,8 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
   // Every phase is pinned to a real DeepSeek model id: Claude's routing
   // resolves to Anthropic tier aliases the endpoint cannot resolve, and a
   // provider with no routing of its own would send one (Issue #413).
-  resolveModel(phase?: string): string | undefined {
-    return resolveDeepSeekModel(phase);
+  resolveModel(phase?: string, env?: EnvLookup): string | undefined {
+    return resolveDeepSeekModel(phase, env);
   },
 
   resolveEffort(phase?: string): string | undefined {
