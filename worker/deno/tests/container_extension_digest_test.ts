@@ -52,6 +52,38 @@ function spec(
   return { path, containerfile: "Containerfile", ...overrides };
 }
 
+const encoder = new TextEncoder();
+const NUL = String.fromCharCode(0);
+
+/**
+ * The digest of a framed byte stream assembled and hashed in **one shot**.
+ *
+ * The expectation the streaming digest is measured against: each entry framed
+ * `<label><NUL><mode><NUL><byte length><NUL><bytes>\n`, in the order given.
+ */
+async function oneShotDigest(
+  entries: [label: string, mode: string, bytes: Uint8Array][],
+): Promise<string> {
+  const parts: Uint8Array[] = [];
+  for (const [label, mode, bytes] of entries) {
+    parts.push(
+      encoder.encode(`${label}${NUL}${mode}${NUL}${bytes.length}${NUL}`),
+    );
+    parts.push(bytes);
+    parts.push(encoder.encode("\n"));
+  }
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const buffer = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    buffer.set(part, offset);
+    offset += part.length;
+  }
+  return Array.from(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", buffer)),
+  ).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 /** The message a call threw, or `""` when it did not throw. */
 async function messageFrom(call: () => Promise<unknown>): Promise<string> {
   try {
@@ -255,38 +287,64 @@ Deno.test("computeContainerExtensionDigest - a file larger than the read buffer 
     await write(root, "Containerfile", containerfile);
     await write(root, "dump.sql", dump);
 
-    const declaration = spec(root);
-    const streamed = await computeContainerExtensionDigest(declaration);
+    assertEquals(
+      await computeContainerExtensionDigest(spec(root)),
+      await oneShotDigest([
+        ["containerfile", "spec", encoder.encode("Containerfile")],
+        ["Containerfile", "644", encoder.encode(containerfile)],
+        ["dump.sql", "644", dump],
+      ]),
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
 
-    // The same framed byte stream, concatenated and hashed in one call.
-    const encoder = new TextEncoder();
-    const nul = String.fromCharCode(0);
-    /** One `<label><NUL><mode><NUL><length><NUL>` entry header. */
-    const header = (label: string, mode: string, length: number) =>
-      encoder.encode(`${label}${nul}${mode}${nul}${length}${nul}`);
-    const parts: Uint8Array[] = [
-      header("containerfile", "spec", "Containerfile".length),
-      encoder.encode("Containerfile"),
-      encoder.encode("\n"),
-      header("Containerfile", "644", containerfile.length),
-      encoder.encode(containerfile),
-      encoder.encode("\n"),
-      header("dump.sql", "644", size),
-      dump,
-      encoder.encode("\n"),
-    ];
-    const total = parts.reduce((sum, part) => sum + part.length, 0);
-    const buffer = new Uint8Array(total);
-    let offset = 0;
-    for (const part of parts) {
-      buffer.set(part, offset);
-      offset += part.length;
-    }
-    const oneShot = Array.from(
-      new Uint8Array(await crypto.subtle.digest("SHA-256", buffer)),
-    ).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+Deno.test("computeContainerExtensionDigest - entries sort by UTF-8 bytes, not UTF-16 units", async () => {
+  // U+FF5E encodes as EF BD 9E and U+1F600 as F0 9F 98 80, so UTF-8 puts the
+  // tilde first — while a naive `<` compares UTF-16 units and puts the
+  // surrogate pair (D83D) first. The two orders frame different byte streams.
+  const root = await Deno.makeTempDir({ prefix: "vibe-extension-unicode-" });
+  try {
+    const containerfile = "FROM vibe-coder:base\n";
+    const tilde = "-- wide tilde\n";
+    const emoji = "-- emoji\n";
+    await write(root, "Containerfile", containerfile);
+    await write(root, "～.sql", tilde);
+    await write(root, "\u{1F600}.sql", emoji);
 
-    assertEquals(streamed, oneShot);
+    assertEquals(
+      await computeContainerExtensionDigest(spec(root)),
+      await oneShotDigest([
+        ["containerfile", "spec", encoder.encode("Containerfile")],
+        ["Containerfile", "644", encoder.encode(containerfile)],
+        ["～.sql", "644", encoder.encode(tilde)],
+        ["\u{1F600}.sql", "644", encoder.encode(emoji)],
+      ]),
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("computeContainerExtensionDigest - an empty directory and a zero-byte file are hashed, not skipped", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-extension-empty-" });
+  try {
+    const empty = await computeContainerExtensionDigest(spec(root));
+    assertEquals(
+      empty,
+      await oneShotDigest([
+        ["containerfile", "spec", encoder.encode("Containerfile")],
+      ]),
+    );
+
+    // A zero-byte file is content the build copies in, so it moves the digest
+    // even though it contributes no bytes of its own.
+    await write(root, "seed/.keep", "");
+    assert(
+      await computeContainerExtensionDigest(spec(root)) !== empty,
+      "a zero-byte file was skipped rather than hashed",
+    );
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -383,6 +441,54 @@ Deno.test("computeContainerExtensionDigest - a symlink inside the directory is h
     assert(
       await computeContainerExtensionDigest(spec(root)) !== baseline,
       "a confined symlink was skipped rather than hashed",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("computeContainerExtensionDigest - a confined directory symlink is an alias, not a loop", async () => {
+  if (Deno.build.os === "windows") return; // Symlinks need elevation there.
+  const root = await extensionDir();
+  try {
+    // `latest -> v3` beside its target is an ordinary extension layout: the
+    // build copies those bytes under both names, so the digest sees both.
+    const baseline = await computeContainerExtensionDigest(spec(root));
+    await Deno.symlink(`${root}/seed`, `${root}/latest`);
+
+    const aliased = await computeContainerExtensionDigest(spec(root));
+    assert(aliased !== baseline, "a directory alias left the digest unchanged");
+    assertEquals(
+      aliased,
+      await oneShotDigest([
+        ["containerfile", "spec", encoder.encode("Containerfile")],
+        [
+          "Containerfile",
+          "644",
+          encoder.encode("FROM vibe-coder:base\n"),
+        ],
+        [
+          "jenkins/Jenkinsfile",
+          "644",
+          encoder.encode("pipeline { agent any }\n"),
+        ],
+        [
+          "latest/schema.sql",
+          "644",
+          encoder.encode("CREATE TABLE jobs (id int);\n"),
+        ],
+        [
+          "seed/schema.sql",
+          "644",
+          encoder.encode("CREATE TABLE jobs (id int);\n"),
+        ],
+        [
+          "start.sh",
+          "644",
+          encoder.encode("#!/bin/sh\nservice postgres start\n"),
+        ],
+      ]),
+      "the alias was not hashed under both paths, in byte-wise order",
     );
   } finally {
     await Deno.remove(root, { recursive: true });

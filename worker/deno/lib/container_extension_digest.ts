@@ -62,9 +62,9 @@ export const EXTENSION_READ_CHUNK_BYTES = 64 * 1024;
 /**
  * Separator between an entry's fields.
  *
- * The same NUL {@link file://./container_image_hash.ts} frames the enumerated
- * inputs with: it cannot occur in a path, so no file's content can forge
- * another entry's framing.
+ * The same NUL `container_image_hash.ts` frames the enumerated inputs with: it
+ * cannot occur in a path, so no file's content can forge another entry's
+ * framing.
  */
 const FIELD_SEPARATOR = "\0";
 
@@ -178,12 +178,20 @@ async function resolveExtensionRoot(path: string): Promise<string> {
   return await realPathOf(path, ".");
 }
 
-/** Walk one directory, appending its regular files to `files`. */
+/**
+ * Walk one directory, appending its regular files to `files`.
+ *
+ * `ancestors` holds the real paths of the directories on the **current** chain,
+ * not every directory seen: a link back up the chain is an endless walk and is
+ * refused, while `latest -> v3` beside its target is an ordinary alias whose
+ * contents the build would copy twice, so it is hashed twice under its two
+ * paths rather than misdiagnosed as a cycle.
+ */
 async function walkExtension(
   directory: string,
   prefix: string,
   realRoot: string,
-  visited: Set<string>,
+  ancestors: Set<string>,
   files: ExtensionFile[],
 ): Promise<void> {
   const style = pathStyleFor(realRoot);
@@ -223,14 +231,20 @@ async function walkExtension(
     const info = await statEntry(path, relative);
     if (info.isDirectory) {
       const real = await realPathOf(path, relative);
-      if (visited.has(real)) {
+      if (ancestors.has(real)) {
         throw new Error(
           `Container extension directory loops: ${relative} resolves to ` +
-            `${real}, already walked — a cycle has no deterministic digest.`,
+            `${real}, a directory it is already inside — a cycle has no ` +
+            `deterministic digest.`,
         );
       }
-      visited.add(real);
-      await walkExtension(path, relative, realRoot, visited, files);
+      await walkExtension(
+        path,
+        relative,
+        realRoot,
+        new Set([...ancestors, real]),
+        files,
+      );
       continue;
     }
     if (!info.isFile) {
