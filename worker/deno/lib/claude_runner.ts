@@ -519,6 +519,21 @@ export interface RunClaudeOptions {
    * the installed set (Issue #3234).
    */
   agentProvider?: AgentProviderSelector;
+  /**
+   * Absolute path to the agent binary for this invocation (Issue #959).
+   *
+   * Omitted — every production caller — the runner spawns the provider's
+   * binary *name* and the operating system resolves it on the inherited
+   * `PATH`, exactly as before.
+   *
+   * Supplied, that path is spawned verbatim and no `PATH` lookup happens.
+   * The child environment was never the leak here: it is already built
+   * explicitly (`clearEnv: true`, `provider.buildChildEnv()`). What leaked
+   * was *binary resolution*, which is process-wide, so a test wanting a stub
+   * agent had to prepend a directory to `Deno.env.get("PATH")` and race every
+   * other test in the process. With this it names the stub instead.
+   */
+  agentBinaryPath?: string;
 }
 
 /** Options for retry behaviour. */
@@ -976,9 +991,15 @@ export async function runClaudeWithTimeout(
       ? undefined
       : resolveNiceBinary();
     const wrapped = agentNice !== undefined && niceBinary !== undefined;
-    const spawnBinary = wrapped ? niceBinary! : provider.binary;
+    // The binary this invocation runs (Issue #959). An explicit path is
+    // spawned verbatim; without one the provider's name goes to the OS and
+    // is resolved on `PATH`, which is the production path and is unchanged.
+    // Either way `nice` wraps the same binary, because it `execvp`s its
+    // argument and the child PID stays the agent's.
+    const agentBinary = options.agentBinaryPath ?? provider.binary;
+    const spawnBinary = wrapped ? niceBinary! : agentBinary;
     const spawnArgs = wrapped
-      ? ["-n", String(agentNice), provider.binary, ...args]
+      ? ["-n", String(agentNice), agentBinary, ...args]
       : args;
 
     const command = new Deno.Command(spawnBinary, {
@@ -2811,12 +2832,15 @@ export async function runClaudeWithRetry(
  * @param logger - Optional logger
  * @param agentProvider - Provider to probe for this call only (Issue #4109);
  *   omit for the active provider.
+ * @param agentBinaryPath - Explicit path to the agent binary (Issue #959);
+ *   omit and the provider's binary name is resolved on `PATH`, as before.
  * @returns Health check result
  */
 export async function checkClaudeHealth(
   timeoutSeconds: number = 30,
   logger?: Logger,
   agentProvider?: AgentProviderSelector,
+  agentBinaryPath?: string,
 ): Promise<HealthCheckResult> {
   // Resolve once, per call: the probe, the auth message and the log lines all
   // describe the same agent even while another provider is probed
@@ -2834,6 +2858,7 @@ export async function checkClaudeHealth(
     logger,
     disallowedTools: [],
     agentProvider: provider,
+    ...(agentBinaryPath ? { agentBinaryPath } : {}),
   });
 
   if (!result.ok) {
@@ -3213,17 +3238,35 @@ export async function summariseLargeContent(
  * The agent binary comes from the provider seam (Issue #4067), so selecting a
  * different provider checks for that provider's binary instead.
  */
-function requiredTools(): string[] {
-  return ["gh", "git", activeAgentProvider().binary, "jq"];
+function requiredTools(agentBinaryPath?: string): string[] {
+  return [
+    "gh",
+    "git",
+    agentBinaryPath ?? activeAgentProvider().binary,
+    "jq",
+  ];
 }
 
 /**
  * Check whether a CLI tool is available.
  *
- * @param tool - The tool name to check
- * @returns true if the tool is found in PATH
+ * @param tool - The tool name to look up on `PATH`, or an explicit path to
+ *   the tool (Issue #959).
+ * @returns true if the tool is found
  */
 async function isCommandAvailable(tool: string): Promise<boolean> {
+  // An explicit path is checked where it is, not searched for (Issue #959):
+  // `PATH` has nothing to say about a binary the caller already located, and
+  // a `which` probe here is what forced a test holding a stub agent to
+  // prepend its directory to the process-wide `PATH`.
+  if (tool.includes("/")) {
+    try {
+      const info = await Deno.stat(tool);
+      return info.isFile && ((info.mode ?? 0o111) & 0o111) !== 0;
+    } catch {
+      return false;
+    }
+  }
   try {
     const command = new Deno.Command("which", {
       args: [tool],
@@ -3237,6 +3280,16 @@ async function isCommandAvailable(tool: string): Promise<boolean> {
   }
 }
 
+/** Options for {@link checkDependencies} (Issue #959). */
+export interface DependencyCheckOptions {
+  /**
+   * Explicit path to the agent binary. Given, the agent is checked at that
+   * path rather than looked up by name on `PATH`; omitted, the active
+   * provider's binary name is resolved on `PATH` exactly as before.
+   */
+  agentBinaryPath?: string;
+}
+
 /**
  * Validate that required CLI tools are installed.
  *
@@ -3246,10 +3299,12 @@ async function isCommandAvailable(tool: string): Promise<boolean> {
  * @returns Result with the timeout command name on success, or error describing
  *          missing dependencies
  */
-export async function checkDependencies(): Promise<Result<string>> {
+export async function checkDependencies(
+  options: DependencyCheckOptions = {},
+): Promise<Result<string>> {
   const missing: string[] = [];
 
-  for (const tool of requiredTools()) {
+  for (const tool of requiredTools(options.agentBinaryPath)) {
     if (!(await isCommandAvailable(tool))) {
       missing.push(tool);
     }
