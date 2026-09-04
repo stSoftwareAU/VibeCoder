@@ -2050,6 +2050,17 @@ async function runIssueScanLoop(
     let processResult;
     try {
       processResult = await deps.processIssue(issue, endTime, "serial");
+    } catch (thrown) {
+      // A throw is a terminal run, so the failure and always callbacks fire
+      // exactly once before it propagates (Issue #806). Covered by
+      // `run_core_callbacks_test.ts` — a sync merge has collapsed this
+      // `catch` into the `finally` below twice, silently.
+      await dispatchIssueCallbacks(deps, issue.repo, issue.issueNumber, {
+        result: "failure",
+        startedAtEpochMs: claimedAtEpochMs,
+        guard: callbackGuard,
+      });
+      throw thrown;
     } finally {
       // In a `finally` so a throw cannot leave the stream marked busy
       // for the rest of the run, which would read as 100% utilisation.
@@ -2140,6 +2151,14 @@ async function runIssueScanLoop(
     // Check exit threshold
     const shouldExit = await deps.shouldExitOnFailures();
     if (shouldExit) {
+      // The run still terminated in failure, so its callbacks fire before
+      // the loop unwinds (Issue #806).
+      await dispatchIssueCallbacks(
+        deps,
+        issue.repo,
+        issue.issueNumber,
+        ran("failure"),
+      );
       noteSlotRetired("serial", deps.now());
       return { exitOuterLoop: true, eligibilityScanCompleted };
     }

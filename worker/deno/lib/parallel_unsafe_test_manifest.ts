@@ -9,9 +9,14 @@
  * that mutates it races whatever else is running:
  *
  * ```ts
- * // commit_and_push_pending_test.ts
- * Deno.env.set("VIBE_RUN_ID", "vibe-test-trailer-abc123");
+ * // prompt_manager_test.ts
+ * Deno.env.set("VIBE_BASE_DIR", "/workspace");
  * ```
+ *
+ * (The example used to be `commit_and_push_pending_test.ts` setting
+ * `VIBE_RUN_ID`. Issue #963 gave the run id and the audit trailer explicit
+ * parameters and drained that file, so the illustration moved to one still on
+ * the list — which is the whole point of the list going down.)
  *
  * Measured with `DENO_JOBS=4`: 48 failures, of which 32 were the pre-existing
  * pwsh failures and ~16 were genuine races.
@@ -82,7 +87,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/agent_provider_per_invocation_test.ts",
   "tests/agent_run_termination_test.ts",
   "tests/agent_transcript_test.ts",
-  "tests/audit_hook_test.ts",
   "tests/best_practices_bucket_guides_consumer_test.ts",
   "tests/boy_scout_idle_tasks_test.ts",
   "tests/bump_deps_phase_test.ts",
@@ -94,7 +98,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/claude_runner_model_unavailable_fallback_test.ts",
   "tests/claude_runner_test.ts",
   "tests/claude_runner_usage_limit_test.ts",
-  "tests/commit_and_push_pending_test.ts",
   "tests/container_entrypoint_test.ts",
   "tests/container_image_hash_test.ts",
   "tests/container_image_provider_set_test.ts",
@@ -114,7 +117,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/follow_up_label_strip_paths_test.ts",
   "tests/gh_guard_shim_test.ts",
   "tests/gh_spawn_test.ts",
-  "tests/git_push_single_branch_clone_test.ts",
   "tests/github_actions_audit_template_test.ts",
   "tests/grill_me_processor_escalation_test.ts",
   "tests/grill_me_processor_test.ts",
@@ -152,7 +154,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/pr_maintenance_command_test.ts",
   "tests/pr_spelling_processor_test.ts",
   "tests/prompt_manager_test.ts",
-  "tests/push_moved_head_test.ts",
   "tests/push_recovery_detail_test.ts",
   "tests/push_recovery_diagnostics_test.ts",
   "tests/quorum_processor_test.ts",
@@ -163,10 +164,8 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/raise_single_idle_task_test.ts",
   "tests/refinement_command_test.ts",
   "tests/revision_command_test.ts",
-  "tests/run_callbacks_integration_test.ts",
   "tests/run_core_production_deps_test.ts",
   "tests/run_entrypoint_test.ts",
-  "tests/run_id_test.ts",
   "tests/run_mode_test.ts",
   "tests/service_account_env_test.ts",
   "tests/setup_agent_provider_gating_test.ts",
@@ -175,7 +174,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/setup_prerequisites_test.ts",
   "tests/shell_helpers_test.ts",
   "tests/spend_ceiling_3684_test.ts",
-  "tests/subprocess_timeout_test.ts",
   "tests/terminal_title_command_test.ts",
   "tests/timeout_extension_report_768_test.ts",
   "tests/timeout_extension_telemetry_4298_test.ts",

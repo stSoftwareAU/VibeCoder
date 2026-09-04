@@ -55,8 +55,8 @@ import {
   rosterWasSeen,
   writeAnchor,
 } from "./audit_anchor.ts";
-import { withFileLock } from "./file_lock.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import { withFileLock } from "./file_lock.ts";
 
 /**
  * Raised when the journal on disk disagrees with its chain anchor —
@@ -129,6 +129,15 @@ export interface RecordOptions {
   workerId?: string;
   /** UTC date string override (default: today, `YYYY-MM-DD`). */
   date?: string;
+  /**
+   * Environment lookup behind the `baseDir`/`workerId` defaults (Issue #963).
+   *
+   * Defaults to the real process environment, so production callers pass
+   * nothing. A test hands over a fixed map instead of setting `WORK_DIR` and
+   * `WORKER_UNIQUE_ID` on the process, which races every other test running
+   * at that moment (Issue #880).
+   */
+  env?: EnvLookup;
 }
 
 /** Result of verifying a journal file's hash chain. */
@@ -268,15 +277,11 @@ function sanitiseWorkerId(id: string): string {
 }
 
 /**
- * Resolve the default audit base directory.
+ * Resolve the default audit base directory from the environment.
  *
- * `override` is the directory parameter callers reach for first; `env` is
- * the seam for the two variables consulted when no directory was passed
- * (Issue #966). Both defaults are the process environment, so production
- * behaviour is exactly what it was when this read `Deno.env.get` itself.
- *
- * @param override - Explicit base directory; wins over everything.
- * @param env - Environment lookup, injectable for testing.
+ * @param override - Explicit directory, used verbatim when supplied.
+ * @param env - Environment lookup for the `WORK_DIR`/`TMPDIR` fallback
+ *   (Issue #963). Defaults to the real process environment.
  */
 export function resolveBaseDir(
   override?: string,
@@ -302,25 +307,34 @@ export function resolveBaseDir(
  * unset on the standard single-worker host, which is why journals there
  * are named `audit-worker-<date>.jsonl`.
  */
-export function resolveWorkerId(override?: string): string {
+export function resolveWorkerId(
+  override?: string,
+  env: EnvLookup = processEnvLookup,
+): string {
   if (override) return sanitiseWorkerId(override);
-  const id = Deno.env.get("WORKER_UNIQUE_ID") ??
-    Deno.env.get("WORKER_NAME") ??
+  const id = env("WORKER_UNIQUE_ID") ??
+    env("WORKER_NAME") ??
     "worker";
   return sanitiseWorkerId(id);
 }
 
-/** Resolve the run-correlation id from the environment (joins to #2381). */
-export function resolveRunId(): string {
-  return Deno.env.get("VIBE_RUN_ID") ??
-    Deno.env.get("WORKER_UNIQUE_ID") ??
+/**
+ * Resolve the run-correlation id from the environment (joins to #2381).
+ *
+ * @param env - Environment lookup (Issue #963). Defaults to the real process
+ *   environment, so production callers pass nothing.
+ */
+export function resolveRunId(env: EnvLookup = processEnvLookup): string {
+  return env("VIBE_RUN_ID") ??
+    env("WORKER_UNIQUE_ID") ??
     "unknown";
 }
 
 /** Build the journal file path for the given partition. */
 export function auditFilePath(opts: RecordOptions = {}): string {
-  const baseDir = resolveBaseDir(opts.baseDir);
-  const workerId = resolveWorkerId(opts.workerId);
+  const env = opts.env ?? processEnvLookup;
+  const baseDir = resolveBaseDir(opts.baseDir, env);
+  const workerId = resolveWorkerId(opts.workerId, env);
   const date = opts.date ?? todayUtc();
   return `${baseDir}/audit-${workerId}-${date}.jsonl`;
 }
@@ -474,7 +488,7 @@ export async function recordMutation(
   opts: RecordOptions = {},
 ): Promise<Result<AuditEntry>> {
   try {
-    const baseDir = resolveBaseDir(opts.baseDir);
+    const baseDir = resolveBaseDir(opts.baseDir, opts.env ?? processEnvLookup);
     await Deno.mkdir(baseDir, { recursive: true });
     // Issue #491: journal selection and the append are one critical
     // section, guarded across processes. The in-process queue wraps the
