@@ -6,6 +6,7 @@
  */
 
 import { assertEquals } from "@std/assert";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 import {
   checkGithubStatusAvailable,
   checkImgbbAvailable,
@@ -201,72 +202,42 @@ Deno.test("feature_availability - getSummary should list all registered features
 // Built-in feature checks
 // =============================================================================
 
+// The environment is handed in (Issue #968) rather than exported. Every value
+// below is absent from the real process environment, so a check that quietly
+// fell back to `Deno.env.get` would read the ambient worker configuration and
+// go red here instead of passing on it.
+
 Deno.test("checkImgbbAvailable - returns true when API key is set", () => {
-  const original = Deno.env.get("VIBE_IMGBB_API_KEY");
-  try {
-    Deno.env.set("VIBE_IMGBB_API_KEY", "test-api-key-123");
-    assertEquals(checkImgbbAvailable(), true);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("VIBE_IMGBB_API_KEY", original);
-    } else {
-      Deno.env.delete("VIBE_IMGBB_API_KEY");
-    }
-  }
+  assertEquals(
+    checkImgbbAvailable(envFrom({ VIBE_IMGBB_API_KEY: "test-api-key-123" })),
+    true,
+  );
 });
 
 Deno.test("checkImgbbAvailable - returns false when API key is empty", () => {
-  const original = Deno.env.get("VIBE_IMGBB_API_KEY");
-  try {
-    Deno.env.set("VIBE_IMGBB_API_KEY", "");
-    assertEquals(checkImgbbAvailable(), false);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("VIBE_IMGBB_API_KEY", original);
-    } else {
-      Deno.env.delete("VIBE_IMGBB_API_KEY");
-    }
-  }
+  assertEquals(checkImgbbAvailable(envFrom({ VIBE_IMGBB_API_KEY: "" })), false);
 });
 
 Deno.test("checkImgbbAvailable - returns false when API key is unset", () => {
-  const original = Deno.env.get("VIBE_IMGBB_API_KEY");
-  try {
-    Deno.env.delete("VIBE_IMGBB_API_KEY");
-    assertEquals(checkImgbbAvailable(), false);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("VIBE_IMGBB_API_KEY", original);
-    }
-  }
+  assertEquals(checkImgbbAvailable(emptyEnv), false);
 });
 
 Deno.test("checkGithubStatusAvailable - returns true when enabled", () => {
-  const original = Deno.env.get("UPDATE_GH_USER_STATUS");
-  try {
-    Deno.env.set("UPDATE_GH_USER_STATUS", "true");
-    assertEquals(checkGithubStatusAvailable(), true);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("UPDATE_GH_USER_STATUS", original);
-    } else {
-      Deno.env.delete("UPDATE_GH_USER_STATUS");
-    }
-  }
+  assertEquals(
+    checkGithubStatusAvailable(envFrom({ UPDATE_GH_USER_STATUS: "true" })),
+    true,
+  );
 });
 
 Deno.test("checkGithubStatusAvailable - returns false when disabled", () => {
-  const original = Deno.env.get("UPDATE_GH_USER_STATUS");
-  try {
-    Deno.env.set("UPDATE_GH_USER_STATUS", "false");
-    assertEquals(checkGithubStatusAvailable(), false);
-  } finally {
-    if (original !== undefined) {
-      Deno.env.set("UPDATE_GH_USER_STATUS", original);
-    } else {
-      Deno.env.delete("UPDATE_GH_USER_STATUS");
-    }
-  }
+  assertEquals(
+    checkGithubStatusAvailable(envFrom({ UPDATE_GH_USER_STATUS: "false" })),
+    false,
+  );
+});
+
+Deno.test("checkGithubStatusAvailable - returns false when unset", () => {
+  assertEquals(checkGithubStatusAvailable(emptyEnv), false);
 });
 
 // =============================================================================
@@ -295,36 +266,32 @@ Deno.test("registerBuiltinFeatures - registers imgbb and github-status", () => {
 });
 
 Deno.test("registerBuiltinFeatures - checkAll should check all built-in features", () => {
-  const original = {
-    imgbb: Deno.env.get("VIBE_IMGBB_API_KEY"),
-    status: Deno.env.get("UPDATE_GH_USER_STATUS"),
-  };
+  const registry = createFeatureRegistry();
+  registerBuiltinFeatures(
+    registry,
+    envFrom({
+      VIBE_IMGBB_API_KEY: "test-key",
+      UPDATE_GH_USER_STATUS: "true",
+    }),
+  );
+  const results = registry.checkAll();
 
-  try {
-    Deno.env.set("VIBE_IMGBB_API_KEY", "test-key");
-    Deno.env.set("UPDATE_GH_USER_STATUS", "true");
+  assertEquals(results.length, 2);
+  for (const result of results) {
+    assertEquals(result.status, "available");
+  }
+});
 
-    const registry = createFeatureRegistry();
-    registerBuiltinFeatures(registry);
-    const results = registry.checkAll();
+Deno.test("registerBuiltinFeatures - both built-ins degrade on an empty environment", () => {
+  // The registered checks must read the environment they were given, not the
+  // one the suite happens to run in — this is the assertion that fails if a
+  // check falls back to `Deno.env.get` on a host that exports either key.
+  const registry = createFeatureRegistry();
+  registerBuiltinFeatures(registry, emptyEnv);
 
-    assertEquals(results.length, 2);
-    for (const result of results) {
-      assertEquals(result.status, "available");
-    }
-  } finally {
-    // Restore
-    for (
-      const [envKey, envVal] of [
-        ["VIBE_IMGBB_API_KEY", original.imgbb],
-        ["UPDATE_GH_USER_STATUS", original.status],
-      ] as const
-    ) {
-      if (envVal !== undefined) {
-        Deno.env.set(envKey, envVal);
-      } else {
-        Deno.env.delete(envKey);
-      }
-    }
+  assertEquals(registry.checkFeature("imgbb"), false);
+  assertEquals(registry.checkFeature("github-status"), false);
+  for (const result of registry.getSummary()) {
+    assertEquals(result.status, "degraded");
   }
 });
