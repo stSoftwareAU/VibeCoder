@@ -423,6 +423,11 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "launch_plumbing",
     note: "PATH fallbacks the launcher computed for the guest",
   },
+  VIBE_CUSTOM_PROMPT_PATHS: {
+    role: "launch_plumbing",
+    note:
+      "where the launcher mounted each custom prompt path, host → guest (Issue #850)",
+  },
   VIBE_AGENT_TRANSCRIPT: {
     role: "launch_plumbing",
     note: "the transcript path handed to the agent process",

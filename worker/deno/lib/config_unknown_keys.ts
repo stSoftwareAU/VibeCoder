@@ -199,6 +199,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
 
   // Post-run callback hooks (Issue #806, parent #796)
   "callbacks",
+
+  // Custom label → non-public prompt file mappings (Issue #846, part of #843)
+  "custom_label_prompts",
 ]);
 
 /**

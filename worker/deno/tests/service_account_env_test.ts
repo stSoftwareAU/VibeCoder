@@ -403,6 +403,9 @@ Deno.test({
         await Deno.readTextFile(`${applied.GH_CONFIG_DIR}/hosts.yml`),
         "github.com:\n",
       );
+      const probe = `${applied.GH_CONFIG_DIR}/.writable-probe`;
+      await Deno.writeTextFile(probe, "");
+      await Deno.remove(probe);
     } finally {
       await Deno.chmod(mounted, 0o700);
       await Deno.remove(home, { recursive: true });
