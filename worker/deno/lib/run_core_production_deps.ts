@@ -2718,6 +2718,7 @@ export async function createProductionRunCoreDeps(
     async processIssue(
       issue: DiscoveredIssue,
       cycleDeadlineEpochMs?: number,
+      laneId?: string,
     ) {
       const issueData: IssueData = await fetchIssueData(
         issue.repo,
@@ -2838,6 +2839,9 @@ export async function createProductionRunCoreDeps(
         config,
         // Issue #4254: bound the execute timeout by the cycle deadline.
         cycleDeadlineEpochMs,
+        // Issue #923: which lane is running this, so the setup phase can
+        // give it its own worktree instead of the shared clone.
+        ...(laneId === undefined ? {} : { laneId }),
       };
 
       const result = await workOnIssue(ctx, workerDeps);

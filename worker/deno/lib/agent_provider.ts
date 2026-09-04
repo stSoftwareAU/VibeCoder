@@ -167,6 +167,35 @@ export const DEEPSEEK_PROVIDER_ID = "deepseek";
 /** The provider used when neither configuration nor environment selects one. */
 export const DEFAULT_AGENT_PROVIDER_ID = CLAUDE_PROVIDER_ID;
 
+/**
+ * A provider that accepts MORE than one credential file (Issue #917, parent
+ * #902).
+ *
+ * Only a vendor whose subscriptions can be held several at a time earns a
+ * pool: an operator with two Claude subscriptions wants the worker to spend
+ * them evenly, which needs every token visible at once. A vendor without this
+ * field keeps exactly one credential file, so registering a second provider
+ * gains nothing it did not ask for.
+ */
+export interface AgentProviderTokenPool {
+  /** Operator-facing filename pattern, e.g. `provider-*.env`. */
+  filePattern: string;
+  /**
+   * Matches an ADDITIONAL credential file's name, capturing its ordinal in
+   * group 1 so discovery can order the pool numerically rather than by the
+   * string order a directory listing happens to return (`provider-10.env`
+   * sorts before `provider-2.env` as text).
+   */
+  fileMatch: RegExp;
+  /**
+   * The credential variables whose files join the selection pool — the
+   * subscription OAuth tokens. A file carrying any other recognised variable
+   * (a metered `ANTHROPIC_API_KEY`) is still a valid credential, it simply
+   * has no budget to compare, so it stays on the single-credential path.
+   */
+  envVars: readonly string[];
+}
+
 /** Where a provider's credentials live inside the Vibe credential directory. */
 export interface AgentProviderCredentials {
   /** Sub-directory name, e.g. `claude`. */
@@ -177,6 +206,12 @@ export interface AgentProviderCredentials {
   envVars: readonly string[];
   /** The `setup.sh` variable that provisions the credential file. */
   provisionEnvVar: string;
+  /**
+   * Additional credential files beside {@link file}, when this provider
+   * supports a pool of tokens (Issue #917). Absent — the default — means the
+   * provider has exactly one credential file, as every vendor did before.
+   */
+  tokenPool?: AgentProviderTokenPool;
 }
 
 /** What the provider's child subprocess may and may not inherit. */
@@ -405,6 +440,17 @@ const CLAUDE_PROVIDER: AgentProviderDescriptor = {
       "CLAUDE_CODE_OAUTH_TOKEN",
     ],
     provisionEnvVar: "VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY",
+    // An operator may hold several Claude subscriptions and wants them spent
+    // evenly (Issue #917, parent #902), so extra tokens live beside
+    // provider.env as provider-2.env, provider-3.env, ... Only the
+    // subscription OAuth token joins the pool: a metered ANTHROPIC_API_KEY
+    // has no per-token budget to weigh, and ANTHROPIC_AUTH_TOKEN is a bearer
+    // for a proxied endpoint rather than a subscription.
+    tokenPool: {
+      filePattern: "provider-*.env",
+      fileMatch: /^provider-(\d+)\.env$/,
+      envVars: ["CLAUDE_CODE_OAUTH_TOKEN"],
+    },
   },
   environment: {
     secretAllowlist: CLAUDE_ENV_SECRET_ALLOWLIST,

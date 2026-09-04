@@ -69,6 +69,14 @@ export interface IssueContext {
   customPromptPath?: string;
   /** The custom label that dispatched this run, named in errors (Issue #848). */
   customPromptLabel?: string;
+  /**
+   * Stable id of the lane running this issue (Issue #923) — `s1`, `s2`, or
+   * `serial`. The setup phase gives the lane its own git worktree off the
+   * shared clone, so two slots working one repository never share a working
+   * tree, `HEAD`, the index, a Claude session or resume state. Absent (CLI
+   * single-issue runs, tests): the shared clone, exactly as before.
+   */
+  laneId?: string;
 }
 
 /** Mutable state set by early phases, consumed by later phases. */
