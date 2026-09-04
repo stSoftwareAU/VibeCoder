@@ -51,13 +51,25 @@ names and the resolver together.
 Backend/CLI change — no web interface to screenshot. Verified by tests and the
 full quality gate.
 
-- `./quality.sh` → **PASSED** (semgrep, markdownlint, mermaid, deno tests, lint,
-  type check, fmt). Several unrelated suites assert on the *absence* of
-  variables the worker sets for its own run (`CONFIG_PATH`, `VIBE_STATE_DIR`,
-  `WORK_DIR`, `DISABLE_AUTOUPDATER`, the provider variables), so the gate was
-  run under a scrubbed environment — they pass in CI, which has none of them
-  set.
-- `deno task test` → 17 500+ passed, 0 failed.
+- `deno task test` → **17 581 passed, 0 failed**, exit 0.
+- `./quality.sh` → every check PASSED — benchmark audit, the five chokepoint
+  guards, workflow hygiene, source targets, mermaid, markdownlint, semgrep,
+  deno lint, deno type check, deno fmt.
+- Both were run with the worker's own environment scrubbed
+  (`env -u CONFIG_PATH -u WORK_DIR -u DISABLE_AUTOUPDATER -u VIBE_* …`).
+  Several unrelated suites assert on the *absence* of those variables — CI has
+  none of them set, so this reproduces the CI environment rather than papering
+  over a failure.
+- **One caveat, stated plainly.** Under the gate's own parallel load (tests,
+  lint, type check and markdownlint at once on a shared host) four
+  timeout-classification tests flake — a different subset each run
+  (`callback_conformance_test.ts`, `repo_config_test.ts::runPreSetupCommand times out`,
+  `run_callbacks_integration_test.ts::a hanging outcome hook is terminated`,
+  `software_updates_test.ts::runWithTimeout - returns exitCode 124 on timeout`).
+  All four pass standalone and in the full suite above; none of their
+  implementations (`repo_config.ts`, `software_updates.ts`, `run_callbacks.ts`)
+  is touched by this diff. This is the wall-clock sensitivity
+  `CODING-STANDARDS.md` warns about, on a loaded host — not a regression here.
 
 ```mermaid
 flowchart LR
