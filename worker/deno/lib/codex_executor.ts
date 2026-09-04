@@ -27,7 +27,8 @@ import {
   CODEX_PHASE_EFFORT_DEFAULTS,
   CODEX_PHASE_MODEL_DEFAULTS,
 } from "./config_defaults.ts";
-import { type EnvLookup, resolvePhaseRoutedValue } from "./phase_routing.ts";
+import type { EnvLookup } from "./env_lookup.ts";
+import { resolvePhaseRoutedValue } from "./phase_routing.ts";
 import type { RepoConfig } from "../types.ts";
 
 /** The Codex subcommand for a non-interactive run. */

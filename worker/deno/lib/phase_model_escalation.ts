@@ -30,7 +30,7 @@ import {
   MODEL_CONTEXT_WINDOWS,
 } from "./context_budget.ts";
 import { resolveCurrentModel } from "./model_fallback.ts";
-import type { EnvLookup } from "./phase_routing.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 
 /**
  * Default escalation target when the configured model's window is too

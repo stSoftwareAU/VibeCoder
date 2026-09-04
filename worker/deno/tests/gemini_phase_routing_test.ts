@@ -33,8 +33,8 @@ import {
   PHASE_EFFORT_DEFAULTS,
   PHASE_MODEL_DEFAULTS,
 } from "../lib/config_defaults.ts";
-import type { EnvLookup } from "../lib/phase_routing.ts";
-import { envLookup } from "./support/env_lookup.ts";
+import type { EnvLookup } from "../lib/env_lookup.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 /** The Gemini descriptor under test. */
 const gemini = resolveAgentProvider(GEMINI_PROVIDER_ID);
@@ -59,7 +59,7 @@ function withCleanRouting(
   setActiveRepoGeminiModelOverrides(undefined);
   clearGeminiEffortWarnings();
   try {
-    fn(envLookup(vars));
+    fn(envFrom(vars));
   } finally {
     setGeminiPhaseModelConfigOverrides({});
     setActiveRepoGeminiModelOverrides(undefined);

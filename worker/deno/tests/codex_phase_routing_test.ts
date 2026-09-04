@@ -34,8 +34,8 @@ import {
   PHASE_EFFORT_DEFAULTS,
   PHASE_MODEL_DEFAULTS,
 } from "../lib/config_defaults.ts";
-import type { EnvLookup } from "../lib/phase_routing.ts";
-import { envLookup } from "./support/env_lookup.ts";
+import type { EnvLookup } from "../lib/env_lookup.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 /** The Codex descriptor under test. */
 const codex = resolveAgentProvider(CODEX_PROVIDER_ID);
@@ -59,7 +59,7 @@ function withCleanRouting(
   setCodexPhaseEffortConfigOverrides({});
   setActiveRepoCodexModelEffortOverrides(undefined);
   try {
-    fn(envLookup(vars));
+    fn(envFrom(vars));
   } finally {
     setCodexPhaseModelConfigOverrides({});
     setCodexPhaseEffortConfigOverrides({});

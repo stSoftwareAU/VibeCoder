@@ -38,6 +38,7 @@ import { setSelfHealEventsWorkDir } from "../lib/self_heal_events.ts";
 import { consumeQuotaPauseMarker } from "../lib/quota_pause.ts";
 import { resolveRunHostId } from "../lib/run_mode_record.ts";
 import { formatLogTail } from "../lib/launcher_failure_evidence.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 
 function optionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -48,6 +49,29 @@ function optionalString(value: unknown): string | undefined {
 function optionalNumber(value: unknown): number | undefined {
   const n = typeof value === "number" ? value : Number(optionalString(value));
   return Number.isFinite(n) ? Math.floor(n) : undefined;
+}
+
+/**
+ * Seconds the supervisor waits between quota re-probes (Issue #342).
+ *
+ * Precedence: the explicit `--quota-pause-sleep-seconds` flag, then the
+ * `VIBE_QUOTA_PAUSE_SLEEP_SECONDS` environment variable, then the default.
+ *
+ * Extracted from `execute` so the environment leg has a seam (Issue #956):
+ * a test drives it with a fixed lookup instead of setting the variable on
+ * the process, which races every other test under `deno test --parallel`.
+ *
+ * @param args - The command's parsed arguments.
+ * @param env - Environment lookup; defaults to the process environment.
+ * @returns The resolved cadence in seconds.
+ */
+export function resolveQuotaPauseSleepSeconds(
+  args: Record<string, unknown>,
+  env: EnvLookup = processEnvLookup,
+): number {
+  return optionalNumber(args["quota-pause-sleep-seconds"]) ??
+    optionalNumber(env("VIBE_QUOTA_PAUSE_SLEEP_SECONDS")) ??
+    CONTAINER_RESTART_DEFAULTS.quotaPauseSleepSeconds;
 }
 
 /** Vibe Coder state directory — the launchers write the phase marker here. */
@@ -168,10 +192,7 @@ export const containerRestartBackoffCommand: Command = {
           CONTAINER_RESTART_DEFAULTS.escalationThreshold,
         imageBuildEscalationThreshold: CONTAINER_RESTART_DEFAULTS
           .imageBuildEscalationThreshold,
-        quotaPauseSleepSeconds:
-          optionalNumber(args["quota-pause-sleep-seconds"]) ??
-            optionalNumber(Deno.env.get("VIBE_QUOTA_PAUSE_SLEEP_SECONDS")) ??
-            CONTAINER_RESTART_DEFAULTS.quotaPauseSleepSeconds,
+        quotaPauseSleepSeconds: resolveQuotaPauseSleepSeconds(args),
       },
       crashConfig,
       repo: optionalString(args["repo"]),

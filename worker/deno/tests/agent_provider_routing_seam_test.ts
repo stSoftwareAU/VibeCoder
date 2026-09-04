@@ -39,7 +39,7 @@ import {
   PHASE_EFFORT_DEFAULTS,
   PHASE_MODEL_DEFAULTS,
 } from "../lib/config_defaults.ts";
-import { envLookup, NO_ENV } from "./support/env_lookup.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 /** Every phase either routing table names, in a stable order. */
 const ROUTED_PHASES: string[] = [
@@ -60,7 +60,7 @@ const CLAUDE_TAIL = [
 ];
 
 // The routing env is injected rather than set on the process (Issue #957):
-// `NO_ENV` is an environment where nothing is set, and `envLookup` states the
+// `emptyEnv` is an environment where nothing is set, and `envFrom` states the
 // variables one scenario declares. Clearing a base variable used to mean
 // deleting it process-wide, which every test running beside this one saw.
 
@@ -92,13 +92,13 @@ Deno.test("routing seam - Claude's resolvers are the existing precedence chain",
 
   for (const phase of [undefined, ...ROUTED_PHASES]) {
     assertEquals(
-      claude.resolveModel(phase, NO_ENV),
-      resolveClaudeModel(phase, NO_ENV),
+      claude.resolveModel(phase, emptyEnv),
+      resolveClaudeModel(phase, emptyEnv),
       `Claude's model resolver must match the chain for phase ${phase}`,
     );
     assertEquals(
-      claude.resolveEffort(phase, NO_ENV),
-      resolveClaudeEffort(phase, NO_ENV),
+      claude.resolveEffort(phase, emptyEnv),
+      resolveClaudeEffort(phase, emptyEnv),
       `Claude's effort resolver must match the chain for phase ${phase}`,
     );
   }
@@ -114,12 +114,12 @@ Deno.test("routing seam - Gemini resolves every routed phase through its own tab
   // injected environment holds none.
   for (const phase of ROUTED_PHASES) {
     assertEquals(
-      gemini.resolveModel(phase, NO_ENV),
+      gemini.resolveModel(phase, emptyEnv),
       GEMINI_PHASE_MODEL_DEFAULTS[phase],
       `gemini model for phase ${phase}`,
     );
     assertEquals(
-      gemini.resolveEffort(phase, NO_ENV),
+      gemini.resolveEffort(phase, emptyEnv),
       PHASE_EFFORT_DEFAULTS[phase],
       `gemini requested effort for phase ${phase}`,
     );
@@ -127,12 +127,12 @@ Deno.test("routing seam - Gemini resolves every routed phase through its own tab
 
   // A phase-less invocation is deliberate: nothing routes, nothing warns.
   assertEquals(
-    gemini.resolveModel(undefined, NO_ENV),
+    gemini.resolveModel(undefined, emptyEnv),
     undefined,
     "gemini model",
   );
   assertEquals(
-    gemini.resolveEffort(undefined, NO_ENV),
+    gemini.resolveEffort(undefined, emptyEnv),
     undefined,
     "gemini effort",
   );
@@ -144,12 +144,12 @@ Deno.test("routing seam - Codex resolves every routed phase through its own tabl
   // injected environment holds neither.
   for (const phase of ROUTED_PHASES) {
     assertEquals(
-      codex.resolveModel(phase, NO_ENV),
+      codex.resolveModel(phase, emptyEnv),
       CODEX_PHASE_MODEL_DEFAULTS[phase],
       `codex model for phase ${phase}`,
     );
     assertEquals(
-      codex.resolveEffort(phase, NO_ENV),
+      codex.resolveEffort(phase, emptyEnv),
       CODEX_PHASE_EFFORT_DEFAULTS[phase],
       `codex effort for phase ${phase}`,
     );
@@ -168,7 +168,7 @@ Deno.test("routing seam - an explicit model and effort beat the phase resolver",
     phase: "planning",
     model: "claude-opus-4-1",
     effort: "low",
-    env: NO_ENV,
+    env: emptyEnv,
   });
 
   assertEquals(routing, { model: "claude-opus-4-1", effort: "low" });
@@ -182,11 +182,11 @@ Deno.test("routing seam - a blank explicit value falls through to the resolver",
     phase: "planning",
     model: "",
     effort: "",
-    env: NO_ENV,
+    env: emptyEnv,
   });
 
-  assertEquals(routing.model, resolveClaudeModel("planning", NO_ENV));
-  assertEquals(routing.effort, resolveClaudeEffort("planning", NO_ENV));
+  assertEquals(routing.model, resolveClaudeModel("planning", emptyEnv));
+  assertEquals(routing.effort, resolveClaudeEffort("planning", emptyEnv));
 });
 
 Deno.test("routing seam - an explicit value beats a provider's own phase routing", () => {
@@ -197,7 +197,7 @@ Deno.test("routing seam - an explicit value beats a provider's own phase routing
     phase: "planning",
     model: "gemini-pinned",
     effort: "low",
-    env: NO_ENV,
+    env: emptyEnv,
   });
 
   assertEquals(routing, { model: "gemini-pinned", effort: "low" });
@@ -207,13 +207,13 @@ Deno.test("routing seam - an explicit value beats a provider's own phase routing
   const routed = resolveInvocationRouting(gemini, {
     prompt: "PROMPT",
     phase: "planning",
-    env: NO_ENV,
+    env: emptyEnv,
   });
   assertEquals(routed.model, GEMINI_PHASE_MODEL_DEFAULTS.planning);
 
   const unrouted = resolveInvocationRouting(gemini, {
     prompt: "PROMPT",
-    env: NO_ENV,
+    env: emptyEnv,
   });
   assertEquals(unrouted, { model: undefined, effort: undefined });
 });
@@ -228,10 +228,10 @@ Deno.test("routing seam - Claude argv per phase is what the pre-seam builders pr
   for (const phase of [undefined, ...ROUTED_PHASES]) {
     // (a) No model/effort: the phase routing decides, exactly as before.
     assertEquals(
-      claude.buildInvocation({ prompt: "PROMPT", phase, env: NO_ENV }),
+      claude.buildInvocation({ prompt: "PROMPT", phase, env: emptyEnv }),
       [
-        ...buildClaudeModelArgs(phase, NO_ENV),
-        ...buildClaudeEffortArgs(phase, NO_ENV),
+        ...buildClaudeModelArgs(phase, emptyEnv),
+        ...buildClaudeEffortArgs(phase, emptyEnv),
         ...CLAUDE_TAIL,
       ],
       `phase ${phase} must route through the unchanged model/effort builders`,
@@ -244,7 +244,7 @@ Deno.test("routing seam - Claude argv per phase is what the pre-seam builders pr
         phase,
         model: "claude-opus-4-1",
         effort: "max",
-        env: NO_ENV,
+        env: emptyEnv,
       }),
       [
         "--model",
@@ -267,7 +267,7 @@ Deno.test("routing seam - Claude argv carries each phase's designed defaults", (
     claude.buildInvocation({
       prompt: "PROMPT",
       phase: "planning",
-      env: envLookup({
+      env: envFrom({
         CLAUDE_MODEL_PLANNING: "opus",
         CLAUDE_EFFORT_PLANNING: "medium",
       }),
@@ -281,9 +281,9 @@ Deno.test("routing seam - Claude argv carries each phase's designed defaults", (
     const args = claude.buildInvocation({
       prompt: "PROMPT",
       phase,
-      env: NO_ENV,
+      env: emptyEnv,
     });
-    const model = claude.resolveModel(phase, NO_ENV);
+    const model = claude.resolveModel(phase, emptyEnv);
     if (model) {
       assertEquals(args[args.indexOf("--model") + 1], model);
     } else {
@@ -291,7 +291,7 @@ Deno.test("routing seam - Claude argv carries each phase's designed defaults", (
     }
     assertEquals(
       args[args.indexOf("--effort") + 1],
-      claude.resolveEffort(phase, NO_ENV),
+      claude.resolveEffort(phase, emptyEnv),
     );
   }
 });
@@ -312,7 +312,7 @@ Deno.test("routing seam - Codex argv carries each phase's designed defaults (Iss
   // env vars are precedence step 6 and would mask the tables, so the injected
   // environment holds neither.
   assertEquals(
-    codex.buildInvocation({ prompt: "PROMPT", env: NO_ENV }),
+    codex.buildInvocation({ prompt: "PROMPT", env: emptyEnv }),
     [...base, "PROMPT"],
     "a phase-less invocation leaves Codex on its configured default",
   );
@@ -320,7 +320,7 @@ Deno.test("routing seam - Codex argv carries each phase's designed defaults (Iss
   for (const phase of [undefined, ...ROUTED_PHASES]) {
     if (phase) {
       assertEquals(
-        codex.buildInvocation({ prompt: "PROMPT", phase, env: NO_ENV }),
+        codex.buildInvocation({ prompt: "PROMPT", phase, env: emptyEnv }),
         [
           ...base,
           "--model",
@@ -339,7 +339,7 @@ Deno.test("routing seam - Codex argv carries each phase's designed defaults (Iss
         phase,
         model: "gpt-5-codex",
         effort: "high",
-        env: NO_ENV,
+        env: emptyEnv,
       }),
       [
         ...base,
@@ -360,7 +360,7 @@ Deno.test("routing seam - Gemini argv carries each phase's designed model (Issue
   // The base env var is precedence step 6 and would mask the table, so the
   // injected environment holds none.
   assertEquals(
-    gemini.buildInvocation({ prompt: "PROMPT", env: NO_ENV }).includes(
+    gemini.buildInvocation({ prompt: "PROMPT", env: emptyEnv }).includes(
       "--model",
     ),
     false,
@@ -371,7 +371,7 @@ Deno.test("routing seam - Gemini argv carries each phase's designed model (Issue
     const routed = gemini.buildInvocation({
       prompt: "PROMPT",
       phase,
-      env: NO_ENV,
+      env: emptyEnv,
     });
     assertEquals(
       routed[routed.indexOf("--model") + 1],
@@ -388,7 +388,7 @@ Deno.test("routing seam - Gemini argv carries each phase's designed model (Issue
       phase,
       model: "gemini-pinned",
       effort: "high",
-      env: NO_ENV,
+      env: emptyEnv,
     });
     assertEquals(explicit[explicit.indexOf("--model") + 1], "gemini-pinned");
     assert(
@@ -420,7 +420,7 @@ Deno.test("routing seam - every provider's resolvers and argv read the injected 
 
   for (const [id, { envVar, value }] of Object.entries(sentinels)) {
     const provider = resolveAgentProvider(id);
-    const env = envLookup({ [envVar]: value });
+    const env = envFrom({ [envVar]: value });
     // Step 6 (the base variable) covers a phase with no table entry.
     assertEquals(
       provider.resolveModel("totally_unknown_phase", env),

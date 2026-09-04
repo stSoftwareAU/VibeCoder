@@ -14,7 +14,7 @@ import {
   type ModelFallbackResult,
   resolveCurrentModel,
 } from "../lib/model_fallback.ts";
-import { envLookup, NO_ENV } from "./support/env_lookup.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 // ---------------------------------------------------------------------------
 // resolveCurrentModel — determines which model is in use
@@ -28,7 +28,7 @@ Deno.test("resolveCurrentModel - returns explicit model option when provided", (
 Deno.test("resolveCurrentModel - returns phase default when no explicit model", () => {
   // The environment is injected (Issue #957): an empty one is what makes this
   // the *phase default*, not whatever `CLAUDE_MODEL_HEALTH` the host exports.
-  const result = resolveCurrentModel(undefined, "health", undefined, NO_ENV);
+  const result = resolveCurrentModel(undefined, "health", undefined, emptyEnv);
   assertEquals(result, "haiku"); // health phase defaults to haiku
 });
 
@@ -37,13 +37,13 @@ Deno.test("resolveCurrentModel - returns CLAUDE_MODEL env var when no phase", ()
     undefined,
     undefined,
     undefined,
-    envLookup({ CLAUDE_MODEL: "opus" }),
+    envFrom({ CLAUDE_MODEL: "opus" }),
   );
   assertEquals(result, "opus");
 });
 
 Deno.test("resolveCurrentModel - returns empty string when no model info available", () => {
-  const result = resolveCurrentModel(undefined, undefined, undefined, NO_ENV);
+  const result = resolveCurrentModel(undefined, undefined, undefined, emptyEnv);
   assertEquals(result, "");
 });
 
@@ -194,7 +194,7 @@ Deno.test("resolveCurrentModel - resolves through the injected lookup, not the p
       undefined,
       undefined,
       undefined,
-      envLookup({ CLAUDE_MODEL: sentinel }),
+      envFrom({ CLAUDE_MODEL: sentinel }),
     ),
     sentinel,
   );

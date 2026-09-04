@@ -13,7 +13,7 @@ import {
   selectModelForLargeInput,
 } from "../lib/phase_model_escalation.ts";
 import { MODEL_CONTEXT_WINDOWS } from "../lib/context_budget.ts";
-import { envLookup, NO_ENV } from "./support/env_lookup.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 // ---------------------------------------------------------------------------
 // The environment these tests run against
@@ -21,7 +21,7 @@ import { envLookup, NO_ENV } from "./support/env_lookup.ts";
 //
 // `selectModelForLargeInput` takes the environment its model resolution reads
 // through (Issue #957), so every call below states what the routing chain may
-// see. `NO_ENV` is the *empty* environment — stricter than the four names this
+// see. `emptyEnv` is the *empty* environment — stricter than the four names this
 // file used to delete from the process, which left any other `CLAUDE_MODEL_*`
 // the worker container exports free to decide the phase's model.
 
@@ -43,7 +43,9 @@ Deno.test("phase_model_escalation - threshold sits within (0, 100)", () => {
 // ---------------------------------------------------------------------------
 
 Deno.test("phase_model_escalation - summarise small input stays on haiku", () => {
-  const result = selectModelForLargeInput("summarise", 5_000, { env: NO_ENV });
+  const result = selectModelForLargeInput("summarise", 5_000, {
+    env: emptyEnv,
+  });
   assertEquals(result.escalated, false);
   assertEquals(result.model, "haiku");
   assertEquals(result.reason, undefined);
@@ -55,7 +57,7 @@ Deno.test("phase_model_escalation - summarise input just below threshold stays o
     (haikuWindow * HAIKU_ESCALATION_THRESHOLD_PERCENT) / 100,
   ) - 1;
   const result = selectModelForLargeInput("summarise", justBelow, {
-    env: NO_ENV,
+    env: emptyEnv,
   });
   assertEquals(result.escalated, false);
   assertEquals(result.model, "haiku");
@@ -71,7 +73,7 @@ Deno.test("phase_model_escalation - summarise input at threshold escalates to so
     (haikuWindow * HAIKU_ESCALATION_THRESHOLD_PERCENT) / 100,
   );
   const result = selectModelForLargeInput("summarise", atThreshold, {
-    env: NO_ENV,
+    env: emptyEnv,
   });
   assertEquals(result.escalated, true);
   assertEquals(result.model, DEFAULT_ESCALATION_TARGET);
@@ -80,7 +82,7 @@ Deno.test("phase_model_escalation - summarise input at threshold escalates to so
 
 Deno.test("phase_model_escalation - summarise input over 200k escalates to sonnet", () => {
   const result = selectModelForLargeInput("summarise", 250_000, {
-    env: NO_ENV,
+    env: emptyEnv,
   });
   assertEquals(result.escalated, true);
   assertEquals(result.model, "sonnet");
@@ -99,7 +101,7 @@ Deno.test("phase_model_escalation - summarise input over 200k escalates to sonne
 
 Deno.test("phase_model_escalation - phase pinned to sonnet via env var does not escalate", () => {
   const result = selectModelForLargeInput("summarise", 500_000, {
-    env: envLookup({ CLAUDE_MODEL_SUMMARISE: "sonnet" }),
+    env: envFrom({ CLAUDE_MODEL_SUMMARISE: "sonnet" }),
   });
   assertEquals(result.escalated, false);
   assertEquals(result.model, "sonnet");
@@ -107,7 +109,7 @@ Deno.test("phase_model_escalation - phase pinned to sonnet via env var does not 
 
 Deno.test("phase_model_escalation - phase pinned to opus via env var does not escalate", () => {
   const result = selectModelForLargeInput("summarise", 500_000, {
-    env: envLookup({ CLAUDE_MODEL_SUMMARISE: "opus" }),
+    env: envFrom({ CLAUDE_MODEL_SUMMARISE: "opus" }),
   });
   assertEquals(result.escalated, false);
   assertEquals(result.model, "opus");
@@ -115,7 +117,7 @@ Deno.test("phase_model_escalation - phase pinned to opus via env var does not es
 
 Deno.test("phase_model_escalation - phase pinned to full sonnet model ID does not escalate", () => {
   const result = selectModelForLargeInput("summarise", 500_000, {
-    env: envLookup({ CLAUDE_MODEL_SUMMARISE: "claude-sonnet-4-7" }),
+    env: envFrom({ CLAUDE_MODEL_SUMMARISE: "claude-sonnet-4-7" }),
   });
   assertEquals(result.escalated, false);
   assertEquals(result.model, "claude-sonnet-4-7");
@@ -126,7 +128,7 @@ Deno.test("phase_model_escalation - phase pinned to full sonnet model ID does no
 // ---------------------------------------------------------------------------
 
 Deno.test("phase_model_escalation - health phase small input stays on haiku", () => {
-  const result = selectModelForLargeInput("health", 50, { env: NO_ENV });
+  const result = selectModelForLargeInput("health", 50, { env: emptyEnv });
   assertEquals(result.escalated, false);
   assertEquals(result.model, "haiku");
 });
@@ -135,7 +137,7 @@ Deno.test("phase_model_escalation - any haiku-pinned phase escalates if input is
   // The function is generic — it triggers on the resolved model's window,
   // not on the phase name. If health were ever called with a giant input
   // we still want the same protection.
-  const result = selectModelForLargeInput("health", 300_000, { env: NO_ENV });
+  const result = selectModelForLargeInput("health", 300_000, { env: emptyEnv });
   assertEquals(result.escalated, true);
   assertEquals(result.model, DEFAULT_ESCALATION_TARGET);
 });
@@ -147,7 +149,7 @@ Deno.test("phase_model_escalation - any haiku-pinned phase escalates if input is
 Deno.test("phase_model_escalation - custom escalation target honoured", () => {
   const result = selectModelForLargeInput("summarise", 250_000, {
     escalationTarget: "opus",
-    env: NO_ENV,
+    env: emptyEnv,
   });
   assertEquals(result.escalated, true);
   assertEquals(result.model, "opus");
@@ -157,7 +159,7 @@ Deno.test("phase_model_escalation - custom threshold percent honoured", () => {
   // Threshold of 50% → 100k tokens.
   const result = selectModelForLargeInput("summarise", 120_000, {
     thresholdPercent: 50,
-    env: NO_ENV,
+    env: emptyEnv,
   });
   assertEquals(result.escalated, true);
   assertEquals(result.model, "sonnet");
@@ -167,7 +169,7 @@ Deno.test("phase_model_escalation - custom threshold percent suppresses escalati
   // Threshold of 95% → 190k tokens. 180k stays on haiku.
   const result = selectModelForLargeInput("summarise", 180_000, {
     thresholdPercent: 95,
-    env: NO_ENV,
+    env: emptyEnv,
   });
   assertEquals(result.escalated, false);
   assertEquals(result.model, "haiku");
@@ -178,13 +180,13 @@ Deno.test("phase_model_escalation - custom threshold percent suppresses escalati
 // ---------------------------------------------------------------------------
 
 Deno.test("phase_model_escalation - zero tokens never escalates", () => {
-  const result = selectModelForLargeInput("summarise", 0, { env: NO_ENV });
+  const result = selectModelForLargeInput("summarise", 0, { env: emptyEnv });
   assertEquals(result.escalated, false);
   assertEquals(result.model, "haiku");
 });
 
 Deno.test("phase_model_escalation - negative tokens treated as zero", () => {
-  const result = selectModelForLargeInput("summarise", -100, { env: NO_ENV });
+  const result = selectModelForLargeInput("summarise", -100, { env: emptyEnv });
   assertEquals(result.escalated, false);
   assertEquals(result.model, "haiku");
 });
@@ -195,7 +197,7 @@ Deno.test("phase_model_escalation - unknown phase falls back to default window (
   // an unresolved model conservatively (default 200k window) and escalate
   // when the input is large.
   const result = selectModelForLargeInput("totally-made-up-phase", 250_000, {
-    env: NO_ENV,
+    env: emptyEnv,
   });
   assertEquals(result.escalated, true);
   assertEquals(result.model, DEFAULT_ESCALATION_TARGET);
@@ -210,7 +212,7 @@ Deno.test("phase_model_escalation - the phase's model is resolved through the in
   // the phase to it through the lookup — under a name no process environment
   // carries a value for — proves the escalation decision reads the seam.
   const result = selectModelForLargeInput("made_up_phase", 500_000, {
-    env: envLookup({ CLAUDE_MODEL_MADE_UP_PHASE: "haiku" }),
+    env: envFrom({ CLAUDE_MODEL_MADE_UP_PHASE: "haiku" }),
   });
   assertEquals(result.escalated, true);
   assertEquals(result.model, DEFAULT_ESCALATION_TARGET);
@@ -218,7 +220,7 @@ Deno.test("phase_model_escalation - the phase's model is resolved through the in
 
   // The same phase with a large-window model pinned does not escalate.
   const pinned = selectModelForLargeInput("made_up_phase", 500_000, {
-    env: envLookup({ CLAUDE_MODEL_MADE_UP_PHASE: "opus" }),
+    env: envFrom({ CLAUDE_MODEL_MADE_UP_PHASE: "opus" }),
   });
   assertEquals(pinned.escalated, false);
   assertEquals(pinned.model, "opus");

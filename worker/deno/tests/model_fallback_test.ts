@@ -25,8 +25,8 @@ import {
   AGENT_PROVIDER_ENV,
   IMAGE_AGENT_PROVIDERS_ENV,
 } from "../lib/agent_provider.ts";
-import type { EnvLookup } from "../lib/phase_routing.ts";
-import { envLookup, NO_ENV } from "./support/env_lookup.ts";
+import type { EnvLookup } from "../lib/env_lookup.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 // =============================================================================
 // MODEL_FALLBACK_MAP structure
@@ -144,9 +144,14 @@ Deno.test("model_fallback - getCheaperModel is case-sensitive (uppercase returns
 Deno.test("model_fallback - planning phase resolves to fable then degrades to opus (Issue #2621)", () => {
   // The empty environment is injected (Issue #957), so this pins the *designed*
   // planning default rather than whatever the host exports.
-  const current = resolveCurrentModel(undefined, "planning", undefined, NO_ENV);
+  const current = resolveCurrentModel(
+    undefined,
+    "planning",
+    undefined,
+    emptyEnv,
+  );
   assertEquals(current, "fable");
-  const fallback = attemptModelFallback(current, true, undefined, NO_ENV);
+  const fallback = attemptModelFallback(current, true, undefined, emptyEnv);
   assertEquals(fallback, { ok: true, cheaperModel: "opus" });
 });
 
@@ -160,7 +165,7 @@ Deno.test("model_fallback - resolveCurrentModel honours per-repo override (Issue
       phaseModelOverrides: { planning: "opus" },
     });
     assertEquals(
-      resolveCurrentModel(undefined, "planning", undefined, NO_ENV),
+      resolveCurrentModel(undefined, "planning", undefined, emptyEnv),
       "opus",
     );
   } finally {
@@ -176,18 +181,18 @@ Deno.test("model_fallback - per-repo claude_model:fable base tier resolves to fa
     setActiveRepoModelEffortOverrides({ claudeModel: "fable" });
     // Base tier applies to all phases (and phase-less calls).
     assertEquals(
-      resolveCurrentModel(undefined, "issue", undefined, NO_ENV),
+      resolveCurrentModel(undefined, "issue", undefined, emptyEnv),
       "fable",
     );
     assertEquals(
-      resolveCurrentModel(undefined, undefined, undefined, NO_ENV),
+      resolveCurrentModel(undefined, undefined, undefined, emptyEnv),
       "fable",
     );
     const fallback = attemptModelFallback(
-      resolveCurrentModel(undefined, "issue", undefined, NO_ENV),
+      resolveCurrentModel(undefined, "issue", undefined, emptyEnv),
       true,
       undefined,
-      NO_ENV,
+      emptyEnv,
     );
     assertEquals(fallback, { ok: true, cheaperModel: "opus" });
   } finally {
@@ -196,9 +201,14 @@ Deno.test("model_fallback - per-repo claude_model:fable base tier resolves to fa
 });
 
 Deno.test("model_fallback - grill_me phase resolves to fable then degrades to opus (Issue #2621)", () => {
-  const current = resolveCurrentModel(undefined, "grill_me", undefined, NO_ENV);
+  const current = resolveCurrentModel(
+    undefined,
+    "grill_me",
+    undefined,
+    emptyEnv,
+  );
   assertEquals(current, "fable");
-  const fallback = attemptModelFallback(current, true, undefined, NO_ENV);
+  const fallback = attemptModelFallback(current, true, undefined, emptyEnv);
   assertEquals(fallback, { ok: true, cheaperModel: "opus" });
 });
 
@@ -229,7 +239,7 @@ function withProviders(
   body: (env: EnvLookup) => void,
   activeId?: string,
 ): void {
-  body(envLookup({
+  body(envFrom({
     [IMAGE_AGENT_PROVIDERS_ENV]: "claude,codex,gemini",
     ...(activeId ? { [AGENT_PROVIDER_ENV]: activeId } : {}),
   }));
@@ -408,14 +418,14 @@ Deno.test("model_fallback - the phase-specific variable is read through the inje
       undefined,
       "planning",
       undefined,
-      envLookup({ CLAUDE_MODEL_PLANNING: sentinel }),
+      envFrom({ CLAUDE_MODEL_PLANNING: sentinel }),
     ),
     sentinel,
   );
   assertEquals(Deno.env.get("CLAUDE_MODEL_PLANNING"), undefined);
 
   // And the ladder still reads the provider stamp through the same lookup.
-  const stamped: EnvLookup = envLookup({
+  const stamped: EnvLookup = envFrom({
     [IMAGE_AGENT_PROVIDERS_ENV]: "claude,codex,gemini",
     [AGENT_PROVIDER_ENV]: "codex",
   });

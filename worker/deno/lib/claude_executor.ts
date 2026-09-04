@@ -19,7 +19,8 @@ import {
   PHASE_MODEL_DEFAULTS,
 } from "./config_defaults.ts";
 import { incrementCounter } from "./fault_tolerance_counters.ts";
-import { type EnvLookup, resolvePhaseRoutedValue } from "./phase_routing.ts";
+import type { EnvLookup } from "./env_lookup.ts";
+import { resolvePhaseRoutedValue } from "./phase_routing.ts";
 import type { RepoConfig } from "../types.ts";
 import type { RunStats } from "./run_stats.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";

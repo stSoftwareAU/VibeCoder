@@ -34,7 +34,8 @@ import {
   DEEPSEEK_PHASE_MODEL_DEFAULTS,
   PHASE_EFFORT_DEFAULTS,
 } from "./config_defaults.ts";
-import { type EnvLookup, resolvePhaseRoutedValue } from "./phase_routing.ts";
+import type { EnvLookup } from "./env_lookup.ts";
+import { resolvePhaseRoutedValue } from "./phase_routing.ts";
 import type { RepoConfig } from "../types.ts";
 
 /** Global `.config.json` `deepseek_phase_model_overrides` (Issue #413). */

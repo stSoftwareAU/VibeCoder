@@ -20,7 +20,7 @@ import {
   type AgentProviderSelector,
   selectAgentProvider,
 } from "./agent_provider.ts";
-import type { EnvLookup } from "./phase_routing.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 
 /** Successful fallback result — a cheaper model is available. */
 export interface ModelFallbackSuccess {

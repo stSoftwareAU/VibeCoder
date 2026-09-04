@@ -38,7 +38,7 @@
  */
 
 import { resolveClaudeEffort, resolveClaudeModel } from "./claude_executor.ts";
-import type { EnvLookup } from "./phase_routing.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 import { getCheaperModel } from "./config_defaults.ts";
 import {
   buildClaudeChildEnv,

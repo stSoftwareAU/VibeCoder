@@ -1,35 +1,29 @@
 /**
- * A fixed environment lookup for tests (Issue #957, parent #944).
+ * Object-backed environment lookups for tests (Issue #956).
  *
- * The routing chain in `lib/phase_routing.ts` takes an {@link EnvLookup}
- * rather than reading `Deno.env` itself, so a test states the variables the
- * chain is allowed to see instead of setting them on the process. That is what
- * makes the model/effort routing tests safe under `deno test --parallel`:
- * process-wide mutation races every other test running at that moment, a map
- * held by one test races nothing.
+ * The replacement for `Deno.env.set`: a test that needs a module to see a
+ * particular variable hands it one of these instead of writing to the
+ * process environment, which races every other test running at that moment
+ * and is what keeps the quality gate's `deno test` stage serial (Issue #880).
  *
- * It is also *stricter* than the save/set/restore it replaces. A snapshot
- * helper clears only the variables it was told about, so a `CLAUDE_MODEL_*`
- * exported by the worker container still reached the chain; a lookup built
- * here answers `undefined` for every name it was not given.
+ * Deliberately *not* backed by `Deno.env`: a name the map does not carry
+ * reads as absent, so a production code path that quietly falls back to
+ * `Deno.env.get` fails here rather than passing on an ambient value.
  *
- * Australian English throughout (behaviour, colour, organisation).
+ * Uses Australian English spelling (behaviour, colour, organisation, etc.).
  */
 
-import type { EnvLookup } from "../../lib/phase_routing.ts";
+import type { EnvLookup } from "../../lib/env_lookup.ts";
 
 /**
- * Build an {@link EnvLookup} over a fixed map.
+ * An {@link EnvLookup} that answers only from `values`.
  *
- * @param vars - The variables the code under test may see. Every other name
- *   reads as unset, whatever the process carries.
- * @returns The lookup to inject.
+ * @param values - Variable name to value. Omit for an empty environment.
+ * @returns A lookup returning `undefined` for every name not in `values`.
  */
-export function envLookup(
-  vars: Readonly<Record<string, string | undefined>> = {},
-): EnvLookup {
-  return (name) => vars[name];
+export function envFrom(values: Record<string, string> = {}): EnvLookup {
+  return (name) => Object.hasOwn(values, name) ? values[name] : undefined;
 }
 
-/** A lookup over an empty environment — nothing is set. */
-export const NO_ENV: EnvLookup = envLookup();
+/** An {@link EnvLookup} in which every variable is absent. */
+export const emptyEnv: EnvLookup = envFrom();

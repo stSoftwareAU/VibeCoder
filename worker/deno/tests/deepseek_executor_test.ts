@@ -37,8 +37,8 @@ import {
 } from "../lib/config_unknown_keys.ts";
 import { validateConfigFileJson } from "../lib/validation.ts";
 import { loadConfig } from "../lib/config.ts";
-import type { EnvLookup } from "../lib/phase_routing.ts";
-import { envLookup } from "./support/env_lookup.ts";
+import type { EnvLookup } from "../lib/env_lookup.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 /** The Anthropic tier aliases Claude's own routing resolves to (Issue #413). */
 const ANTHROPIC_TIER_ALIASES = ["fable", "opus", "sonnet", "haiku"];
@@ -63,7 +63,7 @@ function withCleanRouting(
   setActiveRepoDeepSeekModelOverrides(undefined);
   clearDeepSeekEffortWarnings();
   try {
-    fn(envLookup(vars));
+    fn(envFrom(vars));
   } finally {
     setDeepSeekPhaseModelConfigOverrides({});
     setActiveRepoDeepSeekModelOverrides(undefined);

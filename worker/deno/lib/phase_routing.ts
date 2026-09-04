@@ -29,18 +29,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-/**
- * Read one environment variable (Issue #957).
- *
- * The seam that lets routing be driven by a value rather than by the process:
- * a caller — the worker in production, a test with a fixed map — supplies the
- * lookup, so resolving a phase never reads `Deno.env` on its own behalf and two
- * tests can route different phases concurrently.
- */
-export type EnvLookup = (name: string) => string | undefined;
-
-/** Reads the process environment — what a caller that injects nothing gets. */
-const processEnv: EnvLookup = (name) => Deno.env.get(name);
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /** Where one provider's routing values come from, in precedence order. */
 export interface PhaseRoutingSources {
@@ -120,7 +109,7 @@ export function resolvePhaseRoutedValue(
 ): string | undefined {
   const accept = (level: string, value: string): string =>
     sources.check ? sources.check(level, value) : value;
-  const env = sources.env ?? processEnv;
+  const env = sources.env ?? processEnvLookup;
 
   if (phase) {
     // 1. Phase-specific env var (explicit operator override for this phase)
