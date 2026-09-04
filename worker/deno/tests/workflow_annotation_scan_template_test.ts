@@ -30,10 +30,12 @@ import {
   type WorkflowAnnotationFinding,
 } from "../lib/idle_task_templates/workflow_annotation_scan_template.ts";
 import type { WorkflowRunAnnotation } from "../lib/workflow_annotation_fetcher.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
+import { loadPrompt } from "../lib/prompt_manager.ts";
 
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+// Prompts resolve against this checkout, never the worker host's (Issue #844)
+// — named as a parameter on every call rather than pinned by deleting the
+// host's overrides from the shared process environment (Issue #1024).
+const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -139,7 +141,12 @@ Deno.test("workflow-annotation-scan honours the canonical wrapper contract", () 
 });
 
 Deno.test("workflow-annotation-scan body fingerprint matches the prompt H1", async () => {
-  const t = createWorkflowAnnotationScanTemplate();
+  // The template's own `loadPromptFn` seam names this checkout's prompts
+  // directory, so the body is built from the template under test rather than
+  // whatever tree the host's `PROMPTS_DIR` happens to point at (Issue #1024).
+  const t = createWorkflowAnnotationScanTemplate({
+    loadPromptFn: (name) => loadPrompt(name, PROMPTS_DIR),
+  });
   const body = await t.buildIssueBody({
     repo: "org/repo",
     pickedAt: "2026-07-17T00:00:00.000Z",

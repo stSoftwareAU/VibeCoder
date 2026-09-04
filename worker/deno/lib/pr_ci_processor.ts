@@ -226,6 +226,15 @@ export interface CiProcessorDeps {
    * fake so no live GitHub API call is made.
    */
   actionsLogFn?: typeof fetchGithubActionsLogExcerpt;
+  /**
+   * Prompts directory the CI-fix template is read from (Issue #1024).
+   *
+   * Left unset in production, where `getPromptsDir()` resolves it from the
+   * launcher's environment. A test names its own checkout's `prompts/` here
+   * instead of deleting `PROMPTS_DIR`/`VIBE_BASE_DIR` from the process every
+   * other parallel worker shares.
+   */
+  promptsDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -826,6 +835,7 @@ async function _processCiWithHeartbeat(
       path: a.path,
     })),
     prFailureActions: prFailureActionsExcerpt,
+    promptsDir: processorDeps.promptsDir,
   };
 
   const promptResult = await buildCiFixPrompt(promptOptions);

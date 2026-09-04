@@ -40,10 +40,11 @@ import type {
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
 
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+// Prompts resolve against this checkout, never the worker host's (Issue #844)
+// — named as a parameter on every call rather than pinned by deleting the
+// host's overrides from the shared process environment (Issue #1024).
+const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 // ---------------------------------------------------------------------------
 // Fixtures matching the private-repo-14 #2524 finding shape
@@ -229,6 +230,7 @@ function makeProcessorDeps(
     git: makeSuccessfulCommit(),
   });
   return {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir,
@@ -503,6 +505,7 @@ Deno.test(
       });
 
       const processorDeps: PrFeedbackProcessorDeps = {
+        promptsDir: PROMPTS_DIR,
         logger: makeSilentLogger(),
         deps,
         workDir: tmpDir,
