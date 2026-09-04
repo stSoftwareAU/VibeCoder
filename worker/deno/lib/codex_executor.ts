@@ -27,6 +27,7 @@ import {
   CODEX_PHASE_EFFORT_DEFAULTS,
   CODEX_PHASE_MODEL_DEFAULTS,
 } from "./config_defaults.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 import { resolvePhaseRoutedValue } from "./phase_routing.ts";
 import type { RepoConfig } from "../types.ts";
 
@@ -153,15 +154,21 @@ export function setActiveRepoCodexModelEffortOverrides(
  *   6. Base `CODEX_MODEL` env var — global fallback
  *
  * @param phase - Optional phase name (e.g. `"planning"`).
+ * @param env - Environment lookup for steps 1 and 6 (Issue #957); defaults to
+ *   the process environment.
  * @returns The resolved model, or `undefined` when no step supplies one — the
  *   CLI's configured default then stands, and a non-empty phase warns.
  */
-export function resolveCodexModel(phase?: string): string | undefined {
+export function resolveCodexModel(
+  phase?: string,
+  env?: EnvLookup,
+): string | undefined {
   return resolvePhaseRoutedValue({
     logPrefix: "codex-executor",
     what: "model",
     flag: "--model",
     envVar: "CODEX_MODEL",
+    env,
     repoPhaseOverrides: _repoCodexPhaseModelOverrides,
     repoPhaseOverridesKey: "codex_phase_model_overrides",
     repoBase: _repoCodexModel,
@@ -185,14 +192,20 @@ export function resolveCodexModel(phase?: string): string | undefined {
  * its own configured effort rather than inventing one.
  *
  * @param phase - Optional phase name (e.g. `"planning"`).
+ * @param env - Environment lookup for steps 1 and 6 (Issue #957); defaults to
+ *   the process environment.
  * @returns The resolved effort, or `undefined` when no step supplies one.
  */
-export function resolveCodexEffort(phase?: string): string | undefined {
+export function resolveCodexEffort(
+  phase?: string,
+  env?: EnvLookup,
+): string | undefined {
   return resolvePhaseRoutedValue({
     logPrefix: "codex-executor",
     what: "effort",
     flag: `-c ${REASONING_EFFORT_KEY}`,
     envVar: "CODEX_EFFORT",
+    env,
     repoPhaseOverrides: _repoCodexPhaseEffortOverrides,
     repoPhaseOverridesKey: "codex_phase_effort_overrides",
     globalPhaseOverrides: _codexPhaseEffortConfigOverrides,
