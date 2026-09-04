@@ -23,6 +23,7 @@ import {
   INTEGRATION_TEST_FILES,
   integrationTestIgnoreArg,
   isIntegrationTestSource,
+  SCRIPT_READING_UNIT_TESTS,
 } from "../lib/integration_test_manifest.ts";
 
 const TESTS_DIR = new URL(".", import.meta.url).pathname;
@@ -41,15 +42,58 @@ async function detected(): Promise<string[]> {
 }
 
 Deno.test("integration manifest - no script-driving test is missing from it (Issue #907)", async () => {
+  // Issue #935: a classified file must be placed deliberately, in one list
+  // or the other. Being in neither is the failure — it means the gate is
+  // paying for a script-driving suite nobody decided to keep.
   const listed = new Set(INTEGRATION_TEST_FILES);
-  const missing = (await detected()).filter((f) => !listed.has(f));
+  const missing = (await detected()).filter((f) =>
+    !listed.has(f) && !SCRIPT_READING_UNIT_TESTS.has(f)
+  );
   assertEquals(
     missing,
     [],
-    "these tests drive the repository's own scripts but are not in " +
-      "INTEGRATION_TEST_FILES, so the gate still pays for them on every " +
-      "change:\n" + missing.join("\n"),
+    "these tests name one of the repository's own scripts but appear in " +
+      "neither INTEGRATION_TEST_FILES nor SCRIPT_READING_UNIT_TESTS. Add " +
+      "them to the first if they run the script, or to the second — with a " +
+      "reason — if they only read it:\n" + missing.join("\n"),
   );
+});
+
+Deno.test("integration manifest - the two lists are disjoint (Issue #935)", () => {
+  // A file in both would be excluded from the gate while carrying a note
+  // saying it should not be.
+  const listed = new Set(INTEGRATION_TEST_FILES);
+  const both = [...SCRIPT_READING_UNIT_TESTS.keys()].filter((f) =>
+    listed.has(f)
+  );
+  assertEquals(both, [], "listed as both an integration test and a unit test");
+});
+
+Deno.test("integration manifest - every read-only exemption is still claimed (Issue #935)", async () => {
+  // The stale direction for the second list. A suite that stops naming a
+  // script no longer needs an exemption, and one left behind is the same
+  // kind of orphan that cost #805 and #808 four runs between them.
+  const found = new Set(await detected());
+  const stale = [...SCRIPT_READING_UNIT_TESTS.keys()].filter((f) =>
+    !found.has(f)
+  );
+  assertEquals(
+    stale,
+    [],
+    "these carry a read-only exemption but no longer name a repository " +
+      "script — drop the entry:\n" + stale.join("\n"),
+  );
+});
+
+Deno.test("integration manifest - every read-only exemption gives a reason (Issue #935)", () => {
+  // The exemption is the dangerous one to grant, so it costs a sentence
+  // saying why. An empty reason is an exemption nobody has to justify.
+  for (const [file, reason] of SCRIPT_READING_UNIT_TESTS) {
+    assert(
+      reason.trim().length > 0,
+      `${file} is exempted with no reason given`,
+    );
+  }
 });
 
 Deno.test("integration manifest - it holds nothing that stopped being one (Issue #907)", async () => {
