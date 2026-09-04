@@ -13,10 +13,10 @@ states:
 
 This page is the **operator guide** to that extension point: what it is, a
 worked example you can follow verbatim, the contract a prompt file must
-satisfy, and the exact symptom of every way it can fail. The `.config.json` key
-itself is documented once, in
-[Configuration — Custom Label Prompts](CONFIGURATION.md#-custom-label-prompts);
-this page does not repeat that reference.
+satisfy, and the exact symptom of every way it can fail. It states only as much
+of the `.config.json` key as the example needs — the field-by-field reference,
+and the full semantics of dispatch and override, live in
+[Configuration — Custom Label Prompts](CONFIGURATION.md#-custom-label-prompts).
 
 ## 📋 Table of Contents
 
@@ -66,10 +66,14 @@ flowchart TD
 - **A new label adds a dispatch row.** The issue is worked at priority 1.86 by
   the same `workOnIssue` pipeline `work-on` runs — a real branch, real commits
   and a PR. Only the prompt body differs.
-- **A built-in label overrides that phase's template.** `planning`,
-  `question`, `grill-me`, `quorum` and the implementation phase keep their
-  handler, priority and trust gate; only the template changes. `refine-issue`
-  builds its prompt inline and cannot be overridden.
+- **A built-in label overrides that phase's template.** A mapping naming
+  `planning`, `question`, `grill-me`, `quorum` or `work-on` (which owns the
+  implementation phase, and so covers `top-priority` and `low-priority`
+  pickups too) replaces that phase's template and nothing else — the handler,
+  the priority and the trust gate are unchanged. Match the label names **your
+  fleet configured**: a fleet that renamed `planning` to `plan-it` overrides
+  the planning phase with a `plan-it` mapping. `refine-issue` builds its
+  prompt inline and cannot be overridden.
 
 The full semantics of both live in
 [Configuration — Custom Label Prompts](CONFIGURATION.md#-custom-label-prompts).
@@ -197,9 +201,15 @@ The worker log names both the dispatch and the template it actually loaded:
 
 ```text
 Dispatching my-org/my-service#42 to the implementation phase with the custom
-prompt for 'release-runbook' (/opt/vibe-prompts/release-runbook.md)
-Issue prompt template: /opt/vibe-prompts/release-runbook.md
+prompt for 'release-runbook'
+(/home/vibe/.vibe-coder/custom-prompts/1/release-runbook.md)
+Issue prompt template: /home/vibe/.vibe-coder/custom-prompts/1/release-runbook.md
 ```
+
+Both lines name the path **this run read the file at**. Inside the container
+that is the read-only mount of `/opt/vibe-prompts`, not the host path you
+configured — see [Container operation](#-container-operation). A read outside
+the container translates nothing and names `/opt/vibe-prompts/…` instead.
 
 From there the run is an ordinary implementation run: branch, commits, quality
 gate, PR. A line reading `Issue prompt template: prompts/issue/prompt.md`
@@ -367,7 +377,8 @@ when it never dispatched.
 | `prompt_path` missing, unreadable, or not absolute | Config load | The worker refuses to start, naming `custom_label_prompts[<n>].prompt_path` and the underlying error |
 | `prompt_path` carries a `.` or `..` segment | Config load | Refused by field, naming the path — the mount it would derive is not the path the allowlist checked |
 | An override template short of a required placeholder | Config load | Refused by field, naming the phase and the missing placeholders |
-| `label` is a reserved or discovery label (`top-priority`, `work-on`, `low-priority`, …) | Config load | `"<label>" is a reserved or discovery label and cannot be remapped` |
+| `label` is a reserved or discovery label that is not a built-in phase label (`top-priority`, `low-priority`, …) | Config load | `"<label>" is a reserved or discovery label and cannot be remapped` |
+| `label` is `refine-issue` | Config load | Refused by name: that phase builds its prompt inline and has no template file to override |
 | `label` is one the worker applies itself (`idle-task`, `security`, `severity:…`) | Config load | `"<label>" is a label the worker applies itself and cannot be remapped` |
 | Two entries claiming the same label, or the same phase of one label | Config load | Refused as a duplicate, naming the earlier entry's index |
 | An unknown key in an entry | Config load | Refused, naming the key and listing `label`, `prompt_path`, `phase` |

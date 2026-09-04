@@ -9,7 +9,8 @@ Extending the worker **from outside** — reacting to a finished issue run witho
 - [Architecture](#architecture)
 - [Adding a New Command](#adding-a-new-command)
 - [Adding a CI Log Provider](#adding-a-ci-log-provider)
-- [Custom Label Prompts (operator-side)](CUSTOM-PROMPTS.md)
+- [Custom Label Prompts](CUSTOM-PROMPTS.md) — the operator-side extension
+  point, on its own page
 - [Running Deno Commands](#running-deno-commands)
 - [Prompt Templates](#prompt-templates)
 - [Shell Integration (Internal)](#shell-integration-internal)
@@ -138,7 +139,9 @@ External CI/CD systems plug in through the `CiLogProvider` extension point in
 >
 > See [Private Extensions](PRIVATE-EXTENSIONS.md) for the configuration-only
 > extension surface, and for the two reasons an out-of-tree provider cannot
-> register itself today.
+> register itself today. The sibling configuration-only extension point —
+> a label mapped to a prompt template on the operator's own host — is
+> [Custom Label Prompts](CUSTOM-PROMPTS.md).
 
 ```mermaid
 flowchart TD
