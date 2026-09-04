@@ -206,7 +206,7 @@ flowchart TD
 | 1.80     | Planning                                              | `planning` label                                                                                                                         |
 | 1.81 | Failure-Detection repair resume | `needs-failure-detection-repair` label — re-gates a planning parent's sub-issues and finishes the outstanding repairs |
 | 1.85     | Question answering                                    | `question` label                                                                                                                         |
-| 1.86 | Custom label prompts | A configured `custom_label_prompts` label — runs the generic implementation phase (branch, commits, PR) with the operator's private prompt file. The row exists only when a mapping is configured |
+| 1.86 | Custom label prompts | A configured `custom_label_prompts` label that names a **new** label — runs the generic implementation phase (branch, commits, PR) with the operator's private prompt file. The row exists only when such a mapping is configured; a mapping overriding a built-in label adds no row, it replaces that phase's template (Issue #849) |
 | 1.9      | Stale workflow detection                              | Flag `planning` / `question` labels left in place with no progress                                                                       |
 | 2 | New implementation issues | Configured-label tier `top-priority` then `work-on`, globally oldest across repos (`help wanted` / `claude` retired) |
 | 2.5 | Low-priority backlog | `low-priority` label — only consulted when no eligible higher-tier candidate exists in any scanned repo |

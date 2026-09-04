@@ -1359,4 +1359,14 @@ export interface CustomLabelPromptMapping {
   label: string;
   /** Absolute host path of the prompt template file. */
   promptPath: string;
+  /**
+   * The built-in phase this mapping overrides (Issue #849, part of #843).
+   *
+   * Set when the label matches a configured built-in label — `planning`,
+   * `grill-me`, `question`, `quorum` or the hardwired `work-on` — in which
+   * case the file replaces that phase's template instead of dispatching a new
+   * label into the implementation phase. Resolved and validated once, at
+   * config load.
+   */
+  overridesPhase?: string;
 }

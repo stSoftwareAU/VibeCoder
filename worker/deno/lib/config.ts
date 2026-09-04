@@ -800,6 +800,9 @@ export async function loadConfig(
   // entry rather than silently dropping a mapping — a silently ignored
   // mapping is exactly the failure #843 rules out.
   //
+  // Issue #849: the configured label names decide which entries are overrides
+  // of a built-in phase, so they are passed in rather than assumed.
+  //
   // In container mode the configured paths are *host* paths the container
   // cannot see, so the launcher hands over where it mounted each one
   // (Issue #850) and the mapping resolves onto that. A read outside the
@@ -807,7 +810,15 @@ export async function loadConfig(
   // uses the configured path unchanged, so one `.config.json` serves both.
   const customLabelPrompts = assertCustomLabelPrompts(
     file.custom_label_prompts,
-    { resolvePath: customPromptPathResolver(env(CUSTOM_PROMPT_PATH_MAP_ENV)) },
+    {
+      workOnLabel,
+      planningLabel,
+      questionLabel,
+      grillMeLabel,
+      quorumLabel,
+      refineIssueLabel,
+      resolvePath: customPromptPathResolver(env(CUSTOM_PROMPT_PATH_MAP_ENV)),
+    },
   );
 
   // Recent activity settings (Issue #1326)

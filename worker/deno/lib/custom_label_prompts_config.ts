@@ -25,12 +25,22 @@
 import type { CustomLabelPromptMapping, Result } from "../types.ts";
 import { isReservedLabel } from "./config_defaults.ts";
 import { isWorkerAppliableLabel } from "./worker_label_guard.ts";
+import type { BuiltInLabelNames } from "./builtin_prompt_overrides.ts";
+import {
+  DEFAULT_BUILTIN_LABEL_NAMES,
+  resolveOverridePhase,
+  validateOverrideTemplate,
+} from "./builtin_prompt_overrides.ts";
 import { hasTraversalSegment } from "./custom_prompt_mounts.ts";
 
 /** Keys a `custom_label_prompts` entry may carry. */
 const KNOWN_ENTRY_KEYS: ReadonlySet<string> = new Set([
   "label",
   "prompt_path",
+  // Issue #849: which built-in phase this entry overrides. Only meaningful on
+  // a built-in label, and only needed for a phase whose label owns more than
+  // one template (`planning` also owns `planning_critique`).
+  "phase",
 ]);
 
 /** Whether a value is a plain (non-array, non-null) object. */
@@ -74,23 +84,36 @@ function parseCleanString(raw: unknown, field: string): string {
 }
 
 /**
- * How a configured prompt path is resolved to where it is readable.
+ * Claims made by earlier entries: lower-cased `label::phase` → entry index.
  *
- * The identity by default — read on the host, the operator's path *is* the
- * path. Inside the container the launcher has mounted each prompt directory
- * read-only and handed over the host → in-container translation (Issue #850),
- * so the same `.config.json` serves both sides of the boundary.
+ * The phase is part of the key so a label owning two templates (`planning`
+ * and `planning_critique`) can carry one entry each, while a second entry
+ * claiming a phase already claimed is refused by index.
  */
-export interface CustomLabelPromptOptions {
+type SeenClaims = Map<string, number>;
+
+/**
+ * What the parse needs beyond the raw block: the configured built-in label
+ * names, and how a configured prompt path is resolved to where it is readable.
+ *
+ * The label names decide which entries override a built-in phase (Issue #849)
+ * and default to the stock ones. Path resolution is the identity by default —
+ * read on the host, the operator's path *is* the path. Inside the container the
+ * launcher has mounted each prompt directory read-only and handed over the
+ * host → in-container translation (Issue #850), so the same `.config.json`
+ * serves both sides of the boundary.
+ */
+export interface CustomLabelPromptOptions extends Partial<BuiltInLabelNames> {
   /** Resolve a configured host path to where this run can read it. */
   resolvePath?: (promptPath: string) => string;
 }
 
-/** Validate one entry; `seenLabels` carries the labels already accepted. */
+/** Validate one entry; `seen` carries the claims already accepted. */
 function parseEntry(
   raw: unknown,
   index: number,
-  seenLabels: Set<string>,
+  seen: SeenClaims,
+  names: BuiltInLabelNames,
   resolvePath: (promptPath: string) => string,
 ): CustomLabelPromptMapping {
   const entryField = `custom_label_prompts[${index}]`;
@@ -110,10 +133,30 @@ function parseEntry(
   }
 
   const label = parseCleanString(raw.label, `${entryField}.label`);
+  const requestedPhase = raw.phase === undefined
+    ? undefined
+    : parseCleanString(raw.phase, `${entryField}.phase`);
+
+  // Issue #849: a label matching a built-in one overrides that phase's
+  // template rather than dispatching a new label. Resolved against the
+  // *configured* label names, because a fleet may have renamed `planning`.
+  const phaseResult = resolveOverridePhase(label, requestedPhase, names);
+  if (!phaseResult.ok) {
+    reject(
+      requestedPhase === undefined
+        ? `${entryField}.label`
+        : `${entryField}.phase`,
+      phaseResult.error,
+    );
+  }
+  const overridesPhase = phaseResult.value;
+
   // RESERVED_LABELS already contains the three hardwired discovery labels
   // (top-priority/work-on/low-priority), so isReservedLabel's case-
-  // insensitive check alone covers both lists the issue names.
-  if (isReservedLabel(label)) {
+  // insensitive check alone covers both lists the issue names. A built-in
+  // label an override names is reserved *by design* — that is what makes it
+  // an override — so the check only guards labels that dispatch anew.
+  if (overridesPhase === undefined && isReservedLabel(label)) {
     reject(
       `${entryField}.label`,
       `"${label}" is a reserved or discovery label and cannot be remapped`,
@@ -132,8 +175,17 @@ function parseEntry(
       `"${label}" is a label the worker applies itself and cannot be remapped`,
     );
   }
-  if (seenLabels.has(label.toLowerCase())) {
-    reject(`${entryField}.label`, `duplicate label ${show(label)}`);
+  // Fail loud on an ambiguous mapping: two entries cannot claim one label —
+  // nor, for an override, one phase — or whichever came first wins silently.
+  const claim = `${label.toLowerCase()}::${overridesPhase ?? ""}`;
+  if (seen.has(claim)) {
+    reject(
+      `${entryField}.label`,
+      overridesPhase === undefined
+        ? `duplicate label ${show(label)}`
+        : `duplicate label ${show(label)} — phase "${overridesPhase}" is ` +
+          `already overridden by custom_label_prompts[${seen.get(claim)}]`,
+    );
   }
 
   const configuredPath = parseCleanString(
@@ -166,8 +218,9 @@ function parseEntry(
     ? ""
     : ` (mounted from ${configuredPath})`;
 
+  let content: string;
   try {
-    Deno.readTextFileSync(promptPath);
+    content = Deno.readTextFileSync(promptPath);
   } catch (error) {
     reject(
       `${entryField}.prompt_path`,
@@ -177,8 +230,21 @@ function parseEntry(
     );
   }
 
-  seenLabels.add(label.toLowerCase());
-  return { label, promptPath };
+  // An override answers to the placeholder contract of the phase it replaces,
+  // not to the `issue` one a new custom label runs (Issue #849).
+  if (overridesPhase !== undefined) {
+    const templateResult = validateOverrideTemplate(overridesPhase, content);
+    if (!templateResult.ok) {
+      reject(`${entryField}.prompt_path`, templateResult.error);
+    }
+  }
+
+  seen.set(claim, index);
+  return {
+    label,
+    promptPath,
+    ...(overridesPhase !== undefined ? { overridesPhase } : {}),
+  };
 }
 
 /**
@@ -188,6 +254,14 @@ function parseEntry(
  * who never opts in gets today's behaviour unchanged. Returns the **first**
  * fault as an error message naming the offending entry and field — the list
  * is never partially accepted.
+ *
+ * @param raw - The `custom_label_prompts` value from `.config.json`
+ * @param options - The configured built-in label names, which decide whether an
+ *   entry overrides a built-in phase (Issue #849), and the host → container
+ *   path translation (Issue #850). Callers holding a `WorkerConfig` must pass
+ *   its resolved label names: the stock defaults used otherwise would resolve a
+ *   renamed label to the wrong phase, or to none.
+ * @returns The validated mappings, or the first fault
  */
 export function parseCustomLabelPrompts(
   raw: unknown,
@@ -205,11 +279,15 @@ export function parseCustomLabelPrompts(
   }
 
   const mappings: CustomLabelPromptMapping[] = [];
-  const seenLabels = new Set<string>();
-  const resolvePath = options.resolvePath ?? ((path: string) => path);
+  const seen: SeenClaims = new Map();
+  const { resolvePath = (path: string) => path, ...configuredNames } = options;
+  const names: BuiltInLabelNames = {
+    ...DEFAULT_BUILTIN_LABEL_NAMES,
+    ...configuredNames,
+  };
   try {
     for (let index = 0; index < raw.length; index++) {
-      mappings.push(parseEntry(raw[index], index, seenLabels, resolvePath));
+      mappings.push(parseEntry(raw[index], index, seen, names, resolvePath));
     }
   } catch (error) {
     if (error instanceof MappingError) {
@@ -224,6 +302,12 @@ export function parseCustomLabelPrompts(
  * {@link parseCustomLabelPrompts}, but throwing — the fail-loud entry point
  * used at config load so a malformed, colliding or unreadable mapping stops
  * the worker before a custom label could ever dispatch silently.
+ *
+ * @param raw - The `custom_label_prompts` value from `.config.json`
+ * @param options - The configured built-in label names and path translation
+ *   (see {@link parseCustomLabelPrompts})
+ * @returns The validated mappings
+ * @throws When any entry is invalid
  */
 export function assertCustomLabelPrompts(
   raw: unknown,
@@ -249,6 +333,11 @@ export function assertCustomLabelPrompts(
  * **not** treated as unconfigured: it throws, because launching without the
  * mount would leave every custom label failing at dispatch inside the
  * container.
+ *
+ * The label names are read from the same file (Issue #849), so the launcher
+ * resolves an override exactly as `loadConfig` will inside the container. Left
+ * to the stock defaults it would reject a fleet that renamed `planning` — a
+ * valid configuration that the worker itself accepts.
  *
  * @param configFile - Host path of the worker configuration file
  * @returns The configured absolute host prompt paths, in configuration order
@@ -285,12 +374,37 @@ export async function readConfiguredCustomPromptPaths(
     );
   }
 
-  const raw = (parsed as Record<string, unknown>)["custom_label_prompts"];
-  return assertCustomLabelPrompts(raw).map((mapping) => mapping.promptPath);
+  const file = parsed as Record<string, unknown>;
+  return assertCustomLabelPrompts(
+    file["custom_label_prompts"],
+    configuredLabelNames(file),
+  ).map((mapping) => mapping.promptPath);
+}
+
+/** The configurable built-in label names a raw `.config.json` object states. */
+function configuredLabelNames(
+  file: Record<string, unknown>,
+): Partial<BuiltInLabelNames> {
+  // `work_on_label` is deliberately absent: the three discovery labels are
+  // hardwired in `lib/config_defaults.ts` and cannot be renamed (Issue #1834).
+  const fields: [keyof BuiltInLabelNames, string][] = [
+    ["planningLabel", "planning_label"],
+    ["questionLabel", "question_label"],
+    ["grillMeLabel", "grill_me_label"],
+    ["quorumLabel", "quorum_label"],
+    ["refineIssueLabel", "refine_issue_label"],
+  ];
+  const names: Partial<BuiltInLabelNames> = {};
+  for (const [field, key] of fields) {
+    const value = file[key];
+    if (typeof value === "string" && value.length > 0) names[field] = value;
+  }
+  return names;
 }
 
 /**
- * The label names of every configured mapping (Issue #847, part of #843).
+ * The label names that **dispatch** a configured mapping (Issue #847, part of
+ * #843).
  *
  * The trust gate (`operationalDispatchLabels`), the operational-label
  * verification in `label_security.ts`, and the reserved-label filters in
@@ -298,13 +412,21 @@ export async function readConfiguredCustomPromptPaths(
  * from this one helper keeps those guards in step with the validated config
  * rather than each rebuilding the list.
  *
+ * An **override** is excluded (Issue #849): it names a built-in label that
+ * already carries its own gate, so adding it here would change that label's
+ * trust posture as a side effect of swapping its template. `work-on` is the
+ * sharp case — it sits deliberately outside the AND-gated set, and an operator
+ * who overrode its prompt would otherwise find the fleet's main discovery
+ * label newly stripped on every untrusted or unattributable add. Only a new
+ * label brings a new privileged dispatch with it.
+ *
  * @param config - Worker configuration (or any object carrying the resolved list)
- * @returns The configured labels, in configuration order and original case
+ * @returns The dispatching labels, in configuration order and original case
  */
 export function customLabelPromptLabels(
   config: { customLabelPrompts: CustomLabelPromptMapping[] },
 ): string[] {
-  return config.customLabelPrompts.map((mapping) => mapping.label);
+  return customDispatchMappings(config).map((mapping) => mapping.label);
 }
 
 /**
@@ -329,4 +451,40 @@ export function customLabelPromptPath(
   return config.customLabelPrompts.find((mapping) =>
     mapping.label.toLowerCase() === target
   )?.promptPath;
+}
+
+/**
+ * The mappings that dispatch a **new** label (Issue #849).
+ *
+ * An override names a built-in label, which already has its own priority
+ * handler; scanning for it again in the custom-label row would run, say, a
+ * `planning`-labelled issue through the implementation phase. Only new labels
+ * belong in that scan.
+ *
+ * @param config - Worker configuration (or any object carrying the list)
+ * @returns The mappings with no built-in phase to override
+ */
+export function customDispatchMappings(
+  config: { customLabelPrompts: CustomLabelPromptMapping[] },
+): CustomLabelPromptMapping[] {
+  return config.customLabelPrompts.filter(
+    (mapping) => mapping.overridesPhase === undefined,
+  );
+}
+
+/**
+ * The mappings that override a built-in phase's template (Issue #849).
+ *
+ * Handed to the prompt builders, which resolve the template for the phase they
+ * are building through `resolvePromptTemplate`.
+ *
+ * @param config - Worker configuration (or any object carrying the list)
+ * @returns The mappings that replace a built-in phase template
+ */
+export function promptOverrideMappings(
+  config: { customLabelPrompts: CustomLabelPromptMapping[] },
+): CustomLabelPromptMapping[] {
+  return config.customLabelPrompts.filter(
+    (mapping) => mapping.overridesPhase !== undefined,
+  );
 }

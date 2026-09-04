@@ -25,6 +25,7 @@ import {
 } from "./prompt_builder.ts";
 import { PromptCache } from "./prompt_cache.ts";
 import { computeStaticPromptHash } from "./prompt_hash.ts";
+import { promptOverrideForPhase } from "./prompt_override_resolver.ts";
 import {
   describeVolatileTokens,
   findVolatilePrefixTokens,
@@ -111,17 +112,23 @@ export async function buildCachedIssuePrompt(
     repoContextContent,
     verbosityLevel,
     customPromptPath,
+    promptOverrides,
   } = issueOptions;
 
   // Step 1: Compute SHA of static prompt components (including repo context — Issue #1325,
-  // verbosity level — Issue #1332, an operator's custom prompt — Issue #848)
+  // verbosity level — Issue #1332, an operator's custom prompt — Issue #848).
+  // A `work-on` override (Issue #849) is the same substitution by another
+  // route, so it joins the key too — otherwise editing the override would
+  // re-serve a hash that names the built-in template.
+  const operatorTemplate = customPromptPath ??
+    promptOverrideForPhase(promptOverrides, "issue")?.promptPath;
   const shaResult = await computeStaticPromptHash(
     promptsDir ?? "prompts",
     repo,
     customInstructions,
     repoContextContent,
     verbosityLevel,
-    customPromptPath,
+    operatorTemplate,
   );
   if (!shaResult.ok) {
     return {
@@ -215,6 +222,11 @@ async function buildWithCache(
     value: {
       systemPrompt: cachedSystemPrompt.value,
       prompt: dynamicResult.value.prompt,
+      // Issue #849: the template the dynamic half actually read, carried
+      // through the cache so the run record names it either way.
+      ...(dynamicResult.value.templateSource !== undefined
+        ? { templateSource: dynamicResult.value.templateSource }
+        : {}),
       promptSha: sha,
       cacheHit,
     },
@@ -236,6 +248,9 @@ async function buildWithoutCache(
     value: {
       systemPrompt: fullResult.value.systemPrompt,
       prompt: fullResult.value.prompt,
+      ...(fullResult.value.templateSource !== undefined
+        ? { templateSource: fullResult.value.templateSource }
+        : {}),
       promptSha: sha,
       cacheHit: false,
     },
