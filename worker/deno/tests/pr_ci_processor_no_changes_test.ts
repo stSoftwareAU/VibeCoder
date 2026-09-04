@@ -28,10 +28,11 @@ import type {
   GitDeps,
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
 
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+// Prompts resolve against this checkout, never the worker host's (Issue #844)
+// — named as a parameter on every call rather than pinned by deleting the
+// host's overrides from the shared process environment (Issue #1024).
+const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -164,6 +165,7 @@ async function runNoChangesScenario(
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -357,6 +359,7 @@ Deno.test("processCiFailure - Claude self-pushed: HEAD moved triggers success re
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -429,6 +432,7 @@ Deno.test("processCiFailure - genuine no-changes when HEAD unchanged still posts
     });
 
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -519,6 +523,7 @@ Deno.test("processCiFailure - HEAD moved but the remote disagrees: no success cl
     });
 
     const result = await processCiFailure(makeInput(), {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,

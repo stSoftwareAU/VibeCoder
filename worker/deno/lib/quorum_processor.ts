@@ -91,6 +91,16 @@ export interface QuorumProcessorDeps {
   logger: Logger;
   /** Worker deps for cross-cutting concerns. */
   deps: WorkerDeps;
+  /**
+   * Prompts directory the drafting and judge templates are read from
+   * (Issue #1024).
+   *
+   * Left unset in production, where `getPromptsDir()` resolves it from the
+   * launcher's environment. A test names its own checkout's `prompts/` here
+   * instead of deleting `PROMPTS_DIR`/`VIBE_BASE_DIR` from the process every
+   * other parallel worker shares.
+   */
+  promptsDir?: string;
 }
 
 /** What one Quorum processing run did. */
@@ -418,6 +428,7 @@ async function runQuorumForIssue(
       issueComments: history.formattedComments || "None.",
       commentBoundaryId: history.boundaryId,
       verbosityInstructions: buildVerbosityBlock(config.verbosity),
+      promptsDir: processorDeps.promptsDir,
       // Issue #849: an operator's `quorum` mapping replaces the drafting
       // template; the judge turn takes its own entry.
       promptOverrides: promptOverrideMappings(config),

@@ -153,6 +153,16 @@ export interface PlanningProcessorDeps {
    * shares.
    */
   env?: EnvLookup;
+  /**
+   * Prompts directory the planning and critique templates are read from
+   * (Issue #1024).
+   *
+   * Left unset in production, where `getPromptsDir()` resolves it from the
+   * launcher's environment. A test names its own checkout's `prompts/` here
+   * instead of deleting `PROMPTS_DIR`/`VIBE_BASE_DIR` from the process every
+   * other parallel worker shares.
+   */
+  promptsDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1167,6 +1177,7 @@ async function _processPlanningWithHeartbeat(
     complexityContext,
     milestoneTitle,
     repoContextContent,
+    promptsDir: processorDeps.promptsDir,
     // Issue #849: an operator's `planning` mapping replaces the template.
     promptOverrides: promptOverrideMappings(config),
   });
@@ -1316,6 +1327,7 @@ async function _processPlanningWithHeartbeat(
       milestoneTitle,
       repoContextContent,
       draftPlan,
+      promptsDir: processorDeps.promptsDir,
       // Issue #849: the critique turn takes its own override entry.
       promptOverrides: promptOverrideMappings(config),
     });

@@ -23,10 +23,11 @@ import type {
   GitHubDeps,
   PrDeps,
 } from "../lib/issue_worker_wiring.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
 
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+// Prompts resolve against this checkout, never the worker host's (Issue #844)
+// — named as a parameter on every call rather than pinned by deleting the
+// host's overrides from the shared process environment (Issue #1024).
+const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 function makeSilentLogger(): Logger {
   const noop = () => {};
@@ -131,6 +132,7 @@ Deno.test("processCiFailure records claim → diagnosis → pushed → released"
   try {
     const milestones: string[] = [];
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps: makeDeps(milestones),
       stateDir: `${tmpDir}/.ci_check_state`,
@@ -163,6 +165,7 @@ Deno.test("a throwing recordMilestone never fails the CI fix", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "ci-milestones-" });
   try {
     const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps: makeDeps([], { milestoneThrows: true }),
       stateDir: `${tmpDir}/.ci_check_state`,
