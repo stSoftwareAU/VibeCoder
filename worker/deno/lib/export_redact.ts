@@ -24,8 +24,8 @@
  * repositories and documentation placeholders (`foo`, `repo-a`…) are left.
  *
  * A `rename:` rule is a case-preserving **substring** rename of a private
- * name that has been baked into identifiers and file names (`fleet_health.ts`,
- * `reportFleetHealthHeartbeat`, `VIBE_FLEET_HEALTH_DIR`): lower-case stays
+ * name that has been baked into identifiers and file names (`fleet_metrics.ts`,
+ * `reportFleetMetricsBeat`, `VIBE_FLEET_METRICS_DIR`): lower-case stays
  * lower, Capitalised stays Capitalised, UPPER stays UPPER, and every file or
  * directory whose path carries the substring is renamed the same way — so
  * imports keep resolving and the published tree still builds. Applied last.
@@ -158,6 +158,12 @@ export function applyRename(
   rule: RenameRule,
 ): { text: string; count: number } {
   let count = 0;
+  // `rule.from` is an operator-authored rename key from the private
+  // redactions file, and it is metacharacter-escaped before compilation,
+  // so the compiled pattern is a literal alternation-free string that
+  // cannot backtrack. Same reasoning as `compileRepoName` in
+  // export_scrub_gate.ts.
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
   const re = new RegExp(escapeRegExp(rule.from), "gi");
   const out = text.replace(re, (match) => {
     count++;

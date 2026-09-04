@@ -550,11 +550,9 @@ export async function runWorker(
   if (!env("CONFIG_PATH")) {
     deps.setEnv("CONFIG_PATH", `${repoDir}/.config.json`);
   }
-  // Optional-feature settings from .config.json (imgbb key, FLEET health
-  // repository/directory, GitHub status) become the environment variables
-  // their consumers read — the step the bash conductor's `eval
-  // "$(load-config)"` used to be. Environment wins; a host-only path is
-  // not applied inside the container.
+  // Optional-feature settings from .config.json (imgbb key, GitHub status)
+  // become the environment variables their consumers read — the step the
+  // bash conductor's `eval "$(load-config)"` used to be. Environment wins.
   await deps.applyOptionalFeatureEnv?.(
     env("CONFIG_PATH") ?? `${repoDir}/.config.json`,
   );

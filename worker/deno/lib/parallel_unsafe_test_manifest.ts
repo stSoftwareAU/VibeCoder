@@ -115,7 +115,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/feature_availability_test.ts",
   "tests/fetch_jenkins_log_command_test.ts",
   "tests/first_run_verify_command_test.ts",
-  "tests/fleet_health_test.ts",
   "tests/follow_up_label_strip_paths_test.ts",
   "tests/gh_guard_shim_test.ts",
   "tests/gh_spawn_test.ts",
@@ -126,7 +125,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/grill_me_processor_test.ts",
   "tests/grill_me_run_stats_test.ts",
   "tests/host_escalation_test.ts",
-  "tests/host_workdir_guard_test.ts",
   "tests/idle_task_body_preview_limit_test.ts",
   "tests/idle_task_end_to_end_test.ts",
   "tests/idle_task_multi_worker_end_to_end_test.ts",
@@ -176,6 +174,10 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/run_id_test.ts",
   "tests/run_mode_test.ts",
   "tests/self_heal_events_test.ts",
+  // Arrived with the fleet-logs milestone merge (1.2.0). Both mutate the
+  // process and were never on `main`, so no entry existed for them.
+  "tests/run_callbacks_integration_test.ts",
+  "tests/subprocess_timeout_test.ts",
   "tests/service_account_env_test.ts",
   "tests/setup_agent_provider_gating_test.ts",
   "tests/setup_container_runtime_install_test.ts",

@@ -15,7 +15,6 @@ import { assertEquals, assertExists } from "@std/assert";
 import {
   createProductionRunCoreDeps,
   type ProductionDepsOptions,
-  runEndOfRunHealthReport,
 } from "../lib/run_core_production_deps.ts";
 import { createLogger } from "../lib/logger.ts";
 import {
@@ -283,14 +282,6 @@ Deno.test("createProductionRunCoreDeps - checkDependencies returns ok", async ()
 
   const result = await deps.checkDependencies();
   assertEquals(result.ok, true);
-});
-
-// ---------------------------------------------------------------------------
-// runEndOfRunHealthReport — structure test
-// ---------------------------------------------------------------------------
-
-Deno.test("runEndOfRunHealthReport - is exported and callable", () => {
-  assertEquals(typeof runEndOfRunHealthReport, "function");
 });
 
 // ---------------------------------------------------------------------------

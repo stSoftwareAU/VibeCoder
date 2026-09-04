@@ -6,7 +6,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   DEFAULT_SUBPROCESS_TIMEOUT_MS,
   EXTENDED_SUBPROCESS_TIMEOUT_MS,
@@ -157,4 +157,92 @@ Deno.test("subprocess_timeout - fetchWithTimeout passes through init options", a
     caught = true;
   }
   assertEquals(caught, true);
+});
+
+// ---------------------------------------------------------------------------
+// Environment control and timeout capture (Issue #806)
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name: "subprocess_timeout - env entries reach the child",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const result = await runWithTimeout("/bin/sh", [
+      "-c",
+      'printf "%s" "$VIBE_TEST_VALUE"',
+    ], { env: { VIBE_TEST_VALUE: "carried" } });
+    assertEquals(result.ok, true);
+    assertEquals(result.ok && result.value.stdout, "carried");
+  },
+});
+
+Deno.test({
+  name: "subprocess_timeout - clearEnv keeps the parent environment out",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    Deno.env.set("VIBE_TEST_PARENT_ONLY", "leaked");
+    try {
+      const result = await runWithTimeout("/bin/sh", [
+        "-c",
+        'printf "%s" "${VIBE_TEST_PARENT_ONLY:-absent}"',
+      ], {
+        clearEnv: true,
+        env: { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin" },
+      });
+      assertEquals(result.ok, true);
+      assertEquals(result.ok && result.value.stdout, "absent");
+    } finally {
+      Deno.env.delete("VIBE_TEST_PARENT_ONLY");
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "subprocess_timeout - without clearEnv the parent environment is inherited",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    Deno.env.set("VIBE_TEST_INHERITED", "present");
+    try {
+      const result = await runWithTimeout("/bin/sh", [
+        "-c",
+        'printf "%s" "${VIBE_TEST_INHERITED:-absent}"',
+      ]);
+      assertEquals(result.ok && result.value.stdout, "present");
+    } finally {
+      Deno.env.delete("VIBE_TEST_INHERITED");
+    }
+  },
+});
+
+Deno.test({
+  name: "subprocess_timeout - a timeout reports no output by default",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const result = await runWithTimeout("/bin/sh", [
+      "-c",
+      'printf "before-the-hang"; exec sleep 30',
+    ], { timeoutMs: 300 });
+    assertEquals(result.ok, true);
+    assert(result.ok && result.value.timedOut);
+    assertEquals(result.ok && result.value.code, 124);
+    assertEquals(result.ok && result.value.stdout, "");
+    assertEquals(result.ok && result.value.stderr, "Timed out after 300ms");
+  },
+});
+
+Deno.test({
+  name:
+    "subprocess_timeout - captureOutputOnTimeout keeps what the child printed",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const result = await runWithTimeout("/bin/sh", [
+      "-c",
+      'printf "before-the-hang"; echo "diagnostic" >&2; exec sleep 30',
+    ], { timeoutMs: 300, captureOutputOnTimeout: true });
+    assert(result.ok && result.value.timedOut);
+    assertEquals(result.ok && result.value.stdout, "before-the-hang");
+    assert(result.ok && result.value.stderr.includes("Timed out after 300ms"));
+    assert(result.ok && result.value.stderr.includes("diagnostic"));
+  },
 });

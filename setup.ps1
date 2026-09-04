@@ -1276,31 +1276,6 @@ function Read-VibeInteractiveConfig {
             "Without this, screenshots are saved locally only.")
     if ($imgbb) { $answers.imgbb_api_key = $imgbb }
 
-    # FLEET health tracking (optional, Issue #535). A fleet of workers can
-    # report into a shared health repository; a single host does not need one.
-    # Setup asks only where that repository is and stores it in .config.json
-    # (fleet_health_repo). The worker clones it itself on its first run -
-    # natively beside VibeCoder, in container mode inside its own work volume
-    # - so no directory is asked for and nothing is cloned here. Nothing is
-    # ever cloned from an assumed URL.
-    $fleetRepo = Read-Answer `
-        -Prompt "FLEET health repository (optional): git URL of the fleet's health repository" `
-        -Existing $existing.fleet_health_repo `
-        -Notes @(
-            "e.g. git@github.com:your-org/your-health-repo.git",
-            "The worker clones it on first run. Leave blank to keep the current value,",
-            "or '-' to turn health tracking off.")
-    if ($fleetRepo -eq "-") {
-        $answers.fleet_health_repo = $null
-        $answers.fleet_health_dir = $null
-        Write-VibeInfo "FLEET health tracking turned off."
-    } elseif ($fleetRepo) {
-        $answers.fleet_health_repo = $fleetRepo
-        Write-VibeSuccess "FLEET health repository: $fleetRepo"
-    } else {
-        Write-VibeInfo "FLEET health tracking not configured (optional) - re-run setup and give the repository's git URL to enable it."
-    }
-
     return $answers
 }
 

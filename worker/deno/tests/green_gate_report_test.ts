@@ -37,16 +37,13 @@ function launchBlock(
   ].join("\n");
 }
 
-/** A worker log for one run: N processed issues, health reports, summary. */
+/** A worker log for one run: N processed issues plus the summary. */
 function workerLog(
   start: string,
-  options: { issues?: number; healthAt?: string[]; extra?: string[] } = {},
+  options: { issues?: number; extra?: string[] } = {},
 ): string {
   const day = start.slice(0, 10);
   const lines = [`run_core pid=20 start=${start} (Worker timestamps are UTC)`];
-  for (const h of options.healthAt ?? [`${day} 01:02:03Z`]) {
-    lines.push(`[${h}] INFO: Reporting health as Vibe Coder:host-23`);
-  }
   const n = options.issues ?? 1;
   for (let i = 0; i < n; i++) {
     lines.push(
@@ -251,7 +248,7 @@ Deno.test("green gate - an open regression issue is NOT GREEN; a failed lookup i
   );
 });
 
-Deno.test("green gate - restarts, heartbeat gaps, breaker trips and kills are counted from the logs (Issue #4189)", async () => {
+Deno.test("green gate - restarts, breaker trips and kills are counted from the logs (Issue #4189)", async () => {
   const selfHeal = [
     JSON.stringify({
       timestamp: "2026-08-10T01:00:00Z",
@@ -284,15 +281,8 @@ Deno.test("green gate - restarts, heartbeat gaps, breaker trips and kills are co
   ].join("\n");
   const noisy = workerLog("2026-08-17T01:00:00Z", {
     issues: 1,
-    // Two health reports 3 h apart inside one run: one gap over the 90 min limit.
-    healthAt: [
-      "2026-08-17 01:02:00Z",
-      "2026-08-17 04:02:00Z",
-      "2026-08-17 05:00:00Z",
-    ],
     extra: [
       "[2026-08-17 02:30:00Z] ERROR: ACTION REQUIRED: agent credential is failing (fresh auth probe after 2 consecutive claim failures) — boom. Stopping claims for this cycle; the next cycle's health gate re-checks automatically.",
-      "[2026-08-17 02:40:00Z] WARNING: FLEET heartbeat failed (continuing): push rejected",
       "[2026-08-17 02:50:00Z] [SECURITY] [AGENT_KILLED] raw_exit_code=137 memory_pressure=high",
     ],
   });
@@ -315,8 +305,6 @@ Deno.test("green gate - restarts, heartbeat gaps, breaker trips and kills are co
     "container_restart events inside the window",
   );
   assertEquals(report.host.crashCleanups, 1);
-  assertEquals(report.host.heartbeatGaps, 1);
-  assertEquals(report.host.heartbeatFailures, 1);
   assertEquals(report.host.authBreakerTrips, 1);
   assertEquals(report.host.agentKills, 1);
   const md = formatGreenGateReport(report);

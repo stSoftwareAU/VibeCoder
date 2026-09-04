@@ -14,44 +14,25 @@ import { withCleanEnv, withEnv } from "./support/env.ts";
 Deno.test("resolveOptionalFeatureEnv - maps the config keys to the variables their consumers read", () => {
   const out = resolveOptionalFeatureEnv({
     imgbb_api_key: "k",
-    fleet_health_repo: "git@github.com:org/GRQ-health.git",
-    fleet_health_dir: "/srv/GRQ-health",
     update_gh_user_status: false,
-  }, { env: () => undefined, inContainer: false });
+  }, { env: () => undefined });
   assertEquals(out, {
     VIBE_IMGBB_API_KEY: "k",
-    FLEET_HEALTH_REPO: "git@github.com:org/GRQ-health.git",
-    FLEET_HEALTH_DIR: "/srv/GRQ-health",
     UPDATE_GH_USER_STATUS: "false",
   });
 });
 
 Deno.test("resolveOptionalFeatureEnv - the environment wins over the config, as `${VAR:-config}` did", () => {
   const out = resolveOptionalFeatureEnv({
-    fleet_health_repo: "git@github.com:org/GRQ-health.git",
     imgbb_api_key: "from-config",
   }, {
     env: (name) => name === "VIBE_IMGBB_API_KEY" ? "from-env" : undefined,
-    inContainer: false,
   });
   assertEquals(out.VIBE_IMGBB_API_KEY, undefined);
-  assertEquals(out.FLEET_HEALTH_REPO, "git@github.com:org/GRQ-health.git");
-});
-
-Deno.test("resolveOptionalFeatureEnv - inside the container a host fleet_health_dir is not applied; the repository is", () => {
-  const out = resolveOptionalFeatureEnv({
-    fleet_health_repo: "git@github.com:org/GRQ-health.git",
-    fleet_health_dir: "/Users/someone/src/GRQ-health",
-  }, { env: () => undefined, inContainer: true });
-  assertEquals(out.FLEET_HEALTH_DIR, undefined);
-  assertEquals(out.FLEET_HEALTH_REPO, "git@github.com:org/GRQ-health.git");
 });
 
 Deno.test("resolveOptionalFeatureEnv - GitHub status defaults to true, the documented default; nothing else is assumed", () => {
-  const out = resolveOptionalFeatureEnv({}, {
-    env: () => undefined,
-    inContainer: false,
-  });
+  const out = resolveOptionalFeatureEnv({}, { env: () => undefined });
   assertEquals(out, { UPDATE_GH_USER_STATUS: "true" });
 });
 
@@ -61,15 +42,15 @@ Deno.test("applyOptionalFeatureEnv - reads the file and sets what is missing; an
     const path = `${tmp}/.config.json`;
     await Deno.writeTextFile(
       path,
-      JSON.stringify({ fleet_health_repo: "git@github.com:org/h.git" }),
+      JSON.stringify({ imgbb_api_key: "from-config" }),
     );
     // Issue #378: this reads the real process environment (the environment
     // wins over the config), and the worker container already exports
-    // FLEET_HEALTH_REPO and UPDATE_GH_USER_STATUS. The outer withEnv pins
-    // hostile ambient values so the assertion proves withCleanEnv hides
-    // them, rather than passing only on a bare developer host.
+    // UPDATE_GH_USER_STATUS. The outer withEnv pins hostile ambient values so
+    // the assertion proves withCleanEnv hides them, rather than passing only
+    // on a bare developer host.
     await withEnv({
-      FLEET_HEALTH_REPO: "git@github.com:org/ambient.git",
+      VIBE_IMGBB_API_KEY: "ambient-key",
       UPDATE_GH_USER_STATUS: "false",
     }, () =>
       withCleanEnv({}, async () => {
@@ -78,8 +59,8 @@ Deno.test("applyOptionalFeatureEnv - reads the file and sets what is missing; an
           path,
           (name, value) => set[name] = value,
         );
-        assertEquals(applied.FLEET_HEALTH_REPO, "git@github.com:org/h.git");
-        assertEquals(set.FLEET_HEALTH_REPO, "git@github.com:org/h.git");
+        assertEquals(applied.VIBE_IMGBB_API_KEY, "from-config");
+        assertEquals(set.VIBE_IMGBB_API_KEY, "from-config");
 
         const none: Record<string, string> = {};
         assertEquals(
