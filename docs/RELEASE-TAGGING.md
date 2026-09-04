@@ -37,7 +37,7 @@ flowchart TD
     F --> B{".release-floor above<br/>that number?"}
     I --> B
     B -- no --> T["Create the tag at the merge commit"]
-    B -- yes --> R["Mint the floor instead:<br/>1.0.72 → 1.1.0"]
+    B -- yes --> R["Mint the floor instead:<br/>1.0.72 → 1.2.0"]
     R --> T
     T --> V["Publish tool-versions.json<br/>on the release for that tag"]
     S --> V
@@ -48,7 +48,7 @@ flowchart TD
 - **Patch only, unless the floor says otherwise.** The newest release tag
   decides the major and minor; a human moves the series by editing
   [`.release-floor`](#the-release-floor), and the next merge continues from
-  there (`1.1.0` → `1.1.1`).
+  there (`1.2.0` → `1.2.1`).
 - **First tag is `1.0.0`.** A repository with no release tag yet starts there.
 - **Numeric, not lexical.** `1.0.10` is newer than `1.0.9`.
 - **A release tag is a bare `MAJOR.MINOR.PATCH` triple**, optionally
@@ -71,9 +71,9 @@ automation will honour. That is `.release-floor` at the repository root: **one
 line, one version**, `#` comments and blank lines ignored.
 
 ```text
-# 1.1.0 releases the callback extension point and the removal of the
+# 1.2.0 releases the callback extension point and the removal of the
 # fleet_health_dir / fleet_health_repo configuration keys.
-1.1.0
+1.2.0
 ```
 
 The workflow passes the file to the same script that does the increment, and
@@ -81,10 +81,10 @@ the minted tag is the **higher** of the floor and the automatic patch number:
 
 | Newest release | Floor   | Minted  | Why                                     |
 | -------------- | ------- | ------- | --------------------------------------- |
-| `1.0.71`       | `1.1.0` | `1.1.0` | the floor is above the patch (`1.0.72`) |
-| `1.1.0`        | `1.1.0` | `1.1.1` | the patch is already above the floor    |
-| `1.2.4`        | `1.1.0` | `1.2.5` | a floor below the series does nothing   |
-| _(none)_       | `1.1.0` | `1.1.0` | the floor decides the first tag too     |
+| `1.0.71`       | `1.2.0` | `1.2.0` | the floor is above the patch (`1.0.72`) |
+| `1.2.0`        | `1.2.0` | `1.2.1` | the patch is already above the floor    |
+| `1.2.4`        | `1.2.0` | `1.2.5` | a floor below the series does nothing   |
+| _(none)_       | `1.2.0` | `1.2.0` | the floor decides the first tag too     |
 
 - **It raises, it never holds.** The floor cannot lower a version or re-mint
   one, so it is inert the moment the release it names exists and the file can

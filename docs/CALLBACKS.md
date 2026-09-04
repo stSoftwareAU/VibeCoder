@@ -343,7 +343,7 @@ contains and where it lands, and VibeCoder needs no setting for it.
 > **📣 The migration in release order** — which edit lands before the pin move,
 > which has to land with it, what to observe on the canary before the rest of
 > the fleet follows, and how to roll back — is
-> [Release notes — 1.1.0](RELEASE-NOTES.md). This section is the before/after
+> [Release notes — 1.2.0](RELEASE-NOTES.md). This section is the before/after
 > mapping.
 
 | Built-in health tracking                          | Callback equivalent                                    |

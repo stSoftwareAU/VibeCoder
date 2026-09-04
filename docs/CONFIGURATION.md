@@ -826,8 +826,8 @@ edit.
 2. In one edit of `.config.json`, set `pinned_ref` to that tag, set all three
    `pinned_tool_versions` to what the manifest names, and restore any keys the
    older release requires. [Release notes](RELEASE-NOTES.md) states, per
-   release, exactly which keys those are — for 1.1.0 it is `fleet_health_repo`
-   and `fleet_health_dir`, which 1.1.0 refuses and 1.0.x needs.
+   release, exactly which keys those are — for 1.2.0 it is `fleet_health_repo`
+   and `fleet_health_dir`, which 1.2.0 refuses and 1.0.x needs.
 3. Relaunch. The checkout update moves the worker checkout back and the launch
    installs exactly the pinned versions, one log line per tool.
 
