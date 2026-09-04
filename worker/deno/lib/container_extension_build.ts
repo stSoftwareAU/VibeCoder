@@ -70,18 +70,38 @@ interface Directive {
  * The instructions a Containerfile states, in order.
  *
  * Comments, blank lines and parser directives (`# syntax=…`) carry no
- * instruction, so they are dropped rather than judged.
+ * instruction, so they are dropped rather than judged, and a `\` continuation
+ * is joined into the instruction it belongs to — a checker that read the
+ * second half of a wrapped `ARG` as an instruction of its own would refuse a
+ * file the runtime builds happily.
  */
 function directives(text: string): Directive[] {
   const found: Directive[] = [];
+  let pending = "";
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     if (line === "" || line.startsWith("#")) continue;
-    const separator = line.search(/\s/);
-    const keyword = (separator === -1 ? line : line.slice(0, separator))
+    if (line.endsWith("\\")) {
+      pending += `${line.slice(0, -1).trim()} `;
+      continue;
+    }
+    const whole = `${pending}${line}`;
+    pending = "";
+    const separator = whole.search(/\s/);
+    const keyword = (separator === -1 ? whole : whole.slice(0, separator))
       .toUpperCase();
-    const rest = separator === -1 ? "" : line.slice(separator).trim();
+    const rest = separator === -1 ? "" : whole.slice(separator).trim();
     found.push({ keyword, rest });
+  }
+  // A file ending mid-continuation still states what it stated.
+  if (pending.trim() !== "") {
+    const whole = pending.trim();
+    const separator = whole.search(/\s/);
+    found.push({
+      keyword: (separator === -1 ? whole : whole.slice(0, separator))
+        .toUpperCase(),
+      rest: separator === -1 ? "" : whole.slice(separator).trim(),
+    });
   }
   return found;
 }
@@ -90,13 +110,36 @@ function directives(text: string): Directive[] {
 function declaresBaseImage(rest: string): boolean {
   // `ARG VIBE_BASE_IMAGE` and `ARG VIBE_BASE_IMAGE=<default>` both declare it;
   // the plan always passes the argument, so a default never decides the base.
-  const name = rest.split("=")[0]?.trim();
-  return name === BASE_IMAGE_BUILD_ARG;
+  // A wrapped `ARG A B` states several, and any of them may be the one.
+  return rest.split(/\s+/).some((name) =>
+    name.split("=")[0] === BASE_IMAGE_BUILD_ARG
+  );
 }
 
-/** Whether a `FROM` instruction derives its image from the build argument. */
-function derivesFromBaseImage(rest: string): boolean {
-  const image = rest.split(/\s+/)[0] ?? "";
+/** The image a `FROM` builds on, and the stage name it gives the result. */
+interface FromInstruction {
+  /** The image reference, with any `--platform=…` style flag skipped. */
+  image: string;
+  /** The `AS <name>` alias, lower-cased; absent when unnamed. */
+  alias?: string;
+}
+
+/** Read a `FROM` instruction's image and stage alias. */
+function parseFrom(rest: string): FromInstruction {
+  const tokens = rest.split(/\s+/).filter((token) => token !== "");
+  // `FROM --platform=$BUILDPLATFORM <image>` is an ordinary spelling; the
+  // flags are not the base, so they are skipped rather than compared.
+  let index = 0;
+  while (tokens[index]?.startsWith("--")) index++;
+  const image = tokens[index] ?? "";
+  const alias = tokens[index + 1]?.toUpperCase() === "AS"
+    ? tokens[index + 2]?.toLowerCase()
+    : undefined;
+  return alias === undefined ? { image } : { image, alias };
+}
+
+/** Whether a `FROM` names the base-image build argument directly. */
+function namesBaseImage(image: string): boolean {
   return image === `\${${BASE_IMAGE_BUILD_ARG}}` ||
     image === `$${BASE_IMAGE_BUILD_ARG}`;
 }
@@ -104,11 +147,21 @@ function derivesFromBaseImage(rest: string): boolean {
 /**
  * Refuse an extension Containerfile that does not layer on the standard image.
  *
+ * Two things are checked, because either alone can be evaded. The **first**
+ * `FROM` must derive from the build argument, as the contract states. The
+ * **last** stage must derive from it too — directly, or through a chain of
+ * stages that does — because a build with no `--target` produces the last
+ * stage: `FROM ${VIBE_BASE_IMAGE} AS unused` followed by `FROM ubuntu:24.04`
+ * would otherwise pass a first-`FROM`-only check and still run the worker in
+ * an image carrying none of the fleet's toolchain, entrypoint or pinned
+ * agents. A helper stage built on anything the operator likes is still fine —
+ * it is not what the layer ships.
+ *
  * @param text - The operator's Containerfile, as read from the host
  * @param path - Its host path, named in every refusal
  * @throws When the file states no `FROM`, when anything other than `ARG`
  *   precedes the first one, when `ARG VIBE_BASE_IMAGE` is not declared before
- *   it, or when that `FROM` derives from anything else
+ *   it, or when its first or last stage derives from anything else
  */
 export function assertExtensionLayersOnBaseImage(
   text: string,
@@ -124,32 +177,56 @@ export function assertExtensionLayersOnBaseImage(
   };
 
   let declared = false;
+  let seenFrom = false;
+  /** Stage names that derive from the base, directly or through a chain. */
+  const layered = new Set<string>();
+  /** The last stage's image, and whether it is one of those. */
+  let finalImage = "";
+  let finalLayered = false;
+
   for (const directive of directives(text)) {
     if (directive.keyword === "FROM") {
-      if (!declared) {
+      const from = parseFrom(directive.rest);
+      const onBase = namesBaseImage(from.image) ||
+        layered.has(from.image.toLowerCase());
+      if (!seenFrom) {
+        if (!declared) {
+          refuse(
+            `states no \`ARG ${BASE_IMAGE_BUILD_ARG}\` before its ` +
+              `first FROM`,
+          );
+        }
+        if (!onBase) {
+          refuse(
+            `builds \`FROM ${directive.rest}\` rather than from the ` +
+              `standard image`,
+          );
+        }
+        seenFrom = true;
+      }
+      if (onBase && from.alias) layered.add(from.alias);
+      finalImage = from.image;
+      finalLayered = onBase;
+      continue;
+    }
+    if (!seenFrom) {
+      if (directive.keyword !== "ARG") {
         refuse(
-          `states no \`ARG ${BASE_IMAGE_BUILD_ARG}\` before its ` +
-            `first FROM`,
+          `states \`${directive.keyword}\` before its first FROM — only ARG ` +
+            `may precede it`,
         );
       }
-      if (!derivesFromBaseImage(directive.rest)) {
-        refuse(
-          `builds \`FROM ${directive.rest}\` rather than from the ` +
-            `standard image`,
-        );
-      }
-      return;
+      if (declaresBaseImage(directive.rest)) declared = true;
     }
-    if (directive.keyword !== "ARG") {
-      refuse(
-        `states \`${directive.keyword}\` before its first FROM — only ARG ` +
-          `may precede it`,
-      );
-    }
-    if (declaresBaseImage(directive.rest)) declared = true;
   }
 
-  refuse("states no FROM instruction at all");
+  if (!seenFrom) refuse("states no FROM instruction at all");
+  if (!finalLayered) {
+    refuse(
+      `builds its last stage \`FROM ${finalImage}\` rather than from the ` +
+        `standard image — a build with no --target ships that stage`,
+    );
+  }
 }
 
 /** What the extension build is derived from. */

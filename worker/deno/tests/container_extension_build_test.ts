@@ -104,6 +104,59 @@ Deno.test("assertExtensionLayersOnBaseImage - a multi-stage file is judged on it
   );
 });
 
+Deno.test("assertExtensionLayersOnBaseImage - the last stage is what ships, so it is judged too", () => {
+  // A build with no --target produces the last stage, so opening on the base
+  // and then closing on something else would evade a first-FROM-only check.
+  assertThrows(
+    () =>
+      assertExtensionLayersOnBaseImage(
+        "ARG VIBE_BASE_IMAGE\nFROM ${VIBE_BASE_IMAGE} AS unused\nFROM ubuntu:24.04\nRUN id\n",
+        "/srv/ext/Containerfile",
+      ),
+    Error,
+    "builds its last stage `FROM ubuntu:24.04`",
+  );
+});
+
+Deno.test("assertExtensionLayersOnBaseImage - a helper stage is fine while the shipped one is layered", () => {
+  // The helper compiles something the layer copies in; what ships still
+  // derives from the standard image, through the stage chain.
+  assertExtensionLayersOnBaseImage(
+    [
+      "ARG VIBE_BASE_IMAGE",
+      "FROM ${VIBE_BASE_IMAGE} AS base",
+      "FROM golang:1.23 AS build",
+      "RUN go build ./...",
+      "FROM base",
+      "COPY --from=build /out /usr/local/bin/",
+    ].join("\n"),
+    "/srv/ext/Containerfile",
+  );
+});
+
+Deno.test("assertExtensionLayersOnBaseImage - a platform flag is not the base image", () => {
+  assertExtensionLayersOnBaseImage(
+    "ARG VIBE_BASE_IMAGE\nFROM --platform=$BUILDPLATFORM ${VIBE_BASE_IMAGE}\n",
+    "/srv/ext/Containerfile",
+  );
+});
+
+Deno.test("assertExtensionLayersOnBaseImage - a wrapped instruction is one instruction", () => {
+  // The runtime joins `\\` continuations; a checker that did not would read
+  // `VIBE_BASE_IMAGE` as an instruction keyword and refuse a valid file.
+  assertExtensionLayersOnBaseImage(
+    "ARG \\\n  VIBE_BASE_IMAGE\nFROM \\\n  ${VIBE_BASE_IMAGE}\n",
+    "/srv/ext/Containerfile",
+  );
+});
+
+Deno.test("assertExtensionLayersOnBaseImage - keywords are read case-insensitively", () => {
+  assertExtensionLayersOnBaseImage(
+    "arg VIBE_BASE_IMAGE\nfrom ${VIBE_BASE_IMAGE} as layer\n",
+    "/srv/ext/Containerfile",
+  );
+});
+
 Deno.test("extensionBuildArguments - options precede the context, which is the extension directory", () => {
   assertEquals(
     extensionBuildArguments({

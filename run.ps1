@@ -517,13 +517,19 @@ $BuildNotHealableExit = 3
     The output is captured rather than inherited so container-build-heal can
     classify a failure from the build's own diagnostics (Issue #4441); it is
     written straight back out to stderr, so nothing is lost from the host log.
+
+    The argument list defaults to the standard image's build; the operator's
+    private layer (Issue #980) passes its own and is reported the same way.
 .OUTPUTS
     The build's exit status.
 #>
 function Invoke-ImageBuild {
-    param([Parameter(Mandatory = $true)][string] $LogPath)
+    param(
+        [Parameter(Mandatory = $true)][string] $LogPath,
+        [System.Collections.Generic.List[string]] $ArgumentList = $BuildArgs
+    )
 
-    $build = Invoke-HostCommand -FilePath $Runtime -ArgumentList $BuildArgs -Capture
+    $build = Invoke-HostCommand -FilePath $Runtime -ArgumentList $ArgumentList -Capture
     $text = "$($build.StdOut)$($build.StdErr)"
     [System.IO.File]::WriteAllText($LogPath, $text)
     if ($text) { [Console]::Error.Write($text) }
@@ -618,16 +624,13 @@ if ($present.ExitCode -ne 0) {
         if ($ExtensionBuildArgs.Count -gt 0) {
             [Console]::Error.WriteLine(
                 "[run.ps1] building the container extension for $Image")
-            $extension = Invoke-HostCommand -FilePath $Runtime `
-                -ArgumentList $ExtensionBuildArgs -Capture
-            $extensionText = "$($extension.StdOut)$($extension.StdErr)"
-            [System.IO.File]::WriteAllText($BuildLog, $extensionText)
-            if ($extensionText) { [Console]::Error.Write($extensionText) }
-            if ($extension.ExitCode -ne 0) {
+            $extensionStatus = Invoke-ImageBuild -LogPath $BuildLog `
+                -ArgumentList $ExtensionBuildArgs
+            if ($extensionStatus -ne 0) {
                 [Console]::Error.WriteLine(
                     "Error: failed to build the container extension for $Image")
                 $EvidenceLog = $BuildLog
-                Exit-Launcher $extension.ExitCode
+                Exit-Launcher $extensionStatus
             }
         }
     } finally {
