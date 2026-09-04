@@ -50,10 +50,10 @@ const DENO_DIR = new URL("..", import.meta.url).pathname;
 /**
  * Test files that mutate process-wide state right now, helpers included.
  *
- * The walk follows imports. #880's did not, and the 97-entry list that
+ * The walk follows imports. #880's did not, and the 92-entry list that
  * produced was short by 43. `tests/support/repo_prompts.ts` deletes the
  * prompt-directory variables and calls `Deno.chdir(REPO_ROOT)` at module
- * scope; 36 suites import it and 33 of those mutate nothing of their own.
+ * scope; 35 suites import it and 33 of those mutate nothing of their own.
  * `tests/support/env.ts` is the second such helper. 39 of the 43 were hidden
  * that way; the other 4 delete a variable rather than setting one, which
  * #880's spelling did not match.

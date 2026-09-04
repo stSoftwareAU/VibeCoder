@@ -21,7 +21,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   measuresWallClock,
   mutatesProcessState,
@@ -31,6 +31,7 @@ import {
   reachesInTestGraph,
   relativeImports,
   resolveFrom,
+  stripComments,
   SUBPROCESS_TIMING_TEST_FILES,
   WALL_CLOCK_TEST_FILES,
 } from "../lib/parallel_unsafe_test_manifest.ts";
@@ -361,4 +362,44 @@ Deno.test("parallel-unsafe manifest - every subprocess-timing entry names a real
     "a hand-placed entry has no classifier to notice it went stale: " +
       missing.join(", "),
   );
+});
+
+Deno.test("parallel-unsafe manifest - prose naming a mutation is not a mutation (Issue #940)", () => {
+  // Issue #956 drained `config_test.ts` and friends onto an injected env
+  // lookup, and the helper it handed them opens by naming the thing it
+  // replaces. Matching that sentence claimed 40-odd suites whose whole point
+  // is that they no longer mutate anything — the drain would have run for
+  // ever without moving a single file into the fast pass.
+  const helper = denoCall("env") + ".set` — use an injected lookup instead.";
+  assertEquals(
+    mutatesProcessState(`/** The replacement for \`${helper} */`),
+    false,
+  );
+  assertEquals(
+    mutatesProcessState(`// never call ${denoCall('env.set("X", "1");')}`),
+    false,
+    "a line comment saying do not do this is not doing it",
+  );
+});
+
+Deno.test("parallel-unsafe manifest - a mutation beside a comment still counts (Issue #940)", () => {
+  // The stripping must not become a way to hide one.
+  assert(
+    mutatesProcessState(
+      `/** doc */\n${denoCall('env.set("VIBE_RUN_ID", "x");')} // why`,
+    ),
+  );
+});
+
+Deno.test("parallel-unsafe manifest - a URL in a literal is not a line comment (Issue #940)", () => {
+  // Treating `https://` as a comment would swallow the rest of the line, and
+  // losing source is the direction that hides a real mutation.
+  const line = 'const u = "https://example.test/x";' +
+    denoCall('env.set("A", u);');
+  assert(mutatesProcessState(line));
+  assertStringIncludes(stripComments(line), "https://example.test/x");
+});
+
+Deno.test("parallel-unsafe manifest - block comments go whole (Issue #940)", () => {
+  assertEquals(stripComments("a/* one\ntwo */b").replace(/\s+/g, ""), "ab");
 });

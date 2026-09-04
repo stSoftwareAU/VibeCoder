@@ -28,11 +28,12 @@
  * The first: #880 grepped each suite's own source and stopped there.
  * `tests/support/repo_prompts.ts` deletes the prompt-directory variables and
  * calls `Deno.chdir(REPO_ROOT)` **at module scope**, so importing it is the
- * mutation; 36 suites import it and 33 of those contain no mutation of their
+ * mutation; 35 suites import it and 33 of those contain no mutation of their
  * own. `tests/support/env.ts` is the second such helper. Following imports
  * across the `tests/` tree, and matching `Deno.env.delete` as well, takes the
- * list from 97 files to 140 — 43 suites that were already unsafe and would
- * have gone straight into the parallel pass.
+ * list from 92 files to 135 — 43 suites that were already unsafe and would
+ * have gone straight into the parallel pass. 39 of the 43 are hidden behind a
+ * helper; the other 4 delete a variable rather than setting one.
  *
  * There turned out to be a second reason a file cannot share a machine, and
  * the first `--parallel` trial found it: six failures were ReDoS guards whose
@@ -63,7 +64,7 @@
  * `deno test` from — the same convention as `INTEGRATION_TEST_FILES`.
  *
  * This list may **shrink, never grow** — with one exception, which is what
- * took it from 97 entries to 140: correcting the classifier. #880 grepped
+ * took it from 92 entries to 135: correcting the classifier. #880 grepped
  * each suite's own text, so a helper's mutation was invisible to every suite
  * that imported it. Forty-three files were already unsafe and are now named.
  * A new *test* still may not join them.
@@ -92,7 +93,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/ci_failure_issue_test.ts",
   "tests/ci_log_provider_test.ts",
   "tests/ci_provider_jenkins_target_url_test.ts",
-  "tests/claim_runway_config_test.ts",
   "tests/clarity_assessment_test.ts",
   "tests/claude_executor_test.ts",
   "tests/claude_runner_cache_telemetry_4282_test.ts",
@@ -111,12 +111,10 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/claude_runner_usage_limit_test.ts",
   "tests/codex_phase_routing_test.ts",
   "tests/commit_and_push_pending_test.ts",
-  "tests/config_test.ts",
   "tests/container_entrypoint_test.ts",
   "tests/container_image_hash_test.ts",
   "tests/container_image_provider_set_test.ts",
   "tests/container_image_selection_test.ts",
-  "tests/container_restart_backoff_test.ts",
   "tests/create_all_idle_task_wrappers_command_test.ts",
   "tests/create_all_idle_task_wrappers_test.ts",
   "tests/deepseek_executor_test.ts",
@@ -193,7 +191,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/run_core_production_deps_test.ts",
   "tests/run_core_rate_limit_resume_test.ts",
   "tests/run_entrypoint_test.ts",
-  "tests/run_housekeeping_test.ts",
   "tests/run_id_test.ts",
   "tests/run_mode_test.ts",
   "tests/self_heal_events_test.ts",
@@ -208,7 +205,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/terminal_title_command_test.ts",
   "tests/timeout_extension_report_768_test.ts",
   "tests/timeout_extension_telemetry_4298_test.ts",
-  "tests/trusted_review_bots_test.ts",
   "tests/unpriced_spend_3870_test.ts",
   "tests/work_volume_tiers_command_test.ts",
   "tests/work_volume_tiers_test.ts",
@@ -265,8 +261,6 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   "tests/secret_redaction_bounds_test.ts",
   "tests/secret_redaction_redos_test.ts",
   "tests/secret_transform_redaction_test.ts",
-  "tests/suppression_comments_bounds_test.ts",
-  "tests/suppression_comments_redos_test.ts",
 ];
 
 /**
@@ -284,8 +278,9 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
  * the seam instead of the stopwatch.
  */
 export function measuresWallClock(source: string): boolean {
-  if (GROWTH_HELPER.test(source)) return true;
-  return REAL_CLOCK.test(source) && ELAPSED_BOUND.test(source);
+  const code = stripComments(source);
+  if (GROWTH_HELPER.test(code)) return true;
+  return REAL_CLOCK.test(code) && ELAPSED_BOUND.test(code);
 }
 
 /**
@@ -372,8 +367,35 @@ export const PARALLEL_UNSAFE_TEST_FILES: readonly string[] = [
  * manifests are actually built from, because a helper's mutation belongs to
  * every test that imports it.
  */
+/**
+ * `source` with its comments removed (Issue #940).
+ *
+ * Both classifiers match source text, and prose is not code. Issue #956
+ * drained `config_test.ts` and friends by giving `lib/config.ts` an injected
+ * env lookup, and the helper it handed them opens:
+ *
+ * ```ts
+ * // The replacement for `Deno.env.set`: a test that needs a module to see …
+ * ```
+ *
+ * Matching that sentence claimed 40-odd suites whose whole point is that they
+ * no longer mutate anything, and the drain would then have run forever
+ * without ever moving a file into the fast pass. Naming a pattern in order to
+ * say "do not do this" must not count as doing it.
+ *
+ * Block comments go whole. Line comments go only where the `//` does not
+ * follow a colon, so a `https://` inside a string literal is not mistaken for
+ * one — losing the rest of that line is the dangerous direction, because it
+ * could hide a real mutation.
+ */
+export function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+}
+
 export function mutatesProcessState(source: string): boolean {
-  return /Deno\.env\.(set|delete)|Deno\.chdir/.test(source);
+  return /Deno\.env\.(set|delete)|Deno\.chdir/.test(stripComments(source));
 }
 
 /**
@@ -381,10 +403,10 @@ export function mutatesProcessState(source: string): boolean {
  * imports (Issue #940).
  *
  * A predicate applied to one file's own text stops at the file, and the
- * 97-entry baseline it produced was short by 43.
+ * 92-entry baseline it produced was short by 43.
  * `tests/support/repo_prompts.ts` deletes every prompt-directory variable and
  * calls `Deno.chdir(REPO_ROOT)` **at module scope**, so merely importing it
- * mutates the process; 36 suites import it and 33 of them
+ * mutates the process; 35 suites import it and 33 of them
  * contain no mutation of their own. Under `--parallel` those 33 would
  * have moved the working directory out from under nine other workers, which
  * is the intermittent red the whole split exists to avoid.

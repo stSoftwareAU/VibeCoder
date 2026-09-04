@@ -36,6 +36,7 @@
  * Australian English spelling throughout (behaviour, authorised, organisation).
  */
 
+import type { EnvLookup } from "./env_lookup.ts";
 import {
   activeAgentProvider,
   type AgentProviderDescriptor,
@@ -162,8 +163,14 @@ export interface CredentialPreflightResult {
   failures: CredentialFailure[];
 }
 
-/** Environment lookup seam (tests inject a fixed map). */
-export type EnvLookup = (name: string) => string | undefined;
+/**
+ * Environment lookup seam (tests inject a fixed map).
+ *
+ * Re-exported from the canonical {@link module:lib/env_lookup} so the worker
+ * has one spelling of this type (Issue #956); the name is kept here because
+ * every existing importer reaches for it at this path.
+ */
+export type { EnvLookup };
 
 /**
  * Resolve the credential directory for this host.

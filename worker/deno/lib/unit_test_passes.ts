@@ -4,8 +4,8 @@
  * One sequential `deno test` took 42+ minutes on a 10-core host against a
  * 45-minute phase budget, so issues died in `quality_gate` having changed
  * nothing wrong (#805 twice, #808). `--parallel` runs the same suite in
- * minutes, but 159 files cannot share a machine: 140 mutate the process
- * environment or working directory and race each other (#880), 18 assert on a
+ * minutes, but 152 files cannot share a machine: 135 mutate the process
+ * environment or working directory and race each other (#880), 16 assert on a
  * wall-clock reading their own workers beat, and 2 race a real subprocess.
  *
  * So the suite runs twice, over disjoint halves of the same scope:
