@@ -482,6 +482,12 @@ operator can extend the Vibe Coder with private prompts without publishing
 them. Add the file, add the mapping, apply the label — the Vibe Coder works the
 issue with that prompt and raises a PR.
 
+> **📚 The operator guide is [Custom Label Prompts](CUSTOM-PROMPTS.md)** — the
+> extension point, a worked example an operator can follow verbatim, the
+> placeholder contract, what a prompt author must never do with the fenced
+> issue text, container operation, and the exact symptom of every failure mode.
+> This entry is the key reference.
+
 ```json
 {
   "custom_label_prompts": [
