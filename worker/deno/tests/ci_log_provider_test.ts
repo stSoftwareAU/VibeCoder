@@ -25,31 +25,23 @@ import {
   unregisterCiLogProvider,
 } from "../lib/ci_log_provider.ts";
 import { runPrFailureActions } from "../lib/pr_failure_actions.ts";
+import type { EnvReader } from "../lib/jenkins_access_check.ts";
 import { getCiProviders } from "../lib/repo_config.ts";
 import type { FailedCiCheck } from "../lib/pr_ci_checks.ts";
 import type { CiProviderConfig, RepoConfig, Result } from "../types.ts";
 
-const ENV_KEYS = ["JENKINS_URL", "JENKINS_USER", "JENKINS_TOKEN"] as const;
+/**
+ * Jenkins credentials handed to the dispatcher through its `readEnv` seam
+ * (Issue #958), rather than written into the process environment where a
+ * parallel worker would race on them.
+ */
+const jenkinsEnv: Record<string, string> = {
+  JENKINS_URL: "https://jenkins.example.com",
+  JENKINS_USER: "test-user",
+  JENKINS_TOKEN: "not-a-real-token",
+};
 
-function snapshotEnv(): Record<string, string | undefined> {
-  const snapshot: Record<string, string | undefined> = {};
-  for (const key of ENV_KEYS) snapshot[key] = Deno.env.get(key);
-  return snapshot;
-}
-
-function setJenkinsEnv(): void {
-  Deno.env.set("JENKINS_URL", "https://jenkins.example.com");
-  Deno.env.set("JENKINS_USER", "test-user");
-  Deno.env.set("JENKINS_TOKEN", "test-token");
-}
-
-function restoreEnv(snapshot: Record<string, string | undefined>): void {
-  for (const key of ENV_KEYS) {
-    const v = snapshot[key];
-    if (v === undefined) Deno.env.delete(key);
-    else Deno.env.set(key, v);
-  }
-}
+const readEnv: EnvReader = (name) => jenkinsEnv[name];
 
 function makeCheck(overrides: Partial<FailedCiCheck> = {}): FailedCiCheck {
   return {
@@ -248,6 +240,7 @@ async function runForConfig(
     failedChecks: [makeCheck({})],
     providers,
     fetchFn,
+    readEnv,
   });
 
   const first = results[0]!;
@@ -260,38 +253,39 @@ async function runForConfig(
 }
 
 Deno.test("ci_log_provider - legacy prFailureActions fetches identically to ciProviders", async () => {
-  const snap = snapshotEnv();
-  setJenkinsEnv();
-  try {
-    const legacy = await runForConfig({
-      "stSoftwareAU/example": {
-        prFailureActions: [
-          {
-            type: "fetch-jenkins-log",
-            jobPath: "foo/job/Develop",
-            checkNamePattern: "Jenkins",
-          },
-        ],
-      },
-    });
+  const legacy = await runForConfig({
+    "stSoftwareAU/example": {
+      prFailureActions: [
+        {
+          type: "fetch-jenkins-log",
+          jobPath: "foo/job/Develop",
+          checkNamePattern: "Jenkins",
+        },
+      ],
+    },
+  });
 
-    const modern = await runForConfig({
-      "stSoftwareAU/example": {
-        ciProviders: [
-          {
-            provider: "jenkins",
-            jobPath: "foo/job/Develop",
-            checkNamePattern: "Jenkins",
-          },
-        ],
-      },
-    });
+  const modern = await runForConfig({
+    "stSoftwareAU/example": {
+      ciProviders: [
+        {
+          provider: "jenkins",
+          jobPath: "foo/job/Develop",
+          checkNamePattern: "Jenkins",
+        },
+      ],
+    },
+  });
 
-    assertEquals(legacy.providers, modern.providers);
-    assertEquals(legacy.urls, modern.urls);
-    assertEquals(legacy.excerpt, modern.excerpt);
-    assertEquals(legacy.urls.length, 2, "status + console fetch expected");
-  } finally {
-    restoreEnv(snap);
+  assertEquals(legacy.providers, modern.providers);
+  assertEquals(legacy.urls, modern.urls);
+  assertEquals(legacy.excerpt, modern.excerpt);
+  assertEquals(legacy.urls.length, 2, "status + console fetch expected");
+  // The URLs came from the injected lookup, not the process (Issue #958).
+  for (const url of legacy.urls) {
+    assert(
+      url.startsWith(`${jenkinsEnv["JENKINS_URL"]}/job/`),
+      `fetch did not use the injected JENKINS_URL: ${url}`,
+    );
   }
 });

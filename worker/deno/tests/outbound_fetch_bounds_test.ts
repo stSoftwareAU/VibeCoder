@@ -18,28 +18,26 @@ import {
   fetchJenkinsBuildLog,
   fetchJenkinsBuildStatus,
 } from "../lib/jenkins_log_fetcher.ts";
-import { checkJenkinsAccess } from "../lib/jenkins_access_check.ts";
+import {
+  checkJenkinsAccess,
+  type EnvReader,
+} from "../lib/jenkins_access_check.ts";
 import { uploadToImgbb } from "../lib/imgbb_upload.ts";
 import { fetchNpmTimeData } from "../lib/npm_package_age.ts";
 
-const ENV_KEYS = ["JENKINS_URL", "JENKINS_USER", "JENKINS_TOKEN"] as const;
-
+/**
+ * Jenkins credentials for the bounded-fetch probes. Issue #958: these are
+ * handed to each client through its `readEnv` seam, so nothing here writes
+ * a token-shaped value into the process environment.
+ */
 const jenkinsEnv = {
   JENKINS_URL: "https://jenkins.example.com",
   JENKINS_USER: "ci-bot",
-  JENKINS_TOKEN: "secret-token",
+  JENKINS_TOKEN: "not-a-real-token",
 };
 
-function withJenkinsEnv<T>(fn: () => Promise<T>): Promise<T> {
-  const snapshot = ENV_KEYS.map((k) => [k, Deno.env.get(k)] as const);
-  for (const [k, v] of Object.entries(jenkinsEnv)) Deno.env.set(k, v);
-  return fn().finally(() => {
-    for (const [k, v] of snapshot) {
-      if (v === undefined) Deno.env.delete(k);
-      else Deno.env.set(k, v);
-    }
-  });
-}
+const readEnv: EnvReader = (name) =>
+  jenkinsEnv[name as keyof typeof jenkinsEnv];
 
 /** A response body that never ends, reporting cancellation. */
 function endlessResponse(chunkBytes = 64 * 1024): {
@@ -104,121 +102,114 @@ function capturingFetch(response: () => Response): {
 // ── Jenkins status ──────────────────────────────────────────────────────
 
 Deno.test("fetchJenkinsBuildStatus - request carries an abort signal", async () => {
-  await withJenkinsEnv(async () => {
-    const cap = capturingFetch(() =>
-      new Response(JSON.stringify({ number: 1, result: "SUCCESS" }))
-    );
-    const result = await fetchJenkinsBuildStatus({
-      jobPath: "MyJob",
-      build: 1,
-      fetchFn: cap.fetchFn,
-    });
-    assert(result.ok);
-    assert(
-      cap.init()?.signal instanceof AbortSignal,
-      "status request must be bounded by a signal",
-    );
+  const cap = capturingFetch(() =>
+    new Response(JSON.stringify({ number: 1, result: "SUCCESS" }))
+  );
+  const result = await fetchJenkinsBuildStatus({
+    readEnv,
+    jobPath: "MyJob",
+    build: 1,
+    fetchFn: cap.fetchFn,
   });
+  assert(result.ok);
+  assert(
+    cap.init()?.signal instanceof AbortSignal,
+    "status request must be bounded by a signal",
+  );
 });
 
 Deno.test("fetchJenkinsBuildStatus - a timed-out request fails loud", async () => {
-  await withJenkinsEnv(async () => {
-    const result = await fetchJenkinsBuildStatus({
-      jobPath: "MyJob",
-      build: 1,
-      fetchFn: timingOutFetch(),
-      timeoutMs: 25,
-    });
-    assert(!result.ok);
-    assertStringIncludes(result.error, "timed out after 25ms");
+  const result = await fetchJenkinsBuildStatus({
+    readEnv,
+    jobPath: "MyJob",
+    build: 1,
+    fetchFn: timingOutFetch(),
+    timeoutMs: 25,
   });
+  assert(!result.ok);
+  assertStringIncludes(result.error, "timed out after 25ms");
 });
 
 Deno.test("fetchJenkinsBuildStatus - an endless body is cancelled, not parsed", async () => {
-  await withJenkinsEnv(async () => {
-    const endless = endlessResponse();
-    const result = await fetchJenkinsBuildStatus({
-      jobPath: "MyJob",
-      build: 1,
-      fetchFn: () => Promise.resolve(endless.response),
-    });
-    assert(!result.ok);
-    assertStringIncludes(result.error, "exceeded");
-    assert(endless.cancelled(), "the status body stream must be cancelled");
+  const endless = endlessResponse();
+  const result = await fetchJenkinsBuildStatus({
+    readEnv,
+    jobPath: "MyJob",
+    build: 1,
+    fetchFn: () => Promise.resolve(endless.response),
   });
+  assert(!result.ok);
+  assertStringIncludes(result.error, "exceeded");
+  assert(endless.cancelled(), "the status body stream must be cancelled");
 });
 
 Deno.test("fetchJenkinsBuildStatus - an error body is discarded unread", async () => {
-  await withJenkinsEnv(async () => {
-    const endless = endlessResponse();
-    const errorResponse = new Response(endless.response.body, { status: 500 });
-    const result = await fetchJenkinsBuildStatus({
-      jobPath: "MyJob",
-      build: 1,
-      fetchFn: () => Promise.resolve(errorResponse),
-    });
-    assert(!result.ok);
-    assert(endless.cancelled(), "a 5xx body must be cancelled, not buffered");
-    // At most the stream's own initial pull; the client never reads a chunk.
-    assert(
-      endless.bytesEmitted() <= 64 * 1024,
-      `buffered ${endless.bytesEmitted()} bytes of a 5xx body`,
-    );
+  const endless = endlessResponse();
+  const errorResponse = new Response(endless.response.body, { status: 500 });
+  const result = await fetchJenkinsBuildStatus({
+    readEnv,
+    jobPath: "MyJob",
+    build: 1,
+    fetchFn: () => Promise.resolve(errorResponse),
   });
+  assert(!result.ok);
+  assert(endless.cancelled(), "a 5xx body must be cancelled, not buffered");
+  // At most the stream's own initial pull; the client never reads a chunk.
+  assert(
+    endless.bytesEmitted() <= 64 * 1024,
+    `buffered ${endless.bytesEmitted()} bytes of a 5xx body`,
+  );
 });
 
 // ── Jenkins console log ─────────────────────────────────────────────────
 
 Deno.test("fetchJenkinsBuildLog - request carries an abort signal", async () => {
-  await withJenkinsEnv(async () => {
-    const cap = capturingFetch(() => new Response("log body"));
-    const result = await fetchJenkinsBuildLog({
-      jobPath: "MyJob",
-      build: 1,
-      fetchFn: cap.fetchFn,
-    });
-    assert(result.ok);
-    assert(
-      cap.init()?.signal instanceof AbortSignal,
-      "log request must be bounded by a signal",
-    );
+  const cap = capturingFetch(() => new Response("log body"));
+  const result = await fetchJenkinsBuildLog({
+    readEnv,
+    jobPath: "MyJob",
+    build: 1,
+    fetchFn: cap.fetchFn,
   });
+  assert(result.ok);
+  assert(
+    cap.init()?.signal instanceof AbortSignal,
+    "log request must be bounded by a signal",
+  );
 });
 
 Deno.test("fetchJenkinsBuildLog - a timed-out request fails loud", async () => {
-  await withJenkinsEnv(async () => {
-    const result = await fetchJenkinsBuildLog({
-      jobPath: "MyJob",
-      build: 1,
-      fetchFn: timingOutFetch(),
-      timeoutMs: 40,
-    });
-    assert(!result.ok);
-    assertStringIncludes(result.error, "timed out after 40ms");
+  const result = await fetchJenkinsBuildLog({
+    readEnv,
+    jobPath: "MyJob",
+    build: 1,
+    fetchFn: timingOutFetch(),
+    timeoutMs: 40,
   });
+  assert(!result.ok);
+  assertStringIncludes(result.error, "timed out after 40ms");
 });
 
 Deno.test("fetchJenkinsBuildLog - an endless log stream is cancelled at the hard limit", async () => {
-  await withJenkinsEnv(async () => {
-    const endless = endlessResponse(4096);
-    const maxStreamBytes = 128 * 1024;
-    const result = await fetchJenkinsBuildLog({
-      jobPath: "MyJob",
-      build: 1,
-      maxBytes: 8 * 1024,
-      maxStreamBytes,
-      fetchFn: () => Promise.resolve(endless.response),
-    });
-    assert(result.ok);
-    assertStringIncludes(result.value, "truncated");
-    const size = new TextEncoder().encode(result.value).byteLength;
-    assert(size <= 8 * 1024, `returned ${size} bytes, expected <= 8192`);
-    assert(endless.cancelled(), "the log stream must be cancelled");
-    assert(
-      endless.bytesEmitted() <= maxStreamBytes + 4096,
-      `read ${endless.bytesEmitted()} bytes past the ${maxStreamBytes} ceiling`,
-    );
+  const endless = endlessResponse(4096);
+  const maxStreamBytes = 128 * 1024;
+  const result = await fetchJenkinsBuildLog({
+    readEnv,
+    jobPath: "MyJob",
+    build: 1,
+    maxBytes: 8 * 1024,
+    maxStreamBytes,
+    fetchFn: () => Promise.resolve(endless.response),
   });
+  assert(result.ok);
+  assertStringIncludes(result.value, "truncated");
+  const size = new TextEncoder().encode(result.value).byteLength;
+  assert(size <= 8 * 1024, `returned ${size} bytes, expected <= 8192`);
+  assert(endless.cancelled(), "the log stream must be cancelled");
+  assert(
+    endless.bytesEmitted() <= maxStreamBytes + 4096,
+    `read ${endless.bytesEmitted()} bytes past the ${maxStreamBytes} ceiling`,
+  );
 });
 
 // ── Jenkins preflight ───────────────────────────────────────────────────
@@ -228,7 +219,7 @@ Deno.test("checkJenkinsAccess - probe carries an abort signal", async () => {
   const diagnosis = await checkJenkinsAccess({
     jobPath: "MyJob",
     fetchFn: cap.fetchFn,
-    readEnv: (name) => jenkinsEnv[name as keyof typeof jenkinsEnv],
+    readEnv,
   });
   assertEquals(diagnosis.ok, true);
   assert(
@@ -242,7 +233,7 @@ Deno.test("checkJenkinsAccess - a timed-out probe is a network diagnosis", async
     jobPath: "MyJob",
     fetchFn: timingOutFetch(),
     timeoutMs: 15,
-    readEnv: (name) => jenkinsEnv[name as keyof typeof jenkinsEnv],
+    readEnv,
   });
   assertEquals(diagnosis.ok, false);
   assertEquals(diagnosis.status, "network-error");
@@ -255,7 +246,7 @@ Deno.test("checkJenkinsAccess - the probe body is discarded unread", async () =>
     jobPath: "MyJob",
     fetchFn: () =>
       Promise.resolve(new Response(endless.response.body, { status: 403 })),
-    readEnv: (name) => jenkinsEnv[name as keyof typeof jenkinsEnv],
+    readEnv,
   });
   assertEquals(diagnosis.ok, false);
   assert(endless.cancelled(), "the probe body must be cancelled, not buffered");

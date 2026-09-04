@@ -16,25 +16,22 @@ import { assert, assertStringIncludes } from "@std/assert";
 // module it imports back.
 import { getCiLogProvider } from "../lib/ci_log_provider.ts";
 import { JENKINS_PROVIDER_ID } from "../lib/ci_provider_jenkins.ts";
+import type { EnvReader } from "../lib/jenkins_access_check.ts";
 
 const jenkinsCiLogProvider = getCiLogProvider(JENKINS_PROVIDER_ID)!;
 
-const ENV_KEYS = ["JENKINS_URL", "JENKINS_USER", "JENKINS_TOKEN"] as const;
+/**
+ * Jenkins credentials for the provider under test. Issue #958: they reach
+ * the provider through `CiFailureContext.readEnv`, so no token-shaped value
+ * is written into the process environment a parallel worker shares.
+ */
+const jenkinsEnv: Record<string, string> = {
+  JENKINS_URL: "https://ci.example.invalid",
+  JENKINS_USER: "ci-bot",
+  JENKINS_TOKEN: "not-a-real-token",
+};
 
-async function withJenkinsEnv<T>(run: () => Promise<T>): Promise<T> {
-  const snapshot = ENV_KEYS.map((k) => [k, Deno.env.get(k)] as const);
-  Deno.env.set("JENKINS_URL", "https://ci.example.invalid");
-  Deno.env.set("JENKINS_USER", "ci-bot");
-  Deno.env.set("JENKINS_TOKEN", "test-token");
-  try {
-    return await run();
-  } finally {
-    for (const [k, v] of snapshot) {
-      if (v === undefined) Deno.env.delete(k);
-      else Deno.env.set(k, v);
-    }
-  }
-}
+const readEnv: EnvReader = (name) => jenkinsEnv[name];
 
 Deno.test("jenkins provider - falls back to the configured job path when the URL has none", async () => {
   const requested: string[] = [];
@@ -52,23 +49,22 @@ Deno.test("jenkins provider - falls back to the configured job path when the URL
     return Promise.resolve(new Response("BUILD FAILURE", { status: 200 }));
   };
 
-  await withJenkinsEnv(async () => {
-    const result = await jenkinsCiLogProvider.fetchLog({
-      repo: "stSoftwareAU/private-repo-12",
-      checkName: "continuous-integration/jenkins/pr-head",
-      // No /job/ segment: build number only.
-      targetUrl: "https://ci.example.invalid/6/",
-      providerConfig: {
-        provider: "jenkins",
-        jobPath: "stSoftwareAU/job/private-repo-12/job/Develop",
-      },
-      fetchFn,
-    });
-    assert(
-      result.ok,
-      `expected fetch to succeed, got: ${!result.ok && result.error}`,
-    );
+  const result = await jenkinsCiLogProvider.fetchLog({
+    repo: "stSoftwareAU/private-repo-12",
+    checkName: "continuous-integration/jenkins/pr-head",
+    // No /job/ segment: build number only.
+    targetUrl: "https://ci.example.invalid/6/",
+    providerConfig: {
+      provider: "jenkins",
+      jobPath: "stSoftwareAU/job/private-repo-12/job/Develop",
+    },
+    fetchFn,
+    readEnv,
   });
+  assert(
+    result.ok,
+    `expected fetch to succeed, got: ${!result.ok && result.error}`,
+  );
 
   assert(requested.length > 0, "no Jenkins request was made");
   assertStringIncludes(
@@ -84,15 +80,14 @@ Deno.test("jenkins provider - unparseable target_url fails loudly, never fetches
     return Promise.resolve(new Response("", { status: 200 }));
   };
 
-  const result = await withJenkinsEnv(() =>
-    jenkinsCiLogProvider.fetchLog({
-      repo: "stSoftwareAU/private-repo-12",
-      checkName: "continuous-integration/jenkins/pr-head",
-      targetUrl: "https://ci.example.invalid/job/Develop/lastBuild/",
-      providerConfig: { provider: "jenkins", jobPath: "Develop" },
-      fetchFn,
-    })
-  );
+  const result = await jenkinsCiLogProvider.fetchLog({
+    repo: "stSoftwareAU/private-repo-12",
+    checkName: "continuous-integration/jenkins/pr-head",
+    targetUrl: "https://ci.example.invalid/job/Develop/lastBuild/",
+    providerConfig: { provider: "jenkins", jobPath: "Develop" },
+    fetchFn,
+    readEnv,
+  });
 
   assert(!result.ok);
   assertStringIncludes(result.error, "could not extract Jenkins build number");

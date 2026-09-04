@@ -22,6 +22,7 @@
 
 import type { Result } from "../types.ts";
 import { getEnvOrDefault } from "./config.ts";
+import type { EnvReader } from "./jenkins_access_check.ts";
 import {
   type FetchFn,
   fetchJenkinsBuildLog,
@@ -477,6 +478,12 @@ export interface BuildCiFailureContextOptions {
   /** Injectable fetch function (defaults to `globalThis.fetch`). */
   fetchFn?: FetchFn;
   /**
+   * Injectable environment reader (Issue #958). Supplies `JENKINS_URL`
+   * when `jenkinsBaseUrl` is omitted, and the credentials the log fetch
+   * needs. Defaults to the process environment.
+   */
+  readEnv?: EnvReader;
+  /**
    * Per-run boundary id used to fence the untrusted log excerpt (Issue #3639).
    * The caller generates it and hands the same id to the prompt builder.
    */
@@ -495,8 +502,11 @@ export interface BuildCiFailureContextOptions {
 export async function buildCiFailureContext(
   options: BuildCiFailureContextOptions,
 ): Promise<string> {
+  const { readEnv } = options;
   const baseUrl = options.jenkinsBaseUrl ??
-    getEnvOrDefault("JENKINS_URL", "").trim();
+    (readEnv === undefined
+      ? getEnvOrDefault("JENKINS_URL", "")
+      : readEnv("JENKINS_URL") ?? "").trim();
   const { boundaryId } = options;
 
   const reference = parseCiFailureBuildReference(options.issueBody, {
@@ -518,6 +528,7 @@ export async function buildCiFailureContext(
     jobPath,
     build: reference.value.buildNumber,
     fetchFn: options.fetchFn,
+    readEnv,
   });
   if (!status.ok) return formatCiFailureFetchFailure(status.error, boundaryId);
 
@@ -526,6 +537,7 @@ export async function buildCiFailureContext(
     build: reference.value.buildNumber,
     maxBytes: CI_FAILURE_LOG_FETCH_BYTES,
     fetchFn: options.fetchFn,
+    readEnv,
   });
   if (!log.ok) return formatCiFailureFetchFailure(log.error, boundaryId);
 

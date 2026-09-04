@@ -26,6 +26,7 @@ import {
   withRequestTimeout,
 } from "./bounded_fetch.ts";
 import { getEnvOrDefault } from "./config.ts";
+import type { EnvLookup } from "./credential_preflight.ts";
 
 /** Injectable fetch function type (mirrors the log fetcher's seam). */
 export type FetchFn = (
@@ -71,8 +72,16 @@ export interface JenkinsCredentials {
   token: string;
 }
 
-/** Reads one environment variable — injectable so tests need no real env. */
-export type EnvReader = (name: string) => string | undefined;
+/**
+ * Reads one environment variable — injectable so tests need no real env.
+ *
+ * Alias of the canonical {@link EnvLookup} (Issue #958). The two names were
+ * introduced independently for the same one-argument signature; the whole
+ * Jenkins/CI-log family now takes this one seam, so a test can supply the
+ * three credentials as a plain object instead of writing them into the
+ * process environment where a parallel worker would see them.
+ */
+export type EnvReader = EnvLookup;
 
 const defaultEnvReader: EnvReader = (name) => {
   const value = getEnvOrDefault(name, "");

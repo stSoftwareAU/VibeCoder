@@ -16,6 +16,7 @@
 
 import type { CiProviderConfig, Result } from "../types.ts";
 import type { FetchFn } from "./jenkins_log_fetcher.ts";
+import type { EnvReader } from "./jenkins_access_check.ts";
 import type {
   fetchGithubActionsLogExcerpt,
   GhCommandFn,
@@ -39,6 +40,12 @@ export interface CiFailureContext {
   providerConfig?: CiProviderConfig;
   /** Injection seam: HTTP fetch used by the Jenkins provider. */
   fetchFn?: FetchFn;
+  /**
+   * Injection seam: environment reader used by the Jenkins provider to
+   * resolve its credentials (Issue #958). Defaults to the process
+   * environment when omitted.
+   */
+  readEnv?: EnvReader;
   /** Injection seam: authenticated `gh` runner used by the Actions provider. */
   ghFn?: GhCommandFn;
   /** Injection seam: Actions log fetcher (tests replace the network call). */

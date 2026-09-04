@@ -21,6 +21,7 @@
 import type { CiProviderConfig, Logger } from "../types.ts";
 import type { FailedCiCheck } from "./pr_ci_checks.ts";
 import type { FetchFn } from "./jenkins_log_fetcher.ts";
+import type { EnvReader } from "./jenkins_access_check.ts";
 import type {
   fetchGithubActionsLogExcerpt,
   GhCommandFn,
@@ -53,6 +54,12 @@ export interface RunPrFailureActionsOptions {
   providers: CiProviderConfig[];
   /** Injectable fetch function (used by the Jenkins provider). */
   fetchFn?: FetchFn;
+  /**
+   * Injectable environment reader (Issue #958), used by the Jenkins
+   * provider to resolve its credentials. Defaults to the process
+   * environment when omitted.
+   */
+  readEnv?: EnvReader;
   /** Injectable authenticated `gh` runner (used by the Actions provider). */
   ghFn?: GhCommandFn;
   /** Injectable Actions log fetcher (tests replace the network call). */
@@ -115,6 +122,7 @@ async function runProvider(
     ...(check.targetUrl !== undefined ? { targetUrl: check.targetUrl } : {}),
     providerConfig: config,
     ...(opts.fetchFn !== undefined ? { fetchFn: opts.fetchFn } : {}),
+    ...(opts.readEnv !== undefined ? { readEnv: opts.readEnv } : {}),
     ...(opts.ghFn !== undefined ? { ghFn: opts.ghFn } : {}),
     ...(opts.actionsLogFn !== undefined
       ? { actionsLogFn: opts.actionsLogFn }
