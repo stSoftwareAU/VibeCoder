@@ -187,6 +187,10 @@ docs/PROMPTS.md:
   title: "Vibe Coder: Prompt goals (summary)"
   page_icon: "📝"
 
+docs/CUSTOM-PROMPTS.md:
+  title: "Vibe Coder: Custom Label Prompts"
+  page_icon: "✍️"
+
 docs/QUORUM.md:
   title: "Vibe Coder: Quorum"
   page_icon: "⚖️"

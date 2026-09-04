@@ -171,6 +171,8 @@ import { processIssueQuestion } from "./question_processor.ts";
 import { processIssuePlanning } from "./planning_processor.ts";
 import { processGrillMe } from "./grill_me_processor.ts";
 import { processQuorum } from "./quorum_processor.ts";
+import { dispatchCustomLabelPrompts } from "./custom_label_dispatch.ts";
+import { customDispatchMappings } from "./custom_label_prompts_config.ts";
 
 // Failure & circuit breaker
 import {
@@ -2368,6 +2370,37 @@ export async function createProductionRunCoreDeps(
       );
       return { ok: true, value: result };
     },
+
+    // -- Priority 1.86: Custom label prompts (Issue #848, part of #843) --
+    // Wired only when the operator configured a mapping, so an unconfigured
+    // fleet keeps a byte-identical priority ladder. Each configured label is
+    // tried in configuration order and the first issue found is worked; a
+    // mapped prompt file that has gone missing throws from the processor
+    // rather than falling back to the built-in template.
+    // Issue #849: only mappings that dispatch a *new* label belong here. One
+    // that overrides a built-in label (`planning`, `grill-me`, …) replaces
+    // that phase's template and is worked by that phase's own handler —
+    // scanning for it here would run a planning issue through the
+    // implementation phase.
+    ...(customDispatchMappings(config).length > 0
+      ? {
+        async findAndProcessCustomLabelPrompts(
+          opts?: { deadlineEpochMs: number },
+        ) {
+          const value = await dispatchCustomLabelPrompts(
+            customDispatchMappings(config),
+            findAndProcessByLabel,
+            {
+              ...(opts?.deadlineEpochMs !== undefined
+                ? { deadlineEpochMs: opts.deadlineEpochMs }
+                : {}),
+              onFault: (fault) => logger.error(fault.message),
+            },
+          );
+          return { ok: true as const, value };
+        },
+      }
+      : {}),
 
     // -- Priority 1.9: Stale workflow detection (Issue #1240) --
     async scanStaleWorkflowIssues(opts) {

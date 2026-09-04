@@ -627,6 +627,68 @@ Deno.test("github - createGitHubIssuesWithPartialFailures warns once per strippe
 });
 
 // ---------------------------------------------------------------------------
+// custom_label_prompts labels are reserved too (Issue #847, part of #843)
+// ---------------------------------------------------------------------------
+
+Deno.test("github - filterReservedLabels strips a configured custom label (Issue #847)", () => {
+  const custom = ["deploy-review"];
+  // Case-insensitive, like every other reserved-label guard.
+  assertEquals(
+    filterReservedLabels(
+      ["enhancement", "deploy-review", "DEPLOY-REVIEW"],
+      custom,
+    ),
+    ["enhancement"],
+  );
+  // Without the custom list the label is descriptive and survives.
+  assertEquals(filterReservedLabels(["deploy-review"]), ["deploy-review"]);
+  // Unrelated labels are untouched.
+  assertEquals(filterReservedLabels(["bug"], custom), ["bug"]);
+});
+
+Deno.test("github - createGitHubIssuesWithPartialFailures strips a configured custom label (Issue #847)", async () => {
+  const { createGitHubIssuesWithPartialFailures } = await import(
+    "../lib/github.ts"
+  );
+  const { createLogger } = await import("../lib/logger.ts");
+
+  const improvements = [
+    {
+      title: "Test custom label",
+      description: "Test desc",
+      category: "testing" as const,
+      labels: ["enhancement", "deploy-review"],
+    },
+  ];
+
+  const lines: string[] = [];
+  const logger = createLogger({ write: (msg) => lines.push(msg) });
+  const labelArgs: string[] = [];
+  const mockGh = (args: string[]): Promise<string> => {
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === "--label") labelArgs.push(args[i + 1]!);
+    }
+    return Promise.resolve("https://github.com/org/repo/issues/43");
+  };
+
+  await createGitHubIssuesWithPartialFailures(
+    improvements,
+    "org/repo",
+    mockGh,
+    logger,
+    ["deploy-review"],
+  );
+
+  // The custom label never reaches `gh issue create` …
+  assertEquals(labelArgs, ["enhancement"]);
+  // … and the strip is announced.
+  assertEquals(
+    lines.some((l) => l.includes("WARNING") && l.includes("deploy-review")),
+    true,
+  );
+});
+
+// ---------------------------------------------------------------------------
 // hasVisibleContent (Issue #1659)
 //
 // Bodies that render as blank on GitHub (empty, whitespace, HTML-comment-only)

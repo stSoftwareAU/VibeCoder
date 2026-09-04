@@ -2,13 +2,15 @@
 
 The Vibe Coder worker is built on a **Deno TypeScript** architecture with 103 commands, 299 libraries, and 550 test files (counts as of June 2026 — see `worker/deno/` for the current set). All business logic lives in `worker/deno/`. For a quick overview, see the [main README](../README.md).
 
-Extending the worker **from outside** — reacting to a finished issue run without adding code here — is the [post-run callback contract](CALLBACKS.md), which ships a conformance fixture an extension can run against its own hooks.
+Extending the worker **from outside** — reacting to a finished issue run without adding code here — is the [post-run callback contract](CALLBACKS.md), which ships a conformance fixture an extension can run against its own hooks. Extending it with **prompts you do not publish** — a label mapped to a template on your own host — is [Custom Label Prompts](CUSTOM-PROMPTS.md).
 
 ## 📋 Table of Contents
 
 - [Architecture](#architecture)
 - [Adding a New Command](#adding-a-new-command)
 - [Adding a CI Log Provider](#adding-a-ci-log-provider)
+- [Custom Label Prompts](CUSTOM-PROMPTS.md) — the operator-side extension
+  point, on its own page
 - [Running Deno Commands](#running-deno-commands)
 - [Prompt Templates](#prompt-templates)
 - [Shell Integration (Internal)](#shell-integration-internal)
@@ -137,7 +139,9 @@ External CI/CD systems plug in through the `CiLogProvider` extension point in
 >
 > See [Private Extensions](PRIVATE-EXTENSIONS.md) for the configuration-only
 > extension surface, and for the two reasons an out-of-tree provider cannot
-> register itself today.
+> register itself today. The sibling configuration-only extension point —
+> a label mapped to a prompt template on the operator's own host — is
+> [Custom Label Prompts](CUSTOM-PROMPTS.md).
 
 ```mermaid
 flowchart TD
@@ -480,8 +484,20 @@ troubleshooting symptoms.
 
 **To update a prompt**: edit `prompts/<type>/prompt.md` in place and commit.
 
+**To replace a prompt without publishing it**: map the phase's label to a
+non-public file with `custom_label_prompts`
+([Custom Label Prompts](CUSTOM-PROMPTS.md), key reference in
+[Configuration](CONFIGURATION.md#-custom-label-prompts)). The override is
+validated at config load against the placeholders of the phase it replaces, and
+each turn of a two-turn phase (`planning` / `planning_critique`, `quorum` /
+`quorum_judge`) needs its own entry. The same key maps a **new** label to a
+private prompt, which is the operator-side extension point the worked example
+in [Custom Label Prompts](CUSTOM-PROMPTS.md#-worked-example--end-to-end) walks
+through end to end.
+
 **Traceability**: the execute phase logs the checkout's short commit hash, which
-pins the exact prompt text a run used.
+pins the exact prompt text a run used, and every phase logs the template file it
+loaded — the operator's path when a mapping overrode it (Issue #849).
 
 **Custom prompts directory**: Set the `PROMPTS_DIR` environment variable to override the default prompts location.
 

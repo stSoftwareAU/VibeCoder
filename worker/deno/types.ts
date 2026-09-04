@@ -491,6 +491,23 @@ export interface WorkerConfig {
    */
   softwareMinVersions: Record<string, string>;
   /**
+   * Custom GitHub label → non-public prompt file mappings (Issue #846, part
+   * of #843).
+   *
+   * An operator extends the Vibe Coder with a private prompt template — a
+   * local file path on the host outside the public repository — without
+   * publishing it. Read from the `.config.json` `custom_label_prompts` block
+   * and validated fail-loud by `assertCustomLabelPrompts()` in
+   * `lib/custom_label_prompts_config.ts`. Defaults to an empty list: the
+   * feature is off until an operator opts in, and no existing config changes
+   * behaviour.
+   *
+   * Inside the container each `promptPath` is where the launcher's read-only
+   * mount makes the operator's file readable (Issue #850); read on the host it
+   * is the configured path unchanged.
+   */
+  customLabelPrompts: CustomLabelPromptMapping[];
+  /**
    * Post-run callbacks — the public extension contract (Issue #806).
    *
    * Optional absolute executable paths run after a terminal issue run:
@@ -1243,6 +1260,17 @@ export interface ConfigFile {
    */
   container_tools?: ContainerToolSpec[];
   /**
+   * Custom GitHub label → non-public prompt file mappings (Issue #846, part
+   * of #843).
+   *
+   * Deliberately `unknown`: the block arrives untrusted from the operator's
+   * file, and only `parseCustomLabelPrompts()` / `assertCustomLabelPrompts()`
+   * in `lib/custom_label_prompts_config.ts` may be trusted to produce the
+   * typed {@link CustomLabelPromptMapping} form — they fail loud on any fault
+   * rather than repairing or dropping it.
+   */
+  custom_label_prompts?: unknown;
+  /**
    * Post-run callback hooks (Issue #806, parent #796).
    *
    * Deliberately untyped here: the block arrives untrusted from the
@@ -1315,4 +1343,30 @@ export interface IdleTaskCadenceFileConfig {
   weekly_days?: number;
   /** Monthly rolling window, in days (default 30, must exceed `weekly_days`). */
   monthly_days?: number;
+}
+
+/**
+ * A validated operator mapping from a GitHub label to a non-public prompt
+ * template file on the host (Issue #846, part of #843).
+ *
+ * Extends the Vibe Coder without publishing a private prompt to the public
+ * repository: the label dispatches like `work-on`, but the generic
+ * implementation phase runs `promptPath`'s contents instead of the built-in
+ * template.
+ */
+export interface CustomLabelPromptMapping {
+  /** The GitHub label that dispatches this mapping. */
+  label: string;
+  /** Absolute host path of the prompt template file. */
+  promptPath: string;
+  /**
+   * The built-in phase this mapping overrides (Issue #849, part of #843).
+   *
+   * Set when the label matches a configured built-in label — `planning`,
+   * `grill-me`, `question`, `quorum` or the hardwired `work-on` — in which
+   * case the file replaces that phase's template instead of dispatching a new
+   * label into the implementation phase. Resolved and validated once, at
+   * config load.
+   */
+  overridesPhase?: string;
 }

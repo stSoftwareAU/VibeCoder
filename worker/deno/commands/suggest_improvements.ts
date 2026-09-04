@@ -18,6 +18,7 @@ import {
   type CreateIssuesResult,
 } from "../lib/github.ts";
 import { validateSuggestImprovementsArgs } from "../lib/command_args.ts";
+import { customLabelPromptLabels } from "../lib/custom_label_prompts_config.ts";
 
 /**
  * Represents a single improvement suggestion.
@@ -200,7 +201,7 @@ export const suggestImprovementsCommand: Command = {
 
   async execute(
     args: Record<string, unknown>,
-    _config: WorkerConfig,
+    config: WorkerConfig,
   ): Promise<CommandResult<SuggestImprovementsData>> {
     // Validate args using typed schema (Issue #630)
     const parsed = validateSuggestImprovementsArgs(args);
@@ -231,6 +232,11 @@ export const suggestImprovementsCommand: Command = {
     const result = await createGitHubIssuesWithPartialFailures(
       improvements,
       repo,
+      undefined,
+      undefined,
+      // Issue #847: a configured custom label dispatches a privileged phase, so
+      // the worker must never self-apply one on an issue it files.
+      customLabelPromptLabels(config),
     );
 
     const successMsg =

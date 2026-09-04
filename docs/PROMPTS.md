@@ -18,6 +18,11 @@ are embedded in these prompts, see [AGENTS.md](../AGENTS.md).
 
 ## Prompt types and goals
 
+The rows below are the templates **this repository ships**. An operator can
+add a row — a new GitHub label mapped to a prompt file on their own host — or
+replace the template behind an existing one, without publishing either: see
+[Custom Label Prompts](CUSTOM-PROMPTS.md).
+
 | Prompt                     | Goal                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **coding_guidelines**      | Shared principles and rules embedded into other prompts: KISS (Keep It Simple, Stupid), DRY (Don't Repeat Yourself), Australian English, secure coding principles, and how to use available tools (e.g. `gh`, Playwright). Not used alone; it is included when the worker handles issues, PR (Pull Request) feedback, spelling, or CI (Continuous Integration) fixes.                                                                                                                                                                                                              |

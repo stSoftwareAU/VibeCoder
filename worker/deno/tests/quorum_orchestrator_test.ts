@@ -35,7 +35,7 @@ import {
   type AgentProviderDescriptor,
   IMAGE_AGENT_PROVIDERS_ENV,
 } from "../lib/agent_provider.ts";
-import type { Result } from "../types.ts";
+import type { CustomLabelPromptMapping, Result } from "../types.ts";
 import type { RunStats } from "../lib/run_stats.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -750,4 +750,108 @@ Deno.test("runQuorum - a rerouted invocation that then fails is still observed",
     true,
     "a reroute that failed must still reach the processor",
   );
+});
+
+// --- Operator prompt overrides (Issue #849) -------------------------------
+
+/** Write an operator template and return the mapping that points at it. */
+async function quorumOverride(
+  dir: string,
+  name: string,
+  phase: string,
+  extra = "",
+): Promise<CustomLabelPromptMapping> {
+  const promptPath = `${dir}/${name}`;
+  await Deno.writeTextFile(
+    promptPath,
+    `${QUORUM_OPERATOR_MARKER}\n{{REPO}} #{{ISSUE_NUMBER}}\n{{ISSUE_TITLE}}\n` +
+      `{{ISSUE_LABELS}}\n{{ISSUE_BODY}}\n{{ISSUE_COMMENTS}}\n${extra}` +
+      `{{BOUNDARY_INTEGRITY_INSTRUCTION}}\n`,
+  );
+  return { label: "quorum", promptPath, overridesPhase: phase };
+}
+
+const QUORUM_OPERATOR_MARKER = "OPERATOR QUORUM TEMPLATE";
+
+Deno.test("runQuorum - a quorum override replaces the draft template, the judge keeps its own", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "quorum-override-" });
+  try {
+    const draft = await quorumOverride(dir, "draft.md", "quorum");
+    const rec = recorder();
+    const result = await runQuorum(options(
+      fakeInvoker({
+        alpha: "plan alpha",
+        bravo: "plan bravo",
+        judgy: verdict("A"),
+      }, rec),
+      {
+        issue: { ...ISSUE, promptOverrides: [draft] },
+      },
+    ));
+
+    assertEquals(result.ok, true);
+    for (const call of rec.calls.filter((c) => c.role === "planner")) {
+      assertStringIncludes(call.prompt, QUORUM_OPERATOR_MARKER);
+      assertStringIncludes(call.prompt, "stSoftwareAU/VibeCoder #4111");
+      // The untrusted issue text is still fenced by this run's nonce.
+      assertStringIncludes(call.prompt, "BOUNDARY_");
+    }
+    const judgeCall = rec.calls.find((c) => c.role === "judge");
+    assertEquals(
+      judgeCall?.prompt.includes(QUORUM_OPERATOR_MARKER),
+      false,
+      "overriding quorum must not override the judge turn",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runQuorum - a quorum_judge override replaces only the judge template", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "quorum-override-" });
+  try {
+    const judge = await quorumOverride(
+      dir,
+      "judge.md",
+      "quorum_judge",
+      "{{PLAN_A}}\n{{PLAN_B}}\n",
+    );
+    const rec = recorder();
+    const result = await runQuorum(options(
+      fakeInvoker({
+        alpha: "PLAN-ALPHA-TEXT",
+        bravo: "PLAN-BRAVO-TEXT",
+        judgy: verdict("B"),
+      }, rec),
+      {
+        issue: { ...ISSUE, promptOverrides: [judge] },
+      },
+    ));
+
+    assertEquals(result.ok, true);
+    const judgeCall = rec.calls.find((c) => c.role === "judge");
+    assertStringIncludes(judgeCall?.prompt ?? "", QUORUM_OPERATOR_MARKER);
+    // The judge still receives both plans, fenced as untrusted input.
+    assertStringIncludes(judgeCall?.prompt ?? "", "PLAN-ALPHA-TEXT");
+    assertStringIncludes(judgeCall?.prompt ?? "", "PLAN-BRAVO-TEXT");
+    for (const call of rec.calls.filter((c) => c.role === "planner")) {
+      assertEquals(call.prompt.includes(QUORUM_OPERATOR_MARKER), false);
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runQuorum - an override deleted since config load fails the run loudly", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "quorum-override-" });
+  const draft = await quorumOverride(dir, "gone.md", "quorum");
+  await Deno.remove(dir, { recursive: true });
+
+  const result = await runQuorum(options(fakeInvoker({}, recorder()), {
+    issue: { ...ISSUE, promptOverrides: [draft] },
+  }));
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  // The built-in template is never substituted: the fault names the file.
+  assertStringIncludes(result.error.message, "gone.md");
 });

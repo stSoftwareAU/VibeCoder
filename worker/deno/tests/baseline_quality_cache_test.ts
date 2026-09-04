@@ -436,6 +436,10 @@ Deno.test("baseline_quality_cache - full no-op with no work directory: no path, 
   // to the real environment, so a host that exports `WORK_DIR` (every
   // container run does) would otherwise resolve a real cache path here.
   const home = await Deno.makeTempDir({ prefix: "vibe-bqcache-home-" });
+  // The env lookup is stubbed too: an omitted `workDir` otherwise falls
+  // through to the process `WORK_DIR`, which the worker's own container
+  // exports — so "no work directory" was not the case being run on a real
+  // host, and the assertion below failed there while passing in CI.
   const roots = { home, env: () => undefined };
   try {
     // No cache directory means no path at all — never a $HOME fallback.
@@ -470,8 +474,10 @@ Deno.test("baseline_quality_cache - full no-op with no work directory: no path, 
 
 Deno.test("baseline_quality_cache - with no work directory even a warm legacy $HOME cache is a miss (Issue #133)", async () => {
   const home = await Deno.makeTempDir({ prefix: "vibe-bqcache-home-" });
-  // The env lookup is stubbed for the same reason as above: without it a
-  // host that exports `WORK_DIR` reads its real cache instead of no cache.
+  // The env lookup is stubbed too: an omitted `workDir` otherwise falls
+  // through to the process `WORK_DIR`, which the worker's own container
+  // exports — so "no work directory" was not the case being run on a real
+  // host, and the assertion below failed there while passing in CI.
   const roots = { home, env: () => undefined };
   try {
     // A valid, current entry in the legacy $HOME/.vibe-coder location.

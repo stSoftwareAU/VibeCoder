@@ -670,6 +670,125 @@ Deno.test(
   },
 );
 
+// Issue #847 (part of #843): a `custom_label_prompts` label dispatches a
+// privileged automation phase with an operator-supplied prompt, so it joins the
+// AND-gated set — the label *adder* must be on the allowlist even when the
+// issue author already is.
+Deno.test(
+  "issue_finder - findIssuesByLabel skips a custom-label issue when the label adder is untrusted (Issue #847)",
+  async () => {
+    const config = makeConfig({
+      customLabelPrompts: [
+        { label: "deploy-review", promptPath: "/srv/prompts/deploy-review.md" },
+      ],
+    });
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 71,
+          // Trusted maintainer authored the issue …
+          title: "Custom label issue",
+          url: "https://github.com/owner/repo/issues/71",
+          assignees: [],
+          labels: [{ name: "deploy-review" }],
+          createdAt: "2024-03-01T00:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+        },
+      ],
+      // … but a non-allowlisted triage collaborator applied the custom label.
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "deploy-review" },
+          actor: { login: "mallory" },
+        },
+      ],
+    });
+
+    const result = await findIssuesByLabel(config, "deploy-review", false, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+    });
+    assertEquals(result.found, false);
+  },
+);
+
+Deno.test(
+  "issue_finder - findIssuesByLabel surfaces a custom-label issue when a trusted author added the label (Issue #847)",
+  async () => {
+    const config = makeConfig({
+      customLabelPrompts: [
+        { label: "deploy-review", promptPath: "/srv/prompts/deploy-review.md" },
+      ],
+    });
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 72,
+          title: "Custom label issue",
+          url: "https://github.com/owner/repo/issues/72",
+          assignees: [],
+          labels: [{ name: "deploy-review" }],
+          createdAt: "2024-03-01T00:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "deploy-review" },
+          actor: { login: "alice" },
+        },
+      ],
+    });
+
+    const result = await findIssuesByLabel(config, "deploy-review", false, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+    });
+    assertEquals(result.found, true);
+    assertEquals(result.output.includes("72"), true);
+  },
+);
+
+Deno.test(
+  "issue_finder - findIssuesByLabel fails closed when a custom label's adder cannot be attributed (Issue #847)",
+  async () => {
+    const config = makeConfig({
+      customLabelPrompts: [
+        { label: "deploy-review", promptPath: "/srv/prompts/deploy-review.md" },
+      ],
+    });
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 73,
+          title: "Custom label issue",
+          url: "https://github.com/owner/repo/issues/73",
+          assignees: [],
+          labels: [{ name: "deploy-review" }],
+          createdAt: "2024-03-01T00:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+        },
+      ],
+      // No `labeled` event for the custom label — the adder is unknown.
+      timeline: [],
+    });
+
+    const result = await findIssuesByLabel(config, "deploy-review", false, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+    });
+    assertEquals(result.found, false);
+  },
+);
+
 // =============================================================================
 // findPlanningIssuesWithFallback tests (Issue #977)
 // =============================================================================
