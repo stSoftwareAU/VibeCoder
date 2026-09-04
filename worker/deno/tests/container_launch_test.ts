@@ -1212,3 +1212,56 @@ Deno.test("buildContainerLaunchPlan - carries the claiming floor and its origin 
   assertEquals(parsed.claimFloorPercent, "1");
   assertEquals(parsed.claimFloorOrigin, "gb=config,percent=env");
 });
+
+// ---------------------------------------------------------------------------
+// Extra Claude token files (Issue #917, parent #902).
+//
+// Multiple Claude subscriptions live as extra files INSIDE the credential
+// sub-directory the launcher already mounts, which is the whole reason that
+// layout was chosen: a token pool must reach the container without a new
+// mount, a new host-launch variable, or a launcher change. Asserted here
+// rather than reasoned about, so a future edit that starts enumerating token
+// files on the host fails in CI.
+// ---------------------------------------------------------------------------
+
+Deno.test("buildContainerLaunchPlan - extra token files change no mount and add no variable", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    const credentialDir = `${root}/credentials`;
+    await Deno.mkdir(`${credentialDir}/gh`, { recursive: true });
+    await Deno.mkdir(`${credentialDir}/claude`, { recursive: true });
+    await Deno.writeTextFile(
+      `${credentialDir}/claude/provider.env`,
+      "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-one\n",
+    );
+    const hostPaths = { ...inputs().hostPaths, credentialDir };
+    const before = buildContainerLaunchPlan(inputs({ hostPaths }));
+
+    await Deno.writeTextFile(
+      `${credentialDir}/claude/provider-2.env`,
+      "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-two\n",
+    );
+    await Deno.writeTextFile(
+      `${credentialDir}/claude/provider-3.env`,
+      "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-three\n",
+    );
+    const after = buildContainerLaunchPlan(inputs({ hostPaths }));
+
+    // The claude/ sub-directory is mounted whole and read-only, so the extra
+    // files ride the mount that already exists.
+    assertEquals(after.mounts, before.mounts);
+    assertEquals(mountValues(after.runArgs), mountValues(before.runArgs));
+    assertEquals(after.runArgs, before.runArgs);
+    const claudeMount = after.mounts.find((mount) =>
+      mount.source.endsWith("/credentials/claude")
+    );
+    assert(claudeMount, "the claude credential sub-directory is mounted");
+    assertEquals(claudeMount.readOnly, true);
+    // No token file name and no new VIBE_* variable reaches the argument
+    // list — the launcher and the crontab are untouched (parent #902).
+    assert(!after.runArgs.some((arg) => arg.includes("provider-2")));
+    assert(!after.runArgs.some((arg) => arg.includes("sk-ant-oat01")));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

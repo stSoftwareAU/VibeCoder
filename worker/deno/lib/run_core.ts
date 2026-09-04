@@ -556,6 +556,14 @@ export interface RunCoreDeps {
      * single-issue path omits it.
      */
     cycleDeadlineEpochMs?: number,
+    /**
+     * Stable id of the lane running this issue (Issue #923) — `s1`, `s2`,
+     * or `serial` for the single-stream loop. The issue pipeline works in
+     * a git worktree named for it, so two slots in one repository never
+     * share a working tree, a Claude session or resume state. Absent (CLI
+     * single-issue runs, tests): the shared clone, exactly as before.
+     */
+    laneId?: string,
   ) => Promise<
     Result<{
       success: boolean;
@@ -2009,19 +2017,7 @@ async function runIssueScanLoop(
     beginBusy("serial", deps.now());
     let processResult;
     try {
-      processResult = await deps.processIssue(issue, endTime);
-    } catch (thrown) {
-      // Issue #806: a throw is a terminal run, so the failure and always
-      // callbacks fire exactly once before it propagates. Restored in
-      // Issue #928 — a `main` sync merge replaced this `catch` with the
-      // `finally` below and silently dropped the dispatch, leaving a
-      // thrown run the one terminal outcome that reported nothing.
-      await dispatchIssueCallbacks(deps, issue.repo, issue.issueNumber, {
-        result: "failure",
-        startedAtEpochMs: claimedAtEpochMs,
-        guard: callbackGuard,
-      });
-      throw thrown;
+      processResult = await deps.processIssue(issue, endTime, "serial");
     } finally {
       // In a `finally` so a throw cannot leave the stream marked busy
       // for the rest of the run, which would read as 100% utilisation.
@@ -3354,7 +3350,7 @@ async function runSlotIssue(
   beginBusy(slotId, deps.now());
   let processResult;
   try {
-    processResult = await deps.processIssue(issue, endTime);
+    processResult = await deps.processIssue(issue, endTime, slotId);
   } finally {
     endBusy(slotId, deps.now());
   }
