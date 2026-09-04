@@ -26,12 +26,23 @@
  * a fresh config is pinned to the latest release when one resolves with a
  * manifest — otherwise it stays `dynamic` with one warning line saying why.
  *
+ * Every line is styled through `lib/console_style.ts` (Issue #870), so the
+ * conversation reads in the same `ℹ`/`✓`/`⚠` house style as the `setup.sh`
+ * output around it and a question that has a default shows it in brackets.
+ * The styler is a `deps` seam like every other side effect here, so a test
+ * names it rather than setting `NO_COLOR` on the shared process.
+ *
  * The load-time default is untouched: an absent `update_mode` still resolves
  * to `dynamic` (`DEFAULT_UPDATE_MODE`), because an existing host carries no
  * pins and frozen is all-or-nothing (Issue #622).
  */
 
 import { fetchOrigin, resolveRefCommit } from "../lib/checkout_update.ts";
+import {
+  bracketedDefault,
+  type ConsoleStyler,
+  terminalStyler,
+} from "../lib/console_style.ts";
 import {
   DEFAULT_UPDATE_MODE,
   PINNED_TOOLS,
@@ -84,6 +95,15 @@ export interface UpdateModeSetupDeps {
   ask(question: string): Promise<string | null>;
   /** Show one line to the operator. */
   say(message: string): void;
+  /**
+   * The glyphs and colour the lines are styled with (Issue #870).
+   *
+   * A seam like every other dependency here: a test names the styler instead
+   * of setting `NO_COLOR` on the process, which would race every test running
+   * beside it (Issue #880). Bound to stdout in production, because `say`
+   * prints there.
+   */
+  style: ConsoleStyler;
   /** Is an operator actually there to answer? */
   interactive(): boolean;
   /** Fetch origin (with tags) so a ref pushed since the last launch resolves. */
@@ -142,6 +162,7 @@ export function createDefaultUpdateModeDeps(): UpdateModeSetupDeps {
   return {
     ask: (question) => Promise.resolve(prompt(question)),
     say: (message) => console.log(message),
+    style: terminalStyler(),
     interactive: () => Deno.stdin.isTerminal(),
     fetchOrigin: (repoDir) => fetchOrigin(repoDir, defaultLogDir()),
     resolveCommit: resolveRefCommit,
@@ -247,25 +268,34 @@ async function askMode(
 ): Promise<Result<UpdateMode>> {
   deps.say("");
   deps.say(
-    "  Update mode: 'dynamic' tracks the tip of the default branch and " +
-      "installs the latest tools;",
+    deps.style.info(
+      "Update mode: 'dynamic' tracks the tip of the default branch and " +
+        "installs the latest tools;",
+    ),
   );
   deps.say(
-    "  'frozen' holds this host at a pinned ref with exact tool versions.",
+    deps.style.plain(
+      "'frozen' holds this host at a pinned ref with exact tool versions.",
+    ),
   );
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const answer = await deps.ask(
-      `  Update mode (dynamic/frozen) [${current}]`,
+      deps.style.plain(
+        bracketedDefault("Update mode (dynamic/frozen)", current),
+      ),
     );
     if (answer === null) return inputEnded("update mode");
     const value = answer.trim() === "" ? current : answer.trim().toLowerCase();
     if ((UPDATE_MODES as readonly string[]).includes(value)) {
+      deps.say(deps.style.success(`Update mode: ${value}.`));
       return { ok: true, value: value as UpdateMode };
     }
     deps.say(
-      `  "${answer.trim()}" is not an update mode. Accepted values: ` +
-        `${UPDATE_MODES.join(", ")}.`,
+      deps.style.warning(
+        `"${answer.trim()}" is not an update mode. Accepted values: ` +
+          `${UPDATE_MODES.join(", ")}.`,
+      ),
     );
   }
   return tooManyAttempts("update mode");
@@ -289,45 +319,54 @@ async function askPinnedRef(
   const fetched = await deps.fetchOrigin(repoDir);
   if (!fetched.ok) {
     deps.say(
-      `  Could not fetch origin in ${repoDir}: ${fetched.error.message}`,
+      deps.style.warning(
+        `Could not fetch origin in ${repoDir}: ${fetched.error.message}`,
+      ),
     );
     deps.say(
-      "  Only refs already in this checkout can be validated.",
+      deps.style.plain("Only refs already in this checkout can be validated."),
     );
   }
 
   deps.say("");
-  deps.say("  Pinned ref: the commit SHA or tag this host is held at.");
+  deps.say(
+    deps.style.info("Pinned ref: the commit SHA or tag this host is held at."),
+  );
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    const suffix = current ? ` [${current}]` : "";
-    const answer = await deps.ask(`  Pinned ref${suffix}`);
+    const answer = await deps.ask(
+      deps.style.plain(bracketedDefault("Pinned ref", current)),
+    );
     if (answer === null) return inputEnded("pinned ref");
 
     const value = answer.trim() === "" ? (current ?? "") : answer.trim();
     if (value === "") {
       deps.say(
-        "  Frozen mode needs a pinned ref — a commit SHA or a tag name.",
+        deps.style.warning(
+          "Frozen mode needs a pinned ref — a commit SHA or a tag name.",
+        ),
       );
       continue;
     }
 
     const invalid = pinValueErrors("pinned_ref", value);
     if (invalid.length > 0) {
-      deps.say(`  ${invalid.join(" ")}`);
+      deps.say(deps.style.warning(invalid.join(" ")));
       continue;
     }
 
     const commit = await deps.resolveCommit(repoDir, value);
     if (commit === null) {
       deps.say(
-        `  "${value}" does not resolve to a commit in ${repoDir} — it was ` +
-          `not saved. Enter a commit SHA or a tag that exists here.`,
+        deps.style.warning(
+          `"${value}" does not resolve to a commit in ${repoDir} — it was ` +
+            `not saved. Enter a commit SHA or a tag that exists here.`,
+        ),
       );
       continue;
     }
 
-    deps.say(`  ${value} resolves to ${commit}.`);
+    deps.say(deps.style.success(`${value} resolves to ${commit}.`));
     return { ok: true, value };
   }
   return tooManyAttempts("pinned ref");
@@ -365,16 +404,20 @@ async function askToolVersions(
       candidates = await deps.dynamicVersions();
     } catch (error) {
       deps.say(
-        `  Could not work out what dynamic mode would install: ` +
-          `${describe(error)}`,
+        deps.style.warning(
+          `Could not work out what dynamic mode would install: ` +
+            `${describe(error)}`,
+        ),
       );
-      deps.say("  Enter each version by hand.");
+      deps.say(deps.style.plain("Enter each version by hand."));
     }
   }
 
   deps.say("");
   deps.say(
-    "  Tool versions: the exact version this host installs while frozen.",
+    deps.style.info(
+      "Tool versions: the exact version this host installs while frozen.",
+    ),
   );
 
   const versions: PinnedToolVersions = {};
@@ -383,28 +426,31 @@ async function askToolVersions(
     const fallback = current[tool] ?? releaseTools?.[tool] ??
       (candidate?.eligible ? candidate.version ?? undefined : undefined);
     if (!fallback && candidate && !candidate.eligible) {
-      deps.say(`  ${candidate.reason}`);
+      deps.say(deps.style.warning(candidate.reason));
     }
 
     let answered = false;
     for (let attempt = 0; attempt < MAX_ATTEMPTS && !answered; attempt++) {
-      const suffix = fallback ? ` [${fallback}]` : "";
       const answer = await deps.ask(
-        `  ${TOOL_PROMPT_LABELS[tool]} version${suffix}`,
+        deps.style.plain(
+          bracketedDefault(`${TOOL_PROMPT_LABELS[tool]} version`, fallback),
+        ),
       );
       if (answer === null) return inputEnded(`${tool} version`);
 
       const value = answer.trim() === "" ? (fallback ?? "") : answer.trim();
       if (value === "") {
         deps.say(
-          `  Frozen mode needs an exact ${TOOL_PROMPT_LABELS[tool]} version.`,
+          deps.style.warning(
+            `Frozen mode needs an exact ${TOOL_PROMPT_LABELS[tool]} version.`,
+          ),
         );
         continue;
       }
 
       const invalid = pinValueErrors(`pinned_tool_versions.${tool}`, value);
       if (invalid.length > 0) {
-        deps.say(`  ${invalid.join(" ")}`);
+        deps.say(deps.style.warning(invalid.join(" ")));
         continue;
       }
 
@@ -414,6 +460,15 @@ async function askToolVersions(
     if (!answered) return tooManyAttempts(`${tool} version`);
   }
 
+  deps.say(
+    deps.style.success(
+      `Pinned ${
+        PINNED_TOOLS.map((tool) =>
+          `${TOOL_PROMPT_LABELS[tool]} ${versions[tool]}`
+        ).join(", ")
+      }.`,
+    ),
+  );
   return { ok: true, value: versions };
 }
 
@@ -451,7 +506,7 @@ export async function promptUpdateMode(
   // host already says still wins — a re-run must not re-ask its way into a
   // different answer.
   const release = await releaseDefaults(repoDir, deps);
-  if (release.note) deps.say(`  ${release.note}`);
+  if (release.note) deps.say(deps.style.warning(release.note));
 
   const ref = await askPinnedRef(
     repoDir,
@@ -492,7 +547,9 @@ async function nonInteractiveSettings(
 ): Promise<UpdateModeSettings> {
   const stayDynamic = (reason: string): UpdateModeSettings => {
     deps.say(
-      `Leaving this host on update_mode "${DEFAULT_UPDATE_MODE}": ${reason}`,
+      deps.style.warning(
+        `Leaving this host on update_mode "${DEFAULT_UPDATE_MODE}": ${reason}`,
+      ),
     );
     return { update_mode: DEFAULT_UPDATE_MODE };
   };
@@ -520,8 +577,10 @@ async function nonInteractiveSettings(
   }
 
   deps.say(
-    `Pinned this host to release ${release.tag} — claude ${tools.claude}, ` +
-      `gh ${tools.gh}, deno ${tools.deno}.`,
+    deps.style.success(
+      `Pinned this host to release ${release.tag} — claude ${tools.claude}, ` +
+        `gh ${tools.gh}, deno ${tools.deno}.`,
+    ),
   );
   return {
     update_mode: "frozen",

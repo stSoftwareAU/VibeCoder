@@ -885,6 +885,11 @@ frozen host has something meaningful to name. `"pinned_ref": "1.0.7"` says what
 the host is running in a way that a raw SHA does not, and `git log 1.0.6..1.0.7`
 says what moving to the next tag would bring in.
 
+A release tag is also the pin with a guarantee behind it: a repository tag
+ruleset refuses to delete or re-point a release tag, and releases from `1.0.50`
+onward are immutable records besides, so what a tag names today is what it names
+next year — see [Release integrity](RELEASE-TAGGING.md#release-integrity).
+
 A commit SHA is still accepted, and is the right answer when the state you want
 is not a tagged one — a specific merge you are bisecting, for example. Either
 way the ref must exist on `origin`: the launch-time checkout fetches before it

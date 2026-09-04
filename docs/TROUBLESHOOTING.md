@@ -300,8 +300,10 @@ non-empty value other than `0`, `false`, `no` or `off` turns the update off;
 `VIBE_SKIP_CHECKOUT_UPDATE=0` — and an empty value — leaves it running.
 
 This is the debugging escape hatch, not a deployment setting. Once the fix is
-committed and pushed, drop the variable so the host tracks the default branch
-again — a host that keeps it set runs whatever that checkout holds, forever.
+committed and pushed, drop the variable so the host resumes its own update mode
+— back onto `pinned_ref` on a frozen host, or the tip of the default branch on a
+dynamic one. A host that keeps it set runs whatever that checkout holds,
+forever.
 A host that must reproduce a known release wants
 [`update_mode: "frozen"`](CONFIGURATION.md#-host-side-checkout-update)
 instead, and a checkout that doubles as a development tree wants its own
