@@ -77,11 +77,7 @@
  * removed is one more file that runs in the fast pass.
  */
 export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
-  "tests/agent_mcp_config_test.ts",
-  "tests/agent_progress_test.ts",
   "tests/agent_provider_per_invocation_test.ts",
-  "tests/agent_run_termination_test.ts",
-  "tests/agent_transcript_test.ts",
   "tests/audit_hook_test.ts",
   "tests/baseline_quality_cache_test.ts",
   "tests/best_practices_bucket_guides_consumer_test.ts",
@@ -93,10 +89,8 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/ci_failure_issue_test.ts",
   "tests/ci_log_provider_test.ts",
   "tests/ci_provider_jenkins_target_url_test.ts",
-  "tests/clarity_assessment_test.ts",
   "tests/claude_runner_model_unavailable_fallback_test.ts",
   "tests/claude_runner_test.ts",
-  "tests/claude_runner_usage_limit_test.ts",
   "tests/commit_and_push_pending_test.ts",
   "tests/container_entrypoint_test.ts",
   "tests/container_image_hash_test.ts",
@@ -185,8 +179,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/stale_workdir_command_test.ts",
   "tests/subprocess_timeout_test.ts",
   "tests/terminal_title_command_test.ts",
-  "tests/timeout_extension_report_768_test.ts",
-  "tests/timeout_extension_telemetry_4298_test.ts",
   "tests/unpriced_spend_3870_test.ts",
   "tests/work_volume_tiers_command_test.ts",
   "tests/work_volume_tiers_test.ts",
