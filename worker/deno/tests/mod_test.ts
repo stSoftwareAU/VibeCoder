@@ -195,8 +195,15 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issue #665 added `references-refresh` (count 145 → 146).
   // Issue #736 added `first-run-verify` (count 146 → 147).
   // Issue #807 added `callback-conformance` (count 147 → 148).
-  assertEquals(commands.length, 148);
+  // Issue #805 removed `private-repo-6`, the built-in fleet-health reporter
+  // (count 148 → 147). The removal landed on the milestone branch without
+  // this count following it, so the branch's own suite was red — unnoticed,
+  // because `milestone/*` requires no checks.
+  assertEquals(commands.length, 147);
   assertEquals(commands.includes("callback-conformance"), true);
+  // The command Issue #805 removed stays removed: a merge that quietly
+  // brought it back would restore the built-in reporting that issue deleted.
+  assertEquals(commands.includes("private-repo-6"), false);
   assertEquals(commands.includes("first-run-verify"), true);
   assertEquals(commands.includes("references-refresh"), true);
   assertEquals(commands.includes("upgrade"), true);
