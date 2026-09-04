@@ -35,6 +35,7 @@ import {
   GH_HOSTS_FILE,
   SCRATCH_DIR_ENV,
 } from "./credential_preflight.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 
 /** Environment variable naming the container's durable state root. */
 export const STATE_DIR_ENV = "VIBE_STATE_DIR";
@@ -65,7 +66,7 @@ export interface RestageOptions {
   /** Worker home directory; defaults to `$HOME`. */
   home?: string;
   /** Environment lookup, injectable for tests. */
-  env?: (name: string) => string | undefined;
+  env?: EnvLookup;
   io?: GhCredentialStageIo;
   /** Where a warning goes; defaults to stderr. */
   warn?: (message: string) => void;
@@ -143,7 +144,7 @@ export function isGhConfigDirUsable(
  * root still authenticates.
  */
 export function stagingCandidates(
-  env: (name: string) => string | undefined = defaultEnv,
+  env: EnvLookup = defaultEnv,
 ): string[] {
   const state = env(STATE_DIR_ENV);
   const scratch = env(SCRATCH_DIR_ENV);
@@ -206,30 +207,80 @@ export function restageGhConfigDir(
   return null;
 }
 
+/** What {@link resolveUsableGhConfigDir} decided, with nothing applied. */
+export interface GhConfigDirResolution {
+  /** True when the configuration is usable once {@link env} is applied. */
+  usable: boolean;
+  /**
+   * The variables to establish — `GH_CONFIG_DIR` when a re-stage produced a
+   * new directory, and empty when the current one was already usable or
+   * nothing could be staged.
+   */
+  env: Record<string, string>;
+}
+
+/**
+ * Decide what `GH_CONFIG_DIR` should be, **without writing the process
+ * environment** (Issue #967).
+ *
+ * The re-stage itself still copies `hosts.yml` out of the read-only mount —
+ * that is the point of it — but the resulting variable is returned rather
+ * than applied, so a test can assert on the map without mutating state every
+ * other parallel worker shares. {@link ensureUsableGhConfigDir} is this
+ * function plus the application step.
+ *
+ * @param options - Home, environment lookup, filesystem seams and warn sink.
+ * @returns Whether the configuration is usable, and what to establish.
+ */
+export function resolveUsableGhConfigDir(
+  options: RestageOptions = {},
+): GhConfigDirResolution {
+  const env = options.env ?? defaultEnv;
+  const io = options.io ?? productionIo;
+  const current = env("GH_CONFIG_DIR");
+  if (isGhConfigDirUsable(current, io)) return { usable: true, env: {} };
+
+  const staged = restageGhConfigDir(options);
+  if (staged === null) return { usable: false, env: {} };
+  return { usable: true, env: { GH_CONFIG_DIR: staged } };
+}
+
+/** Options for {@link ensureUsableGhConfigDir}. */
+export interface EnsureGhConfigDirOptions extends RestageOptions {
+  /**
+   * Establishes one variable in the run environment; defaults to
+   * `Deno.env.set`, which is what every child `gh` and `git` inherits. A test
+   * hands in a recorder and asserts on the map instead.
+   */
+  setEnv?: (name: string, value: string) => void;
+}
+
+/** Apply one variable to the process, tolerating a permission denial. */
+function processSetEnv(name: string, value: string): void {
+  try {
+    Deno.env.set(name, value);
+  } catch {
+    // A test environment without env-set permission still gets the copy.
+  }
+}
+
 /**
  * Ensure `GH_CONFIG_DIR` names a usable directory, re-staging if it does not.
  *
- * Applies the result to the process environment so every child `gh` and
- * `git` inherits it.
+ * Applies the result to the run environment so every child `gh` and `git`
+ * inherits it.
  *
  * @returns True when the environment now points at a usable configuration.
  */
 export function ensureUsableGhConfigDir(
-  options: RestageOptions = {},
+  options: EnsureGhConfigDirOptions = {},
 ): boolean {
-  const env = options.env ?? defaultEnv;
-  const io = options.io ?? productionIo;
-  const current = env("GH_CONFIG_DIR");
-  if (isGhConfigDirUsable(current, io)) return true;
-
-  const staged = restageGhConfigDir(options);
-  if (staged === null) return false;
-  try {
-    Deno.env.set("GH_CONFIG_DIR", staged);
-  } catch {
-    // A test environment without env-set permission still gets the copy.
+  const resolution = resolveUsableGhConfigDir(options);
+  const setEnv = options.setEnv ?? processSetEnv;
+  for (const [name, value] of Object.entries(resolution.env)) {
+    setEnv(name, value);
   }
-  return true;
+  return resolution.usable;
 }
 
 /** True when a finished `gh` call failed because it had no authentication. */

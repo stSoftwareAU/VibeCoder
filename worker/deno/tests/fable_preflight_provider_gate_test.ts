@@ -8,9 +8,9 @@
  * cannot resolve and the run was flagged `preflightDegraded` for a tier it
  * never requested.
  *
- * These tests drive `runClaudeWithRetry` end to end against stub `codex` and
- * `claude` binaries on PATH, with a cached `unavailable` verdict in the run's
- * cwd, and assert:
+ * These tests drive `runClaudeWithRetry` end to end against a stub agent named
+ * by path (`agentBinaryPath`, Issue #959), with a cached `unavailable` verdict
+ * in the run's cwd, and assert:
  *   - a Codex `quorum` invocation carries no `opus` / `max` in its argv and is
  *     not flagged degraded, while its own top-tier routing still reaches the
  *     CLI, and the skipped reroute is reported loudly;
@@ -23,10 +23,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import type { Logger } from "../types.ts";
-import {
-  IMAGE_AGENT_PROVIDERS_ENV,
-  resolveAgentProvider,
-} from "../lib/agent_provider.ts";
+import { resolveAgentProvider } from "../lib/agent_provider.ts";
 import {
   setActiveRepoModelEffortOverrides,
   setPhaseEffortConfigOverrides,
@@ -42,67 +39,46 @@ import {
   FABLE_PREFLIGHT_DEGRADED_REASON,
 } from "../lib/fable_routing.ts";
 import { recordFableAvailability } from "../lib/health_check_cache.ts";
+import { withAgentStub } from "./support/agent_stub.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 
-/** A stub agent CLI: records its whole argv, then exits 0 with a result line. */
-function stubBody(argLog: string): string {
+/** Basename of the file the stub records its argv in. */
+const ARG_LOG = "argv.log";
+
+/**
+ * A stub agent CLI: records its whole argv beside itself, then exits 0 with a
+ * result line. The log is located from `$0`, so the same body serves whichever
+ * provider the invocation names.
+ */
+function stubBody(): string {
   return [
-    "#!/usr/bin/env bash",
-    `for arg in "$@"; do printf '%s\\n' "$arg" >> '${argLog}'; done`,
+    `log="$(dirname "$0")/${ARG_LOG}"`,
+    `for arg in "$@"; do printf '%s\\n' "$arg" >> "$log"; done`,
     `printf '%s\\n' '{"type":"result","result":"OK"}'`,
     "exit 0",
   ].join("\n");
 }
 
 interface Stub {
+  /** Absolute path to the stub, passed to the runner as `agentBinaryPath`. */
+  path: string;
   /** Working directory, also holding the cached Fable verdict. */
   cwd: string;
   /** Argv recorded by the stub, one element per line. */
-  args: (binary: string) => Promise<string[]>;
+  args: () => Promise<string[]>;
 }
 
 /**
- * Environment whose ambient values would perturb model/effort resolution for
- * either provider. Cleared for the duration of each test and restored after,
- * so the gate is exercised against the designed defaults.
+ * Run `fn` with a stub agent and a fresh working directory.
+ *
+ * Nothing here touches process state: the stub is named by path (Issue #959)
+ * and each run reads {@link emptyEnv} (Issue #961), so the ambient
+ * `CLAUDE_*` / `CODEX_*` routing variables, the per-run provider override and
+ * the image stamp are all invisible to the gate — it is exercised against the
+ * designed defaults. No vendor credential is exported either: the stub is the
+ * agent, so no provider pre-flight reaches a vendor.
  */
-const MANAGED_ENV = [
-  "CLAUDE_EFFORT",
-  "CLAUDE_EFFORT_QUORUM",
-  "CLAUDE_MODEL",
-  "CLAUDE_MODEL_QUORUM",
-  "CODEX_EFFORT",
-  "CODEX_EFFORT_QUORUM",
-  "CODEX_MODEL",
-  "CODEX_MODEL_QUORUM",
-  "VIBE_AGENT_PROVIDER",
-  IMAGE_AGENT_PROVIDERS_ENV,
-] as const;
-
-/**
- * Run `fn` with stub `claude` and `codex` binaries on PATH and a fresh working
- * directory. PATH, the managed environment and the temp dir are restored or
- * cleaned afterwards.
- */
-async function withStubs<T>(fn: (stub: Stub) => Promise<T>): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "fable_provider_gate_" });
-  for (const binary of ["claude", "codex"]) {
-    const path = `${dir}/${binary}`;
-    await Deno.writeTextFile(path, `${stubBody(`${dir}/${binary}.args`)}\n`);
-    await Deno.chmod(path, 0o755);
-  }
-
-  const saved = new Map<string, string | undefined>();
-  const setEnv = (name: string, value: string | undefined) => {
-    if (!saved.has(name)) saved.set(name, Deno.env.get(name));
-    if (value === undefined) Deno.env.delete(name);
-    else Deno.env.set(name, value);
-  };
-  for (const name of MANAGED_ENV) setEnv(name, undefined);
-  setEnv("PATH", `${dir}:${Deno.env.get("PATH") ?? ""}`);
-  // Dummy credentials so neither provider's preflight has to reach a vendor.
-  setEnv("ANTHROPIC_API_KEY", "test-anthropic-key");
-  setEnv("OPENAI_API_KEY", "test-openai-key");
-
+function withStubs<T>(fn: (stub: Stub) => Promise<T>): Promise<T> {
   // Deno shares one process across test files: reset the module-level repo and
   // config routing overrides a sibling file may have set.
   setActiveRepoModelEffortOverrides(undefined);
@@ -113,21 +89,19 @@ async function withStubs<T>(fn: (stub: Stub) => Promise<T>): Promise<T> {
   setCodexPhaseEffortConfigOverrides({});
   clearFableTierWarnings();
 
-  try {
-    return await fn({
-      cwd: dir,
-      args: async (binary: string) =>
-        (await Deno.readTextFile(`${dir}/${binary}.args`).catch(() => ""))
-          .split("\n").filter((line) => line !== ""),
-    });
-  } finally {
-    for (const [name, value] of saved) {
-      if (value === undefined) Deno.env.delete(name);
-      else Deno.env.set(name, value);
+  return withAgentStub(stubBody(), async (stub) => {
+    try {
+      return await fn({
+        path: stub.path,
+        cwd: stub.dir,
+        args: async () =>
+          (await Deno.readTextFile(`${stub.dir}/${ARG_LOG}`).catch(() => ""))
+            .split("\n").filter((line) => line !== ""),
+      });
+    } finally {
+      clearFableTierWarnings();
     }
-    clearFableTierWarnings();
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
+  }, { prefix: "fable_provider_gate_" });
 }
 
 /** A logger that keeps every warning, discarding the rest. */
@@ -165,11 +139,13 @@ Deno.test({
           cwd: stub.cwd,
           timeoutSeconds: 30,
           agentProvider: "codex",
+          agentBinaryPath: stub.path,
+          env: emptyEnv,
           logger: recordingLogger(warnings),
         },
         { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 },
       );
-      return { result, args: await stub.args("codex") };
+      return { result, args: await stub.args() };
     });
 
     assert(result.ok, `expected ok, got ${!result.ok && result.error}`);
@@ -186,7 +162,10 @@ Deno.test({
     );
 
     // Codex's own top-tier routing for the phase still reaches the CLI.
-    const codexModel = resolveAgentProvider("codex").resolveModel("quorum");
+    const codexModel = resolveAgentProvider("codex").resolveModel(
+      "quorum",
+      emptyEnv,
+    );
     assert(codexModel, "codex must route the quorum phase to a model");
     assertEquals(args[args.indexOf("--model") + 1], codexModel);
 
@@ -218,10 +197,12 @@ Deno.test({
           cwd: stub.cwd,
           timeoutSeconds: 30,
           agentProvider: "claude",
+          agentBinaryPath: stub.path,
+          env: emptyEnv,
         },
         { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 },
       );
-      return { result, args: await stub.args("claude") };
+      return { result, args: await stub.args() };
     });
 
     assert(result.ok, `expected ok, got ${!result.ok && result.error}`);

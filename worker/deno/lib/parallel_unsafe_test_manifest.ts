@@ -9,14 +9,15 @@
  * that mutates it races whatever else is running:
  *
  * ```ts
- * // prompt_manager_test.ts
- * Deno.env.set("VIBE_BASE_DIR", "/workspace");
+ * // container_entrypoint_test.ts
+ * Deno.env.set("VIBE_SCRATCH_DIR", hostScratch);
  * ```
  *
- * (The example used to be `commit_and_push_pending_test.ts` setting
- * `VIBE_RUN_ID`. Issue #963 gave the run id and the audit trailer explicit
- * parameters and drained that file, so the illustration moved to one still on
- * the list — which is the whole point of the list going down.)
+ * (The example has now moved twice. It was `commit_and_push_pending_test.ts`
+ * setting `VIBE_RUN_ID` until #963 gave the run id an explicit parameter, then
+ * `prompt_manager_test.ts` setting `VIBE_BASE_DIR` until #968 gave
+ * `getPromptsDir` an injected environment lookup — which is the whole point of
+ * the list going down.)
  *
  * Measured with `DENO_JOBS=4`: 48 failures, of which 32 were the pre-existing
  * pwsh failures and ~16 were genuine races.
@@ -82,34 +83,22 @@
  * removed is one more file that runs in the fast pass.
  */
 export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
-  "tests/agent_provider_per_invocation_test.ts",
   "tests/best_practices_bucket_guides_consumer_test.ts",
   "tests/boy_scout_idle_tasks_test.ts",
   "tests/check_jenkins_access_command_test.ts",
   "tests/ci_failure_issue_test.ts",
   "tests/ci_log_provider_test.ts",
   "tests/ci_provider_jenkins_target_url_test.ts",
-  "tests/claude_runner_model_unavailable_fallback_test.ts",
-  "tests/claude_runner_test.ts",
-  "tests/container_entrypoint_test.ts",
   "tests/container_image_hash_test.ts",
   "tests/container_image_provider_set_test.ts",
   "tests/create_all_idle_task_wrappers_command_test.ts",
   "tests/create_all_idle_task_wrappers_test.ts",
   "tests/default_branch_cache_test.ts",
   "tests/env_stub_test.ts",
-  "tests/fable_globally_disabled_cycle_test.ts",
-  "tests/fable_preflight_deepseek_gate_test.ts",
-  "tests/fable_preflight_provider_gate_test.ts",
-  "tests/fable_preflight_reroute_wiring_test.ts",
-  "tests/feature_availability_test.ts",
   "tests/fetch_jenkins_log_command_test.ts",
   "tests/follow_up_label_strip_paths_test.ts",
-  "tests/gh_spawn_test.ts",
   "tests/grill_me_processor_escalation_test.ts",
-  "tests/grill_me_processor_test.ts",
   "tests/grill_me_run_stats_test.ts",
-  "tests/host_escalation_test.ts",
   "tests/idle_task_body_preview_limit_test.ts",
   "tests/idle_task_end_to_end_test.ts",
   "tests/idle_task_multi_worker_end_to_end_test.ts",
@@ -136,7 +125,6 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/pr_feedback_processor_test.ts",
   "tests/pr_feedback_trusted_bot_e2e_test.ts",
   "tests/pr_spelling_processor_test.ts",
-  "tests/prompt_manager_test.ts",
   "tests/push_recovery_detail_test.ts",
   "tests/push_recovery_diagnostics_test.ts",
   "tests/quorum_processor_test.ts",
@@ -145,11 +133,7 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
   "tests/raise_all_idle_tasks_test.ts",
   "tests/raise_boy_scout_idle_tasks_command_test.ts",
   "tests/raise_single_idle_task_test.ts",
-  "tests/run_core_production_deps_test.ts",
-  "tests/run_entrypoint_test.ts",
   "tests/run_mode_test.ts",
-  "tests/service_account_env_test.ts",
-  "tests/unpriced_spend_3870_test.ts",
   "tests/worker_cache_dir_test.ts",
   "tests/workflow_annotation_scan_template_test.ts",
 ];

@@ -13,8 +13,9 @@
  *
  * These tests close that gap two ways:
  *   - a **loop over `agentProviderIds()`** driving `runClaudeWithRetry` end to
- *     end against stub CLIs, so a further provider registered without the gate
- *     fails `deno test` immediately rather than at the next Fable outage;
+ *     end against a stub CLI named by path (`agentBinaryPath`, Issue #959), so
+ *     a further provider registered without the gate fails `deno test`
+ *     immediately rather than at the next Fable outage;
  *   - a **DeepSeek regression test** driven through the real
  *     `resolveDeepSeekModel` routing (Issue #413). DeepSeek's descriptor is
  *     registered by Issue #414, so this exercises the routing the descriptor
@@ -34,7 +35,6 @@ import type { Logger } from "../types.ts";
 import {
   type AgentProviderDescriptor,
   agentProviderIds,
-  IMAGE_AGENT_PROVIDERS_ENV,
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
 import {
@@ -66,6 +66,8 @@ import {
   warnProviderHasNoFableTier,
 } from "../lib/fable_routing.ts";
 import { recordFableAvailability } from "../lib/health_check_cache.ts";
+import { withAgentStub } from "./support/agent_stub.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 
 /** The phase under test: Quorum names its provider per call with no model. */
 const PHASE = "quorum";
@@ -73,33 +75,21 @@ const PHASE = "quorum";
 /** Anthropic tier aliases that must never reach a non-Fable provider's argv. */
 const ANTHROPIC_TIER_ALIASES = ["fable", "opus", "sonnet", "haiku"] as const;
 
-/** A stub agent CLI: records its whole argv, then exits 0 with a result line. */
-function stubBody(argLog: string): string {
+/** Basename of the file the stub records its argv in. */
+const ARG_LOG = "argv.log";
+
+/**
+ * A stub agent CLI: records its whole argv beside itself, then exits 0 with a
+ * result line. The log is located from `$0`, so the same body serves whichever
+ * provider the invocation names.
+ */
+function stubBody(): string {
   return [
-    "#!/usr/bin/env bash",
-    `for arg in "$@"; do printf '%s\\n' "$arg" >> '${argLog}'; done`,
+    `log="$(dirname "$0")/${ARG_LOG}"`,
+    `for arg in "$@"; do printf '%s\\n' "$arg" >> "$log"; done`,
     `printf '%s\\n' '{"type":"result","result":"OK"}'`,
     "exit 0",
   ].join("\n");
-}
-
-/**
- * Environment names that would perturb a provider's model/effort resolution,
- * derived from the provider id rather than listed — a new provider's variables
- * are neutralised without editing this file.
- */
-function managedRoutingEnv(): string[] {
-  const names = ["VIBE_AGENT_PROVIDER", IMAGE_AGENT_PROVIDERS_ENV];
-  for (const id of agentProviderIds()) {
-    const prefix = id.toUpperCase();
-    names.push(
-      `${prefix}_MODEL`,
-      `${prefix}_EFFORT`,
-      `${prefix}_MODEL_${PHASE.toUpperCase()}`,
-      `${prefix}_EFFORT_${PHASE.toUpperCase()}`,
-    );
-  }
-  return names;
 }
 
 /** Reset every executor's module-level repo/config routing override state. */
@@ -118,63 +108,43 @@ function clearRoutingOverrides(): void {
 }
 
 interface Stub {
+  /** Absolute path to the stub, passed to the runner as `agentBinaryPath`. */
+  path: string;
   /** Working directory, also holding the cached Fable verdict. */
   cwd: string;
   /** Argv recorded by the stub, one element per line. */
-  args: (binary: string) => Promise<string[]>;
+  args: () => Promise<string[]>;
 }
 
 /**
- * Run `fn` with a stub CLI on PATH for **every** registered provider, dummy
- * credentials for each, and a fresh working directory. PATH, the managed
- * environment and the temp dir are restored or cleaned afterwards.
+ * Run `fn` with a stub agent CLI and a fresh working directory.
+ *
+ * Nothing here touches process state: the stub is named by path (Issue #959)
+ * and every run reads {@link emptyEnv} (Issue #961), so a provider's routing
+ * variables, the per-run provider override and the image stamp are all
+ * invisible — which is what neutralises a newly registered provider's
+ * variables without editing this file. No vendor credential is exported
+ * either: the stub *is* the agent, so no provider's pre-flight reaches a
+ * vendor.
  */
-async function withProviderStubs<T>(
-  fn: (stub: Stub) => Promise<T>,
-): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "fable_deepseek_gate_" });
-  const providers = agentProviderIds().map(resolveAgentProvider);
-  for (const binary of new Set(providers.map((p) => p.binary))) {
-    const path = `${dir}/${binary}`;
-    await Deno.writeTextFile(path, `${stubBody(`${dir}/${binary}.args`)}\n`);
-    await Deno.chmod(path, 0o755);
-  }
-
-  const saved = new Map<string, string | undefined>();
-  const setEnv = (name: string, value: string | undefined) => {
-    if (!saved.has(name)) saved.set(name, Deno.env.get(name));
-    if (value === undefined) Deno.env.delete(name);
-    else Deno.env.set(name, value);
-  };
-  for (const name of managedRoutingEnv()) setEnv(name, undefined);
-  setEnv("PATH", `${dir}:${Deno.env.get("PATH") ?? ""}`);
-  // One dummy credential per provider — the primary variable of its list — so
-  // no provider's pre-flight has to reach a vendor. Deriving it from the
-  // descriptor keeps a newly registered provider authenticated for free.
-  for (const provider of providers) {
-    const primary = provider.credentials.envVars[0];
-    if (primary) setEnv(primary, `test-${provider.id}-key`);
-  }
-
+function withProviderStubs<T>(fn: (stub: Stub) => Promise<T>): Promise<T> {
   // Deno shares one process across test files: reset the module-level repo and
   // config routing overrides a sibling file may have set.
   clearRoutingOverrides();
 
-  try {
-    return await fn({
-      cwd: dir,
-      args: async (binary: string) =>
-        (await Deno.readTextFile(`${dir}/${binary}.args`).catch(() => ""))
-          .split("\n").filter((line) => line !== ""),
-    });
-  } finally {
-    for (const [name, value] of saved) {
-      if (value === undefined) Deno.env.delete(name);
-      else Deno.env.set(name, value);
+  return withAgentStub(stubBody(), async (stub) => {
+    try {
+      return await fn({
+        path: stub.path,
+        cwd: stub.dir,
+        args: async () =>
+          (await Deno.readTextFile(`${stub.dir}/${ARG_LOG}`).catch(() => ""))
+            .split("\n").filter((line) => line !== ""),
+      });
+    } finally {
+      clearFableTierWarnings();
     }
-    clearFableTierWarnings();
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-  }
+  }, { prefix: "fable_deepseek_gate_" });
 }
 
 /** A logger that keeps every warning, discarding the rest. */
@@ -234,11 +204,13 @@ Deno.test({
             cwd: stub.cwd,
             timeoutSeconds: 30,
             agentProvider: id,
+            agentBinaryPath: stub.path,
+            env: emptyEnv,
             logger: recordingLogger(warnings),
           },
           { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 },
         );
-        return { result, args: await stub.args(provider.binary) };
+        return { result, args: await stub.args() };
       });
 
       assert(
@@ -248,7 +220,7 @@ Deno.test({
       if (!result.ok) continue;
 
       // The descriptor decides the expectation — no provider id is named here.
-      if (providerRoutesToFableTier(provider, PHASE)) {
+      if (providerRoutesToFableTier(provider, PHASE, emptyEnv)) {
         assertEquals(
           args[args.indexOf("--model") + 1],
           FABLE_PREFLIGHT_MODEL,
@@ -269,7 +241,7 @@ Deno.test({
 
       // A provider without the Fable tier keeps its own routing untouched…
       assertNoAnthropicTier(provider, args);
-      const own = provider.resolveModel(PHASE);
+      const own = provider.resolveModel(PHASE, emptyEnv);
       if (own) {
         assertEquals(
           args[args.indexOf("--model") + 1],
@@ -319,7 +291,7 @@ Deno.test({
         false,
         provider,
       );
-      if (providerRoutesToFableTier(provider, PHASE)) {
+      if (providerRoutesToFableTier(provider, PHASE, emptyEnv)) {
         assertEquals(applied.options.model, FABLE_PREFLIGHT_MODEL, id);
         assertEquals(applied.options.effort, FABLE_PREFLIGHT_EFFORT, id);
         assertEquals(applied.routing.degraded, true, id);
@@ -342,7 +314,7 @@ Deno.test({
     // The routing DeepSeek's descriptor delegates to (Issue #413/#414). The
     // model is real, so this is DeepSeek's behaviour rather than a fixture.
     const deepseek = { id: "deepseek", resolveModel: resolveDeepSeekModel };
-    const routed = resolveDeepSeekModel(PHASE);
+    const routed = resolveDeepSeekModel(PHASE, emptyEnv);
     assert(routed, "DeepSeek must route the quorum phase to a model");
     assert(
       !ANTHROPIC_TIER_ALIASES.some((alias) => routed.includes(alias)),
@@ -359,6 +331,7 @@ Deno.test({
       "unavailable",
       false,
       deepseek,
+      emptyEnv,
     );
 
     // No Anthropic tier alias is forced onto the Anthropic CLI DeepSeek rides.
@@ -367,7 +340,7 @@ Deno.test({
     assertEquals(applied.routing.degraded, false);
     assertEquals(applied.routing.reason, undefined);
     // The invocation is left on the model DeepSeek's own routing resolved.
-    assertEquals(resolveDeepSeekModel(PHASE), routed);
+    assertEquals(resolveDeepSeekModel(PHASE, emptyEnv), routed);
 
     // The skipped reroute is reported once, naming DeepSeek and its model.
     const warnings: string[] = [];
@@ -375,7 +348,7 @@ Deno.test({
       warn: (message: string) => {
         warnings.push(message);
       },
-    });
+    }, emptyEnv);
     assertEquals(warnings.length, 1, warnings.join("|"));
     const gap = warnings[0] ?? "";
     assert(gap.includes("deepseek"), gap);

@@ -16,6 +16,7 @@
  */
 
 import { ensureAgentMcpConfig } from "./agent_mcp_config.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 import { formatCoarseDuration } from "./rate_limit_wait.ts";
 import {
   describeMemoryPressure,
@@ -547,6 +548,33 @@ export interface RunClaudeOptions {
    * test in the run (Issue #880, plan #944).
    */
   workDir?: string;
+  /**
+   * Environment lookup this invocation makes its own process-level reads
+   * through (Issue #961).
+   *
+   * One lookup covers every variable the *worker side* of a run consults:
+   * the phase-routing chain behind `--model`/`--effort` (the `env` field
+   * `AgentInvocationRequest` and `PhaseRoutingSources` already carry), the
+   * provider selection's image stamp, and the gh-guard shim's operator
+   * opt-in and audit gate. Omitted — every production caller — each is read
+   * from the process environment exactly as before.
+   *
+   * It is deliberately **not** the child's environment: that is
+   * {@link parentEnv}, a map rather than a lookup, and no credential-shaped
+   * value belongs here.
+   */
+  env?: EnvLookup;
+  /**
+   * The parent environment the agent's child environment is built from
+   * (Issue #961).
+   *
+   * `provider.buildChildEnv(parentEnv)` already takes one; this exposes it
+   * at the run options so a test can name the `PATH` the child sees — and
+   * hand it dummy vendor credentials — without exporting either into the
+   * process every other test in the run shares. Omitted, the provider reads
+   * the process environment exactly as before.
+   */
+  parentEnv?: Record<string, string>;
 }
 
 /** Options for retry behaviour. */
@@ -892,7 +920,10 @@ export async function runClaudeWithTimeout(
   // descriptor is held as a local for the whole call, so a concurrent
   // invocation naming a different provider cannot change this one's binary,
   // arguments or child environment mid-run.
-  const provider = selectAgentProvider(options.agentProvider);
+  const provider = selectAgentProvider(
+    options.agentProvider,
+    options.env ? { env: options.env } : {},
+  );
   // The Playwright MCP server for this run (Issue #4355): written per clone
   // to the worker cache and passed as --mcp-config. Wired only when the
   // caller declares the browser needed (Issue #192) — a cwd alone no longer
@@ -915,6 +946,7 @@ export async function runClaudeWithTimeout(
     systemPrompt,
     model,
     phase,
+    ...(options.env ? { env: options.env } : {}),
     effort: options.effort,
     disallowedTools,
     sessionResumeState: options.sessionResumeState,
@@ -963,7 +995,7 @@ export async function runClaudeWithTimeout(
     // Sanitise the child environment (Issue #3203): clear it and pass an
     // explicit copy with the GitHub App private-key material dropped, so a
     // prompt-injected model running unrestricted bash cannot read the PEM.
-    const baseEnv = provider.buildChildEnv();
+    const baseEnv = provider.buildChildEnv(options.parentEnv);
     // Interpose the `gh` guard on the child's PATH (Issue #3643): the agent
     // holds GH_TOKEN and runs unrestricted bash, so without this its own `gh`
     // writes bypass the write-repo allowlist and the reserved-label guard the
@@ -975,6 +1007,7 @@ export async function runClaudeWithTimeout(
     const shimOutcome = await prepareGhGuardShim(
       baseEnv,
       (m) => (logger?.warn(m) ?? console.error(m)),
+      options.env,
     );
     if (shimOutcome.status === "blocked") {
       return {
@@ -2188,7 +2221,10 @@ export async function runClaudeWithRetry(
   if (isFablePreferringPhase(options.phase)) {
     // The provider for *this* invocation (Issue #4109), not the process-wide
     // active one: a Quorum round drives three invocations naming their own.
-    const preflightProvider = selectAgentProvider(options.agentProvider);
+    const preflightProvider = selectAgentProvider(
+      options.agentProvider,
+      options.env ? { env: options.env } : {},
+    );
     // Detect a genuine operator override so the probe never second-guesses a
     // pinned phase. Model overrides cannot be detected by env-var presence:
     // `load_config` exports the *default* fable routing as `CLAUDE_MODEL_<PHASE>`,
@@ -2197,17 +2233,18 @@ export async function runClaudeWithRetry(
     // no default env export, so a call-site or env/config effort value is a
     // genuine pin.
     const effectiveModel = options.model ??
-      preflightProvider.resolveModel(options.phase) ?? "";
+      preflightProvider.resolveModel(options.phase, options.env) ?? "";
     const routedToFable = modelFamily(effectiveModel) === "fable";
     const hasExplicitOverride = !routedToFable ||
       options.effort != null ||
-      hasExplicitEffortOverride(options.phase);
+      hasExplicitEffortOverride(options.phase, options.env);
     const fableVerdict = readFableAvailability(options.cwd ?? ".");
     const applied = applyFablePreflightRouting(
       options,
       fableVerdict,
       hasExplicitOverride,
       preflightProvider,
+      options.env,
     );
     options = applied.options;
     preflightDegraded = applied.routing.degraded;
@@ -2226,6 +2263,7 @@ export async function runClaudeWithRetry(
       options.phase,
       fableVerdict,
       options.logger,
+      options.env,
     );
   }
 
