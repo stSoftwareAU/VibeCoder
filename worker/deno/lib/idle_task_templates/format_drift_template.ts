@@ -41,6 +41,7 @@
 
 import {
   type IdleTaskBodyOptions,
+  idleTaskPromptsDir,
   type IdleTaskRunOptions,
   type IdleTaskRunResult,
   type IdleTaskShouldFileOptions,
@@ -114,7 +115,10 @@ export interface FormatDriftTemplateDeps {
   /** gh CLI runner used for snapshots, dedup, and the wrapper veto. */
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Prompt loader — defaults to `loadPrompt`. */
-  loadPromptFn?: (name: string) => Promise<Result<string>>;
+  loadPromptFn?: (
+    name: string,
+    promptsDir?: string,
+  ) => Promise<Result<string>>;
   /**
    * Ensure the `format-drift` label exists in the target repo. Defaults
    * to `ensureLabelExists`. Tests inject a stub so the filesystem and
@@ -344,7 +348,8 @@ export function createFormatDriftTemplate(
   deps: FormatDriftTemplateDeps = {},
 ): IdleTaskTemplate {
   const ghCommandFn = deps.ghCommandFn ?? ((args) => defaultGhCommand(args));
-  const loadPromptFn = deps.loadPromptFn ?? ((name) => defaultLoadPrompt(name));
+  const loadPromptFn = deps.loadPromptFn ??
+    ((name, promptsDir) => defaultLoadPrompt(name, promptsDir));
   const ensureLabelFn = deps.ensureLabelFn ??
     ((repo) =>
       defaultEnsureLabelExists(
@@ -356,11 +361,11 @@ export function createFormatDriftTemplate(
   const runScanFn = deps.runScanFn ??
     ((opts) => defaultRunScan(opts, loadPromptFn));
 
-  async function buildIssueBody(_opts: IdleTaskBodyOptions): Promise<string> {
+  async function buildIssueBody(opts: IdleTaskBodyOptions): Promise<string> {
     // Issue #2077: the wrapper body IS the prompt — fully substituted at
     // file time so a developer reading the issue sees concrete values
     // rather than `{{...}}` placeholders.
-    const loaded = await loadPromptFn(PROMPT_NAME);
+    const loaded = await loadPromptFn(PROMPT_NAME, idleTaskPromptsDir(opts));
     if (!loaded.ok) {
       throw new Error(
         `format-drift: failed to load prompt template ${PROMPT_NAME}: ` +

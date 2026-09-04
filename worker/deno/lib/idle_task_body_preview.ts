@@ -110,21 +110,36 @@ export interface PromptPreviewOptions {
   scope: string;
   /** Override the budget. Defaults to {@link IDLE_TASK_PREVIEW_MAX_CHARS}. */
   maxChars?: number;
+  /**
+   * Checkout whose HEAD pins the prompt permalink (Issue #1024). Defaults to
+   * {@link REPO_ROOT}. Threaded from the template's
+   * `IdleTaskBodyOptions.rootDir` so a caller that named a root gets a
+   * permalink pinned to *that* checkout, not to whatever the environment
+   * happens to name.
+   */
+  rootDir?: string;
 }
 
 /**
- * Read this checkout's HEAD commit SHA, or null when it cannot be read.
+ * Read a checkout's HEAD commit SHA, or null when it cannot be read.
  *
  * Null is not swallowed: {@link condensePromptPreview} falls back to a `main`
  * link and says in the body that the SHA was unavailable, so a reader can never
  * mistake an unpinned link for a pinned one.
+ *
+ * @param runGitCommandFn - git runner; defaults to the production one
+ * @param rootDir - Checkout to read HEAD from (Issue #1024). Defaults to
+ *   {@link REPO_ROOT}, which honours the launcher's `VIBE_BASE_DIR`; a caller
+ *   that named a root reads that checkout instead of the ambient one.
+ * @returns The 40-character SHA, or null
  */
 export async function headCommitSha(
   runGitCommandFn = defaultRunGitCommand,
+  rootDir: string = REPO_ROOT,
 ): Promise<string | null> {
   try {
     const result = await runGitCommandFn(["rev-parse", "HEAD"], {
-      cwd: REPO_ROOT,
+      cwd: rootDir,
     });
     if (!result.ok || result.value.code !== 0) return null;
     const sha = result.value.stdout.trim();
@@ -239,7 +254,8 @@ export async function buildPromptPreviewBody(
   const maxChars = opts.maxChars ?? IDLE_TASK_PREVIEW_MAX_CHARS;
   if (fullBody.length <= maxChars) return fullBody;
 
-  const headCommitShaFn = deps.headCommitShaFn ?? (() => headCommitSha());
+  const headCommitShaFn = deps.headCommitShaFn ??
+    (() => headCommitSha(defaultRunGitCommand, opts.rootDir ?? REPO_ROOT));
 
   return condensePromptPreview(fullBody, {
     promptName: opts.promptName,

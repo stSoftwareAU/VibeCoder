@@ -71,6 +71,11 @@ export interface RaiseAllIdleTasksOptions {
     CreateAllIdleTaskWrappersDeps["findExistingWrapperTitlesFn"];
   nowFn?: CreateAllIdleTaskWrappersDeps["nowFn"];
   runId?: string;
+  /**
+   * Checkout root the wrapper bodies' prompt files are read from
+   * (Issue #1024). Forwarded to {@link createAllIdleTaskWrappers}.
+   */
+  rootDir?: CreateAllIdleTaskWrappersDeps["rootDir"];
   /** Progress log sink. Defaults to a no-op. */
   log?: (line: string) => void;
 }
@@ -107,6 +112,7 @@ export async function raiseAllIdleTasks(
       findExistingWrapperTitlesFn: opts.findExistingWrapperTitlesFn,
       nowFn: opts.nowFn,
       runId: opts.runId,
+      rootDir: opts.rootDir,
       log,
     });
 

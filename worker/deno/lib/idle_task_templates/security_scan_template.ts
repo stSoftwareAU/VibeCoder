@@ -23,6 +23,7 @@
 
 import {
   type IdleTaskBodyOptions,
+  idleTaskPromptsDir,
   type IdleTaskRunOptions,
   type IdleTaskRunResult,
   type IdleTaskShouldFileOptions,
@@ -110,7 +111,10 @@ export interface SecurityScanTemplateDeps {
    * the file body is deterministic and so they avoid touching the
    * `prompts/` directory.
    */
-  loadPromptFn?: (name: string) => Promise<Result<string>>;
+  loadPromptFn?: (
+    name: string,
+    promptsDir?: string,
+  ) => Promise<Result<string>>;
   /**
    * SARIF emitter (Issue #3538). After the scan files its issues, this reads
    * them back, builds a SARIF 2.1.0 document, and uploads it to the target
@@ -224,23 +228,24 @@ export function createSecurityScanTemplate(
   deps: SecurityScanTemplateDeps = {
     runSecurityScanFn: (opts) => defaultRunSecurityScan(opts),
     ghCommandFn: (args) => defaultGhCommand(args),
-    loadPromptFn: (name) => defaultLoadPrompt(name),
+    loadPromptFn: (name, promptsDir) => defaultLoadPrompt(name, promptsDir),
   },
 ): IdleTaskTemplate {
   const ghCommandFn = deps.ghCommandFn ?? ((args) => defaultGhCommand(args));
-  const loadPromptFn = deps.loadPromptFn ?? ((name) => defaultLoadPrompt(name));
+  const loadPromptFn = deps.loadPromptFn ??
+    ((name, promptsDir) => defaultLoadPrompt(name, promptsDir));
   const emitSarifFn = deps.emitSarifFn ??
     ((opts) => emitSecuritySarif(opts, { ghListFn: ghCommandFn }));
 
-  async function buildIssueBody(_opts: IdleTaskBodyOptions): Promise<string> {
+  async function buildIssueBody(opts: IdleTaskBodyOptions): Promise<string> {
     // Issue #2077: the wrapper body IS the prompt — fully substituted
     // at file time so a developer reading the issue sees concrete
     // values rather than `{{...}}` placeholders.
     //
-    // Issue #2135 (v6): `_opts.repo` is no longer used for substitution —
+    // Issue #2135 (v6): `opts.repo` is no longer used for substitution —
     // v6 of the prompt dropped `{{REPO_FULL_NAME}}` because the worker's
     // cwd already points at the cloned repo.
-    const loaded = await loadPromptFn(PROMPT_NAME);
+    const loaded = await loadPromptFn(PROMPT_NAME, idleTaskPromptsDir(opts));
     if (!loaded.ok) {
       throw new Error(
         `security-scan: failed to load prompt template ${PROMPT_NAME}: ${loaded.error.message}`,
@@ -262,6 +267,7 @@ export function createSecurityScanTemplate(
     return await buildPromptPreviewBody(prompt, {
       promptName: PROMPT_NAME,
       scope: DESCRIPTION,
+      rootDir: opts.rootDir,
     });
   }
 

@@ -9,27 +9,32 @@
  *  - the built-in security-scan template is registered at module load
  *  - security-scan files a human-style wrapper (`Run a security scan`)
  *    with the substituted prompt as the body (Issue #2077)
+ *  - `idleTaskPromptsDir` maps a body build's root directory to the prompts
+ *    directory it reads from, and a named root really does decide which tree
+ *    a wrapper body is built out of (Issue #1024)
+ *
+ * Australian English spelling used throughout (behaviour, organisation).
  */
 
 import {
   assert,
   assertEquals,
+  assertRejects,
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
 import {
   getTemplate,
+  idleTaskPromptsDir,
   type IdleTaskTemplate,
   listTemplates,
   registerTemplate,
 } from "../lib/idle_task_template.ts";
 
-// Import the security-scan template module for its registration side-effect.
+// Import the built-in template modules for their registration side-effect.
 import "../lib/idle_task_templates/security_scan_template.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
-
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+import "../lib/idle_task_templates/dead_code_template.ts";
+import { REPO_ROOT } from "./support/repo_root.ts";
 
 function makeTemplate(name: string): IdleTaskTemplate {
   return {
@@ -177,6 +182,7 @@ Deno.test(
       repo: "acme/widget",
       pickedAt: "2026-05-13T10:20:30.000Z",
       workerUser: "vibe-coder-bot",
+      rootDir: REPO_ROOT,
     }));
     // No hidden idle-task marker is embedded.
     assert(
@@ -195,5 +201,109 @@ Deno.test(
       !/\{\{[A-Z_]+\}\}/.test(body),
       "all prompt placeholders must be substituted at file time",
     );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// The root-directory seam (Issue #1024)
+// ---------------------------------------------------------------------------
+
+Deno.test("idleTaskPromptsDir - an unnamed root leaves resolution to production", () => {
+  assertEquals(idleTaskPromptsDir({}), undefined);
+  assertEquals(idleTaskPromptsDir({ rootDir: undefined }), undefined);
+  // An empty string is not a directory — treat it as "unnamed" rather than
+  // resolving to the process's root.
+  assertEquals(idleTaskPromptsDir({ rootDir: "" }), undefined);
+});
+
+Deno.test("idleTaskPromptsDir - a named root resolves to its prompts directory", () => {
+  assertEquals(
+    idleTaskPromptsDir({ rootDir: "/srv/vibe" }),
+    "/srv/vibe/prompts",
+  );
+  // REPO_ROOT carries a trailing slash; a doubled separator must not survive.
+  assertEquals(
+    idleTaskPromptsDir({ rootDir: "/srv/vibe/" }),
+    "/srv/vibe/prompts",
+  );
+  assertEquals(
+    idleTaskPromptsDir({ rootDir: "/srv/vibe///" }),
+    "/srv/vibe/prompts",
+  );
+});
+
+Deno.test(
+  "idle_task_template - a named root decides which tree the body is built from",
+  async () => {
+    const tpl = getTemplate("dead-code");
+    assert(tpl !== undefined);
+
+    // Give the root a prompts tree of its own, carrying a line this checkout's
+    // copy does not. The built body must show that line, which it can only do
+    // if the named root — not this checkout, not `PROMPTS_DIR`, not the
+    // working directory — is what was read.
+    const marker = "Seam marker for Issue #1024.";
+    const root = await Deno.makeTempDir({ prefix: "idle_task_root_" });
+    try {
+      const promptDir = `${root}/prompts/dead_code`;
+      await Deno.mkdir(promptDir, { recursive: true });
+      const canonical = await Deno.readTextFile(
+        `${REPO_ROOT}prompts/dead_code/prompt.md`,
+      );
+      await Deno.writeTextFile(
+        `${promptDir}/prompt.md`,
+        `${canonical}\n\n${marker}\n`,
+      );
+
+      const fromTemp = await Promise.resolve(tpl!.buildIssueBody({
+        repo: "acme/widget",
+        pickedAt: "2026-05-13T10:20:30.000Z",
+        workerUser: "vibe-coder-bot",
+        rootDir: root,
+      }));
+      assertStringIncludes(fromTemp, marker);
+
+      // The same build against this checkout has no such line — proof the
+      // marker came from the named root rather than from the prompt itself.
+      const fromCheckout = await Promise.resolve(tpl!.buildIssueBody({
+        repo: "acme/widget",
+        pickedAt: "2026-05-13T10:20:30.000Z",
+        workerUser: "vibe-coder-bot",
+        rootDir: REPO_ROOT,
+      }));
+      assert(
+        !fromCheckout.includes(marker),
+        "this checkout's prompt must not carry the seam marker",
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "idle_task_template - a root with no prompts tree fails loud naming it",
+  async () => {
+    const tpl = getTemplate("security-scan");
+    assert(tpl !== undefined);
+
+    const root = await Deno.makeTempDir({ prefix: "idle_task_empty_root_" });
+    try {
+      const err = await assertRejects(
+        () =>
+          Promise.resolve(tpl!.buildIssueBody({
+            repo: "acme/widget",
+            pickedAt: "2026-05-13T10:20:30.000Z",
+            workerUser: "vibe-coder-bot",
+            rootDir: root,
+          })),
+        Error,
+      );
+      // The named root is what was searched — not PROMPTS_DIR, not this
+      // checkout, not the working directory.
+      assertStringIncludes(err.message, `${root}/prompts/security_scan`);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
   },
 );

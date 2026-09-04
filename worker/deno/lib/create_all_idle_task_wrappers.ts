@@ -121,6 +121,15 @@ export interface CreateAllIdleTaskWrappersDeps {
   /** Progress log sink. Defaults to a no-op. */
   log?: (line: string) => void;
   /**
+   * Checkout root the wrapper bodies' prompt files are read from
+   * (Issue #1024). Forwarded verbatim to each template's `buildIssueBody`
+   * as its `rootDir`. Omit for the production
+   * resolution (`PROMPTS_DIR`, `VIBE_BASE_DIR`, then the module-relative
+   * path); name a root to pin every read in the sweep to that checkout,
+   * independent of the process's working directory and environment.
+   */
+  rootDir?: string;
+  /**
    * Optional template-name allowlist (Issue #2933). When provided, only
    * templates whose `name` is in this set are seeded; the rest are ignored
    * entirely (not even reported as skipped). Defaults to "all seventeen canonical
@@ -368,6 +377,7 @@ export async function createAllIdleTaskWrappers(
   const nowFn = deps.nowFn ?? (() => new Date());
   const runId = deps.runId ?? getRunId();
   const log = deps.log ?? (() => {});
+  const rootDir = deps.rootDir;
 
   // The canonical seventeen wrappers only. Filtering by the allowlist excludes any
   // test-only template registered into the shared registry. An optional
@@ -442,7 +452,7 @@ export async function createAllIdleTaskWrappers(
       // only once even when the template already embedded it (Issue #3513).
       const pickedAt = nowFn().toISOString();
       const rawBody = await Promise.resolve(
-        template.buildIssueBody({ repo, pickedAt, workerUser }),
+        template.buildIssueBody({ repo, pickedAt, workerUser, rootDir }),
       );
       // Issue #3634: GitHub rejects bodies over 65,536 characters, and the
       // security-scan preview now exceeds that. Clamp and say so loudly.

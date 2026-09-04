@@ -60,13 +60,7 @@ import "../lib/idle_task_templates/workflow_annotation_scan_template.ts";
 import "../lib/idle_task_templates/private_repo_reference_template.ts";
 import "../lib/idle_task_templates/duplicated_knowledge_template.ts";
 import "../lib/idle_task_templates/retro_template.ts";
-import {
-  pinPromptsToThisCheckout,
-  withRepoRootCwd,
-} from "./support/repo_prompts.ts";
-
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+import { REPO_ROOT } from "./support/repo_root.ts";
 
 /** A 40-character commit SHA, as GitHub permalinks carry. */
 const SHA_40 = /\b[0-9a-f]{40}\b/;
@@ -78,6 +72,7 @@ function buildPreview(template: IdleTaskTemplate): Promise<string> {
       repo: "stSoftwareAU/private-repo-14",
       pickedAt: "2026-08-07T00:00:00.000Z",
       workerUser: "vibe-coder",
+      rootDir: REPO_ROOT,
     }),
   );
 }
@@ -89,44 +84,40 @@ function buildPreview(template: IdleTaskTemplate): Promise<string> {
 Deno.test(
   "every registered idle-task template's preview body fits the limit unclamped",
   async () => {
-    await withRepoRootCwd(async () => {
-      const oversize: string[] = [];
-      for (const template of listTemplates()) {
-        const preview = await buildPreview(template);
-        if (preview.length > IDLE_TASK_PREVIEW_MAX_CHARS) {
-          oversize.push(`${template.name}=${preview.length}`);
-        }
+    const oversize: string[] = [];
+    for (const template of listTemplates()) {
+      const preview = await buildPreview(template);
+      if (preview.length > IDLE_TASK_PREVIEW_MAX_CHARS) {
+        oversize.push(`${template.name}=${preview.length}`);
       }
-      assertEquals(
-        oversize,
-        [],
-        `over the ${IDLE_TASK_PREVIEW_MAX_CHARS}-character preview budget: ` +
-          `${oversize.join(", ")} — condense the preview via ` +
-          `buildPromptPreviewBody() instead of letting the clamp drop the middle`,
-      );
-    });
+    }
+    assertEquals(
+      oversize,
+      [],
+      `over the ${IDLE_TASK_PREVIEW_MAX_CHARS}-character preview budget: ` +
+        `${oversize.join(", ")} — condense the preview via ` +
+        `buildPromptPreviewBody() instead of letting the clamp drop the middle`,
+    );
   },
 );
 
 Deno.test(
   "every seeded wrapper body survives the clamp untruncated",
   async () => {
-    await withRepoRootCwd(async () => {
-      for (const template of listTemplates()) {
-        const body = appendIdleTaskAttribution(await buildPreview(template), {
-          template: template.name,
-          runId: "vibe-20260807-000000-0000",
-        });
-        const clamped = clampIdleTaskBody(body);
-        assertEquals(
-          clamped.truncated,
-          false,
-          `${template.name}: wrapper body was truncated (${clamped.droppedChars} ` +
-            `of ${clamped.originalLength} characters dropped)`,
-        );
-        assert(clamped.body.length <= GITHUB_ISSUE_BODY_MAX_CHARS);
-      }
-    });
+    for (const template of listTemplates()) {
+      const body = appendIdleTaskAttribution(await buildPreview(template), {
+        template: template.name,
+        runId: "vibe-20260807-000000-0000",
+      });
+      const clamped = clampIdleTaskBody(body);
+      assertEquals(
+        clamped.truncated,
+        false,
+        `${template.name}: wrapper body was truncated (${clamped.droppedChars} ` +
+          `of ${clamped.originalLength} characters dropped)`,
+      );
+      assert(clamped.body.length <= GITHUB_ISSUE_BODY_MAX_CHARS);
+    }
   },
 );
 
@@ -137,43 +128,41 @@ Deno.test(
 Deno.test(
   "security-scan wrapper is condensed, still dispatches, and links the pinned prompt",
   async () => {
-    await withRepoRootCwd(async () => {
-      const template = listTemplates().find((t) => t.name === "security-scan");
-      assert(template !== undefined, "security-scan template not registered");
+    const template = listTemplates().find((t) => t.name === "security-scan");
+    assert(template !== undefined, "security-scan template not registered");
 
-      const preview = await buildPreview(template);
+    const preview = await buildPreview(template);
 
-      assert(
-        preview.length <= IDLE_TASK_PREVIEW_MAX_CHARS,
-        `preview is ${preview.length} characters`,
-      );
-      assertStringIncludes(preview, IDLE_TASK_PREVIEW_CONDENSED_MARKER);
+    assert(
+      preview.length <= IDLE_TASK_PREVIEW_MAX_CHARS,
+      `preview is ${preview.length} characters`,
+    );
+    assertStringIncludes(preview, IDLE_TASK_PREVIEW_CONDENSED_MARKER);
 
-      // Dispatch signal (idle_task_claim_handler.ts) still recognises it.
-      assert(
-        template.matchesIdleTaskBody?.(preview) === true,
-        "condensed body no longer matches the template's body fingerprint",
-      );
-      assert(
-        preview.startsWith("# MythOS-style Security Audit"),
-        `condensed body does not open with the fingerprint heading: ` +
-          `${preview.slice(0, 80)}`,
-      );
+    // Dispatch signal (idle_task_claim_handler.ts) still recognises it.
+    assert(
+      template.matchesIdleTaskBody?.(preview) === true,
+      "condensed body no longer matches the template's body fingerprint",
+    );
+    assert(
+      preview.startsWith("# MythOS-style Security Audit"),
+      `condensed body does not open with the fingerprint heading: ` +
+        `${preview.slice(0, 80)}`,
+    );
 
-      // Permalink to the exact prompt text at a 40-character commit SHA.
-      const sha = await headCommitSha();
-      assert(sha !== null, "repo-root HEAD SHA could not be read");
-      const link = new RegExp(
-        `https://github\\.com/${PROMPT_SOURCE_REPO}/blob/[0-9a-f]{40}/` +
-          `prompts/security_scan/prompt\\.md`,
-      );
-      assert(
-        link.test(preview),
-        "condensed body has no SHA-pinned prompts/security_scan/prompt.md permalink",
-      );
-      assert(SHA_40.test(preview));
-      assertStringIncludes(preview, sha);
-    });
+    // Permalink to the exact prompt text at a 40-character commit SHA.
+    const sha = await headCommitSha(undefined, REPO_ROOT);
+    assert(sha !== null, "repo-root HEAD SHA could not be read");
+    const link = new RegExp(
+      `https://github\\.com/${PROMPT_SOURCE_REPO}/blob/[0-9a-f]{40}/` +
+        `prompts/security_scan/prompt\\.md`,
+    );
+    assert(
+      link.test(preview),
+      "condensed body has no SHA-pinned prompts/security_scan/prompt.md permalink",
+    );
+    assert(SHA_40.test(preview));
+    assertStringIncludes(preview, sha);
   },
 );
 
