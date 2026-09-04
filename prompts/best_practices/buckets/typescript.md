@@ -258,3 +258,104 @@ primary file) so re-runs deduplicate.
       `paths`. Suggested fix: drop `baseUrl` and keep `paths` (entries
       become relative to the config file), or scope `baseUrl` only if
       bare-import resolution genuinely needs it.
+
+## Test classification — unit, integration, benchmark
+
+A unit test is behavioural and parallel-safe, and it runs on every
+change; a test that is slow or cannot run alongside its neighbours is
+an integration test or a benchmark. `CODING-STANDARDS.md` holds the
+normative unit / integration / benchmark definition — read it and cite
+it rather than restating the taxonomy here. What it costs to classify a
+test wrongly is measured, not hypothetical: on the repository that
+maintains this scan the same Deno suite ran 42+ minutes sequentially,
+against a 45-minute phase budget, and 2m23s under `--parallel` — an
+18x difference held back entirely by tests that mutate process-wide
+state.
+
+**Hard constraint — static evidence only.** These checks read
+`*_test.ts` sources and the `deno.json` tasks and workflow steps that
+run them. The scanner **does not** invoke `deno test`, `deno bench`, or
+any other command, and never times a test to decide that it is slow.
+Every finding cites the test file and the line range of the offending
+call, and uses the standard `BP-<12 hex>` recipe (title slug plus the
+primary file) so re-runs deduplicate. File at `severity:low`, or
+`severity:medium` when the test sits in the suite the repo runs on
+every change.
+
+**Already-tracked debt is silent.** Where the repo keeps a shrink-only
+list of its known parallel-unsafe test files, or a manifest of the
+integration tests its every-change suite excludes, a file on either
+list is debt already accepted and bounded — do not re-file it. The
+finding worth filing is the test that is recorded in neither.
+
+**How a test asserts is not this bucket's business.** An absolute
+wall-clock threshold inside a test is a `test-audit` finding — do not
+file both. These checks are about where a test lives and what process
+state it touches.
+
+25. **Unit test mutates process-wide state.** Flag a `*_test.ts` file
+    that calls `Deno.env.set`, `Deno.env.delete`, or `Deno.chdir`,
+    whether inside a `Deno.test` body or at module scope. Deno's
+    `--parallel` workers share one process, so the mutation races
+    every other test running at that moment; the failure it produces
+    is intermittent and lands on somebody else's unrelated change,
+    which is the worst shape a gate failure can take. A `try` /
+    `finally` that restores the previous value does not make it safe —
+    the window between the two is exactly the race.
+
+    Suggested fix: take the value as a parameter or an injected seam
+    instead of mutating the process. A worked example, taken from the
+    repository that maintains this scan rather than from the repo
+    under review: `resolveDiskFloors` and `HostDiskMonitor` in
+    `worker/deno/lib/host_disk.ts` each take an
+    `env: (name: string) => string | undefined` reader, so the test
+    supplies a lookup and mutates nothing:
+
+        -Deno.env.set("VIBE_HOST_DISK_LOW_FLOOR_GB", "12");
+        -const floors = resolveDiskFloors();
+        +const floors = resolveDiskFloors((name) =>
+        +  name === "VIBE_HOST_DISK_LOW_FLOOR_GB" ? "12" : undefined);
+
+    `findIssuesByLabel` in `worker/deno/lib/find_issues_by_label.ts`
+    is the same practice one level out: its GitHub command runner
+    arrives as `options.ghCommandFn`, so the test hands it a stub
+    rather than arranging a real `gh` on the process `PATH`.
+
+    Where the code under test has no such seam, the fix is to add the
+    parameter, not to move the mutation somewhere quieter.
+
+26. **Unit test cannot finish within 10 seconds.** A unit test runs on
+    every change, so it is budgeted in seconds; one that cannot hold
+    to 10 seconds is an integration test or a benchmark and belongs in
+    that category's home. Flag a `*_test.ts` file in the every-change
+    suite that carries any of the shapes that put it over the budget:
+    - spawning a process — `Deno.Command`, `Deno.run`, or a helper
+      that drives one of the repository's own `.sh` / `.ps1` scripts.
+      Where the repo already has a classifier for that shape, prefer
+      its verdict over a fresh guess of your own;
+    - waiting on wall-clock time — a `setTimeout` / sleep of seconds,
+      a retry loop with real delays, a poll against a deadline;
+    - reaching the network, or standing up a real server or container;
+    - iterating enough work that the runtime is the point.
+
+    Suggested fix: move the file into the repository's integration
+    manifest and its `test:integration` task so per-PR CI keeps
+    running it, or replace the real process, clock or socket with an
+    injected seam and keep it in the every-change suite. Do not reduce
+    an iteration count to squeeze a timing test under the budget —
+    that yields a test that is both slow and no longer meaningful.
+
+27. **Benchmark runs somewhere it cannot be trusted.** A benchmark's
+    output is a duration, so it is only worth reading when the host is
+    otherwise idle. Flag a benchmark that is wired into the quality
+    gate, the default `deno test` run, or a CI job that shares a
+    runner with other work, and flag benchmark run instructions that
+    do not state the quiet-host requirement. Cite the task or workflow
+    line that schedules it.
+
+    Suggested fix: leave the benchmark reachable only on demand — a
+    dedicated `deno task` or `deno bench` entry point, never a target
+    the every-change gate reaches — and say in its documentation that
+    it is run on an otherwise idle machine, never while parallel jobs
+    occupy the host. A number produced under concurrent load is not a
+    slow result; it is a result nobody can act on.
