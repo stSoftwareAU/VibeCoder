@@ -319,6 +319,60 @@ bump** section; this orchestrator names the rule once:
   apply to `.github/workflows/*.yml` — workflow-config deprecations
   are handled by the separate github-actions-audit scan.
 
+### Cross-bucket: test classification
+
+A test suite earns its place in the every-change gate by being fast
+and parallel-safe; one that is neither blocks every other change for
+as long as it runs. The cost is measured, not hypothetical: on the
+repository that maintains this scan, the same suite took 42+ minutes
+run sequentially — against a 45-minute phase budget — and 2m23s run in
+parallel, an 18x difference held back entirely by tests that mutate
+process-wide state. The `typescript` bucket carries the Deno-specific
+detections in its **Test classification** section and `general.md`
+carries the language-neutral form; this orchestrator names the rule
+once:
+
+- **`CODING-STANDARDS.md` is the normative definition.** Read the
+  unit / integration / benchmark section there before filing, and cite
+  it in the finding rather than restating the taxonomy — two copies of
+  a definition drift into two different definitions.
+- **A unit test is behavioural and parallel-safe.** It asserts what
+  the code does, never how fast it runs, and it does not mutate
+  process-wide state: `Deno.env.set`, `Deno.chdir`, `setenv`, a global
+  working directory, a fixed port, a shared fixed temp path. Parallel
+  workers share one process, so a test that mutates that state races
+  whatever else is running, and the failure lands intermittently on
+  somebody else's unrelated change. Mutating process-wide state is the
+  anti-pattern; taking the value as a parameter or an injected seam is
+  the practice.
+- **A unit test finishes within 10 seconds.** One that cannot is an
+  integration test or a benchmark, and belongs in that category's home
+  rather than in the suite that runs on every change.
+- **A benchmark runs on demand, on a quiet machine.** Never in a
+  quality run, and never while parallel worker jobs occupy the host: a
+  busy host inflates every reading, so a benchmark run under
+  concurrent load reports a number nobody can act on.
+- **Static evidence only.** The check reads the test source and the
+  task or workflow definitions that run it. The scanner **does not**
+  run the suite, time a test, or invoke `deno test`, `deno bench`,
+  `npm test`, `cargo test`, or `mvn test` — Hard Constraint 2 forbids
+  it, and a duration measured on the scanning host would be exactly
+  the untrustworthy number this rule is about.
+- **Already-tracked debt is silent.** Where the repository already
+  records its parallel-unsafe tests in a shrink-only list, or its
+  integration tests in a manifest excluded from the every-change
+  suite, that debt is already accepted and bounded. Never re-file a
+  file that appears in one of those; the finding worth filing is the
+  test that is recorded nowhere.
+- **Severity floor: low; ceiling: medium.** A misclassified test slows
+  the gate, it does not break the product — keep the band tight so it
+  does not crowd out genuine high-severity findings against the 6-cap.
+- **How a test asserts belongs to `test-audit`.** An absolute
+  wall-clock threshold inside a test (`assert(elapsed < 500)`) is a
+  `test-audit` finding, not a best-practices one — do not file both.
+  This rule is about where a test lives and what it touches, never
+  about the shape of its assertions.
+
 ## Phase 3 — Triage
 
 Apply these rules in order to every candidate from Phase 2:
