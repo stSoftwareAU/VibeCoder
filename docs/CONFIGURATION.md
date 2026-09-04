@@ -497,9 +497,12 @@ Semantics:
 
 - **`label`** — the GitHub label the mapping dispatches, or the built-in label
   whose prompt it overrides (see below). Must be a non-empty string with no NUL
-  or control characters, unique within the list, and — unless it names a
-  built-in phase label — must not be one of the reserved workflow labels or the
-  `top-priority` / `low-priority` discovery labels, which are never remappable.
+  or control characters, and — unless it names a built-in phase label — must
+  not be one of the reserved workflow labels or the `top-priority` /
+  `low-priority` discovery labels, which are never remappable. Each
+  label/phase pair may appear once: a plain mapping is unique on its label, and
+  a label owning two templates (`planning`, `quorum`) takes at most one entry
+  per phase.
 - **`prompt_path`** — the absolute host path of the prompt template file. Must
   be a non-empty, control-character-free string starting with `/`, and must
   name a file that exists and is readable **at config load time**.

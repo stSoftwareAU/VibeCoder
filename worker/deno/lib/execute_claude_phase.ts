@@ -18,7 +18,12 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
-import type { Logger, RepoConfig, Result } from "../types.ts";
+import type {
+  CustomLabelPromptMapping,
+  Logger,
+  RepoConfig,
+  Result,
+} from "../types.ts";
 import {
   buildQualityInstructions,
   getCiFailureLabels,
@@ -183,6 +188,11 @@ export interface ExecuteClaudePhaseOptions {
   workDir: string;
   /** Per-repo configuration map. */
   repoConfigs?: Record<string, RepoConfig>;
+  /**
+   * Validated `custom_label_prompts` mappings (Issue #849, part of #843).
+   * An entry overriding the `issue` phase replaces the built-in template.
+   */
+  promptOverrides?: readonly CustomLabelPromptMapping[];
   /** Claude timeout in seconds. */
   claudeTimeout?: number;
   /**
@@ -701,6 +711,7 @@ export async function runExecuteClaudePhase(
     clarityStatus,
     workDir,
     repoConfigs,
+    promptOverrides,
     // Issue #1824: default sourced from OPERATIONAL_DEFAULTS so all timeout
     // defaults flow from a single source of truth.
     claudeTimeout = OPERATIONAL_DEFAULTS.claudeTimeout,
@@ -910,6 +921,10 @@ export async function runExecuteClaudePhase(
     cache: promptCache,
     logger,
     verbosityLevel,
+    // Issue #849: an operator's `work-on` mapping replaces the built-in issue
+    // template here too — this phase is a second entry point into the same
+    // build, and skipping the overrides would silently run the built-in one.
+    ...(promptOverrides ? { promptOverrides } : {}),
   });
 
   if (!promptResult.ok) {

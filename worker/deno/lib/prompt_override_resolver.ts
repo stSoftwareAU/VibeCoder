@@ -117,6 +117,53 @@ export async function resolvePromptTemplate(
   });
 }
 
+/**
+ * A phase's prompt could not be built from the operator's override.
+ *
+ * Typed so a caller can tell "this operator's file is broken" from any other
+ * build failure — the first must never be repaired, the second may still take
+ * whatever degraded path the caller already had.
+ */
+export class PromptOverrideBuildError extends Error {
+  constructor(message: string, readonly label: string, readonly phase: string) {
+    super(message);
+    this.name = "PromptOverrideBuildError";
+  }
+}
+
+/**
+ * Refuse to fall back past an operator's override (Issue #849).
+ *
+ * Several phases answer a failed prompt build with a hard-coded basic prompt
+ * so a broken repository template cannot strand an issue. That fallback is
+ * right for a built-in template and wrong for an override: the operator asked
+ * for *their* prompt, and quietly running a built-in-shaped one instead is the
+ * silent substitution #843 rules out. Called before any such fallback, this
+ * throws when the phase is overridden and does nothing when it is not.
+ *
+ * @param overrides - The validated `custom_label_prompts` list
+ * @param phase - The phase whose prompt build failed
+ * @param cause - The build failure being handled
+ * @throws {PromptOverrideBuildError} When this phase has an override
+ */
+export function refuseFallbackPastOverride(
+  overrides: readonly CustomLabelPromptMapping[] | undefined,
+  phase: string,
+  cause: Error,
+): void {
+  const mapping = promptOverrideForPhase(overrides, phase);
+  if (!mapping) return;
+  throw new PromptOverrideBuildError(
+    `Refusing to fall back to the built-in '${phase}' prompt: the override ` +
+      `for label '${mapping.label}' (${mapping.promptPath}) could not be ` +
+      `built — ${cause.message}. Fix the file or remove the mapping from ` +
+      `.config.json; the built-in template is never substituted for an ` +
+      `operator's prompt.`,
+    mapping.label,
+    phase,
+  );
+}
+
 /** Narrow a mapping to the explicit-template shape, if there is one. */
 function toExplicit(
   mapping: CustomLabelPromptMapping | undefined,

@@ -82,13 +82,14 @@ function parseCleanString(raw: unknown, field: string): string {
   return raw;
 }
 
-/** Labels and phases already claimed by earlier entries. */
-interface SeenClaims {
-  /** Lower-cased `label::phase` keys. */
-  entries: Set<string>;
-  /** Overridden phase → the entry index that claimed it. */
-  phases: Map<string, number>;
-}
+/**
+ * Claims made by earlier entries: lower-cased `label::phase` → entry index.
+ *
+ * The phase is part of the key so a label owning two templates (`planning`
+ * and `planning_critique`) can carry one entry each, while a second entry
+ * claiming a phase already claimed is refused by index.
+ */
+type SeenClaims = Map<string, number>;
 
 /** Validate one entry; `seen` carries the claims already accepted. */
 function parseEntry(
@@ -156,17 +157,16 @@ function parseEntry(
       `"${label}" is a label the worker applies itself and cannot be remapped`,
     );
   }
+  // Fail loud on an ambiguous mapping: two entries cannot claim one label —
+  // nor, for an override, one phase — or whichever came first wins silently.
   const claim = `${label.toLowerCase()}::${overridesPhase ?? ""}`;
-  if (seen.entries.has(claim)) {
-    reject(`${entryField}.label`, `duplicate label ${show(label)}`);
-  }
-  // Fail loud on an ambiguous override: two entries cannot both supply the
-  // template for one phase, or the phase silently runs whichever came first.
-  if (overridesPhase !== undefined && seen.phases.has(overridesPhase)) {
+  if (seen.has(claim)) {
     reject(
       `${entryField}.label`,
-      `phase "${overridesPhase}" is already overridden by ` +
-        `custom_label_prompts[${seen.phases.get(overridesPhase)}]`,
+      overridesPhase === undefined
+        ? `duplicate label ${show(label)}`
+        : `duplicate label ${show(label)} — phase "${overridesPhase}" is ` +
+          `already overridden by custom_label_prompts[${seen.get(claim)}]`,
     );
   }
 
@@ -200,8 +200,7 @@ function parseEntry(
     }
   }
 
-  seen.entries.add(claim);
-  if (overridesPhase !== undefined) seen.phases.set(overridesPhase, index);
+  seen.set(claim, index);
   return {
     label,
     promptPath,
@@ -216,6 +215,13 @@ function parseEntry(
  * who never opts in gets today's behaviour unchanged. Returns the **first**
  * fault as an error message naming the offending entry and field — the list
  * is never partially accepted.
+ *
+ * @param raw - The `custom_label_prompts` value from `.config.json`
+ * @param names - The configured built-in label names, which decide whether an
+ *   entry overrides a built-in phase (Issue #849). Callers holding a
+ *   `WorkerConfig` must pass its resolved names: the stock defaults used
+ *   otherwise would resolve a renamed label to the wrong phase, or to none.
+ * @returns The validated mappings, or the first fault
  */
 export function parseCustomLabelPrompts(
   raw: unknown,
@@ -233,7 +239,7 @@ export function parseCustomLabelPrompts(
   }
 
   const mappings: CustomLabelPromptMapping[] = [];
-  const seen: SeenClaims = { entries: new Set(), phases: new Map() };
+  const seen: SeenClaims = new Map();
   try {
     for (let index = 0; index < raw.length; index++) {
       mappings.push(parseEntry(raw[index], index, seen, names));
@@ -251,6 +257,12 @@ export function parseCustomLabelPrompts(
  * {@link parseCustomLabelPrompts}, but throwing — the fail-loud entry point
  * used at config load so a malformed, colliding or unreadable mapping stops
  * the worker before a custom label could ever dispatch silently.
+ *
+ * @param raw - The `custom_label_prompts` value from `.config.json`
+ * @param names - The configured built-in label names (see
+ *   {@link parseCustomLabelPrompts})
+ * @returns The validated mappings
+ * @throws When any entry is invalid
  */
 export function assertCustomLabelPrompts(
   raw: unknown,

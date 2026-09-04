@@ -23,6 +23,7 @@ import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import type { IssueContext } from "./issue_worker.ts";
 import { sanitiseAnswerOutput } from "./answer_sanitiser.ts";
 import { promptOverrideMappings } from "./custom_label_prompts_config.ts";
+import { refuseFallbackPastOverride } from "./prompt_override_resolver.ts";
 import {
   detectQuestionClarificationRequest,
   extractClarificationBody,
@@ -327,6 +328,13 @@ async function _processQuestionWithHeartbeat(
   let prompt: string;
   let systemPrompt: string | undefined;
   if (!promptResult.ok) {
+    // Issue #849: never fall back past an operator's override — see
+    // `refuseFallbackPastOverride`.
+    refuseFallbackPastOverride(
+      promptOverrideMappings(config),
+      "question",
+      promptResult.error,
+    );
     logger.warn("Question prompt builder failed, using basic question prompt", {
       error: promptResult.error.message,
     });

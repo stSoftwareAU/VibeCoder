@@ -77,20 +77,6 @@ export const REFINE_ISSUE_REASON =
   "the refinement phase builds its prompt inline in " +
   "lib/refinement_processor.ts and has no template file to override";
 
-/** Read the six configurable label names off a worker configuration. */
-export function builtInLabelNames(
-  config: BuiltInLabelNames,
-): BuiltInLabelNames {
-  return {
-    workOnLabel: config.workOnLabel,
-    planningLabel: config.planningLabel,
-    questionLabel: config.questionLabel,
-    grillMeLabel: config.grillMeLabel,
-    quorumLabel: config.quorumLabel,
-    refineIssueLabel: config.refineIssueLabel,
-  };
-}
-
 /** The label name each built-in field carries, in match order. */
 function labelFields(
   names: BuiltInLabelNames,
@@ -102,8 +88,9 @@ function labelFields(
 /**
  * Every phase that can be overridden, given the configured label names.
  *
- * Exported for the documentation-facing error messages and for tests, which
- * assert the list rather than restating it.
+ * Named in the rejection message an operator sees when they set `phase` on a
+ * label that overrides nothing, so the message lists what *is* overridable
+ * rather than leaving them to guess.
  */
 export function overridablePhases(
   names: BuiltInLabelNames = DEFAULT_BUILTIN_LABEL_NAMES,
@@ -138,7 +125,9 @@ export function resolveOverridePhase(
         error:
           `"phase" may only be set on a mapping that overrides a built-in ` +
           `label; "${label}" is not one, and a new custom label always runs ` +
-          `the implementation phase`,
+          `the implementation phase. Overridable phases: ${
+            overridablePhases(names).join(", ")
+          }`,
       };
     }
     return { ok: true, value: undefined };

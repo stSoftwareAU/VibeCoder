@@ -19,9 +19,18 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import type { CustomLabelPromptMapping, Logger } from "../types.ts";
-import { resolvePromptTemplate } from "../lib/prompt_override_resolver.ts";
+import {
+  PromptOverrideBuildError,
+  refuseFallbackPastOverride,
+  resolvePromptTemplate,
+} from "../lib/prompt_override_resolver.ts";
 import {
   buildIssuePrompt,
   buildPlanningCritiquePrompt,
@@ -171,6 +180,49 @@ Deno.test("resolvePromptTemplate - an override edited below its contract fails l
 });
 
 // ---------------------------------------------------------------------------
+// Never fall back past an override
+// ---------------------------------------------------------------------------
+
+Deno.test("refuseFallbackPastOverride - throws for an overridden phase", async () => {
+  await withDir(async (dir) => {
+    const mapping = await override(
+      dir,
+      "q.md",
+      "question",
+      "question",
+      "{{REPO}} {{ISSUE_NUMBER}} {{QUESTION_LABEL}}\n",
+    );
+    const thrown = assertThrows(
+      () =>
+        refuseFallbackPastOverride(
+          [mapping],
+          "question",
+          new Error("the file went missing"),
+        ),
+      PromptOverrideBuildError,
+      "question",
+    );
+    assertStringIncludes(thrown.message, mapping.promptPath);
+    assertStringIncludes(thrown.message, "the file went missing");
+  });
+});
+
+Deno.test("refuseFallbackPastOverride - leaves an unoverridden phase alone", () => {
+  // A broken *repository* template still gets its basic-prompt rescue.
+  refuseFallbackPastOverride([], "question", new Error("boom"));
+  refuseFallbackPastOverride(undefined, "planning", new Error("boom"));
+  refuseFallbackPastOverride(
+    [{
+      label: "planning",
+      promptPath: "/opt/a.md",
+      overridesPhase: "planning",
+    }],
+    "question",
+    new Error("boom"),
+  );
+});
+
+// ---------------------------------------------------------------------------
 // The builders each phase uses
 // ---------------------------------------------------------------------------
 
@@ -198,6 +250,38 @@ Deno.test("buildIssuePrompt - a work-on override replaces the issue template", a
     // The untrusted issue text is still fenced exactly as the built-in
     // template's build fences it.
     assertStringIncludes(result.value.prompt, "BOUNDARY_");
+  });
+});
+
+Deno.test("buildIssuePrompt - a dispatched custom prompt wins over a work-on override", async () => {
+  await withDir(async (dir) => {
+    const overrideMapping = await override(
+      dir,
+      "work-on.md",
+      "work-on",
+      "issue",
+      `${OPERATOR_MARKER}\nIssue {{ISSUE_NUMBER}}\n{{QUALITY_INSTRUCTIONS}}\n`,
+    );
+    const dispatched = `${dir}/dispatched.md`;
+    await Deno.writeTextFile(
+      dispatched,
+      `DISPATCHED TEMPLATE\nIssue {{ISSUE_NUMBER}}\n{{QUALITY_INSTRUCTIONS}}\n`,
+    );
+
+    const result = await buildIssuePrompt({
+      repo: "owner/repo",
+      issueNumber: "42",
+      issueTitle: "A title",
+      issueBody: "A body",
+      issueLabels: "my-custom-label",
+      qualityInstructions: "run the gate",
+      customPromptPath: dispatched,
+      customPromptLabel: "my-custom-label",
+      promptOverrides: [overrideMapping],
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertStringIncludes(result.value.prompt, "DISPATCHED TEMPLATE");
+    assertEquals(result.value.prompt.includes(OPERATOR_MARKER), false);
   });
 });
 

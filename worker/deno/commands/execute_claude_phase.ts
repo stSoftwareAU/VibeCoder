@@ -44,6 +44,7 @@ import {
 import { saveSession } from "../lib/session_manager.ts";
 import { buildProgressExtension } from "../lib/progress_extension_runtime.ts";
 import { resolveRunHardCap } from "../lib/run_hard_cap.ts";
+import { promptOverrideMappings } from "../lib/custom_label_prompts_config.ts";
 
 export const executeClaudePhaseCommand: Command = {
   name: "execute-claude-phase",
@@ -144,6 +145,8 @@ export const executeClaudePhaseCommand: Command = {
       clarityStatus,
       workDir,
       repoConfigs: config.repoConfig,
+      // Issue #849: the operator's built-in-phase prompt overrides.
+      promptOverrides: promptOverrideMappings(config),
       claudeTimeout,
       claudeKillAfter,
       maxRateLimitRetries,

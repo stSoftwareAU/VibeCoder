@@ -21,6 +21,7 @@ import {
 import type { GitHubClient, Logger, Result } from "../types.ts";
 import { maybeCreatePlanningMilestone } from "./planning_milestone.ts";
 import { promptOverrideMappings } from "./custom_label_prompts_config.ts";
+import { refuseFallbackPastOverride } from "./prompt_override_resolver.ts";
 import { fetchNativeSubIssueNumbers } from "./native_sub_issues.ts";
 import {
   buildPlanningCritiquePrompt,
@@ -1174,6 +1175,13 @@ async function _processPlanningWithHeartbeat(
   let prompt: string;
   let systemPrompt: string | undefined;
   if (!promptResult.ok) {
+    // Issue #849: the basic prompt rescues a broken *repository* template. An
+    // operator's override is never rescued that way — it fails the run loudly.
+    refuseFallbackPastOverride(
+      promptOverrideMappings(config),
+      "planning",
+      promptResult.error,
+    );
     logger.warn("Planning prompt builder failed, using basic planning prompt", {
       error: promptResult.error.message,
     });
@@ -1313,6 +1321,12 @@ async function _processPlanningWithHeartbeat(
     });
 
     if (!critiquePromptResult.ok) {
+      // Issue #849: never fall back past an operator's critique override.
+      refuseFallbackPastOverride(
+        promptOverrideMappings(config),
+        "planning_critique",
+        critiquePromptResult.error,
+      );
       logger.warn(
         "Planning critique prompt builder failed, using basic critique prompt",
         {
