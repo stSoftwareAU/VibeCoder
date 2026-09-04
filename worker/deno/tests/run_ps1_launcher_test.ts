@@ -21,8 +21,13 @@ import {
   containerTargetPaths,
   WORK_VOLUME_NAME,
 } from "../lib/container_launch.ts";
-import { CONTAINER_START_EXIT_CODES } from "../lib/container_restart_backoff.ts";
+import {
+  CONTAINER_START_EXIT_CODES,
+  isNetworkUnavailableLaunch,
+} from "../lib/container_restart_backoff.ts";
+import { NETWORK_UNAVAILABLE_MARKER } from "../lib/github_user_resolution.ts";
 import { CONTAINER_WEDGED_EXIT_STATUS } from "../lib/container_watchdog.ts";
+import { executableLines } from "../lib/launcher_source.ts";
 import { stripContainerfile } from "../lib/containerfile_strip.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
@@ -756,18 +761,31 @@ Deno.test({
   },
 });
 
+// ---------------------------------------------------------------------------
+// The worker that stopped itself inside a container that started (Issue #1029)
+// ---------------------------------------------------------------------------
+//
+// The Windows twin of the run.sh change. Issue #720 read exit 1 as "a
+// container that started, so its output says nothing about the launch" and
+// withheld the capture for it; Issue #1029 is what that costs — a host nine
+// consecutive failures into `worker_run` with the worker's own account sitting
+// unread in this capture. These two tests replace the Issue #720 assertion
+// that the capture is withheld for exit 1: the behaviour it pinned is the
+// defect.
+
 Deno.test({
   name:
-    "run.ps1 - a container that started is never quoted as failure evidence (Issue #720)",
+    "run.ps1 - a worker that failed inside a started container is quoted as evidence (Issue #1029)",
   ignore,
   fn: async () => {
-    // Exit status 1 is the worker reporting its own failure from inside a
-    // container that started perfectly well, so its console output says nothing
-    // about a launch that did not fail.
+    // Exit status 1 is the worker reporting its own bootstrap, config,
+    // credential or loop failure — the lines saying which one are on the
+    // stream this capture holds.
+    const reason = "[run-worker] credential preflight failed: no Claude token";
     const harness = await setupHarness({
       STUB_IMAGE_INSPECT_EXIT: "0",
       STUB_RUN_EXIT: "1",
-      STUB_RUN_STDERR: "worker: the run failed for its own reasons",
+      STUB_RUN_STDERR: reason,
     }, { denoStub: true });
     try {
       const outcome = await runLauncher(harness);
@@ -775,10 +793,76 @@ Deno.test({
 
       const args = await recorded(harness, "container-restart-backoff");
       assert(args, "run.ps1 must record its own launcher outcome");
+      assert(
+        args.includes("--launch-log"),
+        `a worker_run escalation with no evidence: ${args.join(" ")}`,
+      );
+
+      const log = await recordedLaunchLog(harness);
+      assert(
+        log !== null,
+        "the run capture was deleted before the outcome was recorded",
+      );
+      assertStringIncludes(log, reason);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - the network-unavailable marker reaches the recorder (Issues #949, #1029)",
+  ignore,
+  fn: async () => {
+    // Issue #949's "not this host's fault" decision is read out of the log the
+    // recorder is handed, so a launcher that hands over nothing can never make
+    // it — and every transient outage climbs the failure ladder instead.
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_RUN_EXIT: "1",
+      STUB_RUN_STDERR:
+        `[run-worker] ${NETWORK_UNAVAILABLE_MARKER} - GitHub was unreachable ` +
+        `for every attempt; not a host fault`,
+    }, { denoStub: true });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 1, outcome.stderr);
+
+      const log = await recordedLaunchLog(harness);
+      assert(log !== null, "no capture was handed to the outcome recorder");
+      assert(
+        isNetworkUnavailableLaunch(log),
+        `the recorder could not see the network marker in: ${log}`,
+      );
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - a launch that succeeded is never quoted as failure evidence (Issue #1029)",
+  ignore,
+  fn: async () => {
+    // The other half of the rule: a clean run has no failure for its output to
+    // be the evidence of.
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_RUN_EXIT: "0",
+      STUB_RUN_STDERR: "worker: nothing to do this cycle",
+    }, { denoStub: true });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+
+      const args = await recorded(harness, "container-restart-backoff");
+      assert(args, "run.ps1 must record its own launcher outcome");
       assertEquals(
         args.includes("--launch-log"),
         false,
-        `a container that started must not be quoted as a refused start: ${
+        `a successful launch must not be quoted as a failure: ${
           args.join(" ")
         }`,
       );
@@ -853,6 +937,30 @@ Deno.test({
   },
 });
 
+Deno.test("run.ps1 - carries no copy of the recorder's refused-start statuses (Issue #1029)", async () => {
+  // The evidence rule is now one rule — a launch that failed hands its
+  // capture over — so the launcher has no reason to know which statuses mean
+  // "the runtime refused the start". That distinction still exists, once, in
+  // CONTAINER_START_EXIT_CODES, where the recorder uses it to choose between
+  // the container_start and worker_run phases. A copy reappearing here is the
+  // special case coming back, and with it the empty worker_run reports
+  // (#994, #995, #996, #1029) it produced. Runs everywhere, PowerShell or
+  // not: it is the contract that is asserted.
+  const source = executableLines(
+    await Deno.readTextFile(`${REPO_ROOT}/run.ps1`),
+    "powershell",
+  ).join("\n");
+  for (const status of CONTAINER_START_EXIT_CODES) {
+    // Whole numbers only: a bound of 1250 seconds is not a copy of 125.
+    assertEquals(
+      new RegExp(`(?<!\\d)${status}(?!\\d)`).test(source),
+      false,
+      `run.ps1 must leave the refused-start statuses to the recorder, ` +
+        `found ${status}`,
+    );
+  }
+});
+
 Deno.test({
   name:
     "run.ps1 - the stderr capture leaves nothing behind in the temporary directory (Issue #720)",
@@ -890,25 +998,6 @@ Deno.test({
       await harness.cleanup();
     }
   },
-});
-
-Deno.test("run.ps1 - the statuses it treats as a refused start are the recorder's own (Issue #720)", async () => {
-  // The launcher cannot import the recorder's list, so it carries a copy —
-  // and a copy nothing checks is a copy that drifts. Pinned in both
-  // directions: a status added to or removed from either side fails here.
-  // Runs everywhere, PowerShell or not: it is the contract that is asserted.
-  const source = await Deno.readTextFile(`${REPO_ROOT}/run.ps1`);
-  const declaration = source.match(
-    /\$ContainerStartExitStatuses = @\(([^)]*)\)/,
-  );
-  assert(
-    declaration,
-    "run.ps1 must name the statuses it treats as a refused container start",
-  );
-  const statuses = (declaration[1] ?? "").split(",").map((status) =>
-    Number(status.trim())
-  );
-  assertEquals(statuses, [...CONTAINER_START_EXIT_CODES]);
 });
 
 // ---------------------------------------------------------------------------

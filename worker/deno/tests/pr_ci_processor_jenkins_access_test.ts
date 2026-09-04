@@ -27,10 +27,11 @@ import type {
   PrFailureActionResult,
   runPrFailureActions,
 } from "../lib/pr_failure_actions.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
 
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+// Prompts resolve against this checkout, never the worker host's (Issue #844)
+// — named as a parameter on every call rather than pinned by deleting the
+// host's overrides from the shared process environment (Issue #1024).
+const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 const TEST_TOKEN = "wiring-test-token-QRS456";
 
@@ -158,6 +159,7 @@ function makeHarness(
   });
 
   harness.processorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     stateDir,

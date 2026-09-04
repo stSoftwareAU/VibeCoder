@@ -10,8 +10,9 @@
  *     the success and the failure path, and the partial outcome is returned.
  *
  * All dependencies are injected so the tests never touch the network. The
- * real template body builders resolve cwd-relative prompt paths, so the
- * happy-path test runs with cwd at the repo root.
+ * real template body builders read `prompts/<scan>/prompt.md`, so the
+ * happy-path test names this checkout with the builders' `rootDir` seam
+ * (Issue #1024) rather than moving the process's working directory.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -22,13 +23,7 @@ import { createAllIdleTaskWrappersCommand } from "../commands/create_all_idle_ta
 import type { CreateAllIdleTaskWrappersResult } from "../lib/create_all_idle_task_wrappers.ts";
 import { IDLE_TASK_WRAPPER_TITLES } from "../lib/idle_task_backfill.ts";
 import type { Result, WorkerConfig } from "../types.ts";
-import {
-  pinPromptsToThisCheckout,
-  withRepoRootCwd,
-} from "./support/repo_prompts.ts";
-
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+import { REPO_ROOT } from "./support/repo_root.ts";
 
 /** Narrow the non-generic CommandResult.data to the helper's result shape. */
 function dataOf(
@@ -77,89 +72,86 @@ Deno.test("create-all-idle-task-wrappers - missing --repo returns failure", asyn
 });
 
 Deno.test("create-all-idle-task-wrappers - clean repo seeds all ten wrappers", async () => {
-  await withRepoRootCwd(async () => {
-    const { fn, calls } = makeMockGh();
-    const result = await createAllIdleTaskWrappersCommand.execute(
-      {
-        repo: "stSoftwareAU/private-repo-14",
-        __testDeps: {
-          ghCommandFn: fn,
-          ensureLabelFn: labelOk,
-          findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
-          nowFn: stableNow,
-          log: () => {},
-        },
+  const { fn, calls } = makeMockGh();
+  const result = await createAllIdleTaskWrappersCommand.execute(
+    {
+      repo: "stSoftwareAU/private-repo-14",
+      __testDeps: {
+        ghCommandFn: fn,
+        ensureLabelFn: labelOk,
+        findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+        nowFn: stableNow,
+        rootDir: REPO_ROOT,
+        log: () => {},
       },
-      EMPTY_CONFIG,
-    );
+    },
+    EMPTY_CONFIG,
+  );
 
-    assertEquals(result.success, true);
-    assertEquals(
-      dataOf(result)?.created.length,
-      IDLE_TASK_WRAPPER_TITLES.length,
-    );
-    assertEquals(dataOf(result)?.skipped.length, 0);
+  assertEquals(result.success, true);
+  assertEquals(
+    dataOf(result)?.created.length,
+    IDLE_TASK_WRAPPER_TITLES.length,
+  );
+  assertEquals(dataOf(result)?.skipped.length, 0);
 
-    // Every filed title is a member of the canonical allowlist.
-    const created = calls.filter(
-      (c) => c.args[0] === "issue" && c.args[1] === "create",
-    );
-    assertEquals(created.length, IDLE_TASK_WRAPPER_TITLES.length);
-    for (const call of created) {
-      const i = call.args.indexOf("--title");
-      assert(i >= 0);
-      assert(IDLE_TASK_WRAPPER_TITLES.includes(call.args[i + 1]!));
-    }
-  });
+  // Every filed title is a member of the canonical allowlist.
+  const created = calls.filter(
+    (c) => c.args[0] === "issue" && c.args[1] === "create",
+  );
+  assertEquals(created.length, IDLE_TASK_WRAPPER_TITLES.length);
+  for (const call of created) {
+    const i = call.args.indexOf("--title");
+    assert(i >= 0);
+    assert(IDLE_TASK_WRAPPER_TITLES.includes(call.args[i + 1]!));
+  }
 });
 
 Deno.test("create-all-idle-task-wrappers - skips wrappers already open", async () => {
-  await withRepoRootCwd(async () => {
-    const { fn } = makeMockGh();
-    const allOpen = new Set<string>(IDLE_TASK_WRAPPER_TITLES);
-    const result = await createAllIdleTaskWrappersCommand.execute(
-      {
-        repo: "stSoftwareAU/private-repo-14",
-        __testDeps: {
-          ghCommandFn: fn,
-          ensureLabelFn: labelOk,
-          findExistingWrapperTitlesFn: () => Promise.resolve(allOpen),
-          nowFn: stableNow,
-          log: () => {},
-        },
+  const { fn } = makeMockGh();
+  const allOpen = new Set<string>(IDLE_TASK_WRAPPER_TITLES);
+  const result = await createAllIdleTaskWrappersCommand.execute(
+    {
+      repo: "stSoftwareAU/private-repo-14",
+      __testDeps: {
+        ghCommandFn: fn,
+        ensureLabelFn: labelOk,
+        findExistingWrapperTitlesFn: () => Promise.resolve(allOpen),
+        nowFn: stableNow,
+        rootDir: REPO_ROOT,
+        log: () => {},
       },
-      EMPTY_CONFIG,
-    );
+    },
+    EMPTY_CONFIG,
+  );
 
-    assertEquals(result.success, true);
-    assertEquals(dataOf(result)?.created.length, 0);
-    assertEquals(
-      dataOf(result)?.skipped.length,
-      IDLE_TASK_WRAPPER_TITLES.length,
-    );
-  });
+  assertEquals(result.success, true);
+  assertEquals(dataOf(result)?.created.length, 0);
+  assertEquals(
+    dataOf(result)?.skipped.length,
+    IDLE_TASK_WRAPPER_TITLES.length,
+  );
 });
 
 Deno.test("create-all-idle-task-wrappers - gh failure surfaces as failed result", async () => {
-  await withRepoRootCwd(async () => {
-    const { fn } = makeMockGh({ createThrows: true });
-    const result = await createAllIdleTaskWrappersCommand.execute(
-      {
-        repo: "stSoftwareAU/private-repo-14",
-        __testDeps: {
-          ghCommandFn: fn,
-          ensureLabelFn: labelOk,
-          findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
-          nowFn: stableNow,
-          log: () => {},
-        },
+  const { fn } = makeMockGh({ createThrows: true });
+  const result = await createAllIdleTaskWrappersCommand.execute(
+    {
+      repo: "stSoftwareAU/private-repo-14",
+      __testDeps: {
+        ghCommandFn: fn,
+        ensureLabelFn: labelOk,
+        findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+        nowFn: stableNow,
+        rootDir: REPO_ROOT,
+        log: () => {},
       },
-      EMPTY_CONFIG,
-    );
+    },
+    EMPTY_CONFIG,
+  );
 
-    assertEquals(result.success, false);
-    assert(result.message.includes("gh issue create failed"));
-  });
+  assertEquals(result.success, false);
+  assert(result.message.includes("gh issue create failed"));
 });
 
 // ---------------------------------------------------------------------------
@@ -167,65 +159,63 @@ Deno.test("create-all-idle-task-wrappers - gh failure surfaces as failed result"
 // ---------------------------------------------------------------------------
 
 Deno.test("create-all-idle-task-wrappers - prints the outcome table on success", async () => {
-  await withRepoRootCwd(async () => {
-    const { fn } = makeMockGh();
-    const lines: string[] = [];
-    const result = await createAllIdleTaskWrappersCommand.execute(
-      {
-        repo: "stSoftwareAU/private-repo-14",
-        __testDeps: {
-          ghCommandFn: fn,
-          ensureLabelFn: labelOk,
-          findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
-          nowFn: stableNow,
-          log: (line: string) => lines.push(line),
-        },
+  const { fn } = makeMockGh();
+  const lines: string[] = [];
+  const result = await createAllIdleTaskWrappersCommand.execute(
+    {
+      repo: "stSoftwareAU/private-repo-14",
+      __testDeps: {
+        ghCommandFn: fn,
+        ensureLabelFn: labelOk,
+        findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+        nowFn: stableNow,
+        rootDir: REPO_ROOT,
+        log: (line: string) => lines.push(line),
       },
-      EMPTY_CONFIG,
-    );
+    },
+    EMPTY_CONFIG,
+  );
 
-    assertEquals(result.success, true);
-    const table = lines.filter((l) => l.includes("outcome table"));
-    assertEquals(table.length, 1);
-    // One `created` row per canonical wrapper.
-    const createdRows = lines.filter((l) => / created /.test(l));
-    assertEquals(createdRows.length, IDLE_TASK_WRAPPER_TITLES.length);
-  });
+  assertEquals(result.success, true);
+  const table = lines.filter((l) => l.includes("outcome table"));
+  assertEquals(table.length, 1);
+  // One `created` row per canonical wrapper.
+  const createdRows = lines.filter((l) => / created /.test(l));
+  assertEquals(createdRows.length, IDLE_TASK_WRAPPER_TITLES.length);
 });
 
 Deno.test("create-all-idle-task-wrappers - prints the outcome table and exits non-zero on failure", async () => {
-  await withRepoRootCwd(async () => {
-    const { fn } = makeMockGh({ createThrows: true });
-    const lines: string[] = [];
-    const result = await createAllIdleTaskWrappersCommand.execute(
-      {
-        repo: "stSoftwareAU/private-repo-14",
-        __testDeps: {
-          ghCommandFn: fn,
-          ensureLabelFn: labelOk,
-          findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
-          nowFn: stableNow,
-          log: (line: string) => lines.push(line),
-        },
+  const { fn } = makeMockGh({ createThrows: true });
+  const lines: string[] = [];
+  const result = await createAllIdleTaskWrappersCommand.execute(
+    {
+      repo: "stSoftwareAU/private-repo-14",
+      __testDeps: {
+        ghCommandFn: fn,
+        ensureLabelFn: labelOk,
+        findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+        nowFn: stableNow,
+        rootDir: REPO_ROOT,
+        log: (line: string) => lines.push(line),
       },
-      EMPTY_CONFIG,
-    );
+    },
+    EMPTY_CONFIG,
+  );
 
-    assertEquals(result.success, false);
-    assert(
-      lines.some((l) => l.includes("outcome table")),
-      "the table must be printed on the failure path too",
-    );
-    const failedRows = lines.filter((l) => / failed /.test(l));
-    assertEquals(failedRows.length, IDLE_TASK_WRAPPER_TITLES.length);
-    assert(
-      failedRows.every((l) => l.includes("exploded")),
-      "each failed row must carry its reason",
-    );
-    // The partial outcome is still returned to the caller.
-    assertEquals(
-      dataOf(result)?.failed?.length,
-      IDLE_TASK_WRAPPER_TITLES.length,
-    );
-  });
+  assertEquals(result.success, false);
+  assert(
+    lines.some((l) => l.includes("outcome table")),
+    "the table must be printed on the failure path too",
+  );
+  const failedRows = lines.filter((l) => / failed /.test(l));
+  assertEquals(failedRows.length, IDLE_TASK_WRAPPER_TITLES.length);
+  assert(
+    failedRows.every((l) => l.includes("exploded")),
+    "each failed row must carry its reason",
+  );
+  // The partial outcome is still returned to the caller.
+  assertEquals(
+    dataOf(result)?.failed?.length,
+    IDLE_TASK_WRAPPER_TITLES.length,
+  );
 });

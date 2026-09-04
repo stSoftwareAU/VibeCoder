@@ -32,10 +32,11 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { GitHubComment, GitHubIssue, WorkerConfig } from "../types.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
 
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+// Prompts resolve against this checkout, never the worker host's (Issue #844)
+// — named as a parameter on every call rather than pinned by deleting the
+// host's overrides from the shared process environment (Issue #1024).
+const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 // ---------------------------------------------------------------------------
 // Helpers (mirror grill_me_processor_test.ts shapes for consistency)
@@ -163,6 +164,7 @@ Deno.test(
 
     const deps = createMockDeps();
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -233,6 +235,7 @@ Deno.test(
 
     const deps = createMockDeps();
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -305,6 +308,7 @@ Deno.test(
 
     const deps = createMockDeps();
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -385,6 +389,7 @@ Deno.test(
 
     const deps = createMockDeps();
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -441,6 +446,7 @@ Deno.test(
 
     const deps = createMockDeps();
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -506,6 +512,7 @@ Deno.test(
 
     const deps = createMockDeps();
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -577,6 +584,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -641,6 +649,7 @@ Deno.test(
     });
 
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -718,6 +727,7 @@ Deno.test(
 
     const deps = createMockDeps();
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,
@@ -771,6 +781,7 @@ Deno.test(
 
     const deps = createMockDeps();
     const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
       ghClient,
       logger: deps.logger,
       deps,

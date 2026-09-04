@@ -25,10 +25,11 @@ import type {
   GitDeps,
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
 
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+// Prompts resolve against this checkout, never the worker host's (Issue #844)
+// — named as a parameter on every call rather than pinned by deleting the
+// host's overrides from the shared process environment (Issue #1024).
+const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -158,6 +159,7 @@ Deno.test("processPrFeedback - succeeds with mock Claude output", async () => {
   });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
@@ -184,6 +186,7 @@ Deno.test("processPrFeedback - handles Claude timeout", async () => {
   const deps = createMockDeps({ claude: mockClaude });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
@@ -207,6 +210,7 @@ Deno.test("processPrFeedback - handles Claude failure", async () => {
   const deps = createMockDeps({ claude: mockClaude });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
@@ -255,6 +259,7 @@ Deno.test("processPrFeedback - skips processing when claim lost to another worke
   const deps = createMockDeps({ github: mockGithub });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
@@ -318,6 +323,7 @@ Deno.test("processPrFeedback - proceeds when claim won", async () => {
   });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
@@ -362,6 +368,7 @@ Deno.test("processPrFeedback - works without workerId (backward compatible)", as
   });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
@@ -421,6 +428,7 @@ Deno.test("processPrFeedback - starts and stops heartbeat during processing", as
   });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
@@ -473,6 +481,7 @@ Deno.test("processPrFeedback - stops heartbeat even when Claude fails", async ()
   });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
@@ -506,6 +515,7 @@ Deno.test("processPrFeedback - reports no changes when Claude output empty", asy
   const deps = createMockDeps({ claude: mockClaude, github: mockGithub });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
@@ -556,6 +566,7 @@ Deno.test("processPrFeedback - passes workDir as cwd to Claude invocation", asyn
   });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo/MyRepo",
@@ -659,6 +670,7 @@ Deno.test("processPrFeedback - pushes commits after Claude makes changes (Issue 
   });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
@@ -731,6 +743,7 @@ Deno.test("processPrFeedback - checks out PR branch before running Claude (Issue
     });
 
     const processorDeps: PrFeedbackProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       workDir: tmpDir,
@@ -818,6 +831,7 @@ Deno.test("processPrFeedback - uses .pr_response_message as comment body when pr
     });
 
     const processorDeps: PrFeedbackProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       workDir: tmpDir,
@@ -883,6 +897,7 @@ Deno.test("processPrFeedback - falls back to default message when .pr_response_m
     });
 
     const processorDeps: PrFeedbackProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
       logger: makeSilentLogger(),
       deps,
       workDir: tmpDir,
@@ -948,6 +963,7 @@ Deno.test("processPrFeedback - reports push failure accurately (Issue #1458)", a
   });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
@@ -1006,6 +1022,7 @@ Deno.test("processPrFeedback - reports no changes when Claude does nothing (Issu
   });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test",
@@ -1073,6 +1090,7 @@ Deno.test("processPrFeedback - a local commit with a failed push never claims su
   });
 
   const result = await processPrFeedback(makeInput(), {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
@@ -1127,6 +1145,7 @@ Deno.test("processPrFeedback - a push the remote does not confirm is reported, n
   });
 
   const result = await processPrFeedback(makeInput(), {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",
@@ -1180,6 +1199,7 @@ Deno.test("processPrFeedback - a verified push claims success and names the SHA 
   });
 
   const result = await processPrFeedback(makeInput(), {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-repo",

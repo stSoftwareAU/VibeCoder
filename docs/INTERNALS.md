@@ -1307,6 +1307,25 @@ refuses the collision at load, so making custom labels reserved can never strip
 a label the worker needs. With no mappings configured the set is the same six
 labels as before.
 
+**A PR-producing label route also gets the `work-on` eligibility gates**
+(Issue #937). The operational dispatch labels above *answer* an issue and remove
+their own label when they finish, so re-dispatch stops itself. A custom label
+does not: it stays on the issue, and `unassign_on_pr_created` hands the issue
+back unassigned, so the next cycle re-ran the whole implementation pipeline
+against the PR the previous cycle had just raised. `findIssuesByLabel` therefore
+takes an opt-in `gateNewWork`, which runs the sequence
+[collect_work_on_candidates.ts](../worker/deno/lib/collect_work_on_candidates.ts)
+runs, factored into
+[new_work_eligibility.ts](../worker/deno/lib/new_work_eligibility.ts) so both
+routes call the same helpers: stale-failure-label cleanup and the blocking-label
+filter, then milestone occupancy, the closed/merged-PR block with its trusted
+re-label escape hatch, the open-PR block with `ignore-open-prs`, and dependency
+blocking. The production wiring passes it for the custom-label row only, along
+with the retry-cooldown filter, and records a cooldown when a gated dispatch
+produces no work. The `work-on` content-integrity (TOCTOU) check stays with
+`work-on`: it verifies an issue against an approval snapshot only the `work-on`
+approval flow captures.
+
 Issues are **excluded** from selection if they carry any of: `failed`,
 `refine-issue`, `planning`, `question`, `needs-human`. retired the standalone
 `needs-clarification` label and folded the clarification handoff onto

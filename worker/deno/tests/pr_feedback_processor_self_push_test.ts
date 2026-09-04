@@ -24,10 +24,11 @@ import type {
   GitDeps,
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
 
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+// Prompts resolve against this checkout, never the worker host's (Issue #844)
+// — named as a parameter on every call rather than pinned by deleting the
+// host's overrides from the shared process environment (Issue #1024).
+const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -158,6 +159,7 @@ Deno.test("processPrFeedback - claude self-pushed: HEAD moved => success reply",
   });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-self-push",
@@ -232,6 +234,7 @@ Deno.test("processPrFeedback - claude self-pushed: genuinely no changes => neutr
   });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-no-changes",
@@ -293,6 +296,7 @@ Deno.test("processPrFeedback - capture failure degrades safely without false suc
   });
 
   const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
     deps,
     workDir: "/tmp/test-capture-fail",

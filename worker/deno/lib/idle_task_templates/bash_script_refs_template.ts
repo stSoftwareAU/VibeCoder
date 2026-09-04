@@ -33,6 +33,7 @@
 
 import {
   type IdleTaskBodyOptions,
+  idleTaskPromptsDir,
   type IdleTaskRunOptions,
   type IdleTaskRunResult,
   type IdleTaskShouldFileOptions,
@@ -100,7 +101,10 @@ export interface BashScriptRefsTemplateDeps {
   /** gh CLI runner used for snapshots, dedup, filing, and the wrapper veto. */
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Prompt loader — defaults to `loadPrompt`. */
-  loadPromptFn?: (name: string) => Promise<Result<string>>;
+  loadPromptFn?: (
+    name: string,
+    promptsDir?: string,
+  ) => Promise<Result<string>>;
   /** Ensure the `bash-missing-script` label exists. Defaults to production. */
   ensureLabelFn?: (repo: string) => Promise<Result<void>>;
   /** Native scanner — defaults to `scanBashScriptRefs`. Tests inject a stub. */
@@ -288,7 +292,8 @@ export function createBashScriptRefsTemplate(
   deps: BashScriptRefsTemplateDeps = {},
 ): IdleTaskTemplate {
   const ghCommandFn = deps.ghCommandFn ?? ((args) => defaultGhCommand(args));
-  const loadPromptFn = deps.loadPromptFn ?? ((name) => defaultLoadPrompt(name));
+  const loadPromptFn = deps.loadPromptFn ??
+    ((name, promptsDir) => defaultLoadPrompt(name, promptsDir));
   const ensureLabelFn = deps.ensureLabelFn ??
     ((repo) =>
       defaultEnsureLabelExists(
@@ -299,10 +304,10 @@ export function createBashScriptRefsTemplate(
       ));
   const scanFn = deps.scanFn ?? ((workDir, repo) => defaultScan(workDir, repo));
 
-  async function buildIssueBody(_opts: IdleTaskBodyOptions): Promise<string> {
+  async function buildIssueBody(opts: IdleTaskBodyOptions): Promise<string> {
     // Issue #2077: the wrapper body IS the prompt, fully substituted at
     // file time so a developer reading the issue sees concrete values.
-    const loaded = await loadPromptFn(PROMPT_NAME);
+    const loaded = await loadPromptFn(PROMPT_NAME, idleTaskPromptsDir(opts));
     if (!loaded.ok) {
       throw new Error(
         `bash-script-refs: failed to load prompt template ${PROMPT_NAME}: ` +

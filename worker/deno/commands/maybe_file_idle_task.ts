@@ -351,6 +351,15 @@ interface TestDeps {
    * `setTimeout`-backed sleep.
    */
   sleepFn?: (ms: number) => Promise<void>;
+  /**
+   * Checkout root the filed wrapper's prompt files are read from
+   * (Issue #1024). Forwarded to the picked template's `buildIssueBody` as
+   * its `rootDir`. Omit for the production resolution
+   * (`PROMPTS_DIR`, `VIBE_BASE_DIR`, then the module-relative path); a test
+   * names its own checkout so building a real body depends on neither the
+   * working directory nor the environment.
+   */
+  rootDir?: string;
 }
 
 /**
@@ -1227,6 +1236,7 @@ export const maybeFileIdleTaskCommand: Command = {
         repo: targetRepo,
         pickedAt,
         workerUser,
+        rootDir: deps.rootDir,
       }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

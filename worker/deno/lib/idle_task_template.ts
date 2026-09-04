@@ -21,6 +21,42 @@ export interface IdleTaskBodyOptions {
   pickedAt: string;
   /** Worker user login filing the issue. */
   workerUser: string;
+  /**
+   * Checkout root the body's prompt files are read from (Issue #1024).
+   *
+   * A wrapper body is the fully-substituted prompt, so building one reads
+   * `prompts/<scan>/prompt.md` — and, for `best-practices`, a bucket guide
+   * under `prompts/best_practices/buckets/`. Left unset, those reads resolve
+   * the way production does: `PROMPTS_DIR`, then `VIBE_BASE_DIR`, then the
+   * path relative to `worker/deno/lib/`.
+   *
+   * Naming a root directory pins every read in the build to
+   * `${rootDir}/prompts`, which is what lets a caller — a test, or an
+   * operator seeding from a named checkout — build a body without depending
+   * on the process's working directory or its environment. It is the seam
+   * that replaced `tests/support/repo_prompts.ts`'s `withRepoRootCwd`.
+   */
+  rootDir?: string;
+}
+
+/**
+ * The prompts directory a body build should read from, given its options
+ * (Issue #1024).
+ *
+ * Returns `undefined` when no root directory was named, so `loadPrompt` keeps
+ * its production resolution order untouched. Kept here, beside
+ * {@link IdleTaskBodyOptions}, so all eighteen templates derive the directory
+ * the one way (DRY).
+ *
+ * @param opts - The body options handed to `buildIssueBody`
+ * @returns `${rootDir}/prompts`, or `undefined` when no root was named
+ */
+export function idleTaskPromptsDir(
+  opts: Pick<IdleTaskBodyOptions, "rootDir">,
+): string | undefined {
+  const root = opts.rootDir;
+  if (root === undefined || root.length === 0) return undefined;
+  return `${root.replace(/\/+$/, "")}/prompts`;
 }
 
 /**

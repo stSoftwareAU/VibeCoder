@@ -41,6 +41,12 @@ interface TestDeps {
   findExistingWrapperTitlesFn?:
     CreateAllIdleTaskWrappersDeps["findExistingWrapperTitlesFn"];
   nowFn?: CreateAllIdleTaskWrappersDeps["nowFn"];
+  /**
+   * Checkout root the wrapper bodies' prompt files are read from
+   * (Issue #1024) — the seam that lets a test build real bodies without
+   * moving the process's working directory.
+   */
+  rootDir?: CreateAllIdleTaskWrappersDeps["rootDir"];
 }
 
 export const createAllIdleTaskWrappersCommand: Command = {
@@ -70,6 +76,7 @@ export const createAllIdleTaskWrappersCommand: Command = {
       ensureLabelFn: deps.ensureLabelFn,
       findExistingWrapperTitlesFn: deps.findExistingWrapperTitlesFn,
       nowFn: deps.nowFn,
+      rootDir: deps.rootDir,
       log,
     });
 

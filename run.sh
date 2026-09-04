@@ -111,9 +111,9 @@ BUILD_LOG=""
 RUN_LOG=""
 RUN_ERR_FIFO=""
 # The log the outcome recorder quotes as evidence in its escalation (Issue
-# #709). Set only on a path that is about to fail with a diagnosable cause -
-# a successful build's output is not what a later failure was caused by, and
-# an alert that quoted it would point the reader at the wrong thing.
+# #709). Set only on a path that is about to fail - a successful build's
+# output is not what a later failure was caused by, and an alert that quoted
+# it would point the reader at the wrong thing.
 EVIDENCE_LOG=""
 
 # Exit status container-build-heal reports for a build failure it does not
@@ -201,10 +201,12 @@ record_outcome() {
   # exactly that way. loop.sh has carried the flag since Issue #633.
   #
   # --launch-log: the failing step's own output - the build's, when a build is
-  # what failed (Issue #709), or the run client's refusal, when the container
-  # never started (Issue #711). An escalation without it names the phase and
-  # the status and nothing at all about why, which is the difference between a
-  # report an operator can act on and one they cannot.
+  # what failed (Issue #709), or the container capture, for every launch that
+  # started one and did not exit 0 (Issues #711, #1029): the runtime client's
+  # refusal when the container never started, and the worker's own error lines
+  # when it started and the worker stopped itself. An escalation without it
+  # names the phase and the status and nothing at all about why, which is the
+  # difference between a report an operator can act on and one they cannot.
   if ! bounded 120 "${DENO_CMD}" run \
     --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
     --allow-env --allow-read --allow-write --allow-run --allow-net \
@@ -1156,15 +1158,6 @@ WEDGE_MARKER="$(mktemp "${TMPDIR:-/tmp}/vibe-wedge.XXXXXX")"
 
 record_phase container_run
 
-# Statuses the runtime client reports when it refused to start the container at
-# all - no such image, an argument it would not accept, an entrypoint it could
-# not execute. They are exactly the statuses the recorder turns into a
-# container_start escalation, so they are the ones whose evidence is the
-# client's own refusal (Issue #711). Pinned against CONTAINER_START_EXIT_CODES
-# in worker/deno/lib/container_restart_backoff.ts by the launcher tests, in
-# both directions: that list is the contract, this is its copy.
-CONTAINER_START_EXIT_STATUSES=(125 126 127)
-
 # How long the capture is given to drain once the client has exited, before it
 # is quoted as far as it got. Seconds, because end-of-file arrives with the
 # client's last write; the bound is only there so a helper still holding the
@@ -1263,16 +1256,31 @@ if [[ -s "${WEDGE_MARKER}" ]]; then
   status="${CONTAINER_WEDGED_EXIT_STATUS}"
 fi
 
-# A status only the runtime client produces means the container never started,
-# so its stderr is what the escalation is about (Issue #711). Any other status
-# came from a container that ran: its output is the worker's own console, not
-# an account of a launch that failed, and quoting it would point the reader at
-# the wrong thing.
-for start_status in "${CONTAINER_START_EXIT_STATUSES[@]}"; do
-  if ((status == start_status)); then
-    EVIDENCE_LOG="${RUN_LOG}"
-    break
-  fi
-done
+# A launch that failed hands this capture over as its evidence, whatever the
+# status (Issue #1029).
+#
+# Issue #711 restricted it to the three statuses only the runtime client
+# produces, reasoning that any other status came from a container that started
+# and so said nothing about the launch. That does not survive a worker_run
+# escalation. Exit 1 IS the worker reporting its own bootstrap, config,
+# credential or loop failure, and the lines naming which one are on the stream
+# this capture holds - so the one status whose cause is most knowable was the
+# one reported with nothing at all. Issues #994, #995, #996 and #1029 all
+# arrived that way, naming a phase and a status; Issue #945 is the same
+# failure on a host running loop.sh, which passes its cycle log
+# unconditionally, and it carried the cause.
+#
+# It also restores the network-unavailable suppression (Issue #949) on this
+# path: the recorder reads the VIBE-NETWORK-UNAVAILABLE marker out of the log
+# it is handed, so a launcher that hands over nothing can never classify a
+# transient GitHub outage as one. Every blip then climbs the failure ladder
+# instead of re-probing at the base cadence, which is how a host reaches nine
+# consecutive failures over a link that has since come back.
+#
+# A launch that succeeded is still never quoted: there is no failure for its
+# output to be the evidence of.
+if ((status != 0)) && [[ -n "${RUN_LOG}" ]]; then
+  EVIDENCE_LOG="${RUN_LOG}"
+fi
 
 exit "${status}"

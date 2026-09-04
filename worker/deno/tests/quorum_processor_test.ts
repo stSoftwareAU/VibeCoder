@@ -57,10 +57,11 @@ import type { RunStats } from "../lib/run_stats.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
 import { DEGRADED_MODEL_LABEL } from "../lib/planning_degraded_label.ts";
 import { FABLE_PREFLIGHT_DEGRADED_REASON } from "../lib/fable_routing.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
 
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+// Prompts resolve against this checkout, never the worker host's (Issue #844)
+// — named as a parameter on every call rather than pinned by deleting the
+// host's overrides from the shared process environment (Issue #1024).
+const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -313,6 +314,7 @@ Deno.test("quorum labels - a completed run removes quorum, adds needs-human, and
   });
   quorumDeps.crashHandling.clearHeartbeat = capture.clearHeartbeat;
   const result = await processQuorum(ctx, {
+    promptsDir: PROMPTS_DIR,
     ghClient: stubGhClient(recorded),
     logger: createMockDeps().logger,
     deps: quorumDeps,
@@ -360,6 +362,7 @@ Deno.test("quorum labels - a failed run posts the failure marker and keeps quoru
   });
   quorumDeps.crashHandling.clearHeartbeat = capture.clearHeartbeat;
   const result = await processQuorum(makeContext(), {
+    promptsDir: PROMPTS_DIR,
     ghClient: stubGhClient(recorded),
     logger: createMockDeps().logger,
     deps: quorumDeps,
@@ -389,6 +392,7 @@ Deno.test("quorum labels - a fetch failure fails loudly rather than posting a pl
     unassigned: 0,
   };
   const result = await processQuorum(makeContext(), {
+    promptsDir: PROMPTS_DIR,
     ghClient: stubGhClient(recorded, [], { commentsThrow: true }),
     logger: createMockDeps().logger,
     deps: mockDepsWithAgents({
@@ -431,6 +435,7 @@ Deno.test("quorum labels - a result already in the thread is not re-run", async 
   });
 
   const result = await processQuorum(makeContext(), {
+    promptsDir: PROMPTS_DIR,
     ghClient: stubGhClient(recorded, prior),
     logger: deps.logger,
     deps,
@@ -600,6 +605,7 @@ Deno.test("quorum degradation - a lost drafter posts the survivor and names the 
     unassigned: 0,
   };
   const result = await processQuorum(makeContext(), {
+    promptsDir: PROMPTS_DIR,
     ghClient: stubGhClient(recorded),
     logger: createMockDeps().logger,
     deps: mockDepsWithAgents({
@@ -643,6 +649,7 @@ Deno.test("quorum model stats - a Fable→Opus reroute labels the issue and post
   };
   const gh = labelRecordingGh();
   const result = await processQuorum(makeContext(), {
+    promptsDir: PROMPTS_DIR,
     ghClient: stubGhClient(recorded),
     logger: createMockDeps().logger,
     deps: mockDepsWithAgents({
@@ -689,6 +696,7 @@ Deno.test("quorum model stats - a healthy plan-off adds no label and no stats co
   };
   const gh = labelRecordingGh();
   const result = await processQuorum(makeContext(), {
+    promptsDir: PROMPTS_DIR,
     ghClient: stubGhClient(recorded),
     logger: createMockDeps().logger,
     deps: mockDepsWithAgents({
@@ -720,6 +728,7 @@ Deno.test("quorum model stats - a degraded run still reports when the judgement 
   };
   const gh = labelRecordingGh();
   const result = await processQuorum(makeContext(), {
+    promptsDir: PROMPTS_DIR,
     ghClient: stubGhClient(recorded),
     logger: createMockDeps().logger,
     deps: mockDepsWithAgents({
@@ -754,6 +763,7 @@ Deno.test("quorum degradation - an unreadable verdict publishes both plans unjud
     unassigned: 0,
   };
   const result = await processQuorum(makeContext(), {
+    promptsDir: PROMPTS_DIR,
     ghClient: stubGhClient(recorded),
     logger: createMockDeps().logger,
     deps: mockDepsWithAgents({

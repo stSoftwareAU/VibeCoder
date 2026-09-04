@@ -97,6 +97,15 @@ export interface SpellingProcessorDeps {
    * gate (Issue #3577). Omitted → no gate.
    */
   repoConfigs?: Record<string, RepoConfig>;
+  /**
+   * Prompts directory the spelling-fix template is read from (Issue #1024).
+   *
+   * Left unset in production, where `getPromptsDir()` resolves it from the
+   * launcher's environment. A test names its own checkout's `prompts/` here
+   * instead of deleting `PROMPTS_DIR`/`VIBE_BASE_DIR` from the process every
+   * other parallel worker shares.
+   */
+  promptsDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +310,7 @@ async function _processSpellingWithHeartbeat(
     qualityInstructions,
     customInstructions,
     repoContextContent,
+    promptsDir: processorDeps.promptsDir,
   };
 
   const promptResult = await buildSpellingFixPrompt(promptOptions);

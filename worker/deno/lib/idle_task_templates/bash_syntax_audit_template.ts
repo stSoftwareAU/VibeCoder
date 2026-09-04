@@ -46,6 +46,7 @@
 
 import {
   type IdleTaskBodyOptions,
+  idleTaskPromptsDir,
   type IdleTaskRunOptions,
   type IdleTaskRunResult,
   type IdleTaskShouldFileOptions,
@@ -154,7 +155,10 @@ export interface BashSyntaxAuditTemplateDeps {
   /** gh CLI runner used for snapshots, dedup, filing, and the wrapper veto. */
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Prompt loader — defaults to `loadPrompt`. */
-  loadPromptFn?: (name: string) => Promise<Result<string>>;
+  loadPromptFn?: (
+    name: string,
+    promptsDir?: string,
+  ) => Promise<Result<string>>;
   /** Ensure the `bash-syntax-audit` label exists. Defaults to production. */
   ensureLabelFn?: (repo: string) => Promise<Result<void>>;
   /**
@@ -464,7 +468,8 @@ export function createBashSyntaxAuditTemplate(
   deps: BashSyntaxAuditTemplateDeps = {},
 ): IdleTaskTemplate {
   const ghCommandFn = deps.ghCommandFn ?? ((args) => defaultGhCommand(args));
-  const loadPromptFn = deps.loadPromptFn ?? ((name) => defaultLoadPrompt(name));
+  const loadPromptFn = deps.loadPromptFn ??
+    ((name, promptsDir) => defaultLoadPrompt(name, promptsDir));
   const ensureLabelFn = deps.ensureLabelFn ??
     ((repo) =>
       defaultEnsureLabelExists(
@@ -483,10 +488,10 @@ export function createBashSyntaxAuditTemplate(
     ((workDir) =>
       defaultCollectSuppressedIds(workDir, defaultReadWorkflowFiles));
 
-  async function buildIssueBody(_opts: IdleTaskBodyOptions): Promise<string> {
+  async function buildIssueBody(opts: IdleTaskBodyOptions): Promise<string> {
     // Issue #2077: the wrapper body IS the prompt, fully substituted at
     // file time so a developer reading the issue sees concrete values.
-    const loaded = await loadPromptFn(PROMPT_NAME);
+    const loaded = await loadPromptFn(PROMPT_NAME, idleTaskPromptsDir(opts));
     if (!loaded.ok) {
       throw new Error(
         `bash-syntax-audit: failed to load prompt template ${PROMPT_NAME}: ` +
