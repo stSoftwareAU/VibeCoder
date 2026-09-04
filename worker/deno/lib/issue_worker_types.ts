@@ -19,6 +19,9 @@ import type { PhaseClaudeResult } from "./phase_run_stats.ts";
 import type { MemoryPressureReading } from "./memory_pressure.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import type { PreservedWip } from "./preserved_wip_branch.ts";
+// Lost in the 1f2c10e merge into this milestone branch, leaving `deno check`
+// red on a type this file still uses (added by Issue #806).
+import type { CallbackRunTelemetry } from "./run_callbacks.ts";
 
 /** Data shared across phases within a single workOnIssue invocation. */
 export interface IssueContext {
@@ -260,6 +263,12 @@ export interface WorkOnIssueResult {
    * `WORKER_SUMMARY` — so one unresolvable issue cannot livelock the pool.
    */
   expectedSkip?: boolean;
+  /**
+   * Token and cost telemetry summed across the run's agent invocations
+   * (Issue #806), for the post-run callback context. Absent when no
+   * invocation reported usage the worker could parse.
+   */
+  telemetry?: CallbackRunTelemetry;
 }
 
 /**

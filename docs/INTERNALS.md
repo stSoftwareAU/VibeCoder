@@ -693,9 +693,10 @@ does not.
 
 The access condition reads the per-repo access store, which only reports a repo
 inaccessible after two consecutive access-denied probes, so a transient blip
-cannot flip the fleet. An unhealthy iteration suppresses the private-repo-6
-heartbeat, so the host goes stale on the dashboard instead of reporting green
-while its repos 404 (the signature). Recovery is automatic: one successful probe
+cannot flip the fleet. An unhealthy iteration sets `lastHealthCheckPassed`
+to `false` on the loop result, so the host is recorded as unhealthy rather
+than green while its repos 404 (the signature).
+Recovery is automatic: one successful probe
 clears the store and the next iteration reports healthy again — no operator
 action, no restart.
 
@@ -719,15 +720,15 @@ them:
   boundary (`resetIterationCaches`) re-arms it. A changed repo set is new
   information and logs immediately.
 
-- **private-repo-6 report payload** — `reportFleetHealth` appends
-  `--message "repos inaccessible: TitlePage/bar, TitlePage/foo"` to the
-  `helpers/repos.sh` invocation. Additive only: the identity argument is
-  unchanged, no `docs/repos.json` field is repurposed, and on a healthy host the
-  flag is omitted entirely so the invocation is byte-identical to the historical
-  one. Repos are listed in the store's stable lexicographic order, so the string
-  cannot churn between ticks.
+- **Reason string** — `formatInaccessibleReposReason()` in
+  `worker/deno/lib/monitored_repo_access.ts` renders the same set as
+  `repos inaccessible: TitlePage/bar, TitlePage/foo`. Repos are listed in the
+  store's stable lexicographic order, so the string cannot churn between
+  ticks. Built-in fleet health reporting was removed in Issue #805, so the
+  worker itself publishes this nowhere — it is the helper an out-of-tree
+  health reporter reads.
 
-Healthy hosts stay silent — no log line, no extra payload field. The operator
+Healthy hosts stay silent — no log line, no reason string. The operator
 runbook for this condition — what it means, what the worker keeps doing, and the
 identity checks to run first — is
 [Host reports unhealthy — `repos inaccessible`](TROUBLESHOOTING.md#-host-reports-unhealthy--repos-inaccessible).
@@ -2468,9 +2469,9 @@ guard, bootstrap, housekeeping, cleanup) and invokes the Deno `run-core` command
 for the loop — the bash `worker/run_core.sh` conductor was deleted. The Deno
 side creates production deps via `createProductionRunCoreDeps()` in
 [run_core_production_deps.ts](../worker/deno/lib/run_core_production_deps.ts)
-and runs `runCoreLoop()` with the full priority dispatch table. FLEET health
-reporting was also migrated to
-[fleet_health.ts](../worker/deno/lib/fleet_health.ts).
+and runs `runCoreLoop()` with the full priority dispatch table. Built-in
+fleet health reporting was removed in Issue #805 — report host health from a
+[post-run callback](CONFIGURATION.md#-post-run-callbacks) instead.
 
 ### 🔄 Shell business logic migrated to Deno
 
@@ -3114,7 +3115,6 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [run_core.ts](../worker/deno/lib/run_core.ts)                                                                     | Main loop and priority dispatch                                                                                                                                                      |
 |                             | [run_core_production_deps.ts](../worker/deno/lib/run_core_production_deps.ts)                                     | Production dependency wiring for run-core                                                                                                                                            |
 |                             | [run_entrypoint.ts](../worker/deno/lib/run_entrypoint.ts)                                                         | Run entrypoint logic                                                                                                                                                                 |
-|                             | [fleet_health.ts](../worker/deno/lib/fleet_health.ts)                                                             | FLEET health reporting                                                                                                                                                               |
 |                             | [heartbeat.ts](../worker/deno/lib/heartbeat.ts)                                                                   | Heartbeat tracking for stuck-issue detection                                                                                                                                         |
 |                             | [live_slot_holds.ts](../worker/deno/lib/live_slot_holds.ts)                                                       | Issues live slots own — recovery passes never touch them                                                                                                                             |
 |                             | [run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts)                                                     | Startup housekeeping orchestration and signal-driven cleanup (terminate descendants, remove PID file)                                                                                |

@@ -80,11 +80,6 @@ export const HOME_WORKDIR_ALLOWLIST: ReadonlyMap<string, number> = new Map<
   // must receive an explicit work dir (see commands/disk_space.ts).
   ["worker/deno/lib/config.ts", 1],
 
-  // Path construction only, feeding the IN-CONTAINER healthDir default
-  // (Issue #4165) where WORK_DIR is always set; the HOME arm is only
-  // reachable host-side, where healthDir ignores it. Nothing is created.
-  ["worker/deno/lib/fleet_health.ts", 1],
-
   // Read-only workDir hint for the setup sync auditors (workflow-sync,
   // best-practices-sync, gitignore-sync): they READ workflow files from a
   // local clone when one exists and fall back to `gh api` otherwise — none

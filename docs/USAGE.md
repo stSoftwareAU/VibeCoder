@@ -32,7 +32,7 @@ detailed usage patterns below.
 - [One Issue per Repository/Milestone](#one-issue-per-repositorymilestone)
 - [Self-Healing Disk Space](#self-healing-disk-space)
 - [Claude CLI (Command-Line Interface) Auto-Update](#claude-cli-auto-update)
-- [Health Check](#health-check)
+- [Health Reporting](#health-reporting)
 - [Feature Availability](#feature-availability)
 - [Reviewing and Requesting Fixes](#reviewing-and-requesting-fixes)
 - [Reaction System](#reaction-system)
@@ -572,29 +572,16 @@ flowchart TD
 - All the skip flags above are honoured on every entry point, including the
   `run-entrypoint` driver `run.sh` uses.
 
-## 💚 Health Check
+## 💚 Health Reporting
 
-After successful work, the worker can update a separate health tracking
-repository to signal it is functioning correctly.
+The worker has no built-in health-reporting integration (Issue #805). Report a
+host's health from a run callback instead: `callbacks.success` fires after a
+successful run, `callbacks.always` after every run. See
+[Post-Run Callbacks](CONFIGURATION.md#-post-run-callbacks).
 
-| Variable          | Default                                      | Description                                               |
-| ----------------- | -------------------------------------------- | --------------------------------------------------------- |
-| `FLEET_HEALTH_DIR`  | (empty)                                      | Directory of the private-repo-6 checkout. Disabled when empty. |
-| `FLEET_HEALTH_REPO` | (empty)                                      | Git URL to clone into `FLEET_HEALTH_DIR` when that directory does not exist (from `fleet_health_repo` in `.config.json`). Unset, the worker never clones (it logs that tracking is off) — no URL is assumed. |
-| `FLEET_HEALTH_TIMEOUT_MS` | `600000` (10 minutes) | Timeout for the `helpers/repos.sh` health-report subprocess. Raised from 60s so a slow-but-healthy report run is not killed and the host wrongly marked dead. |
-
-Both come from `.config.json` (`fleet_health_repo`, and optionally
-`fleet_health_dir`,); the worker applies them to its own
-environment at start (natively and in the container — a host
-`fleet_health_dir` is ignored inside the container, where the worker clones
-into its own work volume). Health tracking is optional — a single host does
-not need it. The interactive `setup.sh` / `setup.ps1` ask once for the health
-repository's git URL (blank keeps the current value, `-` turns tracking off)
-and store it; nothing is cloned by setup. The worker clones the repository on
-its first run into a checkout named after it — `../GRQ-health` beside the
-worker checkout natively, `~/auto-issue-work/GRQ-health` in the container —
-unless `fleet_health_dir` names another directory (native mode). With no
-repository configured setup prints one informational line and moves on.
+A configuration still carrying the removed `fleet_health_dir` or
+`fleet_health_repo` keys fails the config load with a message naming the
+callback replacement — a stale setting is refused, never silently ignored.
 
 ## 🔌 Feature Availability
 
@@ -604,7 +591,6 @@ summary.
 | Feature           | Check                                                  | Fallback when unavailable                     |
 | ----------------- | ------------------------------------------------------ | --------------------------------------------- |
 | `imgbb`           | `imgbb_api_key` in config or `VIBE_IMGBB_API_KEY` set  | Screenshots saved locally instead of uploaded |
-| `health-tracking` | `fleet_health_dir` in config or `FLEET_HEALTH_DIR` set     | Health tracking silently skipped              |
 | `github-status`   | `update_gh_user_status` true and `user` scope on token | Status updates silently skipped               |
 
 > **📝 Note:** Deno is a **required** dependency and is no longer

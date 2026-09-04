@@ -129,8 +129,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "ssh_key_path",
   "gh_config_dir",
   "imgbb_api_key",
-  "fleet_health_dir",
-  "fleet_health_repo",
+  // Issue #805: `fleet_health_dir` and `fleet_health_repo` removed — built-in
+  // fleet health reporting is gone; report health from a `callbacks` hook.
+  // `REMOVED_CONFIG_KEYS` in lib/validation.ts refuses a stale config loudly.
   "github_app_id",
   "github_app_installation_id",
   "github_app_private_key_path",
@@ -196,8 +197,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // Deployer-supplied container build-time tools (Issue #69, parent #5)
   "container_tools",
 
-  // Custom label → non-public prompt file mappings (Issue #846, part of #843)
-  "custom_label_prompts",
+  // Post-run callback hooks (Issue #806, parent #796)
+  "callbacks",
 ]);
 
 /**

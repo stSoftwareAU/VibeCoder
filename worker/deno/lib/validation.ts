@@ -23,6 +23,30 @@ export const EXCLUSION_TEAM_PATTERN =
   /^[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\/[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$/;
 
 /**
+ * Config keys this worker once honoured, mapped to the migration an operator
+ * still carrying one has to make (Issue #805).
+ *
+ * A removed key is refused rather than ignored: a setting that reads as live
+ * and does nothing is the silent failure the whole config load exists to
+ * prevent. The message names the replacement so the fix is one edit, not an
+ * investigation.
+ */
+export const REMOVED_CONFIG_KEYS: ReadonlyMap<string, string> = new Map([
+  [
+    "fleet_health_dir",
+    "Built-in fleet health reporting was removed (Issue #805): report host " +
+    "health from a `callbacks.success` (or `callbacks.always`) hook " +
+    "instead — see docs/CONFIGURATION.md. Remove the key.",
+  ],
+  [
+    "fleet_health_repo",
+    "Built-in fleet health reporting was removed (Issue #805): report host " +
+    "health from a `callbacks.success` (or `callbacks.always`) hook " +
+    "instead — see docs/CONFIGURATION.md. Remove the key.",
+  ],
+]);
+
+/**
  * Validation error with the field that failed and a human-readable message.
  */
 export interface ValidationError {
@@ -146,8 +170,6 @@ export interface ConfigFileJson {
   stuck_issue_timeout?: number;
   issue_retry_cooldown?: number;
   imgbb_api_key?: string;
-  fleet_health_dir?: string;
-  fleet_health_repo?: string;
   github_app_id?: string;
   github_app_installation_id?: string;
   github_app_private_key_path?: string;
@@ -182,16 +204,13 @@ export interface ConfigFileJson {
   /** Per-tool minimum version floors for software auto-update (Issue #2622) */
   software_min_versions?: Record<string, string>;
   /**
-   * Custom GitHub label → non-public prompt file mappings (Issue #846, part
-   * of #843).
+   * Post-run callback hooks (Issue #806, parent #796).
    *
-   * Only the shallow JSON shape (array of objects) is checked here; field-
-   * level validation (label pattern, absolute path, file readability,
-   * duplicates, reserved-label collisions) is `parseCustomLabelPrompts()`'s
-   * job in `lib/custom_label_prompts_config.ts`, which fails loud on any
-   * fault at config load.
+   * Deliberately unvalidated here: `parseCallbacksConfig()` owns the shape and
+   * fails the config load loudly, so a hook that would never run is caught
+   * before any issue is claimed against it.
    */
-  custom_label_prompts?: unknown;
+  callbacks?: unknown;
 }
 
 // --- Helpers ---
@@ -507,6 +526,26 @@ export function validateConfigFileJson(
     );
   }
 
+  // A key this worker used to honour and no longer does must fail loudly:
+  // ignoring it would leave the operator with a setting that reads as live
+  // and does nothing (Issue #805).
+  const stale = [...REMOVED_CONFIG_KEYS.keys()].filter((key) =>
+    data[key] !== undefined
+  );
+  if (stale.length > 0) {
+    // One message for the whole migration — fixing one key and rediscovering
+    // the next on the following start is not actionable.
+    const guidance = [
+      ...new Set(stale.map((key) => REMOVED_CONFIG_KEYS.get(key)!)),
+    ];
+    return fail(
+      stale.join(", "),
+      `${stale.map((key) => `"${key}"`).join(" and ")} ${
+        stale.length === 1 ? "was" : "were"
+      } removed. ${guidance.join(" ")}`,
+    );
+  }
+
   // Optional string fields
   // Issue #1834: `work_on_label` and `low_priority_label` removed — the
   // three discovery labels are hardwired and not configurable.
@@ -531,8 +570,6 @@ export function validateConfigFileJson(
     "ssh_key_path",
     "gh_config_dir",
     "imgbb_api_key",
-    "fleet_health_dir",
-    "fleet_health_repo",
     "github_app_id",
     "github_app_installation_id",
     "github_app_private_key_path",

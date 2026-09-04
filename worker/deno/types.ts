@@ -7,6 +7,7 @@
 
 import type { CadencePolicy } from "./lib/idle_task_cadence.ts";
 import type { RunMode } from "./lib/run_mode.ts";
+import type { CallbacksConfig } from "./lib/run_callbacks_config.ts";
 
 /**
  * Verbosity levels for configurable response output (Issue #1330).
@@ -490,18 +491,15 @@ export interface WorkerConfig {
    */
   softwareMinVersions: Record<string, string>;
   /**
-   * Custom GitHub label → non-public prompt file mappings (Issue #846, part
-   * of #843).
+   * Post-run callbacks — the public extension contract (Issue #806).
    *
-   * An operator extends the Vibe Coder with a private prompt template — a
-   * local file path on the host outside the public repository — without
-   * publishing it. Read from the `.config.json` `custom_label_prompts` block
-   * and validated fail-loud by `assertCustomLabelPrompts()` in
-   * `lib/custom_label_prompts_config.ts`. Defaults to an empty list: the
-   * feature is off until an operator opts in, and no existing config changes
-   * behaviour.
+   * Optional absolute executable paths run after a terminal issue run:
+   * `success` or `failure`, then `always`. Validated by
+   * `parseCallbacksConfig()` in `lib/run_callbacks_config.ts`, which fails the
+   * config load on any fault so a hook an operator believes is wired can never
+   * silently never run.
    */
-  customLabelPrompts: CustomLabelPromptMapping[];
+  callbacks: CallbacksConfig;
   /** Per-repo configuration overrides (Issue #1187) */
   repoConfig?: Record<string, RepoConfig>;
 }
@@ -1139,14 +1137,6 @@ export interface ConfigFile {
   issue_retry_cooldown?: number;
   /** ImgBB API key for screenshot uploads (Issue #535) */
   imgbb_api_key?: string;
-  /** FLEET health directory (Issue #535) */
-  fleet_health_dir?: string;
-  /**
-   * Git URL of the FLEET health repository, cloned into `fleet_health_dir`
-   * when that checkout is missing. Set once by the interactive setup; the
-   * worker never assumes a URL.
-   */
-  fleet_health_repo?: string;
   /** GitHub App ID for App-based authentication (Issue #957) */
   github_app_id?: string;
   /** GitHub App Installation ID for App-based authentication (Issue #957) */
@@ -1253,16 +1243,15 @@ export interface ConfigFile {
    */
   container_tools?: ContainerToolSpec[];
   /**
-   * Custom GitHub label → non-public prompt file mappings (Issue #846, part
-   * of #843).
+   * Post-run callback hooks (Issue #806, parent #796).
    *
-   * Deliberately `unknown`: the block arrives untrusted from the operator's
-   * file, and only `parseCustomLabelPrompts()` / `assertCustomLabelPrompts()`
-   * in `lib/custom_label_prompts_config.ts` may be trusted to produce the
-   * typed {@link CustomLabelPromptMapping} form — they fail loud on any fault
-   * rather than repairing or dropping it.
+   * Deliberately untyped here: the block arrives untrusted from the
+   * operator's file, and only `parseCallbacksConfig()` /
+   * `assertCallbacksConfig()` in `lib/run_callbacks_config.ts` may be trusted
+   * to produce a {@link CallbacksConfig}. They fail loud on any fault rather
+   * than repairing it.
    */
-  custom_label_prompts?: unknown;
+  callbacks?: unknown;
 }
 
 /**

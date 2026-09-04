@@ -12,7 +12,7 @@
  *     F --> C["classifyProbeFailure<br/>(#4035)"]
  *     C --> S["access store<br/>(#4036)"]
  *     S --> H["health gate in<br/>runCoreLoop (#4038)"]
- *     H --> N["named repos on log +<br/>private-repo-6 payload (#4039)"]
+ *     H --> N["dark repos named<br/>on the worker log (#4039)"]
  * ```
  *
  * It reproduces the incident shape exactly: `checkClaudeHealth()` and
@@ -22,8 +22,8 @@
  *
  * Three scenarios:
  *   1. Incident — the host ends unhealthy, both dark repos are named on the
- *      worker log and the private-repo-6 payload, and the accessible repos are
- *      still scanned and worked while unhealthy.
+ *      worker log, and the accessible repos are still scanned and worked
+ *      while unhealthy.
  *   2. Recovery — once the two repos answer again the next iteration is
  *      healthy, with no restart and no operator action.
  *   3. Inverse guard — a rate-limit storm (`403`/`429` on every probe)
@@ -32,7 +32,6 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import type { Result } from "../types.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   createDefaultRunCoreConfig,
@@ -44,7 +43,6 @@ import {
   getInaccessibleRepos,
   resetRepoAccessState,
 } from "../lib/monitored_repo_access.ts";
-import { reportFleetHealth } from "../lib/fleet_health.ts";
 
 // ---------------------------------------------------------------------------
 // Monitored fleet under test
@@ -128,8 +126,6 @@ interface LoopObservations {
   worked: IterationEvent[];
   /** Iterations in which the access gate logged its `[repo-access]` line. */
   unhealthyIterations: number[];
-  /** Iterations in which a healthy private-repo-6 heartbeat was reported. */
-  heartbeatIterations: number[];
   /** Every line the loop sent to `logError`. */
   errorLines: string[];
   /** Iterations completed. */
@@ -155,7 +151,6 @@ async function runLoopAgainstFakeGh(
   const obs: LoopObservations = {
     worked: [],
     unhealthyIterations: [],
-    heartbeatIterations: [],
     errorLines: [],
     iterations: 0,
     pidClaims: 0,
@@ -187,11 +182,6 @@ async function runLoopAgainstFakeGh(
       if (msg.includes("[repo-access]")) {
         obs.unhealthyIterations.push(iteration);
       }
-    },
-
-    reportFleetHealthHeartbeat: () => {
-      obs.heartbeatIterations.push(iteration);
-      return Promise.resolve();
     },
 
     // Priority 2 scan: probe every monitored repo through the production
@@ -308,47 +298,6 @@ Deno.test(
           `only accessible repos may be worked, got ${event.repo}`,
         );
       }
-
-      // An unhealthy host must not heartbeat green.
-      assertEquals(
-        obs.heartbeatIterations.includes(unhealthyIteration),
-        false,
-        "an unhealthy iteration must not report a healthy heartbeat",
-      );
-
-      // The private-repo-6 payload names both repos too.
-      const commands: string[][] = [];
-      const reported = await reportFleetHealth(
-        {
-          healthDir: "/tmp/private-repo-6-e2e",
-          healthRepo: "git@github.com:stSoftwareAU/private-repo-6.git",
-          hostId: "host-3",
-          reportTimeoutMs: 1000,
-        },
-        {
-          log: () => {},
-          logWarning: () => {},
-          directoryExists: () => Promise.resolve(true),
-          fileIsExecutable: () => Promise.resolve(true),
-          runCommand: (cmd: string[]) => {
-            commands.push(cmd);
-            return Promise.resolve({ ok: true, value: undefined });
-          },
-          captureCommand: () =>
-            Promise.resolve(
-              { ok: false, error: new Error("not probed") } as Result<string>,
-            ),
-        },
-      );
-      assertEquals(reported.ok, true);
-      const args = commands[0];
-      assert(args !== undefined, "the health report must have been invoked");
-      const messageIndex = args.indexOf("--message");
-      assert(messageIndex >= 0, "an unhealthy host must carry --message");
-      assertEquals(
-        args[messageIndex + 1],
-        "repos inaccessible: TitlePage/bravo, TitlePage/delta",
-      );
     } finally {
       resetRepoAccessState();
     }
@@ -387,10 +336,6 @@ Deno.test(
         obs.unhealthyIterations.includes(5),
         false,
         "the iteration after recovery must not log the unhealthy line",
-      );
-      assert(
-        obs.heartbeatIterations.includes(5),
-        "the recovered iteration must heartbeat healthy again",
       );
       assertEquals(
         obs.pidClaims,
@@ -441,8 +386,8 @@ Deno.test(
         "no [repo-access] line may be logged during a rate-limit storm",
       );
       assert(
-        obs.heartbeatIterations.length >= 1,
-        "a throttled but healthy host must keep heartbeating",
+        obs.iterations >= 1,
+        "a throttled but healthy host must keep cycling",
       );
     } finally {
       resetRepoAccessState();
@@ -558,8 +503,6 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
     touchPidFile: () => Promise.resolve(),
     sleep: () => Promise.resolve(),
     now: () => Date.now(),
-
-    reportFleetHealthHeartbeat: () => Promise.resolve(),
 
     ...overrides,
   };

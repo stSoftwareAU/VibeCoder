@@ -80,6 +80,11 @@ import {
   describeRunOutcome,
   type RunOutcome,
 } from "./run_outcome.ts";
+import type {
+  CallbackRunTelemetry,
+  TerminalIssueRun,
+} from "./run_callbacks.ts";
+import { IssueCallbackGuard } from "./issue_callback_guard.ts";
 import {
   formatSlotPrefix,
   renderSlotStatus,
@@ -282,8 +287,9 @@ export interface RunCoreResult {
   quotaResetEpochMs?: number;
   /**
    * Issue #2602: whether the most recent health checks (Claude + GitHub auth)
-   * passed. Used to gate the end-of-run private-repo-6 report — a worker that
-   * could not authenticate must not report itself healthy.
+   * passed. Reported on the loop result so the caller can tell a healthy
+   * exit from an unhealthy one — a worker that could not authenticate must
+   * not be recorded as healthy.
    */
   lastHealthCheckPassed: boolean;
   /**
@@ -604,6 +610,12 @@ export interface RunCoreDeps {
        * claim-release comment. Absent on skip (the run never ran).
        */
       outcome?: RunOutcome;
+      /**
+       * Token and cost telemetry for the post-run callback context
+       * (Issue #806). Absent when no agent invocation reported parseable
+       * usage.
+       */
+      telemetry?: CallbackRunTelemetry;
     }>
   >;
 
@@ -818,6 +830,21 @@ export interface RunCoreDeps {
     outcome?: RunOutcome,
   ) => Promise<void>;
 
+  /**
+   * Run the operator's post-run callbacks for one terminal issue run
+   * (Issue #806, parent #796).
+   *
+   * Called once per claim that actually ran, after the claim is released:
+   * `success` or `failure`, then `always`. Never called for a skip (the run
+   * never ran). Must never throw and must never alter the run's outcome —
+   * the production wiring hands this to `invokeRunCallbacks`, which reports
+   * a hook fault rather than propagating it.
+   *
+   * Optional: absent — or configured with no hooks — means no callbacks,
+   * which is the behaviour of every configuration that predates the contract.
+   */
+  runIssueCallbacks?: (run: TerminalIssueRun) => Promise<void>;
+
   // Status
   setStatusIdle: () => Promise<void>;
   setStatusWorking: (details: string) => Promise<void>;
@@ -948,24 +975,6 @@ export interface RunCoreDeps {
    * is inert and behaviour is unchanged.
    */
   refreshTrustedAuthors?: () => Promise<RefreshOutcome>;
-
-  /**
-   * Report worker health to the private-repo-6 repository (Issue #1935).
-   *
-   * Invoked at the top of every priority-loop iteration as a heartbeat,
-   * so the host's `last_commit_ts` row in `private-repo-6/docs/repos.json`
-   * advances at least once per iteration. The previous end-of-run-only
-   * heartbeat in `commands/run_core.ts` was silently lost when the
-   * parent shell sent SIGTERM during the post-loop best-effort block,
-   * leaving hosts flagged dead on the dashboard.
-   *
-   * Best-effort — failures are caught by the loop and never abort the
-   * run. The underlying `helpers/repos.sh` script enforces its own 1h
-   * rate-limit, so frequent calls are cheap no-ops between real pushes.
-   *
-   * Optional so test deps can omit it.
-   */
-  reportFleetHealthHeartbeat?: () => Promise<void>;
 
   /**
    * Fire the idle-task issue filer (Issue #2005).
@@ -1628,6 +1637,7 @@ async function releaseIssueClaim(
   repo: string,
   issueNumber: number,
   outcome?: RunOutcome,
+  ran?: TerminalRun,
 ): Promise<void> {
   // Log the resolved outcome kind (Issue #4325) so a worker-log grep tells
   // "outcome never computed" from "computed but not rendered".
@@ -1640,6 +1650,68 @@ async function releaseIssueClaim(
     await deps.releaseClaim(repo, issueNumber, outcome);
   } else {
     await deps.clearHeartbeat();
+  }
+  // The callbacks run after the release, on every path where a claim
+  // actually ran (Issue #806). A skip passes no `ran`, so an unclaimed or
+  // rejected candidate never triggers a hook.
+  if (ran) await dispatchIssueCallbacks(deps, repo, issueNumber, ran);
+}
+
+/**
+ * What a terminal run reports to the callback layer: the original result and
+ * when the claim started (Issue #806).
+ */
+interface TerminalRun {
+  result: "success" | "failure";
+  startedAtEpochMs: number;
+  /** Token and cost telemetry the run reported, when it reported any. */
+  telemetry?: CallbackRunTelemetry;
+  /**
+   * The cycle's exactly-once guard. Every dispatch site for a claim shares
+   * one, so a run reported by its own release is not reported again by the
+   * slot catch or the shutdown drain.
+   */
+  guard: IssueCallbackGuard;
+}
+
+/**
+ * Fire the operator's post-run callbacks for one terminal issue run
+ * (Issue #806, parent #796).
+ *
+ * Never throws and never alters the run's outcome: a hook that fails is one
+ * more thing to report, not a reason to rewrite what VibeCoder achieved.
+ */
+async function dispatchIssueCallbacks(
+  deps: RunCoreDeps,
+  repo: string,
+  issueNumber: number,
+  ran: TerminalRun,
+): Promise<void> {
+  if (!deps.runIssueCallbacks) return;
+  if (!ran.guard.tryClaim(repo, issueNumber)) {
+    // Said out loud: "already reported" is a very different fact from
+    // "never ran", and only the log can tell them apart afterwards.
+    deps.log(
+      `Post-run callbacks for ${repo}#${issueNumber} already ran for this ` +
+        `claim — not repeating them (Issue #806).`,
+    );
+    return;
+  }
+  try {
+    await deps.runIssueCallbacks({
+      repo,
+      issueNumber,
+      result: ran.result,
+      startedAtEpochMs: ran.startedAtEpochMs,
+      finishedAtEpochMs: deps.now(),
+      ...(ran.telemetry ? { telemetry: ran.telemetry } : {}),
+    });
+  } catch (error) {
+    deps.logError(
+      `Post-run callbacks for ${repo}#${issueNumber} faulted: ${
+        error instanceof Error ? error.message : String(error)
+      }. The original VibeCoder result (${ran.result}) is unchanged.`,
+    );
   }
 }
 
@@ -1833,6 +1905,14 @@ async function runIssueScanLoop(
     scanExcludedRepos?: readonly string[];
   }
 > {
+  /**
+   * One exactly-once post-run callback guard per scan (Issue #806). The
+   * serial loop dispatches from three places — the success release, the
+   * failure release, and the pre-release exit-threshold branch — and each
+   * claim must reach the callback layer once.
+   */
+  const callbackGuard = new IssueCallbackGuard();
+
   // Concurrent slots (Issue #4177, part of #4168): above one slot the pool
   // takes over. At the default of 1 the serial loop below runs unchanged —
   // exactly today's call sequence, including its shutdown timing (Issue
@@ -1973,6 +2053,10 @@ async function runIssueScanLoop(
     // Issue #460: record the claim before the run, not after it. The
     // outcome does not change the fact that this repo was served.
     tracker.recordClaim(issue.repo);
+    // Process the issue. The claim time bounds the post-run callback
+    // context (Issue #806); a throw takes the failure/always path exactly
+    // once and then propagates as before.
+    const claimedAtEpochMs = deps.now();
     // Issue #855: fleet-level claim/busy/outcome counters. The claim is
     // recorded before the run, matching `tracker.recordClaim` above.
     recordFleetClaim();
@@ -1984,6 +2068,17 @@ async function runIssueScanLoop(
     let processResult;
     try {
       processResult = await deps.processIssue(issue, endTime, "serial");
+    } catch (thrown) {
+      // A throw is a terminal run, so the failure and always callbacks fire
+      // exactly once before it propagates (Issue #806). Covered by
+      // `run_core_callbacks_test.ts` — a sync merge has collapsed this
+      // `catch` into the `finally` below twice, silently.
+      await dispatchIssueCallbacks(deps, issue.repo, issue.issueNumber, {
+        result: "failure",
+        startedAtEpochMs: claimedAtEpochMs,
+        guard: callbackGuard,
+      });
+      throw thrown;
     } finally {
       // In a `finally` so a throw cannot leave the stream marked busy
       // for the rest of the run, which would read as 100% utilisation.
@@ -1995,6 +2090,15 @@ async function runIssueScanLoop(
     const runOutcome = processResult.ok
       ? processResult.value.outcome
       : undefined;
+    /** What this run reports to the post-run callbacks (Issue #806). */
+    const ran = (result: "success" | "failure"): TerminalRun => ({
+      result,
+      startedAtEpochMs: claimedAtEpochMs,
+      guard: callbackGuard,
+      ...(processResult.ok && processResult.value.telemetry
+        ? { telemetry: processResult.value.telemetry }
+        : {}),
+    });
 
     if (processResult.ok && processResult.value.success) {
       // Success path
@@ -2024,6 +2128,7 @@ async function runIssueScanLoop(
         issue.repo,
         issue.issueNumber,
         runOutcome,
+        ran("success"),
       );
       deps.log(`Successfully processed ${issue.repo}#${issue.issueNumber}`);
       break; // Exit inner loop, earn normal sleep
@@ -2064,6 +2169,14 @@ async function runIssueScanLoop(
     // Check exit threshold
     const shouldExit = await deps.shouldExitOnFailures();
     if (shouldExit) {
+      // The run still terminated in failure, so its callbacks fire before
+      // the loop unwinds (Issue #806).
+      await dispatchIssueCallbacks(
+        deps,
+        issue.repo,
+        issue.issueNumber,
+        ran("failure"),
+      );
       noteSlotRetired("serial", deps.now());
       return { exitOuterLoop: true, eligibilityScanCompleted };
     }
@@ -2077,6 +2190,7 @@ async function runIssueScanLoop(
       issue.repo,
       issue.issueNumber,
       runOutcome,
+      ran("failure"),
     );
 
     // Scan continuation (Issue #3648): the failure path used to `continue`
@@ -2519,6 +2633,11 @@ interface SlotPoolState {
    */
   eligibilityScanCompleted: boolean;
   /**
+   * The cycle's exactly-once post-run callback guard (Issue #806), shared by
+   * every slot, the slot-level catch and the shutdown drain.
+   */
+  callbackGuard: IssueCallbackGuard;
+  /**
    * The repositories the completed eligibility pass was never shown
    * (Issue #898) — `findOldestIssue`'s `excludeRepos` set at the moment a
    * scan came up empty, i.e. every repo an issue slot (Issue #4176) or the
@@ -2616,6 +2735,12 @@ async function runIssueScanPool(
     claimFloor: poolRunwayFloor,
     deferredClaims: new Set<string>(),
     eligibilityScanCompleted: false,
+    // Issue #806: the cycle's exactly-once post-run callback guard, shared
+    // by every slot, the slot-level catch and the shutdown drain. Restored
+    // in this merge for the third time (Issues #928, #808) — `main` has no
+    // such field, so every sync merge that rewrites this literal drops it
+    // and nothing on `milestone/*` runs to notice.
+    callbackGuard: new IssueCallbackGuard(),
     idleHooks,
   };
   // Effective slots = min(configured, memory-pressure ceiling) (Issue
@@ -2736,6 +2861,15 @@ async function drainSlots(
           }s) elapsed while the slot was still running`,
           elapsedSeconds: (Date.now() - hold.sinceMs) / 1000,
         }),
+        // A shutdown after a claim is a terminal failure for that run, so it
+        // takes the failure/always path exactly once (Issue #806). The
+        // abandoned slot keeps running and may still reach its own release,
+        // so the shared guard — not the ordering — is what makes it once.
+        {
+          result: "failure",
+          startedAtEpochMs: hold.sinceMs,
+          guard: pool.callbackGuard,
+        },
       );
     }
   }
@@ -2980,6 +3114,17 @@ async function runSlot(
 
       /** Set by a successful claim so the settle sleep runs holding no repo. */
       let claimSucceeded = false;
+      /**
+       * Whether the claim actually started running (Issue #806).
+       *
+       * A throw before `processIssue` is an unclaimed cycle, not a run, and
+       * must report nothing; a throw after it is a terminal failure that
+       * takes the failure/always path exactly once. Restored here for the
+       * third time (Issues #928, #808): `main` carries no callback layer, so
+       * every sync merge that rewrites this region drops it, and nothing on
+       * `milestone/*` runs to notice.
+       */
+      const runStarted = { value: false };
       try {
         // Every claim gets its OWN write-repo allowlist (Issue #183). The
         // per-slot context exists (#4175) but nothing wired it up here, so
@@ -3022,6 +3167,7 @@ async function runSlot(
                   tracker,
                   endTime,
                   pool,
+                  runStarted,
                 ),
             ),
         );
@@ -3067,6 +3213,16 @@ async function runSlot(
               ? 0
               : (Date.now() - since) / 1000,
           }),
+          // An exception after a claim takes the failure/always path exactly
+          // once (Issue #806). Reported only when the run actually started,
+          // and the shared guard refuses a repeat if it already reported.
+          runStarted.value
+            ? {
+              result: "failure" as const,
+              startedAtEpochMs: since ?? deps.now(),
+              guard: pool.callbackGuard,
+            }
+            : undefined,
         );
         // A primary rate limit is pool-wide (Issue #4180): stop every slot
         // from claiming and let the pool re-throw once drained so the cycle
@@ -3295,6 +3451,8 @@ async function runSlotIssue(
   tracker: WorkProgressTracker,
   endTime: number,
   pool: SlotPoolState,
+  /** Set when the claim starts running, so a pre-claim throw reports nothing. */
+  started: { value: boolean } = { value: false },
 ): Promise<"success" | "skip" | "failure" | "exit"> {
   const prefix = formatSlotPrefix({
     slotId,
@@ -3342,6 +3500,14 @@ async function runSlotIssue(
 
   // Issue #460: see the sibling call site — the claim, not the outcome.
   tracker.recordClaim(issue.repo);
+  // Each slot bounds its own callback context (Issue #806), so concurrent
+  // slots never share a start time or a result.
+  const claimedAtEpochMs = deps.now();
+  // Issue #806: from here a throw is a *run* that failed, not an unclaimed
+  // cycle, so the slot-level catch reports it. Restored in Issue #928 — a
+  // `main` sync merge dropped this line, leaving `runStarted` permanently
+  // false and every thrown slot run silently reporting nothing.
+  started.value = true;
   recordFleetClaim();
   // Issue #855: busy time is per work stream, so a pool slot's utilisation
   // is reported separately from its siblings'. Fleet occupancy is "any
@@ -3362,6 +3528,15 @@ async function runSlotIssue(
     noteSlotActivity(slotId, "idle", deps.now());
   }
   const runOutcome = processResult.ok ? processResult.value.outcome : undefined;
+  /** What this slot's run reports to the post-run callbacks (Issue #806). */
+  const ran = (result: "success" | "failure"): TerminalRun => ({
+    result,
+    startedAtEpochMs: claimedAtEpochMs,
+    guard: pool.callbackGuard,
+    ...(processResult.ok && processResult.value.telemetry
+      ? { telemetry: processResult.value.telemetry }
+      : {}),
+  });
 
   if (processResult.ok && processResult.value.success) {
     noteIssueProcessed(deps, issue, "success");
@@ -3386,6 +3561,7 @@ async function runSlotIssue(
       issue.repo,
       issue.issueNumber,
       runOutcome,
+      ran("success"),
     );
     log(`Successfully processed ${issue.repo}#${issue.issueNumber}`);
     return "success";
@@ -3425,6 +3601,7 @@ async function runSlotIssue(
       issue.repo,
       issue.issueNumber,
       runOutcome,
+      ran("failure"),
     );
     return "exit";
   }
@@ -3433,6 +3610,7 @@ async function runSlotIssue(
     issue.repo,
     issue.issueNumber,
     runOutcome,
+    ran("failure"),
   );
 
   // Pool-wide consecutive-failure policy (Issue #4180 keeps thresholds
@@ -4328,9 +4506,9 @@ export async function runCoreLoop(
           }
 
           // --- Health checks ---
-          // Issue #2602: a failed check marks the worker unhealthy so neither
-          // the per-iteration heartbeat below nor the end-of-run report
-          // (gated on `lastHealthCheckPassed`) reports the host as healthy.
+          // Issue #2602: a failed check marks the worker unhealthy, so the
+          // loop result carries `lastHealthCheckPassed: false` and the host
+          // is never recorded as healthy for this run.
           const claudeHealth = await deps.checkClaudeHealth();
           if (!claudeHealth.ok || !claudeHealth.value.healthy) {
             lastHealthCheckPassed = false;
@@ -4365,8 +4543,8 @@ export async function runCoreLoop(
             // `[repo-access] host=… status=inaccessible repos=… consecutive=…`
             // — so the outage is recoverable from the log after the fact.
             // `logRepoAccessOnce` suppresses the identical line from the
-            // other call sites in the same iteration (the private-repo-6
-            // report), and the iteration boundary resets it.
+            // other call sites in the same iteration, and the iteration
+            // boundary resets it.
             logRepoAccessOnce(
               inaccessibleRepos,
               (line) => deps.logError(line),
@@ -4422,35 +4600,6 @@ export async function runCoreLoop(
                     : String(fableErr)
                 }`,
               );
-            }
-          }
-
-          // Issue #1935: emit a private-repo-6 heartbeat once per iteration so the
-          // host's row in `private-repo-6/docs/repos.json` advances even when the
-          // end-of-run path is killed by SIGTERM. `helpers/repos.sh`
-          // rate-limits to one push/hour, so frequent invocations are cheap
-          // no-ops.
-          //
-          // Issue #2602: the heartbeat is reported only AFTER the Claude and
-          // GitHub auth health checks pass. A worker that cannot authenticate
-          // (e.g. Claude 401) must NOT report itself healthy — skipping the
-          // heartbeat lets the host go stale on the dashboard so the failure
-          // is visible instead of being masked by a green "healthy" row.
-          // Best-effort — wrapped so a heartbeat failure cannot abort the loop.
-          //
-          // Issue #4038: the `lastHealthCheckPassed` guard is explicit because
-          // the monitored-repo access check above falls through instead of
-          // skipping the cycle. Without it, a host that cannot see its repos
-          // would keep heartbeating green — the exact #4028 false-healthy
-          // signature this gate exists to end.
-          if (lastHealthCheckPassed && deps.reportFleetHealthHeartbeat) {
-            try {
-              await deps.reportFleetHealthHeartbeat();
-            } catch (heartbeatErr) {
-              const msg = heartbeatErr instanceof Error
-                ? heartbeatErr.message
-                : String(heartbeatErr);
-              deps.log(`FLEET heartbeat failed (continuing): ${msg}`);
             }
           }
 
