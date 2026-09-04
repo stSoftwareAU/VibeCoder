@@ -34,12 +34,17 @@ import {
   GITHUB_ACTIONS_AUDIT_BODY_FINGERPRINT,
   GITHUB_ACTIONS_AUDIT_ISSUE_TITLE,
   GITHUB_ACTIONS_AUDIT_LABEL,
+  type GitHubActionsAuditTemplateDeps,
   githubActionsAuditTemplate,
   renderGitHubActionsAuditSummary,
   runGitHubActionsAuditScan,
 } from "../lib/idle_task_templates/github_actions_audit_template.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
-import { getTemplate, listTemplates } from "../lib/idle_task_template.ts";
+import {
+  getTemplate,
+  type IdleTaskTemplate,
+  listTemplates,
+} from "../lib/idle_task_template.ts";
 import type { OpenIssueTitle } from "../lib/idle_task_snapshot.ts";
 import {
   handleIdleTaskIssue,
@@ -51,14 +56,36 @@ import type { Result } from "../types.ts";
 import type { DeprecationFinding } from "../lib/runner_deprecation_scanner.ts";
 import type { LinterCheckResult } from "../lib/linter_in_ci_check.ts";
 import { PINNED_ACTIONS } from "../lib/pinned_actions.ts";
+import { setCachedDefaultBranch } from "../lib/default_branch_cache.ts";
+import { clearDefaultBranchMemoryCache } from "../lib/shell_helpers.ts";
 
-// Point the default-branch persistent cache at a throwaway temp path so
-// the trigger pre-filer's default resolver (Issue #2587) never reads or
-// writes the developer's real `~/.vibe-coder` cache during these tests.
-Deno.env.set(
-  "VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH",
-  `${Deno.makeTempDirSync()}/default-branch-cache.json`,
-);
+/**
+ * A throwaway persistent default-branch cache for this suite.
+ *
+ * The trigger pre-filer's default resolver (Issue #2587) reads and writes
+ * the cache, and must not touch the developer's real one. Issue #964: the
+ * path is handed to every template through `defaultBranchCachePath` rather
+ * than exported into the process environment — writing the process
+ * environment races every other worker under `deno test --parallel`, which
+ * is what kept this suite in the gate's serial second pass.
+ */
+const THROWAWAY_BRANCH_CACHE =
+  `${Deno.makeTempDirSync()}/default-branch-cache.json`;
+
+/**
+ * Build the template with the throwaway cache path already wired.
+ *
+ * Every test in this file goes through here, so no call can reach the real
+ * cache by forgetting the seam. A test that names its own path still wins.
+ */
+function makeAuditTemplate(
+  deps: GitHubActionsAuditTemplateDeps = {},
+): IdleTaskTemplate {
+  return createGitHubActionsAuditTemplate({
+    defaultBranchCachePath: THROWAWAY_BRANCH_CACHE,
+    ...deps,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -303,7 +330,7 @@ Deno.test("github-actions-audit - contract flags", () => {
 Deno.test(
   "github-actions-audit - buildIssueBody matches title and fingerprint",
   async () => {
-    const t = createGitHubActionsAuditTemplate({ loadPromptFn: okPrompt });
+    const t = makeAuditTemplate({ loadPromptFn: okPrompt });
     const body = await Promise.resolve(
       t.buildIssueBody({
         repo: "acme/widget",
@@ -411,7 +438,7 @@ Deno.test(
     });
     const ensureCalls: string[] = [];
     const scanCalls: { knownOpenFindingIds: string[] }[] = [];
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: (repo) => {
@@ -457,7 +484,7 @@ Deno.test(
       issueCreateNumbers: [200],
     });
     let scanReceived: { knownOpen: string[] } | undefined;
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -510,7 +537,7 @@ Deno.test(
       // the pre-filer never reaches `gh issue create`.
     });
     let scanReceived: { knownOpen: string[] } | undefined;
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -548,7 +575,7 @@ Deno.test(
       // fail-safe path never attempts to file the actionlint finding.
     });
     let scanReceived: { knownOpen: string[] } | undefined;
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -601,7 +628,7 @@ Deno.test(
       issueCreateNumbers: [800, 801],
     });
     let scanReceived: { knownOpen: string[] } | undefined;
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -660,7 +687,7 @@ Deno.test(
       "    steps:",
       "      - uses: actions/checkout@v4",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -726,7 +753,7 @@ Deno.test(
       "    steps:",
       "      - run: echo hi",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -798,7 +825,7 @@ Deno.test(
       "    steps:",
       `      - run: ${runScript}`,
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -877,7 +904,7 @@ Deno.test(
       "        with:",
       "          prompt: ${{ github.event.issue.body }}",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -946,6 +973,90 @@ Deno.test(
 const branchMain = () => Promise.resolve({ ok: true as const, value: "main" });
 
 Deno.test(
+  "runTask - the default branch resolver reads the cache path the deps name (Issue #964)",
+  async () => {
+    // Seed a throwaway cache with a branch name that exists nowhere else,
+    // and make the gh fallback fail. The pre-filer only runs when the
+    // default branch resolves, so a resolver that ignored
+    // `defaultBranchCachePath` would ask gh, get an error, and file nothing.
+    const dir = await Deno.makeTempDir({ prefix: "gha-audit-964-" });
+    const cachePath = `${dir}/default-branch-cache.json`;
+    clearDefaultBranchMemoryCache();
+    await setCachedDefaultBranch("org/seam964", "sentinel-964-trunk", cachePath);
+
+    try {
+      const { gh, creates } = makeGhStub({
+        beforeSnapshot: [],
+        afterSnapshot: [931],
+        knownOpen: [],
+        issueCreateNumbers: [931],
+      });
+      const ghNoBranch = (args: string[]): Promise<string> =>
+        args.includes(".default_branch")
+          ? Promise.reject(new Error("no default-branch lookup allowed here"))
+          : gh(args);
+
+      const ciYml = [
+        "name: CI",
+        "on: push",
+        "permissions:",
+        "  contents: read",
+        "jobs:",
+        "  test:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - run: deno test",
+      ].join("\n");
+
+      const t = createGitHubActionsAuditTemplate({
+        defaultBranchCachePath: cachePath,
+        ghCommandFn: ghNoBranch,
+        loadPromptFn: okPrompt,
+        ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+        checkLinterInCIFn: linterOk,
+        scanRunnerDeprecationsFn: () => Promise.resolve([]),
+        readWorkflowFilesFn: () =>
+          Promise.resolve([
+            {
+              path: ".github/workflows/ci.yml",
+              rawText: ciYml,
+              parsed: {
+                name: "CI",
+                on: "push",
+                permissions: { contents: "read" },
+                jobs: {
+                  test: {
+                    "runs-on": "ubuntu-latest",
+                    steps: [{ run: "deno test" }],
+                  },
+                },
+              },
+              kind: "workflow" as const,
+            },
+          ]),
+        runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      });
+
+      const result = await t.runTask({
+        repo: "org/seam964",
+        workDir: "/tmp/repo",
+        idleTaskIssueNumber: 51,
+      });
+
+      assert(result.ok);
+      assertEquals(creates.length, 1);
+      assertStringIncludes(
+        creates[0]!.body,
+        "<!-- finding-id: BP-TRIGGER-ci -->",
+      );
+    } finally {
+      clearDefaultBranchMemoryCache();
+      await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+    }
+  },
+);
+
+Deno.test(
   "runTask - trigger pre-filer files a test/lint workflow on push-to-default",
   async () => {
     const { gh, creates } = makeGhStub({
@@ -966,7 +1077,7 @@ Deno.test(
       "    steps:",
       "      - run: deno test",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -1038,7 +1149,7 @@ Deno.test(
       "    steps:",
       "      - run: npm publish",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -1100,7 +1211,7 @@ Deno.test(
       "      - run: deno test",
       "      - run: npm publish",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -1161,7 +1272,7 @@ Deno.test(
       "    steps:",
       "      - run: deno test",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -1226,7 +1337,7 @@ Deno.test(
       "    steps:",
       "      - run: deno test",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -1298,7 +1409,7 @@ Deno.test(
       "    steps:",
       "      - run: npm publish",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -1359,7 +1470,7 @@ Deno.test(
       "    steps:",
       "      - run: deno test",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -1432,7 +1543,7 @@ Deno.test(
       `      - uses: actions/checkout@${sha}`,
       "      - run: deno test",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -1512,7 +1623,7 @@ Deno.test(
       `      - uses: actions/checkout@${sha}`,
       "      - run: git push origin main",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -1587,7 +1698,7 @@ Deno.test(
       "        with:",
       "          path: .",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -1679,7 +1790,7 @@ Deno.test(
       "    steps:",
       "      - run: deno test",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -1756,7 +1867,7 @@ Deno.test(
       "    steps:",
       "      - run: deno test",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -1861,7 +1972,7 @@ Deno.test(
       "main",
       "milestone/*",
     ]);
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -1915,7 +2026,7 @@ Deno.test(
     const current = PINNED_ACTIONS["gitleaks/gitleaks-action"]!.sha;
     const drifted = gitleaksFixture(current, ['"*"']);
     drifted.parsed.on.pull_request.branches = ["*"];
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -1960,7 +2071,7 @@ Deno.test(
     ]);
     let scanReceived: { knownOpen: string[] } | undefined;
     let coverageArgs: { repo: string; fileCount: number } | undefined;
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2034,7 +2145,7 @@ Deno.test(
       "main",
       "milestone/*",
     ]);
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2093,7 +2204,7 @@ Deno.test(
       "        with:",
       "          path: dist/",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2158,7 +2269,7 @@ Deno.test(
       "    steps:",
       "      - uses: actions/checkout@v4",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2210,7 +2321,7 @@ Deno.test(
       issueCreateNumbers: [], // must NOT be called
     });
     let scanReceived: { knownOpen: string[] } | undefined;
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2246,7 +2357,7 @@ Deno.test(
       beforeSnapshot: [],
       afterSnapshot: [],
     });
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2272,7 +2383,7 @@ Deno.test(
 
 Deno.test("runTask - scan failure surfaces ok:false", async () => {
   const { gh } = makeGhStub({ beforeSnapshot: [], afterSnapshot: [] });
-  const t = createGitHubActionsAuditTemplate({
+  const t = makeAuditTemplate({
     ghCommandFn: gh,
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2299,7 +2410,7 @@ Deno.test("runTask - scan failure surfaces ok:false", async () => {
 
 Deno.test("runTask - empty diff reports no findings", async () => {
   const { gh } = makeGhStub({ beforeSnapshot: [5], afterSnapshot: [5] });
-  const t = createGitHubActionsAuditTemplate({
+  const t = makeAuditTemplate({
     ghCommandFn: gh,
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2334,7 +2445,7 @@ Deno.test(
         ]),
       );
     };
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
     });
@@ -2347,7 +2458,7 @@ Deno.test(
   "shouldFile - allows filing when no open wrapper exists",
   async () => {
     const gh = (_args: string[]): Promise<string> => Promise.resolve("[]");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
     });
@@ -2367,7 +2478,7 @@ Deno.test(
       beforeSnapshot: [],
       afterSnapshot: [11],
     });
-    const template = createGitHubActionsAuditTemplate({
+    const template = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2412,7 +2523,7 @@ Deno.test(
     const { gh } = makeGhStub({ beforeSnapshot: [], afterSnapshot: [] });
     const linterPaths: string[] = [];
     const workflowPaths: string[] = [];
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2469,7 +2580,7 @@ Deno.test(
       "    steps:",
       "      - run: gem install bundler-audit",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2548,7 +2659,7 @@ Deno.test(
       "    steps:",
       "      - run: gem install bundler-audit -v 0.9.3",
     ].join("\n");
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2600,7 +2711,7 @@ Deno.test(
       afterSnapshot: [],
     });
     const { logger, records } = makeLogger();
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2639,7 +2750,7 @@ Deno.test(
   async () => {
     const { gh } = makeGhStub({ beforeSnapshot: [], afterSnapshot: [] });
     const captured: Array<Record<string, unknown>> = [];
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2667,7 +2778,7 @@ Deno.test(
   async () => {
     const { gh } = makeGhStub({ beforeSnapshot: [], afterSnapshot: [] });
     const captured: Array<Record<string, unknown>> = [];
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2762,7 +2873,7 @@ Deno.test(
       issueCreateNumbers: [901, 902],
     });
     const { logger, records } = makeLogger();
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2842,7 +2953,7 @@ Deno.test(
       afterSnapshot: [],
     });
     const { logger, records } = makeLogger();
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2897,7 +3008,7 @@ Deno.test(
     });
     const { logger, records } = makeLogger();
     const ensured: string[] = [];
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -2960,7 +3071,7 @@ Deno.test(
       afterSnapshot: [],
     });
     const { logger, records } = makeLogger();
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -3061,7 +3172,7 @@ Deno.test(
   async () => {
     const { gh } = makeGhStub({ beforeSnapshot: [], afterSnapshot: [] });
     const seen: OpenIssueTitle[][] = [];
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: withTitleLookup(gh, [
         { number: 37, title: "Add a CODEOWNERS file" },
       ]),
@@ -3091,7 +3202,7 @@ Deno.test(
   async () => {
     const { gh } = makeGhStub({ beforeSnapshot: [], afterSnapshot: [] });
     const seen: OpenIssueTitle[][] = [];
-    const t = createGitHubActionsAuditTemplate({
+    const t = makeAuditTemplate({
       ghCommandFn: withTitleLookup(gh, [], true),
       loadPromptFn: okPrompt,
       ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
