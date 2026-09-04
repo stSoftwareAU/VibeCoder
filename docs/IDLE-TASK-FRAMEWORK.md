@@ -518,7 +518,7 @@ mechanism, so repository isolation is untouched.
 
 ## Coordination
 
-Three guards keep two workers (or two trigger paths) from racing on the same
+Four guards keep two workers (or two trigger paths) from racing on the same
 repo:
 
 1. **Label-only repo dedup** — at most one open `idle-task` issue per repo,
@@ -533,6 +533,22 @@ repo:
    of the priority order so idle-task work is selected only when every higher
    tier is empty. It will never pre-empt PR feedback, CI fixes, planning, or
    new-issue work.
+4. **Single-flight idle episode** (Issue #925) — since the filer fires when *a
+   slot* has no claimable work, rather than only when the whole fleet found
+   nothing, one idle observation must not become many issues. The filer picks a
+   repo with no open `idle-task` issue, so three slots idling in the same cycle
+   would file three, and one slot re-scanning 74 times would file 74. An
+   `IdleFilerLatch` makes the **idle episode**, not the scan, the unit of
+   filing: the first slot to observe an empty scan wins it (the flag is set
+   synchronously, before that slot's first `await`, so two slots cannot both
+   win), every later observation in the same episode is refused
+   (`[idle-hooks] ... skipping=idle-task-filer reason=slot_already_filed` when
+   the end-of-cycle gate is the one refused), and the latch is released
+   whenever a slot takes a claim — the fleet has work again, so a later idle
+   stretch may file again. It is also released at the start of every cycle,
+   which preserves the pre-#925 cadence of at most one idle-task per cycle
+   whichever path files it. The audit and the census run behind the same
+   latch, so an idle slot's 74 re-scans cost one probe, not 74.
 
 **Fleet-global existence gate.** Before the per-repo loop — right
 after the cross-repo wrapper check — the filer asks one whole-set question: does
@@ -600,11 +616,17 @@ template's internal pipeline guards) implements that internally in `runTask()`.
 
 ### Idle-decision claimable-work census
 
-At the idle-task **filing** decision point (the same gate the idle-detect audit
-and the filer fire from — i.e. when the Priority 2 scan returned
-`foundClaimableIssue === false`), the worker emits a per-repo **claimable-work
-census** so the idle-vs-work-on inversion is observable from the log alone. For
-every monitored repo the census records:
+At the idle-task **filing** decision point — the same gate the idle-detect audit
+and the filer fire from: the end-of-cycle gate when the Priority 2 scan returned
+`foundClaimableIssue === false`, and, since Issue #925, an individual pool slot
+the moment *its* scan comes up empty beside a busy sibling — the worker emits a
+per-repo **claimable-work census** so the idle-vs-work-on inversion is
+observable from the log alone. All three instruments always move together: an
+audit that stayed fleet-wide while the filer went per-slot would raise its
+`mis_classification` alert on every cycle. A slot's observation forwards its
+own `scanFoundClaimable=false` and the repositories its siblings hold as
+`scanExcludedRepos` (Issue #898), so a sibling's in-flight repository is never
+read as a disagreement. For every monitored repo the census records:
 
 - the **availability** verdict (`available` / `busy` / `empty`), computed from
   the per-iteration issue cache via `checkRepoAvailability`,
