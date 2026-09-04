@@ -2038,6 +2038,19 @@ async function runIssueScanLoop(
     let processResult;
     try {
       processResult = await deps.processIssue(issue, endTime, "serial");
+    } catch (thrown) {
+      // Issue #806: a throw is a terminal run, so the failure and always
+      // callbacks fire exactly once before it propagates. Restored twice —
+      // Issue #928, then again here — because a `main` sync merge replaces
+      // this `catch` with the `finally` below and silently drops the
+      // dispatch, leaving a thrown run the one terminal outcome that
+      // reported nothing.
+      await dispatchIssueCallbacks(deps, issue.repo, issue.issueNumber, {
+        result: "failure",
+        startedAtEpochMs: claimedAtEpochMs,
+        guard: callbackGuard,
+      });
+      throw thrown;
     } finally {
       // In a `finally` so a throw cannot leave the stream marked busy
       // for the rest of the run, which would read as 100% utilisation.
@@ -2128,6 +2141,14 @@ async function runIssueScanLoop(
     // Check exit threshold
     const shouldExit = await deps.shouldExitOnFailures();
     if (shouldExit) {
+      // The run still terminated in failure, so its callbacks fire before
+      // the loop unwinds (Issue #806).
+      await dispatchIssueCallbacks(
+        deps,
+        issue.repo,
+        issue.issueNumber,
+        ran("failure"),
+      );
       noteSlotRetired("serial", deps.now());
       return { exitOuterLoop: true, eligibilityScanCompleted };
     }
@@ -2686,6 +2707,7 @@ async function runIssueScanPool(
     claimFloor: poolRunwayFloor,
     deferredClaims: new Set<string>(),
     eligibilityScanCompleted: false,
+    callbackGuard: new IssueCallbackGuard(),
     idleHooks,
   };
   // Effective slots = min(configured, memory-pressure ceiling) (Issue
@@ -3059,6 +3081,13 @@ async function runSlot(
 
       /** Set by a successful claim so the settle sleep runs holding no repo. */
       let claimSucceeded = false;
+      /**
+       * Whether the claim actually started running (Issue #806) — set the
+       * moment `processIssue` is entered. A throw *before* that point is an
+       * unclaimed cycle and reports no callbacks; the shared guard handles a
+       * throw after the run already reported.
+       */
+      const runStarted = { value: false };
       try {
         // Every claim gets its OWN write-repo allowlist (Issue #183). The
         // per-slot context exists (#4175) but nothing wired it up here, so
@@ -3101,6 +3130,7 @@ async function runSlot(
                   tracker,
                   endTime,
                   pool,
+                  runStarted,
                 ),
             ),
         );
@@ -3146,6 +3176,17 @@ async function runSlot(
               ? 0
               : (Date.now() - since) / 1000,
           }),
+          // An exception after a claim takes the failure/always path exactly
+          // once (Issue #806). Reported only when the run actually started —
+          // a throw before `processIssue` is an unclaimed cycle, not a run —
+          // and the shared guard refuses a repeat if the run already reported.
+          runStarted.value
+            ? {
+              result: "failure" as const,
+              startedAtEpochMs: since ?? deps.now(),
+              guard: pool.callbackGuard,
+            }
+            : undefined,
         );
         // A primary rate limit is pool-wide (Issue #4180): stop every slot
         // from claiming and let the pool re-throw once drained so the cycle
@@ -3374,8 +3415,16 @@ async function runSlotIssue(
   tracker: WorkProgressTracker,
   endTime: number,
   pool: SlotPoolState,
-  /** Set when the claim starts running, so a pre-claim throw reports nothing. */
-  started: { value: boolean } = { value: false },
+  /**
+   * Set when the claim starts running, so a pre-claim throw reports nothing.
+   *
+   * Required, with no default (Issue #796). The default this parameter used
+   * to carry is what let two separate `main` sync merges drop the argument
+   * at the sole call site and still compile: the slot then watched a private
+   * flag nobody read, so every thrown run looked unclaimed and dispatched no
+   * callbacks. Without the default, the same deletion fails `deno check`.
+   */
+  started: { value: boolean },
 ): Promise<"success" | "skip" | "failure" | "exit"> {
   const prefix = formatSlotPrefix({
     slotId,
