@@ -65,7 +65,6 @@ import {
 } from "./credential_preflight.ts";
 import type { AgentProviderDescriptor } from "./agent_provider.ts";
 import { createClaudeBudgetTokenSelector } from "./claude_token_selection.ts";
-import { getGithubUser } from "./claude_runner.ts";
 import {
   NETWORK_UNAVAILABLE_MARKER,
   resolveGithubUserWithRetry,
