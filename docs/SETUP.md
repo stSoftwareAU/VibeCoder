@@ -675,27 +675,6 @@ reaches the coding agent's environment. No other vendor takes extra files, and
 a metered `ANTHROPIC_API_KEY` is not one of these: a host with one credential —
 key or token — behaves exactly as it always has.
 
-Which one is exported is decided at the **start of each run**: the worker asks
-Anthropic for each token's remaining budget, one request per token, and starts
-on whichever has the most headroom left in its own reset window. Level tokens
-go to the one whose window resets soonest, so budget is spent before it lapses,
-and a token whose budget could not be measured is ranked last but never
-dropped — if none can be measured the run starts on `provider.env`, exactly as
-it would have. The chosen token serves the whole run; the next run chooses
-again. Two subscriptions are therefore consumed evenly with no intervention
-between runs.
-
-The run log names the decision, by file stem only:
-
-```text
-[SECURITY] claude token candidate provider-2 (#2): remaining=75.0% window=five_hour resets=2026-09-04T02:00:00.000Z
-[SECURITY] claude token candidate provider (#1): remaining=25.0% window=seven_day resets=2026-09-04T05:00:00.000Z
-[SECURITY] claude token selected provider-2 (#2) of 2: most-remaining-budget remaining=75.0% resets=2026-09-04T02:00:00.000Z
-```
-
-With a single token file there is nothing to choose between, so no request is
-made and no such line appears.
-
 ### Permissions
 
 On macOS and Linux, directories are owner-only `700` and files `600`
