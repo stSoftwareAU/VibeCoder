@@ -45,6 +45,12 @@ interface TestDeps {
   findExistingWrapperTitlesFn?:
     RaiseSingleIdleTaskOptions["findExistingWrapperTitlesFn"];
   nowFn?: RaiseSingleIdleTaskOptions["nowFn"];
+  /**
+   * Checkout root the wrapper bodies' prompt files are read from
+   * (Issue #1024) — the seam that lets a test build real bodies without
+   * moving the process's working directory.
+   */
+  rootDir?: RaiseSingleIdleTaskOptions["rootDir"];
 }
 
 function splitCsv(value: unknown): string[] {
@@ -101,6 +107,7 @@ export const raiseSingleIdleTaskCommand: Command = {
       ensureLabelFn: deps.ensureLabelFn,
       findExistingWrapperTitlesFn: deps.findExistingWrapperTitlesFn,
       nowFn: deps.nowFn,
+      rootDir: deps.rootDir,
       log,
     });
 

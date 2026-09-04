@@ -48,10 +48,7 @@ import {
 } from "../lib/idle_task_cadence.ts";
 import { resetDueScanCache } from "../lib/idle_task_due_scans.ts";
 import { buildAttributionFooter } from "../lib/idle_task_attribution.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
-
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+import { REPO_ROOT } from "./support/repo_root.ts";
 
 // ---------------------------------------------------------------------------
 // Stable milestone stub used across the tests. The production helper hits the
@@ -3166,6 +3163,9 @@ Deno.test(
             nowFn: () => new Date("2026-05-22T00:00:00.000Z"),
             log: () => {},
             ensureMilestoneFn: milestone.fn,
+            // No pickTemplateFn, so the draw can land on a production
+            // template — name the checkout its body reads from (Issue #1024).
+            rootDir: REPO_ROOT,
           },
         },
         config,

@@ -38,10 +38,7 @@ import {
 } from "../lib/idle_task_issue.ts";
 import type { IdleTaskTemplate } from "../lib/idle_task_template.ts";
 import type { WorkerConfig } from "../types.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
-
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+import { REPO_ROOT } from "./support/repo_root.ts";
 
 // ---------------------------------------------------------------------------
 // Shared test fixtures
@@ -295,6 +292,7 @@ function makeFilerHook(
           ghCommandFn: ghFn,
           log: (line: string) => progressLogs.push(line),
           nowFn: () => new Date("2026-05-16T10:00:00.000Z"),
+          rootDir: REPO_ROOT,
           // Pin shuffle order to [REPO_B, REPO_A].
           randomFn: () => 0,
           // Pin the template too (Issue #3938). The subject here is the repo

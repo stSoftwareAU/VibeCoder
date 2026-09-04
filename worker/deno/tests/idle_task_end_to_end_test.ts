@@ -43,10 +43,7 @@ import {
   type IdleTaskTemplate,
 } from "../lib/idle_task_template.ts";
 import type { Logger, WorkerConfig } from "../types.ts";
-import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
-
-// Prompts resolve against this checkout, never the worker host's (Issue #844).
-pinPromptsToThisCheckout();
+import { REPO_ROOT } from "./support/repo_root.ts";
 
 // ---------------------------------------------------------------------------
 // Shared test fixtures
@@ -312,6 +309,7 @@ Deno.test(
               ghCommandFn: ghFn,
               log: (line: string) => progressLogs.push(line),
               nowFn: () => new Date("2026-05-15T10:00:00.000Z"),
+              rootDir: REPO_ROOT,
               // Pin to security-scan so the 50/50 dispatcher (Issue #2149)
               // does not randomly pick best-practices, whose buildIssueBody
               // makes real network calls the test stub cannot satisfy.
@@ -539,6 +537,7 @@ Deno.test(
             ghCommandFn: ghFn,
             log: () => {},
             nowFn: () => new Date("2026-05-15T10:00:00.000Z"),
+            rootDir: REPO_ROOT,
             // Pin to security-scan so the 50/50 dispatcher (Issue #2149)
             // does not randomly pick best-practices, whose buildIssueBody
             // makes real network calls the test stub cannot satisfy.

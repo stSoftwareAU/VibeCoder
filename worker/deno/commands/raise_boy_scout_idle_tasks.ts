@@ -37,6 +37,12 @@ interface TestDeps {
   findExistingWrapperTitlesFn?:
     RaiseBoyScoutIdleTasksOptions["findExistingWrapperTitlesFn"];
   nowFn?: RaiseBoyScoutIdleTasksOptions["nowFn"];
+  /**
+   * Checkout root the wrapper bodies' prompt files are read from
+   * (Issue #1024) — the seam that lets a test build real bodies without
+   * moving the process's working directory.
+   */
+  rootDir?: RaiseBoyScoutIdleTasksOptions["rootDir"];
 }
 
 function splitCsv(value: unknown): string[] {
@@ -81,6 +87,7 @@ export const raiseBoyScoutIdleTasksCommand: Command = {
       ensureLabelFn: deps.ensureLabelFn,
       findExistingWrapperTitlesFn: deps.findExistingWrapperTitlesFn,
       nowFn: deps.nowFn,
+      rootDir: deps.rootDir,
       log,
     });
 
