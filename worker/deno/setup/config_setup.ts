@@ -15,6 +15,7 @@ import {
   LABEL_DEFAULTS,
   OPERATIONAL_DEFAULTS,
 } from "../lib/config_defaults.ts";
+import { REMOVED_CONFIG_KEYS } from "../lib/validation.ts";
 
 /**
  * Configuration values that can be set during setup.
@@ -50,8 +51,6 @@ export interface SetupConfig {
   gh_config_dir?: string;
   // Optional feature configuration (Issue #535)
   imgbb_api_key?: string;
-  fleet_health_dir?: string;
-  fleet_health_repo?: string;
   update_gh_user_status?: boolean;
   // GitHub App authentication (Issue #957)
   github_app_id?: string;
@@ -147,14 +146,38 @@ const EXPLICITLY_HANDLED_KEYS: ReadonlySet<string> = new Set([
   "ssh_key_path",
   "gh_config_dir",
   "imgbb_api_key",
-  "fleet_health_dir",
-  "fleet_health_repo",
   "update_gh_user_status",
   "github_app_id",
   "github_app_installation_id",
   "github_app_private_key_path",
   "repo_config",
 ]);
+
+/**
+ * Drop the config keys this worker no longer honours, naming each removal
+ * (Issue #805).
+ *
+ * Setup rewrites `.config.json` from scratch on every run and carries
+ * operator-set keys through untouched (Issue #4033), so a stale key would be
+ * written straight back and the next worker start would refuse the config.
+ * Stripping it here fixes the file; the warning is what stops the fix being
+ * silent — the operator is told where the behaviour went.
+ *
+ * @param config - The configuration about to be written
+ * @returns The config without removed keys, plus one warning per key dropped
+ */
+export function stripRemovedConfigKeys(
+  config: SetupConfig,
+): { config: SetupConfig; warnings: string[] } {
+  const result = { ...config } as Record<string, unknown>;
+  const warnings: string[] = [];
+  for (const [key, guidance] of REMOVED_CONFIG_KEYS) {
+    if (result[key] === undefined) continue;
+    delete result[key];
+    warnings.push(`Removed '${key}' from .config.json — ${guidance}`);
+  }
+  return { config: result as SetupConfig, warnings };
+}
 
 /**
  * Keys that are hardwired and must never be written back to `.config.json`
@@ -191,6 +214,9 @@ export function buildOverridesOnly(
   // Passthrough for operator-set keys with no default handling (Issue #4033).
   for (const [key, value] of Object.entries(config)) {
     if (EXPLICITLY_HANDLED_KEYS.has(key) || HARDWIRED_KEYS.has(key)) continue;
+    // Issue #805: a key the worker has removed is never written back — the
+    // config it produced would fail the next start.
+    if (REMOVED_CONFIG_KEYS.has(key)) continue;
     if (value === undefined) continue;
     result[key] = value;
   }
@@ -278,18 +304,10 @@ export function buildOverridesOnly(
     result.gh_config_dir = config.gh_config_dir;
   }
 
-  // Optional feature configuration — no defaults for imgbb/health,
+  // Optional feature configuration — no default for imgbb,
   // update_gh_user_status defaults to true (Issue #535)
   if (config.imgbb_api_key) {
     result.imgbb_api_key = config.imgbb_api_key;
-  }
-
-  if (config.fleet_health_dir) {
-    result.fleet_health_dir = config.fleet_health_dir;
-  }
-
-  if (config.fleet_health_repo) {
-    result.fleet_health_repo = config.fleet_health_repo;
   }
 
   if (
@@ -551,11 +569,6 @@ export function mergeNonInteractive(
   const vibeImgbbApiKey = env("VIBE_IMGBB_API_KEY");
   if (vibeImgbbApiKey) {
     result.imgbb_api_key = vibeImgbbApiKey;
-  }
-
-  const vibeFleetHealthDir = env("VIBE_FLEET_HEALTH_DIR");
-  if (vibeFleetHealthDir) {
-    result.fleet_health_dir = vibeFleetHealthDir;
   }
 
   const vibeUpdateGhUserStatus = env("VIBE_UPDATE_GH_USER_STATUS");

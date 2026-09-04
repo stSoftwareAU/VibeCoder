@@ -10,8 +10,9 @@
  * no sleep), and that a `137` exit is routed to OOM only when there is memory
  * evidence (otherwise it keeps timeout semantics).
  *
- * Each test runs the loop against a stub `claude` on PATH that records its
- * invocation count, emits a configurable last line, and exits with a chosen
+ * Each test runs the loop against a stub agent — named by path rather than
+ * installed on `PATH` (Issue #959) — that records its invocation count,
+ * emits a configurable last line, and exits with a chosen
  * code. The recorded count proves no retry occurred. A deliberately long
  * `initialWaitInterval` would make any accidental retry sleep long enough to
  * trip the test's own bounded run, so a fast completion is itself evidence
@@ -23,64 +24,53 @@
 import { assert, assertEquals } from "@std/assert";
 import { OOM_EXIT_CODE, runClaudeWithRetry } from "../lib/claude_runner.ts";
 import { TIMEOUT_EXIT_CODE } from "../lib/claude_executor.ts";
+import { withAgentStub } from "./support/agent_stub.ts";
 
 // ---------------------------------------------------------------------------
-// Stub harness — a fake `claude` on PATH that records how many times it ran,
-// prints a chosen final line, and exits with a chosen code.
+// Stub harness — a fake agent, named by path (Issue #959), that records how
+// many times it ran, prints a chosen final line, and exits with a chosen code.
 // ---------------------------------------------------------------------------
 
 interface StubClaude {
-  /** Directory holding the stub, prepended to PATH. */
-  dir: string;
+  /** Absolute path to the stub, passed to the runner as `agentBinaryPath`. */
+  path: string;
   /** Path the stub appends one line to per invocation (for the run count). */
   runLog: string;
 }
 
+/** Basename of the file the stub appends one line to per invocation. */
+const RUN_LOG = "runs.log";
+
 /**
- * Build a stub `claude` whose body records one line per invocation to
- * `runLog`, prints `lastLine` as a stream-json result, and exits with
- * `exitCode`. The recorded count lets a test assert the loop ran the stub
- * exactly once (no retry).
+ * Build a stub agent whose body records one line per invocation, prints
+ * `lastLine` as a stream-json result, and exits with `exitCode`. The recorded
+ * count lets a test assert the loop ran the stub exactly once (no retry).
+ *
+ * The log is located from `$0`, so the body needs no path baked into it.
  */
-function buildOomStubBody(
-  runLog: string,
-  lastLine: string,
-  exitCode: number,
-): string {
+function buildOomStubBody(lastLine: string, exitCode: number): string {
   return [
-    `printf 'run\\n' >> '${runLog}'`,
+    `printf 'run\\n' >> "$(dirname "$0")/${RUN_LOG}"`,
     `printf '%s\\n' '{"type":"result","result":"${lastLine}"}'`,
     `exit ${exitCode}`,
   ].join("\n");
 }
 
 /**
- * Create a temporary stub `claude` on PATH for the duration of `fn`, then
- * restore PATH and clean up.
+ * Create a temporary stub agent for the duration of `fn`, then clean up. The
+ * runner is handed the stub's path (Issue #959), so nothing here touches the
+ * process-wide `PATH`.
  */
-async function withOomStub<T>(
+function withOomStub<T>(
   lastLine: string,
   exitCode: number,
   fn: (stub: StubClaude) => Promise<T>,
 ): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "claude_oom_stub_" });
-  const runLog = `${dir}/runs.log`;
-  const stubPath = `${dir}/claude`;
-  await Deno.writeTextFile(
-    stubPath,
-    `#!/usr/bin/env bash\n${buildOomStubBody(runLog, lastLine, exitCode)}\n`,
+  return withAgentStub(
+    buildOomStubBody(lastLine, exitCode),
+    (stub) => fn({ path: stub.path, runLog: `${stub.dir}/${RUN_LOG}` }),
+    { prefix: "claude_oom_stub_" },
   );
-  await Deno.chmod(stubPath, 0o755);
-  const originalPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${dir}:${originalPath}`);
-  try {
-    return await fn({ dir, runLog });
-  } finally {
-    Deno.env.set("PATH", originalPath);
-    await Deno.remove(dir, { recursive: true }).catch(() => {
-      /* best-effort */
-    });
-  }
 }
 
 /** Count how many times the stub ran (0 if it never did). */
@@ -123,7 +113,10 @@ Deno.test({
       "FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory",
       1,
       async (stub) => {
-        const result = await runClaudeWithRetry(COMMON_OPTS, SLOW_IF_RETRIED);
+        const result = await runClaudeWithRetry(
+          { ...COMMON_OPTS, agentBinaryPath: stub.path },
+          SLOW_IF_RETRIED,
+        );
         return { result, runs: await readRunCount(stub.runLog) };
       },
     );
@@ -159,7 +152,10 @@ Deno.test({
       "FATAL ERROR: Reached heap limit Allocation failed - process out of memory",
       1,
       async (stub) => {
-        const result = await runClaudeWithRetry(COMMON_OPTS, SLOW_IF_RETRIED);
+        const result = await runClaudeWithRetry(
+          { ...COMMON_OPTS, agentBinaryPath: stub.path },
+          SLOW_IF_RETRIED,
+        );
         return { result, runs: await readRunCount(stub.runLog) };
       },
     );
@@ -192,7 +188,10 @@ Deno.test({
       "JavaScript heap out of memory",
       137,
       async (stub) => {
-        const result = await runClaudeWithRetry(COMMON_OPTS, SLOW_IF_RETRIED);
+        const result = await runClaudeWithRetry(
+          { ...COMMON_OPTS, agentBinaryPath: stub.path },
+          SLOW_IF_RETRIED,
+        );
         return { result, runs: await readRunCount(stub.runLog) };
       },
     );
@@ -221,7 +220,10 @@ Deno.test({
       "Process killed by operator",
       137,
       async (stub) => {
-        const result = await runClaudeWithRetry(COMMON_OPTS, SLOW_IF_RETRIED);
+        const result = await runClaudeWithRetry(
+          { ...COMMON_OPTS, agentBinaryPath: stub.path },
+          SLOW_IF_RETRIED,
+        );
         return { result, runs: await readRunCount(stub.runLog) };
       },
     );

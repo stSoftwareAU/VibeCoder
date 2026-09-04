@@ -544,9 +544,10 @@ the repos are named on two surfaces:
   grep '\[repo-access\]' ~/logs/worker.log | tail -n 5
   ```
 
-- **private-repo-6 dashboard** — the healthy heartbeat is suppressed, so the host's
-  row goes **stale** instead of reporting green, and the end-of-run report
-  carries `--message "repos inaccessible: TitlePage/bar, TitlePage/foo"`.
+- **Loop result** — the iteration sets `lastHealthCheckPassed` to `false`,
+  so the host is recorded as unhealthy rather than green. Built-in fleet
+  health reporting was removed in Issue #805: nothing in the worker
+  publishes this to a dashboard.
 
 **What it means.** The worker authenticated fine — this condition sits *after*
 the Claude and `gh auth` checks — but the account it authenticated as cannot see

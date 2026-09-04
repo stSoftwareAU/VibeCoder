@@ -14,13 +14,14 @@
  * 6. runNonInteractive orchestrates the full non-interactive flow
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   buildOverridesOnly,
   loadExistingConfig,
   mergeNonInteractive,
   parseCsv,
   runNonInteractive,
+  stripRemovedConfigKeys,
   writeConfigFile,
 } from "../setup/config_setup.ts";
 import type { SetupConfig } from "../setup/config_setup.ts";
@@ -730,14 +731,6 @@ Deno.test("mergeNonInteractive - does not set imgbb_api_key when env var is empt
   assertEquals(result.imgbb_api_key, undefined);
 });
 
-Deno.test("mergeNonInteractive - sets fleet_health_dir from VIBE_FLEET_HEALTH_DIR", () => {
-  const env = (name: string) =>
-    name === "VIBE_FLEET_HEALTH_DIR" ? "/path/to/health" : undefined;
-
-  const result = mergeNonInteractive({}, env);
-  assertEquals(result.fleet_health_dir, "/path/to/health");
-});
-
 Deno.test("mergeNonInteractive - sets update_gh_user_status from VIBE_UPDATE_GH_USER_STATUS", () => {
   const env = (name: string) =>
     name === "VIBE_UPDATE_GH_USER_STATUS" ? "false" : undefined;
@@ -764,16 +757,6 @@ Deno.test("mergeNonInteractive - preserves existing imgbb_api_key when no env va
   assertEquals(result.imgbb_api_key, "existing-key");
 });
 
-Deno.test("mergeNonInteractive - preserves existing fleet_health_dir when no env var set", () => {
-  const existing: SetupConfig = {
-    fleet_health_dir: "/existing/path",
-  };
-  const env = (_name: string) => undefined;
-
-  const result = mergeNonInteractive(existing, env);
-  assertEquals(result.fleet_health_dir, "/existing/path");
-});
-
 Deno.test("mergeNonInteractive - preserves existing update_gh_user_status when no env var set", () => {
   const existing: SetupConfig = {
     update_gh_user_status: false,
@@ -798,35 +781,6 @@ Deno.test("buildOverridesOnly - omits imgbb_api_key when empty", () => {
   };
   const result = buildOverridesOnly(config);
   assertEquals(result.imgbb_api_key, undefined);
-});
-
-Deno.test("buildOverridesOnly - includes fleet_health_dir when present", () => {
-  const config: SetupConfig = {
-    fleet_health_dir: "/path/to/health",
-  };
-  const result = buildOverridesOnly(config);
-  assertEquals(result.fleet_health_dir, "/path/to/health");
-});
-
-Deno.test("buildOverridesOnly - carries fleet_health_repo, the health repository setup asked for", () => {
-  const config: SetupConfig = {
-    fleet_health_repo: "git@github.com:org/health.git",
-  };
-  const result = buildOverridesOnly(config);
-  assertEquals(result.fleet_health_repo, "git@github.com:org/health.git");
-  assertEquals(
-    buildOverridesOnly({}).fleet_health_repo,
-    undefined,
-    "no health repository is ever assumed",
-  );
-});
-
-Deno.test("buildOverridesOnly - omits fleet_health_dir when empty", () => {
-  const config: SetupConfig = {
-    fleet_health_dir: "",
-  };
-  const result = buildOverridesOnly(config);
-  assertEquals(result.fleet_health_dir, undefined);
 });
 
 Deno.test("buildOverridesOnly - includes update_gh_user_status when false (overrides default true)", () => {
@@ -866,27 +820,6 @@ Deno.test("runNonInteractive - stores imgbb_api_key in config file (Issue #535)"
   }
 });
 
-Deno.test("runNonInteractive - stores fleet_health_dir in config file (Issue #535)", async () => {
-  const tempDir = await Deno.makeTempDir();
-  const configPath = `${tempDir}/.config.json`;
-  try {
-    const env = (name: string) => {
-      if (name === "VIBE_ALLOWED_AUTHOR") return "testuser";
-      if (name === "VIBE_FLEET_HEALTH_DIR") return "/health/dir";
-      return undefined;
-    };
-
-    await runNonInteractive(configPath, env);
-
-    const content = await Deno.readTextFile(configPath);
-    const parsed = JSON.parse(content);
-
-    assertEquals(parsed.fleet_health_dir, "/health/dir");
-  } finally {
-    await Deno.remove(tempDir, { recursive: true });
-  }
-});
-
 Deno.test("runNonInteractive - stores update_gh_user_status=false in config file (Issue #535)", async () => {
   const tempDir = await Deno.makeTempDir();
   const configPath = `${tempDir}/.config.json`;
@@ -915,7 +848,6 @@ Deno.test("runNonInteractive - idempotent with feature config (Issue #535)", asy
     const env = (name: string) => {
       if (name === "VIBE_ALLOWED_AUTHOR") return "testuser";
       if (name === "VIBE_IMGBB_API_KEY") return "test-key";
-      if (name === "VIBE_FLEET_HEALTH_DIR") return "/health";
       if (name === "VIBE_UPDATE_GH_USER_STATUS") return "false";
       return undefined;
     };
@@ -931,4 +863,44 @@ Deno.test("runNonInteractive - idempotent with feature config (Issue #535)", asy
   } finally {
     await Deno.remove(tempDir, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Removed config keys (Issue #805)
+// ---------------------------------------------------------------------------
+
+Deno.test("stripRemovedConfigKeys - drops a stale fleet_health key and says so", () => {
+  const { config, warnings } = stripRemovedConfigKeys(
+    {
+      repos: ["org/repo"],
+      fleet_health_repo: "git@github.com:org/health.git",
+    } as SetupConfig & Record<string, unknown>,
+  );
+
+  assertEquals(
+    (config as Record<string, unknown>).fleet_health_repo,
+    undefined,
+  );
+  assertEquals(config.repos, ["org/repo"]);
+  assertEquals(warnings.length, 1);
+  assert(warnings[0]!.includes("fleet_health_repo"), warnings[0]);
+  assert(warnings[0]!.includes("callbacks"), warnings[0]);
+});
+
+Deno.test("stripRemovedConfigKeys - a config without a removed key is untouched and silent", () => {
+  const { config, warnings } = stripRemovedConfigKeys({ repos: ["org/repo"] });
+  assertEquals(config, { repos: ["org/repo"] });
+  assertEquals(warnings, []);
+});
+
+Deno.test("buildOverridesOnly - never writes a removed key back (Issue #805)", () => {
+  const result = buildOverridesOnly(
+    {
+      repos: ["org/repo"],
+      fleet_health_dir: "/srv/health",
+      fleet_health_repo: "git@github.com:org/health.git",
+    } as SetupConfig & Record<string, unknown>,
+  );
+  assertEquals(result.fleet_health_dir, undefined);
+  assertEquals(result.fleet_health_repo, undefined);
 });

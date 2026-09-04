@@ -34,6 +34,7 @@ import {
   DEEPSEEK_PHASE_MODEL_DEFAULTS,
   PHASE_EFFORT_DEFAULTS,
 } from "./config_defaults.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 import { resolvePhaseRoutedValue } from "./phase_routing.ts";
 import type { RepoConfig } from "../types.ts";
 
@@ -94,15 +95,21 @@ export function setActiveRepoDeepSeekModelOverrides(
  *   6. Base `DEEPSEEK_MODEL` env var — global fallback
  *
  * @param phase - Optional phase name (e.g. `"planning"`).
+ * @param env - Environment lookup for steps 1 and 6 (Issue #957); defaults to
+ *   the process environment.
  * @returns The resolved model, or `undefined` when no step supplies one — the
  *   CLI's configured default then stands, and a non-empty phase warns.
  */
-export function resolveDeepSeekModel(phase?: string): string | undefined {
+export function resolveDeepSeekModel(
+  phase?: string,
+  env?: EnvLookup,
+): string | undefined {
   return resolvePhaseRoutedValue({
     logPrefix: "deepseek-executor",
     what: "model",
     flag: "--model",
     envVar: "DEEPSEEK_MODEL",
+    env,
     repoPhaseOverrides: _repoDeepSeekPhaseModelOverrides,
     repoPhaseOverridesKey: "deepseek_phase_model_overrides",
     repoBase: _repoDeepSeekModel,

@@ -2,8 +2,8 @@
  * Environment stubbing for tests (Issue #378).
  *
  * The worker container exports its own runtime configuration — `WORK_DIR`,
- * `VIBE_IMAGE_AGENT_PROVIDERS`, `FLEET_HEALTH_REPO`, `UPDATE_GH_USER_STATUS`
- * and friends — into every `deno test` invocation. A test that saves and
+ * `VIBE_IMAGE_AGENT_PROVIDERS`, `UPDATE_GH_USER_STATUS` and friends — into
+ * every `deno test` invocation. A test that saves and
  * restores only *some* of the variables its code path reads therefore
  * inherits the rest from whichever machine runs the suite: green on a
  * developer host, red inside the container, and useless as a gate either way.

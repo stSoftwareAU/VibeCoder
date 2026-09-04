@@ -37,8 +37,6 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { scanDirectoriesForHomeWorkDir } from "../lib/home_workdir_check.ts";
-import { buildFleetHealthConfig } from "../lib/fleet_health.ts";
-import { withCleanEnv } from "./support/env.ts";
 
 /** worker/deno/, resolved from this test file. */
 const DENO_ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
@@ -267,47 +265,6 @@ Deno.test("host workdir guard - mod.ts run-housekeeping without WORK_DIR refuses
     );
     await assertNoStrayWorkDir(home, "mod.ts run-housekeeping");
   });
-});
-
-Deno.test("host workdir guard - the fleet-health entry point creates no work dir", async () => {
-  await withTempHome(async (home, cwd) => {
-    // lib/fleet_health.ts carries the same `${HOME}/auto-issue-work` shape
-    // (path construction only, see the allowlist). Run the CLI wrapper: with
-    // no configuration in cwd it exits non-zero without touching HOME, and
-    // with no FLEET_HEALTH_REPO nothing would be cloned either way.
-    const run = await runEntryPoint(
-      [`${DENO_ROOT}/mod.ts`, "private-repo-6"],
-      { home, cwd },
-    );
-    // The exit code is not the contract here — the guard is that NOTHING
-    // was created under HOME whichever way the command resolves.
-    assertEquals(typeof run.code, "number");
-    await assertNoStrayWorkDir(home, "mod.ts private-repo-6 (fleet health)");
-  });
-});
-
-Deno.test("host workdir guard - buildFleetHealthConfig only builds strings, never directories", async () => {
-  const root = await Deno.makeTempDir({ prefix: "host_workdir_guard_fh_" });
-  const home = `${root}/home`;
-  await Deno.mkdir(home, { recursive: true });
-
-  try {
-    // Issue #378: the worker container exports VIBE_IMAGE_AGENT_PROVIDERS
-    // (and FLEET_HEALTH_REPO), which would put buildFleetHealthConfig on its
-    // container branch and make this assertion depend on where the suite
-    // runs. withCleanEnv hides everything the test did not name, so the
-    // host-side branch is exercised on host and in container alike.
-    await withCleanEnv({ HOME: home }, async () => {
-      const config = buildFleetHealthConfig(`${root}/repo`);
-
-      // Host-side (not in a container) the healthDir is the repo sibling —
-      // the HOME-derived workDir string is never used, let alone created.
-      assertEquals(config.healthDir.startsWith(`${root}/repo/..`), true);
-      await assertNoStrayWorkDir(home, "buildFleetHealthConfig");
-    });
-  } finally {
-    await Deno.remove(root, { recursive: true });
-  }
 });
 
 // ---------------------------------------------------------------------------
