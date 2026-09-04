@@ -5,15 +5,15 @@
  * role") and the scan family shares a `### Verification before exit`
  * closing check. Before #841 the checklist claimed both standards while a
  * subset of templates silently failed them: four surfaces opened with no
- * persona, and eight scans carried the closing check as an unheaded tail
- * paragraph folded into `### Required label set`.
+ * persona, and most of the scan family carried the closing check as an
+ * unheaded tail paragraph at the end of its filing phase.
  *
  * The decision #841 recorded is split by surface kind, and these tests pin
  * both halves so the checklist and the templates cannot drift apart again:
  *
  *   - **Raise the templates** where a model reads them. Every scan-family
- *     template opens with a persona, no two scans share a role noun, and
- *     every scan carries the closing check under its house heading.
+ *     template opens with a persona, no two scans open as the same thing,
+ *     and every scan carries the closing check under its house heading.
  *   - **Narrow the claim** where no model reads them. The four native
  *     scans render their `prompt.md` as the filed wrapper issue body and
  *     never send it to a model, so the checklist records them as a third
@@ -30,23 +30,16 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { loadPrompt, PROMPT_FILENAME } from "../lib/prompt_manager.ts";
-import type { IdleTaskTemplate } from "../lib/idle_task_template.ts";
-import { createAlertFeedTemplate } from "../lib/idle_task_templates/alert_feed_template.ts";
-import { createBashScriptRefsTemplate } from "../lib/idle_task_templates/bash_script_refs_template.ts";
-import { createBashSyntaxAuditTemplate } from "../lib/idle_task_templates/bash_syntax_audit_template.ts";
-import { createWorkflowAnnotationScanTemplate } from "../lib/idle_task_templates/workflow_annotation_scan_template.ts";
+import { getTemplate } from "../lib/idle_task_template.ts";
+import "../lib/idle_task_templates/alert_feed_template.ts";
+import "../lib/idle_task_templates/bash_script_refs_template.ts";
+import "../lib/idle_task_templates/bash_syntax_audit_template.ts";
+import "../lib/idle_task_templates/workflow_annotation_scan_template.ts";
+// Importing this pins prompt resolution to this checkout, so a worker host's
+// `PROMPTS_DIR` cannot point the registered templates at another clone.
+import { REPO_ROOT } from "./support/repo_prompts.ts";
 
-/**
- * Repository root, resolved from this file's location rather than the
- * process's working directory. `URL.pathname` is percent-encoded, so it is
- * decoded — a checkout under a path containing a space would otherwise
- * resolve to a directory that does not exist.
- */
-function repoRoot(): string {
-  return decodeURIComponent(new URL("../../../", import.meta.url).pathname);
-}
-
-const PROMPTS_DIR = `${repoRoot()}prompts`;
+const PROMPTS_DIR = `${REPO_ROOT}prompts`;
 const CHECKLIST_PATH = "docs/PROMPT-BEST-PRACTICES-CHECKLIST.md";
 const VOCABULARY_PATH = "docs/PROMPT-HOUSE-VOCABULARY.md";
 
@@ -57,36 +50,24 @@ const VERIFICATION_HEADING = "### Verification before exit";
 const SCAN_FAMILY_MARKER = "Stable finding ID recipe";
 
 /**
+ * How far into a template the opening persona may sit. Generous enough for
+ * an H1 and a blank line, tight enough that a `You are ` sentence buried in
+ * the body cannot stand in for one.
+ */
+const PERSONA_OPENING_LINES = 8;
+
+/**
  * The four surfaces no model ever reads: their `prompt.md` is rendered as
  * the filed wrapper issue body by a native template. Each entry pairs the
- * prompt directory with the template that renders it, so the exemption is
- * checked against real code rather than asserted.
- *
- * The templates are built through their factories with the repository's
- * own prompts directory injected: the production default honours a
- * `PROMPTS_DIR` environment variable, which points at a different checkout
- * inside the worker container and would silently score the wrong tree.
+ * prompt directory with the idle-task template slug that renders it, so the
+ * exemption is checked against real code rather than asserted.
  */
-const WRAPPER_ISSUE_BODIES: Array<[string, () => IdleTaskTemplate]> = [
-  ["alert_feed", () => createAlertFeedTemplate({ loadPromptFn: loadFromRepo })],
-  [
-    "bash_script_refs",
-    () => createBashScriptRefsTemplate({ loadPromptFn: loadFromRepo }),
-  ],
-  [
-    "bash_syntax_audit",
-    () => createBashSyntaxAuditTemplate({ loadPromptFn: loadFromRepo }),
-  ],
-  [
-    "workflow_annotation_scan",
-    () => createWorkflowAnnotationScanTemplate({ loadPromptFn: loadFromRepo }),
-  ],
+const WRAPPER_ISSUE_BODIES: Array<[string, string]> = [
+  ["alert_feed", "alert-feed"],
+  ["bash_script_refs", "bash-script-refs"],
+  ["bash_syntax_audit", "bash-syntax-audit"],
+  ["workflow_annotation_scan", "workflow-annotation-scan"],
 ];
-
-/** Load a prompt from this checkout, ignoring any ambient `PROMPTS_DIR`. */
-function loadFromRepo(name: string) {
-  return loadPrompt(name, PROMPTS_DIR);
-}
 
 /** Every prompt directory on disk, sorted. */
 function promptDirectories(): string[] {
@@ -121,12 +102,16 @@ async function scanFamily(): Promise<Map<string, string>> {
 
 /**
  * The opening persona paragraph of a template — the block starting at the
- * first `You are ` line and running to the next blank line, whitespace
- * collapsed onto one line. Returns `undefined` when there is no such line.
+ * `You are ` line that opens the prompt and running to the next blank line,
+ * whitespace collapsed onto one line. Returns `undefined` when the template
+ * does not open on one: a `You are ` sentence further down the body is part
+ * of the task text, not the role, so it does not count.
  */
 function personaParagraph(text: string): string | undefined {
   const lines = text.split("\n");
-  const start = lines.findIndex((line) => line.startsWith("You are "));
+  const start = lines
+    .slice(0, PERSONA_OPENING_LINES)
+    .findIndex((line) => line.startsWith("You are "));
   if (start < 0) return undefined;
   const paragraph: string[] = [];
   for (const line of lines.slice(start)) {
@@ -137,14 +122,15 @@ function personaParagraph(text: string): string | undefined {
 }
 
 /**
- * The role noun a persona names — the phrase between `You are a/an` and the
- * `performing` that starts its stance clause, lower-cased. Returns
- * `undefined` for a persona that opens on a stance rather than a role
- * noun, which is scored by the presence check rather than this one.
+ * What a persona identifies itself as: the role noun between `You are a/an`
+ * and the `performing` that starts its stance clause, or — for a persona
+ * that opens on a stance rather than a role noun — its whole first sentence.
+ * Never `undefined`, so no template drops out of the distinctness check
+ * unscored.
  */
-function personaRole(paragraph: string): string | undefined {
-  const match = /^You are an? ([^,.;:]+?) performing\b/.exec(paragraph);
-  return match?.[1]?.toLowerCase();
+function personaIdentity(paragraph: string): string {
+  const role = /^You are an? ([^,.;:]+?) performing\b/.exec(paragraph)?.[1];
+  return (role ?? paragraph.split(/(?<=\.)\s/)[0] ?? paragraph).toLowerCase();
 }
 
 /** Extract the body of the `## ` section whose heading contains `title`. */
@@ -170,7 +156,7 @@ function tableRows(markdown: string): string[][] {
 }
 
 async function readChecklist(): Promise<string> {
-  return await Deno.readTextFile(`${repoRoot()}${CHECKLIST_PATH}`);
+  return await Deno.readTextFile(`${REPO_ROOT}${CHECKLIST_PATH}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -187,16 +173,18 @@ Deno.test("every scan-family template opens with a persona", async () => {
   }
 });
 
-Deno.test("no two scans share a role noun", async () => {
-  const byRole = new Map<string, string[]>();
+Deno.test("no two scans share a persona", async () => {
+  const byIdentity = new Map<string, string[]>();
   for (const [name, text] of await scanFamily()) {
     const paragraph = personaParagraph(text);
-    const role = paragraph ? personaRole(paragraph) : undefined;
-    if (!role) continue;
-    byRole.set(role, [...(byRole.get(role) ?? []), name]);
+    // A template with no opening persona is a failure of the check above,
+    // not a template to drop silently from this one.
+    assert(paragraph, `prompts/${name}/${PROMPT_FILENAME} opens with none`);
+    const identity = personaIdentity(paragraph);
+    byIdentity.set(identity, [...(byIdentity.get(identity) ?? []), name]);
   }
 
-  const shared = [...byRole.entries()].filter(([, names]) => names.length > 1);
+  const shared = [...byIdentity.entries()].filter(([, n]) => n.length > 1);
   assertEquals(
     shared,
     [],
@@ -221,7 +209,7 @@ Deno.test("every scan carries the verification-before-exit section", async () =>
   }
 });
 
-Deno.test("each verification section says what to re-read", async () => {
+Deno.test("each verification section names the filed issues it re-reads", async () => {
   for (const [name, text] of await scanFamily()) {
     const lines = text.split("\n");
     const start = lines.findIndex((line) =>
@@ -233,14 +221,22 @@ Deno.test("each verification section says what to re-read", async () => {
     const body = (end < 0 ? rest : rest.slice(0, end)).join("\n");
 
     assert(
-      /before exiting/i.test(body),
+      /before exit/i.test(body),
       `prompts/${name}: the verification section does not say it runs ` +
         "before the run exits",
     );
+    // What it re-reads is the run's own filed issues, and the way it fixes
+    // a deviation is `gh issue edit` — a section naming neither is a
+    // checklist with no subject.
     assert(
-      body.includes("gh issue"),
-      `prompts/${name}: the verification section does not say which filed ` +
-        "issues to re-read",
+      /\bfiled\b/i.test(body),
+      `prompts/${name}: the verification section does not name the filed ` +
+        "issues it re-reads",
+    );
+    assert(
+      body.includes("gh issue edit"),
+      `prompts/${name}: the verification section does not say how to fix a ` +
+        "deviation it finds",
     );
   }
 });
@@ -278,8 +274,9 @@ Deno.test("row 5 exempts the surfaces no model reads", async () => {
 });
 
 Deno.test("the exempt prompts really are rendered as the filed issue body", async () => {
-  for (const [directory, build] of WRAPPER_ISSUE_BODIES) {
-    const template = build();
+  for (const [directory, slug] of WRAPPER_ISSUE_BODIES) {
+    const template = getTemplate(slug);
+    assert(template, `no idle-task template is registered as "${slug}"`);
 
     const loaded = await loadPrompt(directory, PROMPTS_DIR);
     assert(loaded.ok, `could not load prompts/${directory}/${PROMPT_FILENAME}`);
@@ -305,7 +302,7 @@ Deno.test("the exempt prompts really are rendered as the filed issue body", asyn
 });
 
 Deno.test("the vocabulary points at the settled presence decision", async () => {
-  const vocabulary = await Deno.readTextFile(`${repoRoot()}${VOCABULARY_PATH}`);
+  const vocabulary = await Deno.readTextFile(`${REPO_ROOT}${VOCABULARY_PATH}`);
   const body = section(vocabulary, "Out of scope");
 
   assert(

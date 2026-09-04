@@ -1797,9 +1797,9 @@ label:
 ### Verification before exit
 
 Re-read every issue this run filed before exiting, and confirm: one
-`gh issue create` per surviving finding
-(capped at 6, plus one overflow tracker when more than 6 survived, or when
-the stopping rule left chunks unswept); every filed issue carries
+`gh issue create` per surviving finding (capped at 6, plus one overflow
+tracker when more than 6 survived, or when the stopping rule left chunks
+unswept); every filed issue carries
 `security`, exactly one `severity:*`, and exactly one `confidence:*` label,
 and no operational label; no suppressed or known-open id was filed; every
 body whose finding was assigned a CWE in Phase 3 step 8 carries its

@@ -70,8 +70,11 @@ Three consequences worth stating once, so audits do not re-litigate them:
 ## Checklist
 
 Row numbering and headings follow the guide, so the mapping stays auditable.
-`n/a` describes the only conditions under which a row may be skipped; anything
-else is a pass or a gap. The three levers the guide does not carry are scored
+A row's `n/a` cell describes the only conditions under which *that* row may be
+skipped; anything else is a pass or a gap. The one exemption a row does not
+restate is the surface-kind one above: a row that scores what a model does with
+the text is ➖ for a **wrapper issue body** whatever its own cell says, because
+there is no model turn to score. Every other ➖ must match the row's cell. The three levers the guide does not carry are scored
 separately, as [House additions](#house-additions).
 
 ### General principles

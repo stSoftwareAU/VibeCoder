@@ -491,11 +491,10 @@ The filer attaches **only** these labels — never an operational workflow label
 ### Verification before exit
 
 Re-read every issue this run filed before exiting, and confirm: at most 6
-`gh issue create` calls; every filed issue
-carries `private-repo-reference` and exactly one `severity:*` label and no
-operational label; no suppressed or known-open id was filed; no private content
-was quoted; no file was written — tracked, untracked, or scratch; and every body
-ends with the attribution footer verbatim. Fix any deviation with
-`gh issue edit` before exiting.
+`gh issue create` calls; every filed issue carries `private-repo-reference` and
+exactly one `severity:*` label and no operational label; no suppressed or
+known-open id was filed; no private content was quoted; no file was written —
+tracked, untracked, or scratch; and every body ends with the attribution footer
+verbatim. Fix any deviation with `gh issue edit` before exiting.
 
 </instructions>

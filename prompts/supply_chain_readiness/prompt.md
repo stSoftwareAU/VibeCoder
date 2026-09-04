@@ -604,11 +604,11 @@ label, never a `lang:*` label:
 ### Verification before exit
 
 Re-read every issue this run filed before exiting, and confirm: at most 6
-`gh issue create` calls; every filed
-issue carries `supply-chain-readiness` and exactly one `severity:*` label,
-with no operational and no `lang:*` label; no suppressed or known-open id
-was filed; no file was written — tracked, untracked, or scratch; and
-every body carries the `<!-- finding-id: BP-… -->` marker on its own line
-at the top. Fix any deviation with `gh issue edit` before exiting.
+`gh issue create` calls; every filed issue carries `supply-chain-readiness`
+and exactly one `severity:*` label, with no operational and no `lang:*`
+label; no suppressed or known-open id was filed; no file was written —
+tracked, untracked, or scratch; and every body carries the
+`<!-- finding-id: BP-… -->` marker on its own line at the top. Fix any
+deviation with `gh issue edit` before exiting.
 
 </instructions>

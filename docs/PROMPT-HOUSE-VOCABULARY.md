@@ -32,9 +32,12 @@ flowchart LR
   removed the `vN.md` scheme, so a fix is an edit to that one file and git
   history is the record of how the template got there — a sweep never adds a new
   version file.
-- It governs **names and casing only**. Presence gaps — a scan with no persona
-  line, a scan with no `### Verification before exit` — and the marker shapes the
-  worker emits are separate work, not variants of anything recorded here.
+- It governs **names and casing only**. Whether a template must *have* a section
+  is decided elsewhere, and the marker shapes the worker emits are separate work
+  — neither is a variant of anything recorded here. Once a presence question is
+  settled the other way and the whole family carries the section, its heading
+  text becomes a name like any other and earns a row: Issue #841 is why
+  `### Verification before exit` has one.
 - Counts and file citations below are the **audit baseline** — verified on the
   latest template of each directory at commit `4051c6d`, before any sweep of
   #794 landed. They are evidence for the decision, not the rule; the rule is the
@@ -83,7 +86,7 @@ column names the section; the house form is the exact heading text.
 | Per-finding filing sub-heading | `### For each surviving finding (skip silently if its id is in the suppressed or known-open list)` | bare `### For each surviving finding`, `### Filing the finding` | Seven templates carry the parenthetical, four the bare form and one `### Filing the finding`. The parenthetical is the suppression contract: without it the heading does not say that a suppressed finding is dropped without comment |
 | Issue-body fix slot | `## Suggested fix` | `## Suggested action`, `## Suggested replacement` | Nine against three and two. Every scan files a fix suggestion into the same slot, and a reader scanning filed issues across scans should not have to know which scan wrote the body |
 | Issue-body rationale slot | `## Why this matters` | `## Why this is a candidate`, `## Why this is flagged`, `## Why it is safe to remove`, `## Why it is a bug` | Nine against one each, the fourth being `prompts/security_scan/` (Issue #837). The slot answers the reader's question — why should I care — not the scanner's, and "why it is a bug" names the verdict rather than the stake |
-| Closing self-check | `### Verification before exit` | the same heading at H2; the check present as an unheaded tail paragraph under `### Required label set` | Seven templates carried the heading exactly and eight carried the same closing check as an unheaded paragraph folded into the label section, where a reader looking for the exit check does not find it. H3 keeps it a peer of the other Phase 4 sub-sections. Issue #841 raised the eight rather than dropping the section, so the heading now names one thing in all fifteen |
+| Closing self-check | `### Verification before exit` | the same heading at H2; the check present as an unheaded tail paragraph closing the filing phase | Seven templates carried the heading exactly; the rest carried the same closing check as an unheaded paragraph at the end of the filing phase — under `### Required label set` in six of them and under the issue-body section in `prompts/retro/` — where a reader looking for the exit check does not find it. H3 keeps it a peer of the other Phase 4 sub-sections. Issue #841 raised the templates rather than dropping the section, so the heading now names one thing family-wide |
 | Phase 4 heading | keep the `(outcome-only)` suffix, e.g. `## Phase 4 — File one issue per finding (outcome-only)` | the unsuffixed form | The minority form wins this one row deliberately: the suffix is the verbosity contract for the phase, telling the run to emit outcomes rather than narrate the filing. Four templates carry it and ten dropped it; the fifteenth, `prompts/retro/`, has no filing phase at Phase 4 and is not counted either way. The unsuffixed majority is drift towards the less informative heading |
 
 `## Why this scan exists` is a **prompt-level** section — it tells the run what

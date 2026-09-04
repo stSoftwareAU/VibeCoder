@@ -361,9 +361,9 @@ expected result on a healthy repository, not a scan failure.
 ### Verification before exit
 
 Re-read the issue this run filed before exiting, and confirm: at most **one**
-`gh issue create` call; it carries
-`retro` and exactly one `severity:*` label and no operational label; every
-candidate cites artefact evidence and names a surface; no candidate is in the
-two out-of-scope categories; no suppressed or known-open id was filed; the
-sections are ordered most severe first; and the body ends with the attribution
-footer verbatim. Fix any deviation with `gh issue edit` before exiting.
+`gh issue create` call; it carries `retro` and exactly one `severity:*` label
+and no operational label; every candidate cites artefact evidence and names a
+surface; no candidate is in the two out-of-scope categories; no suppressed or
+known-open id was filed; the sections are ordered most severe first; and the
+body ends with the attribution footer verbatim. Fix any deviation with
+`gh issue edit` before exiting.
