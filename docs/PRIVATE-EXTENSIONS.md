@@ -87,9 +87,10 @@ the clone.
 
 Extra software is a **top-level `container_tools` array** in `.config.json` —
 top level, *not* inside `repo_config`. It is baked into the container image at
-**build time**, which is not a preference: at runtime the container root
-filesystem is read-only and the process runs as a non-root user, so nothing
-can be installed once the worker is running. Build time is the only door.
+**build time**, which is not a preference: the worker runs as a non-root
+user and — on every runtime that supports it — with a read-only root
+filesystem, so nothing can be installed once it is running. Build time is the
+only door.
 
 Each entry is a declarative archive install: download → verify SHA-256 →
 extract → put `bin` directories on `PATH` → set `env`. There are deliberately
@@ -245,9 +246,9 @@ Four constraints to design around:
    the command.
 2. **It re-runs on every setup.** Make it idempotent — regenerate the config
    file each time rather than appending.
-3. **It must write somewhere writable.** The image is read-only at runtime;
+3. **It must write somewhere writable.** Treat the image as read-only: the
    writable locations are the work volume, the named volumes and the scratch
-   mounts. Writing into `/opt/vibe-tools` will fail. See
+   mounts. Do not try to modify `/opt/vibe-tools` in place. See
    [Containment](CONTAINMENT.md).
 4. **It runs as a non-root user** and cannot install packages — the same
    boundary as Step 2, seen from the other side.
