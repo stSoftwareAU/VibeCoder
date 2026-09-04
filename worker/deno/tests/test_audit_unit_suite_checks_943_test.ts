@@ -45,13 +45,6 @@ const TESTS_DIR = new URL(".", import.meta.url).pathname;
 const ENV_MUTATION = ["Deno", "env", "set"].join(".");
 const CHDIR_MUTATION = ["Deno", "chdir"].join(".");
 
-/** Matches a file that mutates process-wide state. */
-const MUTATOR = new RegExp(
-  [ENV_MUTATION, CHDIR_MUTATION]
-    .map((token) => token.replaceAll(".", "\\."))
-    .join("|"),
-);
-
 /** Runs of whitespace flattened, so a re-wrap is not a failure. */
 function collapse(text: string): string {
   return text.replace(/\s+/g, " ");
@@ -310,21 +303,22 @@ Deno.test("test_audit - the definition is cited, not restated (Issue #943)", asy
 // --- Volume control: a suite-wide habit is one finding, not one per file ---
 
 Deno.test("test_audit - a suite-wide habit yields one finding, not one per file (Issue #943)", async () => {
-  // The real input is large: this repository's own unit suite carries dozens
-  // of files with the shape check 12 keys on. The bound is what stops a first
-  // run burying the repository under an issue for each of them.
-  const offenders: string[] = [];
-  for await (const entry of Deno.readDir(TESTS_DIR)) {
-    if (!entry.isFile || !entry.name.endsWith("_test.ts")) continue;
-    const source = await Deno.readTextFile(`${TESTS_DIR}${entry.name}`);
-    if (MUTATOR.test(source)) offenders.push(entry.name);
-  }
-  assert(
-    offenders.length >= 20,
-    `expected a large input to bound, found ${offenders.length} files — ` +
-      "if the debt is genuinely paid down, retire this case",
-  );
-
+  // This case used to gate on a scan of this repository's own suite, asserting
+  // at least twenty files carried the shape check 12 keys on — "the real input
+  // is large" — and its failure message said to retire the case if the debt
+  // was ever genuinely paid down. Issue #944 paid it down: the batches of
+  // #961, #965, #967 and #968 took the count from dozens to twelve, and the
+  // scan started failing on the very PRs that were doing the work.
+  //
+  // Retired rather than lowered, because the threshold was the wrong proxy
+  // from the start. This prompt is filed verbatim into other repositories
+  // (see the integration-exclusion case above, which forbids citing a
+  // VibeCoder-internal path), so whether the bound is needed has never
+  // depended on this repository's own count — a fresh repository with a
+  // hundred such files needs it most, and is exactly what the rules below
+  // assert the prompt says. Those assertions are the subject; the scan was
+  // only ever a canary, and a canary that dies when the work succeeds is
+  // measuring the wrong thing.
   const prompt = await testAuditPrompt();
   for (const number of [12, 13]) {
     const body = checkBody(prompt, number);

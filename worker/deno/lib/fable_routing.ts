@@ -33,6 +33,7 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
+import type { EnvLookup } from "./env_lookup.ts";
 import type { FableCacheRead } from "./health_check_cache.ts";
 import { modelFamily } from "./planning_run_stats.ts";
 
@@ -81,8 +82,13 @@ export function isFablePreferringPhase(phase: string | undefined): boolean {
 export interface FableRoutingProvider {
   /** Provider id, named in the log line when the reroute is skipped. */
   id: string;
-  /** The model this provider routes `phase` to, if any. */
-  resolveModel(phase?: string): string | undefined;
+  /**
+   * The model this provider routes `phase` to, if any.
+   *
+   * `env` is the lookup the provider's routing chain reads its variables
+   * through (Issue #957); omitted means the process environment.
+   */
+  resolveModel(phase?: string, env?: EnvLookup): string | undefined;
 }
 
 /**
@@ -94,13 +100,16 @@ export interface FableRoutingProvider {
  *
  * @param provider - The provider this invocation will run on.
  * @param phase - The phase name.
+ * @param env - Environment lookup the provider's routing reads through
+ *   (Issue #961); omitted means the process environment.
  * @returns true when the provider's routing for `phase` is a Fable-tier model.
  */
 export function providerRoutesToFableTier(
   provider: FableRoutingProvider,
   phase: string | undefined,
+  env?: EnvLookup,
 ): boolean {
-  return modelFamily(provider.resolveModel(phase) ?? "") === "fable";
+  return modelFamily(provider.resolveModel(phase, env) ?? "") === "fable";
 }
 
 /** Model the pre-flight reroute selects when Fable is unavailable. */
@@ -150,6 +159,8 @@ export interface FablePreflightRouting {
  * @param provider - The provider this invocation will run on. Required: the
  *   reroute names an Anthropic tier alias, so it cannot be decided without
  *   knowing which agent would receive it.
+ * @param env - Environment lookup the provider's routing reads through
+ *   (Issue #961); omitted means the process environment.
  * @returns The routing decision.
  */
 export function resolveFablePreflightRouting(
@@ -157,11 +168,12 @@ export function resolveFablePreflightRouting(
   fableVerdict: FableCacheRead,
   hasExplicitOverride: boolean,
   provider: FableRoutingProvider,
+  env?: EnvLookup,
 ): FablePreflightRouting {
   if (!isFablePreferringPhase(phase)) {
     return { degraded: false };
   }
-  if (!providerRoutesToFableTier(provider, phase)) {
+  if (!providerRoutesToFableTier(provider, phase, env)) {
     return { degraded: false };
   }
   if (hasExplicitOverride) {
@@ -194,6 +206,8 @@ export function resolveFablePreflightRouting(
  * @param fableVerdict - Cached Fable-availability verdict.
  * @param hasExplicitOverride - Whether an explicit operator override is present.
  * @param provider - The provider this invocation will run on (Issue #398).
+ * @param env - Environment lookup the provider's routing reads through
+ *   (Issue #961); omitted means the process environment.
  * @returns The (possibly rerouted) options and the routing verdict.
  */
 export function applyFablePreflightRouting<
@@ -203,12 +217,14 @@ export function applyFablePreflightRouting<
   fableVerdict: FableCacheRead,
   hasExplicitOverride: boolean,
   provider: FableRoutingProvider,
+  env?: EnvLookup,
 ): { options: T; routing: FablePreflightRouting } {
   const routing = resolveFablePreflightRouting(
     options.phase,
     fableVerdict,
     hasExplicitOverride,
     provider,
+    env,
   );
   if (routing.model) {
     return {
@@ -257,20 +273,23 @@ export function clearFableTierWarnings(): void {
  * @param phase - The phase name.
  * @param fableVerdict - Cached Fable-availability verdict.
  * @param logger - Run logger; defaults to `console.warn`.
+ * @param env - Environment lookup the provider's routing reads through
+ *   (Issue #961); omitted means the process environment.
  */
 export function warnProviderHasNoFableTier(
   provider: FableRoutingProvider,
   phase: string | undefined,
   fableVerdict: FableCacheRead,
   logger?: FableRoutingWarnLogger,
+  env?: EnvLookup,
 ): void {
   if (!isFablePreferringPhase(phase)) return;
   if (fableVerdict !== "unavailable") return;
-  if (providerRoutesToFableTier(provider, phase)) return;
+  if (providerRoutesToFableTier(provider, phase, env)) return;
   if (_noFableTierWarnedProviders.has(provider.id)) return;
   _noFableTierWarnedProviders.add(provider.id);
 
-  const routed = provider.resolveModel(phase);
+  const routed = provider.resolveModel(phase, env);
   const on = routed
     ? `model ${JSON.stringify(routed)}`
     : "its configured default model";

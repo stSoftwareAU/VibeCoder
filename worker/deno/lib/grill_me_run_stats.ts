@@ -29,6 +29,7 @@
  */
 
 import type { GitHubClient, Logger } from "../types.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 import type { DegradationVerdict } from "./planning_run_stats.ts";
 import type { PlanningInvocationStats } from "./planning_run_stats.ts";
 import {
@@ -83,6 +84,11 @@ export async function reportGrillMeDegradation(args: {
   logger: Logger;
   /** Optional label-cache directory (injected for testability). */
   cacheDir?: string;
+  /**
+   * Environment lookup the expected-model routing reads through
+   * (Issue #961); defaults to the process environment.
+   */
+  env?: EnvLookup;
 }): Promise<DegradationVerdict> {
   const { repo, issueNumber, claudeResult, ghClient, runGhCommand, logger } =
     args;
@@ -105,5 +111,6 @@ export async function reportGrillMeDegradation(args: {
     runGhCommand,
     logger,
     ...(args.cacheDir ? { cacheDir: args.cacheDir } : {}),
+    ...(args.env ? { env: args.env } : {}),
   });
 }
