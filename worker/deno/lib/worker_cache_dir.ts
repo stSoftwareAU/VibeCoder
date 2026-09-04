@@ -27,8 +27,34 @@ function env(name: string): string | undefined {
 }
 
 /**
- * The worker cache directory: `${WORK_DIR}/.vibe-cache`, or `undefined`
- * when `WORK_DIR` is unset (Issue #131).
+ * The two directories every cache path in this module is derived from
+ * (Issue #966).
+ *
+ * Both are paths, so they are taken as plain directory parameters rather
+ * than as an environment lookup: the caller says where the caches live and
+ * the variable name disappears from the call site. `undefined`/empty
+ * `workDir` means "there is no cache directory", which is exactly what an
+ * unset `WORK_DIR` has always meant (Issue #131).
+ */
+export interface CacheRoots {
+  /** Durable work volume root — the `WORK_DIR` the run driver exports. */
+  workDir?: string;
+  /** Home directory backing the legacy read-only fallback. */
+  home?: string;
+}
+
+/**
+ * The roots as the process environment reports them — the production
+ * default for every function below, so passing nothing behaves exactly as
+ * reading `Deno.env.get` here did.
+ */
+export function processCacheRoots(): CacheRoots {
+  return { workDir: env("WORK_DIR"), home: env("HOME") };
+}
+
+/**
+ * The worker cache directory: `${workDir}/.vibe-cache`, or `undefined`
+ * when there is no work directory (Issue #131).
  *
  * `WORK_DIR` is only exported by the run driver (`run_worker.ts`,
  * Issue #4370), so any other entry point — setup, launcher, housekeeping,
@@ -37,17 +63,22 @@ function env(name: string): string | undefined {
  * HOME-derived default silently created a stray `~/auto-issue-work` on the
  * host (Issue #118).
  */
-export function workerCacheDir(): string | undefined {
-  const workDir = env("WORK_DIR");
+export function workerCacheDir(
+  roots: CacheRoots = processCacheRoots(),
+): string | undefined {
+  const workDir = roots.workDir;
   return workDir ? `${workDir}/.vibe-cache` : undefined;
 }
 
 /**
  * Path of a named cache file in the worker cache directory, or `undefined`
- * when there is no cache directory (`WORK_DIR` unset — Issue #131).
+ * when there is no cache directory (no work directory — Issue #131).
  */
-export function workerCachePath(fileName: string): string | undefined {
-  const dir = workerCacheDir();
+export function workerCachePath(
+  fileName: string,
+  roots: CacheRoots = processCacheRoots(),
+): string | undefined {
+  const dir = workerCacheDir(roots);
   return dir ? `${dir}/${fileName}` : undefined;
 }
 
@@ -55,8 +86,11 @@ export function workerCachePath(fileName: string): string | undefined {
  * The pre-#4318 location of a cache file, `$HOME/.vibe-coder/<file>` —
  * consulted read-only when the new file does not exist yet.
  */
-export function legacyHomeCachePath(fileName: string): string {
-  return `${env("HOME") ?? "."}/.vibe-coder/${fileName}`;
+export function legacyHomeCachePath(
+  fileName: string,
+  roots: CacheRoots = processCacheRoots(),
+): string {
+  return `${roots.home || "."}/.vibe-coder/${fileName}`;
 }
 
 /**
@@ -65,9 +99,13 @@ export function legacyHomeCachePath(fileName: string): string {
  */
 export async function readCacheWithLegacyFallback(
   fileName: string,
+  roots: CacheRoots = processCacheRoots(),
 ): Promise<string | null> {
   for (
-    const path of [workerCachePath(fileName), legacyHomeCachePath(fileName)]
+    const path of [
+      workerCachePath(fileName, roots),
+      legacyHomeCachePath(fileName, roots),
+    ]
   ) {
     if (path === undefined) continue; // no cache dir when WORK_DIR is unset
     try {

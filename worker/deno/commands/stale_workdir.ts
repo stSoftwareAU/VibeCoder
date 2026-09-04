@@ -13,6 +13,7 @@ import {
   scanAndCleanupStaleWorkDirs,
   type StaleWorkDirResult,
 } from "../lib/stale_workdir.ts";
+import { resolveCommandWorkDir } from "../lib/command_work_dir.ts";
 
 /**
  * Args:
@@ -21,7 +22,7 @@ import {
  *   --max-age-days <num>  Age threshold in days (default: 7, or
  *                         config.staleWorkDirDays when set).
  */
-export const staleWorkDirCommand: Command = {
+export const staleWorkDirCommand = {
   name: "stale-workdir",
   description:
     "Detect and remove stale or partial repository work directories (Issue #1493)",
@@ -29,11 +30,9 @@ export const staleWorkDirCommand: Command = {
   async execute(
     args: Record<string, unknown>,
     config: WorkerConfig,
+    envWorkDir: string | undefined = Deno.env.get("WORK_DIR"),
   ): Promise<CommandResult<StaleWorkDirResult>> {
-    const workDir =
-      typeof args["work-dir"] === "string" && args["work-dir"].length > 0
-        ? args["work-dir"]
-        : (config.workDir || Deno.env.get("WORK_DIR") || "");
+    const workDir = resolveCommandWorkDir(args, config.workDir, envWorkDir);
 
     if (!workDir) {
       return {
@@ -77,4 +76,7 @@ export const staleWorkDirCommand: Command = {
       data: result,
     };
   },
-};
+  // `satisfies`, not an annotation: the registry only ever calls
+  // `execute(args, config)`, but the third parameter has to stay visible on
+  // this constant so a test can hand it an empty `WORK_DIR` (Issue #966).
+} satisfies Command;

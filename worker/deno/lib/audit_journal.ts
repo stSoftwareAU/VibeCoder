@@ -56,6 +56,7 @@ import {
   writeAnchor,
 } from "./audit_anchor.ts";
 import { withFileLock } from "./file_lock.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /**
  * Raised when the journal on disk disagrees with its chain anchor —
@@ -266,12 +267,25 @@ function sanitiseWorkerId(id: string): string {
   return cleaned.length > 0 ? cleaned : "worker";
 }
 
-/** Resolve the default audit base directory from the environment. */
-export function resolveBaseDir(override?: string): string {
+/**
+ * Resolve the default audit base directory.
+ *
+ * `override` is the directory parameter callers reach for first; `env` is
+ * the seam for the two variables consulted when no directory was passed
+ * (Issue #966). Both defaults are the process environment, so production
+ * behaviour is exactly what it was when this read `Deno.env.get` itself.
+ *
+ * @param override - Explicit base directory; wins over everything.
+ * @param env - Environment lookup, injectable for testing.
+ */
+export function resolveBaseDir(
+  override?: string,
+  env: EnvLookup = processEnvLookup,
+): string {
   if (override) return override;
-  const workDir = Deno.env.get("WORK_DIR");
+  const workDir = env("WORK_DIR");
   if (workDir) return `${workDir}/audit`;
-  const tmp = Deno.env.get("TMPDIR") ?? "/tmp";
+  const tmp = env("TMPDIR") ?? "/tmp";
   return `${tmp}/vibe-audit`;
 }
 
