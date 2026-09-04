@@ -18,7 +18,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
 import {
   CONTAINER_IMAGE_INPUTS,
@@ -30,7 +35,8 @@ import { readContainerToolsSelection } from "../lib/container_tools_config.ts";
 import { resolveTabletopImage } from "../lib/tabletop_container_runner.ts";
 import { checkContainerPrerequisites } from "../setup/prerequisites.ts";
 import type { PrerequisiteOptions } from "../setup/prerequisites.ts";
-import { withoutProviderEnv } from "./fixtures/provider_env.ts";
+import type { EnvLookup } from "../lib/env_lookup.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname.replace(
   /\/$/,
@@ -94,6 +100,7 @@ async function launcherImage(root: string): Promise<string> {
   const { buildValue } = await readConfiguredAgentProviderSet(
     `${root}/.config.json`,
     manifest.installedProviders,
+    HOST_ENV,
   );
   return await resolveContainerImageReference(root, {
     containerTools: tools,
@@ -101,26 +108,28 @@ async function launcherImage(root: string): Promise<string> {
   });
 }
 
-/** Run `fn` with the host's own config-path variables cleared. */
-async function withoutConfigEnv<T>(fn: () => Promise<T>): Promise<T> {
-  const saved = ["CONFIG_FILE", "CONFIG_PATH"].map(
-    (name) => [name, Deno.env.get(name)] as const,
-  );
-  for (const [name] of saved) Deno.env.delete(name);
-  try {
-    return await fn();
-  } finally {
-    for (const [name, value] of saved) {
-      if (value !== undefined) Deno.env.set(name, value);
-    }
-  }
-}
+/**
+ * The environment every caller below is driven with (Issue #962).
+ *
+ * Deliberately empty. Two families of variable would otherwise decide the
+ * answer instead of the fixture: `CONFIG_FILE` / `CONFIG_PATH`, which name a
+ * different configuration file, and `VIBE_AGENT_PROVIDER` /
+ * `VIBE_IMAGE_AGENT_PROVIDERS`, which override or constrain the provider set
+ * the suite itself runs under. Every one of them reads as absent here, so a
+ * caller that fell back to `Deno.env.get` would be answered by the host
+ * rather than by this map — and the tags below would stop agreeing.
+ */
+const HOST_ENV = emptyEnv;
 
 /** Setup's container check against a host whose image is already built. */
-function prerequisiteOptions(root: string): PrerequisiteOptions {
+function prerequisiteOptions(
+  root: string,
+  env: EnvLookup = HOST_ENV,
+): PrerequisiteOptions {
   return {
     os: "linux",
     repoRoot: root,
+    env,
     containerProbe: (candidate) =>
       Promise.resolve(
         candidate.kind === "docker"
@@ -133,8 +142,13 @@ function prerequisiteOptions(root: string): PrerequisiteOptions {
 }
 
 /** The image reference setup's worker-image result names. */
-async function setupImage(root: string): Promise<string> {
-  const results = await checkContainerPrerequisites(prerequisiteOptions(root));
+async function setupImage(
+  root: string,
+  env: EnvLookup = HOST_ENV,
+): Promise<string> {
+  const results = await checkContainerPrerequisites(
+    prerequisiteOptions(root, env),
+  );
   const image = results.find((result) => result.tool === "worker image");
   assert(image, "the container check must report a worker image result");
   const match = image.message.match(/vibe-coder:[0-9a-f]+/);
@@ -157,72 +171,63 @@ const CONFIGURATIONS: Array<{ name: string; config: Record<string, unknown> }> =
   ];
 
 Deno.test("every caller names the image the launcher builds (Issues #743, #749)", async () => {
-  await withoutProviderEnv(async () => {
-    await withoutConfigEnv(async () => {
-      for (const { name, config } of CONFIGURATIONS) {
-        const root = await checkout(config);
-        try {
-          const expected = await launcherImage(root);
-          assertEquals(await setupImage(root), expected, `setup: ${name}`);
-          assertEquals(
-            await resolveTabletopImage({ repoRoot: root }),
-            expected,
-            `tabletop: ${name}`,
-          );
-        } finally {
-          await Deno.remove(root, { recursive: true });
-        }
-      }
-    });
-  });
+  for (const { name, config } of CONFIGURATIONS) {
+    const root = await checkout(config);
+    try {
+      const expected = await launcherImage(root);
+      assertEquals(await setupImage(root), expected, `setup: ${name}`);
+      assertEquals(
+        await resolveTabletopImage({ repoRoot: root, env: HOST_ENV }),
+        expected,
+        `tabletop: ${name}`,
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
 });
 
 Deno.test("the tag changes with the selection, for every caller (Issue #749)", async () => {
-  await withoutProviderEnv(async () => {
-    await withoutConfigEnv(async () => {
-      const setup: string[] = [];
-      const tabletop: string[] = [];
-      for (const { config } of CONFIGURATIONS) {
-        const root = await checkout(config);
-        try {
-          setup.push(await setupImage(root));
-          tabletop.push(await resolveTabletopImage({ repoRoot: root }));
-        } finally {
-          await Deno.remove(root, { recursive: true });
-        }
-      }
-      // Three distinct configurations, three distinct tags — agreement on one
-      // tag for all three would be the defect wearing a passing test.
-      assertEquals(new Set(setup).size, CONFIGURATIONS.length, setup.join(" "));
-      assertEquals(
-        new Set(tabletop).size,
-        CONFIGURATIONS.length,
-        tabletop.join(" "),
+  const setup: string[] = [];
+  const tabletop: string[] = [];
+  for (const { config } of CONFIGURATIONS) {
+    const root = await checkout(config);
+    try {
+      setup.push(await setupImage(root));
+      tabletop.push(
+        await resolveTabletopImage({ repoRoot: root, env: HOST_ENV }),
       );
-    });
-  });
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+  // Three distinct configurations, three distinct tags — agreement on one
+  // tag for all three would be the defect wearing a passing test.
+  assertEquals(new Set(setup).size, CONFIGURATIONS.length, setup.join(" "));
+  assertEquals(
+    new Set(tabletop).size,
+    CONFIGURATIONS.length,
+    tabletop.join(" "),
+  );
 });
 
 Deno.test("a checkout with no configuration selects nothing (Issues #743, #749)", async () => {
-  await withoutProviderEnv(async () => {
-    await withoutConfigEnv(async () => {
-      const root = await checkout(null);
-      try {
-        const selection = await readDeploymentImageSelection({
-          repoRoot: root,
-        });
-        assertEquals(selection.tools, []);
-        assertEquals(selection.agentProviders, undefined);
-        assertEquals(
-          await setupImage(root),
-          await resolveContainerImageReference(root, {}),
-          "an unconfigured checkout keeps the reference it had before",
-        );
-      } finally {
-        await Deno.remove(root, { recursive: true });
-      }
+  const root = await checkout(null);
+  try {
+    const selection = await readDeploymentImageSelection({
+      repoRoot: root,
+      env: HOST_ENV,
     });
-  });
+    assertEquals(selection.tools, []);
+    assertEquals(selection.agentProviders, undefined);
+    assertEquals(
+      await setupImage(root),
+      await resolveContainerImageReference(root, {}),
+      "an unconfigured checkout keeps the reference it had before",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
 
 Deno.test("an explicit tabletop --image still wins (Issue #743)", async () => {
@@ -235,6 +240,7 @@ Deno.test("an explicit tabletop --image still wins (Issue #743)", async () => {
       await resolveTabletopImage({
         repoRoot: root,
         image: " vibe-coder:cafe ",
+        env: HOST_ENV,
       }),
       "vibe-coder:cafe",
     );
@@ -243,21 +249,77 @@ Deno.test("an explicit tabletop --image still wins (Issue #743)", async () => {
   }
 });
 
-Deno.test("a malformed selection fails loud rather than naming another tag (Issue #743)", async () => {
-  await withoutProviderEnv(async () => {
-    await withoutConfigEnv(async () => {
-      const root = await checkout({ container_tools: [{ id: "no-version" }] });
-      try {
-        const results = await checkContainerPrerequisites(
-          prerequisiteOptions(root),
-        );
-        const image = results.find((result) => result.tool === "worker image");
-        assert(image, "the container check must report a worker image result");
-        assertEquals(image.ok, false);
-        assertStringIncludes(image.message, "not buildable");
-      } finally {
-        await Deno.remove(root, { recursive: true });
-      }
+Deno.test("the deployment's selections are read through the injected environment (Issue #962)", async () => {
+  // Every case above states an *empty* environment, which is what the host
+  // running the suite most likely holds anyway — so on its own it would not
+  // tell an injected lookup apart from a fallback to `Deno.env.get`. These
+  // two do: each states a value the real environment does not carry, and
+  // asserts the tag moved because of it.
+  const root = await checkout({});
+  try {
+    const plain = await setupImage(root);
+
+    // 1. The provider set. `VIBE_AGENT_PROVIDERS` overrides the file, so the
+    //    image the deployment names has to change with it.
+    const codexEnv = envFrom({
+      VIBE_AGENT_PROVIDER: "codex",
+      VIBE_AGENT_PROVIDERS: "codex",
     });
-  });
+    const codex = await resolveContainerImageReference(
+      root,
+      (await readDeploymentImageSelection({ repoRoot: root, env: codexEnv }))
+        .options,
+    );
+    assertNotEquals(
+      codex,
+      plain,
+      "a provider set stated through the lookup must move the tag",
+    );
+
+    // 2. The configuration path. `CONFIG_FILE` names a different file, and
+    //    this one selects a tool — so the tag moves again, and differently.
+    const elsewhere = `${root}/elsewhere.json`;
+    await Deno.writeTextFile(
+      elsewhere,
+      JSON.stringify({ container_tools: TOOLS_SELECTION }),
+    );
+    const toolsEnv = envFrom({ CONFIG_FILE: elsewhere });
+    const tools = await resolveContainerImageReference(
+      root,
+      (await readDeploymentImageSelection({ repoRoot: root, env: toolsEnv }))
+        .options,
+    );
+    assertNotEquals(
+      tools,
+      plain,
+      "a configuration path stated through the lookup must be the one read",
+    );
+    assertNotEquals(tools, codex);
+
+    // And setup names the same image the launcher does for each, which is the
+    // whole point of the one reader: the seam did not split them apart.
+    assertEquals(
+      await setupImage(root, codexEnv),
+      codex,
+      "setup follows the same lookup the launcher does",
+    );
+    assertEquals(await setupImage(root, toolsEnv), tools);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("a malformed selection fails loud rather than naming another tag (Issue #743)", async () => {
+  const root = await checkout({ container_tools: [{ id: "no-version" }] });
+  try {
+    const results = await checkContainerPrerequisites(
+      prerequisiteOptions(root),
+    );
+    const image = results.find((result) => result.tool === "worker image");
+    assert(image, "the container check must report a worker image result");
+    assertEquals(image.ok, false);
+    assertStringIncludes(image.message, "not buildable");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });

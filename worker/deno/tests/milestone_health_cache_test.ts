@@ -24,24 +24,25 @@ import {
 } from "../lib/shell_helpers.ts";
 import { setCachedDefaultBranch } from "../lib/default_branch_cache.ts";
 
-const CACHE_ENV = "VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH";
-
+/**
+ * Run `fn` against a throwaway persistent default-branch cache.
+ *
+ * Issue #964: the path is passed to the code under test —
+ * `MilestoneHealthDeps.defaultBranchCachePath`, or the third argument of
+ * `getRepoDefaultBranch` — rather than exported into the process
+ * environment. Writing the process environment races every other worker
+ * under `deno test --parallel`, which is what kept this suite in the gate's
+ * serial second pass.
+ */
 async function withIsolatedDefaultBranchCache<T>(
   fn: (path: string) => Promise<T>,
 ): Promise<T> {
   const dir = await Deno.makeTempDir({ prefix: "milestone-health-1805-" });
   const path = `${dir}/cache.json`;
-  const previous = Deno.env.get(CACHE_ENV);
-  Deno.env.set(CACHE_ENV, path);
   clearDefaultBranchMemoryCache();
   try {
     return await fn(path);
   } finally {
-    if (previous === undefined) {
-      Deno.env.delete(CACHE_ENV);
-    } else {
-      Deno.env.set(CACHE_ENV, previous);
-    }
     clearDefaultBranchMemoryCache();
     await Deno.remove(dir, { recursive: true });
   }
@@ -87,10 +88,10 @@ function buildGraphQLBranchResponse(
 Deno.test(
   "milestone_health (Issue #1805) — default branch served from persistent cache without a second gh call",
   async () => {
-    await withIsolatedDefaultBranchCache(async () => {
+    await withIsolatedDefaultBranchCache(async (cachePath) => {
       // Pre-seed the persistent cache so the helper resolves without
       // ever calling the gh CLI for the default branch.
-      await setCachedDefaultBranch("owner/repo", "main");
+      await setCachedDefaultBranch("owner/repo", "main", cachePath);
 
       let defaultBranchCalls = 0;
       const ghFn = (args: string[]): Promise<string> => {
@@ -108,6 +109,7 @@ Deno.test(
       };
 
       const result = await getMilestoneHealth({
+        defaultBranchCachePath: cachePath,
         repos: ["owner/repo"],
         ghCommandFn: ghFn,
       });
@@ -125,8 +127,8 @@ Deno.test(
 Deno.test(
   "milestone_health (Issue #1805) — getRepoDefaultBranch returns persistent cache value before invoking ghCommandFn",
   async () => {
-    await withIsolatedDefaultBranchCache(async () => {
-      await setCachedDefaultBranch("owner/cached-repo", "trunk");
+    await withIsolatedDefaultBranchCache(async (cachePath) => {
+      await setCachedDefaultBranch("owner/cached-repo", "trunk", cachePath);
 
       let calls = 0;
       const ghFn = (_args: string[]): Promise<string> => {
@@ -134,7 +136,11 @@ Deno.test(
         return Promise.resolve("should-not-be-used");
       };
 
-      const result = await getRepoDefaultBranch("owner/cached-repo", ghFn);
+      const result = await getRepoDefaultBranch(
+        "owner/cached-repo",
+        ghFn,
+        cachePath,
+      );
       assertEquals(result.ok, true);
       if (result.ok) {
         assertEquals(result.value, "trunk");
@@ -151,8 +157,8 @@ Deno.test(
 Deno.test(
   "milestone_health (Issue #1805) — second milestone scan in the same iteration hits the issues_all cache",
   async () => {
-    await withIsolatedDefaultBranchCache(async () => {
-      await setCachedDefaultBranch("owner/repo", "main");
+    await withIsolatedDefaultBranchCache(async (cachePath) => {
+      await setCachedDefaultBranch("owner/repo", "main", cachePath);
 
       const milestones = [
         { title: "v1.0", number: 1 },
@@ -195,6 +201,7 @@ Deno.test(
         // Two calls to getMilestoneHealth using the same cache. The
         // second scan must serve the open-issues read from cache.
         const r1 = await getMilestoneHealth({
+          defaultBranchCachePath: cachePath,
           repos: ["owner/repo"],
           ghCommandFn: ghFn,
           cache,
@@ -203,6 +210,7 @@ Deno.test(
         assertEquals(openIssueListCalls, 1);
 
         const r2 = await getMilestoneHealth({
+          defaultBranchCachePath: cachePath,
           repos: ["owner/repo"],
           ghCommandFn: ghFn,
           cache,
@@ -222,8 +230,8 @@ Deno.test(
 Deno.test(
   "milestone_health (Issue #1805) — second milestone in the same scan reuses issues_all without a fresh gh call",
   async () => {
-    await withIsolatedDefaultBranchCache(async () => {
-      await setCachedDefaultBranch("owner/repo", "main");
+    await withIsolatedDefaultBranchCache(async (cachePath) => {
+      await setCachedDefaultBranch("owner/repo", "main", cachePath);
 
       const milestones = [
         { title: "v1.0", number: 1 },
@@ -254,6 +262,7 @@ Deno.test(
       const { cache, dir } = makeIssueCache();
       try {
         const result = await getMilestoneHealth({
+          defaultBranchCachePath: cachePath,
           repos: ["owner/repo"],
           ghCommandFn: ghFn,
           cache,
@@ -282,8 +291,8 @@ Deno.test(
 Deno.test(
   "milestone_health (Issue #1805) — branch info fetched via a single GraphQL call when available",
   async () => {
-    await withIsolatedDefaultBranchCache(async () => {
-      await setCachedDefaultBranch("owner/repo", "main");
+    await withIsolatedDefaultBranchCache(async (cachePath) => {
+      await setCachedDefaultBranch("owner/repo", "main", cachePath);
 
       const milestones = [{ title: "v1.0", number: 1 }];
       let graphqlCalls = 0;
@@ -315,6 +324,7 @@ Deno.test(
       };
 
       const result = await getMilestoneHealth({
+        defaultBranchCachePath: cachePath,
         repos: ["owner/repo"],
         ghCommandFn: ghFn,
       });
@@ -335,8 +345,8 @@ Deno.test(
 Deno.test(
   "milestone_health (Issue #1805) — falls back to REST pair when GraphQL fails",
   async () => {
-    await withIsolatedDefaultBranchCache(async () => {
-      await setCachedDefaultBranch("owner/repo", "main");
+    await withIsolatedDefaultBranchCache(async (cachePath) => {
+      await setCachedDefaultBranch("owner/repo", "main", cachePath);
 
       const milestones = [{ title: "v1.0", number: 1 }];
       let graphqlCalls = 0;
@@ -372,6 +382,7 @@ Deno.test(
       };
 
       const result = await getMilestoneHealth({
+        defaultBranchCachePath: cachePath,
         repos: ["owner/repo"],
         ghCommandFn: ghFn,
       });
@@ -391,8 +402,8 @@ Deno.test(
 Deno.test(
   "milestone_health (Issue #1805) — GraphQL ref:null reports branch missing without a REST fallback",
   async () => {
-    await withIsolatedDefaultBranchCache(async () => {
-      await setCachedDefaultBranch("owner/repo", "main");
+    await withIsolatedDefaultBranchCache(async (cachePath) => {
+      await setCachedDefaultBranch("owner/repo", "main", cachePath);
 
       const milestones = [{ title: "v1.0", number: 1 }];
       let restBranchCalls = 0;
@@ -415,6 +426,7 @@ Deno.test(
       };
 
       const result = await getMilestoneHealth({
+        defaultBranchCachePath: cachePath,
         repos: ["owner/repo"],
         ghCommandFn: ghFn,
       });

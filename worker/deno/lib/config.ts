@@ -486,6 +486,11 @@ export async function loadConfig(
   // this one: the file in hand decides the set on its own.
   setConfiguredEnabledAgentProviderIds(undefined);
   const enabledAgentProviderIds = resolveEnabledAgentProviderIds({
+    // The same lookup the rest of the load reads through (Issue #962): the
+    // VIBE_AGENT_PROVIDER(S) overrides and the running image's stamp decide
+    // which agent this run dispatches to, so they must not come from a
+    // different environment to everything else on this path.
+    env,
     configured: file.agent_provider,
     configuredProviders: file.agent_providers,
   });

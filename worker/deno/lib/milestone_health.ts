@@ -40,6 +40,13 @@ export interface MilestoneHealthDeps {
    * concurrent milestones within an iteration.
    */
   cache?: IssueCache;
+  /**
+   * Where the persistent default-branch cache lives (Issue #964). Defaults
+   * to the module's own resolution, so production callers pass nothing; a
+   * test names a throwaway path instead of pointing the whole process at
+   * one with `Deno.env.set`.
+   */
+  defaultBranchCachePath?: string;
 }
 
 /** Status of a single issue within a milestone. */
@@ -397,11 +404,16 @@ async function getRepoMilestoneHealth(
   repo: string,
   ghCommandFn: GhCommandFn,
   cache?: IssueCache,
+  defaultBranchCachePath?: string,
 ): Promise<RepoMilestoneHealth> {
   // Get default branch via the persistent (7-day) cache (Issue #1805).
   // The shared `getRepoDefaultBranch` helper checks an in-process memory
   // cache, then a 7-day on-disk cache, before reaching for `gh api`.
-  const defaultBranchResult = await getRepoDefaultBranch(repo, ghCommandFn);
+  const defaultBranchResult = await getRepoDefaultBranch(
+    repo,
+    ghCommandFn,
+    defaultBranchCachePath,
+  );
   if (!defaultBranchResult.ok) {
     throw defaultBranchResult.error;
   }
@@ -526,6 +538,7 @@ export async function getMilestoneHealth(
         repo,
         ghCommandFn,
         deps.cache,
+        deps.defaultBranchCachePath,
       );
       repoReports.push(repoHealth);
     } catch {

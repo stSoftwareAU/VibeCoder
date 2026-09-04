@@ -45,6 +45,12 @@ export interface WorkerCacheDirOptions {
   workDir?: string;
   /** Environment lookup; defaults to the real process environment. */
   env?: EnvLookup;
+  /**
+   * Home directory backing the legacy read-only fallback (Issue #966).
+   * Wins over any `HOME` in the environment, so a test can name the
+   * directory instead of exporting one into the process.
+   */
+  home?: string;
 }
 
 /**
@@ -69,8 +75,11 @@ export function workerCacheDir(
  * Path of a named cache file in the worker cache directory, or `undefined`
  * when there is no cache directory (`WORK_DIR` unset — Issue #131).
  */
-export function workerCachePath(fileName: string): string | undefined {
-  const dir = workerCacheDir();
+export function workerCachePath(
+  fileName: string,
+  options: WorkerCacheDirOptions = {},
+): string | undefined {
+  const dir = workerCacheDir(options);
   return dir ? `${dir}/${fileName}` : undefined;
 }
 
@@ -78,8 +87,12 @@ export function workerCachePath(fileName: string): string | undefined {
  * The pre-#4318 location of a cache file, `$HOME/.vibe-coder/<file>` —
  * consulted read-only when the new file does not exist yet.
  */
-export function legacyHomeCachePath(fileName: string): string {
-  return `${env("HOME") ?? "."}/.vibe-coder/${fileName}`;
+export function legacyHomeCachePath(
+  fileName: string,
+  options: WorkerCacheDirOptions = {},
+): string {
+  const home = options.home ?? env("HOME", options.env);
+  return `${home ?? "."}/.vibe-coder/${fileName}`;
 }
 
 /**

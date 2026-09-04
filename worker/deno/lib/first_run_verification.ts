@@ -22,6 +22,7 @@
  * Australian English spelling used throughout (behaviour, colour).
  */
 
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
 /** Environment variables whose mere presence means the host is not fresh. */
@@ -67,6 +68,31 @@ export const WORKAROUND_ENV_VARS: ReadonlyArray<
     reason: "the launcher's checkout update must run unaided (Issue #735)",
   },
 ];
+
+/**
+ * The workaround-shaped variables this host actually carries (Issue #962).
+ *
+ * The one place the preflight reads an environment, so the read has a seam:
+ * `first_run_verify.ts` used to call `Deno.env.get` per name inline, which
+ * left the command testable only by setting the variables on the process —
+ * and a process the preflight itself judges, so the test had to clear them
+ * again afterwards or turn every later prerequisite check into a skip
+ * (Issue #880, plan in #944).
+ *
+ * @param env - The host environment. Defaults to the process environment, so
+ *   a real verification run reads exactly what it read before.
+ * @returns Name to value, holding only the variables that are set.
+ */
+export function readWorkaroundEnv(
+  env: EnvLookup = processEnvLookup,
+): Record<string, string> {
+  const present: Record<string, string> = {};
+  for (const { name } of WORKAROUND_ENV_VARS) {
+    const value = env(name);
+    if (value !== undefined) present[name] = value;
+  }
+  return present;
+}
 
 /** Short-name settings a fresh host must not need (Issue #728). */
 const SHORT_NAME_SETTINGS = ["[aliases]", "unqualified-search-registries"];

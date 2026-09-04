@@ -16,6 +16,7 @@
 
 import { validateDefaultBranchCacheJson } from "./validation.ts";
 import { legacyHomeCachePath, workerCachePath } from "./worker_cache_dir.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /** 7-day time-to-live. Branch renames are rare, a week is conservative. */
 export const DEFAULT_BRANCH_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -26,18 +27,29 @@ export interface DefaultBranchCacheEntry {
   fetchedAt: number;
 }
 
+/** Environment variable overriding where the cache file lives. */
+export const DEFAULT_BRANCH_CACHE_PATH_ENV =
+  "VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH";
+
 /**
  * Resolve the default path for the persistent cache file.
  *
- * Honours `VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH` for overrides (used by
- * tests); otherwise uses `${WORK_DIR}/.vibe-cache/default-branch-cache.json`.
+ * Honours {@link DEFAULT_BRANCH_CACHE_PATH_ENV} for overrides; otherwise uses
+ * `${WORK_DIR}/.vibe-cache/default-branch-cache.json`.
  * Returns `undefined` when `WORK_DIR` is unset — there is no cache directory
  * then (Issue #131), and every function in this module is a full no-op that
  * never touches the filesystem (Issue #132): host-side runs (setup, launcher,
  * housekeeping) cache nothing and re-query the GitHub API each time.
+ *
+ * @param env - Environment lookup (Issue #964). Defaults to the process
+ *   environment, so production callers pass nothing and behave exactly as
+ *   they did when this read `Deno.env.get` itself. A test hands in a fixed
+ *   map rather than mutating the environment every parallel worker shares.
  */
-export function defaultBranchCachePath(): string | undefined {
-  const override = Deno.env.get("VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH");
+export function defaultBranchCachePath(
+  env: EnvLookup = processEnvLookup,
+): string | undefined {
+  const override = env(DEFAULT_BRANCH_CACHE_PATH_ENV);
   if (override) return override;
   // On the durable work volume (Issue #4318): $HOME/.vibe-coder is
   // root-owned in container mode, so the cache never persisted there.

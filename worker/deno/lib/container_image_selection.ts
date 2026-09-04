@@ -32,6 +32,7 @@ import type { ContainerImageHashOptions } from "./container_image_hash.ts";
 import { parseContainerManifest } from "./container_manifest.ts";
 import { readContainerToolsSelection } from "./container_tools_config.ts";
 import type { ContainerToolSpec } from "../types.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import { resolveHostConfigPath } from "./host_config_path.ts";
 
 /** What one deployment selects, and the image options it implies. */
@@ -61,8 +62,15 @@ export interface DeploymentImageSelectionOptions {
    * the file the launcher reads.
    */
   configFile?: string;
-  /** Environment reader (injectable for tests). */
-  env?: (name: string) => string | undefined;
+  /**
+   * Environment reader (injectable for tests).
+   *
+   * Reaches the provider resolution as well as the config-path rule
+   * (Issue #962): `VIBE_AGENT_PROVIDER` and the image stamp both steer which
+   * providers a deployment is judged to have selected, so a caller that
+   * states one must state the other from the same lookup.
+   */
+  env?: EnvLookup;
 }
 
 /** Strip trailing separators so a root joins cleanly. */
@@ -99,9 +107,10 @@ export async function readDeploymentImageSelection(
   options: DeploymentImageSelectionOptions,
 ): Promise<DeploymentImageSelection> {
   const repoRoot = trimRoot(options.repoRoot);
+  const env = options.env ?? processEnvLookup;
   const configFile = options.configFile ?? resolveHostConfigPath({
     baseDir: repoRoot,
-    env: options.env ?? ((name) => Deno.env.get(name)),
+    env,
   });
 
   const { tools } = await readContainerToolsSelection(configFile);
@@ -118,6 +127,7 @@ export async function readDeploymentImageSelection(
     agentProviders = (await readConfiguredAgentProviderSet(
       configFile,
       manifest.installedProviders,
+      env,
     )).buildValue;
   }
 

@@ -53,6 +53,7 @@ import {
 } from "../lib/checkout_update.ts";
 import { DEFAULT_UPDATE_MODE, UPDATE_MODES } from "../lib/config_defaults.ts";
 import { pinValueErrors } from "../lib/config_validator.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 
 // The name lives beside the update it turns off, so the variable this command
 // reads and the one an overwrite advertises cannot drift (Issue #735).
@@ -184,10 +185,10 @@ function optionalString(value: unknown): string | undefined {
 }
 
 /** Is the update turned off for this checkout? */
-function updateSkipped(): boolean {
+function updateSkipped(env: EnvLookup): boolean {
   let raw: string | undefined;
   try {
-    raw = Deno.env.get(SKIP_CHECKOUT_UPDATE_ENV);
+    raw = env(SKIP_CHECKOUT_UPDATE_ENV);
   } catch {
     return false; // No env permission — the update is not turned off.
   }
@@ -196,8 +197,8 @@ function updateSkipped(): boolean {
 }
 
 /** Where git output is logged when the caller names no directory. */
-function defaultLogDir(): string {
-  const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
+function defaultLogDir(env: EnvLookup): string {
+  const home = env("HOME") ?? env("USERPROFILE");
   return home ? `${home}/logs` : "logs";
 }
 
@@ -221,10 +222,16 @@ export const workerCheckoutUpdateCommand: Command = {
  * directly against a temporary repository.
  *
  * @param args - `base-dir` (required), optional `default-branch`, `log-dir`
+ * @param env - Environment lookup (Issue #964). Defaults to the process
+ *   environment, so the launcher passes nothing and behaves exactly as it
+ *   did when this command read `Deno.env.get` itself; a test hands in a
+ *   fixed map rather than mutating the environment every parallel worker
+ *   shares.
  * @returns Success with the branch or pinned ref, or a fail-loud message
  */
 export async function updateWorkerCheckout(
   args: Record<string, unknown>,
+  env: EnvLookup = processEnvLookup,
 ): Promise<CommandResult<WorkerCheckoutUpdateResult>> {
   const repoDir = optionalString(args["base-dir"]);
   if (!repoDir) {
@@ -234,7 +241,7 @@ export async function updateWorkerCheckout(
     };
   }
 
-  if (updateSkipped()) {
+  if (updateSkipped(env)) {
     return {
       success: true,
       message: `${SKIP_CHECKOUT_UPDATE_ENV} is set: leaving ${repoDir} ` +
@@ -269,7 +276,7 @@ export async function updateWorkerCheckout(
 
   const outcome = await updateCheckout({
     repoDir,
-    logDir: optionalString(args["log-dir"]) ?? defaultLogDir(),
+    logDir: optionalString(args["log-dir"]) ?? defaultLogDir(env),
     defaultBranch: optionalString(args["default-branch"]),
     updateMode: settings.value.mode,
     pinnedRef: settings.value.ref,

@@ -42,6 +42,7 @@ import type { IssueContext } from "../lib/issue_worker.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { WorkerConfig } from "../types.ts";
 import { pinPromptsToThisCheckout } from "./support/repo_prompts.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844).
 pinPromptsToThisCheckout();
@@ -2915,14 +2916,15 @@ Deno.test("processIssuePlanning - fails when claim is rejected", async () => {
 // Complexity context detection (Issue #863, #1226)
 // ============================================================================
 
-Deno.test("processIssuePlanning - passes complexity context from env var to prompt", async () => {
-  // Set the env var to simulate auto-escalation
-  Deno.env.set(
-    "PLANNING_COMPLEXITY_CONTEXT",
-    "Too complex for single implementation",
-  );
+Deno.test("processIssuePlanning - passes complexity context from the env lookup to the prompt", async () => {
+  // Issue #964: the auto-escalation variable is handed to the processor as
+  // an `EnvLookup` rather than exported into the process environment. The
+  // value is a sentinel no host carries, so a read that fell back to
+  // `Deno.env.get` would find nothing and the prompt assertion below fails.
+  const COMPLEXITY_CONTEXT =
+    "sentinel-964: too complex for single implementation";
 
-  try {
+  {
     const ctx = makeContext({
       issueBody: "Simple issue body for testing",
     });
@@ -2978,24 +2980,18 @@ Deno.test("processIssuePlanning - passes complexity context from env var to prom
       ghClient,
       logger: deps.logger,
       deps,
+      env: envFrom({ PLANNING_COMPLEXITY_CONTEXT: COMPLEXITY_CONTEXT }),
     });
     assertEquals(result.ok, true);
-    // Prompt should include the escalation context
+    // Prompt should carry the escalation context verbatim.
     assertEquals(promptsReceived.length >= 1, true);
-    assertEquals(
-      promptsReceived[0]!.includes("Too complex for single implementation") ||
-        promptsReceived[0]!.includes("Escalation Context"),
-      true,
-      "Prompt should include the complexity/escalation context",
-    );
-  } finally {
-    Deno.env.delete("PLANNING_COMPLEXITY_CONTEXT");
+    assertStringIncludes(promptsReceived[0]!, COMPLEXITY_CONTEXT);
   }
 });
 
 Deno.test("processIssuePlanning - detects complexity via assess-clarity when env var not set", async () => {
-  // Ensure env var is NOT set
-  Deno.env.delete("PLANNING_COMPLEXITY_CONTEXT");
+  // Issue #964: an empty lookup is the "not set" case — and unlike a
+  // `Deno.env.delete`, it cannot be undone by another parallel worker.
 
   // Create a context with a complex issue body that triggers too_complex detection
   const ctx = makeContext({
@@ -3070,6 +3066,7 @@ Could we also investigate all the edge cases?`,
     ghClient,
     logger: deps.logger,
     deps,
+    env: emptyEnv,
   });
   assertEquals(result.ok, true);
   // The complexity detection should have run — we can verify the prompt was built

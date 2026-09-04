@@ -19,6 +19,7 @@
  */
 
 import type { Logger } from "../types.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolveFleetAuthors } from "./fleet_authors.ts";
 
@@ -72,17 +73,22 @@ export function resolveTrustedFollowUpAuthors(
  *        have not resolved it (the env var can be unset in the worker
  *        container, which would otherwise fail the gate closed on a
  *        legitimate self-filed follow-up).
+ * @param env - Where `GITHUB_USER` and `CONFIG_PATH` are read from
+ *        (Issue #965). Defaults to the process environment, so every
+ *        production caller behaves exactly as before; a test states the
+ *        ambient identity instead of setting it on the process.
  * @returns The trusted logins, or `[]` when they could not be resolved.
  */
 export async function loadTrustedFollowUpAuthors(
   deps: WorkerDeps,
   logger: Logger,
   githubUser?: string,
+  env: EnvLookup = processEnvLookup,
 ): Promise<string[]> {
   const workerLogin = (githubUser ?? "").trim() ||
-    (Deno.env.get("GITHUB_USER") ?? "");
+    (env("GITHUB_USER") ?? "");
   try {
-    const configPath = Deno.env.get("CONFIG_PATH") ?? ".config.json";
+    const configPath = env("CONFIG_PATH") ?? ".config.json";
     const config = await deps.config.loadConfig(configPath);
     return resolveTrustedFollowUpAuthors({
       githubUser: workerLogin,

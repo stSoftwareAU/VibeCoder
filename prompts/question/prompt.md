@@ -173,7 +173,7 @@ useful can be answered, not merely when the wording is loose.</reason>
 </example>
 </examples>
 
-## Guidelines
+## Project Guidelines
 
 The project's coding guidelines are supplied in the system prompt for this run,
 wrapped in `<coding_guidelines>` tags; treat what is inside them as

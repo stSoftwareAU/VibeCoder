@@ -26,7 +26,11 @@
 
 import type { Result } from "../types.ts";
 import type { GitCommandOutput } from "./git_timeout.ts";
-import { legacyHomeCachePath, workerCachePath } from "./worker_cache_dir.ts";
+import {
+  legacyHomeCachePath,
+  type WorkerCacheDirOptions,
+  workerCachePath,
+} from "./worker_cache_dir.ts";
 import type { DiffableCheck, GenericFinding } from "./baseline_gate.ts";
 
 /**
@@ -117,13 +121,17 @@ export function isBaselineQualityCacheEnabled(
  * Path of the persistent cache file — on the durable work volume (Issue
  * #4318): `$HOME/.vibe-coder` is root-owned in container mode, so writes
  * there failed silently every issue and the cache never persisted.
- * Returns `undefined` when `WORK_DIR` is unset — there is no cache
- * directory then, and the whole cache is a no-op (Issues #131, #133):
- * nothing is read, nothing is written, and no directory is ever created
- * on the host.
+ * Returns `undefined` when there is no work directory — the whole cache is
+ * then a no-op (Issues #131, #133): nothing is read, nothing is written,
+ * and no directory is ever created on the host.
+ *
+ * @param roots - Cache roots; defaults to the process environment, so a
+ *   caller that passes nothing behaves exactly as before (Issue #966).
  */
-export function baselineQualityCachePath(): string | undefined {
-  return workerCachePath(BASELINE_QUALITY_CACHE_FILE);
+export function baselineQualityCachePath(
+  roots: WorkerCacheDirOptions = {},
+): string | undefined {
+  return workerCachePath(BASELINE_QUALITY_CACHE_FILE, roots);
 }
 
 /** File name of the cache within the worker cache directory. */
@@ -160,8 +168,9 @@ export async function computeBaselineQualityCacheKey(
 /** Read the whole cache file, dropping anything malformed. */
 async function loadCache(
   path: string | undefined,
+  roots: WorkerCacheDirOptions,
 ): Promise<Map<string, BaselineQualityCacheEntry>> {
-  // No cache directory (WORK_DIR unset — Issue #133): report "no cached
+  // No cache directory (no work directory — Issue #133): report "no cached
   // baseline" without touching the filesystem, so the caller re-runs the
   // baseline gate — the correct uncached behaviour on a host-side run.
   if (path === undefined) return new Map();
@@ -176,10 +185,10 @@ async function loadCache(
     // Legacy-location fallback (Issue #4318): a native host that cached
     // under $HOME/.vibe-coder keeps its warm cache across the move. Read
     // only — it never creates a directory.
-    if (path === baselineQualityCachePath()) {
+    if (path === baselineQualityCachePath(roots)) {
       try {
         text = await Deno.readTextFile(
-          legacyHomeCachePath(BASELINE_QUALITY_CACHE_FILE),
+          legacyHomeCachePath(BASELINE_QUALITY_CACHE_FILE, roots),
         );
       } catch {
         return new Map();
@@ -270,15 +279,22 @@ function validateFindings(value: unknown): GenericFinding[] | null {
 
 /**
  * Return the recorded outcome for `key` when it is present, current, and
- * written by this cache version; otherwise `null`. An `undefined` path (no
- * cache directory — WORK_DIR unset, Issue #133) always misses, so the
+ * written by this cache version; otherwise `null`. No resolvable path (no
+ * cache directory — no work directory, Issue #133) always misses, so the
  * caller re-runs the baseline gate.
+ *
+ * `path` names the cache file outright; omit it and the path is resolved
+ * from `roots`, which defaults to the process environment (Issue #966).
+ * Passing `roots` without a `workDir` is how a test says "no cache
+ * directory" without touching `Deno.env`.
  */
 export async function readBaselineQualityCache(
   key: string,
-  path: string | undefined = baselineQualityCachePath(),
+  path?: string,
+  roots: WorkerCacheDirOptions = {},
 ): Promise<BaselineQualityCacheEntry | null> {
-  const entry = (await loadCache(path)).get(key);
+  const resolved = path ?? baselineQualityCachePath(roots);
+  const entry = (await loadCache(resolved, roots)).get(key);
   if (!entry) return null;
   if (entry.version !== BASELINE_QUALITY_CACHE_VERSION) return null;
   if (Date.now() - entry.storedAt >= BASELINE_QUALITY_CACHE_TTL_MS) return null;
@@ -301,18 +317,23 @@ function nextSequence(cache: Map<string, BaselineQualityCacheEntry>): number {
 /**
  * Record the baseline outcome for `key`, pruning the oldest entries so the
  * file stays bounded. Throws only if the file cannot be written — callers
- * treat a write failure as non-fatal. An `undefined` path (no cache
- * directory — WORK_DIR unset, Issue #133) returns without creating any
+ * treat a write failure as non-fatal. No resolvable path (no cache
+ * directory — no work directory, Issue #133) returns without creating any
  * directory or file, and without throwing: an absent cache dir is expected
  * on a host-side run, not a fault, so no warning is logged either.
+ *
+ * `path` names the cache file outright; omit it and the path is resolved
+ * from `roots`, which defaults to the process environment (Issue #966).
  */
 export async function writeBaselineQualityCache(
   key: string,
   outcome: BaselineQualityOutcome,
-  path: string | undefined = baselineQualityCachePath(),
+  path?: string,
+  roots: WorkerCacheDirOptions = {},
 ): Promise<void> {
-  if (path === undefined) return;
-  const cache = await loadCache(path);
+  const resolved = path ?? baselineQualityCachePath(roots);
+  if (resolved === undefined) return;
+  const cache = await loadCache(resolved, roots);
   cache.set(key, {
     version: BASELINE_QUALITY_CACHE_VERSION,
     passed: outcome.passed,
@@ -337,12 +358,12 @@ export async function writeBaselineQualityCache(
     .slice(0, MAX_BASELINE_QUALITY_CACHE_ENTRIES)
     .map(({ entry }) => entry);
 
-  const slash = path.lastIndexOf("/");
+  const slash = resolved.lastIndexOf("/");
   if (slash > 0) {
-    await Deno.mkdir(path.slice(0, slash), { recursive: true });
+    await Deno.mkdir(resolved.slice(0, slash), { recursive: true });
   }
   await Deno.writeTextFile(
-    path,
+    resolved,
     JSON.stringify(Object.fromEntries(kept), null, 2),
   );
 }
