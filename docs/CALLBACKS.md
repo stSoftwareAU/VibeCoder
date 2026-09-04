@@ -340,6 +340,12 @@ facts are whatever that one script happens to collect.
 A callback moves the reporting policy out: the hook decides what a record
 contains and where it lands, and VibeCoder needs no setting for it.
 
+> **📣 The migration in release order** — which edit lands before the pin move,
+> which has to land with it, what to observe on the canary before the rest of
+> the fleet follows, and how to roll back — is
+> [Release notes — 1.1.0](RELEASE-NOTES.md). This section is the before/after
+> mapping.
+
 | Built-in health tracking                          | Callback equivalent                                    |
 | ------------------------------------------------- | ------------------------------------------------------ |
 | `fleet_health_repo` / `fleet_health_dir` (clone)   | nothing — the hook owns its own checkout and paths       |

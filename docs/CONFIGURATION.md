@@ -806,6 +806,37 @@ silently drags the host back to the tip. Setup's prompts write the same fields;
 the only thing setup adds is validating the ref while you are still sitting
 there.
 
+#### Rolling back to an earlier release
+
+Rolling back is [moving a pin by hand](#moving-a-pin-by-hand) in the one
+direction `./run.sh upgrade` will not go — it only ever chooses the newest
+release. The mechanics are the three steps above, with one addition that is
+easy to miss: **a release that changed a configuration contract changes it back
+when you roll the ref back**, so the pin and the affected keys move in the same
+edit.
+
+1. Read what the release you are returning to shipped with, so the tool
+   versions go back with the ref rather than staying on the newer ones:
+
+   ```bash
+   gh release download 1.0.71 --repo stSoftwareAU/VibeCoder \
+     --pattern tool-versions.json
+   ```
+
+2. In one edit of `.config.json`, set `pinned_ref` to that tag, set all three
+   `pinned_tool_versions` to what the manifest names, and restore any keys the
+   older release requires. [Release notes](RELEASE-NOTES.md) states, per
+   release, exactly which keys those are — for 1.1.0 it is `fleet_health_repo`
+   and `fleet_health_dir`, which 1.1.0 refuses and 1.0.x needs.
+3. Relaunch. The checkout update moves the worker checkout back and the launch
+   installs exactly the pinned versions, one log line per tool.
+
+A key the older release does not recognise is only a warning there, so a
+forward-looking block such as `callbacks` can stay in place across the
+rollback; a key the newer release **removed** is a hard config-load failure on
+the way forward again, which is why the rollback restores it explicitly rather
+than leaving the host with a config neither version loads.
+
 #### `VIBE_SKIP_CHECKOUT_UPDATE` is not frozen mode
 
 `VIBE_SKIP_CHECKOUT_UPDATE=1` is an **environment-variable escape hatch for one

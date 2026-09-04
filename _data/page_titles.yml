@@ -55,6 +55,10 @@ docs/RELEASE-TAGGING.md:
   title: "Vibe Coder: Release Tagging"
   page_icon: "🏷️"
 
+docs/RELEASE-NOTES.md:
+  title: "Vibe Coder: Release Notes"
+  page_icon: "📣"
+
 docs/security-fix-gate-feedback.md:
   title: "Vibe Coder: Security-fix Gate Feedback"
   page_icon: "🔐"
