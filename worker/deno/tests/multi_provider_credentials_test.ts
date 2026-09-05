@@ -157,12 +157,29 @@ Deno.test("resolveEnabledAgentProviderIds - configuration enables a multi-vendor
   );
 });
 
-Deno.test("resolveEnabledAgentProviderIds - the environment overrides configuration", () => {
+Deno.test("resolveEnabledAgentProviderIds - configuration overrides the environment", () => {
+  // This asserted the opposite until the one-source-of-truth milestone
+  // inverted the precedence (Issue #1032): `.config.json` is now the answer
+  // and the variable is the deprecated fallback, so a host cannot quietly run
+  // a different provider set than its configuration states.
   const ids = agentProviderIds();
   assertEquals(
     resolveEnabledAgentProviderIds({
       env: envFrom({ [ENABLED_AGENT_PROVIDERS_ENV]: ` ${ids.join(" , ")} ` }),
       configuredProviders: [CLAUDE_PROVIDER_ID],
+    }),
+    [CLAUDE_PROVIDER_ID],
+  );
+});
+
+Deno.test("resolveEnabledAgentProviderIds - the environment still answers when nothing is configured", () => {
+  // The variable is deprecated, not removed: a deployment that has not moved
+  // its setting into `.config.json` keeps working, and is warned rather than
+  // silently reset to the active provider alone.
+  const ids = agentProviderIds();
+  assertEquals(
+    resolveEnabledAgentProviderIds({
+      env: envFrom({ [ENABLED_AGENT_PROVIDERS_ENV]: ` ${ids.join(" , ")} ` }),
     }),
     ids,
   );
