@@ -2,7 +2,7 @@
 
 Some deployments need an environment the public Vibe Coder has no business
 carrying: a database server loaded with a schema, a CI server the agent drives,
-a pair of JDKs no other fleet wants. The **container extension** is the
+a pair of language runtimes no other fleet wants. The **container extension** is the
 extension point for exactly that. The operator keeps their own private
 repository of build instructions on their own host, declares where it is, and
 the launcher builds it as a **second image layered on the standard one**. This
@@ -46,7 +46,7 @@ distribution's own repositories, a database initialised from dump files at
 build time, a service that must be **running** before the agent begins work.
 Everything a plain archive install can do belongs in `container_tools`, which
 is validated more tightly and needs no Containerfile of your own. The worked
-example below uses both, because that is the honest split: its JDKs and its
+example below uses both, because that is the honest split: its runtimes and its
 build tool are archive installs, its database and CI server are not.
 
 A deployment that declares no extension is byte-for-byte the deployment it is
@@ -237,17 +237,23 @@ than the minutes a build takes to reach the same conclusion.
 
 ## Worked example
 
-A deployment whose monitored repositories are Java services built against two
-JDKs, tested against a database loaded with production-shaped schemas, and
-released through a CI server the agent has to be able to drive.
+A deployment whose monitored repositories are services built against two
+runtime versions, tested against a database loaded with production-shaped
+schemas, and released through a CI server the agent has to be able to drive.
 
-Concretely, and to keep the commands real rather than notional: a **Postgres**
-server with three databases loaded from dumps at image build time, a
-**Jenkins** whose pipeline job is defined in `casc.yaml` and loads the project
-through the project's own `Jenkinsfile`, and — through `container_tools`, not
-the layer — an 8 LTS and a 21 LTS JDK side by side plus a Java build tool.
-Substitute whatever your deployment actually runs: nothing in the mechanism
-knows or cares what an extension starts.
+Concretely: a **database server** with three databases loaded from dumps at
+image build time, a **CI server** whose pipeline job is defined in
+`ci-config.yaml` and loads the project through the project's own pipeline
+file, and — through `container_tools`, not the layer — two runtime versions
+side by side plus a build tool.
+
+**Every product name is left to you, deliberately.** Placeholders below —
+`${DB_PACKAGE}`, `<db-start>`, `<ci-server-start>` — are where your own
+choices go. This framework does not name a database, a CI server, a language
+or a build tool anywhere, because the moment it names one it starts being an
+exclusive list of the tools someone might want, and that is exactly what
+extending the Vibe Coder exists to avoid. Nothing in the mechanism knows or
+cares what an extension starts.
 
 The split is the one this page opened with: the **toolchains** ride
 `container_tools`, and the **services** ride the extension layer.
@@ -259,16 +265,16 @@ The operator syncs their own private repository to `/srv/vibe-extension`:
 ```text
 /srv/vibe-extension/
 ├── Containerfile          # the layer, built FROM ${VIBE_BASE_IMAGE}
-├── start.sh               # brings Postgres and Jenkins up
+├── start.sh               # brings the database and CI server up
 ├── build/
 │   ├── load-dumps.sh      # initialises a cluster and loads the dumps
-│   └── seed-ci.sh         # installs the pinned plugins into a CI home
+│   └── seed-ci.sh         # installs the pinned plugin set into a CI home
 ├── dumps/
 │   ├── orders.sql         # loaded at image build time
 │   ├── customers.sql
 │   └── reporting.sql
 └── ci/
-    ├── casc.yaml          # configuration as code: the pipeline job
+    ├── ci-config.yaml     # configuration as code: the pipeline job
     └── plugins.txt        # the pinned plugin set
 ```
 
@@ -283,25 +289,25 @@ The operator syncs their own private repository to `/srv/vibe-extension`:
   },
   "container_tools": [
     {
-      "id": "jdk8",
+      "id": "runtime-old",
       "version": "8.0.462.08.1",
       "url": {
-        "amd64": "https://artefacts.example.com/jdk8-8.0.462.08.1-linux-x64.tar.gz",
-        "arm64": "https://artefacts.example.com/jdk8-8.0.462.08.1-linux-aarch64.tar.gz"
+        "amd64": "https://artefacts.example.com/runtime-old-8.0.462-linux-x64.tar.gz",
+        "arm64": "https://artefacts.example.com/runtime-old-8.0.462-linux-aarch64.tar.gz"
       },
       "sha256": {
         "amd64": "1111111111111111111111111111111111111111111111111111111111111111",
         "arm64": "2222222222222222222222222222222222222222222222222222222222222222"
       },
       "stripComponents": 1,
-      "env": { "JAVA_8_HOME": "" }
+      "env": { "RUNTIME_OLD_HOME": "" }
     },
     {
-      "id": "jdk21",
+      "id": "runtime-current",
       "version": "21.0.8.9.1",
       "url": {
-        "amd64": "https://artefacts.example.com/jdk21-21.0.8.9.1-linux-x64.tar.gz",
-        "arm64": "https://artefacts.example.com/jdk21-21.0.8.9.1-linux-aarch64.tar.gz"
+        "amd64": "https://artefacts.example.com/runtime-current-21.0.8-linux-x64.tar.gz",
+        "arm64": "https://artefacts.example.com/runtime-current-21.0.8-linux-aarch64.tar.gz"
       },
       "sha256": {
         "amd64": "3333333333333333333333333333333333333333333333333333333333333333",
@@ -309,36 +315,37 @@ The operator syncs their own private repository to `/srv/vibe-extension`:
       },
       "stripComponents": 1,
       "bin": ["bin"],
-      "env": { "JAVA_HOME": "", "JAVA_21_HOME": "" }
+      "env": { "RUNTIME_HOME": "", "RUNTIME_CURRENT_HOME": "" }
     },
     {
-      "id": "maven",
+      "id": "build-tool",
       "version": "3.9.11",
       "url": {
-        "noarch": "https://artefacts.example.com/maven-3.9.11-bin.tar.gz"
+        "noarch": "https://artefacts.example.com/build-tool-3.9.11-bin.tar.gz"
       },
       "sha256": {
         "noarch": "5555555555555555555555555555555555555555555555555555555555555555"
       },
       "stripComponents": 1,
       "bin": ["bin"],
-      "env": { "MAVEN_HOME": "" }
+      "env": { "BUILD_TOOL_HOME": "" }
     }
   ]
 }
 ```
 
-Read that as two long-term-support JDKs side by side — an 8 LTS build such as
-Amazon Corretto 8, and a 21 LTS build such as Amazon Corretto 21 — plus Maven,
-each landing in its own prefix: `/opt/vibe-tools/jdk8`,
-`/opt/vibe-tools/jdk21` and `/opt/vibe-tools/maven`. **The versions, URLs and
-digests are placeholders**: substitute your vendor's real download and the SHA-256 that
+Read that as two long-term-support runtimes of the same language side by
+side, plus the build tool that drives them, each landing in its own prefix:
+`/opt/vibe-tools/runtime-old`, `/opt/vibe-tools/runtime-current` and
+`/opt/vibe-tools/build-tool`. **The ids, versions, URLs and digests are all
+placeholders**: substitute your vendor's real download and the SHA-256 that
 vendor publishes for it. Nothing in the mechanism inspects them, and pinning a
 real one here would go stale the day it is re-published.
 
-Only the 21 LTS build puts its `bin` on PATH, so `java` resolves to one
-predictable JDK; the 8 LTS build is reached through `JAVA_8_HOME`, which is
-what a per-project toolchain configuration wants anyway.
+Only the current runtime puts its `bin` on PATH, so the interpreter resolves
+to one predictable version; the older one is reached through
+`RUNTIME_OLD_HOME`, which is what a per-project toolchain configuration wants
+anyway.
 
 ### The Containerfile
 
@@ -355,10 +362,11 @@ USER root
 # 1. The database server, pinned to a major version. The start script names
 #    the same one, and an unpinned install would follow the distribution to a
 #    version whose binaries and cluster live somewhere else.
-ARG PG_MAJOR=17
+ARG DB_MAJOR=17
+ARG DB_PACKAGE=your-database-server
 RUN apt-get update \
  && apt-get install --no-install-recommends -y \
-      "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" \
+      "${DB_PACKAGE}-${DB_MAJOR}" "${DB_PACKAGE}-client-${DB_MAJOR}" \
  && rm -rf /var/lib/apt/lists/*
 
 # 2. The CI server itself, verified against a digest you pin.
@@ -377,18 +385,18 @@ RUN mkdir -p /opt/vibe-seed \
  && chown -R vibe:vibe /opt/vibe-extension /opt/vibe-seed /opt/ci
 
 USER vibe
-ENV PATH="/usr/lib/postgresql/${PG_MAJOR}/bin:${PATH}"
+ENV PATH="/usr/lib/${DB_PACKAGE}/${DB_MAJOR}/bin:${PATH}"
 
 # 4. Three databases, created and loaded from the dumps AT BUILD TIME, into a
 #    cluster the worker account owns. No run pays the restore cost, and every
 #    run starts from identical data.
-RUN /opt/vibe-extension/build/load-dumps.sh /opt/vibe-seed/pgdata \
+RUN /opt/vibe-extension/build/load-dumps.sh /opt/vibe-seed/db-data \
       orders customers reporting
 
 # 5. The CI server's home, seeded with the pinned plugin set so no run
-#    downloads plugins. Its job comes from casc.yaml, read from the extension
-#    prefix at start.
-RUN /opt/vibe-extension/build/seed-ci.sh /opt/vibe-seed/jenkins
+#    downloads plugins. Its job comes from ci-config.yaml, read from the
+#    extension prefix at start.
+RUN /opt/vibe-extension/build/seed-ci.sh /opt/vibe-seed/ci-home
 ```
 
 Two operator-owned scripts do the build-time work. `build/load-dumps.sh`
@@ -404,10 +412,10 @@ included, so a changed dump rebuilds the image exactly once and every later run
 starts from the same loaded database in the time it takes the server to open a
 socket.
 
-The CI server's job is defined in `ci/casc.yaml` — configuration as code, so
+The CI server's job is defined in `ci/ci-config.yaml` — configuration as code, so
 the image carries a server already holding its job rather than one waiting to
 be clicked through a setup wizard. That job is a pipeline that reads its steps
-from the checked-out project's own `Jenkinsfile`, so the agent can trigger a
+from the checked-out project's own pipeline file, so the agent can trigger a
 build of the branch it is working on and the pipeline it runs is the
 project's, not one duplicated into the extension.
 
@@ -445,33 +453,35 @@ log() { echo "extension: $*" >&2; }
 # writable per-launch root, the tmpfs where there is one — before it runs
 # this script, so use it rather than assuming /tmp.
 SCRATCH="${VIBE_SCRATCH_DIR:-/tmp}"
-PGDATA="${SCRATCH}/pgdata"
-JENKINS_HOME="${SCRATCH}/jenkins"
-export PGDATA JENKINS_HOME
-cp -a /opt/vibe-seed/pgdata "${PGDATA}"
-cp -a /opt/vibe-seed/jenkins "${JENKINS_HOME}"
+DB_DATA="${SCRATCH}/db-data"
+CI_HOME="${SCRATCH}/ci-home"
+export DB_DATA CI_HOME
+cp -a /opt/vibe-seed/db-data "${DB_DATA}"
+cp -a /opt/vibe-seed/ci-home "${CI_HOME}"
 
-# Postgres, on the container-internal loopback. Nothing is published.
+# The database, on the container-internal loopback. Nothing is published.
+# `<db-start>` and `<db-ready>` are your server's own start and readiness
+# commands — the framework never runs them itself and never names them.
 log "starting the database on 127.0.0.1:5432"
-pg_ctl -D "${PGDATA}" -l "${SCRATCH}/postgres.log" -w -t 60 \
+<db-start> -D "${DB_DATA}" -l "${SCRATCH}/db.log" -w -t 60 \
   -o "-h 127.0.0.1 -p 5432 -k ${SCRATCH}" start
-pg_isready -h 127.0.0.1 -p 5432 --quiet || {
-  log "the database never accepted connections; see ${SCRATCH}/postgres.log"
+<db-ready> -h 127.0.0.1 -p 5432 --quiet || {
+  log "the database never accepted connections; see ${SCRATCH}/db.log"
   exit 1
 }
 
-# Jenkins, its job taken from casc.yaml, listening internally.
+# The CI server, its job taken from ci-config.yaml, listening internally.
 log "starting the CI server on 127.0.0.1:8080"
-CASC_JENKINS_CONFIG=/opt/vibe-extension/ci/casc.yaml \
-  java -jar /opt/ci/server.war --httpPort=8080 \
-    >"${SCRATCH}/jenkins.log" 2>&1 &
+CI_CONFIG_FILE=/opt/vibe-extension/ci/ci-config.yaml \
+  <ci-server-start> --httpPort=8080 \
+    >"${SCRATCH}/ci.log" 2>&1 &
 
 for _ in $(seq 1 60); do
   if curl -fsS http://127.0.0.1:8080/login >/dev/null 2>&1; then break; fi
   sleep 2
 done
 curl -fsS http://127.0.0.1:8080/login >/dev/null 2>&1 || {
-  log "the CI server never came up; see ${SCRATCH}/jenkins.log"
+  log "the CI server never came up; see ${SCRATCH}/ci.log"
   exit 1
 }
 
