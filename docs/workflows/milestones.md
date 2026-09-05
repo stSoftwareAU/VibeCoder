@@ -207,8 +207,57 @@ Long-running milestones can drift significantly from the default branch, causing
 1. **Active milestone detection:** For each configured repo, the worker finds open milestones with at least one closed issue (meaning work has started).
 2. **Branch existence check:** Verifies the milestone branch exists on the remote before attempting sync.
 3. **Merge:** Merges the default branch into the milestone branch using `git merge --no-edit`. If the merge succeeds cleanly, pushes the result.
-4. **Conflict handling:** If a merge conflict occurs, the worker attempts auto-resolution (favouring default branch changes). If auto-resolution fails, the conflict is logged as a warning without blocking other work.
+4. **Conflict handling:** If a merge conflict occurs, the worker attempts auto-resolution (favouring default branch changes). A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). If auto-resolution fails, the conflict is logged as a warning without blocking other work.
 5. **Frequency guard:** Each milestone is synced at most once per cooldown period (default: 1 hour). The cooldown resets after each successful sync.
+6. **Gated branches:** Where a ruleset refuses the direct push, the same merge lands through a `sync/milestone-<name>` PR (Issue #589). That PR merges as a **merge commit, never a squash** (Issue #1048) — see below.
+
+### The sync must record the default branch as an ancestor
+
+A squashed sync applies the default branch's *content* under a single-parent
+commit, so the default branch is **not an ancestor** of the milestone branch.
+Every later merge then computes its merge base from before the sync, and a
+deletion the default branch made in the meantime returns as a modify/delete
+conflict instead of a deletion. On `milestone/863` that revived 1984 lines of a
+deliberately-removed subsystem, and it surfaced only because the resurrected
+test tripped an unrelated gate.
+
+```mermaid
+gitGraph
+    commit id: "shared base"
+    branch milestone/863
+    checkout main
+    commit id: "delete subsystem"
+    checkout milestone/863
+    merge main id: "sync (merge commit)"
+    commit id: "milestone work"
+    checkout main
+    commit id: "more main work"
+    checkout milestone/863
+    merge main id: "later merge — deletion is history"
+```
+
+Two things hold this in place:
+
+- **The sync PR merges as a merge commit.** `mergeMethodFlagForHead` in
+  `worker/deno/lib/milestone_sync_pr.ts` returns `--merge` for a
+  `sync/milestone-*` head and `--squash` for everything else, and every
+  auto-merge and direct-merge path routes through it.
+- **A resurrection is detected directly.** The `check-resurrected-files`
+  command fails when a branch carries a file the default branch deleted and
+  whose deleting commit is already in the branch's ancestry:
+
+  ```bash
+  deno run --allow-read --allow-env --allow-run worker/deno/mod.ts \
+    check-resurrected-files --repo-dir . --branch HEAD --default-branch origin/main
+  ```
+
+  The `milestone-resurrection` job in `.github/workflows/validate-scripts.yml`
+  runs it on every PR into a `milestone/*` branch and on the milestone →
+  default-branch rollup PR, naming each file and the commit that deleted it.
+  A file that is new on the milestone branch and was never on the default
+  branch is not reported, and neither is a branch that is merely behind the
+  deletion — only a branch that has the deleting commit in its ancestry and
+  the file still in its tree.
 
 ### Configuration
 

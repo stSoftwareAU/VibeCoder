@@ -20,6 +20,7 @@ import {
   type SummaryPrMergeDecision,
 } from "./milestone_children_gate.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
+import { mergeMethodFlagForHead } from "./milestone_sync_pr.ts";
 
 /** Auto-merge enablement result codes. */
 export enum AutoMergeResult {
@@ -445,6 +446,11 @@ export async function enableAutoMerge(
     }
   }
 
+  // A milestone sync must land as a merge commit, not a squash (Issue #1048):
+  // squashed, the default branch never becomes an ancestor of the milestone
+  // branch and its deletions return as conflicts. Everything else squashes.
+  const mergeMethod = mergeMethodFlagForHead(options.headRefName);
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       await ghCommandFn([
@@ -454,11 +460,13 @@ export async function enableAutoMerge(
         "--repo",
         repo,
         "--auto",
-        "--squash",
+        mergeMethod,
       ]);
       return {
         result: AutoMergeResult.Enabled,
-        message: `Auto squash merge enabled on PR #${prNumber}`,
+        message: `Auto ${
+          mergeMethod === "--merge" ? "merge-commit" : "squash"
+        } merge enabled on PR #${prNumber}`,
       };
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);

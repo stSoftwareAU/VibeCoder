@@ -168,6 +168,7 @@ import { callbackConformanceCommand } from "./commands/callback_conformance.ts";
 import { checkMermaidCommand } from "./commands/check_mermaid.ts";
 import { checkMermaidBuiltOutputCommand } from "./commands/check_mermaid_built_output.ts";
 import { checkMarkdownlintCommand } from "./commands/check_markdownlint.ts";
+import { checkResurrectedFilesCommand } from "./commands/check_resurrected_files.ts";
 import { notifyAuditFailureCommand } from "./commands/notify_audit_failure.ts";
 import { purgeStaleWorkflowIssuesCommand } from "./commands/purge_stale_workflow_issues.ts";
 import { sweepHeartbeatCommentsCommand } from "./commands/sweep_heartbeat_comments.ts";
@@ -364,6 +365,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(checkMermaidBuiltOutputCommand);
   registry.register(notifyAuditFailureCommand);
   registry.register(checkMarkdownlintCommand);
+  registry.register(checkResurrectedFilesCommand);
   registry.register(purgeStaleWorkflowIssuesCommand);
   registry.register(sweepHeartbeatCommentsCommand);
   registry.register(containerImageHashCommand);

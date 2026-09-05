@@ -53,6 +53,7 @@ import {
   readImgbbApiKeyFromEnv,
 } from "../lib/imgbb_upload.ts";
 import { AutoMergeResult, enableAutoMerge } from "../lib/pr_auto_merge.ts";
+import { mergeMethodFlagForHead } from "../lib/milestone_sync_pr.ts";
 import {
   getCiCheckRetryCount,
   postCiFixMaxRetriesComment,
@@ -245,13 +246,32 @@ export const prManagerCommand: Command = {
         // If not allowed, attempt direct merge
         if (result.result === AutoMergeResult.NotAllowed) {
           try {
+            // A milestone sync must land as a merge commit (Issue #1048), so
+            // the head branch decides the method. An unreadable head keeps the
+            // squash default — the same method this fallback always used.
+            let headRefName = "";
+            try {
+              headRefName = (await runGhCommand([
+                "pr",
+                "view",
+                String(prNumber),
+                "--repo",
+                repo,
+                "--json",
+                "headRefName",
+                "--jq",
+                ".headRefName",
+              ])).trim();
+            } catch {
+              headRefName = "";
+            }
             await runGhCommand([
               "pr",
               "merge",
               String(prNumber),
               "--repo",
               repo,
-              "--squash",
+              mergeMethodFlagForHead(headRefName),
             ]);
             return {
               success: true,

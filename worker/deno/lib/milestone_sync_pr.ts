@@ -63,6 +63,33 @@ export function syncBranchFor(milestoneBranch: string): string {
   return `${SYNC_BRANCH_PREFIX}-${leaf}`;
 }
 
+/** Whether a PR head branch is one this module raised. */
+export function isMilestoneSyncBranch(headRefName?: string | null): boolean {
+  return typeof headRefName === "string" &&
+    headRefName.startsWith(`${SYNC_BRANCH_PREFIX}-`);
+}
+
+/**
+ * The `gh pr merge` method for a PR from this head branch (Issue #1048).
+ *
+ * Everything else squashes, and should: one commit per change keeps the
+ * default branch readable. A **milestone sync is the exception**, because its
+ * whole purpose is ancestry. Squashed, the sync commit carries the default
+ * branch's content with a single parent, so the default branch is not an
+ * ancestor of the milestone branch: every later merge computes its base from
+ * before the sync, and a file the default branch deleted in the meantime comes
+ * back as a modify/delete conflict rather than as a deletion. That is exactly
+ * how `milestone/863` revived a deleted subsystem.
+ *
+ * A merge commit records the default branch as a parent, so its deletions are
+ * genuinely in the branch's history and never have to be re-derived.
+ */
+export function mergeMethodFlagForHead(
+  headRefName?: string | null,
+): "--merge" | "--squash" {
+  return isMilestoneSyncBranch(headRefName) ? "--merge" : "--squash";
+}
+
 /** Injected seams so the whole path is testable without git or GitHub. */
 export interface MilestoneSyncPrDeps {
   /** Runs git in the clone; resolves with the exit code and stderr. */
@@ -158,6 +185,10 @@ export async function raiseMilestoneSyncPr(
       "arms auto-merge only when something blocks the merge — so this lands " +
       "unattended once its checks are green.",
       "",
+      `Lands as a **merge commit**, never a squash: the point of the sync is ` +
+      `to put \`${defaultBranch}\` in this branch's *ancestry*, so its ` +
+      `deletions are history here rather than conflicts later (Issue #1048).`,
+      "",
       "Filed by the milestone branch sync (Issue #589).",
     ].join("\n");
 
@@ -188,7 +219,9 @@ export async function raiseMilestoneSyncPr(
           "--repo",
           repo,
           "--auto",
-          "--squash",
+          // A merge commit, never a squash (Issue #1048) — see
+          // {@link mergeMethodFlagForHead}.
+          mergeMethodFlagForHead(branch),
         ]);
       } catch {
         // Left for `ensureAutoMergeOnOpenPrs` to arm on its next pass.
