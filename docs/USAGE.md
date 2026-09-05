@@ -450,19 +450,26 @@ operational constant (see [Configuration Reference](CONFIGURATION.md)).
 
 ## 🔒 One Issue per Repository/Milestone
 
-To prevent conflicts and ensure clean branches, the worker enforces a
-one-issue-at-a-time policy:
+To prevent conflicts and ensure clean branches, the worker enforces
+one issue at a time **per work stream** — one pull request per merge target:
 
-- **Per repository**: Only one issue is worked on per repository at a time. If a
-  repository already has an in-progress issue, other eligible issues in that
-  repository are skipped until the current one completes.
-- **Per milestone**: Within a milestone, only one issue is worked on at a time.
-  If a milestone already has an assigned issue being processed, other issues in
-  the same milestone are skipped.
+- **Per milestone**: Each open milestone is its own work stream with its own
+  branch. Only one issue is worked on per milestone at a time; if a milestone
+  already has an assigned issue being processed, other issues in the same
+  milestone are skipped.
+- **Per default branch**: The issues that carry no milestone share the default
+  branch as their work stream, so only one of them is worked on per repository
+  at a time.
+
+A repository therefore runs **as many issues concurrently as it has work
+streams** — its default branch plus each open milestone. Two issues in flight
+in one repository, one on a milestone branch and one on the default branch, is
+the intended behaviour, not a duplicate-work fault; opening a milestone is how
+an operator adds a parallel stream to a busy repository.
 
 This enforcement happens during issue selection and ensures that parallel
-workers do not create conflicting branches or overlapping changes in the same
-repository or milestone.
+workers do not create conflicting branches or overlapping changes on the same
+target branch.
 
 ## 💾 Self-Healing Disk Space
 
