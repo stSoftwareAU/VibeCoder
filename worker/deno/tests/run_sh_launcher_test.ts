@@ -34,6 +34,7 @@ import {
   CONTAINER_START_EXIT_CODES,
   isNetworkUnavailableLaunch,
 } from "../lib/container_restart_backoff.ts";
+import { consumeLaunchTerminationMarker } from "../lib/launcher_termination.ts";
 import { NETWORK_UNAVAILABLE_MARKER } from "../lib/github_user_resolution.ts";
 import { CONTAINER_WEDGED_EXIT_STATUS } from "../lib/container_watchdog.ts";
 import { stripContainerfile } from "../lib/containerfile_strip.ts";
@@ -636,6 +637,87 @@ Deno.test("run.sh - propagates SIGTERM to the container and reports its status",
       output.code,
       143,
       new TextDecoder().decode(output.stderr),
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a signalled run declares the stop so it is not counted as a failure (Issue #1072)", async () => {
+  // The launcher exits with the runtime client's own status — 255 on the
+  // fleet's macOS hosts when the container is stopped under it — so the status
+  // cannot say "somebody stopped this". The stub reproduces exactly that: it
+  // exits 255 on the forwarded signal, the shape Issues #879 and #1072 both
+  // reported as three consecutive `worker_run` failures.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_SLEEP: "60",
+    STUB_RUN_SIGNAL_EXIT: "255",
+  });
+  const markerPath =
+    `${harness.tmpDir}/home/.vibe-coder/last-launch-termination`;
+  const workDir = `${harness.tmpDir}/work`;
+  try {
+    // End to end through the real outcome recorder run.sh invokes on its way
+    // out: the declaration is worth nothing if the recorder does not act on it.
+    await Deno.mkdir(`${workDir}/logs`, { recursive: true });
+
+    const child = spawnLauncher(harness);
+    assert(await waitForRecord(harness, "run"), "the container never started");
+
+    child.kill("SIGTERM");
+    const output = await child.output();
+    // Which status arrives is itself unreliable — the client's own 255 when
+    // the wait reaped it, or 143 when the trap interrupted the wait first —
+    // and that is exactly why the classification cannot rest on it.
+    assert(
+      [143, 255].includes(output.code),
+      `expected the client's status, got ${output.code}: ` +
+        new TextDecoder().decode(output.stderr),
+    );
+
+    const state = JSON.parse(
+      await Deno.readTextFile(`${workDir}/.container_restart_state.json`),
+    );
+    assertEquals(
+      state.consecutiveFailures,
+      0,
+      "a stopped run must not climb the failure ladder (Issue #1072)",
+    );
+    assertEquals(state.lastPhase, null);
+
+    const events = await Deno.readTextFile(`${workDir}/logs/self-heal.jsonl`);
+    assertStringIncludes(events, "terminated");
+    assertStringIncludes(events, "SIGTERM");
+
+    // Consumed by the outcome it explained, so the next run is judged on its
+    // own evidence.
+    assertEquals(await consumeLaunchTerminationMarker(markerPath), null);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a launch that ends on its own leaves no termination marker (Issue #1072)", async () => {
+  // Belt and braces on the marker's own staleness: a clean launch clears any
+  // leftover, so a stop can never be inherited by the run after it.
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+  const stateDir = `${harness.tmpDir}/home/.vibe-coder`;
+  try {
+    await Deno.mkdir(stateDir, { recursive: true });
+    await Deno.writeTextFile(
+      `${stateDir}/last-launch-termination`,
+      JSON.stringify({ signal: "TERM", declaredAtMs: Date.now() }),
+    );
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    assertEquals(
+      await consumeLaunchTerminationMarker(
+        `${stateDir}/last-launch-termination`,
+      ),
+      null,
+      "a launch that was never signalled must not leave a stop behind",
     );
   } finally {
     await harness.cleanup();
