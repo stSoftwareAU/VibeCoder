@@ -203,6 +203,23 @@ bounded() {
   fi
 }
 
+# Whether a `bounded` status means the BOUND ended the command, rather than
+# the command ending itself (Issue #1020). `timeout` reports 124 when its
+# SIGTERM expired the run and 137 when the SIGKILL that follows was what
+# stopped it - the same pair SUPERVISOR_DEADLINE_EXIT_CODES names in
+# worker/deno/lib/container_restart_backoff.ts. A command that ran to
+# completion and failed has something to say about why; one the bound killed
+# never got to say it, and reporting the two the same way sends the reader
+# looking for words that were never written.
+#
+# Only ever true where a bound was actually applied: with no `timeout` on the
+# host, 124 is the command's own status and means whatever it means.
+# Usage: bounded_timed_out <status>
+bounded_timed_out() {
+  [[ -n "${TIMEOUT_CMD}" ]] || return 1
+  (($1 == 124 || $1 == 137))
+}
+
 # ./run.sh upgrade - move this host onto the latest release (Issue #691).
 #
 # One .config.json rewrite: pinned_ref and all three pinned_tool_versions, and
@@ -467,6 +484,22 @@ preserve_build_failure_log() {
   printf '%s' "${preserved}"
 }
 
+# One line of a captured stderr file, for a message an operator reads.
+#
+# Empty output becomes an explicit "no explanation given" rather than a
+# message that trails off - a failure with no words is still a failure. That
+# fallback only means something where the stderr really was captured: it used
+# to be the release check's every answer, because the check's stderr went
+# nowhere (Issue #1020).
+#
+# Defined here, above every caller, so the launch steps and the volume
+# recreation share one rendering of "what the failing command said".
+runtime_error_detail() {
+  local text
+  text="$(tr '\n' ' ' <"$1" 2>/dev/null | sed 's/  */ /g; s/^ //; s/ $//')"
+  printf '%s' "${text:-no explanation given}"
+}
+
 # Append a bounded excerpt of a captured log to run_core.log (Issue #1019).
 # Usage: log_run_core_excerpt <label> <source>
 log_run_core_excerpt() {
@@ -560,27 +593,48 @@ fi
 # host's notice is not lost.
 #
 # All the logic lives in the Deno command, exactly as the checkout update's
-# does: this shell captures stdout and prints it, nothing more. Stdout is the
-# notice or empty - a dynamic host, a host already on the newest release, a
-# commit-SHA pin and a repository with no releases all print nothing.
+# does: this shell captures what the command said and prints it, nothing
+# more. Stdout is the notice or empty - a dynamic host, a host already on the
+# newest release, a commit-SHA pin and a repository with no releases all
+# print nothing.
 #
 # Notifying only: nothing here changes a pin or moves the checkout, and a
 # failed or timed-out check is a warning, never a refused launch. The bound is
 # short because an unreachable GitHub must cost seconds, not a hung launch.
+#
+# Stdout is the notice and stderr is the account of a failure - a
+# configuration error, a `gh` that could not resolve GitHub, an uncaught
+# throw - so BOTH are captured, separately (Issue #1020). Capturing stdout
+# alone made "no explanation given" the only answer this warning could ever
+# give: the reason existed, on a stream nothing was reading, so three failed
+# checks during a DNS outage on GRQ-23 were logged as mysteries.
+RELEASE_NOTICE_TIMEOUT_SECONDS=120
 release_notice=""
 release_notice_status=0
-release_notice="$(bounded 120 "${DENO_CMD}" run \
+release_notice_err="$(mktemp -t vibe-release-notice.XXXXXX)"
+release_notice="$(bounded "${RELEASE_NOTICE_TIMEOUT_SECONDS}" "${DENO_CMD}" run \
   --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
   --allow-env --allow-read --allow-run \
   "${BASE_DIR}/worker/deno/mod.ts" release-notice \
-  --base-dir "${BASE_DIR}" </dev/null)" || release_notice_status=$?
+  --base-dir "${BASE_DIR}" </dev/null 2>"${release_notice_err}")" ||
+  release_notice_status=$?
 if ((release_notice_status != 0)); then
-  echo "[run.sh] warning: could not check for a newer release (status ${release_notice_status}) - ${release_notice:-no explanation given}" >&2
-  log_run_core "release-notice: failed (status ${release_notice_status}) - ${release_notice:-no explanation given}"
+  # A check the bound killed is a different fact from a check that ran and
+  # failed, and the log says which: the first never reached the point where
+  # it would have explained itself, so its silence is expected rather than a
+  # missing explanation.
+  if bounded_timed_out "${release_notice_status}"; then
+    release_notice_detail="timed out after ${RELEASE_NOTICE_TIMEOUT_SECONDS}s"
+  else
+    release_notice_detail="$(runtime_error_detail "${release_notice_err}")"
+  fi
+  echo "[run.sh] warning: could not check for a newer release (status ${release_notice_status}) - ${release_notice_detail}" >&2
+  log_run_core "release-notice: failed (status ${release_notice_status}) - ${release_notice_detail}"
 elif [[ -n "${release_notice}" ]]; then
   echo "${release_notice}" >&2
   log_run_core "${release_notice}"
 fi
+rm -f "${release_notice_err}"
 # The plan resolves and validates the container runtime, computes the
 # content-derived image reference, and constructs the fixed least-privilege
 # mount set. A missing runtime, config file or credential directory exits
@@ -709,7 +763,14 @@ bounded 300 "${DENO_CMD}" run \
   --refuse-live </dev/null >&2 || reap_status=$?
 if ((reap_status == ANOTHER_WORKER_RUNNING_EXIT)); then
   echo "[run.sh] another worker is already running on this host - one worker per host; not launching (Issue #26)" >&2
-  exit 1
+  # The reaper's own status leaves this launcher unchanged (Issue #1056). It
+  # used to collapse to 1, which the outcome recorder reads as "a bootstrap,
+  # config or loop failure the worker reported itself" - a healthy host
+  # describing itself as a crashed one, and climbing the escalation ladder
+  # for behaving exactly as designed. Under cron or launchd, where the
+  # scheduler's fixed interval is the retry, that is the normal case rather
+  # than an edge one.
+  exit "${ANOTHER_WORKER_RUNNING_EXIT}"
 elif ((reap_status != 0)); then
   echo "[run.sh] warning: the pre-launch container reaper did not complete" >&2
 fi
@@ -1055,16 +1116,6 @@ for volume in ${volume_names[@]+"${volume_names[@]}"}; do
     "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null
   fi
 done
-# One line of a captured stderr file, for a message an operator reads.
-#
-# Empty output becomes an explicit "no explanation given" rather than a
-# message that trails off — a failure with no words is still a failure.
-runtime_error_detail() {
-  local text
-  text="$(tr '\n' ' ' <"$1" 2>/dev/null | sed 's/  */ /g; s/^ //; s/ $//')"
-  printf '%s' "${text:-no explanation given}"
-}
-
 # Recreate one named volume, loudly (Issues #229, #478, #731).
 #
 # The removal verb comes from the plan — Docker and Podman spell it

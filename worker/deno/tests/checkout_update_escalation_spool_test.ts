@@ -28,9 +28,28 @@ import {
   type CheckoutEscalationState,
   type CheckoutUpdateDeps,
   type CheckoutUpdateEscalationContext,
+  emptyCheckoutStreak,
+  parseCheckoutStreak,
   updateCheckout,
 } from "../lib/checkout_update.ts";
 import type { Result } from "../types.ts";
+
+/**
+ * An hourly clock, one tick per failing run.
+ *
+ * The escalation needs an elapsed span as well as a count since Issue #1017,
+ * and these tests drive several "runs" inside a millisecond. An hour between
+ * launches is the cadence the threshold was written for, so the streaks below
+ * mean what they always meant.
+ */
+function hourlyClock(): () => number {
+  let seconds = 1_700_000_000;
+  return () => {
+    const current = seconds;
+    seconds += 3600;
+    return current;
+  };
+}
 
 /** A checkout update that always fails, as a lost network makes it. */
 const FAILING_RESET: Partial<CheckoutUpdateDeps> = {
@@ -42,6 +61,7 @@ const FAILING_RESET: Partial<CheckoutUpdateDeps> = {
       ),
     } as Result<void>),
   describeCheckoutState: () => Promise.resolve(null),
+  now: hourlyClock(),
 };
 
 /** A checkout update that succeeds. */
@@ -249,7 +269,10 @@ Deno.test("updateCheckout - a successful update flushes the spool and clears it 
       flushed[0]?.error ?? "",
       "Could not resolve hostname github.com",
     );
-    assertEquals((await Deno.readTextFile(paths.streakFile)).trim(), "0");
+    assertEquals(
+      parseCheckoutStreak(await Deno.readTextFile(paths.streakFile)),
+      emptyCheckoutStreak(),
+    );
     assertEquals(
       await readState(paths.spoolFile),
       null,

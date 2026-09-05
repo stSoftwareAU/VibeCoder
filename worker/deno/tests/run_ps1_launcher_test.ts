@@ -26,6 +26,7 @@ import {
   isNetworkUnavailableLaunch,
 } from "../lib/container_restart_backoff.ts";
 import { NETWORK_UNAVAILABLE_MARKER } from "../lib/github_user_resolution.ts";
+import { ANOTHER_WORKER_RUNNING_EXIT } from "../commands/container_reap.ts";
 import { CONTAINER_WEDGED_EXIT_STATUS } from "../lib/container_watchdog.ts";
 import { parseKeepReferences } from "../lib/container_image_prune.ts";
 import { executableLines } from "../lib/launcher_source.ts";
@@ -403,7 +404,14 @@ Deno.test({
     try {
       const outcome = await runLauncher(harness);
 
-      assert(outcome.code !== 0, "a second worker must not launch");
+      // The same status run.sh reports (Issue #1056): the by-design stop is
+      // ANOTHER_WORKER_RUNNING_EXIT on both launchers, so the outcome
+      // recorder recognises it rather than reading it as a worker crash.
+      assertEquals(
+        outcome.code,
+        ANOTHER_WORKER_RUNNING_EXIT,
+        `a second worker must not launch, and must say why: ${outcome.stderr}`,
+      );
       assertStringIncludes(outcome.stderr, "another worker is already running");
       assertStringIncludes(outcome.stderr, live);
       assertEquals(await recorded(harness, "kill"), null);

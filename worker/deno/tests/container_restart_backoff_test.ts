@@ -18,7 +18,11 @@
  *     re-probe cadence, and never as a failure (Issue #342);
  *   - a run stopped by a signal is recorded as a stop: counted neither up nor
  *     down, escalating nothing, while the supervisor's own deadline kill stays
- *     a failure (Issue #1072).
+ *     a failure (Issue #1072);
+ *   - a launch stopped because this host's one worker is already running is
+ *     the design invariant of Issue #26 holding, not a fault: the streak
+ *     resets, the wait is the base cadence, and nothing escalates however
+ *     many times the scheduler fires (Issue #1056).
  *
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
@@ -42,6 +46,7 @@ import {
   resolveInFlightIssue,
   SUPERVISOR_DEADLINE_EXIT_CODES,
 } from "../lib/container_restart_backoff.ts";
+import { ANOTHER_WORKER_RUNNING_EXIT } from "../commands/container_reap.ts";
 import {
   consumeQuotaPauseMarker,
   QUOTA_PAUSE_EXIT_STATUS,
@@ -139,6 +144,103 @@ function record(
     },
   });
 }
+
+// ---------------------------------------------------------------------------
+// One worker per host is not a failure (Issues #26, #1056)
+// ---------------------------------------------------------------------------
+
+Deno.test("classifyLauncherOutcome - one worker per host is a by-design stop, not a crash (Issue #1056)", () => {
+  assertEquals(
+    classifyLauncherOutcome(ANOTHER_WORKER_RUNNING_EXIT),
+    "another_worker_running",
+  );
+  // Only that status. The neighbouring ones stay exactly what they were, so
+  // the new class cannot swallow a real fault.
+  assertEquals(classifyLauncherOutcome(1), "failure");
+  assertEquals(classifyLauncherOutcome(3), "failure");
+  assertEquals(classifyLauncherOutcome(5), "failure");
+  // A clean run is still a clean run, and a declared pause still wins.
+  assertEquals(classifyLauncherOutcome(0), "success");
+  assertEquals(
+    classifyLauncherOutcome(ANOTHER_WORKER_RUNNING_EXIT, quotaMarker()),
+    "quota_pause",
+  );
+});
+
+Deno.test("recordContainerRestartOutcome - a host whose worker is already running never escalates (Issue #1056)", async () => {
+  const harness = await setupHarness();
+  try {
+    // The scheduler fires far more often than the escalation threshold, which
+    // is exactly the live case: a long cycle under a short cron interval.
+    const outcomes: ContainerRestartOutcome[] = [];
+    for (let i = 0; i < 6; i++) {
+      outcomes.push(
+        await record(harness, ANOTHER_WORKER_RUNNING_EXIT, "runtime_detection"),
+      );
+    }
+
+    for (const outcome of outcomes) {
+      assertEquals(outcome.kind, "another_worker_running");
+      assertEquals(outcome.phase, null);
+      assertEquals(outcome.consecutiveFailures, 0);
+      assertEquals(outcome.escalated, false);
+      assertEquals(outcome.recovered, false);
+      // The base cadence, never a doubling ladder: waiting longer does not
+      // make the running worker finish any sooner.
+      assertEquals(outcome.backoffSeconds, FAST_CONFIG.baseSleepSeconds);
+    }
+
+    assertEquals(harness.escalations.length, 0);
+    const state = await loadContainerRestartState(harness.workDir);
+    assertEquals(state.consecutiveFailures, 0);
+    assertEquals(state.lastPhase, null);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("recordContainerRestartOutcome - the by-design stop clears a streak and is visible, without claiming a recovery (Issue #1056)", async () => {
+  const harness = await setupHarness();
+  try {
+    await record(harness, 17, "container_run");
+    await record(harness, 17, "container_run");
+
+    const stopped = await record(
+      harness,
+      ANOTHER_WORKER_RUNNING_EXIT,
+      "runtime_detection",
+    );
+    assertEquals(stopped.consecutiveFailures, 0);
+    assertEquals(stopped.recovered, false);
+
+    const summary = await summariseSelfHealEvents({ workDir: harness.workDir });
+    const actions = summary.recent.map((e) => e.action);
+    assert(
+      actions.includes("another_worker_running"),
+      `the stop must be visible to operators, got: ${actions.join(", ")}`,
+    );
+    assertEquals(actions.includes("escalated"), false);
+    assertEquals(actions.includes("recovered"), false);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("recordContainerRestartOutcome - a genuine crash after a by-design stop still backs off (Issue #1056)", async () => {
+  const harness = await setupHarness();
+  try {
+    await record(harness, ANOTHER_WORKER_RUNNING_EXIT, "runtime_detection");
+
+    // The change must not be satisfiable by never escalating: a real failure
+    // on the next run counts from one and climbs as it always did.
+    const crash = await record(harness, 1, "image_build");
+    assertEquals(crash.kind, "failure");
+    assertEquals(crash.phase, "image_build");
+    assertEquals(crash.consecutiveFailures, 1);
+  } finally {
+    await harness.cleanup();
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Phase resolution

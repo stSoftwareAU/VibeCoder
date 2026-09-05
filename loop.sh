@@ -217,6 +217,13 @@ readonly RUN_KILLED_EXIT=137
 # cadence rather than a grown backoff.
 readonly QUOTA_PAUSE_EXIT=75
 
+# The launcher's "this host's one worker is already running" status
+# (ANOTHER_WORKER_RUNNING_EXIT in worker/deno/commands/container_reap.ts,
+# Issues #26, #1056). The design invariant holding, not a crash - so the
+# supervisor says so rather than calling a healthy host a failing one, and the
+# recorder answers with the base cadence.
+readonly ANOTHER_WORKER_RUNNING_EXIT=4
+
 # Reap what a killed run.sh leaves behind (Issue #322).
 #
 # run.sh execs the worker inside a container named `vibe-coder-<run.sh pid>`.
@@ -411,6 +418,10 @@ while true; do
     elif [[ "${run_status}" -eq "${QUOTA_PAUSE_EXIT}" ]]; then
         echo "loop.sh: ./run.sh paused — this host is out of quota (status ${run_status});" \
              "re-probing on the quota cadence, not backing off (Issue #342)"
+    elif [[ "${run_status}" -eq "${ANOTHER_WORKER_RUNNING_EXIT}" ]]; then
+        echo "loop.sh: ./run.sh did not launch — another worker is already running on this" \
+             "host (status ${run_status}); one worker per host, so this is not a failure" \
+             "(Issues #26, #1056)"
     elif [[ "${run_status}" -ne 0 ]]; then
         echo "loop.sh: ./run.sh exited with status ${run_status} — backing off and retrying"
     fi
