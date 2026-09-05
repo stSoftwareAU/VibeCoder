@@ -132,18 +132,80 @@ function assertFailure(
   return result;
 }
 
+/**
+ * Assert the *directing* set (axis 1) exactly, and that every one of its
+ * members also carries input trust (Issue #1066).
+ *
+ * The two axes are no longer the same list: `authorisedCommenters` is axis 1
+ * plus the known logins — the Vibe Coders and the operator's
+ * `authorized_commenters` bots — so it is a superset by construction.
+ */
 function assertSameSet(
   authors: { allowedAuthors: string[]; authorisedCommenters: string[] },
   expected: string[],
 ): void {
   assertEquals(authors.allowedAuthors, expected);
-  assertEquals(authors.authorisedCommenters, expected);
+  for (const login of expected) {
+    assert(
+      authors.authorisedCommenters.includes(login),
+      `${login} may direct work, so its input must be accepted too`,
+    );
+  }
 }
+
+Deno.test("resolveDerivedAuthors - the input axis adds the Vibe Coders and the known bots (Issue #1066)", async () => {
+  installRouter({
+    collaborators: {
+      [REPO_A]: ok(JSON.stringify([
+        rawCollaborator("Alice", { push: true }),
+        rawCollaborator("stsvcbot", { push: true }),
+      ])),
+    },
+  });
+  const result = assertSuccess(
+    await resolve({
+      cycleId: 1066.1,
+      serviceAccounts: ["stsvcbot"],
+      fleetPrAuthors: ["SiblingBot"],
+      knownInputLogins: ["github-copilot[bot]"],
+    }),
+  );
+  const authors = result.byRepo.get(REPO_A)!;
+  // A Vibe Coder holds write access and is still refused the directing axis.
+  assertEquals(authors.allowedAuthors, ["alice"]);
+  // …and is accepted on the input axis, alongside the named bot.
+  assertEquals(authors.authorisedCommenters, [
+    "alice",
+    "host-bot",
+    "stsvcbot",
+    "siblingbot",
+    "github-copilot[bot]",
+  ]);
+});
+
+Deno.test("resolveDerivedAuthors - an empty Vibe Coder login set fails closed (Issue #1066)", async () => {
+  installRouter({
+    collaborators: {
+      [REPO_A]: ok(JSON.stringify([rawCollaborator("Alice", { push: true })])),
+    },
+  });
+  const result = await resolve({
+    cycleId: 1066.2,
+    githubUser: "",
+    serviceAccounts: [],
+    fleetPrAuthors: [],
+  });
+  assertEquals(result.ok, false, "nothing to subtract must not resolve");
+  if (result.ok) throw new Error("unreachable");
+  assertEquals(result.failedSource, "vibe-coder-logins");
+});
 
 function resolve(
   overrides: {
     repos?: readonly string[];
     serviceAccounts?: readonly string[];
+    fleetPrAuthors?: readonly string[];
+    knownInputLogins?: readonly string[];
     githubUser?: string;
     exclusionTeamSlug?: string;
     cycleId?: unknown;
@@ -154,6 +216,8 @@ function resolve(
     {
       repos: overrides.repos ?? [REPO_A],
       serviceAccounts: overrides.serviceAccounts ?? [],
+      fleetPrAuthors: overrides.fleetPrAuthors ?? [],
+      knownInputLogins: overrides.knownInputLogins ?? [],
       githubUser: overrides.githubUser ?? HOST,
       exclusionTeamSlug: overrides.exclusionTeamSlug,
     },

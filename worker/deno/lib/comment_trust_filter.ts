@@ -14,6 +14,7 @@
 
 import { SHELL_OPERATIONAL_DEFAULTS } from "./operational_defaults.ts";
 import { detectSuspiciousPatterns } from "./security.ts";
+import { normaliseLogin } from "./identity_guard.ts";
 import type { IssueComment, IssueData } from "./comment_filter.ts";
 import {
   applyCommentRateLimits,
@@ -95,7 +96,11 @@ export interface TrustAnnotatedResult {
  * Classify a comment author as trusted or untrusted.
  *
  * An author is trusted if they appear in either the `allowedAuthors`
- * or `authorisedCommenters` lists (case-sensitive exact match).
+ * (may direct work) or `authorisedCommenters` (input we act on) sets.
+ *
+ * Case-insensitive, because GitHub logins are (Issue #1066): both sets are
+ * now derived from repository collaborators and normalised to lower case,
+ * while a comment author arrives in the account's own casing.
  *
  * @param authorLogin - The GitHub username of the comment author
  * @param options - Trust configuration containing author lists
@@ -106,15 +111,15 @@ export function classifyCommentAuthor(
   options: Pick<CommentTrustOptions, "allowedAuthors" | "authorisedCommenters">,
 ): TrustLevel {
   const { allowedAuthors, authorisedCommenters } = options;
+  const key = normaliseLogin(authorLogin);
+  if (!key) return "UNTRUSTED";
 
-  if (allowedAuthors.includes(authorLogin)) {
-    return "TRUSTED";
-  }
-  if (authorisedCommenters.includes(authorLogin)) {
-    return "TRUSTED";
-  }
+  const listed = (logins: readonly string[]) =>
+    logins.some((a) => typeof a === "string" && normaliseLogin(a) === key);
 
-  return "UNTRUSTED";
+  return listed(allowedAuthors) || listed(authorisedCommenters)
+    ? "TRUSTED"
+    : "UNTRUSTED";
 }
 
 /**

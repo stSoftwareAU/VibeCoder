@@ -476,6 +476,26 @@ export const DEFAULT_TRUSTED_REVIEW_BOTS: readonly string[] = [
 ] as const;
 
 /**
+ * Default `authorized_commenters` — the known bots whose input the worker
+ * acts on (Issue #1066).
+ *
+ * Trust for **directing** work is derived from repository permissions, and a
+ * GitHub App is never a repository collaborator: Copilot's reviews and the
+ * Actions bot's results would silently stop being processed under a pure
+ * `hasWriteAccess` rule. They are a third category the one-sentence rule does
+ * not cover — neither humans with write access nor Vibe Coders — so they are
+ * trusted because they are *named*, and named only for input.
+ *
+ * Applied only when `authorized_commenters` is absent from `.config.json`,
+ * so an operator who sets the key keeps exactly what they wrote — including
+ * an empty list, which denies every bot.
+ */
+export const DEFAULT_TRUSTED_INPUT_BOTS: readonly string[] = [
+  "github-copilot[bot]",
+  "github-actions[bot]",
+] as const;
+
+/**
  * @deprecated Use OPERATIONAL_DEFAULTS instead (Issue #277).
  * Kept for backward compatibility with existing code.
  */
@@ -1296,10 +1316,9 @@ export function buildDefaultWorkerConfig(
     // is iterated by the configured-label collector. The work-on and
     // low-priority labels have dedicated, author-checked collectors.
     issueLabels: [LABEL_DEFAULTS.topPriorityLabel],
-    authorisedCommenters: [],
-    // Issue #252: local arrays remain the default source so this schema
-    // change is behaviour-neutral until the GitHub-derived wiring lands.
-    authorSource: "config",
+    // Issue #1066: axis 2 only — the known bots whose input we act on. Axis
+    // 1 (who may direct work) is derived from collaborators and starts empty.
+    authorisedCommenters: [...DEFAULT_TRUSTED_INPUT_BOTS],
     // Issue #3528: identity-guard allowlist. Empty by default — the guard
     // warns loudly that it is inactive until operators configure it.
     serviceAccounts: [],

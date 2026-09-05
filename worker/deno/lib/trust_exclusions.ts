@@ -90,28 +90,50 @@ export function isBotLogin(login: string): boolean {
   return BOT_PATTERNS.some((pattern) => pattern.test(normalised));
 }
 
-/**
- * Host login plus every `service_accounts` entry, all normalised.
- *
- * Bot-shaped logins among those inputs are included like any other
- * account; callers also apply {@link isBotLogin} to collaborator logins
- * so a `[bot]` account that is not in `service_accounts` is still
- * excluded.
- */
-export function resolveStaticExclusions(input: {
+/** The configuration keys that name the fleet's own GitHub logins. */
+export const VIBE_CODER_LOGIN_KEYS = [
+  "service_accounts",
+  "fleet_pr_authors",
+] as const;
+
+/** Inputs from which the fleet's own logins are resolved. */
+export interface VibeCoderLoginInput {
+  /** `service_accounts` — the logins this fleet authenticates as. */
   serviceAccounts: readonly string[];
-  githubUser: string;
-}): Set<string> {
-  const exclusions = new Set<string>();
+  /** `fleet_pr_authors` — sibling fleet hosts' logins. */
+  fleetPrAuthors: readonly string[];
+  /** This host's own resolved `gh` login, when known. */
+  githubUser?: string;
+}
+
+/**
+ * The single "these logins are Vibe Coders" set (Issue #1066).
+ *
+ * The fleet accounts hold write access by necessity — they push branches —
+ * so under the collaborator-derived trust rule they would otherwise become
+ * authors entitled to direct their own work, which is the exact opposite of
+ * the requirement. The exclusion therefore defaults to the fleet login list
+ * the configuration already carries (`service_accounts` and
+ * `fleet_pr_authors`) plus this host's own login, with no operator action
+ * required; `exclusion_team` remains an optional *additional* exclusion for
+ * org-team-based setups.
+ *
+ * Bot-shaped logins among these inputs are included like any other account;
+ * callers also apply {@link isBotLogin} to collaborator logins so a `[bot]`
+ * account that is named nowhere here is still excluded.
+ */
+export function resolveVibeCoderLogins(
+  input: VibeCoderLoginInput,
+): Set<string> {
+  const logins = new Set<string>();
   const add = (login: string | undefined) => {
     const normalised = normaliseLogin(login ?? "");
-    if (normalised) exclusions.add(normalised);
+    if (normalised) logins.add(normalised);
   };
   add(input.githubUser);
-  for (const account of input.serviceAccounts) {
-    add(account);
-  }
-  return exclusions;
+  for (const account of input.serviceAccounts) add(account);
+  for (const sibling of input.fleetPrAuthors) add(sibling);
+  return logins;
 }
 
 /** Extract `(HTTP nnn)` or fall back to 403/404 keywords. */

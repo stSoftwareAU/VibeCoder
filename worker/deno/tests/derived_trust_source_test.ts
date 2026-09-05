@@ -121,17 +121,16 @@ Deno.test("fold summary - names the per-repo sizes so a narrowing is visible", (
 // Question 1: does a fetch failure ever widen trust?
 // ===========================================================================
 
-/** Production deps with `author_source` and a stubbed resolver. */
+/** Production deps with a stubbed resolver (Issue #1066: there is no mode). */
 async function depsWith(
-  authorSource: "config" | "github",
   resolver: () => Promise<DerivedAuthorsResult>,
   configOverrides: Partial<WorkerConfig> = {},
 ) {
   const config = buildDefaultWorkerConfig({
     repos: ["org/a", "org/b"],
+    serviceAccounts: ["host-bot"],
     ...configOverrides,
   });
-  config.authorSource = authorSource;
   return await createProductionRunCoreDeps({
     repoDir: "/tmp/test-repo-256",
     workDir: "/tmp/test-work-256",
@@ -147,7 +146,6 @@ Deno.test("refreshTrustedAuthors - a resolver failure never falls back to popula
   // populated, and a GitHub outage must still stand the cycle down rather
   // than quietly restoring that stale list.
   const { deps, cleanup } = await depsWith(
-    "github",
     () =>
       Promise.resolve({
         ok: false,
@@ -198,7 +196,6 @@ Deno.test("refreshTrustedAuthors - github source populates the snapshot from the
   // even though `allowed_authors` names the local one and not the derived.
   _resetSuppressionAuthorAllowlist();
   const { deps, cleanup } = await depsWith(
-    "github",
     () =>
       Promise.resolve({
         ok: true,
@@ -223,7 +220,7 @@ Deno.test("refreshTrustedAuthors - github source populates the snapshot from the
     assert(
       !suppressionHonoured("ignored-human"),
       "allowed_authors is populated with ignored-human and must have NO " +
-        "effect under author_source=github",
+        "effect — the local array grants nothing",
     );
     assert(
       !suppressionHonoured("bob"),
@@ -236,10 +233,11 @@ Deno.test("refreshTrustedAuthors - github source populates the snapshot from the
   }
 });
 
-Deno.test("refreshTrustedAuthors - config source still applies the static arrays (Issue #256)", async () => {
+Deno.test("refreshTrustedAuthors - the local arrays are never a fallback source (Issues #256, #1066)", async () => {
+  // There is no `author_source: "config"` any more. A resolve that trusts
+  // nobody trusts nobody, however populated the local arrays are.
   _resetSuppressionAuthorAllowlist();
   const { deps, cleanup } = await depsWith(
-    "config",
     () => Promise.resolve({ ok: true, byRepo: new Map() }),
     {
       allowedAuthors: ["static-human"],
@@ -249,8 +247,8 @@ Deno.test("refreshTrustedAuthors - config source still applies the static arrays
   try {
     assertEquals((await deps.refreshTrustedAuthors!()).ok, true);
     assert(
-      suppressionHonoured("static-human"),
-      "the default source must be unchanged by this issue",
+      !suppressionHonoured("static-human"),
+      "a login present only in the local array must never become trusted",
     );
   } finally {
     cleanup();
@@ -263,7 +261,6 @@ Deno.test("refreshTrustedAuthors - a failed resolve leaves the previous snapshot
   // failure, the stale local array never becomes trusted as a side effect.
   _resetSuppressionAuthorAllowlist();
   const { deps, cleanup } = await depsWith(
-    "github",
     () =>
       Promise.resolve({
         ok: false,
@@ -284,27 +281,29 @@ Deno.test("refreshTrustedAuthors - a failed resolve leaves the previous snapshot
   }
 });
 
-Deno.test("refreshTrustedAuthors - config source never calls the resolver (Issue #256)", async () => {
+Deno.test("refreshTrustedAuthors - every refresh asks GitHub (Issues #256, #1066)", async () => {
+  // There is no local-array mode left to short-circuit the resolve.
   let called = 0;
-  const { deps, cleanup } = await depsWith("config", () => {
+  const { deps, cleanup } = await depsWith(() => {
     called++;
     return Promise.resolve({ ok: true, byRepo: new Map() });
   }, { allowedAuthors: ["alice"] });
   try {
     assertEquals((await deps.refreshTrustedAuthors!()).ok, true);
-    assertEquals(called, 0, "the static source must not reach GitHub");
+    assertEquals(called, 1, "trust must always be derived, never read locally");
   } finally {
     cleanup();
   }
 });
 
 Deno.test("refreshTrustedAuthors - an all-repos-fail resolve is a failure, not an empty success", async () => {
-  const { deps, cleanup } = await depsWith("github", () =>
+  const { deps, cleanup } = await depsWith(() =>
     Promise.resolve({
       ok: false,
       reason: "HTTP 403: Forbidden",
       failedSource: "exclusion-team",
-    }));
+    })
+  );
   try {
     const outcome = await deps.refreshTrustedAuthors!();
     assertEquals(outcome.ok, false);
@@ -317,78 +316,49 @@ Deno.test("refreshTrustedAuthors - an all-repos-fail resolve is a failure, not a
 // Start-up validation under the derived source
 // ===========================================================================
 
-Deno.test("validateFleetConfig - empty allowed_authors is not a warning under github (Issue #256)", () => {
+Deno.test("validateFleetConfig - an empty allowed_authors is never a finding (Issues #256, #1066)", () => {
+  // It is now the healthy state: the array grants nothing, and fleet identity
+  // comes from `service_accounts` / `fleet_pr_authors`. A warning that fires
+  // on every healthy start-up trains operators to ignore the validator.
   const result = validateFleetConfig({
     githubUser: "host-bot",
     allowedAuthors: [],
     fleetPrAuthors: ["host-bot"],
     serviceAccounts: [],
-    authorSource: "github",
   });
-  assert(
-    !result.messages.some((m) => m.includes("allowed_authors is empty")),
-    `a warning that fires on every healthy start-up trains operators to ` +
-      `ignore the validator; got: ${JSON.stringify(result.messages)}`,
+  assertEquals(
+    result.messages,
+    [],
+    `got: ${JSON.stringify(result.messages)}`,
   );
+  assertEquals(result.level, "ok");
 });
 
-Deno.test("validateFleetConfig - empty allowed_authors still warns under config (Issue #256)", () => {
+Deno.test("validateFleetConfig - a sibling missing from allowed_authors is no longer a smell (Issue #1066)", () => {
   const result = validateFleetConfig({
     githubUser: "host-bot",
     allowedAuthors: [],
-    fleetPrAuthors: ["host-bot"],
-    serviceAccounts: [],
-    authorSource: "config",
+    fleetPrAuthors: ["sibling-bot"],
+    serviceAccounts: ["stservice"],
   });
-  assert(result.messages.some((m) => m.includes("allowed_authors is empty")));
+  assertEquals(result.level, "ok", JSON.stringify(result.messages));
 });
 
-Deno.test("validateFleetConfig - an absent authorSource behaves as config (Issue #256)", () => {
-  const result = validateFleetConfig({
-    githubUser: "host-bot",
-    allowedAuthors: [],
-    fleetPrAuthors: ["host-bot"],
-  });
-  assert(result.messages.some((m) => m.includes("allowed_authors is empty")));
-});
-
-Deno.test("production deps - the github source seeds trust CLOSED, before any refresh (Issue #256)", async () => {
+Deno.test("production deps - trust is seeded CLOSED, before any refresh (Issues #256, #1066)", async () => {
   // The construction-time snapshot is live until the first refresh lands.
   // Seeding it from the local arrays would make a populated allowed_authors
   // genuinely trusted for that window — the exact thing the derived source
-  // exists to prevent. Trust starts empty and is opened only by a
-  // successful resolve.
+  // exists to prevent. Trust starts empty and is opened only by a successful
+  // resolve. Since #1066 there is no mode in which it starts otherwise.
   _resetSuppressionAuthorAllowlist();
   const { cleanup } = await depsWith(
-    "github",
     () => Promise.resolve({ ok: true, byRepo: new Map() }),
     { allowedAuthors: ["stale-human"], authorisedCommenters: ["stale-human"] },
   );
   try {
     assert(
       !suppressionHonoured("stale-human"),
-      "no refresh has run yet, so nobody is trusted under author_source=github",
-    );
-  } finally {
-    cleanup();
-    _resetSuppressionAuthorAllowlist();
-  }
-});
-
-Deno.test("production deps - the config source still seeds from the static arrays (Issue #256)", async () => {
-  _resetSuppressionAuthorAllowlist();
-  const { cleanup } = await depsWith(
-    "config",
-    () => Promise.resolve({ ok: true, byRepo: new Map() }),
-    {
-      allowedAuthors: ["static-human"],
-      authorisedCommenters: ["static-human"],
-    },
-  );
-  try {
-    assert(
-      suppressionHonoured("static-human"),
-      "the default source must keep its construction-time behaviour",
+      "no refresh has run yet, so nobody is trusted",
     );
   } finally {
     cleanup();

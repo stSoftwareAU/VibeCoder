@@ -272,7 +272,10 @@ import {
 } from "./slot_idle_accounting.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { resolveRunId } from "./audit_journal.ts";
-import { createTrustSnapshotHolder } from "./trust_snapshot.ts";
+import {
+  createTrustSnapshotHolder,
+  setLiveTrustedAuthors,
+} from "./trust_snapshot.ts";
 import {
   formatDerivedAuthorsFoldSummary,
   intersectDerivedAuthors,
@@ -624,20 +627,23 @@ export async function createProductionRunCoreDeps(
   // derived fleet-author sets are recomputed on every apply so they
   // cannot drift from the raw arrays (#4023/#4079).
   //
-  // Issue #256: under `author_source: "github"` the seed is **empty**, not
-  // the local arrays. The construction-time seed is live until the first
-  // refresh lands, so seeding it from `allowed_authors` would make a
-  // populated local list genuinely trusted for that window — the exact thing
-  // the derived source is supposed to make impossible. Trust starts closed
-  // and is opened only by a successful resolve; if the first resolve fails,
-  // the skip-cycle gate stands the cycle down with nobody trusted, which is
-  // the correct end state rather than a stale-list fallback.
-  const trustSeed = config.authorSource === "github"
-    ? { allowedAuthors: [], authorisedCommenters: [] }
-    : {
-      allowedAuthors: config.allowedAuthors ?? [],
-      authorisedCommenters: config.authorisedCommenters ?? [],
-    };
+  // Issue #256, #1066: the seed is **empty**, always. The construction-time
+  // seed is live until the first refresh lands, so seeding it from
+  // `allowed_authors` would make a populated local list genuinely trusted for
+  // that window — the exact thing the derived source exists to make
+  // impossible. Trust starts closed and is opened only by a successful
+  // resolve; if the first resolve fails, the skip-cycle gate stands the cycle
+  // down with nobody trusted, which is the correct end state rather than a
+  // stale-list fallback.
+  const trustSeed = { allowedAuthors: [], authorisedCommenters: [] };
+  // Issue #1066: the operator's known-input allowlist (`authorized_commenters`
+  // — Copilot, Actions, any other named bot), captured **before** the empty
+  // seed is applied. `applyTrustSnapshot` writes the resolved sets back onto
+  // `config`, so reading the key off `config` at refresh time would read the
+  // seed's empty array and silently stop processing every bot's feedback.
+  const knownInputLogins: readonly string[] = [
+    ...(config.authorisedCommenters ?? []),
+  ];
   const trustHolder = createTrustSnapshotHolder(
     {
       githubUser,
@@ -700,6 +706,16 @@ export async function createProductionRunCoreDeps(
     authorisedCommenters: string[];
   }): void {
     const snap = trustHolder.apply(sets);
+    setLiveTrustedAuthors(snap);
+    // Issue #1066: sub-commands (`work_on_issue`, `planning_processor`, the
+    // question and revision processors, …) are handed this same `config`
+    // object and read `allowedAuthors` / `authorisedCommenters` straight off
+    // it. Without the write-back they would keep seeing the load-time value —
+    // which is now empty — and every one of them would fail closed on a
+    // legitimate collaborator. One assignment keeps them on the same set as
+    // the snapshot's own consumers.
+    config.allowedAuthors = [...snap.allowedAuthors];
+    config.authorisedCommenters = [...snap.authorisedCommenters];
     fleetAuthors = snap.fleetAuthors;
     authorisedCommenters = snap.allowedAuthors;
     fleetPrAuthorInput.allowedAuthors = snap.allowedAuthors;
@@ -3324,14 +3340,13 @@ export async function createProductionRunCoreDeps(
       resetRepoAccessLogState();
     },
 
-    // Issue #256: the per-cycle trusted-author refresh, now source-aware.
+    // Issue #256, #1066: the per-cycle trusted-author refresh. There is no
+    // mode switch — this is the only source of trust.
     //
-    // `author_source: "config"` keeps the static arrays — unchanged, and
-    // still the default, so no host flips trust models by upgrading.
-    //
-    // `"github"` resolves write/maintain/admin collaborators minus
-    // exclusions (Issue #254) and folds them to the fleet-wide set. Three
-    // rules, all of them the parent issue's:
+    // It resolves write/maintain/admin collaborators minus the Vibe Coder
+    // logins, minus bots, minus the optional `exclusion_team` (Issue #254),
+    // and folds them to the fleet-wide set. Three rules, all of them the
+    // parent issue's:
     //
     //  1. A resolve failure returns `{ ok: false }`. It never falls back to
     //     the local arrays, even when those arrays are populated — the
@@ -3345,22 +3360,18 @@ export async function createProductionRunCoreDeps(
     //     path, the fleet-PR guards, the heartbeat marker allowlist and
     //     the suppression allowlist all move together or not at all.
     refreshTrustedAuthors: async () => {
-      if (config.authorSource !== "github") {
-        applyTrustSnapshot({
-          allowedAuthors: config.allowedAuthors ?? [],
-          authorisedCommenters: config.authorisedCommenters ?? [],
-        });
-        return { ok: true as const };
-      }
-
       trustRefreshCycle++;
       const resolve = options.resolveTrustedAuthors ?? resolveDerivedAuthors;
       const resolved = await resolve(
         {
           repos: config.repos ?? [],
           serviceAccounts: config.serviceAccounts ?? [],
+          fleetPrAuthors: config.fleetPrAuthors ?? [],
           githubUser,
           exclusionTeamSlug: config.exclusionTeam,
+          // Axis 2's known half: the operator's `authorized_commenters`
+          // (Copilot, Actions, …). The resolver adds the Vibe Coder logins.
+          knownInputLogins,
         },
         {
           cycleId: trustRefreshCycle,
@@ -3371,8 +3382,7 @@ export async function createProductionRunCoreDeps(
       if (!resolved.ok) {
         return {
           ok: false as const,
-          reason:
-            `author_source=github: could not resolve trusted authors from ` +
+          reason: `could not resolve trusted authors from ` +
             `${resolved.failedSource}: ${resolved.reason} — refusing to fall ` +
             `back to the local allowed_authors arrays`,
         };

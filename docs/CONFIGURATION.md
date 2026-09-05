@@ -6,7 +6,7 @@ overview, see the [main README](../README.md).
 ## 📋 Table of Contents
 
 - [Configuration File](#configuration-file)
-- [Author source](#author-source)
+- [Two axes of trust](#two-axes-of-trust)
 - [Multiple Allowed Authors](#multiple-allowed-authors)
 - [Multiple PR (Pull Request) Reviewers](#multiple-pr-reviewers)
 - [Configuration Defaults](#configuration-defaults)
@@ -45,10 +45,9 @@ to all users unless explicitly overridden.
 }
 ```
 
-The sample above is the default `author_source: "config"` shape
-(`author_source` is omitted because `"config"` is the default). For the
-GitHub-derived alternative, and for which keys stay local under either
-source, see [Author source](#author-source).
+`allowed_authors` in the sample is **not** a trust grant — see
+[Two axes of trust](#two-axes-of-trust) for who may direct the worker and
+whose input it acts on.
 
 > **📝 Note:** The default branch is automatically detected per repository via
 > the GitHub API (API = Application Programming Interface). You
@@ -101,102 +100,126 @@ the credential they declared — a check that runs unauthenticated fails later
 and further from the cause. Values are never logged; only names are.
 
 
-## Author source
+## Two axes of trust
 
-`author_source` selects **where** the trusted-author and authorised-commenter
-sets come from. It is not itself an allowlist. Absent, it defaults to
-`"config"` — today's local arrays — so existing hosts keep today's behaviour.
+Who may **direct** the worker, and whose **input** it acts on, are two
+different questions with two different answers. There is no mode switch: the
+`author_source` key was removed in 1.3.0 (Issue #1066) and a `.config.json`
+still carrying it is refused at load, naming the edit.
 
-| Value | Default? | Where trust comes from |
-| ----- | -------- | ---------------------- |
-| `"config"` | Yes (the default when the key is absent) | The local `.config.json` arrays `allowed_authors` and `authorized_commenters`. An empty `allowed_authors` is a configuration error. |
-| `"github"` | No | Write, maintain, or admin collaborators on each monitored repo, minus the exclusions below. The local arrays are optional and do **not** grant trust. |
+| Actor | May **direct** work (raise / label / schedule) | May **supply input** (test results, code reviews, PR comments) |
+| --- | --- | --- |
+| Human with write access, not a Vibe Coder | **yes** | yes |
+| Vibe Coder (`VibeCoderST`, `stservice`) | **no** | yes |
+| Known bot (`github-copilot[bot]`, `github-actions[bot]`) | **no** | yes |
+| Anyone else — the public, unknown bots | **no** | **no** |
 
-`exclusion_team` is an optional GitHub org team in `org/slug` form
-(for example `stSoftwareAU/vibe-workers`). It is consulted only when
-`author_source` is `"github"`. A bare slug, extra path segment, or
-whitespace is rejected at config load — a typo must not silently disable
-team exclusion. Absent means team exclusion is off.
+### Axis 1 — who may direct work
 
-### Worked example — local arrays (`"config"`)
+Derived from repository permissions, every cycle, from every monitored repo:
 
-This is the historical default and the shape `./setup.sh` still writes.
-`allowed_authors` is required. `authorized_commenters` defaults to the first
-allowed author when omitted.
+```text
+mayDirectWork(repo, login) =
+  hasWriteAccess(repo, login) && !isVibeCoder(login) && !isBot(login)
+```
+
+There is nothing to configure. On a public repository this is the security
+boundary: someone with no write access cannot direct the worker, whatever they
+write in an issue. Adding a colleague is a repository-permission change, not a
+config edit on every host.
+
+The `!isBot` term stands on its own: a bot holding write access still may not
+raise or label work. Write access alone does not confer the right to direct.
+
+### Axis 2 — whose input the worker acts on
+
+Axis 1, **plus a known list** — the Vibe Coder logins and
+`authorized_commenters`. "Known" is exactly the property that cannot be
+derived from repository permissions: a GitHub App is never a repository
+collaborator, so Copilot reviews and Actions results would silently stop being
+processed under a pure `hasWriteAccess` rule.
+
+`authorized_commenters` defaults to `["github-copilot[bot]",
+"github-actions[bot]"]` when the key is absent. Set it — including to `[]` —
+and you get exactly what you wrote.
+
+**The asymmetry is the point.** A Vibe Coder's or a known bot's review is
+accepted as input; neither may schedule or change work.
+
+### Which key serves which axis
+
+| Key | Axis | What it does |
+| --- | ---- | ------------ |
+| _(none — derived)_ | 1 | Who may direct work. Repository collaborators with write/maintain/admin, minus the Vibe Coder logins and bots, intersected across the monitored repos. |
+| `authorized_commenters` | 2 | The known bots whose input the worker acts on. Never a grant of the right to direct work. |
+| `service_accounts` | neither | The fleet's own logins (identity-guard allowlist). Also **the exclusion input** for axis 1, and part of the fleet-identity set that governs scheduling. |
+| `fleet_pr_authors` | neither | Sibling fleet logins. Same two roles as `service_accounts`. |
+| `exclusion_team` | 1 | Optional **additional** exclusion, `org/slug`. Never required to exclude the fleet's own accounts. |
+| `allowed_authors` | neither | **No longer a trust grant** (Issue #1066). Parsed only as the default PR reviewer / assignee when `pr_reviewers` is unset. Set `pr_reviewers` and remove it. |
+| `pr_reviewers` | neither | Who is requested as a reviewer on worker PRs — an operator preference. |
+
+### The fleet exclusion needs no configuration
+
+The Vibe Coder accounts hold repository write access **by necessity** — they
+push branches. Under a collaborator-derived rule they would therefore become
+trusted to direct their own work, which is the exact inverse of the
+requirement. So the exclusion defaults from the fleet login list the
+configuration already carries:
+
+```text
+isVibeCoder(login) = login ∈ (service_accounts ∪ fleet_pr_authors ∪ {github_user})
+```
+
+`exclusion_team` remains available as an *additional* exclusion for
+org-team-based setups, and is never required. A deployment that resolves an
+**empty** fleet login set fails loudly at config load rather than running with
+the workers trusted — `./setup.sh` has defaulted `service_accounts` to the
+resolved worker login since Issue #4030, so reaching that state takes a hand
+edit.
+
+One consequence worth stating: the host's own login is excluded too, so a host
+that authenticates as a person's personal account removes that person from the
+directing set **on that host**. Run the worker as a service account.
+
+### Worked example
 
 ```json
 {
-  "author_source": "config",
-  "allowed_authors": ["alice", "bob"],
-  "authorized_commenters": ["alice", "bob", "github-copilot[bot]"],
-  "pr_reviewers": ["alice"],
   "repos": ["your-org/repo1", "your-org/repo2"],
+  "authorized_commenters": ["github-copilot[bot]", "github-actions[bot]"],
+  "pr_reviewers": ["alice"],
   "service_accounts": ["your-svcbot"],
   "fleet_pr_authors": ["sibling-svcbot"]
 }
 ```
 
-### Worked example — GitHub-derived (`"github"`)
+Anyone who can grant **write** access on a monitored repo can authorise an
+instructor of the worker. That is the intended design, and it is a wider set
+than a hand-edited allowlist.
 
-Trust is recomputed each cycle from GitHub. Anyone who can grant **write**
-access on a monitored repo can authorise an instructor of the worker. That is
-the intended design, and it is a wider set than a hand-edited allowlist.
-
-```json
-{
-  "author_source": "github",
-  "exclusion_team": "your-org/vibe-workers",
-  "pr_reviewers": ["alice"],
-  "repos": ["your-org/repo1", "your-org/repo2"],
-  "service_accounts": ["your-svcbot"],
-  "fleet_pr_authors": ["sibling-svcbot"]
-}
-```
-
-Under `"github"`, leftover `allowed_authors` / `authorized_commenters`
-entries are still **parsed** (so a host can flip back to `"config"` without
-losing the lists) but they are **ignored for trust** and the worker logs a
-deprecation warning naming the leftover logins. Remove them, or set
-`author_source` back to `"config"`, if you meant those entries to grant
-anything.
-
-A missing collaborator-read or `read:org` scope is a **403**, and the cycle
-is skipped — never silently permissive. See
+A missing collaborator-read or `read:org` scope is a **403**, and the cycle is
+skipped — never silently permissive. See
 [Setup — Token scopes for derived trust](SETUP.md#token-scopes-for-derived-trust).
 
-### Keys that stay local
+### Who is excluded from axis 1
 
-These three keys are **never** derived from GitHub, under either source:
-
-| Key | Why it stays local |
-| --- | ------------------ |
-| `service_accounts` | The identity guard's allowlist of logins the worker may operate as. Under `"github"` it is **also the exclusion input**: those logins, plus the host's own `github_user`, are stripped from the collaborator set so a fleet account with write access cannot authorise itself. Together with `fleet_pr_authors` it is the **fleet-identity** set that governs scheduling. |
-| `fleet_pr_authors` | Sibling fleet logins whose PRs this host maintains. Membership grants the worker the right to act on a branch, not a human the right to instruct the worker. This is the **scheduling** list: only logins here (plus `service_accounts` and the host itself) can occupy a work stream or defer an issue. |
-| `pr_reviewers` | Who is requested as a reviewer on worker PRs. Reviewer requests are an operator preference, not a trust grant. |
-
-`loadConfig` still unions `service_accounts` into the effective
-`fleet_pr_authors` — see
-[Service accounts are fleet PR authors too](#service-accounts-are-fleet-pr-authors-too).
-
-### Who is excluded under `"github"`
-
-The derived allowlist is **collaborators minus exclusions**, not "every
-write collaborator". The exclusions are:
+The directing set is **collaborators minus exclusions**, not "every write
+collaborator". The exclusions are:
 
 - the host's own GitHub login
 - every `service_accounts` entry
+- every `fleet_pr_authors` entry
 - every member of `exclusion_team`, when that key is set
 - bot-shaped logins (`[bot]` suffix and the known unsuffixed bots)
 
-Without the self-exclusion, a fleet account that holds write access on a
-monitored repo would authorise itself, and any worker-authored comment
-would be self-trusted. That is why `service_accounts` is an exclusion
-input, not merely an identity-guard allowlist.
+Without the fleet exclusions, a Vibe Coder that holds write access on a
+monitored repo would authorise itself — file an issue, label it `work-on`, and
+work it with no human in the loop. That is why `service_accounts` and
+`fleet_pr_authors` are exclusion inputs, not merely identity keys.
 
 ### Per-cycle refresh and `gh` cost
 
-When `author_source` is `"github"`, the trusted-author snapshot is
-refreshed at the **start of every scan cycle** — not cached across ticks,
+The trusted-author snapshot is refreshed at the **start of every scan cycle** — not cached across ticks,
 and not a last-known-good leftover from a previous success. One paginated
 `gh api` call lists collaborators per monitored repo
 (`repos/<owner>/<repo>/collaborators`); a configured `exclusion_team`
@@ -241,7 +264,7 @@ either:
 | List               | Members              | What membership grants                                                        |
 | ------------------ | -------------------- | ------------------------------------------------------------------------------ |
 | `fleet_pr_authors` | Sibling fleet logins | Their PRs are **maintained** — claimed, fixed, commented on, merged             |
-| Trusted authors    | Trusted humans       | They may **instruct** the worker — issues, labels, comments, invitations. Under `author_source: "config"` this is `allowed_authors`; under `"github"` it is collaborators minus exclusions. |
+| Trusted authors    | Trusted humans       | They may **instruct** the worker — issues, labels, comments, invitations. Derived from write/maintain/admin collaborators minus the Vibe Coder logins and bots — see [Two axes of trust](#two-axes-of-trust). |
 
 `service_accounts` names fleet logins too, so it is unioned into the effective
 `fleet_pr_authors` at load — see
@@ -337,8 +360,7 @@ explicitly overridden.
 | `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence)) |
 | `software_min_versions`      | `{ "claude": "2.1.170" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
 | `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                           |
-| `author_source`              | `config`                  | Where the trusted-author and authorised-commenter sets come from. `"config"` uses the local arrays; `"github"` derives them from write/maintain/admin collaborators minus exclusions. See [Author source](#author-source). |
-| `exclusion_team`             | unset                     | Optional GitHub org team in `org/slug` form, excluded from GitHub-derived allowlists. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. |
+| `exclusion_team`             | unset                     | Optional GitHub org team in `org/slug` form, excluded from the derived directing set **on top of** the Vibe Coder logins. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. See [Two axes of trust](#two-axes-of-trust). |
 
 > **📝 Hardwired labels (not overridable).** Some labels have **no** config key
 > — they are fixed in the codebase and any `.config.json` key that tries to set
@@ -2582,12 +2604,11 @@ The budget log records each invocation's token breakdown, enabling operators to:
 
 ## 👤 Authorised Commenters
 
-> **🔒 Security-First Default:** By default, only trusted authors can
-> trigger PR feedback fixes — `allowed_authors` under `author_source:
-> "config"`, or write collaborators minus exclusions under `"github"`.
-> Bot accounts are **opt-in** for security reasons. Under `"github"`, a
-> leftover `authorized_commenters` entry is parsed but ignored for
-> trust.
+> **🔒 Security-First Default:** Trusted authors — write collaborators minus
+> the Vibe Coder logins and bots — can trigger PR feedback fixes. So can the
+> Vibe Coders and the `authorized_commenters` bots, whose reviews and test
+> results are input the worker acts on but who may **never** raise, label or
+> schedule work. See [Two axes of trust](#two-axes-of-trust).
 
 To add bot accounts to the authorised commenters list, use one of these methods:
 
@@ -2734,14 +2755,12 @@ At startup (and in `diagnose-repo`) the worker now validates this configuration
 and emits `[fleet-config]` lines. The **effective author set is named on every
 run** — `[fleet-config] effective-authors=<login>,<login>` — so the logins the
 guards actually cover are visible without reading `.config.json`. Alongside it:
-an **error** if the effective fleet set is empty, and a **warning** if
-`allowed_authors` is empty or a sibling from `fleet_pr_authors` /
-`service_accounts` is missing from `allowed_authors` (the host's own login is
-never reported as a missing sibling). Under `author_source: "config"`, add
-every fleet login to `allowed_authors` as well so the duplicate guard can
-see them. Under `"github"` those fleet logins are collaborators — and
-then **excluded** via `service_accounts`, which is the point: write access
-must not authorise a worker to instruct itself.
+an **error** if the effective fleet set is empty. An empty `allowed_authors`
+is no longer a finding: the array grants nothing, and fleet identity comes from
+`service_accounts` / `fleet_pr_authors` (Issue #1066). Those fleet logins are
+collaborators on the monitored repos — and are then **excluded** from the
+directing set, which is the point: write access must not authorise a worker to
+instruct itself.
 
 ### Service accounts are fleet PR authors too
 
@@ -2762,19 +2781,18 @@ sibling list**: `config.fleetPrAuthors` is the deduplicated union of
 either key — or both — now reaches every guard, and no consumer can see one key
 without the other.
 
-Under `author_source: "github"`, the trusted-author set that feeds those
-same downstream guards is **collaborators minus exclusions**, not the
-local `allowed_authors` array. `service_accounts` is on both sides of
-that picture: it still unions into the sibling list, and it is also
-stripped from the collaborator set so a fleet login cannot authorise
-itself.
+The trusted-author set that feeds those same downstream guards is
+**collaborators minus exclusions**, not the local `allowed_authors` array
+(Issue #1066). `service_accounts` and `fleet_pr_authors` are on both sides of
+that picture: they union into the sibling list, and they are also stripped from
+the collaborator set so a fleet login cannot authorise itself.
 
 ```mermaid
 flowchart LR
     GCol["GitHub collaborators<br/>write / maintain / admin"] --> X
     Team["exclusion_team members"] --> X
-    S["service_accounts<br/>+ host login"] --> X
-    X["collaborators minus exclusions"] --> T["Trusted authors<br/>+ authorised commenters"]
+    S["service_accounts + fleet_pr_authors<br/>+ host login"] --> X
+    X["collaborators minus exclusions"] --> T["Axis 1: may direct work<br/>(+ axis 2 with the known list)"]
     T --> U
     F["fleet_pr_authors<br/>(or FLEET_PR_AUTHORS)"] --> U
     S --> U
@@ -2783,10 +2801,6 @@ flowchart LR
     style X fill:#2d6a4f,stroke:#1b4332,color:#fff
     style U fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
-
-Under `author_source: "config"` the `GCol` / `Team` / `X` path is unused:
-the trusted-author node is the local `allowed_authors` array, and the
-downstream union is unchanged.
 
 Listing a sibling in both keys is harmless — the union deduplicates
 case-insensitively — and `service_accounts` keeps its own meaning for the

@@ -112,14 +112,14 @@ Deno.test("config_merge - loadConfig with validate option rejects missing repos"
   );
 });
 
-Deno.test("config_merge - loadConfig with validate option rejects missing allowed_authors", async () => {
+Deno.test("config_merge - loadConfig with validate option rejects an empty fleet login set (Issue #1066)", async () => {
   await withTempConfig(
     { repos: ["org/repo"] },
     async (configPath) => {
       await assertRejects(
         () => loadConfig(configPath, { validate: true }),
         Error,
-        "allowed_authors",
+        "fleet login set is empty",
       );
     },
   );
@@ -127,7 +127,11 @@ Deno.test("config_merge - loadConfig with validate option rejects missing allowe
 
 Deno.test("config_merge - loadConfig with validate option passes for valid config", async () => {
   await withTempConfig(
-    { allowed_authors: ["user"], repos: ["org/repo"] },
+    {
+      allowed_authors: ["user"],
+      repos: ["org/repo"],
+      service_accounts: ["vibe-worker"],
+    },
     async (configPath) => {
       // Should not throw
       const config = await loadConfig(configPath, { validate: true });

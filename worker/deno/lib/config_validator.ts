@@ -10,7 +10,11 @@
 
 import type { ConfigFile, PinnedToolVersions, WorkerConfig } from "../types.ts";
 import { EXCLUSION_TEAM_PATTERN } from "./validation.ts";
-import { isBotLogin } from "./trust_exclusions.ts";
+import {
+  isBotLogin,
+  resolveVibeCoderLogins,
+  VIBE_CODER_LOGIN_KEYS,
+} from "./trust_exclusions.ts";
 import { PINNED_TOOLS, UPDATE_MODES } from "./config_defaults.ts";
 
 /**
@@ -132,7 +136,7 @@ export function warnTrustedReviewBots(bots: string[]): string[] {
         `TRUSTED_REVIEW_BOTS entry '${bot}' does not look like a bot account ` +
           "(no '[bot]' suffix and not in the known-bot allowlist). " +
           "Auto-trusting a human account bypasses the thumbs-up gate — " +
-          "use authorized_commenters for human reviewers instead",
+          "a human reviewer is trusted through repository write access instead",
       );
     }
   }
@@ -149,20 +153,29 @@ export function warnTrustedReviewBots(bots: string[]): string[] {
 export function validateRequiredFields(config: WorkerConfig): string[] {
   const errors: string[] = [];
 
+  // Issue #1066: `allowed_authors` is no longer required — who may direct
+  // work is derived from repository collaborators. What must be present is
+  // the fleet's own login set, because that is what is subtracted from the
+  // collaborator set; without it the Vibe Coders, which hold write access to
+  // push branches, would be trusted to schedule their own work.
   if (
-    config.authorSource !== "github" &&
-    config.allowedAuthors.length === 0 && !config.allowedAuthor
+    resolveVibeCoderLogins({
+      serviceAccounts: config.serviceAccounts ?? [],
+      fleetPrAuthors: config.fleetPrAuthors ?? [],
+    }).size === 0
   ) {
     errors.push(
-      "ALLOWED_AUTHORS is not set or contains no authors. " +
-        "Configure 'allowed_authors' array or 'allowed_author' string in .config.json",
+      `The fleet login set is empty — set ${
+        VIBE_CODER_LOGIN_KEYS.join(" and/or ")
+      } in .config.json, or the Vibe Coder accounts would be trusted to ` +
+        "raise and schedule their own work",
     );
   }
 
-  // Issue #252: exclusion_team is schema-ready ahead of GitHub-allowlist
-  // wiring. Validate the loaded WorkerConfig field here (not only the raw
-  // JSON key in config.ts) so unused_config_fields_test sees a real consumer
-  // outside config plumbing — same pattern as authorSource above.
+  // Issue #252: `exclusion_team` is an optional *additional* exclusion for
+  // org-team-based setups. Validated on the loaded WorkerConfig here (not
+  // only the raw JSON key in config.ts) so unused_config_fields_test sees a
+  // real consumer outside config plumbing.
   if (
     config.exclusionTeam !== undefined &&
     !EXCLUSION_TEAM_PATTERN.test(config.exclusionTeam)
@@ -198,25 +211,20 @@ export function validateRequiredFields(config: WorkerConfig): string[] {
 export function warnInsecureConfig(config: WorkerConfig): string[] {
   const warnings: string[] = [];
 
-  // Check for generic usernames in allowed authors
-  for (const author of config.allowedAuthors) {
-    if (GENERIC_NAMES.includes(author.toLowerCase())) {
+  // Issue #1066: `allowedAuthors` is the *derived* set (repository
+  // collaborators minus the Vibe Coders and bots), so a generic name or a
+  // long list there is a fact about who holds write access, not a
+  // configuration mistake anyone can fix by editing this file. Only the
+  // hand-maintained known-input allowlist is still worth warning about.
+  for (const commenter of config.authorisedCommenters) {
+    if (GENERIC_NAMES.includes(commenter.toLowerCase())) {
       warnings.push(
-        `ALLOWED_AUTHORS contains '${author}' which is a generic/common name. ` +
+        `AUTHORIZED_COMMENTERS contains '${commenter}' which is a generic/common name. ` +
           "Consider using actual GitHub usernames for better security",
       );
     }
   }
 
-  // Check for very permissive allowed authors list
-  if (config.allowedAuthors.length > 5) {
-    warnings.push(
-      `ALLOWED_AUTHORS has ${config.allowedAuthors.length} users — this is quite permissive. ` +
-        "Consider limiting allowed authors to trusted users only",
-    );
-  }
-
-  // Check for very permissive commenters list
   if (config.authorisedCommenters.length > 5) {
     warnings.push(
       `AUTHORIZED_COMMENTERS has ${config.authorisedCommenters.length} users — this is quite permissive. ` +

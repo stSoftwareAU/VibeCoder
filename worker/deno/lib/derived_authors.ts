@@ -1,11 +1,32 @@
 /**
- * Per-cycle derived author allowlists (Issue #254, parent #234).
+ * Per-cycle derived author allowlists (Issue #254, parent #234; two-axis
+ * rewrite Issue #1066).
  *
  * Combines the collaborator fetch (#250) and the exclusion sources (#251)
- * into a single all-or-nothing resolver. Per repo: write/maintain/admin
- * collaborators minus the union of static exclusions, `[bot]` logins, and
- * optional team members. Both `allowedAuthors` and `authorisedCommenters`
- * come from that same set.
+ * into a single all-or-nothing resolver, and answers **two** questions from
+ * one fetch:
+ *
+ * | Actor                                       | may direct work | may supply input |
+ * | ------------------------------------------- | --------------- | ---------------- |
+ * | Human with write access, not a Vibe Coder   | yes             | yes              |
+ * | Vibe Coder (`service_accounts` / `fleet_pr_authors`) | no      | yes              |
+ * | Known bot (`authorized_commenters`)         | no              | yes              |
+ * | Anyone else — no write access, unknown bots | no              | no               |
+ *
+ * **`allowedAuthors` — who may direct work** (raise, label, schedule):
+ * `hasWriteAccess(repo, login) && !isVibeCoder(login) && !isBot(login)`.
+ * Derived from repository permissions every cycle; no hand-maintained
+ * allowlist contributes to it.
+ *
+ * **`authorisedCommenters` — whose input we act on** (test results, code
+ * reviews, PR comments): the set above, plus a *known* list — the Vibe Coder
+ * logins and the operator's `authorized_commenters` bots. "Known" is exactly
+ * the property that cannot be derived from repository permissions: a GitHub
+ * App is not a collaborator at all, so a naive derived rule would silently
+ * stop processing Copilot reviews and Actions results.
+ *
+ * The asymmetry is the point: a Vibe Coder's or a bot's review is accepted as
+ * input, and neither may schedule or change work.
  *
  * A fetch error from any repo or from the configured team fails the whole
  * resolve — there is no partially-successful variant, so a caller cannot
@@ -21,12 +42,16 @@ import { fetchRepoCollaborators } from "./collaborator_permissions.ts";
 import {
   fetchTeamMembers,
   isBotLogin,
-  resolveStaticExclusions,
+  resolveVibeCoderLogins,
+  VIBE_CODER_LOGIN_KEYS,
 } from "./trust_exclusions.ts";
+import { normaliseLogin } from "./identity_guard.ts";
 
-/** The two trusted-author arrays derived from one collaborator-minus-exclusion set. */
+/** The two trusted-author arrays derived from one collaborator fetch. */
 export interface TrustedAuthors {
+  /** Axis 1 — logins that may raise, label and schedule work. */
   allowedAuthors: string[];
+  /** Axis 2 — logins whose test results, reviews and comments we act on. */
   authorisedCommenters: string[];
 }
 
@@ -40,12 +65,24 @@ export type DerivedAuthorsResult =
   | { ok: true; byRepo: Map<string, TrustedAuthors> }
   | { ok: false; reason: string; failedSource: string };
 
-/** Inputs that identify the monitored repos and the exclusion sources. */
+/** Inputs that identify the monitored repos and both trust axes. */
 export interface ResolveDerivedAuthorsInput {
+  /** Monitored repositories, `owner/repo`. */
   repos: readonly string[];
+  /** `service_accounts` — half of the Vibe Coder login set. */
   serviceAccounts: readonly string[];
+  /** `fleet_pr_authors` — the other half of the Vibe Coder login set. */
+  fleetPrAuthors: readonly string[];
+  /** This host's own resolved `gh` login. */
   githubUser: string;
+  /** Optional *additional* exclusion for org-team-based setups. */
   exclusionTeamSlug?: string;
+  /**
+   * `authorized_commenters` — the known logins whose input we accept without
+   * their holding repository write access (Copilot, Actions, and any other
+   * bot the operator names). Never grants the right to direct work.
+   */
+  knownInputLogins: readonly string[];
 }
 
 /** Per-cycle cache key plus the optional summary-log sink. */
@@ -75,19 +112,36 @@ function fail(reason: string, failedSource: string): DerivedAuthorsResult {
   return { ok: false, reason, failedSource };
 }
 
-function trustedFrom(logins: string[]): TrustedAuthors {
-  return {
-    allowedAuthors: [...logins],
-    authorisedCommenters: [...logins],
-  };
+/**
+ * Build both axes for one repo: the directing set as given, and the input set
+ * as that plus the known logins (Vibe Coders and named bots).
+ */
+function trustedFrom(
+  logins: string[],
+  knownInput: readonly string[],
+): TrustedAuthors {
+  const commenters = [...logins];
+  const seen = new Set(logins.map((l) => l.toLowerCase()));
+  for (const login of knownInput) {
+    const key = login.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    commenters.push(login);
+  }
+  return { allowedAuthors: [...logins], authorisedCommenters: commenters };
 }
 
+/**
+ * Whether `login` is barred from the directing set: a Vibe Coder, a member of
+ * the optional `exclusion_team`, or any bot. The bot term stands on its own —
+ * write access alone must never confer the right to direct work on a bot.
+ */
 function isExcluded(
   login: string,
-  staticExclusions: ReadonlySet<string>,
+  vibeCoderLogins: ReadonlySet<string>,
   teamMembers: ReadonlySet<string>,
 ): boolean {
-  return staticExclusions.has(login) || teamMembers.has(login) ||
+  return vibeCoderLogins.has(login) || teamMembers.has(login) ||
     isBotLogin(login);
 }
 
@@ -112,10 +166,24 @@ async function resolveFresh(
   input: ResolveDerivedAuthorsInput,
   deps: DerivedAuthorsDeps,
 ): Promise<DerivedAuthorsResult> {
-  const staticExclusions = resolveStaticExclusions({
+  const vibeCoderLogins = resolveVibeCoderLogins({
     serviceAccounts: input.serviceAccounts,
+    fleetPrAuthors: input.fleetPrAuthors,
     githubUser: input.githubUser,
   });
+  // Defence in depth behind the config-load check: with nothing to subtract,
+  // the fleet's own accounts hold write access and would be trusted to direct
+  // their own work. Refuse rather than resolve an open set.
+  if (vibeCoderLogins.size === 0) {
+    return fail(
+      `the Vibe Coder login set is empty, so the fleet's own accounts would ` +
+        `be trusted to direct work — set ${
+          VIBE_CODER_LOGIN_KEYS.join(" or ")
+        }` +
+        ` in .config.json`,
+      "vibe-coder-logins",
+    );
+  }
 
   const team = await fetchTeamMembers(input.exclusionTeamSlug);
   if (!team.ok) {
@@ -127,6 +195,17 @@ async function resolveFresh(
   const teamMembers = team.value.kind === "members"
     ? team.value.members
     : new Set<string>();
+
+  // Axis 2's known half: the Vibe Coder logins (their reviews and test
+  // results are input we want) plus whatever `authorized_commenters` names.
+  const knownInput: string[] = [];
+  const knownSeen = new Set<string>();
+  for (const login of [...vibeCoderLogins, ...input.knownInputLogins]) {
+    const key = normaliseLogin(login);
+    if (!key || knownSeen.has(key)) continue;
+    knownSeen.add(key);
+    knownInput.push(login);
+  }
 
   const byRepo = new Map<string, TrustedAuthors>();
   let collaboratorCount = 0;
@@ -142,14 +221,14 @@ async function resolveFresh(
     const trusted: string[] = [];
     for (const collaborator of fetched.value.collaborators) {
       collaboratorCount++;
-      if (isExcluded(collaborator.login, staticExclusions, teamMembers)) {
+      if (isExcluded(collaborator.login, vibeCoderLogins, teamMembers)) {
         excludedCount++;
         continue;
       }
       trusted.push(collaborator.login);
       trustedCount++;
     }
-    byRepo.set(repo, trustedFrom(trusted));
+    byRepo.set(repo, trustedFrom(trusted, knownInput));
   }
 
   const repos = input.repos.join(",");

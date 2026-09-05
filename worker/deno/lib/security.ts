@@ -10,6 +10,7 @@
  */
 
 import { isBotLogin } from "./trust_exclusions.ts";
+import { normaliseLogin } from "./identity_guard.ts";
 
 /** Default maximum length for issue titles. */
 export const DEFAULT_MAX_TITLE_LENGTH = 500;
@@ -243,15 +244,25 @@ export function enforceIssueBodyLimit(
 /**
  * Check if a user is authorised to trigger PR feedback processing.
  *
+ * Case-insensitive, because GitHub logins are (Issue #1066). The list is now
+ * the *derived* set, whose collaborator logins are normalised to lower case
+ * by `normaliseLogin`, while a comment author arrives in whatever casing the
+ * account uses. An exact match would have silently dropped every commenter
+ * whose login carries a capital — the fleet's own `VibeCoderST` included.
+ *
  * @param commenter - The GitHub username to check
  * @param authorisedCommenters - List of authorised commenter usernames
- * @returns Whether the commenter is authorised (case-sensitive exact match)
+ * @returns Whether the commenter is authorised
  */
 export function isAuthorisedCommenter(
   commenter: string,
   authorisedCommenters: string[],
 ): boolean {
-  return authorisedCommenters.includes(commenter);
+  const key = normaliseLogin(commenter);
+  if (!key) return false;
+  return authorisedCommenters.some(
+    (a) => typeof a === "string" && normaliseLogin(a) === key,
+  );
 }
 
 /**

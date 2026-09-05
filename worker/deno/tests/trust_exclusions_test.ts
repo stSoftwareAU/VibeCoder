@@ -16,7 +16,7 @@ import { normaliseLogin } from "../lib/identity_guard.ts";
 import {
   fetchTeamMembers,
   isBotLogin,
-  resolveStaticExclusions,
+  resolveVibeCoderLogins,
   type TeamMemberSet,
 } from "../lib/trust_exclusions.ts";
 
@@ -89,19 +89,44 @@ Deno.test("isBotLogin - rejects ordinary human logins", () => {
 });
 
 // =============================================================================
-// resolveStaticExclusions
+// resolveVibeCoderLogins — the single "these logins are Vibe Coders" set
 // =============================================================================
 
-Deno.test("resolveStaticExclusions - includes host login and every service account", () => {
-  const exclusions = resolveStaticExclusions({
+Deno.test("resolveVibeCoderLogins - includes host login and every service account", () => {
+  const exclusions = resolveVibeCoderLogins({
+    fleetPrAuthors: [],
     serviceAccounts: ["stsvcbot", "Vibecoderbot"],
     githubUser: "host-bot",
   });
   assertEquals(exclusions, new Set(["stsvcbot", "vibecoderbot", "host-bot"]));
 });
 
-Deno.test("resolveStaticExclusions - matching is case-insensitive", () => {
-  const exclusions = resolveStaticExclusions({
+Deno.test("resolveVibeCoderLogins - includes every fleet_pr_authors sibling (Issue #1066)", () => {
+  // The exclusion must default from the fleet login list the configuration
+  // already carries, with no `exclusion_team` required. A sibling named only
+  // under `fleet_pr_authors` is a Vibe Coder like any other.
+  const exclusions = resolveVibeCoderLogins({
+    serviceAccounts: ["stservice"],
+    fleetPrAuthors: ["VibeCoderST", "stservice"],
+    githubUser: "host-bot",
+  });
+  assertEquals(
+    exclusions,
+    new Set(["stservice", "vibecoderst", "host-bot"]),
+  );
+});
+
+Deno.test("resolveVibeCoderLogins - an unknown host login is not required (Issue #1066)", () => {
+  const exclusions = resolveVibeCoderLogins({
+    serviceAccounts: ["stservice"],
+    fleetPrAuthors: [],
+  });
+  assertEquals(exclusions, new Set(["stservice"]));
+});
+
+Deno.test("resolveVibeCoderLogins - matching is case-insensitive", () => {
+  const exclusions = resolveVibeCoderLogins({
+    fleetPrAuthors: [],
     serviceAccounts: ["  STSvcBot  ", "VibeCoderBot"],
     githubUser: "Host-BOT",
   });
@@ -111,8 +136,9 @@ Deno.test("resolveStaticExclusions - matching is case-insensitive", () => {
   assertEquals(exclusions.size, 3);
 });
 
-Deno.test("resolveStaticExclusions - [bot] suffix login is excluded case-insensitively", () => {
-  const exclusions = resolveStaticExclusions({
+Deno.test("resolveVibeCoderLogins - [bot] suffix login is excluded case-insensitively", () => {
+  const exclusions = resolveVibeCoderLogins({
+    fleetPrAuthors: [],
     serviceAccounts: ["Reviewer[bot]"],
     githubUser: "MyApp[BOT]",
   });
@@ -122,8 +148,9 @@ Deno.test("resolveStaticExclusions - [bot] suffix login is excluded case-insensi
   assertEquals(isBotLogin("someone-else[BOT]"), true);
 });
 
-Deno.test("resolveStaticExclusions - known-bot-without-suffix is excluded case-insensitively", () => {
-  const exclusions = resolveStaticExclusions({
+Deno.test("resolveVibeCoderLogins - known-bot-without-suffix is excluded case-insensitively", () => {
+  const exclusions = resolveVibeCoderLogins({
+    fleetPrAuthors: [],
     serviceAccounts: ["Dependabot", "renovate"],
     githubUser: "GitHub-Actions",
   });
@@ -135,8 +162,9 @@ Deno.test("resolveStaticExclusions - known-bot-without-suffix is excluded case-i
   assertEquals(isBotLogin("github-actions"), true);
 });
 
-Deno.test("resolveStaticExclusions - skips blank entries", () => {
-  const exclusions = resolveStaticExclusions({
+Deno.test("resolveVibeCoderLogins - skips blank entries", () => {
+  const exclusions = resolveVibeCoderLogins({
+    fleetPrAuthors: [],
     serviceAccounts: ["", "  ", "stsvcbot"],
     githubUser: "   ",
   });
