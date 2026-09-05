@@ -13,6 +13,7 @@
  */
 
 import type { ConfigFile } from "../types.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /** How the resolver sees the process. */
 export interface OptionalFeatureEnvOptions {
@@ -60,12 +61,17 @@ export function resolveOptionalFeatureEnv(
  *
  * @param configPath - Path of `.config.json`
  * @param setEnv - How to establish a variable (injectable for tests)
+ * @param env - Where the ambient values that win over the config are read
+ *   from (Issue #969). Defaults to the process environment, so the worker's
+ *   startup call is unchanged; a test states the ambient environment instead
+ *   of writing one into the process every parallel worker shares.
  * @returns The variables applied
  */
 export async function applyOptionalFeatureEnv(
   configPath: string,
   setEnv: (name: string, value: string) => void = (name, value) =>
     Deno.env.set(name, value),
+  env: EnvLookup = processEnvLookup,
 ): Promise<Record<string, string>> {
   let raw: ConfigFile;
   try {
@@ -76,8 +82,10 @@ export async function applyOptionalFeatureEnv(
   const resolved = resolveOptionalFeatureEnv(raw, {
     env: (name) => {
       try {
-        return Deno.env.get(name);
+        return env(name);
       } catch {
+        // A denied `--allow-env` reads as "nothing ambient", so the config
+        // value applies rather than the step failing.
         return undefined;
       }
     },

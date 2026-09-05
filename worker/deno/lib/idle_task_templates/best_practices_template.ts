@@ -62,6 +62,7 @@ import {
   getPromptsDir,
   loadPrompt as defaultLoadPrompt,
 } from "../prompt_manager.ts";
+import { type EnvLookup, processEnvLookup } from "../env_lookup.ts";
 import { runIdleTaskClaude } from "../idle_task_claude_budget.ts";
 import { repoCheckoutPath } from "../repo_checkout_path.ts";
 import { RUN_ID_ENV_VAR } from "../run_id.ts";
@@ -108,29 +109,52 @@ export function bucketGuidePath(bucket: string): string {
 }
 
 /**
- * Read a bucket guide, resolving the repo-root-relative path against the same
- * prompts directory the prompt loader uses.
+ * The file a bucket guide is read from, resolved against the same prompts
+ * directory the prompt loader uses.
  *
- * `Deno.readTextFile("prompts/…")` alone resolves against the process's
- * working directory, so the read succeeded only when the worker happened to be
- * started from the repository root.
+ * Split out of {@link readBucketGuide} so the resolution can be asserted on
+ * its own (Issue #969). `Deno.readTextFile("prompts/…")` alone resolves
+ * against the process's working directory, so the read succeeded only when the
+ * worker happened to be started from the repository root — the defect this
+ * anchoring exists to prevent. Proving that used to mean moving the process
+ * cwd in a test, which races every other worker under `deno test --parallel`;
+ * a test can now assert the returned path is anchored and mutate nothing.
  *
  * @param path - Repo-root-relative guide path from {@link bucketGuidePath}.
- * @param promptsDir - Prompts directory to read from. Omit for the production
- *   resolution ({@link getPromptsDir}); a caller that named a root directory
- *   passes `${rootDir}/prompts` so the read depends on neither the working
- *   directory nor the environment (Issue #1024).
+ * @param promptsDir - Prompts directory to resolve against. Omit for the
+ *   production resolution ({@link getPromptsDir}); a caller that named a root
+ *   directory passes `${rootDir}/prompts` so the result depends on neither the
+ *   working directory nor the environment (Issue #1024).
+ * @param env - Environment lookup backing the production resolution. Defaults
+ *   to the process environment.
+ * @returns The absolute file path of the guide.
+ */
+export function bucketGuideFilePath(
+  path: string,
+  promptsDir?: string,
+  env: EnvLookup = processEnvLookup,
+): string {
+  const prefix = "prompts/";
+  const relative = path.startsWith(prefix) ? path.slice(prefix.length) : path;
+  return `${promptsDir ?? getPromptsDir(undefined, env)}/${relative}`;
+}
+
+/**
+ * Read a bucket guide from the file {@link bucketGuideFilePath} names.
+ *
+ * @param path - Repo-root-relative guide path from {@link bucketGuidePath}.
+ * @param promptsDir - Prompts directory to read from; see
+ *   {@link bucketGuideFilePath}.
+ * @param env - Environment lookup backing the production resolution. Defaults
+ *   to the process environment.
  * @returns The guide's text.
  */
 export async function readBucketGuide(
   path: string,
   promptsDir?: string,
+  env: EnvLookup = processEnvLookup,
 ): Promise<string> {
-  const prefix = "prompts/";
-  const relative = path.startsWith(prefix) ? path.slice(prefix.length) : path;
-  return await Deno.readTextFile(
-    `${promptsDir ?? getPromptsDir()}/${relative}`,
-  );
+  return await Deno.readTextFile(bucketGuideFilePath(path, promptsDir, env));
 }
 
 /**
