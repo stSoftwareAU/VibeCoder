@@ -31,7 +31,10 @@ import {
   renderRunSummary,
 } from "../lib/idle_task_templates/security_scan_template.ts";
 import type { ScanError, ScanOk } from "../lib/security_scanner.ts";
-import type { OpenIssueTitle } from "../lib/idle_task_snapshot.ts";
+import {
+  NEWLY_FILED_UNKNOWN_SUMMARY,
+  type OpenIssueTitle,
+} from "../lib/idle_task_snapshot.ts";
 import type { Result } from "../types.ts";
 
 /**
@@ -189,13 +192,98 @@ Deno.test(
   },
 );
 
+// ---------------------------------------------------------------------------
+// Unknown ≠ empty (Issue #1105)
+//
+// Business-logic change: this pair of snapshots used to be reconciled to an
+// empty set on failure, so a failed *after* lookup rendered "0 findings." with
+// no SARIF upload — indistinguishable from a genuinely clean scan — and a
+// failed *before* lookup diffed to every open issue. The two ends fail in
+// opposite directions, so each is asserted independently below. The previous
+// test ("malformed gh JSON in snapshots degrades to '0 findings.'") asserted
+// the old behaviour and is replaced by these.
+// ---------------------------------------------------------------------------
+
+Deno.test("renderRunSummary - an unknown newly-filed set is never '0 findings.'", () => {
+  assertEquals(renderRunSummary(null), NEWLY_FILED_UNKNOWN_SUMMARY);
+});
+
+/**
+ * gh stub whose snapshot lookups fail at one chosen end. `failAt` is the
+ * 1-based snapshot call to fail: 1 = the pre-scan (before) lookup, 2 = the
+ * post-scan (after) lookup. Every other call returns an empty list.
+ */
+function makeFailingSnapshotGhStub(
+  failAt: 1 | 2,
+): (args: string[]) => Promise<string> {
+  let snapshotCalls = 0;
+  return (args: string[]): Promise<string> => {
+    const isSnapshot = args[0] === "issue" &&
+      args[1] === "list" &&
+      args.indexOf("--label") !== -1 &&
+      args[args.indexOf("--label") + 1] === "security" &&
+      args.indexOf("--search") === -1;
+    if (!isSnapshot) return Promise.resolve("[]");
+    snapshotCalls += 1;
+    if (snapshotCalls === failAt) {
+      return Promise.reject(new Error("gh: API rate limit exceeded"));
+    }
+    return Promise.resolve(JSON.stringify([{ number: 10 }]));
+  };
+}
+
 Deno.test(
-  "runTask - malformed gh JSON in snapshots degrades to '0 findings.'",
+  "runTask - a failed after snapshot reports the count as unknown, not '0 findings.'",
   async () => {
-    // If the before snapshot cannot be parsed it is treated as empty,
-    // and likewise for the after snapshot. With both empty the diff is
-    // empty — the worst-case summary is "0 findings." rather than a
-    // crash that would block the worker.
+    let sarifCalls = 0;
+    const tpl = createSecurityScanTemplate({
+      runSecurityScanFn: okScan,
+      ghCommandFn: makeFailingSnapshotGhStub(2),
+      emitSarifFn: () => {
+        sarifCalls += 1;
+        return Promise.resolve({ summary: STUB_SARIF_SUFFIX, upload: null });
+      },
+    });
+    const result = await tpl.runTask(runOpts);
+    // The run still completes rather than throwing.
+    assert(result.ok, "a failed snapshot must not fail the run");
+    assertStringIncludes(result.summary, NEWLY_FILED_UNKNOWN_SUMMARY);
+    assertStringIncludes(result.summary, "SARIF upload skipped");
+    assertEquals(
+      result.summary.includes("0 findings."),
+      false,
+      "a failed after snapshot must never render '0 findings.'",
+    );
+    assertEquals(
+      sarifCalls,
+      0,
+      "no SARIF upload on an unknown newly-filed set",
+    );
+  },
+);
+
+Deno.test(
+  "runTask - a failed before snapshot does not inflate the newly-filed set",
+  async () => {
+    const tpl = createSecurityScanTemplate({
+      runSecurityScanFn: okScan,
+      ghCommandFn: makeFailingSnapshotGhStub(1),
+      emitSarifFn: stubEmitSarif,
+    });
+    const result = await tpl.runTask(runOpts);
+    assert(result.ok);
+    assertStringIncludes(result.summary, NEWLY_FILED_UNKNOWN_SUMMARY);
+    assertEquals(
+      result.summary.includes("#10"),
+      false,
+      "an already-open issue must not be reported as newly filed",
+    );
+  },
+);
+
+Deno.test(
+  "runTask - malformed gh JSON in the snapshots reports an unknown count",
+  async () => {
     const tpl = createSecurityScanTemplate({
       runSecurityScanFn: okScan,
       ghCommandFn: () => Promise.resolve("not json"),
@@ -203,7 +291,8 @@ Deno.test(
     });
     const result = await tpl.runTask(runOpts);
     assert(result.ok);
-    assertEquals(result.summary, `0 findings. ${STUB_SARIF_SUFFIX}`);
+    assertStringIncludes(result.summary, NEWLY_FILED_UNKNOWN_SUMMARY);
+    assertEquals(result.summary.includes("0 findings."), false);
   },
 );
 

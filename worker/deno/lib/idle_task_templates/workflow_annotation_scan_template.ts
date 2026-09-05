@@ -60,6 +60,7 @@ import { loadPrompt as defaultLoadPrompt } from "../prompt_manager.ts";
 import {
   diffNewlyFiled,
   listOpenIssueNumbersByLabel,
+  NEWLY_FILED_UNKNOWN_SUMMARY,
   parseGhJsonArray,
 } from "../idle_task_snapshot.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "../label_operations.ts";
@@ -320,8 +321,9 @@ async function listKnownOpenClassKeys(
  * Exported so tests can assert on the exact wording.
  */
 export function renderWorkflowAnnotationScanSummary(
-  newlyFiled: readonly number[],
+  newlyFiled: readonly number[] | null,
 ): string {
+  if (newlyFiled === null) return NEWLY_FILED_UNKNOWN_SUMMARY;
   if (newlyFiled.length === 0) return "no findings";
   const sorted = [...newlyFiled].sort((a, b) => a - b);
   const list = sorted.map((n) => `#${n}`).join(", ");

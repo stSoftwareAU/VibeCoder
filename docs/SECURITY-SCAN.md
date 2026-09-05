@@ -494,7 +494,7 @@ in the framework manual.
 
 ## Close-comment shape
 
-The claim handler closes the wrapper idle-task issue with one of two
+The claim handler closes the wrapper idle-task issue with one of three
 deterministic comment strings, rendered by `renderRunSummary()` in
 [`security_scan_template.ts`](../worker/deno/lib/idle_task_templates/security_scan_template.ts)
 from the before/after snapshot diff:
@@ -509,7 +509,27 @@ from the before/after snapshot diff:
   issues contains the same set as the BEFORE snapshot. Covers clean
   scans, scans where every candidate was deduplicated against an
   existing open finding, and scans where Claude failed before filing
-  anything.
+  anything. Emitted **only** when both snapshots were actually read —
+  see the unknown-count string below.
+
+- **Unknown newly-filed count** (Issue #1105) — when either snapshot
+  lookup fails (a `gh` error, or a payload that will not parse), the
+  count is reported as unavailable rather than as zero:
+
+  ```text
+  Newly-filed count unavailable — an open-issue snapshot lookup failed, so
+  this run cannot report how many findings it filed. Findings filed by this
+  run are still open as issues; only the count is unknown. SARIF upload
+  skipped — the newly-filed set is unknown.
+  ```
+
+  A failed AFTER lookup used to render `0 findings.` with no SARIF
+  upload, indistinguishable from a genuinely clean scan; a failed BEFORE
+  lookup diffed to every open `security` issue and over-reported. Both
+  now render this string. The scan itself still ran and any findings
+  Claude filed remain open as issues — the run completes with
+  `ok: true`, and the failed lookup is logged by
+  `listOpenIssueNumbersByLabel`.
 
 - **One or more newly-filed findings** — a single line listing each
   new issue number ascending:

@@ -20,6 +20,15 @@
  * empty result is returned, so an operator can tell a genuinely-empty repo
  * apart from a transient gh hiccup that produced unparseable output.
  *
+ * Unknown ≠ empty (Issue #1105): the before/after snapshot
+ * ({@link listOpenIssueNumbersByLabel}) returns `null` rather than an empty
+ * set when its lookup fails, and {@link diffNewlyFiled} propagates that as a
+ * `null` diff. A failed *after* lookup used to render `0 findings` and upload
+ * no SARIF — indistinguishable from a clean scan — while a failed *before*
+ * lookup inflated the newly-filed set to every open issue. Templates render
+ * {@link NEWLY_FILED_UNKNOWN_SUMMARY} instead of claiming a count they do not
+ * have; the run still completes rather than throwing.
+ *
  * Scope (Issue #539): the before/after snapshot is still label-scoped — it
  * measures what one scan filed — but both `finding-id` look-ups are now
  * **repo-wide**. The marker is the dedup key and the label is not part of it,
@@ -48,6 +57,18 @@ import {
  * defensive empty-return while making a swallowed parse failure visible.
  */
 export function parseGhJsonArray(raw: string, label: string): unknown[] {
+  return parseGhJsonArrayOrNull(raw, label) ?? [];
+}
+
+/**
+ * Parse a `gh … --json` payload, distinguishing *unknown* from *empty*.
+ *
+ * Returns `null` — never `[]` — when the payload is unparseable or is not an
+ * array, so a caller that must not conflate "the lookup failed" with "the repo
+ * has nothing" can tell the two apart (Issue #1105). The parse failure is
+ * logged with `label` exactly as {@link parseGhJsonArray} logs it.
+ */
+function parseGhJsonArrayOrNull(raw: string, label: string): unknown[] | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -56,24 +77,47 @@ export function parseGhJsonArray(raw: string, label: string): unknown[] {
     console.error(
       `[idle-task-snapshot] ${label}: failed to parse gh JSON payload: ${message}`,
     );
-    return [];
+    return null;
   }
-  return Array.isArray(parsed) ? parsed : [];
+  if (!Array.isArray(parsed)) {
+    console.error(
+      `[idle-task-snapshot] ${label}: gh JSON payload was not an array`,
+    );
+    return null;
+  }
+  return parsed;
 }
 
 /**
- * Return the set of open issue numbers carrying `label` in `repo`.
+ * Summary text rendered when the newly-filed diff could not be computed
+ * (Issue #1105).
+ *
+ * Every scan template renders this instead of its "no findings" line when
+ * {@link diffNewlyFiled} returns `null`, so a snapshot lookup that failed is
+ * never reported as a scan that found nothing.
+ */
+export const NEWLY_FILED_UNKNOWN_SUMMARY =
+  "Newly-filed count unavailable — an open-issue snapshot lookup failed, so " +
+  "this run cannot report how many findings it filed. Findings filed by this " +
+  "run are still open as issues; only the count is unknown.";
+
+/**
+ * Return the set of open issue numbers carrying `label` in `repo`, or `null`
+ * when the lookup could not be performed.
  *
  * Used as the before/after snapshot for the newly-filed diff. A gh failure or
- * malformed payload returns an empty set so a transient lookup hiccup never
- * crashes the run — the worst case is a summary that reports zero newly-filed
- * findings.
+ * malformed payload returns `null` — **not** an empty set — so the run still
+ * finishes without throwing while the caller can tell "no open issues" apart
+ * from "the lookup failed" (Issue #1105). Conflating the two rendered a failed
+ * *after* snapshot as `0 findings` with no SARIF upload, indistinguishable
+ * from a genuinely clean scan; a failed *before* snapshot inflated the
+ * newly-filed set to every open issue. Both failures are logged.
  */
 export async function listOpenIssueNumbersByLabel(
   repo: string,
   label: string,
   ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<Set<number>> {
+): Promise<Set<number> | null> {
   const out = new Set<number>();
   let raw: string;
   try {
@@ -91,10 +135,17 @@ export async function listOpenIssueNumbersByLabel(
       "--limit",
       "200",
     ]);
-  } catch {
-    return out;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[idle-task-snapshot] list ${label} numbers: ${repo}: gh lookup ` +
+        `failed: ${message} — the newly-filed count for this run is unknown.`,
+    );
+    return null;
   }
-  for (const item of parseGhJsonArray(raw, `list ${label} numbers`)) {
+  const entries = parseGhJsonArrayOrNull(raw, `list ${label} numbers`);
+  if (entries === null) return null;
+  for (const item of entries) {
     if (item === null || typeof item !== "object") continue;
     const n = (item as { number?: unknown }).number;
     if (typeof n === "number" && Number.isFinite(n)) out.add(n);
@@ -239,11 +290,18 @@ export function renderOpenIssueTitles(
  * Return the issue numbers present in `after` but not in `before` — the
  * findings filed during a scan run — sorted ascending so callers render a
  * deterministic summary.
+ *
+ * Returns `null` when **either** snapshot is unknown (Issue #1105). The two
+ * ends fail in opposite directions — an unknown `after` would diff to nothing
+ * and report a clean scan, an unknown `before` would diff to every open issue
+ * and over-report — so neither is turned into a number the run does not have.
+ * Callers render {@link NEWLY_FILED_UNKNOWN_SUMMARY} instead of a count.
  */
 export function diffNewlyFiled(
-  before: ReadonlySet<number>,
-  after: ReadonlySet<number>,
-): number[] {
+  before: ReadonlySet<number> | null,
+  after: ReadonlySet<number> | null,
+): number[] | null {
+  if (before === null || after === null) return null;
   const newlyFiled: number[] = [];
   for (const n of after) {
     if (!before.has(n)) newlyFiled.push(n);

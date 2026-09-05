@@ -127,6 +127,7 @@ import {
   listAllOpenIssueTitles,
   listKnownOpenFindingIds,
   listOpenIssueNumbersByLabel,
+  NEWLY_FILED_UNKNOWN_SUMMARY,
   type OpenIssueTitle,
   renderOpenIssueTitles,
 } from "../idle_task_snapshot.ts";
@@ -654,11 +655,13 @@ export interface GitHubActionsAuditSummaryExtras {
  * Exported so tests can assert on the exact wording.
  */
 export function renderGitHubActionsAuditSummary(
-  newlyFiled: readonly number[],
+  newlyFiled: readonly number[] | null,
   extras: GitHubActionsAuditSummaryExtras = {},
 ): string {
   const lines: string[] = [];
-  if (newlyFiled.length === 0) {
+  if (newlyFiled === null) {
+    lines.push(NEWLY_FILED_UNKNOWN_SUMMARY);
+  } else if (newlyFiled.length === 0) {
     lines.push("no findings");
   } else {
     const sorted = [...newlyFiled].sort((a, b) => a - b);
