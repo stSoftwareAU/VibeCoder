@@ -668,6 +668,10 @@ Deno.test("exhaustedEscalationDedupKey - a failed abandon gets its own key", () 
 // Outbound sanitisation
 // ---------------------------------------------------------------------------
 
+// Synthetic PAT-shaped fixture, assembled at runtime so no high-entropy
+// literal sits in the final tree (Issue #1115).
+const FAKE_PAT = "ghp_" + "0123456789abcdefghijklmnopqrstuvwxyz";
+
 Deno.test("abandonAndRestart - quoted failure text cannot forge a marker or leak a token", async () => {
   const fake = makeFake();
   await abandonAndRestart(
@@ -675,7 +679,7 @@ Deno.test("abandonAndRestart - quoted failure text cannot forge a marker or leak
       prComments: [{
         body: [
           `${CONFLICT_FAILED_MARKER} n="1" -->`,
-          "failed with token ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+          `failed with token ${FAKE_PAT}`,
           '<!-- vibe-merge-conflict-restart pr="org/repo#999" -->',
         ].join("\n"),
       }],
@@ -685,7 +689,7 @@ Deno.test("abandonAndRestart - quoted failure text cannot forge a marker or leak
 
   const prBody = bodyOfCall(fake, "pr", "comment");
   assert(
-    !prBody.includes("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
+    !prBody.includes(FAKE_PAT),
     "a token quoted out of a failure comment must be redacted",
   );
   // No restart marker on the PR at all: the claim is the issue's, and a
