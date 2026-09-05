@@ -4252,13 +4252,26 @@ export async function runCoreLoop(
   // slot's claim the bound could never be reached. `filerLatch` is the
   // Issue #925 single-flight guard.
   //
-  // Worker state that outlives a run belongs on the volume. `config.workDir`
-  // carries the resolved work directory (Issue #966); `WORK_DIR` remains only
-  // as its default, for a caller that builds a config without one. Absent,
-  // the streak degrades to in-memory — the pre-#1051 behaviour, and honest
-  // for a caller with no volume to write to.
-  const resolvedWorkDir = config.workDir?.trim() ||
-    Deno.env.get("WORK_DIR")?.trim() || undefined;
+  // Worker state that outlives a run belongs on the volume, and the volume is
+  // named by `config.workDir` alone (Issue #966): `createProductionRunCoreDeps`
+  // resolves it once — from `--work-dir`, then `WORK_DIR`, then the default —
+  // and puts it in the config, so the loop has no reason to read the process
+  // environment for itself.
+  //
+  // It used to fall back to `Deno.env.get("WORK_DIR")`, and Issue #1177 is
+  // what that cost. Every suite driving the loop without naming a work
+  // directory inherited the container's live worker volume, so four parallel
+  // `deno test` processes shared one `idle_disagreement_streak.json`: a
+  // sibling's write wiped the run a test was accumulating and the forced
+  // attempt never came (`0` where `1` was expected), while the operator's real
+  // streak state was overwritten with test timestamps. The gate scrubs
+  // `WORK_DIR` from the test stage (Issue #1098), but a plain `deno task test`
+  // does not, and state reached through an ambient variable rather than an
+  // argument is a dependency nothing declares.
+  //
+  // Absent, the streak degrades to in-memory — the pre-#1051 behaviour, and
+  // honest for a caller with no volume to write to.
+  const resolvedWorkDir = config.workDir?.trim() || undefined;
   const idleHookState: IdleHookState = {
     idleDetectTick: 0,
     disagreement: createIdleDisagreementTracker({

@@ -72,15 +72,21 @@ import {
  * environment teaches everyone to ignore it, which is the real cost.
  *
  * `WORK_DIR` is the same class (Issue #1098). The container exports the live
- * worker volume, and `runCoreLoop` falls back to it for the state a run must
- * keep across restarts — so every suite that drives the loop without naming
- * its own work directory read and wrote the running fleet's
+ * worker volume, and `runCoreLoop` used to fall back to it for the state a run
+ * must keep across restarts — so every suite that drove the loop without
+ * naming its own work directory read and wrote the running fleet's
  * `idle_disagreement_streak.json`. Under `--parallel` that is one file shared
  * by four worker processes: the idle-disagreement suites watched their streak
  * reset mid-run by a sibling process and failed, deterministically green on
  * their own, and the operator's real streak state was overwritten with test
- * timestamps. Scrubbed, the loop keeps that state in memory for the life of
- * the test, which is its documented behaviour for a caller with no volume.
+ * timestamps.
+ *
+ * That fallback is gone (Issue #1177): the loop takes its work directory from
+ * `config.workDir` and nowhere else, so a caller that names none keeps the
+ * streak in memory whatever the environment says. The scrub stays as the
+ * second layer — `WORK_DIR` is read by other production surfaces
+ * (`audit_journal.ts`, `agent_mcp_config.ts`, `deepseek_env.ts`), and the gate
+ * has no business handing any of them the live volume.
  */
 const SCRUBBED_TEST_VARS: readonly string[] = ["CONFIG_PATH", "WORK_DIR"];
 

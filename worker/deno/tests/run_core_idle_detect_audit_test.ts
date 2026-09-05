@@ -23,7 +23,12 @@ import {
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
-import { IDLE_DISAGREEMENT_BOUND_MS } from "../lib/idle_disagreement_streak.ts";
+import {
+  IDLE_CYCLE_OBSERVER_ID,
+  IDLE_DISAGREEMENT_BOUND_MS,
+  idleDisagreementStatePath,
+  loadIdleDisagreementState,
+} from "../lib/idle_disagreement_streak.ts";
 
 /**
  * How far apart idle observations arrive on the fleet — the liveness-guard
@@ -504,6 +509,167 @@ Deno.test(
     await runCoreLoop(config, deps);
 
     assertEquals(filerRuns, 2);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Issue #1177 — the streak's work directory is an argument, never the ambient
+// environment.
+//
+// The two cases above failed roughly three parallel runs in five, always with
+// a count assertion (`0` where `1` was expected) and always green on their
+// own. The loop resolved the streak's work directory from `config.workDir` and
+// then fell back to `WORK_DIR`, which the container exports as the live worker
+// volume — so four parallel `deno test` processes read and wrote one
+// `idle_disagreement_streak.json`, each one's load-apply-save dropping the run
+// another was accumulating. Six concurrent runs of this file failed six times
+// with the variable set and passed six times with it unset.
+//
+// The loop now reads `config.workDir` and nothing else. These three cases hold
+// that: no directory means no file, a named directory still persists, and two
+// loops that name none cannot reach each other's streak.
+// ---------------------------------------------------------------------------
+
+/**
+ * Deps that drive `cycles` idle observations at the fleet's cadence, every one
+ * of them a probe/scan disagreement, then push the clock past the run's end.
+ *
+ * `counters.filerRuns` counts the attempts the bound forced through; `logs`
+ * collects the worker log so the `persisted=` fragment can be read back.
+ */
+function createDisagreementDeps(
+  cycles: number,
+  counters: { filerRuns: number },
+  logs: string[],
+): RunCoreDeps {
+  let observed = 0;
+  let nowValue = 0;
+  return createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      if (observed >= cycles) nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    log: (m) => logs.push(m),
+    runIdleDetectAudit: () => {
+      observed++;
+      nowValue += OBSERVATION_GAP_MS;
+      return Promise.resolve({ claimableTotal: 4 });
+    },
+    runIdleTaskFiler: () => {
+      counters.filerRuns += 1;
+      return Promise.resolve();
+    },
+  });
+}
+
+/** The disagreement diagnostics a run emitted, in order. */
+function disagreementLines(logs: string[]): string[] {
+  return logs.filter((l) => l.includes("action=audit_scan_disagreement"));
+}
+
+Deno.test(
+  "run_core - a config naming no workDir keeps the streak in memory, whatever WORK_DIR says (Issue #1177)",
+  async () => {
+    const counters = { filerRuns: 0 };
+    const logs: string[] = [];
+    const deps = createDisagreementDeps(4, counters, logs);
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+    assertEquals(config.workDir, undefined);
+
+    await runCoreLoop(config, deps);
+
+    // Every diagnostic says the run behind it is not on a volume — which is
+    // the whole claim: an ambient `WORK_DIR` is not a work directory this
+    // caller asked for, so nothing is written and nothing is shared.
+    const lines = disagreementLines(logs);
+    assert(
+      lines.length > 0,
+      `expected disagreement lines; got: ${logs.join("\n")}`,
+    );
+    for (const line of lines) {
+      assert(
+        line.includes("persisted=false"),
+        `expected an in-memory streak; got: ${line}`,
+      );
+    }
+    // In memory is still a streak: the bound still forces its one attempt.
+    assertEquals(counters.filerRuns, 1);
+  },
+);
+
+Deno.test(
+  "run_core - a config naming a workDir still persists the streak there (Issue #1177)",
+  async () => {
+    // The other half of the contract. Dropping the environment fallback must
+    // not quietly drop persistence — the run that names a directory writes to
+    // it, which is what lets the bound survive the hourly restart (#1051).
+    const workDir = await Deno.makeTempDir({ prefix: "run_core_streak_" });
+    try {
+      const counters = { filerRuns: 0 };
+      const logs: string[] = [];
+      const deps = createDisagreementDeps(4, counters, logs);
+      const config = createDefaultRunCoreConfig();
+      config.runDurationSeconds = 3600;
+      config.workDir = workDir;
+
+      await runCoreLoop(config, deps);
+
+      const lines = disagreementLines(logs);
+      assert(
+        lines.length > 0,
+        `expected disagreement lines; got: ${logs.join("\n")}`,
+      );
+      for (const line of lines) {
+        assert(
+          line.includes("persisted=true"),
+          `expected a persisted streak; got: ${line}`,
+        );
+      }
+      assertEquals(counters.filerRuns, 1);
+
+      const state = await loadIdleDisagreementState(
+        idleDisagreementStatePath(workDir),
+      );
+      assert(
+        state[IDLE_CYCLE_OBSERVER_ID] !== undefined,
+        `expected the cycle observer's run in ${
+          idleDisagreementStatePath(workDir)
+        }; got ${JSON.stringify(state)}`,
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "run_core - two concurrent loops without a workDir do not share a streak (Issue #1177)",
+  async () => {
+    // The flake in miniature, and the reason the fallback had to go rather
+    // than the suites being told to name a temp directory each: two runs of
+    // the loop that name no work directory must not be able to reach each
+    // other's bookkeeping, whichever process they are in. Sharing one file,
+    // the observer id is the same (`cycle`) for both, so one run's restart
+    // lands on the other's entry and its forced attempt never comes.
+    const first = { filerRuns: 0 };
+    const second = { filerRuns: 0 };
+    const firstLogs: string[] = [];
+    const secondLogs: string[] = [];
+    const configFor = () => {
+      const config = createDefaultRunCoreConfig();
+      config.runDurationSeconds = 3600;
+      return config;
+    };
+
+    await Promise.all([
+      runCoreLoop(configFor(), createDisagreementDeps(4, first, firstLogs)),
+      runCoreLoop(configFor(), createDisagreementDeps(4, second, secondLogs)),
+    ]);
+
+    assertEquals(first.filerRuns, 1);
+    assertEquals(second.filerRuns, 1);
   },
 );
 
