@@ -460,9 +460,11 @@ export async function findOldestIssue(
   // not in the repo scan-order shuffle (`config.shuffleRepos`) — within a
   // single `nice` tier, equal repos rotate fairly. The earlier note in
   // `array_utils.ts` (shuffle controls scan order, selection is oldest-first)
-  // is therefore outdated for fairness: selection draws the lowest-`nice`
-  // non-empty tier first and only falls through to a higher-`nice` tier when
-  // no lower tier yields a selectable candidate. A test-supplied `repoNice`
+  // is therefore outdated for fairness: within a label tier, selection draws
+  // from the lowest-`nice` repos holding a candidate of that tier (Issue
+  // #1063 — the label tier itself is decided first, fleet-wide, so `nice`
+  // never lifts one repo's backlog above another's urgency label, F4a in
+  // DESIGN-PRINCIPLES.md). A test-supplied `repoNice`
   // wins; otherwise resolve from `config.repoConfig` (defaults to `0`/neutral
   // for every repo when unset, preserving today's behaviour).
   const selectionOptions: SelectionOptions = {
@@ -475,14 +477,21 @@ export async function findOldestIssue(
   if (selected) {
     diag.logFinalSelection(selected.repo, selected.number, selected.source);
 
-    // Issue #1718: when a work-on candidate is selected and any
-    // configured-label candidate was considered or blocked, emit a
-    // structured selection-reasoning line so the user can see at a
-    // glance why top-priority was passed over. Suppressed when a
-    // configured-label was selected (avoids noise) or when no
-    // configured-label candidates exist at all (no surprise).
+    // Issue #1718: when a lower tier is selected and any configured-label
+    // candidate was considered or blocked, emit a structured
+    // selection-reasoning line so the user can see at a glance why
+    // top-priority was passed over. Suppressed when a configured-label was
+    // selected (avoids noise) or when no configured-label candidates exist
+    // at all (no surprise).
+    //
+    // Issue #1063 widened this from `work-on` to *every* lower tier: with the
+    // label tier now outermost, a top-priority candidate that is passed over
+    // was necessarily filtered or blocked, and the winner may equally be a
+    // self-diagnostic, low-priority or idle-task issue. Narrowing it to
+    // `work-on` left those cases silent — the starvation the operator
+    // reported is exactly the kind that goes unnoticed.
     if (
-      selected.source === "work-on" &&
+      selected.source !== "configured-label" &&
       (configuredLabelConsidered > 0 || allBlockedDetails.length > 0)
     ) {
       diag.logSelectionReasoning(

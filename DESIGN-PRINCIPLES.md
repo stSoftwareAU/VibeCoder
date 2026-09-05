@@ -613,19 +613,18 @@ default `0` leaves a repo neither promoted nor demoted; non-integer / wrong-type
 values are guarded down to `0` by `getRepoNice()` in
 `worker/deno/lib/repo_config.ts`.
 
-- **Outermost grouping is `nice`.** `selectHighestPriority()` /
-  `orderCandidatesByNiceTier()` in `worker/deno/lib/issue_priority.ts` partition
-  candidates by resolved `nice`, drain the lowest-`nice` non-empty tier first,
-  and only fall through to a higher-`nice` tier when no lower tier yields a
-  selectable candidate.
-
-  > **Known divergence from the intent (Issue #1063).** This describes what
-  > the implementation does today, and it contradicts **F4a** in
-  > [Every slot busy, always](#every-slot-busy-always--the-fleet-throughput-invariant):
-  > the label tier is meant to be the outer partition and `nice` the inner
-  > one, so a `nice: -20` repo's `work-on` issue currently outranks a
-  > `nice: -15` repo's `top-priority` issue. F4a is the intent; this bullet
-  > is the defect. Do not "fix" the intent to match the code.
+- **Outermost grouping is the label tier; `nice` is the inner one
+  (Issue #1063).** `selectHighestPriority()` in
+  `worker/deno/lib/issue_priority.ts` walks the label ladder
+  (`top-priority` → `work-on` → self-diagnostic → `low-priority` →
+  `idle-task`) across the whole fleet and drains each tier everywhere before
+  reaching the next; only *within* a tier does it partition candidates by
+  resolved `nice` and take the lowest-`nice` group first. A `nice: -20`
+  repo's `work-on` issue therefore does **not** outrank a `nice: -15` repo's
+  `top-priority` issue — the divergence from **F4a** reported on Issue #1063,
+  now closed. `orderCandidatesByNiceTier()` is unchanged: it orders a single
+  label stream (the label / planning scans), so its `nice` partition is
+  already inside a tier.
 - **Fair within a tier.** Among repos sharing one `nice` value,
   `selectFairWithinTier()` rotates fairly across equal repos (oldest-first
   within a repo, fair rotation across repos when a `randomFn` is injected), so a
