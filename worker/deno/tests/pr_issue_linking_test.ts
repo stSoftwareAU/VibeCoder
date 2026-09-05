@@ -1236,3 +1236,55 @@ Deno.test("pr_issue_linking - prTitleMatchesIssue accepts paren and bracket styl
     assertEquals(prTitleMatchesIssue(title, 42), false, title);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Fork-headed PRs are not evidence (Issue #1124)
+// ---------------------------------------------------------------------------
+
+Deno.test("pr_issue_linking - findExistingPrForIssue ignores a fork-headed PR", async () => {
+  // A PR title and body are text anybody may write on a public repository.
+  // Reading a stranger's PR as "already handled" starves the issue, so the
+  // uncached path drops fork-headed rows just as the cached path does.
+  const lines: string[] = [];
+  const fn = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([
+      {
+        number: 99,
+        title: "Fix: Bug fix (#42)",
+        body: "",
+        url: "https://github.com/owner/repo/pull/99",
+        author: { login: "drive-by-account" },
+        isCrossRepository: true,
+      },
+    ]));
+  const result = await findExistingPrForIssue(
+    "owner/repo",
+    42,
+    fn,
+    undefined,
+    undefined,
+    (message) => lines.push(message),
+  );
+  assertEquals(result.ok, false);
+  assertEquals(lines.length, 3);
+  assertEquals(lines[0]?.includes("drive-by-account"), true);
+});
+
+Deno.test("pr_issue_linking - findExistingPrForIssue asks who opened each PR", async () => {
+  const calls: string[][] = [];
+  const fn = (args: string[]): Promise<string> => {
+    calls.push(args);
+    return Promise.resolve("[]");
+  };
+  await findExistingPrForIssue(
+    "owner/repo",
+    42,
+    fn,
+    undefined,
+    undefined,
+    () => {},
+  );
+  const json = calls[0]![calls[0]!.indexOf("--json") + 1] ?? "";
+  assertEquals(json.split(",").includes("author"), true);
+  assertEquals(json.split(",").includes("isCrossRepository"), true);
+});

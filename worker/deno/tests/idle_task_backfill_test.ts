@@ -50,6 +50,18 @@ import { DUPLICATED_KNOWLEDGE_ISSUE_TITLE } from "../lib/idle_task_templates/dup
 import { RETRO_ISSUE_TITLE } from "../lib/idle_task_templates/retro_template.ts";
 import type { Result } from "../types.ts";
 
+/**
+ * The fleet login every fixture wrapper is filed by (Issue #1124).
+ *
+ * A wrapper title is a compile-time constant on a public repository, so the
+ * author is the only part of a match that is authenticated. The
+ * planted-title case is asserted below.
+ */
+const FLEET_AUTHOR = "vibe-coder-bot";
+
+/** Author-verification inputs the fixtures pass instead of a config file. */
+const FLEET_OPTIONS = { fleetAuthors: [FLEET_AUTHOR] } as const;
+
 interface StubLabelCall {
   repo: string;
   number: number;
@@ -138,11 +150,18 @@ for (const c of PER_TEMPLATE_CASES) {
           return Promise.resolve("[]");
         }
         return Promise.resolve(JSON.stringify([
-          { number: c.number, title: c.title, labels: [] },
+          {
+            number: c.number,
+            title: c.title,
+            labels: [],
+            author: { login: FLEET_AUTHOR },
+          },
         ]));
       };
 
       const summary = await backfillIdleTaskLabels({
+        authorOptions: FLEET_OPTIONS,
+        authorLog: () => {},
         repos: [c.repo],
         ghCommandFn,
         addLabelFn: stub.fn,
@@ -184,11 +203,14 @@ Deno.test("backfillIdleTaskLabels - skips an already-labelled wrapper", async ()
         number: 42,
         title: SECURITY_SCAN_ISSUE_TITLE,
         labels: [{ name: "idle-task" }, { name: "security" }],
+        author: { login: FLEET_AUTHOR },
       },
     ]));
   };
 
   const summary = await backfillIdleTaskLabels({
+    authorOptions: FLEET_OPTIONS,
+    authorLog: () => {},
     repos: ["org/repo"],
     ghCommandFn,
     addLabelFn: stub.fn,
@@ -223,11 +245,14 @@ Deno.test("backfillIdleTaskLabels - skips a wrapper whose idle-task label was de
         number: 49,
         title: SECURITY_SCAN_ISSUE_TITLE,
         labels: [{ name: "low-priority" }],
+        author: { login: FLEET_AUTHOR },
       },
     ]));
   };
 
   const summary = await backfillIdleTaskLabels({
+    authorOptions: FLEET_OPTIONS,
+    authorLog: () => {},
     repos: ["org/repo"],
     ghCommandFn,
     addLabelFn: stub.fn,
@@ -276,11 +301,18 @@ Deno.test("backfillIdleTaskLabels - unlabeled events for other labels do not blo
       return Promise.resolve("[]");
     }
     return Promise.resolve(JSON.stringify([
-      { number: 7, title: SECURITY_SCAN_ISSUE_TITLE, labels: [] },
+      {
+        number: 7,
+        title: SECURITY_SCAN_ISSUE_TITLE,
+        labels: [],
+        author: { login: FLEET_AUTHOR },
+      },
     ]));
   };
 
   const summary = await backfillIdleTaskLabels({
+    authorOptions: FLEET_OPTIONS,
+    authorLog: () => {},
     repos: ["org/repo"],
     ghCommandFn,
     addLabelFn: stub.fn,
@@ -313,11 +345,18 @@ Deno.test("backfillIdleTaskLabels - timeline fetch failure fails closed (no labe
       return Promise.resolve("[]");
     }
     return Promise.resolve(JSON.stringify([
-      { number: 11, title: SECURITY_SCAN_ISSUE_TITLE, labels: [] },
+      {
+        number: 11,
+        title: SECURITY_SCAN_ISSUE_TITLE,
+        labels: [],
+        author: { login: FLEET_AUTHOR },
+      },
     ]));
   };
 
   const summary = await backfillIdleTaskLabels({
+    authorOptions: FLEET_OPTIONS,
+    authorLog: () => {},
     repos: ["org/repo"],
     ghCommandFn,
     addLabelFn: stub.fn,
@@ -340,11 +379,18 @@ Deno.test("backfillIdleTaskLabels - unreadable timeline (null) fails closed", as
       return Promise.resolve("[]");
     }
     return Promise.resolve(JSON.stringify([
-      { number: 12, title: SECURITY_SCAN_ISSUE_TITLE, labels: [] },
+      {
+        number: 12,
+        title: SECURITY_SCAN_ISSUE_TITLE,
+        labels: [],
+        author: { login: FLEET_AUTHOR },
+      },
     ]));
   };
 
   const summary = await backfillIdleTaskLabels({
+    authorOptions: FLEET_OPTIONS,
+    authorLog: () => {},
     repos: ["org/repo"],
     ghCommandFn,
     addLabelFn: stub.fn,
@@ -373,11 +419,18 @@ Deno.test("backfillIdleTaskLabels - captures gh failure and continues sweep", as
       return Promise.resolve("[]");
     }
     return Promise.resolve(JSON.stringify([
-      { number: 9, title: SECURITY_SCAN_ISSUE_TITLE, labels: [] },
+      {
+        number: 9,
+        title: SECURITY_SCAN_ISSUE_TITLE,
+        labels: [],
+        author: { login: FLEET_AUTHOR },
+      },
     ]));
   };
 
   const summary = await backfillIdleTaskLabels({
+    authorOptions: FLEET_OPTIONS,
+    authorLog: () => {},
     repos: ["org/broken", "org/ok"],
     ghCommandFn,
     addLabelFn: stub.fn,
@@ -408,21 +461,26 @@ Deno.test("backfillIdleTaskLabels - ignores partial title matches", async () => 
         number: 1,
         title: "Run a security scan in /tmp",
         labels: [],
+        author: { login: FLEET_AUTHOR },
       },
       {
         number: 2,
         title: `${SECURITY_SCAN_ISSUE_TITLE} (follow-up)`,
         labels: [],
+        author: { login: FLEET_AUTHOR },
       },
       {
         number: 3,
         title: SECURITY_SCAN_ISSUE_TITLE,
         labels: [],
+        author: { login: FLEET_AUTHOR },
       },
     ]));
   };
 
   const summary = await backfillIdleTaskLabels({
+    authorOptions: FLEET_OPTIONS,
+    authorLog: () => {},
     repos: ["org/repo"],
     ghCommandFn,
     addLabelFn: stub.fn,
@@ -439,6 +497,8 @@ Deno.test("backfillIdleTaskLabels - ignores partial title matches", async () => 
 
 Deno.test("backfillIdleTaskLabels - empty repo list returns empty summary", async () => {
   const summary = await backfillIdleTaskLabels({
+    authorOptions: FLEET_OPTIONS,
+    authorLog: () => {},
     repos: [],
     ghCommandFn: () => Promise.reject(new Error("should not be called")),
   });
@@ -569,7 +629,12 @@ Deno.test("backfillIdleTaskLabels - addLabelToIssue failure recorded as error", 
       return Promise.resolve("[]");
     }
     return Promise.resolve(JSON.stringify([
-      { number: 5, title: SECURITY_SCAN_ISSUE_TITLE, labels: [] },
+      {
+        number: 5,
+        title: SECURITY_SCAN_ISSUE_TITLE,
+        labels: [],
+        author: { login: FLEET_AUTHOR },
+      },
     ]));
   };
   const addLabelFn = () =>
@@ -579,6 +644,8 @@ Deno.test("backfillIdleTaskLabels - addLabelToIssue failure recorded as error", 
     });
 
   const summary = await backfillIdleTaskLabels({
+    authorOptions: FLEET_OPTIONS,
+    authorLog: () => {},
     repos: ["org/repo"],
     ghCommandFn,
     addLabelFn,
@@ -595,6 +662,8 @@ Deno.test("backfillIdleTaskLabels - malformed gh JSON captured as error", async 
   const events: BackfillEvent[] = [];
   const ghCommandFn = (_args: string[]) => Promise.resolve("not-json");
   const summary = await backfillIdleTaskLabels({
+    authorOptions: FLEET_OPTIONS,
+    authorLog: () => {},
     repos: ["org/repo"],
     ghCommandFn,
     log: (event) => events.push(event),
@@ -602,4 +671,106 @@ Deno.test("backfillIdleTaskLabels - malformed gh JSON captured as error", async 
   assertEquals(summary.errors.length, 1);
   assert(summary.errors[0]!.message.includes("malformed gh JSON"));
   assertEquals(events[0]!.kind, "error");
+});
+
+// ---------------------------------------------------------------------------
+// Wrapper-author verification (Issue #1124)
+// ---------------------------------------------------------------------------
+
+/** A gh stub returning one wrapper row authored by `login`. */
+function wrapperListStub(
+  number: number,
+  login: string | null,
+): { fn: (args: string[]) => Promise<string>; calls: string[][] } {
+  const calls: string[][] = [];
+  return {
+    calls,
+    fn: (args: string[]) => {
+      calls.push(args);
+      if (args[0] === "api") return Promise.resolve("[]");
+      const searchIdx = args.indexOf("--search");
+      const search = searchIdx >= 0 ? args[searchIdx + 1] : "";
+      if (search !== `"${SECURITY_SCAN_ISSUE_TITLE}" in:title`) {
+        return Promise.resolve("[]");
+      }
+      return Promise.resolve(JSON.stringify([
+        {
+          number,
+          title: SECURITY_SCAN_ISSUE_TITLE,
+          labels: [],
+          ...(login === null ? {} : { author: { login } }),
+        },
+      ]));
+    },
+  };
+}
+
+Deno.test("backfillIdleTaskLabels - asks GitHub who filed each wrapper", async () => {
+  const gh = wrapperListStub(1, FLEET_AUTHOR);
+  await backfillIdleTaskLabels({
+    repos: ["org/repo"],
+    ghCommandFn: gh.fn,
+    addLabelFn: makeStubAddLabel().fn,
+    authorOptions: FLEET_OPTIONS,
+    authorLog: () => {},
+  });
+  const list = gh.calls.find((args) => args[0] === "issue");
+  assert(list !== undefined);
+  const json = list![list!.indexOf("--json") + 1] ?? "";
+  assert(
+    json.split(",").includes("author"),
+    "a wrapper title anybody can reproduce is not evidence the fleet filed " +
+      "it; the author is the only authenticated part of the row",
+  );
+});
+
+Deno.test("backfillIdleTaskLabels - a planted wrapper title is never labelled", async () => {
+  const stub = makeStubAddLabel();
+  const gh = wrapperListStub(4242, "drive-by-account");
+  const summary = await backfillIdleTaskLabels({
+    repos: ["org/repo"],
+    ghCommandFn: gh.fn,
+    addLabelFn: stub.fn,
+    authorOptions: FLEET_OPTIONS,
+    authorLog: () => {},
+  });
+  assertEquals(stub.calls, []);
+  assertEquals(summary.labelled, []);
+  assertEquals(summary.errors, []);
+});
+
+Deno.test("backfillIdleTaskLabels - a sibling fleet host's wrapper is still rescued", async () => {
+  // The guard that stops the fix becoming "never write": a wrapper filed
+  // by another fleet account is still the fleet's own.
+  const stub = makeStubAddLabel();
+  const gh = wrapperListStub(55, "sibling-fleet-host");
+  const summary = await backfillIdleTaskLabels({
+    repos: ["org/repo"],
+    ghCommandFn: gh.fn,
+    addLabelFn: stub.fn,
+    authorOptions: { fleetAuthors: [FLEET_AUTHOR, "sibling-fleet-host"] },
+    authorLog: () => {},
+  });
+  assertEquals(summary.labelled, [{ repo: "org/repo", number: 55 }]);
+  assertEquals(stub.calls.length, 1);
+});
+
+Deno.test("backfillIdleTaskLabels - an unresolvable fleet writes no label and logs", async () => {
+  // The chosen fail direction, asserted. This site drives a write, so the
+  // harmless outcome is to write nothing: the sweep is idempotent and the
+  // next run rescues the wrapper once the fleet resolves.
+  const stub = makeStubAddLabel();
+  const gh = wrapperListStub(77, FLEET_AUTHOR);
+  const lines: string[] = [];
+  const summary = await backfillIdleTaskLabels({
+    repos: ["org/repo"],
+    ghCommandFn: gh.fn,
+    addLabelFn: stub.fn,
+    authorOptions: { fleetAuthors: [] },
+    authorLog: (message) => lines.push(message),
+  });
+  assertEquals(stub.calls, []);
+  assertEquals(summary.labelled, []);
+  assertEquals(lines.length, 1);
+  assert(lines[0]!.includes("no `idle-task` label is written"));
 });
