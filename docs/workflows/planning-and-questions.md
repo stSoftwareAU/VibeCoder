@@ -540,69 +540,43 @@ flowchart TD
     D -->|no| E["escalateToHuman() — needs-human<br/>+ comment naming each uncovered ask<br/>parent left open · run succeeds"]
 ```
 
-#### 🥇 MVP slice marker and gate (Issue #522)
+#### 🚫 No MVP-slice gate — milestones merge as a whole (Issue #1120)
 
-The planner has always ordered sub-issues by **dependency** — what can be built
-first. That is technical ordering, and it never says whether landing only the
-first sub-issue leaves the repo better off. A milestone can stop part-way (a run
-times out, a human pauses it, the backlog shifts), and the half-finished plan
-then delivers whatever the dependency graph happened to unblock — possibly
-nothing usable. Adopted from spec-kit's spec template, where every user story
-must be independently testable: name the one slice that is.
+There is deliberately **no MVP-slice marker and no MVP-slice gate**. One was
+adopted (Issue #522) and then removed by design, and this section is the record
+of that decision so it is not re-proposed.
 
-**The artefact.** The publish turn (`prompts/planning_critique/` v7 onward)
-marks **exactly one** entry in the sub-issue list of its existing summary
-comment — no new comment, no new section:
+**The decision.** A published plan is **not** required to name an MVP slice, to
+order its sub-issues by value, or to carry a
+`No independently valuable slice — <reason>` line. Sub-issues are published in
+plain dependency order, and a plan that names no slice closes its parent
+normally — no `needs-human` escalation.
 
-```markdown
-Sub-issues created, MVP slice first (dependencies still lead their dependants):
-
-1. #101 — Add the query result cache (`enhancement`) — **MVP slice**: repeated dashboard queries are served from memory, even if nothing after this ever lands
-2. #102 — Rewrite the query planner (`enhancement`, depends on #101)
-```
-
-The marker carries a sentence saying **what value lands if nothing after it is
-ever built**, and the MVP sub-issue's own `## Summary` repeats it (draft
-template `prompts/planning/` v23 onward). Where nothing in the plan is
-independently valuable — a pure refactor, a mechanical migration that pays off
-only once every step lands — the plan says so explicitly with the line
-`No independently valuable slice — <reason>` and marks nothing. Silently
-omitting the marker is not the same statement, and is not accepted.
-
-**Value ordering never overrides a dependency.** The list is ordered MVP-first
-*inside* the dependency graph: a sub-issue is never listed before one it
-`Depends on #N`, so everything ahead of the slice is a genuine prerequisite of
-it.
-
-**The gate.** `worker/deno/lib/mvp_slice_gate.ts` re-reads the parent at
-`closePlanningIssue()` — the same chokepoint as the coverage and
-Failure-Detection gates, never a second one — and locates the plan by its
-**shape** (the longest run of numbered items naming sub-issues), so a reworded
-heading cannot hide it. A plan **fails** when it carries no marker and no
-no-slice line, more than one marker, a marker with no value sentence (or a
-`TBD` / bracketed placeholder), a no-slice line with no reason, both statements
-at once, a sub-issue listed before one it depends on, or an unrelated sub-issue
-listed ahead of the slice. A **missing** list and a parent that cannot be read
-fail too: absence of the artefact is not evidence of a viable slice.
-
-**The outcome — no second escalation path.** Which sub-issue is the MVP slice is
-a value judgement no self-repair can make, so the gate routes through the same
-`escalateToHuman()` chokepoint as coverage: `needs-human` plus one explanation
-comment naming every offence. The parent is left **open** (reopened when the
-planner closed it inline) and the run still completes with `mvpSliceOffences` on
-its result — the plan is published and usable. Both in-code fallback publish
-prompts interpolate the same `MVP_SLICE_REQUIREMENT` constant that lives beside
-the gate, so a degraded run does not publish a plan the gate is bound to reject.
+**Why.** The gate's premise was that a milestone can stop part-way and land only
+its first sub-issue, so the first one had better be worth having alone. The
+[milestone workflow](milestones.md) makes that impossible: a planning run puts
+its sub-issues in a milestone, every sub-issue PR merges into that milestone's
+own `milestone/<name>` feature branch, and the default branch is updated by
+**one** final milestone PR raised only after every milestone issue closes. Where
+the milestone exists, nothing partial reaches the default branch, so ordering
+partial value inside it delivers nothing the milestone does not already deliver
+as a whole. Where it does not — a single-sub-issue plan, or the best-effort
+milestone creation failing — the plan is one issue or a handful of
+independently merged ones, and an MVP marker over that list says nothing
+either.
 
 ```mermaid
-flowchart TD
-    A[Publish turn posts the summary comment<br/>with the sub-issue list] --> B["closePlanningIssue() reads the parent"]
-    B --> C{Exactly one MVP-slice marker<br/>or an explicit no-slice reason?}
-    C -->|no| E
-    C -->|yes| D{Ordered MVP-first,<br/>no sub-issue ahead of its prerequisite?}
-    D -->|yes| F[Close the parent as completed]
-    D -->|no| E["escalateToHuman() — needs-human<br/>+ comment naming each offence<br/>parent left open · run succeeds"]
+flowchart LR
+    P[Planning run] --> M[Milestone<br/>+ sub-issues]
+    M --> B1[Sub-issue PR] --> FB["milestone/&lt;name&gt; branch"]
+    M --> B2[Sub-issue PR] --> FB
+    FB -->|all milestone issues closed| D[One milestone PR<br/>→ default branch]
+    style D fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
+
+Coverage (Issue #520) and Failure Detection (Issue #59) are unaffected — they
+check that the plan is *complete*, which milestone-wide merge does not make
+redundant.
 
 #### 🎯 Auto-milestone for sub-issues (Issue #2863)
 
@@ -1006,8 +980,7 @@ repositories or read large codebases.
   (stats + degraded verdict),
   [worker/deno/lib/planning_degraded_label.ts](../../worker/deno/lib/planning_degraded_label.ts)
   (label application),
-  [worker/deno/lib/mvp_slice_gate.ts](../../worker/deno/lib/mvp_slice_gate.ts)
-  (MVP slice + value ordering), [prompts/planning/](../../prompts/planning/),
+  [prompts/planning/](../../prompts/planning/),
   [prompts/question/](../../prompts/question/).
 - **Model and caching:** [MODEL-AND-CACHING.md](../MODEL-AND-CACHING.md) —
   planning-run stats and degraded-model detection.

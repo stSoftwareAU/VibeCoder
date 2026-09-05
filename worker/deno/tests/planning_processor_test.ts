@@ -35,7 +35,6 @@ import {
 import { planningProcessorCommand } from "../commands/planning_processor.ts";
 import { validateFailureDetectionCriteria } from "../lib/failure_detection_gate.ts";
 import { COVERAGE_TABLE_REQUIREMENT } from "../lib/plan_coverage_gate.ts";
-import { MVP_SLICE_REQUIREMENT } from "../lib/mvp_slice_gate.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
@@ -67,7 +66,7 @@ function coverageReadResponse(): string {
       body: [
         "## Plan published",
         "",
-        "1. #131 — Break the issue down (`enhancement`) — **MVP slice**: the decomposition lands even if nothing after it does",
+        "1. #131 — Break the issue down (`enhancement`)",
         "2. #132 — Carry it into the gate (`enhancement`, depends on #131)",
         "",
         "## Plan Coverage",
@@ -4597,10 +4596,7 @@ function coverageReadWith(table: string[]): string {
       body: [
         "## Plan published",
         "",
-        // Issue #522: the MVP-slice gate reads the same summary comment, so
-        // the fixture carries a compliant slice marker — these tests are about
-        // coverage, not about the slice.
-        "1. #101 — Auth module (`enhancement`) — **MVP slice**: login works end to end on its own",
+        "1. #101 — Auth module (`enhancement`)",
         "",
         ...table,
       ].join("\n"),
@@ -4767,30 +4763,33 @@ Deno.test("processIssuePlanning - a fully covered plan closes the parent (Issue 
 });
 
 // ============================================================================
-// MVP-slice requirement + gate wired at closePlanningIssue() (Issue #522)
+// No MVP-slice requirement in the publish path (Issue #1120)
+//
+// The MVP-slice gate (Issue #522) is removed by design: a planning run puts its
+// sub-issues in a milestone, and a milestone merges as a whole from its own
+// feature branch, so ordering partial value inside one buys nothing.
 // ============================================================================
 
-Deno.test("fallback publish prompts carry the shared MVP-slice requirement (Issue #522)", () => {
+Deno.test("fallback publish prompts state no MVP-slice requirement (Issue #1120)", () => {
   const singleInvocation = buildSingleInvocationPlanningPrompt({
     repo: "org/repo",
-    issueNumber: 522,
-    issueTitle: "Name the MVP slice",
+    issueNumber: 1120,
+    issueTitle: "Decompose the auth rewrite",
     issueBody: "Needs sub-issues.",
   });
   const critiqueFallback = buildCritiqueFallbackPublishPrompt({
     repo: "org/repo",
-    issueNumber: 522,
+    issueNumber: 1120,
   });
 
-  // Both in-code fallbacks publish sub-issues, and the MVP-slice gate runs on
-  // whatever they publish — so both must state the rule, from the one shared
-  // constant that sits beside the gate implementing it.
-  assertStringIncludes(singleInvocation, MVP_SLICE_REQUIREMENT);
-  assertStringIncludes(critiqueFallback, MVP_SLICE_REQUIREMENT);
+  for (const prompt of [singleInvocation, critiqueFallback]) {
+    assertEquals(prompt.includes("MVP slice"), false);
+    assertEquals(prompt.includes("independently valuable slice"), false);
+  }
 });
 
 /** A parent read whose summary comment carries `list` plus a covered table. */
-function mvpReadWith(list: string[]): string {
+function planReadWith(list: string[]): string {
   return JSON.stringify({
     body: "Parent",
     comments: [{
@@ -4864,7 +4863,7 @@ async function runPlanningWithList(list: string[]): Promise<{
     },
     github: {
       runGhCommand: (args: string[]) => {
-        if (isCoverageRead(args)) return Promise.resolve(mvpReadWith(list));
+        if (isCoverageRead(args)) return Promise.resolve(planReadWith(list));
         if (args.includes("close")) closedIssue = true;
         return Promise.resolve("");
       },
@@ -4880,47 +4879,28 @@ async function runPlanningWithList(list: string[]): Promise<{
   return { result, closedIssue, labels, comments };
 }
 
-Deno.test("processIssuePlanning - a plan naming no MVP slice leaves the parent open and escalates (Issue #522)", async () => {
+Deno.test("processIssuePlanning - a plan with no MVP marker closes the parent (Issue #1120)", async () => {
   const { result, closedIssue, labels, comments } = await runPlanningWithList([
     "1. #101 — Auth module (`enhancement`)",
+    "2. #102 — Session store (`enhancement`, depends on #101)",
   ]);
 
   assertEquals(result.ok, true);
-  if (result.ok) {
-    // The plan is published, so the run still succeeds …
-    assertEquals(result.value.processed, true);
-    // … but the missing slice is reported and a human is asked to decide.
-    assertEquals(result.value.mvpSliceOffences?.length, 1);
-    assertStringIncludes(
-      result.value.mvpSliceOffences?.[0] ?? "",
-      "No independently valuable slice",
-    );
-  }
-  assertEquals(closedIssue, false);
-  assertEquals(labels.includes("needs-human"), true);
-  assertEquals(comments.some((c) => c.includes("MVP slice")), true);
-});
-
-Deno.test("processIssuePlanning - a plan naming one MVP slice closes the parent (Issue #522)", async () => {
-  const { result, closedIssue, labels } = await runPlanningWithList([
-    "1. #101 — Auth module (`enhancement`) — **MVP slice**: login works end to end on its own",
-  ]);
-
-  assertEquals(result.ok, true);
-  if (result.ok) assertEquals(result.value.mvpSliceOffences, undefined);
+  if (result.ok) assertEquals(result.value.processed, true);
   assertEquals(closedIssue, true);
   assertEquals(labels.includes("needs-human"), false);
+  assertEquals(comments.some((c) => c.includes("MVP slice")), false);
 });
 
-Deno.test("processIssuePlanning - an explicit no-slice statement closes the parent (Issue #522)", async () => {
+Deno.test("processIssuePlanning - a plan ordered against its dependency edges still closes the parent (Issue #1120)", async () => {
+  // The removed gate rejected a sub-issue listed before one it depends on;
+  // milestone-wide merge makes the published order irrelevant.
   const { result, closedIssue, labels } = await runPlanningWithList([
-    "1. #101 — Auth module (`enhancement`)",
-    "",
-    "No independently valuable slice — a mechanical module move; nothing ships until every importer is repointed.",
+    "1. #102 — Session store (`enhancement`, depends on #101)",
+    "2. #101 — Auth module (`enhancement`)",
   ]);
 
   assertEquals(result.ok, true);
-  if (result.ok) assertEquals(result.value.mvpSliceOffences, undefined);
   assertEquals(closedIssue, true);
   assertEquals(labels.includes("needs-human"), false);
 });
