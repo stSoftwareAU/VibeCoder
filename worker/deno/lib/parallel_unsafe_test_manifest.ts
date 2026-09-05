@@ -19,8 +19,11 @@
  * `getPromptsDir` an injected environment lookup — which is the whole point of
  * the list going down.)
  *
- * Measured with `DENO_JOBS=4`: 48 failures, of which 32 were the pre-existing
- * pwsh failures and ~16 were genuine races.
+ * Measured with `DENO_JOBS=4`: 48 failures, ~16 of them genuine races. The
+ * remainder were attributed to "the pre-existing pwsh failures". #971
+ * re-measured that half on a host with PowerShell installed and found 18
+ * test-side defects rather than 32 standing failures — a resolver bug in
+ * `setup_ps1_test.ts` and two tests timing themselves — all fixed in #988.
  *
  * Issue #880 capped that debt so it could not grow. This module takes most of
  * the prize without waiting for the debt to be paid: the list moves out of the
