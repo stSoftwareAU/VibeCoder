@@ -312,13 +312,25 @@ which of the three you chose, and why, in the PR summary.
 
 ## Quality Gates
 
-Iterate with the fast checks — `deno fmt`, `deno lint`, `deno check`, and only
-the test files your change touches. Run `./quality.sh < /dev/null` **once, in
-the foreground**, before raising the PR and fix what it reports; re-run it after
-a fix, never on a timer. Never background it behind a `sleep`/`pgrep` poll loop
-— that spends the whole budget waiting (Issue #399). It streams one line per
-check as each settles, so a slow run is visibly alive rather than
-indistinguishable from a hung one. The quality gate is implemented in Deno
+Iterate with the fast checks — `deno fmt`, `deno lint`, `deno check mod.ts`,
+`deno check tests/`, and the test files that import what your change touches.
+Those cost seconds, and they are what you raise a PR on.
+
+`./quality.sh` is **not** a step every change takes. CI runs the same checks on
+the PR in parallel shards on dedicated runners, and an unattended run has the
+worker gate the branch after the agent, so a serial local copy is the only one
+paid for out of a run budget — commonly 15 minutes or more of a 60-minute one
+(Issue #1138). Run `./quality.sh < /dev/null` **once, in the foreground**, when
+it is the tool that reports the thing you are fixing, or when you deliberately
+want the whole picture and have the time for it; if the time you have will not
+cover it, skip it and say so in the PR body rather than starting something that
+cannot finish. Never re-run it to confirm a fix and never loop on it — once it
+has failed twice, push and let CI report, or escalate. Never background it
+behind a `sleep`/`pgrep` poll loop — that spends the whole budget waiting
+(Issue #399). It streams one line per check as each settles, so a slow run is
+visibly alive rather than indistinguishable from a hung one.
+
+The quality gate is implemented in Deno
 TypeScript (`worker/deno/quality.ts`) and runs benchmark-audit, pages-liquid,
 markdownlint, semgrep, the release-tag ruleset reconciliation, `deno test`,
 `deno lint`, `deno check`, and `deno fmt --check`. The semgrep stage runs the same
@@ -338,9 +350,12 @@ locally with `deno task test:integration` when your change touches a script
 they drive. A green quality run therefore says nothing about the integration
 suites, and is not meant to.
 
-**All quality checks MUST pass before creating a PR.** The worker runs
-`./quality.sh` before creating any PR; CI re-runs the same checks. Never raise a
-PR with failing quality checks — fix the failures first.
+**Never raise a PR over a check you watched fail.** That is not the same as
+running everything first: skipping a check the budget would not cover is a
+decision you disclose in the PR body, while pushing over one you saw go red is
+not. The failure is caught either way — the worker runs `./quality.sh` after the
+agent and CI re-runs the same checks on the PR — so this rule is about honesty,
+not coverage. Fix what you saw fail, or say plainly that you could not.
 
 Always redirect stdin from `/dev/null` when running tests, quality checks, or
 build commands on unattended machines (`./quality.sh < /dev/null`,

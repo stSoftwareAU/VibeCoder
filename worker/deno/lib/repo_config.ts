@@ -100,13 +100,25 @@ export function getRepoNice(
  * - Otherwise: uses the default ./quality.sh
  *
  * The guidance deliberately points the inner loop at the repo's *fast*
- * checks and reserves the full gate for one foreground run at the end
- * (Issue #399). The old "keep running it until it passes" wording sent
+ * checks (Issue #399). The old "keep running it until it passes" wording sent
  * agents back to a multi-minute gate after every edit, and — because a gate
  * that prints nothing until it finishes looks indistinguishable from a hung
  * one — they backgrounded it and burned the rest of the execute budget in
  * `sleep`/`pgrep` poll loops. One agent sat at 38 tool calls for over seven
  * minutes doing exactly that.
+ *
+ * Issue #399 still reserved one foreground gate run at the end, and that run
+ * turned out to be the rest of the problem (Issue #1138). Across three hosts
+ * in a day, 407 worker-log observations caught an agent sitting in the gate
+ * as its most recent tool call — median 17 minutes, and still inside it at
+ * 49, 58, 63 and 68 minutes against a run budget of roughly 60. A run killed
+ * at the deadline is recorded a failure and the issue goes back in the queue,
+ * so a whole slot buys nothing. The gate's answer was never scarce: the
+ * worker runs a baseline gate before the agent, runs the gate itself after
+ * it with bounded remediation, and CI re-runs the same checks on the pull
+ * request in parallel shards on dedicated runners. Only the agent's copy is
+ * paid for out of the run budget, so it is now conditional and budget-aware
+ * rather than a step every run takes.
  *
  * @param repoConfigs - The repo_config map from ConfigFile
  * @param repo - Repository in "owner/repo" format
@@ -125,9 +137,10 @@ export function buildQualityInstructions(
   const command = customCommand || "./quality.sh";
 
   return [
-    `   - While you iterate, use the repository's fast checks — formatter, linter, type check, and only the test files your change touches. Seconds, not minutes.`,
-    `   - Before you finish, run ${command} < /dev/null once, in the foreground, and fix whatever it reports. Re-run it after a fix — never on a timer.`,
-    `   - Never start ${command} in the background and poll for it. A \`sleep\`/\`pgrep\` wait loop spends the execute budget without making progress; run it in the foreground and watch each check report as it completes.`,
+    `   - While you iterate, use the repository's fast checks — formatter, linter, type check, and only the test files your change touches, plus the entry module and the test directory. Seconds, not minutes. These are the checks you validate on.`,
+    `   - Do NOT run ${command} as a step every run takes. The worker runs the gate itself once you finish, and CI re-runs the same checks on the pull request in parallel shards on dedicated runners. Your serial copy is the third answer to a question already answered twice, and it is the only one paid for out of the run budget — commonly 15 minutes or more of it.`,
+    `   - Run ${command} < /dev/null only when it is the tool that reports the thing you are fixing, and only when the run budget you have left comfortably exceeds the time the gate usually takes. If it does not, skip it and say so in the pull request body: a gate started too late to finish loses the whole run, not just the gate.`,
+    `   - When you do run it: once, in the foreground, and fix what it reports. Never start ${command} in the background and poll for it — a \`sleep\`/\`pgrep\` wait loop spends the execute budget without making progress. Do not re-run it to confirm a fix, and never loop on it: once it has failed twice, push and let CI report, or hand off honestly.`,
     `   - IMPORTANT: Always redirect stdin from /dev/null (< /dev/null) when running tests, quality checks, or build commands to prevent hanging on unattended machines.`,
   ].join("\n");
 }

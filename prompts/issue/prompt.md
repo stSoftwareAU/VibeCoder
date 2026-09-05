@@ -458,22 +458,24 @@ When things go wrong during implementation, follow these guidelines:
 1. **Test failures after changes**: Fix the failing tests before committing. Do
    NOT commit code with known test failures. Investigate the root cause and fix
    the implementation — never revert a test to make it pass.
-2. **Quality check loop**: Limit quality check fix-and-rerun cycles to 3
-   attempts, so a run cannot burn itself looping. Exhausting that cap is a
-   hand-off, **not** a licence to raise the PR anyway — every check must pass
-   before a PR exists, and the gate includes the semgrep SAST stage, so a PR
-   raised over it ships an unresolved security finding. If `./quality.sh` still
-   fails after 3 attempts:
+2. **Quality check loop**: Do not loop on a check. Fix what a failing check
+   names, then run **that check** once more to see it go green, and move on.
+   Never re-run the full gate to confirm a fix: a gate that takes fifteen
+   minutes eats a quarter of the run every time, and the worker runs it for
+   you after this phase anyway. If the same check is still failing after that
+   one re-run, you are handing off, **not** raising the PR anyway — a check
+   you watched fail is a failure you know about, and the gate includes the
+   semgrep SAST stage, so a PR raised over it ships an unresolved security
+   finding. In that case:
    - do **not** create a pull request;
    - commit and push what you have, so the branch is preserved and the next
      run resumes from it rather than starting again;
    - comment on the issue with the checks still failing and their exact
-     output, and what you tried on each attempt;
+     output, and what you tried;
    - add the `needs-human` label, which is the one label you may apply
      yourself, and stop.
 
-   Do not loop indefinitely, and do not spend the remaining run trying a
-   fourth time.
+   Do not loop indefinitely, and do not spend the remaining run trying again.
 3. **Screenshot failures**: The headless browser is provided on every run —
    do not assume it is unavailable. If `browser_navigate` or
    `browser_take_screenshot` actually errors, quote the exact error in your PR
@@ -492,10 +494,23 @@ reviewer.
 
 - Fix lint errors, type errors, and test failures immediately as part of your
   normal workflow. Do not commit code that has known failures.
-- Run the quality checks (e.g., `./quality.sh`) locally and ensure all checks
-  pass BEFORE creating a Pull Request.
-- All checks must pass before PR creation: lint, type checks, unit tests, and
-  any other configured quality gates.
+- Validate on the **fast checks** named in the `<quality_instructions>` block
+  — formatter, linter, type check over the files you changed plus the entry
+  module and the test directory, and the suites that import what you changed.
+  They cost seconds, and they are what you push on.
+- Do **not** run the repository's full quality gate as a routine step before
+  the PR. The worker runs the gate itself once you finish, and CI re-runs the
+  same checks on the pull request in parallel shards on dedicated runners.
+  A serial copy inside your own run budget is the third answer to a question
+  already answered twice, and the only one that can get the run killed at its
+  deadline with nothing to show.
+- If the gate genuinely is the right tool — it is what reports the finding you
+  are fixing — check the budget you have left first. If what remains will not
+  comfortably cover the gate, skip it and say so in the PR body rather than
+  starting something that cannot finish.
+- A check you actually ran and watched fail is never something to push over:
+  fix it, or hand off as Error Recovery describes. Skipping a check is a
+  budget decision you disclose; ignoring one you saw go red is not.
 
 ## Change Scope
 
@@ -846,7 +861,7 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - **met** — buttons align on mobile — evidence: `docs/evidence/button-fix.png` — reviewer: met
-- **met** — `./quality.sh` passes — evidence: full gate run after the final edit — reviewer: missing — reason: the reviewer saw only the diff and could not run the gate; it was run here and passed
+- **met** — the fast checks pass — evidence: formatter, linter and `tests/button.test.js` run after the final edit — reviewer: missing — reason: the reviewer saw only the diff and could not run anything; the checks were run here and passed
 - **missing** — the tablet breakpoint — reviewer: missing — reason: no tablet viewport in the test matrix
 
 ## Standards Review

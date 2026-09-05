@@ -247,6 +247,71 @@ Deno.test("repo_config - buildQualityInstructions requires one foreground gate r
   );
 });
 
+// Issue #1138 — one foreground run at the end was still one run too many.
+// 407 worker-log observations caught an agent inside the gate as its most
+// recent tool call, median 17 minutes and still there at 68 against a
+// ~60-minute budget. The worker gates the branch after the agent and CI
+// gates the pull request, so the agent's copy is conditional now.
+
+Deno.test("repo_config - buildQualityInstructions does not make the gate a step every run takes (Issue #1138)", () => {
+  const result = buildQualityInstructions(undefined, "org/any-repo");
+  const lower = result.toLowerCase();
+  assertEquals(
+    lower.includes("do not run ./quality.sh as a step every run takes"),
+    true,
+    `guidance must stop asking for a routine gate run:\n${result}`,
+  );
+  assertEquals(
+    lower.includes("only when it is the tool that reports the thing you are"),
+    true,
+    `guidance must state the condition under which the gate is worth it:\n${result}`,
+  );
+  // The old wording ordered the run unconditionally before finishing.
+  assertEquals(
+    lower.includes("before you finish, run"),
+    false,
+    `guidance must not order an unconditional gate run:\n${result}`,
+  );
+});
+
+Deno.test("repo_config - buildQualityInstructions makes the gate budget-aware (Issue #1138)", () => {
+  const result = buildQualityInstructions(undefined, "org/any-repo");
+  const lower = result.toLowerCase();
+  assertEquals(
+    lower.includes("run budget"),
+    true,
+    `guidance must weigh the gate against the budget left:\n${result}`,
+  );
+  assertEquals(
+    lower.includes("skip it and say so in the pull request body"),
+    true,
+    `a budget too short for the gate must skip it and disclose that, not ` +
+      `start something that cannot finish:\n${result}`,
+  );
+});
+
+Deno.test("repo_config - buildQualityInstructions forbids looping on the gate (Issue #1138)", () => {
+  const result = buildQualityInstructions(undefined, "org/any-repo");
+  const lower = result.toLowerCase();
+  assertEquals(
+    lower.includes("never loop on it"),
+    true,
+    `guidance must forbid the fix-and-rerun loop outright:\n${result}`,
+  );
+  assertEquals(
+    lower.includes("failed twice"),
+    true,
+    `guidance must name the point at which re-running stops being work:\n${result}`,
+  );
+  // No numbered allowance may creep back in: three runs of a 15-minute gate
+  // is 45 minutes of a 60-minute budget before any work happens.
+  assertEquals(
+    /\b(?:3|three)\s+attempts\b/i.test(result),
+    false,
+    `guidance must not budget a numbered set of gate attempts:\n${result}`,
+  );
+});
+
 Deno.test("repo_config - buildQualityInstructions applies the same no-polling rule to a custom command (Issue #399)", () => {
   const repoConfigs = createRepoConfigMap();
   // org/repo-b configures `yarn test` as its quality command.
@@ -257,9 +322,14 @@ Deno.test("repo_config - buildQualityInstructions applies the same no-polling ru
     `the custom command must carry the same guidance:\n${result}`,
   );
   assertEquals(
-    result.includes("run yarn test < /dev/null once, in the foreground"),
+    result.includes("Run yarn test < /dev/null only when"),
     true,
-    `the custom command must be run once in the foreground:\n${result}`,
+    `the custom command must carry the same condition on running it:\n${result}`,
+  );
+  assertEquals(
+    result.includes("Do NOT run yarn test as a step every run takes"),
+    true,
+    `the custom command must not be a routine step either:\n${result}`,
   );
 });
 

@@ -67,7 +67,7 @@ The quality commands for this repository are in the `<quality_instructions>` blo
 When things go wrong during a spelling fix, follow these guidelines:
 
 1. **Test failures after changes**: If your spelling corrections cause tests to fail, the cause is a rename that broke a caller — fix the caller, not the test. Never edit a test's assertions, skip it, or delete it to absorb a spelling change. If the only way to make a test pass is to change what it asserts, revert the rename and add the word to the dictionary instead. Do NOT commit code with known test failures.
-2. **Quality check loop**: Limit fix-and-rerun cycles to 3 attempts. If `./quality.sh` still fails after 3 attempts, document the remaining issues in the response message and commit what you have. Do not loop indefinitely.
+2. **Quality check loop**: Do not loop on a check. Fix what a failing check names, run **that check** once more to see it go green, and move on — never re-run the repository's full quality gate to confirm a fix. The gate takes fifteen minutes or more on a large repository, and a run that spends three of those on it has spent most of its budget before any work happens. If the same check is still failing after that one re-run, document it in the response message with its exact output and commit what you have. Do not loop indefinitely.
 3. **Git conflicts**: Rebase on the latest default branch to resolve conflicts, then re-run the spell check and tests to confirm nothing broke. If a rebase is genuinely required on this pushed branch, push it with `--force-with-lease` and never plain `--force`, and never rewrite commits you did not author. You may not close, merge, or retarget the PR, and you may not delete branches. If resolving the conflict needs any of those, stop and say so in `.pr_response_message`.
 
 Local edits are reversible and are yours to make; anything externally visible or irreversible — a force-push, a PR state change, a branch deletion — is not. When in doubt, do the reversible thing and report the rest.
@@ -76,8 +76,8 @@ Local edits are reversible and are yours to make; anything externally visible or
 
 Fix all validation, lint, and test issues as part of the spelling fix — do not wait for a reviewer.
 
-- Run `./quality.sh` (or the project's equivalent) locally and ensure all checks pass BEFORE pushing.
-- All configured quality gates must pass: spell check, lint, type checks, and unit tests.
+- Validate on the **fast checks** named in the `<quality_instructions>` block — the spell check itself, the formatter, the linter and the type check over the files you changed. On a spelling fix those are the checks that can actually go red, and they cost seconds.
+- Do **not** run the repository's full quality gate before pushing. The worker runs the gate itself once you finish and CI re-runs the same checks on the pull request, so a serial copy inside your own run budget buys nothing and can get the run killed at its deadline. If you do run it — because it is what reports the finding you are fixing — check that the budget you have left covers it first, and if it does not, skip it and say so in the response message.
 
 ## Change Scope
 
@@ -96,7 +96,7 @@ Before each commit, verify every one of the following:
 2. **All previously failing spellings now pass locally** — re-run the spell check to confirm.
 3. **No unrelated files modified** — check `git status` and confirm only the flagged files and dictionary config are staged.
 4. **Australian English is preserved** — American spellings were NOT added to the dictionary to silence the check. If a word like "color" or "behavior" appears in prose or in a name this repo owns, correct it to "colour" or "behaviour" rather than whitelisting the American form. An externally defined name (CSS property, third-party API, wire format) is the documented exception and goes in the dictionary.
-5. **Quality checks pass** — `./quality.sh` (or equivalent) returns zero errors.
+5. **The fast checks pass** — the spell check, formatter, linter and type check over the files you touched return zero errors.
 
 ## Commit
 

@@ -135,7 +135,7 @@ Fixed <failing check> — <one-line root cause>.
 **Root cause:** <why it failed, in a sentence or two>
 **The fix:** <what you changed, and why it addresses the cause rather than the symptom>
 **Files touched:** <path — what changed>; <path — what changed>
-**Gate:** `./quality.sh` (or the repository's gate) passed locally.
+**Checks run:** <the fast checks you ran and what they said — formatter, linter, type check, and the suite covering the fix. If the full gate was the right tool and you ran it, say so; if you skipped it because the run budget would not cover it, say that instead of leaving it unsaid>
 ```
 
 When you changed nothing:
