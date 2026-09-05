@@ -28,18 +28,24 @@ import {
   setActiveRepoModelEffortOverrides,
   setPhaseModelConfigOverrides,
 } from "../lib/claude_executor.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Reset module-level model resolution so grill_me derives the default tier. */
+/**
+ * Reset module-level model resolution so grill_me derives the default tier.
+ *
+ * The environment half of this reset used to remove `CLAUDE_MODEL_GRILL_ME`
+ * and `CLAUDE_MODEL` from the process (Issue #944). Every call below
+ * now hands the recorder {@link emptyEnv} instead, so the routing chain sees
+ * no operator override without the process being changed underneath the other
+ * parallel workers.
+ */
 function resetModelResolution(): void {
   setPhaseModelConfigOverrides({});
   setActiveRepoModelEffortOverrides(undefined);
-  for (const v of ["CLAUDE_MODEL_GRILL_ME", "CLAUDE_MODEL"]) {
-    Deno.env.delete(v);
-  }
 }
 
 function recordingLogger(): { logger: Logger; warnings: string[] } {
@@ -158,6 +164,7 @@ Deno.test("reportGrillMeDegradation - fable-served round is not degraded; no lab
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assertEquals(verdict.degraded, false);
@@ -187,6 +194,7 @@ Deno.test("reportGrillMeDegradation - healthy round posts at most one stats comm
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assertEquals(comments.length, 0);
@@ -210,6 +218,7 @@ Deno.test("reportGrillMeDegradation - an earlier round's stats comment does not 
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assertEquals(comments.length, 1);
@@ -235,6 +244,7 @@ Deno.test("reportGrillMeDegradation - opus-served round is degraded; labels the 
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assert(verdict.degraded, "opus served when fable expected must be degraded");
@@ -269,6 +279,7 @@ Deno.test("reportGrillMeDegradation - explicit pre-flight flag is degraded even 
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assert(verdict.degraded, "explicit pre-flight flag must force degraded");
@@ -291,6 +302,7 @@ Deno.test("reportGrillMeDegradation - rate-limit fallbackModel round is degraded
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assert(verdict.degraded);
@@ -318,6 +330,7 @@ Deno.test("reportGrillMeDegradation - comment failure is non-fatal", async () =>
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assert(verdict.degraded);
@@ -342,6 +355,7 @@ Deno.test("reportGrillMeDegradation - label failure is non-fatal", async () => {
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assert(verdict.degraded);
