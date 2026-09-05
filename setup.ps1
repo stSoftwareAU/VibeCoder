@@ -929,8 +929,18 @@ function Invoke-VibeInteractiveCredentials {
                 if (Get-Command gh -CommandType Application -ErrorAction SilentlyContinue) {
                     $previous = $env:GH_CONFIG_DIR
                     $env:GH_CONFIG_DIR = $expandedSource
-                    $sourceToken = (& gh auth token 2>$null | Select-Object -First 1)
-                    if ($LASTEXITCODE -ne 0) { $sourceToken = "" }
+                    # `& gh ... | Select-Object -First 1` stops the upstream
+                    # pipeline, so the native exit code is never recorded and
+                    # $LASTEXITCODE keeps whatever an earlier native command
+                    # left there — 0, during provisioning. Collecting into an
+                    # array runs gh to completion and records its status, the
+                    # same correction Issue #1146 made to the login lookup.
+                    $sourceLines = @(& gh auth token 2>$null)
+                    if ($LASTEXITCODE -ne 0 -or $sourceLines.Count -eq 0) {
+                        $sourceToken = ""
+                    } else {
+                        $sourceToken = $sourceLines[0]
+                    }
                     $env:GH_CONFIG_DIR = $previous
                 }
                 if ($sourceToken) {
