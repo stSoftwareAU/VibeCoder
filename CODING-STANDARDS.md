@@ -213,7 +213,8 @@ A unit test is **behavioural**, **self-contained**, **fast** and
   temporary tree and spawn it. That last clause is the boundary the code draws:
   `isIntegrationTestSource` claims any test that builds a path to a repository
   script, and a claimed file is an integration test.
-- **Fast** — it finishes within 10 seconds. Nothing times a unit test at run
+- **Fast** — it finishes within 10 seconds, and that is a **target, not a
+  kill**. Nothing times a unit test at run
   time, so the rule is enforced by shape rather than by stopwatch: a wall-clock
   sleep, a retry loop against the real clock, a polling wait or a spawned
   script is a `test-audit` finding (check 13) whatever the test happens to cost
