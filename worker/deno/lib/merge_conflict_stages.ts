@@ -11,7 +11,10 @@
  * of a deleted subsystem returned to `milestone/863`.
  *
  * Taking the incoming side of a modify/delete therefore means **deleting the
- * file**, and this module is the one place that decision is made.
+ * file**, and this module is the one place the milestone sync makes that
+ * decision. (The rebase resolver in `git_conflict_resolution.ts` picks a side
+ * too, but stages nothing when `checkout --<side>` fails, so it stalls the
+ * rebase rather than reviving a file — a different, already-loud outcome.)
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */

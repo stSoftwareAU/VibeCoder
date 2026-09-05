@@ -80,6 +80,36 @@ import {
 import { retargetPrToMilestone } from "../lib/pr_retarget.ts";
 import { runGhCommand } from "../lib/github.ts";
 
+/**
+ * The PR's head branch, which decides its merge method (Issue #1048).
+ *
+ * Throws rather than defaulting: an unreadable head would silently squash a
+ * milestone sync, which is the fault this whole path exists to prevent.
+ */
+async function fetchHeadRefName(
+  repo: string,
+  prNumber: number,
+): Promise<string> {
+  const head = (await runGhCommand([
+    "pr",
+    "view",
+    String(prNumber),
+    "--repo",
+    repo,
+    "--json",
+    "headRefName",
+    "--jq",
+    ".headRefName",
+  ])).trim();
+  if (!head) {
+    throw new Error(
+      `PR #${prNumber} in ${repo} reported no head branch, so its merge ` +
+        `method cannot be chosen (Issue #1048)`,
+    );
+  }
+  return head;
+}
+
 export const prManagerCommand: Command = {
   name: "pr-manager",
   description:
@@ -215,6 +245,10 @@ export const prManagerCommand: Command = {
           repo,
           prNumber,
           skipAutoMerge,
+          // The head branch decides the merge method (Issue #1048): a
+          // milestone sync must land as a merge commit, and without this the
+          // arming here would squash one.
+          headRefName: await fetchHeadRefName(repo, prNumber),
           ghCommandFn: runGhCommand,
         });
         return {
@@ -237,34 +271,19 @@ export const prManagerCommand: Command = {
             message: "Missing required arguments: --repo, --pr-number",
           };
         }
+        // Read once and use for both the arming and the direct-merge fallback
+        // (Issue #1048): the head branch decides the merge method.
+        const headRefName = await fetchHeadRefName(repo, prNumber);
         const result = await enableAutoMerge({
           repo,
           prNumber,
           skipAutoMerge,
+          headRefName,
           ghCommandFn: runGhCommand,
         });
         // If not allowed, attempt direct merge
         if (result.result === AutoMergeResult.NotAllowed) {
           try {
-            // A milestone sync must land as a merge commit (Issue #1048), so
-            // the head branch decides the method. An unreadable head keeps the
-            // squash default — the same method this fallback always used.
-            let headRefName = "";
-            try {
-              headRefName = (await runGhCommand([
-                "pr",
-                "view",
-                String(prNumber),
-                "--repo",
-                repo,
-                "--json",
-                "headRefName",
-                "--jq",
-                ".headRefName",
-              ])).trim();
-            } catch {
-              headRefName = "";
-            }
             await runGhCommand([
               "pr",
               "merge",

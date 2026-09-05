@@ -241,7 +241,11 @@ Two things hold this in place:
 - **The sync PR merges as a merge commit.** `mergeMethodFlagForHead` in
   `worker/deno/lib/milestone_sync_pr.ts` returns `--merge` for a
   `sync/milestone-*` head and `--squash` for everything else, and every
-  auto-merge and direct-merge path routes through it.
+  auto-merge and direct-merge path routes through it. This needs **merge
+  commits to be permitted on the repository** (Settings → Pull Requests →
+  Allow merge commits). Where they are not, the sync is armed as a squash with
+  a warning naming the setting, and the check below is what catches the
+  consequence.
 - **A resurrection is detected directly.** The `check-resurrected-files`
   command fails when a branch carries a file the default branch deleted and
   whose deleting commit is already in the branch's ancestry:

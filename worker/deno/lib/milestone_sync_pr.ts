@@ -90,6 +90,45 @@ export function mergeMethodFlagForHead(
   return isMilestoneSyncBranch(headRefName) ? "--merge" : "--squash";
 }
 
+/**
+ * Whether GitHub refused a merge because the repository does not permit merge
+ * commits (`allow_merge_commit: false`, or a ruleset whose
+ * `allowed_merge_methods` omits `merge`).
+ *
+ * This is the one refusal the sync answers by changing method rather than by
+ * retrying: no number of retries turns a repository setting on.
+ */
+export function isMergeCommitNotAllowed(message: string): boolean {
+  const text = message.toLowerCase();
+  return text.includes("merge commits are not allowed") ||
+    text.includes("merge commit is not allowed") ||
+    (text.includes("merge method") && text.includes("not allowed")) ||
+    text.includes("not allowed for this repository");
+}
+
+/**
+ * The warning a squashed sync earns, naming the repository setting to change.
+ *
+ * A squashed sync is a real fault — it leaves the default branch outside the
+ * milestone branch's ancestry — so it is never silent. It is not fatal either:
+ * the `check-resurrected-files` gate on every milestone PR catches the
+ * consequence, and a sync that refused to land would leave the branch drifting
+ * instead.
+ */
+export function squashedSyncWarning(
+  repo: string,
+  milestoneBranch: string,
+  detail: string,
+): string {
+  return `WARNING: the sync PR for '${milestoneBranch}' in ${repo} had to be ` +
+    `armed as a SQUASH — ${repo} does not permit merge commits (${detail}). ` +
+    `The default branch will not be an ancestor of '${milestoneBranch}', so ` +
+    `its deletions can return as modify/delete conflicts. Enable merge ` +
+    `commits on ${repo} (Settings → Pull Requests → Allow merge commits) to ` +
+    `close this off; until then the check-resurrected-files gate is what ` +
+    `catches the consequence (Issue #1048).`;
+}
+
 /** Injected seams so the whole path is testable without git or GitHub. */
 export interface MilestoneSyncPrDeps {
   /** Runs git in the clone; resolves with the exit code and stderr. */
@@ -105,6 +144,35 @@ export interface MilestoneSyncPrOutcome {
   branch: string;
   /** True when this call opened the PR rather than updating an open one. */
   opened: boolean;
+}
+
+/**
+ * Arm auto-merge on a freshly-raised sync PR, as a merge commit (Issue #1048).
+ *
+ * A repository that forbids merge commits gets the squash it can take, with a
+ * loud warning naming the setting — never a quiet downgrade. Any other failure
+ * is left for `ensureAutoMergeOnOpenPrs` to retry, as before.
+ */
+async function armSyncPrAutoMerge(
+  repo: string,
+  prNumber: string,
+  branch: string,
+  deps: MilestoneSyncPrDeps,
+): Promise<void> {
+  const arm = (method: "--merge" | "--squash") =>
+    deps.gh(["pr", "merge", prNumber, "--repo", repo, "--auto", method]);
+  try {
+    await arm(mergeMethodFlagForHead(branch));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!isMergeCommitNotAllowed(message)) return;
+    try {
+      await arm("--squash");
+      deps.log?.(squashedSyncWarning(repo, branch, message.trim()));
+    } catch {
+      // Left for `ensureAutoMergeOnOpenPrs` to arm on its next pass.
+    }
+  }
 }
 
 /**
@@ -211,21 +279,7 @@ export async function raiseMilestoneSyncPr(
     // own auto-merge pass, so a failure here is not the sync's failure.
     const number = created.trim().split("/").pop() ?? "";
     if (number) {
-      try {
-        await deps.gh([
-          "pr",
-          "merge",
-          number,
-          "--repo",
-          repo,
-          "--auto",
-          // A merge commit, never a squash (Issue #1048) — see
-          // {@link mergeMethodFlagForHead}.
-          mergeMethodFlagForHead(branch),
-        ]);
-      } catch {
-        // Left for `ensureAutoMergeOnOpenPrs` to arm on its next pass.
-      }
+      await armSyncPrAutoMerge(repo, number, branch, deps);
     }
     deps.log?.(
       `milestone sync: raised PR ${created.trim()} to merge ` +

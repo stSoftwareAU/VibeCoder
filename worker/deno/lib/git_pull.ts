@@ -379,6 +379,23 @@ async function gateThenPushMilestoneBranch(
   return { ok: true, value: `${gateNote}${pushNote}` };
 }
 
+/** Build the refusal for a conflicted path whose incoming side would not take. */
+function takeSideError(
+  what: string,
+  file: string,
+  defaultBranch: string,
+  milestoneBranch: string,
+  detail: string,
+): Error {
+  return new Error(
+    `Failed to ${what} '${defaultBranch}'s version of '${file}' while ` +
+      `merging into '${milestoneBranch}' — refusing to commit a resolution ` +
+      `that would keep this branch's side instead (Issue #1048): ${
+        detail.trim() || "git reported no stderr"
+      }`,
+  );
+}
+
 /**
  * Resolve every conflicted path in favour of the default branch (Issue #1048).
  *
@@ -450,8 +467,39 @@ async function resolveConflictsTowardsDefault(
       continue;
     }
 
-    await runGitCommand(buildCheckoutStrategyArgs("theirs", file), options);
-    await runGitCommand(buildAddPathArgs(file), options);
+    // Both exit codes matter (Issue #1048): a `checkout --theirs` that failed
+    // leaves the milestone branch's own working-tree copy in place, and the
+    // `add` below would stage exactly the wrong side under a merge commit
+    // that claims the default branch won.
+    const checkedOut = await runGitCommand(
+      buildCheckoutStrategyArgs("theirs", file),
+      options,
+    );
+    if (!checkedOut.ok || checkedOut.value.code !== 0) {
+      return {
+        ok: false,
+        error: takeSideError(
+          "check out",
+          file,
+          defaultBranch,
+          milestoneBranch,
+          checkedOut.ok ? checkedOut.value.stderr : checkedOut.error.message,
+        ),
+      };
+    }
+    const added = await runGitCommand(buildAddPathArgs(file), options);
+    if (!added.ok || added.value.code !== 0) {
+      return {
+        ok: false,
+        error: takeSideError(
+          "stage",
+          file,
+          defaultBranch,
+          milestoneBranch,
+          added.ok ? added.value.stderr : added.error.message,
+        ),
+      };
+    }
   }
 
   if (deleted.length === 0) return { ok: true, value: "" };

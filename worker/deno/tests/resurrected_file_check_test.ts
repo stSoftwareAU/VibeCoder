@@ -14,7 +14,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   findResurrectedFiles,
   formatResurrectionReport,
-  parseDeletionLog,
+  parseCommitPathLog,
   parseTreePaths,
 } from "../lib/resurrected_file_check.ts";
 
@@ -153,6 +153,62 @@ Deno.test("findResurrectedFiles - names a file a squash sync let the milestone b
     const report = formatResurrectionReport(result.value);
     assertStringIncludes(report, "lib/fleet_health.ts");
     assertStringIncludes(report, deletingSha.slice(0, 8));
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+Deno.test("findResurrectedFiles - catches the squash window, before any later merge", async () => {
+  const dir = await newRepo("resurrection_squash_window_");
+  try {
+    await Deno.mkdir(`${dir}/lib`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/lib/fleet_health.ts`,
+      "export const a=1;\n",
+    );
+    await gitOk(dir, ["add", "lib/fleet_health.ts"]);
+    await gitOk(dir, ["commit", "-m", "Add the fleet-health subsystem"]);
+    await gitOk(dir, ["branch", "milestone/863"]);
+
+    await gitOk(dir, ["rm", "lib/fleet_health.ts"]);
+    await gitOk(dir, ["commit", "-m", "Remove the fleet-health subsystem"]);
+    const deletingSha = (await gitOk(dir, ["rev-parse", "HEAD"])).trim();
+
+    // The squash sync: main's content, none of its ancestry.
+    await gitOk(dir, ["checkout", "milestone/863"]);
+    await gitOk(dir, ["merge", "--squash", "main"]);
+    await gitOk(dir, ["commit", "-m", "Sync main into milestone/863"]);
+
+    // The branch puts the file back — and nothing has merged main since, so
+    // the deletion is NOT in the branch's ancestry.
+    await Deno.mkdir(`${dir}/lib`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/lib/fleet_health.ts`,
+      "export const a=2;\n",
+    );
+    await gitOk(dir, ["add", "lib/fleet_health.ts"]);
+    await gitOk(dir, ["commit", "-m", "Issue #869: tweak fleet health"]);
+    assertEquals(
+      (await git(dir, ["merge-base", "--is-ancestor", deletingSha, "HEAD"]))
+        .code,
+      1,
+      "the deletion must be outside the ancestry — that is the window",
+    );
+
+    const result = await findResurrectedFiles(
+      "milestone/863",
+      "main",
+      gitIn(dir),
+    );
+    assert(result.ok);
+    if (!result.ok) return;
+    assertEquals(result.value.resurrected.length, 1);
+    assertEquals(result.value.resurrected[0]!.path, "lib/fleet_health.ts");
+    assertEquals(result.value.resurrected[0]!.deletionIntegrated, false);
+    assertStringIncludes(
+      formatResurrectionReport(result.value),
+      "squash sync",
+    );
   } finally {
     await cleanup(dir);
   }
@@ -300,10 +356,10 @@ Deno.test("findResurrectedFiles - refuses an option-shaped ref before running gi
 // Parsers
 // ---------------------------------------------------------------------------
 
-Deno.test("parseDeletionLog - attributes each path to its most recent deletion", () => {
+Deno.test("parseCommitPathLog - attributes each path to its most recent deletion", () => {
   const log = "\0bbbb\tSecond deletion\n\nlib/two.ts\n" +
     "\0aaaa\tFirst deletion\n\nlib/one.ts\nlib/two.ts\n";
-  const parsed = parseDeletionLog(log);
+  const parsed = parseCommitPathLog(log);
   assertEquals(parsed.get("lib/two.ts"), {
     sha: "bbbb",
     subject: "Second deletion",

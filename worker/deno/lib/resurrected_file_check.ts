@@ -15,13 +15,18 @@
  *
  *   1. Every file present on the branch and absent on the default branch.
  *   2. Of those, the ones the default branch's history **deleted**.
- *   3. Of those, the ones whose deleting commit is already an **ancestor** of
- *      the branch.
+ *   3. Of those, the ones where **either** the deleting commit is already an
+ *      ancestor of the branch, **or** the branch has its own commits (commits
+ *      the default branch does not have) that add or modify the file.
  *
- * Step 3 is what separates a resurrection from a branch that is merely
- * behind. A stale branch has not seen the deletion yet, so merging it loses
- * nothing; a branch that has the deleting commit in its ancestry and the file
- * in its tree has actively brought the file back.
+ * Step 3 is what separates a resurrection from a branch that is merely behind,
+ * and it needs both halves. The ancestry half catches a conflict resolved by
+ * keeping a file, where nothing on the branch touched the path except the
+ * merge itself. The own-work half catches the window a squash sync opens —
+ * `milestone/863` between the squash and the next merge, where the deletion
+ * was *not* in the ancestry and the branch's own commit had put the file back.
+ * A stale branch satisfies neither: it has not seen the deletion and has not
+ * touched the file, so merging the default branch deletes it cleanly.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -47,6 +52,12 @@ export interface ResurrectedFile {
   deletedBySha: string;
   /** Subject line of that commit, so the report names it in prose. */
   deletedBySubject: string;
+  /**
+   * Whether the deleting commit is already in the branch's ancestry. False
+   * means the branch's own work put the file here without ever seeing the
+   * deletion — the window a squash sync opens.
+   */
+  deletionIntegrated: boolean;
 }
 
 /** What {@link findResurrectedFiles} found. */
@@ -113,7 +124,7 @@ export function parseTreePaths(output: string): string[] {
  * deleted, re-added and deleted again is attributed to the deletion that
  * currently stands.
  */
-export function parseDeletionLog(
+export function parseCommitPathLog(
   output: string,
 ): Map<string, { sha: string; subject: string }> {
   const deletions = new Map<string, { sha: string; subject: string }>();
@@ -205,16 +216,25 @@ export async function findResurrectedFiles(
       `read the deletions on '${defaultBranch}'`,
     );
     if (!log.ok) return log;
-    for (const [path, commit] of parseDeletionLog(log.value)) {
+    for (const [path, commit] of parseCommitPathLog(log.value)) {
       if (!deletions.has(path)) deletions.set(path, commit);
     }
   }
   if (deletions.size === 0) return { ok: true, value: report };
 
-  // Only a deletion the branch has already integrated is a resurrection —
-  // a branch that is merely behind has not seen it yet.
+  // Which of those paths the branch's own commits touch — work the default
+  // branch does not have. `<default>..<branch>` is exactly that set.
+  const ownWork = await branchOwnPaths(
+    branch,
+    defaultBranch,
+    [...deletions.keys()],
+    gitFn,
+  );
+  if (!ownWork.ok) return ownWork;
+
   const ancestry = new Map<string, boolean>();
   for (const [path, commit] of deletions) {
+    // Either half is enough, and neither alone is (see the module header).
     let integrated = ancestry.get(commit.sha);
     if (integrated === undefined) {
       const probe = await gitFn([
@@ -238,16 +258,52 @@ export async function findResurrectedFiles(
       integrated = probe.code === 0;
       ancestry.set(commit.sha, integrated);
     }
-    if (integrated) {
+    if (integrated || ownWork.value.has(path)) {
       report.resurrected.push({
         path,
         deletedBySha: commit.sha,
         deletedBySubject: commit.subject,
+        deletionIntegrated: integrated,
       });
     }
   }
   report.resurrected.sort((a, b) => a.path.localeCompare(b.path));
   return { ok: true, value: report };
+}
+
+/**
+ * The subset of `paths` that commits on `branch` — and not on `defaultBranch`
+ * — add or modify.
+ *
+ * This is the branch's own work on those files. A branch that is merely behind
+ * a deletion has none, which is what keeps a stale branch off the report.
+ */
+async function branchOwnPaths(
+  branch: string,
+  defaultBranch: string,
+  paths: string[],
+  gitFn: ResurrectionGitFn,
+): Promise<Result<Set<string>>> {
+  const touched = new Set<string>();
+  for (let i = 0; i < paths.length; i += PATHSPEC_BATCH) {
+    const log = await git(
+      gitFn,
+      [
+        "-c",
+        "core.quotePath=false",
+        "log",
+        "--name-only",
+        COMMIT_FORMAT,
+        `${defaultBranch}..${branch}`,
+        "--",
+        ...paths.slice(i, i + PATHSPEC_BATCH),
+      ],
+      `read '${branch}'s own commits against '${defaultBranch}'`,
+    );
+    if (!log.ok) return log;
+    for (const path of parseCommitPathLog(log.value).keys()) touched.add(path);
+  }
+  return { ok: true, value: touched };
 }
 
 /**
@@ -257,21 +313,25 @@ export async function findResurrectedFiles(
  */
 export function formatResurrectionReport(report: ResurrectionReport): string {
   if (report.resurrected.length === 0) {
-    return `No resurrected files on '${report.branch}': ${report.branchOnlyFiles} ` +
-      `file(s) are on it and not on '${report.defaultBranch}', and ` +
-      `'${report.defaultBranch}' deleted none of them (Issue #1048)`;
+    return `No resurrected files on '${report.branch}': of the ` +
+      `${report.branchOnlyFiles} file(s) on it and not on ` +
+      `'${report.defaultBranch}', none is one '${report.defaultBranch}' ` +
+      `deleted and this branch put back (Issue #1048)`;
   }
   const lines = report.resurrected.map((file) =>
     `  - ${file.path} — deleted by ${file.deletedBySha.slice(0, 8)} ${
       file.deletedBySubject || "(no subject)"
+    }${
+      file.deletionIntegrated
+        ? " (the deletion is in this branch's ancestry)"
+        : " (the branch's own commits put it here; the deletion is not in its ancestry — a squash sync)"
     }`
   );
   return `'${report.branch}' carries ${report.resurrected.length} file(s) that ` +
     `'${report.defaultBranch}' deleted (Issue #1048):\n${
       lines.join("\n")
     }\n\n` +
-    `Each deletion is already in this branch's ancestry, so the file came ` +
-    `back after the branch had it removed — almost always a modify/delete ` +
-    `conflict resolved by keeping the file. Delete it on the branch, or, if ` +
-    `it is genuinely needed, re-add it in a commit that says why.`;
+    `Almost always a modify/delete conflict resolved by keeping the file. ` +
+    `Delete it on the branch, or, if it is genuinely needed, re-add it in a ` +
+    `commit that says why.`;
 }

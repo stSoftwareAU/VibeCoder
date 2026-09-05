@@ -275,3 +275,40 @@ Deno.test("raiseMilestoneSyncPr - arms auto-merge as a merge commit, not a squas
     "a squashed sync is what put main outside the branch's ancestry",
   );
 });
+
+Deno.test("raiseMilestoneSyncPr - a repo that forbids merge commits gets a loud squash", async () => {
+  const attempted: string[] = [];
+  const logged: string[] = [];
+  const result = await raiseMilestoneSyncPr(
+    "owner/repo",
+    "milestone/863",
+    "main",
+    {
+      git: () => Promise.resolve({ code: 0, stderr: "" }),
+      gh: (args) => {
+        if (args[1] === "list") return Promise.resolve("[]");
+        if (args[1] === "create") {
+          return Promise.resolve("https://github.com/owner/repo/pull/78\n");
+        }
+        if (args[1] === "merge") {
+          const method = args.includes("--merge") ? "--merge" : "--squash";
+          attempted.push(method);
+          if (method === "--merge") {
+            return Promise.reject(
+              new Error("Merge commits are not allowed on this repository"),
+            );
+          }
+        }
+        return Promise.resolve("");
+      },
+      log: (message) => logged.push(message),
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(attempted, ["--merge", "--squash"]);
+  assert(
+    logged.some((line) => line.includes("armed as a SQUASH")),
+    `the downgrade must be loud; logged: ${JSON.stringify(logged)}`,
+  );
+});

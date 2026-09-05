@@ -1694,7 +1694,9 @@ branch is not a conflict the PR has.
 
 ### 🔀 Auto-merge: `worker/deno/lib/pr_auto_merge.ts`
 
-`enable_auto_merge()` enables squash auto-merge on a PR:
+`enable_auto_merge()` enables auto-merge on a PR — squash for every PR bar
+one: a `sync/milestone-*` head lands as a merge commit, so the default
+branch becomes a genuine ancestor of the milestone branch (Issue #1048):
 
 - **Config-aware** — skips repos with `skip_auto_merge=true`.
 - **Retry** — up to `AUTO_MERGE_MAX_RETRIES` (default 3) with delay between
@@ -2774,6 +2776,11 @@ Three defences, each independent of the others:
   `--merge` for a `sync/milestone-*` head and `--squash` for every other PR;
   `pr_auto_merge.ts`, `direct_merge.ts` and `pr_manager.ts` all route their
   `gh pr merge` through it, so no arming path can quietly squash a sync.
+  A repository that forbids merge commits (`allow_merge_commit: false`, or a
+  ruleset whose `allowed_merge_methods` omits `merge`) cannot take one, and
+  there the sync is armed as a squash with a **warning naming the setting** —
+  never a quiet downgrade. Refusing outright would leave the branch drifting;
+  the detector below is what catches the consequence instead.
 - **Modify/delete resolves as a delete.**
   [`merge_conflict_stages.ts`](../worker/deno/lib/merge_conflict_stages.ts)
   reads `git ls-files -u` for each conflicted path: no incoming stage means the

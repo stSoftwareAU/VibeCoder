@@ -520,7 +520,8 @@ function determineDetailStatus(
 /**
  * Determine whether a PR targets the repository's default branch.
  *
- * Direct merge (`gh pr merge --squash` without `--auto`) bypasses branch
+ * Direct merge (`gh pr merge --squash` without `--auto`, or `--merge` for a
+ * milestone sync — Issue #1048) bypasses branch
  * protection and human review, so it must never reach the default branch of a
  * monitored repo. It is only safe for milestone (and other non-default)
  * branches, whose merge into the default branch goes through a separate,
@@ -805,7 +806,8 @@ export async function enforcePreMergeRequirements(
 // =============================================================================
 
 /**
- * Merge the PR directly via `gh pr merge --squash` (without --auto).
+ * Merge the PR directly via `gh pr merge --squash` (without --auto), or
+ * `--merge` when the head is a milestone sync branch (Issue #1048).
  *
  * Only call this when all checks have passed.
  *
