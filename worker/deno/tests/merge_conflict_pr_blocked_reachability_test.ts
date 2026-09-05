@@ -21,10 +21,16 @@
  *    still carries the label after its conflict has cleared is not due, and
  *    the drain reports an empty queue rather than an attempt.
  *
- * Australian English spelling throughout (behaviour, organisation).
+ * The reachability tests use the production repo filter itself — the same
+ * `isRepoAllowed(repos, repo)` the wiring passes in at
+ * `run_core_production_deps.ts` — rather than an unconditional allow, so a
+ * claimability gate added at that seam would turn them red.
+ *
+ * Australian English spelling throughout (behaviour, labelled).
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { isRepoAllowed } from "../lib/config_validator.ts";
 import {
   classifyIssues,
   pickDominantReason,
@@ -81,6 +87,9 @@ function classifyOckham() {
 function makeGh(mergeable: string, labels: string[]) {
   return (args: string[]): Promise<string> => {
     if (args[0] === "pr" && args[1] === "list") {
+      // Only NEAT-AI-Ockham has an open PR; the other monitored repos are
+      // quiet, so the scan has to reach this one to find anything.
+      if (!args.includes(REPO)) return Promise.resolve("[]");
       return Promise.resolve(JSON.stringify([{
         number: PR_NUMBER,
         headRefName: HEAD_REF,
@@ -107,16 +116,25 @@ function makeGh(mergeable: string, labels: string[]) {
       return Promise.resolve("[]");
     }
     if (args[0] === "label" && args[1] === "list") return Promise.resolve("[]");
-    return Promise.resolve("");
+    // Fail loud rather than answering an unmodelled call with a silent empty
+    // success — a scan that grows a new `gh` call must not stay green here.
+    return Promise.reject(
+      new Error(`unmodelled gh call: ${args.join(" ")}`),
+    );
   };
 }
+
+/** The monitored-repo list the production wiring resolves `repos` from. */
+const MONITORED = ["stSoftwareAU/VibeCoder", REPO, "stSoftwareAU/GRQ"];
 
 function scanOckham(mergeable: string, labels: string[]) {
   return findConflictingPr({
     githubUser: "stservice",
-    repos: [REPO],
+    repos: MONITORED,
     logger: makeSilentLogger(),
-    isRepoAllowed: () => true,
+    // Exactly what `run_core_production_deps.ts` passes: the monitored-repo
+    // allowlist, and nothing about claimability.
+    isRepoAllowed: (repo: string) => isRepoAllowed(MONITORED, repo),
     ghCommandFn: makeGh(mergeable, labels),
     nowMs: () => Date.parse("2026-09-05T00:08:36Z"),
   });

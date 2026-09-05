@@ -191,8 +191,8 @@ actually used.
 ### 🤫 Why #116 went silent
 
 NEAT-AI-Ockham#116 was labelled `merge-conflict` at 23:00:34Z on 4 Sep 2026 and
-nothing visible happened for over three hours. **No code in this repository was
-at fault** — the pass ran, and the queue was genuinely empty (Issue #1108). The
+nothing visible happened for over three hours. **No merge-conflict code was at
+fault** — the pass ran, and the queue was genuinely empty (Issue #1108). The
 reconstruction, from the retained GRQ-25 worker logs and the PR's own timeline:
 
 | Time (UTC) | What the logs say |
@@ -205,10 +205,20 @@ reconstruction, from the retained GRQ-25 worker logs and the PR's own timeline:
 | 01:31:23 | Priority 1.61 runs again, takes nothing. |
 | 02:50:36 | #116 merges cleanly. |
 
-Two things account for the silence, and neither is a merge-conflict defect:
+The two decisive lines, verbatim:
+
+```text
+[2026-09-04 23:03:31Z] INFO: Primary rate limit hit mid-cycle — pausing until reset at 2026-09-05 10:03:31 AEST (in 1h 0m).
+[2026-09-05 00:05:08Z] INFO: PR #116 … is 2 commit(s) behind Develop — needs update repo=stSoftwareAU/NEAT-AI-Ockham prNumber=116 reason=behind
+```
+
+Two things account for the silence — a **fourth cause**, not one of the three
+candidates, and neither half is a merge-conflict defect:
 
 - **Roughly two of the three hours were a GitHub primary-rate-limit pause.**
-  Only two cycles in the window reached the maintenance lane at all.
+  Only two cycles in the window reached the maintenance lane at all. Pausing
+  until the reset is correct behaviour, not a fault; how the fleet spends a
+  rate-limited hour belongs to #1072 / #997, not here.
 - **In those two cycles the pass was right to take nothing.** #116's conflict
   had cleared; only the label remained. `findConflictingPr` decides on the live
   `mergeable` state (`worker/deno/lib/pr_merge_conflict_scan.ts`), never on the
@@ -222,10 +232,12 @@ The three candidates considered, and why each is ruled out:
 2. **`claimable=0 reason=pr_blocked` gated the repo out** — no. That gate is
    per-*issue* and belongs to the Priority 2 claim path
    (`worker/deno/lib/idle_detect_diagnostics.ts:587`, reported at `:1026`), and
-   the audit that emits the line runs *after* the priority dispatch and the
-   lane, from `runIdleWorkHooks` (`worker/deno/lib/run_core.ts:3849`). The
-   conflict pass takes no claimability input at all: `findConflictingPr`
-   filters repos by `isRepoAllowed` alone. The deadlock this would have been —
+   the audit that emits the line is invoked at `worker/deno/lib/run_core.ts:3849`,
+   inside `runIdleWorkHooks` — which runs *after* the priority dispatch and the
+   maintenance lane, at the idle-task filer's gate. The conflict pass takes no
+   claimability input at all: `findConflictingPr` filters repos by
+   `isRepoAllowed` alone, wired to the monitored-repo allowlist at
+   `worker/deno/lib/run_core_production_deps.ts:1944`. The deadlock this would have been —
    a repo whose PRs are blocked never running the pass that unblocks them —
    does not exist, and `merge_conflict_pr_blocked_reachability_test.ts` now
    pins it.
