@@ -30,6 +30,7 @@
  */
 
 import type { GitHubClient, Logger } from "../types.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 import {
   buildDegradationReport,
   type DegradationVerdict,
@@ -92,6 +93,9 @@ export function buildQuorumClaudeResults(
  * only decides whether the round is worth reporting at all.
  *
  * @param args.observations - The orchestrator's per-invocation observations.
+ * @param args.env - Environment lookup the expected-model routing reads
+ *   through (Issue #944); defaults to the process environment, so a
+ *   production caller supplies nothing and routes exactly as it did before.
  * @returns The degradation verdict, so the caller can record it.
  */
 export async function reportQuorumDegradation(args: {
@@ -103,6 +107,11 @@ export async function reportQuorumDegradation(args: {
   logger: Logger;
   /** Optional label-cache directory (injected for testability). */
   cacheDir?: string;
+  /**
+   * Environment lookup the expected-model routing reads through
+   * (Issue #944); defaults to the process environment.
+   */
+  env?: EnvLookup;
 }): Promise<DegradationVerdict> {
   const { repo, issueNumber, ghClient, runGhCommand, logger } = args;
 
@@ -112,6 +121,7 @@ export async function reportQuorumDegradation(args: {
       buildPhaseInvocations(QUORUM_STATS_PHASE, result)
     ),
     phase: QUORUM_STATS_PHASE,
+    ...(args.env ? { env: args.env } : {}),
   });
   // A healthy (or unobservable) plan-off reports nothing — the result comment
   // it already posted is the round's output.
@@ -130,5 +140,6 @@ export async function reportQuorumDegradation(args: {
     runGhCommand,
     logger,
     ...(args.cacheDir ? { cacheDir: args.cacheDir } : {}),
+    ...(args.env ? { env: args.env } : {}),
   });
 }

@@ -21,6 +21,7 @@ import {
   setActiveRepoModelEffortOverrides,
   setPhaseModelConfigOverrides,
 } from "../lib/claude_executor.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 import type { RunStats } from "../lib/run_stats.ts";
 
 // ---------------------------------------------------------------------------
@@ -42,13 +43,44 @@ function planningInvocation(
   };
 }
 
-/** Reset the module-level model resolution state between tests. */
+/**
+ * Resolve the expected model against a **stated** environment (Issue #944).
+ *
+ * `resolveExpectedPlanningModel` takes the lookup as its fourth parameter
+ * (Issue #962), so the routing chain's two environment steps — the
+ * `CLAUDE_MODEL_<PHASE>` escape hatch and the base `CLAUDE_MODEL` fallback —
+ * can be answered from a map rather than from the process. Every assertion
+ * below is about the *other* four steps, so it wants an environment in which
+ * neither env step fires: that used to be a deletion from the process, which
+ * raced every other test sharing it, and is now {@link emptyEnv}.
+ *
+ * @param configuredBest - The pinned best model, or omit to derive it.
+ * @param phase - The phase whose routing chain is read (default `planning`).
+ * @returns The expected model the chain resolves to.
+ */
+function expectedModelIn(
+  configuredBest?: string,
+  phase: string = "planning",
+): string {
+  return resolveExpectedPlanningModel(
+    configuredBest,
+    phase,
+    undefined,
+    emptyEnv,
+  );
+}
+
+/**
+ * Reset the module-level model resolution state between tests.
+ *
+ * Only the two module-level override setters remain: the environment half
+ * removed `CLAUDE_MODEL_PLANNING` and `CLAUDE_MODEL` from the process, and is
+ * now stated per call through {@link expectedModelIn} and the `env` parameter
+ * of `buildDegradationReport` (Issue #944).
+ */
 function resetModelResolution(): void {
   setPhaseModelConfigOverrides({});
   setActiveRepoModelEffortOverrides(undefined);
-  for (const v of ["CLAUDE_MODEL_PLANNING", "CLAUDE_MODEL"]) {
-    Deno.env.delete(v);
-  }
 }
 
 // ============================================================================
@@ -372,7 +404,7 @@ Deno.test("resolveExpectedPlanningModel - default planning model when no overrid
   resetModelResolution();
   try {
     // PHASE_MODEL_DEFAULTS.planning is the top tier alias.
-    assertEquals(resolveExpectedPlanningModel(), "fable");
+    assertEquals(expectedModelIn(), "fable");
   } finally {
     resetModelResolution();
   }
@@ -382,7 +414,7 @@ Deno.test("resolveExpectedPlanningModel - honours global phase_model_overrides",
   resetModelResolution();
   try {
     setPhaseModelConfigOverrides({ planning: "claude-opus-4-7" });
-    assertEquals(resolveExpectedPlanningModel(), "claude-opus-4-7");
+    assertEquals(expectedModelIn(), "claude-opus-4-7");
   } finally {
     resetModelResolution();
   }
@@ -394,7 +426,7 @@ Deno.test("resolveExpectedPlanningModel - honours per-repo phase_model_overrides
     setActiveRepoModelEffortOverrides({
       phaseModelOverrides: { planning: "claude-sonnet-4-6" },
     } as never);
-    assertEquals(resolveExpectedPlanningModel(), "claude-sonnet-4-6");
+    assertEquals(expectedModelIn(), "claude-sonnet-4-6");
   } finally {
     resetModelResolution();
   }
@@ -405,7 +437,7 @@ Deno.test("resolveExpectedPlanningModel - pinned bestPlanningModel wins over rou
   try {
     // Route planning to opus, but pin the expected best model to fable.
     setPhaseModelConfigOverrides({ planning: "claude-opus-4-7" });
-    assertEquals(resolveExpectedPlanningModel("fable"), "fable");
+    assertEquals(expectedModelIn("fable"), "fable");
   } finally {
     resetModelResolution();
   }
@@ -414,9 +446,9 @@ Deno.test("resolveExpectedPlanningModel - pinned bestPlanningModel wins over rou
 Deno.test("resolveExpectedPlanningModel - empty/whitespace configured value falls back to routing chain (Issue #2654)", () => {
   resetModelResolution();
   try {
-    assertEquals(resolveExpectedPlanningModel(""), "fable");
-    assertEquals(resolveExpectedPlanningModel("   "), "fable");
-    assertEquals(resolveExpectedPlanningModel(undefined), "fable");
+    assertEquals(expectedModelIn(""), "fable");
+    assertEquals(expectedModelIn("   "), "fable");
+    assertEquals(expectedModelIn(undefined), "fable");
   } finally {
     resetModelResolution();
   }
@@ -425,7 +457,7 @@ Deno.test("resolveExpectedPlanningModel - empty/whitespace configured value fall
 Deno.test("resolveExpectedPlanningModel - pinned value is trimmed (Issue #2654)", () => {
   resetModelResolution();
   try {
-    assertEquals(resolveExpectedPlanningModel("  opus  "), "opus");
+    assertEquals(expectedModelIn("  opus  "), "opus");
   } finally {
     resetModelResolution();
   }
@@ -442,7 +474,7 @@ Deno.test("resolveExpectedPlanningModel - unresolved routing chain returns the s
     // overrides) buildClaudeModelArgs returns [] — the previously-unmatchable
     // "default" path. The sentinel, not a literal that can never match, is used.
     assertEquals(
-      resolveExpectedPlanningModel(undefined, "unknown_phase_2746"),
+      expectedModelIn(undefined, "unknown_phase_2746"),
       UNRESOLVED_EXPECTED_MODEL,
     );
   } finally {
@@ -482,6 +514,7 @@ Deno.test("buildDegradationReport - unresolved routing chain is not degraded (Is
   resetModelResolution();
   try {
     const report = buildDegradationReport({
+      env: emptyEnv,
       invocations: [{
         phase: "unknown_phase_2746",
         runStats: {
@@ -504,7 +537,7 @@ Deno.test("buildDegradationReport - unresolved routing chain is not degraded (Is
 Deno.test("assessDegradation - pinned bestPlanningModel drives the verdict (Issue #2654)", () => {
   resetModelResolution();
   try {
-    const expected = resolveExpectedPlanningModel("fable");
+    const expected = expectedModelIn("fable");
     const served = assessDegradation(
       [planningInvocation(["claude-opus-4-7"])],
       expected,
@@ -753,11 +786,10 @@ Deno.test("buildPlanningStatsSection - default phase keeps the Planning heading"
 });
 
 Deno.test("resolveExpectedPlanningModel - grill_me phase derives the grill_me tier", () => {
-  for (const v of ["CLAUDE_MODEL_GRILL_ME", "CLAUDE_MODEL"]) Deno.env.delete(v);
   setPhaseModelConfigOverrides({});
   setActiveRepoModelEffortOverrides(undefined);
   // grill_me routes to the Fable top tier by default (DEFAULT_CLAUDE_MODEL_GRILL_ME).
-  assertEquals(resolveExpectedPlanningModel(undefined, "grill_me"), "fable");
+  assertEquals(expectedModelIn(undefined, "grill_me"), "fable");
 });
 
 // ============================================================================
@@ -768,11 +800,11 @@ Deno.test("resolveExpectedPlanningModel - grill_me phase derives the grill_me ti
 // ============================================================================
 
 Deno.test("buildDegradationReport - healthy planning run: not degraded, Planning heading", () => {
-  for (const v of ["CLAUDE_MODEL_PLANNING", "CLAUDE_MODEL"]) Deno.env.delete(v);
   setPhaseModelConfigOverrides({});
   setActiveRepoModelEffortOverrides(undefined);
 
   const report = buildDegradationReport({
+    env: emptyEnv,
     invocations: [planningInvocation(["claude-fable-5-20250101"])],
   });
 
@@ -783,11 +815,11 @@ Deno.test("buildDegradationReport - healthy planning run: not degraded, Planning
 });
 
 Deno.test("buildDegradationReport - degraded grill_me run: verdict + Grill-me stats section", () => {
-  for (const v of ["CLAUDE_MODEL_GRILL_ME", "CLAUDE_MODEL"]) Deno.env.delete(v);
   setPhaseModelConfigOverrides({});
   setActiveRepoModelEffortOverrides(undefined);
 
   const report = buildDegradationReport({
+    env: emptyEnv,
     invocations: [
       {
         phase: "grill_me",
@@ -813,12 +845,12 @@ Deno.test("buildDegradationReport - degraded grill_me run: verdict + Grill-me st
 });
 
 Deno.test("buildDegradationReport - pinned best model drives the verdict", () => {
-  for (const v of ["CLAUDE_MODEL_PLANNING", "CLAUDE_MODEL"]) Deno.env.delete(v);
   setPhaseModelConfigOverrides({});
   setActiveRepoModelEffortOverrides(undefined);
 
   // Served fable but the operator pinned opus as the expected best → degraded.
   const report = buildDegradationReport({
+    env: emptyEnv,
     invocations: [planningInvocation(["claude-fable-5-20250101"])],
     configuredBestModel: "opus",
   });
@@ -833,6 +865,7 @@ Deno.test("buildDegradationReport - default phase only judges planning invocatio
 
   // A degraded grill_me invocation must NOT flag a default (planning) report.
   const report = buildDegradationReport({
+    env: emptyEnv,
     invocations: [
       {
         phase: "grill_me",
@@ -951,11 +984,11 @@ Deno.test("buildPlanningStatsSection - reports the gate counts even when no plan
 });
 
 Deno.test("buildDegradationReport - threads the gate counts into the rendered section (Issue #63)", () => {
-  for (const v of ["CLAUDE_MODEL_PLANNING", "CLAUDE_MODEL"]) Deno.env.delete(v);
   setPhaseModelConfigOverrides({});
   setActiveRepoModelEffortOverrides(undefined);
 
   const report = buildDegradationReport({
+    env: emptyEnv,
     invocations: [planningInvocation(["claude-fable-5-20250101"])],
     gate: gateStats({ published: 5, offenders: 2, repaired: 2 }),
   });

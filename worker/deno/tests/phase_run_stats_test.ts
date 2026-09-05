@@ -33,6 +33,7 @@ import {
   setActiveRepoModelEffortOverrides,
   setPhaseModelConfigOverrides,
 } from "../lib/claude_executor.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 
 /** The four newly-promoted reactive phases plus their expected stats heading. */
 const PROMOTED_PHASES: Array<{ phase: string; heading: string }> = [
@@ -51,6 +52,12 @@ const PROMOTED_PHASES: Array<{ phase: string; heading: string }> = [
  * test, mirroring the post-config world where these phases prefer the top tier.
  * (The config default is still `opus` on this branch — Issue #3232 wires the
  * machinery; the config flip is a sibling #3217 sub-issue.)
+ *
+ * This used to remove the `CLAUDE_MODEL*` overrides from the process so the
+ * pin was the highest-priority source (Issue #944). Every call below now hands the
+ * recorder {@link emptyEnv} instead, which is a stronger statement — no phase
+ * env var exists for *any* phase, not just the two that were deleted — and it
+ * leaves the process the other parallel workers share untouched.
  */
 function pinPhasesToFable(): void {
   setPhaseModelConfigOverrides({
@@ -60,9 +67,6 @@ function pinPhasesToFable(): void {
     clarification: "fable",
   });
   setActiveRepoModelEffortOverrides(undefined);
-  for (const v of ["CLAUDE_MODEL", "CLAUDE_MODEL_REFINEMENT"]) {
-    Deno.env.delete(v);
-  }
 }
 
 function resetModelResolution(): void {
@@ -201,6 +205,7 @@ for (const { phase, heading } of PROMOTED_PHASES) {
       runGhCommand: ghCommandFn,
       logger,
       cacheDir: Deno.makeTempDirSync(),
+      env: emptyEnv,
       listIssueComments: () => Promise.resolve([]),
     });
 
@@ -227,6 +232,7 @@ for (const { phase, heading } of PROMOTED_PHASES) {
       runGhCommand: ghCommandFn,
       logger,
       cacheDir: Deno.makeTempDirSync(),
+      env: emptyEnv,
       // This run already posted its stats comment.
       listIssueComments: () =>
         Promise.resolve([{
@@ -255,6 +261,7 @@ for (const { phase, heading } of PROMOTED_PHASES) {
       runGhCommand: ghCommandFn,
       logger,
       cacheDir: Deno.makeTempDirSync(),
+      env: emptyEnv,
       // The planning path reported an earlier, different run.
       listIssueComments: () =>
         Promise.resolve([{
@@ -290,6 +297,7 @@ for (const { phase, heading } of PROMOTED_PHASES) {
       runGhCommand: ghCommandFn,
       logger,
       cacheDir: Deno.makeTempDirSync(),
+      env: emptyEnv,
     });
 
     resetModelResolution();
@@ -330,6 +338,7 @@ for (const { phase, heading } of PROMOTED_PHASES) {
       runGhCommand: ghCommandFn,
       logger,
       cacheDir: Deno.makeTempDirSync(),
+      env: emptyEnv,
     });
 
     resetModelResolution();
@@ -361,6 +370,7 @@ Deno.test("reportPhaseDegradation - rate-limit fallbackModel round is degraded",
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   resetModelResolution();
@@ -389,6 +399,7 @@ Deno.test("reportPhaseDegradation - comment failure is non-fatal", async () => {
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   resetModelResolution();
@@ -414,6 +425,7 @@ Deno.test("reportPhaseDegradation - label failure is non-fatal; stats still post
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   resetModelResolution();
@@ -441,6 +453,7 @@ Deno.test("reportPhaseDegradation - a run with no stats and no flags is silent",
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   resetModelResolution();
