@@ -72,15 +72,15 @@ const REFERENCES: Array<{
   // Security-scans anchor — full slug (4 references).
   {
     source: "docs/SECURITY-SCAN.md",
-    link: "../DESIGN-PRINCIPLES.md#security-scans-simplified-by",
+    link: "../DESIGN-PRINCIPLES.md#security-scans",
     target: "DESIGN-PRINCIPLES.md",
-    fragment: "security-scans-simplified-by",
+    fragment: "security-scans",
   },
   {
     source: "docs/BEST-PRACTICES-SCAN.md",
-    link: "../DESIGN-PRINCIPLES.md#security-scans-simplified-by",
+    link: "../DESIGN-PRINCIPLES.md#security-scans",
     target: "DESIGN-PRINCIPLES.md",
-    fragment: "security-scans-simplified-by",
+    fragment: "security-scans",
   },
   // Model/effort precedence chain — renamed heading + emoji slug.
   {
