@@ -258,6 +258,7 @@ const RECORDED_DENO_COMMANDS = [
   "container-image-prune",
   "container-store-prune",
   "container-build-heal",
+  "container-egress-probe",
   "container-restart-backoff",
   "run-entrypoint",
 ];
@@ -364,6 +365,22 @@ for arg in "\$@"; do
       # Never really rewrite this checkout's .config.json (Issue #691).
       printf '%s\\0' "\$@" > "\${record_dir}/upgrade.args"
       exit "\${STUB_UPGRADE_EXIT:-0}"
+      ;;
+    container-egress-probe)
+      # Never really start a probe container (Issue #997): the test decides
+      # what the probe found, and writes the evidence the launcher hands to
+      # its outcome recorder. Intercepted unconditionally, like the checkout
+      # update above - a real probe here would run the runtime stub and its
+      # \`run\` record would be mistaken for the worker's own.
+      printf '%s\\0' "\$@" > "\${record_dir}/container-egress-probe.args"
+      prev=""
+      for a in "\$@"; do
+        if [[ "\${prev}" == "--out" ]]; then
+          printf '%b\\n' "\${STUB_EGRESS_EVIDENCE:-Container egress probe: reachable}" > "\${a}"
+        fi
+        prev="\${a}"
+      done
+      exit "\${STUB_EGRESS_EXIT:-0}"
       ;;
     release-notice)
       # Never really reach GitHub for the new-release check (Issue #690):
@@ -537,6 +554,29 @@ export async function recordedLaunchLog(
 ): Promise<string | null> {
   try {
     return await Deno.readTextFile(`${harness.recordDir}/outcome-launch.log`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The phase marker the launcher last wrote (Issues #4072, #997).
+ *
+ * The marker is how a failure is attributed — `container_egress` and
+ * `image_build` are the same exit status with completely different operator
+ * actions — so a test asserting on attribution reads it here.
+ *
+ * @param harness - The harness the launcher ran under
+ * @returns The marker's contents, or null when none was written
+ */
+export async function launchPhaseMarker(
+  harness: Harness,
+): Promise<string | null> {
+  try {
+    const text = await Deno.readTextFile(
+      `${harness.tmpDir}/home/.vibe-coder/last-launch-phase`,
+    );
+    return text.trim();
   } catch {
     return null;
   }

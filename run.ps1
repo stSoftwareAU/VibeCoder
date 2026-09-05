@@ -185,6 +185,11 @@ $EvidenceLog = ""
 # the outcome recorder has had its chance to quote it.
 $RunLog = ""
 
+# The pre-build egress probe's hop table and routing evidence (Issue #997).
+# Same lifetime as $RunLog: written before the build, quoted by the outcome
+# recorder when the host is parked, removed by Exit-Launcher afterwards.
+$EgressLog = ""
+
 <#
 .SYNOPSIS
     Record this launcher's outcome for the self-heal backoff (Issue #4072).
@@ -256,6 +261,11 @@ function Exit-Launcher {
     # left Issue #711 reporting a start it could say nothing about (Issue #720).
     if ($RunLog) {
         Remove-Item -LiteralPath $RunLog -Force -ErrorAction SilentlyContinue
+    }
+    # Same ordering, same reason (Issue #997): a parked host's escalation IS
+    # the hop table, so the evidence outlives the record and nothing else.
+    if ($EgressLog) {
+        Remove-Item -LiteralPath $EgressLog -Force -ErrorAction SilentlyContinue
     }
     exit $Code
 }
@@ -501,6 +511,71 @@ if ($reaped.ExitCode -eq 4) {
 if ($reaped.ExitCode -ne 0) {
     [Console]::Error.WriteLine(
         "[run.ps1] warning: the pre-launch container reaper did not complete")
+}
+
+# Container egress probe (Issue #997), before the build and before the launch.
+#
+# GRQ-23 spent hours reporting `image_build` for a fault in its own routing:
+# the build was simply the first thing to notice, 135 seconds into a `curl`,
+# and the report sent every reader to an image that was never broken. One
+# short container run answers it in seconds, against a literal address (never
+# a name: the host bridge IS a resolver, so DNS succeeds while every packet
+# past the gateway is dropped). The host is probed too, because that is what
+# separates the three conditions:
+#
+#   container reaches it            -> carry on
+#   container blocked, host reaches -> this host cannot route out of a
+#                                      container: park, and tell a person once
+#   both blocked                    -> the link is down: wait, escalate nothing
+#
+# Exit statuses kept in step with EGRESS_BLOCKED_EXIT and NETWORK_DOWN_EXIT in
+# worker/deno/commands/container_egress_probe.ts, and with
+# HOST_EGRESS_BLOCKED_EXIT_STATUS in worker/deno/lib/container_egress_probe.ts,
+# by the launcher tests.
+$EgressBlockedExit = 3
+$EgressNetworkDownExit = 4
+$HostEgressBlockedExitStatus = 88
+
+$EgressLog = Join-Path ([System.IO.Path]::GetTempPath()) `
+    ("vibe-egress-" + [System.Guid]::NewGuid().ToString("N") + ".log")
+$egress = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
+    "run",
+    "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
+    "--allow-env", "--allow-read", "--allow-run", "--allow-net",
+    "--allow-write=$EgressLog",
+    "$BaseDir/worker/deno/mod.ts", "container-egress-probe",
+    "--runtime", $Runtime,
+    "--base-dir", $BaseDir,
+    "--image", $Image,
+    "--name", "$($ContainerName)-egress",
+    "--out", $EgressLog
+)
+if ($egress.StdOut) { [Console]::Error.Write($egress.StdOut) }
+if ($egress.StdErr) { [Console]::Error.Write($egress.StdErr) }
+if ($egress.ExitCode -eq $EgressBlockedExit) {
+    # Parked, not retried: the reject route is host networking state a
+    # non-root process cannot change, so rebuilding an image that is fine
+    # would burn minutes per cycle for ever. The phase marker is what stops
+    # the outcome recorder attributing this to the build.
+    Write-LaunchPhase "container_egress"
+    [Console]::Error.WriteLine(
+        "[run.ps1] parking this host: a container cannot reach the network while the host itself can - this is host networking, not the image build (Issue #997); see the hop table above")
+    Write-RunCoreLog "container-egress-probe: parked - container_egress_blocked; a container cannot reach the network while the host can (Issue #997)"
+    $EvidenceLog = $EgressLog
+    Exit-Launcher $HostEgressBlockedExitStatus
+} elseif ($egress.ExitCode -eq $EgressNetworkDownExit) {
+    # The host cannot reach it either, so there is nothing here for a person
+    # to fix. The probe's evidence carries the network-unavailable marker,
+    # which is what keeps this off the failure ladder (Issue #949).
+    [Console]::Error.WriteLine(
+        "[run.ps1] the network is unreachable from this host as well as from a container - not building; the next cycle retries (Issue #997)")
+    Write-RunCoreLog "container-egress-probe: the network is unreachable from the host too - waiting at the base cadence, escalating nothing (Issues #949, #997)"
+    $EvidenceLog = $EgressLog
+    Exit-Launcher 1
+} elseif ($egress.ExitCode -ne 0) {
+    [Console]::Error.WriteLine(
+        "[run.ps1] warning: the container egress probe did not complete (status $($egress.ExitCode)) - launching anyway")
+    Write-RunCoreLog "container-egress-probe: did not complete (status $($egress.ExitCode)) - launching anyway"
 }
 
 # Exit status container-build-heal reports for a build failure it does not

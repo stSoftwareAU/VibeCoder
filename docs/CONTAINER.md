@@ -415,6 +415,76 @@ Four boundaries keep that safe on a machine nobody is watching:
 escalation; the runtime is driven through an injected seam, so the tests never
 start a builder VM.
 
+## A host whose containers cannot reach the network parks itself
+
+Pruning and the builder heal both assume the build can still talk to the
+internet. On GRQ-23 it could not, and the launcher said the wrong thing about
+it for hours (Issue #997, incident #991):
+
+```text
+#9 134.8 curl: (28) Failed to connect to github.com port 443 after 134719 ms
+Error: failed to build vibe-coder:8bbfff3c47f5
+Failure phase: image_build (container image build)
+```
+
+The image was fine. The network was fine — the *host* reached `github.com` in
+0.1 s throughout. What was broken was egress from inside a container: a reject
+route on the container bridge (`default link#22 UCSIg bridge100 !`) while a
+Tailscale `utun` interface held a default route on the same host. The build was
+simply the first thing to notice, 135 seconds into a `curl`.
+
+So both launchers now ask the question directly, **before** the build:
+
+```bash
+deno run --allow-env --allow-read --allow-run --allow-net \
+  --allow-write=/tmp/vibe-egress.log worker/deno/mod.ts \
+  container-egress-probe --runtime container --base-dir . \
+  --image "$IMAGE" --out /tmp/vibe-egress.log
+# container egress: egress_blocked — this host cannot route out of a container
+```
+
+One short container opens a TCP connection to a **literal address**
+(`1.1.1.1:443` by default; `VIBE_EGRESS_PROBE_TARGET` or `--target` to change
+it). A name is refused outright: `192.168.64.1` is the host itself, so DNS
+answers while every packet past the gateway is dropped, and a probe that only
+resolved a name would report a cut-off host as healthy. The same address is
+then tried **from the host**, and that comparison is what tells the three
+conditions apart:
+
+| container | host | verdict | Exit | What the launcher does |
+| --- | --- | --- | --- | --- |
+| reaches it | – | `reachable` | `0` | Builds and launches, as before |
+| blocked | reaches it | `egress_blocked` | `3` | Writes the `container_egress` phase marker, parks (launcher exit **88**), escalates once with the evidence |
+| blocked | blocked | `network_down` | `4` | Waits — the evidence carries the network-unavailable marker, so the streak never climbs the ladder (Issue #949) |
+| not run | – | `inconclusive` | `0` | Launches exactly as before |
+
+The escalation carries the hop table, the host's reject routes and any tunnel
+interface holding a default route, which is what makes the fault diagnosable in
+a minute rather than an hour:
+
+```text
+Container egress probe: egress_blocked — this host cannot route out of a container
+| hop | result |
+| container → 1.1.1.1:443 | FAIL — connect: no route to host |
+| host → 1.1.1.1:443 | OK |
+- reject route(s): default link#22 UCSIg bridge100 !
+- tunnel interface holding a default route: default 100.100.100.100 UGScIg utun8
+Fleet capacity: this host is unavailable — reason: container_egress_blocked.
+```
+
+Four boundaries keep that safe on a machine nobody is watching:
+
+| Boundary | Behaviour |
+| --- | --- |
+| Never blocks a launch on its own failure | No image in the store, an unsupported runtime, a probe that times out — all `inconclusive`, and the launch proceeds exactly as it did before |
+| An address, never a name | `--target` is validated as an IP literal and refused otherwise, so a resolver on the host bridge cannot make a blocked host look healthy |
+| Parks, does not retry | A blocked host backs off at the ceiling (30 minutes), escalates on the **first** occurrence, and reports itself as unavailable capacity with the reason `container_egress_blocked` — the reject route is host state a non-root process cannot change, so nothing here pretends it can be healed |
+| The link is not the host | Both hops blocked is a network outage: it waits at the base cadence and escalates nobody |
+
+`worker/deno/lib/container_egress_probe.ts` owns the classification, the
+routing-table parsing and the evidence; the runtime and the socket are injected
+seams, so the tests never start a container.
+
 ## Runtime detection — which runtime the launchers use
 
 `run.sh` and `run.ps1` must resolve a supported container runtime before they
@@ -925,7 +995,10 @@ flowchart TD
     N -->|"failed — warn only"| P
     N --> P["container-launch-plan<br/>(detect runtime, hash image, build mounts)"]
     P -->|no runtime| X["❌ exit non-zero<br/>(no host fallback)"]
-    P --> E{"image reference<br/>present?"}
+    P --> EG{"container-egress-probe<br/>can a container reach<br/>1.1.1.1:443?"}
+    EG -->|"blocked, host can"| PK["🅿️ exit 88 (container_egress)<br/>park, escalate once with the hop table"]
+    EG -->|"blocked, host cannot"| ND["⏳ exit 1 — the link is down<br/>wait, escalate nobody"]
+    EG -->|"reachable / could not run"| E{"image reference<br/>present?"}
     E -->|no| B["🐳 build"]
     E -->|yes| PR
     B --> BF{"build failed on<br/>builder storage?"}
@@ -940,6 +1013,7 @@ flowchart TD
     K --> KX["❌ exit 87 (container_wedged)<br/>the next cycle runs"]
     style X fill:#c9184a,stroke:#800f2f,color:#fff
     style KX fill:#c9184a,stroke:#800f2f,color:#fff
+    style PK fill:#9d4edd,stroke:#5a189a,color:#fff
     style L fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 

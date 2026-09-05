@@ -66,6 +66,42 @@ self-heal escalation reports that phase through GitHub after two consecutive
 failures. That report quotes the failing build's own output, so the cause is in
 the issue itself rather than only in whatever the scheduler captured of stderr.
 
+### The host is parked: `container_egress`
+
+A launcher that exits **88** having written `container_egress` to the phase
+marker has not failed to build anything — it never tried. Its pre-build probe
+found that a container on this host cannot reach the network **while the host
+itself can**, which is the host's own routing and not something the worker can
+repair (Issue #997). The escalation carries the hop table and the likely cause:
+
+```text
+| container → 1.1.1.1:443 | FAIL — connect: no route to host |
+| host → 1.1.1.1:443      | OK |
+- reject route(s): default link#22 UCSIg bridge100 !
+- tunnel interface holding a default route: default 100.100.100.100 UGScIg utun8
+```
+
+Check the same two things by hand, on the host:
+
+```bash
+netstat -rn | grep -E 'default|bridge'   # macOS; `ip route show` on Linux
+container run --rm --entrypoint /bin/bash "$IMAGE" \
+  -c 'exec 3<>/dev/tcp/1.1.1.1/443'      # 0 = a container gets out
+```
+
+A reject route (`!` on macOS, `unreachable`/`prohibit` on Linux) on the
+container bridge is the usual finding, and a VPN or tunnel interface holding a
+default route is the usual reason for it. Restarting the container service or
+creating a fresh container network does **not** clear it — the fault is
+host-wide. Until a person fixes the route the host parks for 30 minutes at a
+time, claims nothing, and reports itself as unavailable capacity with the
+reason `container_egress_blocked`. There is no host run mode to fall back on:
+containment is mandatory (Issue #4).
+
+When the probe finds the address unreachable **from the host as well**, the
+launcher says so and waits instead — a link outage is not this host's fault and
+escalates nobody.
+
 ### Where a launcher failure is reported
 
 A launcher that fails before claiming work has no issue to comment on, so the
@@ -114,7 +150,7 @@ read/write — so the usual files are read on the host exactly as before:
 ```bash
 tail -n 200 ~/logs/worker.log      # worker activity (symlink to the latest run)
 tail -n 50 ~/logs/cron.log         # launcher output under cron
-cat ~/.vibe-coder/last-launch-phase # runtime_detection | image_build | volume_init | container_run
+cat ~/.vibe-coder/last-launch-phase # runtime_detection | container_egress | image_build | volume_init | container_run
 ```
 
 `.config.json` is likewise the host's own file. The workspace is not: the

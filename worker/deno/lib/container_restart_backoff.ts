@@ -69,6 +69,10 @@ import {
   explainExitStatus,
   knownWorkerStatuses,
 } from "./launcher_failure_evidence.ts";
+import {
+  HOST_EGRESS_BLOCKED_EXIT_STATUS,
+  HOST_EGRESS_BLOCKED_REASON,
+} from "./container_egress_probe.ts";
 
 /**
  * Statuses the worker's own commands return deliberately (Issue #633).
@@ -107,13 +111,23 @@ export const LAUNCH_PHASE_MARKER_FILENAME = "last-launch-phase";
  */
 export type LaunchPhaseMarker =
   | "runtime_detection"
+  | "container_egress"
   | "image_build"
   | "volume_init"
   | "container_run";
 
-/** The phase a launcher failure is attributed to. */
+/**
+ * The phase a launcher failure is attributed to.
+ *
+ * `container_egress` is the host-networking fault of Issue #997: the launcher's
+ * pre-build probe found that a container on this host cannot reach the network
+ * while the host itself can. It was previously reported as `image_build` —
+ * the build was the first thing to notice, 135 seconds into a `curl` — which
+ * sent every reader to an image that was never broken.
+ */
 export type ContainerFailurePhase =
   | "runtime_detection"
+  | "container_egress"
   | "image_build"
   | "volume_init"
   | "container_start"
@@ -140,6 +154,12 @@ export interface ContainerRestartConfig {
   /** Lower threshold used when the image itself cannot be built. */
   imageBuildEscalationThreshold: number;
   /**
+   * Threshold used when a container on this host cannot reach the network
+   * (Issue #997). One, by default: the host cannot repair its own routing, so
+   * the first occurrence is already everything a later one would say.
+   */
+  egressEscalationThreshold: number;
+  /**
    * Fixed re-probe interval while the host is out of quota (Issue #342).
    *
    * Backoff is for unknown faults. Quota exhaustion is a known fault whose
@@ -157,6 +177,7 @@ export const CONTAINER_RESTART_DEFAULTS: Readonly<ContainerRestartConfig> = {
   maxBackoffSeconds: 1800,
   escalationThreshold: 3,
   imageBuildEscalationThreshold: 2,
+  egressEscalationThreshold: 1,
   quotaPauseSleepSeconds: 3600,
 } as const;
 
@@ -300,6 +321,10 @@ export function resolveContainerRestartConfig(
       overrides.imageBuildEscalationThreshold,
       CONTAINER_RESTART_DEFAULTS.imageBuildEscalationThreshold,
     ),
+    egressEscalationThreshold: positiveInteger(
+      overrides.egressEscalationThreshold,
+      CONTAINER_RESTART_DEFAULTS.egressEscalationThreshold,
+    ),
     quotaPauseSleepSeconds: positiveInteger(
       overrides.quotaPauseSleepSeconds,
       CONTAINER_RESTART_DEFAULTS.quotaPauseSleepSeconds,
@@ -396,6 +421,8 @@ export function resolveFailurePhase(
   switch ((marker ?? "").trim()) {
     case "runtime_detection":
       return "runtime_detection";
+    case "container_egress":
+      return "container_egress";
     case "image_build":
       return "image_build";
     case "volume_init":
@@ -418,6 +445,8 @@ export function describeFailurePhase(phase: ContainerFailurePhase): string {
   switch (phase) {
     case "runtime_detection":
       return "container runtime detection";
+    case "container_egress":
+      return "container egress (host networking)";
     case "image_build":
       return "container image build";
     case "volume_init":
@@ -435,11 +464,17 @@ export function describeFailurePhase(phase: ContainerFailurePhase): string {
  * A failed image build means the known-good environment cannot be
  * reconstructed on this host at all, so it escalates ahead of a phase that a
  * plain retry can plausibly clear.
+ *
+ * Blocked container egress escalates on the first failure (Issue #997): the
+ * reject route is host networking state a non-root process cannot change, so
+ * the worker cannot repair it however many cycles it spends discovering it
+ * again. Waiting for a streak only delays the person who can.
  */
 export function escalationThresholdFor(
   phase: ContainerFailurePhase,
   config: ContainerRestartConfig,
 ): number {
+  if (phase === "container_egress") return config.egressEscalationThreshold;
   return phase === "image_build"
     ? config.imageBuildEscalationThreshold
     : config.escalationThreshold;
@@ -584,6 +619,14 @@ export function nextContainerRestartDecision(
       ? previous.streakStartedAt
       : now();
 
+  // A host that cannot route out of a container is parked, not retried
+  // (Issue #997): the fault is host networking state the worker cannot change,
+  // so the ladder's first rungs are spent re-discovering it. The wait goes
+  // straight to the ceiling and stays there until the condition clears.
+  const backoffSeconds = phase === "container_egress"
+    ? config.maxBackoffSeconds
+    : computeBackoffSeconds(consecutiveFailures, config);
+
   return {
     state: {
       consecutiveFailures,
@@ -595,7 +638,7 @@ export function nextContainerRestartDecision(
     },
     kind,
     phase,
-    backoffSeconds: computeBackoffSeconds(consecutiveFailures, config),
+    backoffSeconds,
     escalate: consecutiveFailures >= threshold,
     recovered: false,
     threshold,
@@ -915,6 +958,7 @@ export function buildContainerEscalationParams(
         QUOTA_PAUSE_EXIT_STATUS,
         BUILD_NOT_HEALABLE_STATUS,
         ANOTHER_WORKER_RUNNING_STATUS,
+        HOST_EGRESS_BLOCKED_EXIT_STATUS,
       ),
     ),
     `Next attempt after a ${input.backoffSeconds}s backoff`,
@@ -938,6 +982,24 @@ export function buildContainerEscalationParams(
     lines.push(
       "The container image could not be built, so the known-good environment " +
         "cannot be reconstructed on this host — a retry alone will not fix it.",
+    );
+  }
+  if (input.phase === "container_egress") {
+    // Issue #997: this report exists because the same fault used to arrive as
+    // `image_build`, and the reader went looking at an image that was fine.
+    lines.push(
+      "A container on this host cannot reach the network, while the host " +
+        "itself reaches the same address — so this is the host's own " +
+        "networking, not the image build and not the link. The hop table " +
+        "below shows which hop failed; a reject route on the container " +
+        "bridge, or a tunnel interface holding a default route, is the usual " +
+        "cause.",
+      "The worker cannot repair this itself: the routing is host state a " +
+        `non-root process cannot change. The host is parked for ` +
+        `${input.backoffSeconds}s at a time and will keep re-probing, but it ` +
+        "claims nothing until a person clears the route.",
+      `Fleet capacity: this host is unavailable — reason: ` +
+        `${HOST_EGRESS_BLOCKED_REASON}.`,
     );
   }
   if (input.logTail) lines.push("", input.logTail);
@@ -1269,6 +1331,31 @@ export async function recordContainerRestartOutcome(
   }
 
   if (!decision.phase) return outcome;
+
+  // Issue #997: a host that cannot run containers is unavailable capacity, and
+  // it says so with the reason attached — per host, every cycle it is parked,
+  // so the fleet's record answers "why is that host claiming nothing?" without
+  // anyone reading its console.
+  if (decision.phase === "container_egress") {
+    await emitSelfHealEvent({
+      module: SELF_HEAL_MODULE,
+      action: "host_parked",
+      reason:
+        `this host is unavailable capacity: ${HOST_EGRESS_BLOCKED_REASON}` +
+        ` — a container cannot reach the network while the host can, so it ` +
+        `claims nothing and re-probes in ${decision.backoffSeconds}s`,
+      result: "failed",
+      details: {
+        availability: "unavailable",
+        reason: HOST_EGRESS_BLOCKED_REASON,
+        hostId: options.hostId ?? null,
+        phase: decision.phase,
+        exitStatus: options.exitStatus,
+        consecutiveFailures: decision.state.consecutiveFailures,
+        parkedSeconds: decision.backoffSeconds,
+      },
+    }, { workDir: options.workDir });
+  }
 
   await emitSelfHealEvent({
     module: SELF_HEAL_MODULE,
