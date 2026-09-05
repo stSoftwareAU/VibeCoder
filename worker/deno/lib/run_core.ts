@@ -3885,24 +3885,30 @@ interface IdleHookOutcome {
  * find exactly what the first one did. Both branches log: "swept nothing"
  * and "did not sweep" must never look the same from outside.
  *
+ * The gate is a **claim**, not a success. A run that raised its PR and then
+ * failed — the security gate refused, the watchdog took the run at the
+ * deadline — leaves exactly the PR this pass exists for, and records only
+ * `recordClaim`. Gating on success would skip the sweep in the case where
+ * arming at creation is most likely to have been missed.
+ *
  * Best-effort — a failure is logged loudly and the cycle continues.
  */
 async function runPostScanAutoMerge(
   deps: RunCoreDeps,
   tracker: WorkProgressTracker,
 ): Promise<void> {
-  if (!tracker.scanHadSuccess && !tracker.foundClaimableIssue) {
+  const claimed = tracker.claimedRepos.size > 0;
+  const state = `claimedRepos=${tracker.claimedRepos.size} ` +
+    `foundClaimableIssue=${tracker.foundClaimableIssue} ` +
+    `scanHadSuccess=${tracker.scanHadSuccess}`;
+  if (!claimed && !tracker.scanHadSuccess && !tracker.foundClaimableIssue) {
     deps.log(
-      "[post-scan-auto-merge] skipped reason=no-work-this-cycle " +
-        `foundClaimableIssue=${tracker.foundClaimableIssue} ` +
-        `scanHadSuccess=${tracker.scanHadSuccess}`,
+      `[post-scan-auto-merge] skipped reason=no-work-this-cycle ${state}`,
     );
     return;
   }
   deps.log(
-    "[post-scan-auto-merge] sweeping reason=work-completed-this-cycle " +
-      `foundClaimableIssue=${tracker.foundClaimableIssue} ` +
-      `scanHadSuccess=${tracker.scanHadSuccess}`,
+    `[post-scan-auto-merge] sweeping reason=work-this-cycle ${state}`,
   );
   try {
     // Live listing, not the cache the 1.65 sweep filled before these PRs
@@ -5015,6 +5021,19 @@ export async function runCoreLoop(
           ) {
             throw laneSettled.value.rateLimitError;
           }
+
+          // --- Post-scan auto-merge sweep (Issue #1136) ---
+          // Every slot has drained, so every PR this cycle raised now
+          // exists. Sweep once more here rather than leaving them to the
+          // next cycle's priority 1.65 pass, which is up to an hour away
+          // and blocks every sibling issue while it waits.
+          //
+          // Placed BEFORE the cycle-ending breaks below: a cycle that
+          // stops on the failure threshold or the spend ceiling still
+          // raised the PRs it raised, and they must not be stranded until
+          // the next cycle — which, on those two paths, may never come.
+          await runPostScanAutoMerge(deps, tracker);
+
           if (scanResult.exitOuterLoop) {
             exitedOnFailures = true;
             break;
@@ -5033,14 +5052,6 @@ export async function runCoreLoop(
           if (scanResult.workVolumeFaulted) {
             workVolumeFaultReported = true;
           }
-
-          // --- Post-scan auto-merge sweep (Issue #1136) ---
-          // Every slot has drained, so every PR this cycle raised now
-          // exists. Sweep once more here rather than leaving them to the
-          // next cycle's priority 1.65 pass, which is up to an hour away
-          // and blocks every sibling issue while it waits.
-          await runPostScanAutoMerge(deps, tracker);
-
           // --- Idle-task issue filer (Issue #2005, #2023, #2048) ---
           // After a Priority 2 scan that found no claimable issue, fire
           // the framework filer so an `idle-task` issue is raised

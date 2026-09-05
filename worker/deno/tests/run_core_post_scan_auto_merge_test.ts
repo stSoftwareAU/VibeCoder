@@ -240,6 +240,73 @@ Deno.test(
 );
 
 Deno.test(
+  "run_core - a claim that then FAILED is still swept (Issue #1136)",
+  async () => {
+    // The PR this pass exists for is most likely to be unarmed exactly when
+    // the run that raised it did not finish cleanly — the security gate
+    // refused, or the watchdog took the run at the deadline. Such a run
+    // records a claim and no success, so a success-gated sweep would skip
+    // the one cycle that needed it.
+    const events: string[] = [];
+    let findCalls = 0;
+    let cycleCount = 0;
+    let nowValue = 0;
+    const deps = createMockDeps({
+      now: () => nowValue,
+      sleep: () => {
+        events.push("cycle-end");
+        cycleCount++;
+        if (cycleCount >= 1) nowValue += 4000 * 1000;
+        return Promise.resolve();
+      },
+      ensureAutoMerge: (opts?: { refreshOpenPrs?: boolean }) => {
+        events.push(
+          opts?.refreshOpenPrs === true ? "post-scan-sweep" : "sweep",
+        );
+        return Promise.resolve({ ok: true as const, value: undefined });
+      },
+      findNextIssue: () => {
+        findCalls++;
+        if (findCalls === 1) {
+          return Promise.resolve({
+            ok: true as const,
+            value: {
+              repo: "org/repo",
+              issueNumber: 1136,
+              issueTitle: "An issue whose PR is raised, then the run fails",
+              milestoneTitle: "",
+            },
+          });
+        }
+        return Promise.resolve({ ok: true as const, value: null });
+      },
+      processIssue: () => {
+        events.push("pr-created");
+        // The PR exists; the run itself did not succeed.
+        return Promise.resolve({
+          ok: true as const,
+          value: { success: false },
+        });
+      },
+    });
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+
+    await runCoreLoop(config, deps);
+
+    const created = events.indexOf("pr-created");
+    const cycleEnd = events.indexOf("cycle-end");
+    const swept = events.indexOf("post-scan-sweep");
+    assert(
+      created >= 0 && swept > created && swept < cycleEnd,
+      `expected a post-scan sweep after the failed run's PR: ${
+        events.join(" → ")
+      }`,
+    );
+  },
+);
+
+Deno.test(
   "run_core - the post-scan sweep says what it did, and why when it skips (Issue #1136)",
   async () => {
     const logs: string[] = [];

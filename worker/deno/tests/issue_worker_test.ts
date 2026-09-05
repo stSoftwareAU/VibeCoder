@@ -2315,6 +2315,45 @@ Deno.test("completion - enables auto-merge for non-milestone PRs (Issue #1125)",
   );
 });
 
+Deno.test("completion - the arming outcome is logged at PR creation (Issue #1136)", async () => {
+  // Arming is now the primary mechanism, so a refusal on this path must not
+  // be silent — the same lesson as Issue #470, applied where the sweep's
+  // `recordOutcome` does not reach.
+  const ctx = makeContext({ milestoneTitle: "OIDC Auth" });
+  const state = makeState({ milestoneBranch: "milestone/oidc-auth" });
+  const logMessages: string[] = [];
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: () => Promise.resolve("https://github.com/org/repo/pull/5"),
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("No PR found") }),
+      finalisePr: (() =>
+        Promise.resolve({
+          ok: true,
+          value: "PR #5 left on milestone/oidc-auth: checks pending",
+        })) as unknown as typeof deps.pr.finalisePr,
+    },
+  });
+  const originalInfo = deps.logger.info;
+  deps.logger.info = ((msg: string, data?: Record<string, unknown>) => {
+    logMessages.push(msg);
+    return originalInfo.call(deps.logger, msg, data);
+  }) as typeof deps.logger.info;
+
+  const result = await workOnIssueCompletion(ctx, state, deps);
+
+  assertEquals(result.status, "continue");
+  assertEquals(
+    logMessages.some((m) =>
+      m.includes("Auto-merge armed at creation") && m.includes("checks pending")
+    ),
+    true,
+    `expected the arming outcome in the log: ${logMessages.join(" | ")}`,
+  );
+});
+
 // Issue #1136: the recovery path arms the same way the creation path does —
 // see the note above the milestone child test.
 Deno.test("completion - arms auto-merge on a recovered milestone child PR (idempotency, Issue #1136)", async () => {

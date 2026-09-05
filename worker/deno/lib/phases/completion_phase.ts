@@ -155,6 +155,43 @@ async function runGitOrThrow(
 }
 
 /**
+ * Arm auto-merge on a PR the moment it exists, and say what happened
+ * (Issues #1136, #470).
+ *
+ * Arming at creation is the fleet's *primary* landing mechanism — the
+ * priority 1.65 sweep runs before the work that raises PRs, so it cannot see
+ * a PR its own cycle created. That makes this the call whose refusals matter:
+ * a gate may refuse the merge, but it may not refuse silently, or an unarmed
+ * PR blocks its work stream with nothing in the log to say why.
+ */
+async function armAutoMergeAtCreation(
+  repo: string,
+  prNumber: number,
+  deps: WorkerDeps,
+): Promise<void> {
+  const logger = deps.logger;
+  const result = await deps.pr.finalisePr({
+    repo,
+    prNumber,
+    skipAutoMerge: false,
+    // Route the milestone gates' warnings into the worker log rather than
+    // `console.warn`, which no operator reads.
+    log: (message: string) => logger.warn(message, { repo, prNumber }),
+  });
+  if (result.ok) {
+    logger.info(`Auto-merge armed at creation: ${result.value}`, {
+      repo,
+      prNumber,
+    });
+    return;
+  }
+  logger.warn(`Auto-merge NOT armed at creation: ${result.error.message}`, {
+    repo,
+    prNumber,
+  });
+}
+
+/**
  * Recover an existing PR by updating its body and labels, then finalise (Issue #1189).
  *
  * Issue #1559: When the recovered PR is already merged, skip the redundant
@@ -221,7 +258,7 @@ export async function recoverAndFinaliseExistingPr(
     // Issue #1136: arm auto-merge here, on the recovery path too — see the
     // note on the creation path below.
     if (prNumber > 0) {
-      await deps.pr.finalisePr({ repo, prNumber, skipAutoMerge: false });
+      await armAutoMergeAtCreation(repo, prNumber, deps);
     }
   } catch (err) {
     logger.warn("Post-recovery finalisation error (non-fatal)", {
@@ -1351,7 +1388,7 @@ async function completionBody(
     // time (Issue #3909). The sweep already merged these children, so the
     // skip only ever delayed them.
     if (prNumber > 0) {
-      await deps.pr.finalisePr({ repo, prNumber, skipAutoMerge: false });
+      await armAutoMergeAtCreation(repo, prNumber, deps);
     }
 
     // Issue #1613: Surface a rejected dependency bump on the PR thread
