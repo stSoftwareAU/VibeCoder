@@ -168,13 +168,25 @@ Deno.test("private extensions - the page is reachable from the README (Issue #98
   assertStringIncludes(read("README.md"), "docs/PRIVATE-EXTENSIONS.md");
 });
 
-Deno.test("private extensions - the extension surface names no third-party software (Issue #985)", () => {
-  // The property #985 turns on: core provides extension points and never
-  // learns what is plugged into them. GitHub Actions is exempt — it is the CI
-  // this project itself runs on, not an offered integration.
-  const named = /\b(jenkins|maven|temurin|adoptium)\b/i;
+/**
+ * A hard-coded download: an absolute `http(s)` URL, or a SHA-256 digest
+ * literal, in a file whose whole job is to install whatever the operator
+ * asked for.
+ *
+ * This replaced a denylist of tool names (Issue #986). A denylist catches
+ * the tool somebody remembered and waves the next one through — and writing
+ * it means writing those names into this repository, which is the thing the
+ * principle forbids. Nothing is enumerated here. What is asserted is that
+ * these surfaces bake in **no** artefact at all: every tool arrives through
+ * `.config.json`, so there is nothing for core to know the name of.
+ */
+const BAKED_IN_ARTEFACT = /https?:\/\/|\b[0-9a-f]{64}\b/i;
+
+Deno.test("private extensions - the extension surface bakes in no tool (Issues #985, #986)", () => {
+  // The page itself is exempt and checked separately below: it teaches the
+  // *shape* of a declaration, so it necessarily shows a URL and a digest.
+  // What matters there is that they are placeholders.
   const surfaces = [
-    PAGE,
     "worker/deno/lib/container_tools_config.ts",
     "container/install-tools.sh",
   ];
@@ -182,11 +194,44 @@ Deno.test("private extensions - the extension surface names no third-party softw
     const offenders = read(surface)
       .split("\n")
       .map((line, i) => ({ line, n: i + 1 }))
-      .filter(({ line }) => named.test(line));
+      .filter(({ line }) => BAKED_IN_ARTEFACT.test(line));
     assertEquals(
       offenders.map(({ n, line }) => `${surface}:${n}: ${line.trim()}`),
       [],
-      `${surface} must not name third-party software`,
+      `${surface} names a specific artefact to download. Core provides the ` +
+        "extension point; what an operator installs is declared in their " +
+        "own `.config.json` and never appears in this repository.",
     );
   }
+});
+
+/**
+ * Hosts a documentation example may point at.
+ *
+ * The page has to show a download to be worth reading. Naming a real one
+ * would put an operator's tool in this repository just as surely as code
+ * would, so every example resolves to a reserved documentation domain
+ * (RFC 2606) — which is checkable without listing a single real tool.
+ */
+const EXAMPLE_HOST = /^(?:[a-z0-9-]+\.)*example\.(?:com|org|net)$/i;
+
+Deno.test("private extensions - every example on the page points at a placeholder host (Issue #986)", () => {
+  const offenders = [...read(PAGE).matchAll(/https?:\/\/[^\s)"'`<>\]]+/gi)]
+    .map((m) => m[0])
+    .filter((url) => {
+      try {
+        return !EXAMPLE_HOST.test(new URL(url).hostname);
+      } catch {
+        return true;
+      }
+    });
+
+  assertEquals(
+    offenders,
+    [],
+    "the page points at a real host. Examples must use a reserved " +
+      "documentation domain: naming a real tool's download is how a " +
+      "vendor gets recorded here, whether in code or in prose.\n" +
+      offenders.join("\n"),
+  );
 });
