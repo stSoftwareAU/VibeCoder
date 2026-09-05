@@ -291,7 +291,7 @@ operator syncs their own private repository into it — a `Containerfile` built
 `FROM` the standard image, optionally a start script, and whatever the build
 copies in beside them. `container_extension_digest.ts` reduces the directory to
 one digest and the tag mixes that digest in, so editing **any** file under it
-— a `.sql` dump or a `Jenkinsfile` included — rebuilds, which is the point:
+— a `.sql` dump or a pipeline definition included — rebuilds, which is the point:
 those bytes end up in the image. The digest covers the declared `containerfile`
 and `start` too, since pointing the same directory at `Containerfile.dev` is a
 different image; it does **not** cover the directory's *path*, so two hosts that
@@ -340,7 +340,7 @@ flowchart LR
 ```
 
 **A declared start script runs before the worker, or the run fails**
-(Issue #981). An extension's services — a Postgres server, a Jenkins — have to
+(Issue #981). An extension's services — a database server, a CI server — have to
 be running before the agent starts work, so the framework supervises exactly
 one thing and makes its failure loud. The operator's Containerfile copies the
 extension into the image at the fixed path `/opt/vibe-extension/` (the posture
@@ -355,9 +355,9 @@ Every way that start can fail *and return* aborts the launch with exit status
 **76** and never runs the driver: a script that is absent from the image, one
 that is not executable, and one that exits non-zero — the last naming its own
 status. A start that **hangs** is the exception: it is not time-bounded here,
-because how long a Postgres may take to come up is the operator's call, so the
+because how long a service may take to come up is the operator's call, so the
 launcher's watchdog ends the container and reports it as wedged (87). The
-script's stdout and stderr are inherited, so a Postgres that refused to come up
+script's stdout and stderr are inherited, so a service that refused to come up
 is diagnosable from the container log. The status is the framework's own so it
 cannot be confused with a deliberate quota pause (75) or the runtime's
 container-start range (125–127); the worker records the abort as a **failed
