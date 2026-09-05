@@ -369,45 +369,6 @@ export interface ParkedHostCapacityInput {
 }
 
 /**
- * A host that cannot run containers at all, as slot-utilisation (Issue #997).
- *
- * Every slot-second in the window is unavailable: no slot was occupied, none
- * was idle looking for work, and none was blocked on a quota — the host could
- * not start one. Reporting it in this shape means "why is that host claiming
- * nothing?" is answered by the same line an operator already reads for the
- * hosts that *are* running, rather than by their absence.
- *
- * A host whose configured capacity cannot be resolved reports one slot: the
- * lost capacity is then understated, never invented.
- */
-export function parkedHostCapacity(
-  input: ParkedHostCapacityInput,
-): SlotUtilisationSnapshot {
-  const slots = Math.max(1, Math.floor(input.slots));
-  const wallSeconds = Math.max(0, Math.floor(input.parkedSeconds));
-  const availableSlotSeconds = slots * wallSeconds;
-  return {
-    slots,
-    ...(input.host ? { host: input.host } : {}),
-    wallSeconds,
-    availableSlotSeconds,
-    occupiedSlotSeconds: 0,
-    idleSlotSeconds: 0,
-    blockedSlotSeconds: 0,
-    blockedByReason: {},
-    blockedStops: {},
-    unstaffedSlotSeconds: 0,
-    occupiedBySlot: {},
-    idleBySlot: {},
-    utilisation: 0,
-    unavailable: {
-      slotSeconds: availableSlotSeconds,
-      reason: input.reason,
-    },
-  };
-}
-
-/**
  * Capacity guard for the idle-task filer (Issues #925, #1083).
  *
  * Making the filer per-slot introduced a multiplication the fleet-wide gate
