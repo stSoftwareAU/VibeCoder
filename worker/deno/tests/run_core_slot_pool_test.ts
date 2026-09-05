@@ -410,6 +410,41 @@ Deno.test("slot pool - every terminal path releases the claim exactly once: succ
   }
 });
 
+Deno.test(
+  "slot pool - a slot that never held the claim releases nothing (Issue #1139)",
+  async () => {
+    // A stand-down on a wrapper a sibling host holds. Under the fleet's
+    // shared GitHub login an unassign here strips the holder's claim, so the
+    // slot must release nothing at all — while a sibling's ordinary skip on
+    // the same cycle still releases as usual.
+    const releases: string[] = [];
+    let now = 0;
+    const deps = createMockDeps({
+      now: () => now,
+      sleep: (ms?: number) => {
+        now += ms ?? 30_000;
+        return Promise.resolve();
+      },
+      findNextIssue: issueQueue([issue("o/held", 1), issue("o/skip", 2)]),
+      processIssue: async (i) => {
+        await new Promise((r) => setTimeout(r, 5));
+        return i.repo === "o/held"
+          ? {
+            ok: true as const,
+            value: { success: false, skipped: true, claimNotHeld: true },
+          }
+          : { ok: true as const, value: { success: false, skipped: true } };
+      },
+      releaseClaim: (repo, n) => {
+        releases.push(`${repo}#${n}`);
+        return Promise.resolve();
+      },
+    });
+    await runOneCycle(deps, 2);
+    assertEquals(releases, ["o/skip#2"]);
+  },
+);
+
 Deno.test("slot pool - the pool calls the slot-aware sweep with the live holds, never the whole-process sweep (Issue #4178)", async () => {
   let wholeProcessSweeps = 0;
   const liveSets: number[] = [];

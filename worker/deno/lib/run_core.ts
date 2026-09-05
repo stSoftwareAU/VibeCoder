@@ -661,6 +661,15 @@ export interface RunCoreDeps {
       success: boolean;
       skipped?: boolean;
       /**
+       * The run never held the claim (Issue #1139) — it stood down because
+       * a sibling host holds the issue. There is nothing to release, and
+       * releasing anyway would strip the **winner's** assignee and clear its
+       * heartbeat marker: the fleet shares one GitHub login, so
+       * `--remove-assignee <githubUser>` removes the other host's claim and
+       * leaves it running unassigned (the Issue #214 state).
+       */
+      claimNotHeld?: boolean;
+      /**
        * Failure class (Issue #4304): "timeout" marks a run that burned its
        * whole budget and produced nothing, which feeds the escalating
        * re-claim cooldown. Absent on success/skip and ordinary failures.
@@ -1707,6 +1716,14 @@ async function runInitialisation(
  * Prefers the injected `releaseClaim` (unassign + clear heartbeat). Falls back
  * to the marker-only `clearHeartbeat()` for deps that predate the helper so
  * older test wirings keep working — production always supplies `releaseClaim`.
+ *
+ * Issue #1139: a run that stood down because a **sibling host** holds the
+ * issue passes `claimNotHeld` and releases nothing. The fleet shares one
+ * GitHub login, so `--remove-assignee <githubUser>` would strip the winner's
+ * claim and its release would clear the winner's heartbeat marker — leaving a
+ * live run unassigned and the issue claimable by a third host, which is the
+ * duplicate this guard exists to stop. The callbacks still run, so the
+ * stand-down is reported.
  */
 async function releaseIssueClaim(
   deps: RunCoreDeps,
@@ -1714,18 +1731,26 @@ async function releaseIssueClaim(
   issueNumber: number,
   outcome?: RunOutcome,
   ran?: TerminalRun,
+  options: { claimNotHeld?: boolean } = {},
 ): Promise<void> {
-  // Log the resolved outcome kind (Issue #4325) so a worker-log grep tells
-  // "outcome never computed" from "computed but not rendered".
-  deps.log(
-    `Releasing claim ${repo}#${issueNumber} — outcome ${
-      describeRunOutcome(outcome)
-    }`,
-  );
-  if (deps.releaseClaim) {
-    await deps.releaseClaim(repo, issueNumber, outcome);
+  if (options.claimNotHeld) {
+    deps.log(
+      `Not releasing ${repo}#${issueNumber} — this run never held the claim ` +
+        `(Issue #1139); the host that does still holds it.`,
+    );
   } else {
-    await deps.clearHeartbeat();
+    // Log the resolved outcome kind (Issue #4325) so a worker-log grep tells
+    // "outcome never computed" from "computed but not rendered".
+    deps.log(
+      `Releasing claim ${repo}#${issueNumber} — outcome ${
+        describeRunOutcome(outcome)
+      }`,
+    );
+    if (deps.releaseClaim) {
+      await deps.releaseClaim(repo, issueNumber, outcome);
+    } else {
+      await deps.clearHeartbeat();
+    }
   }
   // The callbacks run after the release, on every path where a claim
   // actually ran (Issue #806). A skip passes no `ran`, so an unclaimed or
@@ -2166,6 +2191,13 @@ async function runIssueScanLoop(
     const runOutcome = processResult.ok
       ? processResult.value.outcome
       : undefined;
+    /**
+     * The run stood down without ever holding the claim (Issue #1139), so
+     * there is nothing of ours to release — and under the fleet's shared
+     * login an unassign here would strip the holder's claim.
+     */
+    const claimNotHeld = processResult.ok &&
+      processResult.value.claimNotHeld === true;
     /** What this run reports to the post-run callbacks (Issue #806). */
     const ran = (result: "success" | "failure"): TerminalRun => ({
       result,
@@ -2217,10 +2249,17 @@ async function runIssueScanLoop(
     if (skipped) {
       noteIssueProcessed(deps, issue, "skip");
       await deps.recordIssueCooldown(issue.repo, issue.issueNumber);
-      // Issue #2670: release any claim taken before the skip. Removing only
-      // the worker's own assignment is a no-op when the claim was rejected,
-      // so this never disturbs another worker holding the issue.
-      await releaseIssueClaim(deps, issue.repo, issue.issueNumber);
+      // Issue #2670: release any claim taken before the skip — unless this
+      // run never held one (Issue #1139), in which case the assignment on
+      // the issue belongs to the host that does.
+      await releaseIssueClaim(
+        deps,
+        issue.repo,
+        issue.issueNumber,
+        undefined,
+        undefined,
+        { claimNotHeld },
+      );
       continue;
     }
 
@@ -2267,6 +2306,7 @@ async function runIssueScanLoop(
       issue.issueNumber,
       runOutcome,
       ran("failure"),
+      { claimNotHeld },
     );
 
     // Scan continuation (Issue #3648): the failure path used to `continue`
@@ -3639,6 +3679,12 @@ async function runSlotIssue(
     noteSlotActivity(slotId, "idle", deps.now());
   }
   const runOutcome = processResult.ok ? processResult.value.outcome : undefined;
+  /**
+   * The run stood down without ever holding the claim (Issue #1139) — see
+   * the serial loop's copy: releasing would strip the holder's assignment.
+   */
+  const claimNotHeld = processResult.ok &&
+    processResult.value.claimNotHeld === true;
   /** What this slot's run reports to the post-run callbacks (Issue #806). */
   const ran = (result: "success" | "failure"): TerminalRun => ({
     result,
@@ -3682,7 +3728,14 @@ async function runSlotIssue(
   if (skipped) {
     noteIssueProcessed(deps, issue, "skip");
     await deps.recordIssueCooldown(issue.repo, issue.issueNumber);
-    await releaseIssueClaim(deps, issue.repo, issue.issueNumber);
+    await releaseIssueClaim(
+      deps,
+      issue.repo,
+      issue.issueNumber,
+      undefined,
+      undefined,
+      { claimNotHeld },
+    );
     if (siblingsWorking()) {
       await deps.setStatusWorking(
         renderSlotStatus(holds().filter((h) => h.slotId !== slotId)),
@@ -3713,6 +3766,7 @@ async function runSlotIssue(
       issue.issueNumber,
       runOutcome,
       ran("failure"),
+      { claimNotHeld },
     );
     return "exit";
   }
@@ -3722,6 +3776,7 @@ async function runSlotIssue(
     issue.issueNumber,
     runOutcome,
     ran("failure"),
+    { claimNotHeld },
   );
 
   // Pool-wide consecutive-failure policy (Issue #4180 keeps thresholds

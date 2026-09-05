@@ -30,7 +30,7 @@ import {
 } from "../lib/idle_task_process_issue_route.ts";
 import {
   claimIdleTaskWrapper,
-  IDLE_TASK_CLAIM_LOST_MESSAGE,
+  IDLE_TASK_CLAIM_REFUSED_MESSAGE,
 } from "../lib/idle_task_wrapper_claim.ts";
 import { CLAIM_MARKER_PREFIX, claimIssue } from "../lib/claim_issue.ts";
 import type { IdleTaskTemplate } from "../lib/idle_task_template.ts";
@@ -236,7 +236,14 @@ function runHost(
   host: string,
   scans: string[],
   logger: Logger,
+  beats: string[] = [],
 ) {
+  const handle = {
+    id: host,
+    repo: REPO,
+    issueNumber: ISSUE,
+    kind: "issue" as const,
+  };
   return routeIdleTaskInProcessIssue(WRAPPER, {
     logger,
     findTemplateFn: () => TEMPLATE,
@@ -251,10 +258,19 @@ function runHost(
       });
     },
     ghCommandFn: hub.gh(host),
+    stopHeartbeatFn: () => {
+      beats.push(`stop:${host}`);
+      return Promise.resolve();
+    },
     claimWrapperFn: (input, deps) =>
       claimIdleTaskWrapper(input, {
         ...deps,
         workerIdFn: (user) => `${user}-${host}`,
+        machineIdFn: () => Promise.resolve(`machine-${host}`),
+        startHeartbeatFn: () => {
+          beats.push(`start:${host}`);
+          return Promise.resolve({ ok: true as const, value: handle });
+        },
         claimIssueFn: (options) =>
           claimIssue({
             ...options,
@@ -274,47 +290,57 @@ Deno.test(
   async () => {
     const hub = new FakeGitHub();
     const scans: string[] = [];
+    const beats: string[] = [];
     const { logger: logA } = makeLogger();
     const { logger: logB, records: recordsB } = makeLogger();
 
-    // Host B's issue-list cache is populated BEFORE host A claims: the
-    // wrapper is open, unassigned, and carries no claim marker.
-    const hostBCachedView = {
-      assignees: [...hub.assignees],
-      comments: hub.comments.length,
-    };
+    // Host B's issue list was fetched here — open, unassigned, no claim
+    // marker — and it is what host B dispatches from below. The route reads
+    // the live issue at claim time, which is the whole point: a stale list
+    // can still offer the wrapper, and the claim is what refuses it.
+    assertEquals(hub.assignees, []);
+    assertEquals(hub.comments.length, 0);
 
-    const first = await runHost(hub, "GRQ-3", scans, logA);
+    const first = await runHost(hub, "GRQ-3", scans, logA, beats);
     assertEquals(first, { routed: true, success: true });
     assertEquals(scans, ["GRQ-3"]);
+    // The winner beat for the life of its scan and stopped afterwards.
+    assertEquals(beats, ["start:GRQ-3", "stop:GRQ-3"]);
 
     // The claim host A took is visible to any other host: an assignee and a
     // fleet-authored CLAIM_LOCK comment.
+    assertEquals(hub.assignees, [FLEET_USER]);
     assert(
       hub.comments.some((c) => c.body.includes(CLAIM_MARKER_PREFIX)),
       "the winning host must leave a CLAIM_LOCK marker on the wrapper",
     );
-    assertEquals(hostBCachedView.assignees, []);
-    assertEquals(hostBCachedView.comments, 0);
 
     // Host B dispatches from that stale view, minutes later.
-    const second = await runHost(hub, "Mac-Ultra-M2", scans, logB);
+    const second = await runHost(hub, "Mac-Ultra-M2", scans, logB, beats);
 
     assertEquals(second, {
       routed: true,
       success: false,
       claimLost: true,
       claimReason: "already_assigned",
-      claimDetail: "no detail reported",
+      claimDetail: "the wrapper is assigned to another run",
     });
     // The scan ran exactly once across the fleet.
     assertEquals(scans, ["GRQ-3"]);
-    // And host B wrote nothing at all to the wrapper.
+    // And host B wrote nothing at all to the wrapper, nor started a beat.
     assertEquals(hub.writesBy("Mac-Ultra-M2"), []);
+    assertEquals(beats, ["start:GRQ-3", "stop:GRQ-3"]);
     assert(
-      recordsB.some(([message]) => message === IDLE_TASK_CLAIM_LOST_MESSAGE),
+      recordsB.some(([message]) => message === IDLE_TASK_CLAIM_REFUSED_MESSAGE),
       "the stood-down host must say why in its log",
     );
+    // The loser has nothing to release — the main loop is told so.
+    assert(second.routed, "the wrapper is routed on both hosts");
+    assertEquals(idleTaskRouteRunResult(second), {
+      success: false,
+      skipped: true,
+      claimNotHeld: true,
+    });
   },
 );
 
@@ -331,7 +357,6 @@ Deno.test(
     hub.onClaimComment = (host) => {
       if (host !== "Mac-Ultra-M2") return;
       hub.onClaimComment = undefined;
-      hub.assignees = [];
       hub.addComment(
         `${CLAIM_MARKER_PREFIX}${FLEET_USER}-GRQ-3 -->\nClaimed by GRQ-3`,
         new Date(Date.now() - 1000).toISOString(),
@@ -344,7 +369,7 @@ Deno.test(
     assertEquals(outcome.claimReason, "race_lost");
     assertEquals(scans, [], "a lost race must never run the scan");
     // The loser leaves the wrapper as it found it: its own CLAIM_LOCK is
-    // deleted and it is no longer an assignee.
+    // deleted and it removed the assignment it had just added.
     assertEquals(hub.assignees, []);
     assertEquals(
       hub.comments.filter((c) => c.body.includes("Mac-Ultra-M2")).length,
@@ -365,7 +390,19 @@ Deno.test(
         claimReason: "already_assigned",
         claimDetail: "assigned to a sibling host",
       }),
-      { success: false, skipped: true },
+      { success: false, skipped: true, claimNotHeld: true },
+    );
+    // A claim that could not be made at all is a FAILURE, not a benign
+    // skip: a broken GitHub must reach the failure counters.
+    assertEquals(
+      idleTaskRouteRunResult({
+        routed: true,
+        success: false,
+        claimLost: true,
+        claimReason: "claim_error",
+        claimDetail: "gh: 503 unavailable",
+      }),
+      { success: false, skipped: false, claimNotHeld: true },
     );
     // A scan this host actually ran keeps its ordinary success/failure.
     assertEquals(idleTaskRouteRunResult({ routed: true, success: true }), {
@@ -385,7 +422,12 @@ Deno.test(
     const { logger, records } = makeLogger();
 
     const claim = await claimIdleTaskWrapper(
-      { repo: REPO, issueNumber: ISSUE, githubUser: FLEET_USER },
+      {
+        repo: REPO,
+        issueNumber: ISSUE,
+        githubUser: FLEET_USER,
+        workDir: "/tmp/work",
+      },
       {
         logger,
         claimIssueFn: () => Promise.reject(new Error("gh: 503 unavailable")),
@@ -396,7 +438,7 @@ Deno.test(
     assert(!claim.claimed && claim.reason === "claim_error");
     assert(!claim.claimed && claim.detail.includes("503"));
     assert(
-      records.some(([message]) => message === IDLE_TASK_CLAIM_LOST_MESSAGE),
+      records.some(([message]) => message === IDLE_TASK_CLAIM_REFUSED_MESSAGE),
       "a claim that could not be verified must say so",
     );
   },

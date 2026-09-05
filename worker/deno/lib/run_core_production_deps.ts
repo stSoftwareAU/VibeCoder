@@ -3004,8 +3004,9 @@ export async function createProductionRunCoreDeps(
         { logger },
       );
       if (idleRoute.routed) {
-        // Issue #1139: a lost claim is a skip — it takes the cooldown and is
-        // never recorded as this host having done the work.
+        // Issue #1139: a wrapper a sibling host holds is a skip that releases
+        // nothing (`claimNotHeld`); a claim that failed for any other reason
+        // is reported as the failure it is. Neither is an ordinary success.
         return { ok: true, value: idleTaskRouteRunResult(idleRoute) };
       }
 

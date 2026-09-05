@@ -114,11 +114,17 @@ Key points:
   recording `success`, and the issue's timeline carries no `assigned` event at
   all.
   [`claimIdleTaskWrapper`](../worker/deno/lib/idle_task_wrapper_claim.ts) now
-  takes the same lock the standard pipeline uses. A host that does not hold the
-  wrapper **stands down before any work**: it clones nothing, scans nothing,
-  writes nothing to the wrapper, logs the refusal reason, and the run is
-  recorded as a **skip** — never as the ordinary success that made two hosts'
-  duplicate audits look like one host working twice.
+  takes the same lock the standard pipeline uses — assignee, `CLAIM_LOCK`
+  comment, earliest-comment race resolution, and a heartbeat that beats for as
+  long as the scan runs so a claim whose assignee is dropped mid-scan is still
+  readable as live (Issue #214). A host that does not hold the wrapper **stands
+  down before any work**: it clones nothing, scans nothing, writes nothing to
+  the wrapper, and — because the fleet shares one GitHub login — releases
+  nothing either, so the holder keeps its assignee and its marker. The refusal
+  reason is logged, and the run is recorded as a **skip** (another run holds
+  it) or as a **failure** (the claim itself could not be made — a `gh` outage,
+  a non-collaborator worker) — never as the ordinary success that made two
+  hosts' duplicate audits look like one host working twice.
 - The claim handler **never throws** — every failure mode (malformed body,
   unknown template, runner error) logs a structured warning and returns a
   `{ handled: true, ok: false }` result so the queue does not stall.

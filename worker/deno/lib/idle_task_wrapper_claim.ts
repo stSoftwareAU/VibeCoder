@@ -15,9 +15,18 @@
  * `assigned` event — the claim lock was never taken, not lost.
  *
  * This module takes that lock with the same machinery the standard pipeline
- * uses (`claimIssue`: live assignee re-read → assign → `CLAIM_LOCK` comment →
- * earliest-comment race resolution), and states loudly when a sibling host
- * already holds it so the losing run stands down before any scan work.
+ * uses:
+ *   - `claimIssue` — live assignee re-read, assign, `CLAIM_LOCK` comment,
+ *     earliest-comment race resolution;
+ *   - an initial heartbeat marker co-published in that claim comment, then
+ *     refreshed for as long as the scan runs. Without a beating marker a
+ *     claim whose assignee is dropped mid-scan — by the loser of a race
+ *     cleaning up under a shared login, or by the assigned-without-heartbeat
+ *     recovery after 30 minutes — reads as free to a sibling host, which is
+ *     the same duplicate by another route (Issue #214).
+ *
+ * A host that does not hold the wrapper is told loudly, so the caller stands
+ * down before any scan work.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -27,6 +36,15 @@ import {
   type ClaimFailureReason,
   claimIssue as defaultClaimIssue,
 } from "./claim_issue.ts";
+import {
+  type HeartbeatHandle,
+  startHeartbeat as defaultStartHeartbeat,
+} from "./heartbeat.ts";
+import { getMachineId as defaultGetMachineId } from "./machine_id.ts";
+import {
+  clearHeartbeat as libClearHeartbeat,
+  recordHeartbeat as libRecordHeartbeat,
+} from "./stuck_issue_detector.ts";
 
 /** What a wrapper claim needs to know about the issue and the fleet. */
 export interface ClaimIdleTaskWrapperInput {
@@ -36,6 +54,8 @@ export interface ClaimIdleTaskWrapperInput {
   issueNumber: number;
   /** This host's GitHub login — the assignee that locks the wrapper. */
   githubUser: string;
+  /** Working directory holding the heartbeat and marker state. */
+  workDir: string;
   /**
    * Fleet logins whose `CLAIM_LOCK` markers this host trusts, and whose
    * open PRs are re-checked live before the claim is finalised — the same
@@ -56,6 +76,10 @@ export interface ClaimIdleTaskWrapperDeps {
   claimIssueFn?: typeof defaultClaimIssue;
   /** Worker-id factory — one unique id per claim attempt. */
   workerIdFn?: (githubUser: string) => string;
+  /** Stable per-machine id, published in the heartbeat marker. */
+  machineIdFn?: typeof defaultGetMachineId;
+  /** Heartbeat starter — the claim's liveness signal. */
+  startHeartbeatFn?: typeof defaultStartHeartbeat;
 }
 
 /**
@@ -67,14 +91,81 @@ export type IdleTaskClaimRefusal = ClaimFailureReason | "claim_error";
 
 /** Outcome of a wrapper claim attempt. */
 export type IdleTaskWrapperClaim =
-  | { claimed: true; workerId: string }
+  | {
+    claimed: true;
+    workerId: string;
+    /**
+     * The claim's heartbeat, which the caller must stop when the scan
+     * finishes. Absent only when the heartbeat could not be started — the
+     * claim comment's initial marker still stands, and the failure is
+     * logged.
+     */
+    heartbeat?: HeartbeatHandle;
+  }
   | {
     claimed: false;
     /** Refusal code, for logs and the run's recorded outcome. */
     reason: IdleTaskClaimRefusal;
-    /** One line naming what holds the wrapper. */
+    /** One line naming what holds the wrapper, or what went wrong. */
     detail: string;
   };
+
+/**
+ * The one log message a stood-down run emits. Exported so tests and log
+ * greps share the wording rather than re-spelling it.
+ */
+export const IDLE_TASK_CLAIM_REFUSED_MESSAGE =
+  "idle-task wrapper claim refused — standing down before the scan " +
+  "(Issue #1139)";
+
+/**
+ * Refusals that mean **another run holds the wrapper**. These are the fleet
+ * working as designed: this host takes a cooldown and re-scans, and the run
+ * is recorded as a skip.
+ *
+ * Everything else — a `gh` outage, a worker that is not a collaborator, a
+ * verification read that failed — is a fault, and {@link isHeldElsewhere}
+ * returning false is what makes the caller report it as one rather than
+ * folding a broken GitHub into the benign path.
+ */
+const HELD_ELSEWHERE: ReadonlySet<IdleTaskClaimRefusal> = new Set<
+  IdleTaskClaimRefusal
+>([
+  "already_assigned",
+  "recent_claim",
+  "heartbeat_active",
+  "race_lost",
+  "fleet_pr_exists",
+  "blocking_label",
+  "already_closed",
+]);
+
+/** True when the refusal means a sibling run holds the wrapper. */
+export function isHeldElsewhere(reason: IdleTaskClaimRefusal): boolean {
+  return HELD_ELSEWHERE.has(reason);
+}
+
+/** A readable sentence for a refusal `claimIssue` reports without detail. */
+function describeRefusal(reason: IdleTaskClaimRefusal): string {
+  switch (reason) {
+    case "already_assigned":
+      return "the wrapper is assigned to another run";
+    case "recent_claim":
+      return "another fleet host posted a CLAIM_LOCK in the last minute";
+    case "race_lost":
+      return "another fleet host's CLAIM_LOCK is earlier";
+    case "already_closed":
+      return "the wrapper is closed";
+    case "blocking_label":
+      return "the wrapper carries a blocking label";
+    case "fleet_pr_exists":
+      return "an open fleet PR already targets this work stream";
+    case "heartbeat_active":
+      return "another run's heartbeat is still beating on the wrapper";
+    default:
+      return `the claim was refused (${reason})`;
+  }
+}
 
 /** Default worker id — the same shape the setup phase uses. */
 function defaultWorkerId(githubUser: string): string {
@@ -95,9 +186,31 @@ export async function claimIdleTaskWrapper(
   deps: ClaimIdleTaskWrapperDeps,
 ): Promise<IdleTaskWrapperClaim> {
   const claim = deps.claimIssueFn ?? defaultClaimIssue;
+  const machineIdFn = deps.machineIdFn ?? defaultGetMachineId;
+  const startHeartbeatFn = deps.startHeartbeatFn ?? defaultStartHeartbeat;
   const workerId = (deps.workerIdFn ?? defaultWorkerId)(input.githubUser);
-  const { repo, issueNumber, githubUser, fleetAuthors, pushCapableAuthors } =
-    input;
+  const {
+    repo,
+    issueNumber,
+    githubUser,
+    workDir,
+    fleetAuthors,
+    pushCapableAuthors,
+  } = input;
+
+  // The machine id rides in the heartbeat marker so another host can tell
+  // whose run is beating. Losing it costs the marker, not the claim, so it
+  // is logged rather than refusing an otherwise legitimate claim.
+  let machineId = "";
+  try {
+    machineId = await machineIdFn(workDir);
+  } catch (err) {
+    deps.logger.warn("idle-task wrapper claim: machine id unavailable", {
+      repo,
+      issueNumber,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   let result: Awaited<ReturnType<typeof defaultClaimIssue>>;
   try {
@@ -108,6 +221,9 @@ export async function claimIdleTaskWrapper(
       workerId,
       ...(fleetAuthors ? { fleetAuthors } : {}),
       ...(pushCapableAuthors ? { pushCapableAuthors } : {}),
+      // Co-publish the initial heartbeat marker inside the CLAIM_LOCK
+      // comment (Issue #1628) so the claim carries liveness from the start.
+      ...(machineId ? { markerOptions: { machineId, workDir } } : {}),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -119,17 +235,79 @@ export async function claimIdleTaskWrapper(
   }
   if (!result.value.claimed) {
     const { reason, reasonDetail, winnerId } = result.value;
+    const code = reason ?? "api_error";
     const detail = reasonDetail ??
-      (winnerId ? `winner=${winnerId}` : "no detail reported");
-    return refuse(deps.logger, input, reason ?? "api_error", detail);
+      (winnerId ? `winner=${winnerId}` : describeRefusal(code));
+    return refuse(deps.logger, input, code, detail);
   }
 
+  const heartbeat = await startClaimHeartbeat(
+    { repo, issueNumber, workDir, machineId, fleetAuthors },
+    startHeartbeatFn,
+    deps.logger,
+  );
   deps.logger.info("Claimed idle-task wrapper before running the scan", {
     repo,
     issueNumber,
     workerId,
+    heartbeat: heartbeat !== undefined,
   });
-  return { claimed: true, workerId };
+  return { claimed: true, workerId, ...(heartbeat ? { heartbeat } : {}) };
+}
+
+/**
+ * Keep the claim's marker beating for the life of the scan.
+ *
+ * Best-effort: a heartbeat that will not start costs the refreshes, not the
+ * claim — the assignee and the claim comment's initial marker still hold the
+ * wrapper — so it is logged loudly and the scan proceeds.
+ */
+async function startClaimHeartbeat(
+  claim: {
+    repo: string;
+    issueNumber: number;
+    workDir: string;
+    machineId: string;
+    fleetAuthors?: string[];
+  },
+  startHeartbeatFn: typeof defaultStartHeartbeat,
+  logger: Logger,
+): Promise<HeartbeatHandle | undefined> {
+  const { repo, issueNumber, workDir, machineId, fleetAuthors } = claim;
+  if (!machineId) return undefined;
+  const markerOptions = {
+    machineId,
+    ...(fleetAuthors && fleetAuthors.length > 0
+      ? { allowedAuthors: fleetAuthors }
+      : {}),
+  };
+  try {
+    const started = await startHeartbeatFn({
+      repo,
+      issueNumber,
+      workDir,
+      recordFn: (w, r, i) =>
+        libRecordHeartbeat(w, r, i, undefined, markerOptions),
+      clearFn: (w, r, i) => libClearHeartbeat(w, r, i, markerOptions),
+    });
+    if (started.ok) return started.value;
+    logger.warn(
+      "idle-task wrapper heartbeat did not start — the claim stands on its " +
+        "assignee and initial marker alone (Issue #1139)",
+      { repo, issueNumber, error: started.error.message },
+    );
+  } catch (err) {
+    logger.warn(
+      "idle-task wrapper heartbeat threw — the claim stands on its assignee " +
+        "and initial marker alone (Issue #1139)",
+      {
+        repo,
+        issueNumber,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+  }
+  return undefined;
 }
 
 /** Log the stand-down loudly and build the refusal. */
@@ -139,19 +317,12 @@ function refuse(
   reason: IdleTaskClaimRefusal,
   detail: string,
 ): IdleTaskWrapperClaim {
-  logger.warn(IDLE_TASK_CLAIM_LOST_MESSAGE, {
+  logger.warn(IDLE_TASK_CLAIM_REFUSED_MESSAGE, {
     repo: input.repo,
     issueNumber: input.issueNumber,
     reason,
+    heldElsewhere: isHeldElsewhere(reason),
     detail,
   });
   return { claimed: false, reason, detail };
 }
-
-/**
- * The one log message a stood-down run emits. Exported so tests and log
- * greps share the wording rather than re-spelling it.
- */
-export const IDLE_TASK_CLAIM_LOST_MESSAGE =
-  "idle-task wrapper is already claimed — standing down before the scan " +
-  "(Issue #1139)";

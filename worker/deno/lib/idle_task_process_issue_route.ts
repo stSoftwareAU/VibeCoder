@@ -29,7 +29,12 @@ import type { Logger } from "../types.ts";
 import {
   claimIdleTaskWrapper as defaultClaimIdleTaskWrapper,
   type IdleTaskClaimRefusal,
+  isHeldElsewhere,
 } from "./idle_task_wrapper_claim.ts";
+import {
+  type HeartbeatHandle,
+  stopHeartbeat as defaultStopHeartbeat,
+} from "./heartbeat.ts";
 import {
   findIdleTaskTemplate as defaultFindIdleTaskTemplate,
   handleIdleTaskIssue as defaultHandleIdleTaskIssue,
@@ -56,13 +61,17 @@ export interface RouteIdleTaskInput {
   /**
    * Fleet logins whose `CLAIM_LOCK` markers are trusted and whose open PRs
    * defer the claim (`resolveFleetAuthors`), forwarded to `claimIssue`.
+   * Required, not optional: an omitted set silently narrows the claim's
+   * trust to this login and switches off the live fleet-PR re-check, and a
+   * guard that can be disabled by forgetting a field is no guard.
    */
-  fleetAuthors?: string[];
+  fleetAuthors: string[];
   /**
    * The fleet's push-capable logins (`resolveFleetMaintenanceAuthorSet`) —
-   * only their open PRs defer the claim (Issue #4133).
+   * only their open PRs defer the claim (Issue #4133). Required for the
+   * same reason as `fleetAuthors`.
    */
-  pushCapableAuthors?: string[];
+  pushCapableAuthors: string[];
   /**
    * Epoch-ms deadline of the current cycle (Issue #186), forwarded to the
    * claim handler so the scan's Claude budget is bounded by the runway left.
@@ -82,6 +91,8 @@ export interface RouteIdleTaskDeps {
   ensureCloneFn?: typeof defaultEnsureRepoClone;
   /** Cross-host wrapper claim (Issue #1139). */
   claimWrapperFn?: typeof defaultClaimIdleTaskWrapper;
+  /** Stops the claim's heartbeat once the scan is finished (Issue #1139). */
+  stopHeartbeatFn?: typeof defaultStopHeartbeat;
 }
 
 /**
@@ -92,10 +103,9 @@ export interface RouteIdleTaskDeps {
  *   A successful run closed the wrapper with the template summary; a
  *   failed run left it open carrying a failure comment (Issue #179).
  *   `success` mirrors `HandleIdleTaskIssueResult.ok`.
- * - `{ routed: true, success: false, claimLost: true, … }` — a sibling
- *   host holds the wrapper (Issue #1139). Nothing was scanned, nothing
- *   was written to the wrapper, and the run is recorded as a skip rather
- *   than as work done.
+ * - `{ routed: true, success: false, claimLost: true, … }` — this host does
+ *   not hold the wrapper (Issue #1139). Nothing was scanned and nothing was
+ *   written to the wrapper.
  */
 export type RouteIdleTaskOutcome =
   | { routed: false }
@@ -103,28 +113,51 @@ export type RouteIdleTaskOutcome =
   | {
     routed: true;
     success: false;
-    /** The wrapper is held elsewhere — this host did no work. */
+    /** This host does not hold the wrapper — it did no work. */
     claimLost: true;
     /** Refusal code from the claim path. */
     claimReason: IdleTaskClaimRefusal;
-    /** One line naming what holds the wrapper. */
+    /** One line naming what holds the wrapper, or what went wrong. */
     claimDetail: string;
   };
 
+/** How the main loop records a routed idle-task run. */
+export interface IdleTaskRouteRunResult {
+  success: boolean;
+  skipped: boolean;
+  /**
+   * This run never held the claim, so it has nothing to release
+   * (Issue #1139). The fleet shares one GitHub login, so an unassign here
+   * would strip the **winner's** claim off an issue it is still scanning —
+   * exactly the "assignee dropped while the run is live" state Issue #214
+   * describes.
+   */
+  claimNotHeld?: true;
+}
+
 /**
- * How the main loop records a routed idle-task run (Issue #1139).
+ * Classify a routed idle-task run for the main loop (Issue #1139).
  *
- * A claim this host lost is a **skip**: it took a cooldown and re-scans,
- * it is not a failure to diagnose, and — crucially — it is not the
+ * A wrapper another run holds is a **skip**: this host takes a cooldown and
+ * re-scans, it is not a failure to diagnose, and — crucially — it is not the
  * ordinary success that made two hosts' duplicate audits indistinguishable
- * from one host doing the work twice as often.
+ * from one host working twice as often.
+ *
+ * A claim that failed for any other reason (a `gh` outage, a worker that is
+ * not a collaborator, a verification read that failed) is a **failure**: the
+ * same verdict the standard pipeline gives it, so a broken GitHub reaches
+ * the failure counters instead of being filed away as a benign conflict.
  */
 export function idleTaskRouteRunResult(
   outcome: Extract<RouteIdleTaskOutcome, { routed: true }>,
-): { success: boolean; skipped: boolean } {
+): IdleTaskRouteRunResult {
+  if (!("claimLost" in outcome)) {
+    return { success: outcome.success, skipped: false };
+  }
   return {
-    success: outcome.success,
-    skipped: "claimLost" in outcome,
+    success: false,
+    skipped: isHeldElsewhere(outcome.claimReason),
+    claimNotHeld: true,
   };
 }
 
@@ -146,6 +179,7 @@ export async function routeIdleTaskInProcessIssue(
   const findTemplate = deps.findTemplateFn ?? defaultFindIdleTaskTemplate;
   const ensureClone = deps.ensureCloneFn ?? defaultEnsureRepoClone;
   const claimWrapper = deps.claimWrapperFn ?? defaultClaimIdleTaskWrapper;
+  const stopHeartbeatFn = deps.stopHeartbeatFn ?? defaultStopHeartbeat;
 
   // Issue #179: a template walks `${workDir}/<repo>`, and nothing on this
   // path had ever cloned it. A repo freshly added to `.config.json` therefore
@@ -157,6 +191,8 @@ export async function routeIdleTaskInProcessIssue(
     issueTitle: input.issueTitle,
     issueBody: input.issueBody,
   });
+
+  let heartbeat: HeartbeatHandle | undefined;
   if (template !== undefined) {
     // Issue #1139: take the cross-host claim BEFORE the clone and the scan.
     // This route bypasses `workOnIssue`, whose setup phase held the only
@@ -168,10 +204,9 @@ export async function routeIdleTaskInProcessIssue(
         repo: input.repo,
         issueNumber: input.issueNumber,
         githubUser: input.githubUser,
-        ...(input.fleetAuthors ? { fleetAuthors: input.fleetAuthors } : {}),
-        ...(input.pushCapableAuthors
-          ? { pushCapableAuthors: input.pushCapableAuthors }
-          : {}),
+        workDir: input.workDir,
+        fleetAuthors: input.fleetAuthors,
+        pushCapableAuthors: input.pushCapableAuthors,
       },
       { logger: deps.logger },
     );
@@ -184,7 +219,34 @@ export async function routeIdleTaskInProcessIssue(
         claimDetail: claim.detail,
       };
     }
+    // The claim beats for as long as the scan runs; `finally` below stops it.
+    heartbeat = claim.heartbeat;
+  }
 
+  try {
+    return await runRoutedScan(input, deps, template, {
+      handleIdleTask,
+      ghCommand,
+      ensureClone,
+    });
+  } finally {
+    if (heartbeat) await stopHeartbeatFn(heartbeat);
+  }
+}
+
+/** The routed work itself: clone the repo, run the scan, finalise the wrapper. */
+async function runRoutedScan(
+  input: RouteIdleTaskInput,
+  deps: RouteIdleTaskDeps,
+  template: ReturnType<typeof defaultFindIdleTaskTemplate>,
+  fns: {
+    handleIdleTask: typeof defaultHandleIdleTaskIssue;
+    ghCommand: typeof defaultRunGhCommand;
+    ensureClone: typeof defaultEnsureRepoClone;
+  },
+): Promise<RouteIdleTaskOutcome> {
+  const { handleIdleTask, ghCommand, ensureClone } = fns;
+  if (template !== undefined) {
     const clone = await ensureClone(input.repo, input.workDir);
     if (!clone.ok) {
       const summary = `idle-task ${template.name} could not run: no local ` +

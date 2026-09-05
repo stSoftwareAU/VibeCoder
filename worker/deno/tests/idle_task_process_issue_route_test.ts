@@ -102,6 +102,8 @@ const WRAPPER_INPUT = {
     "Audit `owner/widget` for vulnerabilities...",
   workDir: "/tmp/widget",
   githubUser: "vibe-coder",
+  fleetAuthors: ["vibe-coder"],
+  pushCapableAuthors: ["vibe-coder"],
 };
 
 // ---------------------------------------------------------------------------
@@ -204,6 +206,8 @@ Deno.test(
         issueBody: "The parser drops the timezone offset.",
         workDir: "/tmp/widget",
         githubUser: "vibe-coder",
+        fleetAuthors: ["vibe-coder"],
+        pushCapableAuthors: ["vibe-coder"],
       },
       {
         logger,
@@ -373,6 +377,8 @@ Deno.test(
         issueBody: "The parser drops the timezone offset.",
         workDir: "/tmp/widget",
         githubUser: "vibe-coder",
+        fleetAuthors: ["vibe-coder"],
+        pushCapableAuthors: ["vibe-coder"],
       },
       {
         logger,
