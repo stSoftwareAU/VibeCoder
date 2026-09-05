@@ -150,9 +150,15 @@ export const prFeedbackProcessorCommand: Command = {
         );
 
         // Build quality and custom instructions from config
+        // This flow writes no run-budget notice (no progress extension), so
+        // the whole run's budget is the only gate signal the agent gets
+        // (Issue #1138): a gate that cannot fit inside it is refused here.
         const qualityInstructions = buildQualityInstructions(
           config.repoConfig,
           repo,
+          {
+            runBudgetSeconds: config.prFeedbackTimeout || config.claudeTimeout,
+          },
         );
         const customInstructions = getCustomInstructions(
           config.repoConfig,

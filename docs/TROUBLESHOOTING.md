@@ -877,9 +877,26 @@ run hard cap, so the agent can stop waiting and preserve its work in progress
 ```
 
 The notice itself is `.vibe-run-budget.md` in the agent's checkout, refreshed
-on every check inside the last ten minutes of runway and cleared at the start
-of the next run. It is hidden, so the enforced `.gitignore` keeps it out of
-every commit.
+on every later check and cleared at the start of the next run. It is hidden, so
+the enforced `.gitignore` keeps it out of every commit.
+
+It is written over a **wider** band than the ten-minute wind-down window
+(Issue #1138): the full quality gate needs closer to twenty minutes, so the
+notice starts refusing the gate while there is still more than ten minutes of
+runway. Above the window it says only that — the run continues, and the log
+line is `run-budget notice written` rather than `wind-down notice written`:
+
+```bash
+grep 'run-budget notice written' ~/logs/worker-*.log
+```
+
+The agent is then told to run the targeted checks and record the skip with a
+`<!-- vibe-quality-gate-skipped … -->` note in the PR summary. If you see a PR
+carrying that note, the gate was not run **on this run** — CI's copy on the PR,
+and the worker's own gate, are what covered it. Because the file now means two
+things, "was this run warned?" is answered by its contents: the handover note
+reports `Wind-down notice: delivered` only for a notice that actually ordered
+one.
 
 If the `Run hard cap:` line instead says the cap is not set, the run was
 uncapped and no ceiling applied: `VIBE_RUN_MAX_SECONDS` is `0`, or the worker

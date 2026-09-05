@@ -222,6 +222,9 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // the count following it, which is the same unnoticed red the paragraph
   // above describes: `milestone/*` requires no checks.
   assertEquals(commands.length, 149);
+  // Asserted by name as well as by count: a number alone is satisfied by any
+  // 149 commands, including a set this one has quietly left.
+  assertEquals(commands.includes("log-dir"), true);
   assertEquals(commands.includes("check-resurrected-files"), true);
   assertEquals(commands.includes("check-release-tag-ruleset"), true);
   assertEquals(commands.includes("log-dir"), true);
