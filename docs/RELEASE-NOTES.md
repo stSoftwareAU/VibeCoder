@@ -12,6 +12,96 @@ major, are minted from [the release floor](RELEASE-TAGGING.md#the-release-floor)
 rather than from the automatic increment, and are recorded here newest first,
 with the exact migration and the exact rollback.
 
+## 2.0.0 — the config file wins over the environment
+
+**Behaviour change, not a fix. Read the migration before upgrading a host that
+sets both a `.config.json` key and its `VIBE_*` variable.**
+
+> **Unreleased.** The change is on
+> `milestone/configuration-one-source-of-truth` and
+> [`.release-floor`](../.release-floor) is still `1.4.0`, so no 2.0.0 tag
+> exists yet. The floor moves to `2.0.0` with the merge that takes this
+> milestone to `main` — that merge is what mints the release these notes
+> describe.
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| `imgbb_api_key`, `agent_provider` and `agent_providers` now take the `.config.json` value when the matching `VIBE_*` variable is also set | #1032 |
+| `update_gh_user_status` moves with them — the same module resolves it, and one module cannot hold two precedence orders | #1032 |
+| A run that still takes any of them from the environment logs one line per setting, naming the config key that replaces the variable | #1032 |
+
+Issue #289 settled the rule years ago — **the `.config.json` key wins over the
+environment variable, and the default applies only when neither states a usable
+value** — but each call site implemented it again, and three came to disagree.
+`host_disk.ts` followed the rule; `optional_feature_env.ts` reproduced the
+bash-era `${VAR:-config}` expansion, and `agent_provider.ts` documented
+environment-then-config on itself. So an operator who stated `imgbb_api_key` in
+the file *and* exported `VIBE_IMGBB_API_KEY` got the variable, while the same
+operator's `host_disk_low_floor_gb` came from the file — and no document could
+say which without listing the call sites, which is #874's complaint.
+
+All three now resolve through `worker/deno/lib/config_precedence.ts`, which
+states the order once. The conformance test in
+`worker/deno/tests/config_precedence_test.ts` has no declared exceptions left,
+so a fourth order cannot appear.
+
+```mermaid
+flowchart LR
+    C[".config.json key"] -->|wins| V["value in force"]
+    E["VIBE_* variable"] -->|"only when the file states nothing<br/>(+ one deprecation line)"| V
+    D["built-in default"] -->|"only when neither does"| V
+    style C fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+### Breaking: which value an operator who set both already gets
+
+| Setting | Variable | Was | Now |
+| ------- | -------- | --- | --- |
+| `imgbb_api_key` | `VIBE_IMGBB_API_KEY` | the variable | **the file** |
+| `agent_provider` | `VIBE_AGENT_PROVIDER` | the variable | **the file** |
+| `agent_providers` | `VIBE_AGENT_PROVIDERS` | the variable | **the file** |
+| `update_gh_user_status` | `UPDATE_GH_USER_STATUS` | the variable | **the file** |
+
+A host that sets only one of the two sources is unchanged, which is most of
+them. The one that changes is the deployment overriding a *stale* file value
+from the environment: it silently switches to whatever the file says — a
+different coding agent, in the `agent_provider` case — so check the file before
+upgrading.
+
+The warning naming the config key was introduced with the flip rather than in a
+1.x release ahead of it, so on a host that had set both, the first run after the
+upgrade is where the line appears. Issue #874's own deprecation pass — the one
+that stops these variables being read at all — is what carries the notice
+forward from here.
+
+### Migration
+
+1. **Print what each host actually resolves.** If the file and the variable
+   disagree, the file is the value you will get:
+
+   ```bash
+   grep -E '"(imgbb_api_key|agent_provider|agent_providers|update_gh_user_status)"' ~/.config.json
+   env | grep -E '^(VIBE_IMGBB_API_KEY|VIBE_AGENT_PROVIDERS?|UPDATE_GH_USER_STATUS)='
+   ```
+
+2. **Move the value you want into `.config.json`** and drop the export. This is
+   the end state for every one of them: the variables stop being read in a
+   later major (Issue #874), and the file is where the rest of the
+   configuration already lives.
+
+3. **Or clear the stale key from the file** if the environment value was the
+   one you meant. Deleting the key restores the variable's effect, because the
+   variable applies whenever the file states nothing.
+
+### Rollback
+
+Pin the host back to `1.x` (`./run.sh upgrade` pins forward; a frozen host
+edits `pinned_ref`). Nothing is rewritten on disk by this change — the
+precedence is decided at load — so a host that rolls back resolves exactly as
+it did before.
+
 ## 1.4.0 — the log directory follows the platform
 
 **Path contract change. Read the migration before upgrading a host.**

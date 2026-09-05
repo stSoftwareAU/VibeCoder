@@ -568,7 +568,7 @@ These only tune the *generated* LaunchAgent (tokens, paths, logs); whether it is
 | `VIBE_MCP_CONFIG_DIR` | Directory for `.mcp.json` (default: script directory) |
 | `VIBE_SCREENSHOT_DIR` | Directory name for screenshots (default: `docs/evidence`) |
 | `VIBE_BROWSER_PROFILE_DIR` | Disposable directory the browser writes its profile to (default: `/tmp/vibe-playwright-profile`) |
-| `VIBE_IMGBB_API_KEY` | ImgBB API key for automatic screenshot uploads |
+| `VIBE_IMGBB_API_KEY` | ImgBB API key for automatic screenshot uploads, when `.config.json` states no `imgbb_api_key` (Issue #1032) |
 
 **Testing/CI environment variables:**
 
@@ -940,7 +940,11 @@ navigate-and-screenshot smoke test with `--network none`.
 **Option 1: Automatic Upload via ImgBB (Recommended)**
 
 1. Get a free API key from https://api.imgbb.com/
-2. Set the environment variable: `export VIBE_IMGBB_API_KEY="your-api-key-here"`
+2. State it in `.config.json` as `"imgbb_api_key": "your-api-key-here"`. The
+   `VIBE_IMGBB_API_KEY` variable still works when the file states no key, but
+   since 2.0.0 the file wins when both are set (Issue #1032) and a run that
+   uses the variable says so once — see
+   [Release notes](RELEASE-NOTES.md#200--the-config-file-wins-over-the-environment).
 3. Screenshots will be automatically uploaded and URLs embedded in the PR
 
 **Option 2: Manual Upload**
@@ -949,7 +953,7 @@ Without an ImgBB API key, screenshots are saved to `docs/evidence/` and the PR i
 
 | Variable | Description |
 |----------|-------------|
-| `VIBE_IMGBB_API_KEY` | ImgBB API key for automatic screenshot uploads |
+| `VIBE_IMGBB_API_KEY` | ImgBB API key for automatic screenshot uploads, when `.config.json` states no `imgbb_api_key` (Issue #1032) |
 | `VIBE_SCREENSHOT_DIR` | Custom screenshot directory (default: `docs/evidence`) |
 
 ### 🧪 Testing Screenshot Support

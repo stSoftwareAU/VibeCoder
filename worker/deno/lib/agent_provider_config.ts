@@ -105,7 +105,7 @@ export interface ConfiguredAgentProviderSet {
  * @param configFile - Host path of the worker configuration file.
  * @param imageDefault - The set a default image build installs, i.e.
  *   `container/tools.json` `installedProviders`.
- * @param env - Environment lookup the `VIBE_AGENT_PROVIDER(S)` overrides and
+ * @param env - Environment lookup the `VIBE_AGENT_PROVIDER(S)` fallbacks and
  *   the image stamp are read through (Issue #962). Defaults to the process
  *   environment, so every existing caller resolves exactly as before.
  * @returns The enabled descriptors and the build-argument value they imply.

@@ -5,14 +5,28 @@
  * The bash-era conductor turned these keys into environment variables by
  * `eval`-ing the `load-config` export script; the Deno driver never did, so
  * `imgbb_api_key` and `update_gh_user_status` in the config file reached
- * nothing. This module is that missing step: the same variables, the same
- * "environment wins" precedence (`${VAR:-config}`), resolved purely so it can
- * be tested, applied once at worker start.
+ * nothing. This module is that missing step: the same variables, resolved
+ * purely so it can be tested, applied once at worker start.
+ *
+ * What it no longer reproduces is the script's `${VAR:-config}` expansion
+ * (Issue #1032). That made the *environment* win, which is the reverse of the
+ * rule Issue #289 settled and every other knob follows, so an operator who
+ * stated `imgbb_api_key` in the file and also exported `VIBE_IMGBB_API_KEY`
+ * got the variable while the same operator's disk floor came from the file.
+ * Precedence is now stated once, in `config_precedence.ts`: **the file wins**,
+ * the variable applies when the file states nothing, and the documented
+ * default applies when neither does. A value still taken from a deprecated
+ * `VIBE_*` variable is warned about once per run, naming the key that
+ * replaces it.
  *
  * Australian English spelling throughout (behaviour, organisation).
  */
 
 import type { ConfigFile } from "../types.ts";
+import {
+  resolveSetting,
+  warnDeprecatedEnvSetting,
+} from "./config_precedence.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /** How the resolver sees the process. */
@@ -21,9 +35,33 @@ export interface OptionalFeatureEnvOptions {
   env: (name: string) => string | undefined;
 }
 
+/** One optional-feature setting, and the two names it can be stated under. */
+interface OptionalFeatureSetting {
+  /** The variable this setting's consumers read. */
+  readonly envVar: string;
+  /** The `.config.json` key that states it. */
+  readonly configKey: string;
+  /** What the file states, stringified; undefined when it states nothing. */
+  readonly configured: string | undefined;
+  /** Applied when neither source states a value; `""` for "no default". */
+  readonly fallback: string;
+  /**
+   * Whether {@link envVar} is a deprecated operator override that 2.0.0 will
+   * stop reading (Issue #874). `UPDATE_GH_USER_STATUS` is not: it is the
+   * variable this very module *sets* for the feature checks downstream, so
+   * telling an operator it will stop being read would be false.
+   */
+  readonly deprecatedEnvVar: boolean;
+}
+
 /**
  * The environment entries the config file asks for and the process does not
  * already carry. Pure — no I/O.
+ *
+ * A setting the file states is emitted even when the process already carries
+ * the variable, because the file wins and the applied value has to be the one
+ * in force (Issue #1032). A setting the *environment* supplied is not emitted:
+ * the process already holds it, and there is nothing to apply.
  *
  * @param raw - The parsed `.config.json`
  * @param options - Environment reader and container flag
@@ -33,23 +71,49 @@ export function resolveOptionalFeatureEnv(
   raw: ConfigFile,
   options: OptionalFeatureEnvOptions,
 ): Record<string, string> {
-  const out: Record<string, string> = {};
-  const want = (name: string, value: string | undefined) => {
-    if (value === undefined || value === "") return;
-    const ambient = options.env(name);
-    if (ambient !== undefined && ambient !== "") return; // environment wins
-    out[name] = value;
-  };
+  const settings: OptionalFeatureSetting[] = [
+    {
+      envVar: "VIBE_IMGBB_API_KEY",
+      configKey: "imgbb_api_key",
+      configured: raw.imgbb_api_key,
+      fallback: "",
+      deprecatedEnvVar: true,
+    },
+    {
+      envVar: "UPDATE_GH_USER_STATUS",
+      configKey: "update_gh_user_status",
+      configured: raw.update_gh_user_status === undefined
+        ? undefined
+        : String(raw.update_gh_user_status),
+      // Documented default true (docs/CONFIGURATION.md) — exactly what
+      // load-config exported.
+      fallback: "true",
+      deprecatedEnvVar: false,
+    },
+  ];
 
-  want("VIBE_IMGBB_API_KEY", raw.imgbb_api_key);
-  // Documented default true (docs/CONFIGURATION.md) — exactly what
-  // load-config exported.
-  want(
-    "UPDATE_GH_USER_STATUS",
-    raw.update_gh_user_status === undefined
-      ? "true"
-      : String(raw.update_gh_user_status),
-  );
+  const out: Record<string, string> = {};
+  for (const setting of settings) {
+    const resolved = resolveSetting<string>({
+      configKey: setting.configKey,
+      envVar: setting.envVar,
+      env: (name) => options.env(name),
+      configured: setting.configured ?? null,
+      fallback: setting.fallback,
+      parse: (value) => value,
+      // A blank value in either source states nothing, as the `${VAR:-config}`
+      // expansion this replaces also treated it.
+      accept: (value) => value.trim() !== "",
+    });
+
+    if (resolved.source === "env") {
+      if (setting.deprecatedEnvVar) {
+        warnDeprecatedEnvSetting(resolved, setting.configKey);
+      }
+      continue; // the process already carries it
+    }
+    if (resolved.value !== "") out[setting.envVar] = resolved.value;
+  }
   return out;
 }
 
@@ -61,7 +125,7 @@ export function resolveOptionalFeatureEnv(
  *
  * @param configPath - Path of `.config.json`
  * @param setEnv - How to establish a variable (injectable for tests)
- * @param env - Where the ambient values that win over the config are read
+ * @param env - Where the ambient values the config file now wins over are read
  *   from (Issue #969). Defaults to the process environment, so the worker's
  *   startup call is unchanged; a test states the ambient environment instead
  *   of writing one into the process every parallel worker shares.

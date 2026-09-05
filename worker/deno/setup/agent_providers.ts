@@ -8,7 +8,8 @@
  * reached the configuration-writing stage at all.
  *
  * The selection already exists — `agent_provider` and `agent_providers` in
- * `.config.json`, overridden by `VIBE_AGENT_PROVIDER`/`VIBE_AGENT_PROVIDERS` —
+ * `.config.json`, with `VIBE_AGENT_PROVIDER`/`VIBE_AGENT_PROVIDERS` applying
+ * when the file states none (Issue #1032) —
  * so it is resolved here, once, through the same
  * {@link resolveEnabledAgentProviderIds} the worker uses. Both consumers read
  * it from this module: the prerequisite probe (which tools are host-fatal) and
@@ -36,9 +37,10 @@ import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 /**
  * Environment lookup for the setup-time resolution.
  *
- * `VIBE_AGENT_PROVIDER` / `VIBE_AGENT_PROVIDERS` still override the file — an
- * operator's explicit selection is the point. The image stamp is deliberately
- * hidden: it says which agents the *currently built* image carries, and setup
+ * `VIBE_AGENT_PROVIDER` / `VIBE_AGENT_PROVIDERS` still select the provider on
+ * a host whose file states none — an operator's explicit selection is the
+ * point — though since Issue #1032 they no longer override the file. The
+ * image stamp is deliberately hidden: it says which agents the *currently built* image carries, and setup
  * runs on the host precisely to configure the providers the next image build
  * will install. Enforcing it here would refuse to configure Codex on a host
  * whose existing image predates that choice; the worker still enforces it at
@@ -133,7 +135,7 @@ export async function readConfiguredAgentProviders(
  * Resolve every coding-agent provider this host is configured to run.
  *
  * @param configFile - Host path of the worker configuration file.
- * @param env - Host environment the `VIBE_AGENT_PROVIDER(S)` overrides are
+ * @param env - Host environment the `VIBE_AGENT_PROVIDER(S)` fallbacks are
  *   read from (Issue #962). Defaults to the process environment, so setup
  *   itself resolves exactly as it did before the parameter existed.
  * @returns The enabled provider ids, active provider first when the set was
