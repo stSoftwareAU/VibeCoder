@@ -41,6 +41,175 @@ resourcing or isolation decision should follow it:
 or I/O stalls the whole fleet silently (the overnight stall), which
 costs far more than any runaway cycle a timeout will reap anyway.
 
+### Every slot busy, always — the fleet throughput invariant
+
+**The invariant: every issue slot in the fleet is working an issue, at every
+moment. An idle slot is a fault to be diagnosed, not a resting state to be
+tolerated.** Idle tasks are the mechanism that *guarantees* the invariant —
+the fleet manufactures work when the queue cannot supply it — not an
+occasional fallback for a quiet day.
+
+That framing is the piece that has been missing, and it is why several
+throughput fixes read as complete while the fleet stayed idle: each was judged
+against "did this work stream behave correctly?" rather than against "is every
+slot busy?". The rules below are written as checks on the invariant, and each
+should read as a pass/fail test rather than as guidance to interpret.
+
+```mermaid
+flowchart TD
+    S["🎰 Slot free"] --> Q{"Startable work anywhere<br/>in the fleet?<br/>(F5 — blocked is not work)"}
+    Q -- yes --> P["Claim the fleet's highest<br/>tier; nice orders within it (F4)"]
+    Q -- no --> E{"A monitored repo with<br/>no open idle task? (F8)"}
+    E -- yes --> R["Raise one idle task there,<br/>chosen pseudo-randomly (F9)"]
+    R --> P
+    E -- no --> X["🚨 Fault: capacity exceeds<br/>eligible repos — investigate"]
+    P --> W["Work it; raise the PR with<br/>auto-merge set (F10, F11)"]
+    W --> S
+    style W fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style X fill:#a4161a,stroke:#6a040f,color:#fff
+```
+
+#### Capacity
+
+- **F1 — eight in flight, always.** Four Vibe Coders × two issue slots each =
+  **eight issues in flight at all times**. Fewer than eight is a fault. The
+  correct response is to find out why a slot could not claim; it is never to
+  accept the lower number as this hour's normal.
+
+#### One issue per work stream — a merge-target guard, nothing else
+
+A **work stream** is a merge target: a repository's default branch is one
+stream, and **each open milestone is another**. A repository with two open
+milestones therefore offers three streams and can have three issues in flight
+at once.
+
+- **F2 — one issue in flight per work stream.** At most **one issue per work
+  stream** at a time — one pull request per merge target. A handful of extras
+  arising from a race is acceptable and needs no fix. "One issue per
+  repository" is the **special case** of a repository with no open milestones,
+  not the general rule.
+- **Why F2 exists, and the only reason it exists:** two pull requests aimed at
+  the *same* branch create merge hell and bury that branch's reviewers under a
+  flood of simultaneous pull requests. Two pull requests aimed at *different*
+  branches do neither, so they may run side by side. F2 is **not** a fairness
+  device, **not** a priority mechanism, **not** a capacity or rate limit, and
+  **not** a load-shedding valve. It must never be offered as the explanation
+  for an under-occupied fleet: the answer to "that stream is taken" is always
+  "then take the next stream".
+- **F2a — milestone streams flow without waiting on review.** A milestone
+  branch carries **no approval gate** until the milestone completes and the
+  fleet merges it to the default branch. That is precisely why milestone work
+  parallelises: a milestone stream never stalls on a human reviewer mid-flight,
+  so adding milestones adds throughput rather than adding queue.
+- **F3 — eight slots need eight work streams.** Because of F2, eight
+  concurrent issues require **eight work streams** with startable work — not
+  eight repositories. One repository with several open milestones can supply
+  several of the eight on its own. Two issues in flight in one repository, one
+  on a milestone stream and one on the default stream, is **correct**, not a
+  duplicate-work bug.
+- **F3a — opening a milestone is the operator's concurrency lever.** Opening a
+  milestone in a busy repository adds a parallel stream and therefore raises
+  the fleet's concurrency, with no code change required. Where the backlog is
+  deep and the streams are few, more milestones is the direct remedy.
+
+**Measured, September 2026 — where the streams actually are.** Eighteen
+repositories are monitored, and they supply the following streams:
+
+| Repository | Streams | Startable work |
+| --- | --- | --- |
+| `VibeCoder` | 1 default + 1 milestone = **2** | 25 issues waiting |
+| `NEAT-AI-Ockham` | 1 default = **1** | 6 issues waiting |
+| `GRQ` | 1 default + 1 milestone = **2** | 1 issue |
+| `GRQ-GTC` | 1 default = **1** | — |
+| `NEAT-AI` | 1 default + 2 milestones = **3** | — |
+| 13 others | 1 default each = **13** | — |
+
+Roughly **four** streams currently hold startable work, against **eight**
+slots. The gap is not a scheduling defect: the queue genuinely cannot supply
+eight streams' worth of labelled work. Under F7 that gap is exactly what idle
+tasks exist to close, which makes the idle-task cap — not the selection
+ladder — the binding constraint on fleet occupancy today.
+
+#### Priority
+
+- **F4 — one order, fleet-wide.** `top-priority` > `work-on` > `low-priority`
+  > `idle-task`, applied **across the whole fleet** rather than within a
+  repository. The next issue claimed is always the fleet's highest-tier
+  startable issue.
+- **F4a — `nice` orders repositories within a tier, never above one.** The
+  per-repo `nice` setting breaks ties **inside** a label tier. It never lifts
+  a repository above a tier nor holds one below it: a high-`nice` repository's
+  `top-priority` issue still outranks every `work-on` issue anywhere in the
+  fleet. Tier is the outer partition and `nice` the inner one — never the
+  reverse.
+
+#### What "startable" means
+
+- **F5 — work that cannot start now is not work.** An issue blocked by an open
+  pull request, already assigned to a Vibe Coder, or inside a cooldown window
+  is not startable, and **must not suppress anything**: it must not stop a
+  slot taking other work, and it must not stop an idle task being raised.
+- **Why F5 matters:** a scan that counts blocked issues as work concludes the
+  queue is full, declines to raise idle tasks, and parks slots in front of a
+  backlog none of them may touch. "No work" means *no startable work* and
+  nothing else. Every count that feeds an idle decision must be a count of
+  startable issues.
+- **F6 — a human never blocks the fleet.** A human assigning themselves an
+  issue, opening a pull request, or taking a milestone blocks nothing. That
+  issue is simply not startable and the fleet moves to the next one. This is
+  the throughput reading of
+  [Locking and scheduling exist only between Vibe Coders](#locking-and-scheduling-exist-only-between-vibe-coders).
+
+#### Idle tasks — the mechanism that guarantees the invariant
+
+- **F7 — a slot with nothing to do raises work and works it.** When a slot
+  finds no startable work anywhere in the fleet, it raises an `idle-task`
+  issue in a monitored repository that has none, and works it. Raising is that
+  slot's own job; there is no separate sweeper it may wait on.
+- **F8 — at most one open idle task per repository.** The idle-task cap has
+  the same shape as F2 — one per merge target, applied to the default stream
+  an idle task is filed against — and emphatically **not** a fleet-wide cap of
+  one. Eighteen monitored repositories may therefore carry up to eighteen open
+  idle tasks. One open idle task anywhere must never stop another repository
+  being given one.
+- **F9 — raise enough to keep the coders busy, and no more.** Raise only as
+  many idle tasks as are needed to keep the Vibe Coders working, choosing
+  target repositories pseudo-randomly among those eligible under F8.
+- **Why F9 has a ceiling:** the failure it avoids is the mirror image of F7's.
+  Flooding the queue with more issues than the fleet can work buries the real
+  backlog and swamps reviewers. The two rules bound correct behaviour from
+  either side — never so few that a slot idles, never so many that the queue
+  becomes unworkable.
+
+#### Pull-request turnaround
+
+- **F10 — finish the pull request as fast as possible.** Under F2 the next
+  issue in a work stream cannot start until the current pull request lands, so
+  every minute a PR stays open is a minute that stream contributes nothing to
+  the eight. Turnaround is a throughput property, not a courtesy.
+- **F11 — auto-merge is set when the pull request is raised.** Every fleet
+  pull request is marked auto-merge **at raise time**, so an approved change
+  merges the moment it clears the quality gates without waiting for a second
+  visit from anyone. A pull request sitting clean and approved with auto-merge
+  unset is a fault of the same class as an idle slot, and the fleet has
+  already lost hours to exactly that.
+
+#### Extension
+
+- **F12 — the operator extends their own container; the public repository
+  names nothing.** Any operator may add any tool they wish to their own
+  container. Correspondingly, **no tool, language or vendor name appears
+  anywhere in the public repository**, documentation included: capability is
+  described by what it does, never by what supplies it. (The operator may
+  relax the documentation half of this rule once the extension feature has
+  landed; the code half stands.)
+
+See [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md) for the
+idle-task operator manual,
+[`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) for
+the selection ladder, and [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for
+`max_concurrent_issues`, `nice` and the discovery labels.
+
 ### Prompt template references
 
 Each prompt type has one editable template, `prompts/<type>/prompt.md`, which
@@ -449,6 +618,14 @@ values are guarded down to `0` by `getRepoNice()` in
   candidates by resolved `nice`, drain the lowest-`nice` non-empty tier first,
   and only fall through to a higher-`nice` tier when no lower tier yields a
   selectable candidate.
+
+  > **Known divergence from the intent (Issue #1063).** This describes what
+  > the implementation does today, and it contradicts **F4a** in
+  > [Every slot busy, always](#every-slot-busy-always--the-fleet-throughput-invariant):
+  > the label tier is meant to be the outer partition and `nice` the inner
+  > one, so a `nice: -20` repo's `work-on` issue currently outranks a
+  > `nice: -15` repo's `top-priority` issue. F4a is the intent; this bullet
+  > is the defect. Do not "fix" the intent to match the code.
 - **Fair within a tier.** Among repos sharing one `nice` value,
   `selectFairWithinTier()` rotates fairly across equal repos (oldest-first
   within a repo, fair rotation across repos when a `randomFn` is injected), so a
@@ -1046,7 +1223,17 @@ repos via the idle-task framework:
    clean does the command shuffle the repo list, pick the first repo that is
    still clean (the per-repo dedup loop stays as defence-in-depth against TOCTOU
    races between the cross-repo check and the per-repo file), and file an
-   `idle-task` issue tagged with the `security-scan` template. The next
+   `idle-task` issue tagged with the `security-scan` template.
+
+   > **Known divergence from the intent (Issue #1083).** The cross-repo
+   > wrapper check is a **fleet-wide** cap of one open idle task, which
+   > contradicts **F8** and **F9** in
+   > [Every slot busy, always](#every-slot-busy-always--the-fleet-throughput-invariant):
+   > the cap is meant to be one open idle task **per repository**, and enough
+   > of them are meant to be raised to keep every slot busy. One wrapper
+   > cannot fill eight slots. F8/F9 are the intent; this gate is the defect.
+
+   The next
    iteration of the main loop claims that issue through the standard priority
    dispatch and routes it to `securityScanTemplate.runTask()`, which runs the
    scanner and files findings. Any failure inside the run is caught, logged as
