@@ -183,10 +183,11 @@ To add a provider:
    };
    ```
 
-2. Register it with `registerCiLogProvider(myCiLogProvider)` — the built-ins
-   register themselves at the bottom of `ci_log_provider.ts`. Ids are unique;
-   re-registering one throws so a clash fails loudly. Registering in core is
-   for CI systems this project runs on; see the note above.
+2. Register it with `registerCiLogProvider(myCiLogProvider)` — the one
+   built-in, GitHub Actions, registers itself at the bottom of
+   `ci_log_provider.ts`. Ids are unique; re-registering one throws so a clash
+   fails loudly. Registering in core is for CI systems this project runs on;
+   see the note above.
 3. Configure it per repo via `repo_config.<owner/repo>.ciProviders` (see
    [Per-repository configuration](CONFIGURATION.md#-per-repository-configuration)).
 

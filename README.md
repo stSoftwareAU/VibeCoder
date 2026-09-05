@@ -148,8 +148,8 @@ host builds and runs a Codex image rather than reusing the default one.
   async turnaround is incompatible with the worker's bounded interactive run;
   see [Model, Caching & Batching](docs/MODEL-AND-CACHING.md#batch-api).)
 - **Post-run callbacks** — Optional `success` / `failure` / `always`
-  executables run after a terminal issue run, following Jenkins and Azure
-  Pipelines outcome semantics. The public extension point for fleet-specific
+  executables run after a terminal issue run, following the outcome semantics
+  common to declarative CI pipelines and Azure Pipelines. The public extension point for fleet-specific
   reporting; a hook failure never rewrites the run's own result. The contract —
   ordering, the versioned context, the security boundary, portable examples and
   a conformance fixture an extension can run against its own hooks — is

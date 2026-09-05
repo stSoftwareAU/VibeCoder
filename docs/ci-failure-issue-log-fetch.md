@@ -1,13 +1,11 @@
 # 🔎 CI-failure issues — automatic root-cause log fetch
 
-A watcher workflow such as private-repo-12's
-`.github/workflows/develop-build-watch.yml` polls the Jenkins Develop
-pipeline and, on `FAILURE`/`UNSTABLE`/`ABORTED`, opens a GitHub issue
-labelled `develop-build-failure` containing a small pre-summary of the
-console log.
+A watcher workflow polls a build pipeline and, on failure, opens a GitHub
+issue labelled (say) `develop-build-failure` containing a small pre-summary
+of the console log.
 
 The worker used to pick that issue up through the **normal issue flow**,
-which had no CI-failure awareness at all: `prFailureActions` only runs
+which had no CI-failure awareness at all: the CI log providers only run
 against a *PR* with *failing checks*, and a pipeline-failure issue has
 neither. So the fix was attempted from whatever window the summariser
 happened to capture — and when the root cause sat outside that window,
@@ -28,7 +26,7 @@ sequenceDiagram
     participant W as execute_claude_phase
     participant C as repo_config
     participant P as ci_failure_issue
-    participant J as Jenkins
+    participant R as CiLogProvider registry
     participant B as prompt_builder (issue)
     participant Cl as Claude
 
@@ -36,13 +34,12 @@ sequenceDiagram
     W->>C: getCiFailureLabels(repo)
     C-->>W: ["develop-build-failure"]
     W->>W: generateBoundaryId() — this run's nonce
-    W->>P: buildCiFailureContext({ issueBody, jobPath, boundaryId })
+    W->>P: buildCiFailureContext({ repo, issueBody, providers, boundaryId })
     P->>P: parse Build URL / Build number
-    P->>P: reject any origin ≠ JENKINS_URL
-    P->>J: GET /job/<jobPath>/<build>/api/json
-    J-->>P: build status
-    P->>J: GET /job/<jobPath>/<build>/consoleText
-    J-->>P: full console log (≤ 256 KiB)
+    P->>R: resolveCiLogProvider(ctx)
+    R-->>P: registered provider (github-actions by default)
+    P->>R: provider.fetchLog(ctx)
+    R-->>P: build status + console log (≤ 256 KiB)
     P->>P: scrub + fence the log in the nonce boundary
     P-->>W: diagnosis context (signals + log tail)
     W->>B: buildIssuePrompt({ ciFailureContext, ciFailureBoundaryId })
@@ -57,41 +54,40 @@ sequenceDiagram
 
 ```markdown
 - **Build number:** `4347`
-- **Build URL:** https://jenkins.example.com/job/Migration/job/Develop/4347/
+- **Build URL:** https://github.com/owner/repo/actions/runs/4347
 ```
 
 `parseCiFailureBuildReference()` in `worker/deno/lib/ci_failure_issue.ts`
 reads it with these rules:
 
-- The **Build URL is authoritative** — it carries the job path as well as
-  the build number. The **Build number is the fallback**, used only when no
-  URL is present.
-- A build-number-only body needs a `ci_failure_job_path` in the repo's
-  configuration; without one the fetch cannot be addressed and the run is
-  told so explicitly.
-- The trailing numeric path segment is the build number. A build alias such
-  as `lastBuild` is rejected — the issue names a specific build.
+- The **Build URL is authoritative** — the provider reads its own build id
+  out of it. The **Build number is the fallback**, used only when no URL is
+  present.
+- The last purely numeric path segment is reported as the build number, for
+  the prompt header only. Which id a provider actually fetches by is the
+  provider's decision, not core's.
 - Only the first 64 KiB of the body is scanned; the header is written at the
   top.
 
 **The watcher workflow's body format must not change without updating this
 parser.**
 
-## Origin allowlist
+## The build URL is untrusted, and is never dereferenced
 
-The issue body is untrusted input, so a `Build URL` is honoured only when it
-passes every check below — otherwise it is **rejected outright** rather than
-fetched:
+The issue body is attacker-influenceable, so the `Build URL` it carries is
+treated as data all the way through:
 
-- The URL parses and uses `http:` or `https:`.
-- Its origin (scheme, host **and** port) equals the configured `JENKINS_URL`
-  origin.
-- When `JENKINS_URL` carries a path prefix (e.g.
-  `https://ci.example.com/jenkins`), the URL's path sits under that prefix.
-
-A foreign-origin URL is never fetched, and the build number is **not**
-silently used instead — a mismatched host signals tampering, so the whole
-reference is refused.
+- Core checks only what it can check without knowing the CI vendor: the URL
+  must parse and name an `http:` or `https:` scheme. Anything else is
+  rejected outright.
+- Core then hands the URL to the resolved provider as `targetUrl` and
+  **never fetches it**. The built-in GitHub Actions provider reads run and
+  job ids out of the path and fetches through the worker's authenticated
+  `gh` client, scoped to the issue's own repository — so a foreign origin in
+  the body cannot cause a request to that origin.
+- A provider supplied by a private extension inherits the same contract,
+  stated on `CiFailureContext.targetUrl`: validate it before dereferencing
+  it.
 
 ## The console log is untrusted data
 
@@ -125,8 +121,9 @@ fetched bytes sit inside.
 ## Failing loud
 
 The log fetch never degrades quietly. Whenever the reference cannot be
-parsed, the origin check fails, no job path is available, or Jenkins returns
-an error, the prompt receives an explicit **"log fetch FAILED"** block that:
+parsed, no provider can resolve the build, or the provider returns an error
+or an empty excerpt, the prompt receives an explicit **"log fetch FAILED"**
+block that:
 
 - quotes the reason,
 - forbids attempting a fix on no evidence, and
@@ -145,12 +142,10 @@ Both keys live under `repo_config.<owner>/<repo>` in the worker's
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
 | `ci_failure_labels` | string[] | yes (to enable) | Issue labels that mark a CI-failure report. Omit or leave empty to disable. Matched per label, case-insensitively. |
-| `ci_failure_job_path` | string | no | Fallback Jenkins job path (e.g. `Migration/job/Develop`) used when the body carries a build number but no `Build URL`. |
+| `ci_providers` | array | no | The CI log providers consulted for the fetch, in order. GitHub Actions is the built-in default and needs no entry; see [per-repository PR failure actions](per-repo-pr-failure-actions.md). |
 
-Jenkins credentials come from the environment only — `JENKINS_URL`,
-`JENKINS_USER`, `JENKINS_TOKEN` — exactly as for
-[per-repository PR failure actions](per-repo-pr-failure-actions.md). The
-token is never echoed into logs, errors, or the prompt.
+Any credentials a provider needs are the provider's own concern and come
+from the worker environment, never from repository configuration.
 
 ### Worked example
 
@@ -158,8 +153,7 @@ token is never echoed into logs, errors, or the prompt.
 {
   "repo_config": {
     "stSoftwareAU/private-repo-12": {
-      "ci_failure_labels": ["develop-build-failure"],
-      "ci_failure_job_path": "Migration/job/Develop"
+      "ci_failure_labels": ["develop-build-failure"]
     }
   }
 }
@@ -173,4 +167,7 @@ feature.
 
 - [Per-repository PR failure actions](per-repo-pr-failure-actions.md) — the
   PR-side counterpart that enriches the `ci_fix` prompt.
-- `worker/deno/lib/jenkins_log_fetcher.ts` — the shared Jenkins HTTP client.
+- [Private extensions](PRIVATE-EXTENSIONS.md) — where a provider for one
+  deployment's own CI system lives.
+- `worker/deno/lib/ci_log_provider.ts` — the provider registry both paths
+  resolve through.
