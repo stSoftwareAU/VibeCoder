@@ -110,11 +110,12 @@ export interface SelectionOptions {
   randomPoolSize?: number;
 
   /**
-   * Resolve a repo's `nice` value (Issue #2773). Lower `nice` = higher
-   * urgency: selection draws from the lowest-`nice` non-empty tier first,
-   * only falling through to a higher-`nice` tier when no lower tier yields
-   * a selectable candidate. Defaults to `() => 0`, so every repo shares a
-   * single tier and existing callers are unaffected.
+   * Resolve a repo's `nice` value (Issue #2773). Lower `nice` = worked
+   * sooner. Issue #1063: `nice` orders repos *within* a label tier — the
+   * label tier is decided first across the whole fleet, and only its
+   * candidates are then drawn from their lowest-`nice` repos. Defaults to
+   * `() => 0`, so every repo shares a single tier and existing callers are
+   * unaffected.
    */
   repoNice?: (repo: string) => number;
 }
@@ -393,11 +394,9 @@ export function orderCandidatesByNiceTier(
  * Select the candidate from a single label tier, ordering repos by `nice`
  * ascending within it (Issue #1063).
  *
- * `nice` is a tie-breaker inside a priority band: candidates are partitioned
- * by their repo's resolved `nice` value and the lowest-`nice` group wins,
- * with {@link selectFairWithinTier} rotating fairly across equal repos inside
- * that group. Because a non-empty group always yields a candidate, the first
- * group reached is the answer.
+ * `nice` is a tie-breaker inside a priority band: the tier is narrowed to the
+ * candidates in its lowest-`nice` repos, and {@link selectFairWithinTier}
+ * rotates fairly across those equal repos.
  *
  * `labelIndex` is honoured *ahead of* `nice`: it distinguishes distinct
  * configured discovery labels (and encodes the tier itself — 0..N
@@ -417,27 +416,16 @@ function selectAcrossNiceTiers(
 ): IssueCandidate | null {
   if (candidates.length === 0) return null;
 
-  // Group by (labelIndex, nice) so the label signal is honoured first and
-  // `nice` orders repos beneath it.
-  const groups = new Map<string, IssueCandidate[]>();
-  for (const c of candidates) {
-    const key = `${c.labelIndex} ${repoNice(c.repo)}`;
-    const group = groups.get(key);
-    if (group) group.push(c);
-    else groups.set(key, [c]);
-  }
+  // Narrow to the winning label sub-tier, then to the lowest `nice` within
+  // it. Both are plain minimums over the candidates — no composite key and
+  // nothing to decode back.
+  const bestLabelIndex = Math.min(...candidates.map((c) => c.labelIndex));
+  const bestLabel = candidates.filter((c) => c.labelIndex === bestLabelIndex);
 
-  const ordered = [...groups.keys()].sort((a, b) => {
-    const [aLabel, aNice] = a.split(" ").map(Number) as [number, number];
-    const [bLabel, bNice] = b.split(" ").map(Number) as [number, number];
-    return aLabel !== bLabel ? aLabel - bLabel : aNice - bNice;
-  });
+  const bestNice = Math.min(...bestLabel.map((c) => repoNice(c.repo)));
+  const winning = bestLabel.filter((c) => repoNice(c.repo) === bestNice);
 
-  for (const key of ordered) {
-    const selected = selectFairWithinTier(groups.get(key)!, options);
-    if (selected) return selected;
-  }
-  return null;
+  return selectFairWithinTier(winning, options);
 }
 
 /**

@@ -3113,9 +3113,9 @@ never starves its peers.
 > repo's `top-priority` work: no amount of routine backlog in a `nice: -20`
 > repo delays a `top-priority` issue in a `nice: 0` one.
 
-**Worked example.** Give a filler repo a high `nice` so it is only worked when
-nothing else is queued, and jump a priority repo ahead of the default tier with
-a negative `nice`:
+**Worked example.** Give a filler repo a high `nice` so its work is only picked
+up when no lower-`nice` repo has work *of the same label tier*, and jump a
+priority repo ahead of the default tier with a negative `nice`:
 
 ```json
 {
@@ -3130,9 +3130,12 @@ a negative `nice`:
 }
 ```
 
-Here `stSoftwareAU/private-repo-18` (`nice: 99`) is picked up only when every
-lower-`nice` repo is idle, while `stSoftwareAU/priority-repo` (`nice: -1`) jumps
-ahead of every default-tier (`nice: 0`) repo.
+Here `stSoftwareAU/private-repo-18` (`nice: 99`) is picked up only when no
+lower-`nice` repo has a candidate in the same label tier, while
+`stSoftwareAU/priority-repo` (`nice: -1`) jumps ahead of every default-tier
+(`nice: 0`) repo of that tier. Neither changes the label ordering: a
+`top-priority` issue in the `nice: 99` repo is still worked before a `work-on`
+issue in the `nice: -1` one.
 
 You can confirm a repo's resolved tier without reading the config — the
 [`check-repo-availability`](workflows/issue-processing.md#-issue-selection-priority)

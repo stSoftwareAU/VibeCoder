@@ -158,14 +158,7 @@ Within a label tier, the final cross-repo selection is **`nice`-aware**. Each re
 2. **Partition by `nice` within the tier.** The candidates of the winning tier are partitioned by their repo's resolved `nice` value, resolved through [`getRepoNice`](../../worker/deno/lib/repo_config.ts), and the lowest-`nice` group wins. A `nice: -1` repo therefore jumps ahead of every default-`nice: 0` repo **of the same tier**; a `nice: 99` filler repo is reached only when every lower-`nice` repo in that tier is idle.
 3. **Fair within a `nice` group.** Among repos sharing one `nice` value, [`selectFairWithinTier`](../../worker/deno/lib/issue_priority.ts) rotates fairly across equal repos (oldest-first within a repo, fair rotation across repos when a `randomFn` is injected), so a busy repo in a tier never starves its peers. With the default `nice: 0` everywhere, every repo shares one group and the behaviour reduces to the existing oldest-first selection.
 
-**Why the label wins.** Until Issue #1063, `nice` was the outermost partition: a `nice: -20` repo's ordinary `work-on` backlog was drained before a `nice: -15` repo's `top-priority` issues were even looked at, so `top-priority` meant "top priority *within a repo's `nice` tier*". An urgency signal another repo's routine backlog can outrank is not an urgency signal, so the ordering was inverted to the one the module header always documented:
-
-| candidate A | candidate B | winner |
-| --- | --- | --- |
-| `top-priority` @ `nice: -15` | `work-on` @ `nice: -20` | **A** — label tier first |
-| `top-priority` @ `nice: -20` | `top-priority` @ `nice: -15` | **A** — `nice` within the tier |
-| `work-on` @ `nice: -20` | `work-on` @ `nice: -15` | **A** — `nice` within the tier |
-| `low-priority` @ `nice: -20` | `work-on` @ `nice: -15` | **B** — label tier first |
+**Why the label wins.** Until Issue #1063, `nice` was the outermost partition: a `nice: -20` repo's ordinary `work-on` backlog was drained before a `nice: -15` repo's `top-priority` issues were even looked at, so `top-priority` meant "top priority *within a repo's `nice` tier*". An urgency signal another repo's routine backlog can outrank is not an urgency signal, so the ordering was inverted to the one the module header always documented. The worked winner-per-combination table lives with the setting itself, in [CONFIGURATION.md → Per-repo `nice` rotation tier](../CONFIGURATION.md#-per-repo-nice-rotation-tier).
 
 **`idle-task` is still the fleet-global floor.** `idle-task` sits below every real-work tier in *every* repo, not just within its own `nice` tier — a low-`nice` repo's tier-4 idle-task scan is never selected ahead of a higher-`nice` repo's tier-2 `work-on` issue (the inversion fixed by Issue #2812). With the label tier now outermost this falls out of the ladder directly: `idle-task` is the last tier walked, so it is reached only when no repo has selectable real work. The per-repo idle suppression is unchanged.
 

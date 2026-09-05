@@ -438,9 +438,11 @@ export async function findOldestIssue(
   // not in the repo scan-order shuffle (`config.shuffleRepos`) — within a
   // single `nice` tier, equal repos rotate fairly. The earlier note in
   // `array_utils.ts` (shuffle controls scan order, selection is oldest-first)
-  // is therefore outdated for fairness: selection draws the lowest-`nice`
-  // non-empty tier first and only falls through to a higher-`nice` tier when
-  // no lower tier yields a selectable candidate. A test-supplied `repoNice`
+  // is therefore outdated for fairness: within a label tier, selection draws
+  // from the lowest-`nice` repos holding a candidate of that tier (Issue
+  // #1063 — the label tier itself is decided first, fleet-wide, so `nice`
+  // never lifts one repo's backlog above another's urgency label, F4a in
+  // DESIGN-PRINCIPLES.md). A test-supplied `repoNice`
   // wins; otherwise resolve from `config.repoConfig` (defaults to `0`/neutral
   // for every repo when unset, preserving today's behaviour).
   const selectionOptions: SelectionOptions = {
