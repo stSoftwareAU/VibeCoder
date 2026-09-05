@@ -23,6 +23,7 @@ import {
   normaliseIssueState,
 } from "../lib/issue_dependencies.ts";
 import { validateCheckParentDepsArgs } from "../lib/command_args.ts";
+import { fetchNativeSubIssueNumbers } from "../lib/native_sub_issues.ts";
 
 /**
  * Data returned by the check-parent-deps command.
@@ -86,22 +87,12 @@ export function createGhIssueFetcher(
       // only genuine sub-issues, which only a user with write access can
       // create, and `[]` when there are none — so the body path keeps running
       // with its back-reference check.
-      try {
-        const output = await runGhFn([
-          "api",
-          `repos/${_repo}/issues/${issueNumber}/sub_issues`,
-        ]);
-        const parsed = JSON.parse(output || "[]");
-        if (Array.isArray(parsed)) {
-          return parsed
-            .map((sub) => (sub as { number?: unknown } | null)?.number)
-            .filter((n): n is number => typeof n === "number");
-        }
-      } catch {
-        // The endpoint may be unavailable; the body path still applies its
-        // own back-reference check, so returning no API children is safe.
-      }
-      return [];
+      //
+      // Delegated to the shared helper rather than re-spelt here: it already
+      // validates the slug, asks for `per_page=100` (the REST default of 30
+      // would silently truncate a large parent's child set, and a missing
+      // child reads as "not blocked"), and de-duplicates.
+      return await fetchNativeSubIssueNumbers(_repo, issueNumber, runGhFn);
     },
 
     async getIssueBody(_repo: string, issueNumber: number): Promise<string> {

@@ -39,7 +39,7 @@ function ok(stdout: string): GhSpawnResult {
 }
 
 // =============================================================================
-// SEC-1218-02 — `pr-manager --operation finalise-pr` must not hand-roll a
+// SEC-1218-F2 — `pr-manager --operation finalise-pr` must not hand-roll a
 // direct merge around `directMergePr()`.
 //
 // Pre-fix, the `NotAllowed` arm issued a raw `gh pr merge <n> --repo <r>
@@ -111,7 +111,7 @@ Deno.test("prManagerCommand - finalise-pr refuses an ungated direct merge onto t
 });
 
 // =============================================================================
-// SEC-1218-03 — `process-add-repo`'s default runner must delegate `gh` to the
+// SEC-1218-F3 — `process-add-repo`'s default runner must delegate `gh` to the
 // shared chokepoint.
 //
 // Pre-fix it spawned `new Deno.Command(cmd[0]!, …)` with `cmd[0] === "gh"`, so
@@ -147,7 +147,7 @@ Deno.test("processAddRepoCommand - the default runner sends gh through the spawn
 });
 
 // =============================================================================
-// SEC-1218-04 — `worker-log-cleanup`'s foreign-file sweep must delete only
+// SEC-1218-F4 — `worker-log-cleanup`'s foreign-file sweep must delete only
 // worker debris.
 //
 // Pre-fix it removed EVERY unrecognised plain file older than 14 days in the
@@ -233,7 +233,7 @@ Deno.test("isForeignDebrisName - names worker debris only", async () => {
 });
 
 // =============================================================================
-// SEC-1218-05 — `load-config` must never emit an unescapable shell variable
+// SEC-1218-F5 — `load-config` must never emit an unescapable shell variable
 // NAME into output that is `eval`'d.
 //
 // A `phase_model_overrides` key is copied verbatim from `.config.json` into

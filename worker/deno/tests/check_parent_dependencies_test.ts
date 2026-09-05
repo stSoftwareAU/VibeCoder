@@ -90,7 +90,8 @@ Deno.test("createGhIssueFetcher - getSubIssues returns empty on failure", async 
 });
 
 // =============================================================================
-// Issue #1218 — sub-issues come from the native endpoint, never the timeline.
+// SEC-1218-F1 (Issue #1218) — sub-issues come from the native endpoint, never
+// the timeline.
 //
 // A `cross-referenced` timeline event is created by anyone who writes `#123`
 // in a comment, so treating those numbers as sub-issues let an unauthenticated
@@ -107,7 +108,7 @@ function createRecordingGh(
   const gh = (args: string[]): Promise<string> => {
     calls.push(args);
     const path = args[1] ?? "";
-    if (path.endsWith("/sub_issues")) {
+    if (path.includes("/sub_issues")) {
       return Promise.resolve(responses.subIssues ?? "[]");
     }
     if (path.endsWith("/timeline")) {
@@ -137,7 +138,14 @@ Deno.test("createGhIssueFetcher - getSubIssues ignores forged cross-referenced t
     false,
   );
   assertEquals(
-    calls.some((args) => args.some((a) => a.endsWith("/sub_issues"))),
+    calls.some((args) => args.some((a) => a.includes("/sub_issues"))),
+    true,
+  );
+  // The child set must not be truncated to the REST default page of 30 — a
+  // child that falls off the end reads as "not blocked", which is the wrong
+  // direction for a guard.
+  assertEquals(
+    calls.some((args) => args.some((a) => a.includes("per_page=100"))),
     true,
   );
 });

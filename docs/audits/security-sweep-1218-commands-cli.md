@@ -119,8 +119,17 @@ child is counted as **open** (`:410-415`), so one comment produced a durable
 The pickup path made this move already — `lib/issue_finder_common.ts:256-271`,
 Issue #2470, with a comment explaining that the old approach "bypassed the
 `hasBackReference` guard … and mis-blocked work-on issues". This was the
-unrepaired copy. Now on the native `repos/{repo}/issues/{n}/sub_issues`
-endpoint, which only a user with write access can populate.
+unrepaired copy. It now delegates to the shared
+`lib/native_sub_issues.ts::fetchNativeSubIssueNumbers`, which reads the native
+`repos/{repo}/issues/{n}/sub_issues` endpoint — populated only by a user with
+write access — validates the slug and asks for `per_page=100`.
+
+_Residual, stated rather than hidden:_ the shared helper caps at one page of 100
+and treats an unreadable endpoint as "no children", so both truncation and
+failure resolve to "not blocked". That direction is inherited from the helper
+and shared with the pickup path; changing it belongs with the helper, not with
+this call site, and the regression test pins `per_page=100` so the REST default
+of 30 cannot creep back.
 
 ### SEC-1218-F2 — the one direct-merge call site that skipped `directMergePr()`
 
