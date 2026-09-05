@@ -10,9 +10,9 @@
 #    credentials.
 #  - security_scan_overflow_3648_test.ts (Issue #3648): a fake hex API
 #    key asserting space-separated CLI secret flags are redacted.
-#  - security_scan_overflow_3707_test.ts (Issue #3707): fake Jenkins/
-#    ImgBB values for the child-env denylist, plus fake JSON secret
-#    values asserting `redactSecrets()` handles arbitrary spacing.
+#  - security_scan_overflow_3707_test.ts (Issue #3707): fake extension
+#    and ImgBB credentials for the child-env denylist, plus fake JSON
+#    secret values asserting `redactSecrets()` handles arbitrary spacing.
 #  - unfenced_untrusted_text_test.ts (Issue #3705): a fake ghp_ token in
 #    an x-access-token clone URL asserting the quality-fix prompt
 #    redacts secrets echoed by the quality script.
@@ -56,7 +56,7 @@ paths = [
   '''worker/deno/tests/handle_no_changes_phase_test\.ts''',
   # Fake 32-hex value passed to `redactSecrets()` as a `--imgbb-api-key` arg.
   '''worker/deno/tests/security_scan_overflow_3648_test\.ts''',
-  # Fake Jenkins token, ImgBB key and JSON secret values fed to
+  # Fake extension credential, ImgBB key and JSON secret values fed to
   # `buildClaudeChildEnv()` / `redactSecrets()`.
   '''worker/deno/tests/security_scan_overflow_3707_test\.ts''',
   # Fake ghp_ token in a clone URL asserting `buildQualityFixPrompt()`

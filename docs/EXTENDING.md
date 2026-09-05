@@ -183,16 +183,24 @@ To add a provider:
    };
    ```
 
-2. Register it with `registerCiLogProvider(myCiLogProvider)` — the built-ins
-   register themselves at the bottom of `ci_log_provider.ts`. Ids are unique;
-   re-registering one throws so a clash fails loudly. Registering in core is
-   for CI systems this project runs on; see the note above.
+2. Register it with `registerCiLogProvider(myCiLogProvider)` — the one
+   built-in registers itself at the bottom of `ci_log_provider.ts`. Ids are
+   unique; re-registering one throws so a clash fails loudly. Registering in
+   core is for CI systems this project runs on, and
+   `tests/ci_log_provider_core_only_test.ts` fails if anything else is added
+   here; see the note above.
 3. Configure it per repo via `repo_config.<owner/repo>.ciProviders` (see
    [Per-repository configuration](CONFIGURATION.md#-per-repository-configuration)).
 
 Contract notes:
 
 - `fetchLog()` **never throws** — return `{ ok: false, error }` instead.
+- `ctx.targetUrl` may be **attacker-influenceable**: in issue mode it comes
+  from an issue body anyone can write. Treat it as a hint, derive what you
+  fetch from your own configured base, and return in `CiLogExcerpt.url` only a
+  URL you built yourself — the renderer puts that URL in the prompt outside
+  the untrusted fence, and core cannot validate a host it knows nothing about
+  (Issue #986).
 - Never return a successful excerpt with empty `logText`: the dispatcher
   rejects it as an explicit error so degraded fix quality is visible rather
   than silent.
@@ -477,10 +485,11 @@ flowchart LR
 CI log excerpt into that placeholder before invoking Claude — from a
 configured provider or, failing that, from the
 built-in GitHub Actions provider. See
-[Adding a CI Log Provider](#adding-a-ci-log-provider) for the extension point
-and [Per-repository PR failure actions](per-repo-pr-failure-actions.md) for
-the config schema, env var contract, worked private-repo-12 example, and
-troubleshooting symptoms.
+[Adding a CI Log Provider](#adding-a-ci-log-provider) for the extension point,
+[Private Extensions](PRIVATE-EXTENSIONS.md) for building one outside this
+repository, and the `ciProviders` row in
+[Per-repository configuration](CONFIGURATION.md#-per-repository-configuration)
+for the config schema.
 
 **To update a prompt**: edit `prompts/<type>/prompt.md` in place and commit.
 
