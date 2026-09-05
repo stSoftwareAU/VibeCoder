@@ -15,7 +15,7 @@ import {
   runCoreLoop,
 } from "../lib/run_core.ts";
 import { InFlightRepoRegistry } from "../lib/in_flight_repos.ts";
-import { currentSlotContext, reportRunDeadline } from "../lib/slot_context.ts";
+import { reportRunDeadline } from "../lib/slot_context.ts";
 import {
   _resetWriteRepoAllowlistSinks,
   _setWriteRepoAllowlistSinks,
