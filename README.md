@@ -148,8 +148,8 @@ host builds and runs a Codex image rather than reusing the default one.
   async turnaround is incompatible with the worker's bounded interactive run;
   see [Model, Caching & Batching](docs/MODEL-AND-CACHING.md#batch-api).)
 - **Post-run callbacks** — Optional `success` / `failure` / `always`
-  executables run after a terminal issue run, following Jenkins and Azure
-  Pipelines outcome semantics. The public extension point for fleet-specific
+  executables run after a terminal issue run, following the
+  `success / failure / always` outcome semantics familiar from CI pipelines. The public extension point for fleet-specific
   reporting; a hook failure never rewrites the run's own result. The contract —
   ordering, the versioned context, the security boundary, portable examples and
   a conformance fixture an extension can run against its own hooks — is
@@ -476,8 +476,7 @@ flowchart LR
 | **[Human-authored PR Policy](docs/HUMAN-PR-POLICY.md)**                        | What the worker will and will not do to a PR it did not author: the two author lists, inviting it onto your PR, revoking, and the blocked-issue nudge  |
 | **[Add-repo Onboarding](docs/ADD-REPO.md)**                                    | Onboarding a new repository to the monitored set via an `add-repo:` issue: validation, label/branch-protection sync                                    |
 | **Switching Identity**                           | Migrating an existing deployment to a new worker GitHub identity                                                                                       |
-| **[Per-repo PR Failure Actions](docs/per-repo-pr-failure-actions.md)**         | Per-repository configuration of what the worker does when a PR's CI fails                                                                              |
-| **[CI-failure Issue Log Fetch](docs/ci-failure-issue-log-fetch.md)**           | Automatic root-cause log fetch for issue-mode CI failures: label config, build-reference parsing, origin allowlist                                     |
+| **[CI-failure Issue Log Fetch](docs/ci-failure-issue-log-fetch.md)**           | Automatic root-cause log fetch for issue-mode CI failures: label config, build-reference parsing, and the provider trust boundary                      |
 | **[Security-fix Gate Feedback](docs/security-fix-gate-feedback.md)**           | Stating the security-fix evidence contract before the first attempt, and carrying a blocked verdict into the retry through worker run state            |
 | **[Agent Accountability](docs/AGENT-ACCOUNTABILITY.md)**                       | Gap analysis of the worker's safeguards against an external agent-accountability model                                                                 |
 | **[Security Work-stream Parallelism](docs/SECURITY-WORK-STREAM-PARALLELISM-INVESTIGATION.md)** | Investigation: a dedicated security work stream and safe parallelism                                                                   |

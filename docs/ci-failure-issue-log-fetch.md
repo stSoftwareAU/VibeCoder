@@ -1,176 +1,119 @@
-# 🔎 CI-failure issues — automatic root-cause log fetch
+# 🔎 CI-failure Issue Log Fetch
 
-A watcher workflow such as private-repo-12's
-`.github/workflows/develop-build-watch.yml` polls the Jenkins Develop
-pipeline and, on `FAILURE`/`UNSTABLE`/`ABORTED`, opens a GitHub issue
-labelled `develop-build-failure` containing a small pre-summary of the
-console log.
+When a build fails, a watcher workflow can open a GitHub issue about it. The
+issue body carries a small pre-summary of the console log — whatever window
+the summariser happened to capture — and the normal issue flow had no
+CI-failure awareness at all, so the worker attempted a fix from that alone.
 
-The worker used to pick that issue up through the **normal issue flow**,
-which had no CI-failure awareness at all: `prFailureActions` only runs
-against a *PR* with *failing checks*, and a pipeline-failure issue has
-neither. So the fix was attempted from whatever window the summariser
-happened to capture — and when the root cause sat outside that window,
-there was no way to go back for more. Detection worked; diagnosis was
-blind.
+This feature closes the gap. An issue carrying one of the repository's
+configured CI-failure labels is routed to a **diagnosis-and-fix** framing, and
+the **full** console log for the referenced build is fetched first, through the
+repository's configured [CI log provider](EXTENDING.md#-adding-a-ci-log-provider).
 
- closes that gap. When an issue carries one of the repo's
-configured CI-failure labels, the worker parses the build reference out of
-the issue body, fetches the **full** console log for that build, and routes
-to a diagnosis-and-fix framing before the prompt is built.
+> **Core fetches nothing itself.** It parses the build reference out of the
+> issue body and hands it to a provider. GitHub Actions is the built-in
+> default, because it is the CI this project runs on. Any other CI system is
+> a [private extension](PRIVATE-EXTENSIONS.md) that registers its own provider
+> — nothing about it appears in this repository (Issue #986).
 
-## End-to-end flow
+## 🔁 Flow
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    participant GH as GitHub issue
-    participant W as execute_claude_phase
-    participant C as repo_config
-    participant P as ci_failure_issue
-    participant J as Jenkins
-    participant B as prompt_builder (issue)
-    participant Cl as Claude
+flowchart TD
+    I["Issue carries a<br/>ci_failure_labels label"] --> P["Parse the build reference<br/>from the issue body"]
+    P -- "no reference" --> X["'log fetch FAILED' block"]
+    P -- "reference" --> R["resolveCiLogProvider(ctx)"]
+    R --> F["provider.fetchLog(ctx)"]
+    F -- "excerpt" --> D["Diagnosis-and-fix prompt<br/>with the full log, fenced"]
+    F -- "error" --> X
 
-    GH-->>W: issue labelled develop-build-failure
-    W->>C: getCiFailureLabels(repo)
-    C-->>W: ["develop-build-failure"]
-    W->>W: generateBoundaryId() — this run's nonce
-    W->>P: buildCiFailureContext({ issueBody, jobPath, boundaryId })
-    P->>P: parse Build URL / Build number
-    P->>P: reject any origin ≠ JENKINS_URL
-    P->>J: GET /job/<jobPath>/<build>/api/json
-    J-->>P: build status
-    P->>J: GET /job/<jobPath>/<build>/consoleText
-    J-->>P: full console log (≤ 256 KiB)
-    P->>P: scrub + fence the log in the nonce boundary
-    P-->>W: diagnosis context (signals + log tail)
-    W->>B: buildIssuePrompt({ ciFailureContext, ciFailureBoundaryId })
-    B-->>W: issue prompt with the fresh log in front
-    W->>Cl: run Claude
-    Cl-->>W: fix branch + PR, diagnosis comment on the issue
+    style D fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style X fill:#bc4749,stroke:#7a2f30,color:#fff
 ```
 
-## Parsing contract
+A fetch that fails renders an explicit **"log fetch FAILED"** block naming the
+reason. The run is told not to attempt a fix on no evidence and not to treat
+the body's pre-summary as a substitute. Absence of a log is never silently
+degraded into "nothing to see".
 
-`develop-build-watch.yml` writes a stable, machine-readable header:
+## 🏷️ The issue body contract
+
+Two machine-readable header lines are recognised, anywhere in the first 64 KiB
+of the body:
 
 ```markdown
 - **Build number:** `4347`
-- **Build URL:** https://jenkins.example.com/job/Migration/job/Develop/4347/
+- **Build URL:** https://ci.example.com/job/Migration/job/Develop/4347/
 ```
 
-`parseCiFailureBuildReference()` in `worker/deno/lib/ci_failure_issue.ts`
-reads it with these rules:
+The **Build URL** is preferred — a provider can usually derive its whole target
+from it. The **Build number** is the fallback, and then the provider's target
+comes from configuration (see `ci_failure_job_path` below).
 
-- The **Build URL is authoritative** — it carries the job path as well as
-  the build number. The **Build number is the fallback**, used only when no
-  URL is present.
-- A build-number-only body needs a `ci_failure_job_path` in the repo's
-  configuration; without one the fetch cannot be addressed and the run is
-  told so explicitly.
-- The trailing numeric path segment is the build number. A build alias such
-  as `lastBuild` is rejected — the issue names a specific build.
-- Only the first 64 KiB of the body is scanned; the header is written at the
-  top.
+## 🔒 Trust boundary
 
-**The watcher workflow's body format must not change without updating this
-parser.**
+The issue body is untrusted input: anyone who can open an issue writes it.
+Core checks the URL's **shape** and nothing more —
 
-## Origin allowlist
+- it must parse as an absolute `http(s)` URL,
+- it must not carry embedded credentials (`user:pass@`),
+- it must end in a numeric build segment; a moving alias such as `lastBuild`
+  is refused.
 
-The issue body is untrusted input, so a `Build URL` is honoured only when it
-passes every check below — otherwise it is **rejected outright** rather than
-fetched:
+Core deliberately does **not** check the URL against a configured CI origin.
+It cannot: core does not know what CI a deployment runs, so it cannot know
+which origin is legitimate. The check moved to where the knowledge is:
 
-- The URL parses and uses `http:` or `https:`.
-- Its origin (scheme, host **and** port) equals the configured `JENKINS_URL`
-  origin.
-- When `JENKINS_URL` carries a path prefix (e.g.
-  `https://ci.example.com/jenkins`), the URL's path sits under that prefix.
+- **core never fetches the URL.** It is handed to the provider as
+  `ctx.targetUrl`.
+- **the provider derives its target from its own configured base**, and
+  returns in `CiLogExcerpt.url` only a URL it constructed itself. That is a
+  written contract on `CiLogProvider.fetchLog`, and the built-in GitHub
+  Actions provider honours it by rebuilding the run URL against `github.com`
+  for the repository it was asked about.
 
-A foreign-origin URL is never fetched, and the build number is **not**
-silently used instead — a mismatched host signals tampering, so the whole
-reference is refused.
+The fetched log is then **redacted**, **scrubbed of delimiter-like patterns**
+and **fenced inside the run's untrusted boundary** before it reaches the model
+(Issues #3639, #3646, #3648). The worker-authored diagnosis framing stays
+outside that fence — it is instruction, not data.
 
-## The console log is untrusted data
+## ⚙️ Configuration
 
-The console log is the one component sourced from outside the repository
-entirely — anyone who can print to stdout during a build (a fork PR, a test
-fixture, a dependency) can put text in it. gives it the same
-control every other untrusted string receives:
+Both keys live under `repo_config.<owner>/<repo>` in `.config.json`.
 
-- the log tail, the matched failure signals, and any fetch-failure reason are
-  scrubbed with `sanitiseDelimiterPatterns()`, so forged boundary markup
-  (`---END UNTRUSTED …`, `<<<…>>>`, `[TRUSTED]`, `author=`) is rendered inert;
-- they are wrapped in the run's randomised untrusted boundary, whose nonce is
-  generated by `execute_claude_phase` and handed to **both**
-  `buildCiFailureContext()` and `buildIssuePrompt()` — so
-  `buildBoundaryIntegrityInstruction()` names the very boundary that fences
-  the log; and
-- the CI-failure section is emitted **above** that integrity instruction.
+| Key | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `ci_failure_labels` | string[] | yes (to enable) | Issue labels that mark a CI-failure report. Omit or leave empty to disable. Matched per label, case-insensitively, after trimming. |
+| `ci_failure_job_path` | string | no | Fallback target handed to the provider when the body carries a build number but no `Build URL`. Used only when the repository's `ciProviders` entry names no `jobPath` of its own. Opaque to core. |
 
- closes the remaining structural gap inside that boundary. The
-markdown code fence around each excerpt is sized by `codeFenceFor()` — always
-one backtick longer than the longest backtick run in the content — so a build
-step printing a bare ` ``` ` line can no longer close the fence early and have
-the rest of the log render as markdown structure (headings, emphasis,
-instruction-shaped prose) instead of inert code.
-
-The worker-authored diagnosis framing (the classification categories, the
-`fetched build #N` marker, the instruction to comment on the issue) stays
-**outside** the fence: it is trusted task instruction, not data. Only the
-fetched bytes sit inside.
-
-## Failing loud
-
-The log fetch never degrades quietly. Whenever the reference cannot be
-parsed, the origin check fails, no job path is available, or Jenkins returns
-an error, the prompt receives an explicit **"log fetch FAILED"** block that:
-
-- quotes the reason,
-- forbids attempting a fix on no evidence, and
-- instructs the run to say so plainly in a comment on the issue.
-
-On success the context contains the literal line `fetched build #N`, and the
-run is instructed to repeat it in its issue comment. That line is the
-behavioural regression marker: a missing `fetched build #N` in the comment
-means the path did not fire and the run fell back to the pre-summary alone.
-
-## Configuration
-
-Both keys live under `repo_config.<owner>/<repo>` in the worker's
-`.config.json` and accept snake_case or camelCase.
-
-| Key | Type | Required | Description |
-|-----|------|----------|-------------|
-| `ci_failure_labels` | string[] | yes (to enable) | Issue labels that mark a CI-failure report. Omit or leave empty to disable. Matched per label, case-insensitively. |
-| `ci_failure_job_path` | string | no | Fallback Jenkins job path (e.g. `Migration/job/Develop`) used when the body carries a build number but no `Build URL`. |
-
-Jenkins credentials come from the environment only — `JENKINS_URL`,
-`JENKINS_USER`, `JENKINS_TOKEN` — exactly as for
-[per-repository PR failure actions](per-repo-pr-failure-actions.md). The
-token is never echoed into logs, errors, or the prompt.
-
-### Worked example
-
-```jsonc
+```json
 {
   "repo_config": {
-    "stSoftwareAU/private-repo-12": {
+    "example-org/example-repo": {
       "ci_failure_labels": ["develop-build-failure"],
-      "ci_failure_job_path": "Migration/job/Develop"
+      "ci_failure_job_path": "Migration/job/Develop",
+      "ciProviders": [{ "provider": "my-ci", "jobPath": "Migration/job/Develop" }]
     }
   }
 }
 ```
 
-A malformed `ci_failure_labels` value (not an array, a non-string entry, or
-a blank label) throws at config load rather than silently disabling the
-feature.
+A malformed `ci_failure_labels` value (not an array, a non-string entry, or an
+empty label) is rejected with a named-field error at config load. A malformed
+`ciProviders` value is logged and ignored on this path, so a configuration
+typo degrades the log fetch rather than aborting the run.
 
-## Related
+## 🧩 Implementation
 
-- [Per-repository PR failure actions](per-repo-pr-failure-actions.md) — the
-  PR-side counterpart that enriches the `ci_fix` prompt.
-- `worker/deno/lib/jenkins_log_fetcher.ts` — the shared Jenkins HTTP client.
+- `worker/deno/lib/ci_failure_issue.ts` — label detection, build-reference
+  parsing, provider dispatch, and prompt-section rendering.
+- `worker/deno/lib/ci_log_provider.ts` — the provider registry and the
+  `fetchLog` contract.
+- `worker/deno/lib/execute_claude_phase.ts` — the call site, which supplies the
+  repository's configured providers.
+
+## 📚 Related
+
+- [Adding a CI Log Provider](EXTENDING.md#-adding-a-ci-log-provider)
+- [Private Extensions](PRIVATE-EXTENSIONS.md)
+- [Configuration](CONFIGURATION.md)

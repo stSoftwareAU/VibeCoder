@@ -71,7 +71,7 @@ Deno.test("redactText - private repositories map to numbered placeholders by a t
     [PRIVATE_B.toLowerCase(), 2],
   ]);
   // The name is replaced wherever it appears as a whole word — slug, work
-  // dir, Jenkins path — so derived forms stay consistent; the organisation
+  // dir, CI job path — so derived forms stay consistent; the organisation
   // stays (it is public), and so do public and placeholder repositories.
   const input =
     `${ORG}/${PRIVATE_B} then ${ORG}/${PRIVATE_A}.git and /work/${PRIVATE_A} and job/${ORG}/job/${PRIVATE_B} and ${ORG}/VibeCoder and ${ORG}/foo`;

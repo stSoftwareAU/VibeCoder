@@ -929,6 +929,72 @@ in `prompts/planning/`. See
 [Planning-run stats + degraded-model detection](docs/MODEL-AND-CACHING.md#planning-run-stats--degraded-model-detection)
 for the operator detail.
 
+### Extension is the operator's, and leaves no trace here
+
+An operator must be able to put whatever their work needs into their own
+container — a CI system, a toolchain for a language nobody here has thought
+about, a proprietary linter, a licensed analyser — **without forking this
+repository, and without any of it appearing in it**.
+
+That second half is the part that keeps being got wrong, so state it as a
+rule:
+
+> **Core provides extension points. It never records what is plugged into
+> them.**
+
+- **Any tool, language or vendor name in this repository is a defect.** Not
+  only in code — in prose, comments, examples, test fixtures, prompts and
+  configuration keys too. If a sentence needs a real product name to be
+  concrete, the sentence is wrong; write the mechanism instead.
+- **A list is the wrong shape by construction.** Enumerating what an operator
+  might install cannot succeed: the next operator's tool is not on any list we
+  could write, and the moment one tool is named every other becomes
+  second-class and its owner has to send a pull request to be recognised.
+  There is no list of supported software here, and there is not meant to be
+  one. This applies to a denylist as forcefully as to an allowlist — a
+  denylist catches the tool somebody remembered, waves the next one through,
+  and writes the names into the tree while doing it.
+- **The one exception is what this project itself runs on.** GitHub Actions is
+  named because it is *our* CI, not because it is an approved integration.
+  That is the whole of the exception, and it does not generalise.
+- **A guard belongs on the property, not on the names.** Assert that core
+  registers exactly the built-ins it ships, or that a surface bakes in no
+  artefact at all — assertions that are total over the tree and therefore
+  catch the vendor nobody anticipated
+  ([`ci_log_provider_core_only_test.ts`](worker/deno/tests/ci_log_provider_core_only_test.ts),
+  [`private_extension_docs_test.ts`](worker/deno/tests/private_extension_docs_test.ts)).
+
+**The scar.** One deployment's CI integration arrived in the initial public
+export from the proving-ground tree, was documented in the CI-log extension
+point as "simply the first one" of several built-in providers, and then became
+structural when core started importing that module's fetch type — at which
+point the *generic* extension point could not compile without one particular
+vendor present. Every subsequent reader concluded, correctly from the code and
+wrongly about the intent, that it was core. It was invested in three separate
+times after it had already been scheduled for removal. None of those authors
+did anything unreasonable; the repository was telling them the wrong thing.
+Removing it took three commits, and only the first one — breaking the type
+dependency — was the actual fix.
+
+**The mechanism that makes this possible:**
+
+- **The container-extension framework** (#933 and its sub-issues) —
+  `container_extension` in `.config.json`, the operator's own Containerfile
+  layer built `FROM` the standard image, the extension hash folded into the
+  image tag so a changed layer rebuilds, and a `start.sh` run at sandbox start
+  for whatever configuration the tools need. What goes in is the operator's
+  business; **where it lands** is still ours, path-confined under
+  `/opt/vibe-tools`.
+- **The registries** — a behaviour contributed at runtime, such as a CI log
+  provider, rather than compiled in.
+- **[Private Extensions](docs/PRIVATE-EXTENSIONS.md)** — the procedure, end to
+  end, and the honest record of what cannot be done yet.
+
+**Rationale:** the alternative is a repository that slowly accumulates one
+deployment's toolchain under the guise of examples, and an operator whose tool
+is not in it concluding they must fork. Neither is recoverable once it has
+started, which is why the rule is absolute rather than a preference.
+
 ### Per-repo configuration is operator-side only
 
 Vibe Coder configuration must not live in the target repositories themselves. A

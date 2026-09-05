@@ -8,11 +8,11 @@
  * This module fetches the failing job's actual log through the worker's
  * existing authenticated `gh` CLI (no new secret), trims it down to the
  * signal, and hands it to the same `{{PR_FAILURE_ACTIONS}}` prompt slot
- * the external (Jenkins) path uses.
+ * an externally-provided CI log provider uses.
  *
- * A failing check that is not an Actions job (e.g. the Jenkins
- * `continuous-integration/jenkins/pr-head` status) yields a clean
- * "not applicable" outcome so callers fall through rather than error.
+ * A failing check that is not an Actions job — a commit status posted by
+ * some other CI system, say — yields a clean "not applicable" outcome so
+ * callers fall through rather than error.
  *
  * Uses Australian English throughout (behaviour, organisation, colour).
  */
@@ -21,10 +21,11 @@
 export const GITHUB_ACTIONS_PROVIDER_ID = "github-actions";
 
 /**
- * Hard cap on the excerpt handed to the fix prompt (16 KiB). The
- * Jenkins fetch cap (`DEFAULT_MAX_LOG_BYTES`, 64 KiB) is the fetch-side
- * precedent; the prompt-facing excerpt is deliberately smaller so a
- * multi-megabyte Actions log cannot blow the model context.
+ * Hard cap on the excerpt handed to the fix prompt (16 KiB).
+ *
+ * Deliberately smaller than any sensible fetch-side cap: a provider bounds
+ * what it pulls off the wire, and this bounds what reaches the model, so a
+ * multi-megabyte Actions log cannot blow the context.
  */
 export const MAX_ACTIONS_EXCERPT_BYTES = 16 * 1024;
 
@@ -78,22 +79,58 @@ export type ActionsCheckUrl =
   | { kind: "other" };
 
 /**
+ * Hosts whose Actions URLs the built-in provider will claim.
+ *
+ * GitHub Enterprise hosts are deliberately absent: the provider declines
+ * rather than guessing, so an Enterprise deployment gets no log excerpt
+ * instead of a wrongly-trusted origin. Declining is the safe direction.
+ */
+const GITHUB_HOSTS: ReadonlySet<string> = new Set([
+  "github.com",
+  "www.github.com",
+]);
+
+/** Whether `hostname` is a GitHub host this provider will claim. */
+export function isGithubHost(hostname: string): boolean {
+  return GITHUB_HOSTS.has(hostname.toLowerCase());
+}
+
+/**
  * Parse a check `details_url` into the Actions run/job ids it encodes.
  *
  * Actions check runs point at `/{owner}/{repo}/actions/runs/{run}/job/{job}`
  * (the `/jobs/{job}` spelling also occurs). A check-suite entry may only
- * carry the run. Anything else — a Jenkins build URL, an empty string —
- * is `other`.
+ * carry the run. Anything else — another CI system's build URL, an empty
+ * string — is `other`.
  */
 export function parseActionsCheckUrl(url: string): ActionsCheckUrl {
   if (!url) return { kind: "other" };
 
-  let path: string;
+  // The origin is checked before the path, and a value that is not an
+  // absolute GitHub URL is `other` rather than being matched on shape.
+  //
+  // This function decides whether the built-in provider CLAIMS a failing
+  // check, and its input reaches here from untrusted places — a `Build URL`
+  // line in an issue body (`ci_failure_issue.ts` calls that body untrusted in
+  // its own header) and a check run's `details_url`. Matching on the path
+  // alone meant `https://attacker.example/o/r/actions/runs/1/job/2` parsed as
+  // a job: the provider claimed it, and the caller echoed the attacker's
+  // string back into the CI-fix prompt. The log itself was always fetched
+  // through `gh api` from real GitHub, so nothing was ever read from the
+  // foreign host — what leaked was an attacker-chosen string into a prompt,
+  // and a false account of where the log came from.
+  //
+  // A relative path is refused for the same reason: an origin that cannot be
+  // established is not one that can be trusted. GitHub's `details_url` is
+  // always absolute, so nothing legitimate is lost.
+  let parsed: URL;
   try {
-    path = new URL(url).pathname;
+    parsed = new URL(url);
   } catch {
-    path = url;
+    return { kind: "other" };
   }
+  if (!isGithubHost(parsed.hostname)) return { kind: "other" };
+  const path = parsed.pathname;
 
   const job = /\/actions\/runs\/(\d+)\/jobs?\/(\d+)/.exec(path);
   if (job) {
@@ -319,8 +356,8 @@ export interface SummariseOptions {
  * fix prompt: the window around the first failure marker plus the log
  * tail, with timestamp prefixes stripped and the result hard-capped.
  *
- * Mirrors the approach proven by private-repo-12's
- * `scripts/summarise-jenkins-log.sh`.
+ * Mirrors an approach already proven against a much noisier console log in
+ * a private deployment.
  */
 export function summariseActionsLog(
   rawLog: string,

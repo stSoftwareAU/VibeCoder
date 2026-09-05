@@ -9,7 +9,7 @@
  * test hands the module a fixed map and asserts on what it does with it.
  *
  * Two identical spellings of this type already existed — `EnvLookup` in
- * `credential_preflight.ts` and `EnvReader` in `jenkins_access_check.ts` —
+ * `credential_preflight.ts` and the `EnvReader` the credential preflight used —
  * so this module holds the canonical one and both re-export from here.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.).

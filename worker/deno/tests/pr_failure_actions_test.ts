@@ -1,658 +1,296 @@
 /**
- * Tests for the CI log provider dispatcher (Issues #1892, #3579).
+ * Tests for the CI log provider dispatcher (Issues #1892, #3579, #986).
  *
- * The dispatcher drives the provider registry; these tests exercise the
- * Jenkins provider through it.
+ * The dispatcher drives the provider registry. Every provider used here is
+ * registered by the test itself, exactly as a private extension would
+ * register one — core ships only the GitHub Actions default, so a suite
+ * that reached for a built-in vendor would be asserting something core must
+ * not know (Issue #986). The suite therefore proves what it should: the
+ * dispatcher works for a provider it has never heard of.
  *
  * Covers:
- *   - Action runs successfully (status + log fetched)
- *   - No matching failing check
- *   - Build URL not parseable
- *   - Underlying fetcher returns an error
- *   - Multiple actions, mixed results
+ *   - A provider runs successfully and its excerpt is returned
+ *   - No failing check matches the provider
+ *   - The provider reports a failure, and it is captured rather than thrown
+ *   - A provider that throws is captured too
+ *   - An empty excerpt is an error, never a hollow success
+ *   - An unregistered provider id is an explicit error
+ *   - `checkNamePattern` validation: oversized, unsafe, and matching
+ *   - Multiple providers produce one result each, in order
+ *
+ * Uses Australian English throughout (behaviour, organisation, colour).
  */
 
 import { assert, assertEquals } from "@std/assert";
 import { runPrFailureActions } from "../lib/pr_failure_actions.ts";
 import {
-  extractJenkinsBuildNumber,
-  extractJenkinsJobPath,
-} from "../lib/ci_provider_jenkins.ts";
+  type CiFailureContext,
+  type CiLogExcerpt,
+  type CiLogProvider,
+  compileCheckNamePattern,
+  registerCiLogProvider,
+  unregisterCiLogProvider,
+} from "../lib/ci_log_provider.ts";
 import type { FailedCiCheck } from "../lib/pr_ci_checks.ts";
-import type { CiProviderConfig } from "../types.ts";
+import type { CiProviderConfig, Result } from "../types.ts";
 
-const ENV_KEYS = ["JENKINS_URL", "JENKINS_USER", "JENKINS_TOKEN"] as const;
+const REPO = "stSoftwareAU/example";
+const PROVIDER_ID = "example-ci";
 
-function snapshotEnv(): Record<string, string | undefined> {
-  const snapshot: Record<string, string | undefined> = {};
-  for (const key of ENV_KEYS) snapshot[key] = Deno.env.get(key);
-  return snapshot;
-}
-
-function setEnv(): void {
-  Deno.env.set("JENKINS_URL", "https://jenkins.example.com");
-  Deno.env.set("JENKINS_USER", "test-user");
-  Deno.env.set("JENKINS_TOKEN", "test-token");
-}
-
-function restoreEnv(snapshot: Record<string, string | undefined>): void {
-  for (const key of ENV_KEYS) {
-    const v = snapshot[key];
-    if (v === undefined) Deno.env.delete(key);
-    else Deno.env.set(key, v);
-  }
-}
-
-function makeCheck(overrides: Partial<FailedCiCheck>): FailedCiCheck {
+function makeCheck(overrides: Partial<FailedCiCheck> = {}): FailedCiCheck {
   return {
-    repo: "stSoftwareAU/example",
+    repo: REPO,
     prNumber: 42,
     branchName: "feature/test",
     checkId: "1",
-    checkName: "Jenkins / build",
+    checkName: "example-ci / build",
     encodedAnnotations: "",
-    targetUrl: "https://jenkins.example.com/job/foo/job/Develop/123/",
+    targetUrl: "https://ci.example.com/job/foo/job/Develop/123/",
     ...overrides,
   };
 }
 
-// ---------------------------------------------------------------------------
-// extractJenkinsBuildNumber
-// ---------------------------------------------------------------------------
-
-Deno.test("extractJenkinsBuildNumber - single-segment job path", () => {
-  const result = extractJenkinsBuildNumber(
-    "https://jenkins.example.com/job/MyJob/42/",
-  );
-  assert(result.ok);
-  if (result.ok) assertEquals(result.value, 42);
-});
-
-Deno.test("extractJenkinsBuildNumber - nested job path", () => {
-  const result = extractJenkinsBuildNumber(
-    "https://jenkins.example.com/job/foo/job/Develop/123/",
-  );
-  assert(result.ok);
-  if (result.ok) assertEquals(result.value, 123);
-});
-
-Deno.test("extractJenkinsBuildNumber - missing trailing slash", () => {
-  const result = extractJenkinsBuildNumber(
-    "https://jenkins.example.com/job/foo/job/Develop/7",
-  );
-  assert(result.ok);
-  if (result.ok) assertEquals(result.value, 7);
-});
-
-Deno.test("extractJenkinsBuildNumber - empty URL is unparseable", () => {
-  const result = extractJenkinsBuildNumber("");
-  assert(!result.ok);
-});
-
-Deno.test("extractJenkinsBuildNumber - missing build segment is unparseable", () => {
-  const result = extractJenkinsBuildNumber(
-    "https://jenkins.example.com/job/foo/",
-  );
-  assert(!result.ok);
-});
-
-Deno.test("extractJenkinsBuildNumber - non-numeric tail is unparseable", () => {
-  const result = extractJenkinsBuildNumber(
-    "https://jenkins.example.com/job/foo/lastBuild/",
-  );
-  assert(!result.ok);
-});
-
-// The shape GitHub actually records in the `target_url` of a
-// `continuous-integration/jenkins/pr-head` status: the build number is
-// followed by a `/display/redirect` view suffix (stSoftwareAU/private-repo-12#585).
-Deno.test("extractJenkinsBuildNumber - display/redirect suffix", () => {
-  const result = extractJenkinsBuildNumber(
-    "https://ci.example.invalid/job/stSoftwareAU/job/private-repo-12/job/PR-599/6/display/redirect",
-  );
-  assert(result.ok);
-  if (result.ok) assertEquals(result.value, 6);
-});
-
-Deno.test("extractJenkinsBuildNumber - console view suffix", () => {
-  const result = extractJenkinsBuildNumber(
-    "https://jenkins.example.com/job/foo/job/Develop/123/console",
-  );
-  assert(result.ok);
-  if (result.ok) assertEquals(result.value, 123);
-});
-
-// A numeric segment deeper in the URL must not be mistaken for the build:
-// the build is always the segment right after the last `job/<name>` pair.
-Deno.test("extractJenkinsBuildNumber - numeric view sub-path is not the build", () => {
-  const result = extractJenkinsBuildNumber(
-    "https://jenkins.example.com/job/foo/12/testReport/junit/3/",
-  );
-  assert(result.ok);
-  if (result.ok) assertEquals(result.value, 12);
-});
-
-// A PR job name is non-numeric, so it can never be read as the build number.
-Deno.test("extractJenkinsBuildNumber - PR job with no build segment is unparseable", () => {
-  const result = extractJenkinsBuildNumber(
-    "https://jenkins.example.com/job/stSoftwareAU/job/private-repo-12/job/PR-599/",
-  );
-  assert(!result.ok);
-});
-
-// ---------------------------------------------------------------------------
-// extractJenkinsJobPath
-// ---------------------------------------------------------------------------
-
-Deno.test("extractJenkinsJobPath - nested PR job path", () => {
-  const result = extractJenkinsJobPath(
-    "https://ci.example.invalid/job/stSoftwareAU/job/private-repo-12/job/PR-599/6/display/redirect",
-  );
-  assert(result.ok);
-  if (result.ok) {
-    assertEquals(result.value, "stSoftwareAU/private-repo-12/PR-599");
-  }
-});
-
-Deno.test("extractJenkinsJobPath - single-segment job path", () => {
-  const result = extractJenkinsJobPath(
-    "https://jenkins.example.com/job/MyJob/42/",
-  );
-  assert(result.ok);
-  if (result.ok) assertEquals(result.value, "MyJob");
-});
-
-Deno.test("extractJenkinsJobPath - URL with no job segment is unparseable", () => {
-  const result = extractJenkinsJobPath("https://jenkins.example.com/blue/42/");
-  assert(!result.ok);
-});
-
-// A traversal segment must never reach the Jenkins URL builder.
-Deno.test("extractJenkinsJobPath - rejects path traversal segments", () => {
-  const result = extractJenkinsJobPath(
-    "https://jenkins.example.com/job/foo/job/..%2F..%2Fadmin/3/",
-  );
-  assert(!result.ok);
-});
-
-// ---------------------------------------------------------------------------
-// Per-PR job path resolution (Jenkins multibranch)
-// ---------------------------------------------------------------------------
-
-// The configured jobPath names the Develop job, but a PR check runs under a
-// sibling PR-<n> job. Using the configured path with the PR's build number
-// would fetch an unrelated (probably green) build and diagnose "no failure
-// found" — the silent-wrong-job hazard. Prefer the job named by the check URL.
-Deno.test("jenkins provider - uses the PR job named by the check target URL", async () => {
-  const restore = snapshotEnv();
-  setEnv();
-  try {
-    const seen: string[] = [];
-    const results = await runPrFailureActions({
-      repo: "stSoftwareAU/private-repo-12",
-      prNumber: 599,
-      failedChecks: [makeCheck({
-        checkName: "continuous-integration/jenkins/pr-head",
-        targetUrl:
-          "https://jenkins.example.com/job/stSoftwareAU/job/private-repo-12/job/PR-599/6/display/redirect",
-      })],
-      providers: [{
-        provider: "jenkins",
-        jobPath: "stSoftwareAU/private-repo-12/Develop",
-        checkNamePattern: "jenkins",
-      }],
-      fetchFn: (url: string | URL | Request) => {
-        seen.push(String(url));
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({ number: 6, result: "FAILURE", url: "u" }),
-            { status: 200 },
-          ),
-        );
-      },
-    });
-
-    assertEquals(results[0]?.ok, true);
-    assert(
-      seen.every((u) => u.includes("/job/PR-599/6/")),
-      `expected the PR-599 job to be fetched, saw: ${seen.join(", ")}`,
-    );
-    assert(
-      !seen.some((u) => u.includes("/job/Develop/")),
-      `must not fetch the configured Develop job, saw: ${seen.join(", ")}`,
-    );
-  } finally {
-    restoreEnv(restore);
-  }
-});
-
-// Trusting the URL's job path must not let a foreign Jenkins job be fetched:
-// the derived job has to live in the same folder as the configured one.
-Deno.test("jenkins provider - refuses a job outside the configured folder", async () => {
-  const restore = snapshotEnv();
-  setEnv();
-  try {
-    const results = await runPrFailureActions({
-      repo: "stSoftwareAU/private-repo-12",
-      prNumber: 599,
-      failedChecks: [makeCheck({
-        checkName: "continuous-integration/jenkins/pr-head",
-        targetUrl:
-          "https://jenkins.example.com/job/evil/job/OtherRepo/job/PR-1/6/",
-      })],
-      providers: [{
-        provider: "jenkins",
-        jobPath: "stSoftwareAU/private-repo-12/Develop",
-        checkNamePattern: "jenkins",
-      }],
-      fetchFn: () => {
-        throw new Error("must not fetch a job outside the configured folder");
-      },
-    });
-
-    const r = results[0]!;
-    assertEquals(r.ok, false);
-    if (!r.ok) {
-      assert(
-        r.error.includes("outside the configured folder"),
-        `unexpected error: ${r.error}`,
+/**
+ * An extension's provider, shaped the way a real one is: it claims a check
+ * only when the repo configured it *and* the check name matches its
+ * pattern, defaulting to its own id. Without that second half the
+ * dispatcher's selection behaviour is untestable.
+ */
+function makeProvider(
+  id: string,
+  fetchLog: (ctx: CiFailureContext) => Promise<Result<CiLogExcerpt, string>>,
+): CiLogProvider {
+  return {
+    id,
+    matches: (ctx) => {
+      if (ctx.providerConfig?.provider !== id) return false;
+      const pattern = compileCheckNamePattern(
+        ctx.providerConfig.checkNamePattern,
+        new RegExp(id, "i"),
       );
-    }
-  } finally {
-    restoreEnv(restore);
-  }
-});
+      return pattern.ok && pattern.value.test(ctx.checkName);
+    },
+    fetchLog,
+  };
+}
 
-// ---------------------------------------------------------------------------
-// checkNamePattern validation (tested through runPrFailureActions)
-// ---------------------------------------------------------------------------
+/** A provider that always resolves the same excerpt. */
+function resolving(id: string, logText: string): CiLogProvider {
+  return makeProvider(id, (ctx) =>
+    Promise.resolve({
+      ok: true,
+      value: {
+        providerId: id,
+        buildId: "123",
+        url: `https://ci.example.com/${ctx.repo}/123`,
+        status: "FAILURE",
+        logText,
+      },
+    }));
+}
 
-Deno.test(
-  "runPrFailureActions - checkNamePattern with nested quantifiers returns error",
-  async () => {
-    const snap = snapshotEnv();
-    setEnv();
-    try {
-      const checks: FailedCiCheck[] = [makeCheck({})];
-      const providers: CiProviderConfig[] = [
-        {
-          provider: "jenkins",
-          jobPath: "foo",
-          checkNamePattern: "(a+)+",
-        },
-      ];
-
-      const results = await runPrFailureActions({
-        repo: "stSoftwareAU/example",
-        prNumber: 42,
-        failedChecks: checks,
-        providers,
-      });
-
-      assertEquals(results.length, 1);
-      const r = results[0]!;
-      assertEquals(r.ok, false);
-      if (!r.ok) {
-        assert(r.error.includes("nested quantifiers"), `got: ${r.error}`);
-      }
-    } finally {
-      restoreEnv(snap);
-    }
-  },
-);
-
-// ---------------------------------------------------------------------------
-// runPrFailureActions - happy path
-// ---------------------------------------------------------------------------
-
-Deno.test("runPrFailureActions - jenkins provider success", async () => {
-  const snap = snapshotEnv();
-  setEnv();
+/** Register `provider`, run `body`, and always unregister again. */
+async function withProvider<T>(
+  provider: CiLogProvider,
+  body: () => Promise<T>,
+): Promise<T> {
+  registerCiLogProvider(provider);
   try {
-    let statusCalls = 0;
-    let logCalls = 0;
-    const fetchFn = (url: string | URL | Request): Promise<Response> => {
-      const u = typeof url === "string" ? url : url.toString();
-      if (u.endsWith("/api/json")) {
-        statusCalls++;
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              number: 123,
-              result: "FAILURE",
-              url: "https://jenkins.example.com/job/foo/job/Develop/123/",
-            }),
-            { status: 200, headers: { "content-type": "application/json" } },
-          ),
-        );
-      }
-      if (u.endsWith("/consoleText")) {
-        logCalls++;
-        return Promise.resolve(
-          new Response("build failed\nfoo bar", {
-            status: 200,
-            headers: { "content-type": "text/plain" },
-          }),
-        );
-      }
-      return Promise.resolve(new Response("not found", { status: 404 }));
-    };
-
-    const checks: FailedCiCheck[] = [makeCheck({})];
-    const providers: CiProviderConfig[] = [
-      { provider: "jenkins", jobPath: "foo/job/Develop" },
-    ];
-
-    const results = await runPrFailureActions({
-      repo: "stSoftwareAU/example",
-      prNumber: 42,
-      failedChecks: checks,
-      providers,
-      fetchFn,
-    });
-
-    assertEquals(results.length, 1);
-    const r = results[0]!;
-    assertEquals(r.providerId, "jenkins");
-    assert(r.ok, `expected ok, got ${JSON.stringify(r)}`);
-    if (r.ok) {
-      assertEquals(r.excerpt.buildId, "123");
-      assertEquals(r.excerpt.status, "FAILURE");
-      assert(r.excerpt.logText.includes("build failed"));
-    }
-    assertEquals(statusCalls, 1);
-    assertEquals(logCalls, 1);
+    return await body();
   } finally {
-    restoreEnv(snap);
+    unregisterCiLogProvider(provider.id);
   }
-});
+}
 
-// ---------------------------------------------------------------------------
-// runPrFailureActions - no matching check
-// ---------------------------------------------------------------------------
-
-Deno.test("runPrFailureActions - no failing check matches pattern", async () => {
-  const snap = snapshotEnv();
-  setEnv();
-  try {
-    const checks: FailedCiCheck[] = [
-      makeCheck({ checkName: "ESLint", targetUrl: "https://other/" }),
-    ];
-    const providers: CiProviderConfig[] = [
-      { provider: "jenkins", jobPath: "foo/job/Develop" },
-    ];
-
-    const fetchFn = (): Promise<Response> => {
-      throw new Error("should not be called");
-    };
-
-    const results = await runPrFailureActions({
-      repo: "stSoftwareAU/example",
-      prNumber: 42,
-      failedChecks: checks,
-      providers,
-      fetchFn,
-    });
-
-    assertEquals(results.length, 1);
-    const r = results[0]!;
-    assertEquals(r.providerId, "jenkins");
-    assertEquals(r.ok, false);
-    if (!r.ok) assert(r.error.includes("no failing check matched provider"));
-  } finally {
-    restoreEnv(snap);
-  }
-});
-
-// ---------------------------------------------------------------------------
-// runPrFailureActions - build URL not parseable
-// ---------------------------------------------------------------------------
-
-Deno.test("runPrFailureActions - target URL not parseable", async () => {
-  const snap = snapshotEnv();
-  setEnv();
-  try {
-    const checks: FailedCiCheck[] = [
-      makeCheck({ targetUrl: "https://jenkins.example.com/job/foo/" }),
-    ];
-    const providers: CiProviderConfig[] = [
-      { provider: "jenkins", jobPath: "foo/job/Develop" },
-    ];
-
-    const fetchFn = (): Promise<Response> => {
-      throw new Error("should not be called");
-    };
-
-    const results = await runPrFailureActions({
-      repo: "stSoftwareAU/example",
-      prNumber: 42,
-      failedChecks: checks,
-      providers,
-      fetchFn,
-    });
-
-    assertEquals(results.length, 1);
-    const r = results[0]!;
-    assertEquals(r.ok, false);
-    if (!r.ok) assert(r.error.toLowerCase().includes("build number"));
-  } finally {
-    restoreEnv(snap);
-  }
-});
-
-// ---------------------------------------------------------------------------
-// runPrFailureActions - underlying fetcher fails
-// ---------------------------------------------------------------------------
-
-Deno.test("runPrFailureActions - fetcher error captured, does not throw", async () => {
-  const snap = snapshotEnv();
-  setEnv();
-  try {
-    const fetchFn = (url: string | URL | Request): Promise<Response> => {
-      const u = typeof url === "string" ? url : url.toString();
-      if (u.endsWith("/api/json")) {
-        return Promise.resolve(
-          new Response("server error", {
-            status: 500,
-            statusText: "Internal Server Error",
-          }),
-        );
-      }
-      return Promise.resolve(new Response("not found", { status: 404 }));
-    };
-
-    const checks: FailedCiCheck[] = [makeCheck({})];
-    const providers: CiProviderConfig[] = [
-      { provider: "jenkins", jobPath: "foo/job/Develop" },
-    ];
-
-    const results = await runPrFailureActions({
-      repo: "stSoftwareAU/example",
-      prNumber: 42,
-      failedChecks: checks,
-      providers,
-      fetchFn,
-    });
-
-    assertEquals(results.length, 1);
-    const r = results[0]!;
-    assertEquals(r.ok, false);
-    if (!r.ok) assert(r.error.includes("HTTP 500"));
-  } finally {
-    restoreEnv(snap);
-  }
-});
-
-// ---------------------------------------------------------------------------
-// runPrFailureActions - mixed results across multiple actions
-// ---------------------------------------------------------------------------
-
-Deno.test(
-  "runPrFailureActions - multiple providers produce one result each",
-  async () => {
-    const snap = snapshotEnv();
-    setEnv();
-    try {
-      const fetchFn = (url: string | URL | Request): Promise<Response> => {
-        const u = typeof url === "string" ? url : url.toString();
-        if (u.endsWith("/api/json")) {
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({
-                number: 123,
-                result: "FAILURE",
-                url: "https://jenkins.example.com/job/foo/job/Develop/123/",
-              }),
-              { status: 200, headers: { "content-type": "application/json" } },
-            ),
-          );
-        }
-        if (u.endsWith("/consoleText")) {
-          return Promise.resolve(new Response("log body", { status: 200 }));
-        }
-        return Promise.resolve(new Response("not found", { status: 404 }));
-      };
-
-      const checks: FailedCiCheck[] = [
-        makeCheck({ checkName: "Jenkins / build" }),
-      ];
-      const providers: CiProviderConfig[] = [
-        { provider: "jenkins", jobPath: "foo/job/Develop" },
-        {
-          provider: "jenkins",
-          jobPath: "other/job/Develop",
-          checkNamePattern: "nonexistent-check",
-        },
-      ];
-
-      const results = await runPrFailureActions({
-        repo: "stSoftwareAU/example",
-        prNumber: 42,
-        failedChecks: checks,
-        providers,
-        fetchFn,
-      });
-
-      assertEquals(results.length, 2);
-      const first = results[0]!;
-      const second = results[1]!;
-      assertEquals(first.ok, true);
-      assertEquals(second.ok, false);
-      if (!second.ok) {
-        assert(second.error.includes("no failing check matched provider"));
-      }
-    } finally {
-      restoreEnv(snap);
-    }
-  },
-);
-
-// ---------------------------------------------------------------------------
-// runPrFailureActions - empty inputs
-// ---------------------------------------------------------------------------
-
-Deno.test("runPrFailureActions - no providers returns empty array", async () => {
-  const results = await runPrFailureActions({
-    repo: "stSoftwareAU/example",
+function run(
+  providers: CiProviderConfig[],
+  failedChecks: FailedCiCheck[] = [makeCheck()],
+) {
+  return runPrFailureActions({
+    repo: REPO,
     prNumber: 42,
-    failedChecks: [],
-    providers: [],
+    failedChecks,
+    providers,
   });
-  assertEquals(results, []);
+}
+
+// ---------------------------------------------------------------------------
+// Happy path
+// ---------------------------------------------------------------------------
+
+Deno.test("runPrFailureActions - an extension's provider drives end to end", async () => {
+  const results = await withProvider(
+    resolving(PROVIDER_ID, "build failed\nfoo bar"),
+    () => run([{ provider: PROVIDER_ID, jobPath: "foo/job/Develop" }]),
+  );
+
+  assertEquals(results.length, 1);
+  const r = results[0]!;
+  assertEquals(r.providerId, PROVIDER_ID);
+  assert(r.ok, `expected ok, got ${JSON.stringify(r)}`);
+  if (r.ok) {
+    assertEquals(r.excerpt.buildId, "123");
+    assertEquals(r.excerpt.status, "FAILURE");
+    assert(r.excerpt.logText.includes("build failed"));
+  }
+});
+
+Deno.test("runPrFailureActions - the configured jobPath reaches the provider untouched", async () => {
+  const seen: CiFailureContext[] = [];
+  await withProvider(
+    makeProvider(PROVIDER_ID, (ctx) => {
+      seen.push(ctx);
+      return Promise.resolve({ ok: false, error: "not today" });
+    }),
+    () =>
+      run([{ provider: PROVIDER_ID, jobPath: "any/shape/the-provider/likes" }]),
+  );
+
+  assertEquals(
+    seen[0]!.providerConfig?.jobPath,
+    "any/shape/the-provider/likes",
+  );
 });
 
 // ---------------------------------------------------------------------------
-// runPrFailureActions - checkNamePattern length guard
+// Provider selection
 // ---------------------------------------------------------------------------
 
-Deno.test(
-  "runPrFailureActions - oversized checkNamePattern returns error",
-  async () => {
-    const snap = snapshotEnv();
-    setEnv();
-    try {
-      const checks: FailedCiCheck[] = [
-        makeCheck({ checkName: "Jenkins / build" }),
-      ];
-      const oversizedPattern = "a".repeat(201);
-      const providers: CiProviderConfig[] = [
-        {
-          provider: "jenkins",
-          jobPath: "foo",
-          checkNamePattern: oversizedPattern,
-        },
-      ];
+Deno.test("runPrFailureActions - no failing check matches the provider", async () => {
+  const results = await withProvider(
+    resolving("other-ci", "unused"),
+    () => run([{ provider: "other-ci" }], [makeCheck({ checkName: "ESLint" })]),
+  );
 
-      const results = await runPrFailureActions({
-        repo: "stSoftwareAU/example",
-        prNumber: 42,
-        failedChecks: checks,
-        providers,
-      });
+  assertEquals(results.length, 1);
+  const r = results[0]!;
+  assertEquals(r.ok, false);
+  if (!r.ok) assert(r.error.includes("no failing check matched provider"));
+});
 
-      assertEquals(results.length, 1);
-      const r = results[0]!;
-      assertEquals(r.ok, false);
-      if (!r.ok) {
-        assert(r.error.includes("exceeds"), `got: ${r.error}`);
-      }
-    } finally {
-      restoreEnv(snap);
-    }
-  },
-);
+Deno.test("runPrFailureActions - an unregistered provider id is an explicit error", async () => {
+  const results = await run([{ provider: "never-registered" }]);
 
-Deno.test(
-  "runPrFailureActions - custom checkNamePattern matches",
-  async () => {
-    const snap = snapshotEnv();
-    setEnv();
-    try {
-      const fetchFn = (url: string | URL | Request): Promise<Response> => {
-        const u = typeof url === "string" ? url : url.toString();
-        if (u.endsWith("/api/json")) {
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({
-                number: 9,
-                result: "FAILURE",
-                url: "https://jenkins.example.com/job/foo/9/",
-              }),
-              { status: 200 },
-            ),
-          );
-        }
-        return Promise.resolve(new Response("log", { status: 200 }));
-      };
+  assertEquals(results.length, 1);
+  const r = results[0]!;
+  assertEquals(r.ok, false);
+  if (!r.ok) assert(r.error.includes("no CI log provider registered"));
+});
 
-      const checks: FailedCiCheck[] = [
-        makeCheck({
-          checkName: "private-repo-25 build",
-          targetUrl: "https://jenkins.example.com/job/foo/9/",
-        }),
-      ];
-      const providers: CiProviderConfig[] = [
-        {
-          provider: "jenkins",
-          jobPath: "foo",
-          checkNamePattern: "private-repo-25",
-        },
-      ];
+Deno.test("runPrFailureActions - no providers returns an empty array", async () => {
+  assertEquals(
+    await runPrFailureActions({
+      repo: REPO,
+      prNumber: 42,
+      failedChecks: [],
+      providers: [],
+    }),
+    [],
+  );
+});
 
-      const results = await runPrFailureActions({
-        repo: "stSoftwareAU/example",
-        prNumber: 42,
-        failedChecks: checks,
-        providers,
-        fetchFn,
-      });
+// ---------------------------------------------------------------------------
+// Failure capture — the dispatcher never unwinds the fix flow
+// ---------------------------------------------------------------------------
 
-      assertEquals(results.length, 1);
-      const r = results[0]!;
-      assert(r.ok);
-      if (r.ok) assertEquals(r.excerpt.buildId, "9");
-    } finally {
-      restoreEnv(snap);
-    }
-  },
-);
+Deno.test("runPrFailureActions - a provider failure is captured, not thrown", async () => {
+  const results = await withProvider(
+    makeProvider(
+      PROVIDER_ID,
+      () =>
+        Promise.resolve({ ok: false, error: "HTTP 500 Internal Server Error" }),
+    ),
+    () => run([{ provider: PROVIDER_ID }]),
+  );
+
+  const r = results[0]!;
+  assertEquals(r.ok, false);
+  if (!r.ok) assert(r.error.includes("HTTP 500"));
+});
+
+Deno.test("runPrFailureActions - a provider that throws is captured too", async () => {
+  const results = await withProvider(
+    makeProvider(PROVIDER_ID, () => {
+      throw new Error("provider bug");
+    }),
+    () => run([{ provider: PROVIDER_ID }]),
+  );
+
+  const r = results[0]!;
+  assertEquals(r.ok, false);
+  if (!r.ok) {
+    assert(r.error.includes("threw"), `got: ${r.error}`);
+    assert(r.error.includes("provider bug"));
+  }
+});
+
+Deno.test("runPrFailureActions - an empty excerpt is an error, never a hollow success", async () => {
+  const results = await withProvider(
+    resolving(PROVIDER_ID, ""),
+    () => run([{ provider: PROVIDER_ID }]),
+  );
+
+  const r = results[0]!;
+  assertEquals(r.ok, false);
+  if (!r.ok) assert(r.error.includes("empty log excerpt"));
+});
+
+// ---------------------------------------------------------------------------
+// checkNamePattern validation
+// ---------------------------------------------------------------------------
+
+Deno.test("runPrFailureActions - checkNamePattern with nested quantifiers is rejected", async () => {
+  const results = await withProvider(
+    resolving(PROVIDER_ID, "unused"),
+    () => run([{ provider: PROVIDER_ID, checkNamePattern: "(a+)+" }]),
+  );
+
+  const r = results[0]!;
+  assertEquals(r.ok, false);
+  if (!r.ok) assert(r.error.includes("nested quantifiers"), `got: ${r.error}`);
+});
+
+Deno.test("runPrFailureActions - an oversized checkNamePattern is rejected", async () => {
+  const results = await withProvider(
+    resolving(PROVIDER_ID, "unused"),
+    () => run([{ provider: PROVIDER_ID, checkNamePattern: "a".repeat(201) }]),
+  );
+
+  const r = results[0]!;
+  assertEquals(r.ok, false);
+  if (!r.ok) assert(r.error.includes("exceeds"), `got: ${r.error}`);
+});
+
+Deno.test("runPrFailureActions - a valid custom checkNamePattern is accepted", async () => {
+  const results = await withProvider(
+    resolving(PROVIDER_ID, "log body"),
+    () =>
+      run(
+        [{ provider: PROVIDER_ID, checkNamePattern: "private-repo-25" }],
+        [makeCheck({ checkName: "private-repo-25 build" })],
+      ),
+  );
+
+  assertEquals(results[0]!.ok, true);
+});
+
+// ---------------------------------------------------------------------------
+// Multiple providers
+// ---------------------------------------------------------------------------
+
+Deno.test("runPrFailureActions - one result per configured provider, in order", async () => {
+  const results = await withProvider(
+    resolving(PROVIDER_ID, "log body"),
+    () =>
+      run([
+        { provider: PROVIDER_ID, jobPath: "foo/job/Develop" },
+        { provider: "never-registered", jobPath: "other/job/Develop" },
+      ]),
+  );
+
+  assertEquals(results.length, 2);
+  assertEquals(results[0]!.ok, true);
+  assertEquals(results[0]!.providerId, PROVIDER_ID);
+  assertEquals(results[1]!.ok, false);
+  assertEquals(results[1]!.providerId, "never-registered");
+});

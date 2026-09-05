@@ -139,10 +139,6 @@ docs/IDLE-TASK-FRAMEWORK.md:
   title: "Vibe Coder: Idle-task Framework"
   page_icon: "😴"
 
-docs/per-repo-pr-failure-actions.md:
-  title: "Vibe Coder: Per-repository PR failure actions"
-  page_icon: "🔧"
-
 docs/ci-failure-issue-log-fetch.md:
   title: "Vibe Coder: CI-failure Issue Log Fetch"
   page_icon: "🔎"

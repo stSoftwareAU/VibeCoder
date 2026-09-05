@@ -303,8 +303,8 @@ chooses the bucket at file time using a SLOC-weighted random pick:
    each as a single bucket whose weight equals the dominant detected
    language's weight, so both compete on par with the largest language
    present. Because neither names a language, a repo written entirely in
-   unsupported languages (Bash, Python, COBOL) still draws one of them:
-   its dominant raw byte count supplies the weight. A repo with no
+   languages the scan has no bucket for still draws one of them: its
+   dominant raw byte count supplies the weight. A repo with no
    detected code at all has nothing to design-review, so it falls back to
    `general` alone.
 4. **Draw uniformly** over the cumulative weight to pick the bucket.

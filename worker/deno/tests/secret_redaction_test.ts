@@ -235,7 +235,7 @@ Deno.test("redactSecrets - masks a Bearer token but keeps the scheme", () => {
 });
 
 Deno.test("redactSecrets - masks a Basic auth credential but keeps the scheme (Issue #3427)", () => {
-  const encoded = btoa("jenkins-user:s3cr3t-jenkins-token");
+  const encoded = btoa("ci-user:s3cr3t-ci-token");
   const out = redactSecrets(`Authorization: Basic ${encoded}`);
   assertEquals(out.includes(encoded), false);
   assertStringIncludes(out, "Basic");

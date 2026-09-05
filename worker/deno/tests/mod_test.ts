@@ -199,7 +199,18 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // (count 148 → 147). The removal landed on the milestone branch without
   // this count following it, so the branch's own suite was red — unnoticed,
   // because `milestone/*` requires no checks.
-  assertEquals(commands.length, 147);
+  // Issue #986 removed `fetch-jenkins-log` and `check-jenkins-access`
+  // (count 147 → 145). Both were the CLI surface of one deployment's CI
+  // integration, which never belonged in the public repository: it is an
+  // example of how to extend the worker, not a feature of it. The whole
+  // integration left with them — modules, provider registration, config and
+  // tests — and anything like it is now built as a private extension
+  // (`docs/PRIVATE-EXTENSIONS.md`, Issue #985). Nothing replaced these two
+  // commands, because core no longer knows what CI a deployment runs.
+  //
+  // `tests/ci_log_provider_core_only_test.ts` is what stops the next one
+  // arriving the same way.
+  assertEquals(commands.length, 145);
   assertEquals(commands.includes("callback-conformance"), true);
   // The command Issue #805 removed stays removed: a merge that quietly
   // brought it back would restore the built-in reporting that issue deleted.
@@ -232,7 +243,12 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   assertEquals(commands.includes("process-seed-idle-tasks"), true);
   assertEquals(commands.includes("audit-chain-verify"), true);
   assertEquals(commands.includes("sweep-heartbeat-comments"), true);
-  assertEquals(commands.includes("check-jenkins-access"), true);
+  // The two commands Issue #986 removed stay removed. A vendor-specific
+  // command returning here is the recurrence this assertion exists to catch
+  // — it happened three times before the removal landed (#977, #1075,
+  // #1080).
+  assertEquals(commands.includes("check-jenkins-access"), false);
+  assertEquals(commands.includes("fetch-jenkins-log"), false);
   assertEquals(commands.includes("run-bootstrap"), true);
   assertEquals(commands.includes("run-housekeeping"), true);
   assertEquals(commands.includes("bulk-triage-security"), true);

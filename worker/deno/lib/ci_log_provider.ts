@@ -1,10 +1,23 @@
 /**
  * CI log provider extension point (Issue #3579).
  *
- * GitHub Actions is the built-in default provider every repo gets with
- * no configuration. External CI/CD systems plug in through this
- * interface — Jenkins is simply the first one — so adding a third
- * provider never touches the dispatcher.
+ * GitHub Actions is the **only** built-in provider, and it is built in for
+ * one reason: it is the CI this project itself runs on. It is the default
+ * every repo gets with no configuration — not an approved integration, and
+ * not the first entry on a list of the CI systems we support. There is no
+ * such list. Core does not know what other CI systems exist, and should not:
+ * an enumeration of vendors is the failure mode, because the next operator's
+ * is never on it.
+ *
+ * Every other CI system plugs in through this interface from a **private
+ * extension**, so adding one never touches the dispatcher and leaves no trace
+ * of one deployment's vendor in this repository. See
+ * `docs/PRIVATE-EXTENSIONS.md` (Issue #985).
+ *
+ * This header used to name one vendor's integration as "simply the first"
+ * built-in, and core imported its fetch seam from that vendor's own module —
+ * so the extension point could not compile without it. Issue #986 removed
+ * both the claim and the dependency.
  *
  * A provider answers two questions: `matches()` — can I resolve a log
  * for this failing check? — and `fetchLog()` — here is a bounded
@@ -15,13 +28,12 @@
  */
 
 import type { CiProviderConfig, Result } from "../types.ts";
-import type { FetchFn } from "./jenkins_log_fetcher.ts";
+import type { FetchFn } from "./ci_fetch_types.ts";
 import type {
   fetchGithubActionsLogExcerpt,
   GhCommandFn,
 } from "./github_actions_log_fetcher.ts";
 import { githubActionsCiLogProvider } from "./ci_provider_github_actions.ts";
-import { jenkinsCiLogProvider } from "./ci_provider_jenkins.ts";
 
 /** The failing check a provider is asked to resolve a log for. */
 export interface CiFailureContext {
@@ -37,7 +49,7 @@ export interface CiFailureContext {
   targetUrl?: string;
   /** Resolved per-repo configuration entry for the provider. */
   providerConfig?: CiProviderConfig;
-  /** Injection seam: HTTP fetch used by the Jenkins provider. */
+  /** Injection seam: HTTP fetch used by a provider that calls a CI server. */
   fetchFn?: FetchFn;
   /** Injection seam: authenticated `gh` runner used by the Actions provider. */
   ghFn?: GhCommandFn;
@@ -61,11 +73,21 @@ export interface CiLogExcerpt {
 
 /** A pluggable source of CI logs for a failing check. */
 export interface CiLogProvider {
-  /** Stable id, e.g. `github-actions` or `jenkins`. */
+  /** Stable id, e.g. `github-actions`. */
   readonly id: string;
   /** Can this provider resolve a log for this failing check? */
   matches(ctx: CiFailureContext): boolean;
-  /** Fetch a bounded root-cause log excerpt. Never throws. */
+  /**
+   * Fetch a bounded root-cause log excerpt. Never throws.
+   *
+   * **Contract (Issue #986).** `ctx.targetUrl` may be attacker-influenceable:
+   * in issue mode it comes from an issue body anyone can write. A provider
+   * must therefore treat it as a hint, derive what it fetches from its own
+   * configured base, and return in `CiLogExcerpt.url` only a URL it built
+   * itself — never the supplied one echoed back. Core renders that URL into
+   * a prompt outside the untrusted fence, and cannot validate a host it
+   * knows nothing about.
+   */
   fetchLog(ctx: CiFailureContext): Promise<Result<CiLogExcerpt, string>>;
 }
 
@@ -177,8 +199,8 @@ export function resolveCiLogProvider(ctx: CiFailureContext): CiLogProvider {
   return githubActionsCiLogProvider;
 }
 
-// Built-in providers. Jenkins is registered ahead of GitHub Actions so a
-// repo that configures Jenkins wins over the default; GitHub Actions is
-// also the fall-back returned when nothing matches.
-registerCiLogProvider(jenkinsCiLogProvider);
+// The one built-in provider. It is here because it is the CI this project
+// itself runs on, and it is also the fall-back `resolveCiLogProvider`
+// returns when nothing matches. Nothing vendor-specific joins it — see
+// `tests/ci_log_provider_core_only_test.ts`, which fails if anything does.
 registerCiLogProvider(githubActionsCiLogProvider);

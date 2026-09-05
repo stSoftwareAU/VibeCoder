@@ -92,8 +92,10 @@ export function pickBucket(
 
   // Weight of the repo's dominant language: the largest supported bucket
   // when one is detected, otherwise the largest language the Languages API
-  // reported at all. The second case is what lets an unsupported-language
-  // repo (Bash, Python, COBOL) still draw a language-agnostic bucket.
+  // reported at all. The second case is what lets a repo in a language no
+  // bucket covers still draw a language-agnostic bucket. Naming an example
+  // language here would be naming one we do not support, which is exactly
+  // the enumeration this repository must not carry (Issue #986).
   const dominantWeight = weighted.length > 0
     ? Math.max(...weighted.map((w) => w.weight))
     : dominantRawWeight(repoLanguages);

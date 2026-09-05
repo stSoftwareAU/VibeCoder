@@ -154,12 +154,12 @@ Deno.test("runBucketDocsCheck - a new undocumented bucket fails", async () => {
 Deno.test("runBucketDocsCheck - a link to a removed bucket fails", async () => {
   const dir = await makeFixture(
     ["rust"],
-    `[rust](${BUCKETS_DIR}/rust.md) [gone](${BUCKETS_DIR}/cobol.md)\n`,
+    `[rust](${BUCKETS_DIR}/rust.md) [gone](${BUCKETS_DIR}/removed-bucket.md)\n`,
   );
   try {
     const result = await runBucketDocsCheck(dir);
     assertEquals(result.status, "FAILED");
-    assertEquals(result.brokenLinks, [`${BUCKETS_DIR}/cobol.md`]);
+    assertEquals(result.brokenLinks, [`${BUCKETS_DIR}/removed-bucket.md`]);
     assertStringIncludes(result.output, "link does not resolve");
   } finally {
     await Deno.remove(dir, { recursive: true });
