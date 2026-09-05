@@ -161,8 +161,8 @@ Before updating an existing host:
 
 Nothing else about an existing deployment changes: the same cron, launchd,
 systemd or Task Scheduler entry keeps invoking the same launcher, and
-`$WORK_DIR`, `~/logs`, `.config.json` and the credential directory stay where
-they are — they are exactly the paths mounted into the container.
+`$WORK_DIR`, the host log directory, `.config.json` and the credential
+directory stay where they are — they are exactly the paths mounted into the container.
 
 ## 🧊 Keeping a host up to date: dynamic or frozen
 
@@ -556,7 +556,7 @@ These only tune the *generated* LaunchAgent (tokens, paths, logs); whether it is
 | `VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY` | Anthropic API key for Claude CLI |
 | `VIBE_LAUNCHAGENT_FALLBACK_PATHS` | Extra PATH locations (default: `/opt/homebrew/bin:/usr/local/bin`) |
 | `VIBE_LAUNCHAGENT_DIR` | Custom LaunchAgents directory (default: `~/Library/LaunchAgents`) |
-| `VIBE_LOGS_DIR` | Logs directory (default: `~/logs`) |
+| `VIBE_LOGS_DIR` | Logs directory (default: the platform's own location — see [Where the logs go](CONFIGURATION.md#-where-the-logs-go)) |
 | `VIBE_SKIP_LAUNCHCTL` | Set to `true` to skip launchctl commands (for testing) |
 
 **Screenshot support environment variables:**
@@ -568,7 +568,7 @@ These only tune the *generated* LaunchAgent (tokens, paths, logs); whether it is
 | `VIBE_MCP_CONFIG_DIR` | Directory for `.mcp.json` (default: script directory) |
 | `VIBE_SCREENSHOT_DIR` | Directory name for screenshots (default: `docs/evidence`) |
 | `VIBE_BROWSER_PROFILE_DIR` | Disposable directory the browser writes its profile to (default: `/tmp/vibe-playwright-profile`) |
-| `VIBE_IMGBB_API_KEY` | ImgBB API key for automatic screenshot uploads |
+| `VIBE_IMGBB_API_KEY` | ImgBB API key for automatic screenshot uploads, when `.config.json` states no `imgbb_api_key` (Issue #1032) |
 
 **Testing/CI environment variables:**
 
@@ -580,7 +580,7 @@ These only tune the *generated* LaunchAgent (tokens, paths, logs); whether it is
 
 The setup is idempotent — running it multiple times produces identical results.
 
-**Logs** are written to `~/logs/`:
+**Logs** are written to the host log directory ([Where the logs go](CONFIGURATION.md#-where-the-logs-go)):
 - `launchagent-stdout.log` — Standard output
 - `launchagent-stderr.log` — Standard error
 - `worker.log` — Worker activity log
@@ -599,7 +599,8 @@ The script is designed to be run from cron every 5 minutes. It will:
 crontab -e
 
 # Add this line to run every 5 minutes:
-*/5 * * * * /path/to/VibeCoder/run.sh >> ~/logs/cron.log 2>&1
+# Linux; on macOS the log directory is ~/Library/Logs/vibe-coder
+*/5 * * * * /path/to/VibeCoder/run.sh >> ~/.local/state/vibe-coder/cron.log 2>&1
 ```
 
 > **📝 Note on cron PATH (macOS/Homebrew):**
@@ -828,7 +829,11 @@ Whichever supervisor you use — launchd, cron, systemd, Task Scheduler, `loop.s
 
 - **Backoff instead of a restart storm.** Consecutive launcher failures are counted in `${WORK_DIR}/.container_restart_state.json`; `loop.sh` / `loop.ps1` wait longer after each one (base sleep doubled per failure, capped at 30 minutes) and reset after a successful run. Under a scheduler the fixed interval is the retry, and the launcher records the same counter itself.
 - **Escalation through GitHub.** The launcher records the phase it reached in `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-phase`, so a failure is attributed to runtime detection, image build, work volume preparation, container start or the worker run. Past the phase's threshold — 2 for a failed image build, 3 otherwise — the failure is reported through the crash-notification channel (GitHub issue comment plus optional webhook, subject to its cooldown), naming the phase.
-- **A quota pause is not a failure.** A run that stops because this host is out of Claude quota exits **75** and writes `~/logs/quota-pause.json`. That is a scheduled outcome: the failure streak resets, nothing escalates, the container is not treated as suspect, and the supervisor re-probes at a fixed cadence (`VIBE_QUOTA_PAUSE_SLEEP_SECONDS`, default 3600 s) rather than doubling its wait — the quota may be extended before its stated reset. A host that genuinely *crashes* while out of quota writes no marker, so it backs off exactly as above.
+- **A quota pause is not a failure.** A run that stops because this host is out of Claude quota exits **75** and writes `quota-pause.json` in the host log directory. That is a scheduled outcome: the failure streak resets, nothing escalates, the container is not treated as suspect, and the supervisor re-probes at a fixed cadence (`VIBE_QUOTA_PAUSE_SLEEP_SECONDS`, default 3600 s) rather than doubling its wait — the quota may be extended before its stated reset. A host that genuinely *crashes* while out of quota writes no marker, so it backs off exactly as above.
+
+- **A worker already running is not a failure.** One worker per host is a design invariant (Issue #26): the work volumes are per-host singletons, so the pre-launch reaper stops a second launch rather than letting it die on a storage attachment. Both launchers exit **4** for it, and the recorder treats that status as its own outcome — the streak resets, the wait is the base cadence, and nothing escalates, however many times the scheduler fires while a long cycle is still running. The stop is still loud on stderr and in `self-heal-summary` (an `another_worker_running` event); it is simply not a fault. It used to exit **1**, which the recorder reads as "a bootstrap, config or loop failure the worker reported itself", so a healthy host reported itself broken for behaving exactly as designed (Issue #1056).
+
+- **A run somebody stopped is not a failure.** `run.sh` forwards SIGTERM/SIGINT to the runtime client and exits with **that client's** status — 255 on macOS hosts when the container is stopped under it — so an operator's `kill`, a launchd stop or a host shutdown used to look exactly like a crash and counted towards the escalation streak (Issues #879, #1072). The signal trap now declares itself in `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-termination`, which the recorder **consumes**: a stop is counted neither as a failure nor as a recovery, the streak it interrupted is carried through untouched, and the next attempt comes at the base cadence. A leftover marker is refused (older than an hour) and a run that was never signalled clears it at launch, so a genuine crash can never inherit somebody else's stop. The supervisor's **own** deadline kill (124/137) stays a failure — a cycle that had to be killed is a fault the host must escalate for.
 
 - **A worker already running is not a failure.** One worker per host is a design invariant (Issue #26): the work volumes are per-host singletons, so the pre-launch reaper stops a second launch rather than letting it die on a storage attachment. Both launchers exit **4** for it, and the recorder treats that status as its own outcome — the streak resets, the wait is the base cadence, and nothing escalates, however many times the scheduler fires while a long cycle is still running. The stop is still loud on stderr and in `self-heal-summary` (an `another_worker_running` event); it is simply not a fault. It used to exit **1**, which the recorder reads as "a bootstrap, config or loop failure the worker reported itself", so a healthy host reported itself broken for behaving exactly as designed (Issue #1056).
 
@@ -851,24 +856,27 @@ Recoveries, backoffs, escalations, quota pauses, already-running stops and force
 
 ## 📝 Logs
 
-Logs are written inside the container to `/home/vibe/logs`, which is the host's
-`~/logs` mounted read/write — so every path below is read on the host, with no
-`exec` into the container.
+Logs are written inside the container to `/home/vibe/logs`, which is the **host
+log directory** mounted read/write — so every path below is read on the host,
+with no `exec` into the container. That directory defaults to the platform's own
+location, so ask for it rather than assuming `~/logs`
+([Where the logs go](CONFIGURATION.md#-where-the-logs-go)):
 
 View logs in real-time:
 ```bash
-tail -f ~/logs/worker.log        # Latest worker activity (symlink)
-tail -f ~/logs/worker-<PID>.log  # Specific run's log
-tail -f ~/logs/run_core.log      # Run core startup/shutdown
-tail -f ~/logs/run_guard.log     # PID guard decisions
-tail -f ~/logs/pull.log          # Git pull output
+LOG_DIR="$(deno run --allow-env --allow-read worker/deno/mod.ts log-dir)"
+tail -f "${LOG_DIR}/worker.log"        # Latest worker activity (symlink)
+tail -f "${LOG_DIR}/worker-<PID>.log"  # Specific run's log
+tail -f "${LOG_DIR}/run_core.log"      # Run core startup/shutdown
+tail -f "${LOG_DIR}/run_guard.log"     # PID guard decisions
+tail -f "${LOG_DIR}/pull.log"          # Git pull output
 ```
 
 Prior runs' worker logs are gzipped at the next worker start, so read them with
 `zcat`:
 
 ```bash
-zcat ~/logs/worker-<PID>.log.gz | less
+zcat "${LOG_DIR}/worker-<PID>.log.gz" | less
 ```
 
 Worker logs — plain or gzipped — are deleted once older than
@@ -941,7 +949,11 @@ navigate-and-screenshot smoke test with `--network none`.
 **Option 1: Automatic Upload via ImgBB (Recommended)**
 
 1. Get a free API key from https://api.imgbb.com/
-2. Set the environment variable: `export VIBE_IMGBB_API_KEY="your-api-key-here"`
+2. State it in `.config.json` as `"imgbb_api_key": "your-api-key-here"`. The
+   `VIBE_IMGBB_API_KEY` variable still works when the file states no key, but
+   since 2.0.0 the file wins when both are set (Issue #1032) and a run that
+   uses the variable says so once — see
+   [Release notes](RELEASE-NOTES.md#200--the-config-file-wins-over-the-environment).
 3. Screenshots will be automatically uploaded and URLs embedded in the PR
 
 **Option 2: Manual Upload**
@@ -950,7 +962,7 @@ Without an ImgBB API key, screenshots are saved to `docs/evidence/` and the PR i
 
 | Variable | Description |
 |----------|-------------|
-| `VIBE_IMGBB_API_KEY` | ImgBB API key for automatic screenshot uploads |
+| `VIBE_IMGBB_API_KEY` | ImgBB API key for automatic screenshot uploads, when `.config.json` states no `imgbb_api_key` (Issue #1032) |
 | `VIBE_SCREENSHOT_DIR` | Custom screenshot directory (default: `docs/evidence`) |
 
 ### 🧪 Testing Screenshot Support

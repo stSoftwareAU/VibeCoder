@@ -568,7 +568,7 @@ Four boundaries keep that safe on a machine nobody is watching:
 | A narrow signature list | Only `no space left on device`, `read-only file system`, `ENOSPC` and BuildKit's `ResourceExhausted` are healed. A broken `RUN` step, a missing package or a syntax error is untouched — "healing" a genuine build error is how a launcher starts looping on it |
 | One retry, never a loop | Exactly one heal and one retry per launch. A second failure in the same launch escalates to a builder *recreate* (`builder delete` + `builder start`) so the **next** launch starts clean, and this launch still fails |
 | Per-runtime, in one place | Apple container bounces its builder VM; Docker and Podman build in-process and prune the build cache instead. Both spellings live with the rest of the dialect in `container_runtime.ts` |
-| Fails loud | An unreadable build log, an unsupported runtime or a builder that will not start exits non-zero naming the reason, and the decision is logged to `~/logs/run_core.log` |
+| Fails loud | An unreadable build log, an unsupported runtime or a builder that will not start exits non-zero naming the reason, and the decision is logged to `run_core.log` in the host log directory |
 
 `worker/deno/lib/container_build_heal.ts` owns the classifier and the
 escalation; the runtime is driven through an injected seam, so the tests never
@@ -1400,17 +1400,23 @@ flowchart LR
 ```
 
 The **enabled set** — which providers are provisioned, preflighted and
-mounted for a run — is `VIBE_AGENT_PROVIDERS` (comma-separated), then the
-`.config.json` `agent_providers` key, then the active provider alone, so a
+mounted for a run — is the `.config.json` `agent_providers` key, then
+`VIBE_AGENT_PROVIDERS` (comma-separated), then the active provider alone, so a
 deployment that configures neither is unchanged. A set that
 excludes the active provider fails loudly: its agent would have no credential
 mounted.
 
-Selection of the *active* provider is `VIBE_AGENT_PROVIDER` (a per-run
-override), then the `.config.json` `agent_provider` key, then Claude. An id that is set but not
+Selection of the *active* provider is the `.config.json` `agent_provider` key,
+then `VIBE_AGENT_PROVIDER`, then Claude. An id that is set but not
 registered fails loudly at startup with the supported ids named — it never
 falls back to the default, which would run the wrong agent under an explicit
 selection.
+
+> **Changed in 2.0.0 (Issue #1032).** The two variables used to *override* the
+> file. They no longer do: the `.config.json` key wins, which is the rule every
+> other setting follows ([RELEASE-NOTES.md](RELEASE-NOTES.md#200--the-config-file-wins-over-the-environment)).
+> A host that sets both now runs the provider the file names, and a run that
+> still takes its provider from a variable says so once at startup.
 
 ### Per-invocation selection
 

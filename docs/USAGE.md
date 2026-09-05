@@ -399,7 +399,7 @@ subsequent scan until a human removes the label.
 >> `idle-task`; the single label the Vibe Coder may self-apply is `idle-task`.
 >> Those labels are controlled by humans (and, for internal state labels, by the
 >> worker's non-Claude code paths). If you see the worker stop retrying an issue
->> with no `needs-human` label, check `~/logs/worker.log` — it is probably in
+>> with no `needs-human` label, check `worker.log` in the host log directory — it is probably in
 >> cooldown or hit the `failed` threshold, not an escalation.
 
 ## ❓ Question Clarification

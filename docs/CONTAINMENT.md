@@ -355,7 +355,8 @@ is a command, not a belief:
 cd worker/deno && deno task green-gate-report        # → docs/evidence/green-gate-<date>.md
 ```
 
-Every launch now writes one durable line into `~/logs/run_core.log`
+Every launch now writes one durable line into `run_core.log` in the host log
+directory ([Where the logs go](CONFIGURATION.md#-where-the-logs-go))
 (`run mode: container host=<host> run_id=<id>`), and the report counts
 launches by mode from those records, adds the claims, heartbeats, breaker
 trips, restarts and agent kills from `worker-*.log` and `self-heal.jsonl`,

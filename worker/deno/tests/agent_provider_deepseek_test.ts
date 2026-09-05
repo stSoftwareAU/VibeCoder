@@ -182,13 +182,22 @@ Deno.test(`deepseek provider - "${AGENT_PROVIDER_CONFIG_KEY}: deepseek" selects 
   );
 });
 
-Deno.test(`deepseek provider - ${AGENT_PROVIDER_ENV}=deepseek overrides configuration`, () => {
+// Inverted by Issue #1032: this asserted the variable overrode the file. The
+// file wins now, as it does for every other setting (Issue #289), so the
+// variable selects DeepSeek only where the file selects nothing.
+Deno.test(`deepseek provider - ${AGENT_PROVIDER_ENV}=deepseek selects it when the file states no provider`, () => {
+  assertEquals(
+    resolveAgentProviderId({
+      env: envOf({ [AGENT_PROVIDER_ENV]: DEEPSEEK_PROVIDER_ID }),
+    }),
+    DEEPSEEK_PROVIDER_ID,
+  );
   assertEquals(
     resolveAgentProviderId({
       configured: CLAUDE_PROVIDER_ID,
       env: envOf({ [AGENT_PROVIDER_ENV]: DEEPSEEK_PROVIDER_ID }),
     }),
-    DEEPSEEK_PROVIDER_ID,
+    CLAUDE_PROVIDER_ID,
   );
 });
 

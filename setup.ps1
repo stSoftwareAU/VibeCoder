@@ -929,8 +929,18 @@ function Invoke-VibeInteractiveCredentials {
                 if (Get-Command gh -CommandType Application -ErrorAction SilentlyContinue) {
                     $previous = $env:GH_CONFIG_DIR
                     $env:GH_CONFIG_DIR = $expandedSource
-                    $sourceToken = (& gh auth token 2>$null | Select-Object -First 1)
-                    if ($LASTEXITCODE -ne 0) { $sourceToken = "" }
+                    # `& gh ... | Select-Object -First 1` stops the upstream
+                    # pipeline, so the native exit code is never recorded and
+                    # $LASTEXITCODE keeps whatever an earlier native command
+                    # left there — 0, during provisioning. Collecting into an
+                    # array runs gh to completion and records its status, the
+                    # same correction Issue #1146 made to the login lookup.
+                    $sourceLines = @(& gh auth token 2>$null)
+                    if ($LASTEXITCODE -ne 0 -or $sourceLines.Count -eq 0) {
+                        $sourceToken = ""
+                    } else {
+                        $sourceToken = $sourceLines[0]
+                    }
                     $env:GH_CONFIG_DIR = $previous
                 }
                 if ($sourceToken) {
@@ -979,7 +989,7 @@ function Invoke-VibeInteractiveCredentials {
     Resolved by the Deno seam (worker/deno/setup/agent_providers.ts) through
     the `agent-providers` subcommand rather than parsed out of .config.json
     here: `agent_provider`, `agent_providers`, the VIBE_AGENT_PROVIDER(S)
-    overrides and the default all live there, and setup.sh reads the selection
+    fallbacks and the default all live there, and setup.sh reads the selection
     the same way, so the two platforms cannot disagree about which host this
     is.
 
