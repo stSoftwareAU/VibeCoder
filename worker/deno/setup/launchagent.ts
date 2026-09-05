@@ -9,7 +9,8 @@
 
 import { processEnvLookup } from "../lib/env_lookup.ts";
 import { pathStyleFor } from "../lib/host_path_style.ts";
-import { resolveLogDir } from "../lib/log_dir.ts";
+import { readConfiguredLogDirSync, resolveLogDir } from "../lib/log_dir.ts";
+import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 
 /** Configuration for LaunchAgent setup. */
 export interface LaunchAgentConfig {
@@ -47,7 +48,15 @@ const LAUNCHAGENT_LABEL = "com.vibe.auto-issue-worker";
  */
 function hostLogsDir(): string {
   const home = Deno.env.get("HOME") ?? "~";
-  return resolveLogDir(home, processEnvLookup, pathStyleFor(home));
+  return resolveLogDir(
+    home,
+    processEnvLookup,
+    pathStyleFor(home),
+    undefined,
+    readConfiguredLogDirSync(
+      resolveHostConfigPath({ baseDir: Deno.cwd(), env: processEnvLookup }),
+    ),
+  );
 }
 
 /**

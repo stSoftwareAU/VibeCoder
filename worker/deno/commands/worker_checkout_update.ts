@@ -55,7 +55,8 @@ import { DEFAULT_UPDATE_MODE, UPDATE_MODES } from "../lib/config_defaults.ts";
 import { pinValueErrors } from "../lib/config_validator.ts";
 import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import { pathStyleFor } from "../lib/host_path_style.ts";
-import { resolveLogDir } from "../lib/log_dir.ts";
+import { readConfiguredLogDirSync, resolveLogDir } from "../lib/log_dir.ts";
+import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 
 // The name lives beside the update it turns off, so the variable this command
 // reads and the one an overwrite advertises cannot drift (Issue #735).
@@ -207,7 +208,16 @@ function updateSkipped(env: EnvLookup): boolean {
  */
 function defaultLogDir(env: EnvLookup): string {
   const home = env("HOME") ?? env("USERPROFILE");
-  return home ? resolveLogDir(home, env, pathStyleFor(home)) : "logs";
+  if (!home) return "logs";
+  return resolveLogDir(
+    home,
+    env,
+    pathStyleFor(home),
+    undefined,
+    readConfiguredLogDirSync(
+      resolveHostConfigPath({ baseDir: Deno.cwd(), env }),
+    ),
+  );
 }
 
 export const workerCheckoutUpdateCommand: Command = {

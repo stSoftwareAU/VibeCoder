@@ -1119,6 +1119,15 @@ export interface ConfigFile {
   ssh_key_path?: string;
   /** gh config dir for separate gh CLI identity (Issue #583) */
   gh_config_dir?: string;
+  /**
+   * Host log directory (Issue #873). Absolute, or anchored at `~`. Outranks
+   * `LAUNCH_LOG_DIR` and `LOG_DIR`; absent, the platform default applies.
+   *
+   * Read straight from the file by `lib/log_dir.ts` rather than through the
+   * loaded `WorkerConfig`, because the launchers ask for it before any
+   * configuration is guaranteed to exist — see `LOG_DIR_CONFIG_KEY`.
+   */
+  log_dir?: string;
   /** GitHub user status toggle (Issue #409) */
   update_gh_user_status?: boolean;
   /** Log rotation max file size in MB (Issue #469) */

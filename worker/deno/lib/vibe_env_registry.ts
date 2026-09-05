@@ -739,6 +739,7 @@ export function unkeyedOperatorSettings(): string[] {
  * The number Issue #874 is measured by. It may shrink, never grow: adding the
  * key lowers it, and a new `operator_config` entry — or a key deleted from
  * `KNOWN_CONFIG_KEYS` — fails
- * {@link ./../tests/vibe_env_registry_test.ts}.
+ * {@link ./../tests/vibe_env_registry_test.ts}. Issue #873 took it from 16 to
+ * 15 by giving `VIBE_LOGS_DIR` the `log_dir` key.
  */
-export const OPERATOR_CONFIG_BYPASS_CAP = 16;
+export const OPERATOR_CONFIG_BYPASS_CAP = 15;

@@ -838,8 +838,15 @@ export function containerTargetPaths(
  * @param baseDir - The worker checkout
  * @param env - Environment reader (injectable for tests)
  * @param style - How this host spells its paths; inferred from `baseDir`
+ * @param platform - Whose log convention the default follows
+ * @param configuredLogDir - The `.config.json` `log_dir` value (Issue #873),
+ *   read by the caller with `readConfiguredLogDir`. It outranks
+ *   `LAUNCH_LOG_DIR` and `LOG_DIR`, so the writable log mount points at the
+ *   same directory the launcher's own `log-dir` command reports — a split
+ *   would put `launch-*.log` and `worker-*.log` in different places.
  * @returns The resolved host paths
- * @throws When no home directory can be resolved
+ * @throws When no home directory can be resolved, or the pinned log directory
+ *   is relative
  */
 // The log directory's own resolution lives in log_dir.ts (Issues #872, #873):
 // `run.sh`, `loop.sh` and `run.ps1` reach the same rule through the `log-dir`
@@ -851,6 +858,7 @@ export function resolveContainerLaunchHostPaths(
   env: (name: string) => string | undefined,
   style: LauncherPathStyle = pathStyleFor(baseDir),
   platform: LogDirPlatform = hostLogDirPlatform(),
+  configuredLogDir?: string,
 ): ContainerLaunchHostPaths {
   // Windows hosts lead with USERPROFILE: HOME, when it is set there at all,
   // is usually a POSIX-shaped path from a Unix emulation layer that the
@@ -893,8 +901,9 @@ export function resolveContainerLaunchHostPaths(
     // all, because this value is the container's writable host mount. One
     // resolution, shared by all three. `LAUNCH_LOG_DIR` is checked first to
     // match `loop.sh`'s precedence exactly. Issue #873 moved the default that
-    // chain falls back to onto the platform's own standard location.
-    logDir: resolveLogDir(home, env, style, platform),
+    // chain falls back to onto the platform's own standard location, and gave
+    // the operator the `.config.json` `log_dir` key that outranks both.
+    logDir: resolveLogDir(home, env, style, platform, configuredLogDir),
     configFile,
     configStageDir: joinPath(home, ".vibe-coder/run-config", style),
     credentialDir: normalise(absolute(credentialDir), style),
