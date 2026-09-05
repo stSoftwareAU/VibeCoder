@@ -19,10 +19,13 @@
  * enforced as what it actually is — a property of the source text — by
  * {@link findMarkerDedupCallSites} plus `tests/marker_dedup_author_cap_test.ts`.
  *
- * Issue #1124 cleared the last six scanned sites and the four consumers, so
- * both lists below are now empty. The scanner and the cap test are what keep
- * them empty; the lists are where a deliberately-deferred site would be
- * recorded.
+ * Issue #1124 cleared the last six scanned sites and the four consumers. Issue
+ * #1216 then found six live instances of the class that the scanner's two
+ * recognised shapes cannot see, fixed four of them, and recorded the two whose
+ * fail direction is a design decision in
+ * {@link MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS} below. The scanner and the
+ * cap test keep the *scanned* set clean; the consumer list is where a site the
+ * scanner cannot classify is recorded so the count stays visible.
  *
  * {@link MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES} is the shrink-only manifest of
  * what has not been fixed yet, in the shape of

@@ -1202,7 +1202,8 @@ because a suppressed wrapper produces no error and no log line.
   fix has to delete its own entry. The test reads source text deliberately —
   the invariant is a property of the source, and the file says so at the top so
   the next reader does not remove it as implementation-coupled.
-- **The manifest is now empty (Issue #1124).** The last six scanned sites —
+- **The manifest was cleared by Issue #1124, and re-populated by #1216.** The
+  last six scanned sites —
   `issue_query.ts`'s `fetchPRsForIssueByTitle`, `claim_pr_comment.ts`,
   `idle_task_backfill.ts`, `pr_branch_lock.ts`, `shared_cooldown.ts`'s expired-
   comment cleanup and `setup/best_practices_sync.ts` — and the four consumers
@@ -1225,12 +1226,28 @@ because a suppressed wrapper produces no error and no log line.
   also the *right* boundary for them — a human maintainer's PR for an issue
   legitimately means "already in hand", so a fleet-only filter would have the
   worker duplicate it.
-- **Residual risk, stated.** An empty manifest means no *scanned* lookup trusts
-  an unverified marker; it does not mean the class cannot return. The scanner
-  sees `gh` call sites, not data flow, so a module that matches markers
-  client-side over rows another module fetched is invisible to it — the
-  reason the consumer list exists alongside the scanned one. The cap keeps the
-  scanned set clean; a new consumer still has to be reasoned about by hand.
+- **Residual risk, stated — and it landed (Issue #1216).** An empty manifest
+  means no *scanned* lookup trusts an unverified marker; it does not mean the
+  class cannot return. The scanner sees `gh` call sites, not data flow, so a
+  module that matches markers client-side over rows another module fetched is
+  invisible to it — the reason the consumer list exists alongside the scanned
+  one. The cap keeps the scanned set clean; a new consumer still has to be
+  reasoned about by hand.
+
+  The chunk-12c sweep found six live instances of the class sitting outside
+  the scanner's two recognised shapes while **both** lists read zero:
+  `issue_comment_pages.ts`'s shared `issueCommentsContainMarker` (pages raw
+  REST comments with no `--jq` at all, and was substring-matching the whole
+  page JSON), `needs_human_escalation.ts`, `run_failure_issue.ts` (projects
+  without a `select(.body`) and `milestone_branch_self_heal.ts`. All four now
+  route through `alert_dedup_authors.ts` and fail towards acting.
+  `conflict_abandon_restart.ts` and `pr_merge_conflict_scan.ts` are recorded
+  in `MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS` rather than fixed, because
+  their restart marker suppresses a *destructive* action and its fail
+  direction is a design decision, not a filter
+  ([#1247](https://github.com/stSoftwareAU/VibeCoder/issues/1247)). The full
+  record is
+  [`docs/audits/security-sweep-1216-untrusted-github-ingestion.md`](docs/audits/security-sweep-1216-untrusted-github-ingestion.md).
 
 ### 6. Egress Containment — Per-Run Write-Repo Allowlist
 
