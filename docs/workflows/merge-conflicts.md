@@ -258,6 +258,73 @@ the whole stuck set at a glance. The branch updater's "needs a real merge"
 warning now fires **once per PR per process** rather than on every ~2.5-minute
 pass, because the label is the queue.
 
+## 🧾 Every decision leaves a reason behind
+
+The label alone said *that* a PR was stuck, never *why the worker left it
+there*. A skipped PR produced either nothing or an unstructured log line, so
+"the label went on and then silence" — the #1076 symptom — read exactly like a
+pass that ran and correctly decided to wait. Issue #1109 closed that: every PR
+the pass decides on now emits one structured record, and every pass closes with
+one summary.
+
+A record is one line, greppable by prefix:
+
+```text
+merge_conflict_decision=cooldown repo=org/repo pr=48
+    repo=org/repo prNumber=48 decision=skipped reason=cooldown msUntilDue=10800000
+merge_conflict_pass=scan labelled=3 attempted=0 considered=3 cooldown=1 needs-human=2
+```
+
+The reasons are a **closed taxonomy** — every exit maps to exactly one, and
+each carries the operands that make the decision checkable afterwards:
+
+| Reason | Operands | Meaning |
+| --- | --- | --- |
+| `attempted` | — | Selected for a resolution this pass. |
+| `not-conflicting` | `mergeableState` | GitHub no longer calls the PR `CONFLICTING` — a stale label, not a queue entry. |
+| `out-of-scope-author` | `author` | Outside the push-capable maintenance set. |
+| `already-handled` | — | Taken or deferred earlier in this same cycle's drain. |
+| `scan-error` | `stage`, `error` | A per-PR lookup failed (`mergeable-state`, `labels` or `attempt-history`); the PR keeps its place. A state lookup that failed is **never** reported as merging cleanly. |
+| `needs-human` | `label` | A human already owns the conflict. |
+| `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent. |
+| `cooldown` | `msUntilDue`, `lastAttemptAt` | Still inside the 4-hour cooldown. `msUntilDue` is null when the recorded timestamp does not parse. |
+| `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
+| `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |
+| `repo-leased` | — | An issue slot holds the repository's shared clone. |
+| `queue-empty` / `deadline` / `cap` | —, `remainingMs`, `maxPerCycle` | The drain's pass-level stops. |
+
+Two properties are worth knowing when reading these:
+
+- **The taxonomy cannot silently grow a hole.** A decision is a required return
+  value, not an optional field, so an exit added without one does not compile;
+  the operand switch is exhaustive, so a reason added without a case does not
+  compile either. `merge_conflict_decision_taxonomy_test.ts` runs the type
+  checker over both shapes to prove it.
+- **The records are free.** Every operand comes from data the pass already
+  fetched — the listing, the batched mergeable state, the labels and the comment
+  timeline. No record costs a GitHub call, which matters when this runs every
+  ~2.5 minutes across every monitored repository.
+
+A PR that was never in the queue (`not-conflicting`, `out-of-scope-author`) is
+recorded at DEBUG so a fleet of healthy PRs costs no log volume; everything in
+the queue is INFO.
+
+Three boundaries are worth knowing before reading a cycle's records as gospel:
+
+- **A scan pass ends at its selection.** Conflicting PRs after the selected one
+  are decided on the next call, not this one — walking past the selection would
+  cost a label read and a comment page per PR. The drain calls the scan once per
+  PR it takes, so a cycle still covers the queue, at the price of several
+  `merge_conflict_pass=scan` summaries per cycle.
+- **The two summaries count different things.** `scope=scan` counts the
+  conflicting PRs that pass walked, plus `reposScanned` / `reposNotAllowed` /
+  `reposListFailed` for the repo-level exits that know no PR to key on;
+  `scope=drain` counts only the PRs the drain itself took or deferred.
+- **A selected PR can leave two records.** The scan records `attempted` when it
+  hands the PR over; if the processor then finds another host holding the PR
+  lock, it records `lock-held`. The first is the pass's decision, the second is
+  that attempt's outcome.
+
 ## 🚰 One cycle empties the queue
 
 The pass takes **every** conflicting PR that is due, not one per cycle

@@ -38,7 +38,7 @@ import type {
   GitDeps,
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
-import type { Logger } from "../types.ts";
+import type { LogContext, Logger } from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -568,6 +568,39 @@ Deno.test("processMergeConflict - a PR locked by another worker is left alone", 
   assertEquals(result.value.processed, false);
   assertEquals(captured.gitArgs.length, 0);
   assertEquals(captured.comments.length, 0);
+});
+
+Deno.test("processMergeConflict - a locked PR records lock-held and its holder", async () => {
+  // Issue #1109: the lock gate is one more exit a labelled PR can leave a
+  // pass through, so it records against the same closed taxonomy.
+  const records: Array<{ message: string; context?: LogContext }> = [];
+  const logger: Logger = {
+    ...makeSilentLogger(),
+    info: (message, context) => records.push({ message, ...{ context } }),
+  };
+
+  await runProcessor(makeInput(), makeGitScript(), {
+    logger,
+    workerId: "worker-b",
+    acquireLockFn: (() =>
+      Promise.resolve({
+        ok: true,
+        value: { acquired: false, winnerId: "worker-a" },
+      })) as unknown as MergeConflictProcessorDeps["acquireLockFn"],
+    releaseLockFn: (() =>
+      Promise.resolve({
+        ok: true,
+        value: undefined,
+      })) as unknown as MergeConflictProcessorDeps["releaseLockFn"],
+  });
+
+  const record = records.find((entry) =>
+    entry.message.startsWith("merge_conflict_decision=")
+  );
+  assert(record, "the lock gate left no decision record");
+  assertEquals(record.context?.reason, "lock-held");
+  assertEquals(record.context?.lockHolder, "worker-a");
+  assertEquals(record.context?.prNumber, makeInput().prNumber);
 });
 
 // ---------------------------------------------------------------------------

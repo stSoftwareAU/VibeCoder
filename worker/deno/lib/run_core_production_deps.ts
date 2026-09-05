@@ -1980,7 +1980,9 @@ export async function createProductionRunCoreDeps(
             needsHumanLabel: config.needsHumanLabel,
             exclude,
           });
-          return scan.ok ? scan.value : null;
+          // Issue #1109: the scan records every PR it decided on through the
+          // logger itself, so the drain needs only the selection.
+          return scan.ok ? scan.value.selected : null;
         },
         // Issue #213: lease the shared `${WORK_DIR}/<repo>` clone before the
         // merge, so this pass and an issue slot never write one tree.

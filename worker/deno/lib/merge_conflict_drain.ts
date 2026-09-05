@@ -33,7 +33,15 @@
  */
 
 import type { Logger } from "../types.ts";
-import { type ConflictingPr, conflictPrKey } from "./pr_merge_conflict_scan.ts";
+import {
+  type ConflictingPr,
+  type ConflictPrDecision,
+  conflictPrKey,
+  conflictReasonOperands,
+  type ConflictSkipReason,
+  recordConflictDecision,
+  recordConflictPassSummary,
+} from "./pr_merge_conflict_scan.ts";
 
 /**
  * Conflicting PRs one cycle's pass will take.
@@ -87,6 +95,19 @@ export type ConflictDrainStopReason =
   /** The per-cycle cap was reached. */
   | "cap";
 
+/**
+ * The drain's stop, as a member of the closed skip taxonomy (Issue #1109).
+ *
+ * Derived from {@link ConflictSkipReason} rather than declared beside it, so
+ * the reason and its operands cannot drift from the record the pass emits —
+ * and {@link ConflictDrainResult.stopReason} is read straight off `kind`,
+ * leaving one source of truth for why the drain stopped.
+ */
+export type ConflictDrainStop = Extract<
+  ConflictSkipReason,
+  { kind: ConflictDrainStopReason }
+>;
+
 /** What the drain did this cycle. */
 export interface ConflictDrainResult {
   /** PRs selected — merged, failed and deferred alike. */
@@ -98,6 +119,8 @@ export interface ConflictDrainResult {
   /** True when any attempt did work (the priority's `processed`). */
   processed: boolean;
   stopReason: ConflictDrainStopReason;
+  /** One decision per PR the drain itself decided on (Issue #1109). */
+  decisions: readonly ConflictPrDecision[];
 }
 
 /**
@@ -121,71 +144,104 @@ export async function drainConflictingPrs(
   } = options;
 
   const handled = new Set<string>();
+  const decisions: ConflictPrDecision[] = [];
   let merged = 0;
   let deferred = 0;
   let processed = false;
-  let stopReason: ConflictDrainStopReason = "cap";
 
-  for (let taken = 0; taken < maxPerCycle; taken++) {
-    if (deadlineEpochMs !== undefined) {
-      const remaining = deadlineEpochMs - now();
-      if (remaining < minMsPerAttempt) {
-        // Said out loud only once the drain has done something: a pass that
-        // starts late and takes nothing is the ordinary quiet case.
-        if (taken > 0) {
-          logger.info(
-            "Merge-conflict drain stopping: too little of the cycle left " +
-              "for another resolution",
-            { taken, merged, remainingMs: remaining },
-          );
+  /**
+   * The loop, as a function that must return a stop.
+   *
+   * The declared return type is the drain's half of the closed taxonomy: an
+   * exit added here without a stop does not compile, the same way a per-PR
+   * exit in the scan cannot be added without a reason (Issue #1109).
+   */
+  const runDrain = async (): Promise<ConflictDrainStop> => {
+    for (let taken = 0; taken < maxPerCycle; taken++) {
+      if (deadlineEpochMs !== undefined) {
+        const remaining = deadlineEpochMs - now();
+        if (remaining < minMsPerAttempt) {
+          // Said out loud only once the drain has done something: a pass that
+          // starts late and takes nothing is the ordinary quiet case.
+          if (taken > 0) {
+            logger.info(
+              "Merge-conflict drain stopping: too little of the cycle left " +
+                "for another resolution",
+              { taken, merged, remainingMs: remaining },
+            );
+          }
+          return { kind: "deadline", remainingMs: remaining };
         }
-        stopReason = "deadline";
-        break;
+      }
+
+      const next = await findNext(handled);
+      if (next === null) return { kind: "queue-empty" };
+      // Excluded before the attempt, not after: a resolution that throws must
+      // not put the same PR back at the head of the queue.
+      handled.add(conflictPrKey(next.repo, next.prNumber));
+
+      const lease = acquireLease(next);
+      if (lease === null) {
+        // The deferral is a decision on a labelled PR like any other, so it
+        // is recorded rather than left to an unstructured line (Issue #1109).
+        const deferral: ConflictPrDecision = {
+          repo: next.repo,
+          prNumber: next.prNumber,
+          outcome: "skipped",
+          reason: { kind: "repo-leased" },
+        };
+        decisions.push(deferral);
+        recordConflictDecision(logger, deferral);
+        deferred++;
+        continue;
+      }
+
+      decisions.push({
+        repo: next.repo,
+        prNumber: next.prNumber,
+        outcome: "attempted",
+      });
+
+      try {
+        const outcome = await resolve(next);
+        if (outcome) {
+          processed = processed || outcome.processed;
+          if (outcome.merged) merged++;
+        }
+      } finally {
+        lease.release();
       }
     }
+    // The loop ran out rather than breaking: the per-cycle cap.
+    return { kind: "cap", maxPerCycle };
+  };
 
-    const next = await findNext(handled);
-    if (next === null) {
-      stopReason = "queue-empty";
-      break;
-    }
-    // Excluded before the attempt, not after: a resolution that throws must
-    // not put the same PR back at the head of the queue.
-    handled.add(conflictPrKey(next.repo, next.prNumber));
-
-    const lease = acquireLease(next);
-    if (lease === null) {
-      logger.info(
-        "Deferring merge-conflict resolution: an issue slot holds the repository",
-        { repo: next.repo, prNumber: next.prNumber },
-      );
-      deferred++;
-      continue;
-    }
-
-    try {
-      const outcome = await resolve(next);
-      if (outcome) {
-        processed = processed || outcome.processed;
-        if (outcome.merged) merged++;
-      }
-    } finally {
-      lease.release();
-    }
-  }
+  const stop = await runDrain();
 
   if (handled.size > 1) {
     logger.info(
       `Merge-conflict drain complete: ${handled.size} PR(s) taken, ` +
-        `${merged} merged, ${deferred} deferred (${stopReason})`,
+        `${merged} merged, ${deferred} deferred (${stop.kind})`,
     );
   }
+
+  // One pass-level summary per completed pass — the stop reason and its
+  // operands, so a cycle that took nothing still says why (Issue #1109). A
+  // resolution that throws propagates past here, loudly, as it did before.
+  recordConflictPassSummary(logger, "drain", decisions, {
+    ...conflictReasonOperands(stop),
+    stopReason: stop.kind,
+    taken: handled.size,
+    merged,
+    deferred,
+  });
 
   return {
     taken: handled.size,
     merged,
     deferred,
     processed,
-    stopReason,
+    stopReason: stop.kind,
+    decisions,
   };
 }

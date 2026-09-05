@@ -64,6 +64,7 @@ import {
   CONFLICT_RESOLVED_MARKER,
   DEFAULT_MAX_CONFLICT_ATTEMPTS,
   DEFAULT_MAX_DISRUPTED_ATTEMPTS,
+  recordConflictDecision,
 } from "./pr_merge_conflict_scan.ts";
 
 // ---------------------------------------------------------------------------
@@ -488,10 +489,14 @@ export async function processMergeConflict(
     const lock = await acquireLock({ repo, prNumber, workerId });
     if (!lock.ok || !lock.value.acquired) {
       const winner = lock.ok ? lock.value.winnerId ?? "unknown" : "unknown";
-      logger.info("Conflicting PR is locked by another worker — skipping", {
+      // The same closed taxonomy the scan and the drain record against, so
+      // "another host has it" is a queryable reason rather than prose only
+      // (Issue #1109).
+      recordConflictDecision(logger, {
         repo,
         prNumber,
-        winnerId: winner,
+        outcome: "skipped",
+        reason: { kind: "lock-held", lockHolder: winner },
       });
       return {
         ok: true,

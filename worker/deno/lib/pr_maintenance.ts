@@ -64,6 +64,11 @@ export interface PrEntry {
   baseRefName?: string;
   autoMergeRequest?: { mergeMethod: string } | null;
   title?: string;
+  /**
+   * Author, when the listing asked for it — the superset listing always does
+   * (Issue #1109).
+   */
+  author?: { login?: string } | null;
 }
 
 /** Comment entry from the GitHub API. */
