@@ -261,6 +261,22 @@ export interface WorkerConfig {
    */
   progressExtensionCheckSeconds?: number;
   /**
+   * Tee every agent invocation's raw stream-json to a redacted transcript
+   * under the worker log directory (`.config.json` `agent_transcript_enabled`,
+   * Issue #1141; default: false).
+   *
+   * A transcript is the raw agent stream — model output, issue and repository
+   * text, file contents the agent read and command output — so this is off
+   * unless a deployment asks for it. It has to be on for **every** run for a
+   * failed one to have a transcript, because which run fails is not knowable
+   * in advance; what happens to a transcript afterwards is the callback
+   * hook's decision, not the tee's.
+   *
+   * Optional so the existing `WorkerConfig` literals stay valid; `loadConfig`
+   * always populates it from `OPERATIONAL_DEFAULTS`.
+   */
+  agentTranscriptEnabled?: boolean;
+  /**
    * Let the worker schedule its own auto-filed diagnostics (Issue #505;
    * default: true).
    *
@@ -1061,6 +1077,11 @@ export interface ConfigFile {
   progress_extension_stall_seconds?: number;
   /** Seconds between working-tree progress checks (Issue #4295) */
   progress_extension_check_seconds?: number;
+  /**
+   * Tee the raw agent stream to a redacted transcript (Issue #1141; default
+   * false). Off unless asked for — the transcript carries repository content.
+   */
+  agent_transcript_enabled?: boolean;
   /**
    * Let the worker schedule its own auto-filed diagnostics (Issue #505;
    * default true). `false` restores the human-`work-on`-only behaviour.

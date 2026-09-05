@@ -55,7 +55,7 @@ import {
 } from "./run_callbacks.ts";
 import type { CallbacksConfig } from "./run_callbacks_config.ts";
 import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
-import { agentTranscriptPath } from "./agent_transcript.ts";
+import { agentTranscriptDir, agentTranscriptPath } from "./agent_transcript.ts";
 
 /** The checks the fixture runs, in the order it runs them. */
 export const CONFORMANCE_CHECK_IDS = [
@@ -120,7 +120,18 @@ export interface CallbackConformanceReport {
 /** Default per-hook budget: generous enough for a slow filesystem. */
 export const DEFAULT_TIMEOUT_SECONDS = 10;
 
-/** Budget used by the scenario that deliberately hangs a hook. */
+/**
+ * Budget used by the one scenario that deliberately hangs a hook.
+ *
+ * Kept short so the fixture is quick, which means it must only ever be spent
+ * on hooks that have already been executed once: the first execution of a
+ * brand-new file costs 1.5–2.9s on a loaded host and 0.4s on an idle one,
+ * against 5–60ms for every execution after it (measured on macOS 15, Issue
+ * #1055). The hanging hook is welcome to spend it — exceeding the budget is
+ * the point — but the `always` hook run alongside it has already been driven
+ * by the preceding scenario under the full {@link DEFAULT_TIMEOUT_SECONDS}
+ * budget, so a loaded host cannot make it look like a contract failure.
+ */
 const HANG_TIMEOUT_SECONDS = 1;
 
 /**
@@ -321,18 +332,20 @@ async function checkAlwaysAfterFault(
   const id = "always-after-outcome-fault" as const;
   const faults = new Faults();
   const observed: string[] = [];
+  const dir = await scenarioDir(root, id);
+
+  // One `always` hook for both scenarios, deliberately. Scenario A drives it
+  // under the full budget, which leaves scenario B's deliberately short
+  // {@link HANG_TIMEOUT_SECONDS} budget to be spent on the hang rather than
+  // on an executable's first-execution cost (Issue #1055).
+  const alwaysHook = hooks.always ??
+    await writeHook(dir, "always.sh", recordEvent(dir, "always"));
 
   // Scenario A — the outcome hook exits non-zero.
-  const failedDir = await scenarioDir(root, `${id}-exit`);
   const failing = await invoke({
     // Injected: an extension's hook cannot be asked to fail on demand.
-    success: await writeHook(failedDir, "success.sh", "exit 7"),
-    always: hooks.always ??
-      await writeHook(
-        failedDir,
-        "always.sh",
-        recordEvent(failedDir, "always"),
-      ),
+    success: await writeHook(dir, "success-exit.sh", "exit 7"),
+    always: alwaysHook,
     timeoutSeconds,
   }, scenarioContext());
   observed.push(`after exit 7: ${describeAll(failing.invocations)}`);
@@ -354,11 +367,9 @@ async function checkAlwaysAfterFault(
   // Scenario B — the outcome hook hangs past its budget. `exec` so the
   // timeout's signal lands on the sleeping process rather than a shell that
   // outlives it.
-  const hungDir = await scenarioDir(root, `${id}-timeout`);
   const hung = await invoke({
-    success: await writeHook(hungDir, "success.sh", "exec sleep 30"),
-    always: hooks.always ??
-      await writeHook(hungDir, "always.sh", recordEvent(hungDir, "always")),
+    success: await writeHook(dir, "success-hang.sh", "exec sleep 30"),
+    always: alwaysHook,
     timeoutSeconds: HANG_TIMEOUT_SECONDS,
   }, scenarioContext());
   observed.push(`after a hang: ${describeAll(hung.invocations)}`);
@@ -381,7 +392,10 @@ async function checkAlwaysAfterFault(
 }
 
 /** Check 4: a callback fault is reported, never allowed to rewrite the run. */
-async function checkResultUnchanged(root: string): Promise<ConformanceCheck> {
+async function checkResultUnchanged(
+  root: string,
+  timeoutSeconds: number,
+): Promise<ConformanceCheck> {
   const id = "result-unchanged-by-callback-fault" as const;
   const faults = new Faults();
   const dir = await scenarioDir(root, id);
@@ -408,7 +422,11 @@ async function checkResultUnchanged(root: string): Promise<ConformanceCheck> {
       "always.sh",
       `cp "$VIBECODER_CALLBACK_CONTEXT" "${dir}/always-context.json"\nexit 5`,
     ),
-    timeoutSeconds: HANG_TIMEOUT_SECONDS,
+    // Nothing here hangs — both hooks exit immediately — so this check gets
+    // the caller's budget. Running it under the hang budget charged two
+    // brand-new executables a one-second first execution and turned a loaded
+    // host into a false "the always hook received no context" (Issue #1055).
+    timeoutSeconds,
   };
 
   let threw: string | undefined;
@@ -561,7 +579,7 @@ async function checkSessionLogBelongsToRun(
   const faults = new Faults();
   const dir = await scenarioDir(root, id);
   const home = await scenarioDir(dir, "home");
-  await Deno.mkdir(`${home}/logs`, { recursive: true });
+  await Deno.mkdir(agentTranscriptDir(home), { recursive: true });
 
   const withTranscript = {
     runId: "vibe-conformance-transcript",
@@ -569,7 +587,7 @@ async function checkSessionLogBelongsToRun(
   };
   const secret = "TRANSCRIPT-BODY-MUST-NOT-BE-EXPORTED";
   const transcript = agentTranscriptPath(
-    `${home}/logs`,
+    agentTranscriptDir(home),
     withTranscript.runId,
     withTranscript.issueNumber,
   );
@@ -683,7 +701,7 @@ export async function runCallbackConformance(
         timeoutSeconds,
       }),
       await checkAlwaysAfterFault(root, hooks, timeoutSeconds),
-      await checkResultUnchanged(root),
+      await checkResultUnchanged(root, timeoutSeconds),
       await checkConcurrentIsolation(root, timeoutSeconds),
       await checkSessionLogBelongsToRun(root, timeoutSeconds),
     ];

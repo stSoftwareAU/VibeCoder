@@ -23,7 +23,11 @@ const REPOS = [
 const FLEET = ["VibeCoderST", "stservice"];
 
 const warnings: { message: string }[] = [];
-const logger: Pick<Logger, "warn"> = {
+const infos: { message: string; context?: Record<string, unknown> }[] = [];
+const logger: Pick<Logger, "info" | "warn"> = {
+  info: (message: string, context?: Record<string, unknown>) => {
+    infos.push({ message, context });
+  },
   warn: (message: string) => {
     warnings.push({ message });
   },
@@ -245,4 +249,66 @@ Deno.test("the open-PR cache is invalidated only for repos an attempt touched", 
 
   assert(result.ok);
   assertEquals(state.invalidated, ["stSoftwareAU/VibeCoder"]);
+});
+
+// ---------------------------------------------------------------------------
+// The sweep records what it saw (Issue #1136)
+//
+// A whole pass used to produce one line — the priority's name. "No candidates"
+// and "refused every candidate" therefore looked identical from outside, which
+// is why an unarmed PR went unnoticed for five instances in a day.
+// ---------------------------------------------------------------------------
+
+Deno.test("a repo with no open fleet PR is logged as having no candidates", async () => {
+  infos.length = 0;
+  const { options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 1 }],
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  // Two of the three monitored repos had nothing to act on, and both said so.
+  assertEquals(result.value.reposWithNoCandidates, [
+    "stSoftwareAU/NEAT-AI-Ockham",
+    "stSoftwareAU/GRQ-GTC",
+  ]);
+  const noCandidateRepos = infos
+    .filter((i) => i.message.includes("no candidates"))
+    .map((i) => i.context?.repo);
+  assertEquals(noCandidateRepos, [
+    "stSoftwareAU/NEAT-AI-Ockham",
+    "stSoftwareAU/GRQ-GTC",
+  ]);
+});
+
+Deno.test("a sweep that finds nothing anywhere still says so", async () => {
+  infos.length = 0;
+  const { state, options } = harness({});
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.attempted, []);
+  assertEquals(result.value.prsAttempted, 0);
+  assertEquals(result.value.reposWithNoCandidates, REPOS);
+  assertEquals(
+    infos.filter((i) => i.message.includes("no candidates")).length,
+    REPOS.length,
+  );
+});
+
+Deno.test("the candidates a repo contributes are named before they are attempted", async () => {
+  infos.length = 0;
+  const { options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 1133 }, { number: 1134 }],
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  const candidateLine = infos.find((i) => i.message.includes("candidates:"));
+  assert(candidateLine, `expected a candidate line: ${JSON.stringify(infos)}`);
+  assertEquals(candidateLine.context?.repo, "stSoftwareAU/VibeCoder");
+  assertEquals(candidateLine.context?.prNumbers, "1133, 1134");
 });

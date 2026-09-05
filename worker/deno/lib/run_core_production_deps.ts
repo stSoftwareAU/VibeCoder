@@ -18,6 +18,7 @@ import {
 } from "./issue_worker_types.ts";
 import type {
   DiscoveredIssue,
+  EnsureAutoMergeOptions,
   HandlerExecuteOptions,
   PriorityHandlerResult,
   RunCoreConfig,
@@ -254,6 +255,7 @@ import {
   resumeStateSurvivesRelease,
 } from "./resume_state_store.ts";
 import { invokeRunCallbacks } from "./run_callbacks.ts";
+import { recordCallbackOutcomes } from "./callback_failure_streak.ts";
 import { hasAnyCallback } from "./run_callbacks_config.ts";
 import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
 import { getRunId } from "./run_id.ts";
@@ -2213,24 +2215,30 @@ export async function createProductionRunCoreDeps(
     },
 
     // -- Priority 1.65: Auto-merge --
-    async ensureAutoMerge() {
+    async ensureAutoMerge(opts?: EnsureAutoMergeOptions) {
       // Issue #1082: the sweep walks the monitored repo list, not the repos
       // with claimable work, and covers every push-capable fleet author —
       // the same set the blocking guard defers `work-on` issues to. A
       // single-login sweep left a sibling account's PR unattended, and with
       // it every issue that PR blocked.
+      const refreshOpenPrs = opts?.refreshOpenPrs === true;
       const sweep = await sweepAutoMerge({
         repos,
         isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),
         fleetAuthors: maintenanceAuthors,
         // Issue #1787: list through the cached helper so the sweep shares
         // the iteration-scoped `prs_${author}` cache.
+        // Issue #1136: the post-scan pass forces a live listing — the cache
+        // it would otherwise read was filled before this cycle's own PRs
+        // existed, so a cached sweep would attempt exactly nothing new.
         listOpenPrs: (repo, authors) =>
           fetchOpenPRsForFleet(
             repo,
             [...authors],
             issueCache,
             runGhCommand,
+            undefined,
+            refreshOpenPrs,
           ),
         attemptMerge: (repo, pr) =>
           enableAutoMerge({
@@ -2274,6 +2282,11 @@ export async function createProductionRunCoreDeps(
       logger.info("Auto-merge sweep complete", {
         repos: sweep.value.reposVisited.length,
         prsAttempted: sweep.value.prsAttempted,
+        // Issue #1136: name the repos that offered nothing, and which pass
+        // this was, so "swept and found nothing" is legible in the log.
+        reposWithNoCandidates: sweep.value.reposWithNoCandidates.join(", ") ||
+          "none",
+        pass: refreshOpenPrs ? "post-scan" : "priority-1.65",
         authors: maintenanceAuthors.join(", "),
       });
       return { ok: true, value: undefined };
@@ -3398,7 +3411,7 @@ export async function createProductionRunCoreDeps(
       const key = `${run.repo}#${run.issueNumber}`;
       const sessionId = releasedSessionIds.get(key);
       releasedSessionIds.delete(key);
-      await invokeRunCallbacks({
+      const invocations = await invokeRunCallbacks({
         callbacks: config.callbacks,
         context: buildIssueRunCallbackContext(run, {
           runId: getRunId(),
@@ -3412,6 +3425,19 @@ export async function createProductionRunCoreDeps(
         log: (message) => logger.info(message),
         logError: (message) => logger.error(message),
       });
+      // Issue #1092: a hook that fails on every issue costs slot time on
+      // every issue and, until now, raised nothing across days of runs. The
+      // streak crossing the threshold raises exactly one deduplicated issue
+      // in the worker's own repository; a success clears it. Never throws.
+      await recordCallbackOutcomes(
+        config.workDir,
+        invocations,
+        { repository: run.repo, issueNumber: run.issueNumber },
+        {
+          log: (message) => logger.info(message),
+          logError: (message) => logger.error(message),
+        },
+      );
     },
     async cleanupInProgressIssue() {
       try {

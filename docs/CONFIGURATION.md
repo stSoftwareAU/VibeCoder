@@ -1567,6 +1567,7 @@ unless explicitly overridden.
 | Progress extension check interval | `progress_extension_check_seconds` | `300` | Seconds between progress samples (working tree and descendant CPU) while a run is inside its budget, so a stall is noticed within a check interval rather than a whole grant. Must be positive. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
+| Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
 | Claude kill-after              | `claude_kill_after`              | `30`       | Grace period after timeout before force-kill                                                                                                                                                         |
 | Sleep interval                 | `sleep_interval`                 | `30`       | Seconds between scans                                                                                                                                                                                |
 | Max concurrent issues | `max_concurrent_issues` | `2` | Issue slots worked concurrently per host (integer 1–8). Above `1` the Priority-2 scan runs as a pool, one clone per slot; the memory-pressure governor lowers the effective count (never raises it). `1` opts into the serial loop. Each slot keeps claiming for the whole cycle — after a success it sleeps `sleep_interval` and claims again, so a long execute in one slot never idles the others (Issue #178). A slot that finds nothing logs the scan's counts and re-scans every `sleep_interval` while a sibling still works, retiring only when nothing else is running (Issue #219). Above `1` the agent-backed PR passes also run in a **maintenance lane** beside the pool instead of ahead of it, so a long CI fix no longer idles the slots — see [Maintenance lane](workflows/README.md#-maintenance-lane-agent-backed-pr-passes-beside-the-pool) (Issue #213). |
@@ -1640,6 +1641,67 @@ unless explicitly overridden.
 | Include codebase map | `include_codebase_map` | `true` | Whether to inject the generated per-repo codebase map (layout, modules, canonical commands) into issue prompts. See [Codebase Map](MODEL-AND-CACHING.md#codebase-map). |
 | Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                            |
 | Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red, carry an unanswered authorised comment, or sit green and unmerged, before the watchdog escalates it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
+
+### 📝 Agent transcripts
+
+`agent_transcript_enabled: true` tees every agent invocation's raw
+stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` on the host that ran
+it, and publishes that path to post-run callbacks as `sessionLogPath` /
+`VIBECODER_SESSION_LOG_PATH`.
+
+Without it, a failed run records its result, its exit code, its duration and
+its cost, and nothing about **why** it failed. That is not hypothetical: every
+one of the twenty fleet run records archived on 2026-09-05 carried
+`"absentReason": "the worker exported no VIBECODER_SESSION_LOG_PATH (agent
+transcript tee not enabled for this run)"`, and diagnosing that day's failures
+from the run records alone produced the wrong answer.
+
+**`.config.json` is the only switch.** `DEBUG=true` used to enable the tee as
+a side effect and no longer does (Issue #1141) — a debug flag that silently
+starts capturing repository content is a surprise. `VIBE_AGENT_TRANSCRIPT` is
+internal plumbing the worker settles from this key on every run, so exporting
+it by hand changes nothing.
+
+#### What is in the file
+
+A transcript is the **raw agent stream**: model output, the issue and
+repository text the agent was given, the contents of files it read, and the
+output of commands it ran. It passes through the console secret redaction on
+its way to disk, which is a net for known credential shapes — **not a
+guarantee**. Treat a transcript as carrying whatever the run touched.
+
+That is why the default is off, and why it is worth deciding deliberately
+rather than switching on across a fleet by habit.
+
+#### It has to be on for every run
+
+You cannot know in advance which run will fail, so a tee that runs only on
+failures cannot exist — the stream has to be captured while the run is still
+in progress. Every run therefore writes a transcript once the key is on.
+
+What happens to a given transcript afterwards is the **callback hook's**
+decision, not the tee's: the hook sees `sessionLogPath` and chooses whether to
+read, redact, archive or ignore it. Transcript *contents* are never exported
+by the worker — only the path. A hook that copies a transcript into a health
+repository is putting raw repository content there, and owns both the
+redaction and the read access that follow. See
+[Post-Run Callbacks](#-post-run-callbacks) and [CALLBACKS.md](CALLBACKS.md).
+
+#### Local retention
+
+Transcripts are bounded by the housekeeping every run already performs, with
+no operator action:
+
+- `log-rotation` size-rotates `*.jsonl`, transcripts included, into
+  `.jsonl.N` backups.
+- `worker-log-cleanup` then applies the worker-log retention policy to
+  `agent-*.jsonl` and its rotated and gzipped forms: deleted after **3 days**,
+  with a hard cap of **200** retained files, oldest deleted first.
+
+Nothing else sweeps them — the session sweeper covers `.claude-sessions/`, not
+transcripts — and nothing prunes a transcript a hook has copied elsewhere. On
+a busy host the practical retention is the 3-day age limit; on a host running
+more than 200 agent invocations inside that window it is the file cap.
 
 ### 🧭 Adaptive claim floor
 
