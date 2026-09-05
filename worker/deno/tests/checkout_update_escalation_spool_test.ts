@@ -334,6 +334,36 @@ Deno.test("updateCheckout - a corrupt escalation store re-escalates rather than 
   });
 });
 
+Deno.test("updateCheckout - a marker left over from an earlier streak does not silence the host (Issue #1018)", async () => {
+  await withLogDir(async (options, paths) => {
+    // A recovery whose clear could not remove the file: the marker survives a
+    // streak it no longer describes. The next streak must still be reported.
+    await Deno.mkdir(options.logDir, { recursive: true });
+    await Deno.writeTextFile(
+      paths.spoolFile,
+      JSON.stringify({ escalatedStreak: 3, pending: null }),
+    );
+
+    const attempts: number[] = [];
+    for (let run = 0; run < 4; run++) {
+      await updateCheckout(options, {
+        ...FAILING_RESET,
+        escalate: (context) => {
+          attempts.push(context.streak);
+          return Promise.resolve();
+        },
+      });
+    }
+
+    assertEquals(
+      attempts,
+      [3],
+      "the new streak escalates once; the stale marker neither silences it " +
+        "nor lets it repeat",
+    );
+  });
+});
+
 Deno.test("updateCheckout - a spool that cannot be written is reported as unqueued (Issue #1018)", async () => {
   await withLogDir(async (options) => {
     const logged: string[] = [];

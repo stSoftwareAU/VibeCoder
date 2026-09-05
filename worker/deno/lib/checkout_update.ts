@@ -55,6 +55,7 @@
 
 import type { Result, UpdateMode } from "../types.ts";
 import { DEFAULT_UPDATE_MODE } from "./config_defaults.ts";
+import { atomicWrite } from "./file_utils.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import {
   appendRunCoreLogLine,
@@ -644,7 +645,14 @@ async function defaultWriteEscalationState(
     return;
   }
   await Deno.mkdir(logDir, { recursive: true });
-  await Deno.writeTextFile(path, `${JSON.stringify(state, null, 2)}\n`);
+  // Written through the temp-file-and-rename helper: a launch interrupted
+  // mid-write must not leave a half-written store, because the queued report
+  // is the only remaining record of an outage nobody could report.
+  const written = await atomicWrite({
+    targetFile: path,
+    content: `${JSON.stringify(state, null, 2)}\n`,
+  });
+  if (!written.ok) throw written.error;
 }
 
 /**
@@ -858,7 +866,14 @@ async function deliverEscalation(
     state = emptyEscalationState();
   }
   // One delivered report per streak — a crash-loop must not spam the repo.
-  if (state.escalatedStreak > 0) return false;
+  //
+  // The marker is only believed while this run is *later in the same streak*
+  // than the delivery it records, which is what the count strictly increasing
+  // within a streak means. A marker left behind by an earlier streak — the
+  // clear on recovery could not remove the file, say — is therefore ignored
+  // rather than silencing the host for ever, which would be a worse failure
+  // than the duplicate report the deduplicated channel folds into one issue.
+  if (state.escalatedStreak > 0 && streak > state.escalatedStreak) return false;
 
   const spooled = state.pending;
   const context: CheckoutUpdateEscalationContext = spooled === null
