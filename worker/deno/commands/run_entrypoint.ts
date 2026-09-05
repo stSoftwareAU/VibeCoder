@@ -45,6 +45,20 @@ export interface RunEntrypointSeams {
    * end to end writes nothing every parallel worker shares.
    */
   setEnv?: (name: string, value: string) => void;
+  /**
+   * The pid the run claims and cleans up after; defaults to `Deno.pid`
+   * (Issue #1055).
+   *
+   * Same reasoning as `setEnv` above, for the process table rather than the
+   * environment. The run's final step is `runSignalCleanup`, which SIGTERMs
+   * every **descendant** of this pid. Under `deno test --parallel` every
+   * suite shares one process, so the default swept whatever subprocesses the
+   * other workers held mid-flight — a callback hook died with exit 143 a
+   * second into a five-second budget, and a cached `deno check` went with it.
+   * A test hands in a pid of its own so the sweep has nothing of anyone
+   * else's to find.
+   */
+  pid?: number;
 }
 
 /**
@@ -98,6 +112,7 @@ export async function runEntrypoint(
     maxRunSeconds,
     env,
     ...(seams.setEnv ? { setEnv: seams.setEnv } : {}),
+    ...(seams.pid !== undefined ? { pid: seams.pid } : {}),
   });
 
   // A zero exit code is a successful outcome (including a clean "blocked" —

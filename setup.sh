@@ -404,10 +404,27 @@ provision_vibe_credentials() {
 # reference, which the container cannot reach (Issue #4064). The login lookup
 # completes the host entry; a failure there is not fatal, the token alone
 # authenticates.
+#
+# Issue #1146: `gh api` prints the API's *response body* to stdout on an HTTP
+# error and the human message to stderr, so on a token gh rejects — the
+# ordinary expired- or revoked-token case — stdout is a "Bad credentials" JSON
+# blob rather than a username. The exit code is the only thing that says which
+# of the two it is, so it is checked rather than discarded, and the output is
+# then required to be shaped like a GitHub login before it reaches the file.
+# Anything else writes the token-only hosts.yml, which is what "a failure there
+# is not fatal" was always supposed to mean, and says so out loud rather than
+# leaving the operator with corrupt YAML.
 write_gh_hosts_file() {
-    local gh_dir="$1" gh_token="$2" login=""
+    local gh_dir="$1" gh_token="$2" login="" lookup="" rc=0
     if command -v gh &>/dev/null; then
-        login=$(GH_TOKEN="$gh_token" gh api user --jq .login 2>/dev/null || true)
+        lookup=$(GH_TOKEN="$gh_token" gh api user --jq .login 2>/dev/null) || rc=$?
+        if (( rc != 0 )); then
+            print_warning "gh could not resolve the token's login (gh exited ${rc}) — writing a token-only ${gh_dir}/hosts.yml; the token alone authenticates"
+        elif [[ "$lookup" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then
+            login="$lookup"
+        else
+            print_warning "gh returned no usable GitHub login for the token — writing a token-only ${gh_dir}/hosts.yml; the token alone authenticates"
+        fi
     fi
     (
         umask 077

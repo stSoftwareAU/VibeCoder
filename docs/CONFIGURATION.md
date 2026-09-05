@@ -1237,13 +1237,26 @@ deno run --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname
   operator debugging a launcher fault learns about the opt-out at the moment it
   discards their patch, rather than from this page. An update that changed
   nothing says nothing.
-- **Three consecutive failures raise one GitHub issue** titled
-  `Worker checkout update failing on <host>` against the checkout's own origin
-  repository, carrying the "active development tree" diagnosis (Issue #4204).
-  The streak lives in `checkout-update-failure-streak` in the host log
-  directory ([Where the logs go](#-where-the-logs-go)) and a successful
+- **Three consecutive failures spanning at least fifteen minutes raise one
+  GitHub issue** titled `Worker checkout update failing on <host>` against the
+  checkout's own origin repository, carrying the "active development tree"
+  diagnosis (Issue #4204). The span qualifies the count because three failures
+  eight seconds apart are one transient host fault, not the hour of stale code
+  the threshold was written to report (Issue #1017). The streak lives in
+  `~/logs/checkout-update-failure-streak` — the count and the first failure's
+  timestamp, with the older bare-count format still read — and a successful
   update resets it to zero. `--allow-sys=hostname` is what lets that title name
   the host; without it every host would share one report.
+- **A report that could not be sent is retried and queued** (Issue #1018). The
+  escalation travels over the network whose loss is the commonest cause of the
+  streak, so a send that throws leaves the streak eligible — every later
+  failing run attempts delivery again — and the evidence is spooled in
+  `~/logs/checkout-update-escalation`, one entry per streak, overwritten. The
+  escalated-at marker is recorded only on a successful send, which is what
+  keeps the rest of the streak quiet. The run that recovers delivers whatever
+  is still queued — marked as an outage that has since ended — and then clears
+  the streak and the spool together, so an outage is reported after it ends and
+  a queued report never outlives the condition it describes.
 - **A frozen host is held at its pin instead** (Issue #624). Under
   `update_mode: "frozen"` the reset to `origin/<default-branch>` would defeat
   the pin, so the command fetches (a tag pushed since the last launch has to
@@ -1302,6 +1315,12 @@ deno run --allow-env --allow-read --allow-run \
   stderr and a `release-notice: failed …` line in `run_core.log`, and the
   launch continues on the checkout the host already has. Every call is bounded,
   so an unreachable GitHub costs seconds.
+- **The warning says why.** Both lines carry the check's own stderr — its
+  configuration error, its `gh` failure, its unresolvable hostname — and a
+  check the 120 s bound killed is logged as `timed out after 120s` rather than
+  as a failure that said nothing. `no explanation given` is now reserved for a
+  check that genuinely wrote no words; it used to be the only answer this
+  warning could give, because only stdout was captured (Issue #1020).
 - **One name for the upgrade.** The command the notice names comes from the
   same constant the upgrade command registers under
   ([`worker/deno/lib/upgrade_command.ts`](../worker/deno/lib/upgrade_command.ts)),
