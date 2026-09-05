@@ -31,9 +31,11 @@ import {
   type AppendRecovery,
   type ChainSweepEntry,
   resolveBaseDir,
+  type RosterRecovery,
   verifyAllChains,
 } from "../lib/audit_journal.ts";
 import { formatAppendRecovery } from "../lib/audit_append_recovery.ts";
+import { formatRosterRecovery } from "../lib/audit_roster_recovery.ts";
 
 /** Typed data returned by the audit-chain-verify command. */
 export interface AuditChainVerifyData {
@@ -49,6 +51,8 @@ export interface AuditChainVerifyData {
   acknowledged: AcknowledgedLoss[];
   /** Interrupted appends settled by this sweep (Issue #1074). */
   recovered: AppendRecovery[];
+  /** Torn roster line discarded by this sweep, if any (Issue #1202). */
+  rosterRepaired?: RosterRecovery;
   /** Losses signed for by this run (`--acknowledge-loss` only). */
   newlyAcknowledged: string[];
 }
@@ -282,7 +286,8 @@ export const auditChainVerifyCommand: Command = {
       };
     }
 
-    const { checked, broken, acknowledged, recovered } = swept.value;
+    const { checked, broken, acknowledged, recovered, rosterRepaired } =
+      swept.value;
     const data: AuditChainVerifyData = {
       baseDir,
       checked,
@@ -290,6 +295,7 @@ export const auditChainVerifyCommand: Command = {
       adopted,
       acknowledged,
       recovered,
+      ...(rosterRepaired ? { rosterRepaired } : {}),
       newlyAcknowledged,
     };
 
@@ -309,6 +315,7 @@ export const auditChainVerifyCommand: Command = {
     for (const recovery of recovered) {
       lines.push(formatAppendRecovery(recovery));
     }
+    if (rosterRepaired) lines.push(formatRosterRecovery(rosterRepaired));
     for (const loss of acknowledged) lines.push(formatAcknowledged(loss));
     for (const entry of broken) lines.push(formatBroken(entry));
     // Named in the summary too. A count that read "12 verified" while
@@ -325,6 +332,9 @@ export const auditChainVerifyCommand: Command = {
     if (recovered.length > 0) {
       parts.push(`${recovered.length} interrupted append(s) settled`);
     }
+    // Issue #1202: the same rule for the roster beside them — a torn line
+    // that healed itself is named in the summary, never folded into "OK".
+    if (rosterRepaired) parts.push(`a torn roster line discarded`);
     const signedFor = parts.length > 0 ? `, ${parts.join(", ")}` : "";
     lines.push(
       broken.length === 0

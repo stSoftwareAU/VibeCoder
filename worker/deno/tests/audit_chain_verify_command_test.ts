@@ -375,6 +375,30 @@ Deno.test("audit-chain-verify - acknowledging one journal leaves the others loud
   await Deno.remove(baseDir, { recursive: true }).catch(() => {});
 });
 
+Deno.test("audit-chain-verify - a torn roster line is repaired and named, not a failed sweep (Issue #1202)", async () => {
+  const { baseDir } = await seedDir();
+  // A writer killed part-way through a roster append: unterminated and
+  // unparseable, the one shape a short write can leave.
+  await Deno.writeTextFile(rosterPath(baseDir), '{"journal":"audit-te', {
+    append: true,
+  });
+
+  const swept = await auditChainVerifyCommand.execute({
+    "base-dir": baseDir,
+  }, CONFIG);
+  assertEquals(swept.success, true, swept.message);
+  assertStringIncludes(swept.message, "[SECURITY] [AUDIT_ROSTER_RECOVERED]");
+  assertStringIncludes(swept.message, "a torn roster line discarded");
+  const repaired = payload(swept.data).rosterRepaired;
+  assert(repaired, "the repair must reach the typed payload");
+  assertEquals(
+    await Deno.readTextFile(repaired.preservedAs),
+    '{"journal":"audit-te',
+  );
+
+  await Deno.remove(baseDir, { recursive: true }).catch(() => {});
+});
+
 Deno.test("audit-chain-verify - a half-formed acknowledgement line is a tamper signal, not a silencer (Issue #359)", async () => {
   const { baseDir, path } = await seedDir();
   const journal = path.slice(path.lastIndexOf("/") + 1);
