@@ -386,11 +386,10 @@ export async function loadConfig(
   configPath: string,
   options?: LoadConfigOptions,
 ): Promise<WorkerConfig> {
-  const file = await loadConfigFile(configPath);
-  warnRemovedTrustKeys(file);
   // The one environment seam this loader reads through (Issue #956).
   const env = options?.env ?? processEnvLookup;
   const file = await loadConfigFile(configPath, env);
+  warnRemovedTrustKeys(file);
 
   // Issue #1066: `allowed_authors` no longer grants anything. Who may direct
   // work is derived from repository collaborators every cycle, so trust
