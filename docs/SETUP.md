@@ -854,6 +854,59 @@ still logged, but the export is skipped. On a contained host that case does not
 arise: the container is started with no token variables passed through, so the
 credential directory is the only route in.
 
+#### Several Vibe Coders: one token each, or the same pool on all of them
+
+Everything above describes one host. A fleet has one more decision to make,
+and the answer is not the obvious one.
+
+**The token files are ordinary files and nothing binds one to a host**, so
+copying `claude/` from one machine to another works. Whether you *should*
+depends on how many subscriptions you have relative to machines.
+
+| Subscriptions vs Vibe Coders | What to do |
+|------------------------------|------------|
+| **At least one each** | Give each machine a single token as its own `provider.env`. No `provider-2.env` anywhere. |
+| **Fewer subscriptions than machines** | Put the same numbered files on every machine and let each one rank them. |
+
+**One token per machine is the better shape when you can afford it**, and not
+only for tidiness: with fewer than two pool candidates the worker makes **no
+probe at all** — no request, no ten-second bound, no log line — and each Vibe
+Coder gets a full, uncontended subscription. It is also the only arrangement
+where two machines are provably never on the same subscription at the same
+moment.
+
+**What sharing a pool actually does.** Ranking is deterministic: the same
+candidates measured at the same moment produce the same winner, and no part of
+the decision carries a host identity, a random tie-break or any shared state
+between machines. Two Vibe Coders that start together therefore *choose the
+same token*, and the one they both skip is left idle:
+
+| Worker start | token A | token B | machine 1 | machine 2 |
+|--------------|---------|---------|-----------|-----------|
+| first | 100% | 100% | tie, so A | tie, so A |
+| second | 60% | 100% | B | B |
+| third | 60% | 70% | B | B |
+
+They alternate together rather than spreading apart. Over a week the totals
+still even out — each start picks whichever subscription is furthest ahead, so
+the gap closes rather than widens — but the two are consumed **in turn, not in
+parallel**. Sharing a pool across machines is a way to keep several
+subscriptions evenly drained; it is not a way to get more throughput at any one
+instant.
+
+**The windows are not synchronised.** Two subscriptions bought at different
+times have seven-day windows that reset hours or days apart, and each token is
+ranked against its own window as a fraction — the only way subscriptions on
+different clocks compare at all. Expect a stretch after each rollover where one
+token is fresh and takes every run until the other catches up. That is the
+ranking working, not a fault.
+
+**Several Vibe Coders on one machine** share `~/.vibe-coder/credentials` unless
+you separate them, so giving each its own token needs a credential directory
+each. That is `VIBE_CREDENTIAL_DIR`, which is read from the environment and has
+no `.config.json` key — the one piece of this setup that is not file
+configuration.
+
 ### Permissions
 
 On macOS and Linux, directories are owner-only `700` and files `600`
