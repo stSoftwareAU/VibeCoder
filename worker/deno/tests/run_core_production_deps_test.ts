@@ -185,7 +185,21 @@ Deno.test("createProductionRunCoreDeps - all deps methods are functions", async 
 Deno.test(
   "createProductionRunCoreDeps - static trust refresh succeeds and does not throw",
   async () => {
-    const options = createTestOptions();
+    // The resolver is stubbed through the seam the factory publishes for
+    // exactly this: production shells out to `gh`, and a wiring test whose
+    // verdict came from a real GitHub call would report the host rather than
+    // the code — which is what it did under the gate, where the ambient
+    // CONFIG_PATH the suite scrubs is what made it pass locally.
+    const options = createTestOptions({
+      resolveTrustedAuthors: () =>
+        Promise.resolve({
+          ok: true as const,
+          byRepo: new Map([[
+            "org/a",
+            { allowedAuthors: ["alice"], authorisedCommenters: ["alice"] },
+          ]]),
+        }),
+    });
     const { deps } = await createProductionRunCoreDeps(options);
     const outcome = await deps.refreshTrustedAuthors!();
     assertEquals(outcome.ok, true);
