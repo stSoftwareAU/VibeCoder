@@ -1088,6 +1088,14 @@ export function validateConfig(config: WorkerConfig): void {
   }
 }
 
+/** Guards {@link warnRemovedTrustKeys} to one notice per process. */
+let warnedRemovedTrustKeys = false;
+
+/** Re-arm the migration notice. Test-only. */
+export function _resetRemovedTrustKeyWarning(): void {
+  warnedRemovedTrustKeys = false;
+}
+
 /**
  * Name what a still-deployed `.config.json` carries that no longer does what
  * it used to (Issue #1066).
@@ -1102,6 +1110,12 @@ export function validateConfig(config: WorkerConfig): void {
  * about instead, once per load, naming what it no longer does.
  */
 function warnRemovedTrustKeys(file: ConfigFile): void {
+  // Once per process: `loadConfig` is re-entered by sub-commands and by the
+  // escape-hatch follow-up gate, and a migration notice repeated on every
+  // read is noise an operator learns to scroll past.
+  if (warnedRemovedTrustKeys) return;
+  warnedRemovedTrustKeys = true;
+
   const configuredAuthors = file.allowed_authors ?? [];
   if (configuredAuthors.length > 0) {
     console.warn(

@@ -12,6 +12,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import {
+  _resetRemovedTrustKeyWarning,
   getEnvArrayOrDefault,
   getEnvNumberOrDefault,
   getEnvOrDefault,
@@ -875,6 +876,7 @@ Deno.test("config - loadConfig warns that local logins no longer grant trust (Is
     console.warn = (...args: unknown[]) => {
       captured.push(args.map((arg) => String(arg)).join(" "));
     };
+    _resetRemovedTrustKeyWarning();
     try {
       await loadConfig(configPath);
     } finally {

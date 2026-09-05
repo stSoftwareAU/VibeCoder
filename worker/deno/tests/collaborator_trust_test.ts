@@ -31,7 +31,11 @@
 
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { loadConfig, validateConfig } from "../lib/config.ts";
+import {
+  _resetRemovedTrustKeyWarning,
+  loadConfig,
+  validateConfig,
+} from "../lib/config.ts";
 import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
 import { createLogger } from "../lib/logger.ts";
 import { _resetDerivedAuthorsCache } from "../lib/derived_authors.ts";
@@ -679,6 +683,7 @@ Deno.test("migration - a live host's allowed_authors still loads, warned but nev
   console.warn = (...args: unknown[]) => {
     warnings.push(args.map(String).join(" "));
   };
+  _resetRemovedTrustKeyWarning();
   try {
     const config = await loadConfig(path, { validate: true });
     const loaded = config as unknown as Record<string, unknown>;
