@@ -1116,6 +1116,28 @@ Deno.test("findContainerfileViolations - reports install-tools.sh run without th
   );
 });
 
+Deno.test("findContainerfileViolations - reports a step that cleans the npm cache (Issue #1015)", () => {
+  // npm cannot empty its cache without the protections-off flag, and warns
+  // whenever it is given one, so the instruction printed a warning on every
+  // build for ever. Three of them trained the operator to skim the log.
+  const violations = findContainerfileViolations(
+    `${GOOD_CONTAINERFILE}\nRUN set -eu; npm cache clean --force\n`,
+    parseContainerManifest(manifestText()),
+  );
+
+  assertEquals(violations.length, 1, violations.join("; "));
+  assertStringIncludes(violations[0]!, "npm_config_cache");
+});
+
+Deno.test("findContainerfileViolations - a cache directory the step deletes is fine (Issue #1015)", () => {
+  const violations = findContainerfileViolations(
+    `${GOOD_CONTAINERFILE}\nRUN set -eu; rm -rf /tmp/npmc\n`,
+    parseContainerManifest(manifestText()),
+  );
+
+  assertEquals(violations, []);
+});
+
 Deno.test("findContainerfileViolations - ignores a commented-out unpinned download", () => {
   const violations = findContainerfileViolations(
     `${GOOD_CONTAINERFILE}\n# RUN curl -fsSL https://example.invalid/x.sh | bash\n`,
@@ -1491,8 +1513,16 @@ Deno.test("container/Containerfile - installs the pinned semgrep wheel and prove
   // image without semgrep while the manifest claimed otherwise.
   assertStringIncludes(steps, "pip-${PIP_VERSION}-py3-none-any.whl");
   assertStringIncludes(steps, "${PIP_SHA256_NOARCH}");
-  assertStringIncludes(steps, "semgrep==${SEMGREP_VERSION}");
-  // The resolved wheel is checked against the per-architecture pin before it
+  // Fetched by pinned URL rather than asked of a resolver (Issue #1016), so
+  // the shared ${CURL_RETRY} policy covers the build's largest download. The
+  // version is part of the wheel's own name, so the URL carries the pin.
+  assertStringIncludes(steps, "semgrep-${SEMGREP_VERSION}-");
+  assertEquals(
+    /\/pip["']?\s+download\b/.test(steps),
+    false,
+    "the semgrep wheel must not be fetched by a pip resolver",
+  );
+  // The fetched wheel is checked against the per-architecture pin before it
   // is installed, so the index's word for the bytes is never taken.
   assert(
     /sg_sha=\"\$\{SEMGREP_SHA256_(AMD64|ARM64)\}\"/.test(steps),

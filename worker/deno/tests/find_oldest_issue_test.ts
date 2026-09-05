@@ -405,6 +405,90 @@ Deno.test(
 );
 
 Deno.test(
+  "findOldestIssue - emits selection-reasoning when a low-priority issue is selected and top-priority is blocked (Issue #1063)",
+  async () => {
+    // Issue #1063: the reasoning line used to be emitted only when a
+    // *work-on* candidate won, so a passed-over top-priority stayed silent
+    // whenever a lower tier took the slot. Repo A's top-priority is blocked
+    // by milestone occupancy and repo B's low-priority wins — the line must
+    // still name the blocked top-priority, without ISSUE_FINDER_DEBUG.
+    const config = makeConfig();
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [
+          {
+            number: 1691,
+            title: "Top-priority bug in v1.0",
+            url: "https://github.com/owner/repo-a/issues/1691",
+            assignees: [],
+            labels: [{ name: "top-priority" }],
+            createdAt: "2024-01-01T00:00:00Z",
+            author: ALICE,
+            milestone: { title: "v1.0" },
+          },
+          {
+            // Occupies v1.0 — assigned to the worker user "bot".
+            number: 1690,
+            title: "Already in flight in v1.0",
+            url: "https://github.com/owner/repo-a/issues/1690",
+            assignees: [{ login: "bot" }],
+            labels: [],
+            createdAt: "2024-01-01T00:00:00Z",
+            author: ALICE,
+            milestone: { title: "v1.0" },
+          },
+        ],
+        timeline: [
+          { event: "labeled", label: { name: "top-priority" }, actor: ALICE },
+        ],
+      },
+      "owner/repo-b": {
+        issues: [
+          {
+            number: 2200,
+            title: "Backlog chore",
+            url: "https://github.com/owner/repo-b/issues/2200",
+            assignees: [],
+            labels: [{ name: "low-priority" }],
+            createdAt: "2024-03-01T00:00:00Z",
+            author: ALICE,
+            milestone: null,
+          },
+        ],
+        timeline: [
+          { event: "labeled", label: { name: "low-priority" }, actor: ALICE },
+        ],
+      },
+    });
+
+    const { diag, output } = captureDiagnostics();
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(result.found, true);
+    assertEquals(result.output.includes("|2200|"), true);
+
+    const reasoningLine = output.find((m) => m.includes("selection-reasoning"));
+    assertEquals(
+      reasoningLine !== undefined,
+      true,
+      `expected selection-reasoning line, got: ${output.join("\n")}`,
+    );
+    assertStringIncludes(reasoningLine!, "selected=owner/repo-b#2200");
+    assertStringIncludes(reasoningLine!, "source=low-priority");
+    assertStringIncludes(
+      reasoningLine!,
+      "owner/repo-a#1691(milestone-occupied)",
+    );
+  },
+);
+
+Deno.test(
   "findOldestIssue - no selection-reasoning when configured-label is selected (Issue #1718)",
   async () => {
     // Both top-priority and work-on are eligible. Configured-label wins.
