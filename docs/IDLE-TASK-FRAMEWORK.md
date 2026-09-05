@@ -1000,10 +1000,20 @@ this work
 
 `claimScanCompleted` is one **cycle-wide** boolean, and the census applied it to
 every repo. The claim scan does not work that way: `findOldestIssue` drops every
-repository in its `excludeRepos` set — the repos held by an issue slot
-(Issue #4176) **or** by the maintenance lane (Issue #213) — before any collector
-runs, logging `logRepoClassification(repo, "in-flight")` and nothing else. No
-gate refused those issues; none was ever consulted.
+repository in its `excludeRepos` set — since Issue #1091 the repos the
+**maintenance lane** has leased wholesale (Issue #213), whose pass may touch any
+branch of the clone — before any collector runs, logging
+`logRepoClassification(repo, "in-flight")` and nothing else. No gate refused
+those issues; none was ever consulted.
+
+A sibling **slot**'s hold is no longer such a case (Issue #1091). The unit of
+slot exclusion is now the work stream — `(repo, milestone)`, the default branch
+for an issue carrying none — so the scan looks at the repository, refuses the
+held stream through the existing `isMilestoneOccupied` gate, and evaluates every
+other stream in it. The refusal is recorded per issue as `milestone-occupied`
+and counted in the census's `stream_occupied` column, where a reader can see it;
+`repo_held_in_flight` records nothing about a single issue, which is why it must
+stay reserved for a repository the scan genuinely never saw.
 
 That is how `stSoftwareAU/VibeCoder` escalated on three consecutive cycles with
 nine claimable `work-on` issues and an **empty** "what the claim scan did with

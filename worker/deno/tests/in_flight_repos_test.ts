@@ -15,7 +15,11 @@ Deno.test("in_flight_repos - acquire/release round trip; heldRepos and heldIssue
   assertEquals(registry.tryAcquire("o/a", 1, "s1"), true);
   assertEquals(registry.isHeld("o/a"), true);
   assertEquals([...registry.heldRepos()], ["o/a"]);
-  assertEquals(registry.heldIssues(), [{ repo: "o/a", issueNumber: 1 }]);
+  // Issue #1091: the hold carries the work stream it occupies — the default
+  // branch, for an issue with no milestone.
+  assertEquals(registry.heldIssues(), [
+    { repo: "o/a", issueNumber: 1, milestone: "" },
+  ]);
   assertEquals(registry.holds()[0]?.slotId, "s1");
   assertEquals(registry.holds()[0]?.sinceMs, 5_000);
   registry.release("o/a");
@@ -57,7 +61,7 @@ Deno.test("in_flight_repos - a progress-extended run's deadline is recorded on i
 
   // Run start: the original one-hour budget, no extensions yet.
   assertEquals(
-    registry.noteRunDeadline("o/a", {
+    registry.noteRunDeadline("o/a", "", {
       deadlineMs: now + 3600_000,
       extensionsGranted: 0,
     }),
@@ -69,7 +73,7 @@ Deno.test("in_flight_repos - a progress-extended run's deadline is recorded on i
   );
 
   // Two grants later the run legitimately lives past the original budget.
-  registry.noteRunDeadline("o/a", {
+  registry.noteRunDeadline("o/a", "", {
     deadlineMs: now + 4500_000,
     extensionsGranted: 2,
   });
@@ -92,7 +96,7 @@ Deno.test("in_flight_repos - a deadline reported after the slot released is drop
   registry.tryAcquire("o/a", 1, "s1");
   registry.release("o/a");
   assertEquals(
-    registry.noteRunDeadline("o/a", {
+    registry.noteRunDeadline("o/a", "", {
       deadlineMs: 1_000,
       extensionsGranted: 3,
     }),
