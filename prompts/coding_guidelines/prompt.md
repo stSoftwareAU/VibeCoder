@@ -449,13 +449,16 @@ cover the gate. Do not leave failures for a reviewer to discover.
 Unit tests verify correctness; benchmarks measure performance. Keep them
 separate.
 
-- **Speed budget**: every unit test must finish within 120 seconds. BATS suites
-  set `BATS_TEST_TIMEOUT=120`; Deno tests should complete within similar bounds.
-  Most tests should finish in under 10 seconds.
+- **Speed budget**: a unit test finishes within 10 seconds. That is a **target,
+  not a kill** — nothing times a unit test at run time, so the rule is
+  enforced by shape rather than by stopwatch: a wall-clock sleep, a retry loop
+  against the real clock, a polling wait or a spawned script is an audit
+  finding whatever the test happens to cost on your machine.
 - **Design for speed**: mock external calls, use small data sets, avoid
   sleep/polling loops.
-- **Fix slow tests, do not raise the timeout**: a test that genuinely needs more
-  than 30 seconds is likely testing too much or is really a benchmark.
+- **Fix slow tests, do not raise the budget**: a test that cannot meet the
+  budget is testing too much, needs an injected seam (a clock, a scheduler, a
+  process runner), or is really a benchmark.
 - **No absolute wall-clock thresholds inside unit tests** — `duration_ms < 50`
   and friends are flaky across machines (loaded CI runner, shared laptop, ARM
   vs x86) and parallel execution makes them worse. Use dedicated benchmarks

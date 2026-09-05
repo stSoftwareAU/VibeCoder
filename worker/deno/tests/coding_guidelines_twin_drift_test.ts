@@ -17,6 +17,15 @@
  * the next drift fails here. It reads whatever guidelines version resolves,
  * so a new version that changes either rule is caught.
  *
+ * Issue #1166 added a third drift to the pin: the **unit-test speed budget**.
+ * The standards said 10 seconds, the injected guidelines said 120 (plus a
+ * `BATS_TEST_TIMEOUT` knob for a suite this repository no longer has, and a
+ * third figure of 30 in its own next bullet), and `CONTRIBUTING.md` said 120
+ * as well. The prompt is filed verbatim into other repositories, so the wrong
+ * figure was not merely present but distributed. All three surfaces now state
+ * one budget, and say it is a target enforced by shape rather than a
+ * stopwatch — the cases below fail the moment any of them disagrees again.
+ *
  * Modelled on `hidden_allowlist_drift_test.ts` (Issue #784).
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
@@ -33,6 +42,47 @@ const TDD_PATTERN = /TDD|test-driven|failing test/i;
 
 const readStandards = () =>
   Deno.readTextFile(`${REPO_ROOT}CODING-STANDARDS.md`);
+
+const readContributing = () => Deno.readTextFile(`${REPO_ROOT}CONTRIBUTING.md`);
+
+/** The one unit-test speed budget every surface must state, in seconds. */
+const BUDGET_SECONDS = 10;
+
+/** Every "N second"/"N-second" reading in a passage, as numbers. */
+function secondsIn(passage: string): number[] {
+  return [...passage.matchAll(/(\d+)[ -]second/g)].map((m) => Number(m[1]));
+}
+
+/** Extract a passage, failing loudly when the surface no longer carries it. */
+function passage(text: string, pattern: RegExp, what: string): string {
+  const found = text.match(pattern);
+  assert(found, `could not locate ${what}`);
+  return found[0];
+}
+
+/** The standards' unit-test speed rule — the `**Fast**` bullet. */
+const standardsBudget = (standards: string) =>
+  passage(
+    standards,
+    /- \*\*Fast\*\*[\s\S]*?(?=\n- \*\*)/,
+    "the `**Fast**` bullet in CODING-STANDARDS.md",
+  );
+
+/** The guidelines' unit-test speed rule — its whole benchmarks section. */
+const guidelinesBudget = (guidelines: string) =>
+  passage(
+    guidelines,
+    /## Unit Tests vs Benchmarks\n[\s\S]*?(?=\n## )/,
+    "the 'Unit Tests vs Benchmarks' section in coding_guidelines",
+  );
+
+/** CONTRIBUTING.md's unit-test speed rule — its `**Speed budget**` bullet. */
+const contributingBudget = (contributing: string) =>
+  passage(
+    contributing,
+    /- \*\*Speed budget\*\*[\s\S]*?(?=\n\n)/,
+    "the `**Speed budget**` bullet in CONTRIBUTING.md",
+  );
 
 async function latestPromptText(name: string): Promise<string> {
   const result = await loadPrompt(name, PROMPTS_DIR);
@@ -121,5 +171,66 @@ Deno.test("twin pair - the standards no longer list TDD among the injected block
     false,
     "the twin-pair claim still lists TDD among the rules both surfaces " +
       `carry, which the guidelines template does not: ${claim[0]}`,
+  );
+});
+
+Deno.test("twin pair - every surface states the same unit-test speed budget (Issue #1166)", async () => {
+  const [standards, guidelines, contributing] = await Promise.all([
+    readStandards(),
+    latestPromptText("coding_guidelines"),
+    readContributing(),
+  ]);
+
+  for (
+    const [surface, text] of [
+      ["CODING-STANDARDS.md", standardsBudget(standards)],
+      ["coding_guidelines", guidelinesBudget(guidelines)],
+      ["CONTRIBUTING.md", contributingBudget(contributing)],
+    ] as const
+  ) {
+    const readings = secondsIn(text);
+    assert(
+      readings.length > 0,
+      `${surface} no longer states a unit-test speed budget at all`,
+    );
+    assertEquals(
+      readings.filter((s) => s !== BUDGET_SECONDS),
+      [],
+      `${surface} states a second-hand figure alongside the agreed ` +
+        `${BUDGET_SECONDS}-second budget: ${text}`,
+    );
+  }
+});
+
+Deno.test("twin pair - the speed budget is stated as a shape-enforced target, not a kill (Issue #1166)", async () => {
+  const [standards, guidelines] = await Promise.all([
+    readStandards(),
+    latestPromptText("coding_guidelines"),
+  ]);
+
+  // Nothing times a unit test at run time. Each surface must say so, or the
+  // budget reads as an absolute timeout an agent will try to configure.
+  for (
+    const [surface, text] of [
+      ["CODING-STANDARDS.md", standardsBudget(standards)],
+      ["coding_guidelines", guidelinesBudget(guidelines)],
+    ] as const
+  ) {
+    assert(
+      /enforced by shape/.test(text),
+      `${surface} states the speed budget without saying it is enforced by ` +
+        `shape rather than by a run-time timeout: ${text}`,
+    );
+  }
+});
+
+Deno.test("twin pair - the guidelines name no timeout knob for a suite this repo dropped (Issue #1166)", async () => {
+  const guidelines = await latestPromptText("coding_guidelines");
+  assertEquals(
+    /BATS_TEST_TIMEOUT/.test(guidelines),
+    false,
+    "coding_guidelines prescribes BATS_TEST_TIMEOUT, but the BATS suite was " +
+      "fully migrated to Deno — the knob names no runner this repository has, " +
+      "and the prompt is filed verbatim into other repositories",
   );
 });
