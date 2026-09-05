@@ -210,7 +210,10 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   //
   // `tests/ci_log_provider_core_only_test.ts` is what stops the next one
   // arriving the same way.
-  assertEquals(commands.length, 145);
+  // Issue #997 added `container-egress-probe` (count 145 → 146): the launchers
+  // ask, before the build, whether a container on this host can reach the
+  // network at all.
+  assertEquals(commands.length, 146);
   assertEquals(commands.includes("callback-conformance"), true);
   // The command Issue #805 removed stays removed: a merge that quietly
   // brought it back would restore the built-in reporting that issue deleted.

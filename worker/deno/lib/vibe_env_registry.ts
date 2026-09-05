@@ -550,6 +550,13 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "switch",
     note: "a CREDENTIAL provisioned to setup; must never reach .config.json",
   },
+  VIBE_EGRESS_PROBE_TARGET: {
+    role: "switch",
+    note:
+      "escape hatch for the container-egress probe's address (Issue #997); " +
+      "no launcher sets it — a host whose network blocks the default literal " +
+      "points the probe elsewhere",
+  },
   VIBE_TABLETOP_CANARY: {
     role: "switch",
     note: "tabletop security exercise fixture",
