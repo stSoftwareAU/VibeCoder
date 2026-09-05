@@ -65,10 +65,27 @@ DRIFT — infra/rulesets/milestone.json (milestone branches)
 OK — infra/rulesets/release-tags.json (release tags)
 ```
 
-Both live drifts the issue named were flagged (Failure Detection #5). A later
-run shows `main` now `OK` — an operator applied `infra/rulesets/main.json`
-during this run — while `Milestone` still drifts, which is what an admin has to
-apply next.
+Both live drifts the issue named were flagged (Failure Detection #5).
+
+The check has since tracked the live configuration changing under it, which is
+the point of reconciling rather than remembering. An operator applied
+`infra/rulesets/main.json` mid-run, so the two missing contexts on `main`
+cleared; a later run flags a **different** drift on the same ruleset:
+
+```text
+DRIFT — infra/rulesets/main.json (the default branch)
+  - bypass_actors: applied 1 bypass actor(s), committed 0 — a bypass actor makes
+    an active ruleset protect nothing
+```
+
+That is Failure Detection #1 firing on the drift it singles out as the one most
+likely to go unnoticed — a ruleset that is active, whose contexts all match, and
+which protects nothing because someone can bypass it. A check that only asked
+"does a ruleset by this name exist?" would call that state healthy.
+
+`Milestone` still drifts on all twelve contexts plus `do_not_enforce_on_create`
+and the same bypass actor: the payload is committed here, but applying it needs
+admin, so an operator runs the printed `gh api --method PUT` for both rulesets.
 
 ```mermaid
 flowchart LR
@@ -81,13 +98,11 @@ flowchart LR
 ```
 
 `./quality.sh` passes (full gate, 19 checks; 3 skipped for missing optional
-tooling). One caveat a reviewer should know: the gate's parallel test pass is
-flaky on this milestone base branch independent of this change — a run on the
-unmodified base commit fails on
-`run_core_idle_detect_audit_test.ts:474`, and a run on this branch failed on
-`quality_gate_test.ts:553` (`runDenoCheck - PASSED when every .ts file
-type-checks`), which passes in isolation on both branches. Neither test is
-touched by this diff; this is the class Issue #1098 recorded.
+tooling), re-run in full after this branch was brought up to date with `main`.
+An earlier run on the old milestone base hit the parallel-test flake Issue
+#1098 records (`run_core_idle_detect_audit_test.ts`, `quality_gate_test.ts` —
+neither touched by this diff, both passing in isolation); the run against
+current `main` is clean.
 
 ## Acceptance Criteria
 
@@ -103,9 +118,10 @@ touched by this diff; this is the class Issue #1098 recorded.
 - **partial** — Both branch rulesets are committed under `infra/rulesets/` and
   match what GitHub has — evidence: `infra/rulesets/main.json`,
   `infra/rulesets/milestone.json`, live `check-rulesets` output above —
-  reviewer: partial — reason: `main` and the tag ruleset now match; `Milestone`
-  still differs until an admin applies the payload, which is the drift this
-  check exists to surface.
+  reviewer: partial — reason: both payloads are committed, but only the tag
+  ruleset matches live today — `main` carries a bypass actor and `Milestone`
+  still lacks every test context, and applying either needs admin. That
+  standing gap is the drift this check exists to surface rather than hide.
 - **met** — Any deliberate difference between `main` and `Milestone`
   protection is recorded with its reason — evidence:
   `infra/rulesets/README.md` (differences table plus the two same-on-both
