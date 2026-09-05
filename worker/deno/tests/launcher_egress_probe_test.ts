@@ -21,9 +21,9 @@ import {
   buildCount,
   denoInvocationOrder,
   type Harness,
-  launchPhaseMarker,
   type LauncherInvocation,
   type LaunchOutcome,
+  launchPhaseMarker,
   POWERSHELL_LAUNCHER,
   recorded,
   recordedLaunchLog,
@@ -188,14 +188,25 @@ for (const launcher of LAUNCHERS) {
 // The statuses the launchers branch on must match the command's (Issue #997)
 // ---------------------------------------------------------------------------
 
-Deno.test("the launchers hardcode the probe's exit statuses correctly", async () => {
-  for (const [name, dialect, pattern] of [
-    ["run.sh", "bash", /EGRESS_BLOCKED_EXIT=(\d+)/],
-    ["run.ps1", "powershell", /\$EgressBlockedExit\s*=\s*(\d+)/],
-  ] as const) {
-    const source = await Deno.readTextFile(
-      new URL(`../../../${name}`, import.meta.url).pathname,
-    );
+const RUN_SH_SOURCE = await Deno.readTextFile(
+  new URL("../../../run.sh", import.meta.url),
+);
+const RUN_PS1_SOURCE = await Deno.readTextFile(
+  new URL("../../../run.ps1", import.meta.url),
+);
+
+Deno.test("the launchers hardcode the probe's exit statuses correctly", () => {
+  for (
+    const [name, dialect, source, pattern] of [
+      ["run.sh", "bash", RUN_SH_SOURCE, /EGRESS_BLOCKED_EXIT=(\d+)/],
+      [
+        "run.ps1",
+        "powershell",
+        RUN_PS1_SOURCE,
+        /\$EgressBlockedExit\s*=\s*(\d+)/,
+      ],
+    ] as const
+  ) {
     const body = executableLines(source, dialect).join("\n");
     const blocked = pattern.exec(body);
     assert(blocked, `${name} does not name the egress-blocked status`);
