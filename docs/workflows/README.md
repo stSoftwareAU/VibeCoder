@@ -317,6 +317,25 @@ another lane)` rather than `failed`, kept out of the Issue #335 failure streak
 so they can never escalate an issue against a healthy PR, and retried next
 cycle.
 
+**One shared store means one repository-wide fault (Issue #1093).** Sharing the
+object store is the right trade — the work volume does not carry a full checkout
+per slot — but it means a single damaged object poisons every slot and every
+milestone branch in that repository, and it persists across runs because nothing
+repairs it. Observed on GRQ-23 on 2026-09-05, `VibeCoder#984` failed at `setup`
+with `error: inflate: data stream error (unknown compression method)`, and the
+next issue in that repository would have failed identically.
+
+`setup` now recognises object-store corruption (`inflate:`, `loose object … is
+corrupt`, `unable to read sha1 file`, `object file … is empty`) as its own class,
+distinct from a bad ref or a missing branch. Every object is recoverable from the
+remote, so the worker repairs rather than fails: it runs `git fsck` for evidence,
+removes the shared clone **and every lane worktree hanging off it** — a surviving
+worktree directory would make `git worktree add` refuse the path — re-clones, and
+retries the branch. The repair is claimed **once per repository per run**, not
+once per issue. Only a repair that does not clear the corruption escalates, with
+the repository named, because at that point the work volume is the fault rather
+than the objects.
+
 `${WORK_DIR}/worktrees` is a reserved work-root name, so the stale-work-dir
 sweep never mistakes it for a disposable clone. The startup orphan-worktree
 sweep may still reclaim a lane worktree that has sat untouched for

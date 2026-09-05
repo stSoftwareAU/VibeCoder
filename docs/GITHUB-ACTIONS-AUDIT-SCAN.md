@@ -1006,6 +1006,18 @@ endpoint is logged and yields nothing. Wording avoids the literal
 `secret_scanning*: value` and `id-token: write` pairs the outbound secret
 masker rewrites.
 
+**A check that could not run says so (Issue #1094).** An HTTP 403 on these
+endpoints is a static limit of the token's scopes, not a fault: it says the
+same thing on every run of every affected repository, and logging it at
+`ERROR` trains the reader to ignore `ERROR` in the worker log. Such a lookup
+is logged once at `WARNING`, naming the repository "Actions policies"
+fine-grained read permission it would take. A 5xx, a network failure or a
+malformed response is a genuine fault and still logs `ERROR`. Either way the
+check is recorded as **skipped** and named in the audit's own summary —
+`Checks skipped — NOT covered by this audit: …` — because an audit that
+silently omits a check reads as one that passed, and that gap is invisible in
+the result.
+
 ### Native worker-token privilege check
 
 The settings pre-filer asks whether the repository is locked down enough;

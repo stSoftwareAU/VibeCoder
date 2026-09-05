@@ -255,6 +255,7 @@ import {
   resumeStateSurvivesRelease,
 } from "./resume_state_store.ts";
 import { invokeRunCallbacks } from "./run_callbacks.ts";
+import { recordCallbackOutcomes } from "./callback_failure_streak.ts";
 import { hasAnyCallback } from "./run_callbacks_config.ts";
 import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
 import { getRunId } from "./run_id.ts";
@@ -3410,7 +3411,7 @@ export async function createProductionRunCoreDeps(
       const key = `${run.repo}#${run.issueNumber}`;
       const sessionId = releasedSessionIds.get(key);
       releasedSessionIds.delete(key);
-      await invokeRunCallbacks({
+      const invocations = await invokeRunCallbacks({
         callbacks: config.callbacks,
         context: buildIssueRunCallbackContext(run, {
           runId: getRunId(),
@@ -3424,6 +3425,19 @@ export async function createProductionRunCoreDeps(
         log: (message) => logger.info(message),
         logError: (message) => logger.error(message),
       });
+      // Issue #1092: a hook that fails on every issue costs slot time on
+      // every issue and, until now, raised nothing across days of runs. The
+      // streak crossing the threshold raises exactly one deduplicated issue
+      // in the worker's own repository; a success clears it. Never throws.
+      await recordCallbackOutcomes(
+        config.workDir,
+        invocations,
+        { repository: run.repo, issueNumber: run.issueNumber },
+        {
+          log: (message) => logger.info(message),
+          logError: (message) => logger.error(message),
+        },
+      );
     },
     async cleanupInProgressIssue() {
       try {
