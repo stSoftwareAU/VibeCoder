@@ -21,6 +21,9 @@ import { parseRulesetPayload, type RulesetPayload } from "./ruleset_payload.ts";
 /** Path of the checked-in payload, relative to the repository root. */
 export const RELEASE_TAG_RULESET_PATH = "infra/rulesets/release-tags.json";
 
+/** The repository this payload describes — the ruleset it is reconciled with. */
+export const RELEASE_TAG_RULESET_REPO = "stSoftwareAU/VibeCoder";
+
 export type { RefNameCondition, RulesetRule } from "./ruleset_payload.ts";
 
 /** A repository ruleset payload, in the shape the create API accepts. */

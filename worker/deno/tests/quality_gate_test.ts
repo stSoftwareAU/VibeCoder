@@ -17,6 +17,7 @@ import {
   runDenoCheck,
   runDenoFmtCheck,
   runQualityGate,
+  runReleaseTagRulesetQualityCheck,
 } from "../lib/quality_gate.ts";
 
 // =============================================================================
@@ -813,4 +814,85 @@ Deno.test("runQualityGate - streams its pre-checks through onProgress (Issue #39
   try {
     Deno.removeSync(config.scriptDir, { recursive: true });
   } catch { /* ignore */ }
+});
+
+// =============================================================================
+// Release-tag ruleset reconciliation (Issue #1049)
+//
+// The gate stage is three lines of mapping, and getting them wrong is how the
+// original drift stayed invisible: a `skipped` reported as PASSED, or a
+// `drift` reported as SKIPPED, would leave the gate green over an unenforced
+// ruleset. Each outcome is pinned here, with the reconciliation injected so
+// no test touches the network.
+// =============================================================================
+
+/** A stub reconciler returning one fixed outcome. */
+function reconcilerReturning(
+  status: "ok" | "drift" | "absent" | "skipped",
+  message = `stub ${status}`,
+) {
+  return () => Promise.resolve({ status, findings: [], message });
+}
+
+Deno.test("runReleaseTagRulesetQualityCheck - a matching ruleset PASSES", async () => {
+  const config = createTestConfig();
+  try {
+    const result = await runReleaseTagRulesetQualityCheck(
+      config,
+      "stSoftwareAU/VibeCoder",
+      reconcilerReturning("ok", "matches infra/rulesets/release-tags.json"),
+    );
+    assertEquals(result.name, "release-tag ruleset");
+    assertEquals(result.status, "PASSED");
+    assertStringIncludes(result.output, "matches");
+  } finally {
+    Deno.removeSync(config.scriptDir, { recursive: true });
+  }
+});
+
+Deno.test("runReleaseTagRulesetQualityCheck - drift and absence FAIL the gate", async () => {
+  const config = createTestConfig();
+  try {
+    for (const status of ["drift", "absent"] as const) {
+      const result = await runReleaseTagRulesetQualityCheck(
+        config,
+        "stSoftwareAU/VibeCoder",
+        reconcilerReturning(status),
+      );
+      assertEquals(result.status, "FAILED", `${status} did not fail the gate`);
+      assertStringIncludes(result.output, `stub ${status}`);
+    }
+  } finally {
+    Deno.removeSync(config.scriptDir, { recursive: true });
+  }
+});
+
+Deno.test("runReleaseTagRulesetQualityCheck - no credential SKIPS, it does not pass", async () => {
+  const config = createTestConfig();
+  try {
+    const result = await runReleaseTagRulesetQualityCheck(
+      config,
+      "stSoftwareAU/VibeCoder",
+      reconcilerReturning("skipped", "SKIPPED: no credential; not a pass"),
+    );
+    assertEquals(result.status, "SKIPPED");
+    assertStringIncludes(result.output, "not a pass");
+  } finally {
+    Deno.removeSync(config.scriptDir, { recursive: true });
+  }
+});
+
+Deno.test("runReleaseTagRulesetQualityCheck - an unexpected error is FAILED, never a pass", async () => {
+  const config = createTestConfig();
+  try {
+    const result = await runReleaseTagRulesetQualityCheck(
+      config,
+      "stSoftwareAU/VibeCoder",
+      () => Promise.reject(new Error("HTTP 422: unprocessable")),
+    );
+    assertEquals(result.status, "FAILED");
+    assertStringIncludes(result.output, "422");
+  } finally {
+    Deno.removeSync(config.scriptDir, { recursive: true });
+  }
 });
