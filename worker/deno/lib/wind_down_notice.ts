@@ -142,10 +142,19 @@ function budgetHeader(notice: RunBudgetNotice): string[] {
       winding ? " — wind down now" : ""
     }`,
     "",
-    "The worker wrote this file because your run is approaching its hard",
-    "wall-clock cap. When the cap is reached the run is stopped: SIGTERM,",
-    "then SIGKILL after the grace period. No further deadline extension can",
-    "be granted past the cap, however much progress you are making.",
+    ...(winding
+      ? [
+        "The worker wrote this file because your run is approaching its hard",
+        "wall-clock cap. When the cap is reached the run is stopped: SIGTERM,",
+        "then SIGKILL after the grace period. No further deadline extension",
+        "can be granted past the cap, however much progress you are making.",
+      ]
+      : [
+        "The worker wrote this file because the runway left no longer covers",
+        "something you might be about to start — see below. The run itself is",
+        "not over: keep working, and read this file again before you begin",
+        "anything long.",
+      ]),
     "",
     `- Remaining before the cap: **${notice.remainingSeconds}s**`,
     `- Elapsed so far: ${notice.elapsedSeconds}s`,
