@@ -1150,16 +1150,23 @@ Deno.test("slot pool - a success is followed by the normal sleep and another cla
 
   await runOneCycle(deps, 2);
 
-  assertEquals(
-    events.slice(0, 3),
-    [
-      "process:o/a#1",
-      `sleep:${config.sleepInterval * 1000}`,
-      "process:o/a#2",
-    ],
-    `a slot must sleep the normal interval and claim again: ${
-      events.join(", ")
-    }`,
+  // The sibling slot finds nothing to claim — one repo, one holder — so it
+  // sleeps the same normal interval, and where its sleeps land in this shared
+  // trace is scheduling, not behaviour. What must hold is the shape between
+  // the two claims: the slot that succeeded sleeps the normal interval and
+  // claims again, so nothing but that interval may separate them.
+  const first = events.indexOf("process:o/a#1");
+  const second = events.indexOf("process:o/a#2");
+  const trace = `trace: ${events.join(", ")}`;
+  assert(first >= 0, `the first issue must be processed — ${trace}`);
+  assert(second > first, `the slot must claim again — ${trace}`);
+  const between = events.slice(first + 1, second);
+  assert(
+    between.length > 0 &&
+      between.every((event) =>
+        event === `sleep:${config.sleepInterval * 1000}`
+      ),
+    `only the normal sleep may separate the two claims — ${trace}`,
   );
   assertEquals(
     poolEntries,

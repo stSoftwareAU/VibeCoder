@@ -243,9 +243,13 @@ Deno.test("container_extension example - the quoted preflight symptom is the rea
 });
 
 Deno.test("container_extension example - the quoted layering refusal is the real one", async () => {
+  // `<image>` is fed in as the base so the refusal comes back in exactly the
+  // shape the page's table shows — backticks included. Quoting drift on
+  // either side then fails here instead of misleading an operator who greps
+  // the launcher's output for what the page told them to expect.
   const message = await faultMessage(() =>
     assertExtensionLayersOnBaseImage(
-      "FROM docs.example.com/some-base:1\n",
+      `ARG ${BASE_IMAGE_BUILD_ARG}\nFROM <image>\n`,
       "/srv/vibe-extension/Containerfile",
     )
   );
@@ -253,10 +257,12 @@ Deno.test("container_extension example - the quoted layering refusal is the real
     message,
     "Refusing to launch: the container_extension Containerfile",
   );
-  assertStringIncludes(
-    read(PAGE),
-    "Refusing to launch: the container_extension Containerfile",
+
+  const quoted = message.slice(
+    message.indexOf("builds "),
+    message.indexOf("standard image") + "standard image".length,
   );
+  assertStringIncludes(read(PAGE), quoted);
 });
 
 Deno.test("container_extension example - the quoted sandbox-start abort is the entrypoint's own wording", () => {

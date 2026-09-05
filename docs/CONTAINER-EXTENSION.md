@@ -226,7 +226,7 @@ symptom.
 | The declared `containerfile` is absent | `Cannot launch: the container_extension Containerfile <path> does not exist. container_extension.containerfile names it, relative to <directory>.` |
 | The declared `start` is absent | `Cannot launch: the container_extension start script <path> does not exist. container_extension.start names it, relative to <directory>.` |
 | A symlink under the directory points outside it | `Cannot launch: the container_extension symlink <entry> escapes the extension directory: it resolves to <target>, outside <directory>.` |
-| The Containerfile does not derive from the base image | Refused before any build runs: `Refusing to launch: the container_extension Containerfile <path> builds FROM <image> rather than from the standard image` |
+| The Containerfile does not derive from the base image | Refused before any build runs: ``Refusing to launch: the container_extension Containerfile <path> builds `FROM <image>` rather than from the standard image`` |
 | The start script is missing inside the built image | Sandbox start aborts, exit 76: `Error: the container_extension declares the start script <start>, but /opt/vibe-extension/<start> does not exist in the image` |
 | The start script is not executable | Sandbox start aborts, exit 76: `Error: the container_extension start script <path> is not executable` |
 | The start script exits non-zero | Sandbox start aborts, exit 76: `Error: <path> exited <status> — aborting the sandbox start; the worker driver was not launched`, and the run is reported failed |
@@ -259,15 +259,16 @@ The operator syncs their own private repository to `/srv/vibe-extension`:
 ```text
 /srv/vibe-extension/
 ├── Containerfile          # the layer, built FROM ${VIBE_BASE_IMAGE}
-├── start.sh               # brings the database and the CI server up
+├── start.sh               # brings Postgres and Jenkins up
 ├── build/
-│   └── load-dumps.sh      # creates and loads the databases during the build
+│   ├── load-dumps.sh      # initialises a cluster and loads the dumps
+│   └── seed-ci.sh         # installs the pinned plugins into a CI home
 ├── dumps/
 │   ├── orders.sql         # loaded at image build time
 │   ├── customers.sql
 │   └── reporting.sql
 └── ci/
-    ├── casc.yaml          # CI server configuration as code: the pipeline job
+    ├── casc.yaml          # configuration as code: the pipeline job
     └── plugins.txt        # the pinned plugin set
 ```
 
@@ -311,28 +312,27 @@ The operator syncs their own private repository to `/srv/vibe-extension`:
       "env": { "JAVA_HOME": "", "JAVA_21_HOME": "" }
     },
     {
-      "id": "build-tool",
+      "id": "maven",
       "version": "3.9.11",
       "url": {
-        "noarch": "https://artefacts.example.com/build-tool-3.9.11-bin.tar.gz"
+        "noarch": "https://artefacts.example.com/maven-3.9.11-bin.tar.gz"
       },
       "sha256": {
         "noarch": "5555555555555555555555555555555555555555555555555555555555555555"
       },
       "stripComponents": 1,
       "bin": ["bin"],
-      "env": { "BUILD_TOOL_HOME": "" }
+      "env": { "MAVEN_HOME": "" }
     }
   ]
 }
 ```
 
 Read that as two long-term-support JDKs side by side — an 8 LTS build such as
-Amazon Corretto 8, and a 21 LTS build such as Amazon Corretto 21 — plus the
-Java build tool the repositories use, each landing in its own prefix:
-`/opt/vibe-tools/jdk8`, `/opt/vibe-tools/jdk21` and
-`/opt/vibe-tools/build-tool`. **The versions, URLs and digests are
-placeholders**: substitute your vendor's real download and the SHA-256 that
+Amazon Corretto 8, and a 21 LTS build such as Amazon Corretto 21 — plus Maven,
+each landing in its own prefix: `/opt/vibe-tools/jdk8`,
+`/opt/vibe-tools/jdk21` and `/opt/vibe-tools/maven`. **The versions, URLs and
+digests are placeholders**: substitute your vendor's real download and the SHA-256 that
 vendor publishes for it. Nothing in the mechanism inspects them, and pinning a
 real one here would go stale the day it is re-published.
 
@@ -352,9 +352,13 @@ ARG VIBE_EXTENSION_START
 
 USER root
 
-# 1. The database server and the CI server's runtime dependencies.
+# 1. The database server, pinned to a major version. The start script names
+#    the same one, and an unpinned install would follow the distribution to a
+#    version whose binaries and cluster live somewhere else.
+ARG PG_MAJOR=17
 RUN apt-get update \
- && apt-get install --no-install-recommends -y postgresql postgresql-client \
+ && apt-get install --no-install-recommends -y \
+      "postgresql-${PG_MAJOR}" "postgresql-client-${PG_MAJOR}" \
  && rm -rf /var/lib/apt/lists/*
 
 # 2. The CI server itself, verified against a digest you pin.
@@ -364,27 +368,35 @@ RUN mkdir -p /opt/ci \
       https://artefacts.example.com/ci-server-2.531.war \
  && printf '%s  %s\n' "${CI_SERVER_SHA256}" /opt/ci/server.war | sha256sum -c -
 
-# 3. The extension itself, at the one fixed prefix the framework runs from.
+# 3. The extension at the one fixed prefix the framework runs from, plus the
+#    seed directory the build fills. Both are owned by the worker account,
+#    because everything below this line — build and run alike — is `vibe`.
 COPY . /opt/vibe-extension/
-RUN chmod 0755 /opt/vibe-extension/start.sh
-
-# 4. Three databases, created and loaded from the dumps AT BUILD TIME, so no
-#    run pays the restore cost and every run starts from identical data.
-RUN /opt/vibe-extension/build/load-dumps.sh \
-      orders customers reporting
-
-# 5. The CI server's configuration as code: one pipeline job that loads the
-#    project through its own pipeline definition file.
-ENV CASC_JENKINS_CONFIG=/opt/vibe-extension/ci/casc.yaml
+RUN mkdir -p /opt/vibe-seed \
+ && chmod 0755 /opt/vibe-extension/start.sh /opt/vibe-extension/build/*.sh \
+ && chown -R vibe:vibe /opt/vibe-extension /opt/vibe-seed /opt/ci
 
 USER vibe
+ENV PATH="/usr/lib/postgresql/${PG_MAJOR}/bin:${PATH}"
+
+# 4. Three databases, created and loaded from the dumps AT BUILD TIME, into a
+#    cluster the worker account owns. No run pays the restore cost, and every
+#    run starts from identical data.
+RUN /opt/vibe-extension/build/load-dumps.sh /opt/vibe-seed/pgdata \
+      orders customers reporting
+
+# 5. The CI server's home, seeded with the pinned plugin set so no run
+#    downloads plugins. Its job comes from casc.yaml, read from the extension
+#    prefix at start.
+RUN /opt/vibe-extension/build/seed-ci.sh /opt/vibe-seed/jenkins
 ```
 
-`build/load-dumps.sh` is the operator's own script: it starts the database
-cluster, creates one database per name it is given, loads the matching
-`dumps/<name>.sql` into it, and stops the cluster again — all inside the build,
-so the finished image carries the loaded data rather than the instructions for
-producing it.
+Two operator-owned scripts do the build-time work. `build/load-dumps.sh`
+initialises a cluster at the path it is handed, starts it on a Unix socket,
+creates one database per name and loads the matching `dumps/<name>.sql` into
+it, then stops it again. `build/seed-ci.sh` installs `ci/plugins.txt` into a
+fresh CI home. Both leave a **seed** behind: state the image carries, rather
+than instructions for producing it.
 
 Loading the dumps at **build time** is the point of doing this in a layer at
 all. The image tag covers every byte under the extension directory, dumps
@@ -398,6 +410,21 @@ be clicked through a setup wizard. That job is a pipeline that reads its steps
 from the checked-out project's own `Jenkinsfile`, so the agent can trigger a
 build of the branch it is working on and the pipeline it runs is the
 project's, not one duplicated into the extension.
+
+### Why the seed is copied rather than used in place
+
+The container root filesystem is **read-only**, and an extension does not move
+that boundary. Both services insist on writing to their own state directory,
+so neither can run against a path baked into the image. The start script
+copies each seed into the per-launch scratch root the entrypoint exports as
+`VIBE_SCRATCH_DIR` — the `/tmp` tmpfs where the runtime has one, a directory
+on the work volume where it has not — and points the service at the copy.
+Either way it is writable, per-run, and gone when the container is.
+
+That is a deliberate trade rather than a free trick. A tmpfs is memory: a seed
+of a few hundred megabytes is comfortable, and a fifty-gigabyte one is not. An
+extension whose data will not fit in the container's scratch space belongs
+behind a service reached over the network, not inside the sandbox.
 
 ### The start script
 
@@ -413,27 +440,38 @@ set -euo pipefail
 
 log() { echo "extension: $*" >&2; }
 
-# The database, on its container-internal port. Nothing is published.
-log "starting the database server"
-pg_ctlcluster 17 main start
+# The container root is read-only, so both services run from a copy of the
+# seed the image carries. The entrypoint exports VIBE_SCRATCH_DIR — the
+# writable per-launch root, the tmpfs where there is one — before it runs
+# this script, so use it rather than assuming /tmp.
+SCRATCH="${VIBE_SCRATCH_DIR:-/tmp}"
+PGDATA="${SCRATCH}/pgdata"
+JENKINS_HOME="${SCRATCH}/jenkins"
+export PGDATA JENKINS_HOME
+cp -a /opt/vibe-seed/pgdata "${PGDATA}"
+cp -a /opt/vibe-seed/jenkins "${JENKINS_HOME}"
 
-# Wait for it to actually accept connections — bounded, and loud on failure.
-for _ in $(seq 1 30); do
-  if pg_isready --quiet; then break; fi
-  sleep 1
-done
-pg_isready --quiet || { log "the database never accepted connections"; exit 1; }
+# Postgres, on the container-internal loopback. Nothing is published.
+log "starting the database on 127.0.0.1:5432"
+pg_ctl -D "${PGDATA}" -l "${SCRATCH}/postgres.log" -w -t 60 \
+  -o "-h 127.0.0.1 -p 5432 -k ${SCRATCH}" start
+pg_isready -h 127.0.0.1 -p 5432 --quiet || {
+  log "the database never accepted connections; see ${SCRATCH}/postgres.log"
+  exit 1
+}
 
-# The CI server, configured entirely from casc.yaml, listening internally.
-log "starting the CI server"
-java -jar /opt/ci/server.war --httpPort=8080 >/tmp/ci-server.log 2>&1 &
+# Jenkins, its job taken from casc.yaml, listening internally.
+log "starting the CI server on 127.0.0.1:8080"
+CASC_JENKINS_CONFIG=/opt/vibe-extension/ci/casc.yaml \
+  java -jar /opt/ci/server.war --httpPort=8080 \
+    >"${SCRATCH}/jenkins.log" 2>&1 &
 
 for _ in $(seq 1 60); do
   if curl -fsS http://127.0.0.1:8080/login >/dev/null 2>&1; then break; fi
   sleep 2
 done
 curl -fsS http://127.0.0.1:8080/login >/dev/null 2>&1 || {
-  log "the CI server never came up; see /tmp/ci-server.log"
+  log "the CI server never came up; see ${SCRATCH}/jenkins.log"
   exit 1
 }
 
