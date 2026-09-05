@@ -29,7 +29,7 @@ import type { Logger } from "../types.ts";
 import {
   claimIdleTaskWrapper as defaultClaimIdleTaskWrapper,
   type IdleTaskClaimRefusal,
-  isHeldElsewhere,
+  isWrapperUnavailable,
 } from "./idle_task_wrapper_claim.ts";
 import {
   type HeartbeatHandle,
@@ -156,7 +156,7 @@ export function idleTaskRouteRunResult(
   }
   return {
     success: false,
-    skipped: isHeldElsewhere(outcome.claimReason),
+    skipped: isWrapperUnavailable(outcome.claimReason),
     claimNotHeld: true,
   };
 }

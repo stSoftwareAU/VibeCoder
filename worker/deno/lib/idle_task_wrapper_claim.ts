@@ -60,14 +60,19 @@ export interface ClaimIdleTaskWrapperInput {
    * Fleet logins whose `CLAIM_LOCK` markers this host trusts, and whose
    * open PRs are re-checked live before the claim is finalised — the same
    * union the standard pipeline passes (`resolveFleetAuthors`).
+   *
+   * Required, like the route's copy of it: an omitted set silently narrows
+   * the claim's trust to this login and switches off the live fleet-PR
+   * re-check, and a guard that can be disabled by forgetting a field is no
+   * guard.
    */
-  fleetAuthors?: string[];
+  fleetAuthors: string[];
   /**
    * The fleet's push-capable logins (`resolveFleetMaintenanceAuthorSet`).
    * Only these accounts' open PRs defer a claim; a human's PR is theirs to
-   * manage (Issue #4133).
+   * manage (Issue #4133). Required for the same reason as `fleetAuthors`.
    */
-  pushCapableAuthors?: string[];
+  pushCapableAuthors: string[];
 }
 
 /** Injectable seams. Defaults wire the production claim path. */
@@ -119,16 +124,18 @@ export const IDLE_TASK_CLAIM_REFUSED_MESSAGE =
   "(Issue #1139)";
 
 /**
- * Refusals that mean **another run holds the wrapper**. These are the fleet
- * working as designed: this host takes a cooldown and re-scans, and the run
- * is recorded as a skip.
+ * Refusals that mean the wrapper is **not this host's to run** — another run
+ * holds it, or it is not claimable at all right now (closed, parked behind a
+ * blocking label, deferred to an open fleet PR). These are the fleet working
+ * as designed: this host takes a cooldown and re-scans, and the run is
+ * recorded as a skip.
  *
  * Everything else — a `gh` outage, a worker that is not a collaborator, a
- * verification read that failed — is a fault, and {@link isHeldElsewhere}
+ * verification read that failed — is a fault, and {@link isWrapperUnavailable}
  * returning false is what makes the caller report it as one rather than
  * folding a broken GitHub into the benign path.
  */
-const HELD_ELSEWHERE: ReadonlySet<IdleTaskClaimRefusal> = new Set<
+const UNAVAILABLE: ReadonlySet<IdleTaskClaimRefusal> = new Set<
   IdleTaskClaimRefusal
 >([
   "already_assigned",
@@ -140,9 +147,13 @@ const HELD_ELSEWHERE: ReadonlySet<IdleTaskClaimRefusal> = new Set<
   "already_closed",
 ]);
 
-/** True when the refusal means a sibling run holds the wrapper. */
-export function isHeldElsewhere(reason: IdleTaskClaimRefusal): boolean {
-  return HELD_ELSEWHERE.has(reason);
+/**
+ * True when the refusal means the wrapper was legitimately unavailable —
+ * held by a sibling run, or not claimable at this moment — rather than a
+ * fault in this host's ability to claim.
+ */
+export function isWrapperUnavailable(reason: IdleTaskClaimRefusal): boolean {
+  return UNAVAILABLE.has(reason);
 }
 
 /** A readable sentence for a refusal `claimIssue` reports without detail. */
@@ -198,18 +209,33 @@ export async function claimIdleTaskWrapper(
     pushCapableAuthors,
   } = input;
 
-  // The machine id rides in the heartbeat marker so another host can tell
-  // whose run is beating. Losing it costs the marker, not the claim, so it
-  // is logged rather than refusing an otherwise legitimate claim.
-  let machineId = "";
+  // The machine id rides in the heartbeat marker, and a claim with no marker
+  // is the state this module exists to prevent: drop the assignee mid-scan —
+  // a race loser cleaning up under the shared login, or the 30-minute
+  // assigned-without-heartbeat recovery — and a sibling host reads the
+  // wrapper as free. So a missing machine id refuses the claim rather than
+  // scanning without liveness. The standard pipeline fails the same way: its
+  // setup phase awaits `getMachineId` before claiming and a throw there is a
+  // phase failure.
+  let machineId: string;
   try {
     machineId = await machineIdFn(workDir);
   } catch (err) {
-    deps.logger.warn("idle-task wrapper claim: machine id unavailable", {
-      repo,
-      issueNumber,
-      error: err instanceof Error ? err.message : String(err),
-    });
+    const message = err instanceof Error ? err.message : String(err);
+    return refuse(
+      deps.logger,
+      input,
+      "claim_error",
+      `machine id unavailable, so the claim would carry no heartbeat: ${message}`,
+    );
+  }
+  if (machineId.length === 0) {
+    return refuse(
+      deps.logger,
+      input,
+      "claim_error",
+      "machine id resolved empty, so the claim would carry no heartbeat",
+    );
   }
 
   let result: Awaited<ReturnType<typeof defaultClaimIssue>>;
@@ -219,11 +245,11 @@ export async function claimIdleTaskWrapper(
       issueNumber,
       githubUser,
       workerId,
-      ...(fleetAuthors ? { fleetAuthors } : {}),
-      ...(pushCapableAuthors ? { pushCapableAuthors } : {}),
+      fleetAuthors,
+      pushCapableAuthors,
       // Co-publish the initial heartbeat marker inside the CLAIM_LOCK
       // comment (Issue #1628) so the claim carries liveness from the start.
-      ...(machineId ? { markerOptions: { machineId, workDir } } : {}),
+      markerOptions: { machineId, workDir },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -268,18 +294,15 @@ async function startClaimHeartbeat(
     issueNumber: number;
     workDir: string;
     machineId: string;
-    fleetAuthors?: string[];
+    fleetAuthors: string[];
   },
   startHeartbeatFn: typeof defaultStartHeartbeat,
   logger: Logger,
 ): Promise<HeartbeatHandle | undefined> {
   const { repo, issueNumber, workDir, machineId, fleetAuthors } = claim;
-  if (!machineId) return undefined;
   const markerOptions = {
     machineId,
-    ...(fleetAuthors && fleetAuthors.length > 0
-      ? { allowedAuthors: fleetAuthors }
-      : {}),
+    ...(fleetAuthors.length > 0 ? { allowedAuthors: fleetAuthors } : {}),
   };
   try {
     const started = await startHeartbeatFn({
@@ -321,7 +344,9 @@ function refuse(
     repo: input.repo,
     issueNumber: input.issueNumber,
     reason,
-    heldElsewhere: isHeldElsewhere(reason),
+    // Whether the wrapper was legitimately unavailable (a skip) or this
+    // host could not claim it (a fault the failure counters must see).
+    unavailable: isWrapperUnavailable(reason),
     detail,
   });
   return { claimed: false, reason, detail };

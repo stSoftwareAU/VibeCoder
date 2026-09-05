@@ -426,15 +426,15 @@ Deno.test(
         return Promise.resolve();
       },
       findNextIssue: issueQueue([issue("o/held", 1), issue("o/skip", 2)]),
-      processIssue: async (i) => {
-        await new Promise((r) => setTimeout(r, 5));
-        return i.repo === "o/held"
-          ? {
-            ok: true as const,
-            value: { success: false, skipped: true, claimNotHeld: true },
-          }
-          : { ok: true as const, value: { success: false, skipped: true } };
-      },
+      processIssue: (i) =>
+        Promise.resolve(
+          i.repo === "o/held"
+            ? {
+              ok: true as const,
+              value: { success: false, skipped: true, claimNotHeld: true },
+            }
+            : { ok: true as const, value: { success: false, skipped: true } },
+        ),
       releaseClaim: (repo, n) => {
         releases.push(`${repo}#${n}`);
         return Promise.resolve();
