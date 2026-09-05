@@ -80,7 +80,6 @@ import {
   exhaustedEscalationDedupKey,
   exhaustedEscalationRoute,
 } from "./conflict_abandon_restart.ts";
-import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import {
   clearMergeConflictLabel,
   CONFLICT_ATTEMPT_MARKER,
@@ -1197,35 +1196,6 @@ async function runResolutionAgent(
  * from one a dying worker abandoned. The branch is left exactly as its author
  * pushed it — the caller has already aborted any in-progress merge.
  */
-/**
- * The PR's comment thread, for the abandon rung's explanatory comment.
- *
- * Best-effort by design: an unreadable thread must not stop the rung — the
- * abandon still has the branch, the base and the originating issue, and the
- * comment says the failures could not be quoted rather than inventing them.
- */
-async function readPrThread(
-  deps: WorkerDeps,
-  repo: string,
-  prNumber: number,
-  logger: Logger,
-): Promise<unknown[]> {
-  try {
-    return await fetchIssueCommentPages(
-      repo,
-      prNumber,
-      deps.github.runGhCommand,
-    );
-  } catch (err) {
-    logger.warn("Could not read the PR thread for the abandon comment", {
-      repo,
-      prNumber,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return [];
-  }
-}
-
 async function failAttempt(
   input: MergeConflictInput,
   processorDeps: MergeConflictProcessorDeps,
@@ -1260,8 +1230,12 @@ async function failAttempt(
       ),
     );
   } catch (err) {
-    // The attempt then reads as disrupted on the next scan and is retried —
-    // the safe direction, and bounded by the disruption budget. Say so.
+    // Below the cap the attempt then reads as disrupted on the next scan and
+    // is retried — the safe direction, and bounded by the disruption budget.
+    // At the cap the abandon rung runs next, and it re-reads this thread: a
+    // missing conclusion means it quotes one failure instead of two, and if
+    // `gh` is down for its calls too it stops at a named step. Say so either
+    // way rather than swallowing this.
     logger.error("Failed to post the merge-conflict failure conclusion", {
       repo,
       prNumber,
@@ -1297,7 +1271,9 @@ async function failAttempt(
       prNumber,
       branchName: input.branchName,
       baseBranch: input.baseBranch,
-      prComments: await readPrThread(deps, repo, prNumber, logger),
+      // No thread passed: the rung fetches it, and fails loud if it cannot —
+      // "no failure comment survives" must never be published because a read
+      // failed.
     });
 
   if (abandon.outcome === "abandoned") {
