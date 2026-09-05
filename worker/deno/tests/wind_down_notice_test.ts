@@ -14,6 +14,7 @@ import {
   buildWindDownNotice,
   clearWindDownNotice,
   DEFAULT_WIND_DOWN_SECONDS,
+  noticeOrdersWindDown,
   shouldWindDown,
   shouldWriteRunBudgetNotice,
   WIND_DOWN_NOTICE_FILENAME,
@@ -142,6 +143,24 @@ Deno.test("buildWindDownNotice - a measured gate duration decides the refusal (I
     typicalGateSeconds: 2_400,
   });
   assert(/do not start the full quality gate/i.test(long));
+});
+
+Deno.test("noticeOrdersWindDown - only a wind-down notice counts as a warning (Issue #1138)", () => {
+  // The handover note reads this to say whether the run was warned. A
+  // gate-refusal notice is not a warning, and claiming otherwise would tell
+  // the next run its predecessor stopped knowingly when it did not.
+  const gateOnly = buildWindDownNotice({
+    remainingSeconds: 1000,
+    elapsedSeconds: 2600,
+    extensionsGranted: 1,
+  });
+  const windingDown = buildWindDownNotice({
+    remainingSeconds: 300,
+    elapsedSeconds: 3300,
+    extensionsGranted: 2,
+  });
+  assertEquals(noticeOrdersWindDown(gateOnly), false);
+  assertEquals(noticeOrdersWindDown(windingDown), true);
 });
 
 Deno.test("writeWindDownNotice - writes the notice where the agent can read it", async () => {

@@ -2006,12 +2006,25 @@ only place a still-progressing agent is stopped. Extensions are bounded by it:
 #### The agent is told to wind down before the cap (Issue #508)
 
 An agent cannot be interrupted mid-session — its stdin carries the prompt and
-is closed — so the remaining budget is written where it can read it. Inside the
-last **600 s** of runway the worker writes `.vibe-run-budget.md` into the
-checkout and refreshes it at every later check: seconds remaining, elapsed,
-extensions granted, and the instruction to stop waiting, commit and push, and
-leave a resumable note. The issue prompt tells the agent to read that file
-between polls of any long-running job.
+is closed — so the remaining budget is written where it can read it. The worker
+writes `.vibe-run-budget.md` into the checkout, and refreshes it at every later
+check, once the runway can no longer cover something the agent might start.
+That is **two bands, one file** (Issue #1138):
+
+- **Inside the last 600 s** — the wind-down window. The notice states the
+  seconds remaining, elapsed, extensions granted, and the instruction to stop
+  waiting, commit and push, and leave a resumable note. The operator log says
+  `wind-down notice written`.
+- **Above the window, while the runway is still short of what the quality gate
+  needs** (~1080 s by default, more on a repo whose gate is measurably slower)
+  — the notice refuses the gate and says the run itself continues. No
+  stop-waiting instruction is emitted there: the run is fine, only the gate
+  does not fit. The operator log says `run-budget notice written`.
+
+The issue prompt tells the agent to read that file between polls of any
+long-running job, and before starting the gate. Because the file now means two
+different things, anything asking "was this run warned?" — the handover note
+does — reads its contents rather than its presence.
 
 The name is hidden, so the enforced `.gitignore` keeps it out of every commit
 and `git status` never reports it — writing it cannot move the working-tree
@@ -2048,6 +2061,14 @@ hands over the note that records the skip:
 A skipped gate is never silent: that note goes in the PR summary (or
 `.pr_response_message`), because a gate nobody ran reads exactly like a gate
 that passed.
+
+**A slow gate is refused for most of a run, by design.** The refusal band is
+`gate + 180 s`, so a repo whose gate measurably takes 40 minutes refuses it
+from about 17 minutes into an hour-long run and does not offer it again. That
+is the intended trade: on such a repo the agent could never have finished the
+gate and acted on it anyway, and CI runs it in parallel shards regardless. A
+repo in that position should shorten its gate or set `quality_command` to the
+subset worth running locally.
 
 ```mermaid
 flowchart TD

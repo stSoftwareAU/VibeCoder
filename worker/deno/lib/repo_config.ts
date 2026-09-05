@@ -121,13 +121,16 @@ export function getRepoNice(
  * @param repo - Repository in "owner/repo" format
  * @param options - `typicalGateSeconds`: what the gate took on this repo this
  *   run (the baseline gate), so the guidance quotes a measurement instead of
- *   the fleet-wide assumption
+ *   the fleet-wide assumption. `runBudgetSeconds`: the whole run's wall-clock
+ *   budget, which settles the question outright for a gate that cannot fit
+ *   inside it — the only budget signal the PR-side flows get, since no
+ *   `.vibe-run-budget.md` is written for them
  * @returns Quality instruction text for inclusion in prompts
  */
 export function buildQualityInstructions(
   repoConfigs: Record<string, RepoConfig> | undefined,
   repo: string,
-  options: { typicalGateSeconds?: number } = {},
+  options: { typicalGateSeconds?: number; runBudgetSeconds?: number } = {},
 ): string {
   const skipQuality = getRepoConfig(repoConfigs, repo, "skipQualityCheck");
   if (skipQuality === "true") {
@@ -139,7 +142,11 @@ export function buildQualityInstructions(
 
   return [
     `   - While you iterate, use the repository's fast checks — formatter, linter, type check, and only the test files your change touches. Seconds, not minutes.`,
-    ...buildQualityGateBudgetLines(command, options.typicalGateSeconds),
+    ...buildQualityGateBudgetLines(
+      command,
+      options.typicalGateSeconds,
+      options.runBudgetSeconds,
+    ),
     `   - Never start ${command} in the background and poll for it. A \`sleep\`/\`pgrep\` wait loop spends the execute budget without making progress; run it in the foreground and watch each check report as it completes.`,
     `   - IMPORTANT: Always redirect stdin from /dev/null (< /dev/null) when running tests, quality checks, or build commands to prevent hanging on unattended machines.`,
   ].join("\n");

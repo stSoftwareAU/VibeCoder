@@ -299,9 +299,12 @@ async function executeClaudeBody(
   const qualityInstructions = buildQualityInstructions(
     config.repoConfig,
     repo,
-    state.baselineQualityDurationSeconds === undefined
-      ? {}
-      : { typicalGateSeconds: state.baselineQualityDurationSeconds },
+    {
+      runBudgetSeconds: config.claudeTimeout,
+      ...(state.baselineQualityDurationSeconds === undefined
+        ? {}
+        : { typicalGateSeconds: state.baselineQualityDurationSeconds }),
+    },
   );
   const customInstructions = getCustomInstructions(config.repoConfig, repo);
 

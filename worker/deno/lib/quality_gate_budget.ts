@@ -179,27 +179,57 @@ export function formatQualityGateSkipNote(
  * placeholder, so the fleet cannot drift back to "run the gate before you
  * push" in one template while another is budget-aware.
  *
+ * Two decisions, not one. The *whole run's* budget is known here, at prompt
+ * build time, and a gate that cannot fit inside it is refused outright — that
+ * is the only signal the PR-side flows (`ci_fix`, `pr_feedback`,
+ * `spelling_fix`, `merge_conflict`) get, because they run no progress
+ * extension and so no `.vibe-run-budget.md` is ever written for them. Where
+ * the gate does fit, the live notice decides mid-run.
+ *
  * @param command - The repository's gate command (`./quality.sh` unless the
  *   repo configured its own).
  * @param typicalGateSeconds - What the gate took on this repository this run,
  *   when it was measured.
+ * @param runBudgetSeconds - The whole run's wall-clock budget, when the
+ *   caller knows it.
  * @returns One prompt bullet per line, ready to join.
  */
 export function buildQualityGateBudgetLines(
   command: string,
   typicalGateSeconds?: number,
+  runBudgetSeconds?: number,
 ): string[] {
-  const decision = decideQualityGateRun(
-    typicalGateSeconds === undefined ? {} : { typicalGateSeconds },
-  );
+  const decision = decideQualityGateRun({
+    ...(typicalGateSeconds === undefined ? {} : { typicalGateSeconds }),
+    ...(runBudgetSeconds === undefined
+      ? {}
+      : { remainingSeconds: runBudgetSeconds }),
+  });
   const duration = describeGateDuration(decision.gateSeconds);
   const cost = decision.measured
     ? `it took ${duration} on this repository this run (measured)`
     : `it takes about ${duration}`;
+  const record =
+    `   - A skipped gate must be recorded, never silent. Put the \`${GATE_SKIP_MARKER} … -->\` note in the PR summary (or \`.pr_response_message\`) saying the gate was skipped for budget, and push what you have. CI runs the same checks on the PR and the worker runs the gate again before the PR is raised.`;
+
+  // The gate cannot fit this run at all — no live signal can rescue that, so
+  // it is settled here rather than left to the agent's judgement.
+  if (!decision.run) {
+    return [
+      `   - Do NOT run ${command} in this run. ${decision.reason} Run the targeted checks instead — formatter, linter, type check and the tests covering what you changed.`,
+      record,
+    ];
+  }
+
+  const share = runBudgetSeconds === undefined
+    ? ""
+    : ` — about ${
+      Math.round((decision.requiredSeconds / runBudgetSeconds) * 100)
+    }% of this run's ${runBudgetSeconds}s budget, so start it while you can still see that much runway ahead`;
 
   return [
     `   - Before you finish, and only when the run budget covers it (next line), run ${command} < /dev/null once, in the foreground, and fix whatever it reports. Re-run it after a fix — never on a timer.`,
-    `   - The gate is not free: ${cost}, so it needs about ${decision.requiredSeconds}s of run budget including the time to fix, commit and push what it reports. Read \`.vibe-run-budget.md\` before you start it — the worker writes that file once the runway can no longer cover the gate, and it says so explicitly. If it exists and refuses the gate, do NOT start it; if it does not exist, the run still has the runway and the gate is yours to run.`,
-    `   - A skipped gate must be recorded, never silent. Put the \`${GATE_SKIP_MARKER} … -->\` note in the PR summary (or \`.pr_response_message\`) saying the gate was skipped for budget, and push what you have. CI runs the same checks on the PR and the worker runs the gate again before the PR is raised.`,
+    `   - The gate is not free: ${cost}, so it needs about ${decision.requiredSeconds}s of run budget including the time to fix, commit and push what it reports${share}. Read \`.vibe-run-budget.md\` before you start it — the worker writes that file once the runway can no longer cover the gate, and it says so explicitly. If it exists and refuses the gate, do NOT start it.`,
+    record,
   ];
 }

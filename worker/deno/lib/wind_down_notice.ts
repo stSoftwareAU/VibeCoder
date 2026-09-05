@@ -40,6 +40,22 @@ import {
 export const WIND_DOWN_NOTICE_FILENAME = ".vibe-run-budget.md";
 
 /**
+ * The heading suffix a notice carries only when it is a wind-down order.
+ *
+ * Since Issue #1138 the file is also written in the wider band where the
+ * quality gate no longer fits but the run is fine, so its mere existence no
+ * longer means "this run was warned it was running out of budget". Anything
+ * that wants that answer — the handover note does — must read the contents,
+ * and this is what it reads.
+ */
+export const WIND_DOWN_HEADING_MARKER = "— wind down now";
+
+/** True when a written notice actually ordered the agent to wind down. */
+export function noticeOrdersWindDown(contents: string): boolean {
+  return contents.includes(WIND_DOWN_HEADING_MARKER);
+}
+
+/**
  * Seconds of runway at or below which the agent is told to wind down.
  *
  * Ten minutes: long enough for an agent mid-poll to stop, commit and write a
@@ -139,7 +155,7 @@ function budgetHeader(notice: RunBudgetNotice): string[] {
   );
   return [
     `# Run budget: ${notice.remainingSeconds}s remaining${
-      winding ? " — wind down now" : ""
+      winding ? ` ${WIND_DOWN_HEADING_MARKER}` : ""
     }`,
     "",
     ...(winding

@@ -119,6 +119,24 @@ Deno.test("quality_gate_budget - the prompt lines make the gate conditional on b
   assertStringIncludes(lines, "15m");
 });
 
+Deno.test("quality_gate_budget - a gate that cannot fit the whole run is refused outright", () => {
+  // The PR-side flows write no run-budget notice, so this is the only signal
+  // the agent gets: a 600s run cannot host a 900s gate, and saying "check the
+  // notice" would leave the agent to run it anyway.
+  const lines = buildQualityGateBudgetLines("./quality.sh", undefined, 600)
+    .join("\n");
+  assertStringIncludes(lines, "Do NOT run ./quality.sh in this run");
+  assertStringIncludes(lines, GATE_SKIP_MARKER);
+  assertEquals(lines.includes("once, in the foreground"), false);
+});
+
+Deno.test("quality_gate_budget - a gate that fits states what share of the run it costs", () => {
+  const lines = buildQualityGateBudgetLines("./quality.sh", undefined, 3600)
+    .join("\n");
+  assertStringIncludes(lines, "once, in the foreground");
+  assertStringIncludes(lines, "30% of this run's 3600s budget");
+});
+
 Deno.test("quality_gate_budget - the prompt lines quote the repo's own measurement", () => {
   const lines = buildQualityGateBudgetLines("make check", 1800).join("\n");
   assertStringIncludes(lines, "make check");
