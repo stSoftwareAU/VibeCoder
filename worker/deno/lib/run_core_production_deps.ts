@@ -3008,12 +3008,12 @@ export async function createProductionRunCoreDeps(
         return { ok: true, value: routeRunResult(idleRoute) };
       }
 
-      // Issue #2579: route a claimed `work-on` issue titled
-      // `add-repo: owner/repo` to the `process-add-repo` command instead
-      // of the standard coding/PR flow (which would try to open a code
-      // PR — wrong for an add-repo request). The allowed-author gate on
-      // the claim path already applies; the slug is re-validated
-      // downstream by `process-add-repo` (defence in depth).
+      // Issue #2579: route a `work-on` issue titled `add-repo: owner/repo`
+      // to the `process-add-repo` command instead of the standard coding/PR
+      // flow (which would try to open a code PR — wrong for an add-repo
+      // request). The route claims the request itself (Issue #1193); the
+      // allowed-author gate on the claim path already applies, and the slug
+      // is re-validated downstream by `process-add-repo` (defence in depth).
       const addRepoRoute = await routeAddRepoInProcessIssue(
         {
           repo: issue.repo,
@@ -3037,7 +3037,7 @@ export async function createProductionRunCoreDeps(
         return { ok: true, value: routeRunResult(addRepoRoute) };
       }
 
-      // Issue #3860: route a claimed issue titled
+      // Issue #3860: route an issue titled
       // `seed-idle-tasks: owner/repo` to `process-seed-idle-tasks` instead
       // of the standard coding/PR flow. The agent's baked `gh` allowlist
       // carries only this issue's own repo (#3643), so an agent-driven

@@ -30,40 +30,16 @@ import { ADD_REPO_PREFIX } from "./add_repo.ts";
 import { processAddRepoCommand } from "../commands/process_add_repo.ts";
 import {
   type RouteClaimDeps,
+  type RouteClaimInput,
   type RouteClaimLost,
   runWithRouteClaim,
 } from "./route_claim.ts";
 
 /** Input describing the issue under consideration. */
-export interface RouteAddRepoInput {
-  /** The repo the issue lives in (where to comment/close). */
-  repo: string;
-  issueNumber: number;
+export interface RouteAddRepoInput extends RouteClaimInput {
   issueTitle: string;
   /** Worker config threaded into the command (needs-human label, etc.). */
   config: WorkerConfig;
-  /**
-   * This host's GitHub login — the assignee that locks a recognised request
-   * against a sibling host (Issue #1193). Required: a route that cannot
-   * claim must not silently run the command.
-   */
-  githubUser: string;
-  /** Working directory holding the heartbeat and marker state. */
-  workDir: string;
-  /**
-   * Fleet logins whose `CLAIM_LOCK` markers are trusted and whose open PRs
-   * defer the claim (`resolveFleetAuthors`), forwarded to `claimIssue`.
-   * Required, not optional: an omitted set silently narrows the claim's
-   * trust to this login and switches off the live fleet-PR re-check, and a
-   * guard that can be disabled by forgetting a field is no guard.
-   */
-  fleetAuthors: string[];
-  /**
-   * The fleet's push-capable logins (`resolveFleetMaintenanceAuthorSet`) —
-   * only their open PRs defer the claim (Issue #4133). Required for the
-   * same reason as `fleetAuthors`.
-   */
-  pushCapableAuthors: string[];
 }
 
 /** Seam for the underlying command call. Defaults to `process-add-repo`. */

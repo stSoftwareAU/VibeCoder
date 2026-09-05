@@ -382,6 +382,16 @@ export interface RouteClaimLost {
   claimDetail: string;
 }
 
+/**
+ * The claim fields every pre-pipeline route needs, minus the route name it
+ * supplies itself (Issue #1193). Derived from {@link ClaimRoutedIssueInput}
+ * so the four fields and their contract are spelled once: an omitted author
+ * set silently narrows the claim's trust and switches off the live fleet-PR
+ * re-check, and a guard that can be disabled by forgetting a field is no
+ * guard — so none of them is optional.
+ */
+export type RouteClaimInput = Omit<ClaimRoutedIssueInput, "route">;
+
 /** Seams a route needs to claim, and to stop the claim's heartbeat. */
 export interface RouteClaimDeps {
   logger: Logger;

@@ -34,6 +34,7 @@ import {
   claimRoutedIssue,
   ROUTE_CLAIM_REFUSED_MESSAGE,
   routeRunResult,
+  runWithRouteClaim,
 } from "../lib/route_claim.ts";
 import { CLAIM_MARKER_PREFIX, claimIssue } from "../lib/claim_issue.ts";
 import { FakeClaimHub, makeRecordingLogger } from "./support/fake_claim_hub.ts";
@@ -151,6 +152,15 @@ function runSeedHost(
   );
 }
 
+/** The log context of the one refusal a stood-down host emitted. */
+function refusalContext(records: Array<[string, unknown]>): unknown {
+  const refusals = records.filter(
+    ([message]) => message === ROUTE_CLAIM_REFUSED_MESSAGE,
+  );
+  assertEquals(refusals.length, 1, "exactly one refusal must be logged");
+  return refusals[0]![1];
+}
+
 Deno.test(
   "two hosts, one add-repo request: the second host stands down without running the command",
   async () => {
@@ -205,10 +215,16 @@ Deno.test(
       assertEquals(ran, ["GRQ-3"]);
       assertEquals(hub.writesBy("Mac-Ultra-M2"), []);
       assertEquals(beats, ["start:GRQ-3", "stop:GRQ-3"]);
-      assert(
-        recordsB.some(([message]) => message === ROUTE_CLAIM_REFUSED_MESSAGE),
-        "the stood-down host must say why in its log",
-      );
+      // The refusal names the route, so a worker-log grep says which
+      // pre-pipeline route stood down, not merely that one did.
+      assertEquals(refusalContext(recordsB), {
+        route: "add-repo",
+        repo: REPO,
+        issueNumber: ISSUE,
+        reason: "already_assigned",
+        unavailable: true,
+        detail: "the issue is assigned to another run",
+      });
       // The loser has nothing to release — the main loop is told so.
       assert(second.routed, "the request is routed on both hosts");
       assertEquals(routeRunResult(second), {
@@ -253,9 +269,10 @@ Deno.test(
       assertEquals(ran, ["GRQ-3"]);
       assertEquals(hub.writesBy("Mac-Ultra-M2"), []);
       assertEquals(beats, ["start:GRQ-3", "stop:GRQ-3"]);
-      assert(
-        recordsB.some(([message]) => message === ROUTE_CLAIM_REFUSED_MESSAGE),
-        "the stood-down host must say why in its log",
+      assertEquals(
+        (refusalContext(recordsB) as { route?: string }).route,
+        "seed-idle-tasks",
+        "the refusal must name the route that stood down",
       );
       assertEquals(routeRunResult(second), {
         success: false,
@@ -324,5 +341,58 @@ Deno.test(
       success: true,
       skipped: false,
     });
+  },
+);
+
+Deno.test(
+  "a route that throws still stops the claim's heartbeat",
+  async () => {
+    // The heartbeat is an interval; leaking it would keep beating on an
+    // issue this host has stopped working, which reads as a live claim to
+    // every other host.
+    const stopped: string[] = [];
+    const { logger } = makeRecordingLogger();
+    let caught: unknown;
+    try {
+      await runWithRouteClaim(
+        {
+          route: "add-repo",
+          repo: REPO,
+          issueNumber: ISSUE,
+          githubUser: FLEET_USER,
+          workDir: "/tmp/unused",
+          fleetAuthors: [FLEET_USER],
+          pushCapableAuthors: [FLEET_USER],
+        },
+        {
+          logger,
+          claimRouteFn: () =>
+            Promise.resolve({
+              claimed: true as const,
+              workerId: "w1",
+              heartbeat: {
+                id: "h",
+                repo: REPO,
+                issueNumber: ISSUE,
+                kind: "issue" as const,
+              },
+            }),
+          stopHeartbeatFn: (handle) => {
+            stopped.push(handle.id);
+            return Promise.resolve();
+          },
+        },
+        () => Promise.reject(new Error("the command blew up")),
+      );
+    } catch (err) {
+      caught = err;
+    }
+
+    assertEquals(
+      caught instanceof Error ? caught.message : caught,
+      "the command blew up",
+      "the throw must surface, not be swallowed",
+    );
+    assertEquals(stopped, ["h"], "the heartbeat must be stopped anyway");
   },
 );
