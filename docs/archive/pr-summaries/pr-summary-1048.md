@@ -212,9 +212,10 @@ deleting commit.
   before any git process starts, with a test proving no git runs for an
   option-shaped ref; `--` end-of-options before every untrusted path and
   pathspec; pathspecs batched to bound argv; the workflow job is SHA-pinned,
-  `persist-credentials: false`, `--frozen --lock`, `contents: read`; no hidden
-  paths staged; both new lib modules added to the `docs/INTERNALS.md` module
-  table; every commit carries its `Vibe-Coder-Run-Id` trailer.
+  checks out with credentials not persisted, runs `--frozen --lock`, and
+  inherits read-only `contents` permission; no hidden paths staged; both new
+  lib modules added to the `docs/INTERNALS.md` module table; every commit
+  carries its `Vibe-Coder-Run-Id` trailer.
 
 ## Test Plan
 
