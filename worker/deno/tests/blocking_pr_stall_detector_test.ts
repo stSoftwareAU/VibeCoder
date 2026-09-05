@@ -8,8 +8,11 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   AUTO_FIX_CAP_MARKER_PREFIX,
+  BLOCKING_PR_STALL_NEXT_STEP,
+  BLOCKING_PR_STALL_WITHDRAWAL_MARKER,
   type BlockingPrObservation,
   blockingPrStallMarker,
+  buildBlockingPrStallNextStep,
   buildBlockingPrStallReason,
   DEFAULT_BLOCKING_PR_STALL_THRESHOLD_SECONDS,
   describeStallSummary,
@@ -18,8 +21,10 @@ import {
   findBlockingPrObservations,
   resolveBlockingPrStallThresholdSeconds,
   scanBlockingPrStalls,
+  withdrawBlockingPrStallEscalation,
 } from "../lib/blocking_pr_stall_detector.ts";
 import { buildDedupMarker } from "../lib/needs_human_escalation.ts";
+import { MERGE_CONFLICT_LABEL } from "../lib/pr_merge_conflict_scan.ts";
 import type { Logger } from "../types.ts";
 
 const REPO = "owner/repo";
@@ -825,4 +830,281 @@ Deno.test("a draft PR is not reported as a stalled repository", () => {
   );
 
   assertEquals(stall, null);
+});
+
+// ---------------------------------------------------------------------------
+// Merge-conflict lane ownership (Issue #1213).
+//
+// NEAT-AI-Ockham#119 was escalated as "green and unmerged … or close it",
+// entered the merge-conflict lane three minutes later, and was closed by hand
+// ten minutes after that — inside the ladder's cooldown, before rung 1 ever
+// ran. A PR the ladder owns is not green-but-unmerged, and nothing the
+// watchdog says about it may invite a close.
+// ---------------------------------------------------------------------------
+
+Deno.test("a CONFLICTING blocking PR is never reported as green but unmerged", () => {
+  const stall = detectBlockingPrStall(
+    observation({
+      createdAt: "2026-08-06T05:46:00Z",
+      checkCounts: { total: 12, pending: 0 },
+      mergeable: "CONFLICTING",
+    }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assertEquals(stall, null);
+});
+
+Deno.test("the merge-conflict label alone takes a PR out of the green lane", () => {
+  const stall = detectBlockingPrStall(
+    observation({
+      createdAt: "2026-08-06T05:46:00Z",
+      checkCounts: { total: 12, pending: 0 },
+      labels: [MERGE_CONFLICT_LABEL],
+    }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assertEquals(stall, null);
+});
+
+Deno.test("a red CONFLICTING PR still trips, and is marked lane-owned", () => {
+  const stall = detectBlockingPrStall(
+    observation({
+      failingChecks: [{ name: "quality", completedAt: "2026-08-11T12:07:00Z" }],
+      mergeable: "CONFLICTING",
+    }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assert(stall, "a red PR is still a fact worth reporting");
+  assertEquals(stall.signals.map((s) => s.reason), ["red-ci"]);
+  assertEquals(stall.mergeConflictLaneOwned, true);
+});
+
+Deno.test("a PR outside the lane keeps the original next step", () => {
+  const stall = detectBlockingPrStall(
+    observation({
+      failingChecks: [{ name: "quality", completedAt: "2026-08-11T12:07:00Z" }],
+      mergeable: "MERGEABLE",
+    }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assert(stall);
+  assertEquals(stall.mergeConflictLaneOwned, false);
+  assertEquals(
+    buildBlockingPrStallNextStep(stall),
+    BLOCKING_PR_STALL_NEXT_STEP,
+  );
+});
+
+Deno.test("a lane-owned stall's next step never invites a close", () => {
+  const nextStep = buildBlockingPrStallNextStep({
+    mergeConflictLaneOwned: true,
+  });
+
+  assertStringIncludes(nextStep, "merge-conflict ladder");
+  assertEquals(
+    nextStep.includes("close it"),
+    false,
+    `the ladder owns the close decision: ${nextStep}`,
+  );
+});
+
+Deno.test("the escalation comment on a lane-owned PR omits the close invitation", async () => {
+  const comments: string[] = [];
+  const writes: string[][] = [];
+  const stall = {
+    ...redCiStall(),
+    mergeConflictLaneOwned: true,
+  };
+
+  const result = await escalateBlockingPrStall(stall, {
+    ghCommandFn: buildEscalationGh(comments, writes),
+    needsHumanLabel: "needs-human",
+    ensureLabelExists: () =>
+      Promise.resolve({ ok: true as const, value: undefined }),
+    escalateWork: () =>
+      Promise.resolve({
+        ok: true as const,
+        value: { issueNumber: 900, filed: true },
+      }),
+    logger,
+  });
+
+  assert(result.ok);
+  assertEquals(result.value.postedReasons, ["red-ci"]);
+  const posted = comments.at(-1) ?? "";
+  assertStringIncludes(posted, "merge-conflict ladder");
+  assertEquals(
+    posted.includes("close it"),
+    false,
+    `the watchdog must not ask a human to close a laddered PR: ${posted}`,
+  );
+});
+
+Deno.test("observation gathering reads the PR's mergeability and labels", async () => {
+  const fixture: ScanFixture = {
+    issues: [{ number: 109, labels: ["work-on"] }],
+    prs: [{ number: 119, baseRefName: "Develop", headRefName: "issue-109" }],
+    views: {
+      119: {
+        ...STALLED_VIEW,
+        mergeable: "CONFLICTING",
+        labels: [{ name: MERGE_CONFLICT_LABEL }, { name: "escalated" }],
+      },
+    },
+  };
+
+  const observations = await findBlockingPrObservations({
+    repos: [REPO],
+    workOnLabel: "work-on",
+    fleetAuthors: ["vibe-coder"],
+    authorisedCommenters: ["nigel"],
+    ghCommandFn: buildScanGh(fixture, [], []),
+  });
+
+  assertEquals(observations.length, 1);
+  assertEquals(observations[0]!.mergeable, "CONFLICTING");
+  assertEquals(observations[0]!.labels, [MERGE_CONFLICT_LABEL, "escalated"]);
+});
+
+Deno.test("a live unmerged-green escalation is withdrawn once the PR enters the lane", async () => {
+  const comments = [
+    `## Blocking PR has stalled\n\n**Next step:** ${BLOCKING_PR_STALL_NEXT_STEP}\n\n${
+      blockingPrStallMarker("unmerged-green")
+    }`,
+  ];
+  const writes: string[][] = [];
+  const gh = buildEscalationGh(comments, writes);
+  const obs = observation({
+    prNumber: 119,
+    mergeable: "CONFLICTING",
+    labels: [MERGE_CONFLICT_LABEL],
+  });
+
+  const first = await withdrawBlockingPrStallEscalation(obs, {
+    ghCommandFn: gh,
+    logger,
+  });
+  assert(first.ok);
+  assertEquals(first.value.withdrawnReasons, ["unmerged-green"]);
+
+  const retraction = comments.at(-1) ?? "";
+  assertStringIncludes(retraction, BLOCKING_PR_STALL_WITHDRAWAL_MARKER);
+  assertStringIncludes(retraction, "merge-conflict ladder");
+  assertEquals(
+    retraction.includes("close it"),
+    false,
+    `a retraction must not repeat the instruction it withdraws: ${retraction}`,
+  );
+
+  // Second pass: the retraction is deduped by its own marker.
+  const second = await withdrawBlockingPrStallEscalation(obs, {
+    ghCommandFn: gh,
+    logger,
+  });
+  assert(second.ok);
+  assertEquals(second.value.withdrawnReasons, []);
+  assertEquals(
+    comments.filter((c) => c.includes(BLOCKING_PR_STALL_WITHDRAWAL_MARKER))
+      .length,
+    1,
+    "exactly one retraction per PR",
+  );
+});
+
+Deno.test("nothing is withdrawn when no stall escalation is live", async () => {
+  const comments: string[] = [];
+  const writes: string[][] = [];
+
+  const result = await withdrawBlockingPrStallEscalation(
+    observation({ mergeable: "CONFLICTING", labels: [MERGE_CONFLICT_LABEL] }),
+    { ghCommandFn: buildEscalationGh(comments, writes), logger },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.withdrawnReasons, []);
+  assertEquals(writes.length, 0, "no comment when there is nothing to retract");
+});
+
+Deno.test("nothing is withdrawn on a PR the merge-conflict lane does not own", async () => {
+  const comments = [
+    `## Blocking PR has stalled\n\n${blockingPrStallMarker("unmerged-green")}`,
+  ];
+  const writes: string[][] = [];
+
+  const result = await withdrawBlockingPrStallEscalation(
+    observation({ mergeable: "MERGEABLE" }),
+    { ghCommandFn: buildEscalationGh(comments, writes), logger },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.withdrawnReasons, []);
+  assertEquals(writes.length, 0);
+});
+
+Deno.test("the scan withdraws the live escalation on a PR that entered the lane", async () => {
+  const fixture: ScanFixture = {
+    issues: [{ number: 109, labels: ["work-on"] }],
+    prs: [{ number: 119, baseRefName: "Develop", headRefName: "issue-109" }],
+    views: {
+      119: {
+        comments: [],
+        commits: [{ oid: "aaa", committedDate: "2026-08-06T05:46:00Z" }],
+        statusCheckRollup: [
+          {
+            name: "quality",
+            status: "COMPLETED",
+            conclusion: "SUCCESS",
+            completedAt: "2026-08-06T06:00:00Z",
+          },
+        ],
+        createdAt: "2026-08-06T05:46:00Z",
+        autoMergeRequest: null,
+        isDraft: false,
+        mergeable: "CONFLICTING",
+        labels: [{ name: MERGE_CONFLICT_LABEL }],
+      },
+    },
+  };
+  const comments = [
+    `## Blocking PR has stalled\n\n**Next step:** ${BLOCKING_PR_STALL_NEXT_STEP}\n\n${
+      blockingPrStallMarker("unmerged-green")
+    }`,
+  ];
+  const writes: string[][] = [];
+
+  const scanOptions = {
+    repos: [REPO],
+    workOnLabel: "work-on",
+    fleetAuthors: ["vibe-coder"],
+    authorisedCommenters: ["nigel"],
+    ghCommandFn: buildScanGh(fixture, comments, writes),
+    config: { blockingPrStallThresholdSeconds: THRESHOLD },
+    needsHumanLabel: "needs-human",
+    ensureLabelExists: () =>
+      Promise.resolve({ ok: true as const, value: undefined }),
+    logger,
+    nowSeconds: () => NOW,
+  };
+
+  const result = await scanBlockingPrStalls(scanOptions);
+  assert(result.ok);
+  assertEquals(result.value, [], "a laddered PR is not a green stall");
+  assertEquals(
+    comments.filter((c) => c.includes(BLOCKING_PR_STALL_WITHDRAWAL_MARKER))
+      .length,
+    1,
+    "the live escalation is retracted exactly once",
+  );
+
+  await scanBlockingPrStalls(scanOptions);
+  assertEquals(
+    comments.filter((c) => c.includes(BLOCKING_PR_STALL_WITHDRAWAL_MARKER))
+      .length,
+    1,
+    "the retraction is not repeated on the next iteration",
+  );
 });
