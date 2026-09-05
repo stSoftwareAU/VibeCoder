@@ -32,6 +32,7 @@ import type {
   OpenIssueStateMap,
 } from "./issue_dependencies.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
+import type { InFlightClaim } from "./work_stream.ts";
 
 /**
  * Options for the issue finder.
@@ -60,12 +61,29 @@ export interface FindIssuesOptions {
   /** Optional function to check if repo is deprioritised */
   isRepoDeprioritised?: (repo: string) => boolean;
   /**
-   * Repositories currently held by another slot on this host (Issue #4176).
-   * Skipped entirely, so a free slot gets the next eligible issue from a
-   * *different* repository rather than idling. Absent/empty: unchanged
-   * serial behaviour.
+   * Repositories leased **wholesale** on this host (Issue #4176, narrowed by
+   * Issue #1091) — the maintenance lane's leases (Issue #213), whose pass
+   * may touch any branch of the clone. Skipped entirely, before any
+   * eligibility check runs. Absent/empty: unchanged serial behaviour.
+   *
+   * A sibling *slot*'s hold is deliberately **not** here. It occupies one
+   * work stream, and the stream is excluded through {@link
+   * FindIssuesOptions.inFlightClaims} so the scan's own occupancy check
+   * refuses it — keying this by repository collapsed a repository's parallel
+   * milestones into one and idled a slot for 14 minutes with 29 claimable
+   * issues in front of it.
    */
   excludeRepos?: ReadonlySet<string>;
+  /**
+   * Every issue a slot on this host currently holds, with the work stream it
+   * occupies (Issue #1091).
+   *
+   * Overlaid onto each repository's fetched issue list before any
+   * availability or occupancy check, so `isMilestoneOccupied` sees a claim
+   * the iteration-scoped `IssueCache` predates. One mechanism, not two: the
+   * scan's existing per-stream gate simply stops being lied to.
+   */
+  inFlightClaims?: readonly InFlightClaim[];
   /** Optional function to check if issue is in cooldown */
   isIssueInCooldown?: (repo: string, issueNumber: number) => boolean;
   /**
