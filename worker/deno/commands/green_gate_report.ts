@@ -1,7 +1,7 @@
 /**
  * `green-gate-report` — the Phase 0 evidence report (Issue #4189).
  *
- * Reads this host's local run logs (`~/logs`) plus the per-launch run-mode
+ * Reads this host's local run logs plus the per-launch run-mode
  * records, checks the named regression issues on GitHub, and writes
  * `docs/evidence/green-gate-<date>.md`: per-host counts and a verdict that
  * is GREEN only when host-mode launches are zero, every launch is verified
@@ -13,7 +13,7 @@
  * Arguments:
  *   --window-days N        how far back to look (default 30)
  *   --min-window-days N    shortest window that may be GREEN (default 14)
- *   --log-dir PATH         where the logs are (default $HOME/logs)
+ *   --log-dir PATH         where the logs are (default: this host's log directory)
  *   --out PATH             report path (default docs/evidence/green-gate-<date>.md)
  *   --repo OWNER/NAME      repo the regression issues live in (default stSoftwareAU/VibeCoder)
  *   --regression-issues a,b,c   override the issue list
@@ -33,6 +33,9 @@ import {
   type GreenGateSources,
 } from "../lib/green_gate_report.ts";
 import { resolveRunHostId } from "../lib/run_mode_record.ts";
+import { processEnvLookup } from "../lib/env_lookup.ts";
+import { pathStyleFor } from "../lib/host_path_style.ts";
+import { resolveLogDir } from "../lib/log_dir.ts";
 
 /** Default report location, per the issue. */
 export const GREEN_GATE_REPORT_DIR = "docs/evidence";
@@ -163,9 +166,11 @@ export const greenGateReportCommand: Command = {
   ): Promise<CommandResult<GreenGateReport>> {
     const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? "";
     const logDirArg = args["log-dir"];
+    // The host's own log directory, resolved once for the whole fleet
+    // (Issues #872, #873) rather than assumed to be `$HOME/logs`.
     const logDir = typeof logDirArg === "string" && logDirArg.length > 0
       ? logDirArg
-      : `${home}/logs`;
+      : resolveLogDir(home, processEnvLookup, pathStyleFor(home));
     const repoArg = args["repo"];
     const repo = typeof repoArg === "string" && repoArg.includes("/")
       ? repoArg

@@ -326,12 +326,27 @@ wait_for_child() {
 # One line per launcher decision in the worker's own host log, so a fleet host
 # that keeps failing a step is visible without reading stderr. Best-effort: an
 # unwritable log must never fail a launch.
-# Issue #872: `LOG_DIR` was honoured by loop.sh and ignored here, so setting
-# it split the logs across two directories with no warning. Same precedence as
-# `loop.sh:56` and `resolveLogDir` in container_launch.ts. A blank value is
-# treated as unset, so an exported-but-empty variable does not write to `/`.
-RUN_CORE_LOG_DIR="${LAUNCH_LOG_DIR:-${LOG_DIR:-${HOME}/logs}}"
-[[ -z "${RUN_CORE_LOG_DIR// }" ]] && RUN_CORE_LOG_DIR="${HOME}/logs"
+#
+# Issue #872: `LOG_DIR` was honoured by loop.sh and ignored here, so setting it
+# split the logs across two directories with no warning.
+# Issue #873: the default moved off `$HOME/logs` and onto the platform's own
+# location, so the resolution is asked for rather than spelled here — one
+# default, in worker/deno/lib/log_dir.ts, shared with loop.sh, run.ps1 and the
+# container mount. The command also prints the one-off legacy-location notice
+# on stderr. Only the last stdout line is taken: warnings a loaded config emits
+# go to stderr, and this stays correct if one ever does not.
+if ! RUN_CORE_LOG_DIR="$("${DENO_CMD}" run \
+  --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+  --allow-env --allow-read \
+  "${BASE_DIR}/worker/deno/mod.ts" log-dir </dev/null)"; then
+  echo "Error: cannot resolve the log directory (see above) - refusing to launch" >&2
+  exit 1
+fi
+RUN_CORE_LOG_DIR="${RUN_CORE_LOG_DIR##*$'\n'}"
+if [[ -z "${RUN_CORE_LOG_DIR// }" ]]; then
+  echo "Error: the log directory resolved empty - refusing to launch" >&2
+  exit 1
+fi
 
 log_run_core() {
   # The log directory is created by the launch plan later in the run, so it

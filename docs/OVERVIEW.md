@@ -39,7 +39,7 @@ repositories, commits and pull requests are how humans steer the worker and how
 the worker reports back — including escalations and crash notifications.
 **SSH, Remote Desktop, screen sharing, a management UI and terminal access to
 the host are not required for normal operation**, and no inbound port is
-opened. Local logs (`~/logs`) stay useful for diagnosis, but a recoverable
+opened. Local logs (the host log directory) stay useful for diagnosis, but a recoverable
 failure is surfaced through GitHub rather than left in a host log.
 
 ---

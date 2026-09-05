@@ -592,6 +592,13 @@ import {
   pathStyleFor,
 } from "./host_path_style.ts";
 import { resolveHostConfigPath } from "./host_config_path.ts";
+// One resolution of the log directory for the launcher, run.sh, loop.sh and
+// the container mount (Issues #872, #873).
+import {
+  hostLogDirPlatform,
+  type LogDirPlatform,
+  resolveLogDir,
+} from "./log_dir.ts";
 import {
   diskFloorOrigin,
   type DiskFloors,
@@ -796,37 +803,16 @@ export function containerTargetPaths(
  * @returns The resolved host paths
  * @throws When no home directory can be resolved
  */
-/**
- * The host directory logs are written to.
- *
- * Precedence matches `loop.sh:56` — `LAUNCH_LOG_DIR`, then `LOG_DIR`, then
- * `$HOME/logs` — so the launcher, `run.sh` and the container mount agree.
- * A blank value is treated as unset: an exported-but-empty variable meant the
- * empty string here, which would have mounted the wrong path.
- *
- * The default is not a standard location; moving it is a breaking change
- * tracked separately (Issue #873).
- */
-export function resolveLogDir(
-  home: string,
-  env: (name: string) => string | undefined,
-  style: LauncherPathStyle,
-): string {
-  // Each level is checked for a non-blank value independently, matching
-  // bash's `${LAUNCH_LOG_DIR:-${LOG_DIR:-...}}` in loop.sh: `:-` treats an
-  // empty value as unset, so a blank LAUNCH_LOG_DIR falls through to LOG_DIR
-  // rather than skipping straight to the default. A `??` chain would not.
-  for (const name of ["LAUNCH_LOG_DIR", "LOG_DIR"]) {
-    const value = (env(name) ?? "").trim();
-    if (value !== "") return normalise(value, style);
-  }
-  return joinPath(home, "logs", style);
-}
+// The log directory's own resolution lives in log_dir.ts (Issues #872, #873):
+// `run.sh`, `loop.sh` and `run.ps1` reach the same rule through the `log-dir`
+// command, so the default cannot mean one thing here and another in shell.
+export { resolveLogDir };
 
 export function resolveContainerLaunchHostPaths(
   baseDir: string,
   env: (name: string) => string | undefined,
   style: LauncherPathStyle = pathStyleFor(baseDir),
+  platform: LogDirPlatform = hostLogDirPlatform(),
 ): ContainerLaunchHostPaths {
   // Windows hosts lead with USERPROFILE: HOME, when it is set there at all,
   // is usually a POSIX-shaped path from a Unix emulation layer that the
@@ -868,8 +854,9 @@ export function resolveContainerLaunchHostPaths(
     // warning — and the worker's own `worker-*.log` could not be relocated at
     // all, because this value is the container's writable host mount. One
     // resolution, shared by all three. `LAUNCH_LOG_DIR` is checked first to
-    // match `loop.sh`'s precedence exactly.
-    logDir: resolveLogDir(home, env, style),
+    // match `loop.sh`'s precedence exactly. Issue #873 moved the default that
+    // chain falls back to onto the platform's own standard location.
+    logDir: resolveLogDir(home, env, style, platform),
     configFile,
     configStageDir: joinPath(home, ".vibe-coder/run-config", style),
     credentialDir: normalise(absolute(credentialDir), style),

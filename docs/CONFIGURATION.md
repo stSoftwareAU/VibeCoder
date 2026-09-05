@@ -1147,7 +1147,8 @@ deno run --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname
 - **Three consecutive failures raise one GitHub issue** titled
   `Worker checkout update failing on <host>` against the checkout's own origin
   repository, carrying the "active development tree" diagnosis (Issue #4204).
-  The streak lives in `~/logs/checkout-update-failure-streak` and a successful
+  The streak lives in `checkout-update-failure-streak` in the host log
+  directory ([Where the logs go](#-where-the-logs-go)) and a successful
   update resets it to zero. `--allow-sys=hostname` is what lets that title name
   the host; without it every host would share one report.
 - **A frozen host is held at its pin instead** (Issue #624). Under
@@ -1990,7 +1991,8 @@ budget:
   them to see how a three-hour run got there:
 
   ```bash
-  grep '\[progress-extension\]' ~/logs/worker-*.log
+  LOG_DIR="$(deno run --allow-env --allow-read worker/deno/mod.ts log-dir)"
+  grep '\[progress-extension\]' "${LOG_DIR}"/worker-*.log
   ```
 
 - **The kill line** — `Claude timed out after 5640s: base budget 3600s extended
@@ -2123,6 +2125,58 @@ VIBE_SLEEP_INTERVAL=60 \
 ```
 
 See `./setup.sh` header comments for the full list of `VIBE_*` variables.
+
+### 📁 Where the logs go
+
+The host log directory is the fleet's **only writable host mount**: the
+checkout is mounted read-only and work and approval state ride named volumes,
+so this is the one directory an operator, a log shipper or a backup can read
+from the host. Its default follows the platform's own convention (Issue #873):
+
+| Platform | Default                                                                 |
+| -------- | ----------------------------------------------------------------------- |
+| Linux    | `$XDG_STATE_HOME/vibe-coder`, falling back to `~/.local/state/vibe-coder` |
+| macOS    | `~/Library/Logs/vibe-coder` — the directory Console.app reads             |
+| Windows  | `%LOCALAPPDATA%\vibe-coder\logs`                                         |
+
+Logs are **state**, which is why Linux uses the XDG state directory rather than
+cache or config: the XDG Base Directory Specification names state as the home
+for "logs [and] history".
+
+Two variables override the default, in this order — set either and the
+platform default is not consulted:
+
+| Variable          | Description                                                          |
+| ----------------- | -------------------------------------------------------------------- |
+| `LAUNCH_LOG_DIR`  | Highest precedence; the supervisor's own spelling, kept from `loop.sh` |
+| `LOG_DIR`         | The one to set. A system service names `/var/log/vibe-coder` here      |
+
+A blank value means unset, exactly as `${LOG_DIR:-…}` does in shell. One
+resolution serves the launcher, `run.sh`, `loop.sh`, `run.ps1` and the
+container mount (Issue #872) — ask for it rather than assuming it:
+
+```bash
+LOG_DIR="$(deno run --allow-env --allow-read worker/deno/mod.ts log-dir)"
+tail -n 200 "${LOG_DIR}/worker.log"
+```
+
+Inside the container the logs are always at `/home/vibe/logs`, which is where
+this host directory is mounted. That path is fixed and does not follow the host
+default.
+
+#### Moving off the old `~/logs`
+
+Before 1.4.0 the default was `$HOME/logs`. **Nothing is migrated for you**: on
+the first launch after the upgrade, a host that still has `~/logs` and does not
+yet have the new directory prints one line naming both paths, and leaves the
+old directory exactly as it is. Bring the history across with:
+
+```bash
+mkdir -p ~/.local/state/vibe-coder && mv ~/logs/* ~/.local/state/vibe-coder/
+```
+
+Or keep the old location — it is still perfectly valid — by setting
+`LOG_DIR=$HOME/logs` in the environment the launcher runs in.
 
 ### 🔄 Special Runtime Variables
 

@@ -54,6 +54,9 @@ import {
   validateUpdateModeSettings,
 } from "../lib/config_validator.ts";
 import { defaultLogger } from "../lib/logger.ts";
+import { processEnvLookup } from "../lib/env_lookup.ts";
+import { pathStyleFor } from "../lib/host_path_style.ts";
+import { resolveLogDir } from "../lib/log_dir.ts";
 import {
   createDefaultReleaseCheckDeps,
   latestRelease as resolveLatestRelease,
@@ -148,10 +151,17 @@ export interface UpdateModeOutcome {
   prompted: boolean;
 }
 
-/** Where git output is logged when nothing better is known. */
+/**
+ * Where git output is logged when nothing better is known.
+ *
+ * Setup runs on the host, so it is the host's log directory — one resolution
+ * with the launcher and the shell (Issues #872, #873).
+ */
 function defaultLogDir(): string {
   const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
-  return home ? `${home}/logs` : "logs";
+  return home
+    ? resolveLogDir(home, processEnvLookup, pathStyleFor(home))
+    : "logs";
 }
 
 /**

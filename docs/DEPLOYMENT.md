@@ -161,8 +161,8 @@ Before updating an existing host:
 
 Nothing else about an existing deployment changes: the same cron, launchd,
 systemd or Task Scheduler entry keeps invoking the same launcher, and
-`$WORK_DIR`, `~/logs`, `.config.json` and the credential directory stay where
-they are — they are exactly the paths mounted into the container.
+`$WORK_DIR`, the host log directory, `.config.json` and the credential
+directory stay where they are — they are exactly the paths mounted into the container.
 
 ## 🧊 Keeping a host up to date: dynamic or frozen
 
@@ -555,7 +555,7 @@ These only tune the *generated* LaunchAgent (tokens, paths, logs); whether it is
 | `VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY` | Anthropic API key for Claude CLI |
 | `VIBE_LAUNCHAGENT_FALLBACK_PATHS` | Extra PATH locations (default: `/opt/homebrew/bin:/usr/local/bin`) |
 | `VIBE_LAUNCHAGENT_DIR` | Custom LaunchAgents directory (default: `~/Library/LaunchAgents`) |
-| `VIBE_LOGS_DIR` | Logs directory (default: `~/logs`) |
+| `VIBE_LOGS_DIR` | Logs directory (default: the platform's own location — see [Where the logs go](CONFIGURATION.md#-where-the-logs-go)) |
 | `VIBE_SKIP_LAUNCHCTL` | Set to `true` to skip launchctl commands (for testing) |
 
 **Screenshot support environment variables:**
@@ -579,7 +579,7 @@ These only tune the *generated* LaunchAgent (tokens, paths, logs); whether it is
 
 The setup is idempotent — running it multiple times produces identical results.
 
-**Logs** are written to `~/logs/`:
+**Logs** are written to the host log directory ([Where the logs go](CONFIGURATION.md#-where-the-logs-go)):
 - `launchagent-stdout.log` — Standard output
 - `launchagent-stderr.log` — Standard error
 - `worker.log` — Worker activity log
@@ -598,7 +598,7 @@ The script is designed to be run from cron every 5 minutes. It will:
 crontab -e
 
 # Add this line to run every 5 minutes:
-*/5 * * * * /path/to/VibeCoder/run.sh >> ~/logs/cron.log 2>&1
+*/5 * * * * /path/to/VibeCoder/run.sh >> /home/USER/.local/state/vibe-coder/cron.log 2>&1
 ```
 
 > **📝 Note on cron PATH (macOS/Homebrew):**
@@ -827,7 +827,7 @@ Whichever supervisor you use — launchd, cron, systemd, Task Scheduler, `loop.s
 
 - **Backoff instead of a restart storm.** Consecutive launcher failures are counted in `${WORK_DIR}/.container_restart_state.json`; `loop.sh` / `loop.ps1` wait longer after each one (base sleep doubled per failure, capped at 30 minutes) and reset after a successful run. Under a scheduler the fixed interval is the retry, and the launcher records the same counter itself.
 - **Escalation through GitHub.** The launcher records the phase it reached in `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-phase`, so a failure is attributed to runtime detection, image build, work volume preparation, container start or the worker run. Past the phase's threshold — 2 for a failed image build, 3 otherwise — the failure is reported through the crash-notification channel (GitHub issue comment plus optional webhook, subject to its cooldown), naming the phase.
-- **A quota pause is not a failure.** A run that stops because this host is out of Claude quota exits **75** and writes `~/logs/quota-pause.json`. That is a scheduled outcome: the failure streak resets, nothing escalates, the container is not treated as suspect, and the supervisor re-probes at a fixed cadence (`VIBE_QUOTA_PAUSE_SLEEP_SECONDS`, default 3600 s) rather than doubling its wait — the quota may be extended before its stated reset. A host that genuinely *crashes* while out of quota writes no marker, so it backs off exactly as above.
+- **A quota pause is not a failure.** A run that stops because this host is out of Claude quota exits **75** and writes `quota-pause.json` in the host log directory. That is a scheduled outcome: the failure streak resets, nothing escalates, the container is not treated as suspect, and the supervisor re-probes at a fixed cadence (`VIBE_QUOTA_PAUSE_SLEEP_SECONDS`, default 3600 s) rather than doubling its wait — the quota may be extended before its stated reset. A host that genuinely *crashes* while out of quota writes no marker, so it backs off exactly as above.
 
 - **A wedged container VM.** Backoff only helps once the launcher returns, and a container whose VM stops answering leaves the host-side `container run` client waiting on it for ever — three hours of blocked `run.sh` on host-23. Both launchers now wait under the launch plan's `watchdog` deadline (the worker's maximum run duration plus a 10-minute margin), reap a container that outlives it (`<runtime> kill`, then SIGKILL of the host-side client and runtime helper), and exit **87** so the next cycle runs. Every launch also reaps `vibe-coder-*` containers left behind by an earlier cycle — including one that survived a host reboot. Forced reaps are `container_wedged` self-heal events.
 
@@ -845,24 +845,27 @@ Recoveries, backoffs, escalations, quota pauses and forced reaps are structured 
 
 ## 📝 Logs
 
-Logs are written inside the container to `/home/vibe/logs`, which is the host's
-`~/logs` mounted read/write — so every path below is read on the host, with no
-`exec` into the container.
+Logs are written inside the container to `/home/vibe/logs`, which is the **host
+log directory** mounted read/write — so every path below is read on the host,
+with no `exec` into the container. That directory defaults to the platform's own
+location, so ask for it rather than assuming `~/logs`
+([Where the logs go](CONFIGURATION.md#-where-the-logs-go)):
 
 View logs in real-time:
 ```bash
-tail -f ~/logs/worker.log        # Latest worker activity (symlink)
-tail -f ~/logs/worker-<PID>.log  # Specific run's log
-tail -f ~/logs/run_core.log      # Run core startup/shutdown
-tail -f ~/logs/run_guard.log     # PID guard decisions
-tail -f ~/logs/pull.log          # Git pull output
+LOG_DIR="$(deno run --allow-env --allow-read worker/deno/mod.ts log-dir)"
+tail -f "${LOG_DIR}/worker.log"        # Latest worker activity (symlink)
+tail -f "${LOG_DIR}/worker-<PID>.log"  # Specific run's log
+tail -f "${LOG_DIR}/run_core.log"      # Run core startup/shutdown
+tail -f "${LOG_DIR}/run_guard.log"     # PID guard decisions
+tail -f "${LOG_DIR}/pull.log"          # Git pull output
 ```
 
 Prior runs' worker logs are gzipped at the next worker start, so read them with
 `zcat`:
 
 ```bash
-zcat ~/logs/worker-<PID>.log.gz | less
+zcat "${LOG_DIR}/worker-<PID>.log.gz" | less
 ```
 
 Worker logs — plain or gzipped — are deleted once older than

@@ -886,14 +886,15 @@ To extract security events from logs:
 
 ```bash
 # Filter all security events
-grep '\[SECURITY\]' ~/logs/worker.log
+LOG_DIR="$(deno run --allow-env --allow-read worker/deno/mod.ts log-dir)"
+grep '\[SECURITY\]' "${LOG_DIR}/worker.log"
 
 # Filter specific event types
-grep '\[SECURITY\] \[AUTH_FAILURE\]' ~/logs/worker.log
-grep '\[SECURITY\] \[ISSUE_PICKED_UP\]' ~/logs/worker.log
+grep '\[SECURITY\] \[AUTH_FAILURE\]' "${LOG_DIR}/worker.log"
+grep '\[SECURITY\] \[ISSUE_PICKED_UP\]' "${LOG_DIR}/worker.log"
 
 # Real-time monitoring of security events
-tail -f ~/logs/worker.log | grep '\[SECURITY\]'
+tail -f "${LOG_DIR}/worker.log" | grep '\[SECURITY\]'
 ```
 
 ### 📝 Existing Security Logging

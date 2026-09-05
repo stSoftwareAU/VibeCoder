@@ -409,7 +409,7 @@ Four boundaries keep that safe on a machine nobody is watching:
 | A narrow signature list | Only `no space left on device`, `read-only file system`, `ENOSPC` and BuildKit's `ResourceExhausted` are healed. A broken `RUN` step, a missing package or a syntax error is untouched — "healing" a genuine build error is how a launcher starts looping on it |
 | One retry, never a loop | Exactly one heal and one retry per launch. A second failure in the same launch escalates to a builder *recreate* (`builder delete` + `builder start`) so the **next** launch starts clean, and this launch still fails |
 | Per-runtime, in one place | Apple container bounces its builder VM; Docker and Podman build in-process and prune the build cache instead. Both spellings live with the rest of the dialect in `container_runtime.ts` |
-| Fails loud | An unreadable build log, an unsupported runtime or a builder that will not start exits non-zero naming the reason, and the decision is logged to `~/logs/run_core.log` |
+| Fails loud | An unreadable build log, an unsupported runtime or a builder that will not start exits non-zero naming the reason, and the decision is logged to `run_core.log` in the host log directory |
 
 `worker/deno/lib/container_build_heal.ts` owns the classifier and the
 escalation; the runtime is driven through an injected seam, so the tests never

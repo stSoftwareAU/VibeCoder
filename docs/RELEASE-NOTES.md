@@ -12,6 +12,75 @@ major, are minted from [the release floor](RELEASE-TAGGING.md#the-release-floor)
 rather than from the automatic increment, and are recorded here newest first,
 with the exact migration and the exact rollback.
 
+## 1.4.0 — the log directory follows the platform
+
+**Path contract change. Read the migration before upgrading a host.**
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| The default log directory moved off `$HOME/logs` onto the platform's own standard location | #873 |
+| `run.sh`, `loop.sh`, `run.ps1` and the launcher ask the new `log-dir` command instead of each spelling the default | #873 |
+| A host that still has `~/logs` is told once, at launch, with both paths — nothing is moved and nothing is deleted | #873 |
+
+| Platform | New default                                                             |
+| -------- | ----------------------------------------------------------------------- |
+| Linux    | `$XDG_STATE_HOME/vibe-coder`, falling back to `~/.local/state/vibe-coder` |
+| macOS    | `~/Library/Logs/vibe-coder` — the directory Console.app reads             |
+| Windows  | `%LOCALAPPDATA%\vibe-coder\logs`                                         |
+
+`~/logs` followed no convention: it is not a location any standard nominates,
+and it put fleet state — rotated `worker-*.log(.gz)`, `launch-*.log`, PID and
+failure-streak files — directly in the operator's home directory beside their
+own files. Logs are **state**, which is why Linux uses the XDG state directory:
+the specification names state as the home for "logs [and] history".
+
+### Breaking: the host path the container mounts moved
+
+The log directory is the fleet's **only writable host mount**, so the move is
+incompatible by construction: existing rotated history stays at the old path,
+and any external tail, ship or backup pointed at `~/logs` reads a directory
+that is no longer written to. Nothing is migrated automatically — a host is
+**told**, once, and its old directory is left exactly as it is.
+
+### Migration
+
+Pick one, per host, before or just after the upgrade:
+
+1. **Move the history across** (Linux; use `~/Library/Logs/vibe-coder` on macOS):
+
+   ```bash
+   mkdir -p ~/.local/state/vibe-coder && mv ~/logs/* ~/.local/state/vibe-coder/
+   ```
+
+2. **Or keep the old location** — still perfectly valid — by setting `LOG_DIR`
+   in the environment the launcher runs in:
+
+   ```bash
+   LOG_DIR=$HOME/logs
+   ```
+
+3. **Repoint anything external** — log shippers, backups, `tail` aliases,
+   dashboards — at the new directory. Print it with:
+
+   ```bash
+   deno run --allow-env --allow-read worker/deno/mod.ts log-dir
+   ```
+
+A system service keeps naming its own directory the same way it always could:
+`LOG_DIR=/var/log/vibe-coder`.
+
+Full detail:
+[Configuration — Where the logs go](CONFIGURATION.md#-where-the-logs-go).
+
+### Rollback
+
+Pin the host back to `1.3.x` (`./run.sh upgrade` pins forward; a frozen host
+edits `pinned_ref`). The old release resolves `$HOME/logs` exactly as before,
+and because nothing was deleted, a host that moved its history back — or never
+moved it — is unaffected.
+
 ## 1.3.0 — one derived trust source
 
 **Configuration contract change. Read the migration before upgrading a host.**

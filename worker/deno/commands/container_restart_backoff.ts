@@ -11,7 +11,7 @@
  *   deno run --allow-env --allow-read --allow-write --allow-run --allow-net \
  *     mod.ts container-restart-backoff --exit-status 91 \
  *     [--phase-file ~/.vibe-coder/last-launch-phase] [--repo-dir .] \
- *     [--log-dir ~/logs] [--quota-pause-sleep-seconds 3600] \
+ *     [--log-dir <host log directory>] [--quota-pause-sleep-seconds 3600] \
  *     [--base-sleep-seconds 60] [--work-dir /path]
  *
  * Issue #342: a run that stopped because the host is out of quota declares it
@@ -39,6 +39,8 @@ import { consumeQuotaPauseMarker } from "../lib/quota_pause.ts";
 import { resolveRunHostId } from "../lib/run_mode_record.ts";
 import { formatLogTail } from "../lib/launcher_failure_evidence.ts";
 import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
+import { pathStyleFor } from "../lib/host_path_style.ts";
+import { resolveLogDir } from "../lib/log_dir.ts";
 
 function optionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -85,15 +87,15 @@ function stateDir(): string {
 /**
  * Log directory the run writes its quota-pause marker to (Issue #342).
  *
- * `$HOME/logs` on the host and the same path inside the container, because
- * that directory is the one host mount both sides share — the work directory
- * rides a named volume the host cannot read.
+ * This command runs on the **host**, called by the supervisor between launcher
+ * runs, so it resolves the host's log directory — the one host mount both
+ * sides share, because the work directory rides a named volume the host cannot
+ * read. One resolution with the launcher and the shell (Issues #872, #873):
+ * `LAUNCH_LOG_DIR`, then `LOG_DIR`, then the platform's own location.
  */
 function logDir(): string {
-  const explicit = Deno.env.get("LOG_DIR");
-  if (explicit) return explicit;
   const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? ".";
-  return `${home}/logs`;
+  return resolveLogDir(home, processEnvLookup, pathStyleFor(home));
 }
 
 /**
