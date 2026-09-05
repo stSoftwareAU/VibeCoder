@@ -27,6 +27,11 @@ import type {
 import { createDefaultRunCoreConfig } from "./run_core.ts";
 import { acquireMaintenanceRepoLease } from "./maintenance_lane.ts";
 import { drainConflictingPrs } from "./merge_conflict_drain.ts";
+import {
+  announceDeferralStreak,
+  readConflictDeferrals,
+  writeConflictDeferrals,
+} from "./merge_conflict_deferrals.ts";
 import { reactivePhaseTimeout } from "./reactive_phase_timeout.ts";
 
 // Config & logging
@@ -264,6 +269,7 @@ import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
 import { getRunId } from "./run_id.ts";
 import {
   type FleetAuthorSetInput,
+  isFleetAuthor,
   resolveFleetMaintenanceAuthorSet,
   resolveFleetPrAuthorSet,
   resolveSuppressionExcludedLogins,
@@ -1965,7 +1971,43 @@ export async function createProductionRunCoreDeps(
         ...(opts?.deadlineEpochMs !== undefined
           ? { deadlineEpochMs: opts.deadlineEpochMs }
           : {}),
-        findNext: async (exclude) => {
+        // Issue #1111: the lease, the deadline and the cap each drop a due PR.
+        // The cursor on the work volume is what stops the same PR losing that
+        // race every cycle in silence, and the notice is what says so on the
+        // PR itself once it has.
+        deferrals: {
+          load: () =>
+            readConflictDeferrals(
+              workDir,
+              undefined,
+              Date.now(),
+              (message) => logger.warn(message),
+            ),
+          save: (state) =>
+            writeConflictDeferrals(
+              workDir,
+              state,
+              undefined,
+              Date.now(),
+              (message) => logger.warn(message),
+            ),
+          announce: (notice) =>
+            announceDeferralStreak(notice, {
+              ghCommandFn: runGhCommand,
+              // The marker only dedups when the fleet wrote it: a body is
+              // text anyone can post, and a dedup that trusts it goes quiet
+              // (`marker_dedup_author_manifest.ts`).
+              isTrustedAuthor: (login) =>
+                isFleetAuthor(login, [
+                  ...resolveFleetMaintenanceAuthorSet({
+                    githubUser,
+                    allowedAuthors: fleetPrAuthorInput.allowedAuthors,
+                    fleetPrAuthors: fleetPrAuthorInput.fleetPrAuthors,
+                  }),
+                ]),
+            }),
+        },
+        findNext: async (exclude, prefer) => {
           const scan = await findConflictingPr({
             githubUser,
             allowedAuthors: fleetPrAuthorInput.allowedAuthors,
@@ -1982,6 +2024,9 @@ export async function createProductionRunCoreDeps(
             // itself, so it needs the configured escalation label.
             needsHumanLabel: config.needsHumanLabel,
             exclude,
+            // Issue #1111: the deferral cursor, so a PR the last pass left
+            // behind leads this one.
+            ...(prefer !== undefined ? { prefer } : {}),
           });
           // Issue #1109: the scan records every PR it decided on through the
           // logger itself, so the drain needs only the selection.

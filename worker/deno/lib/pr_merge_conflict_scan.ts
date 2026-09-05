@@ -40,6 +40,7 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "./fleet_authors.ts";
 import { listOpenPrs, type PrEntry } from "./pr_maintenance.ts";
+import { orderByPreference, preferredRepos } from "./conflict_queue_order.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
@@ -204,8 +205,23 @@ export type ConflictSkipReason =
   }
   /** Another host holds the cross-host PR lock. */
   | { kind: "lock-held"; lockHolder: string }
-  /** An issue slot holds the repository's shared clone (Issue #213). */
-  | { kind: "repo-leased" }
+  /**
+   * An issue slot holds the repository's shared clone (Issue #213).
+   * `deferralStreak` is the consecutive passes that have now deferred this PR
+   * without attempting it (Issue #1111), absent when no cursor is kept.
+   */
+  | { kind: "repo-leased"; deferralStreak?: number }
+  /**
+   * Left in the queue by a pass-level bound before any attempt started
+   * (Issue #1111) — the deadline arrived, or the cap was full. Distinct from
+   * the pass-level `deadline`/`cap` stops below: this one is about one PR, and
+   * unlike them it names a queued PR.
+   */
+  | {
+    kind: "deferred-bound";
+    bound: "deadline" | "cap";
+    deferralStreak: number;
+  }
   /** Pass-level: nothing else was due. */
   | { kind: "queue-empty" }
   /** Pass-level: too little of the cycle remained for another attempt. */
@@ -234,6 +250,7 @@ const CONFLICT_SKIP_REASON_KIND_SET: Record<ConflictSkipReasonKind, true> = {
   "disrupted-bound": true,
   "lock-held": true,
   "repo-leased": true,
+  "deferred-bound": true,
   "queue-empty": true,
   "deadline": true,
   "cap": true,
@@ -295,6 +312,9 @@ export function isQueuedConflictReason(kind: ConflictSkipReasonKind): boolean {
     case "disrupted-bound":
     case "lock-held":
     case "repo-leased":
+    // Issue #1111: a PR the deadline or the cap left behind is queued and
+    // labelled, unlike the pass-level stop of the same name.
+    case "deferred-bound":
       return true;
   }
   const unhandled: never = kind;
@@ -342,6 +362,11 @@ export function conflictReasonOperands(
     case "lock-held":
       return { lockHolder: reason.lockHolder };
     case "repo-leased":
+      return reason.deferralStreak !== undefined
+        ? { deferralStreak: reason.deferralStreak }
+        : {};
+    case "deferred-bound":
+      return { bound: reason.bound, deferralStreak: reason.deferralStreak };
     case "queue-empty":
       return {};
     case "deadline":
@@ -482,6 +507,17 @@ export interface FindConflictingPrOptions {
    * {@link conflictPrKey}.
    */
   exclude?: ReadonlySet<string>;
+  /**
+   * PRs a previous pass deferred without attempting, most starved first
+   * (Issue #1111).
+   *
+   * The scan re-derives the same order every pass, so a PR behind a busy
+   * repository or at the end of a backlog is skipped indefinitely. These keys
+   * are offered first — repositories in cursor order, and preferred PRs first
+   * within their repository. It is an ordering hint only: every gate below
+   * still runs, so a preferred PR that is not due is skipped like any other.
+   */
+  prefer?: readonly string[];
 }
 
 /** The `owner/repo#number` key {@link FindConflictingPrOptions.exclude} uses. */
@@ -970,6 +1006,7 @@ export async function findConflictingPr(
     needsHumanLabel = NEEDS_HUMAN_LABEL,
     nowMs = () => Date.now(),
     exclude,
+    prefer,
   } = options;
 
   // The pass pushes a merge commit to the PR branch, so it is scoped to
@@ -1211,7 +1248,12 @@ export async function findConflictingPr(
     };
   };
 
-  const orderedRepos = shuffleRepos ? shuffleRepos([...repos]) : [...repos];
+  // Issue #1111: the deferral cursor leads, then the usual (shuffled) order.
+  const orderedRepos = orderByPreference(
+    shuffleRepos ? shuffleRepos([...repos]) : [...repos],
+    (repo) => repo,
+    preferredRepos(prefer),
+  );
   const decisions: ConflictPrDecision[] = [];
   // Repo-level tallies: the two exits below know no PR to key a decision on,
   // so they are counted for the summary instead of silently dropped.
@@ -1251,7 +1293,13 @@ export async function findConflictingPr(
       logger,
     );
 
-    for (const pr of prs) {
+    const orderedPrs = orderByPreference(
+      prs,
+      (pr) => conflictPrKey(repo, pr.number),
+      prefer,
+    );
+
+    for (const pr of orderedPrs) {
       const outcome = await decidePr(repo, pr, states.get(pr.number));
       const decision: ConflictPrDecision = outcome.outcome === "attempted"
         ? { repo, prNumber: pr.number, outcome: "attempted" }
