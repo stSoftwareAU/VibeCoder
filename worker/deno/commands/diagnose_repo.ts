@@ -27,7 +27,10 @@ import {
   fetchIssuesByLabel,
   fetchOpenPRsForFleet,
 } from "../lib/issue_query.ts";
-import { resolveFleetAuthors } from "../lib/fleet_authors.ts";
+import {
+  resolveFleetAuthors,
+  resolveFleetMaintenanceAuthorSet,
+} from "../lib/fleet_authors.ts";
 import {
   formatFleetConfigValidation,
   validateFleetConfig,
@@ -289,7 +292,12 @@ export const diagnoseRepoCommand: Command = {
           allIssues,
           labelConfig,
           workerUser: githubUser,
-          allowedAuthors: config.allowedAuthors,
+          // Issue #1064: the fleet-operated accounts, never the
+          // `allowed_authors` permission list.
+          pushCapableAuthors: resolveFleetMaintenanceAuthorSet({
+            githubUser,
+            fleetPrAuthors: config.fleetPrAuthors ?? [],
+          }),
           isInCooldown,
           unmetDependencies,
           openSubIssues,

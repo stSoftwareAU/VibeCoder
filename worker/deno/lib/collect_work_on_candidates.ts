@@ -456,7 +456,10 @@ export async function collectWorkOnCandidates(
         repoAllIssues,
         milestoneTitle,
         options.githubUser,
-        config.allowedAuthors,
+        // Issue #1064: only the accounts the fleet operates occupy a work
+        // stream. `config.allowedAuthors` is a permission list and holds
+        // humans, whose assignments must never stall the worker.
+        pushCapableAuthors,
       )
     ) {
       noteBlocked(issue.number, milestoneTitle, "milestone-occupied");

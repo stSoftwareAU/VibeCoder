@@ -327,7 +327,17 @@ export async function diagnoseIssue(
       : undefined,
   });
 
-  // 6. Milestone occupancy check
+  // The accounts this fleet operates. Both the work-stream occupancy check
+  // below and the open-PR blocking check further down resolve from this one
+  // set — Issue #1064: they used to disagree, occupancy reading
+  // `config.allowedAuthors` (a permission list that holds humans) while PR
+  // blocking correctly used the push-capable set.
+  const pushCapableAuthors = resolveFleetMaintenanceAuthorSet({
+    githubUser: options.githubUser,
+    fleetPrAuthors: config.fleetPrAuthors ?? [],
+  });
+
+  // 6. Work-stream occupancy check
   let milestoneOccupied = false;
   try {
     const allIssues = await fetchAllIssues(repo, undefined, 100, ghFn);
@@ -335,7 +345,7 @@ export async function diagnoseIssue(
       allIssues,
       issue.milestone,
       options.githubUser,
-      config.allowedAuthors,
+      pushCapableAuthors,
     );
 
     checks.push({
@@ -383,10 +393,7 @@ export async function diagnoseIssue(
       const blockingPR = getBlockingPRForIssue(
         repoPRs,
         issue.milestone,
-        resolveFleetMaintenanceAuthorSet({
-          githubUser: options.githubUser,
-          fleetPrAuthors: config.fleetPrAuthors ?? [],
-        }),
+        pushCapableAuthors,
       );
       if (blockingPR) {
         prBlocked = true;

@@ -656,13 +656,19 @@ still counts: the census exists precisely to refute the "a `degraded-model`
 filter is hiding the work" hypothesis.
 
 Work streams are milestones, plus `""` for the default-branch stream. A stream
-is **occupied** once it hosts an open issue assigned to any account the scan
-honours — this worker or an `allowed_authors` entry — and the Priority 2 scan
+is **occupied** once it hosts an open issue assigned to a Vibe Coder — this host
+or a sibling in `fleet_pr_authors`/`service_accounts` — and the Priority 2 scan
 then refuses every sibling in it (`isMilestoneOccupied` → the
-`milestone-occupied` skip). The census applies the same gate **over the same
-account set** and reports the excluded siblings as `stream_occupied=<n>`,
-alongside `pr_blocked=<n>`, so both deferrals stay observable without inflating
-the inversion signal:
+`milestone-occupied` skip). The census applies the same gate and reports the
+excluded siblings as `stream_occupied=<n>`, alongside `pr_blocked=<n>`, so both
+deferrals stay observable without inflating the inversion signal.
+
+**Known divergence:** the census still resolves its account set from
+`allowed_authors`, while the scan resolves the fleet-identity set. A human
+assignee therefore still reads as `stream_occupied` in the census, but no longer
+in the scan — the census **over**-counts occupancy and so **under**-counts
+claimable work, the bounded-harm direction this module already prefers. Aligning
+its input is a follow-up; it is fed from `run_core_production_deps.ts`.
 
 ```mermaid
 flowchart LR
