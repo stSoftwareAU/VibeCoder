@@ -1157,6 +1157,62 @@ helper serves every site. The directions are pinned by test in
   already hold over every other fleet decision. Non-fleet content no longer
   has them.
 
+#### 5d. The class is capped — a shrink-only manifest, tested both ways
+
+§5b and §5c fixed fifteen instances. Neither fixed the **class**: this shape
+spread by copy-paste, and a new template that omits `author` from its `--json`
+list looks exactly like the seventeen that came before it. So the invariant now
+lives in code — [`dedup_author_manifest.ts`](worker/deno/lib/dedup_author_manifest.ts):
+
+> every `--search` value carrying `in:body` or `in:title` must be paired with a
+> `--json` field list that requests `author`
+
+A static scanner reads the `gh issue list` / `gh pr list` argv arrays across
+`worker/deno/{lib,commands,setup}` and classifies each dedup search. The
+searches that do not satisfy the invariant yet are named one by one, with a
+stated reason, in `UNVERIFIED_DEDUP_MANIFEST`, and `UNVERIFIED_DEDUP_SITE_CAP`
+records the remaining count as a literal so it moves visibly in a diff.
+
+**The paired test fails in both directions** — that is what makes the list
+shrink-only rather than a graveyard:
+
+```mermaid
+flowchart LR
+    S["Dedup search<br/>in:body / in:title"] --> V{"--json requests<br/>author?"}
+    V -- yes --> OK["Verified — nothing to do"]
+    V -- no --> M{"On the manifest?"}
+    M -- no --> F1["FAIL: the class grew back"]
+    M -- yes --> C["Capped — allowed for now"]
+    OK --> L{"Still on the<br/>manifest?"}
+    L -- yes --> F2["FAIL: stale entry,<br/>shrink the list"]
+    L -- no --> OK2["Clean"]
+    style F1 fill:#9d0208,stroke:#6a040f,color:#fff
+    style F2 fill:#9d0208,stroke:#6a040f,color:#fff
+    style OK fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style OK2 fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+- an unverified search with no manifest entry fails the build, so the class
+  cannot grow back by copy-paste;
+- a manifest entry whose site is now verified fails the build as **stale**, so
+  fixing a site is not complete until its entry is deleted and the cap lowered.
+
+**The remaining 22 are exposure, not safety.** The manifest bounds the class; it
+does not close it. Nineteen are the silence shape §5b describes (idle-task
+wrapper dedups keyed on a title, plus the audit-failure and carryover-tracker
+alerts); three drive a write — `idle_task_backfill.ts` chooses which issue gets
+the `idle-task` label, `setup/best_practices_sync.ts` chooses which issue the
+sync updates, and `issue_query.ts` decides from a PR title whether work is
+already in progress. Draining the list to zero is tracked by Issue #1106, which
+names the three write-driving sites as the ones to fix first.
+
+**Stated limit of the scan.** It resolves a `--search` value written inline or
+assigned once to a `const` in the same file. A search assembled at runtime from
+several fragments is beyond a static scan and is not claimed to be covered —
+which is why each entry carries a reason rather than the list being a bare
+count. The list is the record of what is known, not proof that nothing else
+exists.
+
 ### 6. Egress Containment — Per-Run Write-Repo Allowlist
 
 The mitigations above narrow what untrusted content can *say* to the worker; egress containment narrows what a successful injection can *do*. Without it, an injection that reads a private repo can post the contents as a public comment in a different repo (four of the monitored repos are public, so the exfiltration sink is real).

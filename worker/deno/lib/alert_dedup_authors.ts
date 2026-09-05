@@ -43,6 +43,11 @@
  * why one helper serves every site. The condition is logged loudly every
  * time so it is visible rather than inferred.
  *
+ * **The class is capped, not merely fixed** (Issue #1097).
+ * `dedup_author_manifest.ts` scans the source tree for dedup searches that
+ * do not request `author` and holds them to a shrink-only manifest, so a
+ * new copy of this shape fails the build instead of joining the pattern.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
