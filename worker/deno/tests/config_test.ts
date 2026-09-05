@@ -12,6 +12,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import {
+  _resetRemovedTrustKeyWarning,
   getEnvArrayOrDefault,
   getEnvNumberOrDefault,
   getEnvOrDefault,
@@ -265,21 +266,20 @@ Deno.test("config - issueLabels is unchanged regardless of file contents (Issue 
   });
 });
 
-Deno.test("config - validateConfig throws when allowedAuthors is empty", () => {
+Deno.test("config - validateConfig accepts an empty allowedAuthors (Issue #1066)", () => {
+  // The derived collaborator set fills this each cycle; an empty local array
+  // is the healthy state, not a configuration error.
   const config: WorkerConfig = buildDefaultWorkerConfig({
     allowedAuthors: [],
     allowedAuthor: "",
     prReviewer: "reviewer",
     repos: ["org/repo"],
     issueLabels: ["claude"],
+    serviceAccounts: ["vibe-worker"],
     workDir: "/tmp/work",
   }) as WorkerConfig;
 
-  assertThrows(
-    () => validateConfig(config),
-    Error,
-    "allowed_authors",
-  );
+  validateConfig(config);
 });
 
 Deno.test("config - validateConfig throws when repos is empty", () => {
@@ -396,6 +396,7 @@ Deno.test("config - validateConfig passes for valid config", () => {
     repos: ["org/repo"],
     issueLabels: ["claude"],
     authorisedCommenters: ["testuser"],
+    serviceAccounts: ["vibe-worker"],
     workDir: "/tmp/work",
   }) as WorkerConfig;
 
@@ -656,14 +657,17 @@ Deno.test("config - isAllowedAuthor returns false for disallowed user", () => {
   assertEquals(isAllowedAuthor(config, "charlie"), false);
 });
 
-Deno.test("config - isAllowedAuthor is case-sensitive", () => {
+Deno.test("config - isAllowedAuthor is case-insensitive, as GitHub logins are (Issue #1066)", () => {
+  // `allowedAuthors` is now the derived collaborator set, normalised to lower
+  // case, while a login under test arrives in the account's own casing.
   const config: WorkerConfig = buildDefaultWorkerConfig({
     allowedAuthors: ["Alice"],
     allowedAuthor: "Alice",
   }) as WorkerConfig;
 
-  assertEquals(isAllowedAuthor(config, "alice"), false);
+  assertEquals(isAllowedAuthor(config, "alice"), true);
   assertEquals(isAllowedAuthor(config, "Alice"), true);
+  assertEquals(isAllowedAuthor(config, "mallory"), false);
 });
 
 // =============================================================================
@@ -711,6 +715,7 @@ Deno.test("config - validateConfig accepts bot account usernames", () => {
     prReviewer: "reviewer",
     repos: ["org/repo"],
     issueLabels: ["claude"],
+    serviceAccounts: ["vibe-worker"],
     workDir: "/tmp/work",
   }) as WorkerConfig;
 
@@ -725,6 +730,7 @@ Deno.test("config - validateConfig accepts multiple allowed authors", () => {
     prReviewer: "reviewer",
     repos: ["org/repo"],
     issueLabels: ["claude"],
+    serviceAccounts: ["vibe-worker"],
     workDir: "/tmp/work",
   }) as WorkerConfig;
 
@@ -733,7 +739,7 @@ Deno.test("config - validateConfig accepts multiple allowed authors", () => {
 });
 
 // =============================================================================
-// GitHub-derived allowlists — author_source + exclusion_team (Issue #252)
+// The single trust source — collaborators minus the Vibe Coders (Issue #1066)
 // =============================================================================
 
 function captureConsoleWarn(fn: () => void): string[] {
@@ -750,57 +756,32 @@ function captureConsoleWarn(fn: () => void): string[] {
   return warnings;
 }
 
-Deno.test("config - validateConfig throws when allowedAuthors is empty under author_source config (Issue #252)", () => {
-  const config: WorkerConfig = buildDefaultWorkerConfig({
+Deno.test("config - validateConfig no longer requires allowed_authors (Issue #1066)", () => {
+  // Trust is derived from repository collaborators, so an empty local array
+  // is the healthy state rather than a configuration error.
+  validateConfig(buildDefaultWorkerConfig({
     allowedAuthors: [],
     allowedAuthor: "",
-    authorSource: "config",
     prReviewer: "reviewer",
     repos: ["org/repo"],
     issueLabels: ["claude"],
+    serviceAccounts: ["vibe-worker"],
     workDir: "/tmp/work",
-  });
-
-  assertThrows(
-    () => validateConfig(config),
-    Error,
-    "allowed_authors is required",
-  );
+  }));
 });
 
-Deno.test("config - validateConfig allows empty allowedAuthors under author_source github (Issue #252)", () => {
+Deno.test("config - validateConfig throws when the fleet login set is empty (Issue #1066)", () => {
   const config: WorkerConfig = buildDefaultWorkerConfig({
-    allowedAuthors: [],
-    allowedAuthor: "",
-    authorSource: "github",
+    allowedAuthors: ["testuser"],
     prReviewer: "reviewer",
     repos: ["org/repo"],
     issueLabels: ["claude"],
-    authorisedCommenters: [],
+    serviceAccounts: [],
+    fleetPrAuthors: [],
     workDir: "/tmp/work",
   });
 
-  validateConfig(config);
-});
-
-Deno.test("config - validateConfig warns about ignored local allowlists under author_source github (Issue #252)", () => {
-  const config: WorkerConfig = buildDefaultWorkerConfig({
-    allowedAuthors: ["alice", "bob"],
-    allowedAuthor: "alice",
-    authorSource: "github",
-    prReviewer: "reviewer",
-    repos: ["org/repo"],
-    issueLabels: ["claude"],
-    authorisedCommenters: ["carol"],
-    workDir: "/tmp/work",
-  });
-
-  const warnings = captureConsoleWarn(() => validateConfig(config));
-  assertEquals(warnings.length > 0, true, "expected a deprecation warning");
-  const combined = warnings.join("\n");
-  assertStringIncludes(combined, "alice");
-  assertStringIncludes(combined, "bob");
-  assertStringIncludes(combined, "carol");
+  assertThrows(() => validateConfig(config), Error, "fleet login set is empty");
 });
 
 Deno.test("config - validateConfig throws on a malformed exclusion_team (Issue #252)", () => {
@@ -810,6 +791,7 @@ Deno.test("config - validateConfig throws on a malformed exclusion_team (Issue #
     prReviewer: "reviewer",
     repos: ["org/repo"],
     issueLabels: ["claude"],
+    serviceAccounts: ["vibe-worker"],
     exclusionTeam: "vibe-workers",
     workDir: "/tmp/work",
   });
@@ -828,43 +810,16 @@ Deno.test("config - validateConfig accepts an org/slug exclusion_team (Issue #25
     prReviewer: "reviewer",
     repos: ["org/repo"],
     issueLabels: ["claude"],
+    serviceAccounts: ["vibe-worker"],
     exclusionTeam: "stSoftwareAU/vibe-workers",
     workDir: "/tmp/work",
   });
 
-  validateConfig(config);
-});
-
-Deno.test("config - absent author_source matches today's validateConfig behaviour (Issue #252)", () => {
-  const emptyAuthors: WorkerConfig = buildDefaultWorkerConfig({
-    allowedAuthors: [],
-    allowedAuthor: "",
-    prReviewer: "reviewer",
-    repos: ["org/repo"],
-    issueLabels: ["claude"],
-    workDir: "/tmp/work",
-  });
-
-  assertThrows(
-    () => validateConfig(emptyAuthors),
-    Error,
-    "allowed_authors is required",
-  );
-
-  const populated: WorkerConfig = buildDefaultWorkerConfig({
-    allowedAuthors: ["testuser"],
-    allowedAuthor: "testuser",
-    prReviewer: "reviewer",
-    repos: ["org/repo"],
-    issueLabels: ["claude"],
-    workDir: "/tmp/work",
-  });
-
-  const warnings = captureConsoleWarn(() => validateConfig(populated));
+  const warnings = captureConsoleWarn(() => validateConfig(config));
   assertEquals(warnings, []);
 });
 
-Deno.test("config - loadConfig defaults author_source to config when absent (Issue #252)", async () => {
+Deno.test("config - loadConfig grants no trust from the local arrays (Issue #1066)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
     repos: ["org/repo"],
@@ -872,22 +827,21 @@ Deno.test("config - loadConfig defaults author_source to config when absent (Iss
 
   await withTempConfig(testConfig, async (configPath) => {
     const config = await loadConfig(configPath);
-    assertEquals(config.authorSource, "config");
+    assertEquals(config.allowedAuthors, []);
     assertEquals(config.exclusionTeam, undefined);
   });
 });
 
-Deno.test("config - loadConfig loads author_source and exclusion_team (Issue #252)", async () => {
+Deno.test("config - loadConfig loads exclusion_team as an additional exclusion (Issue #252)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: [],
     repos: ["org/repo"],
-    author_source: "github",
+    service_accounts: ["vibe-worker"],
     exclusion_team: "stSoftwareAU/vibe-workers",
   };
 
   await withTempConfig(testConfig, async (configPath) => {
     const config = await loadConfig(configPath, { validate: true });
-    assertEquals(config.authorSource, "github");
     assertEquals(config.exclusionTeam, "stSoftwareAU/vibe-workers");
     assertEquals(config.allowedAuthors, []);
   });
@@ -909,32 +863,29 @@ Deno.test("config - loadConfig throws on a malformed exclusion_team (Issue #252)
   });
 });
 
-Deno.test("config - loadConfig with author_source github warns about ignored local logins (Issue #252)", async () => {
+Deno.test("config - loadConfig warns that local logins no longer grant trust (Issue #1066)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["alice"],
-    authorized_commenters: ["bob"],
+    authorized_commenters: ["bob[bot]"],
     repos: ["org/repo"],
-    author_source: "github",
   };
 
   await withTempConfig(testConfig, async (configPath) => {
-    const warnings = await (async () => {
-      const captured: string[] = [];
-      const original = console.warn;
-      console.warn = (...args: unknown[]) => {
-        captured.push(args.map((arg) => String(arg)).join(" "));
-      };
-      try {
-        await loadConfig(configPath, { validate: true });
-      } finally {
-        console.warn = original;
-      }
-      return captured;
-    })();
+    const captured: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => {
+      captured.push(args.map((arg) => String(arg)).join(" "));
+    };
+    _resetRemovedTrustKeyWarning();
+    try {
+      await loadConfig(configPath);
+    } finally {
+      console.warn = original;
+    }
 
-    const combined = warnings.join("\n");
+    const combined = captured.join("\n");
+    assertStringIncludes(combined, "allowed_authors");
     assertStringIncludes(combined, "alice");
-    assertStringIncludes(combined, "bob");
   });
 });
 
@@ -942,7 +893,7 @@ Deno.test("config - loadConfig with author_source github warns about ignored loc
 // loadConfig allowed_authors array (Issue #218)
 // =============================================================================
 
-Deno.test("config - loadConfig loads allowed_authors array from config file", async () => {
+Deno.test("config - allowed_authors seeds only the default PR reviewer (Issue #1066)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["user1", "user2", "user3"],
     repos: ["org/repo"],
@@ -950,12 +901,15 @@ Deno.test("config - loadConfig loads allowed_authors array from config file", as
 
   await withTempConfig(testConfig, async (configPath) => {
     const config = await loadConfig(configPath);
-    assertEquals(config.allowedAuthors, ["user1", "user2", "user3"]);
+    // The array grants no trust — the derived set fills this each cycle.
+    assertEquals(config.allowedAuthors, []);
+    // Its first entry survives as the default reviewer/assignee only.
     assertEquals(config.allowedAuthor, "user1");
+    assertEquals(config.prReviewer, "user1");
   });
 });
 
-Deno.test("config - loadConfig falls back to legacy allowed_author when allowed_authors missing", async () => {
+Deno.test("config - allowed_authors still seeds the legacy allowedAuthor field", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["legacy-user"],
     repos: ["org/repo"],
@@ -963,7 +917,8 @@ Deno.test("config - loadConfig falls back to legacy allowed_author when allowed_
 
   await withTempConfig(testConfig, async (configPath) => {
     const config = await loadConfig(configPath);
-    assertEquals(config.allowedAuthors, ["legacy-user"]);
+    // Issue #1066: the array grants no trust.
+    assertEquals(config.allowedAuthors, []);
     assertEquals(config.allowedAuthor, "legacy-user");
   });
 });
@@ -978,12 +933,14 @@ Deno.test("config - loadConfig uses config file allowed_authors, ignores env (Is
     const config = await loadConfig(configPath, {
       env: envFrom({ ALLOWED_AUTHORS: "env-user1,env-user2" }),
     });
-    // Config file value should be used, NOT env var (Issue #266)
-    assertEquals(config.allowedAuthors, ["config-user"]);
+    // Config file value should be used, NOT env var (Issue #266). Issue
+    // #1066: neither grants trust — the reviewer seed is what survives.
+    assertEquals(config.allowedAuthors, []);
+    assertEquals(config.allowedAuthor, "config-user");
   });
 });
 
-Deno.test("config - loadConfig sets authorisedCommenters from allowedAuthor when not specified", async () => {
+Deno.test("config - loadConfig defaults authorisedCommenters to the known bots (Issue #1066)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
     repos: ["org/repo"],
@@ -991,7 +948,12 @@ Deno.test("config - loadConfig sets authorisedCommenters from allowedAuthor when
 
   await withTempConfig(testConfig, async (configPath) => {
     const config = await loadConfig(configPath);
-    assertEquals(config.authorisedCommenters, ["testuser"]);
+    // Axis 2 is a *known* list. A human no longer needs to be on it: write
+    // access to a monitored repo already carries input trust.
+    assertEquals(config.authorisedCommenters, [
+      "github-copilot[bot]",
+      "github-actions[bot]",
+    ]);
   });
 });
 
@@ -1400,7 +1362,7 @@ Deno.test("config - loadConfig warns about unknown keys in config file (Issue #1
   try {
     const config = await loadConfig(configPath);
     // Config should still load successfully (warnings, not errors)
-    assertEquals(config.allowedAuthors, ["testuser"]);
+    assertEquals(config.allowedAuthor, "testuser");
     // Should have warned about the camelCase key
     assertEquals(stderrOutput.length > 0, true, "Expected warning output");
     assertEquals(

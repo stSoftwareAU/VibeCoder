@@ -9,12 +9,7 @@
  * Use setup.sh to configure via .config.json.
  */
 
-import type {
-  AuthorSource,
-  ConfigFile,
-  RepoConfig,
-  WorkerConfig,
-} from "../types.ts";
+import type { ConfigFile, RepoConfig, WorkerConfig } from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import {
   EXCLUSION_TEAM_PATTERN,
@@ -45,9 +40,14 @@ import {
   formatUnknownKeyWarnings,
 } from "./config_unknown_keys.ts";
 import {
+  FLEET_LOGIN_CONFIG_KEYS,
+  resolveVibeCoderLogins,
+} from "./trust_exclusions.ts";
+import {
   DEFAULT_BEST_PLANNING_MODEL,
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_SHUFFLE_REPOS,
+  DEFAULT_TRUSTED_INPUT_BOTS,
   DEFAULT_TRUSTED_REVIEW_BOTS,
   DEFAULT_UPDATE_MODE,
   DEFAULT_VERBOSITY,
@@ -386,13 +386,20 @@ export async function loadConfig(
   configPath: string,
   options?: LoadConfigOptions,
 ): Promise<WorkerConfig> {
+  const file = await loadConfigFile(configPath);
+  warnRemovedTrustKeys(file);
   // The one environment seam this loader reads through (Issue #956).
   const env = options?.env ?? processEnvLookup;
   const file = await loadConfigFile(configPath, env);
 
-  // Load allowed authors array (Issue #137)
-  const allowedAuthors = file.allowed_authors ?? [];
-  const allowedAuthor: string = allowedAuthors[0] ?? "";
+  // Issue #1066: `allowed_authors` no longer grants anything. Who may direct
+  // work is derived from repository collaborators every cycle, so trust
+  // starts **closed** here and is opened only by a successful resolve. The
+  // file's array survives for one non-trust purpose: the default PR reviewer
+  // and assignee when `pr_reviewers` is unset.
+  const allowedAuthors: string[] = [];
+  const configuredAuthors = file.allowed_authors ?? [];
+  const allowedAuthor: string = configuredAuthors[0] ?? "";
 
   // Load PR reviewers array (Issue #141)
   const prReviewers = file.pr_reviewers ?? [];
@@ -409,13 +416,14 @@ export async function loadConfig(
   // checks.
   const issueLabels = [LABEL_DEFAULTS.topPriorityLabel];
 
+  // Issue #1066, axis 2: the *known* logins whose input the worker acts on —
+  // Copilot, Actions, and any other bot the operator names. A GitHub App is
+  // never a repository collaborator, so this cannot be derived; it is an
+  // explicit allowlist by necessity. It grants input only, never the right to
+  // direct work. An operator who sets the key keeps exactly what they wrote.
   const authorisedCommenters = file.authorized_commenters ??
-    (allowedAuthor ? [allowedAuthor] : []);
+    [...DEFAULT_TRUSTED_INPUT_BOTS];
 
-  // Issue #252: local arrays remain the default source. `"github"` is
-  // accepted here so the later wiring sub-issue can flip behaviour without
-  // another schema change. Absent matches today's `"config"` path.
-  const authorSource: AuthorSource = file.author_source ?? "config";
   const exclusionTeam = file.exclusion_team;
 
   // Issue #3528: allowlist of service-account logins the identity guard
@@ -876,7 +884,6 @@ export async function loadConfig(
     repos,
     issueLabels,
     authorisedCommenters,
-    authorSource,
     exclusionTeam,
     serviceAccounts,
     ghConfigDir,
@@ -1038,22 +1045,6 @@ function validatePreFlightConfigs(
  * @throws Error if required fields are missing or invalid
  */
 export function validateConfig(config: WorkerConfig): void {
-  // Check required fields (Issue #137 - now checking allowedAuthors array).
-  // Issue #252: under author_source "github" the local arrays are optional
-  // (and ignored) — an empty list must not throw, or every existing host
-  // would be stranded the moment they flip the source.
-  const authorSource = config.authorSource ?? "config";
-  if (authorSource !== "github" && config.allowedAuthors.length === 0) {
-    throw new Error(
-      "Configuration error: allowed_authors is required. " +
-        "Set via .config.json (run setup.sh to configure).",
-    );
-  }
-
-  if (authorSource === "github") {
-    warnIgnoredLocalAllowlists(config);
-  }
-
   if (config.exclusionTeam !== undefined) {
     if (!EXCLUSION_TEAM_PATTERN.test(config.exclusionTeam)) {
       throw new Error(
@@ -1099,45 +1090,87 @@ export function validateConfig(config: WorkerConfig): void {
       );
     }
   }
+
+  // Issue #1066: `allowed_authors` is no longer required, and no longer
+  // grants anything — who may direct work is derived from repository
+  // collaborators every cycle. What IS required is something to *subtract*:
+  // the Vibe Coder accounts hold write access by necessity, so an empty
+  // fleet login set would leave the workers trusted to raise and schedule
+  // their own work. Fail loudly rather than run open. Checked last so a host
+  // with several problems still hears about the shape errors first.
+  if (
+    resolveVibeCoderLogins({
+      serviceAccounts: config.serviceAccounts ?? [],
+      fleetPrAuthors: config.fleetPrAuthors ?? [],
+    }).size === 0
+  ) {
+    throw new Error(
+      "Configuration error: the fleet login set is empty, so the Vibe Coder " +
+        "accounts — which hold repository write access in order to push " +
+        "branches — would be trusted to raise and schedule their own work. " +
+        `Set ${FLEET_LOGIN_CONFIG_KEYS.join(" and/or ")} in .config.json to ` +
+        "the fleet's own GitHub logins (run setup.sh to configure).",
+    );
+  }
+}
+
+/** Guards {@link warnRemovedTrustKeys} to one notice per process. */
+let warnedRemovedTrustKeys = false;
+
+/** Re-arm the migration notice. Test-only. */
+export function _resetRemovedTrustKeyWarning(): void {
+  warnedRemovedTrustKeys = false;
 }
 
 /**
- * Warn when local trust arrays are still populated under `author_source:
- * "github"` (Issue #252). The GitHub-derived lists fully replace the local
- * arrays, so a leftover login must never be mistaken for a grant of trust.
+ * Name what a still-deployed `.config.json` carries that no longer does what
+ * it used to (Issue #1066).
+ *
+ * `author_source` is *removed* and refused outright by `REMOVED_CONFIG_KEYS`,
+ * the convention Issue #805 established: a setting that reads as live and
+ * does nothing is the silent failure the config load exists to prevent, and
+ * `./setup.sh` strips it automatically.
+ *
+ * `allowed_authors` is different — it survives with a narrower purpose, so
+ * refusing it would strand every deployed host for no gain. It is warned
+ * about instead, once per load, naming what it no longer does.
  */
-function warnIgnoredLocalAllowlists(config: WorkerConfig): void {
-  const ignoredAuthors = config.allowedAuthors;
-  const ignoredCommenters = config.authorisedCommenters;
-  if (ignoredAuthors.length === 0 && ignoredCommenters.length === 0) {
-    return;
-  }
+function warnRemovedTrustKeys(file: ConfigFile): void {
+  // Once per process: `loadConfig` is re-entered by sub-commands and by the
+  // escape-hatch follow-up gate, and a migration notice repeated on every
+  // read is noise an operator learns to scroll past.
+  if (warnedRemovedTrustKeys) return;
+  warnedRemovedTrustKeys = true;
 
-  const parts: string[] = [];
-  if (ignoredAuthors.length > 0) {
-    parts.push(`allowed_authors: ${ignoredAuthors.join(", ")}`);
+  const configuredAuthors = file.allowed_authors ?? [];
+  if (configuredAuthors.length > 0) {
+    console.warn(
+      "⚠️  CHANGED: `allowed_authors` no longer grants the right to raise, " +
+        "label or schedule work (Issue #1066); who may direct the worker is " +
+        `derived from repository collaborators. Ignored for trust: ${
+          configuredAuthors.join(", ")
+        }. The first entry is still used as the default PR reviewer when ` +
+        "`pr_reviewers` is unset — set `pr_reviewers` and remove this key.",
+    );
   }
-  if (ignoredCommenters.length > 0) {
-    parts.push(`authorized_commenters: ${ignoredCommenters.join(", ")}`);
-  }
-
-  console.warn(
-    `⚠️  DEPRECATION: author_source is "github", so local allowlist ` +
-      `entries are ignored and do not grant trust (${parts.join("; ")}). ` +
-      `Remove them from .config.json or set author_source to "config".`,
-  );
 }
 
 /**
- * Check if a username is in the allowed authors list.
+ * Check whether a username may direct work — axis 1 of the trust model.
+ *
+ * Case-insensitive, because GitHub logins are (Issue #1066): `allowedAuthors`
+ * is the derived collaborator set, normalised to lower case, while a login
+ * under test arrives in the account's own casing.
  *
  * @param config - Worker configuration
  * @param username - Username to check
- * @returns true if the username is an allowed author
+ * @returns true if the username may raise, label and schedule work
  */
 export function isAllowedAuthor(
   config: WorkerConfig,
   username: string,
 ): boolean {
-  return config.allowedAuthors.includes(username);
+  const key = username.trim().toLowerCase();
+  if (!key) return false;
+  return config.allowedAuthors.some((a) => a.trim().toLowerCase() === key);
 }

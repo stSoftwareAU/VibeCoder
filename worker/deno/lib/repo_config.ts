@@ -9,16 +9,9 @@
  * quality checks, reviewers, custom instructions, and pre-setup commands.
  */
 
-import type {
-  CiProviderConfig,
-  PrFailureAction,
-  RepoConfig,
-  Result,
-} from "../types.ts";
+import type { CiProviderConfig, RepoConfig, Result } from "../types.ts";
 import { DEFAULT_REPO_NICE } from "./config_defaults.ts";
-import { assertNever } from "./assert_never.ts";
 import { compileCheckNamePattern } from "./ci_log_provider.ts";
-import { JENKINS_PROVIDER_ID } from "./ci_provider_jenkins.ts";
 
 // =============================================================================
 // Per-repo config queries
@@ -275,112 +268,6 @@ export async function runPreSetupCommand(
 }
 
 // =============================================================================
-// PR failure actions (Issue #1890)
-// =============================================================================
-
-/** Action types recognised by `parsePrFailureActions`. */
-const KNOWN_PR_FAILURE_ACTION_TYPES = ["fetch-jenkins-log"] as const;
-
-/**
- * Parse and validate a raw `prFailureActions` value loaded from
- * `.config.json` into a typed `PrFailureAction[]` (Issue #1890).
- *
- * Returns `Result.ok` with an empty array when the input is `undefined`
- * so callers can treat "missing" and "empty" the same way. Returns
- * `Result.error` with a descriptive message when the input is the wrong
- * shape, contains an unknown `type`, is missing a required field, or
- * carries a malformed regex.
- *
- * The parser is strict — unknown action types are rejected so a typo
- * in `.config.json` fails loudly rather than silently disabling the
- * feature.
- */
-export function parsePrFailureActions(
-  raw: unknown,
-): Result<PrFailureAction[], string> {
-  if (raw === undefined || raw === null) {
-    return { ok: true, value: [] };
-  }
-  if (!Array.isArray(raw)) {
-    return {
-      ok: false,
-      error: "prFailureActions must be an array",
-    };
-  }
-
-  const parsed: PrFailureAction[] = [];
-  for (let i = 0; i < raw.length; i++) {
-    const entry = raw[i];
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-      return {
-        ok: false,
-        error: `prFailureActions[${i}] must be an object`,
-      };
-    }
-    const obj = entry as Record<string, unknown>;
-    const type = obj.type;
-    if (typeof type !== "string") {
-      return {
-        ok: false,
-        error: `prFailureActions[${i}].type must be a string`,
-      };
-    }
-    if (
-      !KNOWN_PR_FAILURE_ACTION_TYPES.includes(
-        type as typeof KNOWN_PR_FAILURE_ACTION_TYPES[number],
-      )
-    ) {
-      return {
-        ok: false,
-        error: `prFailureActions[${i}].type "${type}" is not a known action ` +
-          `(expected one of: ${KNOWN_PR_FAILURE_ACTION_TYPES.join(", ")})`,
-      };
-    }
-
-    // type === "fetch-jenkins-log" — the only variant today.
-    const jobPath = obj.jobPath;
-    if (typeof jobPath !== "string" || jobPath.length === 0) {
-      return {
-        ok: false,
-        error:
-          `prFailureActions[${i}].jobPath is required for type "fetch-jenkins-log"`,
-      };
-    }
-    const checkNamePattern = obj.checkNamePattern;
-    if (
-      checkNamePattern !== undefined &&
-      typeof checkNamePattern !== "string"
-    ) {
-      return {
-        ok: false,
-        error: `prFailureActions[${i}].checkNamePattern must be a string`,
-      };
-    }
-    if (typeof checkNamePattern === "string") {
-      try {
-        new RegExp(checkNamePattern);
-      } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
-        return {
-          ok: false,
-          error:
-            `prFailureActions[${i}].checkNamePattern is not a valid regex: ${detail}`,
-        };
-      }
-    }
-
-    const action: PrFailureAction = {
-      type: "fetch-jenkins-log",
-      jobPath,
-      ...(checkNamePattern !== undefined ? { checkNamePattern } : {}),
-    };
-    parsed.push(action);
-  }
-
-  return { ok: true, value: parsed };
-}
-
-// =============================================================================
 // CI log providers (Issue #3579)
 // =============================================================================
 
@@ -447,16 +334,10 @@ export function parseCiProviders(
         error: `ciProviders[${i}].jobPath must be a string`,
       };
     }
-    if (
-      provider === JENKINS_PROVIDER_ID &&
-      (typeof jobPath !== "string" || jobPath.length === 0)
-    ) {
-      return {
-        ok: false,
-        error:
-          `ciProviders[${i}].jobPath is required for provider "${JENKINS_PROVIDER_ID}"`,
-      };
-    }
+    // Whether a `jobPath` is required is the provider's business, not
+    // core's (Issue #986): core does not know which providers exist, so it
+    // cannot know which of them need one. A provider that needs one reports
+    // its absence as an explicit dispatcher error.
 
     parsed.push({
       provider,
@@ -469,33 +350,8 @@ export function parseCiProviders(
 }
 
 /**
- * Convert a deprecated `prFailureActions` entry into its equivalent
- * `ciProviders` entry (Issue #3579), so existing `.config.json` files
- * keep producing identical fetch behaviour after the upgrade.
- */
-export function ciProviderFromPrFailureAction(
-  action: PrFailureAction,
-): CiProviderConfig {
-  switch (action.type) {
-    case "fetch-jenkins-log":
-      return {
-        provider: JENKINS_PROVIDER_ID,
-        jobPath: action.jobPath,
-        ...(action.checkNamePattern !== undefined
-          ? { checkNamePattern: action.checkNamePattern }
-          : {}),
-      };
-    default:
-      // Exhaustiveness guard — a new legacy action must be mapped above.
-      return assertNever(action.type);
-  }
-}
-
-/**
  * Return the CI log providers configured for a repository (Issue #3579).
  *
- * Explicit `ciProviders` entries come first, followed by any deprecated
- * `prFailureActions` converted to their equivalent provider entry.
  * Malformed configuration is surfaced as a thrown error so the worker
  * fails fast rather than silently dropping a provider.
  */
@@ -513,12 +369,7 @@ export function getCiProviders(
     throw new Error(`Invalid ciProviders for ${repo}: ${parsed.error}`);
   }
 
-  return [
-    ...parsed.value,
-    ...getPrFailureActions(repoConfigs, repo).map(
-      ciProviderFromPrFailureAction,
-    ),
-  ];
+  return parsed.value;
 }
 
 // =============================================================================
@@ -660,34 +511,6 @@ export function getCiFailureLabels(
   const result = parseCiFailureLabels(raw);
   if (!result.ok) {
     throw new Error(`Invalid ciFailureLabels for ${repo}: ${result.error}`);
-  }
-  return result.value;
-}
-
-/**
- * Return the parsed `prFailureActions` for a repository, or an empty
- * array when the repo has no configuration or the field is unset
- * (Issue #1890).
- *
- * Malformed configuration is surfaced as a thrown error so the worker
- * fails fast at startup rather than silently dropping actions. Callers
- * that want to handle the error inline should call
- * `parsePrFailureActions()` directly on the raw value.
- */
-export function getPrFailureActions(
-  repoConfigs: Record<string, RepoConfig> | undefined,
-  repo: string,
-): PrFailureAction[] {
-  if (!repoConfigs) return [];
-  const config = repoConfigs[repo];
-  if (!config) return [];
-  const raw = (config as { prFailureActions?: unknown }).prFailureActions;
-  if (raw === undefined) return [];
-  const result = parsePrFailureActions(raw);
-  if (!result.ok) {
-    throw new Error(
-      `Invalid prFailureActions for ${repo}: ${result.error}`,
-    );
   }
   return result.value;
 }

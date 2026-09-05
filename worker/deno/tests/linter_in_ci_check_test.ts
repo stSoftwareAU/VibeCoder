@@ -1137,7 +1137,11 @@ Deno.test(
     // assertNever default branch and throw rather than returning undefined.
     await withTempRepo({}, async (path) => {
       await assertRejects(
-        () => checkLinterInCI(path, "cobol" as unknown as LinterCheckLanguage),
+        () =>
+          checkLinterInCI(
+            path,
+            "not-a-language" as unknown as LinterCheckLanguage,
+          ),
         Error,
         "Unreachable",
       );

@@ -97,19 +97,18 @@ flowchart TD
 **Trusted:** the operator's host and the configuration file on it; the
 current trusted-author set; the worker's own Deno process.
 
-That trusted-author set is **not** always `allowed_authors`. Under
-`author_source: "config"` (the default) it is the local
-`allowed_authors` array. Under `"github"` it is each monitored repo's
-write, maintain, or admin collaborators, minus the host login,
-`service_accounts`, optional `exclusion_team` members, and bot-shaped
-logins. Anyone who can grant write access on a monitored repo can
-authorise an instructor of the worker. That is the intended design, and
-it is a wider set than a hand-edited allowlist.
+That trusted-author set is **never** `allowed_authors` (Issue #1066). It is
+each monitored repo's write, maintain, or admin collaborators, minus the host
+login, `service_accounts`, `fleet_pr_authors`, optional `exclusion_team`
+members, and bot-shaped logins — intersected across the monitored repos.
+Anyone who can grant write access on a monitored repo can authorise an
+instructor of the worker. That is the intended design, and it is a wider set
+than a hand-edited allowlist.
 
-**Partially trusted:** `authorized_commenters` under `"config"` — they can
-trigger PR feedback processing, but they do not widen the egress
-boundary. Under `"github"` that key is parsed and ignored for trust; the
-derived collaborator set fills both roles.
+**Partially trusted:** the Vibe Coder logins and the `authorized_commenters`
+bots. Their test results, code reviews and PR comments are input the worker
+acts on, and they may **never** raise, label or schedule work. They do not
+widen the egress boundary.
 
 **Untrusted:** every byte that arrives from GitHub, and — by design — the agent
 subprocess itself. See
@@ -125,7 +124,7 @@ account, worldwide, with no relationship to the operator.
 | **Issue body** | Any user (public repository) | Up to 50,000 characters of arbitrary text placed in the prompt; the primary injection surface |
 | **Issue title** | Any user, and editable after posting | Short, high-salience text in the most authoritative position of the issue block |
 | **Issue comments** | Any user, unlimited volume | Injection text, context flooding, and forged trust/boundary markers that try to impersonate the prompt's own structure |
-| **PR review comments** | Any user on a public PR | The same, on the feedback path — plus, if the account is an `authorized_commenters` entry, the ability to trigger a run |
+| **PR review comments** | Any user on a public PR | The same, on the feedback path — plus, if the account is a write collaborator or a known `authorized_commenters` bot, the ability to trigger a run |
 | **Labels** | Any user with triage permission (a common grant on public repositories) | Add or remove the labels that select routing, priority and processing mode; remove a blocking label to force a re-run |
 | **Cloned repository contents** | Anyone who can land a commit, or open a PR whose head branch a run checks out | `CLAUDE.md` / `AGENTS.md` agent instructions, `quality.sh` and everything it runs, test names and assertion messages quoted back into remediation prompts, workflow files, symlinks, and committed images |
 | **Attachments and images** | Any user, on any of the above | Text, QR codes or low-contrast overlays aimed at the agent — a channel no text delimiter can fence |
@@ -154,7 +153,7 @@ answer is enforced.
 | **AP-13** | **Secret leakage into a permanent public record** — a token echoed by a subprocess is quoted into a comment, PR body or log that cannot be un-published | A1, A5 | C23, C24 | `worker/deno/lib/secret_redaction.ts` |
 | **AP-14** | **Credential drift / identity confusion** — the host's ambient credential resolves to a human account, so worker writes run with that person's broader permissions | A1, A3 | C25 | `worker/deno/lib/identity_guard.ts` |
 | **AP-15** | **Committing a secret** — a credential file staged into a commit and pushed to a public repository | A1 | C26 | `hooks/pre-commit` |
-| **AP-16** | **Grant write access to instruct the worker** — when `author_source` is `"github"`, adding a write collaborator authorises an instructor. Compromise of the worker token is now trust resolution, not just repo actions | A1–A4 | C1, C25, C29 | `worker/deno/lib/collaborator_permissions.ts` |
+| **AP-16** | **Grant write access to instruct the worker** — adding a write collaborator authorises an instructor, since trust is derived from repository permissions. Compromise of the worker token is now trust resolution, not just repo actions | A1–A4 | C1, C25, C29 | `worker/deno/lib/collaborator_permissions.ts` |
 
 ## 🔗 Traceability — control → code → test
 
@@ -167,7 +166,7 @@ here exists.
 
 | Id | Control | Implemented in | Enforcing test |
 | -- | ------- | -------------- | -------------- |
-| **C1** | Author trust classification — only the current trusted-author snapshot is trusted (`allowed_authors` / `authorized_commenters` under `"config"`, or collaborators minus exclusions under `"github"`); everyone else's content is untrusted data | `worker/deno/lib/security.ts` | `worker/deno/tests/security_test.ts` |
+| **C1** | Author trust classification — only the current trusted-author snapshot is trusted (collaborators minus the Vibe Coders and bots, plus the known `authorized_commenters` input list); everyone else's content is untrusted data | `worker/deno/lib/security.ts` | `worker/deno/tests/security_test.ts` |
 | **C2** | Approval-label origin verification — the approval label counts only when a trusted author added it, verified against the GitHub timeline | `worker/deno/lib/issue_query.ts` | `worker/deno/tests/issue_query_test.ts` |
 | **C3** | Operational-label trust verification — routing labels added by untrusted actors are ignored and audited | `worker/deno/lib/label_security.ts` | `worker/deno/tests/label_security_test.ts` |
 | **C4** | Nonce-fenced untrusted boundaries with delimiter sanitising and literal (non-`$`-expanding) substitution | `worker/deno/lib/prompt_delimiter.ts` | `worker/deno/tests/prompt_delimiter_test.ts` |

@@ -245,6 +245,9 @@ Deno.test("host workdir guard - mod.ts run-housekeeping without WORK_DIR refuses
       JSON.stringify({
         allowed_authors: ["test-user"],
         repos: ["example-org/example-repo"],
+        // Issue #1066: the fleet login set must be non-empty, or the config
+        // load fails before this command's own guard is reached.
+        service_accounts: ["example-vibe-worker"],
       }),
     );
     const run = await runEntryPoint(

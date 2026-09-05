@@ -84,18 +84,17 @@ import {
   runPrFailureActions,
 } from "./pr_failure_actions.ts";
 import type { FailedCiCheck } from "./pr_ci_checks.ts";
-import type { FetchFn } from "./jenkins_log_fetcher.ts";
+import type { FetchFn } from "./ci_fetch_types.ts";
 import type { fetchGithubActionsLogExcerpt } from "./github_actions_log_fetcher.ts";
 import {
   type CiFailureContext,
   resolveCiLogProvider,
 } from "./ci_log_provider.ts";
-import { JENKINS_PROVIDER_ID } from "./ci_provider_jenkins.ts";
 import {
-  classifyJenkinsFetchError,
-  formatJenkinsAccessDiagnosis,
-  type JenkinsAccessDiagnosis,
-} from "./jenkins_access_check.ts";
+  type CiLogAccessDiagnosis,
+  classifyCiLogAccessError,
+  formatCiLogAccessDiagnosis,
+} from "./ci_log_access.ts";
 
 // Re-export shared annotation types for convenience
 export type { CheckAnnotation };
@@ -119,11 +118,10 @@ export interface CiFixInput {
   /** Base64-encoded annotations JSON. */
   encodedAnnotations: string;
   /**
-   * Optional check `target_url` / `details_url` (Issue #1893). Used by
-   * the PR failure action dispatcher to locate the external build (e.g.
-   * extract the Jenkins build number from a URL). Optional because not
-   * all CI sources populate it and the dispatcher is feature-gated by
-   * `prFailureActions` repo config anyway.
+   * Optional check `target_url` / `details_url` (Issue #1893). Handed to
+   * the CI log provider so it can locate the build it describes. Optional
+   * because not all CI sources populate it, and the dispatcher is gated on
+   * the repo's `ciProviders` configuration anyway.
    */
   targetUrl?: string;
 }
@@ -211,8 +209,8 @@ export interface CiProcessorDeps {
   ) => Promise<PushVerification>;
   /**
    * Injectable PR failure action dispatcher (Issue #1893). Defaults to
-   * {@link runPrFailureActions}. Tests inject a fake to avoid hitting
-   * the real Jenkins HTTP client.
+   * {@link runPrFailureActions}. Tests inject a fake so no provider makes
+   * a real HTTP call.
    */
   prFailureActionsFn?: typeof runPrFailureActions;
   /**
@@ -707,7 +705,7 @@ async function _processCiWithHeartbeat(
       heading: "CI log fetch blocked by credentials",
       reason:
         `The CI log for **${checkName}** could not be fetched, so there is no build output to diagnose.\n\n${
-          formatJenkinsAccessDiagnosis(diagnosis)
+          formatCiLogAccessDiagnosis(diagnosis)
         }`,
       nextStep: diagnosis.remediation,
       // One comment per access failure class — not one per push.
@@ -1539,22 +1537,22 @@ interface CiLogExcerptOutcome {
    * Set when the fetch failed on credentials or job path (Issue #3583).
    * The caller escalates rather than attempting a fix on no evidence.
    */
-  accessDiagnosis?: JenkinsAccessDiagnosis;
+  accessDiagnosis?: CiLogAccessDiagnosis;
 }
 
 /**
  * Resolve the CI log excerpt fed into the `{{PR_FAILURE_ACTIONS}}` prompt
  * slot (Issues #3580, #3579).
  *
- * A repo's configured CI providers (e.g. Jenkins) win when they produce
- * an excerpt; otherwise the registry's fall-back — the built-in GitHub
- * Actions provider — runs, so every repo gets real job logs with zero
+ * A repo's configured CI providers win when they produce an excerpt;
+ * otherwise the registry's fall-back — the built-in GitHub Actions
+ * provider — runs, so every repo gets real job logs with zero
  * configuration. The chosen provider id is always logged, making a silent
  * fall-through to annotation-only diagnosis visible in the worker log.
  *
- * A credentials or job-path failure (401/403/404, or unset Jenkins
- * environment variables) comes back as an `accessDiagnosis` so the caller
- * can post it instead of proceeding without evidence (Issue #3583).
+ * A credentials or target failure (401/403/404) comes back as an
+ * `accessDiagnosis` so the caller can post it instead of proceeding
+ * without evidence (Issue #3583).
  */
 async function _resolveCiLogExcerpt(
   input: CiFixInput,
@@ -1627,9 +1625,9 @@ async function _resolveCiLogExcerpt(
     reason: outcome.ok ? "provider returned an empty excerpt" : outcome.error,
   });
 
-  // The registry fall-back only ever reaches the GitHub Actions provider
-  // (Jenkins requires a configured jobPath), and `gh` auth failures are
-  // surfaced elsewhere — so nothing here is a Jenkins access failure.
+  // The registry fall-back only ever reaches the built-in GitHub Actions
+  // provider — a configured provider is tried first, above — and `gh` auth
+  // failures are surfaced elsewhere, so nothing here is an access failure.
   return { excerpt: "" };
 }
 
@@ -1735,22 +1733,29 @@ async function _runConfiguredPrFailureActions(
 }
 
 /**
- * Find the first Jenkins credentials/job-path failure among the failed
- * provider results (Issue #3583).
+ * Find the first credentials or target failure among the failed provider
+ * results (Issue #3583, de-vendored by Issue #986).
  *
- * Returns `undefined` when every failure is something else — a malformed
- * response, a 5xx, or an unmatched check — so those keep the existing
- * tolerant "continue without an excerpt" behaviour.
+ * Applies to **every** configured provider rather than one named vendor:
+ * the HTTP status a provider reports means the same thing whoever it came
+ * from, and core has no business knowing which providers exist. Returns
+ * `undefined` when every failure is something else — a malformed response,
+ * a 5xx, an unmatched check — so those keep the existing tolerant
+ * "continue without an excerpt" behaviour.
  */
 function _classifyAccessFailures(
   results: readonly PrFailureActionResult[],
   providers: readonly CiProviderConfig[],
-): JenkinsAccessDiagnosis | undefined {
+): CiLogAccessDiagnosis | undefined {
   for (const result of results) {
-    if (result.ok || result.providerId !== JENKINS_PROVIDER_ID) continue;
-    const jobPath = providers.find((p) => p.provider === result.providerId)
-      ?.jobPath ?? "the configured job";
-    const diagnosis = classifyJenkinsFetchError(result.error, jobPath);
+    if (result.ok) continue;
+    const target = providers.find((p) => p.provider === result.providerId)
+      ?.jobPath ?? "the configured target";
+    const diagnosis = classifyCiLogAccessError(
+      result.error,
+      result.providerId,
+      target,
+    );
     if (diagnosis) return diagnosis;
   }
   return undefined;

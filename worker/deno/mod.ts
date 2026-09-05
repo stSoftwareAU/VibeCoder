@@ -99,8 +99,6 @@ import { labelManagerCommand } from "./commands/label_manager.ts";
 import { findIssuesCommand } from "./commands/find_issues.ts";
 import { findIssuesByLabelCommand } from "./commands/find_issues_by_label.ts";
 import { fetchIssueDataCommand } from "./commands/fetch_issue_data.ts";
-import { fetchJenkinsLogCommand } from "./commands/fetch_jenkins_log.ts";
-import { checkJenkinsAccessCommand } from "./commands/check_jenkins_access.ts";
 import { healthCheckCacheCommand } from "./commands/health_check_cache.ts";
 import { shuffleReposCommand } from "./commands/shuffle_repos.ts";
 import { softwareUpdatesCommand } from "./commands/software_updates.ts";
@@ -295,8 +293,6 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(findIssuesCommand);
   registry.register(findIssuesByLabelCommand);
   registry.register(fetchIssueDataCommand);
-  registry.register(fetchJenkinsLogCommand);
-  registry.register(checkJenkinsAccessCommand);
   registry.register(healthCheckCacheCommand);
   registry.register(shuffleReposCommand);
   registry.register(softwareUpdatesCommand);

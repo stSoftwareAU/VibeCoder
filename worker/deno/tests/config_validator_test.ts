@@ -92,22 +92,40 @@ Deno.test("config_validator - validateLabelFormat rejects dangerous characters",
 // validateRequiredFields tests
 // =============================================================================
 
-Deno.test("config_validator - validateRequiredFields reports missing authors", () => {
+Deno.test("config_validator - validateRequiredFields reports an empty fleet login set (Issue #1066)", () => {
+  // `allowed_authors` is no longer required — it grants nothing. What is
+  // required is the fleet login set that gets subtracted from the collaborator
+  // set, without which the Vibe Coders would be trusted to direct themselves.
   const config = buildDefaultWorkerConfig({
     allowedAuthors: [],
     allowedAuthor: "",
     repos: ["org/repo"],
     issueLabels: ["work-on"],
+    serviceAccounts: [],
+    fleetPrAuthors: [],
   }) as WorkerConfig;
 
   const errors = validateRequiredFields(config);
   assertEquals(errors.length, 1);
-  assertEquals(errors[0]!.includes("ALLOWED_AUTHORS"), true);
+  assertEquals(errors[0]!.includes("fleet login set is empty"), true);
+});
+
+Deno.test("config_validator - validateRequiredFields accepts an empty allowed_authors (Issue #1066)", () => {
+  const config = buildDefaultWorkerConfig({
+    allowedAuthors: [],
+    allowedAuthor: "",
+    repos: ["org/repo"],
+    issueLabels: ["work-on"],
+    serviceAccounts: ["vibe-worker"],
+  }) as WorkerConfig;
+
+  assertEquals(validateRequiredFields(config), []);
 });
 
 Deno.test("config_validator - validateRequiredFields reports missing repos", () => {
   const config = buildDefaultWorkerConfig({
     allowedAuthors: ["user"],
+    serviceAccounts: ["vibe-worker"],
     repos: [],
     issueLabels: ["work-on"],
   }) as WorkerConfig;
@@ -120,6 +138,7 @@ Deno.test("config_validator - validateRequiredFields reports missing repos", () 
 Deno.test("config_validator - validateRequiredFields reports missing labels", () => {
   const config = buildDefaultWorkerConfig({
     allowedAuthors: ["user"],
+    serviceAccounts: ["vibe-worker"],
     repos: ["org/repo"],
     issueLabels: [],
   }) as WorkerConfig;
@@ -132,6 +151,7 @@ Deno.test("config_validator - validateRequiredFields reports missing labels", ()
 Deno.test("config_validator - validateRequiredFields passes with all fields present", () => {
   const config = buildDefaultWorkerConfig({
     allowedAuthors: ["user"],
+    serviceAccounts: ["vibe-worker"],
     repos: ["org/repo"],
     issueLabels: ["work-on"],
   }) as WorkerConfig;
@@ -144,9 +164,12 @@ Deno.test("config_validator - validateRequiredFields passes with all fields pres
 // warnInsecureConfig tests
 // =============================================================================
 
-Deno.test("config_validator - warnInsecureConfig warns about generic usernames", () => {
+Deno.test("config_validator - warnInsecureConfig warns about generic usernames (Issue #1066)", () => {
+  // Warned about on the hand-maintained known-input list only: `allowedAuthors`
+  // is derived from repository permissions, so a generic name there is a fact
+  // about who holds write access, not an editable configuration mistake.
   const config = buildDefaultWorkerConfig({
-    allowedAuthors: ["admin"],
+    authorisedCommenters: ["admin"],
     prReviewers: [],
   }) as WorkerConfig;
 
@@ -154,14 +177,25 @@ Deno.test("config_validator - warnInsecureConfig warns about generic usernames",
   assertEquals(warnings.some((w) => w.includes("generic")), true);
 });
 
-Deno.test("config_validator - warnInsecureConfig warns about permissive lists", () => {
+Deno.test("config_validator - warnInsecureConfig warns about permissive lists (Issue #1066)", () => {
   const config = buildDefaultWorkerConfig({
-    allowedAuthors: ["u1", "u2", "u3", "u4", "u5", "u6"],
+    authorisedCommenters: ["u1", "u2", "u3", "u4", "u5", "u6"],
     prReviewers: [],
   }) as WorkerConfig;
 
   const warnings = warnInsecureConfig(config);
   assertEquals(warnings.some((w) => w.includes("permissive")), true);
+});
+
+Deno.test("config_validator - warnInsecureConfig never warns about the derived author set (Issue #1066)", () => {
+  const config = buildDefaultWorkerConfig({
+    allowedAuthors: ["admin", "u1", "u2", "u3", "u4", "u5", "u6"],
+    authorisedCommenters: [],
+    prReviewers: ["reviewer"],
+    prReviewer: "reviewer",
+  }) as WorkerConfig;
+
+  assertEquals(warnInsecureConfig(config), []);
 });
 
 Deno.test("config_validator - warnInsecureConfig warns about missing PR reviewer", () => {
@@ -186,6 +220,7 @@ Deno.test("config_validator - validateConfigFull passes for valid config", () =>
     prReviewer: "reviewer",
     prReviewers: ["reviewer"],
     repos: ["org/repo"],
+    serviceAccounts: ["vibe-worker"],
     issueLabels: ["work-on", "low-priority"],
     authorisedCommenters: ["testuser"],
   }) as WorkerConfig;
@@ -235,6 +270,7 @@ Deno.test("config_validator - validateConfigFull accepts bot account usernames",
   const config = buildDefaultWorkerConfig({
     allowedAuthors: ["github-copilot[bot]"],
     repos: ["org/repo"],
+    serviceAccounts: ["vibe-worker"],
     issueLabels: ["work-on"],
     prReviewers: [],
   }) as WorkerConfig;
@@ -473,6 +509,7 @@ Deno.test("config_validator - validateConfigFull warns on repo_config for an unm
   const config = buildDefaultWorkerConfig({
     allowedAuthors: ["testuser"],
     repos: ["org/repo"],
+    serviceAccounts: ["vibe-worker"],
     issueLabels: ["work-on"],
     repoConfig: {
       "org/repo": {},

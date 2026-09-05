@@ -334,7 +334,11 @@ Deno.test("runWorkOnIssueCommand - failed orchestration returns failure", async 
 });
 
 Deno.test("runWorkOnIssueCommand - passes fetched issue data to orchestrator context", async () => {
-  const config = makeConfig();
+  // Issue #1066: `authorized_commenters` now defaults to the known bots, so
+  // the comment-trust annotation is on by default. This test is about the
+  // orchestrator context, not that annotation, so both trust lists are empty
+  // here — the annotated form is asserted by the comment-trust suites.
+  const config = makeConfig({ allowedAuthors: [], authorisedCommenters: [] });
   const parsed = {
     repo: "org/repo",
     issueNumber: 42,

@@ -119,7 +119,11 @@ function buildShellOutput(
   const lines: string[] = [];
 
   // --- Array values (bash arrays, not exported) ---
-  lines.push(declareArray("ALLOWED_AUTHORS", config.allowedAuthors));
+  // Issue #1066: this command renders **the config file** in shell form, so
+  // `ALLOWED_AUTHORS` mirrors the file's `allowed_authors` key. It is not the
+  // worker's trusted-author set: who may direct work is derived from
+  // repository collaborators each cycle and never reaches a shell variable.
+  lines.push(declareArray("ALLOWED_AUTHORS", rawFile.allowed_authors ?? []));
   lines.push(declareArray("PR_REVIEWERS", config.prReviewers));
   lines.push(declareArray("REPOS", config.repos));
   lines.push(declareArray("ISSUE_LABELS", config.issueLabels));
@@ -130,9 +134,11 @@ function buildShellOutput(
   lines.push(declareArray("TRUSTED_REVIEW_BOTS", config.trustedReviewBots));
 
   // --- Legacy scalar compatibility ---
-  // Issue #3206: derive the legacy scalar from the allowedAuthors array
-  // rather than the deprecated allowedAuthor field (matches lib/config.ts).
-  lines.push(exportScalar("ALLOWED_AUTHOR", config.allowedAuthors[0] ?? ""));
+  // Issue #3206: derive the legacy scalar from the same array the block above
+  // renders, so the two never disagree (matches lib/config.ts).
+  lines.push(
+    exportScalar("ALLOWED_AUTHOR", (rawFile.allowed_authors ?? [])[0] ?? ""),
+  );
   lines.push(exportScalar("PR_REVIEWER", config.prReviewer));
 
   // --- Label configuration ---

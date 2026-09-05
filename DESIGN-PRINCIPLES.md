@@ -82,6 +82,63 @@ milestone-aware `checkRepoAvailability()` function, exposed via the
 `check-repo-availability` Deno command and called from
 `worker/deno/lib/issue_finder.ts`.
 
+### Two axes of trust
+
+**Who may direct work, and whose input we act on, are different questions with
+different answers.** Conflating them is what produced Issues #1064, #1066
+and #1068 — one array (`allowed_authors`) answering three questions at once.
+
+| Actor | May **direct** work (raise / label / schedule) | May **supply input** (test results, code reviews, PR comments) |
+| --- | --- | --- |
+| Human with write access, not a Vibe Coder | **yes** | yes |
+| Vibe Coder (`VibeCoderST`, `stservice`) | **no** | yes |
+| Known bot (`github-copilot[bot]`, `github-actions[bot]`) | **no** | yes |
+| Anyone else — the public, unknown bots | **no** | **no** |
+
+**Axis 1 — who may direct work.** Derived from repository permissions, never a
+hand-maintained allowlist:
+
+```text
+mayDirectWork(repo, login) =
+  hasWriteAccess(repo, login) && !isVibeCoder(login) && !isBot(login)
+```
+
+On a public repository this is the security boundary: someone with no write
+access cannot direct the worker, whatever they write in an issue. The
+`!isBot` term is load-bearing on its own — a bot with write access must still
+not be able to schedule work, because write access alone does not confer the
+right to direct. Resolved every cycle by
+`resolveDerivedAuthors()` (`worker/deno/lib/derived_authors.ts`) and folded
+across the monitored repos as an **intersection**, so write access on one repo
+never confers trust on another.
+
+**Axis 2 — whose input we act on.** An explicit *known* list, because "known"
+is precisely the property that cannot be derived from repository permissions:
+a GitHub App is not a collaborator at all, so a naive derived rule silently
+stops processing Copilot reviews and Actions results. It is axis 1 plus the
+Vibe Coder logins plus `authorized_commenters`.
+
+**The asymmetry is the point.** A Vibe Coder's or a known bot's review is
+accepted as input; neither may schedule or change work. Two mechanisms carry
+it and must survive any rewrite: `wasLabelAddedByAllowedAuthor()` treats any
+fleet login as an untrusted label applier (Issue #3416), and
+`strip_untrusted_work_on.ts` strips a self-applied `work-on` and comments once
+(Issue #3575), failing closed when the applier cannot be established.
+
+**The fleet exclusion needs no configuration.** The Vibe Coder accounts hold
+repository write access by necessity — they push branches — so under a
+collaborator-derived rule they would otherwise become trusted, the exact
+inverse of the requirement. The exclusion therefore defaults from the fleet
+login list the configuration already carries (`service_accounts` and
+`fleet_pr_authors`, plus the host's own login); `exclusion_team` is an
+optional *additional* exclusion for org-team-based setups. A deployment that
+resolves an empty fleet login set **fails loudly at config load** rather than
+running with the workers trusted.
+
+Trust starts **closed**: the construction-time snapshot is empty and is opened
+only by a successful resolve. A resolve failure skips the cycle rather than
+falling back to any local array.
+
 ### Locking and scheduling exist only between Vibe Coders
 
 **There is no locking or scheduling between humans and Vibe Coders.**
@@ -695,6 +752,72 @@ in `prompts/planning/`. See
 [Planning-run stats + degraded-model detection](docs/MODEL-AND-CACHING.md#planning-run-stats--degraded-model-detection)
 for the operator detail.
 
+### Extension is the operator's, and leaves no trace here
+
+An operator must be able to put whatever their work needs into their own
+container — a CI system, a toolchain for a language nobody here has thought
+about, a proprietary linter, a licensed analyser — **without forking this
+repository, and without any of it appearing in it**.
+
+That second half is the part that keeps being got wrong, so state it as a
+rule:
+
+> **Core provides extension points. It never records what is plugged into
+> them.**
+
+- **Any tool, language or vendor name in this repository is a defect.** Not
+  only in code — in prose, comments, examples, test fixtures, prompts and
+  configuration keys too. If a sentence needs a real product name to be
+  concrete, the sentence is wrong; write the mechanism instead.
+- **A list is the wrong shape by construction.** Enumerating what an operator
+  might install cannot succeed: the next operator's tool is not on any list we
+  could write, and the moment one tool is named every other becomes
+  second-class and its owner has to send a pull request to be recognised.
+  There is no list of supported software here, and there is not meant to be
+  one. This applies to a denylist as forcefully as to an allowlist — a
+  denylist catches the tool somebody remembered, waves the next one through,
+  and writes the names into the tree while doing it.
+- **The one exception is what this project itself runs on.** GitHub Actions is
+  named because it is *our* CI, not because it is an approved integration.
+  That is the whole of the exception, and it does not generalise.
+- **A guard belongs on the property, not on the names.** Assert that core
+  registers exactly the built-ins it ships, or that a surface bakes in no
+  artefact at all — assertions that are total over the tree and therefore
+  catch the vendor nobody anticipated
+  ([`ci_log_provider_core_only_test.ts`](worker/deno/tests/ci_log_provider_core_only_test.ts),
+  [`private_extension_docs_test.ts`](worker/deno/tests/private_extension_docs_test.ts)).
+
+**The scar.** One deployment's CI integration arrived in the initial public
+export from the proving-ground tree, was documented in the CI-log extension
+point as "simply the first one" of several built-in providers, and then became
+structural when core started importing that module's fetch type — at which
+point the *generic* extension point could not compile without one particular
+vendor present. Every subsequent reader concluded, correctly from the code and
+wrongly about the intent, that it was core. It was invested in three separate
+times after it had already been scheduled for removal. None of those authors
+did anything unreasonable; the repository was telling them the wrong thing.
+Removing it took three commits, and only the first one — breaking the type
+dependency — was the actual fix.
+
+**The mechanism that makes this possible:**
+
+- **The container-extension framework** (#933 and its sub-issues) —
+  `container_extension` in `.config.json`, the operator's own Containerfile
+  layer built `FROM` the standard image, the extension hash folded into the
+  image tag so a changed layer rebuilds, and a `start.sh` run at sandbox start
+  for whatever configuration the tools need. What goes in is the operator's
+  business; **where it lands** is still ours, path-confined under
+  `/opt/vibe-tools`.
+- **The registries** — a behaviour contributed at runtime, such as a CI log
+  provider, rather than compiled in.
+- **[Private Extensions](docs/PRIVATE-EXTENSIONS.md)** — the procedure, end to
+  end, and the honest record of what cannot be done yet.
+
+**Rationale:** the alternative is a repository that slowly accumulates one
+deployment's toolchain under the guise of examples, and an operator whose tool
+is not in it concluding they must fork. Neither is recoverable once it has
+started, which is why the rule is absolute rather than a preference.
+
 ### Per-repo configuration is operator-side only
 
 Vibe Coder configuration must not live in the target repositories themselves. A
@@ -830,7 +953,7 @@ naming a real pre-existing issue, used to be accepted as a resolution.
 `verifyFollowUpIssueExists()` (`worker/deno/lib/escape_hatch_verify.ts`) now
 requires GitHub's own record of the follow-up: it must **exist** and its
 **author** must be the worker's own login, a fleet sibling
-(`fleet_pr_authors`), or an allowlisted human (`allowed_authors`,
+(`fleet_pr_authors`), or a trusted human (the derived collaborator set, or
 `authorized_commenters`) — the set resolved by
 `resolveTrustedFollowUpAuthors()` (`escape_hatch_trusted_authors.ts`). An issue
 filed by anyone else is rejected at ERROR and the run falls through to the

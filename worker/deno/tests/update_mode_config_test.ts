@@ -87,7 +87,12 @@ Deno.test("update mode - the setup default is frozen while an absent key still l
   assertEquals(SETUP_DEFAULT_UPDATE_MODE, "frozen");
   assertEquals(DEFAULT_UPDATE_MODE, "dynamic");
 
-  const config = { allowed_authors: ["testuser"], repos: ["org/repo"] };
+  // Issue #1066: a config validates only with a non-empty fleet login set.
+  const config = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo"],
+    service_accounts: ["vibe-worker"],
+  };
   await withTempConfig(config, async (configPath) => {
     const loaded = await loadConfig(configPath);
     assertEquals(loaded.updateMode, DEFAULT_UPDATE_MODE);

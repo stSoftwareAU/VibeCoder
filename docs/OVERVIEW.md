@@ -425,8 +425,8 @@ threat model, defence-in-depth, and resolved issues.
 **Important for managers:** Making the _code_ public does **not** give bad
 actors in other countries (or anywhere else) a way to run code on _your_
 machines behind _your_ firewall. Your deployment is protected by design: only
-your config, your token, and — when `author_source` is `"github"` — who
-holds write access on a repo you monitor, can trigger work. See
+your config, your token, and who holds write access on a repo you monitor,
+can trigger work. See
 [SECURITY.md § For managers: public code vs your deployment](../SECURITY.md#for-managers-public-code-vs-your-deployment)
 for the full explanation. The points below are about other risks (e.g.
 trusted-author compromise), not "remote attackers reaching your worker."

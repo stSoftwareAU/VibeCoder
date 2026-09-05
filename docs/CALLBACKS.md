@@ -1,8 +1,8 @@
 # 🪝 Post-Run Callbacks — the extension contract
 
 Optional executables the worker runs after a **terminal issue run**, following
-Jenkins `post { success / failure / always }` and Azure Pipelines
-`succeeded() / failed() / always()` semantics. They are the public extension
+the `success / failure / always` outcome semantics familiar from CI pipeline
+post-build blocks. They are the public extension
 point for fleet-specific reporting — health records, session-log archival,
 spend accounting — so none of that policy has to live in VibeCoder.
 

@@ -50,15 +50,6 @@ export interface FleetConfigInput {
    * definition, so they join the effective author set (Issue #209).
    */
   serviceAccounts?: string[];
-  /**
-   * The active trust source (Issue #256). Under `"github"` the local
-   * `allowed_authors` array is ignored by design, so its emptiness is the
-   * expected healthy state and warning about it every start-up would train
-   * operators to ignore this validator. The sibling-divergence checks still
-   * run: `fleet_pr_authors` and `service_accounts` are host configuration
-   * either way, and a sibling missing from them is still worth naming.
-   */
-  authorSource?: "config" | "github";
 }
 
 /** Trim, drop blanks, and return a lowercase membership set. */
@@ -132,29 +123,11 @@ export function validateFleetConfig(
     return { level, effectiveAuthors, missingFromAllowed, messages };
   }
 
-  // Issue #256: under author_source "github" an empty allowed_authors is
-  // correct, not a misconfiguration — the derived resolver supplies the set
-  // each cycle and the local array is deliberately ignored. Warning here
-  // would fire on every healthy start-up.
-  if (allowedSet.size === 0 && input.authorSource !== "github") {
-    level = "warning";
-    messages.push(
-      "allowed_authors is empty — the open-PR duplicate guard sees only " +
-        `this host (${githubUser || "unknown"}) and is blind to sibling ` +
-        "fleet accounts' open PRs. Add every fleet login to allowed_authors.",
-    );
-  }
-
-  for (const sibling of missingFromAllowed) {
-    if (level === "ok") level = "warning";
-    messages.push(
-      `Fleet sibling "${sibling}" is in fleet_pr_authors/service_accounts ` +
-        "but not allowed_authors. The open-PR guard now covers it via the " +
-        "union (Issues #3138, #209), but the lists diverging is a " +
-        "configuration smell — add it to allowed_authors to keep them " +
-        "consistent.",
-    );
-  }
+  // Issue #1066: an empty `allowed_authors` is now the healthy state — it
+  // grants nothing, and fleet identity comes from `service_accounts` /
+  // `fleet_pr_authors`. Neither its emptiness nor a sibling missing from it
+  // is a finding any more; warning about either would train operators to
+  // ignore this validator.
 
   return { level, effectiveAuthors, missingFromAllowed, messages };
 }

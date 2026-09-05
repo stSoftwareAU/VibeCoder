@@ -3,7 +3,13 @@
  *
  * The escape-hatch follow-up gate is only as good as the set of logins it
  * trusts. These tests pin what goes into that set (worker login, fleet
- * siblings, `allowed_authors`, `authorized_commenters`) and what stays out.
+ * siblings, the derived trusted authors, `authorized_commenters`) and what
+ * stays out.
+ *
+ * Issue #1066: `loadTrustedFollowUpAuthors` prefers the process-wide trust
+ * snapshot over a fresh `loadConfig`, so every test here clears that snapshot
+ * first. Otherwise a suite that ran a real trust refresh earlier would decide
+ * these outcomes instead of the stub.
  *
  * Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -14,6 +20,7 @@ import {
   resolveTrustedFollowUpAuthors,
 } from "../lib/escape_hatch_trusted_authors.ts";
 import { isTrustedFollowUpAuthor } from "../lib/escape_hatch_verify.ts";
+import { _resetLiveTrustedAuthors } from "../lib/trust_snapshot.ts";
 import type { WorkerDeps } from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
@@ -34,6 +41,9 @@ const silentLogger: Logger = {
 function makeStubDeps(
   loadConfig: (path?: string) => Promise<unknown>,
 ): WorkerDeps {
+  // Issue #1066: the gate reads the live snapshot when one exists, so clear
+  // it here — these tests are about what the stubbed config contributes.
+  _resetLiveTrustedAuthors();
   return { config: { loadConfig } } as unknown as WorkerDeps;
 }
 

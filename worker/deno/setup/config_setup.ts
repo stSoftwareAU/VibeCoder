@@ -12,6 +12,7 @@
  */
 
 import {
+  DEFAULT_TRUSTED_INPUT_BOTS,
   LABEL_DEFAULTS,
   OPERATIONAL_DEFAULTS,
 } from "../lib/config_defaults.ts";
@@ -28,7 +29,6 @@ export interface SetupConfig {
   repos?: string[];
   authorized_commenters?: string[];
   /** `"github"` | `"config"` — default `"config"` (Issue #252). */
-  author_source?: string;
   /** Org team slug `org/slug` excluded from GitHub-derived allowlists. */
   exclusion_team?: string;
   /**
@@ -135,7 +135,6 @@ const EXPLICITLY_HANDLED_KEYS: ReadonlySet<string> = new Set([
   "pr_reviewers",
   "repos",
   "authorized_commenters",
-  "author_source",
   "exclusion_team",
   "claude_model",
   "failed_label",
@@ -240,11 +239,6 @@ export function buildOverridesOnly(
 
   if (config.authorized_commenters && config.authorized_commenters.length > 0) {
     result.authorized_commenters = config.authorized_commenters;
-  }
-
-  // Issue #252: default author_source is "config" — only persist an override.
-  if (config.author_source && config.author_source !== "config") {
-    result.author_source = config.author_source;
   }
 
   if (config.exclusion_team) {
@@ -548,11 +542,11 @@ export function mergeNonInteractive(
     !result.authorized_commenters ||
     result.authorized_commenters.length === 0
   ) {
-    // Default: first allowed author
-    const firstAuthor = result.allowed_authors?.[0];
-    if (firstAuthor) {
-      result.authorized_commenters = [firstAuthor];
-    }
+    // Issue #1066: `authorized_commenters` is the *known bot* input list —
+    // logins whose test results and reviews we act on although a GitHub App
+    // is never a repository collaborator. A human no longer needs to be here:
+    // write access to a monitored repo already carries input trust.
+    result.authorized_commenters = [...DEFAULT_TRUSTED_INPUT_BOTS];
   }
 
   // Worker identity guard allowlist (Issue #4030). Without this the guard

@@ -47,6 +47,15 @@ export const githubActionsCiLogProvider: CiLogProvider = {
       };
     }
 
+    // Never echo `ctx.targetUrl` back as the excerpt URL — see the
+    // `fetchLog` contract. The run id is parsed out of it and the URL is
+    // rebuilt against github.com for this repo, so a hostile `targetUrl`
+    // cannot reach the prompt.
+    const parsed = parseActionsCheckUrl(ctx.targetUrl ?? "");
+    const runUrl = parsed.kind === "other"
+      ? `https://github.com/${ctx.repo}/actions/runs`
+      : `https://github.com/${ctx.repo}/actions/runs/${parsed.runId}`;
+
     const fetchExcerpt = ctx.actionsLogFn ?? fetchGithubActionsLogExcerpt;
     const outcome = await fetchExcerpt({
       repo: ctx.repo,
@@ -63,9 +72,7 @@ export const githubActionsCiLogProvider: CiLogProvider = {
           value: {
             providerId: GITHUB_ACTIONS_PROVIDER_ID,
             buildId: String(outcome.jobId),
-            url: ctx.targetUrl && ctx.targetUrl !== ""
-              ? ctx.targetUrl
-              : `https://github.com/${ctx.repo}/actions/runs`,
+            url: runUrl,
             logText: outcome.excerpt,
           },
         };

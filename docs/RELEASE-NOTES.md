@@ -12,6 +12,84 @@ major, are minted from [the release floor](RELEASE-TAGGING.md#the-release-floor)
 rather than from the automatic increment, and are recorded here newest first,
 with the exact migration and the exact rollback.
 
+## 1.3.0 — one derived trust source
+
+**Configuration contract change. Read the migration before upgrading a host.**
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| The `author_source` key and the `"config"` trust mode removed — trust is always derived from repository collaborators | #1066 |
+| `allowed_authors` no longer grants the right to raise, label or schedule work | #1066 |
+| The Vibe Coder accounts are excluded from trust unconditionally, defaulting from `service_accounts` / `fleet_pr_authors`; `exclusion_team` becomes an optional extra | #1066 |
+| `authorized_commenters` keeps its job and gains a default — it is the *known* list of bots whose input the worker acts on | #1066 |
+| A `.config.json` that resolves an empty fleet login set fails loudly at load | #1066 |
+| Setup no longer offers, writes or preserves `author_source` | #1068 |
+
+The point of them together: **who may direct the worker is a repository
+permission, not a file on a host**. On a public repository that is the
+security boundary the operator is actually reasoning about — someone with no
+write access cannot direct the worker, whatever they write in an issue.
+
+### The design, in one table
+
+| Actor | May **direct** work (raise / label / schedule) | May **supply input** (test results, code reviews, PR comments) |
+| --- | --- | --- |
+| Human with write access, not a Vibe Coder | **yes** | yes |
+| Vibe Coder (`VibeCoderST`, `stservice`) | **no** | yes |
+| Known bot (`github-copilot[bot]`, `github-actions[bot]`) | **no** | yes |
+| Anyone else — the public, unknown bots | **no** | **no** |
+
+Axis 1 is derived:
+`hasWriteAccess(repo, login) && !isVibeCoder(login) && !isBot(login)`,
+intersected across the monitored repos. Axis 2 is axis 1 plus a *known* list —
+the Vibe Coder logins and `authorized_commenters` — because "known" is
+precisely the property repository permissions cannot express: a GitHub App is
+never a collaborator. The asymmetry is the point: a Vibe Coder's or a bot's
+review is accepted as input, and neither may schedule or change work.
+
+Full detail: [Configuration — Two axes of trust](CONFIGURATION.md#two-axes-of-trust)
+and [Design Principles — Two axes of trust](../DESIGN-PRINCIPLES.md).
+
+### Breaking: one configuration key was removed
+
+| Removed key | What replaces it |
+| ----------- | ---------------- |
+| `author_source` | nothing — there is one derived source and no mode switch |
+
+A `.config.json` still carrying `author_source` is **refused at load**, naming
+the edit, following the convention Issue #805 set for a removed key: a setting
+that reads as live and does nothing is the silent failure the config load
+exists to prevent. `./setup.sh` strips the key for you.
+
+### Migration
+
+1. **Remove `author_source`** from `.config.json` if it is present (`./setup.sh`
+   does this for you). Setup never offered the key, so most hosts do not have it.
+2. **Confirm `service_accounts` (or `fleet_pr_authors`) names the fleet's own
+   logins.** This is what is subtracted from the collaborator set; an empty
+   result now fails the load. `./setup.sh` has defaulted `service_accounts` to
+   the resolved worker login since Issue #4030.
+3. **Confirm the token can read collaborators** on every monitored repo, and
+   has `read:org` if `exclusion_team` is set. A 403 skips the cycle — it never
+   widens trust. See
+   [Setup — Token scopes for derived trust](SETUP.md#token-scopes-for-derived-trust).
+4. **Grant write access to anyone who should be able to direct the worker.**
+   Editing `allowed_authors` no longer does anything for trust.
+5. **Run the worker as a service account.** The host's own login is excluded
+   from the directing set, so a host authenticating as a person's personal
+   account removes that person from the directing set on that host.
+6. `allowed_authors` may stay: its first entry is still the default PR
+   reviewer when `pr_reviewers` is unset. Set `pr_reviewers` and drop it.
+
+### Rollback
+
+Pin the host back to `1.2.x` (`./run.sh upgrade` pins forward; a frozen host
+edits `pinned_ref`). The removed key is only refused by 1.3.0 and later, so a
+`.config.json` that still carries `author_source` loads on the older release
+exactly as before.
+
 ## 1.2.0 — the post-run callback extension point
 
 **Configuration contract change. Read the migration before upgrading a host.**

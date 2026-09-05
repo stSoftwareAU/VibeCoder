@@ -5,7 +5,7 @@
  * gh CLI JSON responses and config file structures (Issue #214).
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   validateConfigFileJson,
   validateDefaultBranchCacheJson,
@@ -581,33 +581,21 @@ Deno.test("validation - validateConfigFileJson accepts planning_label string fie
   }
 });
 
-Deno.test("validation - validateConfigFileJson accepts author_source github and config (Issue #252)", () => {
-  for (const author_source of ["github", "config"]) {
+Deno.test("validation - validateConfigFileJson refuses author_source, whatever its value (Issue #1066)", () => {
+  // Removed, not ignored — the Issue #805 convention. A setting that reads as
+  // live and does nothing is the silent failure the config load prevents.
+  for (const author_source of ["github", "config", "collaborators", 1]) {
     const result = validateConfigFileJson({ author_source });
     assertEquals(
       result.ok,
-      true,
-      `expected author_source ${author_source} accepted`,
+      false,
+      `expected author_source ${JSON.stringify(author_source)} refused`,
     );
-    if (result.ok) {
-      assertEquals(result.value.author_source, author_source);
+    if (!result.ok) {
+      assertEquals(result.error.field, "author_source");
+      assertStringIncludes(result.error.message, "was removed");
+      assertStringIncludes(result.error.message, "Remove the key");
     }
-  }
-});
-
-Deno.test("validation - validateConfigFileJson rejects unknown author_source (Issue #252)", () => {
-  const result = validateConfigFileJson({ author_source: "collaborators" });
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertEquals(result.error.field, "author_source");
-  }
-});
-
-Deno.test("validation - validateConfigFileJson rejects non-string author_source (Issue #252)", () => {
-  const result = validateConfigFileJson({ author_source: 1 });
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertEquals(result.error.field, "author_source");
   }
 });
 
