@@ -148,7 +148,8 @@ if [[ -n "${STATE_ROOT}" ]]; then
   # directory that keeps being wiped.
   export GIT_CONFIG_GLOBAL="${STATE_ROOT}/gitconfig"
   # The dot-directories every other tool in the image reaches for. Left at
-  # their defaults they all land under ${HOME} on the image layer.
+  # their defaults they all land under ${HOME} on the image layer — except
+  # npm, whose image default is already a scratch directory (Issue #1015).
   export XDG_CACHE_HOME="${STATE_ROOT}/cache"
   export XDG_DATA_HOME="${STATE_ROOT}/data"
   export XDG_STATE_HOME="${STATE_ROOT}/state"
@@ -158,9 +159,9 @@ elif [[ -n "${SCRATCH_ROOT}" ]]; then
   # No durable root: scratch still beats the image layer for the git config,
   # and the worker rebuilds it from the mount when it is lost (Issue #564).
   export GIT_CONFIG_GLOBAL="${SCRATCH_ROOT}/gitconfig"
-  echo "Warning: no writable durable state root (tried ${VIBE_WORK_ROOT}/.container-state) — tool caches keep their \${HOME} defaults and the git config falls back to the scratch root" >&2
+  echo "Warning: no writable durable state root (tried ${VIBE_WORK_ROOT}/.container-state) — tool caches keep their image defaults (\${HOME}, and /tmp for npm) and the git config falls back to the scratch root" >&2
 else
-  echo "Warning: no writable durable state root (tried ${VIBE_WORK_ROOT}/.container-state) — tool caches keep their \${HOME} defaults and need a writable root filesystem" >&2
+  echo "Warning: no writable durable state root (tried ${VIBE_WORK_ROOT}/.container-state) — tool caches keep their image defaults (\${HOME}, and /tmp for npm) and need a writable root filesystem" >&2
 fi
 
 # Trust the mounted repositories. The runtime maps mount roots as root-owned

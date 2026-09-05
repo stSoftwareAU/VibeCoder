@@ -378,6 +378,17 @@ for arg in "\$@"; do
       ;;${extraIntercepts}
   esac
 done
+for arg in "\$@"; do
+  case "\${arg}" in
+    container-image-prune)
+      # Recorded, not intercepted: the prune still really runs against the
+      # runtime stub, and a test can also read the arguments it was given -
+      # which is how the plan's whole image dependency chain reaching
+      # \`--keep\` is proven on both launchers (Issue #1059).
+      printf '%s\\0' "\$@" > "\${record_dir}/container-image-prune.args"
+      ;;
+  esac
+done
 exec "\${VIBE_REAL_DENO}" "\$@"
 `;
 }

@@ -58,6 +58,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  ALERT_DEDUP_JSON_FIELDS,
+  type AlertDedupRow,
+  selectFleetAuthoredMatches,
+} from "./alert_dedup_authors.ts";
 import { atomicWrite } from "./file_utils.ts";
 import { withStateLock } from "./state_mutex.ts";
 
@@ -332,6 +337,18 @@ export interface RecordIdleInversionOptions {
   threshold?: number;
   /** Sink for diagnostics. */
   log?: (message: string) => void;
+  /**
+   * Fleet logins whose escalation markers are trusted.
+   *
+   * A marker in an issue body is text anyone can write, so a dedup match is
+   * only evidence the alert already exists when a fleet account authored it.
+   * Omitted means "read the configured fleet identity"
+   * (`service_accounts` / `fleet_pr_authors` / `GITHUB_USER`), which is what
+   * every production caller does. An empty list is an *unresolved* fleet:
+   * the match cannot be attributed, so it is not treated as an existing
+   * alert and the escalation is raised.
+   */
+  fleetAuthors?: readonly string[];
 }
 
 /** Parse the issue number out of `gh issue create` output. */
@@ -351,9 +368,10 @@ function parseCreatedIssueNumber(output: string): number {
  */
 async function findOpenEscalationIssue(
   repo: string,
-  ghFn: (args: string[]) => Promise<string>,
+  opts: RecordIdleInversionOptions,
+  log: (message: string) => void,
 ): Promise<number | null> {
-  const raw = await ghFn([
+  const raw = await opts.ghFn([
     "issue",
     "list",
     "--repo",
@@ -363,14 +381,18 @@ async function findOpenEscalationIssue(
     "--search",
     `"${IDLE_INVERSION_MARKER_PREFIX}:${repo}" in:body`,
     "--json",
-    "number,body",
+    ALERT_DEDUP_JSON_FIELDS,
     "--limit",
     "20",
   ]);
-  const rows = JSON.parse(raw || "[]") as { number: number; body?: string }[];
-  const match = rows
-    .filter((row) => isIdleInversionIssue(row.body ?? "", repo))
-    .sort((a, b) => a.number - b.number)[0];
+  const rows = JSON.parse(raw || "[]") as AlertDedupRow[];
+  const verified = await selectFleetAuthoredMatches(
+    rows.filter((row) => isIdleInversionIssue(row.body ?? "", repo)),
+    `idle-inversion ${repo}`,
+    opts,
+    log,
+  );
+  const match = verified.sort((a, b) => a.number - b.number)[0];
   return match ? match.number : null;
 }
 
@@ -435,7 +457,7 @@ async function decide(
 
   let existing: number | null;
   try {
-    existing = await findOpenEscalationIssue(repo, opts.ghFn);
+    existing = await findOpenEscalationIssue(repo, opts, log);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     log(

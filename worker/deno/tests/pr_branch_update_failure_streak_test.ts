@@ -27,6 +27,13 @@ import {
   recordPrBranchUpdateFailure,
 } from "../lib/pr_branch_update_failure_streak.ts";
 
+/**
+ * The fleet account the escalation issue is filed by — a marker match only
+ * dedups when a fleet account authored it.
+ */
+const FLEET_LOGIN = "vibe-coder-bot";
+const FLEET: readonly string[] = [FLEET_LOGIN];
+
 const REPO = "stSoftwareAU/NEAT-AI-core";
 const BRANCH = "issue-3832-detect-cycles-linear";
 const OTHER_BRANCH = "issue-3812-memetic-weights-empty-and-ancestry";
@@ -166,7 +173,11 @@ Deno.test("#335 - the filed issue names the PR, count and git error", async () =
 Deno.test("#335 - an existing open escalation issue is adopted, not duplicated", async () => {
   await withState(async (statePath) => {
     const existing = JSON.stringify([
-      { number: 77, body: formatPrBranchFailureMarker(REPO, BRANCH) },
+      {
+        number: 77,
+        body: formatPrBranchFailureMarker(REPO, BRANCH),
+        author: { login: FLEET_LOGIN },
+      },
     ]);
     const { fn, calls } = gh([
       { match: /issue list/, reply: existing },
@@ -179,6 +190,7 @@ Deno.test("#335 - an existing open escalation issue is adopted, not duplicated",
         cycleId: `run-${cycle}`,
         report,
         ghFn: fn,
+        fleetAuthors: FLEET,
       });
     }
     assertEquals(last?.action, "already-open");

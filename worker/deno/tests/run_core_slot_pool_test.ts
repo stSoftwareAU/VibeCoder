@@ -30,6 +30,7 @@ import {
   WriteRepoBlockedError,
 } from "../lib/write_repo_allowlist.ts";
 import type { DiagnosticSummary } from "../lib/issue_finder_logger.ts";
+import type { InFlightClaim } from "../lib/work_stream.ts";
 
 function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
   return {
@@ -124,11 +125,34 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
   };
 }
 
-/** A queue of issues across distinct repos, honouring the exclusion set. */
+/** What the pool hands a scan, as `run_core.ts` builds it. */
+interface ScanOptions {
+  excludeRepos?: ReadonlySet<string>;
+  inFlightClaims?: readonly InFlightClaim[];
+}
+
+/**
+ * Model what the production scan refuses, so a mock cannot pass a slot work
+ * `findOldestIssue` would never have offered (Issue #1091).
+ *
+ * Two refusals, and only two: a repository leased wholesale by the
+ * maintenance lane, and an issue in a work stream a slot on this host already
+ * holds — the latter because the host's claims are overlaid onto the scan's
+ * issue list, so `isMilestoneOccupied` refuses that stream. Every other
+ * stream of that repository stays claimable, which is the whole change.
+ */
+function visibleToScan(i: DiscoveredIssue, options?: ScanOptions): boolean {
+  if (options?.excludeRepos?.has(i.repo)) return false;
+  return !(options?.inFlightClaims ?? []).some((claim) =>
+    claim.repo === i.repo && claim.milestone === i.milestoneTitle
+  );
+}
+
+/** A queue of issues, honouring what the production scan would refuse. */
 function issueQueue(issues: DiscoveredIssue[]) {
   const pending = [...issues];
-  return (options?: { excludeRepos?: ReadonlySet<string> }) => {
-    const idx = pending.findIndex((i) => !options?.excludeRepos?.has(i.repo));
+  return (options?: ScanOptions) => {
+    const idx = pending.findIndex((i) => visibleToScan(i, options));
     if (idx < 0) return Promise.resolve({ ok: true as const, value: null });
     const [next] = pending.splice(idx, 1);
     return Promise.resolve({ ok: true as const, value: next! });
@@ -1110,8 +1134,7 @@ Deno.test("slot pool - a success is followed by the normal sleep and another cla
     findNextIssue: (options) =>
       Promise.resolve({
         ok: true,
-        value: unclaimed.find((i) => !options?.excludeRepos?.has(i.repo)) ??
-          null,
+        value: unclaimed.find((i) => visibleToScan(i, options)) ?? null,
       }),
     processIssue: (i) => {
       unclaimed.splice(unclaimed.indexOf(i), 1);
@@ -1221,9 +1244,7 @@ Deno.test("slot pool - a slot that finds nothing while a sibling works states wh
       return Promise.resolve();
     },
     findNextIssue: (options) => {
-      const found = available.find((i) =>
-        !options?.excludeRepos?.has(i.repo)
-      ) ?? null;
+      const found = available.find((i) => visibleToScan(i, options)) ?? null;
       if (found === null) {
         emptyScans++;
         options?.onScanSummary?.(
@@ -1328,8 +1349,7 @@ Deno.test("slot pool - a slot that loses the acquire race drops that repo's cach
     findNextIssue: (options) =>
       Promise.resolve({
         ok: true,
-        value: unclaimed.find((i) => !options?.excludeRepos?.has(i.repo)) ??
-          null,
+        value: unclaimed.find((i) => visibleToScan(i, options)) ?? null,
       }),
     processIssue: (i) => {
       unclaimed.splice(unclaimed.indexOf(i), 1);

@@ -175,8 +175,10 @@ function makeGhStub(scenario: {
     const jsonField = jsonIdx >= 0 ? args[jsonIdx + 1] : "";
     const labelIdx = args.indexOf("--label");
     const labelArg = labelIdx >= 0 ? args[labelIdx + 1] : "";
-    // Wrapper-title search (number,title).
-    if (jsonField === "number,title") {
+    // Wrapper-title search — `number,title` for the repo-wide open-issue
+    // list, and the author-bearing field list for the veto (a title alone is
+    // text anybody may write, so the veto verifies the author).
+    if (jsonField === "number,title" || (jsonField ?? "").includes("author")) {
       return Promise.resolve("[]");
     }
     // Repository-settings pre-filer (Issues #4397/#4398/#4401) and the GHSA
@@ -2445,13 +2447,20 @@ Deno.test(
       calls.push([...args]);
       return Promise.resolve(
         JSON.stringify([
-          { number: 9, title: GITHUB_ACTIONS_AUDIT_ISSUE_TITLE },
+          {
+            number: 9,
+            title: GITHUB_ACTIONS_AUDIT_ISSUE_TITLE,
+            // The veto now counts a title match only when the fleet wrote
+            // it — a title alone is text anybody may write.
+            author: { login: "vibe-bot" },
+          },
         ]),
       );
     };
     const t = makeAuditTemplate({
       ghCommandFn: gh,
       loadPromptFn: okPrompt,
+      dedupAuthors: { fleetAuthors: ["vibe-bot"] },
     });
     const ok = await t.shouldFile?.({ repo: "acme/widget" }) ?? true;
     assertEquals(ok, false);

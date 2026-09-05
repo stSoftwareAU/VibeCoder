@@ -61,6 +61,7 @@ import {
 } from "./fleet_telemetry.ts";
 import type { HeartbeatLiveKey } from "./heartbeat.ts";
 import { formatInFlightHold, InFlightRepoRegistry } from "./in_flight_repos.ts";
+import type { InFlightClaim } from "./work_stream.ts";
 import type {
   ProcessedIssueReason,
   ProcessedIssueRegistry,
@@ -68,6 +69,7 @@ import type {
 import type { SlotCeiling } from "./slot_governor.ts";
 import {
   formatSlotUtilisationSummary,
+  getIdleSlotCapacity,
   IdleFilerLatch,
   noteSlotActivity,
   noteSlotRetired,
@@ -550,6 +552,22 @@ export interface RunCoreDeps {
     opts?: HandlerExecuteOptions,
   ) => Promise<Result<PriorityHandlerResult>>;
 
+  /**
+   * Priority 1.87: PR-phase custom label prompts (Issue #1011, part of #938).
+   *
+   * Dispatches an **open PR** carrying a configured `pr`-phase
+   * `custom_label_prompts` label: the label is consumed, the PR head branch is
+   * checked out, and the operator's prompt runs against it with a full working
+   * tree and `gh` — like a PR-feedback run. Each label application dispatches
+   * at most one run; the developer re-applies the label to run again.
+   *
+   * Optional, and **absent when no `pr` mapping is configured**, so an
+   * operator who never opts in gets a byte-identical ladder.
+   */
+  findAndProcessCustomLabelPrPrompts?: (
+    opts?: HandlerExecuteOptions,
+  ) => Promise<Result<PriorityHandlerResult>>;
+
   // Priority 1.9: Stale workflow detection (Issue #1240)
   // Issue #1781: caller passes `shouldShutdown` so the rate-limit
   // pause-and-resume loop can abort cleanly on SIGTERM/SIGINT.
@@ -559,10 +577,19 @@ export interface RunCoreDeps {
 
   // Priority 2: Issue scanning
   /**
-   * Find the next claimable issue. `options.excludeRepos` (Issue #4176):
-   * repositories currently held by another slot on this host — skipped so
-   * a free slot gets the next eligible issue from a different repository.
-   * Absent: unchanged serial behaviour.
+   * Find the next claimable issue.
+   *
+   * `options.excludeRepos` (Issue #4176, narrowed by Issue #1091):
+   * repositories leased **wholesale** by the maintenance lane (Issue #213),
+   * whose pass may touch any branch of the clone — skipped before any
+   * eligibility check runs. A sibling *slot*'s hold is no longer in this
+   * set: it occupies one work stream, not a repository.
+   *
+   * `options.inFlightClaims` (Issue #1091): every issue a slot on this host
+   * holds, each with the work stream it occupies. Overlaid on the scan's
+   * fetched issue list so the existing `isMilestoneOccupied` check sees a
+   * claim the iteration-scoped issue cache has not caught up with. Not a
+   * second notion of occupancy — the same check, told the truth.
    *
    * `options.onScanSummary` (Issue #219): invoked with the scan's counts
    * before the result is returned, so a slot that receives `null` can log
@@ -572,6 +599,7 @@ export interface RunCoreDeps {
   findNextIssue: (
     options?: {
       excludeRepos?: ReadonlySet<string>;
+      inFlightClaims?: readonly InFlightClaim[];
       /**
        * Issues this cycle has already deferred for the adaptive claim floor
        * (Issue #245), keyed `owner/repo#number`. Skipped so the scan offers
@@ -1534,6 +1562,18 @@ export function buildPriorityDispatchTable(
         name: "Custom Label Prompts",
         agentBacked: true,
         execute: deps.findAndProcessCustomLabelPrompts,
+      }]
+      : []),
+    // Issue #1011 (part of #938): the PR-phase half of the same family. An
+    // open PR carrying a configured `pr` mapping's label gets a full checkout
+    // and the operator's prompt, and the run consumes the label. Like 1.86 the
+    // row exists only when a mapping of that phase is configured.
+    ...(deps.findAndProcessCustomLabelPrPrompts
+      ? [{
+        priority: 1.87,
+        name: "Custom Label PR Prompts",
+        agentBacked: true,
+        execute: deps.findAndProcessCustomLabelPrPrompts,
       }]
       : []),
     {
@@ -2503,7 +2543,9 @@ async function runMaintenanceLane(
       registry.tryAcquire(repo, ref, MAINTENANCE_LANE_SLOT_ID, {
         maintenance: true,
       }),
-    release: (repo) => registry.release(repo),
+    // A lane lease is repository-wide (Issue #1091), so it is given back
+    // through the lease path rather than the per-stream one.
+    release: (repo) => registry.releaseRepoLease(repo),
   };
   deps.log(
     `${prefix}Maintenance lane: ${handlers.length} agent-backed pass(es) ` +
@@ -2655,12 +2697,16 @@ interface SlotPoolState {
   /**
    * The repositories the completed eligibility pass was never shown
    * (Issue #898) — `findOldestIssue`'s `excludeRepos` set at the moment a
-   * scan came up empty, i.e. every repo an issue slot (Issue #4176) or the
-   * maintenance lane (Issue #213) held.
+   * scan came up empty.
    *
-   * The scan skips those before any collector runs, so it records no
-   * per-issue skip reason for them and the census must not read
-   * {@link SlotPoolState.eligibilityScanCompleted} as covering them.
+   * Issue #1091 narrowed that to the maintenance lane's whole-repository
+   * leases (Issue #213). A slot's hold occupies one work stream, which the
+   * scan does evaluate and refuse as `milestone-occupied`, so it belongs in
+   * the per-issue skip reasons rather than here.
+   *
+   * The scan skips a leased repository before any collector runs, so it
+   * records no per-issue skip reason for it and the census must not read
+   * {@link SlotPoolState.eligibilityScanCompleted} as covering it.
    */
   scanExcludedRepos?: ReadonlySet<string>;
   /**
@@ -2693,8 +2739,9 @@ type SlotStop =
  * failure threshold, or no eligible work. What differs from the serial loop
  * is only what concurrency forces:
  *
- * - `findNextIssue` gets the set of repositories other slots hold (Issue
- *   #4176), so no two slots share a clone;
+ * - `findNextIssue` gets the work streams other slots hold (Issues #4176,
+ *   #1091), so no two slots share a stream — different milestones of one
+ *   repository are worked in parallel, each in its own lane worktree;
  * - the deadline / runway gate runs before EVERY claim in EVERY slot;
  * - the consecutive-failure back-off and `shouldExitOnFailures()` are
  *   pool-wide, so N slots cannot multiply the failure budget;
@@ -2966,13 +3013,20 @@ async function runSlot(
         return;
       }
 
-      // Find the next issue outside the repositories siblings hold.
+      // Find the next issue outside the work streams siblings hold.
       let scanSummary: DiagnosticSummary | undefined;
       // Issue #898: kept, because it is the census's only record of what this
-      // pass was not allowed to see.
-      const excludedRepos = pool.registry.heldRepos();
+      // pass was not allowed to see. Issue #1091 narrowed it to the
+      // maintenance lane's whole-repository leases — a slot's hold occupies
+      // one stream, and the scan evaluates that stream and refuses it as
+      // `milestone-occupied` rather than never looking.
+      const excludedRepos = pool.registry.leasedRepos();
       const findResult = await deps.findNextIssue({
         excludeRepos: excludedRepos,
+        // Issue #1091: what this host already holds, so the scan's own
+        // occupancy check sees it even when the issue cache predates the
+        // sibling's claim.
+        inFlightClaims: pool.registry.heldIssues(),
         // Issues this cycle already deferred for the adaptive floor (#245).
         excludeIssues: pool.deferredClaims,
         onScanSummary: (summary) => {
@@ -3043,7 +3097,7 @@ async function runSlot(
         // together must not become N. The first observer of an idle episode
         // wins; `tryConsume` sets the flag synchronously, before the first
         // `await` below, so two slots cannot both win it.
-        if (pool.idleHooks && pool.idleHooks.filerLatch.tryConsume()) {
+        if (pool.idleHooks && pool.idleHooks.filerLatch.tryConsume(slotId)) {
           // Issue #898, extended by Issue #925: the repos this pass was
           // never shown. `excludedRepos` was read before the scan, and a
           // sibling can acquire a repository between that read and this
@@ -3055,7 +3109,7 @@ async function runSlot(
           // only avoid one the scan never had a chance to disagree about.
           const hookExcludedRepos = new Set<string>([
             ...excludedRepos,
-            ...pool.registry.heldRepos(),
+            ...pool.registry.leasedRepos(),
           ]);
           await runIdleWorkHooks(deps, pool.idleHooks, {
             // `[sN] ` prefixed, so the `[idle-hooks]` line names the slot.
@@ -3118,7 +3172,14 @@ async function runSlot(
 
       // Atomic against sibling starts (Issue #4176): exactly one slot wins a
       // repository; a loser looks again.
-      if (!pool.registry.tryAcquire(issue.repo, issue.issueNumber, slotId)) {
+      if (
+        !pool.registry.tryAcquire(issue.repo, issue.issueNumber, slotId, {
+          // Issue #1091: the stream this claim occupies, so a sibling on a
+          // different milestone of the same repository is not locked out —
+          // and one on the same milestone still is.
+          milestone: issue.milestoneTitle,
+        })
+      ) {
         // Issue #219: the ranking this scan produced has already lost, so
         // drop the repository's cached issue list before looking again —
         // otherwise the next scan can be served the same stale list.
@@ -3180,7 +3241,11 @@ async function runSlot(
                 // drain sees a legitimately extended run as in-flight rather
                 // than as a hang.
                 onRunDeadline: (deadline) => {
-                  pool.registry.noteRunDeadline(issue.repo, deadline);
+                  pool.registry.noteRunDeadline(
+                    issue.repo,
+                    issue.milestoneTitle,
+                    deadline,
+                  );
                 },
               },
               () =>
@@ -3262,7 +3327,7 @@ async function runSlot(
           );
         }
       } finally {
-        pool.registry.release(issue.repo);
+        pool.registry.release(issue.repo, issue.milestoneTitle);
       }
 
       // Settle sleep after a success (Issue #178): the same `sleepInterval`
@@ -3718,11 +3783,11 @@ interface IdleHookState {
    */
   disagreement: IdleDisagreementTracker;
   /**
-   * Single-flight guard so N idle slots file at most one idle-task per idle
-   * episode (Issue #925). Reset at the start of every cycle — preserving
-   * today's at-most-once-per-cycle filing — and released whenever a slot
-   * takes a claim, so a long cycle that keeps cycling between work and idle
-   * can still supply the fleet.
+   * Capacity guard so each idle slot files at most one idle-task per idle
+   * episode, and the episode's total never exceeds the fleet's idle
+   * capacity (Issues #925, #1083). Reset at the start of every cycle, and
+   * released whenever a slot takes a claim, so a long cycle that keeps
+   * cycling between work and idle can still supply the fleet.
    */
   filerLatch: IdleFilerLatch;
 }
@@ -4061,7 +4126,11 @@ export async function runCoreLoop(
       workDir: resolvedWorkDir,
       log: (message) => deps.logError(message),
     }),
-    filerLatch: new IdleFilerLatch(),
+    // Issue #1083: the latch is bounded by the fleet's idle capacity, read
+    // from the #925 ledger at each attempt rather than fixed at one. Six
+    // idle slots may raise six idle tasks; a fully occupied fleet raises
+    // none.
+    filerLatch: new IdleFilerLatch(() => getIdleSlotCapacity()),
   };
   // Issue #2479: monotonic per-cycle counter so the liveness guard runs on
   // a bounded cadence (see LIVENESS_CHECK_CADENCE) instead of every cycle.
@@ -4916,9 +4985,10 @@ export async function runCoreLoop(
           // slot has drained and the answer is the same either way. What
           // changed is that it is no longer the ONLY place the hooks run:
           // an idle slot runs them mid-cycle (see `runSlot`), and the
-          // shared latch stops the two paths filing twice for one episode.
+          // shared latch bounds the two paths together by the fleet's idle
+          // capacity for one episode (Issue #1083).
           if (!tracker.foundClaimableIssue) {
-            if (idleHookState.filerLatch.tryConsume()) {
+            if (idleHookState.filerLatch.tryConsume(IDLE_CYCLE_OBSERVER_ID)) {
               const hookOutcome = await runIdleWorkHooks(deps, idleHookState, {
                 log: (message) => deps.log(message),
                 // The fleet-wide question, asked once every slot has
@@ -4938,9 +5008,12 @@ export async function runCoreLoop(
                 fleetIdleReason = hookOutcome.idleReason;
               }
             } else {
-              // An idle slot already filed for this episode (Issue #925).
+              // The idle slots have already used the episode's capacity
+              // (Issues #925, #1083) — the count names how many filed, so
+              // "the fleet raised nothing" is distinguishable in the log
+              // from "the fleet raised all it had capacity for".
               deps.log(
-                `[idle-hooks] foundClaimableIssue=${tracker.foundClaimableIssue} scanHadSuccess=${tracker.scanHadSuccess} skipping=idle-task-filer reason=slot_already_filed`,
+                `[idle-hooks] foundClaimableIssue=${tracker.foundClaimableIssue} scanHadSuccess=${tracker.scanHadSuccess} skipping=idle-task-filer reason=idle_capacity_used filed=${idleHookState.filerLatch.filedCount} idle_slots=${getIdleSlotCapacity()}`,
               );
             }
           } else {
