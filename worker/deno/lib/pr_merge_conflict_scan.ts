@@ -41,9 +41,18 @@ import {
 } from "./fleet_authors.ts";
 import { listOpenPrs, type PrEntry } from "./pr_maintenance.ts";
 import {
+  CONFLICT_ATTEMPT_MARKER,
+  CONFLICT_FAILED_MARKER,
+  CONFLICT_RESOLVED_MARKER,
+} from "./merge_conflict_markers.ts";
+import {
   abandonAndRestart,
   type AbandonRestartOutcome,
   type AbandonRestartRequest,
+  describeExhaustedRoute,
+  exhaustedEscalationDedupKey,
+  type ExhaustedEscalationRoute,
+  exhaustedEscalationRoute,
 } from "./conflict_abandon_restart.ts";
 import { orderByPreference, preferredRepos } from "./conflict_queue_order.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
@@ -74,24 +83,17 @@ export const MERGE_CONFLICT_LABEL_DESCRIPTION = getLabelDescription(
   MERGE_CONFLICT_LABEL,
 );
 
-/** Marker that identifies one recorded conflict-resolution attempt. */
-export const CONFLICT_ATTEMPT_MARKER = "<!-- vibe-coder:merge-conflict-attempt";
-
 /**
- * Marker posted when an attempt merged successfully. Everything before it
- * belongs to a conflict that is already resolved, so the attempt budget
- * restarts from it — a PR that conflicts again months later gets a full
- * budget rather than inheriting a spent one.
+ * The attempt-history markers, re-exported so every existing importer keeps
+ * its import path. They live in `merge_conflict_markers.ts` (Issue #1115) so
+ * the modules that read them — this scan, the processor, the stall watchdog,
+ * the abandon rung — share the vocabulary without importing each other.
  */
-export const CONFLICT_RESOLVED_MARKER =
-  "<!-- vibe-coder:merge-conflict-resolved -->";
-
-/**
- * Marker posted when an attempt reached a merge conclusion and failed
- * (Issue #395). It is what turns an opened attempt into a *spent* one — an
- * attempt marker with no conclusion after it was disrupted, not judged.
- */
-export const CONFLICT_FAILED_MARKER = "<!-- vibe-coder:merge-conflict-failed";
+export {
+  CONFLICT_ATTEMPT_MARKER,
+  CONFLICT_FAILED_MARKER,
+  CONFLICT_RESOLVED_MARKER,
+} from "./merge_conflict_markers.ts";
 
 /** Hours a PR waits after a failed attempt before another is made. */
 export const DEFAULT_CONFLICT_COOLDOWN_HOURS = 4;
@@ -686,23 +688,6 @@ export const DISRUPTED_CONFLICT_NEXT_STEP =
   "worker try again.";
 
 /**
- * Which route through the ladder ended at a human (Issue #1115).
- *
- * A spent budget no longer means one thing. Abandon-and-restart sits between
- * it and `needs-human`, so the escalation must say which of its three exits
- * produced the hand-over — a human who cannot tell "the fleet could not find
- * the issue" from "the fleet already restarted this once" cannot act on
- * either.
- */
-export type ExhaustedEscalationRoute =
-  /** A precondition refused the abandon; nothing was closed. */
-  | { kind: "abandon-declined"; detail: string }
-  /** The abandon started and a step failed; the state may be partial. */
-  | { kind: "abandon-failed"; step: string; detail: string }
-  /** This issue was already restarted once; the fresh PR exhausted too. */
-  | { kind: "restart-exhausted"; issueNumber: number };
-
-/**
  * Why a PR that is out of attempts but owned by nobody is being handed over
  * (Issue #395), and which route through the ladder brought it here
  * (Issue #1115).
@@ -717,101 +702,16 @@ export function buildExhaustedEscalationReason(
   attemptCount: number,
   route: ExhaustedEscalationRoute,
 ): string {
-  const routeLines = (): string[] => {
-    switch (route.kind) {
-      case "abandon-declined":
-        return [
-          "**The automatic restart was declined, so nothing was closed.** " +
-          `${route.detail}`,
-        ];
-      case "abandon-failed":
-        return [
-          "**The automatic restart failed part-way through, at the " +
-          `\`${route.step}\` step.** ${route.detail}`,
-          "",
-          "Check what that step leaves behind before doing anything else: " +
-          "this PR may already carry the abandon comment, and its issue may " +
-          "already be re-queued.",
-        ];
-      case "restart-exhausted":
-        return [
-          `**This work has already been restarted once** — issue ` +
-          `#${route.issueNumber} was re-queued after an earlier PR ` +
-          "conflicted irreconcilably, and the PR that replaced it has now " +
-          "spent its budget too. The fleet restarts once and then stops, so " +
-          "it does not close and re-raise PRs in a loop.",
-        ];
-    }
-    const unhandled: never = route;
-    throw new Error(
-      `Unhandled exhausted escalation route: ${JSON.stringify(unhandled)}`,
-    );
-  };
-
   return [
     `PR #${prNumber} has spent all ${attemptCount} of its merge-conflict ` +
     "resolution attempts and still conflicts with its base.",
     "",
-    ...routeLines(),
+    ...describeExhaustedRoute(route),
     "",
     "The failure comments above say what each attempt tripped on. The " +
     "branch was left exactly as its author pushed it, so no change has been " +
     "lost.",
   ].join("\n");
-}
-
-/**
- * Which escalation route an abandon that did not happen produced
- * (Issue #1115).
- *
- * Exhaustive over both non-abandoning outcomes, so a decline reason added
- * without a route here fails the type check rather than reaching a human as
- * an unexplained `needs-human`.
- */
-export function exhaustedEscalationRoute(
-  outcome: Exclude<AbandonRestartOutcome, { outcome: "abandoned" }>,
-): ExhaustedEscalationRoute {
-  if (outcome.outcome === "failed") {
-    return {
-      kind: "abandon-failed",
-      step: outcome.step,
-      detail: outcome.message,
-    };
-  }
-
-  const reason = outcome.reason;
-  switch (reason.kind) {
-    case "no-originating-issue":
-      return {
-        kind: "abandon-declined",
-        detail: "This PR names no originating issue " +
-          `(${reason.detail}): neither its branch name, nor a closing ` +
-          "keyword in its body, nor GitHub's own linkage points at one. " +
-          "Closing a PR the fleet cannot re-raise would lose the work " +
-          "outright, so it was left open.",
-      };
-    case "already-restarted":
-      return { kind: "restart-exhausted", issueNumber: reason.issueNumber };
-    case "other-open-pr":
-      return {
-        kind: "abandon-declined",
-        detail: `Issue #${reason.issueNumber} already has another PR ` +
-          `(${reason.prUrl}), so re-queuing it would have raced that one.`,
-      };
-    case "requeue-not-permitted":
-      return {
-        kind: "abandon-declined",
-        detail: `Issue #${reason.issueNumber} does not carry ` +
-          `\`${reason.workLabel}\`, and the worker is not permitted to ` +
-          "apply it (worker_label_guard.ts). Closing this PR would have " +
-          "left the issue open but unqueued — invisible to the fleet and " +
-          "to you.",
-      };
-  }
-  const unhandled: never = reason;
-  throw new Error(
-    `Unhandled abandon decline reason: ${JSON.stringify(unhandled)}`,
-  );
 }
 
 /** What the human must do about a conflict the worker is out of attempts for. */
@@ -1337,8 +1237,11 @@ export async function findConflictingPr(
         reason: buildExhaustedEscalationReason(pr.number, history.count, route),
         nextStep: EXHAUSTED_CONFLICT_NEXT_STEP,
         // The key the resolution pass uses, so a landed escalation is not
-        // duplicated — only its missing label is re-applied.
-        dedupKey: `merge-conflict-${pr.number}`,
+        // duplicated — only its missing label is re-applied. A failed abandon
+        // takes its own key instead (Issue #1115): the shared one is inside
+        // its suppression window here by construction, and it would swallow
+        // the one comment naming the step that broke.
+        dedupKey: exhaustedEscalationDedupKey(pr.number, route),
         needsHumanLabel,
         ghCommandFn,
         logger,
