@@ -145,7 +145,7 @@ alike. Unproven means no signal, never "go ahead".
 
 A unit test that reads ambient environment gets a different answer on every
 machine, and inside the container it gets the running fleet's own state. The
-worker exports `WORK_DIR`, `runCoreLoop` falls back to it for state that
+worker exports `WORK_DIR`, `runCoreLoop` fell back to it for state that
 outlives a run, and every suite driving the loop without naming its own work
 directory therefore read and wrote the live
 `idle_disagreement_streak.json` — four `--parallel` test processes sharing one
@@ -154,6 +154,14 @@ overwritten with test timestamps (Issue #1098). Name the directory, the config
 path and the clock the test wants; the gate scrubs `CONFIG_PATH` and `WORK_DIR`
 from the test stage so an unnamed one degrades to memory rather than to the
 host.
+
+Fix it on both sides. The scrub keeps the gate honest, but a `deno task test`
+run has no scrub, so Issue #1177 took the fallback out of the code as well:
+`resolveRunStateWorkDir` reads `config.workDir` and nothing else, and the
+suites that name no directory now keep that state in memory wherever they run.
+Prefer the argument to the ambient variable — a production path that quietly
+reads the environment is a dependency nothing declares, and the test that
+covers it is only ever as honest as the machine it ran on.
 
 The same rule covers process-global caches: a module singleton keyed by a
 counter that restarts at 1 in every consumer serves one test's result to the
