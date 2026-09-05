@@ -61,6 +61,7 @@ import {
   diffNewlyFiled,
   fileFindingOnce,
   listOpenIssueNumbersByLabel,
+  NEWLY_FILED_UNKNOWN_SUMMARY,
 } from "../idle_task_snapshot.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "../label_operations.ts";
 import { repoCheckoutPath } from "../repo_checkout_path.ts";
@@ -318,12 +319,14 @@ export function renderGateFindingBody(
  * Exported so tests can assert on the exact wording.
  */
 export function renderBashSyntaxAuditSummary(
-  newlyFiled: readonly number[],
+  newlyFiled: readonly number[] | null,
   detectorErrors: readonly string[] = [],
   suppressionReport: string = renderSuppressionSummary(),
 ): string {
   const parts: string[] = [];
-  if (newlyFiled.length === 0) {
+  if (newlyFiled === null) {
+    parts.push(NEWLY_FILED_UNKNOWN_SUMMARY);
+  } else if (newlyFiled.length === 0) {
     parts.push("no findings");
   } else {
     const sorted = [...newlyFiled].sort((a, b) => a - b);

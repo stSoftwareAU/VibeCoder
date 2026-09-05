@@ -48,6 +48,7 @@ import {
   listAllOpenIssueTitles,
   listKnownOpenFindingIds,
   listOpenIssueNumbersByLabel,
+  NEWLY_FILED_UNKNOWN_SUMMARY,
   type OpenIssueTitle,
   renderOpenIssueTitles,
 } from "../idle_task_snapshot.ts";
@@ -211,7 +212,10 @@ export function assembleDeadCodePrompt(
  *
  * Exported so tests can assert on the exact wording.
  */
-export function renderDeadCodeSummary(newlyFiled: readonly number[]): string {
+export function renderDeadCodeSummary(
+  newlyFiled: readonly number[] | null,
+): string {
+  if (newlyFiled === null) return NEWLY_FILED_UNKNOWN_SUMMARY;
   if (newlyFiled.length === 0) return "no findings";
   const sorted = [...newlyFiled].sort((a, b) => a - b);
   const list = sorted.map((n) => `#${n}`).join(", ");

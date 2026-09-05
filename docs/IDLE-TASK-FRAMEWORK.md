@@ -458,6 +458,47 @@ Wiring a template up means all four of:
    note. `tests/dedup_placeholder_docs_test.ts` fails when a published doc
    names `{{KNOWN_OPEN_FINDING_IDS}}` without `{{OPEN_ISSUE_TITLES}}`.
 
+### The newly-filed diff — unknown is not empty
+
+Every scan template verifies its outcome the same way: snapshot the repo's open
+scan-labelled issues **before** the run, snapshot again **after**, and report
+`diffNewlyFiled(before, after)` as what this run filed. Both snapshots come from
+[`listOpenIssueNumbersByLabel`](../worker/deno/lib/idle_task_snapshot.ts).
+
+The two ends of that diff fail in **opposite** directions, so a failed lookup is
+never reconciled to an empty set (Issue #1105):
+
+| Lookup that fails | Reconciled to `∅` — the old behaviour                                                                      |
+| ----------------- | ---------------------------------------------------------------------------------------------------------- |
+| `before`          | `diff(∅, after)` = every open issue → over-reports newly filed                                              |
+| `after`           | `diff(before, ∅)` = `∅` → renders `no findings`, uploads no SARIF — **indistinguishable from a clean scan** |
+
+So `listOpenIssueNumbersByLabel` returns `null` — *unknown* — when its `gh` call
+fails or its payload will not parse, and logs why. `diffNewlyFiled` returns
+`null` when **either** end is unknown, and every template renders
+`NEWLY_FILED_UNKNOWN_SUMMARY` in place of a count:
+
+```text
+Newly-filed count unavailable — an open-issue snapshot lookup failed, so this
+run cannot report how many findings it filed. Findings filed by this run are
+still open as issues; only the count is unknown.
+```
+
+The run still **completes** (`ok: true`) rather than throwing: the scan ran and
+any findings it filed exist as issues — only the count and, for `security-scan`,
+the SARIF upload are lost. `classifyScanOutcome` reads that string as `unknown`,
+never as a `no-op`, so the freshness report does not record a failed lookup as a
+clean scan.
+
+```mermaid
+flowchart LR
+    B["listOpenIssueNumbersByLabel<br/>(before)"] --> D{"diffNewlyFiled"}
+    A["listOpenIssueNumbersByLabel<br/>(after)"] --> D
+    D -- "both known" --> N["'no findings' OR<br/>'Filed N issues: #A, #B, …'"]
+    D -- "either null" --> U["NEWLY_FILED_UNKNOWN_SUMMARY<br/>count unknown, never 0"]
+    style U fill:#9d0208,stroke:#6a040f,color:#fff
+```
+
 ### Wrapper body size limit
 
 GitHub rejects any issue body over **65,536 characters**
@@ -1484,7 +1525,11 @@ Three distinctions carry the report's meaning:
   cannot be read keeps its date and reports an `unknown` **outcome**.
 - **Outcome is read from the template's own close comment.** Every template
   renders `"no findings"` or `"… Filed N issues: #A, #B, …"`, so the report can
-  say whether the last run was a no-op or filed work.
+  say whether the last run was a no-op or filed work. A third string —
+  `NEWLY_FILED_UNKNOWN_SUMMARY` (Issue #1105, see
+  [The newly-filed diff](#the-newly-filed-diff--unknown-is-not-empty)) — is
+  rendered when either before/after snapshot lookup failed, and classifies as
+  `unknown` rather than as a no-op.
 
 Each entry also carries **per-model-tier history**, read from the
 attribution footer's optional `Model:` segment:

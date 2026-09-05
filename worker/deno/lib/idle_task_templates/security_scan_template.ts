@@ -61,6 +61,7 @@ import {
   diffNewlyFiled,
   listAllOpenIssueTitles,
   listOpenIssueNumbersByLabel,
+  NEWLY_FILED_UNKNOWN_SUMMARY,
   parseGhJsonArray,
 } from "../idle_task_snapshot.ts";
 import {
@@ -304,6 +305,10 @@ async function hasOpenSecurityScanWrapper(
  * Render the close-comment summary for the wrapper idle-task issue
  * (Issue #2097).
  *
+ * - Unknown newly-filed set (`null` — a snapshot lookup failed, Issue
+ *   #1105) → {@link NEWLY_FILED_UNKNOWN_SUMMARY}. Never `"0 findings."`:
+ *   a lookup that could not run must not read as a scan that found
+ *   nothing.
  * - No newly-filed issues → `"0 findings."` (the executor's audit
  *   trail says "nothing landed this run").
  * - One or more newly-filed issues → `"Security scan complete. Filed
@@ -312,7 +317,8 @@ async function hasOpenSecurityScanWrapper(
  *
  * Exported so tests can assert on the exact wording.
  */
-export function renderRunSummary(newlyFiled: readonly number[]): string {
+export function renderRunSummary(newlyFiled: readonly number[] | null): string {
+  if (newlyFiled === null) return NEWLY_FILED_UNKNOWN_SUMMARY;
   if (newlyFiled.length === 0) return "0 findings.";
   const sorted = [...newlyFiled].sort((a, b) => a - b);
   const list = sorted.map((n) => `#${n}`).join(", ");
@@ -432,6 +438,20 @@ export function createSecurityScanTemplate(
         ghCommandFn,
       );
       const newlyFiled = diffNewlyFiled(before, after);
+
+      // 4a. Either snapshot unknown (Issue #1105) — a gh failure or an
+      //     unparseable payload. The scan itself ran and Claude filed its
+      //     findings as issues, but this run cannot say which issues they
+      //     were, so it reports the count as unknown rather than `0` and
+      //     names the SARIF upload it had to skip. Reporting `0 findings.`
+      //     here was indistinguishable from a genuinely clean scan.
+      if (newlyFiled === null) {
+        return {
+          ok: true,
+          summary: `${NEWLY_FILED_UNKNOWN_SUMMARY} SARIF upload skipped — ` +
+            `the newly-filed set is unknown.`,
+        };
+      }
 
       // 5. Additive SARIF emission (Issue #3538). Upload the just-filed
       //    findings to GitHub code scanning so they dedup against tool

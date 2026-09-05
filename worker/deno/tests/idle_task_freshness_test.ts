@@ -31,6 +31,7 @@ import {
   parseAttributionTemplate,
   parseWrapperHistory,
 } from "../lib/idle_task_freshness.ts";
+import { NEWLY_FILED_UNKNOWN_SUMMARY } from "../lib/idle_task_snapshot.ts";
 import { idleTaskFreshnessCommand } from "../commands/idle_task_freshness.ts";
 import { listTemplates } from "../lib/idle_task_template.ts";
 import type { WorkerConfig } from "../types.ts";
@@ -104,6 +105,13 @@ Deno.test("classifyScanOutcome - distinguishes findings, no-op and unknown", () 
   assertEquals(classifyScanOutcome("no findings"), "no-op");
   assertEquals(classifyScanOutcome("idle-task processed"), "unknown");
   assertEquals(classifyScanOutcome(null), "unknown");
+});
+
+// Issue #1105: a scan whose snapshot lookup failed closes its wrapper with
+// NEWLY_FILED_UNKNOWN_SUMMARY. The freshness report must read that as
+// `unknown`, never as the clean `no-op` the old "0 findings." summary gave it.
+Deno.test("classifyScanOutcome - an unknown newly-filed count is not a no-op", () => {
+  assertEquals(classifyScanOutcome(NEWLY_FILED_UNKNOWN_SUMMARY), "unknown");
 });
 
 Deno.test("parseWrapperHistory - throws on a malformed payload rather than reporting an empty history", () => {
