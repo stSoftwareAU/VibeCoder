@@ -1408,28 +1408,34 @@ Deno.test("#655 - the cooldown gate is modelled, not silently over-counted", () 
   );
 });
 
-// --- The scan's own account set (Issue #753) -------------------------------
+// --- The selector's own account set (Issues #753, #1071) -------------------
 //
-// The claim scan refuses a stream held by **any** trusted account
-// (`isMilestoneOccupied` over `workerUser ∪ allowedAuthors`); the census
-// counted only the worker's own assignments. On stSoftwareAU/VibeCoder a
-// human took two unmilestoned issues — occupying the default-branch stream —
-// and the scan then refused every other unmilestoned `work-on` issue with
+// The selector refuses a stream held by an account **the fleet operates**
+// (`isMilestoneOccupied` over `workerUser ∪ pushCapableAuthors`); the census
+// counted only the worker's own assignments. On stSoftwareAU/VibeCoder two
+// unmilestoned issues were taken — occupying the default-branch stream — and
+// the scan then refused every other unmilestoned `work-on` issue with
 // `milestone-occupied`, while the census reported `work_on=3` and raised an
 // inversion on three consecutive cycles. Neither instrument was wrong about
 // its own rule; they were applying different ones.
+//
+// Issue #1064 then moved the selector's set from `allowed_authors` (a
+// permission list, which holds humans) to the fleet identity, because
+// scheduling exists only between Vibe Coders. Issue #1071 moves the census
+// with it: these fixtures now hold a **sibling Vibe Coder**, and the human
+// case below asserts the opposite verdict.
 
-Deno.test("census - a trusted author's assignment occupies the stream, as the scan says it does (Issue #753)", () => {
+Deno.test("census - a sibling Vibe Coder's assignment occupies the stream, as the selector says it does (Issue #753)", () => {
   const census = buildIdleDecisionCensus({
     decisionPoint: "filing",
     workerUser: "vibe-bot",
-    allowedAuthors: ["nleck"],
+    pushCapableAuthors: ["sibling-bot"],
     repos: [
       repoInput({
         repo: "org/neat",
         issues: [
-          // A human holds one issue in the milestone…
-          issue(40, ["work-on"], ["nleck"], "v2"),
+          // A sibling Vibe Coder holds one issue in the milestone…
+          issue(40, ["work-on"], ["sibling-bot"], "v2"),
           // …so its siblings are what the scan calls milestone-occupied.
           issue(41, ["work-on"], [], "v2"),
           issue(42, ["work-on"], [], "v2"),
@@ -1448,13 +1454,13 @@ Deno.test("census - a trusted author's assignment occupies the stream, as the sc
 });
 
 Deno.test("census - the reported inversion is not raised once the sets agree (Issue #753)", () => {
-  // The filed case, in shape: a human holds two unmilestoned issues, which
-  // occupies the default-branch stream for the scan, and three other
-  // unmilestoned `work-on` issues are refused `milestone-occupied` while the
-  // census calls them claimable.
+  // The filed case, in shape: a sibling Vibe Coder holds two unmilestoned
+  // issues, which occupies the default-branch stream for the selector, and
+  // three other unmilestoned `work-on` issues are refused
+  // `milestone-occupied` while the census calls them claimable.
   const issues = [
-    issue(750, ["bug"], ["nleck"]),
-    issue(751, ["bug"], ["nleck"]),
+    issue(750, ["bug"], ["sibling-bot"]),
+    issue(751, ["bug"], ["sibling-bot"]),
     issue(743, ["work-on"]),
     issue(745, ["work-on"]),
     issue(747, ["work-on"]),
@@ -1465,8 +1471,8 @@ Deno.test("census - the reported inversion is not raised once the sets agree (Is
     workerUser: "vibe-bot",
     repos: [repoInput({ repo: "stSoftwareAU/VibeCoder", issues })],
   });
-  // Without the scan's set, the human's assignments are invisible and all
-  // three read as claimable — `work_on=3`, the alert as filed.
+  // Without the selector's set, the sibling's assignments are invisible and
+  // all three read as claimable — `work_on=3`, the alert as filed.
   assertEquals(before.perRepo[0]!.unblocked.workOn, 3);
   assertEquals(before.perRepo[0]!.streamOccupied, 0);
   assert(before.perRepo[0]!.inversionSignal);
@@ -1474,7 +1480,7 @@ Deno.test("census - the reported inversion is not raised once the sets agree (Is
   const after = buildIdleDecisionCensus({
     decisionPoint: "filing",
     workerUser: "vibe-bot",
-    allowedAuthors: ["nleck"],
+    pushCapableAuthors: ["sibling-bot"],
     repos: [repoInput({ repo: "stSoftwareAU/VibeCoder", issues })],
   });
   assertEquals(after.perRepo[0]!.unblocked.workOn, 0);
@@ -1483,15 +1489,14 @@ Deno.test("census - the reported inversion is not raised once the sets agree (Is
   assertEquals(after.escalationRepos, []);
 });
 
-Deno.test("census - an account the scan does not honour still does not occupy (Issue #753)", () => {
-  // The narrow set existed so a sibling host's claim could not silence this
-  // host's signal. Honouring exactly the configured set keeps that: an
-  // account nobody trusts occupies nothing here, because it blocks nothing
-  // in the scan either.
+Deno.test("census - an account the selector does not honour still does not occupy (Issue #753)", () => {
+  // Honouring exactly the configured fleet set: an account the fleet does
+  // not operate occupies nothing here, because it blocks nothing in the
+  // selector either.
   const census = buildIdleDecisionCensus({
     decisionPoint: "filing",
     workerUser: "vibe-bot",
-    allowedAuthors: ["nleck"],
+    pushCapableAuthors: ["sibling-bot"],
     repos: [
       repoInput({
         repo: "org/neat",
@@ -1508,16 +1513,16 @@ Deno.test("census - an account the scan does not honour still does not occupy (I
   assert(entry.inversionSignal);
 });
 
-Deno.test("census - the account set is matched case-insensitively, as the scan matches it (Issue #753)", () => {
+Deno.test("census - the account set is matched case-insensitively, as the selector matches it (Issue #753)", () => {
   const census = buildIdleDecisionCensus({
     decisionPoint: "filing",
     workerUser: "vibe-bot",
-    allowedAuthors: ["NLeck"],
+    pushCapableAuthors: ["Sibling-Bot"],
     repos: [
       repoInput({
         repo: "org/neat",
         issues: [
-          issue(60, ["bug"], ["nleck"], "v2"),
+          issue(60, ["bug"], ["sibling-bot"], "v2"),
           issue(61, ["work-on"], [], "v2"),
         ],
       }),
@@ -1526,4 +1531,32 @@ Deno.test("census - the account set is matched case-insensitively, as the scan m
   const entry = census.perRepo[0]!;
   assertEquals(entry.streamOccupied, 1);
   assertEquals(entry.unblocked.workOn, 0);
+});
+
+Deno.test("census - a human's assignment occupies nothing (Issue #1071)", () => {
+  // The other direction, and the reason #1071 exists. `human-dev` is a
+  // trusted human in `allowed_authors` and not an account the fleet
+  // operates, so the selector claims the two siblings and the census must
+  // agree. Handing the permission list to `pushCapableAuthors` would report
+  // `streamOccupied=2` here and explain a starved fleet with a reason the
+  // selector never applied.
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    pushCapableAuthors: ["sibling-bot"],
+    repos: [
+      repoInput({
+        repo: "org/neat",
+        issues: [
+          issue(70, ["work-on"], ["human-dev"], "v2"),
+          issue(71, ["work-on"], [], "v2"),
+          issue(72, ["work-on"], [], "v2"),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.streamOccupied, 0);
+  assertEquals(entry.unblocked.workOn, 2);
+  assert(entry.inversionSignal);
 });

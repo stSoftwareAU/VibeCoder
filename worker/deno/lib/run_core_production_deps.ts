@@ -375,6 +375,22 @@ export interface ProductionDepsOptions {
    * the environment every parallel worker shares.
    */
   env?: EnvLookup;
+  /**
+   * Override the `gh` runner the **idle-detect audit** uses — its issue
+   * probe and its two PR probes (Issue #1050).
+   *
+   * Production leaves this unset and gets {@link runGhCommand}. Tests inject
+   * a stub because the thing worth testing here is the *wiring*: which
+   * account set this factory hands `auditClaimableState`. That question was
+   * unanswerable by any test before #1050, and the answer being wrong is
+   * what suppressed idle-task filing across the whole fleet for ten days —
+   * a fix that only the production factory could activate, with nothing
+   * asserting the factory activated it.
+   *
+   * Scoped deliberately to the audit: it is one probe, and a factory-wide
+   * `gh` override would be a much larger surface for a much smaller reason.
+   */
+  idleDetectGhCommandFn?: (args: string[]) => Promise<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -855,7 +871,12 @@ export async function createProductionRunCoreDeps(
    * treat a rejection as "no merged-PR data" and fall back to the pre-GRQ#4419
    * over-count rather than reporting a repo as having nothing to do.
    */
-  const fetchMergedPRsForCensus = (repo: string) =>
+  const fetchMergedPRsForCensus = (
+    repo: string,
+    // Issue #1050: the audit's probes route through the same injectable
+    // runner its issue probe does, so a wiring test costs no network call.
+    ghFn: (args: string[]) => Promise<string> = runGhCommand,
+  ) =>
     fetchRecentlyClosedPRsForFleet(
       repo,
       resolveFleetPrAuthorSet({
@@ -865,6 +886,7 @@ export async function createProductionRunCoreDeps(
       }),
       config.closedPrCooldownSeconds ?? 3600,
       issueCache,
+      ghFn,
     );
 
   /**
@@ -3384,6 +3406,13 @@ export async function createProductionRunCoreDeps(
           repos,
           log: (line) => logger.info(line),
           fileFn: async () => {
+            // Issue #1050: the filer's fleet-global gate asks "can any of
+            // this be started right now?", and work this run is holding
+            // back — the persisted retry cooldown plus its processed-issue
+            // registry — cannot be. Resolved from the one hold set the
+            // scan, the census and the audit already share, so all four
+            // instruments agree.
+            const runLocalHold = await loadRunLocalHolds();
             await maybeFileIdleTaskCommand.execute(
               {
                 "monitored-repos": repos.join(","),
@@ -3403,7 +3432,10 @@ export async function createProductionRunCoreDeps(
                 // the worker log — making "filer never fires" indistinguishable
                 // from "filer fired but silently failed". Same root cause
                 // and same fix shape as PR #2016 for the fleet heartbeat.
-                __testDeps: { log: (line: string) => logger.info(line) },
+                __testDeps: {
+                  log: (line: string) => logger.info(line),
+                  runLocalHoldFn: runLocalHold,
+                },
               },
               config,
             );
@@ -3429,6 +3461,9 @@ export async function createProductionRunCoreDeps(
       const { auditClaimableState } = await import(
         "./idle_detect_diagnostics.ts"
       );
+      // Issue #1050: production leaves the override unset and gets the real
+      // runner; a wiring test hands in a stub for all three probes.
+      const auditGh = options.idleDetectGhCommandFn ?? runGhCommand;
       try {
         // Issue #655: the same holds the claim scan and the census read, so
         // the audit stops counting work this run is itself withholding — the
@@ -3439,19 +3474,32 @@ export async function createProductionRunCoreDeps(
         const result = await auditClaimableState({
           repos,
           workerUser: githubUser,
+          // Issue #1050: the scan calls a work stream occupied when an
+          // account the fleet operates holds an issue in it, so the audit
+          // must be asked the same question over the same set — without it
+          // one sibling assignment left a whole repository's backlog
+          // reading as claimable here and as `milestone-occupied` to the
+          // scan, and `claimable_total` suppressed the filer fleet-wide for
+          // ten days. Issue #1064: the push-capable set, resolved and kept
+          // live by `applyTrustSnapshot` — never `allowedAuthors`, which is
+          // a permission list holding humans whose assignments must never
+          // park a stream.
+          pushCapableAuthors: maintenanceAuthors,
           tick,
           scanFoundClaimable,
+          ghCommandFn: auditGh,
           // Issue #4223: read each repo's open PRs through the same shared
           // `prs_open_all` cache the census uses (Issue #3526), so the audit
           // stops counting PR-blocked work as claimable. Whichever of the two
           // runs first populates the cache, so the gate adds no API call.
           // `auditClaimableState` catches a rejection itself and falls back to
           // no PR blocking.
-          openPRsFn: (repo: string) => fetchAllOpenPRs(repo, issueCache),
+          openPRsFn: (repo: string) =>
+            fetchAllOpenPRs(repo, issueCache, 50, auditGh),
           // GRQ#4419: an issue named by a merged fleet PR is refused
           // permanently by the scan, so counting it as claimable kept the
           // `mis_classification` ALERT firing against a scan that was right.
-          mergedPRsFn: fetchMergedPRsForCensus,
+          mergedPRsFn: (repo: string) => fetchMergedPRsForCensus(repo, auditGh),
           // Issue #655: this run's persisted retry cooldown and its
           // processed-issue registry, resolved above from the one hold set
           // `findNextIssue` filters its candidates against.
@@ -3590,12 +3638,20 @@ export async function createProductionRunCoreDeps(
         const census = buildIdleDecisionCensus({
           decisionPoint,
           workerUser: githubUser,
-          // Issue #753: the scan refuses a milestone held by any trusted
-          // account, not just this worker's own. Without the same set here,
-          // a human taking three milestone issues reads as three claimable
-          // issues the scan keeps refusing — and files an inversion issue
-          // about work that is simply in flight.
-          allowedAuthors: config.allowedAuthors ?? [],
+          // Issue #753: the selector refuses a milestone held by another
+          // fleet account, not just this worker's own. Without the same set
+          // here, a sibling taking three milestone issues reads as three
+          // claimable issues the scan keeps refusing — and files an
+          // inversion issue about work that is simply in flight.
+          //
+          // Issue #1071: the same set the selector uses, which since Issue
+          // #1064 is the fleet identity resolved by
+          // `resolveFleetMaintenanceAuthorSet` and kept live by
+          // `applyTrustSnapshot`. Never `config.allowedAuthors` — that is a
+          // permission list holding humans, and there is no scheduling
+          // between humans and Vibe Coders, so a human's assignment must not
+          // read as an occupied stream here either.
+          pushCapableAuthors: maintenanceAuthors,
           repos: perRepo,
           // Issue #460: a repo the scan claimed from this cycle was served,
           // not refused — whatever the run's outcome. The census withdraws
