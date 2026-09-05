@@ -573,6 +573,30 @@ Four boundaries keep that safe on a machine nobody is watching:
 escalation; the runtime is driven through an injected seam, so the tests never
 start a builder VM.
 
+### The log says which reason, not which reason it was not
+
+The classification alone is not diagnosable. GRQ-23 wrote
+`build failed for a reason the builder heal does not cover` seven times in four
+hours while the build's own output — the one thing that named the reason — was
+a `mktemp` file the launcher reaped on its way out (Issue #1019). An operator
+could not tell a genuine build defect from the host-egress stall above without
+reproducing the build by hand.
+
+So both launchers now record the failing step's own words, on the not-healable
+branch and on the `could not heal the builder` branch alike:
+
+| What is recorded                       | Where                                                     |
+| -------------------------------------- | --------------------------------------------------------- |
+| A bounded excerpt (last 40 lines)      | `~/logs/run_core.log`, under the decision line             |
+| The full output                        | `~/logs/build-failures/<UTC stamp>-<build\|heal>-output-<pid>.log`, named in that line |
+| The heal's own output                  | The same, and appended to the evidence the `image_build` escalation quotes |
+
+Retention is count-based, like the launch logs `loop.sh` keeps: the newest 20
+files stay and the rest go, so a host that fails several times a day cannot
+turn its log directory into an unbounded archive. The UTC stamp leads each
+filename, so name order is chronological order and the newest is never the one
+dropped.
+
 ## A host whose containers cannot reach the network parks itself
 
 Pruning and the builder heal both assume the build can still talk to the

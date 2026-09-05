@@ -36,6 +36,8 @@ import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import {
   buildCount,
   builderHealed,
+  buildFailureLogDir,
+  buildFailureLogs,
   declareContainerExtension,
   denoInvocationOrder,
   type Harness,
@@ -537,6 +539,110 @@ Deno.test({
       assertEquals(await buildCount(harness), 1);
       assertEquals(await builderHealed(harness), false);
       assertEquals(await recorded(harness, "run"), null);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - a not-healable build failure records the build's own words (Issue #1019)",
+  ignore,
+  fn: async () => {
+    const failure = "E: Unable to locate package libgrq23-dev";
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "1",
+      STUB_BUILD_EXIT: "1",
+      STUB_BUILD_STDERR: failure,
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assert(outcome.code !== 0, "an unhealable build failure must still fail");
+
+      const log = await runCoreLog(harness);
+      assertStringIncludes(log, "does not cover");
+      assertStringIncludes(log, failure);
+
+      const kept = await buildFailureLogs(harness);
+      assertEquals(kept.length, 1, `preserved logs: ${kept.join(", ")}`);
+      const preserved = `${buildFailureLogDir(harness)}/${kept[0]}`;
+      assertStringIncludes(log, preserved);
+      assertStringIncludes(await Deno.readTextFile(preserved), failure);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name: "run.ps1 - a heal that fails records the heal's own output (Issue #1019)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "1",
+      STUB_BUILD_EXIT: "1",
+      // Healable, so the heal is attempted...
+      STUB_BUILD_STDERR:
+        'Error: resourceExhausted: "failed to solve: write /out.tar: no ' +
+        'space left on device"',
+      // ...and the step that would leave a usable builder behind fails.
+      STUB_BUILDER_HEAL_EXIT: "1",
+      STUB_BUILDER_HEAL_STDERR: "Error: the builder VM is read-only",
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assert(outcome.code !== 0, "a build that never succeeded must fail");
+      assertEquals(await buildCount(harness), 1);
+
+      const log = await runCoreLog(harness);
+      assertStringIncludes(log, "could not heal");
+      assertStringIncludes(log, "the builder VM is read-only");
+
+      const kept = await buildFailureLogs(harness);
+      const healLog = kept.find((name) => name.includes("heal-output"));
+      assert(healLog, `no preserved heal output: ${kept.join(", ")}`);
+      assertStringIncludes(log, `${buildFailureLogDir(harness)}/${healLog}`);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - preserved build logs are bounded, and the newest is never the one dropped (Issue #1019)",
+  ignore,
+  fn: async () => {
+    const failure = "E: Unable to locate package libgrq23-dev";
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "1",
+      STUB_BUILD_EXIT: "1",
+      STUB_BUILD_STDERR: failure,
+    });
+    try {
+      const directory = buildFailureLogDir(harness);
+      await Deno.mkdir(directory, { recursive: true });
+      const seeded: string[] = [];
+      for (let i = 0; i < 25; i++) {
+        const name = `20200101T0000${String(i).padStart(2, "0")}Z-build-output-1.log`;
+        await Deno.writeTextFile(`${directory}/${name}`, "an older failure\n");
+        seeded.push(name);
+      }
+
+      const outcome = await runLauncher(harness);
+      assert(outcome.code !== 0, "the build must still fail");
+
+      const kept = await buildFailureLogs(harness);
+      assert(
+        kept.length > 0 && kept.length <= 20,
+        `retention left ${kept.length} logs: ${kept.join(", ")}`,
+      );
+      assertEquals(kept.includes(seeded[0]!), false);
+      assertStringIncludes(
+        await Deno.readTextFile(`${directory}/${kept[kept.length - 1]}`),
+        failure,
+      );
     } finally {
       await harness.cleanup();
     }
