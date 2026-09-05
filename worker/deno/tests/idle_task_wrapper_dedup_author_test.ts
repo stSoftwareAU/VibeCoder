@@ -49,6 +49,7 @@ import { createOrphanDepsTemplate } from "../lib/idle_task_templates/orphan_deps
 import { createPrivateRepoReferenceTemplate } from "../lib/idle_task_templates/private_repo_reference_template.ts";
 import { createRetroTemplate } from "../lib/idle_task_templates/retro_template.ts";
 import { createSupplyChainReadinessTemplate } from "../lib/idle_task_templates/supply_chain_readiness_template.ts";
+import { createSecurityScanTemplate } from "../lib/idle_task_templates/security_scan_template.ts";
 import { createTestAuditTemplate } from "../lib/idle_task_templates/test_audit_template.ts";
 import { createWorkflowAnnotationScanTemplate } from "../lib/idle_task_templates/workflow_annotation_scan_template.ts";
 
@@ -140,6 +141,25 @@ const FACTORIES = new Map<string, Factory>([
   [
     "retro",
     (gh, d) => createRetroTemplate({ ghCommandFn: gh, dedupAuthors: d }),
+  ],
+  [
+    // Fixed by #1100 rather than by the shared helper, so its deps spread
+    // `AlertDedupAuthorOptions` directly instead of nesting them under
+    // `dedupAuthors`. Covered here all the same — the suite asks what the
+    // template does, not which change fixed it.
+    "security-scan",
+    (gh, d) =>
+      createSecurityScanTemplate({
+        ghCommandFn: gh,
+        // This suite exercises `shouldFile` only, which never reaches the
+        // scanner. Throwing rather than stubbing a result means a future
+        // change that does reach it fails loudly instead of passing on a
+        // fabricated scan.
+        runSecurityScanFn: () => {
+          throw new Error("the wrapper dedup must not run the scanner");
+        },
+        ...d,
+      }),
   ],
   [
     "supply-chain-readiness",
