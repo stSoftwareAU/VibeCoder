@@ -714,11 +714,11 @@ export interface GitHubClient {
  *
  * One entry names a registered {@link "./lib/ci_log_provider.ts" CiLogProvider}
  * by id and carries that provider's options. GitHub Actions is the built-in
- * default and needs no entry; external CI systems (Jenkins first) are
- * configured here.
+ * default and needs no entry; a private extension's provider (Issue #986,
+ * `docs/PRIVATE-EXTENSIONS.md`) is configured here.
  */
 export interface CiProviderConfig {
-  /** Registered provider id, e.g. `jenkins` or `github-actions`. */
+  /** Registered provider id, e.g. `github-actions`. */
   provider: string;
   /**
    * Optional regex matching the failing PR check this provider handles.
@@ -726,44 +726,12 @@ export interface CiProviderConfig {
    */
   checkNamePattern?: string;
   /**
-   * Jenkins job path naming the folders and job in order, e.g.
-   * `example-org/private-repo-58/Develop`. `buildJenkinsUrl()` inserts the
-   * `/job/` separators, so the expanded form
-   * (`example-org/private-repo-26/ST-pipeline/job/Develop`) is accepted too.
-   * Required when `provider` is `jenkins`; ignored by other providers.
-   *
-   * Used as the fallback: when the failing check's `target_url` names a
-   * job in this same folder (as a Jenkins PR check does), that job wins,
-   * because pairing a URL build number with this configured path would
-   * fetch a real but unrelated build.
+   * Optional provider-specific job identifier, passed through verbatim.
+   * Core attaches no meaning to it; the provider that declares the id
+   * defines its format and whether it is required.
    */
   jobPath?: string;
 }
-
-/**
- * Action the worker should take when a PR build fails (Issue #1890).
- *
- * @deprecated Superseded by {@link CiProviderConfig} / `ciProviders`
- * (Issue #3579). Still parsed and converted into an equivalent
- * `ciProviders` entry, so existing `.config.json` files keep working
- * unchanged; new configuration should use `ciProviders`.
- */
-export type PrFailureAction = {
-  /** Discriminator. Currently the only supported variant. */
-  type: "fetch-jenkins-log";
-  /**
-   * Jenkins job path, e.g. `example-org/private-repo-58/Develop` (the
-   * expanded `example-org/private-repo-26/ST-pipeline/job/Develop` form is accepted
-   * too). Forwarded to the Jenkins log fetcher when this action fires.
-   */
-  jobPath: string;
-  /**
-   * Optional regex matching the failing PR check whose log should be
-   * fetched. Defaults to a case-insensitive match on `jenkins` when
-   * omitted.
-   */
-  checkNamePattern?: string;
-};
 
 /**
  * Repository configuration for per-repo settings.
@@ -840,15 +808,6 @@ export interface RepoConfig {
    */
   ciProviders?: CiProviderConfig[];
   /**
-   * Actions the worker should take when a PR build fails (Issue #1890).
-   *
-   * @deprecated Use `ciProviders` (Issue #3579). Existing entries are
-   * still validated via `parsePrFailureActions()` in `repo_config.ts`
-   * and converted into equivalent `ciProviders` entries, so no repo's
-   * `.config.json` breaks on upgrade.
-   */
-  prFailureActions?: PrFailureAction[];
-  /**
    * Mandatory pre-flight commands run in the repo working tree immediately
    * before the worker's automated commit (Issue #3577). Optional — omit or
    * use an empty array to disable the gate, in which case the repo runs
@@ -864,7 +823,7 @@ export interface RepoConfig {
    *
    * Stored untyped because it arrives from `.config.json`; validated by
    * `parsePreFlightCommands()` in `repo_config.ts` (rejects a malformed
-   * entry loudly at config load, following the `prFailureActions`
+   * entry loudly at config load, following the `ciProviders`
    * precedent).
    */
   preFlight?: string[];
@@ -872,21 +831,14 @@ export interface RepoConfig {
    * Issue labels that mark an issue as a CI-failure report (Issue #3581),
    * e.g. `["develop-build-failure"]`. Opt-in; omit or use an empty array to
    * disable. When an issue carries one of these labels the worker parses the
-   * build reference out of the issue body, fetches the full console log, and
-   * routes to the CI diagnosis-and-fix prompt instead of the generic
-   * implementation prompt.
+   * build reference out of the issue body, fetches the full console log
+   * through the registered CI log provider, and routes to the CI
+   * diagnosis-and-fix prompt instead of the generic implementation prompt.
    *
    * Stored untyped-ish because it arrives from `.config.json`; validated by
    * `parseCiFailureLabels()` in `repo_config.ts`.
    */
   ciFailureLabels?: string[];
-  /**
-   * Fallback Jenkins job path (e.g. `Migration/job/Develop`) used when a
-   * CI-failure issue body carries a build number but no `Build URL`
-   * (Issue #3581). Without it, a build-number-only body cannot be fetched
-   * and the run is told so explicitly.
-   */
-  ciFailureJobPath?: string;
   /**
    * Per-repo base Claude model tier (Issue #2625). Alias (e.g. `"fable"`,
    * `"sonnet"`, `"opus"`) or a full model id. Overrides the global base model

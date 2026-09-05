@@ -52,8 +52,8 @@ import {
 /**
  * Environment variables the `claude` child must never inherit.
  *
- * The worker-only secrets (the GitHub App private-key material, the Jenkins
- * API credentials and the ImgBB key — see
+ * The worker-only secrets (the GitHub App private-key material, the external
+ * CI API credentials and the ImgBB key — see
  * {@link WORKER_ONLY_SECRET_ENV_VARS}), plus every *other* vendor's agent
  * credential — OpenAI's (Issue #4106), Google's (Issue #4107) and DeepSeek's
  * (Issue #412). The cross-vendor names are denied explicitly rather than left

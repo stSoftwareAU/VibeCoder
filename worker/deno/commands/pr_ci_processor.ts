@@ -74,7 +74,7 @@ export const prCiProcessorCommand: Command = {
       const checkName = String(args["check-name"] ?? "");
       const encodedAnnotations = String(args["encoded-annotations"] ?? "");
       // Optional check details URL (Issue #1893) used by the PR failure
-      // action dispatcher to locate the upstream Jenkins build. Empty
+      // action dispatcher to locate the upstream CI build. Empty
       // string sentinel becomes `undefined` so the dispatcher reports a
       // clean "no target URL" error rather than treating it as a value.
       const targetUrlArg = String(args["target-url"] ?? "").trim();

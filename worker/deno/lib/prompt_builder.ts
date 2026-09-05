@@ -1809,7 +1809,7 @@ export async function buildCiFixPrompt(
   );
 
   // The PR-failure-action excerpt embeds attacker-influenceable CI
-  // console-log content (e.g. a Jenkins build-log tail), so it must receive
+  // console-log content (e.g. a CI build-log tail), so it must receive
   // the same control every other untrusted string in this module gets
   // (Issue #3132): sanitise delimiter-like patterns and wrap it in the
   // per-run randomised untrusted boundary so `buildBoundaryIntegrityInstruction`

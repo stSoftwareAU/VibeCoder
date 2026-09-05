@@ -216,7 +216,6 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   pre_flight: "preFlight",
   // Issue-mode CI-failure log auto-fetch (Issue #3581).
   ci_failure_labels: "ciFailureLabels",
-  ci_failure_job_path: "ciFailureJobPath",
   // Per-repo auto-fix attempt cap (Issue #3582).
   max_auto_fix_attempts: "maxAutoFixAttempts",
   // Per-repo blocking-PR stall threshold (Issue #4025).

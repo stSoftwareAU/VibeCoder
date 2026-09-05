@@ -19,6 +19,7 @@
  */
 
 import type {
+  CiProviderConfig,
   CustomLabelPromptMapping,
   Logger,
   RepoConfig,
@@ -27,10 +28,15 @@ import type {
 import {
   buildQualityInstructions,
   getCiFailureLabels,
+  getCiProviders,
   getCustomInstructions,
   getRepoConfig,
 } from "./repo_config.ts";
-import { buildCiFailureContext, isCiFailureIssue } from "./ci_failure_issue.ts";
+import {
+  type BuildCiFailureContextOptions,
+  buildCiFailureContext,
+  isCiFailureIssue,
+} from "./ci_failure_issue.ts";
 import { generateBoundaryId } from "./prompt_delimiter.ts";
 import { resolveVerbosity } from "./verbosity.ts";
 import {
@@ -289,7 +295,7 @@ export interface ExecuteClaudePhaseDeps {
    * real implementation is used when omitted.
    */
   buildCiFailureContext?: (
-    options: { issueBody: string; jobPath?: string; boundaryId: string },
+    options: BuildCiFailureContextOptions,
   ) => Promise<string>;
   /** Validate repository state before Claude invocation. */
   validateRepoState: (
@@ -803,10 +809,23 @@ export async function runExecuteClaudePhase(
     );
     const fetchContext = deps.buildCiFailureContext ?? buildCiFailureContext;
     ciFailureBoundaryId = generateBoundaryId();
+    // Malformed provider config must not sink the run — the fetch then
+    // reports its own failure block rather than throwing here.
+    let ciProviders: CiProviderConfig[] = [];
+    try {
+      ciProviders = getCiProviders(repoConfigs, repo);
+    } catch (err: unknown) {
+      deps.log(
+        `Ignoring malformed ciProviders for ${repo}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
     ciFailureContext = await fetchContext({
+      repo,
       issueBody,
-      jobPath: getRepoConfig(repoConfigs, repo, "ciFailureJobPath") ||
-        undefined,
+      providers: ciProviders,
+      ghFn: (args: string[]) => runGhOrThrow(args),
       boundaryId: ciFailureBoundaryId,
     });
   }

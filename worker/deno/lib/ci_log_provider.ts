@@ -2,9 +2,11 @@
  * CI log provider extension point (Issue #3579).
  *
  * GitHub Actions is the built-in default provider every repo gets with
- * no configuration. External CI/CD systems plug in through this
- * interface — Jenkins is simply the first one — so adding a third
- * provider never touches the dispatcher.
+ * no configuration, and it is the only one core registers — it is the CI
+ * this project itself runs on. A provider for the CI system one
+ * deployment happens to use is a private extension and belongs in that
+ * deployment's own repository (Issue #986); see `docs/PRIVATE-EXTENSIONS.md`.
+ * Core owns the extension point, never what is plugged into it.
  *
  * A provider answers two questions: `matches()` — can I resolve a log
  * for this failing check? — and `fetchLog()` — here is a bounded
@@ -15,13 +17,12 @@
  */
 
 import type { CiProviderConfig, Result } from "../types.ts";
-import type { FetchFn } from "./jenkins_log_fetcher.ts";
+import type { FetchFn } from "./bounded_fetch.ts";
 import type {
   fetchGithubActionsLogExcerpt,
   GhCommandFn,
 } from "./github_actions_log_fetcher.ts";
 import { githubActionsCiLogProvider } from "./ci_provider_github_actions.ts";
-import { jenkinsCiLogProvider } from "./ci_provider_jenkins.ts";
 
 /** The failing check a provider is asked to resolve a log for. */
 export interface CiFailureContext {
@@ -33,11 +34,17 @@ export interface CiFailureContext {
   checkName: string;
   /** GitHub check run id of the failing check, when known. */
   checkRunId?: string;
-  /** Check `target_url` / `details_url`, when known. */
+  /**
+   * Check `target_url` / `details_url`, when known.
+   *
+   * In issue mode this is parsed out of an attacker-influenceable issue
+   * body, so a provider MUST validate it before dereferencing it — read
+   * ids out of it rather than fetching the origin it names.
+   */
   targetUrl?: string;
   /** Resolved per-repo configuration entry for the provider. */
   providerConfig?: CiProviderConfig;
-  /** Injection seam: HTTP fetch used by the Jenkins provider. */
+  /** Injection seam: HTTP fetch, for providers that call an API directly. */
   fetchFn?: FetchFn;
   /** Injection seam: authenticated `gh` runner used by the Actions provider. */
   ghFn?: GhCommandFn;
@@ -61,7 +68,7 @@ export interface CiLogExcerpt {
 
 /** A pluggable source of CI logs for a failing check. */
 export interface CiLogProvider {
-  /** Stable id, e.g. `github-actions` or `jenkins`. */
+  /** Stable id, e.g. `github-actions`. */
   readonly id: string;
   /** Can this provider resolve a log for this failing check? */
   matches(ctx: CiFailureContext): boolean;
@@ -177,8 +184,9 @@ export function resolveCiLogProvider(ctx: CiFailureContext): CiLogProvider {
   return githubActionsCiLogProvider;
 }
 
-// Built-in providers. Jenkins is registered ahead of GitHub Actions so a
-// repo that configures Jenkins wins over the default; GitHub Actions is
-// also the fall-back returned when nothing matches.
-registerCiLogProvider(jenkinsCiLogProvider);
+// The one built-in provider: GitHub Actions, the CI this project itself
+// runs on. Nothing vendor-specific to a single deployment is registered
+// here — that is a private extension (Issue #986). GitHub Actions is also
+// the fall-back `resolveCiLogProvider` returns when nothing matches, so a
+// registered extension always wins over it.
 registerCiLogProvider(githubActionsCiLogProvider);

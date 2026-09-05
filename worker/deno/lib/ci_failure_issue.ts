@@ -1,33 +1,41 @@
 /**
- * Issue-mode CI-failure log auto-fetch (Issue #3581).
+ * Issue-mode CI-failure log auto-fetch (Issues #3581, #986).
  *
- * `develop-build-watch.yml`-style workflows open a GitHub issue when the
- * Jenkins pipeline fails, carrying only a small pre-summary of the console
- * log. The normal issue flow had no CI-failure awareness, so the worker
- * attempted a fix from whatever window the summariser happened to capture.
+ * A build-watch workflow opens a GitHub issue when the pipeline fails,
+ * carrying only a small pre-summary of the console log. The normal issue
+ * flow had no CI-failure awareness, so the worker attempted a fix from
+ * whatever window the summariser happened to capture.
  *
  * This module closes that gap: when an issue carries one of the repo's
  * configured CI-failure labels, the build reference is parsed out of the
  * issue body and the **full** console log is fetched for that build before
  * the prompt is built.
  *
- * The issue body is untrusted input. A `Build URL` is honoured only when its
- * origin (and base path prefix) match the configured `JENKINS_URL`; anything
- * else is rejected rather than fetched. When the log cannot be fetched for
- * any reason the run is told so explicitly — a fix is never attempted on no
- * evidence.
+ * The fetch runs through the {@link "./ci_log_provider.ts" CiLogProvider}
+ * registry, exactly as the PR-mode path does, so this module names no CI
+ * vendor. Core registers only GitHub Actions; a deployment's own CI system
+ * is a private extension (`docs/PRIVATE-EXTENSIONS.md`).
+ *
+ * The issue body is untrusted input, so the build reference it yields is
+ * handed to the provider as an untrusted `targetUrl` — the provider reads
+ * ids out of it and fetches through its own authenticated client rather
+ * than dereferencing the origin the body named. When the log cannot be
+ * fetched for any reason the run is told so explicitly — a fix is never
+ * attempted on no evidence.
  *
  * Uses Australian English throughout (behaviour, organisation, colour).
  */
 
-import type { Result } from "../types.ts";
-import { getEnvOrDefault } from "./config.ts";
+import type { CiProviderConfig, Result } from "../types.ts";
+import type { FetchFn } from "./bounded_fetch.ts";
+import type {
+  fetchGithubActionsLogExcerpt,
+  GhCommandFn,
+} from "./github_actions_log_fetcher.ts";
 import {
-  type FetchFn,
-  fetchJenkinsBuildLog,
-  fetchJenkinsBuildStatus,
-  type JenkinsBuild,
-} from "./jenkins_log_fetcher.ts";
+  type CiFailureContext,
+  resolveCiLogProvider,
+} from "./ci_log_provider.ts";
 import { truncateLogTail } from "./log_tail.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import {
@@ -36,7 +44,7 @@ import {
   sanitiseDelimiterPatterns,
 } from "./prompt_delimiter.ts";
 
-/** Bytes of console log requested from Jenkins (256 KiB). */
+/** Bytes of console log requested from the provider (256 KiB). */
 export const CI_FAILURE_LOG_FETCH_BYTES = 256 * 1024;
 
 /** Bytes of console log rendered into the prompt (24 KiB). */
@@ -52,19 +60,30 @@ export const CI_FAILURE_SIGNAL_LINES = 40;
  */
 const MAX_BODY_SCAN_CHARS = 64 * 1024;
 
+/** The name reported for the synthetic check a CI-failure issue stands for. */
+export const CI_FAILURE_ISSUE_CHECK_NAME = "ci-failure-issue";
+
 /** A build referenced by a CI-failure issue body. */
 export interface CiFailureBuildReference {
-  /** Jenkins build number. */
-  buildNumber: number;
+  /** Build number, when the body carried one. */
+  buildNumber?: number;
   /**
-   * Job path relative to `${JENKINS_URL}/job/` (e.g. `Migration/job/Develop`).
-   * Present only when parsed from an allowed `Build URL`.
+   * The `Build URL` as written in the issue body — untrusted, and never
+   * dereferenced by this module. Providers read ids out of it.
    */
-  jobPath?: string;
-  /** The verified `Build URL`, when one was present. */
   buildUrl?: string;
   /** Which field the reference came from — the URL is authoritative. */
   source: "url" | "build-number";
+}
+
+/** Build status as reported by the provider that fetched the log. */
+export interface CiBuildStatus {
+  /** Build or run identifier within the provider. */
+  number: number | string;
+  /** Provider-reported build result, e.g. `FAILURE`. */
+  result: string;
+  /** URL a human can open to see the full build. */
+  url?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,40 +122,51 @@ const BUILD_URL_PATTERN = /\*\*Build URL:\*\*\s*[<`]?\s*(\S+?)\s*[>`]?\s*$/im;
 /** Matches the workflow's `- **Build number:** `4347`` header line. */
 const BUILD_NUMBER_PATTERN = /\*\*Build number:\*\*\s*`?(\d{1,9})`?/i;
 
-/** Options for {@link parseCiFailureBuildReference}. */
-export interface ParseBuildReferenceOptions {
-  /** Configured Jenkins base URL — the sole allowed origin. */
-  jenkinsBaseUrl: string;
-}
-
 /**
  * Parse the build reference out of a CI-failure issue body.
  *
- * The `Build URL` is authoritative because it carries the job path too; the
- * `Build number` is the fallback. A `Build URL` that does not match the
- * configured `JENKINS_URL` origin is rejected outright — the body is
- * attacker-influenceable and a mismatched host signals tampering, so the
- * build number is *not* silently used instead.
+ * The `Build URL` is authoritative because it also identifies the build
+ * within the provider; the `Build number` is the fallback.
+ *
+ * The body is attacker-influenceable, so the only check made here is the
+ * one core can make without knowing the CI vendor: the URL must parse and
+ * name an http(s) scheme. It is never dereferenced by this module — it is
+ * handed to the resolved provider, which reads ids out of it and fetches
+ * through its own authenticated client.
  */
 export function parseCiFailureBuildReference(
   issueBody: string,
-  options: ParseBuildReferenceOptions,
 ): Result<CiFailureBuildReference, string> {
-  const base = options.jenkinsBaseUrl.trim();
-  if (base === "") {
-    return {
-      ok: false,
-      error: "JENKINS_URL is not configured, so no build URL can be trusted",
-    };
-  }
-
   const body = issueBody.slice(0, MAX_BODY_SCAN_CHARS);
 
   const urlMatch = BUILD_URL_PATTERN.exec(body);
   if (urlMatch) {
-    const allowed = verifyJenkinsUrl(urlMatch[1]!, base);
-    if (!allowed.ok) return allowed;
-    return parseReferenceFromUrl(allowed.value, base);
+    const candidate = urlMatch[1]!;
+    let url: URL;
+    try {
+      url = new URL(candidate);
+    } catch {
+      return {
+        ok: false,
+        error: `build URL '${candidate}' is not a valid URL`,
+      };
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return {
+        ok: false,
+        error: `build URL scheme '${url.protocol}' is not http(s)`,
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        buildUrl: url.href,
+        ...(lastNumericSegment(url.pathname) !== undefined
+          ? { buildNumber: lastNumericSegment(url.pathname) }
+          : {}),
+        source: "url",
+      },
+    };
   }
 
   const numberMatch = BUILD_NUMBER_PATTERN.exec(body);
@@ -159,128 +189,20 @@ export function parseCiFailureBuildReference(
 }
 
 /**
- * Verify that a body-derived URL is safe to fetch: it must parse, use
- * http(s), and share both origin and base path prefix with the configured
- * `JENKINS_URL`.
- */
-function verifyJenkinsUrl(
-  candidate: string,
-  jenkinsBaseUrl: string,
-): Result<URL, string> {
-  let url: URL;
-  let base: URL;
-  try {
-    url = new URL(candidate);
-  } catch {
-    return { ok: false, error: `build URL '${candidate}' is not a valid URL` };
-  }
-  try {
-    base = new URL(jenkinsBaseUrl);
-  } catch {
-    return {
-      ok: false,
-      error: `configured JENKINS_URL '${jenkinsBaseUrl}' is not a valid URL`,
-    };
-  }
-
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return {
-      ok: false,
-      error: `build URL scheme '${url.protocol}' is not http(s)`,
-    };
-  }
-  if (url.origin !== base.origin) {
-    return {
-      ok: false,
-      error:
-        `build URL origin '${url.origin}' does not match the configured JENKINS_URL origin '${base.origin}'`,
-    };
-  }
-
-  const basePath = trimSlashes(base.pathname);
-  if (basePath !== "") {
-    const candidatePath = trimSlashes(url.pathname);
-    if (
-      candidatePath !== basePath && !candidatePath.startsWith(`${basePath}/`)
-    ) {
-      return {
-        ok: false,
-        error:
-          `build URL path '${url.pathname}' is outside the configured JENKINS_URL path '${base.pathname}'`,
-      };
-    }
-  }
-
-  return { ok: true, value: url };
-}
-
-/** Strip leading and trailing slashes from a path. */
-function trimSlashes(path: string): string {
-  return path.replace(/^\/+/, "").replace(/\/+$/, "");
-}
-
-/**
- * Derive the job path and build number from a verified Jenkins build URL.
+ * The last purely numeric path segment of a build URL, when there is one.
  *
- * Jenkins renders nested jobs as `/job/Folder/job/Name/<build>/`, so the job
- * path is everything between the first `job` segment and the trailing numeric
- * build segment — exactly the form `jenkins_log_fetcher.ts` expects.
+ * Reported for logging and the prompt header only — the provider, not this
+ * function, decides which id it fetches by.
  */
-function parseReferenceFromUrl(
-  url: URL,
-  jenkinsBaseUrl: string,
-): Result<CiFailureBuildReference, string> {
-  const basePath = trimSlashes(new URL(jenkinsBaseUrl).pathname);
-  let relative = trimSlashes(url.pathname);
-  if (basePath !== "" && relative.startsWith(basePath)) {
-    relative = trimSlashes(relative.slice(basePath.length));
-  }
-
-  const segments = relative.split("/").filter((s) => s.length > 0);
-  const firstJob = segments.indexOf("job");
-  if (firstJob === -1 || firstJob === segments.length - 1) {
-    return {
-      ok: false,
-      error: `build URL '${url.href}' has no '/job/<name>/' path segment`,
-    };
-  }
-
-  // Last purely numeric segment is the build number.
-  let buildIndex = -1;
-  for (let i = segments.length - 1; i > firstJob; i--) {
-    if (/^\d+$/.test(segments[i]!)) {
-      buildIndex = i;
-      break;
+function lastNumericSegment(pathname: string): number | undefined {
+  const segments = pathname.split("/").filter((s) => s.length > 0);
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (/^\d{1,9}$/.test(segments[i]!)) {
+      const value = Number.parseInt(segments[i]!, 10);
+      if (Number.isSafeInteger(value) && value > 0) return value;
     }
   }
-  if (buildIndex === -1) {
-    return {
-      ok: false,
-      error:
-        `build URL '${url.href}' has no numeric build segment (a build alias such as 'lastBuild' is not accepted)`,
-    };
-  }
-
-  const jobPath = segments.slice(firstJob + 1, buildIndex).join("/");
-  if (jobPath === "") {
-    return {
-      ok: false,
-      error: `build URL '${url.href}' has an empty job path`,
-    };
-  }
-
-  const buildNumber = Number.parseInt(segments[buildIndex]!, 10);
-  if (!Number.isSafeInteger(buildNumber) || buildNumber <= 0) {
-    return {
-      ok: false,
-      error: `build number '${segments[buildIndex]}' is not a positive integer`,
-    };
-  }
-
-  return {
-    ok: true,
-    value: { buildNumber, jobPath, buildUrl: url.href, source: "url" },
-  };
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -319,8 +241,8 @@ export function extractFailureSignals(
 
 /** Input for {@link formatCiFailureContext}. */
 export interface FormatCiFailureContextOptions {
-  /** Build status as reported by Jenkins. */
-  build: JenkinsBuild;
+  /** Build status as reported by the provider that fetched the log. */
+  build: CiBuildStatus;
   /** Freshly fetched console log. */
   log: string;
   /** Bytes of log tail rendered (defaults to {@link CI_FAILURE_EXCERPT_BYTES}). */
@@ -455,7 +377,7 @@ export function formatCiFailureFetchFailure(
     "",
     "Do NOT attempt a fix on no evidence, and do NOT treat the pre-summary pasted into the issue body as a substitute for the full log.",
     "",
-    "Post a comment on this issue that states plainly that the console log could not be fetched, quotes the reason above, and says what a human needs to check (Jenkins credentials, the build reference in the issue body, or the build's retention). Then stop.",
+    "Post a comment on this issue that states plainly that the console log could not be fetched, quotes the reason above, and says what a human needs to check (the CI provider's credentials, the build reference in the issue body, or the build's retention). Then stop.",
   ].join("\n");
 }
 
@@ -465,17 +387,22 @@ export function formatCiFailureFetchFailure(
 
 /** Options for {@link buildCiFailureContext}. */
 export interface BuildCiFailureContextOptions {
+  /** Repository in `owner/repo` format — the scope every fetch is bound to. */
+  repo: string;
   /** Raw issue body containing the machine-readable build header. */
   issueBody: string;
   /**
-   * Fallback Jenkins job path used when the body carries only a build
-   * number (per-repo `ci_failure_job_path` configuration).
+   * The repo's configured CI log providers, in order. The first entry is
+   * offered to the registry; with none configured the built-in GitHub
+   * Actions provider handles the fetch.
    */
-  jobPath?: string;
-  /** Override for the configured Jenkins base URL (defaults to `JENKINS_URL`). */
-  jenkinsBaseUrl?: string;
-  /** Injectable fetch function (defaults to `globalThis.fetch`). */
+  providers?: readonly CiProviderConfig[];
+  /** Injectable authenticated `gh` runner (used by the Actions provider). */
+  ghFn?: GhCommandFn;
+  /** Injectable HTTP fetch, for providers that call an API directly. */
   fetchFn?: FetchFn;
+  /** Injectable Actions log fetcher (tests replace the network call). */
+  actionsLogFn?: typeof fetchGithubActionsLogExcerpt;
   /**
    * Per-run boundary id used to fence the untrusted log excerpt (Issue #3639).
    * The caller generates it and hands the same id to the prompt builder.
@@ -484,54 +411,71 @@ export interface BuildCiFailureContextOptions {
 }
 
 /**
- * Parse the build reference, fetch the console log, and render the prompt
- * section.
+ * Parse the build reference, fetch the console log through the resolved CI
+ * log provider, and render the prompt section.
  *
  * Always returns a section: on success the diagnosis context with the log,
  * on any failure an explicit "log fetch FAILED" block. It never throws and
  * never returns an empty string, so a fetch fault can never be mistaken for
- * "there was nothing to add".
+ * "there was nothing to add". An empty excerpt is reported as a failure too
+ * — a hollow success would send the run at a fix with no evidence.
  */
 export async function buildCiFailureContext(
   options: BuildCiFailureContextOptions,
 ): Promise<string> {
-  const baseUrl = options.jenkinsBaseUrl ??
-    getEnvOrDefault("JENKINS_URL", "").trim();
   const { boundaryId } = options;
 
-  const reference = parseCiFailureBuildReference(options.issueBody, {
-    jenkinsBaseUrl: baseUrl,
-  });
+  const reference = parseCiFailureBuildReference(options.issueBody);
   if (!reference.ok) {
     return formatCiFailureFetchFailure(reference.error, boundaryId);
   }
 
-  const jobPath = reference.value.jobPath ?? options.jobPath?.trim();
-  if (!jobPath) {
+  const ctx: CiFailureContext = {
+    repo: options.repo,
+    checkName: CI_FAILURE_ISSUE_CHECK_NAME,
+    ...(reference.value.buildUrl !== undefined
+      ? { targetUrl: reference.value.buildUrl }
+      : {}),
+    ...(options.providers?.[0] !== undefined
+      ? { providerConfig: options.providers[0] }
+      : {}),
+    ...(options.fetchFn !== undefined ? { fetchFn: options.fetchFn } : {}),
+    ...(options.ghFn !== undefined ? { ghFn: options.ghFn } : {}),
+    ...(options.actionsLogFn !== undefined
+      ? { actionsLogFn: options.actionsLogFn }
+      : {}),
+  };
+
+  const provider = resolveCiLogProvider(ctx);
+
+  let outcome;
+  try {
+    outcome = await provider.fetchLog(ctx);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
     return formatCiFailureFetchFailure(
-      `the issue body carries build #${reference.value.buildNumber} but no build URL, and no job path is configured for this repository (set 'ci_failure_job_path' in repo_config)`,
+      `CI log provider '${provider.id}' threw: ${message}`,
       boundaryId,
     );
   }
 
-  const status = await fetchJenkinsBuildStatus({
-    jobPath,
-    build: reference.value.buildNumber,
-    fetchFn: options.fetchFn,
-  });
-  if (!status.ok) return formatCiFailureFetchFailure(status.error, boundaryId);
-
-  const log = await fetchJenkinsBuildLog({
-    jobPath,
-    build: reference.value.buildNumber,
-    maxBytes: CI_FAILURE_LOG_FETCH_BYTES,
-    fetchFn: options.fetchFn,
-  });
-  if (!log.ok) return formatCiFailureFetchFailure(log.error, boundaryId);
+  if (!outcome.ok) {
+    return formatCiFailureFetchFailure(outcome.error, boundaryId);
+  }
+  if (outcome.value.logText === "") {
+    return formatCiFailureFetchFailure(
+      `CI log provider '${provider.id}' returned an empty log excerpt`,
+      boundaryId,
+    );
+  }
 
   return formatCiFailureContext({
-    build: status.value,
-    log: log.value,
+    build: {
+      number: reference.value.buildNumber ?? outcome.value.buildId,
+      result: outcome.value.status ?? "FAILURE",
+      url: outcome.value.url,
+    },
+    log: truncateLogTail(outcome.value.logText, CI_FAILURE_LOG_FETCH_BYTES),
     boundaryId,
   });
 }

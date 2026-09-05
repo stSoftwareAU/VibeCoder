@@ -84,18 +84,12 @@ import {
   runPrFailureActions,
 } from "./pr_failure_actions.ts";
 import type { FailedCiCheck } from "./pr_ci_checks.ts";
-import type { FetchFn } from "./jenkins_log_fetcher.ts";
+import type { FetchFn } from "./bounded_fetch.ts";
 import type { fetchGithubActionsLogExcerpt } from "./github_actions_log_fetcher.ts";
 import {
   type CiFailureContext,
   resolveCiLogProvider,
 } from "./ci_log_provider.ts";
-import { JENKINS_PROVIDER_ID } from "./ci_provider_jenkins.ts";
-import {
-  classifyJenkinsFetchError,
-  formatJenkinsAccessDiagnosis,
-  type JenkinsAccessDiagnosis,
-} from "./jenkins_access_check.ts";
 
 // Re-export shared annotation types for convenience
 export type { CheckAnnotation };
@@ -120,10 +114,10 @@ export interface CiFixInput {
   encodedAnnotations: string;
   /**
    * Optional check `target_url` / `details_url` (Issue #1893). Used by
-   * the PR failure action dispatcher to locate the external build (e.g.
-   * extract the Jenkins build number from a URL). Optional because not
-   * all CI sources populate it and the dispatcher is feature-gated by
-   * `prFailureActions` repo config anyway.
+   * the PR failure action dispatcher to locate the external build (each
+   * provider reads its own build id out of it). Optional because not all
+   * CI sources populate it and the dispatcher is feature-gated by the
+   * `ciProviders` repo config anyway.
    */
   targetUrl?: string;
 }
@@ -212,7 +206,7 @@ export interface CiProcessorDeps {
   /**
    * Injectable PR failure action dispatcher (Issue #1893). Defaults to
    * {@link runPrFailureActions}. Tests inject a fake to avoid hitting
-   * the real Jenkins HTTP client.
+   * the real CI provider over the network.
    */
   prFailureActionsFn?: typeof runPrFailureActions;
   /**
@@ -681,56 +675,6 @@ async function _processCiWithHeartbeat(
   // stall the fix flow.
   const ciLogOutcome = await _resolveCiLogExcerpt(input, processorDeps);
   const prFailureActionsExcerpt = ciLogOutcome.excerpt;
-
-  // Credentials preflight (Issue #3583). A 401/403/404 from the CI log
-  // provider means the worker has no evidence at all, so it escalates
-  // with the actionable diagnosis instead of guessing at a fix.
-  if (ciLogOutcome.accessDiagnosis) {
-    const diagnosis = ciLogOutcome.accessDiagnosis;
-    logger.warn("CI log fetch failed authentication — escalating", {
-      repo,
-      prNumber,
-      checkName,
-      accessStatus: diagnosis.status,
-      ...(diagnosis.httpStatus !== undefined
-        ? { httpStatus: diagnosis.httpStatus }
-        : {}),
-    });
-
-    await escalateToHuman({
-      ghClient: createGhEscalationClient(
-        processorDeps.ghCommandFn ?? deps.github.runGhCommand,
-      ),
-      repo,
-      target: { kind: "pr", number: prNumber },
-      needsHumanLabel: "needs-human",
-      heading: "CI log fetch blocked by credentials",
-      reason:
-        `The CI log for **${checkName}** could not be fetched, so there is no build output to diagnose.\n\n${
-          formatJenkinsAccessDiagnosis(diagnosis)
-        }`,
-      nextStep: diagnosis.remediation,
-      // One comment per access failure class — not one per push.
-      dedupKey: `ci-log-access:${diagnosis.status}`,
-      ensureLabelColour: "d4c5f9",
-      ensureLabelDescription:
-        "Worker could not produce a fix; human review required",
-      deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
-      logger,
-    });
-
-    return {
-      ok: true,
-      value: {
-        processed: false,
-        changesPushed: false,
-        annotationCount: annotations.length,
-        retryCount: newRetryCount,
-        summary:
-          `CI log fetch failed (${diagnosis.status}) for PR #${prNumber} (${checkName}) — escalated with needs-human instead of guessing at a fix`,
-      },
-    };
-  }
 
   // Auto-fix attempt cap (Issue #3582). The signature is composed of
   // durable parts only, so three attempted fixes on one underlying failure
@@ -1531,30 +1475,21 @@ async function _runPostClaudeQualityCheck(
 // PR failure action integration (Issue #1893)
 // ---------------------------------------------------------------------------
 
-/** A resolved CI log excerpt, or the access failure that prevented one. */
+/** A resolved CI log excerpt. */
 interface CiLogExcerptOutcome {
   /** Rendered Markdown excerpt, or `""` when none could be fetched. */
   excerpt: string;
-  /**
-   * Set when the fetch failed on credentials or job path (Issue #3583).
-   * The caller escalates rather than attempting a fix on no evidence.
-   */
-  accessDiagnosis?: JenkinsAccessDiagnosis;
 }
 
 /**
  * Resolve the CI log excerpt fed into the `{{PR_FAILURE_ACTIONS}}` prompt
  * slot (Issues #3580, #3579).
  *
- * A repo's configured CI providers (e.g. Jenkins) win when they produce
- * an excerpt; otherwise the registry's fall-back — the built-in GitHub
- * Actions provider — runs, so every repo gets real job logs with zero
+ * A repo's configured CI providers win when they produce an excerpt;
+ * otherwise the registry's fall-back — the built-in GitHub Actions
+ * provider — runs, so every repo gets real job logs with zero
  * configuration. The chosen provider id is always logged, making a silent
  * fall-through to annotation-only diagnosis visible in the worker log.
- *
- * A credentials or job-path failure (401/403/404, or unset Jenkins
- * environment variables) comes back as an `accessDiagnosis` so the caller
- * can post it instead of proceeding without evidence (Issue #3583).
  */
 async function _resolveCiLogExcerpt(
   input: CiFixInput,
@@ -1574,7 +1509,6 @@ async function _resolveCiLogExcerpt(
     });
     return configured;
   }
-  if (configured.accessDiagnosis) return configured;
 
   const ctx: CiFailureContext = {
     repo: input.repo,
@@ -1627,9 +1561,6 @@ async function _resolveCiLogExcerpt(
     reason: outcome.ok ? "provider returned an empty excerpt" : outcome.error,
   });
 
-  // The registry fall-back only ever reaches the GitHub Actions provider
-  // (Jenkins requires a configured jobPath), and `gh` auth failures are
-  // surfaced elsewhere — so nothing here is a Jenkins access failure.
   return { excerpt: "" };
 }
 
@@ -1715,45 +1646,18 @@ async function _runConfiguredPrFailureActions(
 
   const successes = results.filter((r) => r.ok);
   if (successes.length === 0) {
-    // A credentials or job-path failure is not "just another outage":
-    // without a log there is no evidence to fix from, so it is reported
-    // back for escalation rather than silently dropped (Issue #3583).
-    const accessDiagnosis = _classifyAccessFailures(results, providers);
     logger.warn(
       "All configured PR failure actions errored — proceeding with unchanged CI fix prompt",
       {
         repo: input.repo,
         prNumber: input.prNumber,
         attempted: results.length,
-        ...(accessDiagnosis ? { accessStatus: accessDiagnosis.status } : {}),
       },
     );
-    return { excerpt: "", ...(accessDiagnosis ? { accessDiagnosis } : {}) };
+    return { excerpt: "" };
   }
 
   return { excerpt: formatPrFailureActionsExcerpt(results) };
-}
-
-/**
- * Find the first Jenkins credentials/job-path failure among the failed
- * provider results (Issue #3583).
- *
- * Returns `undefined` when every failure is something else — a malformed
- * response, a 5xx, or an unmatched check — so those keep the existing
- * tolerant "continue without an excerpt" behaviour.
- */
-function _classifyAccessFailures(
-  results: readonly PrFailureActionResult[],
-  providers: readonly CiProviderConfig[],
-): JenkinsAccessDiagnosis | undefined {
-  for (const result of results) {
-    if (result.ok || result.providerId !== JENKINS_PROVIDER_ID) continue;
-    const jobPath = providers.find((p) => p.provider === result.providerId)
-      ?.jobPath ?? "the configured job";
-    const diagnosis = classifyJenkinsFetchError(result.error, jobPath);
-    if (diagnosis) return diagnosis;
-  }
-  return undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -83,12 +83,8 @@
  * removed is one more file that runs in the fast pass.
  */
 export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
-  "tests/check_jenkins_access_command_test.ts",
   "tests/ci_failure_issue_test.ts",
   "tests/ci_log_provider_test.ts",
-  "tests/ci_provider_jenkins_target_url_test.ts",
-  "tests/fetch_jenkins_log_command_test.ts",
-  "tests/jenkins_log_fetcher_test.ts",
   "tests/pr_failure_actions_test.ts",
 ];
 

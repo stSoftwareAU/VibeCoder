@@ -35,6 +35,18 @@ export const DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024;
  */
 export const DEFAULT_MAX_STREAM_BYTES = 64 * 1024 * 1024;
 
+/**
+ * Injectable `fetch` seam shared by every outbound HTTP caller.
+ *
+ * Lives here rather than beside any one caller so a test — or an
+ * out-of-tree CI log provider — can substitute the network without
+ * importing a vendor's module (Issue #986).
+ */
+export type FetchFn = (
+  url: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
+
 /** Outcome of a tail-preserving bounded read. */
 export interface BoundedTailRead {
   /** The last `maxBytes` bytes of the body (fewer if the body was shorter). */

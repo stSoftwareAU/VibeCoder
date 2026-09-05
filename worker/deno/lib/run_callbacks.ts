@@ -1,7 +1,7 @@
 /**
  * Post-run callbacks — the public extension contract (Issue #806, parent #796).
  *
- * Jenkins `post { success / failure / always }` and Azure Pipelines
+ * A CI pipeline's `post { success / failure / always }` and Azure Pipelines
  * `succeeded() / failed() / always()` semantics, applied to one terminal issue
  * run:
  *
