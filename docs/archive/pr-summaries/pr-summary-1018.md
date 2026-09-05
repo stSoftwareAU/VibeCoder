@@ -48,9 +48,21 @@ stateDiagram-v2
 
 Behaviour before this change, from the live log the issue quotes: one attempt at
 streak 3, which threw, and silence from streak 4 onwards. The new suite drives
-the same sequence and asserts attempts at streaks `[3, 4, 5]`; run against the
-unfixed guard (`streak === CHECKOUT_UPDATE_ESCALATION_THRESHOLD`) that assertion
-is `[3]`.
+the same sequence and asserts attempts at streaks `[3, 4, 5]`. Restoring the old
+guard (`streak === CHECKOUT_UPDATE_ESCALATION_THRESHOLD`) and re-running the new
+suite was observed red before the fix and green after it:
+
+```text
+# with the unfixed guard
+updateCheckout - a failed escalation is retried on every later failing run ... FAILED
+error: AssertionError: … every run at or above the threshold retries while delivery keeps failing
+error: AssertionError: … exactly one issue is raised per streak
+error: AssertionError: … the spool delivers exactly once
+FAILED | 5 passed | 3 failed
+
+# with the fix
+ok | 8 passed | 0 failed
+```
 
 ```text
 deno test --allow-all tests/checkout_update_escalation_spool_test.ts \
