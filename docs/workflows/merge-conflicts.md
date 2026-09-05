@@ -188,6 +188,56 @@ actually used.
   host cleaned the lock as stale and started a competing attempt on the same
   branch — racing the first one's push and leaving it looking disrupted.
 
+### 🤫 Why #116 went silent
+
+NEAT-AI-Ockham#116 was labelled `merge-conflict` at 23:00:34Z on 4 Sep 2026 and
+nothing visible happened for over three hours. **No code in this repository was
+at fault** — the pass ran, and the queue was genuinely empty (Issue #1108). The
+reconstruction, from the retained GRQ-25 worker logs and the PR's own timeline:
+
+| Time (UTC) | What the logs say |
+| --- | --- |
+| 22:55:44 | PR #116 opened, 2 commits behind `Develop`. |
+| 23:00:34 | Labelled `merge-conflict` by a sibling host's scan. |
+| 23:03:06 | GRQ-25 runs priority 1.61 — 25 s later the run hits a GitHub **primary rate limit** and exits; reset at 00:03:31. |
+| 00:08:36 | Priority 1.61 leads the rotated lane, runs 18 s and 30 `gh` calls, takes nothing. Priority 1.6 reports #116 in the same cycle as `reason=behind`, **not** conflicting. |
+| 00:26:06 | Rate-limited again; reset at 01:26:06. |
+| 01:31:23 | Priority 1.61 runs again, takes nothing. |
+| 02:50:36 | #116 merges cleanly. |
+
+Two things account for the silence, and neither is a merge-conflict defect:
+
+- **Roughly two of the three hours were a GitHub primary-rate-limit pause.**
+  Only two cycles in the window reached the maintenance lane at all.
+- **In those two cycles the pass was right to take nothing.** #116's conflict
+  had cleared; only the label remained. `findConflictingPr` decides on the live
+  `mergeable` state (`worker/deno/lib/pr_merge_conflict_scan.ts`), never on the
+  label, so a stale label reads as an empty queue — correctly.
+
+The three candidates considered, and why each is ruled out:
+
+1. **The launcher was down** (#1072, GRQ-23) — no. `run_core.log` records five
+   container runs starting on GRQ-25, the host monitoring NEAT-AI-Ockham,
+   across the window.
+2. **`claimable=0 reason=pr_blocked` gated the repo out** — no. That gate is
+   per-*issue* and belongs to the Priority 2 claim path
+   (`worker/deno/lib/idle_detect_diagnostics.ts:587`, reported at `:1026`), and
+   the audit that emits the line runs *after* the priority dispatch and the
+   lane, from `runIdleWorkHooks` (`worker/deno/lib/run_core.ts:3849`). The
+   conflict pass takes no claimability input at all: `findConflictingPr`
+   filters repos by `isRepoAllowed` alone. The deadlock this would have been —
+   a repo whose PRs are blocked never running the pass that unblocks them —
+   does not exist, and `merge_conflict_pr_blocked_reachability_test.ts` now
+   pins it.
+3. **The lane never gave the pass its slot** (#608) — no. Rotation was working:
+   1.61 led the lane at 00:08:36 and started within the same second.
+
+**The lesson for the next quiet queue: read the live `mergeable` state, not the
+label.** A PR keeps `merge-conflict` after its conflict clears, so a labelled PR
+with no attempt marker is the *expected* shape once the base moves on — check
+whether the pass ran, then whether GitHub still calls the PR `CONFLICTING`,
+before assuming a stall.
+
 ## 👀 Seeing the queue
 
 Every conflicting PR is labelled `merge-conflict` as soon as the scan sees it —
