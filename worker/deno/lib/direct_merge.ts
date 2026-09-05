@@ -16,6 +16,7 @@ import {
 } from "./check_runs_batch.ts";
 import { fetchPRBranchStateBatch } from "./pr_branch_state.ts";
 import { decideMilestoneBaseMerge } from "./milestone_children_gate.ts";
+import { mergeMethodFlagForHead } from "./milestone_sync_pr.ts";
 import {
   type ApprovedDefaultBranchPolicy,
   fetchPrReviews,
@@ -120,6 +121,12 @@ export interface PreMergeGateOutcome {
    * it and refuses to merge without it.
    */
   headSha?: string;
+  /**
+   * Head branch of the PR, read by the gate anyway (Issue #1048). It decides
+   * the merge method: a milestone sync must land as a merge commit so the
+   * default branch becomes a genuine ancestor of the milestone branch.
+   */
+  headRefName?: string;
 }
 
 /** Operator overrides for the pre-merge gate (Issue #3705). */
@@ -513,7 +520,8 @@ function determineDetailStatus(
 /**
  * Determine whether a PR targets the repository's default branch.
  *
- * Direct merge (`gh pr merge --squash` without `--auto`) bypasses branch
+ * Direct merge (`gh pr merge --squash` without `--auto`, or `--merge` for a
+ * milestone sync — Issue #1048) bypasses branch
  * protection and human review, so it must never reach the default branch of a
  * monitored repo. It is only safe for milestone (and other non-default)
  * branches, whose merge into the default branch goes through a separate,
@@ -787,7 +795,9 @@ export async function enforcePreMergeRequirements(
   const headSha = ci.value.headSha ?? recency?.headSha;
   return {
     ok: true,
-    value: headSha ? { allowed: true, headSha } : { allowed: true },
+    value: headSha
+      ? { allowed: true, headSha, headRefName }
+      : { allowed: true, headRefName },
   };
 }
 
@@ -796,7 +806,8 @@ export async function enforcePreMergeRequirements(
 // =============================================================================
 
 /**
- * Merge the PR directly via `gh pr merge --squash` (without --auto).
+ * Merge the PR directly via `gh pr merge --squash` (without --auto), or
+ * `--merge` when the head is a milestone sync branch (Issue #1048).
  *
  * Only call this when all checks have passed.
  *
@@ -938,7 +949,10 @@ export async function directMergePr(
       String(prNumber),
       "--repo",
       repo,
-      "--squash",
+      // A milestone sync lands as a merge commit so the default branch is a
+      // genuine ancestor of the milestone branch (Issue #1048); every other
+      // PR squashes as before.
+      mergeMethodFlagForHead(gate.value.headRefName),
       // Pin the merge to the checked commit — GitHub refuses the merge if the
       // head moved after the checks were read (Issue #3946).
       "--match-head-commit",

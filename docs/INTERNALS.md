@@ -1694,7 +1694,9 @@ branch is not a conflict the PR has.
 
 ### 🔀 Auto-merge: `worker/deno/lib/pr_auto_merge.ts`
 
-`enable_auto_merge()` enables squash auto-merge on a PR:
+`enable_auto_merge()` enables auto-merge on a PR — squash for every PR bar
+one: a `sync/milestone-*` head lands as a merge commit, so the default
+branch becomes a genuine ancestor of the milestone branch (Issue #1048):
 
 - **Config-aware** — skips repos with `skip_auto_merge=true`.
 - **Retry** — up to `AUTO_MERGE_MAX_RETRIES` (default 3) with delay between
@@ -2757,6 +2759,44 @@ Three properties matter:
 A repository with no Deno project is still synced, but the outcome says
 `UNGATED` so an unchecked push never reads like a checked one.
 
+#### 🪦 The sync never resurrects a deleted file
+
+A **squashed** sync applies the default branch's content under a single-parent
+commit, so the default branch never becomes an ancestor of the milestone
+branch. Every later merge then takes its merge base from before the sync, and
+a deletion the default branch made in the meantime arrives as a modify/delete
+conflict rather than as a deletion — where "keep the file" looks conservative
+and is exactly wrong. That is how `lib/fleet_health.ts` and its test returned
+to `milestone/863` (Issue #1048).
+
+Three defences, each independent of the others:
+
+- **The sync PR lands as a merge commit.**
+  [`mergeMethodFlagForHead`](../worker/deno/lib/milestone_sync_pr.ts) answers
+  `--merge` for a `sync/milestone-*` head and `--squash` for every other PR;
+  `pr_auto_merge.ts`, `direct_merge.ts` and `pr_manager.ts` all route their
+  `gh pr merge` through it, so no arming path can quietly squash a sync.
+  A repository that forbids merge commits (`allow_merge_commit: false`, or a
+  ruleset whose `allowed_merge_methods` omits `merge`) cannot take one, and
+  there the sync is armed as a squash with a **warning naming the setting** —
+  never a quiet downgrade. Refusing outright would leave the branch drifting;
+  the detector below is what catches the consequence instead.
+- **Modify/delete resolves as a delete.**
+  [`merge_conflict_stages.ts`](../worker/deno/lib/merge_conflict_stages.ts)
+  reads `git ls-files -u` for each conflicted path: no incoming stage means the
+  default branch deleted the file, so the resolution is `git rm`, not
+  `git checkout --theirs` followed by staging the working-tree copy. A path
+  whose stages cannot be read fails the whole resolution rather than being
+  guessed at, and every deletion is named in the sync's outcome message.
+- **A resurrection is detected directly.**
+  [`resurrected_file_check.ts`](../worker/deno/lib/resurrected_file_check.ts)
+  reports every file present on a branch, absent on the default branch, and
+  deleted by a commit already in that branch's ancestry. The ancestry test is
+  what separates a resurrection from a branch that is merely behind. The
+  `check-resurrected-files` command exposes it, and the
+  `milestone-resurrection` job runs it on PRs into `milestone/*` and on the
+  rollup PR.
+
 ### 🩹 Milestone branch self-heal
 
 A milestone can gain open children **after** its summary PR merged and
@@ -3234,6 +3274,8 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts)                                             | Type-checks the sync's merged tree before it is pushed, and refuses the push when it does not compile                                                                                |
 |                             | [milestone_branch_self_heal.ts](../worker/deno/lib/milestone_branch_self_heal.ts)                                 | Recreate a deleted branch for an open milestone with open children, and retarget stranded child PRs                                                                                  |
 |                             | [milestone_health.ts](../worker/deno/lib/milestone_health.ts)                                                     | Milestone health diagnostics                                                                                                                                                         |
+|                             | [resurrected_file_check.ts](../worker/deno/lib/resurrected_file_check.ts)                                         | Detects files the default branch deleted that a milestone branch still carries, naming the commit that deleted each                                                                  |
+|                             | [merge_conflict_stages.ts](../worker/deno/lib/merge_conflict_stages.ts)                                           | Reads a conflicted path's merge stages, so a modify/delete resolves as a delete instead of reviving removed code                                                                     |
 | **Issue processing phases** |                                                                                                                   |                                                                                                                                                                                      |
 |                             | [clarity_assessment.ts](../worker/deno/lib/clarity_assessment.ts)                                                 | Issue clarity assessment logic                                                                                                                                                       |
 |                             | [clarity_phase.ts](../worker/deno/lib/clarity_phase.ts)                                                           | Clarity assessment phase                                                                                                                                                             |

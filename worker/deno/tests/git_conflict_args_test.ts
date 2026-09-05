@@ -10,6 +10,7 @@ import { assertEquals } from "@std/assert";
 import {
   buildAddPathArgs,
   buildCheckoutStrategyArgs,
+  buildRemovePathArgs,
 } from "../lib/git_conflict_args.ts";
 
 Deno.test("buildAddPathArgs - inserts -- before an ordinary filename", () => {
@@ -42,4 +43,24 @@ Deno.test("buildCheckoutStrategyArgs - ours with -- before dash-leading name", (
   assertEquals(args, ["checkout", "--ours", "--", "--output=/tmp/x"]);
   const sepIndex = args.indexOf("--");
   assertEquals(args[sepIndex + 1], "--output=/tmp/x");
+});
+
+Deno.test("buildRemovePathArgs - forces the removal with -- before the filename", () => {
+  assertEquals(
+    buildRemovePathArgs("lib/fleet_health.ts"),
+    ["rm", "--force", "--ignore-unmatch", "--", "lib/fleet_health.ts"],
+  );
+});
+
+Deno.test("buildRemovePathArgs - -- precedes a dash-leading filename", () => {
+  const args = buildRemovePathArgs("-rf");
+  assertEquals(args, ["rm", "--force", "--ignore-unmatch", "--", "-rf"]);
+  const sepIndex = args.indexOf("--", 1);
+  assertEquals(args[sepIndex + 1], "-rf");
+});
+
+Deno.test("buildRemovePathArgs - an empty path still lands after the separator", () => {
+  const args = buildRemovePathArgs("");
+  assertEquals(args[args.length - 2], "--");
+  assertEquals(args[args.length - 1], "");
 });

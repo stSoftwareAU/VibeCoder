@@ -42,7 +42,7 @@ flowchart TD
     F -- "no checks at all" --> N[Blocked: unverified —<br/>escalate to a human]
     F -- passed --> H{behindBy > 0?}
     H -- yes --> I[Defer: branch-update maintenance<br/>rebases → CI re-runs → retry next cycle]
-    H -- no --> J["gh pr merge --squash<br/>--match-head-commit &lt;checked SHA&gt;"]
+    H -- no --> J["gh pr merge --squash<br/>(--merge for a milestone sync)<br/>--match-head-commit &lt;checked SHA&gt;"]
     J -- head moved --> L[Defer: re-read checks<br/>for the new head next cycle]
     D --> K[Default branch updated by verified merge only]
     J --> K
@@ -229,7 +229,9 @@ evaluated it.
 
 The gate therefore reports the head SHA it read (`headSha` on both
 `CiStatusResult` and `PreMergeGateOutcome`), and `directMergePr()` merges with
-`gh pr merge --squash --match-head-commit <sha>`. GitHub refuses the merge if
+`gh pr merge --squash --match-head-commit <sha>` — or `--merge` when the head
+is a `sync/milestone-*` branch, which must land as a merge commit
+(Issue #1048). GitHub refuses the merge if
 the head has moved, so the merge is only ever performed on the exact commit the
 verdict was formed against.
 
@@ -308,7 +310,7 @@ flowchart TD
     D -- no --> E["Held: default_branch_unapproved<br/>(logged, re-read next scan)"]
     D -- unreadable --> F[Refused — fail closed]
     D -- yes --> G[Pre-merge gate:<br/>green · current · settled head]
-    G -- passes --> H["gh pr merge --squash<br/>--match-head-commit"]
+    G -- passes --> H["gh pr merge --squash<br/>(--merge for a milestone sync)<br/>--match-head-commit"]
     G -- blocks --> E
 ```
 

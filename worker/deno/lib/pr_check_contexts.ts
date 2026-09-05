@@ -62,6 +62,13 @@ export const EXEMPT_CONTEXTS: readonly ExemptContext[] = [
       "advisory today — making the dependency review block a merge is a " +
       "separate operator decision from Issue #858, taken once it is green",
   },
+  {
+    context: "milestone-resurrection",
+    reason:
+      "milestone-only (Issue #1048); its `if:` skips every PR whose base and " +
+      "head are both outside `milestone/*`, so requiring it on `main` would " +
+      "gate ordinary merges on a job that never reports",
+  },
 ];
 
 /** The result of comparing the required contexts against the derived ones. */
