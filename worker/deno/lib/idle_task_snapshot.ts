@@ -48,8 +48,8 @@ import {
  * Parse a `gh … --json` payload into an array of entries.
  *
  * Returns `[]` when the payload is not valid JSON or is not an array. Unlike
- * the per-template copies this replaces, a JSON parse failure is logged (not
- * swallowed) with `label` so the failure is visible in operator logs.
+ * the per-template copies this replaces, both failures are logged (not
+ * swallowed) with `label` so they are visible in operator logs.
  *
  * Exported (Issue #2411) so scan templates that have not yet migrated their
  * before/after snapshot to {@link listOpenIssueNumbersByLabel} can still route
