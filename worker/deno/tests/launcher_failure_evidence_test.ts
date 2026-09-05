@@ -17,11 +17,13 @@ import {
 import { QUOTA_PAUSE_EXIT_STATUS } from "../lib/quota_pause.ts";
 import { BUILD_NOT_HEALABLE_EXIT } from "../commands/container_build_heal.ts";
 import { ANOTHER_WORKER_RUNNING_EXIT } from "../commands/container_reap.ts";
+import { EXTENSION_START_ABORT_EXIT_STATUS } from "../lib/container_extension_start.ts";
 
 const KNOWN = knownWorkerStatuses(
   QUOTA_PAUSE_EXIT_STATUS,
   BUILD_NOT_HEALABLE_EXIT,
   ANOTHER_WORKER_RUNNING_EXIT,
+  EXTENSION_START_ABORT_EXIT_STATUS,
 );
 
 // ---------------------------------------------------------------------------
@@ -60,7 +62,20 @@ Deno.test("knownWorkerStatuses - the table matches the real exit constants", () 
   assertEquals(QUOTA_PAUSE_EXIT_STATUS, 75);
   assertEquals(BUILD_NOT_HEALABLE_EXIT, 3);
   assertEquals(ANOTHER_WORKER_RUNNING_EXIT, 4);
-  assertEquals([...KNOWN.statuses].sort((a, b) => a - b), [0, 1, 3, 4, 75]);
+  // The entrypoint's abort status (Issue #981) is the container's own, and it
+  // must collide with none of the others — 75 in particular, which resets the
+  // failure streak as a scheduled pause.
+  assertEquals(EXTENSION_START_ABORT_EXIT_STATUS, 76);
+  assertEquals([...KNOWN.statuses].sort((a, b) => a - b), [0, 1, 3, 4, 75, 76]);
+});
+
+Deno.test("explainExitStatus - an aborted extension start is named, not blamed on the runtime (Issue #981)", () => {
+  const explanation = explainExitStatus(
+    EXTENSION_START_ABORT_EXIT_STATUS,
+    KNOWN,
+  );
+  assertStringIncludes(explanation, "extension start script");
+  assertEquals(explanation.includes("container runtime client"), false);
 });
 
 // ---------------------------------------------------------------------------

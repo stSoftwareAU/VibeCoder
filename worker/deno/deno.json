@@ -36,6 +36,7 @@
   },
   "imports": {
     "@std/assert": "jsr:@std/assert@^1.0.18",
+    "@std/crypto": "jsr:@std/crypto@^1.1.0",
     "@std/yaml/parse": "jsr:@std/yaml@^1.0.12/parse"
   },
   "lint": {
