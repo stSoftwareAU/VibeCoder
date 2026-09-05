@@ -20,13 +20,20 @@ const CTX = {
 };
 
 Deno.test(
-  "recomputeDerivedTrust - fleetAuthors unions host, allowed authors and siblings",
+  "recomputeDerivedTrust - fleetAuthors is identity only, never the trusted humans (Issue #1066)",
   () => {
+    // `fleetAuthors` gates heartbeat-marker adoption and stale-assignment
+    // recovery — "is this one of us?". Since the trusted set is derived from
+    // repository collaborators it now names every write-access human, so
+    // folding it in would make a colleague's assignment read as fleet
+    // occupancy. That is the #1064 shape.
     const derived = recomputeDerivedTrust(
       { allowedAuthors: ["alice"], authorisedCommenters: ["bob"] },
       CTX,
     );
-    assertEquals(derived.fleetAuthors, ["worker-bot", "alice", "sibling-bot"]);
+    assertEquals(derived.fleetAuthors, ["worker-bot", "sibling-bot"]);
+    // The defer-to set is different by design: a trusted human's open PR
+    // still blocks a duplicate, so it keeps them.
     assertEquals(derived.fleetPrAuthorInput.allowedAuthors, ["alice"]);
     assertEquals(derived.fleetPrAuthorInput.githubUser, "worker-bot");
     // Maintenance set is push-capable only: host + siblings, not humans.
@@ -45,7 +52,8 @@ Deno.test(
     const first = holder.read();
     assertEquals(first.allowedAuthors, ["alice"]);
     assertEquals(first.authorisedCommenters, ["carol"]);
-    assertEquals(first.fleetAuthors, ["worker-bot", "alice", "sibling-bot"]);
+    // Issue #1066: identity only — `alice` is a trusted human, not the fleet.
+    assertEquals(first.fleetAuthors, ["worker-bot", "sibling-bot"]);
     assertEquals(first.fleetPrAuthorInput.allowedAuthors, ["alice"]);
 
     const second = holder.apply({
@@ -55,12 +63,7 @@ Deno.test(
 
     assertEquals(second.allowedAuthors, ["dave", "erin"]);
     assertEquals(second.authorisedCommenters, ["frank"]);
-    assertEquals(second.fleetAuthors, [
-      "worker-bot",
-      "dave",
-      "erin",
-      "sibling-bot",
-    ]);
+    assertEquals(second.fleetAuthors, ["worker-bot", "sibling-bot"]);
     assertEquals(second.fleetPrAuthorInput.allowedAuthors, ["dave", "erin"]);
     assertEquals(second.maintenanceAuthors, ["worker-bot", "sibling-bot"]);
 
@@ -84,7 +87,7 @@ Deno.test(
       authorisedCommenters: ["frank"],
     });
     assertEquals(first.allowedAuthors, ["alice"]);
-    assertEquals(first.fleetAuthors, ["worker-bot", "alice", "sibling-bot"]);
+    assertEquals(first.fleetAuthors, ["worker-bot", "sibling-bot"]);
     assertEquals(holder.read().allowedAuthors, ["dave"]);
   },
 );

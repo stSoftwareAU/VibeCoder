@@ -90,8 +90,14 @@ export function isBotLogin(login: string): boolean {
   return BOT_PATTERNS.some((pattern) => pattern.test(normalised));
 }
 
-/** The configuration keys that name the fleet's own GitHub logins. */
-export const VIBE_CODER_LOGIN_KEYS = [
+/**
+ * The configuration keys that name the fleet's own GitHub logins.
+ *
+ * Deliberately not named `VIBE_*`: `vibe_env_registry_test.ts` treats every
+ * `VIBE_`-prefixed identifier in the source as an environment variable that
+ * must be declared with a role, and this is a config-key list, not an env var.
+ */
+export const FLEET_LOGIN_CONFIG_KEYS = [
   "service_accounts",
   "fleet_pr_authors",
 ] as const;

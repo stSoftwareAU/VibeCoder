@@ -41,9 +41,9 @@
 import { fetchRepoCollaborators } from "./collaborator_permissions.ts";
 import {
   fetchTeamMembers,
+  FLEET_LOGIN_CONFIG_KEYS,
   isBotLogin,
   resolveVibeCoderLogins,
-  VIBE_CODER_LOGIN_KEYS,
 } from "./trust_exclusions.ts";
 import { normaliseLogin } from "./identity_guard.ts";
 
@@ -178,7 +178,7 @@ async function resolveFresh(
     return fail(
       `the Vibe Coder login set is empty, so the fleet's own accounts would ` +
         `be trusted to direct work — set ${
-          VIBE_CODER_LOGIN_KEYS.join(" or ")
+          FLEET_LOGIN_CONFIG_KEYS.join(" or ")
         }` +
         ` in .config.json`,
       "vibe-coder-logins",

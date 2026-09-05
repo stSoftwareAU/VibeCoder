@@ -39,8 +39,8 @@ import {
   formatUnknownKeyWarnings,
 } from "./config_unknown_keys.ts";
 import {
+  FLEET_LOGIN_CONFIG_KEYS,
   resolveVibeCoderLogins,
-  VIBE_CODER_LOGIN_KEYS,
 } from "./trust_exclusions.ts";
 import {
   DEFAULT_BEST_PLANNING_MODEL,
@@ -1082,7 +1082,7 @@ export function validateConfig(config: WorkerConfig): void {
       "Configuration error: the fleet login set is empty, so the Vibe Coder " +
         "accounts — which hold repository write access in order to push " +
         "branches — would be trusted to raise and schedule their own work. " +
-        `Set ${VIBE_CODER_LOGIN_KEYS.join(" and/or ")} in .config.json to ` +
+        `Set ${FLEET_LOGIN_CONFIG_KEYS.join(" and/or ")} in .config.json to ` +
         "the fleet's own GitHub logins (run setup.sh to configure).",
     );
   }

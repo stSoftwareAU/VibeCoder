@@ -11,9 +11,9 @@
 import type { ConfigFile, PinnedToolVersions, WorkerConfig } from "../types.ts";
 import { EXCLUSION_TEAM_PATTERN } from "./validation.ts";
 import {
+  FLEET_LOGIN_CONFIG_KEYS,
   isBotLogin,
   resolveVibeCoderLogins,
-  VIBE_CODER_LOGIN_KEYS,
 } from "./trust_exclusions.ts";
 import { PINNED_TOOLS, UPDATE_MODES } from "./config_defaults.ts";
 
@@ -166,7 +166,7 @@ export function validateRequiredFields(config: WorkerConfig): string[] {
   ) {
     errors.push(
       `The fleet login set is empty — set ${
-        VIBE_CODER_LOGIN_KEYS.join(" and/or ")
+        FLEET_LOGIN_CONFIG_KEYS.join(" and/or ")
       } in .config.json, or the Vibe Coder accounts would be trusted to ` +
         "raise and schedule their own work",
     );

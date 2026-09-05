@@ -52,6 +52,7 @@ import {
   findSuppressions,
 } from "../lib/suppression_comments.ts";
 import {
+  _resetLiveTrustedAuthors,
   readLiveTrustedAuthors,
   recomputeDerivedTrust,
 } from "../lib/trust_snapshot.ts";
@@ -296,6 +297,9 @@ Deno.test("trust table - every actor is asserted on both axes (Issues #1066, #10
   } finally {
     _resetGhSpawnRunner();
     _resetDerivedAuthorsCache();
+    // The published snapshot is process-wide: leaving it set would leak this
+    // file's trusted set into every later test that reads it.
+    _resetLiveTrustedAuthors();
   }
 });
 
@@ -323,6 +327,9 @@ Deno.test("trust table - the asymmetry holds for the same login in one run (Issu
   } finally {
     _resetGhSpawnRunner();
     _resetDerivedAuthorsCache();
+    // The published snapshot is process-wide: leaving it set would leak this
+    // file's trusted set into every later test that reads it.
+    _resetLiveTrustedAuthors();
   }
 });
 
@@ -342,6 +349,9 @@ Deno.test("trust - trust matching is case-insensitive, as GitHub logins are (Iss
   } finally {
     _resetGhSpawnRunner();
     _resetDerivedAuthorsCache();
+    // The published snapshot is process-wide: leaving it set would leak this
+    // file's trusted set into every later test that reads it.
+    _resetLiveTrustedAuthors();
   }
 });
 
@@ -360,6 +370,9 @@ Deno.test("trust - a known bot's write access does not confer the right to direc
   } finally {
     _resetGhSpawnRunner();
     _resetDerivedAuthorsCache();
+    // The published snapshot is process-wide: leaving it set would leak this
+    // file's trusted set into every later test that reads it.
+    _resetLiveTrustedAuthors();
   }
 });
 
@@ -395,6 +408,9 @@ Deno.test("trust - a known bot's work-on label is stripped by the #3575 path (Is
   } finally {
     _resetGhSpawnRunner();
     _resetDerivedAuthorsCache();
+    // The published snapshot is process-wide: leaving it set would leak this
+    // file's trusted set into every later test that reads it.
+    _resetLiveTrustedAuthors();
   }
 });
 
@@ -417,6 +433,9 @@ Deno.test("trust - an unverifiable work-on adder is left alone (fail closed, Iss
   } finally {
     _resetGhSpawnRunner();
     _resetDerivedAuthorsCache();
+    // The published snapshot is process-wide: leaving it set would leak this
+    // file's trusted set into every later test that reads it.
+    _resetLiveTrustedAuthors();
   }
 });
 
@@ -441,6 +460,9 @@ Deno.test("trust - a write-access collaborator absent from allowed_authors may d
   } finally {
     _resetGhSpawnRunner();
     _resetDerivedAuthorsCache();
+    // The published snapshot is process-wide: leaving it set would leak this
+    // file's trusted set into every later test that reads it.
+    _resetLiveTrustedAuthors();
   }
 });
 
@@ -466,6 +488,9 @@ Deno.test("trust - the host's own login cannot direct work (Issues #1066, #1068)
   } finally {
     _resetGhSpawnRunner();
     _resetDerivedAuthorsCache();
+    // The published snapshot is process-wide: leaving it set would leak this
+    // file's trusted set into every later test that reads it.
+    _resetLiveTrustedAuthors();
   }
 });
 
@@ -483,6 +508,9 @@ Deno.test("trust - read-only access is not write access (Issues #1066, #1068)", 
   } finally {
     _resetGhSpawnRunner();
     _resetDerivedAuthorsCache();
+    // The published snapshot is process-wide: leaving it set would leak this
+    // file's trusted set into every later test that reads it.
+    _resetLiveTrustedAuthors();
   }
 });
 
@@ -506,6 +534,9 @@ Deno.test("trust - a login in allowed_authors with no write access is refused (I
   } finally {
     _resetGhSpawnRunner();
     _resetDerivedAuthorsCache();
+    // The published snapshot is process-wide: leaving it set would leak this
+    // file's trusted set into every later test that reads it.
+    _resetLiveTrustedAuthors();
   }
 });
 
@@ -544,6 +575,9 @@ Deno.test("trust - the Vibe Coders are excluded with no exclusion_team configure
   } finally {
     _resetGhSpawnRunner();
     _resetDerivedAuthorsCache();
+    // The published snapshot is process-wide: leaving it set would leak this
+    // file's trusted set into every later test that reads it.
+    _resetLiveTrustedAuthors();
   }
 });
 
@@ -626,6 +660,9 @@ Deno.test("trust - a trusted human never joins the fleet-identity set (Issues #1
   } finally {
     _resetGhSpawnRunner();
     _resetDerivedAuthorsCache();
+    // The published snapshot is process-wide: leaving it set would leak this
+    // file's trusted set into every later test that reads it.
+    _resetLiveTrustedAuthors();
   }
 });
 
@@ -866,6 +903,7 @@ Deno.test("trust composition - .config.json to claim decision, with real collabo
   } finally {
     _resetGhSpawnRunner();
     _resetDerivedAuthorsCache();
+    _resetLiveTrustedAuthors();
     _resetSuppressionAuthorAllowlist();
     await Deno.remove(dir, { recursive: true });
   }
