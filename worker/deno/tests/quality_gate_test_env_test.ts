@@ -107,12 +107,13 @@ Deno.test("test stage env - a scrubbed variable really is absent from the child 
 
 Deno.test("test stage env - WORK_DIR is not handed to the suite (Issue #1098)", () => {
   // The same class as CONFIG_PATH, found on the milestone base branch: the
-  // container exports the live worker volume, `runCoreLoop` falls back to it
+  // container exports the live worker volume, `runCoreLoop` fell back to it
   // for state that outlives a run, and every suite driving the loop then
   // shared the running fleet's `idle_disagreement_streak.json` with three
-  // sibling test processes. Removed, not blanked — the fallback treats an
-  // empty string as absent, but a caller reading the raw variable should not
-  // see one either.
+  // sibling test processes. Issue #1177 removed that fallback at the source;
+  // the scrub stays for the other production readers of `WORK_DIR`. Removed,
+  // not blanked — a caller reading the raw variable should not see an empty
+  // string either.
   const env = testStageEnv({
     WORK_DIR: "/home/vibe/auto-issue-work",
     PATH: "/usr/bin",
