@@ -274,13 +274,16 @@ export async function collectLabelCandidates(
         continue;
       }
 
-      // Check milestone occupancy (fleet-only — human assignments don't block)
+      // Check work-stream occupancy. Issue #1064: only the accounts the
+      // fleet operates occupy a stream — `config.allowedAuthors` is a
+      // permission list that legitimately holds humans, and a human
+      // assignee must never stall the worker.
       if (
         isMilestoneOccupied(
           repoAllIssues,
           milestoneTitle,
           options.githubUser,
-          config.allowedAuthors,
+          pushCapableAuthors,
         )
       ) {
         diag?.logIssueSkipped(

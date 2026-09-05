@@ -166,7 +166,7 @@ Within a label tier, the final cross-repo selection is **`nice`-aware**. Each re
 
 A `top-priority` issue is **not** automatically picked just because the label is present. Five filters are applied during candidate collection (in [`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts), [`collect_label_candidates.ts`](../../worker/deno/lib/collect_label_candidates.ts), [`collect_work_on_candidates.ts`](../../worker/deno/lib/collect_work_on_candidates.ts), and [`collect_low_priority_candidates.ts`](../../worker/deno/lib/collect_low_priority_candidates.ts)). Any one of them removes the candidate from its tier — the next-oldest issue in the same tier is then considered, and only if every tier 1 candidate is suppressed does the worker fall through to tier 2.
 
-1. **Milestone occupancy** — [`isMilestoneOccupied`](../../worker/deno/lib/issue_filter.ts) skips an issue when the worker already has another issue assigned in the same `repo + milestone` work stream. Enforces "one issue per milestone per repo at a time". Human-assigned issues do not count.
+1. **Milestone occupancy** — [`isMilestoneOccupied`](../../worker/deno/lib/issue_filter.ts) skips an issue when a Vibe Coder — this host or a sibling in `fleet_pr_authors`/`service_accounts` — already has another issue assigned in the same `repo + milestone` work stream. Enforces "one issue per milestone per repo at a time". Human-assigned issues do not count: the match set is the fleet-identity set (`resolveFleetMaintenanceAuthorSet`), never the `allowed_authors` permission list.
 2. **Open PR blocking** — [`getBlockingPRForIssue`](../../worker/deno/lib/issue_query.ts) skips an issue when the **fleet** already has an open PR targeting the same branch (default branch for non-milestone issues, `milestone/<name>` for milestone issues). Enforces "one PR per work stream" so consecutive work serialises cleanly. Only push-capable fleet accounts (`github_user` + `fleet_pr_authors`) count: a human's open PR never blocks issue pickup — the developer manages their own PR.
 3. **Recently-closed PR cooldown** — [`fetchRecentlyClosedPRsByUser`](../../worker/deno/lib/issue_query.ts) plus [`isBlockedByRecentlyClosedPR`](../../worker/deno/lib/issue_query.ts) suppress candidates whose target branch was the subject of a worker-closed (un-merged) PR inside the cooldown window.: prevents the worker from immediately re-opening a PR that was just closed (e.g. a reviewer rejected the approach) before a human has had time to react.
 4. **Dependency blocking** — [`extractDependencyReferences`](../../worker/deno/lib/issue_dependencies.ts) and [`checkParentBlocked`](../../worker/deno/lib/issue_dependencies.ts) read `Depends on #N` / `Blocked by #N` markers (and GitHub task-list sub-issues) from the issue body and skip the candidate if any referenced issue is still open. Cross-repo dependencies (`Depends on org/repo#42`) are supported. Fails open on API errors so a transient outage cannot stall the worker.
@@ -276,9 +276,11 @@ enforces it, and the single recovery path.
    incident.
 2. **Milestone occupancy** —
    [`isMilestoneOccupied`](../../worker/deno/lib/issue_filter.ts) treats a work
-   stream as occupied when **any fleet account** already has an assigned issue in
-   the same `repo + milestone`, so a sibling host's assignment stops a second
-   host starting the same work stream.
+   stream as occupied when **any account the fleet operates** already has an
+   assigned issue in the same `repo + milestone`, so a sibling host's assignment
+   stops a second host starting the same work stream. The set is
+   `resolveFleetMaintenanceAuthorSet()` — the same push-capable set layer 3
+   uses — so a *human* assignee never occupies a stream.
 3. **Discovery open-PR guard** — during candidate collection,
    [`getBlockingPRForIssue`](../../worker/deno/lib/issue_query.ts) over
    [`fetchOpenPRsForFleet`](../../worker/deno/lib/issue_query.ts) skips an issue

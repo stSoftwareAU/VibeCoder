@@ -252,7 +252,9 @@ export async function filterNewWorkEligible(
         ctx.repoAllIssues,
         milestoneTitle,
         options.githubUser,
-        config.allowedAuthors,
+        // Issue #1064: fleet-operated accounts only — a human assignee
+        // never occupies a work stream.
+        ctx.pushCapableAuthors,
       )
     ) {
       note(issue, "milestone-occupied", milestoneTitle);

@@ -82,6 +82,33 @@ milestone-aware `checkRepoAvailability()` function, exposed via the
 `check-repo-availability` Deno command and called from
 `worker/deno/lib/issue_finder.ts`.
 
+### Locking and scheduling exist only between Vibe Coders
+
+**There is no locking or scheduling between humans and Vibe Coders.**
+
+Every mutual-exclusion guard in the worker — work-stream occupancy, open-PR
+blocking, claim-time re-checks — exists for one reason: to stop **two Vibe
+Coders** doing the same piece of work twice. None of them exists to make a Vibe
+Coder wait for a person. A human assigning themselves an issue, opening a PR, or
+taking a milestone must never stop a Vibe Coder picking up other work. The worker
+runs weekends and holidays; it works *alongside* the other developers, never
+behind them.
+
+The rule has one operational consequence that every guard must obey: **the set
+of logins that can occupy or block is the fleet-identity set, never a permission
+set.** Concretely, the fleet is
+`resolveFleetMaintenanceAuthorSet()` (`worker/deno/lib/fleet_authors.ts`) —
+the host's own `github_user` plus `fleet_pr_authors` plus `service_accounts`.
+It is **never** `allowed_authors`, which answers a different question ("whose
+issues and labels may the worker act on?") and legitimately contains humans.
+
+Passing the permission list to a scheduling guard is how the rule gets broken
+silently, because on a correctly configured host the two lists overlap and the
+bug only shows when a human is assigned something. That is exactly what
+happened: a milestone-less issue assigned to a human read as fleet occupancy and
+parked the whole default-branch work stream for ~21 hours while unassigned
+`top-priority` issues sat filtered out of selection.
+
 ### One PR per work stream (serialised work)
 
 The worker serialises its work per work stream (each milestone is a work stream;
@@ -89,28 +116,36 @@ non-milestone issues share the default branch work stream). It creates one PR at
 a time so each piece of work builds on the previous. This prevents merge hell
 from multiple independent PRs branching from the same root.
 
-Human-assigned issues do **not** block any work stream — only the worker's own
-assignments count as "occupied". The worker works weekends and holidays; it must
+Human-assigned issues do **not** block any work stream — only a Vibe Coder's
+assignment counts as "occupied". The worker works weekends and holidays; it must
 not wait on humans to review or merge before picking up the next issue.
 
 **Two guards enforce this for every work stream (milestone and default
 branch):**
 
 1. **Work stream occupancy** (`isMilestoneOccupied` in
-   `worker/deno/lib/issue_filter.ts`): blocks if **any fleet account** already
-   has an assigned issue in the same work stream. Fleet-aware:
-   the match set is the current host's login plus every fleet login in
-   `config.allowedAuthors`, so a sibling host's assignment also occupies the
-   work stream and a second host will not start the same issue (the duplicate-PR
-   root cause in). Non-fleet human assignees are still ignored — only
-   fleet logins occupy.
+   `worker/deno/lib/issue_filter.ts`): blocks if **any account the fleet
+   operates** already has an assigned issue in the same work stream.
+   Fleet-aware: the match set is the current host's login plus the sibling
+   logins in `fleet_pr_authors`/`service_accounts` — i.e.
+   `resolveFleetMaintenanceAuthorSet()`, the same push-capable set guard 2
+   uses — so a sibling host's assignment also occupies the work stream and a
+   second host will not start the same issue (the duplicate-PR root cause).
+   Human assignees never occupy: only Vibe Coders do.
+
+   The match set is deliberately **not** `config.allowedAuthors`. That is a
+   permission list — whose issues and labels the worker may act on — and it
+   legitimately contains humans, so resolving the fleet from it made one
+   human-assigned issue park a whole work stream. The parameter is named
+   `pushCapableAuthors` so the permission list cannot be handed to it by habit.
 2. **PR blocking** (`getBlockingPRForIssue` in
    `worker/deno/lib/issue_query.ts`): blocks if the **fleet** has an open PR
    targeting the same branch (milestone branch or default branch). Only
    push-capable fleet accounts count — a human's open PR never defers an issue.
 
-Together these ensure at most one in-flight piece of worker work per work
-stream, while humans can assign issues freely without stalling the worker.
+Both guards therefore resolve the same set from the same helper. Together they
+ensure at most one in-flight piece of worker work per work stream, while humans
+can assign issues freely without stalling the worker.
 
 ### One PR per issue across the fleet
 
@@ -256,7 +291,16 @@ questions, so `worker/deno/lib/fleet_authors.ts` exports one resolver for each:
 | Resolver                             | Members                                       | Answers                                                    |
 | ------------------------------------ | --------------------------------------------- | ---------------------------------------------------------- |
 | `resolveFleetPrAuthorSet()`          | host + `allowed_authors` + `fleet_pr_authors` | May I raise a duplicate PR, or must I wait behind this one? |
-| `resolveFleetMaintenanceAuthorSet()` | host + `fleet_pr_authors`                     | May I claim, push to, comment on, or auto-merge this PR?    |
+| `resolveFleetMaintenanceAuthorSet()` | host + `fleet_pr_authors`                     | May I claim, push to, comment on, or auto-merge this PR? Is this work stream already held by a Vibe Coder? |
+
+`service_accounts` is unioned into the effective `fleet_pr_authors` at load, so
+both resolvers see it.
+
+The maintenance set is the **fleet-identity** set, and it is therefore also the
+set every *scheduling* guard resolves from — work-stream occupancy
+(`isMilestoneOccupied`) included. Scheduling exists only between Vibe Coders,
+so a scheduling guard must never be handed `allowed_authors`; see
+[Locking and scheduling exist only between Vibe Coders](#locking-and-scheduling-exist-only-between-vibe-coders).
 
 The maintenance set is always a **subset** of the fleet-owned set; that asymmetry
 is intended, not drift. `allowed_authors` is excluded from the maintenance set

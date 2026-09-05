@@ -1371,11 +1371,18 @@ The `isMilestoneOccupied()` function in
 issue per repository (or per milestone within a repository) is being worked on
 at any given time. This prevents conflicts from concurrent changes to the same
 codebase area. The check is **fleet-aware**: a work stream is occupied when an
-issue in it is assigned to **any** fleet account — the current host's login plus
-every fleet login in `config.allowedAuthors` — so in a multi-account fleet
+issue in it is assigned to **any account the fleet operates** — the current
+host's login plus `fleet_pr_authors` and `service_accounts`, resolved by
+`resolveFleetMaintenanceAuthorSet()` — so in a multi-account fleet
 (`Vibecoderbot`, `stsvcbot`, …) a sibling host's assignment also occupies the
-stream and a second host will not start the same issue. Non-fleet human
-assignees are ignored.
+stream and a second host will not start the same issue.
+
+Human assignees are **never** counted. The match set is deliberately not
+`config.allowedAuthors`: that is a permission list ("whose issues may we work
+on?") which legitimately contains humans, and resolving the fleet from it let a
+single human-assigned issue park a whole work stream. Locking and scheduling
+exist only between Vibe Coders — see
+[Design Principles](../DESIGN-PRINCIPLES.md#locking-and-scheduling-exist-only-between-vibe-coders).
 
 #### 📦 Issue data consolidation
 
