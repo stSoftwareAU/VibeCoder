@@ -62,7 +62,15 @@ async function captureSleepDelays(
   return requestedDelays;
 }
 
-/** Create test options for the production deps factory. */
+/**
+ * Create test options for the production deps factory.
+ *
+ * The config is named rather than loaded (Issue #1098). Left to the factory,
+ * it comes from `CONFIG_PATH` — so with the operator's own config in the
+ * environment these tests resolved trusted authors against the real monitored
+ * repositories, making live `gh` calls from a unit test and failing whenever
+ * one of them did.
+ */
 function createTestOptions(
   overrides?: Partial<ProductionDepsOptions>,
 ): ProductionDepsOptions {
@@ -71,6 +79,7 @@ function createTestOptions(
     workDir: "/tmp/test-work",
     githubUser: "test-user",
     logger: testLogger,
+    config: buildDefaultWorkerConfig(),
     ...overrides,
   };
 }
@@ -189,7 +198,7 @@ Deno.test(
     const options = createTestOptions();
     const { deps } = await createProductionRunCoreDeps(options);
     const outcome = await deps.refreshTrustedAuthors!();
-    assertEquals(outcome.ok, true);
+    assertEquals(outcome.ok, true, JSON.stringify(outcome));
   },
 );
 
@@ -218,7 +227,7 @@ Deno.test(
 
     const { deps } = await createProductionRunCoreDeps(createTestOptions());
     const outcome = await deps.refreshTrustedAuthors!();
-    assertEquals(outcome.ok, true);
+    assertEquals(outcome.ok, true, JSON.stringify(outcome));
   },
 );
 

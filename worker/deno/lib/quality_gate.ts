@@ -149,16 +149,26 @@ export interface QualityGateConfig {
 /**
  * Run a subprocess command and capture output.
  *
+ * A supplied `env` is the child's **whole** environment, not an overlay
+ * (Issue #1098). `Deno.Command` merges `env` into the parent's by default, so
+ * a variable the caller deliberately left out is still inherited — which made
+ * the Issue #891 `CONFIG_PATH` scrub a no-op in the gate for as long as it has
+ * existed. `deno test` kept receiving the container's config path, the suite
+ * kept loading the operator's real `.config.json`, and tests that only ever
+ * meant to read an empty config made live `gh` calls: one of them was killed
+ * mid-flight and reported `gh command failed (exit 143)` as a code failure.
+ * `clearEnv` makes the omission mean what the caller wrote.
+ *
  * Returns the exit code and combined stdout/stderr.
  */
-async function runCommand(
+export async function runCommand(
   cmd: string[],
   options?: { cwd?: string; env?: Record<string, string> },
 ): Promise<{ exitCode: number; output: string }> {
   const command = new Deno.Command(cmd[0]!, {
     args: cmd.slice(1),
     cwd: options?.cwd,
-    ...(options?.env === undefined ? {} : { env: options.env }),
+    ...(options?.env === undefined ? {} : { env: options.env, clearEnv: true }),
     stdout: "piped",
     stderr: "piped",
   });

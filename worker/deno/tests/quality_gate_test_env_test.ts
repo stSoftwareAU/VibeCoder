@@ -29,7 +29,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { testStageEnv } from "../lib/quality_gate.ts";
+import { runCommand, testStageEnv } from "../lib/quality_gate.ts";
 
 Deno.test("test stage env - CONFIG_PATH is not handed to the suite (Issue #891)", () => {
   const env = testStageEnv({
@@ -41,6 +41,47 @@ Deno.test("test stage env - CONFIG_PATH is not handed to the suite (Issue #891)"
     false,
     "CONFIG_PATH must be removed, not blanked — setup.sh's guard fires on a " +
       "set-but-different value, and an empty string is still set",
+  );
+});
+
+Deno.test("test stage env - a scrubbed variable really is absent from the child (Issue #1098)", async () => {
+  // The scrub is only worth having if the subprocess honours it. `Deno.Command`
+  // merges `env` into the parent's by default, so for as long as the scrub has
+  // existed the child still inherited `CONFIG_PATH`: the suite loaded the
+  // operator's real config and made live `gh` calls from tests that meant to
+  // read an empty one. This drives the gate's own spawn helper with an
+  // environment that omits a variable the parent has.
+  // An existing parent variable stands in for the scrubbed one, so no process
+  // state is mutated and this file stays in the parallel pass. Deno supplies
+  // `PATH`, `HOME` and its node shim marker to every child it spawns, so the
+  // probe is any other variable the parent happens to carry.
+  const parentEnv = Deno.env.toObject();
+  const supplied = new Set(["PATH", "HOME", "DENO_NODE_SHIM_ACTIVE"]);
+  const probeVar = Object.keys(parentEnv).find((name) => !supplied.has(name));
+  assert(probeVar !== undefined, "the parent has no variable to omit");
+  const probe = [
+    Deno.execPath(),
+    "eval",
+    `console.log(Deno.env.get(${JSON.stringify(probeVar)}) ?? "ABSENT")`,
+  ];
+
+  const passedThrough = await runCommand(probe, {
+    env: testStageEnv(parentEnv),
+  });
+  assertEquals(passedThrough.exitCode, 0, passedThrough.output);
+  assertEquals(
+    passedThrough.output.trim(),
+    parentEnv[probeVar],
+    "the supplied environment must reach the child intact",
+  );
+
+  const { [probeVar]: _omitted, ...withoutProbe } = parentEnv;
+  const omitted = await runCommand(probe, { env: testStageEnv(withoutProbe) });
+  assertEquals(omitted.exitCode, 0, omitted.output);
+  assertEquals(
+    omitted.output.trim(),
+    "ABSENT",
+    "a variable left out of the supplied environment must not be inherited",
   );
 });
 
