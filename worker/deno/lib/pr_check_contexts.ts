@@ -70,6 +70,16 @@ const ALWAYS_EXEMPT_CONTEXTS: readonly ExemptContext[] = [
 export const EXEMPT_CONTEXTS: readonly ExemptContext[] = [
   ...ALWAYS_EXEMPT_CONTEXTS,
   {
+    context: "integration tests (not a required check)",
+    reason:
+      "the integration suites (PR #1170); they copy one of the repository's " +
+      "own `.sh`/`.ps1` scripts into a temp tree and spawn `bash` or `pwsh`, " +
+      "so requiring them would put a provisioned PowerShell between every " +
+      "change and its merge — the exact cost #907 took out of the gate. The " +
+      "job still runs on every PR and its result is still read; it just " +
+      "cannot block one",
+  },
+  {
     context: "milestone-resurrection",
     reason:
       "milestone-only (Issue #1048); its `if:` skips every PR whose base and " +
