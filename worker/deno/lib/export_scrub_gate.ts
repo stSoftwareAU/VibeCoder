@@ -236,13 +236,16 @@ function compileRepoName(value: string): RegExp | null {
 export function compileIdentifier(value: string): RegExp | null {
   const regexForm = /^\/(.+)\/(i?)$/.exec(value);
   try {
+    // Same provenance and the same justification as `compileRepoName` above:
+    // the value comes from the operator's private identifiers file, and the
+    // literal branch is metacharacter-escaped before compilation.
     if (regexForm) {
+      // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
       return new RegExp(regexForm[1]!, `g${regexForm[2] ?? ""}`);
     }
-    return new RegExp(
-      `(?<![A-Za-z0-9_])${escapeRegExp(value)}(?![A-Za-z0-9_])`,
-      "gi",
-    );
+    const wholeWord = `(?<![A-Za-z0-9_])${escapeRegExp(value)}(?![A-Za-z0-9_])`;
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
+    return new RegExp(wholeWord, "gi");
   } catch {
     return null;
   }
