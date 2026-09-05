@@ -201,12 +201,26 @@ export class DescendantTracker {
       alive.set(pid, await deps.getParentPid(pid));
     }
 
-    // Orphan roots: alive, parent is neither the child nor another live
-    // member, and old enough to be the process we snapshotted.
+    // Orphan roots: alive, topmost (no live snapshot member above them), and
+    // old enough to be the process we snapshotted.
+    //
+    // A member still parented to the child IS a root. This read `ppid ===
+    // this.#childPid || ...`, excluding it — a rule that only holds while the
+    // child is alive, and `collectOrphans` is called exactly once the child
+    // is not: its only caller runs it after `externallyKilled` or an
+    // incomplete kill. Re-parenting to PID 1 is the kernel's own work and does
+    // not happen at the instant the parent dies, so on a busy host the
+    // collector looked while the orphan still named the dead agent as its
+    // parent, discarded the only root, collected nothing, and returned before
+    // logging ORPHANS_COLLECTED. The orphan survived, silently — the whole
+    // failure Issue #4382 exists to prevent, striking hardest under exactly
+    // the memory pressure that causes the external kill.
+    //
+    // Members below another live member are still skipped: those are reached
+    // by walking their root's subtree below.
     const roots: number[] = [];
     for (const [pid, ppid] of alive) {
-      const parentIsOurs = ppid === this.#childPid ||
-        (ppid !== null && alive.has(ppid));
+      const parentIsOurs = ppid !== null && alive.has(ppid);
       if (parentIsOurs) continue;
       const elapsed = await deps.getElapsedSeconds(pid);
       // A younger process than the snapshot is a reused pid — not ours.
