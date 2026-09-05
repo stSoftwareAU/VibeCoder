@@ -19,6 +19,7 @@ import {
   detectBlockingPrStall,
   escalateBlockingPrStall,
   findBlockingPrObservations,
+  isMergeConflictLaneOwned,
   resolveBlockingPrStallThresholdSeconds,
   scanBlockingPrStalls,
   withdrawBlockingPrStallEscalation,
@@ -1107,4 +1108,54 @@ Deno.test("the scan withdraws the live escalation on a PR that entered the lane"
     1,
     "the retraction is not repeated on the next iteration",
   );
+});
+
+Deno.test("lane ownership tolerates unknown, absent and empty state", () => {
+  assertEquals(isMergeConflictLaneOwned({}), false);
+  assertEquals(isMergeConflictLaneOwned({ mergeable: "UNKNOWN" }), false);
+  assertEquals(isMergeConflictLaneOwned({ labels: [] }), false);
+  assertEquals(isMergeConflictLaneOwned({ mergeable: " conflicting " }), true);
+  assertEquals(
+    isMergeConflictLaneOwned({ labels: ["escalated", MERGE_CONFLICT_LABEL] }),
+    true,
+  );
+});
+
+Deno.test("a withdrawal that cannot read the thread fails loud", async () => {
+  const result = await withdrawBlockingPrStallEscalation(
+    observation({ mergeable: "CONFLICTING" }),
+    {
+      ghCommandFn: () => Promise.reject(new Error("gh api: 502 Bad Gateway")),
+      logger,
+    },
+  );
+
+  assert(!result.ok, "an unreadable thread must not report a clean no-op");
+  assertStringIncludes(result.error.message, "502 Bad Gateway");
+  assertStringIncludes(result.error.message, `${REPO}#103`);
+});
+
+Deno.test("a withdrawal whose comment cannot be posted fails loud", async () => {
+  const comments = [
+    `## Blocking PR has stalled\n\n${blockingPrStallMarker("unmerged-green")}`,
+  ];
+  const writes: string[][] = [];
+  const read = buildEscalationGh(comments, writes);
+
+  const result = await withdrawBlockingPrStallEscalation(
+    observation({ mergeable: "CONFLICTING" }),
+    {
+      ghCommandFn: (args: string[]) => {
+        // Both the REST POST and the `gh issue comment` fallback refuse.
+        if (args.includes("-X") || args[0] === "issue") {
+          return Promise.reject(new Error("gh: comment refused"));
+        }
+        return read(args);
+      },
+      logger,
+    },
+  );
+
+  assert(!result.ok, "a dropped retraction must not report success");
+  assertStringIncludes(result.error.message, "comment refused");
 });

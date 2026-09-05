@@ -414,12 +414,17 @@ export const BLOCKING_PR_STALL_NEXT_STEP =
  * of a human at minute zero. A hand close inside the cooldown skips every rung
  * and the work is redone from scratch, which is what happened to
  * NEAT-AI-Ockham#119.
+ *
+ * The actionable verbs stay: the ladder rebases a conflict, it does not fix red
+ * CI or answer a comment. Only the close comes off the menu, and the wording
+ * names the conflict rather than the `merge-conflict` label, which is applied a
+ * scan later than GitHub reports `CONFLICTING`.
  */
 export const MERGE_CONFLICT_LANE_NEXT_STEP =
-  "No action is needed here: this PR carries `merge-conflict`, so the " +
-  "merge-conflict ladder owns it and will resolve, rebase or retire it on its " +
-  "own schedule. Please leave the PR open — retiring it by hand skips the " +
-  "ladder's attempts and the work has to be redone from scratch.";
+  "Push a fix or reply to the outstanding comment if you can, but leave this " +
+  "PR open: it is in the merge-conflict lane, so the merge-conflict ladder " +
+  "owns whether it is resolved, rebased or retired. Retiring it by hand skips " +
+  "the ladder's attempts and the work has to be redone from scratch.";
 
 /**
  * Choose the next step for a stall: the merge-conflict lane's when the ladder
@@ -640,14 +645,20 @@ export function buildBlockingPrStallWithdrawalBody(params: {
   const withdrawn = params.reasons
     .map((reason) => `\`${reason}\``)
     .join(", ");
+  // Only the parts the lane invalidates are withdrawn: the close, always, and
+  // the green claim when `unmerged-green` was the reason. Red CI and an
+  // unanswered comment are still true of a conflicting PR.
+  const greenWithdrawn = params.reasons.includes("unmerged-green")
+    ? " It also called the PR green and unmerged, which a conflicting PR is not."
+    : "";
   return [
     "## Blocking-PR stall escalation withdrawn",
     "",
-    `**Why:** ${params.repo}#${params.prNumber} now carries ` +
-    `\`${MERGE_CONFLICT_LABEL}\`, so the merge-conflict ladder owns it. The ` +
-    `earlier blocking-PR stall escalation on this thread (${withdrawn}) no ` +
-    "longer describes the PR, and the options it listed are no longer this " +
-    "PR's to take.",
+    `**Why:** ${params.repo}#${params.prNumber} is in the merge-conflict ` +
+    `lane, so the merge-conflict ladder owns it. The earlier blocking-PR ` +
+    `stall escalation on this thread (${withdrawn}) offered closing the PR as ` +
+    "a next step; that is the ladder's own decision, taken after its attempts " +
+    `fail, not one to take by hand.${greenWithdrawn}`,
     "",
     `**Next step:** ${MERGE_CONFLICT_LANE_NEXT_STEP}`,
     "",
