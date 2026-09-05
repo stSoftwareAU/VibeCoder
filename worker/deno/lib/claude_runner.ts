@@ -17,6 +17,7 @@
 
 import { ensureAgentMcpConfig } from "./agent_mcp_config.ts";
 import type { EnvLookup } from "./env_lookup.ts";
+import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
 import { formatCoarseDuration } from "./rate_limit_wait.ts";
 import {
   describeMemoryPressure,
@@ -568,6 +569,22 @@ export interface RunClaudeOptions {
    */
   env?: EnvLookup;
   /**
+   * The clock this invocation reads time and arms its timers through.
+   *
+   * Omitted — every production caller — the runner uses {@link systemClock},
+   * which is `Date.now()` and the runtime's own `setTimeout`/`setInterval`,
+   * exactly as before.
+   *
+   * Supplied, the hard deadline, the #1825 silence watchdog, the #4254
+   * post-kill cap, the #325 stream drain and the #4382 descendant snapshot
+   * all run on it, and so does the progress tracker's own `now`. A test then
+   * *drives* the deadline instead of sleeping through it: twenty-five suites
+   * asked for a real one- to four-second budget, which cost the serial pass
+   * 108 s and reported a watchdog that woke late on a loaded host as a
+   * correctness failure. See `tests/support/fake_clock.ts`.
+   */
+  clock?: Clock;
+  /**
    * The parent environment the agent's child environment is built from
    * (Issue #961).
    *
@@ -915,6 +932,9 @@ export async function runClaudeWithTimeout(
     creditLogDir,
     workerName,
     repo,
+    // The clock seam: production passes none and gets the real one, so every
+    // deadline, watchdog and snapshot below behaves exactly as before.
+    clock = systemClock,
   } = options;
 
   // The provider seam (Issue #4067) owns the binary, the argument list and
@@ -967,12 +987,12 @@ export async function runClaudeWithTimeout(
   // (Issue #424). Carried onto the result so the phase can report a
   // scheduled release instead of a per-issue timeout.
   let scheduledRelease: ScheduledReleaseReason | undefined;
-  let hardWatchdog: ReturnType<typeof setTimeout> | undefined;
-  let silenceWatchdog: ReturnType<typeof setTimeout> | undefined;
-  let killBoundTimer: ReturnType<typeof setTimeout> | undefined;
+  let hardWatchdog: TimerHandle | undefined;
+  let silenceWatchdog: TimerHandle | undefined;
+  let killBoundTimer: TimerHandle | undefined;
   // Descendant-tree snapshot (Issue #4382): what the child had spawned, so
   // the survivors of an external kill can be collected after the fact.
-  let descendantSnapshotTimer: ReturnType<typeof setInterval> | undefined;
+  let descendantSnapshotTimer: TimerHandle | undefined;
   let descendantTracker: DescendantTracker | undefined;
   let ghGuard: GhGuardShim | undefined;
   let transcript: AgentTranscriptWriter | undefined;
@@ -1118,7 +1138,7 @@ export async function runClaudeWithTimeout(
         } bytes, streamed to the agent's stdin)`,
       );
     }
-    const startMs = Date.now();
+    const startMs = clock.now();
     const child = command.spawn();
     const childPid = child.pid;
     if (promptViaStdin && promptFilePath) {
@@ -1175,7 +1195,7 @@ export async function runClaudeWithTimeout(
           options.probeMemoryPressure,
         );
         if (reading.level !== "high") return;
-        const now = Date.now();
+        const now = clock.now();
         if (now - lastMemoryWarnMs < memoryWatchMinIntervalMs) return;
         lastMemoryWarnMs = now;
         const psText = await (options.memoryWatchRunPs ?? defaultRunPs)();
@@ -1197,7 +1217,7 @@ export async function runClaudeWithTimeout(
     };
     const requestDescendantSnapshot = () => {
       if (!descendantTracker || runFinished) return;
-      lastSnapshotRequestMs = Date.now();
+      lastSnapshotRequestMs = clock.now();
       void descendantTracker.refresh();
       void memoryWatch();
     };
@@ -1206,7 +1226,7 @@ export async function runClaudeWithTimeout(
         childPid,
         options.orphanCollectorDeps,
       );
-      descendantSnapshotTimer = setInterval(
+      descendantSnapshotTimer = clock.setInterval(
         requestDescendantSnapshot,
         snapshotIntervalMs,
       );
@@ -1241,9 +1261,9 @@ export async function runClaudeWithTimeout(
     const streamDrainMs = options.streamDrainCapSeconds !== undefined
       ? options.streamDrainCapSeconds * 1000
       : 5_000;
-    let streamDrainTimer: ReturnType<typeof setTimeout> | undefined;
+    let streamDrainTimer: TimerHandle | undefined;
     const streamDrainBound = new Promise<void>((resolve) => {
-      streamDrainTimer = setTimeout(resolve, streamDrainMs);
+      streamDrainTimer = clock.setTimeout(resolve, streamDrainMs);
     });
 
     const fireKill = (
@@ -1266,7 +1286,7 @@ export async function runClaudeWithTimeout(
       }
       timedOut = true;
       timeoutReason = reason;
-      killFiredMs = Date.now();
+      killFiredMs = clock.now();
       logger?.error(message);
       killPromise = killClaudeProcessTree(
         childPid,
@@ -1281,7 +1301,7 @@ export async function runClaudeWithTimeout(
             }`,
           );
         });
-      killBoundTimer = setTimeout(
+      killBoundTimer = clock.setTimeout(
         () => killBoundResolve?.("kill-bound"),
         killBoundMs,
       );
@@ -1300,6 +1320,11 @@ export async function runClaudeWithTimeout(
     const progress = new AgentProgressTracker({
       phase: phase ?? "agent",
       log: logger ? (message) => logger.info(message) : () => undefined,
+      // The same clock the deadline runs on (Issue #1170 follow-up): the
+      // policy compares `nowMs` against this tracker's `lastChunkAtMs` and
+      // `lastToolCallAtMs`, so a run on an injected clock whose tracker still
+      // read `Date.now()` would compare two unrelated epochs.
+      now: () => clock.now(),
       ...(options.progressIntervalMs !== undefined
         ? { intervalMs: options.progressIntervalMs }
         : {}),
@@ -1361,7 +1386,7 @@ export async function runClaudeWithTimeout(
     const fireHardTimeout = (trigger: "timer" | "wall-clock") => {
       // Late-fire visibility (Issue #4254): a starved VM delays Deno
       // timers — host-25 saw this watchdog fire 487 s and 3470 s late.
-      const firedAfterSeconds = Math.round((Date.now() - startMs) / 1000);
+      const firedAfterSeconds = Math.round((clock.now() - startMs) / 1000);
       // Measured against the deadline actually armed (Issue #4296), which is
       // the configured budget until an extension moves it.
       const budgetSeconds = Math.round((deadlineMs - startMs) / 1000);
@@ -1369,7 +1394,7 @@ export async function runClaudeWithTimeout(
       watchdogLateSeconds = late;
       // Say what actually happened (Issue #4298): an extended run reports its
       // true elapsed and extension history, not the budget it started with.
-      killTelemetry = snapshotExtensions(Date.now());
+      killTelemetry = snapshotExtensions(clock.now());
       fireKill(
         "hard-timeout",
         buildTimeoutKillMessage({
@@ -1391,11 +1416,11 @@ export async function runClaudeWithTimeout(
      * a re-arm from the wall-clock backstop cannot leave two running.
      */
     const armHardWatchdog = () => {
-      if (hardWatchdog) clearTimeout(hardWatchdog);
+      if (hardWatchdog) clock.clearTimeout(hardWatchdog);
       const delay = extension
-        ? nextProgressCheckDelayMs(Date.now(), deadlineMs, extension.policy)
-        : Math.max(0, deadlineMs - Date.now());
-      hardWatchdog = setTimeout(() => onWatchdogWake("timer"), delay);
+        ? nextProgressCheckDelayMs(clock.now(), deadlineMs, extension.policy)
+        : Math.max(0, deadlineMs - clock.now());
+      hardWatchdog = clock.setTimeout(() => onWatchdogWake("timer"), delay);
     };
 
     /**
@@ -1526,7 +1551,7 @@ export async function runClaudeWithTimeout(
       }
       const external = await probeExternal(opts, "interim");
       if (timedOut || runFinished) return;
-      const atMs = Date.now();
+      const atMs = clock.now();
       lastTreeSample = { outcome, atMs };
       if (external !== undefined) {
         lastExternalSample = { outcome: external, atMs };
@@ -1560,7 +1585,7 @@ export async function runClaudeWithTimeout(
       const externalState = await probeExternal(opts, "deadline");
       if (timedOut || runFinished) return;
 
-      const nowMs = Date.now();
+      const nowMs = clock.now();
       // Written before the decision, so an agent the cap is about to stop has
       // its remaining budget in hand rather than only in the worker log.
       await maybeWindDown(opts, nowMs);
@@ -1679,7 +1704,7 @@ export async function runClaudeWithTimeout(
       // An interim wake only happens when a check interval is configured;
       // without one the sole wake is the deadline itself (Issue #4295).
       const interim = progressCheckIntervalMs(extension.policy) > 0 &&
-        Date.now() < deadlineMs;
+        clock.now() < deadlineMs;
       extensionInFlight = true;
       const work =
         (interim ? sampleTree(extension) : evaluateDeadline(extension, trigger))
@@ -1711,7 +1736,7 @@ export async function runClaudeWithTimeout(
       // hard budget against real elapsed time, so a starved timer is not
       // the only trigger. It follows the *current* deadline (Issue #4296),
       // or it would kill a run the policy has just extended.
-      if (!timedOut && Date.now() >= deadlineMs) {
+      if (!timedOut && clock.now() >= deadlineMs) {
         onWatchdogWake("wall-clock");
         // Without the opt-in the run is already dying — nothing to re-arm,
         // exactly as before. With it the decision is still in flight, so the
@@ -1719,8 +1744,8 @@ export async function runClaudeWithTimeout(
         if (!extension || timedOut) return;
       }
       if (noOutputMs <= 0) return;
-      if (silenceWatchdog) clearTimeout(silenceWatchdog);
-      silenceWatchdog = setTimeout(() => {
+      if (silenceWatchdog) clock.clearTimeout(silenceWatchdog);
+      silenceWatchdog = clock.setTimeout(() => {
         fireKill(
           "no-output",
           `Claude produced no output for ${noOutputTimeout}s — killing process tree (PID ${childPid})`,
@@ -1767,7 +1792,7 @@ export async function runClaudeWithTimeout(
             // throttled to a quarter of the interval (Issue #4382).
             if (
               descendantTracker &&
-              Date.now() - lastSnapshotRequestMs >= snapshotIntervalMs / 4
+              clock.now() - lastSnapshotRequestMs >= snapshotIntervalMs / 4
             ) {
               requestDescendantSnapshot();
             }
@@ -1848,7 +1873,7 @@ export async function runClaudeWithTimeout(
     let status: { success: boolean; code: number; signal: Deno.Signal | null };
     let killIncompleteSeconds: number | undefined;
     if (settled === "kill-bound") {
-      killIncompleteSeconds = Math.round((Date.now() - killFiredMs) / 1000);
+      killIncompleteSeconds = Math.round((clock.now() - killFiredMs) / 1000);
       logger?.error(
         `Kill of PID ${childPid} did not complete within ` +
           `${killIncompleteSeconds}s of the ${
@@ -1871,26 +1896,26 @@ export async function runClaudeWithTimeout(
     }
 
     if (killBoundTimer) {
-      clearTimeout(killBoundTimer);
+      clock.clearTimeout(killBoundTimer);
       killBoundTimer = undefined;
     }
     // Issue #325: the drain timer is armed unconditionally, so it must be
     // cleared on every path or Deno's sanitisers flag a leaked timer on a
     // perfectly healthy run.
     if (streamDrainTimer !== undefined) {
-      clearTimeout(streamDrainTimer);
+      clock.clearTimeout(streamDrainTimer);
       streamDrainTimer = undefined;
     }
     if (hardWatchdog) {
-      clearTimeout(hardWatchdog);
+      clock.clearTimeout(hardWatchdog);
       hardWatchdog = undefined;
     }
     if (silenceWatchdog) {
-      clearTimeout(silenceWatchdog);
+      clock.clearTimeout(silenceWatchdog);
       silenceWatchdog = undefined;
     }
     if (descendantSnapshotTimer) {
-      clearInterval(descendantSnapshotTimer);
+      clock.clearInterval(descendantSnapshotTimer);
       descendantSnapshotTimer = undefined;
     }
 
@@ -1928,7 +1953,7 @@ export async function runClaudeWithTimeout(
     const runStats = buildRunStats(rawOutput, {
       requestedModel: resolvedModel,
       ...(resolvedEffort ? { effort: resolvedEffort } : {}),
-      wallClockMs: Date.now() - startMs,
+      wallClockMs: clock.now() - startMs,
       // Attribute the run to the provider that produced it (Issue #4109).
       provider: provider.id,
     });
@@ -1992,7 +2017,7 @@ export async function runClaudeWithTimeout(
 
     // A killed run reports the snapshot taken at the kill; one that finished
     // reports where the deadline ended up (Issue #4298).
-    const extensions = killTelemetry ?? snapshotExtensions(Date.now());
+    const extensions = killTelemetry ?? snapshotExtensions(clock.now());
 
     activeAgentRuns.delete(childPid);
     const gotSigterm = !timedOut &&
@@ -2090,10 +2115,10 @@ export async function runClaudeWithTimeout(
     // deadline check before the timers are cleared, so it cannot re-arm one.
     runFinished = true;
     if (extensionWork) await extensionWork.catch(() => {/* already logged */});
-    if (hardWatchdog) clearTimeout(hardWatchdog);
-    if (silenceWatchdog) clearTimeout(silenceWatchdog);
-    if (killBoundTimer) clearTimeout(killBoundTimer);
-    if (descendantSnapshotTimer) clearInterval(descendantSnapshotTimer);
+    if (hardWatchdog) clock.clearTimeout(hardWatchdog);
+    if (silenceWatchdog) clock.clearTimeout(silenceWatchdog);
+    if (killBoundTimer) clock.clearTimeout(killBoundTimer);
+    if (descendantSnapshotTimer) clock.clearInterval(descendantSnapshotTimer);
     if (descendantTracker) await descendantTracker.settle();
     for (const [pid, run] of activeAgentRuns) {
       if (run.logger === logger && run.label.startsWith(phase ?? "agent")) {
@@ -2246,6 +2271,10 @@ export async function runClaudeWithRetry(
   const errorScanTailLines = options.errorScanTailLines ??
     DEFAULT_ERROR_SCAN_TAIL_LINES;
   const enableFallback = options.enableModelFallback ?? true;
+  // The same seam the timeout path takes (Issue #1170 follow-up): the
+  // backoff ladder sleeps in-process, and a test driving the ladder should
+  // not have to spend five real minutes to see the second rung.
+  const clock = options.clock ?? systemClock;
 
   // Pre-flight Fable reroute (Issue #3231, parent #3217). This is the single
   // chokepoint every Fable-preferring phase (planning, grill_me, refinement,
@@ -2700,7 +2729,7 @@ export async function runClaudeWithRetry(
         // the hour, whatever the stated reset. The reset is reported, not
         // slept on.
         const untilResetSeconds = resetMs !== null
-          ? Math.max(60, Math.ceil((resetMs - Date.now()) / 1000))
+          ? Math.max(60, Math.ceil((resetMs - clock.now()) / 1000))
           : USAGE_LIMIT_DEFAULT_WAIT_SECONDS;
         const waitSeconds = Math.min(
           untilResetSeconds,
@@ -2876,7 +2905,7 @@ export async function runClaudeWithRetry(
           `Retry ${retryCount} of ${maxRetries}. Waiting ${actualWait}s (jittered from ${waitInterval}s, total waited: ${totalWaitTime}s, max: ${maxWaitSeconds}s)...`,
         );
 
-        await new Promise((resolve) => setTimeout(resolve, actualWait * 1000));
+        await clock.sleep(actualWait * 1000);
         // Issue #855: this ladder sleeps in-process, inside a claimed run.
         // Without recording it, an hour spent waiting on the model's own
         // rate limit reads as an hour of work and `token_blocked` stays 0.

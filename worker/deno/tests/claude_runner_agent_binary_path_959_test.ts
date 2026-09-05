@@ -37,6 +37,7 @@ import {
   runClaudeWithTimeout,
 } from "../lib/claude_runner.ts";
 import { createAgentStub, withAgentStub } from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 /** No rate-limit waiting — nothing here is a rate limit. */
 const FAST_RETRY = {
@@ -77,6 +78,7 @@ Deno.test({
       assertNotOnPath(stub.dir);
 
       const result = await runClaudeWithTimeout({
+        clock: fakeClock(),
         prompt: "test",
         timeoutSeconds: 30,
         killAfterSeconds: 2,
@@ -107,6 +109,7 @@ Deno.test({
 
       const result = await runClaudeWithRetry(
         {
+          clock: fakeClock(),
           prompt: "test",
           model: "sonnet",
           enableModelFallback: false,
@@ -136,6 +139,7 @@ Deno.test({
     const absent = `${stub.dir}/not-installed-here`;
     try {
       const result = await runClaudeWithTimeout({
+        clock: fakeClock(),
         prompt: "test",
         timeoutSeconds: 30,
         killAfterSeconds: 2,

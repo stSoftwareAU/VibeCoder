@@ -24,7 +24,12 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
-import { type AgentStub, createAgentStub } from "./support/agent_stub.ts";
+import {
+  type AgentStub,
+  agentStubGate,
+  createAgentStub,
+} from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 import type { TreeProgressState } from "../lib/progress_extension.ts";
 import {
   buildExtensionTelemetry,
@@ -496,13 +501,15 @@ function installStub(body: string): Promise<AgentStub> {
   return createAgentStub(body, { prefix: "timeout_report_768_" });
 }
 
-/** A stub that emits a tool call every `gapSeconds` for `count` iterations. */
-function chattyStub(count: number, gapSeconds: string): string {
-  return `for i in $(seq 1 ${count}); do\n` +
-    `  printf '%s\\n' '${TOOL_LINE}'\n` +
-    `  sleep ${gapSeconds}\n` +
-    `done\n` +
-    `printf '%s\\n' '{"type":"result","result":"done"}'\n`;
+/**
+ * A stub that reports one tool call and then waits at the gate.
+ *
+ * The case ends in a kill, so the agent's job is to be alive with its
+ * activity signal set until the runner stops it — on the injected clock, at
+ * the instant the test says (PR #1170 follow-up).
+ */
+function toolThenWait(): string {
+  return `printf '%s\\n' '${TOOL_LINE}'\n` + agentStubGate();
 }
 
 /** Collect log lines so the kill message can be asserted on. */
@@ -522,22 +529,29 @@ Deno.test({
   fn: async () => {
     // The first check refuses, so nothing is granted and the deadline never
     // moves — the #732 shape, which must still be readable off the log.
-    const stub = await installStub(chattyStub(120, "0.1"));
+    const stub = await installStub(toolThenWait());
     const { logger, lines } = recordingLogger();
     const probe = (): Promise<TreeProgressState> =>
       Promise.resolve("unchanged");
+    const clock = fakeClock();
+    const firstChunk = Promise.withResolvers<void>();
     try {
-      const result = await runClaudeWithTimeout({
+      const run = runClaudeWithTimeout({
+        clock,
         prompt: "test",
         agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
+        onActivity: () => firstChunk.resolve(),
         progressExtension: {
           policy: { enabled: true, grantSeconds: 1, activityStallSeconds: 60 },
           treeProbe: probe,
         },
       });
+      await firstChunk.promise;
+      await clock.advance(1_000);
+      const result = await run;
       assert(result.ok, "the runner must return a result");
       if (!result.ok) return;
       assertEquals(result.value.extensions?.granted, 0);

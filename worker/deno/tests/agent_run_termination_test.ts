@@ -27,6 +27,7 @@ import {
   runCoreLoop,
 } from "../lib/run_core.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 /**
  * Run `fn` with a stub agent that records spawns and runs `body`.
@@ -78,6 +79,7 @@ Deno.test({
     await withStubClaude(body, async (spawnLog, stub) => {
       const result = await runClaudeWithRetry(
         {
+          clock: fakeClock(),
           prompt: "P",
           model: "m",
           agentBinaryPath: stub.path,
@@ -116,6 +118,7 @@ Deno.test({
         async (spawnLog, stub) => {
           const result = await runClaudeWithRetry(
             {
+              clock: fakeClock(),
               prompt: "P",
               model: "m",
               agentBinaryPath: stub.path,
@@ -146,6 +149,7 @@ Deno.test({
       await withStubClaude(`sleep 60`, async (spawnLog, stub) => {
         const running = runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "P",
             model: "m",
             agentBinaryPath: stub.path,
@@ -475,6 +479,7 @@ Deno.test({
       async (spawnLog, stub) => {
         const result = await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "P",
             model: "m",
             agentBinaryPath: stub.path,
