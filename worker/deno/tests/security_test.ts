@@ -425,8 +425,12 @@ Deno.test("security - isAuthorisedCommenter handles bot-style usernames", () => 
   );
 });
 
-Deno.test("security - isAuthorisedCommenter is case-sensitive", () => {
-  assertEquals(isAuthorisedCommenter("alice", ["Alice"]), false);
+Deno.test("security - isAuthorisedCommenter is case-insensitive, as GitHub logins are (Issue #1066)", () => {
+  // The list is now the derived set, whose collaborator logins are normalised
+  // to lower case, while a comment author arrives in the account's own casing.
+  assertEquals(isAuthorisedCommenter("alice", ["Alice"]), true);
+  assertEquals(isAuthorisedCommenter("Alice", ["alice"]), true);
+  assertEquals(isAuthorisedCommenter("mallory", ["Alice"]), false);
 });
 
 Deno.test("security - isAuthorisedCommenter returns false for empty username", () => {

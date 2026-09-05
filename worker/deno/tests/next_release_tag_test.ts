@@ -282,7 +282,7 @@ Deno.test("next-release-tag - a floor file that was named but is absent fails lo
   }
 });
 
-Deno.test("next-release-tag - the repository's own floor mints 1.2.0 over the 1.0.x series", async () => {
+Deno.test("next-release-tag - the repository's own floor mints 1.3.0 over the 1.0.x series", async () => {
   // Issue #808: the acceptance criterion itself. `.release-floor` is the one
   // line that decides the number, so it is asserted through the real script
   // against the series the fleet is actually on.
@@ -300,7 +300,7 @@ Deno.test("next-release-tag - the repository's own floor mints 1.2.0 over the 1.
     assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));
     assertEquals(
       new TextDecoder().decode(out.stdout),
-      "should_tag=true\ntag=1.2.0\n",
+      "should_tag=true\ntag=1.3.0\n",
     );
   } finally {
     await Deno.remove(dir, { recursive: true });

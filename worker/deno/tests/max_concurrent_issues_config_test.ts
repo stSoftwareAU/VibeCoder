@@ -28,6 +28,9 @@ function validConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
     repos: ["org/repo"],
     issueLabels: ["work-on"],
     authorisedCommenters: ["testuser"],
+    // Issue #1066: the fleet login set must be non-empty for a config to
+    // validate — it is what is subtracted from the collaborator set.
+    serviceAccounts: ["vibe-worker"],
     ...overrides,
   }) as WorkerConfig;
 }
