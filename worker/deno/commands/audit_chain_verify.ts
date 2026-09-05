@@ -28,10 +28,12 @@ import {
   acknowledgeJournalDamage,
   acknowledgeJournalLoss,
   adoptAnchor,
+  type AppendRecovery,
   type ChainSweepEntry,
   resolveBaseDir,
   verifyAllChains,
 } from "../lib/audit_journal.ts";
+import { formatAppendRecovery } from "../lib/audit_append_recovery.ts";
 
 /** Typed data returned by the audit-chain-verify command. */
 export interface AuditChainVerifyData {
@@ -45,6 +47,8 @@ export interface AuditChainVerifyData {
   adopted: string[];
   /** Losses already signed for — reported, but not failures (Issue #359). */
   acknowledged: AcknowledgedLoss[];
+  /** Interrupted appends settled by this sweep (Issue #1074). */
+  recovered: AppendRecovery[];
   /** Losses signed for by this run (`--acknowledge-loss` only). */
   newlyAcknowledged: string[];
 }
@@ -160,6 +164,7 @@ export const auditChainVerifyCommand: Command = {
       broken: [],
       adopted,
       acknowledged: [],
+      recovered: [],
       newlyAcknowledged,
     });
 
@@ -277,13 +282,14 @@ export const auditChainVerifyCommand: Command = {
       };
     }
 
-    const { checked, broken, acknowledged } = swept.value;
+    const { checked, broken, acknowledged, recovered } = swept.value;
     const data: AuditChainVerifyData = {
       baseDir,
       checked,
       broken,
       adopted,
       acknowledged,
+      recovered,
       newlyAcknowledged,
     };
 
@@ -300,6 +306,9 @@ export const auditChainVerifyCommand: Command = {
     for (const name of newlyAcknowledged) {
       lines.push(`acknowledged ${name} (recorded in the chain)`);
     }
+    for (const recovery of recovered) {
+      lines.push(formatAppendRecovery(recovery));
+    }
     for (const loss of acknowledged) lines.push(formatAcknowledged(loss));
     for (const entry of broken) lines.push(formatBroken(entry));
     // Named in the summary too. A count that read "12 verified" while
@@ -310,6 +319,12 @@ export const auditChainVerifyCommand: Command = {
     const parts: string[] = [];
     if (lost > 0) parts.push(`${lost} acknowledged as lost`);
     if (damaged > 0) parts.push(`${damaged} acknowledged as damaged`);
+    // Issue #1074: a self-heal is never folded silently into "OK". The
+    // summary line says how many appends were settled, so a host that
+    // heals one every run is visible as exactly that.
+    if (recovered.length > 0) {
+      parts.push(`${recovered.length} interrupted append(s) settled`);
+    }
     const signedFor = parts.length > 0 ? `, ${parts.join(", ")}` : "";
     lines.push(
       broken.length === 0

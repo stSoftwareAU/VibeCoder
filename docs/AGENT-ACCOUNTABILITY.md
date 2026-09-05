@@ -245,8 +245,9 @@ written before the anchor existed is adopted **explicitly** by an operator
 first so a tampered file can never be blessed.
 
 **Damage quarantines, it does not stop the trail (Issue #361).** When the
-day's journal exists but disagrees with its anchor — truncated, rewritten,
-appended past the anchored head, or carrying a torn final line — it is left
+day's journal exists and still disagrees with its anchor once an interrupted
+append has been settled (Issue #1074, below) — truncated, rewritten, appended
+past the anchored head, or torn before it — it is left
 **exactly as found** and a fresh segment is opened beside it,
 `audit-<worker>-<date>.s1.jsonl`, whose first entry records what was
 quarantined and why. A `[SECURITY] [AUDIT_JOURNAL_QUARANTINED]` line names
@@ -266,6 +267,110 @@ it stops attesting are in the future.
 The one exception is a journal with **no anchor at all** — the pre-#3712 case
 `--adopt` exists for. That still refuses, because opening a segment beside it
 would strand the chain the operator is about to adopt.
+
+**An interrupted append heals itself; damage still needs a signature
+(Issue #1074).** A journal line and its anchor are two files and cannot be
+written atomically, so a run killed between them left a chain that failed the
+sweep and asked an operator to sign the kill off with
+`--acknowledge-damage`. That is the wrong ask: a control that routinely wants a human to wave damage
+through is one that gets waved through unread, and the chain exists precisely
+so that tampering is distinguishable from ordinary breakage.
+
+What the cause turned out to be is worth recording, because the two candidate
+causes needed opposite fixes. SIGKILLing a live writer 34 times produced a
+**complete unanchored entry** in 5 of them and a **torn line in none**: a
+single `write(2)` of one line to a regular file is not interruptible, so a
+partial line comes from below the process — an unflushed page cache lost with
+the machine, or a short write from a full or failing volume — and never from
+a kill. A source check confirmed the other hypothesis was not it either:
+`audit_journal.ts` holds the only append to a *journal* in the tree — the
+roster sidecar beside it is the one other appender, and is not the file that
+broke — and the lock breaker could not fire under two minutes. Either way, torn bytes land
+**past the anchored head**, because the anchor is only advanced after the
+append returns.
+
+So the writer now declares each append in its anchor before making it —
+`pending: { hash, startedAt }`, naming the entry by its chain hash
+([`audit_append_recovery.ts`](../worker/deno/lib/audit_append_recovery.ts)).
+That one fact makes recovery decidable, and the table below is the whole
+policy. **Self-healing** outcomes are reported on the sweep as
+`[SECURITY] [AUDIT_APPEND_RECOVERED]` and counted in the summary; everything
+else is `[SECURITY] [AUDIT_CHAIN_BROKEN]` and still needs
+`--acknowledge-damage`.
+
+| On disk | Verdict |
+| --- | --- |
+| Declared append, journal still at the anchored length | **nothing to do** — the chain already agrees with its anchor |
+| Declared append, one further line that *is* the declared entry | **heals** — completed, entry kept |
+| Declared append, one further line that is *torn* (unterminated or unparseable) | **heals** — discarded to a `.torn-<n>` sidecar |
+| Declared append, one further line that *parses* but is not the declared entry | **signature** — a kill cannot write a whole entry nobody declared |
+| Unterminated, unparseable trailing bytes, no declaration (pre-#1074 journal) | **heals** — discarded to a `.torn-<n>` sidecar |
+| A further line that parses, with no declaration | **signature** — the forged-tail shape (#3949) |
+| Journal missing, anchor says zero entries and declares an append, journal **on the roster** | **signature** — an erasure, not a writer killed before its first line |
+| More than one line past the anchor | **signature** — never one interrupted append |
+| Any change at or before the anchored head | **signature** — rewritten, truncated, torn middle |
+| Journal or anchor missing | **signature** — `--acknowledge-loss`/`--acknowledge-damage` |
+
+Four properties make the self-heal safe to have at all. Only bytes **past the
+anchored head** are ever touched, and the anchored head is the last position
+the chain was confirmed at, so nothing verified can be dropped. Discarded
+bytes are **moved, not deleted** — into
+`audit-<worker>-<date>.jsonl.torn-<n>` beside the journal — and the log line
+names how many bytes went where. A tail that claims the declared hash must
+also **re-derive** it from its own payload, so satisfying a pending record
+with different content is a SHA-256 second preimage, not a forgery. And a
+journal an operator has already **signed for** is never healed, on the sweep
+path *and* on the write path: the signature is pinned to its exact bytes, so
+repairing it would lapse that signature and turn a closed finding back into a
+red one.
+
+Two of those rows are narrower than they first look, and deliberately so. A
+declaration is **not** a licence to discard whatever is past the anchor: a
+crash can leave nothing, the declared entry whole, or the declared entry torn,
+but it can never leave a *complete, parseable* entry the writer never set out
+to append. Only a forger can do that — so a whole line that is not the
+declared entry keeps its signature requirement, and a stale `pending` (left by
+any writer killed after declaring) cannot be used to launder a forged tail
+into a clean sweep. For the same reason the "killed before its first line"
+row is decided by the **roster** (#3949) rather than by the anchor: the anchor
+is plain JSON an attacker may rewrite, so "no entries, one in flight" is also
+what an erasure looks like once it has tidied up. `addToRoster` runs only
+after an append has landed, which makes the roster the independent witness —
+a journal that ever held an entry is on it for good.
+
+**Clearing the lock the same kill left (Issue #1074).** The abandoned lock
+and the damaged chain arrive together — the kill has to land inside the
+critical section to damage the chain — so the next run has to clear both, and
+the recovery above cannot run until it does.
+
+A lock is broken immediately only when its holder is *provably* gone
+([`file_lock.ts`](../worker/deno/lib/file_lock.ts)). That needs the record to
+name the same host this process runs under, because pids are namespaced per
+container and a `ps` miss on another container's pid would be a live holder's
+lock stolen; and it needs `ps -p` to report that pid gone, asked once per
+contended acquisition, and serialised by a short-lived `<lock>.break` lock so
+that two contenders cannot both condemn the same dead holder and the second
+then remove the *winner's* fresh lock.
+
+A lock file naming **no** holder is **never** broken early. An earlier
+revision broke one on its second sighting, on the reasoning that the op
+creating and filling the file was too narrow to survive two polls. It is not:
+creation was `open(O_CREAT|O_EXCL)` and then a separate `write`, and a holder
+descheduled between the two reads as ownerless for as long as it is off the
+CPU — present-but-empty in 265 of 961 sightings when measured, and wider under
+load, so two polls a millisecond apart both landed inside it and a live
+holder's lock was broken. The lock record is now published atomically with
+`link(2)` from a temp file, so a lock file carries its holder from the instant
+it exists; an ownerless one is unreachable in new writes, and a legacy or
+genuinely abandoned one is left to the age rules below.
+
+Past the stale age the age rule decides, and there the change runs the other
+way: only a **conclusive** liveness answer now protects a lock. The probe
+used to stat `/proc`, which Deno refuses without `--allow-all`; the worker
+runs on granular permissions, so the stat threw, the catch read that as
+"assume alive", and every abandoned lock survived to the twenty-minute
+hard-stale backstop — twenty minutes of mutations that could not be
+journalled, after every kill.
 
 **Scheduled verification.** `deno task audit-chain-verify`
 ([`worker/deno/commands/audit_chain_verify.ts`](../worker/deno/commands/audit_chain_verify.ts))
