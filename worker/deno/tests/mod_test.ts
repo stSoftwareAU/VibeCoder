@@ -211,7 +211,9 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // `tests/ci_log_provider_core_only_test.ts` is what stops the next one
   // arriving the same way.
   // Issue #858 added `check-main-ruleset` (count 145 -> 146).
-  assertEquals(commands.length, 146);
+  // Issue #1048 added `check-resurrected-files` (count 146 -> 147).
+  assertEquals(commands.length, 147);
+  assertEquals(commands.includes("check-resurrected-files"), true);
   assertEquals(commands.includes("callback-conformance"), true);
   // The command Issue #805 removed stays removed: a merge that quietly
   // brought it back would restore the built-in reporting that issue deleted.

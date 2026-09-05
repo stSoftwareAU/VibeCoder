@@ -44,7 +44,15 @@ export const checkResurrectedFilesCommand: Command = {
   ): Promise<CommandResult<ResurrectionReport>> {
     const cwd = stringArg(args, "repo-dir", Deno.cwd());
     const branch = stringArg(args, "branch", "HEAD");
-    const defaultBranch = stringArg(args, "default-branch", "main");
+    // No default: branch names vary per repo (Issue #1182), and a check run
+    // against the wrong branch would report a clean tree it never examined.
+    const defaultBranch = stringArg(args, "default-branch", "");
+    if (!defaultBranch) {
+      return {
+        success: false,
+        message: "Missing required argument: --default-branch",
+      };
+    }
 
     const result = await findResurrectedFiles(
       branch,
