@@ -159,3 +159,131 @@ Deno.test("merge_conflict - gives the total-order rationale so the carve-out is 
   assertStringIncludes(body, "rule");
   assertStringIncludes(body, "judgement");
 });
+
+// --- The narrowed issue-intent carve-out (Issue #1114) ---
+
+/** Template prose is hard-wrapped by `deno fmt`, so match on flattened text. */
+function flatten(text: string): string {
+  return text.replace(/\s+/g, " ");
+}
+
+/** The intent carve-out section of the template, flattened. */
+async function intentSection(): Promise<string> {
+  const body = await loadMergeConflict();
+  const start = body.indexOf("### The Issue-Intent Carve-Out");
+  const end = body.indexOf("### Worked Examples", start);
+  assert(start >= 0 && end > start, "the intent carve-out section is missing");
+  return flatten(body.slice(start, end));
+}
+
+Deno.test("merge_conflict - carries the issue-context placeholder exactly once", async () => {
+  const body = await loadMergeConflict();
+  assertStringIncludes(body, "{{ISSUE_CONTEXT}}");
+  assertEquals(body.split("{{ISSUE_CONTEXT}}").length - 1, 1);
+});
+
+Deno.test("merge_conflict - states the default contract before the intent carve-out", async () => {
+  const body = await loadMergeConflict();
+  const contract = body.indexOf("## The Contract — Both Sides Survive");
+  const intent = body.indexOf("### The Issue-Intent Carve-Out");
+  assert(contract >= 0 && intent > contract, "the carve-out precedes the rule");
+  assertStringIncludes(
+    flatten(body.slice(intent)),
+    "The contract above is the default and it is unchanged",
+  );
+});
+
+Deno.test("merge_conflict - an override needs both issues and a quotable sentence", async () => {
+  const section = await intentSection();
+  assertStringIncludes(section, "Both sides' originating issues are present");
+  assertStringIncludes(section, "explicitly supersedes the other");
+  assertStringIncludes(section, "You can quote the sentence that says so");
+  assertStringIncludes(section, "One side's issue alone is not evidence");
+  assertStringIncludes(section, "Intent override:");
+  // Absent the evidence, the unchanged contract still applies.
+  assertStringIncludes(section, "Absent that evidence, nothing changes");
+  assertStringIncludes(section, "git merge --abort");
+});
+
+Deno.test("merge_conflict - an intent-justified resolution still meets the guards", async () => {
+  const section = await intentSection();
+  assertStringIncludes(
+    section,
+    "an intent-justified resolution still has to leave no unmerged path and " +
+      "no conflict marker behind",
+  );
+  assertStringIncludes(section, "the worker still refuses the push");
+});
+
+Deno.test("merge_conflict - the built prompt fences the issue context", async () => {
+  const built = await buildMergeConflictPrompt({
+    repo: "stSoftwareAU/VibeCoder",
+    prNumber: "4321",
+    baseBranch: "main",
+    conflictedFiles: ["worker/deno/lib/timeouts.ts"],
+    promptsDir: PROMPTS_DIR,
+    issueContext: {
+      repo: "stSoftwareAU/VibeCoder",
+      prNumber: 4321,
+      prSide: {
+        resolved: true,
+        signal: "branch",
+        issue: {
+          number: 900,
+          title: "Retune the timeout",
+          state: "CLOSED",
+          body: "Supersedes #812: use 10s.",
+          bodyTruncated: false,
+        },
+      },
+      baseSide: [{
+        path: "worker/deno/lib/timeouts.ts",
+        commitsInspected: 1,
+        prNumbers: [77],
+        issues: [{
+          number: 812,
+          title: "Raise the timeout to 60s",
+          state: "CLOSED",
+          body: "",
+          bodyTruncated: false,
+        }],
+        unresolved: null,
+        partial: false,
+      }],
+      truncation: {
+        commitCapPaths: [],
+        issueCapHit: false,
+        textTruncatedIssues: [],
+        ghCallCapHit: false,
+      },
+      ghCallsUsed: 4,
+      warnings: [],
+    },
+  });
+  assertEquals(built.ok, true);
+  if (!built.ok) return;
+
+  const { prompt } = built.value;
+  assertStringIncludes(prompt, `<document source="github-issues">`);
+  assertStringIncludes(prompt, "Issue #900");
+  assertStringIncludes(prompt, "Issue #812");
+  assertStringIncludes(prompt, "the originating issues quoted below");
+  assertEquals(/\{\{[A-Z_]+\}\}/.test(prompt), false);
+});
+
+Deno.test("merge_conflict - no issue context leaves no block behind", async () => {
+  const built = await buildMergeConflictPrompt({
+    repo: "stSoftwareAU/VibeCoder",
+    prNumber: "4321",
+    baseBranch: "main",
+    conflictedFiles: ["worker/deno/lib/timeouts.ts"],
+    promptsDir: PROMPTS_DIR,
+  });
+  assertEquals(built.ok, true);
+  if (!built.ok) return;
+  assertEquals(
+    built.value.prompt.includes(`<document source="github-issues">`),
+    false,
+  );
+  assertEquals(/\{\{[A-Z_]+\}\}/.test(built.value.prompt), false);
+});
