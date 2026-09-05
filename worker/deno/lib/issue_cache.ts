@@ -7,6 +7,14 @@
  *
  * Cache format: JSON file with timestamp and data fields.
  *
+ * Issue #1215: the default directory lives under a world-writable `TMPDIR`,
+ * so it carries a per-account suffix, is created `0700`, and is
+ * ownership-checked before any entry is read or written — the same control
+ * `timeline_cache.ts` has had since Issue #3709. Without it any local account
+ * could pre-create the directory and plant entries the worker would read back
+ * as GitHub API responses. A caller-supplied directory (the production path,
+ * on the user-owned work volume) is used verbatim and not permission-checked.
+ *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
@@ -15,6 +23,13 @@ import {
   recordCacheHit,
   recordCacheMiss,
 } from "./gh_call_metrics.ts";
+import { defaultLogger } from "./logger.ts";
+import {
+  ensurePrivateDir,
+  isSharedTmpPath,
+  sharedTmpStateDir,
+  verifyPrivateDir,
+} from "./private_cache_dir.ts";
 
 /**
  * Cache entry stored on disk.
@@ -41,19 +56,58 @@ export interface CacheStats {
 export class IssueCache {
   private readonly cacheDir: string;
   private readonly ttlSeconds: number;
+  /** True when the directory is the shared-tmp default and must be verified. */
+  private readonly sharedTmpDir: boolean;
+  /** Memoised result of the one-off directory ownership check. */
+  private privateDirCheck: Promise<boolean> | null = null;
   private stats: CacheStats;
 
   /**
    * Create a new issue cache.
    *
-   * @param cacheDir - Directory to store cache files
+   * @param cacheDir - Directory to store cache files. Omit it to use the
+   *   per-account default under `TMPDIR`. Any directory under the shared
+   *   temporary root — supplied or defaulted — is ownership-checked.
    * @param ttlSeconds - Cache time-to-live in seconds (default: 600 = 10 minutes)
    */
   constructor(cacheDir?: string, ttlSeconds = 600) {
-    const tmpDir = Deno.env.get("TMPDIR") ?? "/tmp";
-    this.cacheDir = cacheDir ?? `${tmpDir}/vibe-issue-cache-deno`;
+    this.cacheDir = cacheDir ?? sharedTmpStateDir("vibe-issue-cache-deno");
+    this.sharedTmpDir = isSharedTmpPath(this.cacheDir);
     this.ttlSeconds = ttlSeconds;
     this.stats = { hits: 0, misses: 0, saved: 0 };
+  }
+
+  /**
+   * Whether the backing directory may be used (Issue #1215).
+   *
+   * The check follows the directory's **location**, not whether the caller
+   * named it: any directory at or below the shared temporary root is created
+   * `0700` and ownership-checked, while a work-volume directory (whose
+   * permissions the worker does not own) is used as given. A directory
+   * another account could have written to disables the cache entirely, so
+   * planted entries can never be read back and a poisoned directory is never
+   * written to. Checked once per instance; failure is logged, never
+   * swallowed.
+   */
+  private dirIsUsable(): Promise<boolean> {
+    if (!this.sharedTmpDir) return Promise.resolve(true);
+    this.privateDirCheck ??= (async () => {
+      try {
+        await ensurePrivateDir(this.cacheDir);
+      } catch {
+        // Creation failure is reported by the verification below.
+      }
+      const trust = await verifyPrivateDir(this.cacheDir);
+      if (!trust.trusted) {
+        defaultLogger.warn(
+          "Issue cache directory is not worker-private — cache disabled " +
+            "(Issue #1215)",
+          { cacheDir: this.cacheDir, reason: trust.reason ?? "unknown" },
+        );
+      }
+      return trust.trusted;
+    })();
+    return this.privateDirCheck;
   }
 
   /**
@@ -81,6 +135,11 @@ export class IssueCache {
    * @returns Cached data or null if cache miss/expired
    */
   async read<T>(repo: string, cacheKey: string): Promise<T | null> {
+    if (!await this.dirIsUsable()) {
+      this.stats.misses++;
+      recordCacheMiss();
+      return null;
+    }
     const filePath = this.getCacheFilePath(repo, cacheKey);
 
     try {
@@ -114,6 +173,7 @@ export class IssueCache {
    * @param data - Data to cache
    */
   async write(repo: string, cacheKey: string, data: unknown): Promise<void> {
+    if (!await this.dirIsUsable()) return;
     const filePath = this.getCacheFilePath(repo, cacheKey);
 
     try {

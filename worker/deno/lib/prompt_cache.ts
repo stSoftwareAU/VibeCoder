@@ -26,12 +26,30 @@
  */
 
 import type { Result } from "../types.ts";
+import { defaultLogger } from "./logger.ts";
+import {
+  ensurePrivateDir,
+  isSharedTmpPath,
+  sharedTmpStateDir,
+  verifyPrivateDir,
+} from "./private_cache_dir.ts";
 
 /** Default cache TTL in seconds (24 hours). */
 const DEFAULT_TTL_SECONDS = 86400;
 
-/** Default cache directory. */
-const DEFAULT_CACHE_DIR = "/tmp/vibe-prompt-cache-deno";
+/**
+ * Default cache directory (Issue #1215).
+ *
+ * The old default was the fixed literal `/tmp/vibe-prompt-cache-deno`: the
+ * same path for every account on the host, and it holds assembled *prompt
+ * text* that is fed straight to the coding agent. Any local user could
+ * create it first and plant an entry, injecting instructions into the run.
+ * The name now carries a per-account suffix and the directory is created
+ * `0700` and ownership-checked before it is read or written.
+ */
+function defaultPromptCacheDir(): string {
+  return sharedTmpStateDir("vibe-prompt-cache-deno");
+}
 
 /** Separator between metadata header and content in cache files. */
 const HEADER_SEPARATOR = "\n---PROMPT-CACHE-CONTENT---\n";
@@ -52,7 +70,11 @@ export interface PromptCacheStats {
 
 /** Options for creating a PromptCache instance. */
 export interface PromptCacheOptions {
-  /** Directory for cache files (defaults to /tmp/vibe-prompt-cache-deno/). */
+  /**
+   * Directory for cache files. Omit it to use the per-account default
+   * `${TMPDIR}/vibe-prompt-cache-deno-<account>/`. Any directory under the
+   * shared temporary root — supplied or defaulted — is ownership-checked.
+   */
   cacheDir?: string;
   /** Cache TTL in seconds (default: 86400 = 24 hours). */
   ttlSeconds?: number;
@@ -71,13 +93,49 @@ export class PromptCache {
   private readonly cacheDir: string;
   private readonly ttlSeconds: number;
   private readonly now: () => number;
+  /** True when the directory is the shared-tmp default and must be verified. */
+  private readonly sharedTmpDir: boolean;
+  /** Memoised result of the one-off directory ownership check. */
+  private privateDirCheck: Promise<boolean> | null = null;
   private stats: PromptCacheStats;
 
   constructor(options?: PromptCacheOptions) {
-    this.cacheDir = options?.cacheDir ?? DEFAULT_CACHE_DIR;
+    this.cacheDir = options?.cacheDir ?? defaultPromptCacheDir();
+    this.sharedTmpDir = isSharedTmpPath(this.cacheDir);
     this.ttlSeconds = options?.ttlSeconds ?? DEFAULT_TTL_SECONDS;
     this.now = options?.now ?? (() => Math.floor(Date.now() / 1000));
     this.stats = { hits: 0, misses: 0 };
+  }
+
+  /**
+   * Whether the backing directory may be used (Issue #1215).
+   *
+   * The check follows the directory's **location**, not whether the caller
+   * named it: any directory at or below the shared temporary root is created
+   * `0700` and ownership-checked, while a work-volume directory is used as
+   * given. A directory another account could have written to disables the
+   * cache, so a planted prompt can never be read back into the agent's
+   * context. Checked once per instance, logged loudly.
+   */
+  private dirIsUsable(): Promise<boolean> {
+    if (!this.sharedTmpDir) return Promise.resolve(true);
+    this.privateDirCheck ??= (async () => {
+      try {
+        await ensurePrivateDir(this.cacheDir);
+      } catch {
+        // Creation failure is reported by the verification below.
+      }
+      const trust = await verifyPrivateDir(this.cacheDir);
+      if (!trust.trusted) {
+        defaultLogger.warn(
+          "Prompt cache directory is not worker-private — cache disabled " +
+            "(Issue #1215)",
+          { cacheDir: this.cacheDir, reason: trust.reason ?? "unknown" },
+        );
+      }
+      return trust.trusted;
+    })();
+    return this.privateDirCheck;
   }
 
   /** Get the configured TTL in seconds. */
@@ -105,6 +163,10 @@ export class PromptCache {
    * @returns Result containing the cached content string, or null on miss
    */
   async get(repo: string, sha: string): Promise<Result<string | null>> {
+    if (!await this.dirIsUsable()) {
+      this.stats.misses++;
+      return { ok: true, value: null };
+    }
     const filePath = this.getCacheFilePath(repo, sha);
 
     try {
@@ -149,6 +211,14 @@ export class PromptCache {
    * @returns Result indicating success or failure
    */
   async set(repo: string, sha: string, content: string): Promise<Result<void>> {
+    if (!await this.dirIsUsable()) {
+      return {
+        ok: false,
+        error: new Error(
+          `PromptCache — cache directory is not worker-private: ${this.cacheDir}`,
+        ),
+      };
+    }
     const filePath = this.getCacheFilePath(repo, sha);
 
     try {
