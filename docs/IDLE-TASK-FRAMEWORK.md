@@ -1002,6 +1002,76 @@ The pure builder lives in
 wired into the idle gate in
 [`worker/deno/lib/run_core.ts`](../worker/deno/lib/run_core.ts).
 
+### Idle capacity that files no idle task (Issue #1052)
+
+The census above escalates a **per-repo** contradiction. It does not cover the
+**fleet-level** one that followed: between 2026-08-26 and 2026-09-04 the fleet
+filed no `idle-task` issue at all — zero open across all eighteen monitored
+repos — while slot capacity sat unused, and nothing said so. The operator found
+it by noticing the fleet did not look busy.
+
+Every instrument needed to notice was present, running and correct, and all of
+them end at `log(...)`:
+
+```text
+slot-utilisation: slots=2 available=1616s occupied=171s occupied_pct=10.6
+idle_pct=31.4 unstaffed=937s occupied_by_slot=s2=171s
+[idle-hooks] … skipping=idle-task-filer reason=audit_found_claimable
+claimable_total=24 streak=2
+[idle-census] repo=… availability=available …   (× 18, every cycle)
+```
+
+[`idle_starvation_escalation.ts`](../worker/deno/lib/idle_starvation_escalation.ts)
+watches the **outcome** instead, and needs both halves of it before it says
+anything:
+
+```mermaid
+flowchart TD
+    O["Observation at the census hook"] --> A{"Any open idle-task<br/>anywhere in the fleet?"}
+    A -- yes --> S["supplied → episode ends,<br/>state file removed"]
+    A -- no --> E["Episode runs: bank elapsed hours<br/>and idle slot-seconds (#925)"]
+    E --> T{"≥ 12h AND<br/>≥ 14,400 idle slot-seconds?"}
+    T -- no --> W["watching → one greppable line"]
+    T -- yes --> F["File one issue in VibeCoder,<br/>deduped on the body marker"]
+```
+
+- **A busy fleet** files no idle task for days by design; its slots are
+  occupied, so the idle slot-seconds never reach four slot-hours.
+- **A genuinely quiet fleet** files an idle task, and `maybe-file-idle-task`
+  keeps at most one open across the whole monitored set — so one open wrapper
+  is the healthy steady state, which ends the episode and restarts the clock.
+- **Idle capacity with no idle task** is neither, and is the ten-day state
+  nothing watched.
+
+The thresholds are 12 hours and 14,400 idle slot-seconds (four slot-hours). The
+incident measured `idle_pct=31.4` on a two-slot host — about 2,250 idle
+slot-seconds per wall hour — so a fleet idling like that meets the capacity half
+in under seven hours and the alert lands on the elapsed half at twelve.
+
+The episode is persisted to `idle_starvation.json` in the work directory,
+atomically, exactly as the #321 streak is. This is not incidental: the counter
+this replaces (Issue #1051) lived in memory for the length of one run and so
+never reached any threshold. The #925 ledger is per-run too, so each observation
+banks the **delta** of that run's reading against what the episode last saw from
+it — a restart contributes its whole reading and the episode's total survives.
+
+The issue is filed into `stSoftwareAU/VibeCoder` for the Issue #459 reason
+above, deduped on a `<!-- VIBE_IDLE_STARVATION -->` body marker so two hosts
+observing the same episode converge on one issue, and filed once per episode: a
+continuing episode does not file again, and a later episode does. The body
+carries the evidence — the `slot-utilisation:` line, the last `[idle-hooks]`
+refusal reason with its `claimable_total`, the per-repo census, and how long the
+fleet has gone without an idle task — so the alert arrives diagnosable rather
+than asking a human to reproduce what the machine already saw
+(Issues #1019 and #1020).
+
+Every observation emits one line, so "the detector ran and decided nothing"
+stays distinguishable from "the detector never ran":
+
+```text
+[idle-starvation] action=watching hours=3.5 idle_slot_seconds=7800 open_idle_tasks=0
+```
+
 ### Random repo selection
 
 `maybe-file-idle-task`
@@ -2007,6 +2077,14 @@ calls escape. It fails closed when any of the following regressions land:
 
 When you touch any of these wiring points, run this test first — it is the
 canonical regression detector for the trigger pipeline.
+
+The two escalations that watch the pipeline from outside have their own suites:
+[`idle_inversion_streak_test.ts`](../worker/deno/tests/idle_inversion_streak_test.ts)
+for the per-repo inversion streak (Issue #321) and
+[`idle_starvation_escalation_1052_test.ts`](../worker/deno/tests/idle_starvation_escalation_1052_test.ts)
+for fleet-wide idle starvation (Issue #1052) — the latter replays the ten-day
+incident, both healthy directions (busy and genuinely quiet), two-host dedup,
+restart persistence and one-issue-per-episode.
 
 ## Related documentation
 

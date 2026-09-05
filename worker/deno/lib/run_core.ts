@@ -76,6 +76,12 @@ import {
   startSlotIdleAccounting,
 } from "./slot_idle_accounting.ts";
 import {
+  createIdleDisagreementTracker,
+  formatIdleDisagreementFragment,
+  IDLE_CYCLE_OBSERVER_ID,
+  type IdleDisagreementTracker,
+} from "./idle_disagreement_streak.ts";
+import {
   deriveRunOutcome,
   describeRunOutcome,
   type RunOutcome,
@@ -1181,25 +1187,22 @@ export interface RunCoreDeps {
 }
 
 // ---------------------------------------------------------------------------
-// Idle-task filer short-circuit bound (Issue #2475)
+// Idle-task filer short-circuit bound (Issues #2475, #3526, #1051)
 // ---------------------------------------------------------------------------
-
-/**
- * Maximum number of *consecutive* audit/scan disagreement iterations the
- * idle-task filer may be short-circuited (Issue #2106 budget guard) before
- * a single filer attempt is forced through (Issue #2475).
- *
- * The #2106 guard skips the filer whenever the independent idle-detect
- * probe reports claimable work while the Priority-2 scan set
- * `foundClaimableIssue = false`, on the assumption the scan
- * mis-classified and the next iteration will pick the work up. A
- * *persistent* disagreement, however, would suppress every wrapper
- * indefinitely. Once the consecutive-disagreement streak exceeds this
- * bound the loop allows exactly ONE filer attempt and resets the streak,
- * so a durable disagreement still produces wrappers without
- * re-introducing the wrapper flooding the #2106 guard prevents.
- */
-export const AUDIT_DISAGREEMENT_SKIP_LIMIT = 3;
+//
+// The #2106 guard skips the filer whenever the independent idle-detect probe
+// (or the census) reports claimable work while the Priority-2 scan set
+// `foundClaimableIssue = false`, on the assumption the scan mis-classified
+// and the next iteration will pick the work up. A *persistent* disagreement
+// would otherwise suppress every wrapper indefinitely, so Issue #2475 bounded
+// the short-circuit: once the disagreement has run long enough, exactly ONE
+// filer attempt is forced through and the run restarts.
+//
+// The bound itself lives in `idle_disagreement_streak.ts` (Issue #1051): it
+// is measured in elapsed time rather than iterations, kept per starved
+// observer rather than per pool, and persisted across the worker's roughly
+// hourly restarts. As three-cycles-in-memory it could never fire — see
+// `IDLE_DISAGREEMENT_BOUND_MS` for why each of those is load-bearing.
 
 // ---------------------------------------------------------------------------
 // Liveness-guard cadence (Issue #2479)
@@ -3057,6 +3060,10 @@ async function runSlot(
           await runIdleWorkHooks(deps, pool.idleHooks, {
             // `[sN] ` prefixed, so the `[idle-hooks]` line names the slot.
             log,
+            // This slot is the one being starved, so the disagreement run
+            // is counted against it and cleared only by its own claim
+            // (Issue #1051).
+            observerId: slotId,
             // Per slot, not per fleet — the whole point of Issue #925.
             scanFoundClaimable: false,
             scanHadSuccess: tracker.scanHadSuccess,
@@ -3123,6 +3130,12 @@ async function runSlot(
         await yieldToEventLoop();
         continue;
       }
+
+      // This slot found work and took it, so it is not starved: end its own
+      // disagreement run (Issue #1051). Only its own — a sibling still being
+      // refused keeps counting, which is the whole point of keying the run
+      // per slot.
+      await pool.idleHooks?.disagreement.clear(slotId);
 
       /** Set by a successful claim so the settle sleep runs holding no repo. */
       let claimSucceeded = false;
@@ -3696,8 +3709,14 @@ async function logWorkVolumeUsage(
 interface IdleHookState {
   /** Monotonic idle-detect correlation id (Issue #2106). */
   idleDetectTick: number;
-  /** Consecutive audit/scan disagreement iterations (Issue #2475). */
-  auditDisagreementStreak: number;
+  /**
+   * How long each observer has been starved by an audit/census disagreement
+   * (Issues #2475, #3526, #1051).
+   *
+   * Shared like the tick counter, but the count inside it is keyed per
+   * observer, so a slot's claim clears only its own run.
+   */
+  disagreement: IdleDisagreementTracker;
   /**
    * Single-flight guard so N idle slots file at most one idle-task per idle
    * episode (Issue #925). Reset at the start of every cycle — preserving
@@ -3716,6 +3735,18 @@ interface IdleHookRequest {
    * `[idle-hooks]` line names the slot that had nothing to do.
    */
   log: (message: string) => void;
+  /**
+   * Who was starved (Issue #1051) — the slot id (`s1`, `s2`, …) for a slot
+   * that scanned and was refused, or {@link IDLE_CYCLE_OBSERVER_ID} for the
+   * end-of-cycle gate.
+   *
+   * The disagreement run is kept under this key, so `s2` claiming work
+   * cannot clear the starvation `s1` has been accumulating. That pool-wide
+   * clear is what made a two-slot fleet with one busy slot invisible, and it
+   * is the same fault `slot_idle_accounting.ts` removed from the accounting
+   * half (Issue #925).
+   */
+  observerId: string;
   /**
    * Whether the scan that produced this observation found claimable work.
    * Always `false` at both call sites — it is forwarded verbatim to the
@@ -3864,13 +3895,21 @@ async function runIdleWorkHooks(
   //
   // Issue #2475: bound the short-circuit so a *persistent*
   // disagreement cannot suppress filing indefinitely. Each
-  // disagreement iteration increments a streak and emits a
-  // structured diagnostic; while the streak stays within
-  // AUDIT_DISAGREEMENT_SKIP_LIMIT the filer is skipped as
-  // before, but once it exceeds the bound exactly ONE filer
-  // attempt is forced through and the streak resets — so a
-  // durable disagreement still produces wrappers without
-  // re-introducing the #2106 wrapper flooding.
+  // disagreement observation extends this observer's run and
+  // emits a structured diagnostic; while the run stays inside
+  // the bound the filer is skipped as before, but once it
+  // exceeds the bound exactly ONE filer attempt is forced
+  // through and the run restarts — so a durable disagreement
+  // still produces wrappers without re-introducing the #2106
+  // wrapper flooding.
+  //
+  // Issue #1051: the run is measured in elapsed time (so it
+  // does not silently depend on the liveness-guard cadence),
+  // kept per starved observer (so a sibling slot's claim
+  // cannot clear it) and persisted across the worker's roughly
+  // hourly restarts. Without all three the bound could never
+  // be reached and the fleet filed no idle-task for ten days.
+  const nowMs = deps.now();
   const auditDisagrees = auditClaimableTotal !== null &&
     auditClaimableTotal > 0;
   if (censusInversionDetected) {
@@ -3890,19 +3929,24 @@ async function runIdleWorkHooks(
     // incident one open PR made the whole low-priority backlog
     // unclaimable while the census counted it as available, and
     // the then-unconditional streak reset suppressed the filer
-    // for hours. Once the streak exceeds the bound, exactly ONE
-    // filer attempt is forced through and the streak resets, so
+    // for hours. Once the run exceeds the bound, exactly ONE
+    // filer attempt is forced through and the run restarts, so
     // a durable census/scan divergence still produces wrappers
     // without re-introducing the #2106 wrapper flooding.
-    state.auditDisagreementStreak += 1;
-    if (
-      state.auditDisagreementStreak > AUDIT_DISAGREEMENT_SKIP_LIMIT &&
-      deps.runIdleTaskFiler
-    ) {
+    //
+    // The observation is recorded whether or not a filer hook is
+    // wired — the bound describes the disagreement, not the hook —
+    // so a caller with no filer (test deps only; production always
+    // wires one) sees the run restart with nothing filed.
+    const streak = await state.disagreement.record(req.observerId, nowMs);
+    const streakFragment = formatIdleDisagreementFragment(
+      req.observerId,
+      streak,
+    );
+    if (streak.action === "bound-exceeded" && deps.runIdleTaskFiler) {
       req.log(
-        `[idle-hooks] ${flagFragment} invoking=idle-task-filer reason=census_inversion_bound_exceeded streak=${state.auditDisagreementStreak} limit=${AUDIT_DISAGREEMENT_SKIP_LIMIT}`,
+        `[idle-hooks] ${flagFragment} invoking=idle-task-filer reason=census_inversion_bound_exceeded ${streakFragment}`,
       );
-      state.auditDisagreementStreak = 0;
       try {
         outcome.filed = true;
         await deps.runIdleTaskFiler();
@@ -3914,24 +3958,28 @@ async function runIdleWorkHooks(
       }
     } else {
       req.log(
-        `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=unblocked_work_exists streak=${state.auditDisagreementStreak} limit=${AUDIT_DISAGREEMENT_SKIP_LIMIT}`,
+        `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=unblocked_work_exists ${streakFragment}`,
       );
     }
   } else if (auditDisagrees && deps.runIdleTaskFiler) {
-    state.auditDisagreementStreak += 1;
+    const streak = await state.disagreement.record(req.observerId, nowMs);
+    const streakFragment = formatIdleDisagreementFragment(
+      req.observerId,
+      streak,
+    );
     // Structured diagnostic on every disagreement so the
     // scan/probe mismatch is observable per iteration.
     req.log(
-      `[idle-hooks] ${flagFragment} action=audit_scan_disagreement claimable_total=${auditClaimableTotal} streak=${state.auditDisagreementStreak} limit=${AUDIT_DISAGREEMENT_SKIP_LIMIT}`,
+      `[idle-hooks] ${flagFragment} action=audit_scan_disagreement claimable_total=${auditClaimableTotal} ${streakFragment}`,
     );
-    if (state.auditDisagreementStreak > AUDIT_DISAGREEMENT_SKIP_LIMIT) {
-      // Bound exceeded: force a single filer attempt, then
-      // reset the streak so we do not file again until the
-      // disagreement persists for another full bound.
+    if (streak.action === "bound-exceeded") {
+      // Bound exceeded: force a single filer attempt. The run
+      // has already restarted from this observation, so we do
+      // not file again until the disagreement persists for
+      // another full bound.
       req.log(
-        `[idle-hooks] ${flagFragment} invoking=idle-task-filer reason=audit_disagreement_bound_exceeded streak=${state.auditDisagreementStreak} limit=${AUDIT_DISAGREEMENT_SKIP_LIMIT}`,
+        `[idle-hooks] ${flagFragment} invoking=idle-task-filer reason=audit_disagreement_bound_exceeded ${streakFragment}`,
       );
-      state.auditDisagreementStreak = 0;
       try {
         outcome.filed = true;
         await deps.runIdleTaskFiler();
@@ -3943,14 +3991,14 @@ async function runIdleWorkHooks(
       }
     } else {
       req.log(
-        `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=audit_found_claimable claimable_total=${auditClaimableTotal} streak=${state.auditDisagreementStreak}`,
+        `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=audit_found_claimable claimable_total=${auditClaimableTotal} ${streakFragment}`,
       );
     }
   } else if (deps.runIdleTaskFiler) {
     // No disagreement (probe agreed, audit unavailable, or no
-    // positive claimable total) — reset the streak and file as
-    // usual.
-    state.auditDisagreementStreak = 0;
+    // positive claimable total) — this observer's run ends
+    // here and the filer runs as usual.
+    await state.disagreement.clear(req.observerId);
     req.log(
       `[idle-hooks] ${flagFragment} invoking=idle-task-filer`,
     );
@@ -3992,14 +4040,27 @@ export async function runCoreLoop(
   //
   // `idleDetectTick` (Issue #2106) is the monotonic correlation id the
   // idle-detect audit stamps on its per-repo lines and per-tick summary.
-  // `auditDisagreementStreak` (Issue #2475) counts consecutive audit/scan
-  // disagreement iterations — probe found claimable work while the scan
-  // reported none — so the #2106 budget-guard short-circuit cannot suppress
-  // the idle-task filer forever; it resets to 0 on any non-disagreement
-  // pass. `filerLatch` is the Issue #925 single-flight guard.
+  // `disagreement` (Issues #2475, #3526, #1051) measures how long each
+  // observer has been refused work while the probe or the census insists
+  // there is some, so the #2106 budget-guard short-circuit cannot suppress
+  // the idle-task filer for ever. It is keyed per observer and persisted to
+  // the work volume, because as a single in-memory counter reset by any
+  // slot's claim the bound could never be reached. `filerLatch` is the
+  // Issue #925 single-flight guard.
+  //
+  // Worker state that outlives a run belongs on the volume. `config.workDir`
+  // carries the resolved work directory (Issue #966); `WORK_DIR` remains only
+  // as its default, for a caller that builds a config without one. Absent,
+  // the streak degrades to in-memory — the pre-#1051 behaviour, and honest
+  // for a caller with no volume to write to.
+  const resolvedWorkDir = config.workDir?.trim() ||
+    Deno.env.get("WORK_DIR")?.trim() || undefined;
   const idleHookState: IdleHookState = {
     idleDetectTick: 0,
-    auditDisagreementStreak: 0,
+    disagreement: createIdleDisagreementTracker({
+      workDir: resolvedWorkDir,
+      log: (message) => deps.logError(message),
+    }),
     filerLatch: new IdleFilerLatch(),
   };
   // Issue #2479: monotonic per-cycle counter so the liveness guard runs on
@@ -4756,11 +4817,8 @@ export async function runCoreLoop(
           // nothing and changes no resource bound: still one agent-backed
           // pass at a time, just not always the same one first.
           // The lane's own state belongs beside the other worker state on
-          // the volume. `config.workDir` carries the resolved work
-          // directory (Issue #966); `WORK_DIR` remains only as its default,
-          // for a caller that builds a config without one.
-          const laneWorkDir = config.workDir?.trim() ||
-            Deno.env.get("WORK_DIR")?.trim() || undefined;
+          // the volume — `resolvedWorkDir`, above (Issue #966).
+          const laneWorkDir = resolvedWorkDir;
           const laneOffset = await readLaneRotation(laneWorkDir);
           const rotatedLanePasses = rotate(deferredLanePasses, laneOffset);
           if (rotatedLanePasses.length > 1) {
@@ -4863,6 +4921,9 @@ export async function runCoreLoop(
             if (idleHookState.filerLatch.tryConsume()) {
               const hookOutcome = await runIdleWorkHooks(deps, idleHookState, {
                 log: (message) => deps.log(message),
+                // The fleet-wide question, asked once every slot has
+                // drained — its own observer, never a slot's (Issue #1051).
+                observerId: IDLE_CYCLE_OBSERVER_ID,
                 scanFoundClaimable: tracker.foundClaimableIssue,
                 scanHadSuccess: tracker.scanHadSuccess,
                 claimScanCompleted:
@@ -4884,8 +4945,14 @@ export async function runCoreLoop(
             }
           } else {
             // Issue #2475: the scan found claimable work, so there is no
-            // disagreement to bound — clear the streak.
-            idleHookState.auditDisagreementStreak = 0;
+            // disagreement to bound — end this observer's run.
+            //
+            // Issue #1051: only the cycle gate's own run. This branch means
+            // "some slot claimed something", which says nothing about a
+            // slot that was refused all cycle; clearing every observer here
+            // is precisely what stopped a starved slot ever reaching the
+            // bound in a two-slot pool.
+            await idleHookState.disagreement.clear(IDLE_CYCLE_OBSERVER_ID);
             deps.log(
               `[idle-hooks] foundClaimableIssue=${tracker.foundClaimableIssue} scanHadSuccess=${tracker.scanHadSuccess} skipping=idle-task-filer reason=found-issue`,
             );
