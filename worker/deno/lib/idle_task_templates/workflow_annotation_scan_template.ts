@@ -54,6 +54,8 @@ import {
   registerTemplate,
 } from "../idle_task_template.ts";
 import { runGhCommand as defaultGhCommand } from "../github.ts";
+import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
+import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
 import { loadPrompt as defaultLoadPrompt } from "../prompt_manager.ts";
 import {
   diffNewlyFiled,
@@ -133,6 +135,12 @@ export interface WorkflowAnnotationFinding {
 
 /** Injectable dependencies for {@link createWorkflowAnnotationScanTemplate}. */
 export interface WorkflowAnnotationScanTemplateDeps {
+  /**
+   * Author-verification inputs for the wrapper dedup search
+   * ({@link hasFleetAuthoredOpenIssueTitled}). Omitted — every
+   * production caller — reads the configured fleet identity.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
   /** gh CLI runner used for snapshots, dedup, filing, and the wrapper veto. */
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Prompt loader — defaults to `loadPrompt`. */
@@ -256,45 +264,6 @@ async function defaultFileFinding(
 // gh snapshot / dedup helpers
 // ---------------------------------------------------------------------------
 
-/** True when an open wrapper titled exactly the canonical title exists. */
-async function hasOpenWrapper(
-  repo: string,
-  ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<boolean> {
-  let raw: string;
-  try {
-    raw = await ghCommandFn([
-      "issue",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "open",
-      "--search",
-      `"${WORKFLOW_ANNOTATION_SCAN_ISSUE_TITLE}" in:title`,
-      "--json",
-      "number,title",
-      "--limit",
-      "10",
-    ]);
-  } catch {
-    return false;
-  }
-  for (
-    const item of parseGhJsonArray(raw, "find workflow-annotation-scan wrapper")
-  ) {
-    if (item === null || typeof item !== "object") continue;
-    const title = (item as { title?: unknown }).title;
-    if (
-      typeof title === "string" &&
-      title.trim() === WORKFLOW_ANNOTATION_SCAN_ISSUE_TITLE
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
 /**
  * Return the set of class keys already open as `workflow-annotation-scan`
  * findings, read back from each open issue's `<!-- annotation-class: … -->`
@@ -368,6 +337,7 @@ export function createWorkflowAnnotationScanTemplate(
   deps: WorkflowAnnotationScanTemplateDeps = {},
 ): IdleTaskTemplate {
   const ghCommandFn = deps.ghCommandFn ?? ((args) => defaultGhCommand(args));
+  const dedupAuthors = deps.dedupAuthors ?? {};
   const loadPromptFn = deps.loadPromptFn ??
     ((name, promptsDir) => defaultLoadPrompt(name, promptsDir));
   const ensureLabelsFn = deps.ensureLabelsFn ??
@@ -416,7 +386,17 @@ export function createWorkflowAnnotationScanTemplate(
     // findings (or a prior wrapper) is still open.
     const known = await listKnownOpenClassKeys(opts.repo, ghCommandFn);
     if (known.size > 0) return false;
-    if (await hasOpenWrapper(opts.repo, ghCommandFn)) return false;
+    if (
+      await hasFleetAuthoredOpenIssueTitled({
+        repo: opts.repo,
+        title: WORKFLOW_ANNOTATION_SCAN_ISSUE_TITLE,
+        context: "workflow-annotation-scan wrapper",
+        ghCommand: ghCommandFn,
+        ...dedupAuthors,
+      })
+    ) {
+      return false;
+    }
     return true;
   }
 
