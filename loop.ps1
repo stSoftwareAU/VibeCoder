@@ -59,6 +59,11 @@ $env:VIBE_SUPERVISOR_RECORDS_OUTCOME = "1"
 # (QUOTA_PAUSE_EXIT_STATUS in worker/deno/lib/quota_pause.ts, Issue #342).
 $QuotaPauseExit = 75
 
+# The launcher's "this host's one worker is already running" status
+# (ANOTHER_WORKER_RUNNING_EXIT in worker/deno/commands/container_reap.ts,
+# Issues #26, #1056). The design invariant holding, not a crash.
+$AnotherWorkerRunningExit = 4
+
 $WorkerMod = Join-Path $ScriptDir "worker/deno/mod.ts"
 $DenoCmd = Get-Command "deno" -CommandType Application -ErrorAction SilentlyContinue |
     Select-Object -First 1
@@ -129,6 +134,10 @@ while ($true) {
     if ($status -eq $QuotaPauseExit) {
         Write-Host ("loop.ps1: run.ps1 paused — this host is out of quota (status $status); " +
             "re-probing on the quota cadence, not backing off (Issue #342)")
+    } elseif ($status -eq $AnotherWorkerRunningExit) {
+        Write-Host ("loop.ps1: run.ps1 did not launch — another worker is already running " +
+            "on this host (status $status); one worker per host, so this is not a failure " +
+            "(Issues #26, #1056)")
     } elseif ($status -ne 0) {
         Write-Host "loop.ps1: run.ps1 exited with status $status — backing off and retrying"
     }
