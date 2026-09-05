@@ -2709,6 +2709,54 @@ Milestone branches are now periodically synchronised with the default branch,
 ensuring they stay up-to-date and reducing merge conflicts when the milestone is
 consolidated.
 
+#### 🚦 The merged tree is type-checked before it is pushed
+
+Git reporting no conflict says only that each side of the merge is internally
+consistent — not that their combination is. The same callback wiring was
+deleted from `run_core.ts` three times by a clean sync merge, and because
+`milestone/*` carries no required checks nothing downstream caught it either
+(#928, #796). [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts)
+closes that gap: after the merge commit is created locally and **before** the
+push, the merged tree is type-checked with the repository's own gate — its
+`deno task check` where the manifest defines one, otherwise a whole-tree
+`deno check`. **Every** Deno project in the tree is checked, not the first one
+found: this repository carries `container/deno-seed/deno.json` beside
+`worker/deno/deno.json`, and checking whichever the filesystem returned first
+would pass a broken worker tree behind a one-file seed project.
+
+```mermaid
+flowchart TD
+    A[Merge default into milestone] --> B[Type-check the merged tree]
+    B -- passes --> C[Push, or raise a sync PR]
+    B -- no Deno project --> D["Push, logged UNGATED<br/>(nothing verified the tree)"]
+    B -- fails or cannot run --> E[Reset to the pre-merge commit]
+    E --> F["Report the failure loudly<br/>(sync_failed, self-heal event)"]
+    F --> G["Comment on the milestone's<br/>tracking issue — needs a human"]
+```
+
+Three properties matter:
+
+- **Nothing unverified is published.** A check that cannot be run — a spawn
+  failure, a timeout past `MERGE_GATE_TIMEOUT_MS`, a working tree that cannot be
+  read — counts as a failure, not a pass: absence of a failure is not success.
+- **The refusal leaves no residue.** The local branch is reset to the commit it
+  stood at before the merge, so the next cycle starts from the remote head
+  rather than a half-merged tree. The pre-merge SHA is read *before* merging and
+  the sync refuses to merge at all without it, since a merge it could not roll
+  back is one it must not start.
+- **It escalates on the first occurrence.** A tree the check rejects is not
+  transient, so the needs-human comment (carrying the check output) goes to the
+  milestone's tracking issue immediately rather than waiting for the
+  `MILESTONE_SYNC_ESCALATION_THRESHOLD` failure streak. It is posted once, via
+  its own `gateEscalated` flag in the streak file — a branch that already
+  escalated for an ordinary sync failure still reports a refused merge. Without
+  a streak file (the ad hoc `sync-milestone-branches` command) nothing can
+  record that the comment went out, so the refusal stays in the log rather than
+  being re-posted every cycle.
+
+A repository with no Deno project is still synced, but the outcome says
+`UNGATED` so an unchecked push never reads like a checked one.
+
 ### 🩹 Milestone branch self-heal
 
 A milestone can gain open children **after** its summary PR merged and
@@ -3183,6 +3231,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_progress.ts](../worker/deno/lib/milestone_progress.ts)                                                 | Milestone progress notifications                                                                                                                                                     |
 |                             | [milestone_priority.ts](../worker/deno/lib/milestone_priority.ts)                                                 | Configurable issue ordering within milestones                                                                                                                                        |
 |                             | [milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts)                                           | Periodic milestone branch sync with default branch                                                                                                                                   |
+|                             | [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts)                                             | Type-checks the sync's merged tree before it is pushed, and refuses the push when it does not compile                                                                                |
 |                             | [milestone_branch_self_heal.ts](../worker/deno/lib/milestone_branch_self_heal.ts)                                 | Recreate a deleted branch for an open milestone with open children, and retarget stranded child PRs                                                                                  |
 |                             | [milestone_health.ts](../worker/deno/lib/milestone_health.ts)                                                     | Milestone health diagnostics                                                                                                                                                         |
 | **Issue processing phases** |                                                                                                                   |                                                                                                                                                                                      |
