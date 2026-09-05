@@ -23,6 +23,7 @@ import { IssueCache } from "../lib/issue_cache.ts";
 import {
   fetchAllOpenPRs,
   fetchOpenPRsByUser,
+  fetchOpenPRsForFleet,
   fetchRecentMergedPRs,
 } from "../lib/issue_query.ts";
 
@@ -192,6 +193,60 @@ Deno.test("run_core deps cache - prs_recent_merged_${limit} different limits are
       2,
       "different limits must use distinct cache keys",
     );
+  } finally {
+    await cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The post-scan sweep's live listing (Issue #1136)
+// ---------------------------------------------------------------------------
+
+Deno.test("run_core deps cache - the post-scan sweep's forced refresh sees a PR raised after the 1.65 pass", async () => {
+  // `ensureAutoMerge({ refreshOpenPrs: true })` lists through
+  // `fetchOpenPRsForFleet(repo, authors, cache, gh, undefined, true)`. The
+  // cache was populated by the priority 1.65 sweep, before this cycle's own
+  // PRs existed — a cached second sweep would be handed that same pre-scan
+  // list and attempt nothing new, which is the whole defect.
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    let openPrs: unknown[] = [];
+    let callCount = 0;
+    const mockGh = (_args: string[]): Promise<string> => {
+      callCount++;
+      return Promise.resolve(JSON.stringify(openPrs));
+    };
+
+    // Priority 1.65: the repo has no open fleet PR yet.
+    const early = await fetchOpenPRsForFleet("o/r", ["bot"], cache, mockGh);
+    assertEquals(early.length, 0);
+    assertEquals(callCount, 1);
+
+    // The cycle's issue work raises one.
+    openPrs = [{
+      number: 1133,
+      title: "Fix the thing",
+      baseRefName: "milestone/fleet",
+      headRefName: "issue-1133",
+    }];
+
+    // A cached read is still blind to it...
+    const cached = await fetchOpenPRsForFleet("o/r", ["bot"], cache, mockGh);
+    assertEquals(cached.length, 0, "the cached list predates the new PR");
+    assertEquals(callCount, 1, "a cached read makes no gh call");
+
+    // ...and the forced refresh the post-scan sweep uses is not.
+    const live = await fetchOpenPRsForFleet(
+      "o/r",
+      ["bot"],
+      cache,
+      mockGh,
+      undefined,
+      true,
+    );
+    assertEquals(live.length, 1);
+    assertEquals(live[0]?.number, 1133);
+    assertEquals(callCount, 2, "a forced refresh lists live");
   } finally {
     await cleanup();
   }
