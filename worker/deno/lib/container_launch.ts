@@ -1267,10 +1267,14 @@ export function buildContainerLaunchPlan(
 
   return {
     runtime: descriptor.executable,
-    image,
-    // One image today: the standard build is its own whole chain. A layered
-    // build appends the image it is built FROM (Issue #1059).
-    keepImages: [image],
+    // What the container runs: the operator's layer when one is configured
+    // (Issue #980), else the standard image, exactly as before.
+    image: runImage,
+    // The chain the launch depends on, deepest last (Issue #1059). One image
+    // without an extension — the standard build is its own whole chain; two
+    // with one, because the layer is built FROM the standard image and a
+    // prune told only the leaf would untag that base on every launch.
+    keepImages: runImage === image ? [image] : [runImage, image],
     containerName,
     watchdogSeconds: Math.floor(inputs.watchdogSeconds),
     mounts,

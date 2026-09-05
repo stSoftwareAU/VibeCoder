@@ -1550,6 +1550,22 @@ Deno.test("buildContainerLaunchPlan - the container runs the extension tag (Issu
   );
 });
 
+Deno.test("buildContainerLaunchPlan - the keep chain carries the layer and its base (Issues #980, #1059)", () => {
+  // The prune keeps what the launch depends on. A layered deployment depends
+  // on both tags — the layer's own `FROM` names the base — so a chain holding
+  // only the leaf would untag that base on every launch and force the standard
+  // build again. Deepest last.
+  assertEquals(
+    buildContainerLaunchPlan(extensionInputs()).keepImages,
+    ["vibe-coder:fedcba987654", "vibe-coder:0123456789ab"],
+  );
+  // An unlayered deployment keeps exactly the one tag it always did.
+  assertEquals(
+    buildContainerLaunchPlan(inputs()).keepImages,
+    ["vibe-coder:0123456789ab"],
+  );
+});
+
 Deno.test("buildContainerLaunchPlan - a declared start script rides the extension build (Issue #980)", () => {
   const plan = buildContainerLaunchPlan(
     extensionInputs({

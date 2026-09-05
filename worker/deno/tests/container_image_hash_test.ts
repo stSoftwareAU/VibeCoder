@@ -34,7 +34,7 @@ import {
   resolveConfigFile,
 } from "../commands/container_image_hash.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { emptyEnv } from "./support/env_lookup.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname.replace(
   /\/$/,
@@ -934,11 +934,13 @@ Deno.test("container-image-hash - the configured extension moves the printed ref
       }),
     );
 
-    const result = await withoutProviderEnv(() =>
-      containerImageHashCommand.execute(
-        commandArgs(root),
-        buildDefaultWorkerConfig(),
-      )
+    const result = await containerImageHashCommand.execute(
+      commandArgs(root),
+      buildDefaultWorkerConfig(),
+      // A stated home directory, not the suite's: the declaration's
+      // containment rule is about the operator's home, and a lookup that
+      // answered nothing at all would refuse the path for being uncheckable.
+      envFrom({ HOME: "/home/operator" }),
     );
 
     const data = result.data as {
@@ -979,11 +981,13 @@ Deno.test("container-image-hash - a malformed extension fails the command, namin
       }),
     );
 
-    const result = await withoutProviderEnv(() =>
-      containerImageHashCommand.execute(
-        commandArgs(root),
-        buildDefaultWorkerConfig(),
-      )
+    const result = await containerImageHashCommand.execute(
+      commandArgs(root),
+      buildDefaultWorkerConfig(),
+      // A stated home directory, not the suite's: the declaration's
+      // containment rule is about the operator's home, and a lookup that
+      // answered nothing at all would refuse the path for being uncheckable.
+      envFrom({ HOME: "/home/operator" }),
     );
 
     assertEquals(result.success, false);
