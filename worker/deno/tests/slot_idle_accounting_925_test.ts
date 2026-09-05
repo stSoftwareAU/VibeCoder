@@ -318,18 +318,25 @@ Deno.test(
       `expected a named occupied slot in: ${line}`,
     );
 
-    // The audit ran wherever the filer ran, told the truth about this slot,
-    // and was shown the sibling's repo as excluded — without which it would
-    // raise `mis_classification` on every observation (Issue #898).
+    // The audit ran wherever the filer ran and told the truth about this slot.
+    //
+    // Issue #1091: the sibling's repository is deliberately **not** excluded
+    // any more. Issue #898 excluded it because the scan skipped the whole
+    // repository unseen, so the two instruments had never disagreed about it;
+    // a slot's hold now occupies one work stream, the scan evaluates every
+    // other stream of that repository, and a disagreement about them is real
+    // evidence rather than an artefact of the hold. Only the maintenance
+    // lane's whole-repository lease still reaches this set.
     assert(audits.length > 0, "the audit ran at the slot's gate");
     const slotAudit = audits[0] as {
       scanFoundClaimable: boolean;
       scanExcludedRepos: readonly string[];
     };
     assertEquals(slotAudit.scanFoundClaimable, false);
-    assert(
-      slotAudit.scanExcludedRepos.includes("o/busy"),
-      `expected the sibling's repo in scanExcludedRepos; got ${
+    assertEquals(
+      [...slotAudit.scanExcludedRepos],
+      [],
+      `a sibling slot's hold must not hide its repository from the audit; got ${
         JSON.stringify(slotAudit.scanExcludedRepos)
       }`,
     );
