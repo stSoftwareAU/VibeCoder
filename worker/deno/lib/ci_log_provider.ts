@@ -1,10 +1,23 @@
 /**
  * CI log provider extension point (Issue #3579).
  *
- * GitHub Actions is the built-in default provider every repo gets with
- * no configuration. External CI/CD systems plug in through this
- * interface — Jenkins is simply the first one — so adding a third
- * provider never touches the dispatcher.
+ * GitHub Actions is the **only** built-in provider, and it is built in for
+ * one reason: it is the CI this project itself runs on. It is the default
+ * every repo gets with no configuration — not an approved integration, and
+ * not the first entry on a list of the CI systems we support. There is no
+ * such list. Core does not know what other CI systems exist, and should not:
+ * an enumeration of vendors is the failure mode, because the next operator's
+ * is never on it.
+ *
+ * Every other CI system plugs in through this interface from a **private
+ * extension**, so adding one never touches the dispatcher and leaves no trace
+ * of one deployment's vendor in this repository. See
+ * `docs/PRIVATE-EXTENSIONS.md` (Issue #985).
+ *
+ * This header used to name one vendor's integration as "simply the first"
+ * built-in, and core imported its fetch seam from that vendor's own module —
+ * so the extension point could not compile without it. Issue #986 removed
+ * both the claim and the dependency.
  *
  * A provider answers two questions: `matches()` — can I resolve a log
  * for this failing check? — and `fetchLog()` — here is a bounded
@@ -15,7 +28,7 @@
  */
 
 import type { CiProviderConfig, Result } from "../types.ts";
-import type { FetchFn } from "./jenkins_log_fetcher.ts";
+import type { FetchFn } from "./ci_fetch_types.ts";
 import type {
   fetchGithubActionsLogExcerpt,
   GhCommandFn,
@@ -37,7 +50,7 @@ export interface CiFailureContext {
   targetUrl?: string;
   /** Resolved per-repo configuration entry for the provider. */
   providerConfig?: CiProviderConfig;
-  /** Injection seam: HTTP fetch used by the Jenkins provider. */
+  /** Injection seam: HTTP fetch used by a provider that calls a CI server. */
   fetchFn?: FetchFn;
   /** Injection seam: authenticated `gh` runner used by the Actions provider. */
   ghFn?: GhCommandFn;
@@ -61,7 +74,7 @@ export interface CiLogExcerpt {
 
 /** A pluggable source of CI logs for a failing check. */
 export interface CiLogProvider {
-  /** Stable id, e.g. `github-actions` or `jenkins`. */
+  /** Stable id, e.g. `github-actions`. */
   readonly id: string;
   /** Can this provider resolve a log for this failing check? */
   matches(ctx: CiFailureContext): boolean;

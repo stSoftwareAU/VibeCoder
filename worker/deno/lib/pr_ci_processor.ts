@@ -84,7 +84,7 @@ import {
   runPrFailureActions,
 } from "./pr_failure_actions.ts";
 import type { FailedCiCheck } from "./pr_ci_checks.ts";
-import type { FetchFn } from "./jenkins_log_fetcher.ts";
+import type { FetchFn } from "./ci_fetch_types.ts";
 import type { fetchGithubActionsLogExcerpt } from "./github_actions_log_fetcher.ts";
 import {
   type CiFailureContext,

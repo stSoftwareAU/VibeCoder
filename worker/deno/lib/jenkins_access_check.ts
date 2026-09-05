@@ -25,14 +25,12 @@ import {
   discardBody,
   withRequestTimeout,
 } from "./bounded_fetch.ts";
+import type { FetchFn } from "./ci_fetch_types.ts";
 import { getEnvOrDefault } from "./config.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 
-/** Injectable fetch function type (mirrors the log fetcher's seam). */
-export type FetchFn = (
-  url: string | URL | Request,
-  init?: RequestInit,
-) => Promise<Response>;
+/** Re-exported so this module's own callers keep one import site. */
+export type { FetchFn };
 
 /** Environment variables the Jenkins client requires, in report order. */
 export const REQUIRED_JENKINS_ENV_VARS = [

@@ -22,8 +22,8 @@
 
 import type { Result } from "../types.ts";
 import { getEnvOrDefault } from "./config.ts";
+import type { FetchFn } from "./ci_fetch_types.ts";
 import {
-  type FetchFn,
   fetchJenkinsBuildLog,
   fetchJenkinsBuildStatus,
   type JenkinsBuild,

@@ -14,6 +14,7 @@
  */
 
 import type { Result } from "../types.ts";
+import type { FetchFn } from "./ci_fetch_types.ts";
 import {
   DEFAULT_FETCH_TIMEOUT_MS,
   DEFAULT_MAX_STREAM_BYTES,
@@ -48,11 +49,7 @@ export interface JenkinsBuild {
   url: string;
 }
 
-/** Injectable fetch function type for testing. */
-export type FetchFn = (
-  url: string | URL | Request,
-  init?: RequestInit,
-) => Promise<Response>;
+export type { FetchFn };
 
 /** Options shared by both status and log fetchers. */
 interface JenkinsFetcherBaseOptions {

@@ -20,7 +20,7 @@
 
 import type { CiProviderConfig, Logger } from "../types.ts";
 import type { FailedCiCheck } from "./pr_ci_checks.ts";
-import type { FetchFn } from "./jenkins_log_fetcher.ts";
+import type { FetchFn } from "./ci_fetch_types.ts";
 import type {
   fetchGithubActionsLogExcerpt,
   GhCommandFn,
@@ -51,7 +51,7 @@ export interface RunPrFailureActionsOptions {
   failedChecks: FailedCiCheck[];
   /** Configured providers to run, in order. */
   providers: CiProviderConfig[];
-  /** Injectable fetch function (used by the Jenkins provider). */
+  /** Injectable fetch function (used by a provider that calls a CI server). */
   fetchFn?: FetchFn;
   /** Injectable authenticated `gh` runner (used by the Actions provider). */
   ghFn?: GhCommandFn;
