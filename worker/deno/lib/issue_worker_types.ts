@@ -104,6 +104,15 @@ export interface PhaseState {
    */
   baselineGateFindings?: GenericFinding[];
   /**
+   * Seconds the baseline quality gate took on this repository this run
+   * (Issue #1138). The execute phase quotes it in the agent's quality
+   * instructions, so the agent can weigh the gate against the run budget it
+   * has left instead of against a fleet-wide assumption. `undefined` when the
+   * gate did not actually run — a reused baseline or a gate that errored has
+   * no duration to report.
+   */
+  baselineQualityDurationSeconds?: number;
+  /**
    * Outcome of the per-repo `bump-deps.sh` phase (Issue #1613). Set by
    * `workOnIssueBumpDeps`. Consumed by the quality-gate audit (which
    * may flip the status to `rejected_by_audit`) and by the completion

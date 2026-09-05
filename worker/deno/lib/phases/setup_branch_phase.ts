@@ -43,6 +43,10 @@ import {
   describeRepoLevelRejection,
   isRepoLevelBranchRejection,
 } from "../milestone_branch_rejection.ts";
+import {
+  claimObjectStoreRepair,
+  isObjectStoreCorruption,
+} from "../object_store_repair.ts";
 
 /**
  * What a human must do when a milestone branch cannot be ensured
@@ -53,6 +57,17 @@ export const MILESTONE_BRANCH_NEXT_STEP =
   "permissions, and whether the branch was deleted), or move this issue off " +
   "the milestone. The worker will not base a milestone issue on the default " +
   "branch, so it stopped rather than opening a wrongly-based PR.";
+
+/**
+ * What a human must do when a re-clone did not clear the corruption
+ * (Issue #1093). Exported so tests assert the handoff wording.
+ */
+export const OBJECT_STORE_NEXT_STEP =
+  "Delete the repository's clone and its lane worktrees under the work " +
+  "volume by hand and check the host's free disk — a truncated object write " +
+  "is the usual cause. The worker already re-cloned once this run and the " +
+  "corruption survived it, so the fault is in the volume rather than in the " +
+  "objects.";
 
 /**
  * Set up the repository and create/checkout the feature branch.
@@ -164,7 +179,7 @@ export async function workOnIssueSetupBranch(
       reason: `Failed to set up repo ${repo}: ${setupResult.error.message}`,
     };
   }
-  const repoPath = setupResult.value;
+  let repoPath = setupResult.value;
 
   // Record initial heartbeat (Issue #631). The initial record is awaited
   // (Issue #1888); on failure release the claim and surface the failure
@@ -449,11 +464,123 @@ export async function workOnIssueSetupBranch(
 
   // Create feature branch from base (skipped when a checkpoint was resumed)
   if (!state.resumedFromCheckpoint) {
-    const branchResult = await deps.git.createFeatureBranchFromBase(
+    let branchResult = await deps.git.createFeatureBranchFromBase(
       state.branchName,
       state.baseBranch,
       { cwd: repoPath },
     );
+
+    // Issue #1093: `inflate: data stream error` is not a bad ref, it is a
+    // damaged object in the store every lane worktree of this repository
+    // shares — so failing the issue here fails the next issue, and the one
+    // after that, identically. Every object is recoverable from the remote,
+    // so repair and retry rather than hand a human a fault the worker can
+    // fix itself.
+    if (
+      !branchResult.ok && isObjectStoreCorruption(branchResult.error.message)
+    ) {
+      const corruption = branchResult.error.message;
+      let repairDetail = "";
+      if (!claimObjectStoreRepair(repo)) {
+        // Already re-cloned this run and the corruption came back: the work
+        // volume is the fault, not the objects. Do not spend another clone.
+        repairDetail =
+          "the object store was already re-cloned this run and the " +
+          "corruption recurred";
+        logger.error(
+          "Object-store corruption recurred after this run's re-clone — not re-cloning again (Issue #1093)",
+          { repo, issueNumber, error: corruption },
+        );
+      } else {
+        logger.error(
+          "Shared object store is corrupt — re-cloning the repository before failing the issue (Issue #1093)",
+          { repo, issueNumber, error: corruption },
+        );
+        const repair = await deps.git.repairObjectStore({
+          repo,
+          workDir: config.workDir,
+        });
+        if (!repair.ok) {
+          repairDetail = repair.error.message;
+          logger.error("Object-store repair failed (Issue #1093)", {
+            repo,
+            issueNumber,
+            error: repairDetail,
+          });
+        } else {
+          logger.info(
+            "Object store re-cloned — retrying the feature branch (Issue #1093)",
+            {
+              repo,
+              issueNumber,
+              removed: repair.value.removed,
+              fsck: repair.value.fsck,
+            },
+          );
+          // The lane's worktree went with the clone, so take a fresh one
+          // off the new store before retrying.
+          const reSetup = await deps.git.setupRepo(
+            repo,
+            config.workDir,
+            ctx.laneId,
+          );
+          if (!reSetup.ok) {
+            repairDetail =
+              `the repaired clone could not be re-opened: ${reSetup.error.message}`;
+            logger.error(
+              "Could not take a working tree off the repaired clone (Issue #1093)",
+              { repo, issueNumber, error: reSetup.error.message },
+            );
+          } else {
+            repoPath = reSetup.value;
+            branchResult = await deps.git.createFeatureBranchFromBase(
+              state.branchName,
+              state.baseBranch,
+              { cwd: repoPath },
+            );
+            if (!branchResult.ok) {
+              repairDetail =
+                `the branch still could not be created after the re-clone: ${branchResult.error.message}`;
+            }
+          }
+        }
+      }
+
+      if (!branchResult.ok) {
+        // A repair that did not resolve the corruption is the one case a
+        // human is needed for, and it is named per repository — every issue
+        // in it fails identically, so one report is the whole story.
+        const ghClient = deps.github.createClient(logger);
+        const escalation = await escalateToHuman({
+          ghClient,
+          repo,
+          target: { kind: "issue", number: issueNumber },
+          needsHumanLabel: config.needsHumanLabel,
+          heading: "Corrupt git object store",
+          reason:
+            `The shared git object store of \`${repo}\` on this host is corrupt, ` +
+            `and the worker could not repair it: ${repairDetail}.\n\n` +
+            "The lane worktrees share one object store per repository, so this " +
+            "fault applies to every slot and every milestone branch in it.\n\n" +
+            "```\n" + corruption + "\n```",
+          nextStep: OBJECT_STORE_NEXT_STEP,
+          dedupKey: `object-store-corrupt-${repo}`,
+          githubUser,
+          deps: {
+            github: { ensureLabelExists: deps.github.ensureLabelExists },
+          },
+          logger,
+        });
+        if (!escalation.ok) {
+          logger.error("Object-store corruption escalation failed", {
+            repo,
+            issueNumber,
+            error: escalation.error.message,
+          });
+        }
+      }
+    }
+
     if (!branchResult.ok) {
       return {
         status: "failure",

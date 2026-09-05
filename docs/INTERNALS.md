@@ -372,7 +372,24 @@ every prior run's log is gzipped at the next worker start
 ([worker_log_gzip.ts](../worker/deno/lib/worker_log_gzip.ts)) and both forms are
 deleted by the age-based retention pass
 ([worker_log_cleanup.ts](../worker/deno/lib/worker_log_cleanup.ts)) once older
-than `WORKER_LOG_MAX_AGE_DAYS` (default 3).
+than `WORKER_LOG_MAX_AGE_DAYS` (default 3). In container mode the host's
+`$HOME/logs` is bind-mounted to `/home/vibe/logs`, so both passes work on one
+directory rather than two.
+
+The compression pass's start-of-run summary names that directory and reconciles
+against it (Issue #1021) — candidates present on one side, and compressed,
+skipped, failed and the current run's own log on the other, with each skip
+attributed to its cause:
+
+```text
+worker log gzip: /home/vibe/logs: 6 worker log(s) present = compressed 2 +
+skipped 3 + failed 0 + current 1; skipped: 3 header-only stub(s) below the
+200-byte size floor, 0 owned by a live PID
+```
+
+A large stub figure is not a compression problem: it counts consecutive runs
+that wrote nothing past their header line, and those are deleted by the
+retention pass an hour after they are written.
 
 ```mermaid
 flowchart LR

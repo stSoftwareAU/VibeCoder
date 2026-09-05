@@ -195,6 +195,14 @@ export interface ProgressExtensionOptions {
    */
   windDownSeconds?: number;
   /**
+   * What the full quality gate took on this repository this run (Issue
+   * #1138), measured by the baseline gate. The notice is written from the
+   * wider of the wind-down window and what the gate needs, so a repo with a
+   * slow gate is warned earlier than one with a fast gate. Absent, the
+   * fleet-wide assumption applies.
+   */
+  typicalGateSeconds?: number;
+  /**
    * Where each granted extension is reported (Issue #4297).
    *
    * Purely observational — the shutdown drain reads it to account for a

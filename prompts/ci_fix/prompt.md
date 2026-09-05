@@ -11,7 +11,7 @@ A CI check on PR #{{PR_NUMBER}} failed and was pre-classified by the worker befo
 
 The classification's category takes precedence over your own read of the logs; only deviate if you have direct evidence it is wrong, and document that evidence in `.pr_response_message`.
 
-- **`code-fix-required`** — a code change is expected. "No change" is escalation, not success. `semgrep` and other security findings are always actionable — do not dismiss them without an explicit, justified suppression. If you cannot find a fix, escalate honestly in `.pr_response_message`. A semgrep finding reproduces locally: the quality gate runs the same `p/default` ruleset over the branch's changed files, so `./quality.sh` tells you whether the fix landed before you push it.
+- **`code-fix-required`** — a code change is expected. "No change" is escalation, not success. `semgrep` and other security findings are always actionable — do not dismiss them without an explicit, justified suppression. If you cannot find a fix, escalate honestly in `.pr_response_message`. A semgrep finding reproduces locally: the quality gate runs the same `p/default` ruleset over the branch's changed files, so the gate's semgrep stage on its own tells you whether the fix landed before you push it.
 - **`timing`** — consider optimising the slow code, raising the timeout with justification, or making the test hermetic (remove network/IO, use fakes). If none apply, record in `.pr_response_message` what you considered, why each was rejected, and what a human should do.
 - **`infrastructure`** — consider retries with backoff, a config change, or a different runner. This is the only category that may legitimately conclude "transient — retry". Apply a mitigation if one exists; otherwise document the analysis.
 - **`unknown`** — investigate fully: read the failing check's logs, build the reproduction loop below before you theorise, inspect the source. The logs are not in the working tree — run `gh pr checks {{PR_NUMBER}}` to find the failing run, then `gh run view <run-id> --log-failed` to pull the failing steps. Apply a fix if you find one; otherwise say so clearly and list what you inspected.
@@ -77,7 +77,7 @@ The `<failure_classification>` and `<ci_log_excerpt>` blocks above carry GitHub-
 
 Before you change a line you need a **red-capable command**: one command, already run once in this run, that drives the failing path and reproduces the check's own symptom. No red command, no hypothesis — reading source to build a theory before that command exists is how a run ships a change that turns the check green without touching the cause. If you catch yourself theorising first, stop and build the command.
 
-Most CI failures make this cheap. A lint violation, a formatting drift, a type error or a `semgrep` finding is **already reproduced by the tool that reported it**: run that tool — usually `./quality.sh` or the single check the log names — watch it report the same violation, and the gate costs you one line. Do not manufacture ceremony for a failure whose output already names the file, the rule and the fix. The three steps below earn their keep on the rest: an assertion failure, a crash, a flake, an order-dependent test, anything the log does not explain.
+Most CI failures make this cheap. A lint violation, a formatting drift, a type error or a `semgrep` finding is **already reproduced by the tool that reported it**: run that tool — the single check the log names, not the whole gate — watch it report the same violation, and the reproduction costs you one line. Do not manufacture ceremony for a failure whose output already names the file, the rule and the fix. The three steps below earn their keep on the rest: an assertion failure, a crash, a flake, an order-dependent test, anything the log does not explain.
 
 **1. Build the loop, and bound the attempt.** Name the command, run it, and quote enough of its output in `.pr_response_message` to show it went red for the reported reason. A good loop is **deterministic** (the same result every run), fast (**seconds**, not the whole suite), **unattended** (`< /dev/null`, no prompts, nothing to watch) and **narrow** (the one failing test or file, not the full gate). The attempt is **bounded**: try roughly three shapes of command, and if none goes red, stop trying. Say in `.pr_response_message` which commands you ran, what each did instead, and why the symptom would not reproduce. A loop you could not build is a **legitimate outcome** and belongs in the reply; a fix guessed without one is not.
 
@@ -135,7 +135,7 @@ Fixed <failing check> — <one-line root cause>.
 **Root cause:** <why it failed, in a sentence or two>
 **The fix:** <what you changed, and why it addresses the cause rather than the symptom>
 **Files touched:** <path — what changed>; <path — what changed>
-**Gate:** `./quality.sh` (or the repository's gate) passed locally.
+**Gate:** <the checks you ran and their result — the full gate when the run budget covered it, otherwise the targeted checks plus the skip note from `<quality_instructions>`>
 ```
 
 When you changed nothing:

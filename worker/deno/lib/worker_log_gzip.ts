@@ -19,6 +19,18 @@
  *  - The `.gz` keeps the original's modification time, so age-based retention
  *    counts from the last write rather than from the compression.
  *
+ * The summary names the directory it scanned and reconciles against it
+ * (Issue #1021): `compressed 0, skipped 39` said nothing about which directory
+ * held the 39 or why they were left, so an operator could not tell a genuine
+ * backlog of header-only stubs from a miscount. It now reports the candidate
+ * count and the disposition of every one of them, with each skip attributed to
+ * its cause. A large `header-only stub(s) below the size floor` figure is the
+ * signal it looks like: that many consecutive runs wrote nothing past their
+ * header line, and they wait on the retention pass in
+ * {@link ../lib/worker_log_cleanup.ts}, which deletes a stub older than an hour
+ * from this same directory (in container mode the host's `$HOME/logs` is
+ * bind-mounted to `/home/vibe/logs`, so there is one directory, not two).
+ *
  * Fail-loud (Issue #3234): a compression failure leaves the source log intact,
  * removes the partial temporary file, and is reported in
  * {@link GzipWorkerLogsResult.failures} plus the summary message. Nothing is
@@ -61,12 +73,42 @@ export interface GzipWorkerLogFailure {
   error: string;
 }
 
+/**
+ * Why a candidate log was left uncompressed. The two reasons mean opposite
+ * things — a stub is a run that logged nothing but its header, a live owner is
+ * a log still being written — so one opaque total cannot serve both
+ * (Issue #1021).
+ */
+export interface GzipWorkerLogsSkipReasons {
+  /** Header-only stubs below the size floor; gzip would grow them. */
+  belowSizeFloor: number;
+  /** Legacy PID-named logs whose owning process is still running. */
+  ownerStillRunning: number;
+}
+
 /** Result of a compression pass. */
 export interface GzipWorkerLogsResult {
+  /**
+   * The directory that was scanned. Reported so the summary can be checked
+   * against an `ls` of the same path (Issue #1021): `skipped 39` naming no
+   * directory is unfalsifiable.
+   */
+  logDir: string;
+  /**
+   * Files matching the worker-log pattern that the pass saw, including the
+   * current run's own log. Every candidate lands in exactly one of
+   * {@link compressed}, {@link skipped}, {@link failures} or
+   * {@link currentRunLogs}, so the arithmetic is auditable.
+   */
+  candidates: number;
   /** Absolute paths of the `.gz` files written. */
   compressed: string[];
   /** Count of candidate logs deliberately left uncompressed. */
   skipped: number;
+  /** The {@link skipped} total broken down by cause (Issue #1021). */
+  skippedByReason: GzipWorkerLogsSkipReasons;
+  /** The current run's own log, left plain text (0 or 1). */
+  currentRunLogs: number;
   /** Logs that failed to compress (source left intact). */
   failures: GzipWorkerLogFailure[];
   /** Human-readable summary. */
@@ -114,29 +156,42 @@ export async function gzipOldWorkerLogs(
     }
   } catch {
     return {
+      logDir,
+      candidates: 0,
       compressed: [],
       skipped: 0,
+      skippedByReason: { belowSizeFloor: 0, ownerStillRunning: 0 },
+      currentRunLogs: 0,
       failures: [],
-      message: "worker log gzip: log directory missing or unreadable",
+      message:
+        `worker log gzip: ${logDir}: log directory missing or unreadable`,
     };
   }
 
   const compressed: string[] = [];
   const failures: GzipWorkerLogFailure[] = [];
-  let skipped = 0;
+  const skippedByReason: GzipWorkerLogsSkipReasons = {
+    belowSizeFloor: 0,
+    ownerStillRunning: 0,
+  };
+  let currentRunLogs = 0;
 
   const currentName = options.currentLogFile.split("/").pop();
   for (const candidate of candidates) {
     // The running worker's own log stays plain text — matched by file, so
     // container mode's every-run-is-PID-1 world exempts exactly one file
-    // (Issue #4227).
-    if (candidate.name === currentName) continue;
+    // (Issue #4227). Counted rather than silently passed over, so the totals
+    // add up to the files on disk (Issue #1021).
+    if (candidate.name === currentName) {
+      currentRunLogs++;
+      continue;
+    }
     if (candidate.size < minBytes) {
-      skipped++;
+      skippedByReason.belowSizeFloor++;
       continue;
     }
     if (candidate.legacyPid !== null && await isRunning(candidate.legacyPid)) {
-      skipped++;
+      skippedByReason.ownerStillRunning++;
       continue;
     }
     try {
@@ -150,15 +205,35 @@ export async function gzipOldWorkerLogs(
     }
   }
 
-  let message =
-    `worker log gzip: compressed ${compressed.length}, skipped ${skipped}`;
+  const skipped = skippedByReason.belowSizeFloor +
+    skippedByReason.ownerStillRunning;
+
+  // The summary reconciles against the directory itself: candidate count on
+  // one side, every disposition on the other, and each skip named by cause
+  // (Issue #1021). A rising "below the size floor" figure is then legible for
+  // what it is — that many consecutive runs wrote nothing but a header line.
+  let message = `worker log gzip: ${logDir}: ${candidates.length} worker ` +
+    `log(s) present = compressed ${compressed.length} + skipped ${skipped} + ` +
+    `failed ${failures.length} + current ${currentRunLogs}; skipped: ` +
+    `${skippedByReason.belowSizeFloor} header-only stub(s) below the ` +
+    `${minBytes}-byte size floor, ${skippedByReason.ownerStillRunning} owned ` +
+    `by a live PID`;
   if (failures.length > 0) {
-    message += `, failed ${failures.length} (${
+    message += `; failures: ${
       failures.map((f) => `${f.path}: ${f.error}`).join("; ")
-    })`;
+    }`;
   }
 
-  return { compressed, skipped, failures, message };
+  return {
+    logDir,
+    candidates: candidates.length,
+    compressed,
+    skipped,
+    skippedByReason,
+    currentRunLogs,
+    failures,
+    message,
+  };
 }
 
 /**

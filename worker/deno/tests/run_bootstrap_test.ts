@@ -28,10 +28,14 @@ import type { GzipWorkerLogsResult } from "../lib/worker_log_gzip.ts";
 /** Build a gzip result with no work done. */
 function emptyGzipResult(): GzipWorkerLogsResult {
   return {
+    logDir: "/tmp/logs",
+    candidates: 0,
     compressed: [],
     skipped: 0,
+    skippedByReason: { belowSizeFloor: 0, ownerStillRunning: 0 },
+    currentRunLogs: 0,
     failures: [],
-    message: "worker log gzip: compressed 0, skipped 0",
+    message: "worker log gzip: /tmp/logs: 0 worker log(s) present",
   };
 }
 
@@ -526,8 +530,10 @@ Deno.test("runBootstrap - gzips prior worker logs after the current log is initi
       seen = { logDir, currentLogFile };
       return Promise.resolve({
         ...emptyGzipResult(),
+        logDir,
+        candidates: 1,
         compressed: [`${logDir}/worker-1.log.gz`],
-        message: "worker log gzip: compressed 1, skipped 0",
+        message: `worker log gzip: ${logDir}: 1 worker log(s) present`,
       });
     },
   });
@@ -546,7 +552,9 @@ Deno.test("runBootstrap - gzips prior worker logs after the current log is initi
   );
   // The outcome is recorded in run_core.log.
   assertEquals(
-    order.includes("log:worker log gzip: compressed 1, skipped 0"),
+    order.some((o) =>
+      o.startsWith("log:worker log gzip: ") && o.includes("1 worker log(s)")
+    ),
     true,
   );
 });
@@ -558,10 +566,10 @@ Deno.test("runBootstrap - a gzip failure is logged loud but never aborts the pre
     gzipPriorWorkerLogs: (_logDir, _pid) => {
       order.push("gzipPriorWorkerLogs");
       return Promise.resolve({
-        compressed: [],
-        skipped: 0,
+        ...emptyGzipResult(),
         failures: [{ path: "/tmp/logs/worker-7.log", error: "disk full" }],
-        message: "worker log gzip: compressed 0, skipped 0, failed 1",
+        message: "worker log gzip: /tmp/logs: 1 worker log(s) present; " +
+          "failures: /tmp/logs/worker-7.log: disk full",
       });
     },
   });
