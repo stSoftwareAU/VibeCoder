@@ -300,7 +300,11 @@ Hook paths are validated by the same parser `.config.json` uses, so a path the
 fixture accepts is a path the worker will load. `--timeout-seconds` overrides
 the budget the fixture gives each hook (its own default is 10 seconds — short,
 because a conformance run should not take a minute to fail; the contract's
-own default remains 60).
+own default remains 60). The one exception is the scenario that deliberately
+hangs a hook, which keeps a one-second budget of its own so that proving the
+timeout does not cost the whole budget; the `always` hook it runs alongside
+has already been driven by the preceding scenario, so a loaded host cannot
+turn that second into a false failure.
 
 | Check                                | Proves                                                        |
 | ------------------------------------ | ------------------------------------------------------------- |
