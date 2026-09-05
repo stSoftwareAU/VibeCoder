@@ -54,6 +54,17 @@ carried whatever the runtime shipped and every build logged npm's
 its own entry, and the build installs that tarball over the bundled copy after
 verifying its checksum, so exactly one pin owns the `npm` command.
 
+Every layer that runs `npm install -g` points `npm_config_cache` at
+`/tmp/npmc` and deletes that directory in the same `RUN` (Issue #1015). The
+layer is exactly as small as it was when each of the three layers ended with a
+cache-clean instead, and the build log is three lines shorter: modern npm
+refuses to empty its cache without the protections-off flag and warns whenever
+it is given one, so those three warnings fired on every build, for ever, and
+trained the operator to skim the log that is the first thing read when an image
+build fails. At run time the entrypoint repoints `npm_config_cache` at the
+durable state root, so the image-level default only ever applies during the
+build and in the degraded no-durable-root path.
+
 The two are still coupled: npm 12 declares
 `engines.node: ^22.22.2 || ^24.15.0 || >=26.0.0`, so a `NODE_VERSION` bump has
 to land a Node that npm's `engines` still accepts. The build fails loud on
@@ -136,11 +147,20 @@ install is not the usual "download one checksum-verified binary":
   `container/tools.json`): the base ships no `ensurepip`, so the installer is
   downloaded as a checksum-verified wheel and run straight from that file as a
   zipapp. Nothing installs pip *into* the image.
-- pip resolves the semgrep wheel for the build architecture and the committed
-  `amd64` / `arm64` digest is verified **before** it is installed — the wheels
-  differ per architecture because each bundles its own `semgrep-core`. Only
-  semgrep's dependency wheels come from the index unverified, the same residual
-  risk `playwright-core install --with-deps` carries for its apt set.
+- Both wheels are fetched by **pinned URL with `curl`**, like every other
+  artefact in the file, and the committed `amd64` / `arm64` digest is verified
+  **before** anything is installed — the wheels differ per architecture because
+  each bundles its own `semgrep-core`. Until Issue #1016 the semgrep wheel was
+  the one download the build asked a *resolver* for (`pip download`), and so
+  the one outside the shared `CURL_RETRY` policy: a build on 2026-09-04 dropped
+  its connection halfway through the 72 MB body and recovered on pip's own
+  resume, with a warning as the only evidence it had happened. The URL embeds
+  the wheel's compatibility-tag string, which `files.pythonhosted.org` also
+  uses as its path segment, so that string is bumped with `SEMGREP_VERSION`; a
+  stale one 404s the fetch rather than installing the wrong bytes, and the
+  `sha256sum -c -` is what makes fetching by URL safe. Only semgrep's
+  dependency wheels come from the index unverified, the same residual risk
+  `playwright-core install --with-deps` carries for its apt set.
 - The step ends by asserting `semgrep --version` reports `SEMGREP_VERSION`, so
   a drifted or half-installed toolchain fails the build rather than the first
   gate run. `SEMGREP_ENABLE_VERSION_CHECK=0` keeps an unattended container from
