@@ -132,6 +132,72 @@ Deno.test("orphan collector - after the child dies, its re-parented descendants 
   );
 });
 
+Deno.test("orphan collector - a probe that lands as the child dies does not erase the tree it must collect (Issue #1135)", async () => {
+  // Observed on a loaded host: the snapshot runs on an interval, so one of
+  // its ticks lands in the window between the external kill and the
+  // runner's collection. `pid_guard.getDescendants` answers [] for a parent
+  // it can no longer see, and that answer used to replace the snapshot —
+  // leaving `collectOrphans` with nothing and the orphan running. The
+  // descendant test in claude_runner_killed_test.ts caught exactly this,
+  // failing 1 run in 25 under load with the orphan still alive.
+  const { table, signals, deps } = fakeTable({
+    100: { ppid: 20, alive: true, elapsedSeconds: 900 },
+    101: { ppid: 100, alive: true, elapsedSeconds: 88 },
+    102: { ppid: 101, alive: true, elapsedSeconds: 87 },
+  });
+  const tracker = new DescendantTracker(CHILD, deps, {
+    nowMs: () => 1_000_000,
+  });
+  await tracker.refresh();
+  assertEquals([...tracker.snapshot()].sort(), [101, 102]);
+
+  // The OOM killer takes the agent; the kernel re-parents its shell.
+  table.get(100)!.alive = false;
+  table.get(101)!.ppid = 1;
+
+  // The tick that was already due now runs and finds nothing.
+  await tracker.refresh();
+  assertEquals(
+    [...tracker.snapshot()].sort(),
+    [101, 102],
+    "the tree seen while the child was alive is what the collector needs",
+  );
+
+  const { logger, security } = capturingLogger();
+  const result = await tracker.collectOrphans({
+    reason: "AGENT_KILLED",
+    maxWaitSeconds: 2,
+    logger,
+  });
+  assertEquals(result.collected.sort(), [101, 102]);
+  assertEquals(signals.map((s) => s.pid), [102, 101]);
+  assert(
+    security.some((s) => s.startsWith("[ORPHANS_COLLECTED]")),
+    `security line: ${JSON.stringify(security)}`,
+  );
+});
+
+Deno.test("orphan collector - an empty tree is still recorded when nothing was ever seen (Issue #1135)", async () => {
+  // The guard above must not turn into "the snapshot can never be empty":
+  // a child with no descendants at all keeps an empty snapshot, and the
+  // collector has nothing to do.
+  const { deps, signals } = fakeTable({
+    100: { ppid: 20, alive: true, elapsedSeconds: 900 },
+  });
+  const tracker = new DescendantTracker(CHILD, deps, {
+    nowMs: () => 1_000_000,
+  });
+  await tracker.refresh();
+  assertEquals([...tracker.snapshot()], []);
+
+  const result = await tracker.collectOrphans({
+    reason: "AGENT_KILLED",
+    maxWaitSeconds: 1,
+  });
+  assertEquals(result.collected, []);
+  assertEquals(signals, []);
+});
+
 Deno.test("orphan collector - grandchildren born after the last snapshot are still collected (Issue #4382)", async () => {
   const { table, signals, deps } = fakeTable({
     100: { ppid: 20, alive: true, elapsedSeconds: 900 },
