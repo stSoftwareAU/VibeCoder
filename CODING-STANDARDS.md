@@ -141,6 +141,37 @@ provably yours — `captureProcessIdentity` in
 re-verify with `isSameProcess` immediately before every signal, TERM and KILL
 alike. Unproven means no signal, never "go ahead".
 
+### Never let a unit test inherit the host's state
+
+A unit test that reads ambient environment gets a different answer on every
+machine, and inside the container it gets the running fleet's own state. The
+worker exports `WORK_DIR`, `runCoreLoop` falls back to it for state that
+outlives a run, and every suite driving the loop without naming its own work
+directory therefore read and wrote the live
+`idle_disagreement_streak.json` — four `--parallel` test processes sharing one
+file, each resetting the others' streak, and the operator's real state
+overwritten with test timestamps (Issue #1098). Name the directory, the config
+path and the clock the test wants; the gate scrubs `CONFIG_PATH` and `WORK_DIR`
+from the test stage so an unnamed one degrades to memory rather than to the
+host.
+
+The same rule covers process-global caches: a module singleton keyed by a
+counter that restarts at 1 in every consumer serves one test's result to the
+next file in the same worker. Key it by something only its own owner can
+produce.
+
+### Rendezvous, never sleep, to prove concurrency
+
+"N ran at once" is not provable with `await new Promise((r) => setTimeout(r,
+10))`: on an idle laptop ten milliseconds is ample, and under the gate's own
+parallel suite the first participant finished before the third had started, so
+a correct pool was reported as `expected 3 concurrent, saw 2`. Use
+[`tests/support/rendezvous.ts`](worker/deno/tests/support/rendezvous.ts)
+(`createRendezvous`), where each participant waits until every expected one has
+arrived: a loaded host only makes the wait longer, never the answer different.
+The wait is bounded, so a participant that never arrives fails the assertion
+instead of hanging the suite.
+
 ### Test coverage expectations
 
 Every new or modified public function MUST have tests covering the happy path,

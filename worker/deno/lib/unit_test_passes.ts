@@ -19,10 +19,19 @@
  * The halves are built from the two manifests rather than written out, so
  * dropping a file from `PARALLEL_UNSAFE_TEST_FILES` moves it from the slow
  * pass to the fast one and nothing else has to change. Both passes exclude
- * `INTEGRATION_TEST_FILES`, which is also what keeps the 32 pre-existing pwsh
- * failures out of the verdict: every suite that spawns `pwsh` is an
+ * `INTEGRATION_TEST_FILES` (#907): every suite that spawns `pwsh` is an
  * integration suite, and CI runs those where the environment is provisioned
  * for them.
+ *
+ * That exclusion used to be described here as what "keeps the 32 pre-existing
+ * pwsh failures out of the verdict". There are no such failures to keep out,
+ * and describing the split that way is what made a standing red sound like a
+ * property of the gate. #971 re-measured those suites on a host with
+ * PowerShell installed and found test-side defects, not a standing failure —
+ * chiefly `setup_ps1_test.ts` resolving `pwsh` against the developer's own
+ * `PATH` and then spawning it with `clearEnv: true` and
+ * `PATH: "/usr/bin:/bin"` — all fixed in #988. The suites are excluded because
+ * they need a provisioned environment, never because they are expected to fail.
  *
  * `DENO_JOBS` is bounded to {@link CONTAINER_DENO_JOBS} inside the container
  * and left at Deno's default on the host. The container has a memory ceiling
@@ -61,8 +70,19 @@ import {
  * nothing to do with the change under test, so `deno tests FAILED` reported
  * the container rather than the code. A gate that fails on its own
  * environment teaches everyone to ignore it, which is the real cost.
+ *
+ * `WORK_DIR` is the same class (Issue #1098). The container exports the live
+ * worker volume, and `runCoreLoop` falls back to it for the state a run must
+ * keep across restarts — so every suite that drives the loop without naming
+ * its own work directory read and wrote the running fleet's
+ * `idle_disagreement_streak.json`. Under `--parallel` that is one file shared
+ * by four worker processes: the idle-disagreement suites watched their streak
+ * reset mid-run by a sibling process and failed, deterministically green on
+ * their own, and the operator's real streak state was overwritten with test
+ * timestamps. Scrubbed, the loop keeps that state in memory for the life of
+ * the test, which is its documented behaviour for a caller with no volume.
  */
-const SCRUBBED_TEST_VARS: readonly string[] = ["CONFIG_PATH"];
+const SCRUBBED_TEST_VARS: readonly string[] = ["CONFIG_PATH", "WORK_DIR"];
 
 /**
  * The variable the container image exports and no host run has (#4269).
