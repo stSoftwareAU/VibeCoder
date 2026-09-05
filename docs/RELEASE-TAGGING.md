@@ -235,7 +235,10 @@ Two guarantees stop that, and both are verifiable from any checkout:
 - A repository **tag ruleset** refuses to delete or re-point the tag underneath
   it (Issue #869), checked in at
   [`infra/rulesets/release-tags.json`](../infra/rulesets/release-tags.json) so
-  the live configuration has a reviewable source of truth.
+  the live configuration has a reviewable source of truth. That file is not a
+  wish: [`check-release-tag-ruleset`](#reconciling-it) compares it against what
+  GitHub actually applies, and the local quality gate runs the same comparison
+  (Issue #1049).
 
 Neither of them is how a host moves forward: the supported way to take a newer
 release is [`./run.sh upgrade`](CONFIGURATION.md#the-upgrade-loop), which
@@ -326,10 +329,12 @@ gh api repos/stSoftwareAU/VibeCoder/rulesets/RULESET_ID \
 ```
 
 **A rule the payload carries and command 2 does not print is not enforced.**
-The `update` rule was added to the payload after the ruleset was first created
-and needs an admin to apply it (Issue #869); until that `PUT` runs, a release
-tag is still forward-movable however this section reads. Read the rule list,
-do not assume it.
+The applied ruleset really did carry `deletion` and `non_fast_forward` only —
+`update` was dropped when a human applied the payload, so a release tag stayed
+forward-movable for as long as this section read otherwise, and nothing
+compared the two (Issue #1049). The `PUT` in [Applying it](#applying-it) has
+since run and GitHub stores all three; [Reconciling it](#reconciling-it) is
+what now notices if that changes. Read the rule list, do not assume it.
 
 The behavioural proof is the refused delete — with the `deletion` rule live,
 GitHub rejects the push and the tag is left exactly where it was:
@@ -362,6 +367,52 @@ gh api --method PUT repos/stSoftwareAU/VibeCoder/rulesets/RULESET_ID \
   --input infra/rulesets/release-tags.json
 ```
 
+### Reconciling it
+
+The two commands under [Verifying it](#verifying-it) are the manual read. This
+is the automated one, and it is what backs the claim that the checked-in
+payload is the source of truth — read-only, and it defaults to this
+repository (`--repo owner/repo` points it at a fork):
+
+```bash
+deno run --allow-all worker/deno/mod.ts check-release-tag-ruleset
+```
+
+It matches the applied ruleset by **name and target**, never by id, so
+recreating it by hand does not silently stop the check working. Four outcomes,
+kept apart because conflating them is how the original drift survived:
+
+| Outcome     | Meaning                                                | Exit  |
+| ----------- | ------------------------------------------------------ | ----- |
+| **matches** | Every compared field agrees                            | `0`   |
+| **differs** | A per-field diff plus the `PUT` that repairs it        | `1`   |
+| **absent**  | No tag ruleset of that name — the tags are unprotected | `1`   |
+| **SKIPPED** | No credential with `administration:read`; nothing compared | `0` |
+
+A skip is never reported as agreement: it says `SKIPPED` and "this is not a
+pass" in as many words. It exits `0` deliberately — a check that goes red on
+every fork is a check that gets disabled.
+
+The compared fields are every one that could weaken enforcement, not just the
+rule types: `name`, `target`, `enforcement`, `bypass_actors`, and both
+`ref_name` lists. A ruleset carrying a bypass actor is still `active` and
+protects nothing, so a rule-types-only comparison would pass on the worst drift
+there is.
+
+`./quality.sh` runs the same comparison as the `release-tag ruleset` check, in
+any checkout that carries the payload, so drift fails an ordinary local gate
+run rather than waiting to be noticed.
+
+```mermaid
+flowchart LR
+    F["infra/rulesets/release-tags.json"] --> C{"check-release-tag-ruleset"}
+    G["Ruleset GitHub applies"] --> C
+    C -->|no credential| S["SKIPPED — nothing compared, not a pass"]
+    C -->|no such ruleset| X["❌ absent — tags unprotected"]
+    C -->|differs| D["❌ per-field diff + the gh PUT"]
+    C -->|agrees| K["✅ the file is what is enforced"]
+```
+
 ## When a run goes red
 
 The step output names the newest tag it found and the tag it tried to mint. The
@@ -385,6 +436,12 @@ same commit publishes the manifest against that tag once the tool resolves.
   payload: deletion, update and non-fast-forward blocked, no creation rule,
   active enforcement, no bypass actors, and the ref condition evaluated against
   real release tags, branches and pre-releases.
+- `worker/deno/tests/release_tag_ruleset_check_test.ts` — the reconciliation
+  itself, one drift direction at a time against a stubbed API: a missing rule,
+  an extra rule, `enforcement` moved to `evaluate`, a bypass actor, and a
+  changed `ref_name` list, each failing with the field named; plus the
+  identical ruleset that passes, the absent ruleset that fails loud rather than
+  skipping, and the missing credential that skips rather than passing.
 - `worker/deno/tests/release_integrity_docs_test.ts` — the
   [Release integrity](#release-integrity) section against that same payload:
   every rule it carries is named, the allowances it does not carry are stated,

@@ -599,6 +599,11 @@ gh api --method PUT repos/stSoftwareAU/VibeCoder/rulesets/21019403 \
 - [`worker/deno/lib/main_branch_ruleset_check.ts`](../worker/deno/lib/main_branch_ruleset_check.ts)
   — `checkMainBranchRuleset()`, the read-only live-versus-committed
   reconciliation behind `check-main-ruleset`.
+- [`worker/deno/lib/ruleset_reconcile.ts`](../worker/deno/lib/ruleset_reconcile.ts)
+  — `reconcileRuleset()` / `diffRulesetPayloads()`, the fetch and the
+  drift/absent/skipped semantics that check shares with the release-tag one
+  ([`check-release-tag-ruleset`](RELEASE-TAGGING.md#reconciling-it),
+  Issue #1049).
 - [`worker/deno/lib/direct_merge.ts`](../worker/deno/lib/direct_merge.ts) —
   `enforcePreMergeRequirements()` (backstop gate), `directMergePr()`,
   `checkCiStatus()`, `prTargetsDefaultBranch()`.

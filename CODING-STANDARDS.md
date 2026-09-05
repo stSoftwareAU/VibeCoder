@@ -212,8 +212,8 @@ a fix, never on a timer. Never background it behind a `sleep`/`pgrep` poll loop
 check as each settles, so a slow run is visibly alive rather than
 indistinguishable from a hung one. The quality gate is implemented in Deno
 TypeScript (`worker/deno/quality.ts`) and runs benchmark-audit, pages-liquid,
-markdownlint, semgrep, `deno test`, `deno lint`,
-`deno check`, and `deno fmt --check`. The semgrep stage runs the same
+markdownlint, semgrep, the release-tag ruleset reconciliation, `deno test`,
+`deno lint`, `deno check`, and `deno fmt --check`. The semgrep stage runs the same
 `p/default` ruleset as the blocking `semgrep.yml` PR check, over the branch's
 changed files only, so a SAST finding is met before the push rather than after
 it (Issue #559). Shellcheck is deliberately not run here —

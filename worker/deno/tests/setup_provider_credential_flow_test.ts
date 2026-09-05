@@ -49,6 +49,10 @@ async function runSetupFunction(
     env: {
       // No `claude` on the default PATH — the Codex host the report described.
       PATH: options.path ?? "/usr/bin:/bin",
+      // These stages simulate a HOST run: the image stamp of whatever
+      // container the suite happens to run inside must not decide which
+      // providers setup believes are installed.
+      VIBE_IMAGE_AGENT_PROVIDERS: "",
       HOME: tmp,
       TMPDIR: tmp,
       CONFIG_FILE: options.configFile ?? `${tmp}/.config.json`,

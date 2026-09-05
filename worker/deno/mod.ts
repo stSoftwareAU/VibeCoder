@@ -185,6 +185,7 @@ import { runModeCommand } from "./commands/run_mode.ts";
 import { workerCheckoutUpdateCommand } from "./commands/worker_checkout_update.ts";
 import { auditDefaultBranchRulesetsCommand } from "./commands/audit_default_branch_rulesets.ts";
 import { checkMainRulesetCommand } from "./commands/check_main_ruleset.ts";
+import { checkReleaseTagRulesetCommand } from "./commands/check_release_tag_ruleset.ts";
 import { secretsHistoryScanCommand } from "./commands/secrets_history_scan.ts";
 import { securityTabletopCommand } from "./commands/security_tabletop.ts";
 import { publishDecisionCheckCommand } from "./commands/publish_decision_check.ts";
@@ -381,6 +382,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(workerCheckoutUpdateCommand);
   registry.register(auditDefaultBranchRulesetsCommand);
   registry.register(checkMainRulesetCommand);
+  registry.register(checkReleaseTagRulesetCommand);
   registry.register(secretsHistoryScanCommand);
   registry.register(securityTabletopCommand);
   registry.register(publishDecisionCheckCommand);
@@ -627,6 +629,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "audit-default-branch-rulesets",
       // Read-only ruleset reconciliation; needs no config (Issue #858).
       "check-main-ruleset",
+      // The same, for the release-tag ruleset; needs no config (Issue #1049).
+      "check-release-tag-ruleset",
       // Full-history secrets sweep; runs in CI with no config (Issue #4190).
       "secrets-history-scan",
       // Hostile-fixture tabletop; runs on a schedule with no config (#4194).
@@ -744,6 +748,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "audit-default-branch-rulesets",
       // Read-only ruleset reconciliation; needs no config (Issue #858).
       "check-main-ruleset",
+      // The same, for the release-tag ruleset; needs no config (Issue #1049).
+      "check-release-tag-ruleset",
       // Hostile-fixture tabletop; runs on a schedule with no config (#4194).
       "security-tabletop",
       // Dossier checker; a pure file check with no config (Issue #4200).

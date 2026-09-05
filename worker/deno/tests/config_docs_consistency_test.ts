@@ -87,6 +87,28 @@ Deno.test("config docs - no JSON example advertises a dead / hardwired key", asy
   }
 });
 
+/**
+ * Image-shaping keys whose absence from the reference is not a cosmetic gap:
+ * an operator who cannot find the key writes the wrong one, and the first
+ * symptom is a config-load failure or an image that silently lacks what the
+ * deployment needs (Issue #984).
+ */
+const KEYS_NEEDING_A_ROW = ["container_tools", "container_extension"];
+
+Deno.test("config docs - every image-shaping key has a reference row (Issue #984)", async () => {
+  const lines = (await read("docs/CONFIGURATION.md")).split("\n");
+  for (const key of KEYS_NEEDING_A_ROW) {
+    assert(
+      KNOWN_CONFIG_KEYS.has(key),
+      `${key} must be a recognised config key`,
+    );
+    assert(
+      lines.some((line) => line.startsWith(`| \`${key}\``)),
+      `docs/CONFIGURATION.md must carry a table row documenting "${key}"`,
+    );
+  }
+});
+
 Deno.test("config docs - primary sample .config.json uses only recognised keys", async () => {
   const markdown = await read("docs/CONFIGURATION.md");
   const first = jsonBlocks(markdown)[0];
