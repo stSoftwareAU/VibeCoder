@@ -360,6 +360,7 @@ explicitly overridden.
 | `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#-idle-task-template-weights))                                                                                                                                                                      |
 | `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence)) |
 | `software_min_versions`      | `{ "claude": "2.1.170" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
+| `log_dir` | platform default | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. Outranks `LAUNCH_LOG_DIR` and `LOG_DIR`; absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go). |
 | `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                           |
 | `exclusion_team`             | unset                     | Optional GitHub org team in `org/slug` form, excluded from the derived directing set **on top of** the Vibe Coder logins. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. See [Two axes of trust](#two-axes-of-trust). |
 
@@ -2235,17 +2236,48 @@ Logs are **state**, which is why Linux uses the XDG state directory rather than
 cache or config: the XDG Base Directory Specification names state as the home
 for "logs [and] history".
 
-Two variables override the default, in this order — set either and the
-platform default is not consulted:
+#### Pinning it: `log_dir`
+
+A deployment that wants its logs somewhere else states it in `.config.json`,
+where the rest of its host configuration lives — no environment variable:
+
+```json
+{
+  "log_dir": "~/logs"
+}
+```
+
+| Accepted value | Example |
+| -------------- | ------- |
+| An absolute host path | `"/var/log/vibe-coder"`, `"C:\\ProgramData\\vibe-coder\\logs"` |
+| A path anchored at `~`, expanded against the host's home | `"~/logs"`, `"~"` |
+| Absent, or blank | The variables below, then the platform default |
+
+A **relative** path is refused, with the offending value named: it would
+resolve against whichever directory each launcher happened to be started in, so
+`launch-*.log` and `worker-*.log` could land in different places — the split
+this key exists to prevent. `~` is expanded exactly as it is for the other
+path-valued keys (`ssh_key_path`, `gh_config_dir`).
+
+Setting `log_dir` also silences the legacy-location notice below: the directory
+is the operator's own choice, not a default that moved.
+
+Two variables still override the default, and `log_dir` outranks both — the
+precedence is **`log_dir`, then `LAUNCH_LOG_DIR`, then `LOG_DIR`, then the
+platform default**:
 
 | Variable          | Description                                                          |
 | ----------------- | -------------------------------------------------------------------- |
-| `LAUNCH_LOG_DIR`  | Highest precedence; the supervisor's own spelling, kept from `loop.sh` |
-| `LOG_DIR`         | The one to set. A system service names `/var/log/vibe-coder` here      |
+| `LAUNCH_LOG_DIR`  | The supervisor's own spelling, kept from `loop.sh`                    |
+| `LOG_DIR`         | A system service names `/var/log/vibe-coder` here — a launchd or systemd unit sets an environment, not a config file |
 
-A blank value means unset, exactly as `${LOG_DIR:-…}` does in shell. One
-resolution serves the launcher, `run.sh`, `loop.sh`, `run.ps1` and the
-container mount (Issue #872) — ask for it rather than assuming it:
+Neither is deprecated: a unit file is the one place a directory genuinely has
+to come from the environment. For everything else, state `log_dir`.
+
+A blank value means unset, exactly as `${LOG_DIR:-…}` does in shell — in the
+config key as well as in the variables. One resolution serves the launcher,
+`run.sh`, `loop.sh`, `run.ps1` and the container mount (Issues #872, #873) —
+ask for it rather than assuming it:
 
 ```bash
 LOG_DIR="$(deno run --allow-env --allow-read worker/deno/mod.ts log-dir)"
@@ -2267,8 +2299,10 @@ old directory exactly as it is. Bring the history across with:
 mkdir -p ~/.local/state/vibe-coder && mv ~/logs/* ~/.local/state/vibe-coder/
 ```
 
-Or keep the old location — it is still perfectly valid — by setting
-`LOG_DIR=$HOME/logs` in the environment the launcher runs in.
+Or keep the old location — it is still perfectly valid — by stating
+`"log_dir": "~/logs"` in `.config.json`. Rotated logs stay gzipped there just
+as they do anywhere else: compression and retention both run on the resolved
+directory, not on a re-spelled default.
 
 ### 🔄 Special Runtime Variables
 

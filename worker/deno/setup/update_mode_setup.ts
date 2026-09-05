@@ -56,7 +56,8 @@ import {
 import { defaultLogger } from "../lib/logger.ts";
 import { processEnvLookup } from "../lib/env_lookup.ts";
 import { pathStyleFor } from "../lib/host_path_style.ts";
-import { resolveLogDir } from "../lib/log_dir.ts";
+import { readConfiguredLogDirSync, resolveLogDir } from "../lib/log_dir.ts";
+import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 import {
   createDefaultReleaseCheckDeps,
   latestRelease as resolveLatestRelease,
@@ -159,9 +160,16 @@ export interface UpdateModeOutcome {
  */
 function defaultLogDir(): string {
   const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
-  return home
-    ? resolveLogDir(home, processEnvLookup, pathStyleFor(home))
-    : "logs";
+  if (!home) return "logs";
+  return resolveLogDir(
+    home,
+    processEnvLookup,
+    pathStyleFor(home),
+    undefined,
+    readConfiguredLogDirSync(
+      resolveHostConfigPath({ baseDir: Deno.cwd(), env: processEnvLookup }),
+    ),
+  );
 }
 
 /**

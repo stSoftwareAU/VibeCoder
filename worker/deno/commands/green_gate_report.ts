@@ -35,7 +35,8 @@ import {
 import { resolveRunHostId } from "../lib/run_mode_record.ts";
 import { processEnvLookup } from "../lib/env_lookup.ts";
 import { pathStyleFor } from "../lib/host_path_style.ts";
-import { resolveLogDir } from "../lib/log_dir.ts";
+import { readConfiguredLogDirSync, resolveLogDir } from "../lib/log_dir.ts";
+import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 
 /** Default report location, per the issue. */
 export const GREEN_GATE_REPORT_DIR = "docs/evidence";
@@ -170,7 +171,15 @@ export const greenGateReportCommand: Command = {
     // (Issues #872, #873) rather than assumed to be `$HOME/logs`.
     const logDir = typeof logDirArg === "string" && logDirArg.length > 0
       ? logDirArg
-      : resolveLogDir(home, processEnvLookup, pathStyleFor(home));
+      : resolveLogDir(
+        home,
+        processEnvLookup,
+        pathStyleFor(home),
+        undefined,
+        readConfiguredLogDirSync(
+          resolveHostConfigPath({ baseDir: Deno.cwd(), env: processEnvLookup }),
+        ),
+      );
     const repoArg = args["repo"];
     const repo = typeof repoArg === "string" && repoArg.includes("/")
       ? repoArg

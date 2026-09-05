@@ -40,7 +40,8 @@ import { resolveRunHostId } from "../lib/run_mode_record.ts";
 import { formatLogTail } from "../lib/launcher_failure_evidence.ts";
 import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import { pathStyleFor } from "../lib/host_path_style.ts";
-import { resolveLogDir } from "../lib/log_dir.ts";
+import { readConfiguredLogDirSync, resolveLogDir } from "../lib/log_dir.ts";
+import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 
 function optionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -91,11 +92,20 @@ function stateDir(): string {
  * runs, so it resolves the host's log directory — the one host mount both
  * sides share, because the work directory rides a named volume the host cannot
  * read. One resolution with the launcher and the shell (Issues #872, #873):
- * `LAUNCH_LOG_DIR`, then `LOG_DIR`, then the platform's own location.
+ * the `.config.json` `log_dir` key, then `LAUNCH_LOG_DIR`, then `LOG_DIR`,
+ * then the platform's own location.
  */
 function logDir(): string {
   const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? ".";
-  return resolveLogDir(home, processEnvLookup, pathStyleFor(home));
+  return resolveLogDir(
+    home,
+    processEnvLookup,
+    pathStyleFor(home),
+    undefined,
+    readConfiguredLogDirSync(
+      resolveHostConfigPath({ baseDir: Deno.cwd(), env: processEnvLookup }),
+    ),
+  );
 }
 
 /**

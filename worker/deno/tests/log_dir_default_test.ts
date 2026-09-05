@@ -35,6 +35,15 @@ const envFrom =
   (vars: Record<string, string>) => (name: string): string | undefined =>
     vars[name];
 
+/**
+ * A configuration file that does not exist.
+ *
+ * `log-dir` reads `.config.json` for the `log_dir` key (Issue #873); naming a
+ * file that is not there keeps these tests on the default-and-variables path
+ * they are about, and keeps them off the host's own configuration.
+ */
+const NO_CONFIG_FILE = "/nonexistent-log-dir-test/.config.json";
+
 Deno.test("log dir - Linux defaults to ~/.local/state/vibe-coder (Issue #873)", () => {
   assertEquals(
     defaultLogDir("/home/vibe", envFrom({}), "posix", "linux"),
@@ -244,34 +253,37 @@ Deno.test("log dir - the Windows notice offers a Windows move (Issue #873)", () 
 // resolution above: they capture its stdout rather than spelling the default
 // in shell, so there is one default and not four (Issues #872, #873).
 
-Deno.test("log-dir command - answers with the platform default (Issue #873)", () => {
-  const result = resolveLogDirForCommand({
+Deno.test("log-dir command - answers with the platform default (Issue #873)", async () => {
+  const result = await resolveLogDirForCommand({
     env: envFrom({ HOME: "/home/vibe" }),
     platform: "linux",
     exists: () => false,
+    configFile: NO_CONFIG_FILE,
   });
   assertEquals(result.logDir, "/home/vibe/.local/state/vibe-coder");
   assertEquals(result.notice, undefined);
 });
 
-Deno.test("log-dir command - carries the legacy notice for the launcher to print (Issue #873)", () => {
-  const result = resolveLogDirForCommand({
+Deno.test("log-dir command - carries the legacy notice for the launcher to print (Issue #873)", async () => {
+  const result = await resolveLogDirForCommand({
     env: envFrom({ HOME: "/home/vibe" }),
     platform: "linux",
     exists: (path) => path === "/home/vibe/logs",
+    configFile: NO_CONFIG_FILE,
   });
   assertEquals(result.logDir, "/home/vibe/.local/state/vibe-coder");
   assertStringIncludes(result.notice ?? "", "/home/vibe/logs");
 });
 
-Deno.test("log-dir command - a Windows host is answered in its own spelling (Issue #873)", () => {
-  const result = resolveLogDirForCommand({
+Deno.test("log-dir command - a Windows host is answered in its own spelling (Issue #873)", async () => {
+  const result = await resolveLogDirForCommand({
     env: envFrom({
       USERPROFILE: "C:\\Users\\vibe",
       LOCALAPPDATA: "C:\\Users\\vibe\\AppData\\Local",
     }),
     platform: "windows",
     exists: () => false,
+    configFile: NO_CONFIG_FILE,
   });
   assertEquals(
     result.logDir,
@@ -279,12 +291,16 @@ Deno.test("log-dir command - a Windows host is answered in its own spelling (Iss
   );
 });
 
-Deno.test("log-dir command - fails loud with no home directory (Issue #873)", () => {
+Deno.test("log-dir command - fails loud with no home directory (Issue #873)", async () => {
   // A launcher handed a path relative to nothing would write its logs into
   // whatever directory it happened to be started from.
   let message = "";
   try {
-    resolveLogDirForCommand({ env: envFrom({}), platform: "linux" });
+    await resolveLogDirForCommand({
+      env: envFrom({}),
+      platform: "linux",
+      configFile: NO_CONFIG_FILE,
+    });
   } catch (error) {
     message = (error as Error).message;
   }
@@ -315,5 +331,10 @@ Deno.test("log-dir command - stdout is the path alone, even under OUTPUT_JSON (I
   }).output();
   const lines = new TextDecoder().decode(output.stdout).trim().split("\n");
   assertEquals(lines.length, 1, `stdout must be one line: ${lines.join("|")}`);
-  assertEquals(lines[0], "/tmp/vibe-log-dir-probe/.local/state/vibe-coder");
+  // The subprocess follows the host's own convention: this assertion used to
+  // spell the Linux answer, which failed on every macOS host in the fleet.
+  assertEquals(
+    lines[0],
+    defaultLogDir("/tmp/vibe-log-dir-probe", envFrom({}), "posix"),
+  );
 });
