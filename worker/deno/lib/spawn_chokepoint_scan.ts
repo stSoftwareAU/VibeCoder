@@ -11,6 +11,11 @@
  * The scanning functions are pure (or filesystem-only) and exported so each
  * check can be tested behaviourally against literal inputs.
  *
+ * Each check owns its own **literal** spawn pattern rather than composing one
+ * from the binary name: a `new RegExp(...)` built from a variable is a ReDoS
+ * warning the gate's own semgrep stage raises, and hardcoding two short
+ * regexes is both cheaper and clearer than defending a builder.
+ *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
@@ -41,19 +46,6 @@ export interface DirectSpawnScanOptions {
    * git repositories, for instance) and is not a production surface.
    */
   excludeTests?: boolean;
-}
-
-/**
- * Build the pattern matching a direct `new Deno.Command("<binary>", …)`.
- *
- * @param binary - The guarded executable name, e.g. `git`.
- * @returns A regular expression matching either spawn spelling.
- */
-export function directSpawnPattern(binary: string): RegExp {
-  return new RegExp(
-    `new\\s+Deno\\.Command\\s*\\(\\s*["'\`]${binary}["'\`]` +
-      `|Deno\\.Command\\s*\\(\\s*["'\`]${binary}["'\`]`,
-  );
 }
 
 /**

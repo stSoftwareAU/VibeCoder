@@ -20,7 +20,6 @@
  */
 
 import {
-  directSpawnPattern,
   type DirectSpawnScanResult,
   type DirectSpawnViolation,
   scanContentForDirectSpawn,
@@ -41,7 +40,8 @@ export const GH_SPAWN_ALLOWLIST: ReadonlySet<string> = new Set<string>([
 ]);
 
 /** Matches a direct `gh` subprocess construction. */
-export const GH_SPAWN_PATTERN: RegExp = directSpawnPattern("gh");
+export const GH_SPAWN_PATTERN =
+  /new\s+Deno\.Command\s*\(\s*["'`]gh["'`]|Deno\.Command\s*\(\s*["'`]gh["'`]/;
 
 /**
  * Scan a file's content for direct `gh` spawns.

@@ -203,10 +203,13 @@ export const prManagerCommand: Command = {
           imgbbApiKey: imgbbApiKey || undefined,
           uploadFn: imgbbApiKey ? createImgbbUploadFn(imgbbApiKey) : undefined,
           // Through the shared chokepoint (Issue #1214) so the call is
-          // timeout-bounded and journalled.
+          // timeout-bounded and journalled. A spawn failure throws, exactly as
+          // the raw `Deno.Command` it replaced did — an empty string here
+          // would read as "git found nothing", not "git could not run".
           gitCommandFn: async (gitArgs: string[]) => {
             const result = await runGitCommand(gitArgs);
-            return result.ok ? result.value.stdout : "";
+            if (!result.ok) throw result.error;
+            return result.value.stdout;
           },
         });
         return {

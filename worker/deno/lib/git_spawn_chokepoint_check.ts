@@ -18,11 +18,15 @@
  * worker spawns most, sharing its scanning machinery via
  * `spawn_chokepoint_scan.ts`.
  *
+ * Residual risk, stated: the pattern matches a **literal** binary name, so a
+ * spawn written as `new Deno.Command(cmd[0], …)` with `"git"` supplied by the
+ * caller is invisible to it — the same limitation Issue #1227 records for the
+ * `gh` gate.
+ *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
 import {
-  directSpawnPattern,
   type DirectSpawnScanResult,
   type DirectSpawnViolation,
   scanContentForDirectSpawn,
@@ -42,7 +46,8 @@ export const GIT_SPAWN_ALLOWLIST: ReadonlySet<string> = new Set<string>([
 ]);
 
 /** Matches a direct `git` subprocess construction. */
-export const GIT_SPAWN_PATTERN: RegExp = directSpawnPattern("git");
+export const GIT_SPAWN_PATTERN =
+  /new\s+Deno\.Command\s*\(\s*["'`]git["'`]|Deno\.Command\s*\(\s*["'`]git["'`]/;
 
 /**
  * Scan a file's content for direct `git` spawns.

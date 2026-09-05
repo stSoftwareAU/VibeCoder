@@ -124,6 +124,38 @@ distinct root cause from the two above and from each other.
   invocations have no timeout at the chokepoint layer. `severity:medium` ·
   `confidence:medium`
 
+## The other binaries — `deno`, `docker`/`podman`, and the shell
+
+The issue asks for the chokepoint reasoning `gh` already has to be applied to
+the other binaries. `git` earned a gate because it has a chokepoint whose
+controls were being skipped. The others were reasoned about and did **not**:
+
+- **`docker`/`podman`** — already guarded where it matters.
+  `container_runtime.ts` picks the executable from a static table,
+  `quality_gate_phase.ts` validates the image ref with `isSafeDockerImageRef()`
+  (which rejects a leading `-`) and `buildDockerRunArgs` inserts `--` before it,
+  and `container_watchdog.ts` validates every container name against a strict
+  pattern. A gate would enforce a chokepoint that does not exist and is not
+  needed.
+- **`deno`** — every spawn resolves the binary through `detectTool("deno")` or a
+  worker-owned path and passes fixed subcommands; no argv element comes from
+  GitHub data. The one gap is a missing timeout on `coverage_gap_scanner.ts`,
+  filed as SEC-1214-05 rather than turned into a gate.
+- **shell spawns** — the three `sh -c`/`bash -c` sites all take fleet-operator
+  configuration or a worker-internal path (`repo_credentials.ts`,
+  `repo_config.ts`, `quality_gate.ts`), and the fourth runs the repo's own
+  `quality.sh` by design. What they needed was not a chokepoint but the built
+  environment, which is SEC-1214-02.
+
+### Residual risk in the new gate
+
+`git_spawn_chokepoint_check.ts` matches a **literal** binary name, so it
+inherits the limitation SEC-1214-04
+([#1227](https://github.com/stSoftwareAU/VibeCoder/issues/1227)) records for its
+`gh` sibling: a spawn written as `new Deno.Command(cmd[0], …)` with `"git"`
+supplied by the caller is invisible to it. That is stated here rather than left
+implicit — the gate closes the class as written today, not every spelling of it.
+
 ## Refuted / no finding
 
 Named here so a later sweep does not re-litigate them.
@@ -153,6 +185,17 @@ Named here so a later sweep does not re-litigate them.
   option. PR titles and commit subjects reach prompt text, never argv.
 - **`secrets_history_scan.ts`** — `gitleaks`/`trufflehog` argv is worker-owned
   paths and fixed flags only.
+- **`benchmark.ts:83`** — the runner is generic, but every call site passes
+  fixed literals (`deno check`, `git init/add/commit` against a fixture
+  directory the benchmark itself creates). It inherits the environment and has
+  no timeout, but it is an operator-invoked diagnostic with no
+  untrusted-repository interaction in its call graph.
+- **`container_runtime.ts:591`** — the binary is `candidate.executable` from the
+  static `CONTAINER_RUNTIMES` table (the docker/podman/apple-container probes),
+  not attacker input, and the probe is bounded by a 15s `AbortController`. This
+  is the `docker`/`podman` half of the chokepoint question below.
+- **`quality_helpers.ts:200`** — `which <toolName>`, where `toolName` is the
+  literal `"deno"` supplied by `quality_gate.ts`.
 - **`software_updates.ts:368`** — `version` is validated against
   `PINNED_VERSION_PATTERN` before it can reach the argv builder, which blocks a
   leading `-`; the timeout is a required parameter; and the installs target

@@ -8,9 +8,15 @@
  * gate, the per-repo `bump-deps.sh`, and the lock-file regeneration tools —
  * still inherited the worker's whole environment.
  *
- * Each test below spawns for real and reads the child's own view of its
- * environment, so it fails against the unfixed code (the planted credential
- * is visible to the child) and passes after the fix (it is absent).
+ * Each test spawns for real and reads the child's own view of its environment,
+ * asserting the property the control promises: **every** name the child can
+ * see is one the allowlist put there. That fails against the unfixed code —
+ * an inherited environment always carries names outside a thirty-name
+ * allowlist — and passes after the fix.
+ *
+ * Asserting over the whole name set, rather than planting a credential in the
+ * worker's own environment, is what keeps these tests parallel-safe: nothing
+ * here mutates process-wide state (Issue #880).
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -20,85 +26,87 @@ import { runPreFlightGate } from "../lib/pre_flight_gate.ts";
 import { createBumpDepsRuntimeDeps } from "../lib/phases/bump_deps_phase.ts";
 import type { WorkerDeps } from "../lib/issue_worker_wiring.ts";
 import { defaultRunner } from "../lib/dependency_lock_regen.ts";
-
-/** A credential-shaped variable name no allowlist entry matches. */
-const PLANTED_NAME = "VIBE_TEST_PLANTED_API_TOKEN";
-const PLANTED_VALUE = "planted-secret-value-1214";
+import { ALLOWED_ENV_NAMES } from "../lib/untrusted_command_env.ts";
 
 /**
- * Run `body` with a credential-shaped variable present in the worker's own
- * environment, then remove it again.
+ * Names a POSIX shell sets for itself in a child it starts.
+ *
+ * They carry no secret and are not inherited from the worker — `sh`/`bash`
+ * write them after `clearEnv` has already emptied the environment.
  */
-async function withPlantedCredential<T>(body: () => Promise<T>): Promise<T> {
-  Deno.env.set(PLANTED_NAME, PLANTED_VALUE);
-  try {
-    return await body();
-  } finally {
-    Deno.env.delete(PLANTED_NAME);
-  }
+const SHELL_SET_NAMES = ["PWD", "SHLVL", "_", "OLDPWD", "IFS"];
+
+/** Parse `printenv` output into the set of variable names the child saw. */
+function envNames(output: string): string[] {
+  return output
+    .split("\n")
+    .map((line) => line.slice(0, line.indexOf("=")))
+    .filter((name) => name.length > 0);
 }
 
-Deno.test("pre-flight gate - a repo-supplied command cannot read the worker's credentials", async () => {
-  await withPlantedCredential(async () => {
-    // Fails so the captured output rides on the returned error, which is the
-    // only surface a pre-flight command's stdout reaches.
-    const result = await runPreFlightGate(
-      ['sh -c "printenv; exit 1"'],
-      { cwd: Deno.cwd(), timeoutSeconds: 30 },
-    );
-    assert(!result.ok, "expected the failing command to block");
-    const output = result.error.output;
-    assertEquals(
-      output.includes(PLANTED_VALUE),
-      false,
-      "the pre-flight child inherited a worker credential",
-    );
-    // The allowlisted essentials are still present, so the gate still works.
-    assert(output.includes("PATH="), "expected PATH in the built environment");
-  });
+/**
+ * Assert the child saw only names the allowlist (plus `extra`) put there.
+ *
+ * @param output - The child's `printenv` output.
+ * @param extra - Names the call site legitimately layers on top.
+ */
+function assertOnlyAllowlistedNames(
+  output: string,
+  extra: string[] = [],
+): void {
+  const permitted = new Set([
+    ...ALLOWED_ENV_NAMES,
+    ...SHELL_SET_NAMES,
+    ...extra,
+  ]);
+  const leaked = envNames(output).filter((name) => !permitted.has(name));
+  assertEquals(
+    leaked,
+    [],
+    `the child inherited names the allowlist never granted: ${
+      leaked.join(", ")
+    }`,
+  );
+  assert(
+    output.includes("PATH="),
+    "expected PATH, so the built environment is usable",
+  );
+}
+
+Deno.test("pre-flight gate - a repo-supplied command sees only the allowlisted environment", async () => {
+  // Fails so the captured output rides on the returned error, which is the
+  // only surface a pre-flight command's stdout reaches.
+  const result = await runPreFlightGate(
+    ['sh -c "printenv; exit 1"'],
+    { cwd: Deno.cwd(), timeoutSeconds: 30 },
+  );
+  assert(!result.ok, "expected the failing command to block");
+  assertOnlyAllowlistedNames(result.error.output);
 });
 
-Deno.test("bump-deps script - a repo-supplied bump script cannot read the worker's credentials", async () => {
-  await withPlantedCredential(async () => {
-    const dir = await Deno.makeTempDir();
-    try {
-      const scriptPath = `${dir}/bump-deps.sh`;
-      await Deno.writeTextFile(scriptPath, "#!/usr/bin/env bash\nprintenv\n");
-      const deps = createBumpDepsRuntimeDeps({} as WorkerDeps);
-      const { exitCode, output } = await deps.runScript(dir, scriptPath, {});
-      assertEquals(exitCode, 0, `bump script failed: ${output}`);
-      assertEquals(
-        output.includes(PLANTED_VALUE),
-        false,
-        "the bump script inherited a worker credential",
-      );
-      assert(
-        output.includes("PATH="),
-        "expected PATH in the built environment",
-      );
-    } finally {
-      await Deno.remove(dir, { recursive: true });
-    }
-  });
-});
-
-Deno.test("lock regeneration - an install hook cannot read the worker's credentials", async () => {
-  await withPlantedCredential(async () => {
-    const outcome = await defaultRunner({
-      bin: "printenv",
-      args: [],
-      cwd: Deno.cwd(),
-      lockPath: "deno.lock",
-      timeoutMs: 30_000,
+Deno.test("bump-deps script - a repo-supplied bump script sees only the allowlisted environment", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const scriptPath = `${dir}/bump-deps.sh`;
+    await Deno.writeTextFile(scriptPath, "#!/usr/bin/env bash\nprintenv\n");
+    const deps = createBumpDepsRuntimeDeps({} as WorkerDeps);
+    const { exitCode, output } = await deps.runScript(dir, scriptPath, {
+      VIBE_BUMP_QUARANTINE_HOURS: "24",
     });
-    assertEquals(
-      outcome.stdout.includes(PLANTED_VALUE),
-      false,
-      "the lock-regeneration child inherited a worker credential",
-    );
-    assert(
-      outcome.stdout.includes("PATH="),
-      "expected PATH in the built environment",
-    );
+    assertEquals(exitCode, 0, `bump script failed: ${output}`);
+    assertOnlyAllowlistedNames(output, ["VIBE_BUMP_QUARANTINE_HOURS"]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("lock regeneration - an install hook sees only the allowlisted environment", async () => {
+  const outcome = await defaultRunner({
+    bin: "printenv",
+    args: [],
+    cwd: Deno.cwd(),
+    lockPath: "deno.lock",
+    timeoutMs: 30_000,
   });
+  assertOnlyAllowlistedNames(outcome.stdout);
 });
