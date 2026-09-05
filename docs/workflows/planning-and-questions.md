@@ -554,13 +554,16 @@ normally — no `needs-human` escalation.
 
 **Why.** The gate's premise was that a milestone can stop part-way and land only
 its first sub-issue, so the first one had better be worth having alone. The
-[milestone workflow](milestones.md) makes that impossible: a planning run puts its sub-issues in a milestone, every sub-issue PR
-merges into that milestone's own `milestone/<name>` feature branch, and the
-default branch is updated by **one** final milestone PR raised only after every
-milestone issue closes. Nothing partial ever reaches the default branch, so
-ordering partial value inside a milestone delivers nothing the milestone does not
-already deliver as a whole. A plan with a single sub-issue gets no milestone at
-all — and an MVP marker on a one-entry list says nothing.
+[milestone workflow](milestones.md) makes that impossible: a planning run puts
+its sub-issues in a milestone, every sub-issue PR merges into that milestone's
+own `milestone/<name>` feature branch, and the default branch is updated by
+**one** final milestone PR raised only after every milestone issue closes. Where
+the milestone exists, nothing partial reaches the default branch, so ordering
+partial value inside it delivers nothing the milestone does not already deliver
+as a whole. Where it does not — a single-sub-issue plan, or the best-effort
+milestone creation failing — the plan is one issue or a handful of
+independently merged ones, and an MVP marker over that list says nothing
+either.
 
 ```mermaid
 flowchart LR

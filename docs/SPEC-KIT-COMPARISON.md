@@ -177,11 +177,11 @@ that a milestone can stop part-way and leave only its first sub-issue landed. It
 cannot: a planning run puts its sub-issues in a milestone, every sub-issue PR
 merges into that milestone's own feature branch, and the default branch is
 updated by one final milestone PR raised only once every milestone issue is
-closed ([milestone workflow](workflows/milestones.md)). Nothing partial ever
-reaches the default branch, so ordering partial value inside a milestone buys
-nothing and the marker cost the planner a sentence for it. A plan with a single
-sub-issue gets no milestone at all, and an MVP marker on a one-entry list is
-meaningless anyway.
+closed ([milestone workflow](workflows/milestones.md)). Nothing partial reaches
+the default branch, so ordering partial value inside a milestone buys nothing and
+the marker cost the planner a sentence for it. A plan with a single sub-issue
+gets no milestone at all, and an MVP marker on a one-entry list is meaningless
+anyway.
 
 The gate, its prompt instructions and its escalation are gone: no
 `mvp_slice_gate.ts`, no marker in the planning prompts, no `needs-human`
