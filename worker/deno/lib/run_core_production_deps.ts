@@ -76,7 +76,6 @@ import type {
 } from "./issue_finder_logger.ts";
 import {
   fetchAllOpenPRs,
-  fetchOpenPRsByUser,
   fetchOpenPRsForFleet,
   fetchRecentlyClosedPRsForFleet,
 } from "./issue_query.ts";
