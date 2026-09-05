@@ -373,6 +373,9 @@ $ClaimFloorPercent = ""
 $ClaimFloorOrigin = ""
 $ExistsArgs = [System.Collections.Generic.List[string]]::new()
 $BuildArgs = [System.Collections.Generic.List[string]]::new()
+# The operator's private layer, built after the standard image (Issue #980).
+# Empty for every deployment that configures no container_extension.
+$ExtensionBuildArgs = [System.Collections.Generic.List[string]]::new()
 $BuilderStopArgs = [System.Collections.Generic.List[string]]::new()
 $BuilderAbsentPatterns = [System.Collections.Generic.List[string]]::new()
 $RunArgs = [System.Collections.Generic.List[string]]::new()
@@ -434,6 +437,7 @@ try {
             "claim-floor-origin" { $ClaimFloorOrigin = $value }
             "exists" { $ExistsArgs.Add($value) }
             "build" { $BuildArgs.Add($value) }
+            "extension-build" { $ExtensionBuildArgs.Add($value) }
             "builder-stop" { $BuilderStopArgs.Add($value) }
             "builder-absent" { $BuilderAbsentPatterns.Add($value) }
             "run" { $RunArgs.Add($value) }
@@ -623,13 +627,19 @@ $BuildNotHealableExit = 3
     The output is captured rather than inherited so container-build-heal can
     classify a failure from the build's own diagnostics (Issue #4441); it is
     written straight back out to stderr, so nothing is lost from the host log.
+
+    The argument list defaults to the standard image's build; the operator's
+    private layer (Issue #980) passes its own and is reported the same way.
 .OUTPUTS
     The build's exit status.
 #>
 function Invoke-ImageBuild {
-    param([Parameter(Mandatory = $true)][string] $LogPath)
+    param(
+        [Parameter(Mandatory = $true)][string] $LogPath,
+        [System.Collections.Generic.List[string]] $ArgumentList = $BuildArgs
+    )
 
-    $build = Invoke-HostCommand -FilePath $Runtime -ArgumentList $BuildArgs -Capture
+    $build = Invoke-HostCommand -FilePath $Runtime -ArgumentList $ArgumentList -Capture
     $text = "$($build.StdOut)$($build.StdErr)"
     [System.IO.File]::WriteAllText($LogPath, $text)
     if ($text) { [Console]::Error.Write($text) }
@@ -714,6 +724,24 @@ if ($present.ExitCode -ne 0) {
             # exits, so the log is still there when the recorder reads it.
             $EvidenceLog = $BuildLog
             Exit-Launcher $buildStatus
+        }
+
+        # The operator's private layer (Issue #980), built FROM the standard
+        # image the step above just produced. It is reached only when that
+        # build succeeded - a `FROM` naming a tag that does not exist cannot
+        # build - and a deployment that configures no extension carries no
+        # arguments here at all.
+        if ($ExtensionBuildArgs.Count -gt 0) {
+            [Console]::Error.WriteLine(
+                "[run.ps1] building the container extension for $Image")
+            $extensionStatus = Invoke-ImageBuild -LogPath $BuildLog `
+                -ArgumentList $ExtensionBuildArgs
+            if ($extensionStatus -ne 0) {
+                [Console]::Error.WriteLine(
+                    "Error: failed to build the container extension for $Image")
+                $EvidenceLog = $BuildLog
+                Exit-Launcher $extensionStatus
+            }
         }
     } finally {
         Remove-Item -LiteralPath $BuildLog -Force -ErrorAction SilentlyContinue

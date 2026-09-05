@@ -70,6 +70,7 @@ import {
   QUOTA_PAUSE_EXIT_STATUS,
   type QuotaPauseMarker,
 } from "./quota_pause.ts";
+import { EXTENSION_START_ABORT_EXIT_STATUS } from "./container_extension_start.ts";
 import {
   escalationHostId,
   fileOrCommentIssue,
@@ -155,6 +156,11 @@ export type ContainerFailurePhase =
  * "the entry point could not be invoked" and 127 for "the entry point was not
  * found" — all of them are the container failing to start, not the worker
  * inside it failing.
+ *
+ * An aborted extension start (Issue #981) is deliberately NOT one of these:
+ * the container started and the framework's own entrypoint ran it, so the
+ * abort is recorded as a failed run and surfaces the way every other run
+ * failure does rather than as a crashed launch.
  */
 export const CONTAINER_START_EXIT_CODES: readonly number[] = [125, 126, 127];
 
@@ -1032,7 +1038,7 @@ export function buildContainerEscalationParams(
         QUOTA_PAUSE_EXIT_STATUS,
         BUILD_NOT_HEALABLE_STATUS,
         ANOTHER_WORKER_RUNNING_STATUS,
-        HOST_EGRESS_BLOCKED_EXIT_STATUS,
+        EXTENSION_START_ABORT_EXIT_STATUS,
       ),
     ),
     `Next attempt after a ${input.backoffSeconds}s backoff`,
