@@ -1,17 +1,17 @@
 /**
  * Production-loop add-repo routing helper (Issue #2579).
  *
- * Routes a claimed `work-on` issue whose title starts with `add-repo:`
- * (for example `add-repo: stSoftwareAU/private-repo-11`) to the
+ * Claims a `work-on` issue whose title starts with `add-repo:` (for example
+ * `add-repo: stSoftwareAU/private-repo-11`) and routes it to the
  * `process-add-repo` command (Issue #2578) instead of the standard
  * Claude-driven coding/PR flow — which would otherwise try to open a
  * code PR, the wrong outcome for an add-repo request.
  *
- * Discovery is unchanged: the existing issue scan already claims
- * `work-on` issues by allowed authors. This helper only adds a cheap
- * title-prefix routing branch, so it stays well within the per-handler
- * watchdog budget. The slug carried in the title is re-validated
- * downstream by `process-add-repo` (defence in depth).
+ * Discovery is unchanged: the existing issue scan still selects `work-on`
+ * issues by allowed authors. This helper adds a cheap title-prefix routing
+ * branch and the claim that branch bypassed, so it stays well within the
+ * per-handler watchdog budget. The slug carried in the title is
+ * re-validated downstream by `process-add-repo` (defence in depth).
  *
  * Modelled on `idle_task_process_issue_route.ts`: the production factory
  * wires the real command `execute`; tests inject a stub so the routing

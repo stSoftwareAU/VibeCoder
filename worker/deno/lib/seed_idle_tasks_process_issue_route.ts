@@ -1,9 +1,9 @@
 /**
  * Production-loop routing helper for idle-task seeding requests (Issue #3860).
  *
- * Routes a claimed issue whose title starts with `seed-idle-tasks:` (for
- * example `seed-idle-tasks: stSoftwareAU/private-repo-14`) to the
- * `process-seed-idle-tasks` command instead of the standard Claude-driven
+ * Claims an issue whose title starts with `seed-idle-tasks:` (for
+ * example `seed-idle-tasks: stSoftwareAU/private-repo-14`) and routes it to
+ * the `process-seed-idle-tasks` command instead of the standard Claude-driven
  * coding/PR flow. That matters for more than tidiness: the standard flow
  * spawns the agent, whose baked `gh` allowlist carries only the claimed
  * issue's own repo (#3643), so every `gh issue create` against the target was
