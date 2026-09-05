@@ -280,7 +280,11 @@ export const OPTIONAL_PLACEHOLDERS: Record<string, readonly string[]> = {
   workflow_setup: ["VERBOSITY_INSTRUCTIONS", "CODING_GUIDELINES"],
   // Issue #84: the coding guidelines ride in the system prompt, so only the
   // verbosity block is substituted into the merge-conflict body.
-  merge_conflict: ["VERBOSITY_INSTRUCTIONS"],
+  // Issue #1114: `ISSUE_CONTEXT` carries the originating issues behind both
+  // sides of the conflict. It is optional rather than required — a conflict
+  // with nothing to consult substitutes it away, and an operator override
+  // written before this change is still a valid template.
+  merge_conflict: ["VERBOSITY_INSTRUCTIONS", "ISSUE_CONTEXT"],
   // Issue #2439: `ATTRIBUTION_FOOTER` is the attribution-footer
   // placeholder the four idle-task templates always supply at file time.
   // Issue #3014: `LLM_GATE` carries the worker's deterministic LLM-usage

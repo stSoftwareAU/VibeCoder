@@ -27,6 +27,11 @@ import type {
 import { createDefaultRunCoreConfig } from "./run_core.ts";
 import { acquireMaintenanceRepoLease } from "./maintenance_lane.ts";
 import { drainConflictingPrs } from "./merge_conflict_drain.ts";
+import {
+  announceDeferralStreak,
+  readConflictDeferrals,
+  writeConflictDeferrals,
+} from "./merge_conflict_deferrals.ts";
 import { reactivePhaseTimeout } from "./reactive_phase_timeout.ts";
 
 // Config & logging
@@ -92,10 +97,8 @@ import { workOnIssue } from "./issue_worker.ts";
 import { createDefaultDeps, type WorkerDeps } from "./issue_worker_wiring.ts";
 import { fetchIssueData, type IssueData } from "./issue_data.ts";
 import { stripDiscoveryLabelsOnEscalation } from "./escalation_cleanup.ts";
-import {
-  idleTaskRouteRunResult,
-  routeIdleTaskInProcessIssue,
-} from "./idle_task_process_issue_route.ts";
+import { routeIdleTaskInProcessIssue } from "./idle_task_process_issue_route.ts";
+import { routeRunResult } from "./route_claim.ts";
 import { verifyPickupContentIntegrity } from "./pickup_content_integrity.ts";
 import { routeAddRepoInProcessIssue } from "./add_repo_process_issue_route.ts";
 import { routeSeedIdleTasksInProcessIssue } from "./seed_idle_tasks_process_issue_route.ts";
@@ -123,7 +126,11 @@ import {
   processCiNudgeCandidate,
 } from "./pr_ci_nudge_scan.ts";
 import { scanBlockingPrStalls as libScanBlockingPrStalls } from "./blocking_pr_stall_detector.ts";
-import { findConflictingPr } from "./pr_merge_conflict_scan.ts";
+import {
+  type ConflictPrDecision,
+  findConflictingPr,
+} from "./pr_merge_conflict_scan.ts";
+import { scanConflictQueueStalls } from "./merge_conflict_stall_watchdog.ts";
 import { processMergeConflict } from "./pr_merge_conflict_processor.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
 import {
@@ -264,6 +271,7 @@ import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
 import { getRunId } from "./run_id.ts";
 import {
   type FleetAuthorSetInput,
+  isFleetAuthor,
   resolveFleetMaintenanceAuthorSet,
   resolveFleetPrAuthorSet,
   resolveSuppressionExcludedLogins,
@@ -1960,12 +1968,52 @@ export async function createProductionRunCoreDeps(
     // they are. This wiring supplies the three side effects: the scan, the
     // repository lease, and one resolution.
     async findAndProcessMergeConflict(opts?: HandlerExecuteOptions) {
+      // A marker only dedups when the fleet wrote it: a comment body is text
+      // anyone can post, and a dedup that trusts it goes quiet
+      // (`marker_dedup_author_manifest.ts`).
+      const isTrustedAuthor = (login: string) =>
+        isFleetAuthor(login, [
+          ...resolveFleetMaintenanceAuthorSet({
+            githubUser,
+            allowedAuthors: fleetPrAuthorInput.allowedAuthors,
+            fleetPrAuthors: fleetPrAuthorInput.fleetPrAuthors,
+          }),
+        ]);
+      // Issue #1112: every decision this cycle's scans reached, so the stall
+      // watchdog can name the skip reasons recorded for a stalled PR (#1109).
+      const scanDecisions: ConflictPrDecision[] = [];
       const drain = await drainConflictingPrs({
         logger,
         ...(opts?.deadlineEpochMs !== undefined
           ? { deadlineEpochMs: opts.deadlineEpochMs }
           : {}),
-        findNext: async (exclude) => {
+        // Issue #1111: the lease, the deadline and the cap each drop a due PR.
+        // The cursor on the work volume is what stops the same PR losing that
+        // race every cycle in silence, and the notice is what says so on the
+        // PR itself once it has.
+        deferrals: {
+          load: () =>
+            readConflictDeferrals(
+              workDir,
+              undefined,
+              Date.now(),
+              (message) => logger.warn(message),
+            ),
+          save: (state) =>
+            writeConflictDeferrals(
+              workDir,
+              state,
+              undefined,
+              Date.now(),
+              (message) => logger.warn(message),
+            ),
+          announce: (notice) =>
+            announceDeferralStreak(notice, {
+              ghCommandFn: runGhCommand,
+              isTrustedAuthor,
+            }),
+        },
+        findNext: async (exclude, prefer) => {
           const scan = await findConflictingPr({
             githubUser,
             allowedAuthors: fleetPrAuthorInput.allowedAuthors,
@@ -1982,8 +2030,16 @@ export async function createProductionRunCoreDeps(
             // itself, so it needs the configured escalation label.
             needsHumanLabel: config.needsHumanLabel,
             exclude,
+            // Issue #1111: the deferral cursor, so a PR the last pass left
+            // behind leads this one.
+            ...(prefer !== undefined ? { prefer } : {}),
           });
-          return scan.ok ? scan.value : null;
+          // Issue #1109: the scan records every PR it decided on through the
+          // logger itself, so the drain needs only the selection. The
+          // decisions are kept for the stall watchdog below (Issue #1112).
+          if (!scan.ok) return null;
+          scanDecisions.push(...scan.value.decisions);
+          return scan.value.selected;
         },
         // Issue #213: lease the shared `${WORK_DIR}/<repo>` clone before the
         // merge, so this pass and an issue slot never write one tree.
@@ -2044,6 +2100,29 @@ export async function createProductionRunCoreDeps(
           };
         },
       });
+
+      // Issue #1112: the ladder above is attempt-driven, so it cannot see the
+      // stall where no attempt record exists at all. This watchdog keys on the
+      // age of the `merge-conflict` label instead, and files a PR that has
+      // carried it for hours with nothing concluding as work — never
+      // `needs-human`, which would remove it from this very lane (Issue #569).
+      // Skipped once the cycle's deadline has passed: the drain stops there
+      // for the same reason, and a watchdog that observes is never worth
+      // running into the next pass's time.
+      if (
+        opts?.deadlineEpochMs === undefined || Date.now() < opts.deadlineEpochMs
+      ) {
+        await scanConflictQueueStalls({
+          repos,
+          ghCommandFn: runGhCommand,
+          logger,
+          isTrustedAuthor,
+          isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),
+          timelineCache,
+          needsHumanLabel: config.needsHumanLabel,
+          decisions: [...scanDecisions, ...drain.decisions],
+        });
+      }
 
       return { ok: true, value: { processed: drain.processed } };
     },
@@ -3007,32 +3086,39 @@ export async function createProductionRunCoreDeps(
         // Issue #1139: a wrapper a sibling host holds is a skip that releases
         // nothing (`claimNotHeld`); a claim that failed for any other reason
         // is reported as the failure it is. Neither is an ordinary success.
-        return { ok: true, value: idleTaskRouteRunResult(idleRoute) };
+        return { ok: true, value: routeRunResult(idleRoute) };
       }
 
-      // Issue #2579: route a claimed `work-on` issue titled
-      // `add-repo: owner/repo` to the `process-add-repo` command instead
-      // of the standard coding/PR flow (which would try to open a code
-      // PR — wrong for an add-repo request). The allowed-author gate on
-      // the claim path already applies; the slug is re-validated
-      // downstream by `process-add-repo` (defence in depth).
+      // Issue #2579: route a `work-on` issue titled `add-repo: owner/repo`
+      // to the `process-add-repo` command instead of the standard coding/PR
+      // flow (which would try to open a code PR — wrong for an add-repo
+      // request). The route claims the request itself (Issue #1193); the
+      // allowed-author gate on the claim path already applies, and the slug
+      // is re-validated downstream by `process-add-repo` (defence in depth).
       const addRepoRoute = await routeAddRepoInProcessIssue(
         {
           repo: issue.repo,
           issueNumber: issue.issueNumber,
           issueTitle,
           config,
+          // Issue #1193: the request is claimed on GitHub before
+          // `process-add-repo` runs, so a sibling host working from a stale
+          // issue list stands down instead of adding the repo twice.
+          githubUser,
+          workDir: config.workDir,
+          fleetAuthors,
+          pushCapableAuthors: maintenanceAuthors,
         },
         { logger },
       );
       if (addRepoRoute.routed) {
-        return {
-          ok: true,
-          value: { success: addRepoRoute.success, skipped: false },
-        };
+        // Issue #1193: a request a sibling host holds is a skip that releases
+        // nothing (`claimNotHeld`); a claim that failed for any other reason
+        // is reported as the failure it is.
+        return { ok: true, value: routeRunResult(addRepoRoute) };
       }
 
-      // Issue #3860: route a claimed issue titled
+      // Issue #3860: route an issue titled
       // `seed-idle-tasks: owner/repo` to `process-seed-idle-tasks` instead
       // of the standard coding/PR flow. The agent's baked `gh` allowlist
       // carries only this issue's own repo (#3643), so an agent-driven
@@ -3045,14 +3131,17 @@ export async function createProductionRunCoreDeps(
           issueNumber: issue.issueNumber,
           issueTitle,
           config,
+          // Issue #1193: claimed before the seeding runs, so two hosts
+          // cannot file every wrapper issue in the target repo twice.
+          githubUser,
+          workDir: config.workDir,
+          fleetAuthors,
+          pushCapableAuthors: maintenanceAuthors,
         },
         { logger },
       );
       if (seedRoute.routed) {
-        return {
-          ok: true,
-          value: { success: seedRoute.success, skipped: false },
-        };
+        return { ok: true, value: routeRunResult(seedRoute) };
       }
 
       const ctx = {
@@ -3117,6 +3206,10 @@ export async function createProductionRunCoreDeps(
         value: {
           success: result.success,
           skipped: isExpectedSkip,
+          // Issue #1193: the setup phase was refused the claim, so this run
+          // holds nothing to release — releasing would strip the winner's
+          // assignee and clear its heartbeat marker under the shared login.
+          ...(result.claimNotHeld ? { claimNotHeld: true } : {}),
           ...(failureKind ? { failureKind } : {}),
           // Issue #855: the phase a real failure died at, so the fleet
           // success rate can say *where* the 13 failures happened.

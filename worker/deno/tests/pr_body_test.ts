@@ -9,9 +9,43 @@ import {
   buildIdempotencyMarker,
   buildMilestonePrSection,
   ensurePrReferencesIssue,
+  extractClosingIssueNumbers,
   extractIssueNumberFromPrTitle,
   hasClosingKeyword,
 } from "../lib/pr_body.ts";
+
+// --- extractClosingIssueNumbers (Issue #1113) ---
+
+Deno.test("pr_body - extractClosingIssueNumbers reads every keyword conjugation", () => {
+  assertEquals(
+    extractClosingIssueNumbers(
+      "Closes #42\nfixed #7\nRESOLVE #9\nclosed #11\nFixes #13",
+    ),
+    [42, 7, 9, 11, 13],
+  );
+});
+
+Deno.test("pr_body - extractClosingIssueNumbers keeps first-mention order and de-duplicates", () => {
+  assertEquals(
+    extractClosingIssueNumbers("Fixes #8. Also closes #3, and closes #8."),
+    [8, 3],
+  );
+});
+
+Deno.test("pr_body - hasClosingKeyword honours every conjugation GitHub does", () => {
+  assertEquals(hasClosingKeyword("Fixed #42", 42), true);
+  assertEquals(hasClosingKeyword("resolve #42", 42), true);
+  // A keyword glued to a preceding word is not a closing keyword.
+  assertEquals(hasClosingKeyword("Prefixes #42", 42), false);
+  // A cross-repository reference names an issue in another repository.
+  assertEquals(hasClosingKeyword("Closes owner/repo#42", 42), false);
+});
+
+Deno.test("pr_body - extractClosingIssueNumbers ignores bare and cross-repo references", () => {
+  assertEquals(extractClosingIssueNumbers("See #42, related to #7"), []);
+  assertEquals(extractClosingIssueNumbers("Closes owner/repo#42"), []);
+  assertEquals(extractClosingIssueNumbers(""), []);
+});
 
 // --- hasClosingKeyword ---
 

@@ -146,7 +146,15 @@ export async function workOnIssueSetupBranch(
     } else {
       detail = winnerId ?? "already assigned or closed";
     }
-    return { status: "early_exit", reason: `Issue not available: ${detail}` };
+    // Issue #1193: the claim was refused, so this run holds nothing to
+    // release. Every fleet host runs under one login, so an unassign from
+    // here removes the *winner's* assignment and clears its live heartbeat
+    // marker — the state Issue #214 describes, reached by a stand-down.
+    return {
+      status: "early_exit",
+      reason: `Issue not available: ${detail}`,
+      claimNotHeld: true,
+    };
   }
 
   // Check for claim churn (Issue #861, #999)

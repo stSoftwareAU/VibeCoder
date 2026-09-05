@@ -440,6 +440,9 @@ async function workOnIssueCore(
         phase: "setup",
         reason: setupResult.reason,
         timings,
+        // Issue #1193: a refused claim is carried to the main loop so the
+        // release path leaves the holder's assignee and heartbeat alone.
+        ...(setupResult.claimNotHeld ? { claimNotHeld: true } : {}),
       };
     }
 

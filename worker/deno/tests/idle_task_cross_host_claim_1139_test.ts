@@ -10,7 +10,7 @@
  * lock at all, so a second host's scan kept offering it.
  *
  * These tests drive the real claim path (`claimIssue` →
- * `claimIdleTaskWrapper` → `routeIdleTaskInProcessIssue`) over one shared
+ * `claimRoutedIssue` → `routeIdleTaskInProcessIssue`) over one shared
  * fake GitHub state, with two hosts:
  *
  *   1. the second host's issue list was populated BEFORE the first host's
@@ -24,14 +24,12 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { routeIdleTaskInProcessIssue } from "../lib/idle_task_process_issue_route.ts";
 import {
-  idleTaskRouteRunResult,
-  routeIdleTaskInProcessIssue,
-} from "../lib/idle_task_process_issue_route.ts";
-import {
-  claimIdleTaskWrapper,
-  IDLE_TASK_CLAIM_REFUSED_MESSAGE,
-} from "../lib/idle_task_wrapper_claim.ts";
+  claimRoutedIssue,
+  ROUTE_CLAIM_REFUSED_MESSAGE,
+  routeRunResult,
+} from "../lib/route_claim.ts";
 import { CLAIM_MARKER_PREFIX, claimIssue } from "../lib/claim_issue.ts";
 import { formatHeartbeatMarker } from "../lib/heartbeat_storage.ts";
 import type { IdleTaskTemplate } from "../lib/idle_task_template.ts";
@@ -237,7 +235,7 @@ function wrapperInput(workDir: string) {
 
 /**
  * Run the route for one host against the shared issue, counting scans.
- * The real `claimIdleTaskWrapper` and `claimIssue` are used — only `gh`,
+ * The real `claimRoutedIssue` and `claimIssue` are used — only `gh`,
  * the clone and the template are faked.
  */
 function runHost(
@@ -272,8 +270,8 @@ function runHost(
       beats.push(`stop:${host}`);
       return Promise.resolve();
     },
-    claimWrapperFn: (input, deps) =>
-      claimIdleTaskWrapper(input, {
+    claimRouteFn: (input, deps) =>
+      claimRoutedIssue(input, {
         ...deps,
         workerIdFn: (user) => `${user}-${host}`,
         machineIdFn: () => Promise.resolve(`machine-${host}`),
@@ -341,7 +339,7 @@ Deno.test(
         success: false,
         claimLost: true,
         claimReason: "already_assigned",
-        claimDetail: "the wrapper is assigned to another run",
+        claimDetail: "the issue is assigned to another run",
       });
       // The scan ran exactly once across the fleet.
       assertEquals(scans, ["GRQ-3"]);
@@ -349,14 +347,12 @@ Deno.test(
       assertEquals(hub.writesBy("Mac-Ultra-M2"), []);
       assertEquals(beats, ["start:GRQ-3", "stop:GRQ-3"]);
       assert(
-        recordsB.some(([message]) =>
-          message === IDLE_TASK_CLAIM_REFUSED_MESSAGE
-        ),
+        recordsB.some(([message]) => message === ROUTE_CLAIM_REFUSED_MESSAGE),
         "the stood-down host must say why in its log",
       );
       // The loser has nothing to release — the main loop is told so.
       assert(second.routed, "the wrapper is routed on both hosts");
-      assertEquals(idleTaskRouteRunResult(second), {
+      assertEquals(routeRunResult(second), {
         success: false,
         skipped: true,
         claimNotHeld: true,
@@ -421,8 +417,7 @@ Deno.test(
   "a lost claim is recorded as a skip, never as an ordinary success",
   () => {
     assertEquals(
-      idleTaskRouteRunResult({
-        routed: true,
+      routeRunResult({
         success: false,
         claimLost: true,
         claimReason: "already_assigned",
@@ -433,8 +428,7 @@ Deno.test(
     // A claim that could not be made at all is a FAILURE, not a benign
     // skip: a broken GitHub must reach the failure counters.
     assertEquals(
-      idleTaskRouteRunResult({
-        routed: true,
+      routeRunResult({
         success: false,
         claimLost: true,
         claimReason: "claim_error",
@@ -443,11 +437,11 @@ Deno.test(
       { success: false, skipped: false, claimNotHeld: true },
     );
     // A scan this host actually ran keeps its ordinary success/failure.
-    assertEquals(idleTaskRouteRunResult({ routed: true, success: true }), {
+    assertEquals(routeRunResult({ success: true }), {
       success: true,
       skipped: false,
     });
-    assertEquals(idleTaskRouteRunResult({ routed: true, success: false }), {
+    assertEquals(routeRunResult({ success: false }), {
       success: false,
       skipped: false,
     });

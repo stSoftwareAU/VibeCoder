@@ -250,6 +250,14 @@ export type PhaseResult =
      * before.
      */
     outcome?: RunOutcome;
+    /**
+     * The phase stopped because the claim was **refused** (Issue #1193), so
+     * this run holds nothing to release. The fleet shares one GitHub login,
+     * so releasing anyway strips the winner's assignee and clears its live
+     * heartbeat marker. The orchestrator carries it out on
+     * {@link WorkOnIssueResult.claimNotHeld}.
+     */
+    claimNotHeld?: true;
   }
   | { status: "failure"; reason: string };
 
@@ -278,6 +286,14 @@ export interface WorkOnIssueResult {
    * invocation reported usage the worker could parse.
    */
   telemetry?: CallbackRunTelemetry;
+  /**
+   * The setup phase was refused the claim (Issue #1193): another host holds
+   * the issue, so this run has nothing to release. The main loop passes it
+   * to `releaseIssueClaim`, which then releases nothing — without it the
+   * refused host unassigns the **winner** (one shared login) and clears the
+   * winner's heartbeat marker, leaving a live run claimable by a third host.
+   */
+  claimNotHeld?: boolean;
 }
 
 /**
