@@ -13,7 +13,7 @@ and the lifecycle diagram common to every template.
 
 For the **agent-facing** rules (label policy, suppression syntax, trigger
 summary) see
-[DESIGN-PRINCIPLES.md → Security scans](../DESIGN-PRINCIPLES.md#security-scans-simplified-by).
+[DESIGN-PRINCIPLES.md → Security scans](../DESIGN-PRINCIPLES.md#security-scans).
 
 For the **rationale** behind the pipeline's shape — threat modelling, the
 multi-stage false-positive triage, and patch verification — see the
@@ -603,7 +603,7 @@ The body has three parts (per the Phase 4 instructions in
 
 Operators who want to suppress the finding on future runs paste the
 in-source comment described in
-[`DESIGN-PRINCIPLES.md → Security scans`](../DESIGN-PRINCIPLES.md#security-scans-simplified-by):
+[`DESIGN-PRINCIPLES.md → Security scans`](../DESIGN-PRINCIPLES.md#security-scans):
 `security-scan-ignore: SEC-<id> — author=<login> expires=<YYYY-MM-DD> reason`.
 The grammar lives in
 [`worker/deno/lib/suppression_comments.ts`](../worker/deno/lib/suppression_comments.ts)
