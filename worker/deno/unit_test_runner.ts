@@ -51,7 +51,11 @@ async function main(): Promise<void> {
     const startedAt = Date.now();
     const status = await new Deno.Command(pass.args[0]!, {
       args: pass.args.slice(1),
+      // The pass env is the whole environment, not an overlay (Issue #1098):
+      // without `clearEnv` the child inherits the variables the pass scrubbed,
+      // and "it passed locally" stops meaning what the gate means.
       env: pass.env,
+      clearEnv: true,
       stdout: "inherit",
       stderr: "inherit",
     }).output();

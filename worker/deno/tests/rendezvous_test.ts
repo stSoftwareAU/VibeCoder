@@ -5,7 +5,22 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { createRendezvous } from "./support/rendezvous.ts";
+import { createRendezvous, waitUntil } from "./support/rendezvous.ts";
+
+Deno.test("waitUntil - returns true as soon as the condition holds", async () => {
+  let ready = false;
+  setTimeout(() => ready = true, 5);
+
+  assertEquals(await waitUntil(() => ready), true);
+});
+
+Deno.test("waitUntil - a condition that never holds ends at the bound", async () => {
+  assertEquals(await waitUntil(() => false, 5), false);
+});
+
+Deno.test("waitUntil - an already-true condition does not wait at all", async () => {
+  assertEquals(await waitUntil(() => true, 0), true);
+});
 
 Deno.test("rendezvous - nobody leaves until every participant has arrived", async () => {
   const meeting = createRendezvous(3);

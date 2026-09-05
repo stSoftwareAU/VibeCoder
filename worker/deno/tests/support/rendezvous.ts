@@ -14,14 +14,36 @@
  * arrived. Nobody leaves early however loaded the host is, and a slow host
  * only makes the wait longer, never the answer different.
  *
- * The wait is bounded, so a genuine regression — one participant that never
- * arrives — fails the test's own assertion rather than hanging the suite.
+ * {@link waitUntil} is the same idea for a condition rather than a count —
+ * "hold this slot until the other has finished" — and the rendezvous is built
+ * on it.
+ *
+ * Both waits are bounded, so a genuine regression — one participant that
+ * never arrives — fails the test's own assertion rather than hanging the
+ * suite.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-/** How many 1 ms ticks a participant waits before giving up on the others. */
+/** How many 1 ms ticks a wait runs for before giving up. */
 export const DEFAULT_MAX_TICKS = 2000;
+
+/**
+ * Wait until `ready()` holds, for at most `maxTicks` one-millisecond ticks.
+ *
+ * Returns whether it held in the end, so a caller can assert on the outcome
+ * rather than on how long it took. The bound is the difference between a
+ * failed assertion and a hung suite.
+ */
+export async function waitUntil(
+  ready: () => boolean,
+  maxTicks: number = DEFAULT_MAX_TICKS,
+): Promise<boolean> {
+  for (let tick = 0; tick < maxTicks && !ready(); tick++) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  return ready();
+}
 
 /** A meeting point for concurrent participants. */
 export interface Rendezvous {
@@ -54,9 +76,7 @@ export function createRendezvous(
     },
     async arrive(): Promise<number> {
       arrived++;
-      for (let tick = 0; tick < maxTicks && arrived < expected; tick++) {
-        await new Promise((resolve) => setTimeout(resolve, 1));
-      }
+      await waitUntil(() => arrived >= expected, maxTicks);
       return arrived;
     },
   };

@@ -17,7 +17,10 @@ import {
   type ProductionDepsOptions,
 } from "../lib/run_core_production_deps.ts";
 import { createLogger } from "../lib/logger.ts";
-import { resolveDerivedAuthors } from "../lib/derived_authors.ts";
+import {
+  _resetDerivedAuthorsCache,
+  resolveDerivedAuthors,
+} from "../lib/derived_authors.ts";
 import {
   rateLimitSignalPath,
   writeRateLimitSignal,
@@ -225,9 +228,15 @@ Deno.test(
     );
     assertEquals(poisoned.ok, false, "the poisoning resolve must have failed");
 
-    const { deps } = await createProductionRunCoreDeps(createTestOptions());
-    const outcome = await deps.refreshTrustedAuthors!();
-    assertEquals(outcome.ok, true, JSON.stringify(outcome));
+    try {
+      const { deps } = await createProductionRunCoreDeps(createTestOptions());
+      const outcome = await deps.refreshTrustedAuthors!();
+      assertEquals(outcome.ok, true, JSON.stringify(outcome));
+    } finally {
+      // Leave no poisoned entry behind for the next file in this worker —
+      // the fault this test covers, in the direction this test creates it.
+      _resetDerivedAuthorsCache();
+    }
   },
 );
 

@@ -31,7 +31,7 @@ import {
 } from "../lib/write_repo_allowlist.ts";
 import type { DiagnosticSummary } from "../lib/issue_finder_logger.ts";
 import type { InFlightClaim } from "../lib/work_stream.ts";
-import { createRendezvous } from "./support/rendezvous.ts";
+import { createRendezvous, waitUntil } from "./support/rendezvous.ts";
 
 function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
   return {
@@ -731,8 +731,10 @@ Deno.test("slot pool - pressure spike while 3 slots run: 0 cancellations, 0 new 
         await allThree.arrive();
         ceiling = 1;
       }
-      // A window in which a sibling the ceiling failed to stop would be seen
-      // overlapping this run. Absence, so a slow host only widens it.
+      // A window for a sibling the ceiling failed to stop to be seen
+      // overlapping this run. This one proves an absence, so it stays a
+      // plain wait: a slow host widens the window and can only make the
+      // overlap easier to catch, never harder.
       await new Promise((r) => setTimeout(r, 10));
       inFlight--;
       if (postSpike) postSpikeInFlight--;
@@ -1169,9 +1171,7 @@ Deno.test("slot pool - a success is followed by the normal sleep and another cla
         // The sibling holds its slot — and so stays out of the trace —
         // until the slot under test has taken both its claims. Bounded, so
         // a regression fails the assertions below instead of hanging.
-        for (let tick = 0; tick < 2000 && processedA < 2; tick++) {
-          await new Promise((r) => setTimeout(r, 1));
-        }
+        await waitUntil(() => processedA >= 2);
         return { ok: true, value: { success: true } };
       }
       events.push(`process:${i.repo}#${i.issueNumber}`);

@@ -29,7 +29,10 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { runCommand, testStageEnv } from "../lib/quality_gate.ts";
+// `runCommand` is exercised through the intermediate process below, which
+// imports it dynamically — the test needs a parent that carries the planted
+// variable, and this process must not be it.
+import { testStageEnv } from "../lib/quality_gate.ts";
 
 Deno.test("test stage env - CONFIG_PATH is not handed to the suite (Issue #891)", () => {
   const env = testStageEnv({
@@ -51,37 +54,54 @@ Deno.test("test stage env - a scrubbed variable really is absent from the child 
   // operator's real config and made live `gh` calls from tests that meant to
   // read an empty one. This drives the gate's own spawn helper with an
   // environment that omits a variable the parent has.
-  // An existing parent variable stands in for the scrubbed one, so no process
-  // state is mutated and this file stays in the parallel pass. Deno supplies
-  // `PATH`, `HOME` and its node shim marker to every child it spawns, so the
-  // probe is any other variable the parent happens to carry.
-  const parentEnv = Deno.env.toObject();
-  const supplied = new Set(["PATH", "HOME", "DENO_NODE_SHIM_ACTIVE"]);
-  const probeVar = Object.keys(parentEnv).find((name) => !supplied.has(name));
-  assert(probeVar !== undefined, "the parent has no variable to omit");
-  const probe = [
-    Deno.execPath(),
-    "eval",
-    `console.log(Deno.env.get(${JSON.stringify(probeVar)}) ?? "ABSENT")`,
-  ];
-
-  const passedThrough = await runCommand(probe, {
-    env: testStageEnv(parentEnv),
+  // The variable is planted in an intermediate process rather than in this
+  // one: the test needs a parent that carries it, and mutating the test
+  // runner's own environment is what the parallel-unsafe manifest exists to
+  // keep out of this pass. The intermediate calls the gate's real helper, so
+  // what is measured is `runCommand`'s contract, not Deno's.
+  const scrubbed = "CONFIG_PATH";
+  const planted = "/planted/by/the/parent/.config.json";
+  const helper = import.meta.resolve("../lib/quality_gate.ts");
+  const grandchild =
+    'console.log(Deno.env.get("CONFIG_PATH") ?? "ABSENT-IN-GRANDCHILD")';
+  const script = `
+    const { runCommand } = await import(${JSON.stringify(helper)});
+    const probe = [Deno.execPath(), "eval", ${JSON.stringify(grandchild)}];
+    const own = Deno.env.get(${JSON.stringify(scrubbed)}) ?? "ABSENT-IN-CHILD";
+    const scrubbedRun = await runCommand(probe, {
+      env: { HOME: Deno.env.get("HOME") ?? "" },
+    });
+    const keptRun = await runCommand(probe, {
+      env: { HOME: Deno.env.get("HOME") ?? "", CONFIG_PATH: own },
+    });
+    console.log(JSON.stringify({
+      own,
+      scrubbed: scrubbedRun.output.trim(),
+      kept: keptRun.output.trim(),
+    }));
+  `;
+  const intermediate = new Deno.Command(Deno.execPath(), {
+    args: ["eval", "--allow-run", "--allow-env", "--allow-read", script],
+    env: { ...Deno.env.toObject(), [scrubbed]: planted },
+    stdout: "piped",
+    stderr: "piped",
   });
-  assertEquals(passedThrough.exitCode, 0, passedThrough.output);
-  assertEquals(
-    passedThrough.output.trim(),
-    parentEnv[probeVar],
-    "the supplied environment must reach the child intact",
-  );
+  const result = await intermediate.output();
+  const stdout = new TextDecoder().decode(result.stdout);
+  const stderr = new TextDecoder().decode(result.stderr);
+  assertEquals(result.code, 0, stderr);
 
-  const { [probeVar]: _omitted, ...withoutProbe } = parentEnv;
-  const omitted = await runCommand(probe, { env: testStageEnv(withoutProbe) });
-  assertEquals(omitted.exitCode, 0, omitted.output);
+  const observed = JSON.parse(stdout.trim().split("\n").at(-1)!);
+  assertEquals(observed.own, planted, "the intermediate must carry the value");
   assertEquals(
-    omitted.output.trim(),
-    "ABSENT",
+    observed.scrubbed,
+    "ABSENT-IN-GRANDCHILD",
     "a variable left out of the supplied environment must not be inherited",
+  );
+  assertEquals(
+    observed.kept,
+    planted,
+    "the supplied environment must reach the child intact",
   );
 });
 
