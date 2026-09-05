@@ -194,18 +194,99 @@ Deno.test("withFileLock - breaks a fresh lock whose holder is provably dead", as
   }
 });
 
-Deno.test("withFileLock - an ownerless lock is broken on a second look", async () => {
+// Replaces "an ownerless lock is broken on a second look" (Issue #1074).
+// That test pinned a heuristic this change removes: a lock file naming
+// nobody was broken on its second sighting, on the reasoning that the op
+// creating and filling it was too narrow to survive two polls. It is not.
+// `Deno.writeFile(…, { createNew: true })` creates the file and writes its
+// record in separate syscalls, and a holder descheduled between them is
+// observably ownerless for as long as it is off the CPU — 265 of 961
+// sightings in a straight measurement, and far wider under load. Two polls
+// a millisecond apart therefore both land in that window, and the "proof"
+// broke a *live* holder's lock. The behaviour is deliberately reversed
+// below: an empty lock file is now waited out, never taken early.
+Deno.test("withFileLock - an empty lock file is never broken early", async () => {
   const { dir, lock } = await tempLock();
   try {
-    // What a holder killed inside the single create-and-fill op leaves:
-    // a lock file naming nobody. One sighting could be that op in
-    // flight, so the break waits for a second (Issue #1074).
+    // Exactly what a live holder looks like mid-create. Indistinguishable
+    // from a holder killed in that window, so the safe reading is the one
+    // that never puts two writers in one journal.
+    await Deno.writeTextFile(lock, "");
+    await assertRejects(
+      () =>
+        withFileLock(lock, () => Promise.resolve("taken"), {
+          timeoutMs: 150,
+          pollMs: 1,
+        }),
+      FileLockTimeoutError,
+    );
+    // Untouched: the contender waited rather than stealing it.
+    assertEquals(await Deno.readTextFile(lock), "");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("withFileLock - an empty lock file is still aged out", async () => {
+  const { dir, lock } = await tempLock();
+  try {
+    // The case the removed heuristic was reaching for: a genuinely
+    // abandoned ownerless lock must not wedge writers for ever. The age
+    // rule already covers it, without having to guess about a live holder.
     await Deno.writeTextFile(lock, "");
     const took = await withFileLock(lock, () => Promise.resolve("taken"), {
       timeoutMs: 2_000,
       pollMs: 5,
+      staleMs: 50,
+      now: () => Date.now() + 10_000,
     });
     assertEquals(took, "taken");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("withFileLock - the lock file is never seen without its record", async () => {
+  const { dir, lock } = await tempLock();
+  try {
+    // The property that makes the ownerless case unreachable rather than
+    // merely tolerated: once the lock file exists, it already carries the
+    // record naming its holder.
+    let ownerless = 0;
+    let sightings = 0;
+    let watching = true;
+    // Reads the file the way the lock breaker does, because that is the
+    // observation the safety of a break rests on: a present lock file whose
+    // record will not parse is what "ownerless" actually means.
+    const watcher = (async () => {
+      while (watching) {
+        let raw: string;
+        try {
+          raw = await Deno.readTextFile(lock);
+        } catch {
+          continue; // Between holders; nothing to see.
+        }
+        sightings++;
+        try {
+          const parsed = JSON.parse(raw) as { token?: unknown };
+          if (typeof parsed?.token !== "string") ownerless++;
+        } catch {
+          ownerless++;
+        }
+      }
+    })();
+
+    await Promise.all(
+      Array.from(
+        { length: 40 },
+        () => withFileLock(lock, () => Promise.resolve(true), { pollMs: 1 }),
+      ),
+    );
+    watching = false;
+    await watcher;
+
+    assertEquals(ownerless, 0, "a lock file was visible without its record");
+    assert(sightings > 0, "the watcher never saw the lock file at all");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

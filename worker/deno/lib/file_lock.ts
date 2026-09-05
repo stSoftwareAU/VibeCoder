@@ -32,10 +32,26 @@
  * gets stolen and two writers land in one journal. And `ps -p` must
  * conclusively report the pid gone; the probe is run at most once per
  * contended acquisition, and anything short of a conclusive answer counts
- * as alive. A lock file that records no holder at all is broken on its
- * **second** sighting: the op that creates and fills it is a single call,
- * so an ownerless lock cannot survive two polls unless the process that
- * made it is gone.
+ * as alive.
+ *
+ * A lock file that records **no holder** is never broken early. An earlier
+ * revision of this module broke one on its second sighting, reasoning that
+ * the op creating and filling it was too narrow to survive two polls. That
+ * was wrong, and wrong in the direction this whole subsystem exists to
+ * prevent: creation was `open(O_CREAT|O_EXCL)` followed by a separate
+ * `write`, so a holder descheduled between the two is observably ownerless
+ * for as long as it is off the CPU. Measured straight, the file was
+ * present-but-empty in 265 of 961 sightings; under CPU contention two
+ * polls a millisecond apart both landed inside the window, and the lock of
+ * a perfectly live holder was broken — two writers in one journal, which
+ * is the torn line of Issue #1074 rather than a fix for it.
+ *
+ * {@link createLockAtomically} closes the window instead of guessing about
+ * it: the record is written to a temp file first and `link(2)`ed into
+ * place, so the lock file carries its holder from the instant it exists.
+ * An ownerless lock is therefore unreachable in new writes, and a legacy
+ * or genuinely abandoned one is left to the age rules below — slower than
+ * an immediate break, and sound.
  *
  * Otherwise the age rules decide: a lock older than
  * {@link DEFAULT_STALE_MS} is broken unless the holder is *conclusively*
@@ -202,7 +218,7 @@ async function breakIfAbandoned(
   path: string,
   staleMs: number,
   now: () => number,
-  probe: { probed: boolean; sawEmpty: boolean },
+  probe: { probed: boolean },
 ): Promise<boolean> {
   let ageMs: number;
   try {
@@ -219,20 +235,12 @@ async function breakIfAbandoned(
     // waited out — a run killed mid-append leaves its lock behind, and the
     // next run's audit sweep arrives well inside the stale window.
     //
-    // "Prove" is the whole of it, and there are two proofs.
-    //
-    // An ownerless lock file is one whose holder was killed inside the
-    // single op that creates and fills it — microseconds wide, and not
-    // survivable across two polls, so a second sighting is the proof. One
-    // sighting is not: it could be that op in flight.
-    if (!record) {
-      if (!probe.sawEmpty) {
-        probe.sawEmpty = true;
-        return false;
-      }
-      await breakLock(path, ageMs, `it records no holder on a second look`);
-      return true;
-    }
+    // "Prove" is the whole of it, and a lock naming nobody proves nothing:
+    // it is what a live holder looks like mid-create on any build that
+    // still fills the file after creating it, and what a legacy or
+    // truncated record looks like afterwards. Neither is grounds for a
+    // break, so it waits for the age rules.
+    if (!record) return false;
     // Otherwise the recorded pid has to be one this process can ask
     // about. A record from another pid namespace names a pid that is not
     // ours to look up, and a `ps` miss there would be a *live* holder's
@@ -284,6 +292,41 @@ async function breakLock(
 }
 
 /**
+ * Create `lockPath` already carrying `payload`, or fail because it exists.
+ *
+ * `Deno.writeFile(…, { createNew: true })` cannot do this: it creates the
+ * file and writes the record in separate syscalls, leaving a window in
+ * which the lock exists but names nobody (Issue #1074). `link(2)` has no
+ * such window — it publishes a name for a file that is already complete,
+ * and fails with `EEXIST` atomically when the name is taken — so the two
+ * properties this lock needs, exclusion and a legible holder, arrive
+ * together.
+ *
+ * The temp file is a sibling because a hard link cannot cross filesystems.
+ *
+ * @param lockPath - Lock file to publish; its directory must already exist
+ * @param payload - Encoded {@link LockRecord} to publish with it
+ * @throws {Deno.errors.AlreadyExists} When the lock is held
+ */
+async function createLockAtomically(
+  lockPath: string,
+  payload: Uint8Array,
+): Promise<void> {
+  const temp = `${lockPath}.${crypto.randomUUID()}.tmp`;
+  await Deno.writeFile(temp, payload, { createNew: true });
+  try {
+    await Deno.link(temp, lockPath);
+  } finally {
+    try {
+      await Deno.remove(temp);
+    } catch {
+      // The link either landed or did not; a leftover sibling would be
+      // noise, not a lock, and must not mask the outcome of the link.
+    }
+  }
+}
+
+/**
  * Run `fn` while holding an exclusive cross-process lock at `lockPath`.
  *
  * The lock is released whether `fn` resolves or throws. A lock this call
@@ -316,15 +359,15 @@ export async function withFileLock<T>(
   const payload = new TextEncoder().encode(JSON.stringify(record));
 
   const deadline = now() + timeoutMs;
-  const probe = { probed: false, sawEmpty: false };
+  const probe = { probed: false };
   let held = false;
   for (;;) {
     try {
-      // One op, not an open-then-write pair (Issue #1074): the pair left
-      // an `await` between creating the file and recording who owns it,
-      // and a holder killed in that window left an ownerless lock nobody
-      // could reason about. `createNew` keeps the `O_EXCL` exclusion.
-      await Deno.writeFile(lockPath, payload, { createNew: true });
+      // Published complete, not created and then filled (Issue #1074):
+      // a lock file that exists but names nobody is indistinguishable
+      // from a live holder mid-write, and acting on that guess is what
+      // put two writers in one journal.
+      await createLockAtomically(lockPath, payload);
       held = true;
       break;
     } catch (error: unknown) {
