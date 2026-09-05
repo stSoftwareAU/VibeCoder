@@ -130,7 +130,8 @@ records each one's output under the transcript directory, then prints
 `report.md`, the table to paste onto the issue you are verifying against. The
 report carries an eighth row, `volume-init`: `run.sh` swallows volume
 initialisation's own output, so that row is read back from the launcher's log
-and `~/logs/run_core.log` rather than from a stage of its own, and it is
+and the host log directory's `run_core.log` rather than from a stage of its
+own, and it is
 `SKIPPED` — never a pass — when neither source shows the initialisation ran.
 
 ```mermaid
@@ -187,7 +188,7 @@ in this order:
 deno run --allow-run --allow-env worker/deno/mod.ts container-runtime-detect
 VIBE_AGENT_PROVIDER=codex ./setup.sh   # on a terminal: the prompts are TTY-gated
 ./run.sh
-podman ps && tail -n 200 ~/logs/worker.log
+podman ps && tail -n 200 "$(deno run --allow-env --allow-read worker/deno/mod.ts log-dir)/worker.log"
 ```
 
 Doing so leaves the host non-fresh, so it is a debugging path, not a

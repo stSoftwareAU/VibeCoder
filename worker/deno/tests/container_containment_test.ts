@@ -462,9 +462,9 @@ async function buildHostFixture(
   // flag rather than by host ownership (the container user is uid 1000, the
   // CI runner is not).
   const workDir = `${home}/auto-issue-work`;
-  const logDir = `${home}/logs`;
   await makeSharedDir(workDir, 0o777);
-  await makeSharedDir(logDir, 0o777);
+  // The log directory is created below, once the resolver has named it: its
+  // default is the platform's, not `$HOME/logs` (Issue #873).
 
   const credentialDir = `${home}/.vibe-coder/credentials`;
   await makeSharedDir(credentialDir);
@@ -495,6 +495,9 @@ async function buildHostFixture(
     checkout,
     (name) => (name === "HOME" ? home : undefined),
   );
+  // World-writable, like the work directory above: only the mount flag may
+  // decide whether the container can write here.
+  await makeSharedDir(hostPaths.logDir, 0o777);
 
   // The launcher stages the config into its own read-only directory (Apple
   // container cannot mount a single file) — mirror that here so the mounted

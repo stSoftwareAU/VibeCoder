@@ -21,7 +21,9 @@ import {
  * Log rotation command implementation.
  *
  * Args:
- *   --log-dir <string>       Directory containing log files (default: ~/logs)
+ *   --log-dir <string>       Directory containing log files (default:
+ *                            `$HOME/logs` — the fixed in-container mount, not
+ *                            the host's own log directory, Issue #873)
  *   --max-size-mb <number>   Maximum size in MB before rotation (default: 10)
  *   --max-rotations <number> Number of rotated copies to keep (default: 3)
  */

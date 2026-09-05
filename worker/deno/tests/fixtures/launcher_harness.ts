@@ -12,6 +12,8 @@
  */
 
 import { resolvePowerShell } from "../support/pwsh.ts";
+import { pathStyleFor } from "../../lib/host_path_style.ts";
+import { resolveLogDir } from "../../lib/log_dir.ts";
 
 const FIXTURE_PATH = new URL(import.meta.url).pathname;
 
@@ -401,6 +403,12 @@ export interface Harness {
   tmpDir: string;
   recordDir: string;
   env: Record<string, string>;
+  /**
+   * The host log directory the launcher will resolve for this harness — the
+   * platform's own default under the fake HOME (Issue #873), asserted here
+   * rather than spelled, so the expectation follows the resolver.
+   */
+  logDir: string;
   cleanup: () => Promise<void>;
 }
 
@@ -464,20 +472,25 @@ export async function setupHarness(
   );
   await Deno.chmod(`${stubDir}/deno`, 0o755);
 
+  const env: Record<string, string> = {
+    PATH: `${stubDir}:${DENO_BIN_DIR}:${Deno.env.get("PATH") ?? ""}`,
+    HOME: home,
+    DENO_DIR,
+    WORK_DIR: workDir,
+    CONFIG_PATH: `${tmpDir}/config.json`,
+    VIBE_CREDENTIAL_DIR: credentialDir,
+    VIBE_STUB_RECORD: recordDir,
+    VIBE_REAL_DENO: Deno.execPath(),
+    ...extraEnv,
+  };
+
   return {
     tmpDir,
     recordDir,
-    env: {
-      PATH: `${stubDir}:${DENO_BIN_DIR}:${Deno.env.get("PATH") ?? ""}`,
-      HOME: home,
-      DENO_DIR,
-      WORK_DIR: workDir,
-      CONFIG_PATH: `${tmpDir}/config.json`,
-      VIBE_CREDENTIAL_DIR: credentialDir,
-      VIBE_STUB_RECORD: recordDir,
-      VIBE_REAL_DENO: Deno.execPath(),
-      ...extraEnv,
-    },
+    env,
+    // The launcher is run with `clearEnv`, so this reads exactly the
+    // environment it will see — an override in `extraEnv` included.
+    logDir: resolveLogDir(home, (name) => env[name], pathStyleFor(home)),
     cleanup: async () => {
       try {
         await Deno.remove(tmpDir, { recursive: true });
@@ -666,9 +679,7 @@ export async function buildCount(harness: Harness): Promise<number> {
  */
 export async function runCoreLog(harness: Harness): Promise<string> {
   try {
-    return await Deno.readTextFile(
-      `${harness.tmpDir}/home/logs/run_core.log`,
-    );
+    return await Deno.readTextFile(`${harness.logDir}/run_core.log`);
   } catch {
     return "";
   }

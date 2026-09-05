@@ -117,7 +117,8 @@ set -euo pipefail
 #                             has no interactive login, so this variable is the
 #                             only way its credential is ever provisioned
 #   VIBE_LAUNCHAGENT_FALLBACK_PATHS - PATH fallback for LaunchAgent (e.g., /opt/homebrew/bin)
-#   VIBE_LOGS_DIR           - Logs directory (default: ~/logs)
+#   VIBE_LOGS_DIR           - Logs directory (default: the platform's own
+#                             location, see docs/CONFIGURATION.md)
 #   VIBE_SKIP_LAUNCHCTL     - Set to "true" to skip launchctl commands (for testing)
 #
 # Screenshot capability setup (for UI change evidence):

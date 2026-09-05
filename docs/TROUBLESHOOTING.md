@@ -32,7 +32,7 @@ flowchart TD
     R -->|no| RF["❌ runtime detection failure<br/>install / start the runtime"]
     R -->|yes| I{"image reference<br/>present locally?"}
     I -->|no| B["next run rebuilds it<br/>(several minutes)"]
-    I -->|yes| L["read ~/logs/worker.log<br/>and the launch-phase marker"]
+    I -->|yes| L["read worker.log in the<br/>host log directory<br/>and the launch-phase marker"]
     style RF fill:#c9184a,stroke:#800f2f,color:#fff
 ```
 
@@ -93,7 +93,10 @@ If old tags are still there, the prune is failing rather than idle, and the
 launcher log says why:
 
 ```bash
-grep container-image-prune ~/logs/cron.log | tail -n 20
+# ${LOG_DIR} is this host's log directory — see "Where the logs land on the
+# host" below, or Configuration → Where the logs go.
+LOG_DIR="$(deno run --allow-env --allow-read worker/deno/mod.ts log-dir)"
+grep container-image-prune "${LOG_DIR}"/cron.log | tail -n 20
 ```
 
 A build that dies mid-export with "No space left on device" is the same symptom
@@ -108,14 +111,21 @@ docker builder prune   # operator-only: the launcher never touches the cache
 
 ### Where the logs land on the host
 
-The container writes to `/home/vibe/logs`, which is the host's `~/logs` mounted
-read/write — so the usual files are read on the host exactly as before:
+The container writes to `/home/vibe/logs`, which is the **host log directory**
+mounted read/write — so the usual files are read on the host exactly as before.
+That directory defaults to the platform's own location (Issue #873), so ask for
+it rather than assuming `~/logs`:
 
 ```bash
-tail -n 200 ~/logs/worker.log      # worker activity (symlink to the latest run)
-tail -n 50 ~/logs/cron.log         # launcher output under cron
-cat ~/.vibe-coder/last-launch-phase # runtime_detection | image_build | volume_init | container_run
+LOG_DIR="$(deno run --allow-env --allow-read worker/deno/mod.ts log-dir)"
+tail -n 200 "${LOG_DIR}/worker.log"  # worker activity (symlink to the latest run)
+tail -n 50 "${LOG_DIR}/cron.log"     # launcher output under cron
+cat ~/.vibe-coder/last-launch-phase  # runtime_detection | image_build | volume_init | container_run
 ```
+
+`${LOG_DIR}` below means that same directory — the default per platform, the
+overrides, and how to move an old `~/logs` across are all in
+[Configuration — Where the logs go](CONFIGURATION.md#-where-the-logs-go).
 
 `.config.json` is likewise the host's own file. The workspace is not: the
 repositories live on the `vibe-work` named volume, mounted at
@@ -127,7 +137,7 @@ next launch.
 ### A container that stopped answering (exit 87)
 
 A container VM can wedge: `<runtime> exec` hangs, nothing new appears in
-`~/logs/worker.log`, and the host-side `container run` client never exits. The
+`${LOG_DIR}/worker.log`, and the host-side `container run` client never exits. The
 launcher no longer waits on it for ever — past the plan's
 watchdog deadline it kills the container, SIGKILLs the host-side client and
 runtime helper if the record survives that, and exits `87`:
@@ -232,7 +242,7 @@ The **launcher** updates the worker checkout to its default branch (read from
 `origin/HEAD` — the example below shows `main`) on the host before each
 container launch, and says so loudly when it cannot (Issues #512, #513). The
 run still starts — on whatever the checkout already holds — so the symptom is
-a host stuck on an old commit, with this in `~/logs/run_core.log` every cycle:
+a host stuck on an old commit, with this in `${LOG_DIR}/run_core.log` every cycle:
 
 ```text
 Updating /Users/vibe/VibeCoder to origin/main
@@ -249,7 +259,7 @@ alone (see [Deployment — dedicated clone](DEPLOYMENT.md#the-worker-needs-its-o
 After three consecutive failures the host also files (or comments on) a
 `Worker checkout update failing on <host>` issue against the worker
 repository, so the stuck host is visible from GitHub rather than only in host
-logs. The streak counter lives at `~/logs/checkout-update-failure-streak` and
+logs. The streak counter lives at `${LOG_DIR}/checkout-update-failure-streak` and
 resets on the first successful update. A checkout that is *meant* to be left
 alone — a development tree, a CI merge commit — should set
 `VIBE_SKIP_CHECKOUT_UPDATE=1` instead, which skips the update loudly and
@@ -277,7 +287,7 @@ working says so on every launch:
 Every launch updates the worker checkout before the container starts, so a
 patch applied by hand — a launcher fix while bringing a new platform up, for
 instance — is discarded by the next run. The update says so when it happens, on
-stderr and in `~/logs/run_core.log`:
+stderr and in `${LOG_DIR}/run_core.log`:
 
 ```text
 The checkout update changed /home/vibe/VibeCoder (HEAD 8b0f2c1a4d33 →
@@ -356,7 +366,7 @@ order:
    land on every launch that could not complete the check.
 
 Every warning line from this path goes to **both** places — stderr for whatever
-launched the host (a cron log, a LaunchAgent log) and `~/logs/run_core.log` for
+launched the host (a cron log, a LaunchAgent log) and `${LOG_DIR}/run_core.log` for
 the record — so a host launched from cron still leaves the evidence behind.
 
 ### `./run.sh upgrade` says the release records no tool versions
@@ -419,7 +429,8 @@ caller's `PATH` and also probes `~/.deno/bin/deno`. When either tool lives
 somewhere else, set `PATH` in the crontab entry itself:
 
 ```bash
-*/5 * * * * PATH=/opt/custom/bin:/usr/bin:/bin /path/to/VibeCoder/run.sh >> ~/logs/cron.log 2>&1
+# Linux; on macOS the log directory is ~/Library/Logs/vibe-coder
+*/5 * * * * PATH=/opt/custom/bin:/usr/bin:/bin /path/to/VibeCoder/run.sh >> ~/.local/state/vibe-coder/cron.log 2>&1
 ```
 
 ## 📦 Dependency bumps never land on one host
@@ -429,7 +440,7 @@ succeeds, only the bump is dropped. Symptoms and remedies:
 
 | Symptom                                                                    | Likely cause                                                                                        | Remedy                                                                                                                                                            |
 | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Bumps land on every host except one; PRs from that host carry no dep bump   | The repo's `bump-deps.sh` failed its tool pre-flight, so the bump was reverted as `rejected_by_script` | The rejection WARNING is followed by a `bump-deps.sh output tail (last 20 lines)` block in `~/logs/worker.log` (secret-redacted) — read it for the cause (e.g. `ERROR: deno is required`), then confirm the tool resolves on that host's unattended `PATH` |
+| Bumps land on every host except one; PRs from that host carry no dep bump   | The repo's `bump-deps.sh` failed its tool pre-flight, so the bump was reverted as `rejected_by_script` | The rejection WARNING is followed by a `bump-deps.sh output tail (last 20 lines)` block in `${LOG_DIR}/worker.log` (secret-redacted) — read it for the cause (e.g. `ERROR: deno is required`), then confirm the tool resolves on that host's unattended `PATH` |
 | A repo gets an auto-filed `bump-deps.sh` fails on every run issue | The script was rejected on 3 consecutive runs, so bumps are effectively disabled for that repo | Fix the script in that repo — the issue body carries the redacted output tail. Apply `work-on` to schedule it; the streak clears (and the worker stops reporting) as soon as the script exits `0` again |
 | `ERROR: deno is required` from `bump-deps.sh` on a launchd/cron host        | Deno was installed by the official installer into `~/.deno/bin`, which the unattended `PATH` omits     | Confirm `~/.deno/bin/deno` exists; the bootstrap adds that directory to the driver and to spawned repo scripts, so a stale checkout of the worker is the usual cause  |
 | A bump is reverted as `rejected_by_quarantine` | `bump-deps.sh` picked a version published inside `VIBE_BUMP_QUARANTINE_HOURS` (default 24h) | Expected — the embargo held. Re-run once the release has aged past the window, or fix the repo's script to honour `VIBE_BUMP_QUARANTINE_HOURS` itself |
@@ -465,7 +476,7 @@ occupancy) with actionable suggestions.
 - Check the issue doesn't have the `needs-human` label (issues escalated to a
   human are skipped until the label is removed — see
   [Worker escalation via `needs-human`](USAGE.md#-worker-escalation-via-needs-human))
-- **Check the worker log** at `~/logs/worker.log` for diagnostic information
+- **Check the worker log** at `${LOG_DIR}/worker.log` for diagnostic information
   showing:
   - How many issues were returned from GitHub API
   - How many were filtered out due to being assigned to other users
@@ -501,7 +512,7 @@ flowchart TD
     CircuitBreaker -->|Yes| ResetCB["Fix underlying failures<br/>or delete state file"]
     CircuitBreaker -->|No| RepoConfig{"Repo in .config.json<br/>repos list?"}
     RepoConfig -->|No| AddRepo["Add repo to<br/>.config.json repos"]
-    RepoConfig -->|Yes| CheckLog["Check ~/logs/worker.log<br/>for details"]
+    RepoConfig -->|Yes| CheckLog["Check worker.log in the<br/>host log directory<br/>for details"]
     style Start fill:#e0a050,stroke:#8b4500,color:#1a1a1a
     style Labels fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Author fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
@@ -536,14 +547,14 @@ monitor?** (incident.) When two consecutive issue-list probes
 for a repo come back 404 / permission-denied, the host is marked unhealthy and
 the repos are named on two surfaces:
 
-- **Worker log** (`~/logs/worker.log`) — one greppable line per iteration:
+- **Worker log** (`${LOG_DIR}/worker.log`) — one greppable line per iteration:
 
   ```text
   [repo-access] host=host-3 status=inaccessible repos=TitlePage/bar,TitlePage/foo consecutive=2 — host marked unhealthy; continuing this cycle for the repos that remain accessible
   ```
 
   ```bash
-  grep '\[repo-access\]' ~/logs/worker.log | tail -n 5
+  grep '\[repo-access\]' "${LOG_DIR}"/worker.log | tail -n 5
   ```
 
 - **Loop result** — the iteration sets `lastHealthCheckPassed` to `false`,
@@ -603,7 +614,7 @@ you see either:**
   or `work-on`)
 - The worker processes one milestone issue at a time — if there is an open PR
   targeting the milestone branch, the next issue will wait until it is merged
-- Check the worker log at `~/logs/worker.log` for milestone-specific messages
+- Check the worker log at `${LOG_DIR}/worker.log` for milestone-specific messages
 
 ## ⚠️ Milestone branch has merge conflicts
 
@@ -628,7 +639,7 @@ causes and remedies:
 | ------------------------------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | Claude exits 0 but no files changed        | Issue is ambiguous or already resolved             | Check issue description for clarity; add more detail                                |
 | PR created with empty diff                 | Claude misunderstood the task scope                | Review the prompt template version; add `custom_instructions` for the repo          |
-| `.pr_response_message` is empty            | Claude did not create the summary file             | Check Claude output in `~/logs/worker.log` for errors during execution              |
+| `.pr_response_message` is empty            | Claude did not create the summary file             | Check Claude output in `${LOG_DIR}/worker.log` for errors during execution              |
 | Quality gate passes but CI fails           | Claude fixed the wrong thing                       | Review the annotations in the CI check run; the fix may address a different failure |
 | Claude output is truncated                 | Hit `claude_timeout` or `claude_no_output_timeout` | Increase timeout values in `.config.json` or simplify the issue scope               |
 | Commit message present but no code changes | Claude determined no changes were needed           | Check the PR comment — Claude explains why no changes were made                     |
@@ -636,7 +647,7 @@ causes and remedies:
 
 **Diagnosing silent failures:**
 
-1. Check `~/logs/worker.log` for the Claude execution section — look for exit
+1. Check `${LOG_DIR}/worker.log` for the Claude execution section — look for exit
    code, duration, and output size.
 2. Check for rate limit messages (`rate limit`, `429`, `credit`, `quota`) which
    may cause early termination.
@@ -689,7 +700,7 @@ when all issues across all repos fail consecutively. When active:
 
 **To resolve:**
 
-- Check `~/logs/worker.log` for the underlying failure cause (e.g., rate limits,
+- Check `${LOG_DIR}/worker.log` for the underlying failure cause (e.g., rate limits,
   network issues, auth expiry)
 - The circuit breaker resets automatically on any successful issue processing
 - To force a reset, delete the state file: `rm WORK_DIR/.circuit_breaker_state`
@@ -769,7 +780,7 @@ kept making progress. Reconstruct what happened from three places:
 1. **The grants** — one line per extension in `worker-*.log`:
 
    ```bash
-   grep '\[progress-extension\]' ~/logs/worker-*.log
+   grep '\[progress-extension\]' "${LOG_DIR}"/worker-*.log
    ```
 
    Each names the reason, the elapsed time, the extension count and the new
@@ -821,7 +832,7 @@ order they appear:
    copied into documentation:
 
    ```bash
-   grep 'Run hard cap:' ~/logs/worker-*.log
+   grep 'Run hard cap:' "${LOG_DIR}"/worker-*.log
    ```
 
    ```text
@@ -835,7 +846,7 @@ order they appear:
    has:
 
    ```bash
-   grep 'grant clamped to the run hard cap' ~/logs/worker-*.log
+   grep 'grant clamped to the run hard cap' "${LOG_DIR}"/worker-*.log
    ```
 
    ```text
@@ -857,7 +868,7 @@ Before that refusal the agent is handed its remaining budget so it can stop
 waiting deliberately (Issue #508). Grep for it:
 
 ```bash
-grep 'wind-down notice written' ~/logs/worker-*.log
+grep 'wind-down notice written' "${LOG_DIR}"/worker-*.log
 ```
 
 ```text
@@ -922,7 +933,7 @@ The default observability for a long agent phase is the periodic
 `[agent-progress]` line in `worker-*.log`. When that is not enough — a stuck
 or misbehaving session you want to diagnose after the fact without re-running
 it — set `VIBE_AGENT_TRANSCRIPT=true` (or `DEBUG=true`) and the worker tees
-the agent's raw stream-json to `~/logs/agent-<runid>[-<issue>].jsonl`:
+the agent's raw stream-json to `${LOG_DIR}/agent-<runid>[-<issue>].jsonl`:
 
 - Every line passes through the console secret redaction before
   hitting disk.
@@ -986,6 +997,6 @@ state is the GitHub `idle-task` issue itself.
 ```bash
 # The driver's PID file lives in the log directory, not the checkout
 # (Issue #514): /workspace is mounted read-only inside the container.
-cat ~/logs/.run.pid  # Shows PID if running
-ps -p $(head -1 ~/logs/.run.pid) 2>/dev/null && echo "Running" || echo "Not running"
+cat "${LOG_DIR}"/.run.pid  # Shows PID if running
+ps -p $(head -1 "${LOG_DIR}"/.run.pid) 2>/dev/null && echo "Running" || echo "Not running"
 ```

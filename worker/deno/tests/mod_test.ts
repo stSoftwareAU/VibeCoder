@@ -210,7 +210,9 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   //
   // `tests/ci_log_provider_core_only_test.ts` is what stops the next one
   // arriving the same way.
-  assertEquals(commands.length, 145);
+  // Issue #873 added `log-dir` — the launchers ask where the host's logs go
+  // rather than each spelling the default themselves (count 145 → 146).
+  assertEquals(commands.length, 146);
   assertEquals(commands.includes("callback-conformance"), true);
   // The command Issue #805 removed stays removed: a merge that quietly
   // brought it back would restore the built-in reporting that issue deleted.

@@ -1226,7 +1226,8 @@ launches the least-privilege container, the credential preflight passes
 silently, and the worker syncs its clone and polls the monitored
 repositories. On a fresh setup with no labelled work it finds nothing to
 claim and exits cleanly — that *is* success. Activity lands in
-`~/logs/worker.log`.
+`worker.log` in the host log directory
+([Where the logs go](CONFIGURATION.md#-where-the-logs-go)).
 
 An unhealthy first run fails loudly with a named cause — a
 [credential preflight error](TROUBLESHOOTING.md#-the-worker-exits-on-a-credential-preflight-error)
