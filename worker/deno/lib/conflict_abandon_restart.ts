@@ -69,10 +69,15 @@ import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 /**
  * Marker recorded on the **originating issue** when it is restarted.
  *
+ * Canonical `vibe-*` grammar — a bare `vibe-` prefix and `key="value"`
+ * attributes (Issue #842). The older `vibe-coder:merge-conflict-*` markers
+ * beside it are frozen only because they are already in live comment threads;
+ * a new marker has no such data to stay compatible with.
+ *
  * Its presence is what bounds the rung to one abandon per issue, and what
  * makes two hosts scanning the same exhausted PR produce one abandon.
  */
-export const CONFLICT_RESTART_MARKER = "<!-- vibe-coder:merge-conflict-restart";
+export const CONFLICT_RESTART_MARKER = "<!-- vibe-merge-conflict-restart";
 
 /** The marker comment line for one abandoned PR. */
 export function conflictRestartMarker(repo: string, prNumber: number): string {
