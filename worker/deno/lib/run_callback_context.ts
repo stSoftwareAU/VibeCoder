@@ -18,6 +18,7 @@ import type {
   TerminalIssueRun,
 } from "./run_callbacks.ts";
 import {
+  agentTranscriptDir,
   agentTranscriptEnabled,
   agentTranscriptPath,
 } from "./agent_transcript.ts";
@@ -68,10 +69,14 @@ export interface CallbackContextSeams {
  * Absolute path of this run's agent transcript, when one was actually
  * written.
  *
- * The tee writes nothing unless `VIBE_AGENT_TRANSCRIPT`/`DEBUG` asks for it,
- * and it disables itself when its directory cannot be created — so the path
- * is **verified on disk** before it is published. Naming a file a hook cannot
- * open would be worse than naming none.
+ * The tee writes nothing unless `.config.json`'s `agent_transcript_enabled`
+ * asks for it (Issue #1141), and it disables itself when its directory cannot
+ * be created — so the path is **verified on disk** before it is published.
+ * Naming a file a hook cannot open would be worse than naming none.
+ *
+ * The directory comes from {@link agentTranscriptDir}, the same helper the
+ * writer uses: this call site has to find the file that one made, so the two
+ * must not be able to disagree.
  */
 export function resolveSessionLogPath(
   identity: CallbackIdentity,
@@ -82,7 +87,11 @@ export function resolveSessionLogPath(
   const exists = seams.exists ?? fileExists;
   const home = present(identity.home);
   if (!home || !transcriptEnabled()) return undefined;
-  const path = agentTranscriptPath(`${home}/logs`, identity.runId, issueNumber);
+  const path = agentTranscriptPath(
+    agentTranscriptDir(home),
+    identity.runId,
+    issueNumber,
+  );
   return exists(path) ? path : undefined;
 }
 

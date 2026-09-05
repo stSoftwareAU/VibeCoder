@@ -220,6 +220,18 @@ export const OPERATIONAL_DEFAULTS = {
    * kill back.
    */
   progressExtensionEnabled: true,
+  /**
+   * Tee every agent invocation's raw stream-json to a redacted transcript
+   * (Issue #1141).
+   *
+   * **Off by default.** A transcript is the raw agent stream — model output,
+   * issue and repository text, file contents the agent read, command output —
+   * passing only through the console secret redaction, which is a net for
+   * known credential shapes rather than a guarantee. That is not something to
+   * start capturing on a deployment's behalf, so it stays off until
+   * `agent_transcript_enabled` asks for it.
+   */
+  agentTranscriptEnabled: false,
   /** Seconds each grant adds to the deadline, measured from now (#4296). */
   progressExtensionGrantSeconds: 900,
   /** A tool call older than this is no longer evidence of activity (#4296). */
@@ -1358,6 +1370,8 @@ export function buildDefaultWorkerConfig(
     // Adaptive claim floor (Issue #245): the labels that mark a long job.
     claimLongJobLabels: [...DEFAULT_LONG_JOB_LABELS],
     progressExtensionEnabled: OPERATIONAL_DEFAULTS.progressExtensionEnabled,
+    // Issue #1141: the agent transcript tee, off until configured on.
+    agentTranscriptEnabled: OPERATIONAL_DEFAULTS.agentTranscriptEnabled,
     progressExtensionGrantSeconds:
       OPERATIONAL_DEFAULTS.progressExtensionGrantSeconds,
     progressExtensionStallSeconds:

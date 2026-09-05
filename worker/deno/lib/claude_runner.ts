@@ -416,9 +416,9 @@ export interface RunClaudeOptions {
   issueNumber?: number;
   /**
    * Explicit transcript destination (Issue #4169). Test seam / caller
-   * override: production leaves this unset and the tee is created only
-   * when `VIBE_AGENT_TRANSCRIPT=true` or `DEBUG=true`, writing to
-   * `~/logs/agent-<runid>[-<issue>].jsonl`.
+   * override: production leaves this unset and the tee is created only when
+   * `.config.json` states `agent_transcript_enabled: true` (Issue #1141),
+   * writing to `<log dir>/agent-<runid>[-<issue>].jsonl`.
    */
   transcriptPath?: string;
   /**
@@ -1691,10 +1691,11 @@ export async function runClaudeWithTimeout(
     // on stderr-only chatter is still considered silent.
     resetSilenceWatchdog();
 
-    // Raw-transcript tee (Issue #4169, proposal 2): with the debug flag
-    // set, the same decoded stream lands redacted in ~/logs so a stuck or
-    // misbehaving session can be diagnosed after the fact without
-    // re-running it. Without the flag nothing extra is written.
+    // Raw-transcript tee (Issue #4169, proposal 2): when the deployment
+    // configured `agent_transcript_enabled` (Issue #1141), the same decoded
+    // stream lands redacted in the worker log directory so a stuck, failed or
+    // misbehaving session can be diagnosed after the fact without re-running
+    // it. Without it nothing extra is written.
     transcript = maybeCreateAgentTranscriptWriter({
       ...(options.issueNumber !== undefined
         ? { issueNumber: options.issueNumber }

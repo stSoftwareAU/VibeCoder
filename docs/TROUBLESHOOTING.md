@@ -919,10 +919,11 @@ truncated, never as a silently larger prompt.
 ## 🎞️ Capturing a full agent transcript
 
 The default observability for a long agent phase is the periodic
-`[agent-progress]` line in `worker-*.log`. When that is not enough — a stuck
-or misbehaving session you want to diagnose after the fact without re-running
-it — set `VIBE_AGENT_TRANSCRIPT=true` (or `DEBUG=true`) and the worker tees
-the agent's raw stream-json to `~/logs/agent-<runid>[-<issue>].jsonl`:
+`[agent-progress]` line in `worker-*.log`. When that is not enough — a stuck,
+failed or misbehaving session you want to diagnose after the fact without
+re-running it — set `"agent_transcript_enabled": true` in `.config.json` and
+the worker tees the agent's raw stream-json to
+`~/logs/agent-<runid>[-<issue>].jsonl`:
 
 - Every line passes through the console secret redaction before
   hitting disk.
@@ -930,7 +931,19 @@ the agent's raw stream-json to `~/logs/agent-<runid>[-<issue>].jsonl`:
   while it is still wedged.
 - Transcripts rotate with the other logs and age out with the worker-log
   cleanup; a 100 MB per-invocation cap stops a runaway stream.
-- Without the flag, nothing extra is written.
+- Without the key, nothing extra is written.
+
+Two things to know before switching it on. The transcript is the **raw agent
+stream**, including repository content, so read
+[Agent transcripts](CONFIGURATION.md#-agent-transcripts) first. And the tee has
+to run for **every** run for a *failed* run to have a transcript — which run
+fails is not knowable in advance — so this is a standing setting, not something
+to switch on after the failure you wanted to diagnose.
+
+`DEBUG=true` no longer enables the tee (Issue #1141): a debug flag that
+silently starts capturing repository content is a surprise.
+`VIBE_AGENT_TRANSCRIPT` is internal plumbing the worker settles from the config
+key on every run, so exporting it by hand changes nothing.
 
 ## 💥 Worker crashed — what happened?
 
