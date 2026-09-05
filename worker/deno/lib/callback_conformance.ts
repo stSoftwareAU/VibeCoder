@@ -55,7 +55,7 @@ import {
 } from "./run_callbacks.ts";
 import type { CallbacksConfig } from "./run_callbacks_config.ts";
 import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
-import { agentTranscriptPath } from "./agent_transcript.ts";
+import { agentTranscriptDir, agentTranscriptPath } from "./agent_transcript.ts";
 
 /** The checks the fixture runs, in the order it runs them. */
 export const CONFORMANCE_CHECK_IDS = [
@@ -579,7 +579,7 @@ async function checkSessionLogBelongsToRun(
   const faults = new Faults();
   const dir = await scenarioDir(root, id);
   const home = await scenarioDir(dir, "home");
-  await Deno.mkdir(`${home}/logs`, { recursive: true });
+  await Deno.mkdir(agentTranscriptDir(home), { recursive: true });
 
   const withTranscript = {
     runId: "vibe-conformance-transcript",
@@ -587,7 +587,7 @@ async function checkSessionLogBelongsToRun(
   };
   const secret = "TRANSCRIPT-BODY-MUST-NOT-BE-EXPORTED";
   const transcript = agentTranscriptPath(
-    `${home}/logs`,
+    agentTranscriptDir(home),
     withTranscript.runId,
     withTranscript.issueNumber,
   );

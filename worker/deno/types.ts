@@ -261,6 +261,22 @@ export interface WorkerConfig {
    */
   progressExtensionCheckSeconds?: number;
   /**
+   * Tee every agent invocation's raw stream-json to a redacted transcript
+   * under the worker log directory (`.config.json` `agent_transcript_enabled`,
+   * Issue #1141; default: false).
+   *
+   * A transcript is the raw agent stream — model output, issue and repository
+   * text, file contents the agent read and command output — so this is off
+   * unless a deployment asks for it. It has to be on for **every** run for a
+   * failed one to have a transcript, because which run fails is not knowable
+   * in advance; what happens to a transcript afterwards is the callback
+   * hook's decision, not the tee's.
+   *
+   * Optional so the existing `WorkerConfig` literals stay valid; `loadConfig`
+   * always populates it from `OPERATIONAL_DEFAULTS`.
+   */
+  agentTranscriptEnabled?: boolean;
+  /**
    * Let the worker schedule its own auto-filed diagnostics (Issue #505;
    * default: true).
    *
@@ -1062,6 +1078,11 @@ export interface ConfigFile {
   /** Seconds between working-tree progress checks (Issue #4295) */
   progress_extension_check_seconds?: number;
   /**
+   * Tee the raw agent stream to a redacted transcript (Issue #1141; default
+   * false). Off unless asked for — the transcript carries repository content.
+   */
+  agent_transcript_enabled?: boolean;
+  /**
    * Let the worker schedule its own auto-filed diagnostics (Issue #505;
    * default true). `false` restores the human-`work-on`-only behaviour.
    */
@@ -1237,6 +1258,17 @@ export interface ConfigFile {
    */
   container_tools?: ContainerToolSpec[];
   /**
+   * This deployment's private environment extension (Issue #978, parent
+   * #933).
+   *
+   * Deliberately untyped here: the block arrives untrusted from the
+   * operator's file, and only `parseContainerExtension()` /
+   * `assertContainerExtension()` in `lib/container_extension_config.ts` may be
+   * trusted to produce a {@link ContainerExtensionSpec}. They fail loud on any
+   * fault rather than repairing it.
+   */
+  container_extension?: unknown;
+  /**
    * Custom GitHub label → non-public prompt file mappings (Issue #846, part
    * of #843).
    *
@@ -1296,6 +1328,30 @@ export interface ContainerToolSpec {
   bin: string[];
   /** Environment variables set to prefix-relative paths (default none). */
   env: Record<string, string>;
+}
+
+/**
+ * A validated per-deployment private environment extension (Issue #978,
+ * parent #933).
+ *
+ * The operator syncs their own private extension definition into {@link path}
+ * on the host; the Vibe Coder clones nothing. Only
+ * `parseContainerExtension()` / `assertContainerExtension()` in
+ * `lib/container_extension_config.ts` produce this shape, so anything holding
+ * one already knows the path is absolute, contained (never the host home
+ * directory, an ancestor of it, or a filesystem root) and that
+ * `containerfile`/`start` stay inside it.
+ */
+export interface ContainerExtensionSpec {
+  /** Absolute host directory holding the extension definition. */
+  path: string;
+  /** Containerfile relative to {@link path}; defaults to `Containerfile`. */
+  containerfile: string;
+  /**
+   * Service start script relative to {@link path}, run before the worker.
+   * Absent means a toolchain-only extension with no services to start.
+   */
+  start?: string;
 }
 
 /**

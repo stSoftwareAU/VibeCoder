@@ -59,6 +59,7 @@ Top-level imports of `worker/deno/deno.json` resolved through `worker/deno/deno.
 | Import | Specifier | Locked version | Integrity | Verdict |
 | --- | --- | --- | --- | --- |
 | @std/assert | jsr:@std/assert@^1.0.18 | 1.0.18 | 270245e9c2c13b446286de475131dc688ca9abcd94fc5db41d43a219b34d1c78 | locked (exact version + integrity) |
+| @std/crypto | jsr:@std/crypto@^1.1.0 | 1.1.0 | b8d6d0a6377a32b213af2661ed7bf1062d94feac0c57def5526a8e74a95c3ec8 | locked (exact version + integrity) |
 | @std/yaml/parse | jsr:@std/yaml@^1.0.12/parse | 1.0.12 | 7deabca4545bcedd07c5f69ea53acea71b8b4c67562f224e17b90d75944cb20c | locked (exact version + integrity) |
 
 ## Container Deno seed
@@ -69,6 +70,7 @@ Top-level imports of `container/deno-seed/deno.json` resolved through `container
 | --- | --- | --- | --- | --- |
 | @playwright/mcp | npm:@playwright/mcp@0.0.75 | 0.0.75 | sha512-oBjzVXfEGZ9Ev45tKKQULNDVdF83B82lg0uPejEK3xsp/zWmdNdNVnPi032fmd/o20ZZXs+LX7cr77qRNbV4VA== | locked (exact version + integrity) |
 | @std/assert | jsr:@std/assert@1.0.18 | 1.0.18 | 270245e9c2c13b446286de475131dc688ca9abcd94fc5db41d43a219b34d1c78 | locked (exact version + integrity) |
+| @std/crypto | jsr:@std/crypto@1.1.0 | 1.1.0 | b8d6d0a6377a32b213af2661ed7bf1062d94feac0c57def5526a8e74a95c3ec8 | locked (exact version + integrity) |
 | @std/internal | jsr:@std/internal@1.0.12 | 1.0.12 | 972a634fd5bc34b242024402972cd5143eac68d8dffaca5eaa4dba30ce17b027 | locked (exact version + integrity) |
 | @std/yaml/parse | jsr:@std/yaml@1.0.12/parse | 1.0.12 | 7deabca4545bcedd07c5f69ea53acea71b8b4c67562f224e17b90d75944cb20c | locked (exact version + integrity) |
 

@@ -2,5 +2,6 @@
 // It only names the dependencies; nothing here runs.
 import "@playwright/mcp";
 import "@std/assert";
+import "@std/crypto";
 import "@std/yaml/parse";
 import "@std/internal";

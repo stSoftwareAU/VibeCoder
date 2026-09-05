@@ -66,7 +66,7 @@ export interface SweepAutoMergeOptions {
   /** Drop the repo's cached open-PR list after a merge attempt mutated it. */
   invalidateOpenPrCache: (repo: string) => Promise<void>;
   /** Logger. */
-  logger: Pick<Logger, "warn">;
+  logger: Pick<Logger, "info" | "warn">;
 }
 
 /** What one sweep did. */
@@ -75,6 +75,12 @@ export interface SweepAutoMergeSummary {
   reposVisited: string[];
   /** PRs a merge was attempted for. */
   prsAttempted: number;
+  /**
+   * Repositories whose listing succeeded and returned no open fleet PR
+   * (Issue #1136). Named, not counted away: "the sweep found nothing" and
+   * "the sweep refused everything" must never read the same in the log.
+   */
+  reposWithNoCandidates: string[];
 }
 
 /**
@@ -98,7 +104,12 @@ export async function sweepAutoMerge(
     logger,
   } = options;
 
-  const summary: SweepAutoMergeSummary = { reposVisited: [], prsAttempted: 0 };
+  const summary: SweepAutoMergeSummary = {
+    reposVisited: [],
+    prsAttempted: 0,
+    reposWithNoCandidates: [],
+  };
+  const authors = fleetAuthors.join(", ");
 
   try {
     for (const repo of repos) {
@@ -115,6 +126,19 @@ export async function sweepAutoMerge(
         });
         continue;
       }
+
+      // Issue #1136: say what this repo contributed. Without these lines the
+      // whole pass produced one log entry — the priority's name — so an
+      // unswept PR was indistinguishable from an empty backlog.
+      if (prs.length === 0) {
+        summary.reposWithNoCandidates.push(repo);
+        logger.info("Auto-merge sweep: no candidates", { repo, authors });
+        continue;
+      }
+      logger.info(
+        `Auto-merge sweep: candidates: ${prs.length}`,
+        { repo, authors, prNumbers: prs.map((pr) => pr.number).join(", ") },
+      );
 
       let mutated = false;
       for (const pr of prs) {
