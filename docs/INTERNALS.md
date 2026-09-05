@@ -1966,6 +1966,15 @@ PR comment processing uses a two-attempt system:
 2. **Second failure** — marks as processed (eyes reaction); posts "Permanently
    Failed". No further retries.
 
+Both reactions are **read back by reactor, never by count** (Issue #1249). Any
+account can react on any comment with no repository permission, so a count
+would let a stranger's 😕 retire a comment permanently, or a stranger's 👀
+remove it from the scan altogether. `checkPrCommentHasFailedOnce` and
+`findActionableComment` resolve the reactor logins through the per-comment
+reactions endpoint and honour the marker only from the fleet — the same
+treatment the `+1` trust signal has had since Issue #2484. An unattributable
+reaction fails towards *processing the comment again*.
+
 ---
 
 ## 🎯 4. Milestone and dependency handling
