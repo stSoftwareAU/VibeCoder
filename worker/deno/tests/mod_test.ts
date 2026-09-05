@@ -216,9 +216,15 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // ruleset, which had drifted from its committed payload with nothing in
   // the repository comparing the two. Each branch bumped 146 -> 147 on its
   // own; merged, both commands exist, so the count is 148.
-  assertEquals(commands.length, 148);
+  // Issue #873 added `log-dir` — the one place the platform's log directory
+  // is resolved, which the launchers ask instead of each spelling their own
+  // default (count 148 -> 149). It landed on this milestone branch without
+  // the count following it, which is the same unnoticed red the paragraph
+  // above describes: `milestone/*` requires no checks.
+  assertEquals(commands.length, 149);
   assertEquals(commands.includes("check-resurrected-files"), true);
   assertEquals(commands.includes("check-release-tag-ruleset"), true);
+  assertEquals(commands.includes("log-dir"), true);
   assertEquals(commands.includes("callback-conformance"), true);
   // The command Issue #805 removed stays removed: a merge that quietly
   // brought it back would restore the built-in reporting that issue deleted.
