@@ -208,7 +208,7 @@ script is never printed.
 | ID          | Issue                                                          | Site                                                                                         | Severity / confidence |
 | ----------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------- |
 | SEC-1218-01 | [#1263](https://github.com/stSoftwareAU/VibeCoder/issues/1263) | `lib/label_clarification.ts:89` via `commands/clarity_phase.ts`, `commands/work_on_issue.ts` | medium / high         |
-| SEC-1218-02 | [#1264](https://github.com/stSoftwareAU/VibeCoder/issues/1264) | `commands/pr_manager.ts:614`                                                                 | medium / medium       |
+| SEC-1218-02 | [#1264](https://github.com/stSoftwareAU/VibeCoder/issues/1264) | `commands/pr_manager.ts:630`                                                                 | medium / high         |
 | SEC-1218-03 | [#1265](https://github.com/stSoftwareAU/VibeCoder/issues/1265) | `lib/export_scrub_gate.ts:719` via `commands/export_scrub_gate.ts`                           | medium / high         |
 | SEC-1218-04 | [#1266](https://github.com/stSoftwareAU/VibeCoder/issues/1266) | seven commands, one root cause in `mod.ts::parseArgs`                                        | medium / high         |
 | SEC-1218-05 | [#1267](https://github.com/stSoftwareAU/VibeCoder/issues/1267) | `commands/log_rotation.ts:38`                                                                | medium / high         |
@@ -216,6 +216,12 @@ script is never printed.
 | SEC-1218-07 | [#1269](https://github.com/stSoftwareAU/VibeCoder/issues/1269) | `commands/git_operations.ts:548`                                                             | low / high            |
 | SEC-1218-08 | [#1270](https://github.com/stSoftwareAU/VibeCoder/issues/1270) | `commands/software_updates.ts:47`                                                            | low / high            |
 | SEC-1218-09 | [#1271](https://github.com/stSoftwareAU/VibeCoder/issues/1271) | `commands/security_tree_sweep.ts:98`                                                         | low / medium          |
+
+SEC-1218-02's reachability was corrected after filing and the correction posted
+to the issue: `closeDuplicatePrs` is not CLI-only.
+`lib/issue_worker_wiring.ts:88` imports it, `:255` declares it on `PrDeps` and
+`:524` binds the real implementation, so the unauthenticated head-branch
+selection runs unattended during ordinary issue work.
 
 Deduped onto issues that already existed rather than re-filed: the variable
 binary name that evades the `gh` chokepoint gate (**#1227**) and the unscanned
