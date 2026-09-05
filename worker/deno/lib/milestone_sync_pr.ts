@@ -86,8 +86,17 @@ export function isMilestoneSyncBranch(headRefName?: string | null): boolean {
  */
 export function mergeMethodFlagForHead(
   headRefName?: string | null,
+  headIsSameRepository: boolean = true,
 ): "--merge" | "--squash" {
-  return isMilestoneSyncBranch(headRefName) ? "--merge" : "--squash";
+  // A head branch *name* is chosen by whoever pushed the branch, and a fork
+  // PR's head lives in a repository the fleet does not control — so on a fork
+  // the name is a claim, not evidence (Issue #1249, finding 10). Only a
+  // same-repository head, which needed write access to create, can select the
+  // merge-commit deviation; everything else squashes, which is the default
+  // this repository's policy expects.
+  return isMilestoneSyncBranch(headRefName) && headIsSameRepository
+    ? "--merge"
+    : "--squash";
 }
 
 /**

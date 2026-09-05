@@ -421,32 +421,54 @@ export interface ClassifyOptions {
   openIssueNumbers?: ReadonlySet<number>;
   /** Repo the issues belong to, for resolving same-repo dependency refs. */
   repo?: string;
+  /**
+   * The repositories this fleet monitors, lower-cased (Issue #1249,
+   * finding 11). A cross-repo `Depends on owner/repo#N` blocks only when it
+   * names one of them; omitted or empty keeps the previous behaviour, where
+   * every cross-repo reference blocks.
+   */
+  knownRepos?: readonly string[];
 }
 
 /**
  * True when `issue` names an open dependency the Priority 2 scan refuses it
  * for (Issue #460, GRQ#4465).
  *
- * Mirrors `isDependencyBlockedByOpenIssue` in `idle_decision_census.ts`,
- * including its two deliberate choices: a same-repo `#N` absent from the
- * open set is closed and does not block, and a cross-repo reference cannot
- * be resolved here so it counts as blocking, because the scan fails safe the
- * same way. Parent/child blocking is not modelled — it needs a per-issue API
- * call, and omitting it under-counts, which merely alerts on work that will
- * not be claimed rather than inventing a blocker.
+ * Mirrors `isDependencyBlockedByOpenIssue` in `idle_decision_census.ts`: a
+ * same-repo `#N` absent from the open set is closed and does not block, and a
+ * cross-repo reference cannot be resolved from this repo's issues, so it
+ * counts as blocking — the scan fails safe the same way. Parent/child
+ * blocking is not modelled: it needs a per-issue API call, and omitting it
+ * under-counts, which merely alerts on work that will not be claimed rather
+ * than inventing a blocker.
+ *
+ * `knownRepos` bounds that unresolvable case (Issue #1249, finding 11). An
+ * issue body is text anybody who can open an issue writes, so
+ * `Depends on attacker/repo#1` was an unconditional, unfalsifiable claim that
+ * this issue is blocked — one line that removed it from the audit's
+ * `claimable` count and, with it, the idle-inversion alert the count exists
+ * to raise. Only a reference into a **monitored** repository is honoured now:
+ * that is the form the blocked-run deferral writes, so the legitimate case is
+ * unchanged, while a reference to a repository the fleet does not work in
+ * cannot silence the audit. When `knownRepos` is empty the caller has no
+ * repository list to check against and every cross-repo reference blocks, as
+ * before.
  */
 function isDependencyBlockedByOpenIssue(
   body: string | undefined,
   repo: string,
   openIssueNumbers: ReadonlySet<number>,
+  knownRepos: ReadonlySet<string>,
 ): boolean {
   if (body === undefined) return false;
   const refs = extractDependencyReferencesDetailed(body);
   const lowerRepo = repo.trim().toLowerCase();
   return refs.some((ref) => {
-    const sameRepo = ref.repo === undefined ||
-      ref.repo.trim().toLowerCase() === lowerRepo;
-    if (!sameRepo) return true;
+    const refRepo = ref.repo?.trim().toLowerCase();
+    const sameRepo = refRepo === undefined || refRepo === lowerRepo;
+    if (!sameRepo) {
+      return knownRepos.size === 0 || knownRepos.has(refRepo);
+    }
     return openIssueNumbers.has(ref.number);
   });
 }
@@ -474,6 +496,11 @@ export function classifyIssues(
   const mergedPRs = opts.mergedPRs ?? [];
   const runLocalHolds = opts.runLocalHolds ?? new Set<number>();
   const openIssueNumbers = opts.openIssueNumbers ?? new Set<number>();
+  const knownRepos = new Set(
+    (opts.knownRepos ?? [])
+      .filter((r) => typeof r === "string" && r.trim().length > 0)
+      .map((r) => r.trim().toLowerCase()),
+  );
   const repo = opts.repo ?? "";
   const pushCapableAuthors = opts.pushCapableAuthors ?? [];
 
@@ -612,7 +639,12 @@ export function classifyIssues(
     // so an issue refused for a more fundamental reason keeps that reason.
     if (
       openIssueNumbers.size > 0 && repo !== "" &&
-      isDependencyBlockedByOpenIssue(issue.body, repo, openIssueNumbers)
+      isDependencyBlockedByOpenIssue(
+        issue.body,
+        repo,
+        openIssueNumbers,
+        knownRepos,
+      )
     ) {
       result.push({
         number: issue.number,
@@ -1006,6 +1038,10 @@ export async function auditClaimableState(
       runLocalHolds,
       repo,
       openIssueNumbers,
+      // Issue #1249: the audit already knows which repositories the fleet
+      // monitors, so a dependency on anything else is not a blocker it can
+      // be silenced by.
+      knownRepos: opts.repos,
     });
     const claimableCount = verdicts.filter((v) => v.claimable).length;
     const reason: ClaimableSkipReason = claimableCount > 0

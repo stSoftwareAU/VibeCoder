@@ -9,6 +9,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { resolveAlertDedupAuthors } from "./alert_dedup_authors.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
@@ -143,36 +144,92 @@ export async function replyToComment(
 }
 
 /**
- * Check if a PR comment has the "confused" reaction (failed-once marker).
+ * Fetch the logins that left a given reaction on a comment (Issue #1249).
+ *
+ * The comment payload exposes only a reaction **count**, and any account may
+ * react on any comment, so a count establishes nothing about who reacted.
+ * The per-comment reactions endpoint names them — the same treatment
+ * `fetchCommentThumbsUpReactors` already gives `+1` (Issue #2484).
  *
  * @param repo - Repository in "owner/repo" format
  * @param commentType - Type of comment ("review" or "issue")
  * @param commentId - The comment ID
+ * @param content - Reaction content, e.g. `confused` or `eyes`
  * @param ghCommandFn - Function to run gh commands (injectable for testing)
- * @returns true if the comment has been marked as failed once
+ * @returns Logins that left the reaction (empty on error)
  */
-export async function checkPrCommentHasFailedOnce(
+export async function fetchCommentReactors(
   repo: string,
   commentType: CommentType,
   commentId: string,
+  content: string,
   ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
-): Promise<boolean> {
+): Promise<string[]> {
   const apiPath = commentType === "review"
-    ? `repos/${repo}/pulls/comments/${commentId}`
-    : `repos/${repo}/issues/comments/${commentId}`;
+    ? `repos/${repo}/pulls/comments/${commentId}/reactions`
+    : `repos/${repo}/issues/comments/${commentId}/reactions`;
 
   try {
     const output = await ghCommandFn([
       "api",
       apiPath,
       "--jq",
-      ".reactions.confused // 0",
+      `[.[] | select(.content == "${content}") | .user.login]`,
     ]);
-    const count = parseInt(output.trim(), 10);
-    return count > 0;
+    const parsed: unknown = JSON.parse(output);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((x): x is string => typeof x === "string");
   } catch {
-    return false;
+    return [];
   }
+}
+
+/**
+ * Check if a PR comment carries a **fleet-authored** "confused" reaction —
+ * the failed-once marker.
+ *
+ * A bare `confused` count proves nothing: any account can react on any
+ * comment, and this flag is what promotes the next failure straight to
+ * *permanent* (Issue #1249, finding 5). One drive-by reaction therefore
+ * retired a comment the worker would otherwise have retried. The reactor
+ * logins are resolved and checked against the fleet, exactly as
+ * `pr_maintenance.ts` already does for `+1`.
+ *
+ * Fail direction: no attributable reactor — including an empty
+ * `trustedReactors`, an unreadable reactions list or an API failure — reports
+ * **not** failed-once, so the comment is retried rather than permanently
+ * retired. A retry is cheap; a wrongly-retired comment is feedback nobody
+ * answers.
+ *
+ * @param repo - Repository in "owner/repo" format
+ * @param commentType - Type of comment ("review" or "issue")
+ * @param commentId - The comment ID
+ * @param ghCommandFn - Function to run gh commands (injectable for testing)
+ * @param trustedReactors - Logins whose `confused` reaction counts
+ * @returns true if the fleet has marked the comment as failed once
+ */
+export async function checkPrCommentHasFailedOnce(
+  repo: string,
+  commentType: CommentType,
+  commentId: string,
+  ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
+  trustedReactors: readonly string[] = [],
+): Promise<boolean> {
+  const trusted = trustedReactors
+    .filter((r) => typeof r === "string" && r.trim().length > 0)
+    .map((r) => r.trim().toLowerCase());
+  if (trusted.length === 0) return false;
+
+  const reactors = await fetchCommentReactors(
+    repo,
+    commentType,
+    commentId,
+    "confused",
+    ghCommandFn,
+  );
+  return reactors.some((login) =>
+    trusted.includes(login.trim().toLowerCase())
+  );
 }
 
 /**
@@ -289,6 +346,10 @@ ${redactSecrets(failureMessage)}
  * @param commentId - The comment ID
  * @param failureMessage - Description of the failure
  * @param ghCommandFn - Function to run gh commands (injectable for testing)
+ * @param trustedReactors - Logins whose `confused` reaction counts as the
+ *   failed-once marker (Issue #1249). Omitted resolves the configured fleet
+ *   identity; an unresolvable fleet means no reaction is trusted, so the
+ *   comment is retried rather than permanently retired.
  */
 export async function handlePrCommentFailure(
   repo: string,
@@ -297,12 +358,16 @@ export async function handlePrCommentFailure(
   commentId: string,
   failureMessage: string,
   ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
+  trustedReactors?: readonly string[],
 ): Promise<void> {
+  const trusted = trustedReactors ??
+    await resolveAlertDedupAuthors({}, (m) => console.warn(m));
   const hasFailedOnce = await checkPrCommentHasFailedOnce(
     repo,
     commentType,
     commentId,
     ghCommandFn,
+    trusted,
   );
 
   if (hasFailedOnce) {

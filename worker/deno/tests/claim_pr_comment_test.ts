@@ -376,7 +376,23 @@ Deno.test("claim pr comment - handles three-way race correctly", async () => {
 // ---------------------------------------------------------------------------
 
 Deno.test("claim pr comment - cleans up stale claim comments before claiming", async () => {
-  const staleClaims = JSON.stringify([100, 101]);
+  // Since Issue #1249 the cleanup read carries the body, timestamp and author
+  // of each claim comment, and deletes only fleet-authored ones that have aged
+  // past the minimum — so the fixture is two genuinely stale fleet claims.
+  const staleClaims = JSON.stringify([
+    {
+      id: 100,
+      body: "<!-- PR_COMMENT_CLAIM:crashed-worker:555 -->",
+      created_at: "2026-03-31T23:00:00Z",
+      author: FLEET_AUTHOR,
+    },
+    {
+      id: 101,
+      body: "<!-- PR_COMMENT_CLAIM:crashed-worker:556 -->",
+      created_at: "2026-03-31T23:30:00Z",
+      author: FLEET_AUTHOR,
+    },
+  ]);
   const singleClaim = JSON.stringify([
     {
       id: 200,
@@ -410,6 +426,7 @@ Deno.test("claim pr comment - cleans up stale claim comments before claiming", a
     ghCommandFn: mockGh,
     authorOptions: FLEET_OPTIONS,
     log: () => {},
+    nowMsFn: () => Date.parse("2026-04-01T00:00:00Z"),
   });
 
   assertEquals(result.ok, true);

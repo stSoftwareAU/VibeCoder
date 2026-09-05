@@ -127,6 +127,13 @@ export interface PreMergeGateOutcome {
    * default branch becomes a genuine ancestor of the milestone branch.
    */
   headRefName?: string;
+  /**
+   * Whether the head branch lives in **this** repository rather than a fork
+   * (Issue #1249, finding 10). Only a same-repository head makes the branch
+   * name evidence of who created it, so only it may select the merge-commit
+   * deviation; absent reads as "not established" and squashes.
+   */
+  headIsSameRepository?: boolean;
 }
 
 /** Operator overrides for the pre-merge gate (Issue #3705). */
@@ -664,6 +671,7 @@ export async function enforcePreMergeRequirements(
   //    oriented base-to-head, so the head ref is not optional (Issue #470).
   let baseRefName: string;
   let headRefName: string;
+  let headIsSameRepository = false;
   try {
     const raw = await ghCommandFn([
       "pr",
@@ -672,11 +680,15 @@ export async function enforcePreMergeRequirements(
       "--repo",
       repo,
       "--json",
-      "baseRefName,headRefName",
+      // `isCrossRepository` says whether the head lives in a fork, which is
+      // what makes the head branch *name* trustworthy as a policy signal
+      // (Issue #1249, finding 10).
+      "baseRefName,headRefName,isCrossRepository",
     ]);
     const parsed = JSON.parse(raw) as {
       baseRefName?: unknown;
       headRefName?: unknown;
+      isCrossRepository?: unknown;
     };
     baseRefName = typeof parsed.baseRefName === "string"
       ? parsed.baseRefName.trim()
@@ -684,6 +696,9 @@ export async function enforcePreMergeRequirements(
     headRefName = typeof parsed.headRefName === "string"
       ? parsed.headRefName.trim()
       : "";
+    // Absent or non-boolean reads as "cannot show it is same-repository",
+    // which selects the squash default rather than the deviation.
+    headIsSameRepository = parsed.isCrossRepository === false;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     return {
@@ -796,8 +811,8 @@ export async function enforcePreMergeRequirements(
   return {
     ok: true,
     value: headSha
-      ? { allowed: true, headSha, headRefName }
-      : { allowed: true, headRefName },
+      ? { allowed: true, headSha, headRefName, headIsSameRepository }
+      : { allowed: true, headRefName, headIsSameRepository },
   };
 }
 
@@ -952,7 +967,10 @@ export async function directMergePr(
       // A milestone sync lands as a merge commit so the default branch is a
       // genuine ancestor of the milestone branch (Issue #1048); every other
       // PR squashes as before.
-      mergeMethodFlagForHead(gate.value.headRefName),
+      mergeMethodFlagForHead(
+        gate.value.headRefName,
+        gate.value.headIsSameRepository ?? false,
+      ),
       // Pin the merge to the checked commit — GitHub refuses the merge if the
       // head moved after the checks were read (Issue #3946).
       "--match-head-commit",

@@ -248,6 +248,26 @@ function defaultNow(): number {
  *
  * Uses the GitHub API to retrieve comments matching the lock prefix.
  */
+/**
+ * The comment id in the URL `gh issue comment` prints, or null (Issue #1249).
+ *
+ * `gh` writes the new comment's URL to stdout —
+ * `https://github.com/o/r/issues/5#issuecomment-2412345678` — and that
+ * fragment is the only *authenticated* statement about which comment in the
+ * thread this worker just wrote. Exported for the regression test; a payload
+ * with no fragment yields null, and the caller then declines the lock rather
+ * than guessing.
+ *
+ * @param ghOutput - Raw stdout from `gh issue comment`
+ * @returns The comment id, or null when the output carries no fragment
+ */
+export function parsePostedCommentId(ghOutput: string): number | null {
+  const match = /#issuecomment-(\d+)/.exec(ghOutput ?? "");
+  if (!match) return null;
+  const id = Number(match[1]);
+  return Number.isSafeInteger(id) ? id : null;
+}
+
 async function fetchLockComments(
   repo: string,
   prNumber: number,
@@ -369,8 +389,13 @@ export async function acquireBranchUpdateLock(
   const now = nowFn();
   const lockCommentBody = buildLockBody(workerId, now, options.note);
 
+  // `gh issue comment` prints the new comment's URL, whose
+  // `#issuecomment-<id>` fragment identifies the comment we just posted.
+  // That id — not the worker id inside the body — is what makes a lock
+  // ours (Issue #1249, finding 6).
+  let ownLockCommentId: number | null = null;
   try {
-    await ghCommandFn([
+    const posted = await ghCommandFn([
       "issue",
       "comment",
       String(prNumber),
@@ -379,6 +404,7 @@ export async function acquireBranchUpdateLock(
       "--body",
       lockCommentBody,
     ]);
+    ownLockCommentId = parsePostedCommentId(posted);
   } catch {
     return { ok: true, value: { acquired: false } };
   }
@@ -396,18 +422,34 @@ export async function acquireBranchUpdateLock(
   }
 
   // Step 4a: A lock the fleet did not post is not a lock (Issue #1124).
-  // Our own comment is ours by construction — we posted it moments ago and
-  // it carries our worker-id — so it is kept without an author lookup;
-  // everything else has to prove who wrote it. Verifying only the
-  // competitors means the log names the comments that would otherwise have
-  // stalled this branch.
-  const ourLocks = readLockComments.filter(
-    (c) => parseLockComment(c.body)?.workerId === workerId,
-  );
+  //
+  // Ours is the comment whose **id** GitHub returned when we posted it
+  // moments ago (Issue #1249, finding 6). Matching on the worker id inside
+  // the body was never evidence we wrote it: the id is `name@hostname` and is
+  // printed verbatim into every public lock comment, so replaying it with an
+  // earlier timestamp made a stranger's comment read as ours — and two
+  // workers both reported `acquired: true`, defeating the mutual exclusion
+  // this module exists for. Everything that is not that comment has to prove
+  // who wrote it, so the log still names the comments that would otherwise
+  // have stalled this branch.
+  //
+  // No id back from `gh` means nothing in the thread can be established as
+  // ours, so the lock is not taken this cycle: a mutual-exclusion primitive
+  // that cannot identify its own holder must fail closed, and the branch
+  // update is simply retried on the next scan.
+  if (ownLockCommentId === null) {
+    log(
+      `[pr-branch-lock] ${repo}#${prNumber}: gh returned no comment URL for ` +
+        `the lock comment, so this worker cannot identify its own lock — ` +
+        `not acquiring; the branch update retries next cycle (Issue #1249).`,
+    );
+    return { ok: true, value: { acquired: false } };
+  }
+
+  const isOurs = (c: LockComment) => c.id === ownLockCommentId;
+  const ourLocks = readLockComments.filter(isOurs);
   const competingLocks = await selectFleetAuthoredComments(
-    readLockComments.filter(
-      (c) => parseLockComment(c.body)?.workerId !== workerId,
-    ),
+    readLockComments.filter((c) => !isOurs(c)),
     `branch update lock ${repo}#${prNumber}`,
     authorOptions,
     log,

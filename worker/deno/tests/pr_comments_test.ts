@@ -153,24 +153,29 @@ Deno.test("pr_comments - replyToComment returns error on failure", async () => {
 
 // --- checkPrCommentHasFailedOnce ---
 
-Deno.test("pr_comments - checkPrCommentHasFailedOnce returns true when confused > 0", async () => {
-  const fn = async (_args: string[]): Promise<string> => "1";
+Deno.test("pr_comments - checkPrCommentHasFailedOnce returns true for a fleet reaction", async () => {
+  // Issue #1249: the reaction is resolved to its reactor, so the stub returns
+  // the reactions list rather than a bare count.
+  const fn = async (_args: string[]): Promise<string> =>
+    JSON.stringify(["vibe-bot"]);
   const result = await checkPrCommentHasFailedOnce(
     "owner/repo",
     "review",
     "123",
     fn,
+    ["vibe-bot"],
   );
   assertEquals(result, true);
 });
 
-Deno.test("pr_comments - checkPrCommentHasFailedOnce returns false when confused is 0", async () => {
-  const fn = async (_args: string[]): Promise<string> => "0";
+Deno.test("pr_comments - checkPrCommentHasFailedOnce returns false when nobody reacted", async () => {
+  const fn = async (_args: string[]): Promise<string> => "[]";
   const result = await checkPrCommentHasFailedOnce(
     "owner/repo",
     "review",
     "123",
     fn,
+    ["vibe-bot"],
   );
   assertEquals(result, false);
 });
@@ -184,6 +189,7 @@ Deno.test("pr_comments - checkPrCommentHasFailedOnce returns false on API error"
     "review",
     "123",
     fn,
+    ["vibe-bot"],
   );
   assertEquals(result, false);
 });
@@ -283,9 +289,9 @@ Deno.test("pr_comments - handlePrCommentFailure calls failed for second failure"
     calls.push(args);
     if (
       args.includes("--jq") &&
-      args.some((a) => a.includes(".reactions.confused"))
+      args.some((a) => a.includes('select(.content == "confused")'))
     ) {
-      return "1"; // Already failed once
+      return JSON.stringify(["vibe-bot"]); // Already failed once, by the fleet
     }
     return "";
   };
@@ -296,6 +302,7 @@ Deno.test("pr_comments - handlePrCommentFailure calls failed for second failure"
     "123",
     "Error again",
     fn,
+    ["vibe-bot"],
   );
   // Second failure path: markPrCommentAsFailed -> markCommentProcessed (eyes reaction)
   // then replyToComment. Check that eyes content was sent.

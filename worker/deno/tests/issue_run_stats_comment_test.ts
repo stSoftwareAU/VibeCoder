@@ -67,11 +67,21 @@ function claudeResult(
 }
 
 /** Minimal in-memory GitHub double recording posted comment bodies. */
-function makeGitHubDouble(existing: string[] = []) {
+/** The fleet login the tally trusts in these tests (Issue #1249). */
+const FLEET_AUTHOR = "vibe-bot";
+
+/** Author-verification inputs, as every tally assertion now needs. */
+const FLEET_OPTIONS = { fleetAuthors: [FLEET_AUTHOR] };
+
+function makeGitHubDouble(
+  existing: string[] = [],
+  author: string = FLEET_AUTHOR,
+) {
   const posted: string[] = [];
   return {
     posted,
-    getIssueComments: () => Promise.resolve(existing.map((body) => ({ body }))),
+    getIssueComments: () =>
+      Promise.resolve(existing.map((body) => ({ body, author }))),
     postComment: (_r: string, _i: number, body: string) => {
       posted.push(body);
       return Promise.resolve();
@@ -382,6 +392,7 @@ Deno.test("postIssueRunStatsComment - an earlier run's comment no longer hides t
     getIssueComments: gh.getIssueComments,
     postComment: gh.postComment,
     logger: makeLogger(),
+    authorOptions: FLEET_OPTIONS,
   });
 
   assertEquals(result.posted, true);
@@ -406,6 +417,7 @@ Deno.test("postIssueRunStatsComment - a legacy planning stats comment does not s
     getIssueComments: gh.getIssueComments,
     postComment: gh.postComment,
     logger: makeLogger(),
+    authorOptions: FLEET_OPTIONS,
   });
 
   assertEquals(result.posted, true);
@@ -433,16 +445,26 @@ Deno.test("postIssueRunStatsComment - posts nothing when there are no stats", as
 // ghIssueCommentLister
 // ============================================================================
 
-Deno.test("ghIssueCommentLister - reads bodies from gh issue view", async () => {
+Deno.test("ghIssueCommentLister - reads bodies and authors from gh issue view", async () => {
   let seen: string[] = [];
   const list = ghIssueCommentLister((args) => {
     seen = args;
     return Promise.resolve(
-      JSON.stringify({ comments: [{ body: "one" }, { body: "two" }] }),
+      JSON.stringify({
+        comments: [
+          { body: "one", author: { login: "vibe-bot" } },
+          { body: "two" },
+        ],
+      }),
     );
   });
 
-  assertEquals(await list("org/repo", 5), [{ body: "one" }, { body: "two" }]);
+  // Issue #1249: the author rides along, and a comment without one is null
+  // rather than absent — the tally must be able to tell "unknown" apart.
+  assertEquals(await list("org/repo", 5), [
+    { body: "one", author: "vibe-bot" },
+    { body: "two", author: null },
+  ]);
   assertEquals(seen, [
     "issue",
     "view",

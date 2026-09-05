@@ -20,7 +20,11 @@
 import type { Logger, Result } from "../types.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { verifyMergeLanded } from "./merge_landing.ts";
-import type { CommentType, PrCommentToFix } from "./pr_comments.ts";
+import {
+  type CommentType,
+  fetchCommentReactors,
+  type PrCommentToFix,
+} from "./pr_comments.ts";
 import type { FailedCiCheck } from "./pr_ci_checks.ts";
 import {
   encodeBase64,
@@ -78,6 +82,12 @@ export interface CommentEntry {
   id: number;
   body: string;
   thumbs_up: number;
+  /**
+   * Count of `eyes` reactions — the worker's processed marker. A count alone
+   * settles nothing (Issue #1249, finding 5): the reactor is resolved before
+   * the comment is skipped.
+   */
+  eyes?: number;
   /** ISO 8601 creation time — used for fleet-push supersession (Issue #211). */
   created_at?: string;
 }
@@ -457,6 +467,14 @@ export async function listMergedPrs(
 /**
  * Fetch comments of a specific type for a PR.
  *
+ * Every comment is returned, carrying its `eyes` count (Issue #1249,
+ * finding 5). The count used to be a server-side filter — `select(.reactions
+ * .eyes == 0)` — so a single 👀 from any account, with no repository
+ * permission at all, dropped a comment from the actionable scan for good.
+ * The reaction is the worker's own processed marker, so the *reactor* is what
+ * settles it; {@link findActionableComment} resolves that only for the
+ * comments it would otherwise act on, which keeps the extra API call rare.
+ *
  * @param repo - Repository in "owner/repo" format
  * @param prNumber - PR number
  * @param commentType - Type of comments to fetch
@@ -478,7 +496,7 @@ export async function fetchPrComments(
       "api",
       apiPath,
       "--jq",
-      '[.[] | select(.reactions.eyes == 0) | {login: .user.login, id: .id, body: .body, thumbs_up: (.reactions["+1"] // 0), created_at: .created_at}]',
+      '[.[] | {login: .user.login, id: .id, body: .body, thumbs_up: (.reactions["+1"] // 0), eyes: (.reactions.eyes // 0), created_at: .created_at}]',
     ]);
     const parsed: unknown = JSON.parse(output);
     if (!Array.isArray(parsed)) return [];
@@ -898,6 +916,41 @@ async function findActionableComment(
     }
 
     if (isAuthorised || hasAuthorisedThumbsUp || isTrustedReviewBot) {
+      // The comment is actionable — unless the fleet has already processed
+      // it. The `eyes` marker is the worker's own, so a count is not the
+      // test: any account can add 👀 and would otherwise have removed this
+      // comment from the scan permanently (Issue #1249, finding 5). Resolved
+      // here, after the trust checks, so the extra call is paid only for a
+      // comment the worker was about to act on.
+      if ((comment.eyes ?? 0) > 0) {
+        const eyesReactors = await fetchCommentReactors(
+          repo,
+          commentType,
+          String(comment.id),
+          "eyes",
+          ghCommandFn,
+        );
+        const processedByFleet = eyesReactors.some((login) =>
+          login === githubUser || isAuthorisedCommenter(login)
+        );
+        if (processedByFleet) {
+          logger.debug("Skipping comment already processed by the fleet", {
+            repo,
+            prNumber,
+            author: comment.login,
+            commentType,
+          });
+          continue;
+        }
+        logger.info("Ignoring an untrusted eyes reaction on a PR comment", {
+          repo,
+          prNumber,
+          commentId: comment.id,
+          commentType,
+          reactors: eyesReactors.join(","),
+        });
+      }
+
       const trustReason = isAuthorised
         ? "authorised"
         : hasAuthorisedThumbsUp
