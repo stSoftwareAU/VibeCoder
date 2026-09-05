@@ -808,3 +808,173 @@ pwshTest(
     }
   },
 );
+
+// ── The login lookup and gh's exit code (Issue #1146) ───────────────────
+//
+// The twin of the setup.sh cases in `setup_credential_provisioning_test.ts`.
+// `gh api` prints the API's response body to stdout on an HTTP error, so
+// `Select-Object -First 1` takes that body's first line — `{` — rather than
+// nothing, and a token gh rejects produced a hosts.yml with JSON where the
+// username belongs. Both halves of the guard are asserted here: the exit code
+// is honoured, and the output must be shaped like a GitHub login.
+
+/** A `gh` that fails the way the real one does: body on stdout, exit 1. */
+const PS_GH_REJECTS_TOKEN = `#!/usr/bin/env bash
+cat <<'JSON'
+{
+  "message": "Bad credentials",
+  "documentation_url": "https://docs.github.com/rest",
+  "status": "401"
+}
+JSON
+echo 'gh: Bad credentials (HTTP 401)' >&2
+exit 1
+`;
+
+/** A `gh` that resolves the login the way a good token does. */
+const PS_GH_RESOLVES_LOGIN = `#!/usr/bin/env bash
+echo 'vibe-worker-bot'
+`;
+
+/** A `gh` that exits 0 but prints something that is not a login. */
+const PS_GH_PRINTS_NON_LOGIN = `#!/usr/bin/env bash
+printf 'not a login\\n'
+`;
+
+/**
+ * Run `fn` with a PATH whose `gh` is `stub`.
+ *
+ * The stub is a shell script, as the rest of this suite's POSIX assumptions
+ * already are (`/usr/bin:/bin`, POSIX permission bits) — pwsh on a POSIX host
+ * is what CI and the developer machines run.
+ */
+async function withGhStub<T>(
+  stub: string,
+  fn: (path: string) => Promise<T>,
+): Promise<T> {
+  const bin = await Deno.makeTempDir({ prefix: "vibe_ps1_gh_" });
+  try {
+    await Deno.writeTextFile(`${bin}/gh`, stub);
+    await Deno.chmod(`${bin}/gh`, 0o755);
+    return await fn(`${bin}:/usr/bin:/bin`);
+  } finally {
+    await Deno.remove(bin, { recursive: true });
+  }
+}
+
+/** Provision a gh credential under `tmp` with `gh` stubbed by `stub`. */
+async function provisionWithGhStub(
+  tmp: string,
+  token: string,
+  stub: string,
+): Promise<PwshRun> {
+  return await withGhStub(stub, (path) =>
+    runPwsh(
+      `
+    Invoke-VibeCredentialProvisioning
+      `,
+      {
+        PATH: path,
+        HOME: tmp,
+        CONFIG_FILE: `${tmp}/.config.json`,
+        VIBE_LAUNCHAGENT_GH_TOKEN: token,
+        VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY: "sk-ant-provisioned",
+      },
+    ));
+}
+
+pwshTest(
+  "setup.ps1 - a token gh rejects writes a token-only hosts.yml (Issue #1146)",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const run = await provisionWithGhStub(
+        tmp,
+        "gho_rejected",
+        PS_GH_REJECTS_TOKEN,
+      );
+      // Not fatal: the token alone authenticates.
+      assertEquals(run.code, 0, run.output);
+
+      const hosts = await Deno.readTextFile(
+        `${tmp}/.vibe-coder/credentials/gh/hosts.yml`,
+      );
+      assertEquals(
+        hosts,
+        "github.com:\n    oauth_token: gho_rejected\n    git_protocol: ssh\n",
+      );
+      assert(
+        !hosts.includes("user:"),
+        `hosts.yml carries a user key: ${hosts}`,
+      );
+      assert(!hosts.includes("{"), `hosts.yml carries JSON: ${hosts}`);
+      assert(
+        !hosts.includes("Bad credentials"),
+        `hosts.yml carries gh's error body: ${hosts}`,
+      );
+      assertStringIncludes(
+        run.output,
+        "gh could not resolve the token's login",
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+pwshTest(
+  "setup.ps1 - a token gh accepts still completes the host entry (Issue #1146)",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const run = await provisionWithGhStub(
+        tmp,
+        "gho_accepted",
+        PS_GH_RESOLVES_LOGIN,
+      );
+      assertEquals(run.code, 0, run.output);
+
+      const hosts = await Deno.readTextFile(
+        `${tmp}/.vibe-coder/credentials/gh/hosts.yml`,
+      );
+      assertEquals(
+        hosts,
+        "github.com:\n" +
+          "    oauth_token: gho_accepted\n" +
+          "    git_protocol: ssh\n" +
+          "    user: vibe-worker-bot\n" +
+          "    users:\n" +
+          "        vibe-worker-bot:\n" +
+          "            oauth_token: gho_accepted\n",
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+pwshTest(
+  "setup.ps1 - output that is not a login is refused even on exit 0 (Issue #1146)",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const run = await provisionWithGhStub(
+        tmp,
+        "gho_odd",
+        PS_GH_PRINTS_NON_LOGIN,
+      );
+      assertEquals(run.code, 0, run.output);
+
+      const hosts = await Deno.readTextFile(
+        `${tmp}/.vibe-coder/credentials/gh/hosts.yml`,
+      );
+      assertEquals(
+        hosts,
+        "github.com:\n    oauth_token: gho_odd\n    git_protocol: ssh\n",
+      );
+      assertStringIncludes(run.output, "gh returned no usable GitHub login");
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
