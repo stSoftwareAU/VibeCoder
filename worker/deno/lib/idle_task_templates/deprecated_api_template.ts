@@ -41,6 +41,8 @@ import {
   registerTemplate,
 } from "../idle_task_template.ts";
 import { runGhCommand as defaultGhCommand } from "../github.ts";
+import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
+import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
 import { loadPrompt as defaultLoadPrompt } from "../prompt_manager.ts";
 import {
   diffNewlyFiled,
@@ -48,7 +50,6 @@ import {
   listKnownOpenFindingIds,
   listOpenIssueNumbersByLabel,
   type OpenIssueTitle,
-  parseGhJsonArray,
   renderOpenIssueTitles,
 } from "../idle_task_snapshot.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "../label_operations.ts";
@@ -103,6 +104,12 @@ export const DEPRECATED_API_BODY_FINGERPRINT = /^#+\s+Deprecated-API\b/m;
  * on Claude.
  */
 export interface DeprecatedApiTemplateDeps {
+  /**
+   * Author-verification inputs for the wrapper dedup search
+   * ({@link hasFleetAuthoredOpenIssueTitled}). Omitted — every
+   * production caller — reads the configured fleet identity.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
   /** gh CLI runner used for snapshots, dedup, and the wrapper veto. */
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Prompt loader — defaults to `loadPrompt`. */
@@ -190,53 +197,6 @@ export function assembleDeprecatedApiPrompt(
     .replaceAll("{{KNOWN_OPEN_FINDING_IDS}}", known)
     .replaceAll("{{OPEN_ISSUE_TITLES}}", openIssues)
     .replaceAll("{{ATTRIBUTION_FOOTER}}", footer);
-}
-
-// ---------------------------------------------------------------------------
-// gh snapshot helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Return true when an open wrapper titled exactly
- * `Run a deprecated-API usage scan` already exists in `repo`. Used to
- * prevent piling new wrappers on top of an un-triaged one. A gh failure is
- * treated as "no open wrapper" so the gate never stalls scanning on a
- * transient hiccup.
- */
-async function hasOpenDeprecatedApiWrapper(
-  repo: string,
-  ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<boolean> {
-  let raw: string;
-  try {
-    raw = await ghCommandFn([
-      "issue",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "open",
-      "--search",
-      `"${DEPRECATED_API_ISSUE_TITLE}" in:title`,
-      "--json",
-      "number,title",
-      "--limit",
-      "10",
-    ]);
-  } catch {
-    return false;
-  }
-  for (const item of parseGhJsonArray(raw, "find deprecated-api wrapper")) {
-    if (item === null || typeof item !== "object") continue;
-    const title = (item as { title?: unknown }).title;
-    if (
-      typeof title === "string" &&
-      title.trim() === DEPRECATED_API_ISSUE_TITLE
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +303,7 @@ export function createDeprecatedApiTemplate(
   deps: DeprecatedApiTemplateDeps = {},
 ): IdleTaskTemplate {
   const ghCommandFn = deps.ghCommandFn ?? ((args) => defaultGhCommand(args));
+  const dedupAuthors = deps.dedupAuthors ?? {};
   const loadPromptFn = deps.loadPromptFn ??
     ((name, promptsDir) => defaultLoadPrompt(name, promptsDir));
   const ensureLabelFn = deps.ensureLabelFn ??
@@ -388,7 +349,15 @@ export function createDeprecatedApiTemplate(
     // Refuse to pile on while a wrapper is still being triaged. The
     // generic backlog gate handles open-findings count separately via the
     // `outputLabel` declaration below.
-    if (await hasOpenDeprecatedApiWrapper(opts.repo, ghCommandFn)) {
+    if (
+      await hasFleetAuthoredOpenIssueTitled({
+        repo: opts.repo,
+        title: DEPRECATED_API_ISSUE_TITLE,
+        context: "deprecated-api wrapper",
+        ghCommand: ghCommandFn,
+        ...dedupAuthors,
+      })
+    ) {
       return false;
     }
     return true;

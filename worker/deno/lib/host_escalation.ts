@@ -23,7 +23,17 @@
  */
 
 import { runGitCommand } from "./git_timeout.ts";
-import { spawnGh } from "./gh_spawn.ts";
+import {
+  type GhSpawnOptions,
+  type GhSpawnResult,
+  spawnGh,
+} from "./gh_spawn.ts";
+import {
+  ALERT_DEDUP_TITLE_JSON_FIELDS,
+  type AlertDedupAuthorOptions,
+  type AlertDedupRow,
+  selectFleetAuthoredMatches,
+} from "./alert_dedup_authors.ts";
 import {
   GH_CREDENTIAL_SUBDIR,
   GH_HOSTS_FILE,
@@ -136,24 +146,54 @@ export interface HostEscalation {
 }
 
 /**
+ * Injected seams for {@link fileOrCommentIssue}.
+ *
+ * Extends {@link AlertDedupAuthorOptions}: `fleetAuthors` (tests) or the
+ * configured fleet identity (production) decides whose title match may
+ * receive the escalation body.
+ */
+export interface FileOrCommentDeps extends AlertDedupAuthorOptions {
+  /** Runs `gh`. Production: {@link spawnGh}. */
+  ghFn?: (
+    args: readonly string[],
+    options: GhSpawnOptions,
+  ) => Promise<GhSpawnResult>;
+  /** Sink for the author-verification diagnostics. Defaults to `console.warn`. */
+  log?: (message: string) => void;
+}
+
+/**
  * File the escalation, or comment on the open issue that already carries this
- * exact title.
+ * exact title **and that the fleet itself opened**.
  *
  * Deduplication is by exact title so an ongoing condition stays ONE incident.
- * An unparseable or failed listing falls through to creating a fresh issue: a
- * duplicate report is recoverable, a lost escalation is not.
+ * A title is chosen by whoever opens the issue, though, so a title match on
+ * its own would let anybody both silence a host-level escalation and have its
+ * body posted onto an issue of their choosing — and this function would then
+ * report `"commented"`, i.e. success, for a report that landed somewhere it
+ * was never meant to go. The match therefore counts only when a fleet account
+ * authored the issue.
  *
+ * An unparseable listing, a failed listing or an unresolvable fleet all fall
+ * through to creating a fresh issue: a duplicate report is recoverable, a lost
+ * or misdirected escalation is not.
+ *
+ * @param escalation - The report and where it goes.
+ * @param deps - Injected `gh`, log sink and fleet identity.
  * @returns Whether the report was created or added to an existing issue.
  * @throws When `gh` refuses the write — the caller must know it was not
  *   delivered, which is the whole of Issue #556.
  */
 export async function fileOrCommentIssue(
   escalation: HostEscalation,
+  deps: FileOrCommentDeps = {},
 ): Promise<EscalationDelivery> {
   const { repo, title, body } = escalation;
   const env = escalation.env ?? await resolveEscalationGhEnv();
+  const gh = deps.ghFn ?? spawnGh;
+  const log = deps.log ?? ((message: string) => console.warn(message));
 
-  const listed = await spawnGh(
+  const listed = await gh(
     [
       "issue",
       "list",
@@ -164,29 +204,36 @@ export async function fileOrCommentIssue(
       "--search",
       `in:title "${title}"`,
       "--json",
-      "number,title",
+      ALERT_DEDUP_TITLE_JSON_FIELDS,
     ],
     { env },
   );
   let existing: number | undefined;
   if (listed.code === 0) {
     try {
-      const issues = JSON.parse(listed.stdout) as {
-        number: number;
-        title: string;
-      }[];
-      existing = issues.find((issue) => issue.title === title)?.number;
+      const issues = JSON.parse(listed.stdout) as (AlertDedupRow & {
+        title?: string;
+      })[];
+      const verified = await selectFleetAuthoredMatches(
+        issues.filter((issue) => issue.title === title),
+        `host escalation ${repo}`,
+        deps,
+        log,
+        'a fresh issue is created — reporting "commented" for a report ' +
+          "that landed on an issue the fleet did not open would be a lie",
+      );
+      existing = verified[0]?.number;
     } catch {
       // Unparseable listing — fall through to creation.
     }
   }
 
   const result = existing
-    ? await spawnGh(
+    ? await gh(
       ["issue", "comment", `${existing}`, "--repo", repo, "--body", body],
       { env },
     )
-    : await spawnGh(
+    : await gh(
       ["issue", "create", "--repo", repo, "--title", title, "--body", body],
       { env },
     );

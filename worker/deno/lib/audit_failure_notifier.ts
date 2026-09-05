@@ -24,8 +24,9 @@
  *
  * Design notes:
  *   - Idempotent. One open tracking issue per ecosystem at a time: a
- *     second failing run finds the existing issue (matched by exact
- *     title) and skips rather than filing a duplicate every week.
+ *     second failing run finds the existing issue (matched by exact title
+ *     **and** by fleet authorship — a title alone is attacker-writable) and
+ *     skips rather than filing a duplicate every week.
  *   - The tracking issue is the guarantee; the label is best-effort. The
  *     issue is created first (no label, so creation cannot fail on a
  *     missing label), then the label is ensured and applied — any
@@ -37,6 +38,8 @@
  */
 
 import { runGhCommand } from "./github.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import { findFleetAuthoredIssuesTitled } from "./idle_task_wrapper_dedup.ts";
 import {
   type AuditFailureMode,
   classifyAuditFailure,
@@ -187,6 +190,11 @@ export interface NotifyAuditFailureOptions {
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Injectable warning sink — defaults to `console.error` (Issue #3649). */
   warnFn?: (message: string) => void;
+  /**
+   * Author-verification inputs for the idempotency lookup. Omitted — every
+   * production caller — reads the configured fleet identity.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
 }
 
 export interface NotifyAuditFailureResult {
@@ -225,6 +233,8 @@ export async function notifyAuditFailure(
     opts.repo,
     issue.title,
     gh,
+    opts.dedupAuthors ?? {},
+    warn,
   );
   if (existing !== null && "lookupFailed" in existing) {
     const reason = `existing-issue lookup failed: ${existing.reason}`;
@@ -321,32 +331,39 @@ interface LookupFailure {
 }
 
 /**
- * Return the first open issue in `repo` whose title exactly equals
- * `title`, or null when there is none. The server-side `in:title` search
- * narrows the candidate set; the exact client-side match guards against
- * the search being fuzzy.
+ * Return the first open **fleet-authored** issue in `repo` whose title
+ * exactly equals `title`, or null when there is none.
+ *
+ * The server-side `in:title` search narrows the candidate set; the exact
+ * client-side match guards against the search being fuzzy; and the author
+ * check is what makes a match evidence. An issue title is text any account
+ * able to open an issue may write, and the titles here are constants derived
+ * from the ecosystem name, so without the author check an outsider could open
+ * one issue with the right title and every future audit failure would report
+ * "already tracked" while nothing was tracked at all. An unresolvable fleet
+ * author set counts no match, so the tracking issue is filed rather than
+ * silently skipped — `idle_task_wrapper_dedup.ts` logs the reason.
  */
 async function findExistingAuditFailureIssue(
   repo: string,
   title: string,
   gh: (args: string[]) => Promise<string>,
+  dedupAuthors: AlertDedupAuthorOptions,
+  warn: (message: string) => void,
 ): Promise<ExistingIssue | null | LookupFailure> {
-  let raw: string;
+  let matches: { number: number; url?: string }[];
   try {
-    raw = await gh([
-      "issue",
-      "list",
-      "--repo",
+    matches = await findFleetAuthoredIssuesTitled({
       repo,
-      "--state",
-      "open",
-      "--search",
-      `${title} in:title`,
-      "--json",
-      "number,title,url",
-      "--limit",
-      "50",
-    ]);
+      title,
+      context: `audit-failure tracker ${repo}`,
+      ghCommand: gh,
+      searchExpression: `${title} in:title`,
+      extraJsonFields: ["url"],
+      limit: 50,
+      log: warn,
+      ...dedupAuthors,
+    });
   } catch (err) {
     // A failed lookup must not produce a duplicate-or-nothing gamble, so
     // filing is still skipped — but Issue #3649 (SEC-c8172be04d3a): the old
@@ -359,24 +376,9 @@ async function findExistingAuditFailureIssue(
     };
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(parsed)) return null;
-
-  for (const entry of parsed) {
-    if (entry === null || typeof entry !== "object") continue;
-    const r = entry as Record<string, unknown>;
-    if (r.title !== title) continue;
-    const number = typeof r.number === "number" ? r.number : null;
-    const url = typeof r.url === "string" ? r.url : "";
-    if (number === null) continue;
-    return { number, url };
-  }
-  return null;
+  const match = matches[0];
+  if (match === undefined) return null;
+  return { number: match.number, url: match.url ?? "" };
 }
 
 /**

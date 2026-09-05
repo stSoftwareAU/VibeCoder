@@ -58,6 +58,8 @@ import {
   type RepoLanguages,
 } from "../language_detector.ts";
 import { runGhCommand as defaultGhCommand } from "../github.ts";
+import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
+import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
 import {
   getPromptsDir,
   loadPrompt as defaultLoadPrompt,
@@ -74,7 +76,6 @@ import {
   listKnownOpenFindingIds,
   listOpenIssueNumbersByLabel,
   type OpenIssueTitle,
-  parseGhJsonArray,
   renderOpenIssueTitles,
 } from "../idle_task_snapshot.ts";
 import type { Result } from "../../types.ts";
@@ -197,6 +198,12 @@ const LANGUAGE_BUCKETS: ReadonlySet<SupportedLanguage> = new Set([
  * network or block on Claude.
  */
 export interface BestPracticesTemplateDeps {
+  /**
+   * Author-verification inputs for the wrapper dedup search
+   * ({@link hasFleetAuthoredOpenIssueTitled}). Omitted — every
+   * production caller — reads the configured fleet identity.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
   /**
    * Detect languages for a repo — defaults to the production
    * `detectRepoLanguages`. Tests inject a stub that returns a fixed
@@ -361,51 +368,6 @@ export function assembleBestPracticesPrompt(
   ].join("\n");
 
   return [bucketLine, "", body.trim(), guideSection].join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// gh snapshot helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Return true when an open wrapper titled exactly
- * `Run a best-practices scan` already exists in `repo`. Used to
- * prevent piling new wrappers on top of an un-triaged one.
- */
-async function hasOpenBestPracticesWrapper(
-  repo: string,
-  ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<boolean> {
-  let raw: string;
-  try {
-    raw = await ghCommandFn([
-      "issue",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "open",
-      "--search",
-      `"${BEST_PRACTICES_ISSUE_TITLE}" in:title`,
-      "--json",
-      "number,title",
-      "--limit",
-      "10",
-    ]);
-  } catch {
-    return false;
-  }
-  for (const item of parseGhJsonArray(raw, "find best-practices wrapper")) {
-    if (item === null || typeof item !== "object") continue;
-    const title = (item as { title?: unknown }).title;
-    if (
-      typeof title === "string" &&
-      title.trim() === BEST_PRACTICES_ISSUE_TITLE
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 /**
@@ -680,6 +642,7 @@ export function createBestPracticesTemplate(
     ((name, promptsDir) => defaultLoadPrompt(name, promptsDir));
   const readBucketGuideFn = deps.readBucketGuideFn ?? readBucketGuide;
   const ghCommandFn = deps.ghCommandFn ?? ((args) => defaultGhCommand(args));
+  const dedupAuthors = deps.dedupAuthors ?? {};
   const checkLinterInCIFn = deps.checkLinterInCIFn ??
     ((path, lang) => defaultCheckLinterInCI(path, lang));
   const runScanFn = deps.runScanFn ??
@@ -746,7 +709,15 @@ export function createBestPracticesTemplate(
     // Refuse to pile on while a wrapper is still being triaged. The
     // generic backlog gate handles open-findings count separately via
     // the `outputLabel` declaration below.
-    if (await hasOpenBestPracticesWrapper(opts.repo, ghCommandFn)) {
+    if (
+      await hasFleetAuthoredOpenIssueTitled({
+        repo: opts.repo,
+        title: BEST_PRACTICES_ISSUE_TITLE,
+        context: "best-practices wrapper",
+        ghCommand: ghCommandFn,
+        ...dedupAuthors,
+      })
+    ) {
       return false;
     }
     return true;

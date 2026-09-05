@@ -44,6 +44,7 @@ import {
   isRateLimitError,
 } from "./issue_finder_common.ts";
 import { shuffleArray } from "./array_utils.ts";
+import { applyInFlightClaims } from "./work_stream.ts";
 import { collectLabelCandidates } from "./collect_label_candidates.ts";
 import { collectWorkOnCandidates } from "./collect_work_on_candidates.ts";
 import { collectLowPriorityCandidates } from "./collect_low_priority_candidates.ts";
@@ -90,6 +91,10 @@ export async function findOldestIssue(
     ? shuffleArray([...config.repos])
     : [...config.repos];
 
+  // Issue #1091: what a slot on this host already holds. Empty for the
+  // serial loop and every single-shot CLI path, which hold nothing.
+  const inFlightClaims = options.inFlightClaims ?? [];
+
   // Categorise repos as free or busy
   const freeRepos: string[] = [];
   const busyRepos: string[] = [];
@@ -110,8 +115,11 @@ export async function findOldestIssue(
       continue;
     }
 
-    // Held by another slot on this host (Issue #4176): no two slots may
-    // share a clone, so this repository is invisible to this scan.
+    // Leased wholesale on this host (Issue #4176, narrowed by Issue #1091):
+    // the maintenance lane's pass may touch any branch of the clone, so the
+    // repository is invisible to this scan. A sibling *slot*'s hold is not
+    // here — it occupies one work stream, and `isMilestoneOccupied` refuses
+    // that stream below, having been shown the claim.
     if (options.excludeRepos?.has(repo)) {
       diag.logRepoClassification(repo, "in-flight");
       continue;
@@ -119,7 +127,16 @@ export async function findOldestIssue(
 
     // Check availability using milestone-aware logic
     try {
-      const allIssuesForCheck = await fetchAllIssues(repo, cache, 200, ghFn);
+      // Issue #1091: the host's live claims are overlaid before the first
+      // check that reads assignment, so every downstream gate — this
+      // availability classification and every collector's
+      // `isMilestoneOccupied` — asks its question of the same truth.
+      const allIssuesForCheck = applyInFlightClaims(
+        repo,
+        await fetchAllIssues(repo, cache, 200, ghFn),
+        inFlightClaims,
+        options.githubUser,
+      );
       issuesByRepo.set(repo, allIssuesForCheck);
       const repoIssueInfos: RepoIssueInfo[] = allIssuesForCheck.map((i) => ({
         number: i.number,
@@ -251,7 +268,12 @@ export async function findOldestIssue(
     // map does not contain this repo (e.g., classification raised an error
     // before issuesByRepo.set could run).
     const repoAllIssues = issuesByRepo.get(repo) ??
-      await fetchAllIssues(repo, cache, 200, ghFn);
+      applyInFlightClaims(
+        repo,
+        await fetchAllIssues(repo, cache, 200, ghFn),
+        inFlightClaims,
+        options.githubUser,
+      );
 
     const labelResult = await collectLabelCandidates(
       repo,
@@ -438,9 +460,11 @@ export async function findOldestIssue(
   // not in the repo scan-order shuffle (`config.shuffleRepos`) — within a
   // single `nice` tier, equal repos rotate fairly. The earlier note in
   // `array_utils.ts` (shuffle controls scan order, selection is oldest-first)
-  // is therefore outdated for fairness: selection draws the lowest-`nice`
-  // non-empty tier first and only falls through to a higher-`nice` tier when
-  // no lower tier yields a selectable candidate. A test-supplied `repoNice`
+  // is therefore outdated for fairness: within a label tier, selection draws
+  // from the lowest-`nice` repos holding a candidate of that tier (Issue
+  // #1063 — the label tier itself is decided first, fleet-wide, so `nice`
+  // never lifts one repo's backlog above another's urgency label, F4a in
+  // DESIGN-PRINCIPLES.md). A test-supplied `repoNice`
   // wins; otherwise resolve from `config.repoConfig` (defaults to `0`/neutral
   // for every repo when unset, preserving today's behaviour).
   const selectionOptions: SelectionOptions = {
@@ -453,14 +477,21 @@ export async function findOldestIssue(
   if (selected) {
     diag.logFinalSelection(selected.repo, selected.number, selected.source);
 
-    // Issue #1718: when a work-on candidate is selected and any
-    // configured-label candidate was considered or blocked, emit a
-    // structured selection-reasoning line so the user can see at a
-    // glance why top-priority was passed over. Suppressed when a
-    // configured-label was selected (avoids noise) or when no
-    // configured-label candidates exist at all (no surprise).
+    // Issue #1718: when a lower tier is selected and any configured-label
+    // candidate was considered or blocked, emit a structured
+    // selection-reasoning line so the user can see at a glance why
+    // top-priority was passed over. Suppressed when a configured-label was
+    // selected (avoids noise) or when no configured-label candidates exist
+    // at all (no surprise).
+    //
+    // Issue #1063 widened this from `work-on` to *every* lower tier: with the
+    // label tier now outermost, a top-priority candidate that is passed over
+    // was necessarily filtered or blocked, and the winner may equally be a
+    // self-diagnostic, low-priority or idle-task issue. Narrowing it to
+    // `work-on` left those cases silent — the starvation the operator
+    // reported is exactly the kind that goes unnoticed.
     if (
-      selected.source === "work-on" &&
+      selected.source !== "configured-label" &&
       (configuredLabelConsidered > 0 || allBlockedDetails.length > 0)
     ) {
       diag.logSelectionReasoning(

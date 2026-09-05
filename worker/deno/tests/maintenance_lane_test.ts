@@ -23,7 +23,9 @@ function registryBroker(
       registry.tryAcquire(repo, ref, MAINTENANCE_LANE_SLOT_ID, {
         maintenance: true,
       }),
-    release: (repo) => registry.release(repo),
+    // Issue #1091: a lane lease is repository-wide, so it is given back
+    // through the lease path rather than the per-stream one.
+    release: (repo) => registry.releaseRepoLease(repo),
   };
 }
 
@@ -95,7 +97,9 @@ Deno.test("in-flight registry - a maintenance hold is not an issue claim (Issue 
   // Display sees both.
   assertEquals(registry.holds().length, 2);
   // The claim-shaped views see only the slot's.
-  assertEquals(registry.heldIssues(), [{ repo: "o/a", issueNumber: 42 }]);
+  assertEquals(registry.heldIssues(), [
+    { repo: "o/a", issueNumber: 42, milestone: "" },
+  ]);
   assertEquals(registry.slotHolds().map((h) => h.repo), ["o/a"]);
   // Both repositories are still excluded from a slot's next scan.
   assertEquals(new Set(registry.heldRepos()), new Set(["o/a", "o/b"]));

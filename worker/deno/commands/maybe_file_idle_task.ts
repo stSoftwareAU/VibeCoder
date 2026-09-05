@@ -85,8 +85,8 @@ import type { Result } from "../types.ts";
 import {
   type ExistingIdleTaskIssue,
   type ExistingIdleTaskWrapper,
-  findAnyOpenIdleTaskWrapper as defaultFindAnyOpenIdleTaskWrapper,
   findExistingIdleTaskIssue as defaultFindExistingIdleTaskIssue,
+  findOpenIdleTaskWrappers as defaultFindOpenIdleTaskWrappers,
   IDLE_TASK_LABEL,
 } from "../lib/idle_task_issue.ts";
 import {
@@ -135,7 +135,7 @@ import {
   type IdleTaskMilestone,
 } from "../lib/idle_task_milestone.ts";
 import {
-  anyRepoHasUnblockedRealWork as defaultAnyRepoHasUnblockedRealWork,
+  countReposWithStartableWork as defaultCountReposWithStartableWork,
   isRepoBusyForIdleTask as defaultIsRepoBusyForIdleTask,
 } from "../lib/repo_busy_for_idle_task.ts";
 import {
@@ -189,6 +189,7 @@ export interface MaybeFileIdleTaskData {
     | "no_template"
     | "duplicate"
     | "existing_wrapper_open"
+    | "no_idle_capacity"
     | "pending_results"
     | "approved_work_in_flight"
     | "cooldown_active"
@@ -246,13 +247,19 @@ export interface MaybeFileIdleTaskData {
  * inputs; the caller supplies them so the gate refuses the same work streams
  * the scan refuses.
  */
-interface AnyRepoHasWorkOptions {
+interface StartableWorkCountOptions {
   repos: readonly string[];
   logFn?: (message: string) => void;
   /** This worker's login, for the scan's occupancy gate (Issue #1050). */
   workerUser?: string;
   /** The fleet's push-capable set (Issues #1050, #1064). */
   pushCapableAuthors?: readonly string[];
+  /**
+   * Stop counting at this many repositories (Issue #1083). The verdict only
+   * ever compares the count against idle capacity, so the probes past the
+   * bound cannot change it.
+   */
+  stopAt?: number;
 }
 
 interface TestDeps {
@@ -264,14 +271,16 @@ interface TestDeps {
     opts: { repo: string },
   ) => Promise<ExistingIdleTaskIssue | null>;
   /**
-   * Cross-repo wrapper lookup (Issue #2092). Scans every monitored repo
-   * and returns the first open `idle-task` wrapper found anywhere, or
-   * `null` when the entire set is clean. Defaults to
-   * {@link defaultFindAnyOpenIdleTaskWrapper}.
+   * Per-repo wrapper census (Issues #2092, #1083). Scans every monitored
+   * repo and returns one entry per repo already holding an open `idle-task`
+   * wrapper; an empty array means the whole set is clean. Those repos are
+   * subtracted from the candidate list — the gate is one wrapper per
+   * repository, not one across the fleet. Defaults to
+   * {@link defaultFindOpenIdleTaskWrappers}.
    */
-  findAnyOpenWrapperFn?: (
+  findOpenWrappersFn?: (
     repos: readonly string[],
-  ) => Promise<ExistingIdleTaskWrapper | null>;
+  ) => Promise<ExistingIdleTaskWrapper[]>;
   /** Ensure-label helper for the `idle-task` label. */
   ensureLabelFn?: (repo: string) => Promise<Result<void>>;
   /** gh CLI runner. */
@@ -317,19 +326,26 @@ interface TestDeps {
     opts: { repo: string; logFn?: (message: string) => void },
   ) => Promise<boolean>;
   /**
-   * Fleet-global existence gate (Issue #2813). Returns true when ANY
-   * monitored repo holds an open `top-priority`/`work-on`/`low-priority`
-   * issue a slot could claim — including one merely *deferred* this cycle
-   * by `nice` tiering, fair rotation, or cooldown rather than claimed.
-   * Issue #1050: "could claim" is the claim scan's own definition, so work
-   * the scan permanently refuses no longer suppresses filing. When true the filer suppresses idle-task creation
-   * across the whole set, repairing the filing half of the #2806
-   * idle-vs-work-on inversion. Defaults to `anyRepoHasUnblockedRealWork`
-   * from `lib/repo_busy_for_idle_task.ts`. A helper throw is treated as
-   * "no work" (matches the `busy_check_failed` pattern) so a transient gh
-   * hiccup never silently disables the filer.
+   * Fleet-global startable-work count (Issues #2813, #1050, #1083). Returns
+   * how many monitored repos hold an open
+   * `top-priority`/`work-on`/`low-priority` issue a slot could claim —
+   * including one merely *deferred* this cycle by `nice` tiering, fair
+   * rotation, or cooldown rather than claimed. Issue #1050: "could claim" is
+   * the claim scan's own definition, so work the scan permanently refuses no
+   * longer suppresses filing.
+   *
+   * Issue #1083 turned the gate from a boolean into a count. As a boolean it
+   * meant *one* startable issue anywhere suppressed *all* idle filing
+   * everywhere, which is the wrong arithmetic: a startable issue occupies one
+   * slot, not eight. The filer now suppresses only when there is enough real
+   * work for every idle slot. Defaults to `countReposWithStartableWork` from
+   * `lib/repo_busy_for_idle_task.ts`. A helper throw is treated as "no work"
+   * (matches the `busy_check_failed` pattern) so a transient gh hiccup never
+   * silently disables the filer.
    */
-  anyRepoHasWorkFn?: (opts: AnyRepoHasWorkOptions) => Promise<boolean>;
+  countStartableWorkReposFn?: (
+    opts: StartableWorkCountOptions,
+  ) => Promise<number>;
   /**
    * True when this run is holding `issueNumber` in `repo` back whatever
    * GitHub says (Issue #1050) — the persisted retry cooldown plus this run's
@@ -414,6 +430,22 @@ export const REAPPLY_BACKOFF_MS: readonly number[] = [0, 500, 1500];
 // ---------------------------------------------------------------------------
 // Argument parsing helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Parse `--idle-slots` (Issue #1083): how many slots are idle right now, and
+ * therefore how much idle work the fleet can actually pick up.
+ *
+ * Absent or unparseable means one — a bare CLI invocation has one notional
+ * idle slot, and one is the pre-#1083 bound, so a caller that has not been
+ * taught to supply the reading behaves exactly as it did before. Zero is a
+ * legitimate value and means "every slot is busy": file nothing.
+ */
+export function parseIdleSlots(value: unknown): number {
+  if (value === undefined || value === null || value === "") return 1;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(0, Math.floor(parsed));
+}
 
 /** Split a comma-separated CLI arg into a trimmed, non-empty list. */
 function splitCsv(value: unknown): string[] {
@@ -730,6 +762,11 @@ export const maybeFileIdleTaskCommand: Command = {
     const monitoredRepos = splitCsv(args["monitored-repos"]);
     const githubUser = String(args["github-user"] ?? "");
     const workerUser = String(args["worker-user"] ?? githubUser);
+    // Issue #1083 — the fleet's idle capacity, from `slot_idle_accounting`
+    // (#925), which is the authority on how many slots are doing nothing.
+    // Everything below is bounded by it rather than by a constant: file
+    // enough idle work to fill the empty slots and no more.
+    const idleSlots = parseIdleSlots(args["idle-slots"]);
     // Issue #2467: the `worker-repo` arg used to drive the #2082 queue
     // gate. The gate was removed because it fired whenever the worker
     // repo had any open `work-on` issue — i.e. virtually all the time
@@ -758,13 +795,14 @@ export const maybeFileIdleTaskCommand: Command = {
 
     const ghCommandFn = deps.ghCommandFn ?? defaultGhCommand;
     const findExistingFn = deps.findExistingFn ??
-      ((opts: { repo: string }) => defaultFindExistingIdleTaskIssue(opts));
-    // Issue #2092 — cross-repo dedup. Thread `ghCommandFn` through so a
-    // caller that has already injected a gh stub does not also need to
-    // stub the cross-repo check.
-    const findAnyOpenWrapperFn = deps.findAnyOpenWrapperFn ??
+      ((opts: { repo: string }) =>
+        defaultFindExistingIdleTaskIssue({ ...opts, ghCommandFn }));
+    // Issues #2092, #1083 — per-repo wrapper census. Thread `ghCommandFn`
+    // through so a caller that has already injected a gh stub does not also
+    // need to stub the census.
+    const findOpenWrappersFn = deps.findOpenWrappersFn ??
       ((repos: readonly string[]) =>
-        defaultFindAnyOpenIdleTaskWrapper(repos, { ghCommandFn }));
+        defaultFindOpenIdleTaskWrappers(repos, { ghCommandFn }));
     const ensureLabelFn = deps.ensureLabelFn ??
       ((repo: string) => defaultEnsureIdleTaskLabel(repo));
     const nowFn = deps.nowFn ?? (() => new Date());
@@ -820,10 +858,11 @@ export const maybeFileIdleTaskCommand: Command = {
       githubUser: workerUser,
       fleetPrAuthors: config.fleetPrAuthors,
     });
-    const anyRepoHasWorkFn = deps.anyRepoHasWorkFn ??
-      ((opts: AnyRepoHasWorkOptions) =>
-        defaultAnyRepoHasUnblockedRealWork({
+    const countStartableWorkReposFn = deps.countStartableWorkReposFn ??
+      ((opts: StartableWorkCountOptions) =>
+        defaultCountReposWithStartableWork({
           repos: opts.repos,
+          stopAt: opts.stopAt,
           ghCommandFn,
           logFn: opts.logFn,
           workerUser: opts.workerUser,
@@ -924,59 +963,107 @@ export const maybeFileIdleTaskCommand: Command = {
     //     check (#2054, tightened by #2440), and the runTask re-check
     //     (#2441).
 
-    // 1b. Issue #2092 — cross-repo wrapper dedup. At most one open
-    //     `idle-task` wrapper across the entire monitored set: if any
-    //     monitored repo already has one, skip filing entirely and let
-    //     the next iteration of the main loop claim the existing
-    //     wrapper through standard priority dispatch. Without this gate
-    //     successive idle ticks could each pick a different "clean"
-    //     repo from the per-repo shuffle and fan wrappers out across
-    //     the fleet (root cause observed in #2089).
-    let crossRepoWrapper: ExistingIdleTaskWrapper | null;
+    // 1aa. Issue #1083 — idle capacity. Every slot busy means there is no
+    //      slot to give an idle task to, so file nothing however many
+    //      repositories are empty. The reading comes from the caller, which
+    //      takes it from the #925 slot ledger.
+    if (idleSlots <= 0) {
+      log(
+        `[idle-task] template=${template.name} action=skipped reason=no_idle_capacity idle_slots=0`,
+      );
+      return {
+        success: true,
+        message: "[idle-task] skipped: every slot is busy, so no idle task " +
+          "is needed",
+        data: {
+          action: "skipped",
+          reason: "no_idle_capacity",
+          template: template.name,
+        },
+      };
+    }
+
+    // 1b. Issues #2092, #1083 — per-repo wrapper exclusivity. A repository
+    //     already holding an open `idle-task` wrapper is removed from the
+    //     candidate set; the rest stay eligible. The operator's concurrency
+    //     rule is *one issue in flight per work stream*, and for idle work
+    //     that reads "at most one open wrapper per repository" — never one
+    //     across the fleet, which is what capped eight slots at a single
+    //     idle task while fourteen repositories sat empty (#1083).
+    //
+    //     #2089's protection survives intact, because its fault was fan-out
+    //     from a shuffle rather than plurality: no repository accumulates
+    //     two wrappers (they are excluded here and again by the per-repo
+    //     dedup inside `checkRepoGates`), and this command files at most one
+    //     wrapper per invocation, so the next tick re-decides from fresh
+    //     state instead of scattering wrappers in one pass.
+    let heldWrappers: ExistingIdleTaskWrapper[];
     try {
-      crossRepoWrapper = await findAnyOpenWrapperFn(monitoredRepos);
+      heldWrappers = await findOpenWrappersFn(monitoredRepos);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log(
         `[idle-task] template=${template.name} action=warn reason=cross_repo_check_failed message=${message}`,
       );
-      crossRepoWrapper = null;
+      heldWrappers = [];
     }
-    if (crossRepoWrapper !== null) {
+    // Log every refusal, naming the repo and the issue that held it. The
+    // absence of this line is why a fleet-wide cap of one went unnoticed for
+    // a week (#1083): a slot that declines to file must say so.
+    for (const held of heldWrappers) {
       log(
-        `[idle-task] template=${template.name} repo=${crossRepoWrapper.repo} issue=${crossRepoWrapper.number} action=skipped reason=existing_wrapper_open`,
+        `[idle-task] template=${template.name} repo=${held.repo} issue=${held.number} action=skipped reason=existing_wrapper_open scope=repo`,
+      );
+    }
+    const heldRepos = new Set(heldWrappers.map((w) => w.repo));
+    const candidateRepos = monitoredRepos.filter((r) => !heldRepos.has(r));
+    if (candidateRepos.length === 0) {
+      const first = heldWrappers[0];
+      log(
+        `[idle-task] template=${template.name} action=skipped reason=existing_wrapper_open scope=monitored_set held=${heldWrappers.length}`,
       );
       return {
         success: true,
         message:
-          `[idle-task] skipped: open idle-task wrapper already exists in ${crossRepoWrapper.repo}#${crossRepoWrapper.number}`,
+          `[idle-task] skipped: every monitored repo already holds an open idle-task wrapper (${heldWrappers.length})`,
         data: {
           action: "skipped",
           reason: "existing_wrapper_open",
           template: template.name,
-          repo: crossRepoWrapper.repo,
+          ...(first === undefined ? {} : { repo: first.repo }),
         },
       };
     }
 
-    // 1c. Issue #2813 — fleet-global existence gate. If ANY monitored
-    //     repo holds an open, unblocked
-    //     `top-priority`/`work-on`/`low-priority` issue, the fleet has
-    //     real work — even when that issue was merely *deferred* this
-    //     cycle by `nice` tiering, fair rotation, or local/cross-worker
-    //     cooldown rather than claimed. The per-repo busy check (#2054)
-    //     below only skips the *individual* busy repo, so a quiet repo B
-    //     could still be filed into while a different repo A held the
-    //     deferred backlog — the filing half of the #2806 idle-vs-work-on
-    //     inversion. This gate suppresses idle filing across the whole
-    //     set. Best-effort: a throw degrades to "no work" so a transient
-    //     gh hiccup never silently disables the filer (matches the
+    // 1c. Issues #2813, #1083 — fleet-global startable-work gate, bounded
+    //     by idle capacity. Count the monitored repos holding an open,
+    //     unblocked `top-priority`/`work-on`/`low-priority` issue — real
+    //     work, even when merely *deferred* this cycle by `nice` tiering,
+    //     fair rotation, or local/cross-worker cooldown rather than
+    //     claimed — and suppress filing only when there is enough of it to
+    //     occupy every idle slot. The per-repo busy check (#2054) below
+    //     skips the *individual* busy repo, so this gate is what stops a
+    //     quiet repo B being filed into while repo A holds a backlog the
+    //     fleet is about to take up: the filing half of the #2806
+    //     idle-vs-work-on inversion.
+    //
+    //     Issue #1083 turned it from a boolean into a comparison. As a
+    //     boolean it read "one startable issue anywhere suppresses all idle
+    //     filing everywhere", so twenty-five `work-on` issues waiting in one
+    //     repository kept fourteen empty repositories empty while six slots
+    //     idled. A startable issue occupies one slot, not eight.
+    //
+    //     Best-effort: a throw degrades to "no work" so a transient gh
+    //     hiccup never silently disables the filer (matches the
     //     `busy_check_failed` pattern).
-    let fleetHasWork: boolean;
+    let startableRepos: number;
     try {
-      fleetHasWork = await anyRepoHasWorkFn({
+      startableRepos = await countStartableWorkReposFn({
         repos: monitoredRepos,
         logFn: log,
+        // Issue #1083: the verdict only compares the count against idle
+        // capacity, so probing past it cannot change the answer.
+        stopAt: idleSlots,
         // Issue #1050: the gate refuses the work streams the claim scan
         // refuses, and the scan calls a stream occupied when an account the
         // fleet operates holds an issue in it. Without this set the gate
@@ -992,16 +1079,16 @@ export const maybeFileIdleTaskCommand: Command = {
       log(
         `[idle-task] template=${template.name} action=warn reason=fleet_work_check_failed message=${message}`,
       );
-      fleetHasWork = false;
+      startableRepos = 0;
     }
-    if (fleetHasWork) {
+    if (startableRepos >= idleSlots) {
       log(
-        `[idle-task] template=${template.name} action=skipped reason=approved_work_in_flight scope=monitored_set`,
+        `[idle-task] template=${template.name} action=skipped reason=approved_work_in_flight scope=monitored_set startable_repos=${startableRepos} idle_slots=${idleSlots}`,
       );
       return {
         success: true,
         message:
-          "[idle-task] skipped: unblocked top-priority/work-on/low-priority work exists in the monitored set (deferred this cycle)",
+          `[idle-task] skipped: ${startableRepos} repo(s) hold startable top-priority/work-on/low-priority work, enough for all ${idleSlots} idle slot(s)`,
         data: {
           action: "skipped",
           reason: "approved_work_in_flight",
@@ -1035,7 +1122,7 @@ export const maybeFileIdleTaskCommand: Command = {
       | null = null;
     let dueScans: DueScan[] | null;
     try {
-      dueScans = await dueScansFn({ repos: monitoredRepos, now: nowFn() });
+      dueScans = await dueScansFn({ repos: candidateRepos, now: nowFn() });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log(
@@ -1044,7 +1131,7 @@ export const maybeFileIdleTaskCommand: Command = {
       dueScans = null;
     }
     if (dueScans !== null) {
-      const monitoredSet = new Set(monitoredRepos);
+      const monitoredSet = new Set(candidateRepos);
       for (const due of dueScans) {
         // Defensive: a due list naming a repo we no longer monitor, or a
         // template that is not registered in this process, is ignored
@@ -1087,10 +1174,12 @@ export const maybeFileIdleTaskCommand: Command = {
     //    the template does not veto filing (#2056 — e.g. security-scan
     //    refuses to re-run while open `security` findings remain). The
     //    list is shuffled randomly (#1986) so a busy lead-of-list repo
-    //    does not starve the rest. The cross-repo gate at #1b above
-    //    already ensures the entire set is clean before we reach this
-    //    point; the per-repo dedup inside the loop stays as
-    //    defence-in-depth against TOCTOU races (Issue #2092).
+    //    does not starve the rest, and the draw spreads filings across the
+    //    eligible repositories over successive ticks rather than always
+    //    reaching for the same one. The census at #1b above has already
+    //    removed every repository holding a wrapper; the per-repo dedup
+    //    inside the loop stays as defence-in-depth against TOCTOU races
+    //    (Issues #2092, #1083).
     //
     //    Issue #2776 (part of #2771) — filer selection stays **uniform**:
     //    deliberately no repo `nice` weighting here. Idle tasks are already
@@ -1104,7 +1193,7 @@ export const maybeFileIdleTaskCommand: Command = {
     if (biasedPick !== null) {
       targetRepo = biasedPick.repo;
     } else {
-      const shuffledRepos = shuffleWith(monitoredRepos, randomFn);
+      const shuffledRepos = shuffleWith(candidateRepos, randomFn);
       // Track which fall-through reason applies so we can emit an
       // informative `action=skipped` line when no repo was eligible.
       // Specificity order (most → least specific): `output_backlog` >
