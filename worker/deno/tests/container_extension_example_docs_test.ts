@@ -26,15 +26,18 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  assertContainerExtension,
   DEFAULT_EXTENSION_CONTAINERFILE,
   parseContainerExtension,
 } from "../lib/container_extension_config.ts";
+import { preflightContainerExtension } from "../lib/container_extension_preflight.ts";
 import {
   CONTAINER_TOOL_PREFIX_ROOT,
   containerToolPrefix,
   parseContainerTools,
 } from "../lib/container_tools_config.ts";
 import {
+  assertExtensionLayersOnBaseImage,
   BASE_IMAGE_BUILD_ARG,
   EXTENSION_START_BUILD_ARG,
 } from "../lib/container_extension_build.ts";
@@ -191,38 +194,81 @@ Deno.test("container_extension example - the page quotes the implemented contrac
   }
 });
 
-Deno.test("container_extension example - the quoted failure symptoms are the implemented ones", () => {
-  const page = read(PAGE);
+/** The message a thrown fault carries, or a failure naming what happened. */
+async function faultMessage(action: () => unknown): Promise<string> {
+  try {
+    await action();
+  } catch (error) {
+    return (error as Error).message;
+  }
+  throw new Error("the call was expected to fail and did not");
+}
 
-  // The launch preflight's shared refusal prefix, and the config-load one.
-  const preflight = read("worker/deno/lib/container_extension_preflight.ts");
-  assertStringIncludes(preflight, "Cannot launch: the container_extension");
-  assertStringIncludes(page, "Cannot launch: the container_extension");
-
-  const config = read("worker/deno/lib/container_extension_config.ts");
-  assertStringIncludes(config, "Invalid container_extension in .config.json");
-  assertStringIncludes(page, "Invalid container_extension in .config.json");
-
-  // The build's refusal of a Containerfile that does not layer on the base.
-  const build = read("worker/deno/lib/container_extension_build.ts");
+Deno.test("container_extension example - the quoted config-load symptom is the real one", async () => {
+  // Produced by the real validator rather than read out of its source: an
+  // operator meets this sentence, not the file it is written in.
+  const message = await faultMessage(() =>
+    assertContainerExtension({ path: "relative/extension" }, {
+      env: (name) => (name === "HOME" ? "/home/operator" : undefined),
+    })
+  );
+  assertStringIncludes(message, "Invalid container_extension in .config.json");
+  assertStringIncludes(message, "container_extension.path");
   assertStringIncludes(
-    build,
+    read(PAGE),
+    "Invalid container_extension in .config.json",
+  );
+});
+
+Deno.test("container_extension example - the quoted preflight symptom is the real one", async () => {
+  const directory = await Deno.makeTempDir({ prefix: "vibe-extension-docs-" });
+  try {
+    const message = await faultMessage(() =>
+      preflightContainerExtension({
+        path: `${directory}/absent`,
+        containerfile: DEFAULT_EXTENSION_CONTAINERFILE,
+      })
+    );
+    assertStringIncludes(message, "Cannot launch: the container_extension");
+    assertStringIncludes(message, "does not exist");
+    const page = read(PAGE);
+    assertStringIncludes(page, "Cannot launch: the container_extension");
+    assertStringIncludes(
+      page,
+      "The operator syncs their own extension into it",
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("container_extension example - the quoted layering refusal is the real one", async () => {
+  const message = await faultMessage(() =>
+    assertExtensionLayersOnBaseImage(
+      "FROM docs.example.com/some-base:1\n",
+      "/srv/vibe-extension/Containerfile",
+    )
+  );
+  assertStringIncludes(
+    message,
     "Refusing to launch: the container_extension Containerfile",
   );
   assertStringIncludes(
-    page,
+    read(PAGE),
     "Refusing to launch: the container_extension Containerfile",
   );
+});
 
-  // The entrypoint's abort, which the run is reported as a failure by.
-  assertStringIncludes(
-    read("container/entrypoint.sh"),
-    "aborting the sandbox start; the worker driver was not launched",
-  );
-  assertStringIncludes(
-    page,
-    "aborting the sandbox start; the worker driver was not launched",
-  );
+Deno.test("container_extension example - the quoted sandbox-start abort is the entrypoint's own wording", () => {
+  // The entrypoint is shell, and its behaviour — abort, status 76, driver
+  // never launched — is exercised against the real script by
+  // `container_entrypoint_test.ts`. What is checked here is the one thing
+  // that suite cannot: that the page quotes the wording the script prints,
+  // so an edit to either side of the quotation fails rather than drifting.
+  const symptom = "aborting the sandbox start; the worker driver was not " +
+    "launched";
+  assertStringIncludes(read("container/entrypoint.sh"), symptom);
+  assertStringIncludes(read(PAGE), symptom);
 });
 
 // ---------------------------------------------------------------------------

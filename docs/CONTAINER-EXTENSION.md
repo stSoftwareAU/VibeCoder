@@ -359,7 +359,8 @@ RUN apt-get update \
 
 # 2. The CI server itself, verified against a digest you pin.
 ARG CI_SERVER_SHA256=6666666666666666666666666666666666666666666666666666666666666666
-RUN curl -fsSL -o /opt/ci/server.war \
+RUN mkdir -p /opt/ci \
+ && curl -fsSL -o /opt/ci/server.war \
       https://artefacts.example.com/ci-server-2.531.war \
  && printf '%s  %s\n' "${CI_SERVER_SHA256}" /opt/ci/server.war | sha256sum -c -
 
@@ -406,8 +407,8 @@ project's, not one duplicated into the extension.
 #
 # Runs as the unprivileged worker account, before the worker driver. A
 # non-zero exit here aborts the sandbox start (exit 76) and the run is
-# reported failed — so every step is checked, and nothing is backgrounded
-# without being waited for.
+# reported failed — so every service is started, then proved to be answering
+# before this script returns.
 set -euo pipefail
 
 log() { echo "extension: $*" >&2; }
