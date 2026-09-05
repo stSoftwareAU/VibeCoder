@@ -346,8 +346,8 @@ recovery. A torn line there is worse than a torn journal line because it is
 not scoped to one journal: `readRosterContents` throws, so the sweep failed
 for the **whole directory**, and both acknowledgement exits read the roster
 before they do anything, so neither applied. That left no documented exit at
-all — only hand-editing the tamper-evidence file, which is exactly what Issue
-#359 established must never be the remedy.
+all — only hand-editing the tamper-evidence file, which is exactly what
+Issue #359 established must never be the remedy.
 
 The roster needs no write-ahead declaration: it is append-only and every line
 stands alone, so there is no head to advance and nothing for a `pending`
