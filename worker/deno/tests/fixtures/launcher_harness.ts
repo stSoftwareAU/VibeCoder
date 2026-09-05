@@ -385,6 +385,15 @@ for arg in "\$@"; do
       printf '%s\\0' "\$@" > "\${record_dir}/upgrade.args"
       exit "\${STUB_UPGRADE_EXIT:-0}"
       ;;
+    log-dir)
+      # Issue #873: the launcher asks where the logs go rather than spelling
+      # it, and refuses to launch if the answer is missing or empty. The
+      # harness resolves the same directory through the real \`resolveLogDir\`
+      # and hands it in, so the stub agrees with \`harness.logDir\` by
+      # construction rather than by a second copy of the precedence rules.
+      printf '%s\\n' "\${VIBE_STUB_LOG_DIR}"
+      exit 0
+      ;;
     container-egress-probe)
       # Never really start a probe container (Issue #997): the test decides
       # what the probe found, and writes the evidence the launcher hands to
@@ -534,6 +543,18 @@ export async function setupHarness(
     VIBE_REAL_DENO: Deno.execPath(),
     ...extraEnv,
   };
+
+  // What the `log-dir` stub answers (Issue #873). Resolved from the finished
+  // environment — after `extraEnv`, so a test that overrides `LOG_DIR` moves
+  // the stub's answer with it — and through the real `resolveLogDir`, so the
+  // launcher and `harness.logDir` below cannot disagree. A second copy of the
+  // precedence rules inside the shell stub would be a third place to keep in
+  // step with `lib/log_dir.ts`.
+  env.VIBE_STUB_LOG_DIR = resolveLogDir(
+    home,
+    (name) => env[name],
+    pathStyleFor(home),
+  );
 
   return {
     tmpDir,
