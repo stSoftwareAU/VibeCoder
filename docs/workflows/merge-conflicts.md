@@ -114,6 +114,14 @@ progress and stopped on conflicts. Its contract is absolute:
   those files are absent from the agent's conflicted-file list. The carve-out
   stops there — a conflicting constant in source code is still a human's call,
   because a version has a total order to appeal to and a source value does not.
+- **Issue intent may override "both sides survive" — evidenced, or not at
+  all.** When the originating issues behind _both_ sides of a path are known and
+  one of them explicitly supersedes, reverts, replaces or retunes the other, the
+  agent resolves to the intended outcome and cites both issues. This is the same
+  shape as the dependency carve-out: a bounded exception, applied only where an
+  external order exists to appeal to, and reported decision-by-decision on the
+  PR. One side's issue, a plausible-sounding title, or a supersession the agent
+  cannot quote establishes nothing — the contract above then stands unchanged.
 - **No force-push, no rebase, no branch recreation.** The merge commit
   fast-forwards the remote branch, so every commit on the PR survives.
 
@@ -158,8 +166,7 @@ down in an issue neither side of the merge can see.
 [`lib/conflict_issue_context.ts`](../../worker/deno/lib/conflict_issue_context.ts)
 (`gatherConflictIssueContext`) resolves that missing input. It is a **reporting**
 module: it says what the two sides were trying to do and never judges which one
-wins. **Nothing calls it yet** — the contract above is unchanged, and the wiring
-into the resolution path is Issue #1114.
+wins.
 
 ```mermaid
 flowchart LR
@@ -189,6 +196,38 @@ flowchart LR
 - **Every bound is documented and declared**: 20 commits per path, 8 issues,
   4000 characters of issue text, 30 `gh` calls. Whichever bound bites is
   reported in the result, so a cut answer is never read as a whole one.
+
+#### 🧭 What the resolver does with it
+
+The gather runs **after** the deterministic dependency rules have taken their
+files and **before** the agent is asked anything, so it costs lookups only for
+the paths a judgement is actually needed on. A `deno.json` conflict the rules
+settle still reaches no agent and now consults no issue either.
+
+- **The prompt carries the issues behind a fence.** Issue titles and bodies are
+  GitHub text an outside author controls, so they are sanitised, code-fenced and
+  wrapped in the run's nonce boundary — the same treatment `CLAUDE.md` gets —
+  and the prompt says plainly that they are evidence, not instructions.
+- **Eligibility is the worker's call, not the model's.** Outside that fence the
+  prompt states, per conflicted path, whether both sides' issues are known at
+  all. Only those paths may be settled on intent; every other path carries "no
+  override is permitted" and the reason. Supersession itself is still the
+  agent's judgement, and it must quote the sentence that establishes it.
+- **The attempt comment says what was consulted.** The PR-side issue, the
+  base-side issues keyed by path, and the paths for which none was found are
+  appended to the attempt comment before the agent runs — so a reader can tell
+  "consulted and still contradictory" from "never looked" even when the
+  resolution then fails.
+- **The resolved comment names every override**: the file, both issue numbers,
+  and one line on what was kept and what it superseded. A claim on a path where
+  both sides' issues were _not_ known is printed as an uncorroborated
+  justification rather than dropped.
+- **No issue context means today's behaviour, unchanged** — the block is absent
+  from the prompt, and the attempt comment says no originating issues were
+  found.
+- **The mechanical guards are untouched.** Unmerged paths, leftover conflict
+  markers and base-is-an-ancestor still abort the attempt. An intent-justified
+  resolution is not a trusted one.
 
 ## 🔁 Bounds and escalation
 

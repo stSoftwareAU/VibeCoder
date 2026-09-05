@@ -12,6 +12,11 @@
  *
  * - Perform a **real merge** of the base into the PR branch. Both sides'
  *   changes survive, or the attempt stops and escalates — never a side-pick.
+ *   The one narrow exception is issue intent (Issue #1114): where the
+ *   originating issues behind *both* sides are known and one explicitly
+ *   supersedes the other, the agent resolves to the intended outcome and both
+ *   issues are named on the PR. Absent that evidence the contract is unchanged,
+ *   and the mechanical guards below apply either way.
  * - Run the repo's quality gate on the merged result (the agent does this;
  *   a conflicting PR has had no CI at all, so this is often the first run).
  * - Push without force, so every commit on the PR survives.
@@ -57,6 +62,15 @@ import {
   type ResolvedConflictFile,
 } from "./dependency_conflict_apply.ts";
 import type { DependencyDecision } from "./dependency_conflict_decisions.ts";
+import {
+  type ConflictIssueContext,
+  gatherConflictIssueContext,
+} from "./conflict_issue_context.ts";
+import {
+  buildConsultedIssuesSection,
+  buildIntentOverrideSection,
+  parseIntentOverrides,
+} from "./conflict_intent_audit.ts";
 import {
   clearMergeConflictLabel,
   CONFLICT_ATTEMPT_MARKER,
@@ -146,6 +160,11 @@ export interface MergeConflictProcessorDeps {
    * {@link applyDependencyConflictRules}.
    */
   applyDependencyRulesFn?: DependencyRuleApplier;
+  /**
+   * Injectable originating-issue gather (Issue #1114). Defaults to
+   * {@link gatherConflictIssueContext}.
+   */
+  gatherIssueContextFn?: typeof gatherConflictIssueContext;
 }
 
 const DEFAULT_CLAUDE_TIMEOUT = OPERATIONAL_DEFAULTS.prFeedbackTimeout;
@@ -362,12 +381,19 @@ export function buildRuleResolutionSection(
   return lines;
 }
 
-/** Body of the comment posted when the merge lands. */
+/**
+ * Body of the comment posted when the merge lands.
+ *
+ * When the agent settled a conflict on issue intent (Issue #1114) the comment
+ * names each override — both issue numbers, the file, and what was superseded
+ * — so the judgement is auditable without reading the diff.
+ */
 export function buildResolvedComment(
   baseBranch: string,
   branchName: string,
   detail?: string,
   ruleResolved: readonly ResolvedConflictFile[] = [],
+  issueContext?: ConflictIssueContext | null,
 ): string {
   const body = detail && detail.trim().length > 0
     ? detail.trim()
@@ -376,6 +402,7 @@ export function buildResolvedComment(
     `${CONFLICT_RESOLVED_MARKER}\n✅ **Merge conflict resolved**`,
     "",
     body,
+    ...buildIntentOverrideSection(parseIntentOverrides(detail), issueContext),
     ...buildRuleResolutionSection(ruleResolved, baseBranch, branchName),
   ].join("\n");
 }
@@ -438,13 +465,28 @@ export function buildConflictEscalationReason(
   ].join("\n");
 }
 
+/**
+ * The comment id GitHub's own URL names, or `null` when it names none.
+ *
+ * `gh pr comment` prints the new comment's URL, which ends
+ * `#issuecomment-<id>`. That id is what lets the attempt comment be amended
+ * later with the issues consulted (Issue #1114) instead of being followed by a
+ * second comment.
+ */
+export function parseCommentId(output: string | undefined): number | null {
+  const match = /#issuecomment-(\d+)/.exec(output ?? "");
+  if (!match) return null;
+  const id = Number(match[1]);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
 async function postPrComment(
   deps: WorkerDeps,
   repo: string,
   prNumber: number,
   body: string,
-): Promise<void> {
-  await deps.github.runGhCommand([
+): Promise<number | null> {
+  const output = await deps.github.runGhCommand([
     "pr",
     "comment",
     String(prNumber),
@@ -453,6 +495,66 @@ async function postPrComment(
     "--body",
     body,
   ]);
+  return parseCommentId(output);
+}
+
+/**
+ * Record on the attempt which issues were consulted (Issue #1114).
+ *
+ * The attempt comment is posted *before* the merge starts — that ordering is
+ * what makes a disrupted attempt detectable (Issue #395) — and the conflicted
+ * paths are not known until after it. The consulted issues are therefore
+ * appended to that same comment once the gather has run and before the agent
+ * is asked anything, so the record survives a resolution that then fails: a
+ * reader can tell "consulted and still contradictory" from "never looked".
+ *
+ * When the comment cannot be amended the section is posted on its own rather
+ * than dropped — the audit record must exist either way.
+ */
+async function recordConsultedIssues(
+  processorDeps: MergeConflictProcessorDeps,
+  repo: string,
+  prNumber: number,
+  attemptCommentId: number | null,
+  attemptBody: string,
+  issueContext: ConflictIssueContext | null,
+): Promise<void> {
+  const { deps, logger } = processorDeps;
+  const section = buildConsultedIssuesSection(issueContext);
+
+  if (attemptCommentId !== null) {
+    try {
+      await deps.github.runGhCommand([
+        "api",
+        "-X",
+        "PATCH",
+        `repos/${repo}/issues/comments/${attemptCommentId}`,
+        "-f",
+        `body=${[attemptBody, "", ...section].join("\n")}`,
+      ]);
+      return;
+    } catch (err) {
+      logger.warn(
+        "Could not amend the merge-conflict attempt comment — posting the " +
+          "issues consulted separately",
+        {
+          repo,
+          prNumber,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+    }
+  }
+
+  try {
+    await postPrComment(deps, repo, prNumber, section.join("\n"));
+  } catch (err) {
+    logger.error("Failed to record the issues consulted for the conflict", {
+      repo,
+      prNumber,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -622,18 +724,15 @@ async function resolveConflict(
   // what a later scan reads to tell "this attempt was disrupted" from "no
   // attempt has run". It opens the attempt; only a conclusion posted below
   // spends it (Issue #395).
+  const attemptBody = buildAttemptComment(
+    attemptNumber,
+    maxAttempts,
+    baseBranch,
+    input.disruptedCount ?? 0,
+  );
+  let attemptCommentId: number | null = null;
   try {
-    await postPrComment(
-      deps,
-      repo,
-      prNumber,
-      buildAttemptComment(
-        attemptNumber,
-        maxAttempts,
-        baseBranch,
-        input.disruptedCount ?? 0,
-      ),
-    );
+    attemptCommentId = await postPrComment(deps, repo, prNumber, attemptBody);
   } catch (err) {
     // Without the marker the attempt is unbounded, so refuse to start.
     return {
@@ -657,6 +756,8 @@ async function resolveConflict(
   let ruleResolved: readonly ResolvedConflictFile[] = [];
   /** Whether the AI fallback was asked for anything at all. */
   let agentRan = false;
+  /** The originating issues behind both sides, when the agent is involved. */
+  let issueContext: ConflictIssueContext | null = null;
   if (merge.code !== 0) {
     const unmerged = await git(
       run,
@@ -713,11 +814,30 @@ async function resolveConflict(
         conflictedFiles: deferredFiles,
       });
 
+      // What were the two sides trying to do? (Issue #1114) Gathered only for
+      // the paths actually going to the agent — the rule-resolved files cost
+      // no judgement, so they cost no lookups either — and recorded on the
+      // attempt before the agent is asked anything.
+      issueContext = await gatherIssueContext(
+        input,
+        processorDeps,
+        deferredFiles,
+      );
+      await recordConsultedIssues(
+        processorDeps,
+        repo,
+        prNumber,
+        attemptCommentId,
+        attemptBody,
+        issueContext,
+      );
+
       agentRan = true;
       const agentOutcome = await runResolutionAgent(
         input,
         processorDeps,
         deferredFiles,
+        issueContext,
       );
       if (!agentOutcome.ok) {
         await abortMerge(run, workDir);
@@ -840,7 +960,13 @@ async function resolveConflict(
       deps,
       repo,
       prNumber,
-      buildResolvedComment(baseBranch, branchName, detail, ruleResolved),
+      buildResolvedComment(
+        baseBranch,
+        branchName,
+        detail,
+        ruleResolved,
+        issueContext,
+      ),
     );
   } catch (err) {
     logger.warn("Failed to post merge-resolved comment", {
@@ -887,6 +1013,49 @@ async function resolveConflict(
 }
 
 /**
+ * Gather the originating issues behind both sides of the conflict.
+ *
+ * Degrades to `null` — today's behaviour, with the attempt comment saying no
+ * originating issues were found — rather than failing the attempt: the gather
+ * is extra evidence, and a conflict is still resolvable under the unchanged
+ * both-sides-survive contract without it. The failure is logged, never
+ * swallowed silently.
+ */
+async function gatherIssueContext(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+  conflictedPaths: readonly string[],
+): Promise<ConflictIssueContext | null> {
+  const { logger, deps, workDir } = processorDeps;
+  const gather = processorDeps.gatherIssueContextFn ??
+    gatherConflictIssueContext;
+  try {
+    return await gather({
+      repo: input.repo,
+      prNumber: input.prNumber,
+      prBranch: input.branchName,
+      baseBranch: input.baseBranch,
+      conflictedPaths,
+      cwd: workDir,
+    }, {
+      git: deps.git.runGitCommand,
+      gh: deps.github.runGhCommand,
+    });
+  } catch (err) {
+    logger.warn(
+      "Could not gather the originating issues for the conflict — resolving " +
+        "under the unchanged both-sides-survive contract",
+      {
+        repo: input.repo,
+        prNumber: input.prNumber,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+    return null;
+  }
+}
+
+/**
  * Run the resolution agent against the conflicted working tree.
  *
  * @returns An error result when the agent could not run or timed out.
@@ -895,6 +1064,7 @@ async function runResolutionAgent(
   input: MergeConflictInput,
   processorDeps: MergeConflictProcessorDeps,
   conflictedFiles: readonly string[],
+  issueContext: ConflictIssueContext | null,
 ): Promise<Result<void>> {
   const {
     logger,
@@ -922,6 +1092,7 @@ async function runResolutionAgent(
     customInstructions,
     repoContextContent,
     promptsDir: processorDeps.promptsDir,
+    issueContext,
   });
   if (!promptResult.ok) {
     return {
