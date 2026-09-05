@@ -5,8 +5,9 @@
  * (see private-repo-12/docs/jenkins-access.md). The worker calls Jenkins
  * directly so it can summarise CI failures without shelling out.
  *
- * Credentials are read only from the environment (`JENKINS_URL`,
- * `JENKINS_USER`, `JENKINS_TOKEN`) and are never logged or included
+ * Credentials are read from `JENKINS_URL`, `JENKINS_USER` and
+ * `JENKINS_TOKEN` — through the injectable `readEnv` seam, defaulting to
+ * the process environment (Issue #958) — and are never logged or included
  * in error messages.
  *
  * Uses Australian English throughout (behaviour, organisation, colour).
@@ -29,6 +30,7 @@ import {
   loadJenkinsCredentials,
   redactJenkinsSecrets,
 } from "./jenkins_access_check.ts";
+import type { EnvReader } from "./jenkins_access_check.ts";
 
 /** Default cap on log size returned to callers (64 KiB). */
 export const DEFAULT_MAX_LOG_BYTES = 64 * 1024;
@@ -60,6 +62,13 @@ interface JenkinsFetcherBaseOptions {
   build: string | number;
   /** Injectable fetch function (defaults to globalThis.fetch). */
   fetchFn?: FetchFn;
+  /**
+   * Injectable environment reader (Issue #958). Defaults to the process
+   * environment, so every production caller is unchanged; a test supplies
+   * the three Jenkins variables as a plain object rather than writing a
+   * credential-shaped value into the process every parallel worker shares.
+   */
+  readEnv?: EnvReader;
   /**
    * Hard timeout for the request, in milliseconds (Issue #3710). Defaults to
    * {@link DEFAULT_FETCH_TIMEOUT_MS}; a hung Jenkins can no longer wedge the
@@ -110,7 +119,7 @@ function coerceResult(raw: unknown): JenkinsBuild["result"] {
 export async function fetchJenkinsBuildStatus(
   opts: FetchStatusOptions,
 ): Promise<Result<JenkinsBuild, string>> {
-  const credsResult = loadJenkinsCredentials();
+  const credsResult = loadJenkinsCredentials(opts.readEnv);
   if (!credsResult.ok) return credsResult;
   const { baseUrl, user, token } = credsResult.value;
 
@@ -215,7 +224,7 @@ export async function fetchJenkinsBuildStatus(
 export async function fetchJenkinsBuildLog(
   opts: FetchLogOptions,
 ): Promise<Result<string, string>> {
-  const credsResult = loadJenkinsCredentials();
+  const credsResult = loadJenkinsCredentials(opts.readEnv);
   if (!credsResult.ok) return credsResult;
   const { baseUrl, user, token } = credsResult.value;
 

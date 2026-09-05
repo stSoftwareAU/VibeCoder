@@ -83,26 +83,19 @@
  * removed is one more file that runs in the fast pass.
  */
 export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
-  "tests/best_practices_bucket_guides_consumer_test.ts",
   "tests/check_jenkins_access_command_test.ts",
   "tests/ci_failure_issue_test.ts",
   "tests/ci_log_provider_test.ts",
   "tests/ci_provider_jenkins_target_url_test.ts",
   "tests/container_image_hash_test.ts",
   "tests/container_image_provider_set_test.ts",
-  "tests/default_branch_cache_test.ts",
-  "tests/env_stub_test.ts",
   "tests/fetch_jenkins_log_command_test.ts",
   "tests/grill_me_run_stats_test.ts",
   "tests/jenkins_log_fetcher_test.ts",
-  "tests/optional_feature_env_test.ts",
-  "tests/outbound_fetch_bounds_test.ts",
   "tests/phase_run_stats_test.ts",
   "tests/planning_run_stats_test.ts",
   "tests/pr_failure_actions_test.ts",
   "tests/quorum_run_stats_test.ts",
-  "tests/run_mode_test.ts",
-  "tests/worker_cache_dir_test.ts",
 ];
 
 /**

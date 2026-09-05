@@ -98,12 +98,22 @@ export function legacyHomeCachePath(
 /**
  * Read a cache file's text, preferring the new location and falling back
  * to the legacy HOME location. Returns null when neither exists.
+ *
+ * @param fileName - Name of the cache file within either directory.
+ * @param options - Where the two directories come from (Issue #969). Defaults
+ *   to the process environment, so production callers are unchanged; a test
+ *   names both roots instead of exporting `WORK_DIR` and `HOME` into the
+ *   process every parallel worker shares.
  */
 export async function readCacheWithLegacyFallback(
   fileName: string,
+  options: WorkerCacheDirOptions = {},
 ): Promise<string | null> {
   for (
-    const path of [workerCachePath(fileName), legacyHomeCachePath(fileName)]
+    const path of [
+      workerCachePath(fileName, options),
+      legacyHomeCachePath(fileName, options),
+    ]
   ) {
     if (path === undefined) continue; // no cache dir when WORK_DIR is unset
     try {

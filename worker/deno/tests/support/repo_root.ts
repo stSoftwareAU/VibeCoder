@@ -1,11 +1,11 @@
 /**
  * The repo root of *this* checkout, with no process-wide side effects.
  *
- * `tests/support/repo_prompts.ts` also exports {@link REPO_ROOT}, but importing
- * that module deletes the prompt-directory environment variables and its
- * {@link withRepoRootCwd} moves the working directory — process-wide mutations
- * that race under `deno test --parallel`, so every suite reaching it is pushed
- * into the gate's slow serial pass (Issues #880, #940).
+ * `tests/support/repo_prompts.ts` also exports {@link REPO_ROOT}, but its
+ * `pinPromptsToThisCheckout` deletes the prompt-directory environment
+ * variables — a process-wide mutation that races under
+ * `deno test --parallel`, so every suite calling it is pushed into the gate's
+ * slow serial pass (Issues #880, #940).
  *
  * A test that names its prompts directory explicitly —
  * `loadPrompt(name, `${REPO_ROOT}prompts`)` — is already pinned to this

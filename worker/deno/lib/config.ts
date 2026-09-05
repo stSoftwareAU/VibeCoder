@@ -461,7 +461,10 @@ export async function loadConfig(
   // Where this host runs the worker (Issue #4146). Container by default;
   // `native` is an explicit opt-in, and an unrecognised value fails loudly
   // here rather than quietly launching in the mode nobody asked for.
-  const runMode = resolveRunMode({ configured: file.run_mode });
+  // `env` goes through: `VIBE_RUN_MODE` beats the file, and a loader given an
+  // explicit lookup must not have that override answered by the process
+  // instead (Issue #969 — the seam #956 added stopped one call short here).
+  const runMode = resolveRunMode({ configured: file.run_mode, env });
 
   // How this host tracks releases (Issue #622, part of #583). Absent means
   // `dynamic`, so a host with no update-mode keys behaves exactly as before.

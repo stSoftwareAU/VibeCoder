@@ -35,9 +35,11 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 
 import {
   assembleBestPracticesPrompt,
+  bucketGuideFilePath,
   bucketGuidePath,
   readBucketGuide,
 } from "../lib/idle_task_templates/best_practices_template.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 
 /** Repo root, derived from this test file's location. */
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
@@ -64,25 +66,53 @@ function readGuide(bucket: string): Promise<string> {
   return Deno.readTextFile(`${REPO_ROOT}${bucketGuidePath(bucket)}`);
 }
 
+/**
+ * Is `path` anchored rather than resolved against the working directory?
+ *
+ * POSIX and the `/C:/…` shape `new URL(…).pathname` yields on Windows both
+ * start with a slash; a bare drive-letter path is accepted too.
+ */
+function isAnchored(path: string): boolean {
+  return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
+}
+
 Deno.test("readBucketGuide - resolves the guide without depending on the CWD", async () => {
   // The default reader used to be `Deno.readTextFile(bucketGuidePath(b))`,
   // which resolves against the process's working directory — so building a
   // best-practices body threw `No such file or directory` whenever the worker
   // was not started from the repository root (the quality gate runs the suite
-  // from `worker/deno`). Reading from a directory that is definitely not the
-  // repo root proves the resolution is anchored, not relative.
-  const scratch = await Deno.makeTempDir({ prefix: "bucket_guide_cwd_" });
-  const previous = Deno.cwd();
-  try {
-    Deno.chdir(scratch);
-    assertEquals(
-      await readBucketGuide(bucketGuidePath("general")),
-      await readGuide("general"),
-    );
-  } finally {
-    Deno.chdir(previous);
-    await Deno.remove(scratch, { recursive: true });
-  }
+  // from `worker/deno`).
+  //
+  // This used to be proved by moving the process cwd into a temp directory and
+  // reading from there — the only `Deno.chdir` in the whole parallel-unsafe
+  // manifest, and a mutation shared with every other worker under
+  // `deno test --parallel` (Issues #880, #944, #969). The property is now
+  // asserted directly on the resolved path instead: a path that is anchored
+  // cannot depend on where the process happens to be. The environment is
+  // declared empty, so no `PROMPTS_DIR` or `VIBE_BASE_DIR` on the host running
+  // the suite can answer for the production default either.
+  const resolved = bucketGuideFilePath(
+    bucketGuidePath("general"),
+    undefined,
+    emptyEnv,
+  );
+  assert(
+    isAnchored(resolved),
+    `bucket guides must resolve to an anchored path, got ${resolved}`,
+  );
+
+  // And the read that path drives returns the guide, whatever the cwd is.
+  assertEquals(
+    await readBucketGuide(bucketGuidePath("general"), undefined, emptyEnv),
+    await readGuide("general"),
+  );
+
+  // Naming the base directory outright is the other supported spelling
+  // (Issue #1024), and resolves to the same guide.
+  assertEquals(
+    await readBucketGuide(bucketGuidePath("general"), `${REPO_ROOT}prompts`),
+    await readGuide("general"),
+  );
 });
 
 Deno.test("bucketGuidePath - maps a bucket to its guide path", () => {

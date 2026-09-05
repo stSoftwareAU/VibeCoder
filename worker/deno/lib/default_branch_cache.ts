@@ -52,12 +52,56 @@ export function defaultBranchCachePath(
   const override = env(DEFAULT_BRANCH_CACHE_PATH_ENV);
   if (override) return override;
   // On the durable work volume (Issue #4318): $HOME/.vibe-coder is
-  // root-owned in container mode, so the cache never persisted there.
-  return workerCachePath(DEFAULT_BRANCH_CACHE_FILE);
+  // root-owned in container mode, so the cache never persisted there. The
+  // lookup goes through: a test that names `WORK_DIR` in its map must not
+  // have the resolution answered by whatever the host exports (Issue #969).
+  return workerCachePath(DEFAULT_BRANCH_CACHE_FILE, { env });
 }
 
 /** File name of the cache within the worker cache directory. */
 export const DEFAULT_BRANCH_CACHE_FILE = "default-branch-cache.json";
+
+/**
+ * How every accessor below takes its cache path (Issue #969).
+ *
+ * A tuple union rather than two optional parameters, because a default
+ * parameter cannot tell an *omitted* argument from an explicit `undefined` —
+ * JavaScript applies the default to both. That mattered: `undefined` is what
+ * {@link defaultBranchCachePath} returns for *there is no cache directory at
+ * all* (Issue #132), so a caller passing on the `undefined` it had just been
+ * handed re-resolved against the process environment and wrote the very file
+ * it had been told did not exist. With `WORK_DIR` set that is a stray cache
+ * write behind the caller's back, the class of bug #132 exists to prevent, and
+ * it made the "creates nothing anywhere" tests pass only because the host
+ * running them happened to export no `WORK_DIR`.
+ *
+ * With the tuple the three cases are distinct and every doc comment below is
+ * true as written:
+ *
+ * - **omitted** — resolve the default against `env` (production's shape);
+ * - **`undefined`** — there is no cache directory; every accessor is a full
+ *   no-op that touches no filesystem path at all;
+ * - **a string** — use exactly that file.
+ *
+ * `env` is the lookup backing the default resolution and the legacy HOME
+ * fallback. It defaults to the process environment, so production callers are
+ * unchanged; a test that names `WORK_DIR` or `HOME` in a map passes that map
+ * and mutates nothing (Issue #944).
+ */
+export type DefaultBranchCacheArgs =
+  | []
+  | [path: string | undefined]
+  | [path: string | undefined, env: EnvLookup];
+
+/** The `env` half of {@link DefaultBranchCacheArgs}. */
+function argsEnv(rest: DefaultBranchCacheArgs): EnvLookup {
+  return rest.length === 2 ? rest[1] : processEnvLookup;
+}
+
+/** The resolved cache file of {@link DefaultBranchCacheArgs}, or undefined. */
+function argsPath(rest: DefaultBranchCacheArgs): string | undefined {
+  return rest.length === 0 ? defaultBranchCachePath() : rest[0];
+}
 
 /**
  * Load the cache from disk. Returns an empty Map if the file is missing
@@ -66,14 +110,19 @@ export const DEFAULT_BRANCH_CACHE_FILE = "default-branch-cache.json";
  * An `undefined` path (no cache directory — WORK_DIR unset, Issue #132)
  * returns an empty Map without touching the filesystem — not even the
  * legacy HOME location is read.
+ *
+ * @param rest - Cache path and environment lookup; see
+ *   {@link DefaultBranchCacheArgs}.
  */
 export async function loadDefaultBranchCache(
-  path: string | undefined = defaultBranchCachePath(),
+  ...rest: DefaultBranchCacheArgs
 ): Promise<Map<string, DefaultBranchCacheEntry>> {
-  if (path === undefined) return new Map();
+  const env = argsEnv(rest);
+  const file = argsPath(rest);
+  if (file === undefined) return new Map();
   let text: string | null = null;
   try {
-    text = await Deno.readTextFile(path);
+    text = await Deno.readTextFile(file);
   } catch {
     // Fall through to the legacy location below.
   }
@@ -81,10 +130,10 @@ export async function loadDefaultBranchCache(
     // Legacy-location fallback (Issue #4318) — read-only, and only for the
     // module's own default path (an explicit caller-supplied path, e.g.
     // from tests, reads nothing else).
-    if (path !== defaultBranchCachePath()) return new Map();
+    if (file !== defaultBranchCachePath(env)) return new Map();
     try {
       text = await Deno.readTextFile(
-        legacyHomeCachePath(DEFAULT_BRANCH_CACHE_FILE),
+        legacyHomeCachePath(DEFAULT_BRANCH_CACHE_FILE, { env }),
       );
     } catch {
       return new Map();
@@ -111,15 +160,20 @@ export async function loadDefaultBranchCache(
  * returns without creating any directory or file: in particular the
  * `Deno.mkdir` below must never run then — it is the call that used to
  * create a stray `~/auto-issue-work/.vibe-cache` on the host (Issue #118).
+ *
+ * @param cache - The entries to persist.
+ * @param rest - Cache path and environment lookup; see
+ *   {@link DefaultBranchCacheArgs}.
  */
 export async function saveDefaultBranchCache(
   cache: Map<string, DefaultBranchCacheEntry>,
-  path: string | undefined = defaultBranchCachePath(),
+  ...rest: DefaultBranchCacheArgs
 ): Promise<void> {
-  if (path === undefined) return;
-  const slash = path.lastIndexOf("/");
+  const file = argsPath(rest);
+  if (file === undefined) return;
+  const slash = file.lastIndexOf("/");
   if (slash > 0) {
-    const dir = path.slice(0, slash);
+    const dir = file.slice(0, slash);
     try {
       await Deno.mkdir(dir, { recursive: true });
     } catch {
@@ -131,7 +185,7 @@ export async function saveDefaultBranchCache(
   for (const [repo, entry] of cache) {
     obj[repo] = entry;
   }
-  await Deno.writeTextFile(path, JSON.stringify(obj, null, 2));
+  await Deno.writeTextFile(file, JSON.stringify(obj, null, 2));
 }
 
 /**
@@ -139,12 +193,15 @@ export async function saveDefaultBranchCache(
  * the TTL window; otherwise return `null`. Always `null` when there is no
  * cache directory (`path` undefined — Issue #132), without touching the
  * filesystem.
+ *
+ * @param rest - Cache path and environment lookup; see
+ *   {@link DefaultBranchCacheArgs}.
  */
 export async function getCachedDefaultBranch(
   repo: string,
-  path: string | undefined = defaultBranchCachePath(),
+  ...rest: DefaultBranchCacheArgs
 ): Promise<string | null> {
-  const cache = await loadDefaultBranchCache(path);
+  const cache = await loadDefaultBranchCache(argsPath(rest), argsEnv(rest));
   const entry = cache.get(repo);
   if (!entry) return null;
   const ageMs = Date.now() - entry.fetchedAt;
@@ -156,16 +213,21 @@ export async function getCachedDefaultBranch(
  * Store the branch in the cache with the current timestamp. A no-op when
  * there is no cache directory (`path` undefined — Issue #132): no
  * directory or file is created anywhere.
+ *
+ * @param rest - Cache path and environment lookup; see
+ *   {@link DefaultBranchCacheArgs}.
  */
 export async function setCachedDefaultBranch(
   repo: string,
   branch: string,
-  path: string | undefined = defaultBranchCachePath(),
+  ...rest: DefaultBranchCacheArgs
 ): Promise<void> {
-  if (path === undefined) return;
-  const cache = await loadDefaultBranchCache(path);
+  const env = argsEnv(rest);
+  const file = argsPath(rest);
+  if (file === undefined) return;
+  const cache = await loadDefaultBranchCache(file, env);
   cache.set(repo, { branch, fetchedAt: Date.now() });
-  await saveDefaultBranchCache(cache, path);
+  await saveDefaultBranchCache(cache, file, env);
 }
 
 /**
@@ -173,14 +235,19 @@ export async function setCachedDefaultBranch(
  * be stale (e.g., `git fetch origin/<branch>` fails because the branch
  * was renamed on the remote). A no-op when there is no cache directory
  * (`path` undefined — Issue #132).
+ *
+ * @param rest - Cache path and environment lookup; see
+ *   {@link DefaultBranchCacheArgs}.
  */
 export async function invalidateCachedDefaultBranch(
   repo: string,
-  path: string | undefined = defaultBranchCachePath(),
+  ...rest: DefaultBranchCacheArgs
 ): Promise<void> {
-  if (path === undefined) return;
-  const cache = await loadDefaultBranchCache(path);
+  const env = argsEnv(rest);
+  const file = argsPath(rest);
+  if (file === undefined) return;
+  const cache = await loadDefaultBranchCache(file, env);
   if (!cache.has(repo)) return;
   cache.delete(repo);
-  await saveDefaultBranchCache(cache, path);
+  await saveDefaultBranchCache(cache, file, env);
 }
