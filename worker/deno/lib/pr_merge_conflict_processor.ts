@@ -69,6 +69,7 @@ import {
 import {
   buildConsultedIssuesSection,
   buildIntentOverrideSection,
+  findUncorroboratedOverrides,
   parseIntentOverrides,
 } from "./conflict_intent_audit.ts";
 import {
@@ -758,6 +759,19 @@ async function resolveConflict(
   let agentRan = false;
   /** The originating issues behind both sides, when the agent is involved. */
   let issueContext: ConflictIssueContext | null = null;
+
+  // `readPrResponseMessage` consumes the file so a stale reply cannot be
+  // reused, and this attempt reads it in up to three places — the override
+  // guard, the ancestor failure and the resolved comment. Read it once.
+  let replyRead = false;
+  let reply: string | undefined;
+  const agentReply = async (): Promise<string | undefined> => {
+    if (!replyRead) {
+      reply = await readPrResponseMessage(workDir);
+      replyRead = true;
+    }
+    return reply;
+  };
   if (merge.code !== 0) {
     const unmerged = await git(
       run,
@@ -890,6 +904,28 @@ async function resolveConflict(
         attemptNumber,
       );
     }
+
+    // An override claimed where both sides' originating issues were *not*
+    // known is a side-pick with a justification attached (Issue #1114). The
+    // eligibility is the worker's own, so this is decidable here rather than
+    // trusted to the model — refuse it before anything is pushed.
+    const uncorroborated = findUncorroboratedOverrides(
+      parseIntentOverrides(await agentReply()),
+      issueContext,
+    );
+    if (uncorroborated.length > 0) {
+      await abortMerge(run, workDir);
+      return await failAttempt(
+        input,
+        processorDeps,
+        conflictedFiles,
+        `the resolution settled ${
+          uncorroborated.map((o) => `\`${o.path}\``).join(", ")
+        } on issue intent, but both sides' originating issues were not known ` +
+          "for those paths — the both-sides-survive contract applied there",
+        attemptNumber,
+      );
+    }
   }
 
   // Commit whatever the agent left staged and push. No force: the merge
@@ -942,7 +978,7 @@ async function resolveConflict(
     workDir,
   );
   if (ancestor.code !== 0) {
-    const detail = await readPrResponseMessage(workDir);
+    const detail = await agentReply();
     return await failAttempt(
       input,
       processorDeps,
@@ -954,7 +990,7 @@ async function resolveConflict(
     );
   }
 
-  const detail = await readPrResponseMessage(workDir);
+  const detail = await agentReply();
   try {
     await postPrComment(
       deps,

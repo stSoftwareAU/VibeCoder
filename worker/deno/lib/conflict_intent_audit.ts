@@ -30,6 +30,7 @@ import {
   assessIntentEligibility,
   describeBaseUnresolved,
   describePrUnresolved,
+  normaliseConflictPath,
   sanitiseIssueText,
 } from "./conflict_intent_context.ts";
 
@@ -187,6 +188,38 @@ export function buildConsultedIssuesSection(
   return lines;
 }
 
+/** The paths for which both sides' originating issues were actually known. */
+function eligiblePathSet(
+  context: ConflictIssueContext | null | undefined,
+): Set<string> {
+  return new Set(
+    assessIntentEligibility(context)
+      .filter((assessment) => assessment.eligible)
+      .map((assessment) => normaliseConflictPath(assessment.path)),
+  );
+}
+
+/**
+ * Overrides claimed where the evidence an override requires was absent.
+ *
+ * This is the deterministic half of the carve-out, and the worker refuses a
+ * resolution that trips it: a well-formed override on a path where both sides'
+ * originating issues were *not* known is a side-pick with a justification
+ * attached, which is precisely the silent-work-destruction shape the
+ * never-side-pick contract exists to prevent. Malformed claims are deliberately
+ * not included — a line the parser could not read is reported on the PR rather
+ * than treated as a confession.
+ */
+export function findUncorroboratedOverrides(
+  report: IntentOverrideReport,
+  context: ConflictIssueContext | null | undefined,
+): IntentOverride[] {
+  const eligible = eligiblePathSet(context);
+  return report.overrides.filter((override) =>
+    !eligible.has(normaliseConflictPath(override.path))
+  );
+}
+
 /**
  * The intent-override record for a resolution that landed.
  *
@@ -194,9 +227,10 @@ export function buildConsultedIssuesSection(
  * ordinary way produces exactly the comment it produced before this change.
  *
  * A claim on a path where both sides' issues were **not** known is rendered as
- * a warning rather than dropped: the resolution has already passed the
- * mechanical guards, and a reviewer must see that the justification was not
- * corroborated by the issues actually consulted.
+ * a warning rather than dropped. {@link findUncorroboratedOverrides} means the
+ * processor has already refused such a resolution, so this is defence in depth
+ * — if one ever reaches a comment, it says so rather than reading as an
+ * evidenced pick.
  */
 export function buildIntentOverrideSection(
   report: IntentOverrideReport,
@@ -204,11 +238,7 @@ export function buildIntentOverrideSection(
 ): string[] {
   if (report.overrides.length === 0 && report.malformed.length === 0) return [];
 
-  const eligiblePaths = new Set(
-    assessIntentEligibility(context).filter((a) => a.eligible).map((a) =>
-      a.path
-    ),
-  );
+  const eligiblePaths = eligiblePathSet(context);
 
   const lines = [
     "",
@@ -219,7 +249,7 @@ export function buildIntentOverrideSection(
     lines.push(
       `- \`${override.path}\` — kept #${override.kept}, superseded #${override.superseded}: ${override.note}`,
     );
-    if (!eligiblePaths.has(override.path)) {
+    if (!eligiblePaths.has(normaliseConflictPath(override.path))) {
       lines.push(
         `  - ⚠️ both sides' originating issues were **not** known for this ` +
           "path, so this justification is uncorroborated — review the file " +

@@ -110,6 +110,8 @@ interface Script {
   unmergedAfterAgent: string[];
   /** Whether `git grep` still finds conflict markers after the agent. */
   markersAfterAgent: boolean;
+  /** Exit code of `git merge-base --is-ancestor` once the merge has run. */
+  ancestorCode: number;
 }
 
 function makeGit(script: Script, captured: Captured): Partial<GitDeps> {
@@ -145,7 +147,11 @@ function makeGit(script: Script, captured: Captured): Partial<GitDeps> {
       if (args[0] === "merge-base") {
         return Promise.resolve({
           ok: true,
-          value: { code: mergeDone ? 0 : 1, stdout: "", stderr: "" },
+          value: {
+            code: mergeDone ? script.ancestorCode : 1,
+            stdout: "",
+            stderr: "",
+          },
         });
       }
       return Promise.resolve({
@@ -239,6 +245,7 @@ async function runProcessor(opts?: {
   const script: Script = {
     unmergedAfterAgent: [],
     markersAfterAgent: false,
+    ancestorCode: 0,
     ...opts?.script,
   };
 
@@ -459,4 +466,55 @@ Deno.test("processMergeConflict - an unmerged path aborts even with an intent ju
   assertEquals(merged, false);
   assertEquals(captured.commitAndPushCalls, 0);
   assertStringIncludes(audit(captured), "unmerged");
+});
+
+Deno.test("processMergeConflict - a base still not an ancestor fails an intent-justified merge", async () => {
+  const { captured, merged } = await runProcessor({
+    script: { ancestorCode: 1 },
+    agentReply: "Intent override: SECURITY.md — kept #900, superseded #812 — " +
+      "#900 supersedes #812",
+  });
+
+  assertEquals(merged, false);
+  assertStringIncludes(audit(captured), "did not produce a mergeable branch");
+  assert(
+    !audit(captured).includes(CONFLICT_RESOLVED_MARKER),
+    "a branch the base is not an ancestor of is not a resolved conflict",
+  );
+});
+
+Deno.test("processMergeConflict - an override with no evidence is refused, not reported", async () => {
+  const { captured, merged } = await runProcessor({
+    // Only the PR side's issue is known, so no path qualifies.
+    issueContext: makeIssueContext({
+      baseSide: [{
+        path: "SECURITY.md",
+        commitsInspected: 1,
+        prNumbers: [],
+        issues: [],
+        unresolved: "no-pr",
+        partial: false,
+      }],
+    }),
+    agentReply: "Intent override: SECURITY.md — kept #900, superseded #812 — " +
+      "#900 looks newer so it probably wins",
+  });
+
+  assertEquals(merged, false);
+  assertEquals(captured.commitAndPushCalls, 0);
+  assertStringIncludes(audit(captured), "on issue intent, but both sides'");
+  assertStringIncludes(audit(captured), "`SECURITY.md`");
+});
+
+Deno.test("processMergeConflict - an evidenced override still lands", async () => {
+  const { merged } = await runProcessor({
+    agentReply: "Intent override: ./SECURITY.md — kept #900, superseded #812 " +
+      "— #900 retunes what #812 set",
+  });
+
+  assertEquals(
+    merged,
+    true,
+    "a path written with a ./ prefix is the same file, not an unevidenced pick",
+  );
 });

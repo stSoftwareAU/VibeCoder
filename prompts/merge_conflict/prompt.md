@@ -47,7 +47,7 @@ When all three hold, resolve to the intended outcome and say so in `.pr_response
 
 `Intent override: <path> — kept #<issue>, superseded #<issue> — <one line: what was kept and what it superseded>`
 
-Then quote, beneath that line, the sentence from the superseding issue that establishes it. The worker copies these lines onto the PR so a reviewer can audit the pick without reading the diff — a line that does not carry both issue numbers and the file is recorded as an uncorroborated claim.
+Then quote, beneath that line, the sentence from the superseding issue that establishes it. The worker copies these lines onto the PR so a reviewer can audit the pick without reading the diff. It also checks them: an override claimed for a path the list below does **not** qualify is **refused** — the worker aborts the merge and fails the attempt, exactly as if you had side-picked. Claim one only where the evidence is listed.
 
 **Absent that evidence, nothing changes.** No issue block below, only one side's issue, or supersession you cannot quote — then the two changes are still a contradiction you may not settle: keep both sides if you can, and otherwise `git merge --abort` and explain, exactly as before. The mechanical guards are unchanged too: an intent-justified resolution still has to leave no unmerged path and no conflict marker behind, and the worker still refuses the push if it does.
 

@@ -17,6 +17,7 @@ import type {
 import {
   buildConsultedIssuesSection,
   buildIntentOverrideSection,
+  findUncorroboratedOverrides,
   parseIntentOverrides,
 } from "../lib/conflict_intent_audit.ts";
 
@@ -193,4 +194,42 @@ Deno.test("buildIntentOverrideSection - no claim renders no section", () => {
     buildIntentOverrideSection(parseIntentOverrides("all good"), makeContext()),
     [],
   );
+});
+
+// --- The deterministic refusal ---
+
+Deno.test("findUncorroboratedOverrides - an evidenced override is corroborated", () => {
+  const report = parseIntentOverrides(
+    "Intent override: lib/timeouts.ts — kept #900, superseded #812 — retuned",
+  );
+  assertEquals(findUncorroboratedOverrides(report, makeContext()), []);
+});
+
+Deno.test("findUncorroboratedOverrides - the same file written `./` is still evidenced", () => {
+  const report = parseIntentOverrides(
+    "Intent override: ./lib/timeouts.ts — kept #900, superseded #812 — retuned",
+  );
+  assertEquals(findUncorroboratedOverrides(report, makeContext()), []);
+});
+
+Deno.test("findUncorroboratedOverrides - a path with no evidence is caught", () => {
+  const report = parseIntentOverrides(
+    "Intent override: docs/notes.md — kept #900, superseded #812 — a guess",
+  );
+  const caught = findUncorroboratedOverrides(report, makeContext());
+  assertEquals(caught.length, 1);
+  assertEquals(caught[0]?.path, "docs/notes.md");
+});
+
+Deno.test("findUncorroboratedOverrides - no context means no override is evidenced", () => {
+  const report = parseIntentOverrides(
+    "Intent override: lib/timeouts.ts — kept #900, superseded #812 — retuned",
+  );
+  assertEquals(findUncorroboratedOverrides(report, null).length, 1);
+});
+
+Deno.test("findUncorroboratedOverrides - a malformed claim is not treated as a confession", () => {
+  const report = parseIntentOverrides("Intent override: lib/a.ts — kept #5");
+  assertEquals(findUncorroboratedOverrides(report, makeContext()), []);
+  assertEquals(report.malformed.length, 1);
 });

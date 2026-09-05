@@ -219,9 +219,13 @@ settle still reaches no agent and now consults no issue either.
   "consulted and still contradictory" from "never looked" even when the
   resolution then fails.
 - **The resolved comment names every override**: the file, both issue numbers,
-  and one line on what was kept and what it superseded. A claim on a path where
-  both sides' issues were _not_ known is printed as an uncorroborated
-  justification rather than dropped.
+  and one line on what was kept and what it superseded.
+- **An uncorroborated override is refused, not reported.** Eligibility is the
+  worker's own computation, so an override claimed for a path where both sides'
+  issues were _not_ known is decidable without trusting the model: the merge is
+  aborted and the attempt fails, exactly as for a side-pick. A claim the parser
+  cannot read is reported on the PR instead — a line it could not understand is
+  not a confession.
 - **No issue context means today's behaviour, unchanged** — the block is absent
   from the prompt, and the attempt comment says no originating issues were
   found.

@@ -41,6 +41,7 @@ import {
   neutraliseHtmlComments,
   sanitiseDelimiterPatterns,
 } from "./prompt_delimiter.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 /** Why an intent override may not be considered for a conflicted path. */
 export type IntentIneligibleReason =
@@ -119,9 +120,29 @@ export function assessIntentEligibility(
   });
 }
 
-/** Sanitise GitHub-authored text before it reaches a prompt or a comment. */
+/**
+ * Sanitise GitHub-authored text before it reaches a prompt or a comment.
+ *
+ * Redaction is applied here rather than at a chokepoint because both sinks
+ * this feeds are outbound: the PR comment is permanent and public, and the
+ * gather's warnings quote raw `git`/`gh` failure text, which is where a token
+ * in a remote URL would surface.
+ */
 export function sanitiseIssueText(text: string): string {
-  return neutraliseHtmlComments(sanitiseDelimiterPatterns(text));
+  return neutraliseHtmlComments(
+    sanitiseDelimiterPatterns(redactSecrets(text)),
+  );
+}
+
+/**
+ * Compare a path the agent typed against a path the worker gathered.
+ *
+ * The agent writes the path itself, so a leading `./`, stray whitespace or a
+ * sanitised character must not be read as "a different file" — that would turn
+ * a corroborated override into an uncorroborated one, or the reverse.
+ */
+export function normaliseConflictPath(path: string): string {
+  return sanitiseIssueText(path).trim().replace(/^\.\//, "");
 }
 
 /** One issue, as the fenced block renders it. */
