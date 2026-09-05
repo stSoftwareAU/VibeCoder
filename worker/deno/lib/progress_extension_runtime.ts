@@ -112,6 +112,10 @@ export function createRollingDescendantProbe(
  * @param ceilingMs - Absolute epoch-ms past which no grant may be issued
  *   (Issue #421), from `run_hard_cap.ts`. Omitted means uncapped, exactly as
  *   before the supervisor published its cap.
+ * @param typicalGateSeconds - What the quality gate took on this repository
+ *   this run (Issue #1138), so the budget notice reaches the agent while the
+ *   gate still needs more runway than is left. Omitted, the fleet-wide
+ *   assumption applies.
  * @returns The option, or `undefined` when the feature is off — in which
  *   case the caller passes nothing and the hard timeout is unchanged.
  */
@@ -120,6 +124,7 @@ export async function buildProgressExtension(
   repoDir: string,
   onExtension?: RunDeadlineReporter,
   ceilingMs?: number,
+  typicalGateSeconds?: number,
 ): Promise<ProgressExtensionOptions | undefined> {
   if (!config.progressExtensionEnabled) return undefined;
 
@@ -158,5 +163,6 @@ export async function buildProgressExtension(
       writeWindDownNotice(repoDir, notice),
     ...(onExtension ? { onExtension } : {}),
     ...(ceilingMs !== undefined ? { ceilingMs } : {}),
+    ...(typicalGateSeconds !== undefined ? { typicalGateSeconds } : {}),
   };
 }

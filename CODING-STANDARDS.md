@@ -334,8 +334,9 @@ which of the three you chose, and why, in the PR summary.
 
 Iterate with the fast checks — `deno fmt`, `deno lint`, `deno check`, and only
 the test files your change touches. Run `./quality.sh < /dev/null` **once, in
-the foreground**, before raising the PR and fix what it reports; re-run it after
-a fix, never on a timer. Never background it behind a `sleep`/`pgrep` poll loop
+the foreground**, before raising the PR — provided the run budget covers it,
+see below — and fix what it reports; re-run it after a fix, never on a timer.
+Never background it behind a `sleep`/`pgrep` poll loop
 — that spends the whole budget waiting (Issue #399). It streams one line per
 check as each settles, so a slow run is visibly alive rather than
 indistinguishable from a hung one. The quality gate is implemented in Deno
@@ -364,6 +365,20 @@ not meant to.
 **All quality checks MUST pass before creating a PR.** The worker runs
 `./quality.sh` before creating any PR; CI re-runs the same checks. Never raise a
 PR with failing quality checks — fix the failures first.
+
+**The agent's own run of the gate is conditional on the run budget (Issue
+#1138).** The gate's median observed run is 17 minutes inside a budget of
+roughly an hour, and the same checks arrive twice more for free — the worker
+runs the gate itself before the PR, and CI runs it on the PR. So an agent
+starts the gate only when the runway left covers it plus the time to fix,
+commit and push what it reports; the worker writes `.vibe-run-budget.md` into
+the checkout the moment it no longer does, and refuses the gate there. A gate
+skipped for budget is **recorded, never silent**: the
+`<!-- vibe-quality-gate-skipped … -->` note goes in the PR summary (or
+`.pr_response_message`), because a gate nobody ran reads exactly like a gate
+that passed. That is not a licence to raise a PR over a *failing* check — the
+rule above is unchanged for every check that actually ran. See
+[docs/CONFIGURATION.md → The full gate is conditional on the budget left](docs/CONFIGURATION.md#the-full-gate-is-conditional-on-the-budget-left-issue-1138).
 
 Always redirect stdin from `/dev/null` when running tests, quality checks, or
 build commands on unattended machines (`./quality.sh < /dev/null`,
