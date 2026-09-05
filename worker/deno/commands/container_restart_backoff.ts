@@ -22,7 +22,7 @@
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
 
-import type { Command, CommandResult } from "../types.ts";
+import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
   CONTAINER_RESTART_DEFAULTS,
   type ContainerRestartOutcome,
@@ -112,6 +112,7 @@ export const containerRestartBackoffCommand: Command = {
 
   async execute(
     args: Record<string, unknown>,
+    config: WorkerConfig,
   ): Promise<CommandResult<ContainerRestartOutcome>> {
     const exitStatus = optionalNumber(args["exit-status"]);
     if (exitStatus === undefined) {
@@ -179,6 +180,10 @@ export const containerRestartBackoffCommand: Command = {
     const outcome = await recordContainerRestartOutcome({
       workDir,
       hostId,
+      // Issue #997: the capacity a parked host can no longer offer is the
+      // concurrency it was configured for, so the report says how much the
+      // fleet lost rather than only that it lost something.
+      slots: config.maxConcurrentIssues,
       ...(logTail !== undefined ? { logTail } : {}),
       exitStatus,
       phaseMarker: await readLaunchPhaseMarker(phaseFile),

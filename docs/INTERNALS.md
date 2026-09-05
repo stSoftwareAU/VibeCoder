@@ -871,6 +871,25 @@ run wall seconds` — against which four non-overlapping spans are booked:
   sleep). Reported rather than folded into idle, because a slot that does not
   exist cannot be said to be looking for work.
 
+A fifth span sits outside that partition, because it describes a host that ran
+**no** slot at all — a host whose containers cannot reach the network parks
+itself (Issue #997), and reporting that as an absence is what let one host sit
+parked and unnoticed. Its launcher emits the same line with the capacity the
+fleet has lost and the reason it lost it:
+
+```text
+slot-utilisation: host=GRQ-23 slots=2 wall=1800s available=3600s occupied=0s
+  occupied_pct=0.0 idle=0s idle_pct=0.0 blocked=0s unstaffed=0s
+  occupied_by_slot=none idle_by_slot=none blocked_by_reason=none
+  blocked_stops=none unavailable=3600s unavailable_pct=100.0
+  unavailable_reason=container_egress_blocked
+```
+
+- **`unavailable`** — slot-seconds no slot could be run for, with `host=` and
+  `unavailable_reason=` naming the machine and why. The three fields appear
+  **only** on a parked host's line, so a running pool's line is exactly the one
+  above.
+
 The same change moved the idle **hooks** — the idle-detect audit, the
 idle-decision census and the idle-task filer — to fire when *a slot* has no
 claimable work, not only when the whole fleet found nothing. The gate was

@@ -375,6 +375,22 @@ The report describes the host it runs on; run it on each host and read the
 union. Re-running rewrites the file for the requested window. It is operator
 telemetry (hostnames, run ids) and stays private.
 
+The host table leads with **availability** (Issue #997), because a host that
+cannot run a container at all makes every count below it a description of a
+machine that is not working:
+
+```text
+| GRQ-23 | Availability | unavailable — container_egress_blocked |
+| GRQ-23 | Parked cycles (host could not run a container) | 14 |
+```
+
+`unavailable` means the launcher's most recent word in the window was a park —
+it found that a container on this host cannot reach the network while the host
+itself can, and stopped rather than rebuilding an image that is fine. A host
+parked earlier in the window but launching since reads `available`, with the
+parked cycles still counted so the episode is not lost. A park is deliberately
+**not** counted as a container restart: nothing was retried.
+
 ## Tabletop evidence: does the boundary hold when it is attacked?
 
 The green gate above measures how the fleet *ran*. The tabletop harness

@@ -102,6 +102,24 @@ When the probe finds the address unreachable **from the host as well**, the
 launcher says so and waits instead — a link outage is not this host's fault and
 escalates nobody.
 
+Four hosts share this configuration, so the park is reported as lost capacity
+rather than as a machine that went quiet. Every parked cycle writes a
+`host_parked` self-heal event carrying the slot-utilisation line for the
+capacity nobody can use:
+
+```text
+slot-utilisation: host=GRQ-23 slots=2 wall=1800s available=3600s occupied=0s …
+  unavailable=3600s unavailable_pct=100.0 unavailable_reason=container_egress_blocked
+```
+
+and the [green-gate report](CONTAINMENT.md#green-gate-evidence-is-the-fleet-actually-running-contained)
+for that host leads with it:
+
+```text
+| GRQ-23 | Availability | unavailable — container_egress_blocked |
+| GRQ-23 | Parked cycles (host could not run a container) | 14 |
+```
+
 ### Where a launcher failure is reported
 
 A launcher that fails before claiming work has no issue to comment on, so the

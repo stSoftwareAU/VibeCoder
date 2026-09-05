@@ -73,6 +73,10 @@ import {
   HOST_EGRESS_BLOCKED_EXIT_STATUS,
   HOST_EGRESS_BLOCKED_REASON,
 } from "./container_egress_probe.ts";
+import {
+  formatSlotUtilisation,
+  parkedHostCapacity,
+} from "./slot_idle_accounting.ts";
 
 /**
  * Statuses the worker's own commands return deliberately (Issue #633).
@@ -912,6 +916,12 @@ export interface ContainerEscalationInput {
    * alert and the log agree. Omitted only when it genuinely cannot be read.
    */
   hostId?: string;
+  /**
+   * The parked host's slot-utilisation line (Issue #997) — the capacity the
+   * fleet has lost, in the vocabulary of Issue #925. Set only for the
+   * `container_egress` phase, where a host offers no capacity at all.
+   */
+  capacityLine?: string;
   /** Unix seconds the streak began — identifies the report (Issue #343). */
   streakStartedAt?: number;
   /** Escalations already delivered for this streak (Issue #343). */
@@ -1000,6 +1010,10 @@ export function buildContainerEscalationParams(
         "claims nothing until a person clears the route.",
       `Fleet capacity: this host is unavailable — reason: ` +
         `${HOST_EGRESS_BLOCKED_REASON}.`,
+      // The same statement as a number, in the Issue #925 vocabulary, so the
+      // lost capacity can be read rather than inferred from a host that
+      // stopped reporting.
+      ...(input.capacityLine ? [input.capacityLine] : []),
     );
   }
   if (input.logTail) lines.push("", input.logTail);
@@ -1118,6 +1132,12 @@ export interface RecordContainerOutcomeOptions {
   logTail?: string;
   /** The machine this alert is about (Issue #633). */
   hostId?: string;
+  /**
+   * The host's configured concurrency (Issue #997) — the capacity a parked
+   * host can no longer offer the fleet. Defaults to one slot, so an
+   * unresolved capacity is understated rather than invented.
+   */
+  slots?: number;
   /** Clock seam, in Unix seconds. */
   now?: () => number;
   /** Notification seam (tests inject a recorder). */
@@ -1239,6 +1259,11 @@ export async function recordContainerRestartOutcome(
     );
   }
 
+  // The parked host's lost capacity, in the Issue #925 vocabulary (Issue
+  // #997). Built where the park is recorded and carried into the escalation,
+  // so the event and the report quote one line rather than two spellings.
+  let capacityLine: string | undefined;
+
   const outcome: ContainerRestartOutcome = {
     kind: decision.kind,
     phase: decision.phase,
@@ -1337,6 +1362,13 @@ export async function recordContainerRestartOutcome(
   // so the fleet's record answers "why is that host claiming nothing?" without
   // anyone reading its console.
   if (decision.phase === "container_egress") {
+    const capacity = parkedHostCapacity({
+      ...(options.hostId ? { host: options.hostId } : {}),
+      slots: options.slots ?? 1,
+      parkedSeconds: decision.backoffSeconds,
+      reason: HOST_EGRESS_BLOCKED_REASON,
+    });
+    capacityLine = formatSlotUtilisation(capacity);
     await emitSelfHealEvent({
       module: SELF_HEAL_MODULE,
       action: "host_parked",
@@ -1353,6 +1385,9 @@ export async function recordContainerRestartOutcome(
         exitStatus: options.exitStatus,
         consecutiveFailures: decision.state.consecutiveFailures,
         parkedSeconds: decision.backoffSeconds,
+        unavailableSlotSeconds: capacity.unavailable?.slotSeconds ?? 0,
+        slots: capacity.slots,
+        slotUtilisation: capacityLine,
       },
     }, { workDir: options.workDir });
   }
@@ -1406,6 +1441,7 @@ export async function recordContainerRestartOutcome(
     issueNumber: target?.issueNumber,
     logTail: options.logTail,
     ...(options.hostId ? { hostId: options.hostId } : {}),
+    ...(capacityLine ? { capacityLine } : {}),
     streakStartedAt: decision.state.streakStartedAt,
     priorEscalations: plan.delivered,
     ...(carried

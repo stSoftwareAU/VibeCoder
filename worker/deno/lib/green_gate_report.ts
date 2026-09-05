@@ -15,7 +15,9 @@
  * - `~/logs/worker-*.log(.gz)`: `Processing issue`, `Releasing claim`,
  *   `[WORKER_SUMMARY]`, `ACTION REQUIRED: agent credential is failing`,
  *   `[SECURITY] [AGENT_KILLED]`.
- * - `~/logs/self-heal.jsonl`: `container_restart` and `crash_cleanup` events.
+ * - `~/logs/self-heal.jsonl`: `container_restart` and `crash_cleanup` events,
+ *   including the `host_parked` events that say this host is offering the
+ *   fleet no capacity at all, and why (Issue #997).
  * - GitHub (optional): which of the named regression issues are still open.
  *
  * Verdict rules:
@@ -101,6 +103,29 @@ export interface LaunchRecord {
   host: string | undefined;
 }
 
+/**
+ * What the launcher recorded about a host that could not run containers
+ * (Issue #997).
+ *
+ * A parked host stops emitting everything else — no launch, no worker log, no
+ * slot-utilisation line — so its absence used to be indistinguishable from a
+ * quiet week. The `host_parked` self-heal events are the record that says
+ * otherwise, and they carry the reason with them.
+ */
+export interface HostParkedEvidence {
+  /** Cycles inside the window on which the host parked itself. */
+  cycles: number;
+  /**
+   * True when the launcher's most recent word in the window was a park — the
+   * host is still unavailable, rather than parked earlier and running since.
+   */
+  current: boolean;
+  /** The named reason of the latest park, e.g. `container_egress_blocked`. */
+  reason: string | undefined;
+  /** When the latest park was recorded. */
+  at: string | undefined;
+}
+
 /** Everything gathered, before analysis. */
 export interface GreenGateEvidence {
   generatedAt: string;
@@ -114,6 +139,8 @@ export interface GreenGateEvidence {
   agentKills: number;
   restarts: number;
   crashCleanups: number;
+  /** What the host's own launcher last said about its availability (#997). */
+  parked: HostParkedEvidence;
   /** Earliest evidence timestamp inside the window, if any. */
   earliestEvidence: string | undefined;
   regression:
@@ -138,6 +165,15 @@ export interface GreenGateHostSummary {
   crashCleanups: number;
   authBreakerTrips: number;
   agentKills: number;
+  /**
+   * Whether this host is offering the fleet any capacity at all (Issue #997).
+   * `unavailable` when its launcher parked it and nothing has launched since.
+   */
+  availability: "available" | "unavailable";
+  /** Why it is unavailable, when it is — e.g. `container_egress_blocked`. */
+  unavailableReason?: string;
+  /** Cycles in the window on which the host parked itself. */
+  parkedCycles: number;
 }
 
 export type GreenGateVerdict = "GREEN" | "NOT GREEN" | "INSUFFICIENT EVIDENCE";
@@ -163,6 +199,12 @@ const PROCESSING_RE = /INFO: (?:\[[^\]]*\] )?Processing issue (\S+#\d+)/;
 const RELEASING_RE = /INFO: (?:\[[^\]]*\] )?Releasing claim (\S+#\d+)/;
 const AUTH_BREAKER_RE = /ACTION REQUIRED: agent credential is failing/;
 const AGENT_KILLED_RE = /\[SECURITY\] \[AGENT_KILLED\]/;
+
+/** The self-heal action a launcher writes when it parks a host (Issue #997). */
+const HOST_PARKED_ACTION = "host_parked";
+
+/** The failure phase a park is recorded under (Issue #997). */
+const EGRESS_PHASE = "container_egress";
 
 function parseWorkerTimestamp(line: string): number | undefined {
   const m = line.match(WORKER_TS_RE);
@@ -259,12 +301,40 @@ export async function gatherGreenGateEvidence(
     }
   }
 
-  // --- self-heal.jsonl: restarts and crash cleanups ---------------------
+  // --- self-heal.jsonl: restarts, crash cleanups and parks --------------
+  //
+  // Issue #997: a park is not a restart. The launcher parked *instead of*
+  // building, so counting it beside the restarts would report a host that ran
+  // nothing as one that kept retrying. It is counted on its own, and the
+  // latest park is compared with the latest evidence that the host ran a
+  // container at all — a launch that reached the worker, a recovery, a pause,
+  // or a failure in any other phase — so a host parked last week but running
+  // since is not reported as unavailable now.
   let restarts = 0;
   let crashCleanups = 0;
+  let parkedCycles = 0;
+  let latestParkAt: number | undefined;
+  let parkReason: string | undefined;
+  // Launches are already window-filtered above, and one that recorded its run
+  // mode reached the worker — which a parked host never does.
+  let latestRunningAt: number | undefined;
+  for (const launch of launches.values()) {
+    const at = Date.parse(launch.at);
+    if (
+      !Number.isNaN(at) &&
+      (latestRunningAt === undefined || at > latestRunningAt)
+    ) {
+      latestRunningAt = at;
+    }
+  }
   for (const line of (await sources.readSelfHealEvents()).split("\n")) {
     if (!line.trim()) continue;
-    let event: { timestamp?: string; module?: string };
+    let event: {
+      timestamp?: string;
+      module?: string;
+      action?: string;
+      details?: { reason?: unknown; phase?: unknown };
+    };
     try {
       event = JSON.parse(line);
     } catch {
@@ -272,9 +342,39 @@ export async function gatherGreenGateEvidence(
     }
     const at = Date.parse(event.timestamp ?? "");
     if (Number.isNaN(at) || !inWindow(at)) continue;
-    if (event.module === "container_restart") restarts++;
-    else if (event.module === "crash_cleanup") crashCleanups++;
+    if (event.module === "crash_cleanup") {
+      crashCleanups++;
+      continue;
+    }
+    if (event.module !== "container_restart") continue;
+    if (event.action === HOST_PARKED_ACTION) {
+      parkedCycles++;
+      if (latestParkAt === undefined || at >= latestParkAt) {
+        latestParkAt = at;
+        parkReason = typeof event.details?.reason === "string"
+          ? event.details.reason
+          : undefined;
+      }
+      continue;
+    }
+    restarts++;
+    // Everything else from this module describes a launcher that got as far
+    // as running, or failing at, a phase the park replaces.
+    if (event.details?.phase !== EGRESS_PHASE) {
+      if (latestRunningAt === undefined || at > latestRunningAt) {
+        latestRunningAt = at;
+      }
+    }
   }
+  const parked: HostParkedEvidence = {
+    cycles: parkedCycles,
+    current: latestParkAt !== undefined &&
+      (latestRunningAt === undefined || latestRunningAt <= latestParkAt),
+    reason: parkReason,
+    at: latestParkAt === undefined
+      ? undefined
+      : new Date(latestParkAt).toISOString(),
+  };
 
   // --- regression issues -----------------------------------------------
   let regression: GreenGateEvidence["regression"];
@@ -300,6 +400,7 @@ export async function gatherGreenGateEvidence(
     agentKills,
     restarts,
     crashCleanups,
+    parked,
     earliestEvidence: earliest === undefined
       ? undefined
       : new Date(earliest).toISOString(),
@@ -396,6 +497,13 @@ export function analyseGreenGate(
       crashCleanups: evidence.crashCleanups,
       authBreakerTrips: evidence.authBreakerTrips,
       agentKills: evidence.agentKills,
+      // Issue #997: capacity the fleet has lost, named. A host that cannot
+      // run containers reports why rather than simply going quiet.
+      availability: evidence.parked.current ? "unavailable" : "available",
+      ...(evidence.parked.current && evidence.parked.reason
+        ? { unavailableReason: evidence.parked.reason }
+        : {}),
+      parkedCycles: evidence.parked.cycles,
     },
     regressionIssues: options.regressionIssues,
     regression: evidence.regression,
@@ -447,6 +555,15 @@ export function formatGreenGateReport(report: GreenGateReport): string {
   lines.push("| --- | --- | --- |");
   const row = (metric: string, value: number | string) =>
     lines.push(`| ${h.hostId} | ${metric} | ${value} |`);
+  // Issue #997: first, because a host offering no capacity makes every count
+  // below it a description of a machine that is not working.
+  row(
+    "Availability",
+    h.availability === "unavailable"
+      ? `unavailable — ${h.unavailableReason ?? "reason not recorded"}`
+      : "available",
+  );
+  row("Parked cycles (host could not run a container)", h.parkedCycles);
   row("Launches (total)", h.launches.total);
   row("Container-mode launches", h.launches.container);
   row(
@@ -505,7 +622,9 @@ export function formatGreenGateReport(report: GreenGateReport): string {
   lines.push(
     "- Issues, claims, breaker trips, kills: `worker-*.log` (gzip included) within the window.",
   );
-  lines.push("- Restarts and crash cleanups: `self-heal.jsonl`.");
+  lines.push(
+    "- Restarts, crash cleanups and parks (availability): `self-heal.jsonl`.",
+  );
   lines.push(
     "- A launch with no run-mode record is unverified and never counted as container; " +
       "an empty log set is INSUFFICIENT EVIDENCE, not GREEN.",
