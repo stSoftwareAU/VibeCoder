@@ -73,6 +73,7 @@ import { formatRunModeRecord, resolveRunHostId } from "./run_mode_record.ts";
 import { assertWorkerIdentity } from "./identity_guard.ts";
 import { getGhTokenScopes } from "./gh_auth.ts";
 import { runCoreCommand } from "../commands/run_core.ts";
+import { AGENT_TRANSCRIPT_ENV } from "./agent_transcript.ts";
 import { applyOptionalFeatureEnv } from "./optional_feature_env.ts";
 import {
   QUOTA_PAUSE_EXIT_STATUS,
@@ -570,6 +571,19 @@ export async function runWorker(
   // bash conductor's `eval "$(load-config)"` used to be. Environment wins.
   await deps.applyOptionalFeatureEnv?.(
     env("CONFIG_PATH") ?? `${repoDir}/.config.json`,
+  );
+  // The agent transcript tee (Issue #1141). `.config.json` is the only
+  // operator switch, so the decision is settled here, once, from the loaded
+  // configuration and carried to every consumer in this process and every
+  // child it spawns — the tee itself lives deep inside `claude_runner.ts` and
+  // the callback context reads it back at the far end of the run.
+  //
+  // Written **unconditionally**, unlike the optional-feature step above: an
+  // ambient value must not decide whether the raw agent stream is captured,
+  // so `false` is exported just as deliberately as `true`.
+  deps.setEnv(
+    AGENT_TRANSCRIPT_ENV,
+    String(options.config.agentTranscriptEnabled === true),
   );
 
   try {

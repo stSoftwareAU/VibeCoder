@@ -209,7 +209,9 @@ understand instead of misreading it.
 ## Session logs are sensitive — redaction is the hook author's job
 
 `VIBECODER_SESSION_LOG_PATH` is present only when the agent transcript tee was
-enabled for that run **and** the file exists on disk. When it is present:
+enabled for that run — `"agent_transcript_enabled": true` in `.config.json`,
+off by default (Issue #1141) — **and** the file exists on disk. When it is
+present:
 
 - The transcript is the **raw agent stream** for that run: model output, issue
   and repository text, file contents the agent read, and command output. It is

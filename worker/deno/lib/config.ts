@@ -564,6 +564,13 @@ export async function loadConfig(
   // loudly rather than silently disabling or extending forever (#3234).
   const progressExtensionEnabled = file.progress_extension_enabled ??
     OPERATIONAL_DEFAULTS.progressExtensionEnabled;
+  // Agent transcript tee (Issue #1141). `.config.json` is the only operator
+  // switch: every one of the twenty fleet run records archived on 2026-09-05
+  // carried "agent transcript tee not enabled for this run" because nothing
+  // set the environment variable and there was no key that could. Off by
+  // default — the transcript is the raw agent stream, so a deployment opts in.
+  const agentTranscriptEnabled = file.agent_transcript_enabled ??
+    OPERATIONAL_DEFAULTS.agentTranscriptEnabled;
   const progressExtensionGrantSeconds = file.progress_extension_grant_seconds ??
     OPERATIONAL_DEFAULTS.progressExtensionGrantSeconds;
   const progressExtensionStallSeconds = file.progress_extension_stall_seconds ??
@@ -913,6 +920,7 @@ export async function loadConfig(
     minClaimRunwaySeconds,
     claimLongJobLabels,
     progressExtensionEnabled,
+    agentTranscriptEnabled,
     progressExtensionGrantSeconds,
     progressExtensionStallSeconds,
     progressExtensionCheckSeconds,
