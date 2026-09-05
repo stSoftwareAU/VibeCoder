@@ -302,6 +302,7 @@ import { isRepoAllowed } from "./config_validator.ts";
 import { isAuthorisedCommenter } from "./security.ts";
 import { createGitHubClient, runGhCommand } from "./github.ts";
 import { InFlightRepoRegistry } from "./in_flight_repos.ts";
+import type { InFlightClaim } from "./work_stream.ts";
 import { setLiveSlotHolds } from "./live_slot_holds.ts";
 import { setScanCacheForCloseInvalidation } from "./issue_close_notifier.ts";
 import { sharedProcessedIssues } from "./processed_issue_registry.ts";
@@ -2534,6 +2535,7 @@ export async function createProductionRunCoreDeps(
 
     async findNextIssue(options?: {
       excludeRepos?: ReadonlySet<string>;
+      inFlightClaims?: readonly InFlightClaim[];
       excludeIssues?: ReadonlySet<string>;
       onScanSummary?: (summary: DiagnosticSummary) => void;
     }) {
@@ -2558,10 +2560,17 @@ export async function createProductionRunCoreDeps(
         isIssueInCooldown: (repo, num) =>
           runLocalHold(repo, num) ||
           options?.excludeIssues?.has(issueClaimKey(repo, num)) === true,
-        // Repositories held by sibling slots (Issue #4176): skipped so no
-        // two slots share a clone.
+        // Repositories the maintenance lane has leased wholesale (Issues
+        // #4176, #213, narrowed by #1091): skipped before any eligibility
+        // check, because that pass may touch any branch of the clone.
         ...(options?.excludeRepos
           ? { excludeRepos: options.excludeRepos }
+          : {}),
+        // Issue #1091: the streams sibling slots hold, carried as the claims
+        // that occupy them, so `isMilestoneOccupied` refuses those streams
+        // and the rest of the repository stays claimable.
+        ...(options?.inFlightClaims
+          ? { inFlightClaims: options.inFlightClaims }
           : {}),
         closedPrCooldownSeconds: config.closedPrCooldownSeconds,
         // Issue #4024: the set the PR-maintenance scans actually use, so
@@ -3529,10 +3538,13 @@ export async function createProductionRunCoreDeps(
           // Read from the same signals the census and the fleet-board note
           // use, so all three agree about why this host is idle.
           claimGateActive: claimGateReason() !== "cycle_deadline",
-          // Issue #898: a repo a slot — or the maintenance lane — held was
-          // skipped by the scan before any eligibility check ran, so the two
-          // never disagreed about it. The claimable counts stay; the ALERT
-          // goes, exactly as it does for a claim gate.
+          // Issue #898: a repo the maintenance lane leased was skipped by the
+          // scan before any eligibility check ran, so the two never disagreed
+          // about it. The claimable counts stay; the ALERT goes, exactly as
+          // it does for a claim gate. Issue #1091: a sibling slot's hold is
+          // no longer in this set — the scan evaluated that repository and
+          // refused only the held stream, so a disagreement about the rest of
+          // it is real.
           heldRepos: scanExcludedRepos,
           log: (line: string) => logger.info(line),
         });
@@ -3569,7 +3581,8 @@ export async function createProductionRunCoreDeps(
       try {
         const host = `${Deno.hostname()}:${Deno.pid}`;
         // Issue #898: the repos this cycle's eligibility pass was never shown
-        // because a slot — or the maintenance lane — held them.
+        // because the maintenance lane leased them (Issue #1091: a slot's
+        // hold no longer hides a repository — it occupies one work stream).
         const heldRepos = new Set(scanExcludedRepos);
         // Issue #655: the same holds the claim scan filtered its candidates
         // against, so the two instruments cannot disagree about them.

@@ -1069,6 +1069,44 @@ whose eligibility rests on provenance.
   self-scheduling grants no new capability, and issue content still reaches the
   agent inside the untrusted-content boundary.
 
+#### 5b. Self-diagnostic alert dedup — the marker match is author-verified
+
+The worker's own escalations — run/launcher failures, idle inversion,
+bump-script failures, PR branch-update failures and idle starvation — are
+deduplicated by searching the target repository for a machine-readable marker
+in an **issue body** (`gh issue list --search '"<MARKER>" in:body'`). A body is
+content any account able to open an issue may write, so a marker match on its
+own carries no provenance; only the issue **author** is authenticated. Trusting
+the match alone means an alert can be concluded "already filed" on the strength
+of an issue the fleet never wrote — a **suppression of the fleet's own
+self-diagnostics**, which is the failure mode these alerts exist to prevent.
+
+- **The control.** Every escalation dedup search requests `author` alongside
+  `number,body`, and a match counts as an existing alert only when
+  [`isFleetAuthor`](worker/deno/lib/fleet_authors.ts) accepts its author. This
+  is the same author gate `claim_issue.ts` applies to `CLAIM_LOCK` comment
+  markers (Issue #3664), applied to body-marker dedup, and it lives in one
+  module — [`alert_dedup_authors.ts`](worker/deno/lib/alert_dedup_authors.ts) —
+  so the five escalations cannot drift apart.
+- **The comparison set is the fleet, not this host.** Membership is
+  `service_accounts` ∪ `fleet_pr_authors` ∪ this host's login
+  (`resolveFleetMaintenanceAuthorSet`). Deliberately **not** `--author @me`:
+  cross-host convergence depends on one host finding the issue another host
+  filed, and fleet hosts authenticate as different accounts, so a self-only
+  filter would raise one duplicate alert per host.
+- **Fails towards raising the alert.** When the fleet author set cannot be
+  resolved — no configuration, an unreadable config — the match cannot be
+  attributed, and it is therefore **not** treated as an existing alert: the
+  escalation is filed. For an alerting system silence is the worse failure; a
+  duplicate is noise a human closes in a moment, a missing alert is an incident
+  nobody hears about. The condition is logged in full (`[alert-dedup] … fleet
+  author set unresolved`) so it is visible rather than inferred, and the
+  direction is pinned by test.
+- **Residual risk, stated.** A fleet account is by definition trusted here, so
+  an actor who controls one can still suppress an alert — the same capability
+  they already hold over every other fleet decision. Non-fleet content can no
+  longer do it.
+
 ### 6. Egress Containment — Per-Run Write-Repo Allowlist
 
 The mitigations above narrow what untrusted content can *say* to the worker; egress containment narrows what a successful injection can *do*. Without it, an injection that reads a private repo can post the contents as a public comment in a different repo (four of the monitored repos are public, so the exfiltration sink is real).
