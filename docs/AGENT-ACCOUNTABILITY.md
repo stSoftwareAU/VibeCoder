@@ -205,7 +205,8 @@ under `${WORK_DIR}/audit/` — a sibling of, never inside, any cloned
 repo — a bug in the worker that rewrites a repo's history cannot rewrite
 its own audit log. `audit` is a **reserved work-root name**
 ([`stale_workdir.ts`](../worker/deno/lib/stale_workdir.ts)), as are the
-`audit.roster.jsonl` and `audit.roster.seen` sidecars beside it, so no
+`audit.roster.jsonl` and `audit.roster.seen` sidecars beside it — and any
+`audit.roster.jsonl.torn-<n>` a repair preserved (Issue #1202) — so no
 housekeeping sweep — tier reclaim, stale-workdir scan, worktree cleanup or
 the 90%-disk `nukeWorkDir` — may delete the trail. Before Issue #337 it
 tiered as a disposable clone and was pruned, and the sweep below then
@@ -337,6 +338,38 @@ is plain JSON an attacker may rewrite, so "no entries, one in flight" is also
 what an erasure looks like once it has tidied up. `addToRoster` runs only
 after an append has landed, which makes the roster the independent witness —
 a journal that ever held an entry is on it for good.
+
+**A torn roster line heals the same way (Issue #1202).** The roster beside the
+journal is appended to by `addToRoster`, `markRosterSeen` and both
+acknowledgement writers, and it was still using a plain append with no
+recovery. A torn line there is worse than a torn journal line because it is
+not scoped to one journal: `readRosterContents` throws, so the sweep failed
+for the **whole directory**, and both acknowledgement exits read the roster
+before they do anything, so neither applied. That left no documented exit at
+all — only hand-editing the tamper-evidence file, which is exactly what Issue
+#359 established must never be the remedy.
+
+The roster needs no write-ahead declaration: it is append-only and every line
+stands alone, so there is no head to advance and nothing for a `pending`
+record to disambiguate. Only the one shape a short write can leave is
+repaired ([`audit_roster_recovery.ts`](../worker/deno/lib/audit_roster_recovery.ts)):
+
+| Final roster line on disk | Verdict |
+| --- | --- |
+| Newline-terminated, whatever it holds | **signature** — the writer finished; a kill did not do this |
+| Unterminated but complete, parseable JSON | **signature** — the forged-line shape; a missing newline must not launder it |
+| Unterminated and unparseable | **heals** — discarded to `audit.roster.jsonl.torn-<n>` |
+
+The same four safety properties as the journal repair hold. Nothing before
+the last complete line is touched; the discarded bytes are **moved, not
+deleted**, into a `.torn-<n>` sidecar that housekeeping is forbidden to sweep
+([`stale_workdir.ts`](../worker/deno/lib/stale_workdir.ts)); the repair
+refuses to truncate a roster that grew underneath it, so a live writer's line
+cannot be destroyed; and the repair is announced as
+`[SECURITY] [AUDIT_ROSTER_RECOVERED]` and named in the sweep summary, never
+folded silently into "OK". The sweep and both acknowledgement exits go
+through the same repair, so the exit an operator is sent to is reachable
+after the kill that made them need it.
 
 **Clearing the lock the same kill left (Issue #1074).** The abandoned lock
 and the damaged chain arrive together — the kill has to land inside the

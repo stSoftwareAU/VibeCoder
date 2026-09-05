@@ -71,6 +71,15 @@ const RESERVED_WORKDIR_FILES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Prefix of the sidecars a torn-roster repair preserves (Issue #1202).
+ *
+ * `audit.roster.jsonl.torn-<n>` holds the bytes a repair moved aside rather
+ * than deleted. Letting housekeeping remove them would delete the only copy
+ * of the evidence the repair promised to keep.
+ */
+const RESERVED_ROSTER_TORN_PREFIX = "audit.roster.jsonl.torn-";
+
+/**
  * Is this work-root entry owned by a subsystem and off-limits to every
  * cleanup sweep? Covers {@link RESERVED_WORKDIR_NAMES} and the audit
  * trail's sibling files, so a sweep that walks files as well as directories
@@ -80,7 +89,9 @@ const RESERVED_WORKDIR_FILES: ReadonlySet<string> = new Set([
  * @returns True when the entry must be left alone
  */
 export function isReservedWorkRootEntry(name: string): boolean {
-  return RESERVED_WORKDIR_NAMES.has(name) || RESERVED_WORKDIR_FILES.has(name);
+  return RESERVED_WORKDIR_NAMES.has(name) ||
+    RESERVED_WORKDIR_FILES.has(name) ||
+    name.startsWith(RESERVED_ROSTER_TORN_PREFIX);
 }
 
 /** Options for scanning the work directory. */
