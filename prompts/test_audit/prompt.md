@@ -29,9 +29,9 @@ and finding-limit rules — never as a parallel report:
   state, or whose shape shows they must wait on the clock, and so belong
   behind a seam or in the integration suite (checks 12–13 in Phase 2).
   The repository's own coding standards own the normative definition of
-  unit, integration and benchmark — read it there ("Unit Tests vs
-  Benchmarks" in `CODING-STANDARDS.md`, or the equivalent section this
-  repository documents) rather than inferring one.
+  unit, integration and benchmark — read it there ("Unit, Integration and
+  Benchmark Tests" in `CODING-STANDARDS.md`, or the equivalent section
+  this repository documents) rather than inferring one.
 
 This audit reads **test source**. It is distinct from its
 documentation-scan siblings, which read the same repo for different
@@ -626,10 +626,10 @@ a bug in the behaviour under test.
 ### 13. Slow unit tests — a wait, a poll or a spawn in the source
 
 A test in the **unit** suite whose shape shows it cannot meet the time
-budget the repository's coding standards set for a unit test (the "Unit
-Tests vs Benchmarks" section of `CODING-STANDARDS.md`, or the equivalent
-section this repository documents — that section is normative, not this
-check).
+budget the repository's coding standards set for a unit test (the "Unit,
+Integration and Benchmark Tests" section of `CODING-STANDARDS.md`, or the
+equivalent section this repository documents — that section is normative,
+not this check).
 
 This is a **static, source-shape** check, and that constraint is the
 whole of it. The audit does not execute tests, so this check keys on an
