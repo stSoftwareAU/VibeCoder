@@ -36,12 +36,27 @@ import {
   type ContainerRuntimeDescriptor,
 } from "../lib/container_runtime.ts";
 import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
-import { withoutProviderEnv } from "./fixtures/provider_env.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname.replace(
   /\/$/,
   "",
 );
+
+/**
+ * The provider environment every resolution below is judged against
+ * (Issue #944).
+ *
+ * The suite itself runs inside a worker image, which stamps
+ * `VIBE_IMAGE_AGENT_PROVIDERS` and may carry the per-run `VIBE_AGENT_PROVIDER`
+ * / `VIBE_AGENT_PROVIDERS` overrides, so a test asserting on a *configured*
+ * set must not be judged against this process's own image. That used to mean
+ * deleting the three variables and restoring them (`withoutProviderEnv`),
+ * which raced every other test sharing the process; the resolver takes the
+ * lookup as a parameter instead, so the same statement is made without
+ * touching the process.
+ */
+const NO_PROVIDER_ENV = emptyEnv;
 
 /** The repository's real manifest — the image default the build compares to. */
 const MANIFEST: ContainerManifest = parseContainerManifest(
@@ -163,8 +178,10 @@ Deno.test("readConfiguredAgentProviderSet - a Codex-only config resolves to a Co
     agent_providers: ["codex"],
   });
   try {
-    const set = await withoutProviderEnv(() =>
-      readConfiguredAgentProviderSet(path, IMAGE_DEFAULT)
+    const set = await readConfiguredAgentProviderSet(
+      path,
+      IMAGE_DEFAULT,
+      NO_PROVIDER_ENV,
     );
 
     // The mounts and the build follow one resolution, not two.
@@ -187,8 +204,10 @@ Deno.test("readConfiguredAgentProviderSet - a Claude-only config needs no build 
   ) {
     const path = await writeConfig(selection);
     try {
-      const set = await withoutProviderEnv(() =>
-        readConfiguredAgentProviderSet(path, IMAGE_DEFAULT)
+      const set = await readConfiguredAgentProviderSet(
+        path,
+        IMAGE_DEFAULT,
+        NO_PROVIDER_ENV,
       );
 
       assertEquals(set.providers.map((provider) => provider.id), ["claude"]);
@@ -216,8 +235,10 @@ Deno.test("readConfiguredAgentProviderSet - an unusable configuration fails loud
     const path = await writeConfig(selection as Record<string, unknown>);
     let message = "";
     try {
-      await withoutProviderEnv(() =>
-        readConfiguredAgentProviderSet(path, IMAGE_DEFAULT)
+      await readConfiguredAgentProviderSet(
+        path,
+        IMAGE_DEFAULT,
+        NO_PROVIDER_ENV,
       );
     } catch (error) {
       message = (error as Error).message;

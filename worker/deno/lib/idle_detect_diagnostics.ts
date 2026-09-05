@@ -26,9 +26,18 @@
  *   2. Carries no blocking label (`failed`, `needs-revision`,
  *      `refine-issue`, `planning`, `question`, `needs-human`).
  *   3. Has no assignees (`filterByAssignee` in `issue_filter.ts`).
+ *   3b. Is not a milestone-tracking issue — `filterAndSort` drops those
+ *      in the same pass (Issue #1134, gate added by Issue #1050).
  *   4. Its work stream — the milestone title, or `""` for default
- *      branch — is not already occupied by an issue assigned to
- *      `workerUser` (`isMilestoneOccupied`).
+ *      branch — is not already occupied. The verdict comes from the
+ *      scan's own `isMilestoneOccupied`, over the scan's own account
+ *      set: `workerUser` plus the caller's `pushCapableAuthors` (Issues
+ *      #1050, #1064). Supply that set, or a stream a sibling worker
+ *      holds reads as free here and as `milestone-occupied` to the
+ *      scan — the divergence behind the ten-day fleet-wide idle-task
+ *      drought of 2026-08-26, when one assignment in the
+ *      default-branch stream made a 24-issue backlog unclaimable while
+ *      the audit went on counting all 24.
  *   5. No open PR blocks its work stream under the scan's own
  *      milestone-aware rule (`getBlockingPRForIssue`), unless the issue
  *      carries `ignore-open-prs` (Issue #4223). Requires the caller to
@@ -90,6 +99,11 @@ import {
   isBlockedByRecentlyClosedPR,
   type OpenPR,
 } from "./issue_query.ts";
+import {
+  type FilterableIssue,
+  isMilestoneOccupied,
+  isMilestoneTrackingIssue,
+} from "./issue_filter.ts";
 import { LABEL_DEFAULTS } from "./config_defaults.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 // Issue #4037: the audit's per-repo probe also feeds the access store.
@@ -138,6 +152,8 @@ export type ClaimableSkipReason =
   | "label_filter"
   | "assignee_filter"
   | "blocking_label"
+  /** Every candidate is a milestone-tracking issue (Issue #1050). */
+  | "milestone_tracker"
   | "stream_occupied"
   | "pr_blocked"
   /** Every candidate is named by a merged fleet PR (GRQ#4419). */
@@ -262,18 +278,24 @@ const IGNORE_OPEN_PRS_LABEL = "ignore-open-prs";
  * True when an open PR blocks `issue` under the same milestone-aware rule the
  * Priority 2 scan applies (Issue #4223).
  *
- * The empty `pushCapableAuthors` set is deliberate and matches the census: the
- * shared `prs_open_all` cache carries no author, so no PR can be classified as
- * human-authored here and every open PR counts as a blocker. The audit only
- * counts — it never blocks a pickup — so the residual over-count is
- * observability, not policy.
+ * `pushCapableAuthors` is the fleet identity, so a human's open PR never
+ * defers an issue (Issue #4133) — the same rule the scan applies. Passing an
+ * empty set, or PRs whose author was never stamped (the shared
+ * `prs_open_all` cache does not carry one), classifies nothing as human and
+ * leaves every open PR blocking: the fail-safe `isHumanAuthoredPr` documents,
+ * and what the audit did before Issue #1050 gave callers a set to pass.
  */
 function isPrBlocked(
   issue: { labels: string[]; milestone: string },
   openPRs: readonly OpenPR[],
+  pushCapableAuthors: readonly string[],
 ): boolean {
   if (issue.labels.includes(IGNORE_OPEN_PRS_LABEL)) return false;
-  return getBlockingPRForIssue([...openPRs], issue.milestone, []) !== null;
+  return getBlockingPRForIssue(
+    [...openPRs],
+    issue.milestone,
+    pushCapableAuthors,
+  ) !== null;
 }
 
 /**
@@ -307,6 +329,8 @@ export type IssueExclusionReason =
   | "label_filter"
   | "assignee_filter"
   | "blocking_label"
+  /** A milestone-tracking issue `filterAndSort` drops (Issue #1050). */
+  | "milestone_tracker"
   | "stream_occupied"
   | "pr_blocked"
   /** Named by a merged fleet PR — a permanent skip (GRQ#4419). */
@@ -325,6 +349,37 @@ export interface IssueVerdict {
 
 export interface ClassifyOptions {
   workerUser: string;
+  /**
+   * The accounts the fleet operates beside `workerUser`, as
+   * `resolveFleetMaintenanceAuthorSet` resolves them — the host login,
+   * `fleet_pr_authors` and `service_accounts` (Issue #1050).
+   *
+   * `isMilestoneOccupied` treats a work stream as occupied when an issue in
+   * it is assigned to ANY of those accounts, not just this worker's own
+   * login, and the audit now calls that very function. Without the same set
+   * here, an issue a *sibling* worker holds read as claimable to the audit
+   * and as `milestone-occupied` to the scan — the divergence that suppressed
+   * idle-task filing fleet-wide for ten days.
+   *
+   * NEVER `config.allowedAuthors` (Issue #1064): that is a permission list
+   * and legitimately holds humans, and there is no scheduling between humans
+   * and Vibe Coders — a human's assignment must never park a work stream.
+   *
+   * Omitted → this worker alone, which is what the audit counted before and
+   * what made a sibling's assignment look like claimable work.
+   */
+  pushCapableAuthors?: readonly string[];
+  /**
+   * The discovery labels that make an issue a candidate. Defaults to
+   * {@link CLAIMABLE_LABELS}.
+   *
+   * The fleet-global existence gate asks the narrower
+   * `REAL_WORK_LABELS` question — "is there genuine work anywhere?", with
+   * `idle-task` excluded because an open wrapper is already caught by the
+   * cross-repo dedup — and reads its answer from this same classifier so
+   * the two cannot drift (Issue #1050).
+   */
+  claimableLabels?: readonly string[];
   /**
    * The repo's open PRs, so the classifier can apply the scan's
    * milestone-aware blocking rule (Issue #4223).
@@ -413,22 +468,58 @@ export function classifyIssues(
   }>,
   opts: ClassifyOptions,
 ): IssueVerdict[] {
-  const claimableSet = new Set(CLAIMABLE_LABELS);
+  const claimableSet = new Set(opts.claimableLabels ?? CLAIMABLE_LABELS);
   const blockingSet = new Set(BLOCKING_LABELS);
   const openPRs = opts.openPRs ?? [];
   const mergedPRs = opts.mergedPRs ?? [];
   const runLocalHolds = opts.runLocalHolds ?? new Set<number>();
   const openIssueNumbers = opts.openIssueNumbers ?? new Set<number>();
   const repo = opts.repo ?? "";
+  const pushCapableAuthors = opts.pushCapableAuthors ?? [];
 
-  // Streams occupied by the worker = milestones (or "" for the default
-  // branch stream) that already host a worker-assigned open issue.
+  // Issue #1050: the scan's own view of the issue set, so the two gates
+  // below are answered by the scan's own functions rather than by a second
+  // implementation of the same rule. Every field `isMilestoneOccupied` and
+  // `isMilestoneTrackingIssue` read comes off the probe's single
+  // `gh issue list`; the rest are placeholders those two never touch.
+  const asFilterable: FilterableIssue[] = issues.map((issue) => ({
+    number: issue.number,
+    title: issue.title ?? "",
+    url: "",
+    author: "",
+    assignees: issue.assignees,
+    labels: issue.labels,
+    createdAt: "",
+    milestone: issue.milestone,
+    ...(issue.body === undefined ? {} : { body: issue.body }),
+  }));
+
+  // Streams the scan considers occupied — milestones (or "" for the
+  // default-branch stream) that already host an issue assigned to an account
+  // the fleet operates. Issue #1050: resolved through the scan's own
+  // `isMilestoneOccupied`, over the scan's own account set, once per
+  // distinct stream. The hand-rolled version here matched `workerUser`
+  // alone, so an issue a sibling worker held left the stream reading as free
+  // to the audit while the scan refused every issue in it as
+  // `milestone-occupied`.
   const occupiedStreams = new Set<string>();
-  for (const issue of issues) {
-    if (issue.assignees.includes(opts.workerUser)) {
-      occupiedStreams.add(issue.milestone);
+  for (const stream of new Set(issues.map((i) => i.milestone))) {
+    if (
+      isMilestoneOccupied(
+        asFilterable,
+        stream,
+        opts.workerUser,
+        [...pushCapableAuthors],
+      )
+    ) {
+      occupiedStreams.add(stream);
     }
   }
+  const trackers = new Set(
+    asFilterable.filter((i) => isMilestoneTrackingIssue(i)).map((i) =>
+      i.number
+    ),
+  );
 
   const result: IssueVerdict[] = [];
   for (const issue of issues) {
@@ -460,6 +551,20 @@ export function classifyIssues(
       });
       continue;
     }
+    // Issue #1050: `filterAndSort` drops milestone-tracking issues in the
+    // same pass as assignees and blocking labels (Issue #1134), so a tracker
+    // carrying a discovery label is work the scan can never action. The
+    // audit counted it, and #2751 has already shown what counting work the
+    // scan permanently skips does to a backlog.
+    if (trackers.has(issue.number)) {
+      result.push({
+        number: issue.number,
+        claimable: false,
+        excludedBy: "milestone_tracker",
+        milestone: issue.milestone,
+      });
+      continue;
+    }
     if (occupiedStreams.has(issue.milestone)) {
       result.push({
         number: issue.number,
@@ -479,7 +584,7 @@ export function classifyIssues(
     // Applied last, so an issue excluded for a more fundamental reason keeps
     // that reason: `pr_blocked` marks only issues that would otherwise be
     // claimable right now.
-    if (openPRs.length > 0 && isPrBlocked(issue, openPRs)) {
+    if (openPRs.length > 0 && isPrBlocked(issue, openPRs, pushCapableAuthors)) {
       result.push({
         number: issue.number,
         claimable: false,
@@ -577,6 +682,10 @@ export function pickDominantReason(
   // specific than stream occupancy and the filters above that.
   if (seen.has("run_local_hold")) return "run_local_hold";
   if (seen.has("stream_occupied")) return "stream_occupied";
+  // Issue #1050: below stream occupancy — a tracker is only ever refused
+  // after the label, blocking-label and assignee gates have passed it, but
+  // "the stream is busy" is the more actionable answer when both apply.
+  if (seen.has("milestone_tracker")) return "milestone_tracker";
   if (seen.has("assignee_filter")) return "assignee_filter";
   if (seen.has("blocking_label")) return "blocking_label";
   if (seen.has("label_filter")) return "label_filter";
@@ -646,6 +755,19 @@ export interface AuditClaimableStateOptions {
   repos: readonly string[];
   /** GitHub username of the worker — drives the stream-occupancy check. */
   workerUser: string;
+  /**
+   * The accounts the fleet operates beside `workerUser`, from
+   * `resolveFleetMaintenanceAuthorSet`, so the stream-occupancy gate models
+   * the scan's `milestone-occupied` refusal over the same set (Issues #1050,
+   * #1064). NEVER `config.allowedAuthors` — see
+   * {@link ClassifyOptions.pushCapableAuthors}.
+   *
+   * Omitted → this worker alone, the pre-#1050 behaviour: an issue a sibling
+   * worker holds then leaves a stream reading as free here while the scan
+   * refuses every issue in it, and the audit's `claimableTotal` suppresses
+   * the idle-task filer on work nothing can claim.
+   */
+  pushCapableAuthors?: readonly string[];
   /** Monotonic tick counter (caller-supplied; the lib never persists it). */
   tick: number;
   /**
@@ -769,7 +891,10 @@ export async function auditClaimableState(
         // Issue #857: `body` carries the dependency references the scan's
         // eighth gate reads. One extra field on a call already being made —
         // no extra request, matching how the census gets it free.
-        "number,labels,assignees,milestone,body",
+        // Issue #1050: `title` for the same reason — it is the fallback
+        // `isMilestoneTrackingIssue` falls back to for trackers filed before
+        // the body marker existed.
+        "number,title,labels,assignees,milestone,body",
         "--limit",
         String(limit),
       ]);
@@ -874,6 +999,7 @@ export async function auditClaimableState(
 
     const verdicts = classifyIssues(issues, {
       workerUser: opts.workerUser,
+      pushCapableAuthors: opts.pushCapableAuthors,
       openPRs,
       mergedPRs,
       runLocalHolds,
