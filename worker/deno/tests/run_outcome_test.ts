@@ -5,20 +5,24 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   deriveRunOutcome,
   describeRunOutcome,
   prNumberFromUrl,
+  summaryIncompleteOutcome,
 } from "../lib/run_outcome.ts";
 import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
 import {
   _setRenderReleasedBody,
+  describeAttemptOutcome,
   type HeartbeatBodyFields,
   releaseClaim,
   renderHeartbeatBody,
+  renderRunOutcomeClause,
   seedMarkerState,
 } from "../lib/heartbeat_storage.ts";
+import { resumeStateSurvivesRelease } from "../lib/resume_state_store.ts";
 
 Deno.test("run outcome - a success that raised a PR → kind pr with the real URL and number (Issue #4325)", () => {
   const outcome = deriveRunOutcome({
@@ -210,4 +214,58 @@ Deno.test("run outcome - releaseClaim without an outcome renders with no outcome
     restore();
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("run outcome - summaryIncompleteOutcome names the PR and the rule, and is not a failure (Issue #1140)", () => {
+  const outcome = summaryIncompleteOutcome({
+    phase: "completion",
+    prUrl: "https://github.com/stSoftwareAU/VibeCoder/pull/1107",
+    prNumber: 1107,
+    problem:
+      "Independent Spec/Standards review not reported in the PR summary: " +
+      "`unrequested` entry names no `reviewer:` verdict",
+  });
+  assertEquals(outcome.kind, "summary_incomplete");
+  assertEquals(describeRunOutcome(outcome), "summary_incomplete:pr#1107");
+  // Not a failure shape: nothing here feeds the failure streak or the
+  // auto-filed run-failure issue, both of which key off `kind: "no_pr"`.
+  assert(!("category" in outcome), "carries no failure category");
+  assertEquals(resumeStateSurvivesRelease(outcome), false);
+});
+
+Deno.test("run outcome - the release comment states the PR and the shortfall (Issue #1140)", () => {
+  const clause = renderRunOutcomeClause({
+    kind: "summary_incomplete",
+    phase: "completion",
+    prUrl: "https://github.com/stSoftwareAU/VibeCoder/pull/1126",
+    prNumber: 1126,
+    problem: "the PR summary carries no `## Acceptance Criteria` heading",
+  });
+  assertStringIncludes(clause, "Raised #1126");
+  assertStringIncludes(clause, "pull/1126");
+  assertStringIncludes(clause, "The PR summary is incomplete");
+  assertStringIncludes(clause, "## Acceptance Criteria");
+});
+
+Deno.test("run outcome - the attempt tally distinguishes a delivered run from a failed one (Issue #1140)", () => {
+  assertEquals(
+    describeAttemptOutcome({
+      kind: "summary_incomplete",
+      phase: "completion",
+      prUrl: "https://github.com/stSoftwareAU/VibeCoder/pull/1133",
+      prNumber: 1133,
+      problem: "reproduction status not recorded",
+    }),
+    "raised #1133, summary incomplete",
+  );
+  assertEquals(
+    describeAttemptOutcome({
+      kind: "no_pr",
+      category: detectFailureCategory("Git push failed"),
+      phase: "completion",
+      elapsedSeconds: 12,
+      message: "Git push failed",
+    }),
+    "no PR (`infrastructure-error`, phase `completion`)",
+  );
 });
