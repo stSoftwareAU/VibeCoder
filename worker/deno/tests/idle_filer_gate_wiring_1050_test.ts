@@ -150,7 +150,7 @@ async function runFiler(
         ghCommandFn: gh.fn,
         pickTemplateFn: () => testTemplate,
         findExistingFn: () => Promise.resolve(null),
-        findAnyOpenWrapperFn: () => Promise.resolve(null),
+        findOpenWrappersFn: () => Promise.resolve([]),
         dueScansFn: () => Promise.resolve([]),
         countOutputLabelOpenIssuesFn: () => Promise.resolve(0),
         isRepoCooledDownFn: () => Promise.resolve(false),

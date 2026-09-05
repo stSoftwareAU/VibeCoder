@@ -19,6 +19,9 @@ import {
   relabelBestPracticesForRepo,
 } from "../setup/best_practices_relabel.ts";
 
+/** The fleet login every fixture issue is authored by. */
+const FLEET_AUTHOR = "vibe-coder-bot";
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -112,6 +115,7 @@ function buildMockRunner(state: MockState): GhCommandFn {
           number: iss.number,
           labels: iss.labels.map((name) => ({ name })),
           body: iss.body,
+          author: { login: FLEET_AUTHOR },
         })),
       );
       return ok(payload);
@@ -159,6 +163,7 @@ Deno.test("relabel - adds severity + category to enhancement-only issue", async 
     ],
   });
   const result = await relabelBestPracticesForRepo("o/r", {
+    fleetAuthors: [FLEET_AUTHOR],
     ghCommandFn: buildMockRunner(state),
   });
 
@@ -182,6 +187,7 @@ Deno.test("relabel - highest severity wins on mixed body", async () => {
     ],
   });
   await relabelBestPracticesForRepo("o/r", {
+    fleetAuthors: [FLEET_AUTHOR],
     ghCommandFn: buildMockRunner(state),
   });
   const added = state.labelsAdded.map((l) => l.label);
@@ -201,6 +207,7 @@ Deno.test("relabel - idempotent when already correctly labelled", async () => {
     ],
   });
   const result = await relabelBestPracticesForRepo("o/r", {
+    fleetAuthors: [FLEET_AUTHOR],
     ghCommandFn: buildMockRunner(state),
   });
   assertEquals(result.relabelled, 0);
@@ -219,6 +226,7 @@ Deno.test("relabel - dry-run reports without mutating", async () => {
     ],
   });
   const result = await relabelBestPracticesForRepo("o/r", {
+    fleetAuthors: [FLEET_AUTHOR],
     ghCommandFn: buildMockRunner(state),
     dryRun: true,
   });
@@ -243,6 +251,7 @@ Deno.test("relabel - per-issue failure does not abort the run", async () => {
       cmd.some((a) => /\/issues\/1\/labels$/.test(a)),
   });
   const result = await relabelBestPracticesForRepo("o/r", {
+    fleetAuthors: [FLEET_AUTHOR],
     ghCommandFn: buildMockRunner(state),
   });
   // Run completes; issue 2 still relabelled.
@@ -256,6 +265,7 @@ Deno.test("relabel - issue list failure is caught (silent skip)", async () => {
     failOn: (cmd) => cmd[1] === "issue" && cmd[2] === "list",
   });
   const result = await relabelBestPracticesForRepo("o/r", {
+    fleetAuthors: [FLEET_AUTHOR],
     ghCommandFn: buildMockRunner(state),
   });
   // Repo-level failure does not throw; result reports it.
@@ -284,6 +294,7 @@ Deno.test("relabelAll - iterates every repo, one failure does not stop others", 
             number: 1,
             labels: [{ name: "enhancement" }],
             body: bodyWithSeverities(["high"]),
+            author: { login: FLEET_AUTHOR },
           },
         ]),
         stderr: "",
@@ -295,6 +306,7 @@ Deno.test("relabelAll - iterates every repo, one failure does not stop others", 
   const results = await relabelBestPracticesForAllRepos({
     repos: ["o/good", "o/bad", "o/good2"],
     ghCommandFn: runner,
+    fleetAuthors: [FLEET_AUTHOR],
   });
 
   assertEquals(results.length, 3);

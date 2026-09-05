@@ -42,6 +42,12 @@ Deno.test("blockedReason - maps each known reason to its stable string", () => {
   assertEquals(blockedReason("checks_failed"), "checks_failed");
   assertEquals(blockedReason("behind_target"), "behind_target");
   assertEquals(blockedReason("checks_pending"), "checks_pending");
+  // Issue #1082: a default-branch PR held for want of a review reports the
+  // hold, not a generic "checks pending" that hides why it did not land.
+  assertEquals(
+    blockedReason("default_branch_unapproved"),
+    "default_branch_unapproved",
+  );
 });
 
 Deno.test("blockedReason - throws via assertNever on an out-of-union reason", () => {

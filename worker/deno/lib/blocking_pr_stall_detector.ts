@@ -14,10 +14,15 @@
  * stopped making progress:
  *
  * - **red CI** — a failing check whose run has not been superseded by a
- *   newer fleet push, older than the configured threshold; or
+ *   newer fleet push, older than the configured threshold;
  * - **unanswered authorised comment** — the newest comment from an
  *   `authorized_commenters` login is newer than the newest fleet reply or
- *   push, by longer than the threshold.
+ *   push, by longer than the threshold; or
+ * - **green but unmerged** (Issue #1082) — genuinely green (at least one
+ *   check ran, none failing, none still running), not a draft, no auto-merge
+ *   armed, and no movement for longer than the threshold. Nothing is wrong
+ *   with the PR; it simply is not landing, and the repository's whole work
+ *   stream is stopped behind it.
  *
  * On trip it escalates through the shared `escalateToHuman()` chokepoint —
  * one deduped comment per PR per stall reason, plus `needs-human`. It never
@@ -68,8 +73,19 @@ const FAILING_CONCLUSIONS = new Set([
   "ERROR",
 ]);
 
-/** Why a blocking PR is considered stalled. */
-export type BlockingPrStallReason = "red-ci" | "unanswered-comment";
+/**
+ * Why a blocking PR is considered stalled.
+ *
+ * `unmerged-green` is the third shape (Issue #1082): nothing is *wrong* with
+ * the PR — CI is green and no comment is outstanding — it simply is not
+ * landing, and while it does not land its repository's whole work stream is
+ * stopped. `GRQ-GTC#305` sat exactly like that for five days and no host
+ * said a word about it, because the two signals above both looked healthy.
+ */
+export type BlockingPrStallReason =
+  | "red-ci"
+  | "unanswered-comment"
+  | "unmerged-green";
 
 /** A failing check observed on a blocking PR. */
 export interface FailingCheck {
@@ -95,6 +111,19 @@ export interface BlockingPrObservation {
   lastAuthorisedCommentAt?: string;
   /** ISO timestamp of the newest comment from a fleet account. */
   lastFleetReplyAt?: string;
+  /** ISO timestamp the PR was opened (Issue #1082). */
+  createdAt?: string;
+  /** True when GitHub's native auto-merge is armed on the PR (Issue #1082). */
+  autoMergeEnabled?: boolean;
+  /** True when the PR is a draft (Issue #1082) — not waiting on anyone. */
+  isDraft?: boolean;
+  /**
+   * Checks on the head commit, by state (Issue #1082). "Green" means at
+   * least one check ran and none is failing or still running — "not red" is
+   * not green, and a head with no checks at all is unverified, which this
+   * repo refuses to call passed (`docs/MERGE.md`, Issue #3705).
+   */
+  checkCounts?: { total: number; pending: number };
 }
 
 /** One tripped staleness signal. */
@@ -229,6 +258,26 @@ export function detectBlockingPrStall(
     }
   }
 
+  // -- Green but not landing (Issue #1082) --------------------------------
+  // Only when nothing else has tripped: a red or unanswered PR is already
+  // being reported, and a second reason for the same PR would be noise.
+  if (
+    signals.length === 0 && isGreen(observation) &&
+    observation.autoMergeEnabled !== true && observation.isDraft !== true
+  ) {
+    const since = maxDefined(pushAt, epochSeconds(observation.createdAt));
+    const stalledSeconds = since === undefined ? undefined : nowSeconds - since;
+    if (stalledSeconds !== undefined && stalledSeconds >= thresholdSeconds) {
+      signals.push({
+        reason: "unmerged-green",
+        stalledSeconds,
+        detail: `been open and green for ${
+          formatDuration(stalledSeconds)
+        } with no auto-merge armed and no merge`,
+      });
+    }
+  }
+
   if (signals.length === 0) return null;
   return {
     repo: observation.repo,
@@ -236,6 +285,19 @@ export function detectBlockingPrStall(
     blockedIssues: [...observation.blockedIssues],
     signals,
   };
+}
+
+/**
+ * Whether the head is genuinely green: at least one check ran, none failed,
+ * and none is still running. Absent counts mean the checks were not read, so
+ * the answer is no — the watchdog says nothing rather than calling an
+ * unverified head green.
+ */
+function isGreen(observation: BlockingPrObservation): boolean {
+  if (observation.failingChecks.length > 0) return false;
+  const counts = observation.checkCounts;
+  if (!counts) return false;
+  return counts.total > 0 && counts.pending === 0;
 }
 
 /** Dedup key handed to `escalateToHuman` for one stall reason. */
@@ -255,27 +317,35 @@ export function buildBlockingPrStallReason(
   stall: BlockingPrStall,
   signal: BlockingPrStallSignal,
 ): string {
+  const count = stall.blockedIssues.length;
   const issues = stall.blockedIssues.map((issue) => `#${issue}`).join(", ");
-  const plural = stall.blockedIssues.length === 1 ? "" : "s";
+  const plural = count === 1 ? "" : "s";
   return (
-    `This PR has ${signal.detail}, and it is blocking the \`work-on\` ` +
-    `issue${plural} ${issues} from being picked up. The worker defers ` +
-    `${plural === "" ? "that issue" : "those issues"} to this PR, so the ` +
-    "work stream is stopped until the PR moves."
+    `${stall.repo}#${stall.prNumber} has ${signal.detail}, and it is ` +
+    `blocking ${count} \`work-on\` issue${plural} (${issues}) from being ` +
+    `picked up. The worker defers ${
+      plural === "" ? "that issue" : "those issues"
+    } to this PR, so the work stream is stopped until the PR moves.`
   );
 }
 
 /** Next step printed in the escalation comment. */
 /** Short noun phrase naming the stall, for the escalation issue's title. */
 export function describeStallSummary(reason: BlockingPrStallReason): string {
-  return reason === "red-ci"
-    ? "CI is red and no fix has landed"
-    : "an authorised comment is unanswered";
+  switch (reason) {
+    case "red-ci":
+      return "CI is red and no fix has landed";
+    case "unanswered-comment":
+      return "an authorised comment is unanswered";
+    case "unmerged-green":
+      return "the PR is green but is not being merged";
+  }
 }
 
 export const BLOCKING_PR_STALL_NEXT_STEP =
-  "Push a fix, reply to the outstanding comment, or close the PR — whichever " +
-  "unblocks it — so the deferred `work-on` issues can be picked up again.";
+  "Push a fix, reply to the outstanding comment, approve or merge the PR, or " +
+  "close it — whichever unblocks it — so the deferred `work-on` issues can be " +
+  "picked up again.";
 
 // ---------------------------------------------------------------------------
 // Escalation
@@ -622,7 +692,7 @@ async function observeBlockingPr(params: {
     "--repo",
     repo,
     "--json",
-    "comments,commits,statusCheckRollup",
+    "comments,commits,statusCheckRollup,createdAt,autoMergeRequest,isDraft",
   ]);
 
   const view = parseObject(raw);
@@ -631,7 +701,17 @@ async function observeBlockingPr(params: {
     prNumber,
     blockedIssues: [...blockedIssues],
     failingChecks: parseFailingChecks(view.statusCheckRollup),
+    // Issue #1082: an armed auto-merge means the PR is already on its way,
+    // and a draft is not waiting on anyone.
+    autoMergeEnabled: view.autoMergeRequest !== null &&
+      typeof view.autoMergeRequest === "object",
+    isDraft: view.isDraft === true,
+    checkCounts: countChecks(view.statusCheckRollup),
   };
+
+  if (typeof view.createdAt === "string" && view.createdAt) {
+    observation.createdAt = view.createdAt;
+  }
 
   const lastFleetPushAt = newestCommitDate(view.commits);
   if (lastFleetPushAt) observation.lastFleetPushAt = lastFleetPushAt;
@@ -797,6 +877,30 @@ function parseFailingChecks(value: unknown): FailingCheck[] {
     out.push({ name, completedAt });
   }
   return out;
+}
+
+/**
+ * Count the head's checks and how many have not finished (Issue #1082).
+ * A check run is pending unless `status` is `COMPLETED`; a legacy commit
+ * status is pending while its `state` is `PENDING` or `EXPECTED`.
+ */
+function countChecks(value: unknown): { total: number; pending: number } {
+  let total = 0;
+  let pending = 0;
+  for (const entry of asArray(value)) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const obj = entry as Record<string, unknown>;
+    total++;
+    const status = typeof obj.status === "string"
+      ? obj.status.toUpperCase()
+      : "";
+    const state = typeof obj.state === "string" ? obj.state.toUpperCase() : "";
+    if (status && status !== "COMPLETED") pending++;
+    else if (!status && (state === "PENDING" || state === "EXPECTED")) {
+      pending++;
+    }
+  }
+  return { total, pending };
 }
 
 /** Newest `committedDate` across the PR's commits. */

@@ -30,6 +30,7 @@ import {
   tmpfsArgument,
   WORK_VOLUME_NAME,
 } from "../lib/container_launch.ts";
+import { parseKeepReferences } from "../lib/container_image_prune.ts";
 import { resolveContentApprovalStateDir } from "../lib/content_approval_state_dir.ts";
 import {
   CONTAINER_RUNTIMES,
@@ -1177,6 +1178,29 @@ Deno.test("buildContainerLaunchPlan - carries the runtime's own volume-removal v
     ).volumeRemoveArgs,
     ["volume", "delete"],
   );
+});
+
+Deno.test("renderContainerLaunchPlan - the keep token carries the whole image chain (Issue #1059)", () => {
+  // The prune keeps what the launch depends on, not just what it runs: a
+  // deployment's private extension layer is built FROM the standard image, and
+  // a prune told only the leaf untagged that base on every launch. Nothing
+  // here special-cases two tags — the chain is a list, so a third layer rides
+  // the same token.
+  const plan = buildContainerLaunchPlan(inputs());
+  assertEquals(plan.keepImages, [plan.image]);
+
+  const chained = {
+    ...plan,
+    keepImages: [
+      plan.image,
+      "vibe-coder:ba5e00000001",
+      "vibe-coder:deadbeef01",
+    ],
+  };
+  const parsed = parseContainerLaunchPlanText(
+    renderContainerLaunchPlan(chained),
+  );
+  assertEquals(parseKeepReferences(parsed.keep), chained.keepImages);
 });
 
 Deno.test("renderContainerLaunchPlan - the launchers receive the removal verb (Issue #731)", () => {

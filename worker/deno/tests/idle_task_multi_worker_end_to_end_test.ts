@@ -465,19 +465,18 @@ Deno.test(
 // ---------------------------------------------------------------------------
 
 Deno.test(
-  "multi-worker end-to-end - second cycle skips entirely when any repo already has a wrapper (Issue #2092)",
+  "multi-worker end-to-end - second cycle skips the repo holding a wrapper and files into the other (Issues #2092, #1083)",
   async () => {
     // Pre-seed state with an open idle-task issue in REPO_B, mirroring
     // the post-condition of the iteration-1 test above.
     //
-    // Issue #2092 behaviour change: previously this test asserted that
-    // the scheduler dedup'd REPO_B and filed a fresh wrapper into REPO_A.
-    // Under the new cross-repo gate, **any** open `idle-task` wrapper
-    // anywhere in the monitored set blocks further filing for the entire
-    // round — so the filer now skips with `reason=existing_wrapper_open`
-    // and waits for the next iteration of the main loop to claim the
-    // existing REPO_B wrapper through normal priority dispatch. This
-    // prevents the multi-repo fan-out observed in #2089.
+    // Documented business-logic change (Issue #1083). Issue #2092 made
+    // **any** open wrapper anywhere block filing for the whole round; that
+    // capped the fleet at one idle task however many slots were empty, so
+    // the gate is now one wrapper per **repository**. REPO_B is skipped and
+    // REPO_A — which holds none — is filed, which is what this test asserted
+    // before #2092. The #2089 fan-out protection is unchanged and asserted
+    // below: exactly one wrapper is created by this tick, not one per repo.
     const seededIssue: FiledIssue = {
       number: 901,
       body:
@@ -526,20 +525,31 @@ Deno.test(
     assertEquals(filerInvocations, 1);
     assertEquals(outcomes.length, 1);
 
-    // Issue #2092: the cross-repo gate fires and the filer skips
-    // entirely, naming the repo that holds the existing wrapper.
-    assertEquals(outcomes[0]!.action, "skipped");
-    assertEquals(outcomes[0]!.reason, "existing_wrapper_open");
-    assertEquals(outcomes[0]!.repo, REPO_B);
+    // Issue #1083: REPO_B is skipped for already holding a wrapper and
+    // REPO_A, which holds none, receives the new one.
+    assertEquals(outcomes[0]!.action, "filed");
+    assertEquals(outcomes[0]!.repo, REPO_A);
 
-    // Both repos remain in the pre-filer state: REPO_B holds the seeded
-    // wrapper; REPO_A has nothing.
+    // The refusal names the repo and the issue that held it.
+    const refusal = progressLogs.find((l) =>
+      l.includes("reason=existing_wrapper_open") &&
+      l.includes(`repo=${REPO_B}`) && l.includes("issue=901")
+    );
+    assert(
+      refusal !== undefined,
+      `expected a refusal line naming ${REPO_B}; saw ${
+        JSON.stringify(progressLogs)
+      }`,
+    );
+
+    // No repo carries two wrappers, and the tick did not fan out: REPO_B
+    // still holds exactly its seeded one, REPO_A exactly the new one.
     assertEquals((state.issues.get(REPO_B) ?? []).length, 1);
-    assertEquals((state.issues.get(REPO_A) ?? []).length, 0);
+    assertEquals((state.issues.get(REPO_A) ?? []).length, 1);
 
-    // No `gh issue create` calls — the cross-repo gate short-circuits.
+    // Issue #2089: exactly one `gh issue create` for the whole tick.
     const createCalls = calls.filter((c) => c.args.includes("create"));
-    assertEquals(createCalls.length, 0);
+    assertEquals(createCalls.length, 1);
   },
 );
 

@@ -13,12 +13,31 @@
  * Comment format: `<!-- COOLDOWN:worker-id:unix-timestamp -->`
  * This is consistent with the existing `CLAIM_LOCK` pattern.
  *
+ * **The signal is only a signal when the fleet posted it.** An issue
+ * comment thread is open to anyone who can see the issue, so a cooldown
+ * marker on its own is a request from a stranger that the whole fleet
+ * skip an issue. The worker-id inside the marker is chosen by whoever
+ * typed it and proves nothing; the comment **author** is the only
+ * authenticated part, and it is checked against the fleet identity
+ * (`alert_dedup_authors.ts`), exactly as `claim_issue.ts` checks
+ * `CLAIM_LOCK` authors.
+ *
+ * **The fail direction is "do not suppress the work".** An unresolvable
+ * fleet, an unreadable comment thread and a malformed payload all mean no
+ * active cooldown, so the issue stays workable. A wasted retry costs one
+ * run; an issue nobody may touch costs every run after it.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import type { Result } from "../types.ts";
 import { runGhCommand } from "./github.ts";
 import { COOLDOWN_DEFAULTS } from "./cooldown_state.ts";
+import {
+  type AlertDedupAuthorOptions,
+  type AlertDedupCommentRow,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
 
 /** The cooldown comment marker prefix used in issue comments. */
 export const COOLDOWN_MARKER_PREFIX = "<!-- COOLDOWN:";
@@ -103,22 +122,31 @@ export async function postCooldownComment(
 }
 
 /**
- * Check if an issue has an active cross-worker cooldown signal.
+ * Check if an issue has an active cross-worker cooldown signal **from the
+ * fleet**.
  *
- * Fetches recent comments on the issue and looks for cooldown markers
- * that are still within the configured cooldown period.
+ * Fetches recent comments on the issue and looks for cooldown markers that
+ * are still within the configured cooldown period and were written by a
+ * fleet account. The `--jq` projection carries `.user.login` through for
+ * exactly that reason: the data is fetched either way, and a projection
+ * that drops the author leaves the check with nothing to check.
  *
  * @param repo - Repository in "owner/repo" format
  * @param issueNumber - The issue number
  * @param cooldownPeriodSeconds - Cooldown period in seconds (default: 600)
  * @param ghCommandFn - Injected gh command function (for testing)
- * @returns True if an active cooldown signal exists
+ * @param authorOptions - Fleet identity inputs; omitted reads the
+ *   configured fleet, which is what every production caller does
+ * @param log - Sink for the author-verification diagnostics
+ * @returns True if an active fleet-authored cooldown signal exists
  */
 export async function hasActiveCooldownSignal(
   repo: string,
   issueNumber: number,
   cooldownPeriodSeconds: number = COOLDOWN_DEFAULTS.issueRetryCooldown,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+  authorOptions: AlertDedupAuthorOptions = {},
+  log: (message: string) => void = (message) => console.warn(message),
 ): Promise<boolean> {
   let commentsJson: string;
   try {
@@ -126,7 +154,8 @@ export async function hasActiveCooldownSignal(
       "api",
       `repos/${repo}/issues/${issueNumber}/comments`,
       "--jq",
-      `[.[] | select(.body | test("${COOLDOWN_MARKER_PREFIX}")) | {body: .body}]`,
+      `[.[] | select(.body | test("${COOLDOWN_MARKER_PREFIX}")) | ` +
+      `{body: .body, author: .user.login}]`,
     ]);
   } catch (err) {
     console.warn(
@@ -143,6 +172,10 @@ export async function hasActiveCooldownSignal(
 
     const nowSeconds = Math.floor(Date.now() / 1000);
 
+    // Keep only the markers that are still live, then keep only the ones
+    // the fleet wrote. Verifying the live ones alone means the log names
+    // comments that would otherwise have parked the issue.
+    const live: (AlertDedupCommentRow & { body: string })[] = [];
     for (const comment of parsed as Array<Record<string, unknown>>) {
       const body = String(comment.body ?? "");
       const cooldownData = parseCooldownComment(body);
@@ -150,9 +183,21 @@ export async function hasActiveCooldownSignal(
 
       const age = nowSeconds - cooldownData.timestamp;
       if (age >= 0 && age < cooldownPeriodSeconds) {
-        return true;
+        live.push({
+          body,
+          author: typeof comment.author === "string" ? comment.author : null,
+        });
       }
     }
+    const verified = await selectFleetAuthoredComments(
+      live,
+      `cooldown ${repo}#${issueNumber}`,
+      authorOptions,
+      log,
+      "the issue is not skipped — a cooldown comment anyone can post must " +
+        "not park work for the whole fleet",
+    );
+    if (verified.length > 0) return true;
   } catch (err) {
     console.warn(
       `[shared-cooldown] Failed to parse cooldown comments for ${repo}#${issueNumber}: ${

@@ -7,7 +7,9 @@ import { MILESTONE_PRIORITY_VALUES } from "./milestone_priority.ts";
  * Handles candidate timestamp extraction, sorting, dependency blocking,
  * per-issue eligibility, and priority-based candidate selection.
  *
- * Priority order (highest first):
+ * Priority order (highest first). This order is **fleet-global** — it is the
+ * outermost grouping, and a repo's `nice` value orders repos *within* a tier
+ * rather than around it (Issue #1063):
  *   1. configured-label  — top-priority discovery label (Issue #2022).
  *                          Legacy `help wanted` / `claude` labels remain
  *                          configurable for backward compatibility but
@@ -24,6 +26,15 @@ import { MILESTONE_PRIORITY_VALUES } from "./milestone_priority.ts";
  *   4. idle-task         — worker-filed busywork, picked up only when
  *                          every other tier is empty (Issue #1961). The
  *                          single label the Vibe Coder may self-apply.
+ *
+ * Issue #1063: `nice` is a tie-breaker *within* a priority band, never a band
+ * of its own. Urgency is expressed by the label; `nice` shapes throughput
+ * between repos that are equally urgent. So a `top-priority` issue in a
+ * `nice: -15` repo is selected ahead of a `work-on` issue in a `nice: -20`
+ * repo, while two `top-priority` issues are ordered by their repos' `nice`.
+ * Issue #2773 had briefly inverted this by wrapping a `nice` partition around
+ * the tier ladder, which let another repo's routine backlog outrank an
+ * urgency signal.
  *
  * Issue #1237: Supports configurable milestone priority via priority labels.
  * Within the same milestone, issues with priority-high are selected before
@@ -99,11 +110,12 @@ export interface SelectionOptions {
   randomPoolSize?: number;
 
   /**
-   * Resolve a repo's `nice` value (Issue #2773). Lower `nice` = higher
-   * urgency: selection draws from the lowest-`nice` non-empty tier first,
-   * only falling through to a higher-`nice` tier when no lower tier yields
-   * a selectable candidate. Defaults to `() => 0`, so every repo shares a
-   * single tier and existing callers are unaffected.
+   * Resolve a repo's `nice` value (Issue #2773). Lower `nice` = worked
+   * sooner. Issue #1063: `nice` orders repos *within* a label tier — the
+   * label tier is decided first across the whole fleet, and only its
+   * candidates are then drawn from their lowest-`nice` repos. Defaults to
+   * `() => 0`, so every repo shares a single tier and existing callers are
+   * unaffected.
    */
   repoNice?: (repo: string) => number;
 }
@@ -379,9 +391,48 @@ export function orderCandidatesByNiceTier(
 }
 
 /**
+ * Select the candidate from a single label tier, ordering repos by `nice`
+ * ascending within it (Issue #1063).
+ *
+ * `nice` is a tie-breaker inside a priority band: the tier is narrowed to the
+ * candidates in its lowest-`nice` repos, and {@link selectFairWithinTier}
+ * rotates fairly across those equal repos.
+ *
+ * `labelIndex` is honoured *ahead of* `nice`: it distinguishes distinct
+ * configured discovery labels (and encodes the tier itself — 0..N
+ * configured-label, 99 work-on, 150 self-diagnostic, 199 low-priority, 299
+ * idle-task), so a second-choice label in a low-`nice` repo must not outrank
+ * the first-choice label in a higher-`nice` one.
+ *
+ * @param candidates - Candidates of a single label tier
+ * @param repoNice - Resolver for a repo's `nice` value
+ * @param options - Optional randomisation settings
+ * @returns Selected candidate, or null if the tier is empty
+ */
+function selectAcrossNiceTiers(
+  candidates: IssueCandidate[],
+  repoNice: (repo: string) => number,
+  options?: SelectionOptions,
+): IssueCandidate | null {
+  if (candidates.length === 0) return null;
+
+  // Narrow to the winning label sub-tier, then to the lowest `nice` within
+  // it. Both are plain minimums over the candidates — no composite key and
+  // nothing to decode back.
+  const bestLabelIndex = Math.min(...candidates.map((c) => c.labelIndex));
+  const bestLabel = candidates.filter((c) => c.labelIndex === bestLabelIndex);
+
+  const bestNice = Math.min(...bestLabel.map((c) => repoNice(c.repo)));
+  const winning = bestLabel.filter((c) => repoNice(c.repo) === bestNice);
+
+  return selectFairWithinTier(winning, options);
+}
+
+/**
  * Select the highest priority candidate.
  *
- * Priority rules:
+ * Priority rules — the label tier is the **outermost** grouping, applied
+ * across the whole fleet (Issue #1063):
  * 1. Configured-label issues (highest priority)
  * 2. Work-on candidates from repos whose configured-label search succeeded
  *    (repos with search failures are excluded — we cannot be sure there
@@ -394,18 +445,19 @@ export function orderCandidatesByNiceTier(
  * 3. Low-priority candidates (Issue #1725) — only chosen when tiers 1, 2
  *    and 2b produce no selectable candidate across every scanned repo.
  * 4. Idle-task candidates (Issue #1961, #2812) — a *fleet-global* floor,
- *    strictly below every real-work tier across *all* `nice` tiers. Only
- *    chosen when no monitored repo in any `nice` tier has a selectable
- *    configured-label / work-on / low-priority candidate.
+ *    strictly below every real-work tier in every repo. Only chosen when no
+ *    monitored repo has a selectable configured-label / work-on /
+ *    low-priority candidate.
  *
- * Issue #2812: `idle-task` is lifted out of the per-`nice`-tier ordering so
- * a low-`nice` repo's idle-task can never be selected ahead of a
- * higher-`nice` repo's real work. The real-work tiers (1–3) keep the #2773
- * `nice` tiering exactly; only `idle-task` becomes a global floor. This is
- * implemented as two passes over the `nice` tiers: the first pass excludes
- * idle-task entirely (real work only); the second pass — reached only when
- * the first selects nothing anywhere — admits idle-task, draining the
- * lowest-`nice` tier with an eligible idle-task candidate first.
+ * Issue #1063: within each tier, {@link selectAcrossNiceTiers} orders repos
+ * by `nice` ascending — a lower-`nice` repo is drained before a higher-`nice`
+ * one *of the same tier*. `nice` no longer wraps the tier ladder (as it did
+ * under Issue #2773), because a repo's routine backlog must not outrank
+ * another repo's urgency signal.
+ *
+ * Issue #2812's guarantee is unchanged and now falls out of the tier order
+ * directly: `idle-task` is the last tier considered, so it is reached only
+ * when no real work is selectable anywhere in any `nice` tier.
  *
  * @param result - Selection result with all candidates and metadata
  * @returns Selected candidate, or null if none eligible
@@ -414,94 +466,20 @@ export function selectHighestPriority(
   result: SelectionResult,
   options?: SelectionOptions,
 ): IssueCandidate | null {
-  // Issue #2773: `nice` is the outermost grouping for real work. Partition
-  // candidates by their repo's resolved `nice` value and run the tier logic
-  // restricted to one `nice` tier at a time, ascending. The first tier that
-  // yields a selectable candidate wins, so a lower-`nice` repo is always
-  // drained before any higher-`nice` repo is reached. Default `() => 0`
-  // keeps every repo in a single tier (backward compatible).
+  // Default `() => 0` keeps every repo in a single `nice` tier, so callers
+  // that supply no resolver are unaffected.
   const repoNice = options?.repoNice ?? (() => 0);
 
-  const niceValues = [
-    ...new Set(
-      [
-        ...result.labelCandidates,
-        ...result.workOnCandidates,
-        ...(result.selfDiagnosticCandidates ?? []),
-        ...(result.lowPriorityCandidates ?? []),
-        ...(result.idleTaskCandidates ?? []),
-      ].map((c) => repoNice(c.repo)),
-    ),
-  ].sort((a, b) => a - b);
-
-  // Pass 1 (Issue #2812): real-work tiers only (configured-label > work-on >
-  // low-priority), `nice`-tiered. idle-task is excluded so it can never be
-  // selected while any `nice` tier still has selectable real work.
-  for (const nice of niceValues) {
-    const selected = selectWithinNiceTier(
-      result,
-      nice,
-      repoNice,
-      false,
-      options,
-    );
-    if (selected) return selected;
-  }
-
-  // Pass 2 (Issue #2812): no real work anywhere — idle-task is now the
-  // fleet-global floor. Drain the lowest-`nice` tier with an eligible
-  // idle-task candidate first.
-  for (const nice of niceValues) {
-    const selected = selectWithinNiceTier(
-      result,
-      nice,
-      repoNice,
-      true,
-      options,
-    );
-    if (selected) return selected;
-  }
-  return null;
-}
-
-/**
- * Run the priority-tier selection (configured-label > work-on >
- * low-priority > idle-task, with the Issue #2164 / #2610 suppression)
- * restricted to candidates whose repo resolves to a single `nice` value
- * (Issue #2773). Repo-level suppression sets and blocked entries are
- * applied unchanged — they are keyed by repo, so they only affect the
- * restricted candidates that belong to this tier.
- *
- * Issue #2812: when `includeIdleTask` is false the idle-task tier is
- * treated as empty, so this tier yields a candidate only from real work
- * (configured-label / work-on / low-priority). `selectHighestPriority`
- * runs a first pass with `includeIdleTask = false` across every `nice`
- * tier, making idle-task a fleet-global floor rather than a per-tier one.
- */
-function selectWithinNiceTier(
-  result: SelectionResult,
-  nice: number,
-  repoNice: (repo: string) => number,
-  includeIdleTask: boolean,
-  options?: SelectionOptions,
-): IssueCandidate | null {
-  const inTier = (c: IssueCandidate) => repoNice(c.repo) === nice;
-
-  const labelCandidates = result.labelCandidates.filter(inTier);
-  const workOnCandidates = result.workOnCandidates.filter(inTier);
+  const labelCandidates = result.labelCandidates;
+  const workOnCandidates = result.workOnCandidates;
   // Issue #505: tier 2b — self-scheduled worker diagnostics. Never
   // suppressed by `reposWithOpenWorkOn`: the tier order below already keeps
   // every human-scheduled candidate ahead of them, and the collector runs
   // the same PR/milestone/dependency gates, so the one-PR-per-work-stream
   // guarantee holds without a second suppression rule.
-  const selfDiagnosticCandidates = (result.selfDiagnosticCandidates ?? [])
-    .filter(inTier);
-  const lowPriorityCandidates = (result.lowPriorityCandidates ?? []).filter(
-    inTier,
-  );
-  const idleTaskCandidates = includeIdleTask
-    ? (result.idleTaskCandidates ?? []).filter(inTier)
-    : [];
+  const selfDiagnosticCandidates = result.selfDiagnosticCandidates ?? [];
+  const lowPriorityCandidates = result.lowPriorityCandidates ?? [];
+  const idleTaskCandidates = result.idleTaskCandidates ?? [];
   const {
     blockedEntries,
     reposWithOpenWorkOn,
@@ -536,62 +514,38 @@ function selectWithinNiceTier(
     return list;
   })();
 
-  // Priority 1: Configured-label candidates
-  if (labelCandidates.length > 0) {
-    return selectFairWithinTier(labelCandidates, options);
-  }
-
-  const eligibleWorkOn = workOnCandidates;
-
-  // Priority 2: Blocked configured-label issues suppress work-on in same repo+milestone
-  if (blockedEntries.length > 0) {
-    const unblockedWorkOn = eligibleWorkOn.filter((candidate) => {
-      return !blockedEntries.some(
+  // Priority 2: blocked configured-label issues suppress work-on in the same
+  // repo+milestone. Applied before the tier walk so a suppressed work-on
+  // cannot hold the tier against a lower tier elsewhere in the fleet.
+  const eligibleWorkOn = blockedEntries.length > 0
+    ? workOnCandidates.filter((candidate) =>
+      !blockedEntries.some(
         (blocked) =>
           blocked.repo === candidate.repo &&
           blocked.milestone === candidate.milestone,
-      );
-    });
+      )
+    )
+    : workOnCandidates;
 
-    if (unblockedWorkOn.length > 0) {
-      return selectFairWithinTier(unblockedWorkOn, options);
-    }
+  // The fleet-global tier ladder (Issue #1063). Each tier is drained across
+  // every repo — ordered by `nice` within the tier — before the next tier is
+  // considered, so an urgency label anywhere outranks routine work anywhere.
+  //
+  //   1  configured-label  →  2  work-on  →  2b self-diagnostic
+  //   →  3  low-priority   →  4  idle-task (fleet-global floor, Issue #2812)
+  const tiers: IssueCandidate[][] = [
+    labelCandidates,
+    eligibleWorkOn,
+    selfDiagnosticCandidates,
+    eligibleLowPriority,
+    eligibleIdleTask,
+  ];
 
-    // No work-on survived suppression — fall through to tier 2b (Issue
-    // #505), then tier 3 and tier 4 (applying the Issue #2164 repo-level
-    // suppression).
-    return (
-      selectFairWithinTier(selfDiagnosticCandidates, options) ??
-        selectFairWithinTier(eligibleLowPriority, options) ??
-        selectFairWithinTier(eligibleIdleTask, options)
-    );
+  for (const tier of tiers) {
+    const selected = selectAcrossNiceTiers(tier, repoNice, options);
+    if (selected) return selected;
   }
-
-  // Priority 2 (cont.): Work-on candidates from repos with successful searches
-  if (eligibleWorkOn.length > 0) {
-    return selectFairWithinTier(eligibleWorkOn, options);
-  }
-
-  // Priority 2b: self-scheduled worker diagnostics (Issue #505). Reached
-  // only when no human-scheduled candidate is selectable, so a human's
-  // intent always outranks the worker's own; above the backlog, because a
-  // fault in the machine that does the work is not backlog.
-  if (selfDiagnosticCandidates.length > 0) {
-    return selectFairWithinTier(selfDiagnosticCandidates, options);
-  }
-
-  // Priority 3: Low-priority candidates (Issue #1725).
-  // Only reached when no configured-label and no work-on candidates exist
-  // across every scanned repo. Issue #2164: candidates from repos with
-  // any open work-on issue are filtered out of `eligibleLowPriority`
-  // above, so a temporarily-blocked work-on issue in repo A no longer
-  // allows a low-priority issue in the same repo to slip through.
-  if (eligibleLowPriority.length > 0) {
-    return selectFairWithinTier(eligibleLowPriority, options);
-  }
-
-  // Priority 4: Idle-task candidates (Issue #1961) — strictly last.
-  return selectFairWithinTier(eligibleIdleTask, options);
+  return null;
 }
 
 /**

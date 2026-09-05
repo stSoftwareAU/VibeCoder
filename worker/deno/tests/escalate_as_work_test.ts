@@ -18,6 +18,9 @@ import {
   workEscalationTitle,
 } from "../lib/escalate_as_work.ts";
 
+/** The fleet login every fixture issue is authored by. */
+const FLEET_AUTHOR = "vibe-coder-bot";
+
 const STALL = {
   repo: "org/repo",
   prNumber: 549,
@@ -46,7 +49,10 @@ function fakeGh(answer = "[]") {
 
 Deno.test("escalateAsWork - files the blockage into the fleet's own queue", async () => {
   const { gh, calls } = fakeGh();
-  const result = await escalateAsWork(STALL, { gh });
+  const result = await escalateAsWork(STALL, {
+    gh,
+    fleetAuthors: [FLEET_AUTHOR],
+  });
 
   assert(result.ok);
   assertEquals(result.value.filed, true);
@@ -63,11 +69,18 @@ Deno.test("escalateAsWork - files the blockage into the fleet's own queue", asyn
 
 Deno.test("escalateAsWork - an ongoing blockage updates its issue, never re-files", async () => {
   const existing = JSON.stringify([
-    { number: 601, title: workEscalationTitle(STALL) },
+    {
+      number: 601,
+      title: workEscalationTitle(STALL),
+      author: { login: FLEET_AUTHOR },
+    },
   ]);
   const { gh, calls } = fakeGh(existing);
 
-  const result = await escalateAsWork(STALL, { gh });
+  const result = await escalateAsWork(STALL, {
+    gh,
+    fleetAuthors: [FLEET_AUTHOR],
+  });
 
   assert(result.ok);
   assertEquals(result.value.filed, false);
@@ -83,7 +96,10 @@ Deno.test("escalateAsWork - an ongoing blockage updates its issue, never re-file
 Deno.test("escalateAsWork - an unparseable listing files rather than losing the escalation", async () => {
   // A duplicate report is recoverable; a lost escalation is not.
   const { gh, calls } = fakeGh("not json at all");
-  const result = await escalateAsWork(STALL, { gh });
+  const result = await escalateAsWork(STALL, {
+    gh,
+    fleetAuthors: [FLEET_AUTHOR],
+  });
 
   assert(result.ok);
   assertEquals(result.value.filed, true);

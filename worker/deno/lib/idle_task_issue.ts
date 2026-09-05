@@ -125,28 +125,22 @@ export async function findExistingIdleTaskIssue(
 }
 
 /**
- * Cross-repo dedup query (Issue #2092). Scans every repo in `repos` and
- * returns the first open `idle-task`-labelled issue found anywhere, or
- * `null` when the entire set is clean. The first match in caller order
- * wins — the result is deterministic for a fixed input list.
- *
- * The scheduler calls this before its per-repo shuffle so that at most
- * one open `idle-task` wrapper exists across the entire monitored set.
- * Without this gate, successive idle ticks could each pick a different
- * "clean" repo from the shuffle and fan out wrappers across the fleet
- * (root cause observed in #2089).
+ * Shared scan behind {@link findOpenIdleTaskWrappers} and
+ * {@link findAnyOpenIdleTaskWrapper}.
  *
  * Per-repo `gh` failures are logged via `warn` and the failing repo is
  * treated as "unknown — assume clean" so a single transient hiccup never
- * silently disables the filer (matches the existing
- * `busy_check_failed` pattern in `maybe_file_idle_task.ts`).
+ * silently disables the filer (matches the existing `busy_check_failed`
+ * pattern in `maybe_file_idle_task.ts`).
  */
-export async function findAnyOpenIdleTaskWrapper(
+async function scanForOpenIdleTaskWrappers(
   repos: readonly string[],
-  opts: FindAnyOpenIdleTaskOptions = {},
-): Promise<ExistingIdleTaskWrapper | null> {
+  opts: FindAnyOpenIdleTaskOptions,
+  stopAtFirst: boolean,
+): Promise<ExistingIdleTaskWrapper[]> {
   const gh = opts.ghCommandFn ?? runGhCommand;
   const warn = opts.warn ?? ((m: string) => console.warn(m));
+  const found: ExistingIdleTaskWrapper[] = [];
   for (const repo of repos) {
     let existing: ExistingIdleTaskIssue | null;
     try {
@@ -159,8 +153,55 @@ export async function findAnyOpenIdleTaskWrapper(
       continue;
     }
     if (existing !== null) {
-      return { repo, number: existing.number, url: existing.url };
+      found.push({ repo, number: existing.number, url: existing.url });
+      if (stopAtFirst) return found;
     }
   }
-  return null;
+  return found;
+}
+
+/**
+ * Per-repo wrapper census (Issue #1083). Scans every repo in `repos` and
+ * returns one entry for **each** repo already holding an open
+ * `idle-task`-labelled issue, in caller order. A clean set returns an empty
+ * array.
+ *
+ * The filer subtracts this from the monitored set rather than short-circuiting
+ * on it: the operator's concurrency rule is *one issue in flight per work
+ * stream*, and applied to idle work that reads "at most one open wrapper **per
+ * repository**". The previous fleet-wide maximum of one (Issue #2092) was a
+ * far stronger constraint than the rule asks for, and it capped the fleet at a
+ * single filled idle slot however many empty repositories were available:
+ * measured live at four Vibe Coders, eight slots, two issues in flight and
+ * exactly one idle task (Issue #1083).
+ *
+ * #2089's protection is kept, because its fault was **fan-out from a
+ * shuffle** rather than plurality: a repository still never accumulates two
+ * open wrappers (this census excludes it), and a single idle tick still files
+ * at most one wrapper, so the next tick re-decides from fresh state.
+ */
+export function findOpenIdleTaskWrappers(
+  repos: readonly string[],
+  opts: FindAnyOpenIdleTaskOptions = {},
+): Promise<ExistingIdleTaskWrapper[]> {
+  return scanForOpenIdleTaskWrappers(repos, opts, false);
+}
+
+/**
+ * Cross-repo dedup query (Issue #2092). Returns the first open
+ * `idle-task`-labelled issue found anywhere in `repos`, or `null` when the
+ * entire set is clean. The first match in caller order wins — the result is
+ * deterministic for a fixed input list, and the scan stops at it.
+ *
+ * This answers "does the monitored set hold **any** wrapper?". It is no
+ * longer what gates filing — see {@link findOpenIdleTaskWrappers} for why —
+ * and remains for callers that only need existence, at one `gh` call rather
+ * than one per repository.
+ */
+export async function findAnyOpenIdleTaskWrapper(
+  repos: readonly string[],
+  opts: FindAnyOpenIdleTaskOptions = {},
+): Promise<ExistingIdleTaskWrapper | null> {
+  const found = await scanForOpenIdleTaskWrappers(repos, opts, true);
+  return found[0] ?? null;
 }

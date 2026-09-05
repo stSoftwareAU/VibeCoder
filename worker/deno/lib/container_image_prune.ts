@@ -13,19 +13,35 @@
  *
  * ## The rule
  *
- * The reference this checkout resolves to is the only one any future launch of
- * it can use, so after the launchers have that image present, every *other*
- * `vibe-coder` tag is dead weight and is removed. A rollback rebuilds from the
- * builder cache, which is deliberately left alone — it is what keeps a
+ * The references this checkout resolves to are the only ones any future launch
+ * of it can use, so after the launchers have those images present, every
+ * *other* `vibe-coder` tag is dead weight and is removed. A rollback rebuilds
+ * from the builder cache, which is deliberately left alone — it is what keeps a
  * definition-change rebuild cheap.
+ *
+ * ## Why "the reference", plural (Issue #1059)
+ *
+ * A deployment with a private extension layer builds **two** images: the
+ * standard `vibe-coder:<baseHash>` and `vibe-coder:<extensionHash>`, the latter
+ * built `FROM` the former (Issue #980). The container runs the extension tag,
+ * so a prune told only about that one untagged the base its own `FROM` names,
+ * on every single launch — a prune that reads as "remove superseded tags" while
+ * removing a current one, and a base rebuild on every launch that rebuilds the
+ * layer.
+ *
+ * The fix is not "keep two tags": the set to keep is the launch's image
+ * **dependency chain**, derived where the chain is actually known — the launch
+ * plan, which resolves each image and the image it is built from. A chain of
+ * any depth is a longer list here and needs no further change, which is why
+ * {@link PruneOptions.keep} is a list rather than a pair.
  *
  * Three properties keep this safe on an unattended host:
  *
- * 1. **Only our own image.** A candidate must be the same repository as the
+ * 1. **Only our own image.** A candidate must be the same repository as a
  *    reference being kept (Podman's `localhost/` prefix included) and carry a
- *    different tag. A foreign `vibe-coder` from some registry, a dangling
- *    `<none>` layer and every other image are left untouched.
- * 2. **Nothing untrusted reaches the runtime.** Both the reference to keep and
+ *    tag none of them names. A foreign `vibe-coder` from some registry, a
+ *    dangling `<none>` layer and every other image are left untouched.
+ * 2. **Nothing untrusted reaches the runtime.** Every reference to keep and
  *    each candidate are validated before they are passed as arguments, so a
  *    listing carrying something odd cannot turn into an argument the runtime
  *    misreads.
@@ -241,24 +257,61 @@ function listingIsEmpty(text: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Pick the superseded tags of the image being kept.
+ * Separator between the references of one `--keep` value.
+ *
+ * A comma cannot occur in either {@link REPOSITORY_RE} or {@link TAG_RE}, so
+ * splitting on it can never cut a reference in half.
+ */
+const KEEP_SEPARATOR = ",";
+
+/**
+ * Split a `--keep` value into the references it names (Issue #1059).
+ *
+ * @param value - One `--keep` value, comma-separated for a layered build
+ * @returns The references, empty entries dropped
+ */
+export function parseKeepReferences(value: string): string[] {
+  return value.split(KEEP_SEPARATOR).map((part) => part.trim()).filter((part) =>
+    part !== ""
+  );
+}
+
+/** Join a dependency chain into the single `--keep` value the command takes. */
+export function renderKeepReferences(references: readonly string[]): string {
+  return references.join(KEEP_SEPARATOR);
+}
+
+/**
+ * Pick the tags superseded by the images being kept.
+ *
+ * A candidate survives when any kept reference names it — so the base image an
+ * extension layer is built `FROM` survives as long as the launch plan passed
+ * the chain, however deep that chain is (Issue #1059).
  *
  * @param options.records - Images the runtime reported
- * @param options.keep - Reference this checkout resolves to
+ * @param options.keep - Every reference this checkout's launch depends on
  * @returns The images to remove, in listing order
  */
 export function selectSupersededImages(options: {
   records: readonly ImageRecord[];
-  keep: string;
+  keep: readonly string[];
 }): ImageRecord[] {
-  const keep = parseImageReference(options.keep);
-  if (!keep) return [];
-  const keepRepository = bareRepository(keep.repository);
+  const kept = options.keep
+    .map(parseImageReference)
+    .filter((parts): parts is ImageReferenceParts => parts !== null)
+    .map((parts) => `${bareRepository(parts.repository)}:${parts.tag}`);
+  if (kept.length === 0) return [];
 
-  return options.records.filter((record) =>
-    bareRepository(record.repository) === keepRepository &&
-    record.tag !== keep.tag
+  const keptRepositories = new Set(
+    kept.map((reference) => reference.slice(0, reference.lastIndexOf(":"))),
   );
+  const keptReferences = new Set(kept);
+
+  return options.records.filter((record) => {
+    const repository = bareRepository(record.repository);
+    return keptRepositories.has(repository) &&
+      !keptReferences.has(`${repository}:${record.tag}`);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -282,8 +335,11 @@ export interface PruneDeps {
 
 /** One prune request. */
 export interface PruneOptions {
-  /** Reference to keep — this checkout's content-derived image. */
-  keep: string;
+  /**
+   * Every reference to keep — this checkout's content-derived image and each
+   * image it is built `FROM`, deepest last (Issue #1059).
+   */
+  keep: readonly string[];
   /** Arguments that list the local images. */
   listArgs: readonly string[];
   /** Arguments that remove an image, before the reference. */
@@ -321,23 +377,35 @@ function firstLine(text: string, limit = 200): string {
 }
 
 /**
- * Remove every `vibe-coder` tag other than the one being kept.
+ * Remove every `vibe-coder` tag other than the ones being kept.
  *
  * @param deps - Injected runtime and log seams
- * @param options - The reference to keep and the runtime's own argv dialect
+ * @param options - The references to keep and the runtime's own argv dialect
  * @returns What was removed, and why the prune is not clean when it is not
  */
 export async function pruneSupersededImages(
   deps: PruneDeps,
   options: PruneOptions,
 ): Promise<PruneOutcome> {
-  const keep = parseImageReference(options.keep);
-  if (!keep) {
-    const detail = `${JSON.stringify(options.keep)} is not a plain ` +
-      `repository:tag image reference — refusing to prune anything`;
+  // Every reference must parse: one that does not would silently drop an image
+  // out of the keep set, and the prune would then delete it.
+  const unreadable = options.keep.filter((reference) =>
+    parseImageReference(reference) === null
+  );
+  if (options.keep.length === 0 || unreadable.length > 0) {
+    const detail = unreadable.length > 0
+      ? `${
+        unreadable.map((value) => JSON.stringify(value)).join(", ")
+      } is not a plain repository:tag image reference — refusing to prune ` +
+        "anything"
+      : "no image reference to keep — refusing to prune anything";
     deps.log(`[container-image-prune] ${detail}`);
     return { removed: [], failed: [], ok: false, detail };
   }
+  const kept = renderKeepReferences(options.keep);
+  const keepRepository = bareRepository(
+    parseImageReference(options.keep[0]!)!.repository,
+  );
 
   const listing = await deps.runRuntime(options.listArgs);
   if (listing.code !== 0) {
@@ -364,8 +432,8 @@ export async function pruneSupersededImages(
   const superseded = selectSupersededImages({ records, keep: options.keep });
   if (superseded.length === 0) {
     deps.log(
-      `[container-image-prune] nothing to prune — ${options.keep} is the ` +
-        `only ${keep.repository} tag on this host`,
+      `[container-image-prune] nothing to prune — ${kept} is the ` +
+        `only ${keepRepository} tag set on this host`,
     );
     return { removed: [], failed: [], ok: true };
   }
