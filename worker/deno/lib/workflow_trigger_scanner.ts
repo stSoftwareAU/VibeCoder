@@ -105,7 +105,7 @@ function workflowBasename(path: string): string {
  * YAML 1.1 parser would coerce it to the boolean `true`. Check both so
  * the scanner is robust regardless of the parser's schema.
  */
-function readOnBlock(parsed: Record<string, unknown>): unknown {
+export function readOnBlock(parsed: Record<string, unknown>): unknown {
   if ("on" in parsed) return parsed["on"];
   // Defensive: a YAML 1.1 parser coerces the `on` key to boolean true.
   const coerced = (parsed as Record<string, unknown>)[
