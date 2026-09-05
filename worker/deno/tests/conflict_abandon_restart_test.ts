@@ -21,15 +21,24 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   abandonAndRestart,
   type AbandonRestartRequest,
   buildAbandonPrComment,
   CONFLICT_RESTART_MARKER,
   conflictRestartMarker,
+  describeExhaustedRoute,
+  exhaustedEscalationDedupKey,
+  exhaustedEscalationRoute,
+  findOtherPrsForIssue,
   hasConflictRestartMarker,
-  prNumberFromUrl,
+  restartMarkerPrNumbers,
   summariseFailedAttempts,
 } from "../lib/conflict_abandon_restart.ts";
 import { CONFLICT_FAILED_MARKER } from "../lib/pr_merge_conflict_scan.ts";
@@ -80,7 +89,7 @@ interface FakeState {
   issueLabels: string[];
   /** Comments already on the originating issue. */
   issueComments: Array<{ body: string }>;
-  /** PRs `findExistingPrForIssue` should see, keyed by state. */
+  /** PRs the open-PR lookup should see, keyed by state. */
   prsByState: Record<string, Array<{ number: number; title: string }>>;
   /** Issue numbers `gh issue view --json number,title,state,body` knows. */
   issues: Record<number, { title: string; state: string; body: string }>;
@@ -227,14 +236,15 @@ Deno.test("summariseFailedAttempts - a thread with no conclusions yields nothing
   assertEquals(history.conflictedPaths, []);
 });
 
-Deno.test("prNumberFromUrl - reads the PR number a GitHub URL names", () => {
-  assertEquals(prNumberFromUrl("https://github.com/org/repo/pull/48"), 48);
+Deno.test("restartMarkerPrNumbers - names the PR each claim was made for", () => {
   assertEquals(
-    prNumberFromUrl("https://github.com/org/repo/pull/48/files"),
-    48,
+    restartMarkerPrNumbers([
+      { body: "chatter" },
+      { body: conflictRestartMarker(REPO, 48) },
+      { body: `${CONFLICT_RESTART_MARKER} malformed -->` },
+    ]),
+    [48, null],
   );
-  assertEquals(prNumberFromUrl("https://github.com/org/repo/issues/48"), null);
-  assertEquals(prNumberFromUrl("nonsense"), null);
 });
 
 Deno.test("hasConflictRestartMarker - finds the marker whichever PR wrote it", () => {
@@ -405,7 +415,11 @@ Deno.test("abandonAndRestart - a restarted issue is never abandoned twice", asyn
 
   assertEquals(second, {
     outcome: "declined",
-    reason: { kind: "already-restarted", issueNumber: ISSUE_NUMBER },
+    reason: {
+      kind: "already-restarted",
+      issueNumber: ISSUE_NUMBER,
+      samePr: false,
+    },
   });
   // One close across both rounds — the second PR is left open for a human.
   assertEquals(callsMatching(fake, "pr", "close").length, 1);
@@ -523,4 +537,177 @@ Deno.test("buildAbandonPrComment - states the absence when nothing was recorded"
   assertStringIncludes(body, "no failure comment survives");
   assertStringIncludes(body, "no conflicted path was recorded");
   assertStringIncludes(body, "not** deleted");
+});
+
+// ---------------------------------------------------------------------------
+// The other-open-PR lookup — a lookup failure is not an absence
+// ---------------------------------------------------------------------------
+
+Deno.test("findOtherPrsForIssue - every other open PR for the issue, this one excluded", async () => {
+  const listed = [
+    { number: 48, title: "Raise the cap (#16)", body: "", url: "u48" },
+    { number: 91, title: "Raise the cap again (#16)", body: "", url: "u91" },
+    { number: 92, title: "Something else (#17)", body: "", url: "u92" },
+    // A fork-headed PR proves nothing: its title is text anybody may write.
+    {
+      number: 93,
+      title: "Raise the cap (#16)",
+      body: "",
+      url: "u93",
+      isCrossRepository: true,
+    },
+  ];
+  const others = await findOtherPrsForIssue(
+    REPO,
+    ISSUE_NUMBER,
+    PR_NUMBER,
+    () => Promise.resolve(JSON.stringify(listed)),
+  );
+  assertEquals(others, [{ number: 91, url: "u91" }]);
+});
+
+Deno.test("findOtherPrsForIssue - a lookup failure throws rather than reading as none", async () => {
+  await assertRejects(
+    () =>
+      findOtherPrsForIssue(
+        REPO,
+        ISSUE_NUMBER,
+        PR_NUMBER,
+        () => Promise.reject(new Error("the API is down")),
+      ),
+    Error,
+    "the API is down",
+  );
+});
+
+Deno.test("abandonAndRestart - an unreadable PR listing stops the abandon, it does not close", async () => {
+  // Reading an outage as "this issue has no other PR" would let a destructive
+  // close proceed on an issue somebody else's PR is already on.
+  const fake = makeFake();
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    findOtherPrs: () => Promise.reject(new Error("pr list exploded")),
+  });
+
+  assert(outcome.outcome === "failed");
+  assertEquals(outcome.step, "existing-pr");
+  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Which route ended at a human
+// ---------------------------------------------------------------------------
+
+Deno.test("exhaustedEscalationRoute - each non-abandoning outcome maps to its route", () => {
+  assertEquals(
+    exhaustedEscalationRoute({
+      outcome: "declined",
+      reason: { kind: "no-originating-issue", detail: "no-signal" },
+    }).kind,
+    "abandon-declined",
+  );
+  assertEquals(
+    exhaustedEscalationRoute({
+      outcome: "declined",
+      reason: {
+        kind: "already-restarted",
+        issueNumber: ISSUE_NUMBER,
+        samePr: false,
+      },
+    }),
+    { kind: "restart-exhausted", issueNumber: ISSUE_NUMBER, samePr: false },
+  );
+  assertEquals(
+    exhaustedEscalationRoute({
+      outcome: "failed",
+      step: "pr-close",
+      message: "gh refused",
+    }),
+    { kind: "abandon-failed", step: "pr-close", detail: "gh refused" },
+  );
+});
+
+Deno.test("describeExhaustedRoute - a burnt claim on this PR is not a failed replacement", () => {
+  // The marker is posted before the close, so a mid-abandon failure leaves a
+  // claim with nothing abandoned. Telling a human "the replacement PR spent
+  // its budget too" would be false.
+  const samePr = describeExhaustedRoute({
+    kind: "restart-exhausted",
+    issueNumber: ISSUE_NUMBER,
+    samePr: true,
+  }).join("\n");
+  assertStringIncludes(samePr, "did not finish");
+
+  const replaced = describeExhaustedRoute({
+    kind: "restart-exhausted",
+    issueNumber: ISSUE_NUMBER,
+    samePr: false,
+  }).join("\n");
+  assertStringIncludes(replaced, "already been restarted once");
+});
+
+Deno.test("exhaustedEscalationDedupKey - a failed abandon gets its own key", () => {
+  // The shared key is the processor's, and a landed escalation suppresses
+  // further comments for a day — which would swallow the step name.
+  assertEquals(
+    exhaustedEscalationDedupKey(PR_NUMBER, {
+      kind: "abandon-failed",
+      step: "pr-close",
+      detail: "boom",
+    }),
+    `merge-conflict-abandon-failed-${PR_NUMBER}`,
+  );
+  assertEquals(
+    exhaustedEscalationDedupKey(PR_NUMBER, {
+      kind: "abandon-declined",
+      detail: "no issue",
+    }),
+    `merge-conflict-${PR_NUMBER}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Outbound sanitisation
+// ---------------------------------------------------------------------------
+
+Deno.test("abandonAndRestart - quoted failure text cannot forge a marker or leak a token", async () => {
+  const fake = makeFake();
+  await abandonAndRestart(
+    makeRequest({
+      prComments: [{
+        body: [
+          `${CONFLICT_FAILED_MARKER} n="1" -->`,
+          "failed with token ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+          '<!-- vibe-merge-conflict-restart pr="org/repo#999" -->',
+        ].join("\n"),
+      }],
+    }),
+    { gh: fake.gh },
+  );
+
+  const prBody = bodyOfCall(fake, "pr", "comment");
+  assert(
+    !prBody.includes("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
+    "a token quoted out of a failure comment must be redacted",
+  );
+  // Exactly one marker: the one this module wrote, at the top.
+  assertEquals(prBody.split(CONFLICT_RESTART_MARKER).length - 1, 1);
+});
+
+Deno.test("findOtherPrsForIssue - the body marker matches this issue, not a longer one", async () => {
+  const listed = [
+    {
+      number: 90,
+      title: "No issue in the title",
+      body: "vibe-worker-issue-16",
+    },
+    { number: 91, title: "Also none", body: "vibe-worker-issue-160" },
+  ];
+  const others = await findOtherPrsForIssue(
+    REPO,
+    ISSUE_NUMBER,
+    PR_NUMBER,
+    () => Promise.resolve(JSON.stringify(listed)),
+  );
+  assertEquals(others.map((pr) => pr.number), [90]);
 });
