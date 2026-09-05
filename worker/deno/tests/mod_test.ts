@@ -210,10 +210,15 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   //
   // `tests/ci_log_provider_core_only_test.ts` is what stops the next one
   // arriving the same way.
-  // Issue #997 added `container-egress-probe` (count 145 → 146): the launchers
-  // ask, before the build, whether a container on this host can reach the
-  // network at all.
-  assertEquals(commands.length, 146);
+  // Issue #858 added `check-main-ruleset` (count 145 -> 146).
+  // Issue #1048 added `check-resurrected-files` and Issue #1049 added
+  // `check-release-tag-ruleset` — the same reconciliation for the tag
+  // ruleset, which had drifted from its committed payload with nothing in
+  // the repository comparing the two. Each branch bumped 146 -> 147 on its
+  // own; merged, both commands exist, so the count is 148.
+  assertEquals(commands.length, 148);
+  assertEquals(commands.includes("check-resurrected-files"), true);
+  assertEquals(commands.includes("check-release-tag-ruleset"), true);
   assertEquals(commands.includes("callback-conformance"), true);
   // The command Issue #805 removed stays removed: a merge that quietly
   // brought it back would restore the built-in reporting that issue deleted.

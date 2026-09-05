@@ -49,6 +49,7 @@ import { recoverFromPushRejection } from "./git_push_recovery.ts";
 import { validateRepoState } from "./git_repo_validation.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import { setupRepo as setupRepoCommand } from "../commands/git_operations.ts";
+import { repairSharedObjectStore } from "./object_store_repair.ts";
 import { ensureRepoClone } from "./ensure_repo_clone.ts";
 import { ensureLaneWorktree } from "./lane_worktree.ts";
 import { runGitCommand } from "./git_timeout.ts";
@@ -192,6 +193,12 @@ export interface GitDeps {
     workDir: string,
     laneId?: string,
   ) => Promise<Result<string>>;
+  /**
+   * Re-clone a repository whose shared object store is corrupt (Issue
+   * #1093). The lane worktrees share one object store, so a damaged object
+   * is a repository-wide fault the worker repairs rather than fails on.
+   */
+  repairObjectStore: typeof repairSharedObjectStore;
   createBranchName: typeof createBranchName;
   createFeatureBranchFromBase: typeof createFeatureBranchFromBase;
   resumeFeatureBranchFromRemote: typeof resumeFeatureBranchFromRemote;
@@ -462,6 +469,7 @@ export function createDefaultDeps(
 
     git: {
       setupRepo: setupRepoFn,
+      repairObjectStore: repairSharedObjectStore,
       createBranchName,
       createFeatureBranchFromBase,
       resumeFeatureBranchFromRemote,
@@ -743,6 +751,14 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
   const mockGit: GitDeps = {
     setupRepo: mockFn<GitDeps["setupRepo"]>(() =>
       Promise.resolve({ ok: true, value: "/tmp/test-repo" })
+    ),
+    // Default: no test's clone is corrupt, so the repair is never reached
+    // unless a test makes `createFeatureBranchFromBase` say otherwise.
+    repairObjectStore: mockFn<GitDeps["repairObjectStore"]>(() =>
+      Promise.resolve({
+        ok: true,
+        value: { fsck: "", removed: [], repoPath: "/tmp/test-repo" },
+      })
     ),
     createBranchName: mockFn<GitDeps["createBranchName"]>((
       issueNumber: number,

@@ -29,6 +29,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 
 import {
+  ACTIONS_POLICY_PERMISSION,
   assembleGitHubActionsAuditPrompt,
   createGitHubActionsAuditTemplate,
   GITHUB_ACTIONS_AUDIT_BODY_FINGERPRINT,
@@ -36,6 +37,7 @@ import {
   GITHUB_ACTIONS_AUDIT_LABEL,
   githubActionsAuditTemplate,
   type GitHubActionsAuditTemplateDeps,
+  isNotPermittedLookup,
   renderGitHubActionsAuditSummary,
   runGitHubActionsAuditScan,
 } from "../lib/idle_task_templates/github_actions_audit_template.ts";
@@ -3236,5 +3238,158 @@ Deno.test(
     // The scan still ran, with the `(none)` sentinel's empty list.
     assertEquals(result.ok, true);
     assertEquals(seen, [[]]);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// A check the token may not run is skipped LOUDLY, never reported clean
+// (Issue #1094)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "isNotPermittedLookup - a 403 is a permission limit; a 5xx, a network fault and a parse fault are not (Issue #1094)",
+  () => {
+    assert(isNotPermittedLookup(
+      "gh command failed (exit 1): gh: You must have repository read " +
+        "permissions or have the repository Actions policies fine-grained " +
+        "permission. (HTTP 403)",
+    ));
+    assert(isNotPermittedLookup("Resource not accessible by integration"));
+    assertEquals(isNotPermittedLookup("HTTP 500 Internal Server Error"), false);
+    assertEquals(isNotPermittedLookup("HTTP 404 Not Found"), false);
+    assertEquals(isNotPermittedLookup("connection reset by peer"), false);
+    assertEquals(isNotPermittedLookup("Unexpected token < in JSON"), false);
+  },
+);
+
+Deno.test(
+  "renderGitHubActionsAuditSummary - a skipped check is named in the result, so a partial audit never reads as a clean one (Issue #1094)",
+  () => {
+    const summary = renderGitHubActionsAuditSummary([], {
+      skippedChecks: [
+        {
+          check: "actions/permissions/workflow",
+          reason: "HTTP 403",
+          notPermitted: true,
+        },
+        {
+          check: "rules/branches/Develop",
+          reason: "HTTP 500",
+          notPermitted: false,
+        },
+      ],
+    });
+    // Still says "no findings" — and immediately says what it did not look at.
+    assertStringIncludes(summary, "no findings");
+    assertStringIncludes(summary, "NOT covered by this audit");
+    assertStringIncludes(summary, "actions/permissions/workflow");
+    assertStringIncludes(summary, ACTIONS_POLICY_PERMISSION);
+    assertStringIncludes(summary, "rules/branches/Develop");
+    assertStringIncludes(summary, "HTTP 500");
+  },
+);
+
+Deno.test(
+  "runTask - a 403 on the Actions policy endpoints logs no ERROR and names the skipped checks in the summary (Issue #1094)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [],
+    });
+    const { logger, records } = makeLogger();
+    const t = makeAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      readWorkflowFilesFn: () => Promise.resolve([]),
+      scanActionAdvisoriesFn: () => Promise.resolve([]),
+      getDefaultBranchFn: () => Promise.resolve({ ok: true, value: "Develop" }),
+      scanRepoSettingsFn: (_repo, _gh, options) => {
+        options.onLookupFailure(
+          "actions/permissions/workflow",
+          "gh command failed (exit 1): gh: You must have repository read " +
+            "permissions or have the repository Actions policies " +
+            "fine-grained permission. (HTTP 403)",
+        );
+        options.onLookupFailure(
+          "actions/permissions",
+          "gh command failed (exit 1): (HTTP 403)",
+        );
+        return Promise.resolve([]);
+      },
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      logger,
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assertEquals(creates.length, 0);
+    // Acceptance 1: no ERROR line at all for a permission limit.
+    assertEquals(records.filter((r) => r.startsWith("error:")), []);
+    // Logged once per endpoint at WARNING, naming the scope to grant.
+    const warnings = records.filter((r) =>
+      r.startsWith("warn:") && r.includes("not permitted")
+    );
+    assertEquals(warnings.length, 2, JSON.stringify(warnings));
+    assert(
+      warnings.every((w) => w.includes(ACTIONS_POLICY_PERMISSION)),
+      JSON.stringify(warnings),
+    );
+    // Acceptance 2: the audit's own result names what it could not run.
+    assertStringIncludes(result.summary, "NOT covered by this audit");
+    assertStringIncludes(result.summary, "actions/permissions/workflow");
+    assertStringIncludes(result.summary, "actions/permissions (");
+  },
+);
+
+Deno.test(
+  "runTask - a non-403 settings lookup failure still logs ERROR and is still named as skipped (Issue #1094)",
+  async () => {
+    const { gh } = makeGhStub({ beforeSnapshot: [], afterSnapshot: [] });
+    const { logger, records } = makeLogger();
+    const t = makeAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      readWorkflowFilesFn: () => Promise.resolve([]),
+      scanActionAdvisoriesFn: () => Promise.resolve([]),
+      getDefaultBranchFn: () => Promise.resolve({ ok: true, value: "Develop" }),
+      scanRepoSettingsFn: (_repo, _gh, options) => {
+        options.onLookupFailure(
+          "actions/permissions",
+          "HTTP 500 Internal Server Error",
+        );
+        return Promise.resolve([]);
+      },
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      logger,
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    // Acceptance 3: a genuine fault is still loud.
+    assert(
+      records.some((r) =>
+        r.startsWith("error:") &&
+        r.includes("repository settings lookup failed (actions/permissions)")
+      ),
+      JSON.stringify(records),
+    );
+    assertStringIncludes(result.summary, "NOT covered by this audit");
+    assertStringIncludes(result.summary, "HTTP 500");
   },
 );

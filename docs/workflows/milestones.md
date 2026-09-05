@@ -6,7 +6,7 @@ This page is part of the **user manual** for the Vibe Coder. It describes how mi
 
 ## Why milestones? (Productivity + safety)
 
-**Milestones unlock the potential** of the Vibe Coder: it can **safely** work on many issues in the background overnight or over the weekend. Each milestone-issue PR targets the **milestone branch**. At **PR creation** the worker **skips** enabling auto-merge for those PRs (`skipAutoMerge` —); a later Priority 1.65 catch-up scan may still arm auto-merge on open worker PRs when mergeable. You still get **one final PR** to default with many issues completed and quality checks already exercised on the milestone line.
+**Milestones unlock the potential** of the Vibe Coder: it can **safely** work on many issues in the background overnight or over the weekend. Each milestone-issue PR targets the **milestone branch**, and the worker **enables auto-merge at PR creation** for those PRs like any other (Issue #1136). The Priority 1.65 catch-up scan — and the post-scan sweep that repeats it once the issue slots drain — are the backstop when arming is refused or fails. You still get **one final PR** to default with many issues completed and quality checks already exercised on the milestone line.
 
 **Safety is unchanged.** Every PR (including every milestone-issue PR) runs the full quality gate (e.g. `./quality.sh`). **No code reaches the default branch without your review:** the only path to default is the **final PR** from the milestone branch, which you approve when ready. Productivity gain without sacrificing oversight.
 
@@ -16,7 +16,7 @@ This page is part of the **user manual** for the Vibe Coder. It describes how mi
 
 ## ⚡ TL;DR
 
-**One branch per milestone; one PR (Pull Request) at a time per branch.** Put issues in a GitHub milestone → the worker creates a `milestone/<name>` branch and implements issues one by one, each with a PR **to the milestone branch** (not default). At create time those PRs use **`skipAutoMerge`** (unlike non-milestone PRs, which enable auto-merge immediately). The Priority 1.65 catch-up path may still enable auto-merge later when a PR is mergeable — see [Label Flows](label-flows.md) and [PR feedback](pr-feedback.md). When **all** milestone issues are done, the worker creates a **tracking issue**, then opens **one final PR** from the milestone branch to default — the human review gate for the whole stream. The worker **monitors the final PR for CI failures** (including integration tests that may only run against the default branch) and automatically fixes them. Milestone issues **branch off the milestone branch** so the integration line stays clean. Spelling/quality/merge fixes run automatically on worker-authored PRs.
+**One branch per milestone; one PR (Pull Request) at a time per branch.** Put issues in a GitHub milestone → the worker creates a `milestone/<name>` branch and implements issues one by one, each with a PR **to the milestone branch** (not default). Those PRs enable auto-merge at create, exactly as non-milestone PRs do (Issue #1136); the Priority 1.65 catch-up path and the post-scan sweep are the backstop — see [Label Flows](label-flows.md) and [PR feedback](pr-feedback.md). When **all** milestone issues are done, the worker creates a **tracking issue**, then opens **one final PR** from the milestone branch to default — the human review gate for the whole stream. The worker **monitors the final PR for CI failures** (including integration tests that may only run against the default branch) and automatically fixes them. Milestone issues **branch off the milestone branch** so the integration line stays clean. Spelling/quality/merge fixes run automatically on worker-authored PRs.
 
 ```mermaid
 flowchart TD
@@ -90,7 +90,7 @@ This means: if a non-milestone issue has a stuck PR targeting the default branch
 1. **Select** — Issue is in a milestone; no other open PR by the configured GitHub user for **this milestone branch**; issue is otherwise eligible (labels, author, not blocked by dependencies or open children).
 2. **Branch** — Ensure `milestone/<name>` exists (from default); sync it with default (merge); **create feature branch from the milestone branch** (not from default).
 3. **Implement** — Same as non-milestone: clarify if needed, Claude, quality, commit, push.
-4. **PR** — Create PR targeting **milestone branch** (not default). Use "Closes #N" in the PR body (not "Addresses #N" — see [Issue closure for milestone issues](#issue-closure-for-milestone-issues)). **Do not** enable auto-merge at create (`skipAutoMerge` —); catch-up may arm it later.
+4. **PR** — Create PR targeting **milestone branch** (not default). Use "Closes #N" in the PR body (not "Addresses #N" — see [Issue closure for milestone issues](#issue-closure-for-milestone-issues)). Enable auto-merge at create, like any other PR (Issue #1136); the catch-up scan and post-scan sweep are the backstop.
 
 ### ✅ Milestone completion
 
@@ -207,8 +207,61 @@ Long-running milestones can drift significantly from the default branch, causing
 1. **Active milestone detection:** For each configured repo, the worker finds open milestones with at least one closed issue (meaning work has started).
 2. **Branch existence check:** Verifies the milestone branch exists on the remote before attempting sync.
 3. **Merge:** Merges the default branch into the milestone branch using `git merge --no-edit`. If the merge succeeds cleanly, pushes the result.
-4. **Conflict handling:** If a merge conflict occurs, the worker attempts auto-resolution (favouring default branch changes). If auto-resolution fails, the conflict is logged as a warning without blocking other work.
+4. **Conflict handling:** If a merge conflict occurs, the worker attempts auto-resolution (favouring default branch changes). A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). If auto-resolution fails, the conflict is logged as a warning without blocking other work.
 5. **Frequency guard:** Each milestone is synced at most once per cooldown period (default: 1 hour). The cooldown resets after each successful sync.
+6. **Gated branches:** Where a ruleset refuses the direct push, the same merge lands through a `sync/milestone-<name>` PR (Issue #589). That PR merges as a **merge commit, never a squash** (Issue #1048) — see below.
+
+### The sync must record the default branch as an ancestor
+
+A squashed sync applies the default branch's *content* under a single-parent
+commit, so the default branch is **not an ancestor** of the milestone branch.
+Every later merge then computes its merge base from before the sync, and a
+deletion the default branch made in the meantime returns as a modify/delete
+conflict instead of a deletion. On `milestone/863` that revived 1984 lines of a
+deliberately-removed subsystem, and it surfaced only because the resurrected
+test tripped an unrelated gate.
+
+```mermaid
+gitGraph
+    commit id: "shared base"
+    branch milestone/863
+    checkout main
+    commit id: "delete subsystem"
+    checkout milestone/863
+    merge main id: "sync (merge commit)"
+    commit id: "milestone work"
+    checkout main
+    commit id: "more main work"
+    checkout milestone/863
+    merge main id: "later merge — deletion is history"
+```
+
+Two things hold this in place:
+
+- **The sync PR merges as a merge commit.** `mergeMethodFlagForHead` in
+  `worker/deno/lib/milestone_sync_pr.ts` returns `--merge` for a
+  `sync/milestone-*` head and `--squash` for everything else, and every
+  auto-merge and direct-merge path routes through it. This needs **merge
+  commits to be permitted on the repository** (Settings → Pull Requests →
+  Allow merge commits). Where they are not, the sync is armed as a squash with
+  a warning naming the setting, and the check below is what catches the
+  consequence.
+- **A resurrection is detected directly.** The `check-resurrected-files`
+  command fails when a branch carries a file the default branch deleted and
+  whose deleting commit is already in the branch's ancestry:
+
+  ```bash
+  deno run --allow-read --allow-env --allow-run worker/deno/mod.ts \
+    check-resurrected-files --repo-dir . --branch HEAD --default-branch origin/main
+  ```
+
+  The `milestone-resurrection` job in `.github/workflows/validate-scripts.yml`
+  runs it on every PR into a `milestone/*` branch and on the milestone →
+  default-branch rollup PR, naming each file and the commit that deleted it.
+  A file that is new on the milestone branch and was never on the default
+  branch is not reported, and neither is a branch that is merely behind the
+  deletion — only a branch that has the deleting commit in its ancestry and
+  the file still in its tree.
 
 ### Configuration
 

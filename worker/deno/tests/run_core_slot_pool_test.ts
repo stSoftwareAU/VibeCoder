@@ -1151,6 +1151,18 @@ Deno.test("slot pool - a success is followed by the normal sleep and another cla
       logs.push(m);
       if (m.includes("Issue scan pool:")) poolEntries++;
     },
+    // The pool is entered with two configured slots, but the memory-pressure
+    // ceiling starts one (Issue #990). With a sibling running, this trace was
+    // not the trace of one slot: the idle slot's own rescan sleeps landed
+    // between this slot's settle sleep and its next claim, in an order the
+    // event loop decided, so the assertion below failed on a loaded host. The
+    // sibling could not be attributed either — sleeps happen outside the slot
+    // context — and, once the first slot releases its hold, the sibling may
+    // legitimately take the second issue, so two slots could never prove the
+    // property this test is named for. One slot in the pool proves it exactly:
+    // the claim that follows the settle sleep is the same slot's or there is
+    // no second claim at all.
+    slotCeiling: { effectiveSlots: () => Promise.resolve(1) },
     sleep: (ms?: number) => {
       events.push(`sleep:${ms ?? 0}`);
       now += ms ?? 30_000;
