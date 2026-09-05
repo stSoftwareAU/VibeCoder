@@ -25,32 +25,6 @@ import { assertNever } from "./assert_never.ts";
 
 export { GITHUB_ACTIONS_PROVIDER_ID };
 
-/**
- * The caller's URL when it is safe to present as this run's source.
- *
- * Safe means: parseable, on a GitHub host, shaped like an Actions run or job
- * URL, and under this repository's path. Anything else returns `undefined`
- * and the caller falls back to a URL it builds itself.
- *
- * @param targetUrl - The caller-supplied URL, from untrusted input.
- * @param repo - `owner/repo` this log was fetched for.
- * @returns The URL to present, or `undefined` when it cannot be trusted.
- */
-export function actionsUrlForRepo(
-  targetUrl: string | undefined,
-  repo: string,
-): string | undefined {
-  if (!targetUrl) return undefined;
-  if (parseActionsCheckUrl(targetUrl).kind === "other") return undefined;
-  let path: string;
-  try {
-    path = new URL(targetUrl).pathname;
-  } catch {
-    return undefined;
-  }
-  return path.startsWith(`/${repo}/`) ? targetUrl : undefined;
-}
-
 /** The built-in GitHub Actions provider. */
 export const githubActionsCiLogProvider: CiLogProvider = {
   id: GITHUB_ACTIONS_PROVIDER_ID,
@@ -73,6 +47,15 @@ export const githubActionsCiLogProvider: CiLogProvider = {
       };
     }
 
+    // Never echo `ctx.targetUrl` back as the excerpt URL — see the
+    // `fetchLog` contract. The run id is parsed out of it and the URL is
+    // rebuilt against github.com for this repo, so a hostile `targetUrl`
+    // cannot reach the prompt.
+    const parsed = parseActionsCheckUrl(ctx.targetUrl ?? "");
+    const runUrl = parsed.kind === "other"
+      ? `https://github.com/${ctx.repo}/actions/runs`
+      : `https://github.com/${ctx.repo}/actions/runs/${parsed.runId}`;
+
     const fetchExcerpt = ctx.actionsLogFn ?? fetchGithubActionsLogExcerpt;
     const outcome = await fetchExcerpt({
       repo: ctx.repo,
@@ -89,15 +72,7 @@ export const githubActionsCiLogProvider: CiLogProvider = {
           value: {
             providerId: GITHUB_ACTIONS_PROVIDER_ID,
             buildId: String(outcome.jobId),
-            // Never echo the caller's URL back. `targetUrl` reaches here
-            // from untrusted input (an issue body's `Build URL`, a check's
-            // `details_url`), and this value is rendered into the CI-fix
-            // prompt. It is used only when it is an Actions URL on a GitHub
-            // host — enforced by `parseActionsCheckUrl` — AND names this
-            // repository, so a valid github.com URL for somebody else's
-            // repository cannot be presented as the source of this log.
-            url: actionsUrlForRepo(ctx.targetUrl, ctx.repo) ??
-              `https://github.com/${ctx.repo}/actions/runs`,
+            url: runUrl,
             logText: outcome.excerpt,
           },
         };

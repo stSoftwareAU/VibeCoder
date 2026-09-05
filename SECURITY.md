@@ -1243,8 +1243,8 @@ environment is readable by a prompt-injected model. `buildClaudeChildEnv()`
 child's environment and withholds:
 
 - the named worker-only credentials in `CLAUDE_ENV_DENYLIST` — the GitHub App
-  private key (path and inline body), the Jenkins API user and token, and the
-  ImgBB key; and
+  private key (path and inline body) and the ImgBB key, which are the only
+  credentials core itself holds; and
 - **anything else whose name looks like a credential** —
   `*TOKEN*`, `*SECRET*`, `*PASSWORD*`, `*API_KEY*`, `*ACCESS_KEY*`,
   `*PRIVATE_KEY*`, `*CREDENTIAL*` — unless it appears in

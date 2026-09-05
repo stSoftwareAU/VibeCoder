@@ -81,16 +81,21 @@
  * code under test already accepts an `env` function for exactly this reason
  * (see `HostDiskMonitor`, `resolveDiskFloors`, `findIssuesByLabel`). Each file
  * removed is one more file that runs in the fast pass.
+ *
+ * **It is now empty, and #944/#969 are done for this category.** The last
+ * seven entries were all CI-log suites, and Issue #986 cleared them in one
+ * step rather than by migration: four were the tests of an integration that
+ * left the repository, and the other three read a vendor's credentials out
+ * of the process environment only because they drove that vendor's client.
+ * Driving the provider registry with a fake provider needs no credentials at
+ * all, so the mutation had nothing left to do.
+ *
+ * An empty list is not an invitation. The classifier below still runs over
+ * every suite, so a new mutator fails `parallel_safety_cap_test.ts` naming
+ * itself, and re-adding an entry here to silence it is the thing this list
+ * exists to prevent.
  */
-export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
-  "tests/check_jenkins_access_command_test.ts",
-  "tests/ci_failure_issue_test.ts",
-  "tests/ci_log_provider_test.ts",
-  "tests/ci_provider_jenkins_target_url_test.ts",
-  "tests/fetch_jenkins_log_command_test.ts",
-  "tests/jenkins_log_fetcher_test.ts",
-  "tests/pr_failure_actions_test.ts",
-];
+export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
 
 /**
  * Test files that assert on a real elapsed wall-clock reading (Issue #940).

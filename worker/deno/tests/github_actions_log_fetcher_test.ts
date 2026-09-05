@@ -61,9 +61,9 @@ Deno.test("parseActionsCheckUrl - run-only URL yields a run resolution", () => {
   assertEquals(parsed, { kind: "run", runId: 77 });
 });
 
-Deno.test("parseActionsCheckUrl - Jenkins URL is not an Actions URL", () => {
+Deno.test("parseActionsCheckUrl - another CI system's URL is not an Actions URL", () => {
   const parsed = parseActionsCheckUrl(
-    "https://jenkins.example.com/job/Migration/job/Develop/1234/",
+    "https://ci.example.com/job/Migration/job/Develop/1234/",
   );
   assertEquals(parsed.kind, "other");
 });
@@ -105,9 +105,9 @@ Deno.test("resolveActionsJobId - falls back to the check-run API when no target 
 Deno.test("resolveActionsJobId - non-Actions check run is not applicable", async () => {
   const ghFn = fakeGh({
     "repos/o/r/check-runs/555": JSON.stringify({
-      name: "continuous-integration/jenkins/pr-head",
-      app: { slug: "jenkins" },
-      details_url: "https://jenkins.example.com/job/Foo/12/",
+      name: "continuous-integration/external-ci/pr-head",
+      app: { slug: "external-ci" },
+      details_url: "https://ci.example.com/job/Foo/12/",
     }),
   });
 
@@ -120,12 +120,12 @@ Deno.test("resolveActionsJobId - non-Actions check run is not applicable", async
   assertEquals(result.kind, "not-applicable");
 });
 
-Deno.test("resolveActionsJobId - Jenkins target URL is not applicable without any gh call", async () => {
+Deno.test("resolveActionsJobId - a foreign target URL is not applicable without any gh call", async () => {
   const calls: string[][] = [];
   const result = await resolveActionsJobId({
     repo: "o/r",
     checkRunId: "555",
-    targetUrl: "https://jenkins.example.com/job/Migration/job/Develop/1234/",
+    targetUrl: "https://ci.example.com/job/Migration/job/Develop/1234/",
     ghFn: fakeGh({}, calls),
   });
 
@@ -268,12 +268,12 @@ Deno.test("fetchGithubActionsLogExcerpt - returns a populated excerpt for a fail
   }
 });
 
-Deno.test("fetchGithubActionsLogExcerpt - Jenkins check falls through as not applicable", async () => {
+Deno.test("fetchGithubActionsLogExcerpt - a foreign CI check falls through as not applicable", async () => {
   const outcome = await fetchGithubActionsLogExcerpt({
     repo: "o/r",
     checkRunId: "555",
-    checkName: "continuous-integration/jenkins/pr-head",
-    targetUrl: "https://jenkins.example.com/job/Migration/job/Develop/1234/",
+    checkName: "continuous-integration/external-ci/pr-head",
+    targetUrl: "https://ci.example.com/job/Migration/job/Develop/1234/",
     ghFn: fakeGh({}),
   });
 

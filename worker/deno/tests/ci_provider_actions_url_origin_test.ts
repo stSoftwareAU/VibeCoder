@@ -27,9 +27,6 @@ import {
   isGithubHost,
   parseActionsCheckUrl,
 } from "../lib/github_actions_log_fetcher.ts";
-import { actionsUrlForRepo } from "../lib/ci_provider_github_actions.ts";
-
-const REPO = "owner/repo";
 
 Deno.test("parseActionsCheckUrl - a foreign host with an Actions-shaped path is not claimed", () => {
   for (
@@ -91,49 +88,4 @@ Deno.test("isGithubHost - matches the GitHub hosts case-insensitively and nothin
   ) {
     assertEquals(isGithubHost(host), false, host);
   }
-});
-
-// The URL is rendered into the CI-fix prompt, so an unverified value must
-// never reach it — the caller falls back to one it builds itself.
-Deno.test("actionsUrlForRepo - refuses a URL it cannot verify", () => {
-  for (
-    const hostile of [
-      "https://attacker.example/owner/repo/actions/runs/1/job/2",
-      "/owner/repo/actions/runs/1",
-      "not a url at all",
-      "",
-    ]
-  ) {
-    assertEquals(
-      actionsUrlForRepo(hostile, REPO),
-      undefined,
-      `must refuse ${JSON.stringify(hostile)}`,
-    );
-  }
-  assertEquals(actionsUrlForRepo(undefined, REPO), undefined);
-});
-
-// A valid github.com Actions URL for somebody else's repository must not be
-// presented as the source of this repository's log.
-Deno.test("actionsUrlForRepo - refuses a GitHub URL for a different repository", () => {
-  assertEquals(
-    actionsUrlForRepo(
-      "https://github.com/someone/else/actions/runs/1/job/2",
-      REPO,
-    ),
-    undefined,
-  );
-  // A path that merely starts with the same characters is not the same repo.
-  assertEquals(
-    actionsUrlForRepo(
-      "https://github.com/owner/repo-other/actions/runs/1",
-      REPO,
-    ),
-    undefined,
-  );
-});
-
-Deno.test("actionsUrlForRepo - accepts this repository's own Actions URL", () => {
-  const good = "https://github.com/owner/repo/actions/runs/7/job/9";
-  assertEquals(actionsUrlForRepo(good, REPO), good);
 });

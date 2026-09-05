@@ -19,6 +19,7 @@
  */
 
 import type {
+  CiProviderConfig,
   CustomLabelPromptMapping,
   Logger,
   RepoConfig,
@@ -27,6 +28,7 @@ import type {
 import {
   buildQualityInstructions,
   getCiFailureLabels,
+  getCiProviders,
   getCustomInstructions,
   getRepoConfig,
 } from "./repo_config.ts";
@@ -289,7 +291,13 @@ export interface ExecuteClaudePhaseDeps {
    * real implementation is used when omitted.
    */
   buildCiFailureContext?: (
-    options: { issueBody: string; jobPath?: string; boundaryId: string },
+    options: {
+      issueBody: string;
+      repo: string;
+      jobPath?: string;
+      ciProviders?: readonly CiProviderConfig[];
+      boundaryId: string;
+    },
   ) => Promise<string>;
   /** Validate repository state before Claude invocation. */
   validateRepoState: (
@@ -631,6 +639,31 @@ export async function defaultEscalateContextBudget(
 }
 
 /**
+ * The repo's configured CI log providers, or none.
+ *
+ * `getCiProviders` throws on malformed configuration, which is right for the
+ * PR flow that is about to act on it. In issue mode a bad `ciProviders`
+ * entry must not abort the run: the log simply is not fetched and the
+ * prompt says so. The parse error is logged so the operator can see it.
+ */
+function readCiProviders(
+  repoConfigs: Record<string, RepoConfig> | undefined,
+  repo: string,
+  log: (message: string) => void,
+): readonly CiProviderConfig[] {
+  try {
+    return getCiProviders(repoConfigs, repo);
+  } catch (err: unknown) {
+    log(
+      `Ignoring malformed ciProviders for ${repo}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return [];
+  }
+}
+
+/**
  * Default production dependencies.
  */
 export function createDefaultDeps(): ExecuteClaudePhaseDeps {
@@ -805,8 +838,10 @@ export async function runExecuteClaudePhase(
     ciFailureBoundaryId = generateBoundaryId();
     ciFailureContext = await fetchContext({
       issueBody,
+      repo,
       jobPath: getRepoConfig(repoConfigs, repo, "ciFailureJobPath") ||
         undefined,
+      ciProviders: readCiProviders(repoConfigs, repo, deps.log),
       boundaryId: ciFailureBoundaryId,
     });
   }

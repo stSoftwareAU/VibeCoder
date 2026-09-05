@@ -219,7 +219,7 @@ export function redactText(
     // The organisation is public; the repository NAME is what is private.
     // Every private name found after `stSoftwareAU/` anywhere in the tree
     // (the index) is replaced wherever it appears as a whole word — in the
-    // slug, in a Jenkins job path, in a work-dir path, in a fixture — so a
+    // slug, in a CI job path, in a work-dir path, in a fixture — so a
     // test that derives one form from another still agrees with itself.
     // Names shorter than four characters are replaced only in slug form
     // (a bare short word is too likely to be ordinary text).

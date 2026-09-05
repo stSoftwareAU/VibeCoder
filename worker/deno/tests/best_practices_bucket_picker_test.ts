@@ -53,7 +53,11 @@ Deno.test("pickBucket - empty repo returns general", () => {
 // feedback. `design` is language-agnostic, so it now competes with `general`
 // on such a repo.
 Deno.test("pickBucket - unknown language only returns general or design", () => {
-  const langs = makeLangs({ Brainfuck: 1000, Cobol: 500 });
+  // Invented names on purpose. A real language here would be this
+  // repository recording a language it does not support, which is the
+  // enumeration Issue #986 removed — and the test needs only that no
+  // bucket covers them.
+  const langs = makeLangs({ "Unbucketed-A": 1000, "Unbucketed-B": 500 });
   const rng = mulberry32(11);
   const seen = new Set<string>();
   for (let i = 0; i < 200; i++) {

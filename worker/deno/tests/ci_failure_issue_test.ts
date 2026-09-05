@@ -1,13 +1,19 @@
 /**
- * Tests for issue-mode CI-failure log auto-fetch (Issue #3581).
+ * Tests for issue-mode CI-failure log auto-fetch (Issue #3581, #986).
  *
  * Covers:
  *   - Failure-label detection driven by per-repo configuration
- *   - Build-reference parsing from a real develop-build-watch.yml body,
- *     a body with only a build number, and a body with neither
- *   - Origin allowlist enforcement (foreign host must be rejected)
+ *   - Build-reference parsing from a real watcher-workflow body, a body with
+ *     only a build number, and a body with neither
+ *   - Structural rejection of a hostile build URL (bad scheme, embedded
+ *     credentials, no build segment)
  *   - Failure-signal extraction and context rendering
- *   - End-to-end context build for both fetch success and fetch failure
+ *   - End-to-end context build through the CI log provider registry, for
+ *     both a provider that resolves a log and one that cannot
+ *
+ * The suite names no CI vendor. Issue #986: core fetches through the
+ * provider registry and has no opinion about what is behind it, so a test
+ * that named one would be asserting something core must not know.
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -19,41 +25,41 @@ import {
   isCiFailureIssue,
   parseCiFailureBuildReference,
 } from "../lib/ci_failure_issue.ts";
+import type {
+  CiFailureContext,
+  CiLogExcerpt,
+  CiLogProvider,
+} from "../lib/ci_log_provider.ts";
 import { createPromptDelimiters } from "../lib/prompt_delimiter.ts";
+import type { Result } from "../types.ts";
 
 /** Fixed per-run boundary id so fence assertions are deterministic. */
 const TEST_BOUNDARY_ID = "abc123def456";
 
-const ENV_KEYS = ["JENKINS_URL", "JENKINS_USER", "JENKINS_TOKEN"] as const;
-
-function snapshotEnv(): Record<string, string | undefined> {
-  const snapshot: Record<string, string | undefined> = {};
-  for (const key of ENV_KEYS) snapshot[key] = Deno.env.get(key);
-  return snapshot;
-}
-
-function setEnv(base = "https://jenkins.example.com"): void {
-  Deno.env.set("JENKINS_URL", base);
-  Deno.env.set("JENKINS_USER", "test-user");
-  Deno.env.set("JENKINS_TOKEN", "test-token");
-}
-
-function restoreEnv(snapshot: Record<string, string | undefined>): void {
-  for (const key of ENV_KEYS) {
-    const v = snapshot[key];
-    if (v === undefined) Deno.env.delete(key);
-    else Deno.env.set(key, v);
-  }
+/** A provider that resolves a log, recording the context it was handed. */
+function fakeProvider(
+  outcome: Result<CiLogExcerpt, string>,
+  seen: CiFailureContext[] = [],
+): CiLogProvider {
+  return {
+    id: "test-provider",
+    matches: () => true,
+    fetchLog: (ctx) => {
+      seen.push(ctx);
+      return Promise.resolve(outcome);
+    },
+  };
 }
 
 /**
- * Body as produced by private-repo-12's `.github/workflows/develop-build-watch.yml`.
- * The machine-readable header is the parsing contract this feature relies on.
+ * Body as produced by a watcher workflow that opens an issue when a build
+ * fails. The machine-readable header is the parsing contract this feature
+ * relies on.
  */
 const REAL_BODY = `## Develop pipeline build failed
 
 - **Build number:** \`4347\`
-- **Build URL:** https://jenkins.example.com/job/Migration/job/Develop/4347/
+- **Build URL:** https://ci.example.com/job/Migration/job/Develop/4347/
 - **Result:** \`FAILURE\`
 
 ### Summary
@@ -104,45 +110,36 @@ Deno.test("isCiFailureIssue - does not match a label substring", () => {
 // ---------------------------------------------------------------------------
 
 Deno.test("parseCiFailureBuildReference - parses a real workflow body", () => {
-  const result = parseCiFailureBuildReference(REAL_BODY, {
-    jenkinsBaseUrl: "https://jenkins.example.com",
-  });
+  const result = parseCiFailureBuildReference(REAL_BODY);
   assert(result.ok, result.ok ? "" : result.error);
   assertEquals(result.value.buildNumber, 4347);
-  assertEquals(result.value.jobPath, "Migration/job/Develop");
   assertEquals(result.value.source, "url");
   assertEquals(
     result.value.buildUrl,
-    "https://jenkins.example.com/job/Migration/job/Develop/4347/",
+    "https://ci.example.com/job/Migration/job/Develop/4347/",
   );
 });
 
-Deno.test("parseCiFailureBuildReference - single-segment job path", () => {
-  const body =
-    "- **Build URL:** https://jenkins.example.com/job/Develop/12/console";
-  const result = parseCiFailureBuildReference(body, {
-    jenkinsBaseUrl: "https://jenkins.example.com/",
-  });
+Deno.test("parseCiFailureBuildReference - build number from a trailing view segment", () => {
+  const result = parseCiFailureBuildReference(
+    "- **Build URL:** https://ci.example.com/job/Develop/12/console",
+  );
   assert(result.ok, result.ok ? "" : result.error);
   assertEquals(result.value.buildNumber, 12);
-  assertEquals(result.value.jobPath, "Develop");
 });
 
 Deno.test("parseCiFailureBuildReference - build number only", () => {
   const body = "## Build failed\n\n- **Build number:** `4347`\n";
-  const result = parseCiFailureBuildReference(body, {
-    jenkinsBaseUrl: "https://jenkins.example.com",
-  });
+  const result = parseCiFailureBuildReference(body);
   assert(result.ok, result.ok ? "" : result.error);
   assertEquals(result.value.buildNumber, 4347);
-  assertEquals(result.value.jobPath, undefined);
+  assertEquals(result.value.buildUrl, undefined);
   assertEquals(result.value.source, "build-number");
 });
 
 Deno.test("parseCiFailureBuildReference - neither reference present", () => {
   const result = parseCiFailureBuildReference(
     "The nightly build broke again, please look.",
-    { jenkinsBaseUrl: "https://jenkins.example.com" },
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
@@ -150,68 +147,43 @@ Deno.test("parseCiFailureBuildReference - neither reference present", () => {
   }
 });
 
-Deno.test("parseCiFailureBuildReference - rejects a foreign-origin URL", () => {
-  const body = [
-    "- **Build number:** `4347`",
-    "- **Build URL:** https://attacker.example.net/job/Migration/job/Develop/4347/",
-  ].join("\n");
-  const result = parseCiFailureBuildReference(body, {
-    jenkinsBaseUrl: "https://jenkins.example.com",
-  });
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertStringIncludes(result.error, "origin");
-    assertStringIncludes(result.error, "attacker.example.net");
-  }
-});
-
 Deno.test("parseCiFailureBuildReference - rejects a non-HTTP scheme", () => {
-  const body = "- **Build URL:** file:///etc/passwd";
-  const result = parseCiFailureBuildReference(body, {
-    jenkinsBaseUrl: "https://jenkins.example.com",
-  });
+  const result = parseCiFailureBuildReference(
+    "- **Build URL:** file:///etc/passwd",
+  );
   assertEquals(result.ok, false);
+  if (!result.ok) assertStringIncludes(result.error, "http(s)");
 });
 
-Deno.test("parseCiFailureBuildReference - rejects a mismatched port", () => {
-  const body =
-    "- **Build URL:** https://jenkins.example.com:8443/job/Develop/7/";
-  const result = parseCiFailureBuildReference(body, {
-    jenkinsBaseUrl: "https://jenkins.example.com",
-  });
+Deno.test("parseCiFailureBuildReference - rejects embedded credentials", () => {
+  const result = parseCiFailureBuildReference(
+    "- **Build URL:** https://user:secret@ci.example.com/job/Develop/7/",
+  );
   assertEquals(result.ok, false);
-});
-
-Deno.test("parseCiFailureBuildReference - honours a base path prefix", () => {
-  const ok = parseCiFailureBuildReference(
-    "- **Build URL:** https://ci.example.com/jenkins/job/Develop/9/",
-    { jenkinsBaseUrl: "https://ci.example.com/jenkins" },
-  );
-  assert(ok.ok, ok.ok ? "" : ok.error);
-  assertEquals(ok.value.jobPath, "Develop");
-  assertEquals(ok.value.buildNumber, 9);
-
-  const bad = parseCiFailureBuildReference(
-    "- **Build URL:** https://ci.example.com/other/job/Develop/9/",
-    { jenkinsBaseUrl: "https://ci.example.com/jenkins" },
-  );
-  assertEquals(bad.ok, false);
+  if (!result.ok) assertStringIncludes(result.error, "credentials");
 });
 
 Deno.test("parseCiFailureBuildReference - rejects a URL with no build number", () => {
   const result = parseCiFailureBuildReference(
-    "- **Build URL:** https://jenkins.example.com/job/Develop/lastBuild/",
-    { jenkinsBaseUrl: "https://jenkins.example.com" },
+    "- **Build URL:** https://ci.example.com/job/Develop/lastBuild/",
   );
   assertEquals(result.ok, false);
+  if (!result.ok) assertStringIncludes(result.error, "numeric build segment");
 });
 
-Deno.test("parseCiFailureBuildReference - errors when JENKINS_URL is unset", () => {
-  const result = parseCiFailureBuildReference(REAL_BODY, {
-    jenkinsBaseUrl: "",
-  });
-  assertEquals(result.ok, false);
-  if (!result.ok) assertStringIncludes(result.error, "JENKINS_URL");
+// A foreign host is no longer core's business to reject: core never fetches
+// this URL. It is handed to the provider, which derives its target from its
+// own configured base — see the `fetchLog` contract in `ci_log_provider.ts`.
+// The end-to-end test below asserts the URL only ever reaches a provider.
+Deno.test("parseCiFailureBuildReference - a foreign host parses and is left to the provider", () => {
+  const result = parseCiFailureBuildReference(
+    "- **Build URL:** https://attacker.example.net/job/Develop/4347/",
+  );
+  assert(result.ok, result.ok ? "" : result.error);
+  assertEquals(
+    result.value.buildUrl,
+    "https://attacker.example.net/job/Develop/4347/",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -253,9 +225,9 @@ Deno.test("formatCiFailureContext - records the fetched build number", () => {
   const section = formatCiFailureContext({
     boundaryId: TEST_BOUNDARY_ID,
     build: {
-      number: 4347,
+      number: "4347",
       result: "FAILURE",
-      url: "https://jenkins.example.com/job/Develop/4347/",
+      url: "https://ci.example.com/job/Develop/4347/",
     },
     log: "[ERROR] boom\nBUILD FAILURE\n",
   });
@@ -268,7 +240,7 @@ Deno.test("formatCiFailureContext - records the fetched build number", () => {
 Deno.test("formatCiFailureContext - fresh log takes precedence over the pre-summary", () => {
   const section = formatCiFailureContext({
     boundaryId: TEST_BOUNDARY_ID,
-    build: { number: 1, result: "FAILURE", url: "" },
+    build: { number: "1", result: "FAILURE", url: "" },
     log: "boom",
   });
   assertStringIncludes(section.toLowerCase(), "freshly fetched log wins");
@@ -292,7 +264,7 @@ Deno.test("formatCiFailureContext - fences the log in the run's untrusted bounda
   const delimiters = createPromptDelimiters(TEST_BOUNDARY_ID);
   const section = formatCiFailureContext({
     boundaryId: TEST_BOUNDARY_ID,
-    build: { number: 7, result: "FAILURE", url: "" },
+    build: { number: "7", result: "FAILURE", url: "" },
     log: "[ERROR] boom\nBUILD FAILURE\n",
   });
 
@@ -322,7 +294,7 @@ Deno.test("formatCiFailureContext - neutralises forged boundary markup in the lo
 
   const section = formatCiFailureContext({
     boundaryId: TEST_BOUNDARY_ID,
-    build: { number: 7, result: "FAILURE", url: "" },
+    build: { number: "7", result: "FAILURE", url: "" },
     log: forged,
   });
 
@@ -390,7 +362,7 @@ Deno.test("formatCiFailureContext - a bare ``` in the log cannot break out of th
 
   const section = formatCiFailureContext({
     boundaryId: TEST_BOUNDARY_ID,
-    build: { number: 7, result: "FAILURE", url: "" },
+    build: { number: "7", result: "FAILURE", url: "" },
     log: payload,
   });
 
@@ -418,7 +390,7 @@ Deno.test("formatCiFailureContext - a bare ``` in the log cannot break out of th
 Deno.test("formatCiFailureContext - fence outgrows a longer backtick run (Issue #3646)", () => {
   const section = formatCiFailureContext({
     boundaryId: TEST_BOUNDARY_ID,
-    build: { number: 7, result: "FAILURE", url: "" },
+    build: { number: "7", result: "FAILURE", url: "" },
     log: "[ERROR] boom\n`````\nescaped?\n",
   });
 
@@ -445,136 +417,122 @@ Deno.test("formatCiFailureFetchFailure - a bare ``` in the reason cannot break o
 // buildCiFailureContext (end to end, injected fetch)
 // ---------------------------------------------------------------------------
 
-Deno.test("buildCiFailureContext - fetches the log for the referenced build", async () => {
-  const snapshot = snapshotEnv();
-  setEnv();
-  const requested: string[] = [];
-  try {
-    const section = await buildCiFailureContext({
-      boundaryId: TEST_BOUNDARY_ID,
-      issueBody: REAL_BODY,
-      fetchFn: (url) => {
-        const u = String(url);
-        requested.push(u);
-        if (u.endsWith("api/json")) {
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({
-                number: 4347,
-                result: "FAILURE",
-                url:
-                  "https://jenkins.example.com/job/Migration/job/Develop/4347/",
-              }),
-              { status: 200 },
-            ),
-          );
-        }
-        return Promise.resolve(
-          new Response("[ERROR] cannot find symbol\nBUILD FAILURE\n", {
-            status: 200,
-          }),
-        );
-      },
-    });
-    assertStringIncludes(section, "fetched build #4347");
-    assertStringIncludes(section, "cannot find symbol");
-    assert(
-      requested.some((u) =>
-        u ===
-          "https://jenkins.example.com/job/Migration/job/Develop/4347/consoleText"
-      ),
-      `unexpected requests: ${requested.join(", ")}`,
-    );
-  } finally {
-    restoreEnv(snapshot);
-  }
+Deno.test("buildCiFailureContext - renders the log the provider resolved", async () => {
+  const seen: CiFailureContext[] = [];
+  const section = await buildCiFailureContext({
+    boundaryId: TEST_BOUNDARY_ID,
+    issueBody: REAL_BODY,
+    repo: "owner/repo",
+    resolveProvider: () =>
+      fakeProvider({
+        ok: true,
+        value: {
+          providerId: "test-provider",
+          buildId: "4347",
+          url: "https://ci.example.com/job/Migration/job/Develop/4347/",
+          status: "FAILURE",
+          logText: "[ERROR] cannot find symbol\nBUILD FAILURE\n",
+        },
+      }, seen),
+  });
+
+  assertStringIncludes(section, "fetched build #4347");
+  assertStringIncludes(section, "cannot find symbol");
+  assertEquals(seen.length, 1);
 });
 
-Deno.test("buildCiFailureContext - never fetches a foreign host", async () => {
-  const snapshot = snapshotEnv();
-  setEnv();
-  const requested: string[] = [];
-  try {
-    const section = await buildCiFailureContext({
-      boundaryId: TEST_BOUNDARY_ID,
-      issueBody:
-        "- **Build URL:** https://attacker.example.net/job/Develop/4347/",
-      fetchFn: (url) => {
-        requested.push(String(url));
-        return Promise.resolve(new Response("pwned", { status: 200 }));
-      },
-    });
-    assertEquals(requested.length, 0);
-    assertStringIncludes(section, "could not be fetched");
-  } finally {
-    restoreEnv(snapshot);
-  }
+Deno.test("buildCiFailureContext - hands the untrusted build URL to the provider and fetches nothing itself", async () => {
+  const seen: CiFailureContext[] = [];
+  const section = await buildCiFailureContext({
+    boundaryId: TEST_BOUNDARY_ID,
+    issueBody:
+      "- **Build URL:** https://attacker.example.net/job/Develop/4347/",
+    repo: "owner/repo",
+    // A fetch seam that explodes: core must never call it. Everything that
+    // touches the network is behind the provider.
+    fetchFn: () => {
+      throw new Error("core must not fetch");
+    },
+    resolveProvider: () =>
+      fakeProvider({ ok: false, error: "target is not mine" }, seen),
+  });
+
+  assertEquals(seen.length, 1);
+  assertEquals(
+    seen[0]!.targetUrl,
+    "https://attacker.example.net/job/Develop/4347/",
+  );
+  assertStringIncludes(section, "could not be fetched");
 });
 
-Deno.test("buildCiFailureContext - build-number-only body uses the configured job path", async () => {
-  const snapshot = snapshotEnv();
-  setEnv();
-  const requested: string[] = [];
-  try {
-    const section = await buildCiFailureContext({
-      boundaryId: TEST_BOUNDARY_ID,
-      issueBody: "- **Build number:** `77`",
-      jobPath: "Migration/job/Develop",
-      fetchFn: (url) => {
-        const u = String(url);
-        requested.push(u);
-        if (u.endsWith("api/json")) {
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({ number: 77, result: "FAILURE", url: "" }),
-              { status: 200 },
-            ),
-          );
-        }
-        return Promise.resolve(
-          new Response("BUILD FAILURE\n", { status: 200 }),
-        );
-      },
-    });
-    assertStringIncludes(section, "fetched build #77");
-    assert(requested.length > 0);
-  } finally {
-    restoreEnv(snapshot);
-  }
+Deno.test("buildCiFailureContext - passes the configured job path through to the provider", async () => {
+  const seen: CiFailureContext[] = [];
+  await buildCiFailureContext({
+    boundaryId: TEST_BOUNDARY_ID,
+    issueBody: "- **Build number:** `77`",
+    repo: "owner/repo",
+    jobPath: "Migration/job/Develop",
+    ciProviders: [{ provider: "test-provider" }],
+    resolveProvider: () => fakeProvider({ ok: false, error: "no build" }, seen),
+  });
+
+  assertEquals(seen[0]!.providerConfig?.jobPath, "Migration/job/Develop");
 });
 
-Deno.test("buildCiFailureContext - build-number-only body without a job path fails loudly", async () => {
-  const snapshot = snapshotEnv();
-  setEnv();
-  try {
-    const section = await buildCiFailureContext({
-      boundaryId: TEST_BOUNDARY_ID,
-      issueBody: "- **Build number:** `77`",
-      fetchFn: () => Promise.reject(new Error("must not be called")),
-    });
-    assertStringIncludes(section, "could not be fetched");
-    assertStringIncludes(section, "job path");
-  } finally {
-    restoreEnv(snapshot);
-  }
+Deno.test("buildCiFailureContext - an explicit ciProviders jobPath wins over the fallback", async () => {
+  const seen: CiFailureContext[] = [];
+  await buildCiFailureContext({
+    boundaryId: TEST_BOUNDARY_ID,
+    issueBody: "- **Build number:** `77`",
+    repo: "owner/repo",
+    jobPath: "fallback/job/Path",
+    ciProviders: [{ provider: "test-provider", jobPath: "explicit/job/Path" }],
+    resolveProvider: () => fakeProvider({ ok: false, error: "no build" }, seen),
+  });
+
+  assertEquals(seen[0]!.providerConfig?.jobPath, "explicit/job/Path");
 });
 
-Deno.test("buildCiFailureContext - surfaces an HTTP failure explicitly", async () => {
-  const snapshot = snapshotEnv();
-  setEnv();
-  try {
-    const section = await buildCiFailureContext({
-      boundaryId: TEST_BOUNDARY_ID,
-      issueBody: REAL_BODY,
-      fetchFn: () =>
-        Promise.resolve(
-          new Response("nope", { status: 404, statusText: "Not Found" }),
-        ),
-    });
-    assertStringIncludes(section, "could not be fetched");
-    assertStringIncludes(section, "404");
-    assertStringIncludes(section, "Do NOT attempt a fix");
-  } finally {
-    restoreEnv(snapshot);
-  }
+Deno.test("buildCiFailureContext - a provider failure is stated, never guessed around", async () => {
+  const section = await buildCiFailureContext({
+    boundaryId: TEST_BOUNDARY_ID,
+    issueBody: REAL_BODY,
+    repo: "owner/repo",
+    ciProviders: [{ provider: "test-provider" }],
+    resolveProvider: () =>
+      fakeProvider({ ok: false, error: "HTTP 404 Not Found" }),
+  });
+
+  assertStringIncludes(section, "could not be fetched");
+  assertStringIncludes(section, "404");
+  assertStringIncludes(section, "Do NOT attempt a fix");
+});
+
+Deno.test("buildCiFailureContext - with no provider configured, names the private-extension route", async () => {
+  const section = await buildCiFailureContext({
+    boundaryId: TEST_BOUNDARY_ID,
+    issueBody: REAL_BODY,
+    repo: "owner/repo",
+    resolveProvider: () =>
+      fakeProvider({ ok: false, error: "not an Actions run" }),
+  });
+
+  assertStringIncludes(section, "could not be fetched");
+  assertStringIncludes(section, "docs/PRIVATE-EXTENSIONS.md");
+});
+
+Deno.test("buildCiFailureContext - an unparseable body never reaches a provider", async () => {
+  let called = false;
+  const section = await buildCiFailureContext({
+    boundaryId: TEST_BOUNDARY_ID,
+    issueBody: "nothing machine-readable in here",
+    repo: "owner/repo",
+    resolveProvider: () => {
+      called = true;
+      return fakeProvider({ ok: false, error: "unreachable" });
+    },
+  });
+
+  assertEquals(called, false);
+  assertStringIncludes(section, "no build reference");
 });

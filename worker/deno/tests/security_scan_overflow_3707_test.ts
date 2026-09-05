@@ -40,19 +40,22 @@ const GH_TOKEN_SAMPLE = `ghp_${"a1B2c3D4e5".repeat(4)}`;
 // SEC-7e148c3ba692 — child-environment denylist covered only two variables
 // ---------------------------------------------------------------------------
 
-Deno.test("SEC-7e148c3ba692 - drops worker-only Jenkins and ImgBB credentials", () => {
+Deno.test("SEC-7e148c3ba692 - drops the worker-only credentials and an extension's", () => {
   const child = buildClaudeChildEnv({
-    JENKINS_URL: "https://ci.example.com",
-    JENKINS_USER: "worker-bot",
-    JENKINS_TOKEN: "11abcdef0123456789",
+    // A private extension's own CI credentials. Core does not name them —
+    // it cannot, it does not know what an operator installed (Issue #986) —
+    // so the credential-shape rule is what has to hold.
+    EXTENSION_CI_URL: "https://ci.example.com",
+    EXTENSION_CI_TOKEN: "11abcdef0123456789",
+    GITHUB_APP_PRIVATE_KEY_PATH: "/keys/app.pem",
     VIBE_IMGBB_API_KEY: "0123456789abcdef0123456789abcdef",
     PATH: "/usr/bin",
   });
-  assertEquals(child["JENKINS_USER"], undefined);
-  assertEquals(child["JENKINS_TOKEN"], undefined);
+  assertEquals(child["EXTENSION_CI_TOKEN"], undefined);
+  assertEquals(child["GITHUB_APP_PRIVATE_KEY_PATH"], undefined);
   assertEquals(child["VIBE_IMGBB_API_KEY"], undefined);
   // Non-secret siblings survive so the agent keeps working context.
-  assertEquals(child["JENKINS_URL"], "https://ci.example.com");
+  assertEquals(child["EXTENSION_CI_URL"], "https://ci.example.com");
   assertEquals(child["PATH"], "/usr/bin");
 });
 
@@ -83,15 +86,15 @@ Deno.test("SEC-7e148c3ba692 - keeps the credentials the agent legitimately needs
 });
 
 Deno.test("SEC-7e148c3ba692 - runner and env module share one denylist", () => {
-  assert(CLAUDE_ENV_DENYLIST.includes("JENKINS_TOKEN"));
+  assert(CLAUDE_ENV_DENYLIST.includes("GITHUB_APP_PRIVATE_KEY"));
   assert(CLAUDE_ENV_DENYLIST.includes("VIBE_IMGBB_API_KEY"));
-  const parent = { JENKINS_TOKEN: "s3cret", PATH: "/usr/bin" };
+  const parent = { VIBE_IMGBB_API_KEY: "s3cret", PATH: "/usr/bin" };
   assertEquals(
     buildClaudeChildEnvFromRunner(parent),
     buildClaudeChildEnv(parent),
   );
   assertEquals(
-    buildClaudeChildEnvFromRunner(parent)["JENKINS_TOKEN"],
+    buildClaudeChildEnvFromRunner(parent)["VIBE_IMGBB_API_KEY"],
     undefined,
   );
 });

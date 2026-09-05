@@ -2259,8 +2259,8 @@ flowchart TD
 ## 🪝 Post-Run Callbacks
 
 Optional executables the worker runs after a terminal issue run, following
-Jenkins `post { success / failure / always }` and Azure Pipelines
-`succeeded() / failed() / always()` semantics (Issue #806). They are the public
+the `success / failure / always` outcome semantics familiar from CI pipeline
+post-build blocks (Issue #806). They are the public
 extension point for fleet-specific reporting — health records, session-log
 archival, spend accounting — so none of that policy has to live in VibeCoder.
 
@@ -3131,11 +3131,10 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `skip_reviewer_request` | boolean | When `true`, skips requesting PR reviewers for this repository                                                                                                                                                                                                                                                                                                            |
 | `verbosity`             | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`), applied to the `issue` phase. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                                                     |
 | `nice`                  | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only. See [Per-repo `nice` rotation tier](#-per-repo-nice-rotation-tier).                                                                                                                                                                         |
-| `ciProviders`           | array   | Per-repo CI log providers consulted when a PR's CI fails, before invoking the `ci_fix` prompt. Each entry is `{ "provider": "<id>", "checkNamePattern"?: "<regex>", "jobPath"?: "<path>" }`; `provider` is required, `jobPath` is required for `jenkins`. GitHub Actions is the built-in default and needs no entry. Malformed entries are rejected with a named-field error at config load. See [Adding a CI log provider](EXTENDING.md#adding-a-ci-log-provider) and [Per-repository PR failure actions](per-repo-pr-failure-actions.md). |
-| `prFailureActions`      | array   | **Deprecated — use `ciProviders`.** Still parsed and converted into an equivalent `ciProviders` entry, so existing configuration keeps working unchanged. The only action type is `fetch-jenkins-log`. See [Per-repository PR failure actions](per-repo-pr-failure-actions.md) for the schema, the `JENKINS_URL`/`JENKINS_USER`/`JENKINS_TOKEN` env var contract, a worked private-repo-12 example, and troubleshooting steps. |
+| `ciProviders`           | array   | Per-repo CI log providers consulted when a PR's CI fails, before invoking the `ci_fix` prompt. Each entry is `{ "provider": "<id>", "checkNamePattern"?: "<regex>", "jobPath"?: "<path>" }`; only `provider` is required. `jobPath` is passed through untouched — whether a provider needs one, and what shape it takes, is that provider's business. GitHub Actions is the built-in default and needs no entry; any other CI system registers its provider from a [private extension](PRIVATE-EXTENSIONS.md). Malformed entries are rejected with a named-field error at config load. See [Adding a CI log provider](EXTENDING.md#-adding-a-ci-log-provider). |
 | `pre-flight`            | array   | Mandatory pre-flight commands run in the repo working tree immediately before the worker's automated commit, at the `assertSafeToCommit()` chokepoint. The first non-zero exit **blocks both the commit and the push** — there is no override flag. A missing / non-executable / unstartable command or a timeout is a block, never a pass. See [Pre-flight enforcement gate](#-pre-flight-enforcement-gate). |
-| `ci_failure_labels`     | array   | Issue labels that mark a CI-failure report (e.g. `["develop-build-failure"]`). When an issue carries one, the worker parses the build reference from the issue body, fetches the **full** Jenkins console log, and routes to the CI diagnosis-and-fix framing. Omit or leave empty to disable. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
-| `ci_failure_job_path`   | string  | Fallback Jenkins job path (e.g. `Migration/job/Develop`) used when a CI-failure issue body carries a build number but no `Build URL`. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md).                                                                                                                                                     |
+| `ci_failure_labels`     | array   | Issue labels that mark a CI-failure report (e.g. `["develop-build-failure"]`). When an issue carries one, the worker parses the build reference from the issue body, fetches the **full** console log through the repo's configured CI log provider, and routes to the CI diagnosis-and-fix framing. Omit or leave empty to disable. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
+| `ci_failure_job_path`   | string  | Fallback target handed to the CI log provider when a CI-failure issue body carries a build number but no `Build URL`. Used only when the repo's `ciProviders` entry names no `jobPath` of its own; opaque to core. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
 | `max_auto_fix_attempts` | integer | Per-repo auto-fix attempt cap, overriding the global `max_auto_fix_attempts`. Non-positive values fall back to the global setting. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                                                                                                                           |
 | `blocking_pr_stall_threshold_seconds` | integer | Per-repo blocking-PR stall threshold, overriding the global `blocking_pr_stall_threshold_seconds`. Non-positive or non-integer values fall back to the global setting. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
 | `claude_model`          | string  | Per-repo base model tier overriding the global base for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                          |
@@ -3176,8 +3175,8 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 
 ### 🛫 Pre-flight enforcement gate
 
-Expensive builds (e.g. the full Jenkins Develop pipeline for
-`stSoftwareAU/private-repo-12`) cost hours before a compilation error the worker
+Expensive builds (a full downstream pipeline, say) cost hours before a
+compilation error the worker
 pushed is even reported. The `pre-flight` gate refuses to commit or push work
 that is already known to be broken, so the failure is caught locally in
 seconds instead of downstream in the build.

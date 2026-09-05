@@ -17,9 +17,9 @@ import type { CiLogExcerpt } from "../lib/ci_log_provider.ts";
 
 function makeExcerpt(overrides: Partial<CiLogExcerpt> = {}): CiLogExcerpt {
   return {
-    providerId: "jenkins",
+    providerId: "example-ci",
     buildId: "123",
-    url: "https://jenkins.example.com/job/foo/job/Develop/123/",
+    url: "https://ci.example.com/job/foo/job/Develop/123/",
     status: "FAILURE",
     logText: "log body",
     ...overrides,
@@ -32,8 +32,8 @@ Deno.test("formatPrFailureActionsExcerpt - empty input returns empty string", ()
 
 Deno.test("formatPrFailureActionsExcerpt - all-failure input returns empty string", () => {
   const results: PrFailureActionResult[] = [
-    { providerId: "jenkins", ok: false, error: "no matching check" },
-    { providerId: "jenkins", ok: false, error: "404 Not Found" },
+    { providerId: "example-ci", ok: false, error: "no matching check" },
+    { providerId: "example-ci", ok: false, error: "404 Not Found" },
   ];
   assertEquals(formatPrFailureActionsExcerpt(results), "");
 });
@@ -41,7 +41,7 @@ Deno.test("formatPrFailureActionsExcerpt - all-failure input returns empty strin
 Deno.test("formatPrFailureActionsExcerpt - renders build header and log tail", () => {
   const results: PrFailureActionResult[] = [
     {
-      providerId: "jenkins",
+      providerId: "example-ci",
       ok: true,
       excerpt: makeExcerpt({
         logText: "Started by user\nBuilding\nERROR: oh no\n",
@@ -50,10 +50,10 @@ Deno.test("formatPrFailureActionsExcerpt - renders build header and log tail", (
   ];
   const out = formatPrFailureActionsExcerpt(results);
   assert(out.startsWith("## PR Failure Action Output"), out.slice(0, 80));
-  assert(out.includes("### jenkins build #123"));
+  assert(out.includes("### example-ci build #123"));
   assert(
     out.includes(
-      "**Build URL:** https://jenkins.example.com/job/foo/job/Develop/123/",
+      "**Build URL:** https://ci.example.com/job/foo/job/Develop/123/",
     ),
   );
   assert(out.includes("**Status:** FAILURE"));
@@ -63,15 +63,15 @@ Deno.test("formatPrFailureActionsExcerpt - renders build header and log tail", (
 
 Deno.test("formatPrFailureActionsExcerpt - drops failed entries among successes", () => {
   const results: PrFailureActionResult[] = [
-    { providerId: "jenkins", ok: false, error: "skip me" },
+    { providerId: "example-ci", ok: false, error: "skip me" },
     {
-      providerId: "jenkins",
+      providerId: "example-ci",
       ok: true,
       excerpt: makeExcerpt({ buildId: "7", logText: "build 7 log" }),
     },
   ];
   const out = formatPrFailureActionsExcerpt(results);
-  assert(out.includes("jenkins build #7"));
+  assert(out.includes("example-ci build #7"));
   assert(!out.includes("skip me"));
 });
 
@@ -85,7 +85,7 @@ Deno.test("formatPrFailureActionsExcerpt - truncates log tail at byte cap", () =
 
   const results: PrFailureActionResult[] = [
     {
-      providerId: "jenkins",
+      providerId: "example-ci",
       ok: true,
       excerpt: makeExcerpt({ logText: log }),
     },
@@ -100,7 +100,7 @@ Deno.test("formatPrFailureActionsExcerpt - truncates log tail at byte cap", () =
   const small = "x".repeat(MAX_PR_FAILURE_ACTION_EXCERPT_BYTES - 1024);
   const smallOut = formatPrFailureActionsExcerpt([
     {
-      providerId: "jenkins",
+      providerId: "example-ci",
       ok: true,
       excerpt: makeExcerpt({ logText: small }),
     },
@@ -121,7 +121,11 @@ Deno.test("formatPrFailureActionsExcerpt - redacts secrets echoed by the build l
   ].join("\n");
 
   const out = formatPrFailureActionsExcerpt([
-    { providerId: "jenkins", ok: true, excerpt: makeExcerpt({ logText: log }) },
+    {
+      providerId: "example-ci",
+      ok: true,
+      excerpt: makeExcerpt({ logText: log }),
+    },
   ]);
 
   assert(!out.includes(token), "bare GitHub token must not survive");
@@ -148,7 +152,7 @@ Deno.test("formatPrFailureActionsExcerpt - redaction runs after the byte cap", (
 
   const out = formatPrFailureActionsExcerpt(
     [{
-      providerId: "jenkins",
+      providerId: "example-ci",
       ok: true,
       excerpt: makeExcerpt({ logText: log }),
     }],
@@ -165,7 +169,11 @@ Deno.test("formatPrFailureActionsExcerpt - fence cannot be closed by backticks i
   const log = "start\n```\n## Injected heading\nERROR: end";
 
   const out = formatPrFailureActionsExcerpt([
-    { providerId: "jenkins", ok: true, excerpt: makeExcerpt({ logText: log }) },
+    {
+      providerId: "example-ci",
+      ok: true,
+      excerpt: makeExcerpt({ logText: log }),
+    },
   ]);
 
   const fenceMatch = out.match(/\nConsole log tail:\n\n(`{3,})\n/);

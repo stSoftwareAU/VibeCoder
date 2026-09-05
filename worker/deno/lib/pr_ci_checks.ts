@@ -27,8 +27,8 @@ export interface FailedCiCheck {
   /**
    * Optional check `target_url` / `details_url` (Issue #1892).
    * Used by the PR failure action dispatcher to locate the external
-   * build (e.g. extract the Jenkins build number from a URL like
-   * `https://jenkins.example.com/job/foo/job/Develop/123/`). Optional
+   * build (e.g. extract a build number from a URL like
+   * `https://ci.example.com/job/foo/job/Develop/123/`). Optional
    * because not all check sources populate it.
    */
   targetUrl?: string;

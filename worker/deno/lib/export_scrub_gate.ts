@@ -370,7 +370,7 @@ const PRIVATE_REPO_PLACEHOLDERS = new Set([
   "project",
   "name",
   "owner",
-  // Jenkins folder syntax: `job/<org>/job/<name>` — `job` is a keyword, not
+  // CI folder syntax: `job/<org>/job/<name>` — `job` is a keyword, not
   // a repository.
   "job",
 ]);

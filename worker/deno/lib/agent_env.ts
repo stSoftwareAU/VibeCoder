@@ -9,8 +9,8 @@
  * implementation here rather than one copy per vendor.
  *
  * The worker-only secrets are provider-independent: no agent, whichever vendor
- * it comes from, has any use for the GitHub App PEM, the Jenkins API token or
- * the ImgBB key, all of which the worker uses in-process.
+ * it comes from, has any use for the GitHub App PEM or the ImgBB key, both of
+ * which the worker uses in-process.
  *
  * A host may hold a POOL of credentials for one vendor, of which a run selects
  * exactly one (Issue #920). The unselected ones must not reach the child by
@@ -25,12 +25,14 @@
  * Secrets the worker owns and no coding agent ever needs.
  *
  * The GitHub App private-key material (the PEM path and the raw PEM, should a
- * deployment pass it inline) plus the worker-only service credentials: the
- * Jenkins API user and token (CI logs are fetched in-process by
- * `jenkins_log_fetcher.ts`) and the ImgBB key (screenshots are uploaded
- * worker-side by `pr_evidence.ts`). None of them are reachable from anything
- * an agent does, and a bare Jenkins token has no prefix for `redactSecrets`
- * to catch on the way out (Issue #3707).
+ * deployment pass it inline) plus the ImgBB key (screenshots are uploaded
+ * worker-side by `pr_evidence.ts`). Neither is reachable from anything an
+ * agent does.
+ *
+ * This list names only secrets **core itself** holds. A private extension
+ * brings its own credentials, and they are covered by the credential-shaped
+ * name rule below rather than by an entry here (Issue #3707) — core cannot
+ * enumerate what it does not know about, and must not try.
  *
  * `GH_TOKEN` is deliberately absent — it is the short-lived installation token
  * the model legitimately uses via `gh`. What that token may *do* is
@@ -39,8 +41,6 @@
 export const WORKER_ONLY_SECRET_ENV_VARS: readonly string[] = [
   "GITHUB_APP_PRIVATE_KEY_PATH",
   "GITHUB_APP_PRIVATE_KEY",
-  "JENKINS_USER",
-  "JENKINS_TOKEN",
   "VIBE_IMGBB_API_KEY",
 ];
 
