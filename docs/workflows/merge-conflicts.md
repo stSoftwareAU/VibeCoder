@@ -203,10 +203,6 @@ reported.
   answer is still the agent's judgement, and it must show the sentence in the
   issue that explicitly supersedes, reverts, replaces or retunes the other
   side. A supersession it cannot quote establishes nothing.
-- **Eligibility is the worker's computation, not the model's**
-  (`assessIntentEligibility`, `worker/deno/lib/conflict_intent_context.ts`), so
-  an override claimed for an ineligible path is caught without trusting the
-  agent's account of it.
 - **Every override is reported on the PR**, file by file, with both issue
   numbers and one line on what was kept and what it superseded
   (`worker/deno/lib/conflict_intent_audit.ts`). A reviewer audits the decision
@@ -527,9 +523,7 @@ that gap, and reading the queue means reading both:
   skip reasons — and files the stall as work through `escalateAsWork`.
 - **The watchdog applies `escalated`, never `needs-human`.** A mechanical stall
   is work the fleet can claim, and `needs-human` is a cross-subsystem veto that
-  would remove the PR from the very lane that clears it (Issue #569). It
-  escalates and never retries: forcing an attempt from a watchdog would race
-  the ordinary pass and manufacture the disrupted state.
+  would remove the PR from the very lane that clears it (Issue #569).
 
 ## 🧾 Every decision leaves a reason behind
 
