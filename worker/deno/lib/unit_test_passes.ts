@@ -61,8 +61,19 @@ import {
  * nothing to do with the change under test, so `deno tests FAILED` reported
  * the container rather than the code. A gate that fails on its own
  * environment teaches everyone to ignore it, which is the real cost.
+ *
+ * `WORK_DIR` is the same class (Issue #1098). The container exports the live
+ * worker volume, and `runCoreLoop` falls back to it for the state a run must
+ * keep across restarts — so every suite that drives the loop without naming
+ * its own work directory read and wrote the running fleet's
+ * `idle_disagreement_streak.json`. Under `--parallel` that is one file shared
+ * by four worker processes: the idle-disagreement suites watched their streak
+ * reset mid-run by a sibling process and failed, deterministically green on
+ * their own, and the operator's real streak state was overwritten with test
+ * timestamps. Scrubbed, the loop keeps that state in memory for the life of
+ * the test, which is its documented behaviour for a caller with no volume.
  */
-const SCRUBBED_TEST_VARS: readonly string[] = ["CONFIG_PATH"];
+const SCRUBBED_TEST_VARS: readonly string[] = ["CONFIG_PATH", "WORK_DIR"];
 
 /**
  * The variable the container image exports and no host run has (#4269).
