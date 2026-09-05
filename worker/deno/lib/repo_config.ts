@@ -509,4 +509,3 @@ export function getCiFailureLabels(
   }
   return result.value;
 }
-

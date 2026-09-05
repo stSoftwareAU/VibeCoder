@@ -3,12 +3,12 @@
  * `processCiFailure` (Issue #1893).
  *
  * Covers:
- *   - Dispatcher is invoked when the repo configures `prFailureActions`
+ *   - Dispatcher is invoked when the repo configures `ciProviders`
  *     and the rendered excerpt is injected into the CI fix prompt.
  *   - All-errors dispatcher result is logged and the CI fix flow
  *     proceeds with an unchanged prompt (no excerpt block).
  *   - Dispatcher is NOT invoked when the repo has no
- *     `prFailureActions` configured.
+ *     `ciProviders` configured.
  *   - The built-in GitHub Actions log provider (Issue #3580) supplies the
  *     excerpt when no configured action produces one, and a non-Actions
  *     check falls through cleanly without an excerpt.
@@ -83,9 +83,9 @@ function makeInput(overrides?: Partial<CiFixInput>): CiFixInput {
     prNumber: 42,
     branchName: "feature/test",
     checkRunId: "67890",
-    checkName: "Jenkins / build",
+    checkName: "example-ci / build",
     encodedAnnotations: encoded,
-    targetUrl: "https://jenkins.example.com/job/foo/job/Develop/123/",
+    targetUrl: "https://ci.example.com/job/foo/job/Develop/123/",
     ...overrides,
   };
 }
@@ -176,9 +176,7 @@ async function makeRig(opts: {
 Deno.test("processCiFailure - injects PR failure action excerpt into prompt", async () => {
   const repoConfigs: Record<string, RepoConfig> = {
     "stSoftwareAU/example": {
-      prFailureActions: [
-        { type: "fetch-jenkins-log", jobPath: "foo/job/Develop" },
-      ],
+      ciProviders: [{ provider: "example-ci", jobPath: "foo/job/Develop" }],
     } as unknown as RepoConfig,
   };
 
@@ -186,14 +184,14 @@ Deno.test("processCiFailure - injects PR failure action excerpt into prompt", as
     repoConfigs,
     dispatcherResult: [
       {
-        providerId: "jenkins",
+        providerId: "example-ci",
         ok: true,
         excerpt: {
-          providerId: "jenkins",
+          providerId: "example-ci",
           buildId: "123",
           status: "FAILURE",
-          url: "https://jenkins.example.com/job/foo/job/Develop/123/",
-          logText: "ERROR: jenkins build failed at step compile\n",
+          url: "https://ci.example.com/job/foo/job/Develop/123/",
+          logText: "ERROR: example-ci build failed at step compile\n",
         },
       },
     ],
@@ -209,9 +207,9 @@ Deno.test("processCiFailure - injects PR failure action excerpt into prompt", as
       prompt.includes("## PR Failure Action Output"),
       "excerpt header missing",
     );
-    assert(prompt.includes("jenkins build #123"), "build header missing");
+    assert(prompt.includes("example-ci build #123"), "build header missing");
     assert(
-      prompt.includes("ERROR: jenkins build failed at step compile"),
+      prompt.includes("ERROR: example-ci build failed at step compile"),
       "log tail missing",
     );
   } finally {
@@ -222,16 +220,14 @@ Deno.test("processCiFailure - injects PR failure action excerpt into prompt", as
 Deno.test("processCiFailure - all-errors dispatcher result is logged but does not abort", async () => {
   const repoConfigs: Record<string, RepoConfig> = {
     "stSoftwareAU/example": {
-      prFailureActions: [
-        { type: "fetch-jenkins-log", jobPath: "foo/job/Develop" },
-      ],
+      ciProviders: [{ provider: "example-ci", jobPath: "foo/job/Develop" }],
     } as unknown as RepoConfig,
   };
 
   const rig = await makeRig({
     repoConfigs,
     dispatcherResult: [
-      { providerId: "jenkins", ok: false, error: "Jenkins is down" },
+      { providerId: "example-ci", ok: false, error: "example-ci is down" },
     ],
   });
 
@@ -312,7 +308,7 @@ Deno.test("processCiFailure - non-Actions check falls through without an excerpt
 
   try {
     const result = await processCiFailure(
-      makeInput({ checkName: "continuous-integration/jenkins/pr-head" }),
+      makeInput({ checkName: "continuous-integration/external-ci/pr-head" }),
       rig.processorDeps,
     );
     assert(result.ok, "a non-Actions check must not fail the CI fix flow");
@@ -330,7 +326,7 @@ Deno.test("processCiFailure - non-Actions check falls through without an excerpt
   }
 });
 
-Deno.test("processCiFailure - dispatcher not invoked when repo has no prFailureActions", async () => {
+Deno.test("processCiFailure - dispatcher not invoked when repo has no ciProviders", async () => {
   // No repoConfigs entry for the repo => getPrFailureActions returns [].
   const rig = await makeRig({
     dispatcherResult: [],

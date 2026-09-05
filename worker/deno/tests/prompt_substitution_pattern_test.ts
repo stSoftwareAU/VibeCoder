@@ -178,10 +178,10 @@ async function renderCiFix(prFailureActions: string): Promise<string> {
 Deno.test(
   "buildCiFixPrompt - substitution patterns in the CI log excerpt are inserted literally",
   async () => {
-    const baseline = await renderCiFix("jenkins log tail");
-    const rendered = await renderCiFix("$`$'$& jenkins log tail");
+    const baseline = await renderCiFix("example-ci log tail");
+    const rendered = await renderCiFix("$`$'$& example-ci log tail");
 
-    assertStringIncludes(rendered, "$`$'$& jenkins log tail");
+    assertStringIncludes(rendered, "$`$'$& example-ci log tail");
     // A `$`-expansion would splice the rendered prefix (or the template tail)
     // into the untrusted block, duplicating its genuine boundary markers.
     assertEquals(

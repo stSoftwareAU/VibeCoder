@@ -12,7 +12,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { CiProviderConfig, Logger, RepoConfig, Result } from "../types.ts";
+import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { buildCiFixPrompt, type CiFixPromptOptions } from "./prompt_builder.ts";
 import { readRepoContext } from "./repo_context_reader.ts";

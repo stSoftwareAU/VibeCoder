@@ -226,10 +226,10 @@ Deno.test("Gap 2 - the instruction scopes itself to the whole prompt", () => {
 
 Deno.test("Gap 2 - the CI log excerpt renders below the rule that governs it", async () => {
   const prompt = await ciFixPrompt({
-    prFailureActions: "jenkins log tail",
+    prFailureActions: "example-ci log tail",
   });
   const rule = prompt.indexOf("## Handling Untrusted Content");
-  const excerpt = prompt.indexOf("jenkins log tail");
+  const excerpt = prompt.indexOf("example-ci log tail");
   assert(rule >= 0 && excerpt > rule, "the excerpt must render below the rule");
   assertStringIncludes(prompt, "the CI console-log excerpt");
   assertStringIncludes(prompt, "anywhere in this prompt");

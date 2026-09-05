@@ -88,7 +88,7 @@ function createTestOptions(
 }
 
 Deno.test("runExecuteClaudePhase - CI-failure label triggers the log fetch", async () => {
-  const seen: { issueBody?: string; jobPath?: string } = {};
+  const seen: { repo?: string; issueBody?: string; providers?: unknown } = {};
   let promptOptions: CachedIssuePromptOptions | undefined;
 
   const result = await runExecuteClaudePhase(
@@ -96,14 +96,15 @@ Deno.test("runExecuteClaudePhase - CI-failure label triggers the log fetch", asy
       repoConfigs: {
         "owner/repo": {
           ciFailureLabels: ["develop-build-failure"],
-          ciFailureJobPath: "Migration/job/Develop",
+          ciProviders: [{ provider: "example-ci", jobPath: "foo/Develop" }],
         },
       },
     }),
     createMockDeps({
       buildCiFailureContext: (opts) => {
+        seen.repo = opts.repo;
         seen.issueBody = opts.issueBody;
-        seen.jobPath = opts.jobPath;
+        seen.providers = opts.providers;
         return Promise.resolve("## CI Failure Diagnosis\nfetched build #4347");
       },
       buildCachedIssuePrompt: (opts) => {
@@ -123,7 +124,12 @@ Deno.test("runExecuteClaudePhase - CI-failure label triggers the log fetch", asy
 
   assertEquals(result.action, "success");
   assertEquals(seen.issueBody, "- **Build number:** `4347`");
-  assertEquals(seen.jobPath, "Migration/job/Develop");
+  assertEquals(seen.repo, "owner/repo");
+  // The repo's configured providers reach the fetch, so a registered
+  // extension handles the log rather than anything vendor-specific in core.
+  assertEquals(seen.providers, [
+    { provider: "example-ci", jobPath: "foo/Develop" },
+  ]);
   assert(promptOptions, "prompt builder was not called");
   assertStringIncludes(
     promptOptions.ciFailureContext ?? "",
@@ -191,7 +197,7 @@ Deno.test("runExecuteClaudePhase - log fence and prompt share one boundary id (I
       repoConfigs: {
         "owner/repo": {
           ciFailureLabels: ["develop-build-failure"],
-          ciFailureJobPath: "Migration/job/Develop",
+          ciProviders: [{ provider: "example-ci", jobPath: "foo/Develop" }],
         },
       },
     }),

@@ -33,8 +33,8 @@ import {
   getRepoConfig,
 } from "./repo_config.ts";
 import {
-  type BuildCiFailureContextOptions,
   buildCiFailureContext,
+  type BuildCiFailureContextOptions,
   isCiFailureIssue,
 } from "./ci_failure_issue.ts";
 import { generateBoundaryId } from "./prompt_delimiter.ts";

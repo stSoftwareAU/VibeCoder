@@ -75,7 +75,6 @@ Deno.test("loadConfig - normalises snake_case CI-failure keys", async () => {
       repo_config: {
         "owner/repo": {
           ci_failure_labels: ["develop-build-failure"],
-          ci_failure_job_path: "Migration/job/Develop",
         },
       },
     }),
@@ -85,10 +84,6 @@ Deno.test("loadConfig - normalises snake_case CI-failure keys", async () => {
     assertEquals(getCiFailureLabels(config.repoConfig, "owner/repo"), [
       "develop-build-failure",
     ]);
-    assertEquals(
-      config.repoConfig?.["owner/repo"]?.ciFailureJobPath,
-      "Migration/job/Develop",
-    );
   } finally {
     await Deno.remove(tempDir, { recursive: true });
   }

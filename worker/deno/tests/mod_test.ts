@@ -199,8 +199,19 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // (count 148 → 147). The removal landed on the milestone branch without
   // this count following it, so the branch's own suite was red — unnoticed,
   // because `milestone/*` requires no checks.
-  assertEquals(commands.length, 147);
+  // Issue #986 removed `fetch-jenkins-log` and `check-jenkins-access` with
+  // the Jenkins implementation itself (count 147 → 145). Jenkins was one
+  // deployment's CI system, not core: core keeps the CiLogProvider
+  // extension point and registers only GitHub Actions, the CI this project
+  // runs on. A deployment's own CI system is a private extension
+  // (`docs/PRIVATE-EXTENSIONS.md`), so neither command comes back here.
+  assertEquals(commands.length, 145);
   assertEquals(commands.includes("callback-conformance"), true);
+  // The two commands Issue #986 removed stay removed: re-registering
+  // either would put a single deployment's CI vendor back in the shared
+  // tree, which is the exact regression that issue closed.
+  assertEquals(commands.includes("fetch-jenkins-log"), false);
+  assertEquals(commands.includes("check-jenkins-access"), false);
   // The command Issue #805 removed stays removed: a merge that quietly
   // brought it back would restore the built-in reporting that issue deleted.
   assertEquals(commands.includes("private-repo-6"), false);
@@ -232,7 +243,6 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   assertEquals(commands.includes("process-seed-idle-tasks"), true);
   assertEquals(commands.includes("audit-chain-verify"), true);
   assertEquals(commands.includes("sweep-heartbeat-comments"), true);
-  assertEquals(commands.includes("check-jenkins-access"), true);
   assertEquals(commands.includes("run-bootstrap"), true);
   assertEquals(commands.includes("run-housekeeping"), true);
   assertEquals(commands.includes("bulk-triage-security"), true);

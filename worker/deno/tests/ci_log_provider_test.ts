@@ -1,7 +1,10 @@
 /**
- * Tests for the CI log provider extension point (Issue #3579).
+ * Tests for the CI log provider extension point (Issues #3579, #986).
  *
  * Covers:
+ *   - Core registers GitHub Actions and nothing vendor-specific — the
+ *     guard that stops the next single-deployment CI system landing in
+ *     the shared tree (Issue #986).
  *   - Registry registration, lookup, duplicate rejection and removal.
  *   - `resolveCiLogProvider` falls back to the built-in GitHub Actions
  *     provider when nothing external matches.
@@ -9,8 +12,6 @@
  *     with no edit to `pr_failure_actions.ts`.
  *   - A provider returning an empty excerpt is reported as an explicit
  *     error, never as a hollow success.
- *   - Back-compat: a legacy `prFailureActions` config issues exactly the
- *     same Jenkins fetches as the equivalent `ciProviders` config.
  */
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
@@ -25,31 +26,8 @@ import {
   unregisterCiLogProvider,
 } from "../lib/ci_log_provider.ts";
 import { runPrFailureActions } from "../lib/pr_failure_actions.ts";
-import { getCiProviders } from "../lib/repo_config.ts";
 import type { FailedCiCheck } from "../lib/pr_ci_checks.ts";
-import type { CiProviderConfig, RepoConfig, Result } from "../types.ts";
-
-const ENV_KEYS = ["JENKINS_URL", "JENKINS_USER", "JENKINS_TOKEN"] as const;
-
-function snapshotEnv(): Record<string, string | undefined> {
-  const snapshot: Record<string, string | undefined> = {};
-  for (const key of ENV_KEYS) snapshot[key] = Deno.env.get(key);
-  return snapshot;
-}
-
-function setJenkinsEnv(): void {
-  Deno.env.set("JENKINS_URL", "https://jenkins.example.com");
-  Deno.env.set("JENKINS_USER", "test-user");
-  Deno.env.set("JENKINS_TOKEN", "test-token");
-}
-
-function restoreEnv(snapshot: Record<string, string | undefined>): void {
-  for (const key of ENV_KEYS) {
-    const v = snapshot[key];
-    if (v === undefined) Deno.env.delete(key);
-    else Deno.env.set(key, v);
-  }
-}
+import type { Result } from "../types.ts";
 
 function makeCheck(overrides: Partial<FailedCiCheck> = {}): FailedCiCheck {
   return {
@@ -57,9 +35,9 @@ function makeCheck(overrides: Partial<FailedCiCheck> = {}): FailedCiCheck {
     prNumber: 42,
     branchName: "feature/test",
     checkId: "1",
-    checkName: "Jenkins / build",
+    checkName: "example-ci / build",
     encodedAnnotations: "",
-    targetUrl: "https://jenkins.example.com/job/foo/job/Develop/123/",
+    targetUrl: "https://ci.example.com/job/foo/job/Develop/123/",
     ...overrides,
   };
 }
@@ -90,11 +68,31 @@ function makeFakeProvider(
 // Registry
 // ---------------------------------------------------------------------------
 
-Deno.test("ci_log_provider - built-in providers are registered", () => {
+/**
+ * The guard from Issue #986.
+ *
+ * The Jenkins provider was registered here because it was "simply the
+ * first one" — which taught the next deployment to add its own vendor to
+ * the shared tree. Core registers GitHub Actions and only GitHub Actions,
+ * because that is the CI this project itself runs on; anything specific
+ * to one deployment is a private extension (`docs/PRIVATE-EXTENSIONS.md`)
+ * and registers itself at runtime. This test fails the moment a second
+ * built-in appears.
+ */
+Deno.test("ci_log_provider - core registers no vendor-specific provider", () => {
   const ids = listCiLogProviders().map((p) => p.id);
-  assert(ids.includes("jenkins"), `jenkins missing from ${ids.join(", ")}`);
-  assert(ids.includes("github-actions"), "github-actions missing");
+  assertEquals(
+    ids,
+    ["github-actions"],
+    `core must register only github-actions, found: ${ids.join(", ")}`,
+  );
+  assertEquals(resolveCiLogProvider(makeCheckContext()).id, "github-actions");
 });
+
+/** A failing check with nothing a provider could match on. */
+function makeCheckContext(): CiFailureContext {
+  return { repo: "stSoftwareAU/example", checkName: "build" };
+}
 
 Deno.test("ci_log_provider - register, look up and unregister a provider", () => {
   const provider = makeFakeProvider("teamcity", "boom");
@@ -138,13 +136,19 @@ Deno.test("ci_log_provider - resolve falls back to GitHub Actions", () => {
 });
 
 Deno.test("ci_log_provider - resolve picks the matching external provider", () => {
-  const provider = resolveCiLogProvider({
-    repo: "stSoftwareAU/example",
-    checkName: "Jenkins / build",
-    targetUrl: "https://jenkins.example.com/job/foo/job/Develop/123/",
-    providerConfig: { provider: "jenkins", jobPath: "foo/job/Develop" },
-  });
-  assertEquals(provider.id, "jenkins");
+  // An extension registered at runtime wins over the built-in fall-back.
+  registerCiLogProvider(makeFakeProvider("example-ci", "boom"));
+  try {
+    const provider = resolveCiLogProvider({
+      repo: "stSoftwareAU/example",
+      checkName: "example-ci / build",
+      targetUrl: "https://ci.example.com/job/foo/job/Develop/123/",
+      providerConfig: { provider: "example-ci", jobPath: "foo/job/Develop" },
+    });
+    assertEquals(provider.id, "example-ci");
+  } finally {
+    unregisterCiLogProvider("example-ci");
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -207,91 +211,5 @@ Deno.test("ci_log_provider - an empty excerpt is an error, never a hollow succes
     if (!result.ok) assert(result.error.includes("empty log excerpt"));
   } finally {
     unregisterCiLogProvider("empty-ci");
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Back-compat: legacy prFailureActions === equivalent ciProviders
-// ---------------------------------------------------------------------------
-
-/**
- * Drive the dispatcher for one repo config and record every Jenkins URL
- * requested plus the rendered excerpt, so two configurations can be
- * compared for identical fetch behaviour.
- */
-async function runForConfig(
-  repoConfigs: Record<string, RepoConfig>,
-): Promise<{ urls: string[]; providers: CiProviderConfig[]; excerpt: string }> {
-  const urls: string[] = [];
-  const fetchFn = (url: string | URL | Request): Promise<Response> => {
-    const u = typeof url === "string" ? url : url.toString();
-    urls.push(u);
-    if (u.endsWith("/api/json")) {
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            number: 123,
-            result: "FAILURE",
-            url: "https://jenkins.example.com/job/foo/job/Develop/123/",
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        ),
-      );
-    }
-    return Promise.resolve(new Response("console output", { status: 200 }));
-  };
-
-  const providers = getCiProviders(repoConfigs, "stSoftwareAU/example");
-  const results = await runPrFailureActions({
-    repo: "stSoftwareAU/example",
-    prNumber: 42,
-    failedChecks: [makeCheck({})],
-    providers,
-    fetchFn,
-  });
-
-  const first = results[0]!;
-  assert(first.ok, `expected success, got ${JSON.stringify(first)}`);
-  return {
-    urls,
-    providers,
-    excerpt: first.ok ? JSON.stringify(first.excerpt) : "",
-  };
-}
-
-Deno.test("ci_log_provider - legacy prFailureActions fetches identically to ciProviders", async () => {
-  const snap = snapshotEnv();
-  setJenkinsEnv();
-  try {
-    const legacy = await runForConfig({
-      "stSoftwareAU/example": {
-        prFailureActions: [
-          {
-            type: "fetch-jenkins-log",
-            jobPath: "foo/job/Develop",
-            checkNamePattern: "Jenkins",
-          },
-        ],
-      },
-    });
-
-    const modern = await runForConfig({
-      "stSoftwareAU/example": {
-        ciProviders: [
-          {
-            provider: "jenkins",
-            jobPath: "foo/job/Develop",
-            checkNamePattern: "Jenkins",
-          },
-        ],
-      },
-    });
-
-    assertEquals(legacy.providers, modern.providers);
-    assertEquals(legacy.urls, modern.urls);
-    assertEquals(legacy.excerpt, modern.excerpt);
-    assertEquals(legacy.urls.length, 2, "status + console fetch expected");
-  } finally {
-    restoreEnv(snap);
   }
 });
