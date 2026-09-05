@@ -33,6 +33,38 @@ export function hasClosingKeyword(
 }
 
 /**
+ * Every conjugation GitHub accepts as an issue-closing keyword.
+ * Same-repository `#N` references only — a cross-repository
+ * `owner/repo#N` names an issue this repository cannot read.
+ */
+const CLOSING_KEYWORD_PATTERN =
+  /(?:^|[^\w/])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b/gi;
+
+/**
+ * Extract the issue numbers a PR body closes, in the order written
+ * (Issue #1113).
+ *
+ * The read half of {@link hasClosingKeyword}: that answers "does this body
+ * close issue N?", this answers "which issues does this body close?" — the
+ * question asked when the issue number is what you are looking for.
+ *
+ * @param prBody - The full PR body content
+ * @returns De-duplicated issue numbers, in first-mention order
+ */
+export function extractClosingIssueNumbers(prBody: string): number[] {
+  const seen = new Set<number>();
+  const numbers: number[] = [];
+  for (const match of prBody.matchAll(CLOSING_KEYWORD_PATTERN)) {
+    const issueNumber = Number(match[1]);
+    if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) continue;
+    if (seen.has(issueNumber)) continue;
+    seen.add(issueNumber);
+    numbers.push(issueNumber);
+  }
+  return numbers;
+}
+
+/**
  * Ensure the PR body contains an issue-closing keyword (Issue #242).
  *
  * GitHub auto-closes issues when a PR body contains keywords like

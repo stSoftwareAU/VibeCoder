@@ -9,9 +9,34 @@ import {
   buildIdempotencyMarker,
   buildMilestonePrSection,
   ensurePrReferencesIssue,
+  extractClosingIssueNumbers,
   extractIssueNumberFromPrTitle,
   hasClosingKeyword,
 } from "../lib/pr_body.ts";
+
+// --- extractClosingIssueNumbers (Issue #1113) ---
+
+Deno.test("pr_body - extractClosingIssueNumbers reads every keyword conjugation", () => {
+  assertEquals(
+    extractClosingIssueNumbers(
+      "Closes #42\nfixed #7\nRESOLVE #9\nclosed #11\nFixes #13",
+    ),
+    [42, 7, 9, 11, 13],
+  );
+});
+
+Deno.test("pr_body - extractClosingIssueNumbers keeps first-mention order and de-duplicates", () => {
+  assertEquals(
+    extractClosingIssueNumbers("Fixes #8. Also closes #3, and closes #8."),
+    [8, 3],
+  );
+});
+
+Deno.test("pr_body - extractClosingIssueNumbers ignores bare and cross-repo references", () => {
+  assertEquals(extractClosingIssueNumbers("See #42, related to #7"), []);
+  assertEquals(extractClosingIssueNumbers("Closes owner/repo#42"), []);
+  assertEquals(extractClosingIssueNumbers(""), []);
+});
 
 // --- hasClosingKeyword ---
 

@@ -148,6 +148,43 @@ deterministically **before** the agent is asked anything:
   documented carve-out from the never-side-pick contract, so it states what it
   did and a reviewer can audit the pick without reading the diff.
 
+### 🧭 What were the two sides trying to do?
+
+"Stop rather than guess" is right given what the agent knows, and it frequently
+knows too little: the same constant set to two different values often is not a
+contradiction at all — one issue superseded the other, and the answer is written
+down in an issue neither side of the merge can see.
+
+[`lib/conflict_issue_context.ts`](../../worker/deno/lib/conflict_issue_context.ts)
+(`gatherConflictIssueContext`) resolves that missing input. It is a **reporting**
+module: it says what the two sides were trying to do and never judges which one
+wins. **Nothing calls it yet** — the contract above is unchanged, and the wiring
+into the resolution path is Issue #1114.
+
+```mermaid
+flowchart LR
+    B["PR branch<br/>issue-116-…"] --> P["PR-side issue<br/>signal: branch"]
+    D["PR body<br/>Closes #42"] -.fallback.-> P
+    L["GitHub linkage"] -.fallback.-> P
+    C["Conflicted path"] --> G["git log --first-parent<br/>merge-base..base"]
+    G --> R["PR from the<br/>commit subject"] --> S["Base-side issue<br/>keyed to the path"]
+    style P fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style S fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+- **PR side, first hit wins, and the winning signal is named**: the
+  `issue-<n>-<slug>` branch shape, then the body's closing keywords, then
+  GitHub's own linkage.
+- **Base side**: per conflicted path, the first-parent base commits since the
+  merge base, mapped to PRs by their merge/squash subjects, mapped to issues.
+- **Absence is stated, never an empty list.** A path whose commits name no PR
+  reports `no-pr`; a PR with no discoverable issue reports `no-signal`. The
+  resolver behaves differently when it has no intent to consult, and it cannot
+  tell that apart from `[]`.
+- **Every bound is documented and declared**: 20 commits per path, 8 issues,
+  4000 characters of issue text, 30 `gh` calls. Whichever bound bites is
+  reported in the result, so a cut answer is never read as a whole one.
+
 ## 🔁 Bounds and escalation
 
 - **One attempt per PR per 4 hours**, at most **2 concluded attempts**.
