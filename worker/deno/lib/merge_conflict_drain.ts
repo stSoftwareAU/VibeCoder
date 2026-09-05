@@ -26,6 +26,15 @@
  * the scan's, unchanged: this loop only decides how many of the PRs already
  * due get taken this cycle.
  *
+ * All three bounds drop a due PR, and repeated every cycle they starve one
+ * (Issue #1111): the scan re-derives the same order every pass, so the PR
+ * behind a busy repository or at position 6 of a backlog loses the same race
+ * forever. The drain therefore keeps a persisted deferral cursor
+ * (`merge_conflict_deferrals.ts`) — a PR any of the three bounds dropped is
+ * offered **first** next pass, and one that keeps losing is told so on itself.
+ * A deferral is not an attempt: it spends neither the two-attempt budget nor
+ * the three-disruption budget, because nothing was started.
+ *
  * Every side effect is injected, so the loop is unit-tested without git,
  * GitHub or an agent.
  *
@@ -42,6 +51,17 @@ import {
   recordConflictDecision,
   recordConflictPassSummary,
 } from "./pr_merge_conflict_scan.ts";
+import {
+  clearDeferral,
+  type ConflictDeferralBound,
+  type ConflictDeferralEntry,
+  type ConflictDeferralState,
+  deferralCursor,
+  type DeferralNoticeBounds,
+  markDeferralNotified,
+  recordDeferral,
+  shouldAnnounceDeferral,
+} from "./merge_conflict_deferrals.ts";
 
 /**
  * Conflicting PRs one cycle's pass will take.
@@ -67,11 +87,43 @@ export interface RepoLease {
   release: () => void;
 }
 
+/** One PR's starvation, as the drain hands it to the announcer (Issue #1111). */
+export interface ConflictDeferralNotice {
+  repo: string;
+  prNumber: number;
+  entry: ConflictDeferralEntry;
+}
+
+/**
+ * The persisted fairness cursor, as seams (Issue #1111).
+ *
+ * Optional: a drain given no tracking behaves exactly as it did before —
+ * no cursor, no notice, and no extra lookup at the deadline or the cap.
+ */
+export interface ConflictDeferralTracking extends DeferralNoticeBounds {
+  /** Read the cursor persisted by the previous pass. */
+  load: () => Promise<ConflictDeferralState>;
+  /** Persist the cursor for the next pass. */
+  save: (state: ConflictDeferralState) => Promise<void>;
+  /**
+   * Post the once-per-streak notice on the PR. Returns true when this call
+   * posted it; false means another host already had.
+   */
+  announce?: (notice: ConflictDeferralNotice) => Promise<boolean>;
+}
+
 /** Injected seams for {@link drainConflictingPrs}. */
 export interface ConflictDrainOptions {
-  /** The next due PR, excluding those this cycle already handled. */
+  /**
+   * The next due PR, excluding those this cycle already handled.
+   *
+   * `prefer` carries the deferral cursor — PRs a previous pass deferred
+   * without attempting, most starved first (Issue #1111). It is an ordering
+   * hint: the scan's gates still decide what is due.
+   */
   findNext: (
     exclude: ReadonlySet<string>,
+    prefer?: readonly string[],
   ) => Promise<ConflictingPr | null>;
   /** Lease the shared clone, or null when an issue slot holds it. */
   acquireLease: (pr: ConflictingPr) => RepoLease | null;
@@ -84,6 +136,11 @@ export interface ConflictDrainOptions {
   now?: () => number;
   maxPerCycle?: number;
   minMsPerAttempt?: number;
+  /**
+   * Fairness cursor and starvation notice (Issue #1111). Omit it and the
+   * drain keeps no cursor at all.
+   */
+  deferrals?: ConflictDeferralTracking;
 }
 
 /** Why the drain stopped. */
@@ -121,6 +178,12 @@ export interface ConflictDrainResult {
   stopReason: ConflictDrainStopReason;
   /** One decision per PR the drain itself decided on (Issue #1109). */
   decisions: readonly ConflictPrDecision[];
+  /** Due PRs the deadline or the cap left in the queue (Issue #1111). */
+  leftBehind: number;
+  /** Longest consecutive-deferral streak this pass touched (Issue #1111). */
+  maxDeferralStreak: number;
+  /** Starvation notices this pass posted (Issue #1111). */
+  deferralNotices: number;
 }
 
 /**
@@ -141,13 +204,70 @@ export async function drainConflictingPrs(
     now = () => Date.now(),
     maxPerCycle = DEFAULT_MAX_CONFLICTS_PER_CYCLE,
     minMsPerAttempt = DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
+    deferrals,
   } = options;
 
   const handled = new Set<string>();
   const decisions: ConflictPrDecision[] = [];
   let merged = 0;
   let deferred = 0;
+  let leftBehind = 0;
   let processed = false;
+  let maxDeferralStreak = 0;
+  let deferralNotices = 0;
+
+  // Issue #1111: the cursor the previous pass left. Read once, so the order
+  // offered to `findNext` is stable for the whole pass.
+  const state: ConflictDeferralState = deferrals
+    ? await deferrals.load()
+    : new Map();
+  const prefer = deferralCursor(state);
+
+  /**
+   * Count one deferral against a PR, and tell the PR once its streak says it
+   * is being starved rather than merely queued.
+   *
+   * @returns The streak, or undefined when no cursor is kept.
+   */
+  const noteDeferral = async (
+    pr: ConflictingPr,
+    bound: ConflictDeferralBound,
+  ): Promise<number | undefined> => {
+    if (!deferrals) return undefined;
+    const key = conflictPrKey(pr.repo, pr.prNumber);
+    const entry = recordDeferral(state, key, bound, now());
+    maxDeferralStreak = Math.max(maxDeferralStreak, entry.streak);
+
+    if (!deferrals.announce || !shouldAnnounceDeferral(entry, deferrals)) {
+      return entry.streak;
+    }
+    try {
+      const posted = await deferrals.announce({
+        repo: pr.repo,
+        prNumber: pr.prNumber,
+        entry,
+      });
+      // Marked whoever posted it: the marker on the PR is the cross-host
+      // guard, and this only saves the next pass a comment read.
+      markDeferralNotified(state, key);
+      if (posted) deferralNotices++;
+    } catch (error) {
+      // Left unmarked on purpose, so the next pass tries again — but never
+      // silently: a PR that is starved and cannot be told so is exactly the
+      // #1076 symptom.
+      logger.warn(
+        "Merge-conflict drain: could not post the deferral notice",
+        {
+          repo: pr.repo,
+          prNumber: pr.prNumber,
+          deferralStreak: entry.streak,
+          bound,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+    return entry.streak;
+  };
 
   /**
    * The loop, as a function that must return a stop.
@@ -174,7 +294,7 @@ export async function drainConflictingPrs(
         }
       }
 
-      const next = await findNext(handled);
+      const next = await findNext(handled, prefer);
       if (next === null) return { kind: "queue-empty" };
       // Excluded before the attempt, not after: a resolution that throws must
       // not put the same PR back at the head of the queue.
@@ -183,12 +303,18 @@ export async function drainConflictingPrs(
       const lease = acquireLease(next);
       if (lease === null) {
         // The deferral is a decision on a labelled PR like any other, so it
-        // is recorded rather than left to an unstructured line (Issue #1109).
+        // is recorded rather than left to an unstructured line (Issue #1109),
+        // and it is counted against the PR so a repeat cannot stay quiet
+        // (Issue #1111).
+        const streak = await noteDeferral(next, "repo-leased");
         const deferral: ConflictPrDecision = {
           repo: next.repo,
           prNumber: next.prNumber,
           outcome: "skipped",
-          reason: { kind: "repo-leased" },
+          reason: {
+            kind: "repo-leased",
+            ...(streak !== undefined ? { deferralStreak: streak } : {}),
+          },
         };
         decisions.push(deferral);
         recordConflictDecision(logger, deferral);
@@ -201,6 +327,9 @@ export async function drainConflictingPrs(
         prNumber: next.prNumber,
         outcome: "attempted",
       });
+      // Something was started, so the PR is not starved — whatever the
+      // attempt then concludes (Issue #1111).
+      clearDeferral(state, conflictPrKey(next.repo, next.prNumber));
 
       try {
         const outcome = await resolve(next);
@@ -218,6 +347,49 @@ export async function drainConflictingPrs(
 
   const stop = await runDrain();
 
+  /**
+   * Name the PR a pass-level bound left in the queue (Issue #1111).
+   *
+   * The deadline and the cap end the loop without ever asking who was next,
+   * which is why the cheap exits were the invisible ones. One more `findNext`
+   * — a listing, not an agent run — is what turns "the pass stopped" into
+   * "this PR was left behind, for the third pass running". Only done when a
+   * cursor is kept, so a drain with no tracking costs exactly what it did.
+   */
+  const noteLeftBehind = async (bound: "deadline" | "cap"): Promise<void> => {
+    if (!deferrals) return;
+    const left = await findNext(handled, prefer);
+    if (left === null) return;
+    const streak = await noteDeferral(left, bound);
+    const decision: ConflictPrDecision = {
+      repo: left.repo,
+      prNumber: left.prNumber,
+      outcome: "skipped",
+      reason: { kind: "deferred-bound", bound, deferralStreak: streak ?? 1 },
+    };
+    decisions.push(decision);
+    recordConflictDecision(logger, decision);
+    leftBehind++;
+  };
+
+  if (stop.kind === "deadline" || stop.kind === "cap") {
+    await noteLeftBehind(stop.kind);
+  }
+
+  if (deferrals) {
+    try {
+      await deferrals.save(state);
+    } catch (error) {
+      // Best-effort like the lane rotation's counter: an unwritable cursor
+      // costs fairness on the next pass, never this pass's work — but it is
+      // said out loud so a silently unfair host is diagnosable.
+      logger.warn(
+        "Merge-conflict drain: could not persist the deferral cursor",
+        { error: error instanceof Error ? error.message : String(error) },
+      );
+    }
+  }
+
   if (handled.size > 1) {
     logger.info(
       `Merge-conflict drain complete: ${handled.size} PR(s) taken, ` +
@@ -234,6 +406,11 @@ export async function drainConflictingPrs(
     taken: handled.size,
     merged,
     deferred,
+    // Issue #1111: "deferred once, fine" and "deferred nine times" are the
+    // same line without these.
+    leftBehind,
+    maxDeferralStreak,
+    deferralNotices,
   });
 
   return {
@@ -243,5 +420,8 @@ export async function drainConflictingPrs(
     processed,
     stopReason: stop.kind,
     decisions,
+    leftBehind,
+    maxDeferralStreak,
+    deferralNotices,
   };
 }

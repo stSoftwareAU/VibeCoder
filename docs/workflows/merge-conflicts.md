@@ -290,7 +290,8 @@ each carries the operands that make the decision checkable afterwards:
 | `cooldown` | `msUntilDue`, `lastAttemptAt` | Still inside the 4-hour cooldown. `msUntilDue` is null when the recorded timestamp does not parse. |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
 | `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |
-| `repo-leased` | — | An issue slot holds the repository's shared clone. |
+| `repo-leased` | `deferralStreak` | An issue slot holds the repository's shared clone. The streak is the consecutive passes that have now deferred this PR without attempting it. |
+| `deferred-bound` | `bound`, `deferralStreak` | The deadline or the cap left this due PR in the queue before any attempt started. |
 | `queue-empty` / `deadline` / `cap` | —, `remainingMs`, `maxPerCycle` | The drain's pass-level stops. |
 
 Two properties are worth knowing when reading these:
@@ -344,6 +345,50 @@ The per-PR budgets are unchanged: the 4-hour cooldown, two concluded attempts
 and `needs-human` are the scan's, and the drain only decides how many of the
 PRs already due get taken now.
 
+## ⏳ A deferred PR leads the next pass, and says so if it keeps losing
+
+Each of those bounds — plus the repository lease an issue slot holds — drops a
+PR that was due. Individually correct; repeated every cycle they starve one
+(Issue #1111). The scan re-derives the same order every pass, so the PR behind
+a busy repository, or at position 6 of a persistent backlog, loses the same
+race for ever, and the only trace was a log line on whichever host ran.
+
+Two things fix that, both in `worker/deno/lib/merge_conflict_deferrals.ts`:
+
+```mermaid
+flowchart TD
+    A[Pass starts] --> B[Read .merge_conflict_deferrals<br/>from the work volume]
+    B --> C[Cursor keys, most starved first]
+    C --> D[findConflictingPr — cursor leads,<br/>every gate still runs]
+    D -->|attempted| E[Streak cleared]
+    D -->|lease / deadline / cap| F[Streak + 1]
+    F --> G{3 passes and<br/>over one cooldown window?}
+    G -->|no| H[Write the cursor back]
+    G -->|yes| I{Notice marker<br/>already on the PR?}
+    I -->|yes — another host posted it| H
+    I -->|no| J[One comment: which bound,<br/>how many passes] --> H
+    E --> H
+```
+
+- **The cursor** is persisted on the work volume, like the lane rotation's
+  offset and for the same reason: runs get as few as one lane cycle each, so a
+  run-local counter would never survive to have an effect. It is an ordering
+  hint only — a preferred PR still has to pass every gate, so the cursor can
+  never re-open a cooldown or a spent budget.
+- **The notice** is one comment on the PR, carrying the
+  `<!-- vibe-coder:merge-conflict-deferred` marker, after three consecutive
+  deferrals spanning more than one cooldown window. Deduplicated by reading the
+  PR's own thread, not host-local state, so a restart or a second host cannot
+  post it twice. An attempt or a merge ends the streak the marker belongs to.
+
+**A deferral is not an attempt.** Nothing was started, so it spends neither the
+two concluded attempts nor the three disrupted ones — reusing the disruption
+counter would escalate a PR to a human for a bound it never hit, the opposite
+of what this is for. The `scope=drain` summary carries `maxDeferralStreak`,
+`leftBehind` and `deferralNotices`, so "deferred once, fine" and "deferred nine
+times" are no longer the same line. Losing the volume costs fairness for a
+cycle and warns; it never fails the pass.
+
 ## 🏷️ `needs-human` is a veto, so a mechanical stall does not get one
 
 The scan skips any PR carrying `needs-human`. That is correct for what the
@@ -391,6 +436,10 @@ branch at the same time. A host that loses the race returns immediately.
   `worker/deno/lib/pr_merge_conflict_processor.ts` — the implementation.
 - `worker/deno/lib/merge_conflict_drain.ts` — the per-cycle drain loop and its
   three bounds.
+- `worker/deno/lib/merge_conflict_deferrals.ts` — the persisted fairness cursor
+  and the once-per-streak starvation notice, so none of those bounds can starve
+  a due PR in silence. `worker/deno/lib/conflict_queue_order.ts` is the pure
+  ordering the cursor applies to the scan's repositories and PRs.
 - `worker/deno/lib/dependency_conflict_apply.ts` — the deterministic pass the
   processor runs before the agent: it applies the registered rules, regenerates
   the lock files whose manifest resolved, stages what it resolved, and returns

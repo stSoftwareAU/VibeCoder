@@ -85,7 +85,12 @@ const SAMPLES: Record<ConflictSkipReasonKind, ConflictSkipReason> = {
     maxDisruptedAttempts: 3,
   },
   "lock-held": { kind: "lock-held", lockHolder: "host-b" },
-  "repo-leased": { kind: "repo-leased" },
+  "repo-leased": { kind: "repo-leased", deferralStreak: 2 },
+  "deferred-bound": {
+    kind: "deferred-bound",
+    bound: "cap",
+    deferralStreak: 3,
+  },
   "queue-empty": { kind: "queue-empty" },
   "deadline": { kind: "deadline", remainingMs: 60_000 },
   "cap": { kind: "cap", maxPerCycle: 5 },
@@ -128,6 +133,16 @@ Deno.test("conflictReasonOperands - each reason carries what makes it checkable"
   assertEquals(conflictReasonOperands(SAMPLES["lock-held"]), {
     lockHolder: "host-b",
   });
+  // Issue #1111: the streak is what separates "deferred once, fine" from
+  // "deferred nine times" in the record.
+  assertEquals(conflictReasonOperands(SAMPLES["repo-leased"]), {
+    deferralStreak: 2,
+  });
+  assertEquals(conflictReasonOperands({ kind: "repo-leased" }), {});
+  assertEquals(conflictReasonOperands(SAMPLES["deferred-bound"]), {
+    bound: "cap",
+    deferralStreak: 3,
+  });
   assertEquals(
     conflictReasonOperands({
       kind: "cooldown",
@@ -145,6 +160,11 @@ Deno.test("isQueuedConflictReason - separates the queue from what never entered 
   assertEquals(isQueuedConflictReason("cooldown"), true);
   assertEquals(isQueuedConflictReason("lock-held"), true);
   assertEquals(isQueuedConflictReason("repo-leased"), true);
+  // Issue #1111: a PR the deadline or the cap left behind is a queued PR,
+  // unlike the pass-level stop of the same name.
+  assertEquals(isQueuedConflictReason("deferred-bound"), true);
+  assertEquals(isQueuedConflictReason("deadline"), false);
+  assertEquals(isQueuedConflictReason("cap"), false);
 });
 
 Deno.test("conflictDecisionContext - names the repository, the PR and the reason", () => {
@@ -341,6 +361,7 @@ export function describe(reason: ConflictSkipReason): string {
     case "disrupted-bound":
     case "lock-held":
     case "repo-leased":
+    case "deferred-bound":
     case "queue-empty":
     case "deadline":
     case "cap":

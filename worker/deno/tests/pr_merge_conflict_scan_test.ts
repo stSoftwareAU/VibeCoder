@@ -1049,3 +1049,69 @@ Deno.test("findConflictingPr - the records cost no extra gh calls", async () => 
     "api repos/org/repo/issues/48/comments?per_page=100&page=1",
   ]);
 });
+
+// ---------------------------------------------------------------------------
+// The deferral cursor (Issue #1111)
+//
+// The drain hands back the PRs its lease, deadline or cap dropped. The scan
+// must offer them first, without loosening a single gate.
+// ---------------------------------------------------------------------------
+
+Deno.test("findConflictingPr - a deferred PR is offered before the rest of its repo", async () => {
+  const state = makeState({
+    prs: [
+      { number: 48, headRefName: "issue-16-fix", baseRefName: "main" },
+      { number: 61, headRefName: "issue-30-fix", baseRefName: "main" },
+    ],
+    mergeable: { 48: "CONFLICTING", 61: "CONFLICTING" },
+    labels: { 48: [], 61: [] },
+    comments: { 48: [], 61: [] },
+  });
+
+  // Without a cursor the listing order stands.
+  const plain = await scanWith(makeFakeGh(state));
+  assertEquals(plain.result.value.selected?.prNumber, 48);
+
+  // With one, the PR a previous pass deferred leads.
+  const preferred = await scanWith(makeFakeGh(state), {
+    prefer: ["org/repo#61"],
+  });
+  assertEquals(preferred.result.value.selected?.prNumber, 61);
+});
+
+Deno.test("findConflictingPr - the cursor reorders, it never re-opens a closed gate", async () => {
+  // The deferred PR is out of attempts, so being offered first must change
+  // nothing about whether it is due: it is still skipped, and the healthy PR
+  // behind it is still selected.
+  const state = makeState({
+    prs: [
+      { number: 48, headRefName: "issue-16-fix", baseRefName: "main" },
+      { number: 61, headRefName: "issue-30-fix", baseRefName: "main" },
+    ],
+    mergeable: { 48: "CONFLICTING", 61: "CONFLICTING" },
+    labels: { 48: [], 61: ["needs-human"] },
+    comments: { 48: [], 61: [] },
+  });
+
+  const { result, log } = await scanWith(makeFakeGh(state), {
+    prefer: ["org/repo#61"],
+  });
+
+  assertEquals(result.value.selected?.prNumber, 48);
+  assertEquals(reasonFor(log, 61), "needs-human");
+});
+
+Deno.test("findConflictingPr - the cursor moves the repository too", async () => {
+  // A PR cannot lead the pass if its repository is scanned last.
+  const fake = makeFakeGh(makeState());
+  const { result } = await scanWith(fake, {
+    repos: ["org/first", "org/repo"],
+    prefer: ["org/repo#48"],
+  });
+
+  assertEquals(result.value.selected?.repo, "org/repo");
+  const listed = fake.calls
+    .filter((call) => call[0] === "pr" && call[1] === "list")
+    .map((call) => call[call.indexOf("--repo") + 1]);
+  assertEquals(listed[0], "org/repo");
+});
