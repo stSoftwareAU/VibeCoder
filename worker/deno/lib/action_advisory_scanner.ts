@@ -182,9 +182,7 @@ export async function scanActionAdvisories(
       // `slug` leaves a well-formed `GHSA-xxxx-xxxx-xxxx` id byte-identical
       // and strips anything else back to alphanumerics and hyphens, so no
       // advisory can plant marker syntax in the dedup key itself.
-      const findingId = `BP-GHSA-${slug(coordinate)}-${
-        slug(advisory.ghsa_id)
-      }`;
+      const findingId = `BP-GHSA-${slug(coordinate)}-${slug(advisory.ghsa_id)}`;
       const ghsaId = slug(advisory.ghsa_id);
       if (known.has(findingId)) continue;
       const severity = mapAdvisorySeverity(advisory.severity);

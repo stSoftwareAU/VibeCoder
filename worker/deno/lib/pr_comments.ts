@@ -227,9 +227,7 @@ export async function checkPrCommentHasFailedOnce(
     "confused",
     ghCommandFn,
   );
-  return reactors.some((login) =>
-    trusted.includes(login.trim().toLowerCase())
-  );
+  return reactors.some((login) => trusted.includes(login.trim().toLowerCase()));
 }
 
 /**

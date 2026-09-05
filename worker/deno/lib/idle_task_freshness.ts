@@ -366,13 +366,12 @@ async function fetchCloseSummaryViaGh(
     )
     .map((c) => {
       const author = c["author"];
-      const login =
-        typeof author === "object" && author !== null &&
+      const login = typeof author === "object" && author !== null &&
           typeof (author as Record<string, unknown>).login === "string"
-          ? (author as Record<string, unknown>).login as string
-          : typeof author === "string"
-          ? author
-          : null;
+        ? (author as Record<string, unknown>).login as string
+        : typeof author === "string"
+        ? author
+        : null;
       return {
         author: login,
         body: typeof c["body"] === "string" ? c["body"] as string : "",
