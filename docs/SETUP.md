@@ -854,32 +854,35 @@ still logged, but the export is skipped. On a contained host that case does not
 arise: the container is started with no token variables passed through, so the
 credential directory is the only route in.
 
-#### Several Vibe Coders: one token each, or the same pool on all of them
+#### Several Vibe Coders sharing a set of subscriptions
 
-Everything above describes one host. A fleet has one more decision to make,
-and the answer is not the obvious one.
+Everything above describes one host. A fleet has one more decision, and it
+turns on what you are trying to achieve.
 
 **The token files are ordinary files and nothing binds one to a host**, so
-copying `claude/` from one machine to another works. Whether you *should*
-depends on how many subscriptions you have relative to machines.
+copying `claude/` from one machine to another works — same `600` files, same
+`700` directory.
 
-| Subscriptions vs Vibe Coders | What to do |
-|------------------------------|------------|
-| **At least one each** | Give each machine a single token as its own `provider.env`. No `provider-2.env` anywhere. |
-| **Fewer subscriptions than machines** | Put the same numbered files on every machine and let each one rank them. |
+**For the usual fleet goal — keep the subscriptions draining roughly evenly,
+and never leave a worker idle while another subscription still has quota —
+put every token on every machine.** Each worker start ranks the whole set and
+takes whichever is furthest ahead, so no worker begins a run on a subscription
+that is spent while a fresh one sits unused. That is the arrangement to choose
+by default.
 
-**One token per machine is the better shape when you can afford it**, and not
-only for tidiness: with fewer than two pool candidates the worker makes **no
-probe at all** — no request, no ten-second bound, no log line — and each Vibe
-Coder gets a full, uncontended subscription. It is also the only arrangement
-where two machines are provably never on the same subscription at the same
-moment.
+Splitting the subscriptions instead — one token per machine, each as its own
+`provider.env` — is the wrong shape for that goal, even though it looks tidier.
+A machine given one token can only ever use that token: when its subscription
+is exhausted, that Vibe Coder stops for the rest of the window while another
+machine's subscription still has budget, and nothing can move the work across.
+Split them only when you deliberately want a worker pinned to a particular
+subscription — billing separation, or an experiment you want isolated.
 
-**What sharing a pool actually does.** Ranking is deterministic: the same
-candidates measured at the same moment produce the same winner, and no part of
-the decision carries a host identity, a random tie-break or any shared state
-between machines. Two Vibe Coders that start together therefore *choose the
-same token*, and the one they both skip is left idle:
+**What sharing a pool does and does not give you.** Ranking is deterministic:
+it carries no host identity, no random tie-break and no state shared between
+machines, so two workers that start at the same moment measure the same
+candidates and pick the *same* token, leaving the other idle until the next
+start:
 
 | Worker start | token A | token B | machine 1 | machine 2 |
 |--------------|---------|---------|-----------|-----------|
@@ -887,12 +890,21 @@ same token*, and the one they both skip is left idle:
 | second | 60% | 100% | B | B |
 | third | 60% | 70% | B | B |
 
-They alternate together rather than spreading apart. Over a week the totals
-still even out — each start picks whichever subscription is furthest ahead, so
-the gap closes rather than widens — but the two are consumed **in turn, not in
-parallel**. Sharing a pool across machines is a way to keep several
-subscriptions evenly drained; it is not a way to get more throughput at any one
-instant.
+They alternate together rather than spreading apart, so a pool is a way to keep
+subscriptions **evenly drained over time**, not a way to run two subscriptions
+in parallel at one instant. For the goal above that is exactly what is wanted:
+consumption stays level, and every start lands on the subscription with the
+most left.
+
+**The one gap: exhaustion part-way through a run is not recovered until the
+next start.** Selection happens once per worker start and holds for the whole
+run — the runner has no route back to the selector. A subscription that runs
+out mid-run takes the retry ladder (two retries, roughly five then ten minutes)
+and then fails the run, even when another token in the pool is untouched. The
+next worker start reselects, ranks the spent token last and picks a fresh one,
+so the fleet recovers on its own; what is lost is the remainder of that one
+run, not the machine. Shorter, more frequent worker starts narrow that window;
+nothing else does.
 
 **The windows are not synchronised.** Two subscriptions bought at different
 times have seven-day windows that reset hours or days apart, and each token is
@@ -902,10 +914,10 @@ token is fresh and takes every run until the other catches up. That is the
 ranking working, not a fault.
 
 **Several Vibe Coders on one machine** share `~/.vibe-coder/credentials` unless
-you separate them, so giving each its own token needs a credential directory
-each. That is `VIBE_CREDENTIAL_DIR`, which is read from the environment and has
-no `.config.json` key — the one piece of this setup that is not file
-configuration.
+you separate them, so pinning one to its own subscription needs a credential
+directory each. That is `VIBE_CREDENTIAL_DIR`, which is read from the
+environment and has no `.config.json` key — the one piece of this setup that is
+not file configuration.
 
 ### Permissions
 
