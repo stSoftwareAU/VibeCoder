@@ -79,10 +79,22 @@ reads.
 
 ## What the worker does
 
-When the issue is claimed, the dispatch loop spots the `add-repo:` title prefix
-and routes the issue to the `process-add-repo` command instead of the standard
-Claude-driven coding/PR flow (which would wrongly try to open a code PR). The
-command runs seven steps:
+The dispatch loop spots the `add-repo:` title prefix and routes the issue to
+the `process-add-repo` command instead of the standard Claude-driven coding/PR
+flow (which would wrongly try to open a code PR).
+
+**The route claims the request first** (Issue #1193). It dispatches _before_
+`workOnIssue`, whose setup phase held the only `claimIssue` call, so an
+`add-repo:` request used to collect neither an assignee nor a `CLAIM_LOCK`
+comment and two hosts scanning the same repo both ran it. The claim is the
+same one the standard pipeline takes — assignee, `CLAIM_LOCK` comment,
+earliest-comment race resolution and a heartbeat that beats for as long as the
+command runs. A host that is refused it runs nothing, writes nothing to the
+issue and — because the fleet shares one GitHub login — releases nothing, so
+the holder keeps its assignee and its marker. See
+[`route_claim.ts`](../worker/deno/lib/route_claim.ts).
+
+The command then runs seven steps:
 
 1. **Parse the title** — extract and validate the `owner/repo` slug. An
    unparseable title is commented on and closed (see [Failure paths](#failure-paths)).
@@ -134,7 +146,9 @@ flowchart TD
     B -- No --> Z["Not routed<br/>(discovery gate)"]
     B -- Yes --> C{Title prefix<br/>add-repo: ?}
     C -- No --> Y["Standard coding/PR flow"]
-    C -- Yes --> D["process-add-repo"]
+    C -- Yes --> C2{Claim taken?<br/>assignee + CLAIM_LOCK}
+    C2 -- Refused --> C3["Stand down:<br/>nothing run, nothing released"]
+    C2 -- Held --> D["process-add-repo"]
     D --> E{Parse owner/repo<br/>from title}
     E -- Unparseable --> E1["Comment + close issue"]
     E -- Valid slug --> F{Validate target:<br/>exists? triage access?}
@@ -305,8 +319,11 @@ applied to any issue by the flow.
   [`default_branch_ruleset.ts`](../worker/deno/lib/default_branch_ruleset.ts)
   `ensureDefaultBranchRuleset`.
 - [`worker/deno/lib/add_repo_process_issue_route.ts`](../worker/deno/lib/add_repo_process_issue_route.ts)
-  — routes a claimed `add-repo:` issue to the command, wired into the main
-  dispatch loop in `run_core_production_deps.ts`.
+  — claims an `add-repo:` issue and routes it to the command, wired into the
+  main dispatch loop in `run_core_production_deps.ts`.
+- [`worker/deno/lib/route_claim.ts`](../worker/deno/lib/route_claim.ts)
+  — the cross-host claim every pre-pipeline route takes before it runs
+  (Issues #1139, #1193).
 
 See [`docs/IDLE-TASK-FRAMEWORK.md`](IDLE-TASK-FRAMEWORK.md) for the idle-task
 scans the wrappers trigger, and [`docs/CONFIGURATION.md`](CONFIGURATION.md) for

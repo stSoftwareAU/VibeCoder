@@ -126,7 +126,7 @@ Deno.test(
       logger,
       handleIdleTaskFn: () => Promise.resolve(handlerResult),
       ensureCloneFn: okClone,
-      claimWrapperFn: okClaim,
+      claimRouteFn: okClaim,
       ghCommandFn: (args) => {
         ghCalls.push(args);
         return Promise.resolve("");
@@ -171,7 +171,7 @@ Deno.test(
           summary: "security-scan threw: timeout",
         }),
       ensureCloneFn: okClone,
-      claimWrapperFn: okClaim,
+      claimRouteFn: okClaim,
       ghCommandFn: (args) => {
         ghCalls.push(args);
         return Promise.resolve("");
@@ -213,7 +213,7 @@ Deno.test(
         logger,
         handleIdleTaskFn: () => Promise.resolve({ handled: false }),
         ensureCloneFn: okClone,
-        claimWrapperFn: okClaim,
+        claimRouteFn: okClaim,
         ghCommandFn: (args) => {
           ghCalls.push(args);
           return Promise.resolve("");
@@ -238,7 +238,7 @@ Deno.test(
       handleIdleTaskFn: () =>
         Promise.resolve({ handled: true, ok: true, summary: "ran" }),
       ensureCloneFn: okClone,
-      claimWrapperFn: okClaim,
+      claimRouteFn: okClaim,
       ghCommandFn: () => Promise.reject(new Error("gh: rate limited")),
     });
 
@@ -266,7 +266,7 @@ Deno.test(
       logger,
       handleIdleTaskFn: () => Promise.resolve({ handled: true, ok: true }),
       ensureCloneFn: okClone,
-      claimWrapperFn: okClaim,
+      claimRouteFn: okClaim,
       ghCommandFn: (args) => {
         ghCalls.push(args);
         return Promise.resolve("");
@@ -294,7 +294,7 @@ Deno.test(
     const outcome = await routeIdleTaskInProcessIssue(WRAPPER_INPUT, {
       logger,
       findTemplateFn: () => fakeTemplate("security-scan"),
-      claimWrapperFn: okClaim,
+      claimRouteFn: okClaim,
       ensureCloneFn: (repo, workDir) => {
         cloneCalls.push([repo, workDir]);
         return Promise.resolve({
@@ -330,7 +330,7 @@ Deno.test(
     const outcome = await routeIdleTaskInProcessIssue(WRAPPER_INPUT, {
       logger,
       findTemplateFn: () => fakeTemplate("security-scan"),
-      claimWrapperFn: okClaim,
+      claimRouteFn: okClaim,
       ensureCloneFn: (_repo, workDir) =>
         Promise.resolve({
           ok: false,
@@ -415,7 +415,7 @@ Deno.test(
           return Promise.resolve({ handled: true, ok: true, summary: "ran" });
         },
         ensureCloneFn: okClone,
-        claimWrapperFn: okClaim,
+        claimRouteFn: okClaim,
         ghCommandFn: () => Promise.resolve(""),
       },
     );
@@ -437,7 +437,7 @@ Deno.test(
         return Promise.resolve({ handled: true, ok: true, summary: "ran" });
       },
       ensureCloneFn: okClone,
-      claimWrapperFn: okClaim,
+      claimRouteFn: okClaim,
       ghCommandFn: () => Promise.resolve(""),
     });
 
@@ -458,7 +458,7 @@ Deno.test(
     await routeIdleTaskInProcessIssue(WRAPPER_INPUT, {
       logger,
       findTemplateFn: () => fakeTemplate("security-scan"),
-      claimWrapperFn: (input) => {
+      claimRouteFn: (input) => {
         order.push("claim");
         assertEquals(input.repo, "owner/widget");
         assertEquals(input.issueNumber, 2726);
@@ -491,7 +491,7 @@ Deno.test(
     const outcome = await routeIdleTaskInProcessIssue(WRAPPER_INPUT, {
       logger,
       findTemplateFn: () => fakeTemplate("security-scan"),
-      claimWrapperFn: () =>
+      claimRouteFn: () =>
         Promise.resolve({
           claimed: false as const,
           reason: "already_assigned" as const,

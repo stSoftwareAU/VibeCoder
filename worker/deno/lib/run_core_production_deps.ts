@@ -92,10 +92,8 @@ import { workOnIssue } from "./issue_worker.ts";
 import { createDefaultDeps, type WorkerDeps } from "./issue_worker_wiring.ts";
 import { fetchIssueData, type IssueData } from "./issue_data.ts";
 import { stripDiscoveryLabelsOnEscalation } from "./escalation_cleanup.ts";
-import {
-  idleTaskRouteRunResult,
-  routeIdleTaskInProcessIssue,
-} from "./idle_task_process_issue_route.ts";
+import { routeIdleTaskInProcessIssue } from "./idle_task_process_issue_route.ts";
+import { routeRunResult } from "./route_claim.ts";
 import { verifyPickupContentIntegrity } from "./pickup_content_integrity.ts";
 import { routeAddRepoInProcessIssue } from "./add_repo_process_issue_route.ts";
 import { routeSeedIdleTasksInProcessIssue } from "./seed_idle_tasks_process_issue_route.ts";
@@ -3007,32 +3005,39 @@ export async function createProductionRunCoreDeps(
         // Issue #1139: a wrapper a sibling host holds is a skip that releases
         // nothing (`claimNotHeld`); a claim that failed for any other reason
         // is reported as the failure it is. Neither is an ordinary success.
-        return { ok: true, value: idleTaskRouteRunResult(idleRoute) };
+        return { ok: true, value: routeRunResult(idleRoute) };
       }
 
-      // Issue #2579: route a claimed `work-on` issue titled
-      // `add-repo: owner/repo` to the `process-add-repo` command instead
-      // of the standard coding/PR flow (which would try to open a code
-      // PR — wrong for an add-repo request). The allowed-author gate on
-      // the claim path already applies; the slug is re-validated
-      // downstream by `process-add-repo` (defence in depth).
+      // Issue #2579: route a `work-on` issue titled `add-repo: owner/repo`
+      // to the `process-add-repo` command instead of the standard coding/PR
+      // flow (which would try to open a code PR — wrong for an add-repo
+      // request). The route claims the request itself (Issue #1193); the
+      // allowed-author gate on the claim path already applies, and the slug
+      // is re-validated downstream by `process-add-repo` (defence in depth).
       const addRepoRoute = await routeAddRepoInProcessIssue(
         {
           repo: issue.repo,
           issueNumber: issue.issueNumber,
           issueTitle,
           config,
+          // Issue #1193: the request is claimed on GitHub before
+          // `process-add-repo` runs, so a sibling host working from a stale
+          // issue list stands down instead of adding the repo twice.
+          githubUser,
+          workDir: config.workDir,
+          fleetAuthors,
+          pushCapableAuthors: maintenanceAuthors,
         },
         { logger },
       );
       if (addRepoRoute.routed) {
-        return {
-          ok: true,
-          value: { success: addRepoRoute.success, skipped: false },
-        };
+        // Issue #1193: a request a sibling host holds is a skip that releases
+        // nothing (`claimNotHeld`); a claim that failed for any other reason
+        // is reported as the failure it is.
+        return { ok: true, value: routeRunResult(addRepoRoute) };
       }
 
-      // Issue #3860: route a claimed issue titled
+      // Issue #3860: route an issue titled
       // `seed-idle-tasks: owner/repo` to `process-seed-idle-tasks` instead
       // of the standard coding/PR flow. The agent's baked `gh` allowlist
       // carries only this issue's own repo (#3643), so an agent-driven
@@ -3045,14 +3050,17 @@ export async function createProductionRunCoreDeps(
           issueNumber: issue.issueNumber,
           issueTitle,
           config,
+          // Issue #1193: claimed before the seeding runs, so two hosts
+          // cannot file every wrapper issue in the target repo twice.
+          githubUser,
+          workDir: config.workDir,
+          fleetAuthors,
+          pushCapableAuthors: maintenanceAuthors,
         },
         { logger },
       );
       if (seedRoute.routed) {
-        return {
-          ok: true,
-          value: { success: seedRoute.success, skipped: false },
-        };
+        return { ok: true, value: routeRunResult(seedRoute) };
       }
 
       const ctx = {
@@ -3117,6 +3125,10 @@ export async function createProductionRunCoreDeps(
         value: {
           success: result.success,
           skipped: isExpectedSkip,
+          // Issue #1193: the setup phase was refused the claim, so this run
+          // holds nothing to release — releasing would strip the winner's
+          // assignee and clear its heartbeat marker under the shared login.
+          ...(result.claimNotHeld ? { claimNotHeld: true } : {}),
           ...(failureKind ? { failureKind } : {}),
           // Issue #855: the phase a real failure died at, so the fleet
           // success rate can say *where* the 13 failures happened.

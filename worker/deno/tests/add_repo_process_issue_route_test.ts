@@ -20,6 +20,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   isAddRepoTitle,
   type ProcessAddRepoExecuteFn,
+  type RouteAddRepoDeps,
   routeAddRepoInProcessIssue,
 } from "../lib/add_repo_process_issue_route.ts";
 import type { CommandResult, Logger, WorkerConfig } from "../types.ts";
@@ -58,6 +59,21 @@ function makeExecuteStub(
   return { fn, calls };
 }
 
+/**
+ * The claim fields `processIssue` supplies (Issue #1193). A route that
+ * cannot claim must not run the command, so they are required.
+ */
+const CLAIM_INPUT = {
+  githubUser: "stservice",
+  workDir: "/tmp/work",
+  fleetAuthors: ["stservice"],
+  pushCapableAuthors: ["stservice"],
+};
+
+/** Grant the claim without touching GitHub — the routing is what is tested. */
+const GRANT_CLAIM: RouteAddRepoDeps["claimRouteFn"] = () =>
+  Promise.resolve({ claimed: true, workerId: "stservice-1" });
+
 Deno.test("routeAddRepoInProcessIssue - routes add-repo: title to process-add-repo", async () => {
   const { fn, calls } = makeExecuteStub({
     success: true,
@@ -71,8 +87,9 @@ Deno.test("routeAddRepoInProcessIssue - routes add-repo: title to process-add-re
       issueNumber: 2579,
       issueTitle: "add-repo: stSoftwareAU/private-repo-11",
       config: CONFIG,
+      ...CLAIM_INPUT,
     },
-    { logger: makeLogger(), executeFn: fn },
+    { logger: makeLogger(), executeFn: fn, claimRouteFn: GRANT_CLAIM },
   );
 
   assertEquals(outcome, { routed: true, success: true });
@@ -96,8 +113,9 @@ Deno.test("routeAddRepoInProcessIssue - mirrors command failure as success=false
       issueNumber: 99,
       issueTitle: "add-repo: stSoftwareAU/Broken",
       config: CONFIG,
+      ...CLAIM_INPUT,
     },
-    { logger: makeLogger(), executeFn: fn },
+    { logger: makeLogger(), executeFn: fn, claimRouteFn: GRANT_CLAIM },
   );
 
   assertEquals(outcome, { routed: true, success: false });
@@ -112,8 +130,9 @@ Deno.test("routeAddRepoInProcessIssue - normal title passes through untouched", 
       issueNumber: 1234,
       issueTitle: "Fix the date parser",
       config: CONFIG,
+      ...CLAIM_INPUT,
     },
-    { logger: makeLogger(), executeFn: fn },
+    { logger: makeLogger(), executeFn: fn, claimRouteFn: GRANT_CLAIM },
   );
 
   assertEquals(outcome, { routed: false });
