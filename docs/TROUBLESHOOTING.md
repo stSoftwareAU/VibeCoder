@@ -77,6 +77,17 @@ channel can deliver, the attempt is queued and the streak carries it, and
 `self-heal-summary` shows it as `escalation_undeliverable` — a host that cannot
 report is itself the thing to look at.
 
+A run **you** stopped is not reported at all. `run.sh` exits with the runtime
+client's own status — 255 on macOS when the container is stopped under it —
+which reads as a crash, so a `kill`, a launchd stop or a host shutdown used to
+count towards the streak and escalate a host that was working (Issues #879,
+#1072). The signal trap declares the stop in
+`${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-termination` and the recorder
+consumes it: `self-heal-summary` shows a `terminated` event, the failure count
+is unchanged, and nothing is filed. If you see a `worker_run` escalation for a
+run you stopped by hand, that marker was not written — the launcher says so on
+stderr when it cannot write it.
+
 A report titled `unknown-host` is a fault in the reporter, not a nameless
 machine: the outcome recorder was invoked without `--allow-sys=hostname`, so
 `Deno.hostname()` threw. Because the title is also the deduplication key, every

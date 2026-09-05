@@ -79,15 +79,18 @@ The container is a disposable execution environment: when it dies, the superviso
    - an escalation still undeliverable at the cap, or whose streak ends before it ever landed — the host recovered, a pause was scheduled, or the fault moved to a different phase — is emitted as an `escalation_undeliverable` self-heal event with result **failed**, and the attempts that were lost are named in the next report that does get through.
 4. **A host that is merely out of quota.** Quota exhaustion is neither of the above: the worker stops on purpose, with the reset already known, so backing off exponentially, escalating and rebuilding the container are all wrong answers. The run declares the pause twice — it exits **75** (`QUOTA_PAUSE_EXIT_STATUS`, a status no crash produces), and it writes `~/logs/quota-pause.json`, which crosses the container boundary on the one host mount both sides share. The recorder **consumes** that marker, so it can only ever explain the invocation that just ended: a later run that genuinely crashes while the quota is still out has no marker of its own and backs off exactly as before. A quota pause **resets the failure streak**, escalates nothing, claims no recovery, and re-probes at a **fixed cadence** (`--quota-pause-sleep-seconds`, default 3600 s) — clamped down when the window reopens sooner, never grown — because the quota may be *extended* before its stated reset and a host whose interval doubles every cycle would not notice.
 
-Every action — backoff, recovery, escalation, quota pause — is emitted as a structured self-heal event, so it appears in `self-heal-summary` rather than only in a host log.
+5. **A host that was merely stopped.** `run.sh` forwards SIGTERM/SIGINT to the runtime client and exits with **that client's** status, which on the fleet's macOS hosts is **255** when the container is stopped under it. So an operator's `kill`, a launchd stop or a host shutdown was indistinguishable from a crash: it climbed the failure ladder, and three of them escalated a host that was working — with a report advising the reader to look at the container runtime, which for a stop is a phantom (Issues #879, #1072). The signal trap now declares what it knows in `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-termination`, and the recorder **consumes** it, as it does the quota-pause marker. A stop **carries the streak through untouched** — counted neither up (it is not this host failing) nor down (an operator restarting a broken host must not erase the evidence) — escalates nothing, claims no recovery, and waits the base cadence, because whoever stopped the run wants it back. Three defences stop a leftover silencing a genuine failure: the launcher clears the marker at the start of every launch, the recorder consumes it, and a marker older than an hour is refused loudly. The **supervisor's own** deadline kill (`timeout`'s 124/137) is exempt and stays a failure: a cycle that had to be killed is a fault the host must escalate for (Issue #322).
+
+Every action — backoff, recovery, escalation, quota pause, stop — is emitted as a structured self-heal event, so it appears in `self-heal-summary` rather than only in a host log.
 
 ```mermaid
 flowchart TD
   Loop["loop.sh / loop.ps1"]
   Launch["run.sh — writes phase marker"]
-  Status{"Exit status<br/>and quota-pause marker"}
+  Status{"Exit status, quota-pause<br/>and termination markers"}
   Reset["Reset counter<br/>self-heal: recovered"]
   Quota["Reset counter, no escalation<br/>self-heal: quota_pause"]
+  Stopped["Carry the streak through<br/>self-heal: terminated"]
   Count["Increment consecutive failures<br/>self-heal: restart_backoff"]
   Threshold{"Failures ≥ phase threshold?<br/>image build 2, otherwise 3"}
   Due{"New streak, retry due,<br/>or re-notify due?<br/>(crossing → hourly → daily)"}
@@ -101,6 +104,7 @@ flowchart TD
   Loop --> Launch --> Status
   Status -->|0| Reset --> Sleep
   Status -->|75, or a marker| Quota --> Cadence
+  Status -->|"signalled (not 124/137)"| Stopped --> Sleep
   Status -->|any other non-zero| Count --> Threshold
   Threshold -->|No| Sleep
   Threshold -->|Yes| Due

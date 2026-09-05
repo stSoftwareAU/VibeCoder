@@ -406,6 +406,10 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "launch_plumbing",
     note: "where the launcher records the phase it reached",
   },
+  VIBE_LAUNCH_TERMINATION_FILE: {
+    role: "launch_plumbing",
+    note: "where a signalled launcher declares its stop (Issue #1072)",
+  },
   VIBE_IMAGE_AGENT_PROVIDERS: {
     role: "launch_plumbing",
     note: "the provider set the IMAGE was built with, stamped by the build",
