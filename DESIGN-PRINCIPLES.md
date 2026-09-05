@@ -618,6 +618,14 @@ values are guarded down to `0` by `getRepoNice()` in
   candidates by resolved `nice`, drain the lowest-`nice` non-empty tier first,
   and only fall through to a higher-`nice` tier when no lower tier yields a
   selectable candidate.
+
+  > **Known divergence from the intent (Issue #1063).** This describes what
+  > the implementation does today, and it contradicts **F4a** in
+  > [Every slot busy, always](#every-slot-busy-always--the-fleet-throughput-invariant):
+  > the label tier is meant to be the outer partition and `nice` the inner
+  > one, so a `nice: -20` repo's `work-on` issue currently outranks a
+  > `nice: -15` repo's `top-priority` issue. F4a is the intent; this bullet
+  > is the defect. Do not "fix" the intent to match the code.
 - **Fair within a tier.** Among repos sharing one `nice` value,
   `selectFairWithinTier()` rotates fairly across equal repos (oldest-first
   within a repo, fair rotation across repos when a `randomFn` is injected), so a
@@ -1149,7 +1157,17 @@ repos via the idle-task framework:
    clean does the command shuffle the repo list, pick the first repo that is
    still clean (the per-repo dedup loop stays as defence-in-depth against TOCTOU
    races between the cross-repo check and the per-repo file), and file an
-   `idle-task` issue tagged with the `security-scan` template. The next
+   `idle-task` issue tagged with the `security-scan` template.
+
+   > **Known divergence from the intent (Issue #1083).** The cross-repo
+   > wrapper check is a **fleet-wide** cap of one open idle task, which
+   > contradicts **F8** and **F9** in
+   > [Every slot busy, always](#every-slot-busy-always--the-fleet-throughput-invariant):
+   > the cap is meant to be one open idle task **per repository**, and enough
+   > of them are meant to be raised to keep every slot busy. One wrapper
+   > cannot fill eight slots. F8/F9 are the intent; this gate is the defect.
+
+   The next
    iteration of the main loop claims that issue through the standard priority
    dispatch and routes it to `securityScanTemplate.runTask()`, which runs the
    scanner and files findings. Any failure inside the run is caught, logged as
