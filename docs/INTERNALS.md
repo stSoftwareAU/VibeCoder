@@ -1092,12 +1092,24 @@ network hiccups, and even its own mistakes:
   ```
 
 - **Unified claim release** — every scan-loop path that releases a claim
-  (success, failure, skip-after-claim) calls the single `releaseClaim()` helper
+  (success, failure, skip-after-claim, **and a `processIssue` that throws**)
+  calls the single `releaseClaim()` helper
   (`worker/deno/lib/heartbeat_storage.ts`), which unassigns the worker **and**
   clears the heartbeat/marker. Both steps are best-effort and independent — a
   failure in one never blocks the other, and a double-unassign is a harmless
   no-op. This fixes incident, where the failure path cleared the marker but left
   the issue permanently assigned, blocking all future pickup.
+- **A throw is a terminal run, so it releases too** (Issue #1222) — a
+  `processIssue` that throws stops its heartbeat in a `finally` (the pipeline's
+  `stopHeartbeat`, `runWithRouteClaim`'s for a pre-pipeline route) but used to
+  re-throw without unassigning, leaving the issue **assigned with a dead
+  marker** until the ~30-minute assigned-without-heartbeat recovery freed it —
+  half an hour parked after a crash that should have freed it in seconds. Both
+  work streams now release before the throw unwinds: the slot pool's own catch
+  (Issue #4178) and the serial loop's (Issue #1222), each carrying the derived
+  failure outcome so the release comment states what happened. `claimNotHeld`
+  does not apply on this path — every stand-down *returns* rather than throwing,
+  so a throw never carries one.
 - **A run that never held the claim releases nothing** (Issues #1139, #1193) —
   the fleet runs every host under one GitHub login, so
   `gh issue edit --remove-assignee <githubUser>` removes **whichever** host's
