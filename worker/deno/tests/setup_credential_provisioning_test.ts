@@ -22,11 +22,44 @@ import {
   DEEPSEEK_PROVIDER_ID,
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
+import { listTree, removeTempTree, withTempDir } from "./support/temp_tree.ts";
 
 const setupPath = new URL("../../../setup.sh", import.meta.url).pathname;
 
+/**
+ * Run `fn` with a PATH whose `gh` is a stub that reaches nothing
+ * (Issue #1135).
+ *
+ * `PATH: "/usr/bin:/bin"` was written to keep `write_gh_hosts_file`'s login
+ * lookup off the network, and on a developer's machine — where `gh` lives in
+ * `/opt/homebrew/bin` or `/usr/local/bin` — it does. It does **not** on CI:
+ * `ubuntu-latest` ships the GitHub CLI at `/usr/bin/gh`, so every
+ * provisioning case here ran the real `gh api user` against api.github.com
+ * with `HOME` pointed at the test's own temp directory. That put a program
+ * the test does not own inside the tree the test then deletes — measured, it
+ * writes `$HOME/.local/state/gh/device-id` — on a schedule set by a network
+ * round trip, and it made the resulting `hosts.yml` differ between a
+ * developer's machine and CI.
+ *
+ * A stub that exits non-zero without printing gives every host the single
+ * behaviour the comment always claimed: the lookup finds no login, nothing
+ * outside setup.sh writes into `HOME`, and no test depends on the network.
+ */
+async function withOfflineGh<T>(
+  fn: (path: string) => Promise<T>,
+): Promise<T> {
+  const bin = await Deno.makeTempDir({ prefix: "vibe_offline_gh_" });
+  try {
+    await Deno.writeTextFile(`${bin}/gh`, "#!/usr/bin/env bash\nexit 1\n");
+    await Deno.chmod(`${bin}/gh`, 0o755);
+    return await fn(`${bin}:/usr/bin:/bin`);
+  } finally {
+    await removeTempTree(bin);
+  }
+}
+
 /** Run `provision_vibe_credentials` from the real setup.sh with `env` set. */
-async function provision(
+function provision(
   tmp: string,
   env: Record<string, string>,
 ): Promise<{ code: number; output: string }> {
@@ -36,23 +69,24 @@ async function provision(
     provision_vibe_credentials
     printf 'PROVISIONED_GH_DIR=%s\\n' "\${VIBE_PROVISIONED_GH_CONFIG_DIR}"
   `;
-  const cmd = new Deno.Command("bash", {
-    args: ["-c", script],
-    env: {
-      // A PATH without `gh` keeps the login lookup off the network.
-      PATH: "/usr/bin:/bin",
-      HOME: tmp,
-      CONFIG_FILE: `${tmp}/.config.json`,
-      ...env,
-    },
-    stdin: "null",
+  return withOfflineGh(async (path) => {
+    const cmd = new Deno.Command("bash", {
+      args: ["-c", script],
+      env: {
+        PATH: path,
+        HOME: tmp,
+        CONFIG_FILE: `${tmp}/.config.json`,
+        ...env,
+      },
+      stdin: "null",
+    });
+    const { code, stdout, stderr } = await cmd.output();
+    return {
+      code,
+      output: new TextDecoder().decode(stdout) +
+        new TextDecoder().decode(stderr),
+    };
   });
-  const { code, stdout, stderr } = await cmd.output();
-  return {
-    code,
-    output: new TextDecoder().decode(stdout) +
-      new TextDecoder().decode(stderr),
-  };
 }
 
 /** POSIX permission bits of a path. */
@@ -62,8 +96,7 @@ async function modeOf(path: string): Promise<number> {
 }
 
 Deno.test("provision_vibe_credentials - writes owner-only credential material", async () => {
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     const { code, output } = await provision(tmp, {
       VIBE_LAUNCHAGENT_GH_TOKEN: "gho_provisioned",
       VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY: "sk-ant-provisioned",
@@ -98,14 +131,11 @@ Deno.test("provision_vibe_credentials - writes owner-only credential material", 
     assertEquals(result.ok, true, credentialPreflightMessage(result));
     assertEquals(result.githubSource, "directory");
     assertEquals(result.providerSource, "directory");
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 Deno.test("provision_vibe_credentials - honours VIBE_CREDENTIAL_DIR and CLAUDE_CODE_OAUTH_TOKEN", async () => {
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     const dir = `${tmp}/mounted-credentials`;
     const { code, output } = await provision(tmp, {
       VIBE_CREDENTIAL_DIR: dir,
@@ -123,14 +153,11 @@ Deno.test("provision_vibe_credentials - honours VIBE_CREDENTIAL_DIR and CLAUDE_C
       env: () => undefined,
     });
     assertEquals(result.ok, true, credentialPreflightMessage(result));
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 Deno.test("provision_vibe_credentials - no credential variables leaves nothing behind and warns", async () => {
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     const { code, output } = await provision(tmp, {});
     assertEquals(code, 0, output);
     assert(
@@ -162,17 +189,14 @@ Deno.test("provision_vibe_credentials - no credential variables leaves nothing b
       env: () => undefined,
     });
     assertEquals(result.ok, false);
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 Deno.test("provision_vibe_credentials - provisions one credential per vendor", async () => {
   // Issue #4108: each provider is provisioned from its own descriptor
   // variable, into its own sub-directory, so a run can carry more than one
   // vendor's credential without either seeing the other's.
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     const { code, output } = await provision(tmp, {
       VIBE_LAUNCHAGENT_GH_TOKEN: "gho_provisioned",
       VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY: "sk-ant-provisioned",
@@ -228,14 +252,11 @@ Deno.test("provision_vibe_credentials - provisions one credential per vendor", a
       result.providers.map((p) => p.source),
       providers.map(() => "directory" as const),
     );
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 Deno.test("provision_vibe_credentials - an unset variable leaves that vendor untouched", async () => {
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     // First run provisions Claude only — no Codex directory is created.
     await provision(tmp, {
       VIBE_LAUNCHAGENT_GH_TOKEN: "gho_provisioned",
@@ -261,9 +282,7 @@ Deno.test("provision_vibe_credentials - an unset variable leaves that vendor unt
       await Deno.readTextFile(`${dir}/codex/provider.env`),
       "OPENAI_API_KEY=sk-openai-second\n",
     );
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 /**
@@ -280,8 +299,7 @@ function deepseekDescriptor(): AgentProviderDescriptor {
 Deno.test("provision_vibe_credentials - provisions the DeepSeek API key", async () => {
   // Issue #416: DeepSeek is an API-key-only vendor, so the non-interactive
   // path is the only way it is ever provisioned.
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     const key = "sk-deepseek-provisioned";
     const { code, output } = await provision(tmp, {
       VIBE_LAUNCHAGENT_GH_TOKEN: "gho_provisioned",
@@ -312,14 +330,11 @@ Deno.test("provision_vibe_credentials - provisions the DeepSeek API key", async 
     if (Deno.build.os !== "windows") {
       assertEquals(await modeOf(file), 0o600);
     }
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 Deno.test("provision_vibe_credentials - a claude+deepseek run passes the preflight unchanged", async () => {
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     const providers = [
       resolveAgentProvider(CLAUDE_PROVIDER_ID),
       deepseekDescriptor(),
@@ -363,14 +378,11 @@ Deno.test("provision_vibe_credentials - a claude+deepseek run passes the preflig
       "directory",
       "directory",
     ]);
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 Deno.test("provision_vibe_credentials - is idempotent across repeated runs", async () => {
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     const env = {
       VIBE_LAUNCHAGENT_GH_TOKEN: "gho_provisioned",
       VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY: "sk-ant-provisioned",
@@ -385,9 +397,45 @@ Deno.test("provision_vibe_credentials - is idempotent across repeated runs", asy
     if (Deno.build.os !== "windows") {
       assertEquals(await modeOf(`${dir}/gh/hosts.yml`), 0o600);
     }
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
+});
+
+Deno.test("provision_vibe_credentials - writes nothing into HOME beyond the credential directory", async () => {
+  // Issue #1135: the teardown of the idempotency case above failed on CI
+  // with ENOTEMPTY while every assertion passed. `ENOTEMPTY` from a
+  // recursive remove means an entry appeared inside the tree while it was
+  // being walked, so the question was who else writes into this HOME.
+  //
+  // `write_gh_hosts_file` runs `gh api user` whenever `command -v gh`
+  // succeeds, and on `ubuntu-latest` it does — the GitHub CLI is installed
+  // at `/usr/bin/gh`, which the helper's `PATH` names. The real `gh` then
+  // ran against the network with `HOME` set to this directory and left
+  // `.local/state/gh/device-id` behind in it. This case pins the boundary:
+  // the only thing a provisioning run may create under HOME is the
+  // credential directory setup.sh is asked for.
+  await withTempDir(async (tmp) => {
+    const { code, output } = await provision(tmp, {
+      VIBE_LAUNCHAGENT_GH_TOKEN: "gho_provisioned",
+      VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY: "sk-ant-provisioned",
+    });
+    assertEquals(code, 0, output);
+
+    const written = await listTree(tmp);
+    const foreign = written.filter((path) =>
+      path !== ".vibe-coder" && !path.startsWith(".vibe-coder/")
+    );
+    assertEquals(
+      foreign,
+      [],
+      `only setup.sh may write into HOME; found ${foreign.join(", ")}`,
+    );
+    // ...and the credential material really was written, so an empty tree
+    // cannot pass this case by accident.
+    assert(
+      written.includes(".vibe-coder/credentials/gh/hosts.yml"),
+      written.join(", "),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -399,46 +447,50 @@ Deno.test("provision_vibe_credentials - is idempotent across repeated runs", asy
 // ---------------------------------------------------------------------------
 
 /** Run `interactive_credentials_flow` from the real setup.sh with stdin fed. */
-async function interactiveFlow(
+function interactiveFlow(
   tmp: string,
   stdinText: string,
   ghSourceDir = "",
   // No `claude` on the default PATH, so the run-it-for-you offer is skipped
   // and the paste fallback is exercised unless a test injects a fake CLI.
-  path = "/usr/bin:/bin",
+  // A caller that injects its own PATH owns what `gh` resolves to; the
+  // default resolves it to the offline stub for the reason above.
+  path?: string,
 ): Promise<{ code: number; output: string }> {
   const script = `
     set -euo pipefail
     source "${setupPath}"
     interactive_credentials_flow "${ghSourceDir}"
   `;
-  const child = new Deno.Command("bash", {
-    args: ["-c", script],
-    env: {
-      PATH: path,
-      HOME: tmp,
-      // Pty transcripts land here, so the tests can assert none survive.
-      TMPDIR: tmp,
-      CONFIG_FILE: `${tmp}/.config.json`,
-    },
-    stdin: "piped",
-    stdout: "piped",
-    stderr: "piped",
-  }).spawn();
-  const writer = child.stdin.getWriter();
-  await writer.write(new TextEncoder().encode(stdinText));
-  await writer.close();
-  const { code, stdout, stderr } = await child.output();
-  return {
-    code,
-    output: new TextDecoder().decode(stdout) +
-      new TextDecoder().decode(stderr),
+  const run = async (resolvedPath: string) => {
+    const child = new Deno.Command("bash", {
+      args: ["-c", script],
+      env: {
+        PATH: resolvedPath,
+        HOME: tmp,
+        // Pty transcripts land here, so the tests can assert none survive.
+        TMPDIR: tmp,
+        CONFIG_FILE: `${tmp}/.config.json`,
+      },
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+    }).spawn();
+    const writer = child.stdin.getWriter();
+    await writer.write(new TextEncoder().encode(stdinText));
+    await writer.close();
+    const { code, stdout, stderr } = await child.output();
+    return {
+      code,
+      output: new TextDecoder().decode(stdout) +
+        new TextDecoder().decode(stderr),
+    };
   };
+  return path === undefined ? withOfflineGh(run) : run(path);
 }
 
 Deno.test("interactive_credentials_flow - copies the gh identity and writes the pasted OAuth token", async () => {
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     const ghSource = `${tmp}/gh-vibe`;
     await Deno.mkdir(ghSource, { recursive: true });
     const hosts = "github.com:\n    oauth_token: gho_existing\n";
@@ -481,14 +533,11 @@ Deno.test("interactive_credentials_flow - copies the gh identity and writes the 
     assertEquals(result.ok, true, credentialPreflightMessage(result));
     assertEquals(result.githubSource, "directory");
     assertEquals(result.providerSource, "directory");
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 Deno.test("interactive_credentials_flow - declining and skipping writes nothing and warns", async () => {
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     const ghSource = `${tmp}/gh-vibe`;
     await Deno.mkdir(ghSource, { recursive: true });
     await Deno.writeTextFile(`${ghSource}/hosts.yml`, "github.com:\n");
@@ -501,14 +550,11 @@ Deno.test("interactive_credentials_flow - declining and skipping writes nothing 
     assertEquals(await exists(`${dir}/claude/provider.env`), false);
     // The skip is loud: the operator is told the worker cannot launch yet.
     assert(/claude credential|preflight/i.test(output), output);
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 Deno.test("interactive_credentials_flow - existing material is kept by default", async () => {
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     await provision(tmp, {
       VIBE_LAUNCHAGENT_GH_TOKEN: "gho_provisioned",
       CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-original",
@@ -525,9 +571,7 @@ Deno.test("interactive_credentials_flow - existing material is kept by default",
       await Deno.readTextFile(`${dir}/claude/provider.env`),
       "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-original\n",
     );
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 Deno.test("interactive_credentials_flow - runs claude setup-token itself and captures the token", async () => {
@@ -535,8 +579,7 @@ Deno.test("interactive_credentials_flow - runs claude setup-token itself and cap
   // the real CLI, printing UI noise around the token exactly as setup-token
   // does. The flow must extract the token from the pty transcript and write
   // provider.env without any paste.
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     const bin = `${tmp}/bin`;
     await Deno.mkdir(bin, { recursive: true });
     await Deno.writeTextFile(
@@ -570,14 +613,11 @@ Deno.test("interactive_credentials_flow - runs claude setup-token itself and cap
         `transcript left behind: ${entry.name}`,
       );
     }
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 Deno.test("interactive_credentials_flow - replace offer rotates an expired token via paste fallback", async () => {
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     await provision(tmp, {
       VIBE_LAUNCHAGENT_GH_TOKEN: "gho_provisioned",
       CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-expired",
@@ -596,9 +636,7 @@ Deno.test("interactive_credentials_flow - replace offer rotates an expired token
       await Deno.readTextFile(`${dir}/claude/provider.env`),
       "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-fresh\n",
     );
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 /** True when a path exists. */
@@ -615,8 +653,7 @@ Deno.test("interactive_credentials_flow - an invalid stored token is detected an
   // The fake claude validates whichever token the flow exported: the stored
   // "expired" one fails `-p`, the freshly minted one passes — so the flow
   // must notice the stale credential and rotate it without being asked.
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     await provision(tmp, {
       VIBE_LAUNCHAGENT_GH_TOKEN: "gho_provisioned",
       CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-expired",
@@ -648,14 +685,11 @@ Deno.test("interactive_credentials_flow - an invalid stored token is detected an
       "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-fresh_123\n",
     );
     assert(/fail|invalid|expired/i.test(output), output);
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 Deno.test("interactive_credentials_flow - a token that fails validation is never kept", async () => {
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     const bin = `${tmp}/bin`;
     await Deno.mkdir(bin, { recursive: true });
     // setup-token mints a token, but `-p` always fails: whatever is written
@@ -682,17 +716,14 @@ Deno.test("interactive_credentials_flow - a token that fails validation is never
       false,
     );
     assert(/fail|invalid/i.test(output), output);
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 Deno.test("interactive_credentials_flow - a rate-limited token is kept, never discarded", async () => {
   // The operator may be waiting out their subscription's usage window: a
   // "limit reached" answer proves the token authenticated, so the flow must
   // keep the credential rather than deleting a perfectly good token.
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     await provision(tmp, {
       VIBE_LAUNCHAGENT_GH_TOKEN: "gho_provisioned",
       CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-good-but-limited",
@@ -721,9 +752,7 @@ Deno.test("interactive_credentials_flow - a rate-limited token is kept, never di
       "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-good-but-limited\n",
     );
     assert(/rate-limited/i.test(output), output);
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 Deno.test("interactive_credentials_flow - materialises a keychain-held gh token into the copy", async () => {
@@ -731,8 +760,7 @@ Deno.test("interactive_credentials_flow - materialises a keychain-held gh token 
   // source hosts.yml carries no oauth_token at all, so a plain copy hands
   // the container an unusable identity (observed live on host-23). The flow
   // must extract the token via `gh auth token` and write it inline.
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     const ghSource = `${tmp}/gh-vibe`;
     await Deno.mkdir(ghSource, { recursive: true });
     await Deno.writeTextFile(
@@ -761,14 +789,11 @@ Deno.test("interactive_credentials_flow - materialises a keychain-held gh token 
       `${tmp}/.vibe-coder/credentials/gh/hosts.yml`,
     );
     assert(hosts.includes("oauth_token: gho_from_keychain"), hosts);
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
 
 Deno.test("interactive_credentials_flow - a token-less source with no gh warns instead of copying", async () => {
-  const tmp = await Deno.makeTempDir();
-  try {
+  await withTempDir(async (tmp) => {
     const ghSource = `${tmp}/gh-vibe`;
     await Deno.mkdir(ghSource, { recursive: true });
     await Deno.writeTextFile(`${ghSource}/hosts.yml`, "github.com:\n");
@@ -780,7 +805,5 @@ Deno.test("interactive_credentials_flow - a token-less source with no gh warns i
       false,
     );
     assert(/keychain/i.test(output), output);
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  });
 });
