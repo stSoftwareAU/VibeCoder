@@ -54,7 +54,7 @@ $ echo $?
 says in as many words that nothing was compared:
 
 ```console
-$ GH_TOKEN=ghp_0000… deno run --allow-all worker/deno/mod.ts check-release-tag-ruleset
+$ GH_TOKEN=<an invalid token> deno run --allow-all worker/deno/mod.ts check-release-tag-ruleset
 SKIPPED: the stSoftwareAU/VibeCoder rulesets could not be read — gh command
 failed (exit 1): gh: Bad credentials (HTTP 401). Nothing was compared; this is
 not a pass.
