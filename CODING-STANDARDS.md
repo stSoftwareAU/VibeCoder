@@ -235,8 +235,22 @@ Issue #1135.
 - **Do not** reduce iteration counts to make a "performance test" fast enough
   to pass as a unit test. If you need to confirm performance, write a benchmark
   and include the results in the PR summary.
-- **Guard super-linearity by shape, not by clock** — catastrophic backtracking
-  has no wrong output, only a runtime one, so a few tests must measure. Use
+- **Guard super-linearity by behaviour first** — catastrophic backtracking on
+  an adversarial input of any real size does not cost a little more than some
+  threshold, it never returns. So the first form to reach for is not a
+  measurement at all: feed the hostile input and assert what the code
+  **produces** — benign text unchanged, the credential masked, no suppression
+  found. A super-linear regression then hangs the case until the runner kills
+  it, which is a failure on every machine under every load. PR #1170 is what
+  it cost to learn this twice: an absolute millisecond budget went red on a
+  host 8% slower than the one it was chosen on, and the ratio assertion that
+  replaced it went red on a loaded laptop reading 30 ms against 355 ms for work
+  that is linear. **A fleet of unlike machines under unlike loads has no budget
+  and no ratio that means the same thing twice**, and a flaky gate teaches
+  everyone to re-run rather than read the result.
+- **If, and only if, no observable output distinguishes the two, guard by
+  shape rather than by clock** — catastrophic backtracking has no wrong output,
+  only a runtime one, so such a test must measure. Use
   [`tests/support/growth.ts`](worker/deno/tests/support/growth.ts)
   (`assertLinearGrowth`), which times the same work at size N and 4N and fails
   only when the cost grew faster than the input. A slower fleet host inflates
@@ -245,7 +259,9 @@ Issue #1135.
   never a reading against a constant.** A ratio assertion is permitted and is
   not a `test-audit` finding; an absolute wall-clock threshold is forbidden and
   is one (Issue #786). Such a test measures deliberately, so it runs in the
-  serial pass — and it is still a unit test.
+  serial pass — and it is still a unit test. No suite in this repository needs
+  it today: every ReDoS guard has a behavioural form, and PR #1170 moved
+  them all onto it.
 
 ### Integration tests
 
@@ -264,11 +280,15 @@ prerequisite must be named and enforced loudly, never skipped in silence.
 `ignore` when it is absent — and both CI jobs that would run it fail the build
 when `pwsh` is missing, rather than reporting a green suite that tested nothing.
 
-Integration tests are **excluded from every quality run**. Both unit passes
-ignore them, because they cost roughly a third of the gate's wall time and ran
-on changes that cannot reach them (Issue #907). They run in per-PR CI, where
-the environment is provisioned and sharding absorbs the cost, and on demand
-with `deno task test:integration`.
+Integration tests are **excluded from every quality run and from the merge
+gate**. Both unit passes ignore them, because they cost roughly a third of the
+gate's wall time and ran on changes that cannot reach them (Issue #907), and
+PR #1170 took them out of the sharded `validate (tests N/4)` legs for the
+same reason — a required check that needs a provisioned PowerShell before it
+can start reports the runner as often as it reports the change. They run in
+per-PR CI in their own `integration tests` job, which is deliberately **not** a
+required check, and on demand with `deno task test:integration`. A red result
+there is a real signal and must be read; it is not the gate.
 
 A test that **reads** a repository script without running it is a unit test,
 not an integration test — but the classifier still claims it, so it must be
@@ -332,11 +352,14 @@ optional checks (Ruby + `liquid`, `markdownlint-cli2`, `semgrep`).
 **A quality run executes the unit suite only** — no integration tests, no
 benchmarks. Its `deno test` stage is the two unit passes and nothing else:
 both of them ignore `INTEGRATION_TEST_FILES` (Issue #907), and no gate has
-ever run a benchmark. Integration tests are covered by per-PR CI, which runs
-every test file across four shards on a runner provisioned for them; run them
-locally with `deno task test:integration` when your change touches a script
-they drive. A green quality run therefore says nothing about the integration
-suites, and is not meant to.
+ever run a benchmark. The sharded `validate (tests N/4)` legs run exactly the
+same two unit passes, built from the same manifests by
+`lib/unit_test_passes.ts` (PR #1170), so "it passed locally" and "the merge
+gate passed" mean the same thing. Integration tests are covered by per-PR CI in
+a separate, non-required `integration tests` job; run them locally with
+`deno task test:integration` when your change touches a script they drive. A
+green quality run therefore says nothing about the integration suites, and is
+not meant to.
 
 **All quality checks MUST pass before creating a PR.** The worker runs
 `./quality.sh` before creating any PR; CI re-runs the same checks. Never raise a
