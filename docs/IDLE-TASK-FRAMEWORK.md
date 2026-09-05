@@ -677,12 +677,15 @@ then refuses every sibling in it (`isMilestoneOccupied` → the
 excluded siblings as `stream_occupied=<n>`, alongside `pr_blocked=<n>`, so both
 deferrals stay observable without inflating the inversion signal.
 
-**Known divergence:** the census still resolves its account set from
-`allowed_authors`, while the scan resolves the fleet-identity set. A human
-assignee therefore still reads as `stream_occupied` in the census, but no longer
-in the scan — the census **over**-counts occupancy and so **under**-counts
-claimable work, the bounded-harm direction this module already prefers. Aligning
-its input is a follow-up; it is fed from `run_core_production_deps.ts`.
+Since Issue #1071 it is not merely "the same gate" but the same **function**:
+`occupiedStreamsFor` calls `isMilestoneOccupied`, over the fleet-identity set
+`run_core_production_deps.ts` resolves for the selector. The census used to
+restate the rule, and the restatement drifted twice — first on the account set
+(#753), then in the opposite direction when #1064 moved occupancy off
+`allowed_authors` and the copy here kept counting a human's assignment as
+occupied. One implementation cannot drift a third time, and
+`census_occupancy_drift_1071_test.ts` feeds one issue set to both and fails on
+any disagreement.
 
 ```mermaid
 flowchart LR
