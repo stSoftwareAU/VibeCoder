@@ -41,6 +41,8 @@ import type { LogContext, Logger } from "../types.ts";
 const WORK_DIR = "/work";
 const HOUR = 3600_000;
 const START = 1_700_000_000_000;
+/** The worker's own login — the only author the notice dedup trusts. */
+const FLEET = "vibe-bot";
 
 function makeSilentLogger(): Logger {
   const noop = () => {};
@@ -130,7 +132,10 @@ function queueFinder(
 
 /** A PR comment thread every simulated host reads and writes. */
 function fakeThread() {
-  const comments = new Map<string, { body: string }[]>();
+  const comments = new Map<
+    string,
+    { body: string; user: { login: string } }[]
+  >();
   const ghCommandFn = (args: string[]): Promise<string> => {
     if (args[0] === "api") {
       const path = args[1] ?? "";
@@ -143,7 +148,7 @@ function fakeThread() {
     if (args[0] === "pr" && args[1] === "comment") {
       const key = `${args[4]}#${args[2]}`;
       const thread = comments.get(key) ?? [];
-      thread.push({ body: args[6] ?? "" });
+      thread.push({ body: args[6] ?? "", user: { login: FLEET } });
       comments.set(key, thread);
       return Promise.resolve("");
     }
@@ -388,6 +393,40 @@ Deno.test("drain fairness - an attempt clears the streak", async () => {
 // Visibility: one comment per streak, and never a spent budget
 // ---------------------------------------------------------------------------
 
+Deno.test("drain fairness - an attempt that never ran leaves the streak standing", async () => {
+  // `resolve` returning null is an attempt that never got off the ground — a
+  // clone that would not set up, a branch that is gone. Nothing was tried, so
+  // the PR is still waiting and must keep its place at the head of the queue.
+  const volume = fakeVolume();
+  const nowMs = START;
+  const target = pr("org/held", 1);
+
+  await drainConflictingPrs({
+    logger: makeSilentLogger(),
+    findNext: queueFinder([target]),
+    acquireLease: () => null,
+    resolve: () => Promise.resolve(null),
+    now: () => nowMs,
+    deferrals: tracking(volume, () => nowMs),
+  });
+
+  const stillborn = await drainConflictingPrs({
+    logger: makeSilentLogger(),
+    findNext: queueFinder([target]),
+    acquireLease: () => ({ release: () => {} }),
+    resolve: () => Promise.resolve(null),
+    now: () => nowMs,
+    deferrals: tracking(volume, () => nowMs),
+  });
+
+  assertEquals(stillborn.merged, 0);
+  assertEquals(
+    (await readConflictDeferrals(WORK_DIR, volume.io, nowMs)).get("org/held#1")
+      ?.streak,
+    1,
+  );
+});
+
 Deno.test("drain visibility - a starved PR gets exactly one comment per streak", async () => {
   const volume = fakeVolume();
   const thread = fakeThread();
@@ -407,6 +446,7 @@ Deno.test("drain visibility - a starved PR gets exactly one comment per streak",
         announce: (notice) =>
           announceDeferralStreak(notice, {
             ghCommandFn: thread.ghCommandFn,
+            isTrustedAuthor: (login) => login === FLEET,
           }),
       }),
     });
@@ -447,6 +487,7 @@ Deno.test("drain visibility - a starved PR gets exactly one comment per streak",
         announce: (notice) =>
           announceDeferralStreak(notice, {
             ghCommandFn: thread.ghCommandFn,
+            isTrustedAuthor: (login) => login === FLEET,
           }),
       }),
     });
@@ -474,6 +515,7 @@ Deno.test("drain visibility - five deferrals spend neither budget", async () => 
         announce: (notice) =>
           announceDeferralStreak(notice, {
             ghCommandFn: thread.ghCommandFn,
+            isTrustedAuthor: (login) => login === FLEET,
           }),
       }),
     });
@@ -548,6 +590,8 @@ Deno.test("drain visibility - the summary carries the streak, not just the stop"
 
 Deno.test("drain fairness - a broken volume costs fairness, never the pass", async () => {
   const log = makeRecordingLogger();
+  // Both ends of the cursor are broken, not just the write: a load that
+  // throws must degrade to "no cursor this cycle" exactly as a save does.
   const broken: ConflictDeferralTracking = {
     load: () => Promise.reject(new Error("volume gone")),
     save: () => Promise.reject(new Error("volume gone")),
@@ -558,18 +602,58 @@ Deno.test("drain fairness - a broken volume costs fairness, never the pass", asy
     findNext: queueFinder([pr("org/alpha", 1)]),
     acquireLease: () => ({ release: () => {} }),
     resolve: () => Promise.resolve({ processed: true, merged: true }),
-    deferrals: { ...broken, load: () => Promise.resolve(new Map()) },
+    deferrals: broken,
   }).catch((error: Error) => error);
 
   assert(
     !(failed instanceof Error),
-    "an unwritable cursor must not fail the pass",
+    "an unreadable or unwritable cursor must not fail the pass",
   );
   assertEquals(failed.merged, 1);
+  for (const said of ["could not read the deferral", "could not persist the"]) {
+    assert(
+      log.entries.some((e) => e.message.includes(said)),
+      `a broken cursor must be said out loud: ${said}`,
+    );
+  }
+});
+
+Deno.test("drain visibility - a notice that cannot be posted warns and is retried", async () => {
+  const volume = fakeVolume();
+  const log = makeRecordingLogger();
+  const nowMs = START;
+  const target = pr("org/held", 1);
+  const state = new Map();
+  // Two deferrals already banked, five hours apart: the next one earns the
+  // notice.
+  state.set("org/held#1", {
+    streak: 2,
+    bound: "repo-leased" as const,
+    firstDeferredAtMs: nowMs - 5 * HOUR,
+    lastDeferredAtMs: nowMs - HOUR,
+  });
+  await writeConflictDeferrals(WORK_DIR, state, volume.io, nowMs);
+
+  const result = await drainConflictingPrs({
+    logger: log,
+    findNext: queueFinder([target]),
+    acquireLease: () => null,
+    resolve: () => Promise.resolve(null),
+    now: () => nowMs,
+    deferrals: tracking(volume, () => nowMs, {
+      announce: () => Promise.reject(new Error("gh comment exploded")),
+    }),
+  });
+
+  assertEquals(result.deferralNotices, 0);
   assert(
-    log.entries.some((e) =>
-      e.message.includes("could not persist the deferral")
-    ),
-    "an unwritable cursor must be said out loud",
+    log.entries.some((e) => e.message.includes("could not post the deferral")),
+    "a notice that could not be posted must never be silent",
+  );
+  // Unmarked, so the next pass tries again rather than assuming it landed.
+  assertEquals(
+    (await readConflictDeferrals(WORK_DIR, volume.io, nowMs)).get("org/held#1")
+      ?.notifiedAtStreak,
+    undefined,
   );
 });

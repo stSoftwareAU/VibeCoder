@@ -54,7 +54,7 @@ import {
 import {
   clearDeferral,
   type ConflictDeferralBound,
-  type ConflictDeferralEntry,
+  type ConflictDeferralNotice,
   type ConflictDeferralState,
   deferralCursor,
   type DeferralNoticeBounds,
@@ -85,13 +85,6 @@ export interface ConflictResolutionOutcome {
 /** A held repository lease, released when the attempt finishes. */
 export interface RepoLease {
   release: () => void;
-}
-
-/** One PR's starvation, as the drain hands it to the announcer (Issue #1111). */
-export interface ConflictDeferralNotice {
-  repo: string;
-  prNumber: number;
-  entry: ConflictDeferralEntry;
 }
 
 /**
@@ -216,24 +209,44 @@ export async function drainConflictingPrs(
   let maxDeferralStreak = 0;
   let deferralNotices = 0;
 
-  // Issue #1111: the cursor the previous pass left. Read once, so the order
-  // offered to `findNext` is stable for the whole pass.
-  const state: ConflictDeferralState = deferrals
-    ? await deferrals.load()
-    : new Map();
+  /**
+   * The cursor the previous pass left (Issue #1111). Read once, so the order
+   * offered to `findNext` is stable for the whole pass.
+   *
+   * A cursor that cannot be read costs fairness for this cycle, never the
+   * cycle's work — the same bargain `lane_rotation.ts` strikes — but it is
+   * said out loud, so a host that has silently stopped being fair is
+   * diagnosable.
+   */
+  const loadCursor = async (): Promise<ConflictDeferralState> => {
+    if (!deferrals) return new Map();
+    try {
+      return await deferrals.load();
+    } catch (error) {
+      logger.warn("Merge-conflict drain: could not read the deferral cursor", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return new Map();
+    }
+  };
+
+  const state = await loadCursor();
   const prefer = deferralCursor(state);
 
   /**
    * Count one deferral against a PR, and tell the PR once its streak says it
    * is being starved rather than merely queued.
    *
-   * @returns The streak, or undefined when no cursor is kept.
+   * Takes the tracking explicitly so it can only be called where a cursor
+   * exists, and always returns a real streak.
+   *
+   * @returns The PR's consecutive-deferral streak, including this one.
    */
   const noteDeferral = async (
+    deferrals: ConflictDeferralTracking,
     pr: ConflictingPr,
     bound: ConflictDeferralBound,
-  ): Promise<number | undefined> => {
-    if (!deferrals) return undefined;
+  ): Promise<number> => {
     const key = conflictPrKey(pr.repo, pr.prNumber);
     const entry = recordDeferral(state, key, bound, now());
     maxDeferralStreak = Math.max(maxDeferralStreak, entry.streak);
@@ -241,16 +254,19 @@ export async function drainConflictingPrs(
     if (!deferrals.announce || !shouldAnnounceDeferral(entry, deferrals)) {
       return entry.streak;
     }
+    const notice: ConflictDeferralNotice = {
+      repo: pr.repo,
+      prNumber: pr.prNumber,
+      entry,
+    };
     try {
-      const posted = await deferrals.announce({
-        repo: pr.repo,
-        prNumber: pr.prNumber,
-        entry,
-      });
-      // Marked whoever posted it: the marker on the PR is the cross-host
-      // guard, and this only saves the next pass a comment read.
-      markDeferralNotified(state, key);
-      if (posted) deferralNotices++;
+      if (await deferrals.announce(notice)) {
+        // Marked only when *this* host posted. A host that found another's
+        // marker keeps checking, so a notice suppressed by a stale marker
+        // resumes the moment an attempt closes the streak it belonged to.
+        markDeferralNotified(state, key);
+        deferralNotices++;
+      }
     } catch (error) {
       // Left unmarked on purpose, so the next pass tries again — but never
       // silently: a PR that is starved and cannot be told so is exactly the
@@ -306,7 +322,9 @@ export async function drainConflictingPrs(
         // is recorded rather than left to an unstructured line (Issue #1109),
         // and it is counted against the PR so a repeat cannot stay quiet
         // (Issue #1111).
-        const streak = await noteDeferral(next, "repo-leased");
+        const streak = deferrals
+          ? await noteDeferral(deferrals, next, "repo-leased")
+          : undefined;
         const deferral: ConflictPrDecision = {
           repo: next.repo,
           prNumber: next.prNumber,
@@ -327,13 +345,15 @@ export async function drainConflictingPrs(
         prNumber: next.prNumber,
         outcome: "attempted",
       });
-      // Something was started, so the PR is not starved — whatever the
-      // attempt then concludes (Issue #1111).
-      clearDeferral(state, conflictPrKey(next.repo, next.prNumber));
 
       try {
         const outcome = await resolve(next);
         if (outcome) {
+          // The attempt ran, so the PR is not starved — whatever it then
+          // concluded (Issue #1111). A `null` outcome is an attempt that never
+          // got off the ground (a clone that would not set up, a branch that
+          // is gone), and that PR is still waiting, so its streak stands.
+          clearDeferral(state, conflictPrKey(next.repo, next.prNumber));
           processed = processed || outcome.processed;
           if (outcome.merged) merged++;
         }
@@ -360,12 +380,12 @@ export async function drainConflictingPrs(
     if (!deferrals) return;
     const left = await findNext(handled, prefer);
     if (left === null) return;
-    const streak = await noteDeferral(left, bound);
+    const deferralStreak = await noteDeferral(deferrals, left, bound);
     const decision: ConflictPrDecision = {
       repo: left.repo,
       prNumber: left.prNumber,
       outcome: "skipped",
-      reason: { kind: "deferred-bound", bound, deferralStreak: streak ?? 1 },
+      reason: { kind: "deferred-bound", bound, deferralStreak },
     };
     decisions.push(decision);
     recordConflictDecision(logger, decision);

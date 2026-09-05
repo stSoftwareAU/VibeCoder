@@ -36,6 +36,7 @@
 
 import {
   CONFLICT_ATTEMPT_MARKER,
+  CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
   DEFAULT_CONFLICT_COOLDOWN_HOURS,
 } from "./pr_merge_conflict_scan.ts";
@@ -44,9 +45,15 @@ import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 /** Cursor file, relative to the work directory. */
 export const CONFLICT_DEFERRAL_FILE = ".merge_conflict_deferrals";
 
-/** Marker identifying the once-per-streak starvation notice. */
-export const CONFLICT_DEFERRAL_MARKER =
-  "<!-- vibe-coder:merge-conflict-deferred";
+/**
+ * Marker identifying the once-per-streak starvation notice.
+ *
+ * Canonical `vibe-` grammar with `key="value"` attributes (Issue #842), not
+ * the `vibe-coder:` shape its merge-conflict siblings are frozen into: those
+ * are frozen because they are already in live comment threads, and this one is
+ * new.
+ */
+export const CONFLICT_DEFERRAL_MARKER = "<!-- vibe-merge-conflict-deferred";
 
 /** Consecutive deferrals before the PR is told, on itself, that it is starved. */
 export const DEFAULT_DEFERRAL_NOTICE_STREAK = 3;
@@ -77,7 +84,10 @@ export type ConflictDeferralBound = "repo-leased" | "deadline" | "cap";
 const BOUND_DESCRIPTIONS: Record<ConflictDeferralBound, string> = {
   "repo-leased": "an issue slot held the repository's shared clone",
   "deadline": "too little of the cycle remained to start a resolution",
-  "cap": "the per-cycle cap on conflict resolutions was already full",
+  // Deferrals count against the cap as well as attempts, so "used up" rather
+  // than "spent on resolutions" — the latter would be false for a cycle that
+  // hit the cap on deferrals.
+  "cap": "this cycle's cap on conflict PRs was already used up",
 };
 
 /** One PR's consecutive-deferral record. */
@@ -199,6 +209,7 @@ export async function readConflictDeferrals(
   workDir: string | undefined,
   io: ConflictDeferralIo = productionIo,
   nowMs: number = Date.now(),
+  warn?: (message: string) => void,
 ): Promise<ConflictDeferralState> {
   if (!workDir) return new Map();
   try {
@@ -206,7 +217,18 @@ export async function readConflictDeferrals(
       await io.readTextFile(`${workDir}/${CONFLICT_DEFERRAL_FILE}`),
       nowMs,
     );
-  } catch {
+  } catch (error) {
+    // No file is the ordinary first pass and says nothing. Anything else is a
+    // volume that cannot be read, and a host that has silently stopped being
+    // fair is exactly what this issue exists to stop.
+    if (!(error instanceof Deno.errors.NotFound)) {
+      warn?.(
+        `[merge-conflict-drain] could not read the deferral cursor in ` +
+          `${workDir}: ${
+            error instanceof Error ? error.message : String(error)
+          } — this pass runs without one (Issue #1111)`,
+      );
+    }
     return new Map();
   }
 }
@@ -293,11 +315,13 @@ export function clearDeferral(
 }
 
 /**
- * Record that this streak's notice has been posted.
+ * Record that this host posted this streak's notice.
  *
  * Local to the host, and deliberately only half the guard: the marker on the
  * PR is what stops a second host duplicating the comment. This just saves the
- * next pass on *this* host a comment read it already knows the answer to.
+ * host that posted a comment read it already knows the answer to — a host that
+ * found the marker instead keeps checking, so the notice resumes on its own
+ * once an attempt closes the streak the marker belonged to.
  */
 export function markDeferralNotified(
   state: ConflictDeferralState,
@@ -358,35 +382,6 @@ export function buildDeferralNoticeBody(
   ].join("\n");
 }
 
-/**
- * Whether a notice for the current streak is already on the thread.
- *
- * Order matters: an attempt or a resolution ends the streak, so a deferral
- * marker posted *before* the most recent attempt belongs to an older streak
- * and must not suppress this one's notice. Reading the PR rather than
- * host-local state is what makes the once-per-streak bound hold across
- * restarts and across hosts.
- *
- * @param comments - Raw comment objects from the GitHub REST API, oldest first.
- */
-export function hasOpenDeferralNotice(comments: readonly unknown[]): boolean {
-  let open = false;
-  for (const raw of comments) {
-    if (typeof raw !== "object" || raw === null) continue;
-    const body = (raw as { body?: unknown }).body;
-    if (typeof body !== "string") continue;
-    if (
-      body.includes(CONFLICT_ATTEMPT_MARKER) ||
-      body.includes(CONFLICT_RESOLVED_MARKER)
-    ) {
-      open = false;
-      continue;
-    }
-    if (body.includes(CONFLICT_DEFERRAL_MARKER)) open = true;
-  }
-  return open;
-}
-
 /** One PR's starvation, as the drain hands it to the announcer. */
 export interface ConflictDeferralNotice {
   repo: string;
@@ -394,9 +389,68 @@ export interface ConflictDeferralNotice {
   entry: ConflictDeferralEntry;
 }
 
+/** The `user.login` a raw REST comment object carries, when it carries one. */
+function commentAuthor(raw: unknown): string | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const login = (raw as { user?: { login?: unknown } }).user?.login;
+  return typeof login === "string" && login.trim().length > 0
+    ? login.trim()
+    : undefined;
+}
+
+/**
+ * Whether a notice for the current streak is already on the thread.
+ *
+ * Order matters: an attempt or a conclusion ends the streak, so a deferral
+ * marker posted *before* the most recent one belongs to an older streak and
+ * must not suppress this one's notice. Reading the PR rather than host-local
+ * state is what makes the once-per-streak bound hold across restarts and
+ * across hosts.
+ *
+ * The **author** is checked, not just the marker: on a public repository the
+ * body is text anybody may write, and a dedup that trusts it goes quiet on
+ * evidence an unprivileged account can manufacture
+ * (`marker_dedup_author_manifest.ts`). An untrusted marker is ignored, which
+ * fails towards posting the notice rather than towards silence.
+ *
+ * @param comments - Raw comment objects from the GitHub REST API, oldest first.
+ * @param isTrustedAuthor - Whether a login is one of the fleet's own.
+ */
+export function hasOpenDeferralNotice(
+  comments: readonly unknown[],
+  isTrustedAuthor: (login: string) => boolean,
+): boolean {
+  let open = false;
+  for (const raw of comments) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const body = (raw as { body?: unknown }).body;
+    if (typeof body !== "string") continue;
+    // Any attempt or conclusion closes the streak the marker belonged to.
+    // Author-blind on purpose: a forged one only lets a second notice be
+    // posted, which is the loud direction.
+    if (
+      body.includes(CONFLICT_ATTEMPT_MARKER) ||
+      body.includes(CONFLICT_FAILED_MARKER) ||
+      body.includes(CONFLICT_RESOLVED_MARKER)
+    ) {
+      open = false;
+      continue;
+    }
+    if (!body.includes(CONFLICT_DEFERRAL_MARKER)) continue;
+    const author = commentAuthor(raw);
+    if (author !== undefined && isTrustedAuthor(author)) open = true;
+  }
+  return open;
+}
+
 /** Seams the announcer needs: the PR's thread, and a way to comment on it. */
 export interface ConflictDeferralAnnounceOptions {
   ghCommandFn: (args: string[]) => Promise<string>;
+  /**
+   * Whether a comment author is one of the fleet's own. Required, so no call
+   * site can dedup on a marker anybody could have written.
+   */
+  isTrustedAuthor: (login: string) => boolean;
 }
 
 /**
@@ -416,7 +470,7 @@ export async function announceDeferralStreak(
     prNumber,
     options.ghCommandFn,
   );
-  if (hasOpenDeferralNotice(comments)) return false;
+  if (hasOpenDeferralNotice(comments, options.isTrustedAuthor)) return false;
 
   await options.ghCommandFn([
     "pr",

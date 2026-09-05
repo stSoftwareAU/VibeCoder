@@ -376,10 +376,11 @@ flowchart TD
   hint only — a preferred PR still has to pass every gate, so the cursor can
   never re-open a cooldown or a spent budget.
 - **The notice** is one comment on the PR, carrying the
-  `<!-- vibe-coder:merge-conflict-deferred` marker, after three consecutive
-  deferrals spanning more than one cooldown window. Deduplicated by reading the
-  PR's own thread, not host-local state, so a restart or a second host cannot
-  post it twice. An attempt or a merge ends the streak the marker belongs to.
+  `<!-- vibe-merge-conflict-deferred` marker, after three consecutive deferrals
+  spanning at least one cooldown window. Deduplicated by reading the PR's own
+  thread — and checking the **author**, because a body is text anybody may post
+  — rather than host-local state, so a restart or a second host cannot post it
+  twice. Any attempt or conclusion ends the streak the marker belongs to.
 
 **A deferral is not an attempt.** Nothing was started, so it spends neither the
 two concluded attempts nor the three disrupted ones — reusing the disruption

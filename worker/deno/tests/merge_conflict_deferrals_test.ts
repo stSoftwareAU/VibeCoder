@@ -26,15 +26,15 @@ import {
 } from "../lib/merge_conflict_deferrals.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
+  CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
 } from "../lib/pr_merge_conflict_scan.ts";
-import {
-  orderByPreference,
-  preferredRepos,
-} from "../lib/conflict_queue_order.ts";
 
 const WORK_DIR = "/work";
 const HOUR = 3600_000;
+/** The worker's own login, and the only author this dedup trusts. */
+const FLEET = "vibe-bot";
+const isFleet = (login: string) => login === FLEET;
 
 /** An in-memory work volume, so no test touches a real directory. */
 function fakeVolume(): { files: Map<string, string>; io: ConflictDeferralIo } {
@@ -169,27 +169,6 @@ Deno.test("deferralCursor - the most starved PR leads, then the longest waiting"
   ]);
 });
 
-Deno.test("orderByPreference - the cursor leads and everything else keeps its order", () => {
-  const queue = ["a", "b", "c", "d"];
-  assertEquals(orderByPreference(queue, (x) => x, ["c", "a"]), [
-    "c",
-    "a",
-    "b",
-    "d",
-  ]);
-  assertEquals(orderByPreference(queue, (x) => x, ["zz"]), queue);
-  assertEquals(orderByPreference(queue, (x) => x, undefined), queue);
-  assertEquals(orderByPreference([], (x: string) => x, ["a"]), []);
-});
-
-Deno.test("preferredRepos - names each repository once, in cursor order", () => {
-  assertEquals(
-    preferredRepos(["org/beta#7", "org/alpha#1", "org/beta#9", "malformed"]),
-    ["org/beta", "org/alpha"],
-  );
-  assertEquals(preferredRepos(undefined), []);
-});
-
 // ---------------------------------------------------------------------------
 // When a streak earns its comment
 // ---------------------------------------------------------------------------
@@ -270,35 +249,56 @@ Deno.test("buildDeferralNoticeBody - names the bound, the streak and what was no
 // The marker: once per streak, across restarts and across hosts
 // ---------------------------------------------------------------------------
 
-Deno.test("hasOpenDeferralNotice - an attempt or a merge ends the streak the marker belongs to", () => {
-  const notice = { body: `${CONFLICT_DEFERRAL_MARKER} n="3" -->` };
-  assertEquals(hasOpenDeferralNotice([]), false);
-  assertEquals(hasOpenDeferralNotice([notice]), true);
+Deno.test("hasOpenDeferralNotice - an attempt or a conclusion ends the streak the marker belongs to", () => {
+  const notice = {
+    body: `${CONFLICT_DEFERRAL_MARKER} n="3" -->`,
+    user: { login: FLEET },
+  };
+  const check = (comments: readonly unknown[]) =>
+    hasOpenDeferralNotice(comments, isFleet);
+
+  assertEquals(check([]), false);
+  assertEquals(check([notice]), true);
   assertEquals(
-    hasOpenDeferralNotice([notice, {
-      body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`,
-    }]),
+    check([notice, { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->` }]),
     false,
   );
   assertEquals(
-    hasOpenDeferralNotice([notice, { body: CONFLICT_RESOLVED_MARKER }]),
+    check([notice, { body: `${CONFLICT_FAILED_MARKER} n="1" -->` }]),
     false,
   );
+  assertEquals(check([notice, { body: CONFLICT_RESOLVED_MARKER }]), false);
   assertEquals(
-    hasOpenDeferralNotice([
-      notice,
-      { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->` },
-      notice,
-    ]),
+    check([notice, { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->` }, notice]),
     true,
   );
   // Junk on the thread is ignored rather than throwing.
-  assertEquals(hasOpenDeferralNotice([null, 7, { body: 3 }, notice]), true);
+  assertEquals(check([null, 7, { body: 3 }, notice]), true);
+});
+
+Deno.test("hasOpenDeferralNotice - a marker nobody trusted wrote is not a guard", () => {
+  // On a public repository the body is text anybody may post. Trusting it
+  // would let an unprivileged account silence the starvation notice for good
+  // (`marker_dedup_author_manifest.ts`), so an untrusted marker is ignored —
+  // failing towards posting, not towards silence.
+  const forged = {
+    body: `${CONFLICT_DEFERRAL_MARKER} n="9" -->`,
+    user: { login: "drive-by" },
+  };
+  assertEquals(hasOpenDeferralNotice([forged], isFleet), false);
+  // An anonymous entry with no author at all is no better.
+  assertEquals(
+    hasOpenDeferralNotice(
+      [{ body: `${CONFLICT_DEFERRAL_MARKER} -->` }],
+      isFleet,
+    ),
+    false,
+  );
 });
 
 /** A PR comment thread plus the `gh` seam two "hosts" both talk to. */
 function fakeThread(repo: string, prNumber: number) {
-  const comments: { body: string }[] = [];
+  const comments: { body: string; user: { login: string } }[] = [];
   const ghCommandFn = (args: string[]): Promise<string> => {
     if (args[0] === "api") {
       const page = (args[1] ?? "").includes("page=1") ? comments : [];
@@ -308,7 +308,7 @@ function fakeThread(repo: string, prNumber: number) {
       assertEquals(args[2], String(prNumber));
       assertEquals(args[4], repo);
       assertEquals(args[5], "--body");
-      comments.push({ body: args[6] ?? "" });
+      comments.push({ body: args[6] ?? "", user: { login: FLEET } });
       return Promise.resolve("");
     }
     throw new Error(`unexpected gh call: ${args.join(" ")}`);
@@ -324,23 +324,40 @@ Deno.test("announceDeferralStreak - a second host posts nothing on top of the fi
   recordDeferral(state, "org/alpha#7", "cap", start + HOUR);
   const entry = recordDeferral(state, "org/alpha#7", "cap", start + 5 * HOUR);
   const notice = { repo: "org/alpha", prNumber: 7, entry };
+  const options = {
+    ghCommandFn: thread.ghCommandFn,
+    isTrustedAuthor: isFleet,
+  };
 
   // Host A, with an empty cursor of its own, posts.
-  assertEquals(
-    await announceDeferralStreak(notice, { ghCommandFn: thread.ghCommandFn }),
-    true,
-  );
+  assertEquals(await announceDeferralStreak(notice, options), true);
   // Host B has never seen host A's volume — the marker on the PR is the guard.
-  assertEquals(
-    await announceDeferralStreak(notice, { ghCommandFn: thread.ghCommandFn }),
-    false,
-  );
+  assertEquals(await announceDeferralStreak(notice, options), false);
   // And the same host after a restart is no different.
-  assertEquals(
-    await announceDeferralStreak(notice, { ghCommandFn: thread.ghCommandFn }),
-    false,
-  );
+  assertEquals(await announceDeferralStreak(notice, options), false);
   assertEquals(thread.comments.length, 1);
+});
+
+Deno.test("announceDeferralStreak - an attempt since the notice opens the next streak", async () => {
+  const thread = fakeThread("org/alpha", 7);
+  const state: ConflictDeferralState = new Map();
+  const start = 1_700_000_000_000;
+  recordDeferral(state, "org/alpha#7", "cap", start);
+  const entry = recordDeferral(state, "org/alpha#7", "cap", start + 5 * HOUR);
+  const notice = { repo: "org/alpha", prNumber: 7, entry };
+  const options = {
+    ghCommandFn: thread.ghCommandFn,
+    isTrustedAuthor: isFleet,
+  };
+
+  assertEquals(await announceDeferralStreak(notice, options), true);
+  thread.comments.push({
+    body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->`,
+    user: { login: FLEET },
+  });
+  // The old notice belongs to the streak that attempt ended.
+  assertEquals(await announceDeferralStreak(notice, options), true);
+  assertEquals(thread.comments.length, 3);
 });
 
 Deno.test("announceDeferralStreak - a GitHub failure is raised, never swallowed", async () => {
@@ -352,7 +369,7 @@ Deno.test("announceDeferralStreak - a GitHub failure is raised, never swallowed"
   try {
     await announceDeferralStreak(
       { repo: "org/alpha", prNumber: 7, entry },
-      { ghCommandFn: failing },
+      { ghCommandFn: failing, isTrustedAuthor: isFleet },
     );
   } catch (error) {
     thrown = error;

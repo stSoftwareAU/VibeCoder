@@ -269,6 +269,7 @@ import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
 import { getRunId } from "./run_id.ts";
 import {
   type FleetAuthorSetInput,
+  isFleetAuthor,
   resolveFleetMaintenanceAuthorSet,
   resolveFleetPrAuthorSet,
   resolveSuppressionExcludedLogins,
@@ -1975,7 +1976,13 @@ export async function createProductionRunCoreDeps(
         // race every cycle in silence, and the notice is what says so on the
         // PR itself once it has.
         deferrals: {
-          load: () => readConflictDeferrals(workDir),
+          load: () =>
+            readConflictDeferrals(
+              workDir,
+              undefined,
+              Date.now(),
+              (message) => logger.warn(message),
+            ),
           save: (state) =>
             writeConflictDeferrals(
               workDir,
@@ -1985,7 +1992,20 @@ export async function createProductionRunCoreDeps(
               (message) => logger.warn(message),
             ),
           announce: (notice) =>
-            announceDeferralStreak(notice, { ghCommandFn: runGhCommand }),
+            announceDeferralStreak(notice, {
+              ghCommandFn: runGhCommand,
+              // The marker only dedups when the fleet wrote it: a body is
+              // text anyone can post, and a dedup that trusts it goes quiet
+              // (`marker_dedup_author_manifest.ts`).
+              isTrustedAuthor: (login) =>
+                isFleetAuthor(login, [
+                  ...resolveFleetMaintenanceAuthorSet({
+                    githubUser,
+                    allowedAuthors: fleetPrAuthorInput.allowedAuthors,
+                    fleetPrAuthors: fleetPrAuthorInput.fleetPrAuthors,
+                  }),
+                ]),
+            }),
         },
         findNext: async (exclude, prefer) => {
           const scan = await findConflictingPr({
