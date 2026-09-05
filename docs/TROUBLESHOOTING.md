@@ -320,6 +320,25 @@ alone — a development tree, a CI merge commit — should set
 `VIBE_SKIP_CHECKOUT_UPDATE=1` instead, which skips the update loudly and
 raises nothing.
 
+That report has to reach `api.github.com`, and the commonest reason the
+checkout update fails is that the host cannot (Issue #1018). So a send that
+fails is retried on every later failing run until one lands, and the evidence
+is queued at `~/logs/checkout-update-escalation` — one entry per streak,
+overwritten — so an outage is reported once connectivity returns instead of
+never:
+
+```text
+Checkout update escalation failed, spooled for the next run with connectivity
+(Issue #1018): gh issue create exited 1: error connecting to api.github.com
+```
+
+The run that recovers is usually the first that can reach GitHub, so it
+delivers the queued report itself — marked as an outage that has **since
+ended**, naming the time it was queued — and then clears the streak and the
+queue together. A queued report therefore never outlives the condition it
+describes, and an outage that ends is reported rather than forgotten. A flush
+that still cannot be delivered is dropped, loudly, in `run_core.log`.
+
 On a host running `update_mode: "frozen"` the same warning appears with a
 different message (Issue #624):
 

@@ -81,6 +81,14 @@ function recordingDeps(
       order.push(`writeStreak:${count}`);
       return Promise.resolve();
     },
+    readEscalationState: (_logDir) => {
+      order.push("readEscalationState");
+      return Promise.resolve({ escalatedStreak: 0, pending: null });
+    },
+    writeEscalationState: (_logDir, state) => {
+      order.push(`writeEscalationState:${state.escalatedStreak}`);
+      return Promise.resolve();
+    },
     escalate: (_context) => {
       order.push("escalate");
       return Promise.resolve();
@@ -199,7 +207,14 @@ Deno.test("updateCheckout - the third consecutive failure escalates, once (Issue
     assertEquals(order.includes("escalate"), false);
   }
 
-  // Fourth failure (streak 3 -> 4): already escalated this streak — stay quiet.
+  // Fourth failure (streak 3 -> 4) after a delivered escalation — stay quiet.
+  //
+  // Issue #1018 changed what proves "already escalated": the streak count no
+  // longer does, because an attempt that threw left nothing delivered. The
+  // marker recorded on a successful send is what silences the rest of the
+  // streak, so this case now states that marker instead of implying it from
+  // the count (the retry half is covered in
+  // checkout_update_escalation_spool_test.ts).
   {
     const order: string[] = [];
     const outcome = await updateCheckout(
@@ -207,6 +222,11 @@ Deno.test("updateCheckout - the third consecutive failure escalates, once (Issue
       recordingDeps(order, {
         resetToDefaultBranch: failingReset(order),
         readFailureStreak: (_logDir) => Promise.resolve(3),
+        readEscalationState: (_logDir) =>
+          Promise.resolve({
+            escalatedStreak: CHECKOUT_UPDATE_ESCALATION_THRESHOLD,
+            pending: null,
+          }),
       }),
     );
     assertEquals(outcome.streak, 4);
