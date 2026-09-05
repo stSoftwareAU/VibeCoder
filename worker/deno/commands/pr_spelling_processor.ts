@@ -152,9 +152,12 @@ export const prSpellingProcessorCommand: Command = {
         await runPreSetupCommand(repo, repoWorkDir, config.repoConfig);
 
         // Build quality and custom instructions from config
+        // No run-budget notice is written for this flow, so the whole run's
+        // budget is the only gate signal the agent gets (Issue #1138).
         const qualityInstructions = buildQualityInstructions(
           config.repoConfig,
           repo,
+          { runBudgetSeconds: config.claudeTimeout },
         );
         const customInstructions = getCustomInstructions(
           config.repoConfig,

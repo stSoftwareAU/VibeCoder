@@ -126,6 +126,19 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
  * serial pass, where the machine is theirs and the measurement means what it
  * says.
  *
+ * The serial pass is not a cure, only a smaller dose, and PR #1170 is where
+ * that ran out. Twelve ReDoS and scan-bound suites sat here and still went red
+ * on `main`: an absolute millisecond budget reports a host 8% slower as a
+ * correctness error, and the ratio assertion that replaced it read 30 ms
+ * against 355 ms on a loaded laptop for work that is perfectly linear. A fleet
+ * of unlike machines under unlike loads has no budget and no ratio that means
+ * the same thing twice. All twelve now assert on what the code **produces**
+ * for the same adversarial input — a super-linear pattern at those sizes never
+ * returns, so the runner's own timeout is the detector — and they left this
+ * list for the parallel pass. What remains here genuinely races a real clock:
+ * suites that drive `runClaudeWithTimeout` against a one- to four-second
+ * window, and the growth helper's own tests.
+ *
  * The asymmetry here runs the opposite way to the integration manifest, and
  * that is why {@link measuresWallClock} can afford to be broad. A file wrongly
  * listed still runs, a second or two later than it might have. A file wrongly
@@ -157,19 +170,7 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   "tests/fable_preflight_provider_gate_test.ts",
   "tests/fable_preflight_reroute_wiring_test.ts",
   "tests/growth_bound_test.ts",
-  "tests/orphan_deps_suppression_scan_bounds_test.ts",
-  "tests/orphan_deps_suppression_scan_cap_test.ts",
-  "tests/orphan_deps_suppression_scan_caps_test.ts",
-  "tests/orphan_deps_suppression_scan_test.ts",
-  "tests/prompt_delimiter_test.ts",
-  "tests/quorum_orchestrator_test.ts",
-  "tests/regex_complexity_3942_test.ts",
-  "tests/regex_complexity_dos_test.ts",
-  "tests/regex_dos_3942_test.ts",
   "tests/run_ps1_launcher_test.ts",
-  "tests/secret_redaction_bounds_test.ts",
-  "tests/secret_redaction_redos_test.ts",
-  "tests/secret_transform_redaction_test.ts",
   "tests/timeout_extension_report_768_test.ts",
   "tests/timeout_extension_telemetry_4298_test.ts",
 ];

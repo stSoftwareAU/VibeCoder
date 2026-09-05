@@ -22,7 +22,10 @@ import { handoverFilePath } from "../lib/preserved_wip_branch.ts";
 import { classifyStagedPath } from "../lib/pre_commit_safety.ts";
 import { fenceUntrustedIssueText } from "../lib/prompt_delimiter.ts";
 import { describeWipCause } from "../lib/wip_checkpoint.ts";
-import { WIND_DOWN_NOTICE_FILENAME } from "../lib/wind_down_notice.ts";
+import {
+  buildWindDownNotice,
+  WIND_DOWN_NOTICE_FILENAME,
+} from "../lib/wind_down_notice.ts";
 
 const FACTS = {
   issueNumber: 769,
@@ -355,6 +358,34 @@ Deno.test("writeHandoverNote #769 - records the wind-down notice the run was han
       `${repoPath}/${handoverFilePath(769)}`,
     );
     assertStringIncludes(written, "Wind-down notice: delivered");
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("writeHandoverNote #1138 - a gate-refusal notice is not a wind-down warning", async () => {
+  // The same file is written in the wider band where only the quality gate no
+  // longer fits (Issue #1138). Such a run was never warned it was running out
+  // of budget, and the note must not claim it was.
+  const repoPath = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${repoPath}/.git`);
+    await Deno.writeTextFile(
+      `${repoPath}/${WIND_DOWN_NOTICE_FILENAME}`,
+      buildWindDownNotice({
+        remainingSeconds: 1000,
+        elapsedSeconds: 2600,
+        extensionsGranted: 1,
+      }),
+    );
+    await writeHandoverNote({
+      repoPath,
+      facts: { ...FACTS, windDownNoticeDelivered: undefined },
+    });
+    const written = await Deno.readTextFile(
+      `${repoPath}/${handoverFilePath(769)}`,
+    );
+    assertStringIncludes(written, "Wind-down notice: not delivered");
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }

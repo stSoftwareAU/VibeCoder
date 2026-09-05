@@ -404,15 +404,21 @@ jobs:
             console.log("benchmark audit: PASSED");
           '
 
-  # Issue #4334: the Deno test suite, sharded by FILE across parallel jobs.
+  # Issue #4334: the Deno UNIT suite, sharded by FILE across parallel jobs.
   #
-  # ~940 test files ran serially in one process and took ~5.5 minutes of the
-  # `validate` check. Deno's --parallel is not an option here: ~60 test files
-  # mutate the process environment (15 swap PATH to inject stub binaries) and
-  # --parallel shares Deno.env across threads. Separate jobs are separate
-  # processes, so the suite's semantics are unchanged; only wall time shrinks.
-  # Every shard runs the same `deno task test` the local quality gate runs
-  # (Issue #2194), so the permission set can never drift.
+  # ~1,260 test files ran serially in one process and took ~5.5 minutes of the
+  # `validate` check. Separate jobs are separate processes, so sharding by file
+  # does not change what any test sees; only wall time shrinks. Every pass runs
+  # the same `deno task test` the local quality gate runs (Issue #2194), so the
+  # permission set can never drift.
+  #
+  # PR #1170: these shards run the UNIT suite, which is what a merge gate is
+  # for — the same two passes `deno task test:unit` runs, built from the same
+  # manifests. They previously ran every file in `tests/`, which put the 27
+  # integration suites (#907) into the merge gate and ran the 42
+  # parallel-unsafe files (#880, #940) alongside everything else. The
+  # integration suites now have their own job below, which is deliberately not
+  # a required check.
   #
   # A separate job for the same reason as `run-mode`: `validate` is a required
   # status check by name and must keep reporting under it.
@@ -453,8 +459,70 @@ jobs:
           # shape a poisoned entry needs to be selected. A lockfile change now
           # costs one cold fetch of a few small JSR modules, nothing more.
 
+      # No PowerShell check here any more (PR #1170). Every suite that
+      # spawns `pwsh` is an integration suite by the repository's own
+      # classifier, and none of them run in this job — the `integration tests`
+      # job below is where that prerequisite is enforced.
+      - name: Deno tests (shard ${{ matrix.shard }} of 4)
+        run: |
+          set -euo pipefail
+          .github/scripts/deno-test-shard.sh $(( ${{ matrix.shard }} - 1 )) 4
+
+  # PR #1170: the integration suites, in a job that does NOT gate a merge.
+  #
+  # `INTEGRATION_TEST_FILES` (#907) copy one of the repository's own `.sh` or
+  # `.ps1` scripts into a temp tree, build a stub `PATH` and spawn `bash` or
+  # `pwsh`. They are excluded from every quality run because they cost roughly
+  # a third of the gate's wall time and ran on changes that cannot reach them,
+  # and PR #1170 took them out of the `validate (tests N/4)` shards for the
+  # same reason — a merge gate that needs a provisioned PowerShell to start is
+  # a gate that reports the runner as often as the change. They still run on
+  # every pull request, here, where the environment is provisioned for them.
+  #
+  # The name is deliberately outside the `validate` family. Required status
+  # checks on `main` are matched by name, so this job cannot block a merge —
+  # which is the point. A red result here is a real signal about the launcher
+  # and setup scripts and must be read; it is simply not the gate. Coverage
+  # went here; it did not go away.
+  #
+  # `deno task test:integration` derives its file list from the same manifest
+  # the shards exclude, so the two cannot disagree about what an integration
+  # test is (Issue #940).
+  integration-tests:
+    name: integration tests (not a required check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Issue #606: Opt into Node.js 24 to avoid deprecation warnings for
+      # actions still bundled with Node.js 20 (e.g. denoland/setup-deno@v2)
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install deno
+        # denoland/setup-deno@v2.0.5
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with:
+          # Issue #4403 (GHA-SUPPLY-019): exact toolchain from the repo's single source of
+          # truth (.deno-version, tied to the container image's Deno by test), never a
+          # floating range resolved at run time.
+          deno-version-file: .deno-version
+
+      - name: Cache Deno modules
+        # actions/cache@v6.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/deno
+          key: deno-${{ runner.os }}-${{ hashFiles('worker/deno/deno.lock') }}
+          # Issue #4404 (GHA-SUPPLY-010): exact-key only, as in the shard jobs.
+
       # Issue #4066: the run.ps1 launcher tests only run where PowerShell
-      # exists, and a skipped test is not a passed one.
+      # exists, and a skipped test is not a passed one. This is the job that
+      # owns that prerequisite now.
       - name: Check PowerShell is available
         run: |
           set -euo pipefail
@@ -464,10 +532,17 @@ jobs:
           fi
           pwsh --version
 
-      - name: Deno tests (shard ${{ matrix.shard }} of 4)
+      # Same session containment as the shards (PR #498 CI): these suites
+      # spawn real scripts, so a stray signal must not reach the runner.
+      - name: Deno integration tests
         run: |
           set -euo pipefail
-          .github/scripts/deno-test-shard.sh $(( ${{ matrix.shard }} - 1 )) 4
+          if ! command -v setsid > /dev/null 2>&1; then
+            echo "setsid is required to isolate the suite from the CI runner" >&2
+            exit 127
+          fi
+          cd worker/deno
+          exec setsid --wait deno task test:integration
 
   # Issues #4150, #4: containment is mandatory — container is the only run
   # mode — and a mode nothing exercises rots, so the gate keeps one leg per
