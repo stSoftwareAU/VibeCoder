@@ -14,8 +14,28 @@ import type { Result } from "../types.ts";
 export const WORKER_PR_MARKER_PREFIX = "<!-- vibe-worker-issue-";
 
 /**
+ * Every conjugation GitHub accepts as an issue-closing keyword, matched as a
+ * literal so no issue number is ever interpolated into a regular expression
+ * (`detect-non-literal-regexp`). Same-repository `#N` references only — a
+ * cross-repository `owner/repo#N` names an issue this repository cannot read.
+ */
+const CLOSING_KEYWORD_PATTERN =
+  /(?:^|[^\w/])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b/gi;
+
+/** Every `#N` a closing keyword names, as written — duplicates included. */
+function closingIssueReferences(prBody: string): number[] {
+  const numbers: number[] = [];
+  for (const match of prBody.matchAll(CLOSING_KEYWORD_PATTERN)) {
+    const issueNumber = Number(match[1]);
+    if (Number.isSafeInteger(issueNumber)) numbers.push(issueNumber);
+  }
+  return numbers;
+}
+
+/**
  * Check whether a PR body already contains an issue-closing keyword
- * (Closes, Fixes, or Resolves) for the given issue number.
+ * (Closes, Fixes, or Resolves — in any conjugation GitHub honours) for the
+ * given issue number.
  *
  * @param prBody - The full PR body content
  * @param issueNumber - The issue number to check for
@@ -25,20 +45,8 @@ export function hasClosingKeyword(
   prBody: string,
   issueNumber: number,
 ): boolean {
-  const pattern = new RegExp(
-    `(closes|fixes|resolves)\\s+#${issueNumber}([^0-9]|$)`,
-    "i",
-  );
-  return pattern.test(prBody);
+  return closingIssueReferences(prBody).includes(issueNumber);
 }
-
-/**
- * Every conjugation GitHub accepts as an issue-closing keyword.
- * Same-repository `#N` references only — a cross-repository
- * `owner/repo#N` names an issue this repository cannot read.
- */
-const CLOSING_KEYWORD_PATTERN =
-  /(?:^|[^\w/])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b/gi;
 
 /**
  * Extract the issue numbers a PR body closes, in the order written
@@ -46,7 +54,8 @@ const CLOSING_KEYWORD_PATTERN =
  *
  * The read half of {@link hasClosingKeyword}: that answers "does this body
  * close issue N?", this answers "which issues does this body close?" — the
- * question asked when the issue number is what you are looking for.
+ * question asked when the issue number is what you are looking for. `#0` is
+ * not a GitHub issue, so it is dropped here.
  *
  * @param prBody - The full PR body content
  * @returns De-duplicated issue numbers, in first-mention order
@@ -54,10 +63,8 @@ const CLOSING_KEYWORD_PATTERN =
 export function extractClosingIssueNumbers(prBody: string): number[] {
   const seen = new Set<number>();
   const numbers: number[] = [];
-  for (const match of prBody.matchAll(CLOSING_KEYWORD_PATTERN)) {
-    const issueNumber = Number(match[1]);
-    if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) continue;
-    if (seen.has(issueNumber)) continue;
+  for (const issueNumber of closingIssueReferences(prBody)) {
+    if (issueNumber <= 0 || seen.has(issueNumber)) continue;
     seen.add(issueNumber);
     numbers.push(issueNumber);
   }
