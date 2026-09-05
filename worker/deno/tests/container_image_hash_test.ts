@@ -21,18 +21,20 @@ import {
   AGENT_PROVIDERS_HASH_INPUT,
   canonicalContainerToolsSpec,
   computeContainerImageHash,
+  CONTAINER_EXTENSION_HASH_INPUT,
   CONTAINER_IMAGE_INPUTS,
   CONTAINER_IMAGE_NAME,
   CONTAINER_TOOLS_HASH_INPUT,
   resolveContainerImageReference,
 } from "../lib/container_image_hash.ts";
+import type { ContainerExtensionSpec } from "../types.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import {
   containerImageHashCommand,
   resolveConfigFile,
 } from "../commands/container_image_hash.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { emptyEnv } from "./support/env_lookup.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname.replace(
   /\/$/,
@@ -295,6 +297,12 @@ Deno.test("computeContainerImageHash - no selected tools keeps the pre-#73 tag",
       await computeContainerImageHash(root, { containerTools: [] }),
       legacy,
     );
+    // Issue #979 mixes the extension in last and only when one is configured,
+    // so a fleet that configures none must still hash exactly this stream.
+    assertEquals(
+      await computeContainerImageHash(root, { containerExtension: undefined }),
+      legacy,
+    );
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -448,6 +456,100 @@ Deno.test("canonicalContainerToolsSpec - is key-sorted, whitespace-free and reso
   );
   // Already-validated specs round-trip unchanged.
   assertEquals(canonicalContainerToolsSpec(JSON.parse(canonical)), canonical);
+});
+
+// ---------------------------------------------------------------------------
+// The private extension is part of the image's identity (Issue #979)
+// ---------------------------------------------------------------------------
+
+/** A throwaway extension directory, as an operator would sync one. */
+async function fakeExtension(): Promise<string> {
+  const root = await Deno.makeTempDir({ prefix: "vibe-image-extension-" });
+  await writeInput(root, "Containerfile", "FROM vibe-coder:base\n");
+  await writeInput(root, "start.sh", "#!/bin/sh\nservice postgres start\n");
+  await writeInput(root, "seed/schema.sql", "CREATE TABLE jobs (id int);\n");
+  return root;
+}
+
+/** The declaration for an extension directory, with the parser's defaults. */
+function extensionSpec(path: string): ContainerExtensionSpec {
+  return { path, containerfile: "Containerfile" };
+}
+
+Deno.test("computeContainerImageHash - a configured extension moves the tag, and editing it moves it again", async () => {
+  const root = await fakeRepo();
+  const extension = await fakeExtension();
+  try {
+    const plain = await resolveContainerImageReference(root);
+    const extended = await resolveContainerImageReference(root, {
+      containerExtension: extensionSpec(extension),
+    });
+    assert(
+      plain !== extended,
+      "configuring an extension did not change the image tag",
+    );
+
+    // A dump is content the extension's build copies in, so it moves the tag.
+    await writeInput(
+      extension,
+      "seed/schema.sql",
+      "CREATE TABLE jobs (id bigint);\n",
+    );
+    const edited = await resolveContainerImageReference(root, {
+      containerExtension: extensionSpec(extension),
+    });
+    assert(edited !== extended, "editing a dump did not change the image tag");
+    assert(edited !== plain, "editing a dump collided with the plain tag");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(extension, { recursive: true });
+  }
+});
+
+Deno.test("computeContainerImageHash - the extension composes with the tools and provider set", async () => {
+  const root = await fakeRepo();
+  const extension = await fakeExtension();
+  try {
+    const tags = await Promise.all([
+      resolveContainerImageReference(root),
+      resolveContainerImageReference(root, { containerTools: [javaSpec()] }),
+      resolveContainerImageReference(root, { agentProviders: "codex" }),
+      resolveContainerImageReference(root, {
+        containerExtension: extensionSpec(extension),
+      }),
+      resolveContainerImageReference(root, {
+        containerTools: [javaSpec()],
+        agentProviders: "codex",
+        containerExtension: extensionSpec(extension),
+      }),
+    ]);
+
+    assertEquals(new Set(tags).size, tags.length, tags.join(" "));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(extension, { recursive: true });
+  }
+});
+
+Deno.test("computeContainerImageHash - an absent extension directory fails loud, naming the path", async () => {
+  const root = await fakeRepo();
+  try {
+    const missing = `${root}/never-synced`;
+
+    let message = "";
+    try {
+      await computeContainerImageHash(root, {
+        containerExtension: extensionSpec(missing),
+      });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+
+    assert(message !== "", "an absent extension directory did not throw");
+    assertStringIncludes(message, missing);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -812,6 +914,84 @@ Deno.test("container-image-hash - an unsupported provider fails the command, nam
 
     assertEquals(result.success, false);
     assertStringIncludes(result.message, "kimi");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+// The extension is baked into the image too (Issue #979): a host whose
+// operator edited the extension must be told to rebuild, not handed the tag of
+// the image built from the previous contents.
+Deno.test("container-image-hash - the configured extension moves the printed reference", async () => {
+  const root = await fakeRepo();
+  const extension = await fakeExtension();
+  try {
+    await Deno.writeTextFile(
+      `${root}/.config.json`,
+      JSON.stringify({
+        repos: ["stSoftwareAU/VibeCoder"],
+        container_extension: { path: extension },
+      }),
+    );
+
+    const result = await containerImageHashCommand.execute(
+      commandArgs(root),
+      buildDefaultWorkerConfig(),
+      // A stated home directory, not the suite's: the declaration's
+      // containment rule is about the operator's home, and a lookup that
+      // answered nothing at all would refuse the path for being uncheckable.
+      envFrom({ HOME: "/home/operator" }),
+    );
+
+    const data = result.data as {
+      image: string;
+      inputs: string[];
+      containerExtension: string;
+    };
+    assertEquals(result.success, true);
+    assertEquals(data.containerExtension, extension);
+    assertEquals(
+      data.inputs,
+      [...CONTAINER_IMAGE_INPUTS, CONTAINER_EXTENSION_HASH_INPUT],
+    );
+    assertEquals(
+      data.image,
+      await resolveContainerImageReference(root, {
+        containerExtension: extensionSpec(extension),
+      }),
+    );
+    assert(
+      data.image !== await resolveContainerImageReference(root),
+      "the configured extension does not change the printed reference",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(extension, { recursive: true });
+  }
+});
+
+Deno.test("container-image-hash - a malformed extension fails the command, naming the field", async () => {
+  const root = await fakeRepo();
+  try {
+    await Deno.writeTextFile(
+      `${root}/.config.json`,
+      JSON.stringify({
+        repos: ["stSoftwareAU/VibeCoder"],
+        container_extension: { path: "relative/extension" },
+      }),
+    );
+
+    const result = await containerImageHashCommand.execute(
+      commandArgs(root),
+      buildDefaultWorkerConfig(),
+      // A stated home directory, not the suite's: the declaration's
+      // containment rule is about the operator's home, and a lookup that
+      // answered nothing at all would refuse the path for being uncheckable.
+      envFrom({ HOME: "/home/operator" }),
+    );
+
+    assertEquals(result.success, false);
+    assertStringIncludes(result.message, "container_extension.path");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
