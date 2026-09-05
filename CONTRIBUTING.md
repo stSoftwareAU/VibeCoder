@@ -164,9 +164,12 @@ themselves:
   result. Tests that grep source files for patterns or function names
   are rejected; see [CODING-STANDARDS.md](CODING-STANDARDS.md#test-driven-development-tdd)
   for the rationale.
-- **Speed budget** — unit tests must complete within 120 seconds (most
-  are well under 10 seconds). Slow tests are likely benchmarks in
-  disguise — move them to a dedicated benchmark file.
+- **Speed budget** — a unit test finishes within 10 seconds. It is a
+  target, not a kill: nothing times a unit test at run time, so it is
+  enforced by shape (see
+  [CODING-STANDARDS.md](CODING-STANDARDS.md#unit-tests)). Slow tests are
+  likely benchmarks in disguise — move them to a dedicated benchmark
+  file.
 
 ## Commit and PR conventions
 
