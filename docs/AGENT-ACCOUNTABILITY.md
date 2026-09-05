@@ -302,9 +302,11 @@ else is `[SECURITY] [AUDIT_CHAIN_BROKEN]` and still needs
 | --- | --- |
 | Declared append, journal still at the anchored length | **nothing to do** — the chain already agrees with its anchor |
 | Declared append, one further line that *is* the declared entry | **heals** — completed, entry kept |
-| Declared append, one further line torn or not the declared entry | **heals** — discarded to a `.torn-<n>` sidecar |
+| Declared append, one further line that is *torn* (unterminated or unparseable) | **heals** — discarded to a `.torn-<n>` sidecar |
+| Declared append, one further line that *parses* but is not the declared entry | **signature** — a kill cannot write a whole entry nobody declared |
 | Unterminated, unparseable trailing bytes, no declaration (pre-#1074 journal) | **heals** — discarded to a `.torn-<n>` sidecar |
 | A further line that parses, with no declaration | **signature** — the forged-tail shape (#3949) |
+| Journal missing, anchor says zero entries and declares an append, journal **on the roster** | **signature** — an erasure, not a writer killed before its first line |
 | More than one line past the anchor | **signature** — never one interrupted append |
 | Any change at or before the anchored head | **signature** — rewritten, truncated, torn middle |
 | Journal or anchor missing | **signature** — `--acknowledge-loss`/`--acknowledge-damage` |
@@ -317,9 +319,24 @@ bytes are **moved, not deleted** — into
 names how many bytes went where. A tail that claims the declared hash must
 also **re-derive** it from its own payload, so satisfying a pending record
 with different content is a SHA-256 second preimage, not a forgery. And a
-journal an operator has already **signed for** is never healed: the signature
-is pinned to its exact bytes, so repairing it would lapse that signature and
-turn a closed finding back into a red one.
+journal an operator has already **signed for** is never healed, on the sweep
+path *and* on the write path: the signature is pinned to its exact bytes, so
+repairing it would lapse that signature and turn a closed finding back into a
+red one.
+
+Two of those rows are narrower than they first look, and deliberately so. A
+declaration is **not** a licence to discard whatever is past the anchor: a
+crash can leave nothing, the declared entry whole, or the declared entry torn,
+but it can never leave a *complete, parseable* entry the writer never set out
+to append. Only a forger can do that — so a whole line that is not the
+declared entry keeps its signature requirement, and a stale `pending` (left by
+any writer killed after declaring) cannot be used to launder a forged tail
+into a clean sweep. For the same reason the "killed before its first line"
+row is decided by the **roster** (#3949) rather than by the anchor: the anchor
+is plain JSON an attacker may rewrite, so "no entries, one in flight" is also
+what an erasure looks like once it has tidied up. `addToRoster` runs only
+after an append has landed, which makes the roster the independent witness —
+a journal that ever held an entry is on it for good.
 
 **Clearing the lock the same kill left (Issue #1074).** The abandoned lock
 and the damaged chain arrive together — the kill has to land inside the
@@ -331,9 +348,21 @@ A lock is broken immediately only when its holder is *provably* gone
 name the same host this process runs under, because pids are namespaced per
 container and a `ps` miss on another container's pid would be a live holder's
 lock stolen; and it needs `ps -p` to report that pid gone, asked once per
-contended acquisition. A lock file naming **no** holder is the same kill
-caught inside the single op that creates and fills the file, and is broken on
-its second sighting — one sighting could be that op still in flight.
+contended acquisition, and serialised by a short-lived `<lock>.break` lock so
+that two contenders cannot both condemn the same dead holder and the second
+then remove the *winner's* fresh lock.
+
+A lock file naming **no** holder is **never** broken early. An earlier
+revision broke one on its second sighting, on the reasoning that the op
+creating and filling the file was too narrow to survive two polls. It is not:
+creation was `open(O_CREAT|O_EXCL)` and then a separate `write`, and a holder
+descheduled between the two reads as ownerless for as long as it is off the
+CPU — present-but-empty in 265 of 961 sightings when measured, and wider under
+load, so two polls a millisecond apart both landed inside it and a live
+holder's lock was broken. The lock record is now published atomically with
+`link(2)` from a temp file, so a lock file carries its holder from the instant
+it exists; an ownerless one is unreachable in new writes, and a legacy or
+genuinely abandoned one is left to the age rules below.
 
 Past the stale age the age rule decides, and there the change runs the other
 way: only a **conclusive** liveness answer now protects a lock. The probe

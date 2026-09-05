@@ -210,11 +210,74 @@ async function holderGone(pid: number): Promise<boolean | null> {
 }
 
 /**
+ * How long a break decision may hold the break lock before it is ignored.
+ *
+ * Only a `ps` spawn happens under it, so this is orders of magnitude above
+ * the real hold; it exists solely so a breaker killed mid-decision cannot
+ * stop anyone else ever breaking a lock again.
+ */
+const BREAK_LOCK_TTL_MS = 5_000;
+
+/**
  * Break a lock whose holder is gone, announcing it.
+ *
+ * Serialised across processes by a second, short-lived lock. Deciding
+ * takes real time — the liveness probe spawns `ps` — and the filesystem
+ * offers no "remove this file only if it still contains X", so without
+ * this two contenders can both condemn the same dead holder, and the
+ * second removes the *winner's* fresh lock and enters behind it. That is
+ * two writers in one journal (Issue #1074): the corruption this module
+ * exists to prevent, arriving through the machinery meant to recover from
+ * it. Holding the break lock across the whole read-decide-remove sequence
+ * is what makes "at most one contender may break a given lock" true.
  *
  * @returns true when the lock file was removed by this call
  */
 async function breakIfAbandoned(
+  path: string,
+  staleMs: number,
+  now: () => number,
+  probe: { probed: boolean },
+): Promise<boolean> {
+  const breakPath = `${path}.break`;
+  try {
+    await createLockAtomically(
+      breakPath,
+      new TextEncoder().encode(JSON.stringify({
+        token: crypto.randomUUID(),
+        pid: Deno.pid,
+        acquiredAt: new Date(now()).toISOString(),
+        host: ownerHost(),
+      })),
+    );
+  } catch (error: unknown) {
+    if (!(error instanceof Deno.errors.AlreadyExists)) throw error;
+    // Someone else is deciding. Let them, and come back on the next poll —
+    // unless their decision has plainly outlived any real one, which means
+    // the breaker was itself killed part-way through.
+    try {
+      const held = await Deno.stat(breakPath);
+      if (now() - (held.mtime?.getTime() ?? now()) > BREAK_LOCK_TTL_MS) {
+        await Deno.remove(breakPath);
+      }
+    } catch {
+      // Released while we looked; the next poll will find it free.
+    }
+    return false;
+  }
+  try {
+    return await decideAndBreak(path, staleMs, now, probe);
+  } finally {
+    try {
+      await Deno.remove(breakPath);
+    } catch {
+      // Only cleared by its holder or by the TTL above; either way, gone.
+    }
+  }
+}
+
+/** The break decision itself, run under the break lock. */
+async function decideAndBreak(
   path: string,
   staleMs: number,
   now: () => number,
@@ -251,7 +314,12 @@ async function breakIfAbandoned(
     if (probe.probed) return false;
     probe.probed = true;
     if (await holderGone(record.pid) !== true) return false;
-    await breakLock(path, ageMs, `pid ${record.pid} is no longer running`);
+    await breakLock(
+      path,
+      ageMs,
+      `pid ${record.pid} is no longer running`,
+      record,
+    );
     return true;
   }
 
@@ -268,7 +336,7 @@ async function breakIfAbandoned(
       `is now`
     : `pid ${record?.pid ?? "unknown"} is not running, or cannot be asked ` +
       `about from here`;
-  await breakLock(path, ageMs, why);
+  await breakLock(path, ageMs, why, record);
   return true;
 }
 
@@ -277,7 +345,20 @@ async function breakLock(
   path: string,
   ageMs: number,
   why: string,
+  condemned: LockRecord | null,
 ): Promise<void> {
+  // Break the lock that was actually judged, not whatever holds the path
+  // now. Deciding takes time — the liveness probe spawns `ps` — and two
+  // contenders can condemn the same dead holder concurrently: without
+  // this, the first breaks it and takes the lock, and the second then
+  // removes the *winner's* fresh lock and takes it too, which is two live
+  // writers in one journal (Issue #1074). Re-reading immediately before
+  // the remove narrows that to the gap between two adjacent syscalls; it
+  // does not make the check atomic, so this stays a last line of defence
+  // behind the age and liveness rules rather than a substitute for them.
+  const current = await readRecord(path);
+  if (condemned && current && current.token !== condemned.token) return;
+
   console.error(
     `[SECURITY] [AUDIT_LOCK_BROKEN] ${path}: held for ${
       Math.round(ageMs / 1000)

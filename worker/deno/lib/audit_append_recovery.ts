@@ -200,6 +200,26 @@ async function clearPending(
   if (!written.ok) throw written.error;
 }
 
+/**
+ * Does `line` parse as a whole journal entry?
+ *
+ * The question separates damage from forgery. A kill can leave bytes that
+ * do not parse; it cannot leave a *complete* entry the writer never set
+ * out to append. So a parseable tail is never discarded as torn, whether
+ * or not the anchor declares an append (Issue #1074, Issue #3949).
+ *
+ * @param line - The trailing line, without its terminator
+ * @returns true when the line is complete, parseable JSON
+ */
+function parsesAsEntry(line: string): boolean {
+  try {
+    const parsed = JSON.parse(line) as unknown;
+    return typeof parsed === "object" && parsed !== null;
+  } catch {
+    return false;
+  }
+}
+
 /** Is `line` exactly the entry the anchor declared as in flight? */
 async function isDeclaredEntry(
   line: string,
@@ -282,6 +302,16 @@ export async function settleInterruptedAppend(
           },
         };
       }
+      // The tail is not the declared entry. A crash cannot produce that:
+      // the writer only ever appends the one entry it declared, so the
+      // shapes a kill can leave are nothing at all, that entry whole, or
+      // that entry torn. A *complete, parseable* line that is something
+      // else is therefore not damage — it is the forged-tail shape Issue
+      // #3949 keeps red, and a stale declaration must not become the way
+      // to launder it. Only genuinely torn bytes are discarded.
+      if (journal.endsWithNewline && parsesAsEntry(tail)) {
+        return { ok: true, value: null };
+      }
       return {
         ok: true,
         value: await discardTornTail(path, journal, anchor),
@@ -295,13 +325,10 @@ export async function settleInterruptedAppend(
     // they can carry no forgery, because a forgery has to parse and chain
     // to be worth anything, and they sit past the anchored head, so
     // discarding them removes nothing the chain ever confirmed.
-    if (journal.endsWithNewline) return { ok: true, value: null };
-    try {
-      JSON.parse(tail);
+    if (journal.endsWithNewline || parsesAsEntry(tail)) {
       return { ok: true, value: null };
-    } catch {
-      return { ok: true, value: await discardTornTail(path, journal, anchor) };
     }
+    return { ok: true, value: await discardTornTail(path, journal, anchor) };
   } catch (error: unknown) {
     return {
       ok: false,

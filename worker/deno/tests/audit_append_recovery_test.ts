@@ -27,7 +27,12 @@ import {
   formatAppendRecovery,
   settleInterruptedAppend,
 } from "../lib/audit_append_recovery.ts";
-import { anchorPath, type ChainAnchor } from "../lib/audit_anchor.ts";
+import {
+  anchorPath,
+  type ChainAnchor,
+  rosterPath,
+  writeAnchor,
+} from "../lib/audit_anchor.ts";
 
 /** A fresh audit directory with `count` recorded mutations. */
 async function seeded(
@@ -83,6 +88,17 @@ async function crashMidAppend(
   if (text.length > 0) {
     await Deno.writeTextFile(path, text, { append: true });
   }
+}
+
+/** Lowercase hex SHA-256 of a string, as the roster records digests. */
+async function sha256Hex(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(input),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 /** A 64-hex hash that is not any real entry's. */
@@ -305,7 +321,17 @@ Deno.test("audit recovery - a torn line followed by a valid one does not self-he
   }
 });
 
-Deno.test("audit recovery - a tail claiming the declared hash is refused", async () => {
+// Behaviour deliberately reversed (Issue #1074 review). This test
+// previously asserted that a forged tail claiming the declared hash was
+// `discarded` and the sweep then went green. That was a hole, not a
+// feature: a stale `pending` record is a state the fix itself creates
+// routinely — any writer killed after declaring and before appending
+// leaves one — so "there is a declaration, therefore any unexpected tail
+// is crash damage" let a forged, chain-valid entry be swept away with a
+// clean report. A kill cannot produce a *complete* entry the writer never
+// declared; only a forger can. So a parseable tail now stays red and
+// needs a signature, which is what the acceptance criterion asks for.
+Deno.test("audit recovery - a tail claiming the declared hash stays broken", async () => {
   const { baseDir, path } = await seeded(3);
   try {
     // A forger who can read the pending record still cannot satisfy it:
@@ -324,16 +350,52 @@ Deno.test("audit recovery - a tail claiming the declared hash is refused", async
 
     const settled = await settleInterruptedAppend(path);
     assert(settled.ok);
-    // The forged line is not promoted into the anchor; it is set aside as
-    // a torn tail and the anchor stays where it was confirmed.
-    assertEquals(settled.value?.kind, "discarded");
+    // Nothing is settled: the tail is whole, so it is not damage.
+    assertEquals(settled.value, null);
     assertEquals((await readAnchorFile(path)).count, 3);
+    // Still on disk — a self-heal must not be the way a forgery is
+    // removed, and the operator has to see it to sign for it.
+    assertStringIncludes(await Deno.readTextFile(path), "forged");
     const verified = await verifyChain(path);
     assert(verified.ok);
-    assert(verified.value.valid, "the chain must be back at its anchored head");
-    const preserved = settled.value?.preservedAs;
-    assert(preserved);
-    assertStringIncludes(await Deno.readTextFile(preserved), "forged");
+    assert(!verified.value.valid, "a forged tail must still fail loudly");
+  } finally {
+    await Deno.remove(baseDir, { recursive: true });
+  }
+});
+
+Deno.test("audit recovery - a forged chain-valid tail is not laundered by a stale declaration", async () => {
+  const { baseDir, path } = await seeded(3);
+  try {
+    // The sharper form of the same hole: the forged entry chains
+    // correctly onto the anchored head, so it is indistinguishable from a
+    // real append except that the anchor never declared *it*. The chain
+    // hash is unkeyed, so any local actor can compute one.
+    const entries = await loadEntries(path);
+    assert(entries.ok);
+    const head = entries.value[2];
+    assert(head);
+    const payload = {
+      timestamp: new Date().toISOString(),
+      runId: "attacker",
+      repo: "o/r",
+      target: "main",
+      verb: "git-push" as const,
+      outcome: "success" as const,
+      caller: "forged",
+    };
+    const forged = {
+      ...payload,
+      prevHash: head.hash,
+      hash: await computeEntryHash(payload, head.hash),
+    };
+    await crashMidAppend(path, FAKE_HASH, `${JSON.stringify(forged)}\n`);
+
+    const swept = await verifyAllChains(baseDir);
+    assert(swept.ok);
+    assertEquals(swept.value.recovered, []);
+    assertEquals(swept.value.broken.length, 1, "the forgery must stay red");
+    assertStringIncludes(await Deno.readTextFile(path), "attacker");
   } finally {
     await Deno.remove(baseDir, { recursive: true });
   }
@@ -585,5 +647,112 @@ Deno.test("audit recovery - a very long dropped line is quoted, not copied whole
     assertEquals(await Deno.readTextFile(recovery.preservedAs), long);
   } finally {
     await Deno.remove(baseDir, { recursive: true });
+  }
+});
+
+Deno.test("audit recovery - an erased journal cannot be laundered by its anchor", async () => {
+  const { baseDir, path } = await seeded(3);
+  try {
+    // The anchor is plain JSON anyone who can reach the audit directory
+    // may rewrite, so "no entries, and one in flight" cannot be taken on
+    // the anchor's word alone: that is also what an erasure looks like
+    // once the attacker has tidied up after itself. The roster is the
+    // independent witness — a journal that ever took an append is on it.
+    await Deno.remove(path);
+    const laundered = await writeAnchor(path, {
+      count: 0,
+      headHash: "",
+      pending: { hash: FAKE_HASH, startedAt: "2026-09-05T00:49:12.000Z" },
+    });
+    assert(laundered.ok);
+
+    const swept = await verifyAllChains(baseDir);
+    assert(swept.ok);
+    assertEquals(swept.value.broken.length, 1, "an erasure must stay red");
+    assertStringIncludes(
+      swept.value.broken[0]?.reason ?? "",
+      "journal deleted",
+    );
+  } finally {
+    await Deno.remove(baseDir, { recursive: true });
+  }
+});
+
+Deno.test("audit recovery - a journal killed before its first line is not a deletion", async () => {
+  // The other side of the same rule: a writer killed after declaring its
+  // first append and before writing it leaves an anchor and no journal,
+  // and never reached the roster. Nothing is missing, so nothing is red.
+  _resetAuditCaches();
+  const baseDir = await Deno.makeTempDir({ prefix: "audit-recovery-" });
+  try {
+    const path = auditFilePath({
+      baseDir,
+      workerId: "test-worker",
+      date: "2026-09-05",
+    });
+    const declared = await writeAnchor(path, {
+      count: 0,
+      headHash: "",
+      pending: { hash: FAKE_HASH, startedAt: "2026-09-05T00:49:12.000Z" },
+    });
+    assert(declared.ok);
+
+    const swept = await verifyAllChains(baseDir);
+    assert(swept.ok);
+    assertEquals(swept.value.broken, []);
+  } finally {
+    await Deno.remove(baseDir, { recursive: true });
+  }
+});
+
+Deno.test("audit recovery - a journal signed for by an operator is not healed by the next append", async () => {
+  const { baseDir, path, opts } = await seeded(3);
+  try {
+    // The sweep refuses to heal a journal an operator has signed for,
+    // because the signature is pinned to its exact bytes. That guarantee
+    // is only worth something if the *write* path honours it too: healing
+    // on the next ordinary mutation would lapse the signature and quietly
+    // close a finding the operator had deliberately left open.
+    //
+    // The signature is written straight to the roster rather than through
+    // `acknowledgeJournalDamage`, because that call records its own
+    // chained entry and so drives the very append path under test.
+    await crashMidAppend(path, FAKE_HASH, '{"timestamp":"2026-09-05T00:4');
+    const bytesWhenSigned = await Deno.readTextFile(path);
+    const name = path.slice(path.lastIndexOf("/") + 1);
+    await Deno.writeTextFile(
+      rosterPath(baseDir),
+      `${
+        JSON.stringify({
+          journal: name,
+          kind: "damage",
+          digest: await sha256Hex(bytesWhenSigned),
+          entries: 3,
+          reason: "torn tail reviewed and accepted",
+          by: "operator",
+          acknowledgedAt: "2026-09-05T01:00:00.000Z",
+        })
+      }\n`,
+      { append: true },
+    );
+
+    // An ordinary mutation must still be journalled — somewhere else.
+    const next = await recordMutation({
+      runId: "run-2",
+      target: "after-signature",
+      verb: "git-push",
+      outcome: "success",
+      caller: "recovery-test",
+    }, opts);
+    assert(next.ok, "journalling must continue after a signature");
+
+    assertEquals(
+      await Deno.readTextFile(path),
+      bytesWhenSigned,
+      "the signed-for bytes must be exactly as the operator left them",
+    );
+  } finally {
+    await Deno.remove(baseDir, { recursive: true });
+    await Deno.remove(`${baseDir}.roster.jsonl`).catch(() => {});
   }
 });

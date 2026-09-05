@@ -321,3 +321,52 @@ Deno.test("withFileLock - a lock from another host is never broken early", async
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("withFileLock - a contender does not break the lock of whoever won the race", async () => {
+  const { dir, lock } = await tempLock();
+  // Two contenders can condemn the same dead holder at the same time.
+  // Deciding is not instant — the liveness probe spawns `ps` — so by the
+  // time the loser acts, the winner may already hold a fresh lock of its
+  // own. Removing the lock "at that path" rather than the lock that was
+  // judged is how the second contender evicts the first and two writers
+  // land in one journal (Issue #1074).
+  const child = new Deno.Command("sleep", {
+    args: ["30"],
+    stdout: "null",
+    stderr: "null",
+  }).spawn();
+  const deadPid = child.pid;
+  child.kill("SIGKILL");
+  await child.status;
+  try {
+    await Deno.writeTextFile(
+      lock,
+      JSON.stringify({
+        token: "the-dead-holder",
+        pid: deadPid,
+        acquiredAt: new Date().toISOString(),
+        host: Deno.hostname(),
+      }),
+    );
+
+    let inside = 0;
+    let maxInside = 0;
+    const body = async () => {
+      inside++;
+      maxInside = Math.max(maxInside, inside);
+      await new Promise((r) => setTimeout(r, 20));
+      inside--;
+      return true;
+    };
+    // Every contender condemns the same record before any of them acts.
+    await Promise.all(
+      Array.from(
+        { length: 6 },
+        () => withFileLock(lock, body, { timeoutMs: 5_000, pollMs: 1 }),
+      ),
+    );
+    assertEquals(maxInside, 1, "a contender evicted the winner of the race");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

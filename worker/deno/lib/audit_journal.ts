@@ -424,6 +424,27 @@ function reconcile(
  * true for as long as no other process appends, so reading it outside the
  * lock and writing on the strength of it is the original bug.
  */
+/**
+ * Has an operator signed for this journal's current damage?
+ *
+ * Mirrors the sweep's `damageAcknowledgements` guard for the append path
+ * (Issue #1074). A signature covers the exact bytes it was given, so a
+ * journal whose acknowledgement no longer matches its digest is *not*
+ * protected — that is the alarm coming back, and healing is the lesser
+ * concern at that point.
+ *
+ * @param path - Journal file path
+ * @returns true when a current acknowledgement covers these exact bytes
+ */
+async function damageIsAcknowledged(path: string): Promise<boolean> {
+  const baseDir = path.slice(0, path.lastIndexOf("/")) || ".";
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const damage = (await readRosterContents(baseDir)).damaged.get(name);
+  if (!damage) return false;
+  const digest = await journalDigest(path);
+  return digest.ok && digest.value === damage.digest;
+}
+
 async function getChainState(path: string): Promise<ChainState> {
   try {
     return reconcile(
@@ -439,6 +460,13 @@ async function getChainState(path: string): Promise<ChainState> {
     // failed — before quarantining it. A journal that settles nothing
     // keeps its original error, so nothing is repaired on the strength of
     // a second look.
+    //
+    // Except one an operator has already signed for. The sweep refuses to
+    // heal those because the signature is pinned to the journal's exact
+    // bytes, and repairing them would lapse it; the guarantee is worth
+    // nothing if the *write* path quietly does what the sweep declines to,
+    // so the same check stands on both.
+    if (await damageIsAcknowledged(path)) throw error;
     const settled = await settleInterruptedAppend(path);
     if (!settled.ok) throw settled.error;
     if (!settled.value) throw error;
@@ -704,8 +732,34 @@ export async function verifyChain(
       // what a writer killed before its first line leaves behind (Issue
       // #1074): it anchors nothing, so there is nothing to be missing.
       // Without the declaration it is still a deletion, and still red.
+      //
+      // The anchor alone cannot carry that verdict, because it is plain
+      // JSON an attacker may rewrite: "delete the journal, then declare
+      // it empty and in-flight" would launder an erasure into a clean
+      // sweep. The roster is the independent witness (Issue #3949) —
+      // `addToRoster` runs only *after* an append has landed, so a
+      // journal that was never successfully written to is absent from it,
+      // while one that ever held an entry is on it for good. A missing
+      // journal that the roster expects is a deletion, whatever its
+      // anchor says.
       if (anchor && anchor.count === 0 && anchor.pending) {
-        return { ok: true, value: { valid: true, count: 0 } };
+        const baseDir = path.slice(0, path.lastIndexOf("/")) || ".";
+        const name = path.slice(path.lastIndexOf("/") + 1);
+        let expected: boolean;
+        try {
+          expected = (await readRosterContents(baseDir)).journals.includes(
+            name,
+          );
+        } catch (error: unknown) {
+          // A corrupted roster is a tamper signal, never a silent pass.
+          return {
+            ok: false,
+            error: error instanceof Error ? error : new Error(String(error)),
+          };
+        }
+        if (!expected) {
+          return { ok: true, value: { valid: true, count: 0 } };
+        }
       }
       if (anchor) {
         return {
