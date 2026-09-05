@@ -268,11 +268,11 @@ The one exception is a journal with **no anchor at all** — the pre-#3712 case
 `--adopt` exists for. That still refuses, because opening a segment beside it
 would strand the chain the operator is about to adopt.
 
-**An interrupted append heals itself; damage still needs a signature (Issue
-#1074).** A journal line and its anchor are two files and cannot be written
-atomically, so a run killed between them left a chain that failed the sweep
-and asked an operator to sign the kill off with `--acknowledge-damage`. That
-is the wrong ask: a control that routinely wants a human to wave damage
+**An interrupted append heals itself; damage still needs a signature
+(Issue #1074).** A journal line and its anchor are two files and cannot be
+written atomically, so a run killed between them left a chain that failed the
+sweep and asked an operator to sign the kill off with
+`--acknowledge-damage`. That is the wrong ask: a control that routinely wants a human to wave damage
 through is one that gets waved through unread, and the chain exists precisely
 so that tampering is distinguishable from ordinary breakage.
 
