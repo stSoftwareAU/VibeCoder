@@ -11,8 +11,9 @@ Canonical guides — link, do not restate:
 This bucket reviews **design quality in any language**: the shape of the
 code — naming, coupling, cohesion, delegation — rather than a language's
 own idioms. It is the only bucket that scores design without naming a
-language, so it runs on a Bash, Python or COBOL repo exactly as it runs
-on a Rust one. Language idioms belong to that language's bucket
+language, so it runs on a repo in a language no bucket covers exactly as
+it runs on one that has a bucket. Language idioms belong to that
+language's bucket
 (`rust`, `typescript`, `react`, `java`, `html`, `aws-cloudformation`,
 `terraform`); repo-level hygiene — README, licence, CI presence,
 dependency tooling — belongs to `general`.
