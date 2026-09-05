@@ -109,6 +109,10 @@ code, which escalates on the third.
   the count still has to be met however long the span, and an unknown start does
   not veto. Both directions, so the change cannot be satisfied by never
   escalating.
+- `resetCheckoutToDefaultBranch - the real update sequence rides the retry` —
+  the production entry point, not a helper in isolation: a first `fetch` that
+  fails on the uid lookup is absorbed, the whole four-step sequence completes,
+  and the recovery lands in `pull.log`.
 - `parseCheckoutStreak - reads the pre-#1017 file without crashing`.
 - `updateCheckout - three failures inside a minute do not escalate`.
 - `updateCheckout - the streak file lives under the log directory (Issue #513)`

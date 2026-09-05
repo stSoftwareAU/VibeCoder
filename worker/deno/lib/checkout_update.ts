@@ -401,18 +401,22 @@ async function appendLine(filePath: string, line: string): Promise<void> {
  * Output is appended to `pull.log` **under the log directory**, which is a
  * mounted host directory — never the checkout. The first failing command
  * short-circuits and returns a fail-loud error (Issue #3234).
+ *
+ * `deps` is the seam {@link runGitStepWithRetry} needs (Issue #1017); it
+ * defaults to the real git runner, so production callers pass nothing.
  */
 export function resetCheckoutToDefaultBranch(
   repoDir: string,
   branch: string,
   logDir: string,
+  deps: GitStepDeps = defaultGitStepDeps(),
 ): Promise<Result<void>> {
   return runGitSteps(repoDir, logDir, [
     ["fetch", "origin"],
     ["checkout", branch],
     ["reset", "--hard", `origin/${branch}`],
     ["clean", "-fd"],
-  ]);
+  ], deps);
 }
 
 /**
@@ -426,8 +430,9 @@ export function resetCheckoutToDefaultBranch(
 export function fetchOrigin(
   repoDir: string,
   logDir: string,
+  deps: GitStepDeps = defaultGitStepDeps(),
 ): Promise<Result<void>> {
-  return runGitSteps(repoDir, logDir, [["fetch", "--tags", "origin"]]);
+  return runGitSteps(repoDir, logDir, [["fetch", "--tags", "origin"]], deps);
 }
 
 /**
@@ -444,12 +449,13 @@ export function checkoutPinnedRef(
   repoDir: string,
   ref: string,
   logDir: string,
+  deps: GitStepDeps = defaultGitStepDeps(),
 ): Promise<Result<void>> {
   return runGitSteps(repoDir, logDir, [
     ["checkout", "--force", "--detach", ref],
     ["reset", "--hard", ref],
     ["clean", "-fd"],
-  ]);
+  ], deps);
 }
 
 /** Seams the retrying git-step runner needs, so it is testable (#1017). */

@@ -35,6 +35,7 @@ import {
   emptyCheckoutStreak,
   parseCheckoutStreak,
   parseOriginRepo,
+  resetCheckoutToDefaultBranch,
   runGitStepWithRetry,
   SKIP_CHECKOUT_UPDATE_ENV,
   updateCheckout,
@@ -529,6 +530,61 @@ Deno.test("runGitStepWithRetry - a condition that never clears gives up, bounded
   // No "retrying" line survives a step that kept failing: the failure reports
   // itself, and a retry note beside it would read as though the retry helped.
   assertEquals(attempted.notes, []);
+});
+
+Deno.test("resetCheckoutToDefaultBranch - the real update sequence rides the retry (Issue #1017)", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "checkout_update_retry_" });
+  try {
+    const attempts: string[] = [];
+    let fetches = 0;
+    const reset = await resetCheckoutToDefaultBranch(
+      `${tmp}/repo`,
+      "main",
+      tmp,
+      {
+        run: (args) => {
+          attempts.push(args.join(" "));
+          if (args[0] === "fetch" && ++fetches === 1) {
+            return Promise.resolve({
+              ok: true as const,
+              value: {
+                code: 128,
+                stdout: "",
+                stderr:
+                  "No user exists for uid 501\nfatal: Could not read from remote repository.",
+              },
+            });
+          }
+          return Promise.resolve({
+            ok: true as const,
+            value: { code: 0, stdout: "", stderr: "" },
+          });
+        },
+        sleep: () => Promise.resolve(),
+      },
+    );
+
+    // The production sequence, not a helper in isolation: the transient
+    // uid-lookup failure is absorbed and the whole update completes, so this
+    // run never reaches the failure streak at all.
+    assertEquals(reset.ok, true);
+    assertEquals(fetches, 2, "the fetch is retried, once");
+    assertEquals(attempts.slice(1), [
+      "fetch origin",
+      "checkout main",
+      "reset --hard origin/main",
+      "clean -fd",
+    ]);
+
+    // And the recovery is on the record an operator already reads for this
+    // update, rather than being silently absorbed.
+    assertStringIncludes(
+      await Deno.readTextFile(`${tmp}/pull.log`),
+      "could not resolve uid 501",
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
 });
 
 Deno.test("checkoutStreakEscalates - the count alone is not persistence (Issue #1017)", () => {
