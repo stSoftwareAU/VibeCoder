@@ -29,6 +29,12 @@ import type {
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
 // host's overrides from the shared process environment (Issue #1024).
+/** The fleet service account both racing hosts post their claims as. */
+const FLEET_AUTHOR = "vibe-coder-bot";
+
+/** Author-verification inputs the fixtures pass instead of a config file. */
+const FLEET_OPTIONS = { fleetAuthors: [FLEET_AUTHOR] } as const;
+
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 // ---------------------------------------------------------------------------
@@ -234,11 +240,13 @@ Deno.test("processPrFeedback - skips processing when claim lost to another worke
       id: 100,
       body: "<!-- PR_COMMENT_CLAIM:other-worker:123 -->",
       created_at: "2026-04-01T00:00:01Z",
+      author: FLEET_AUTHOR,
     },
     {
       id: 101,
       body: "<!-- PR_COMMENT_CLAIM:my-worker:123 -->",
       created_at: "2026-04-01T00:00:02Z",
+      author: FLEET_AUTHOR,
     },
   ]);
 
@@ -264,6 +272,7 @@ Deno.test("processPrFeedback - skips processing when claim lost to another worke
     deps,
     workDir: "/tmp/test",
     workerId: "my-worker",
+    claimAuthorOptions: FLEET_OPTIONS,
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -281,6 +290,7 @@ Deno.test("processPrFeedback - proceeds when claim won", async () => {
       id: 100,
       body: "<!-- PR_COMMENT_CLAIM:my-worker:123 -->",
       created_at: "2026-04-01T00:00:00Z",
+      author: FLEET_AUTHOR,
     },
   ]);
 
@@ -329,6 +339,7 @@ Deno.test("processPrFeedback - proceeds when claim won", async () => {
     workDir: "/tmp/test",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
     workerId: "my-worker",
+    claimAuthorOptions: FLEET_OPTIONS,
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);

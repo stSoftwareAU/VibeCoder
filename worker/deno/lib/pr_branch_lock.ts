@@ -14,11 +14,32 @@
  *
  * Comment format: `<!-- BRANCH_UPDATE_LOCK:worker-id:unix-timestamp -->`
  *
+ * **A competing lock only counts when the fleet posted it (Issue #1124).**
+ * A PR comment thread on a public repository is open to anyone, so a
+ * `BRANCH_UPDATE_LOCK` marker is a claim from a stranger unless the comment
+ * **author** says otherwise — and the worker-id and timestamp inside the
+ * marker are chosen by whoever typed it. A planted lock with a fresh
+ * timestamp never expires, sorts earliest, and stalls every host's branch
+ * updates on that PR indefinitely. The re-read therefore carries
+ * `.user.login` and competing locks are filtered against the fleet identity
+ * (`alert_dedup_authors.ts`).
+ *
+ * **The fail direction leaves the work claimable.** An unresolvable fleet
+ * identity means no competing lock can be attributed, so none is counted
+ * and this host takes the lock. Two hosts updating the same branch is a
+ * conflict git resolves; a branch no host may ever update is a PR that
+ * never merges.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import type { Result } from "../types.ts";
 import { runGhCommand } from "./github.ts";
+import {
+  type AlertDedupAuthorOptions,
+  type AlertDedupCommentRow,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -80,6 +101,14 @@ export interface BranchUpdateLockOptions {
    * pass a sentence saying who holds the lock and why.
    */
   note?: string;
+  /**
+   * Fleet identity inputs for the competing-lock author check
+   * (Issue #1124). Omitted reads the configured fleet, which is what every
+   * production caller does.
+   */
+  authorOptions?: AlertDedupAuthorOptions;
+  /** Sink for the author-verification diagnostics. */
+  log?: (message: string) => void;
 }
 
 /** Options for renewing a held branch update lock (Issue #3754). */
@@ -139,7 +168,7 @@ export interface CleanStaleLockOptions {
 }
 
 /** Parsed lock comment from the GitHub API. */
-interface LockComment {
+interface LockComment extends AlertDedupCommentRow {
   id: number;
   body: string;
   createdAt: string;
@@ -228,7 +257,8 @@ async function fetchLockComments(
     "api",
     `repos/${repo}/issues/${prNumber}/comments`,
     "--jq",
-    `[.[] | select(.body | test("${BRANCH_UPDATE_LOCK_PREFIX}")) | {id: .id, body: .body, created_at: .created_at}]`,
+    `[.[] | select(.body | test("${BRANCH_UPDATE_LOCK_PREFIX}")) | ` +
+    `{id: .id, body: .body, created_at: .created_at, author: .user.login}]`,
   ]);
 
   const parsed: unknown = JSON.parse(commentsJson);
@@ -243,6 +273,7 @@ async function fetchLockComments(
       id: Number(c.id),
       body: String(c.body),
       createdAt: String(c.created_at ?? ""),
+      author: typeof c.author === "string" ? c.author : null,
     }));
 }
 
@@ -321,6 +352,8 @@ export async function acquireBranchUpdateLock(
     sleepFn = defaultSleep,
     ghCommandFn = runGhCommand,
     nowFn = defaultNow,
+    authorOptions = {},
+    log = (message: string) => console.warn(message),
   } = options;
 
   // Step 1: Clean up stale locks from previous runs / crashed workers
@@ -354,13 +387,34 @@ export async function acquireBranchUpdateLock(
   await sleepFn(DEFAULT_CONSISTENCY_DELAY_MS);
 
   // Step 4: Re-read comments to check for competing locks
-  let allLockComments: LockComment[];
+  let readLockComments: LockComment[];
   try {
-    allLockComments = await fetchLockComments(repo, prNumber, ghCommandFn);
+    readLockComments = await fetchLockComments(repo, prNumber, ghCommandFn);
   } catch {
     // Cannot verify — back off to avoid conflicts
     return { ok: true, value: { acquired: false } };
   }
+
+  // Step 4a: A lock the fleet did not post is not a lock (Issue #1124).
+  // Our own comment is ours by construction — we posted it moments ago and
+  // it carries our worker-id — so it is kept without an author lookup;
+  // everything else has to prove who wrote it. Verifying only the
+  // competitors means the log names the comments that would otherwise have
+  // stalled this branch.
+  const ourLocks = readLockComments.filter(
+    (c) => parseLockComment(c.body)?.workerId === workerId,
+  );
+  const competingLocks = await selectFleetAuthoredComments(
+    readLockComments.filter(
+      (c) => parseLockComment(c.body)?.workerId !== workerId,
+    ),
+    `branch update lock ${repo}#${prNumber}`,
+    authorOptions,
+    log,
+    "no competing lock is counted and the branch stays updatable — a lock " +
+      "marker anyone can post must not stall a PR indefinitely",
+  );
+  const allLockComments = [...ourLocks, ...competingLocks];
 
   // Step 5: Determine the winner
   if (allLockComments.length === 0) {

@@ -80,7 +80,20 @@ interface FakeComment {
   id: number;
   body: string;
   created_at: string;
+  /**
+   * The login GitHub reports for the comment (Issue #1124). Both hosts in
+   * this race run as the same fleet service account and are told apart by
+   * the worker-id inside the marker, which is how the fleet actually
+   * authenticates; a lock from outside the set is not a lock at all.
+   */
+  author: string;
 }
+
+/** The fleet service account both racing hosts post as. */
+const FLEET_AUTHOR = "vibe-coder-bot";
+
+/** Author-verification inputs the fixtures pass instead of a config file. */
+const FLEET_OPTIONS = { fleetAuthors: [FLEET_AUTHOR] } as const;
 
 /**
  * A shared, in-memory stand-in for one PR's comment timeline.
@@ -105,6 +118,7 @@ class FakePrComments {
           id: this.nextId++,
           body,
           created_at: new Date(this.now * 1000).toISOString(),
+          author: FLEET_AUTHOR,
         });
         // Each post advances the clock so `created_at` ordering is stable.
         this.now += 1;
@@ -236,6 +250,8 @@ function makeProcessorDeps(params: {
         ghCommandFn: timeline.gh(),
         sleepFn: () => Promise.resolve(),
         nowFn: () => timeline.now,
+        authorOptions: FLEET_OPTIONS,
+        log: () => {},
       }),
     ghCommandFn: timeline.gh(),
   };
@@ -283,6 +299,7 @@ Deno.test("processCiFailure - racing workers: earliest wins, loser returns early
       body:
         `<!-- BRANCH_UPDATE_LOCK:Mac-Ultra-M2.local-b6287ceb:${holderTimestamp} -->`,
       created_at: new Date((holderTimestamp - 1) * 1000).toISOString(),
+      author: FLEET_AUTHOR,
     });
 
     const secondResult = await processCiFailure(
@@ -397,6 +414,7 @@ Deno.test("processCiFailure - a stale lock past TTL is cleaned and acquisition s
       id: 1,
       body: "<!-- BRANCH_UPDATE_LOCK:crashed-host:1699997600 -->",
       created_at: "2026-08-03T01:00:00Z",
+      author: FLEET_AUTHOR,
     });
     const effects: Effects = { heartbeats: 0, claudeRuns: 0, pushes: 0 };
 
