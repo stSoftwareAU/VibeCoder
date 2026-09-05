@@ -289,6 +289,7 @@ container is the only run mode (Issue #4), and the report names it:
 | -------------------------------------------------- | -------------- |
 | `git`, authenticated `gh`, `deno`, the `claude` CLI | host-fatal     |
 | container runtime + worker image                    | host-fatal     |
+| a configured `container_extension` (Issue #982)     | host-fatal     |
 | `jq`, `timeout`                                     | informational  |
 
 A host-fatal gap exits 1; an informational one is reported and never fails

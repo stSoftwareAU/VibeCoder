@@ -8,8 +8,17 @@
  * described.
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { QUOTA_PAUSE_EXIT_STATUS } from "../lib/quota_pause.ts";
+import {
+  EXTENSION_PREFIX,
+  EXTENSION_START_ABORT_EXIT_STATUS,
+} from "../lib/container_extension_start.ts";
 
 const ENTRYPOINT = new URL("../../../container/entrypoint.sh", import.meta.url)
   .pathname;
@@ -118,9 +127,14 @@ function spawnEntrypoint(opts: EntrypointOpts): Deno.ChildProcess {
 
 async function runEntrypoint(
   opts: EntrypointOpts,
-): Promise<{ code: number; stderr: string }> {
-  const { code, stderr } = await spawnEntrypoint(opts).output();
-  return { code, stderr: new TextDecoder().decode(stderr) };
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const { code, stdout, stderr } = await spawnEntrypoint(opts).output();
+  const decoder = new TextDecoder();
+  return {
+    code,
+    stdout: decoder.decode(stdout),
+    stderr: decoder.decode(stderr),
+  };
 }
 
 Deno.test("entrypoint - execs the Deno driver with the worker permission set", async () => {
@@ -686,6 +700,11 @@ const SHELL_OWNED_ENV = new Set([
   "OLDPWD",
   "SHLVL",
   "_",
+  // The entrypoint exports this itself, unconditionally (Issue #4248). The
+  // suite runs INSIDE a container this same script started, so the value
+  // matches for a reason that is the opposite of a leak — the child set it —
+  // and without this the case fails on every containerised run.
+  "DISABLE_AUTOUPDATER",
 ]);
 
 /**
@@ -1491,6 +1510,227 @@ Deno.test("entrypoint - a second launch still configures the credential helper (
       (config.match(/insteadOf = git@github\.com:/g) ?? []).length,
       1,
       `SSH rewrite should be configured exactly once:\n${config}`,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The deployment's extension start script (Issue #981, parent #933)
+//
+// The contract is "start succeeds or the run fails": the declared script runs
+// before the driver, and every way it can fail aborts the sandbox start with
+// the path named. The cases below run the real entrypoint against a fixture
+// extension prefix, so a silently-skipped start script — the failure mode that
+// would let the agent work against a dead Postgres — fails here.
+// ---------------------------------------------------------------------------
+
+/** Write an executable start script into a fixture extension prefix. */
+async function extensionStart(
+  dir: string,
+  body: string,
+  options: { executable?: boolean } = {},
+): Promise<string> {
+  const prefix = `${dir}/extension`;
+  await Deno.mkdir(`${prefix}/bin`, { recursive: true });
+  const script = `${prefix}/bin/start.sh`;
+  await Deno.writeTextFile(script, `#!/bin/bash\n${body}\n`);
+  await Deno.chmod(script, options.executable === false ? 0o644 : 0o755);
+  return prefix;
+}
+
+/** The environment a launch with a declared start script is given. */
+function extensionEnv(dir: string): Record<string, string> {
+  return {
+    VIBE_BASE_DIR: `${dir}/repo`,
+    VIBE_EXTENSION_PREFIX: `${dir}/extension`,
+    VIBE_EXTENSION_START: "bin/start.sh",
+  };
+}
+
+Deno.test("entrypoint - runs the declared start script before the driver (Issue #981)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const orderFile = `${dir}/order.txt`;
+    // The stub records the driver launch in the same file the start script
+    // writes, so the ORDER is asserted rather than merely both happening.
+    await Deno.mkdir(`${dir}/bin`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/bin/deno`,
+      `#!/bin/bash\nprintf 'driver\\n' >> "${orderFile}"\nexit 0\n`,
+    );
+    await Deno.chmod(`${dir}/bin/deno`, 0o755);
+    await fakeRepo(dir);
+    await extensionStart(dir, `printf 'start\\n' >> "${orderFile}"`);
+
+    const { code, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin`,
+      env: extensionEnv(dir),
+    });
+
+    assertEquals(code, 0, stderr);
+    assertEquals(
+      (await Deno.readTextFile(orderFile)).trim().split("\n"),
+      ["start", "driver"],
+      "the driver must start only after the extension start script exits zero",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - a non-zero start aborts the launch and never runs the driver (Issue #981)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const argvFile = await stubDeno(dir);
+    await fakeRepo(dir);
+    await extensionStart(dir, "exit 42");
+
+    const { code, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin`,
+      env: extensionEnv(dir),
+    });
+
+    assertEquals(code, EXTENSION_START_ABORT_EXIT_STATUS);
+    // The script and its own status are both named, so a Postgres that
+    // refused to start is diagnosable from the container log alone.
+    assertStringIncludes(stderr, `${dir}/extension/bin/start.sh`);
+    assertStringIncludes(stderr, "exited 42");
+    await assertRejects(
+      () => Deno.stat(argvFile),
+      Deno.errors.NotFound,
+      "",
+      "the driver must not run after an aborted extension start",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - a declared start script missing from the image fails loudly (Issue #981)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const argvFile = await stubDeno(dir);
+    await fakeRepo(dir);
+    // The operator's Containerfile did not copy it where the contract says.
+    await Deno.mkdir(`${dir}/extension`, { recursive: true });
+
+    const { code, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin`,
+      env: extensionEnv(dir),
+    });
+
+    assertEquals(code, EXTENSION_START_ABORT_EXIT_STATUS);
+    assertStringIncludes(stderr, `${dir}/extension/bin/start.sh`);
+    assertStringIncludes(stderr, "does not exist");
+    await assertRejects(() => Deno.stat(argvFile), Deno.errors.NotFound);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - a non-executable start script fails loudly (Issue #981)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const argvFile = await stubDeno(dir);
+    await fakeRepo(dir);
+    await extensionStart(dir, "exit 0", { executable: false });
+
+    const { code, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin`,
+      env: extensionEnv(dir),
+    });
+
+    assertEquals(code, EXTENSION_START_ABORT_EXIT_STATUS);
+    assertStringIncludes(stderr, `${dir}/extension/bin/start.sh`);
+    assertStringIncludes(stderr, "not executable");
+    await assertRejects(() => Deno.stat(argvFile), Deno.errors.NotFound);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - the start script's stdout and stderr reach the container log (Issue #981)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    await stubDeno(dir);
+    await fakeRepo(dir);
+    await extensionStart(
+      dir,
+      "printf 'postgres ready\\n'\nprintf 'jenkins warming up\\n' >&2",
+    );
+
+    const { code, stdout, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin`,
+      env: extensionEnv(dir),
+    });
+
+    assertEquals(code, 0, stderr);
+    assertStringIncludes(stdout, "postgres ready");
+    assertStringIncludes(stderr, "jenkins warming up");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - the prefix defaults to the contract path, not the tests' fixture (Issue #981)", async () => {
+  // Every other case overrides VIBE_EXTENSION_PREFIX, because /opt is not
+  // writable from a test. This one leaves it unset, so the production default
+  // — the one fixed path the operator's Containerfile copies the extension to
+  // — is the value the entrypoint resolves, and the TypeScript constant and
+  // the shell literal cannot drift apart unnoticed.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const argvFile = await stubDeno(dir);
+    await fakeRepo(dir);
+
+    const { code, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin`,
+      env: {
+        VIBE_BASE_DIR: `${dir}/repo`,
+        VIBE_EXTENSION_START: "bin/start.sh",
+      },
+    });
+
+    assertEquals(code, EXTENSION_START_ABORT_EXIT_STATUS);
+    assertStringIncludes(stderr, `${EXTENSION_PREFIX}/bin/start.sh`);
+    await assertRejects(() => Deno.stat(argvFile), Deno.errors.NotFound);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - with no extension configured the launch is unchanged (Issue #981)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const argvFile = await stubDeno(dir);
+    await fakeRepo(dir);
+    // A start script exists in the image, but nothing declares it: the block
+    // is inert, exactly as it is for the public Vibe Coder.
+    await extensionStart(dir, "exit 1");
+
+    const { code, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin`,
+      env: { VIBE_BASE_DIR: `${dir}/repo` },
+    });
+
+    assertEquals(code, 0, stderr);
+    assert(
+      (await Deno.readTextFile(argvFile)).includes("run-entrypoint"),
+      "the driver must still start when no extension is configured",
+    );
+    assertEquals(
+      stderr.includes("extension"),
+      false,
+      `an unconfigured deployment says nothing about extensions:\n${stderr}`,
     );
   } finally {
     await Deno.remove(dir, { recursive: true });

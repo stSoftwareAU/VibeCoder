@@ -262,8 +262,9 @@ it would invalidate the image on every commit:
 | `worker/deno/deno.lock`   | The dependency set the image caches          |
 | `container_tools` (`.config.json`) | The extra tools this deployment bakes in |
 | `agent_providers` (`.config.json`) | The coding-agent CLIs this deployment bakes in |
+| `container_extension` (`.config.json`) | The private extension directory this deployment builds on top |
 
-The last two are not committed files. `container_tools` is the deployment's own
+The last three are not committed files. `container_tools` is the deployment's own
 selection (see
 [Deployer-supplied build-time tools](CONTAINER-IMAGE.md#deployer-supplied-build-time-tools)),
 and the
@@ -285,7 +286,151 @@ that is already the image's default (`container/tools.json`
 `installedProviders`) passes no argument and leaves the tag exactly where it
 was.
 
-**Every caller reads both selections through one reader.** Because the tag is
+`container_extension` is a whole **directory**, not a value (Issue #979). The
+operator syncs their own private repository into it — a `Containerfile` built
+`FROM` the standard image, optionally a start script, and whatever the build
+copies in beside them. `container_extension_digest.ts` reduces the directory to
+one digest and the tag mixes that digest in, so editing **any** file under it
+— a `.sql` dump or a pipeline definition included — rebuilds, which is the point:
+those bytes end up in the image. The digest covers the declared `containerfile`
+and `start` too, since pointing the same directory at `Containerfile.dev` is a
+different image; it does **not** cover the directory's *path*, so two hosts that
+sync the same extension to different directories share one image. Entries are
+sorted byte-wise and framed by path, mode and length, so adding, deleting,
+renaming, moving bytes between two files, or making `start.sh` executable each
+move the tag, and file bytes reach the digest in 64 KiB chunks so a
+multi-gigabyte dump costs one buffer rather than the worker's heap. An absent
+directory, an unreadable file or a symlink resolving outside the extension
+exits non-zero naming the entry rather than hashing a partial view. A
+deployment that configures no extension gets exactly the tag it got before, so
+no existing host rebuilds.
+
+**A configured extension is built as a second image, never instead of the first**
+(Issue #980). The launch plan then carries two builds, and both launchers run
+them in order:
+
+1. `build --file <checkout>/container/Containerfile --tag vibe-coder:<baseHash>
+   <checkout>/container` — the standard image, exactly as every host builds it;
+2. `build --file <extension>/<containerfile> --tag vibe-coder:<extensionHash>
+   --build-arg VIBE_BASE_IMAGE=vibe-coder:<baseHash> <extension>` — the
+   operator's own layer, whose build context is the extension directory alone.
+
+The container runs `vibe-coder:<extensionHash>`, and the image-presence check
+names it too: an absent layer runs both builds, a present one runs neither. A
+failed first build never reaches the second — the layer's `FROM` names a tag
+that was never produced — and either failure aborts the launch. The extension's
+Containerfile is required to open with `ARG VIBE_BASE_IMAGE` and
+`FROM ${VIBE_BASE_IMAGE}`; one that names its own base is refused while the plan
+is built, naming the file, so "layered on the standard image" is a guarantee
+rather than a comment. The layer changes what the image *contains*, never what
+the container may *reach*: no host path is mounted into the build, no port is
+published, and the run arguments are the same contained set (`--read-only` and
+its scratch tmpfs included) that the standard image runs under.
+
+```mermaid
+flowchart LR
+    C["📄 container/Containerfile"] --> B1["🐳 build<br/>vibe-coder:&lt;baseHash&gt;"]
+    B1 -->|"--build-arg VIBE_BASE_IMAGE"| B2["🐳 build<br/>vibe-coder:&lt;extensionHash&gt;"]
+    X["📁 container_extension/<br/>Containerfile"] --> B2
+    B1 -.->|"build fails"| F["🛑 launch aborts"]
+    B2 -.->|"build fails"| F
+    B2 --> R["🚀 run vibe-coder:&lt;extensionHash&gt;"]
+    style B2 fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style R fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+**A declared start script runs before the worker, or the run fails**
+(Issue #981). An extension's services — a database server, a CI server — have to
+be running before the agent starts work, so the framework supervises exactly
+one thing and makes its failure loud. The operator's Containerfile copies the
+extension into the image at the fixed path `/opt/vibe-extension/` (the posture
+`/opt/vibe-tools/<id>` already takes for `container_tools`), the launch plan
+hands the container `VIBE_EXTENSION_START=<start>` when — and only when — the
+block declares one, and `container/entrypoint.sh` runs
+`/opt/vibe-extension/<start>` as the container's own unprivileged worker
+account, after the writable-path policy and the tools PATH, before the Deno
+driver.
+
+Every way that start can fail *and return* aborts the launch with exit status
+**76** and never runs the driver: a script that is absent from the image, one
+that is not executable, and one that exits non-zero — the last naming its own
+status. A start that **hangs** is the exception: it is not time-bounded here,
+because how long a service may take to come up is the operator's call, so the
+launcher's watchdog ends the container and reports it as wedged (87). The
+script's stdout and stderr are inherited, so a service that refused to come up
+is diagnosable from the container log. The status is the framework's own so it
+cannot be confused with a deliberate quota pause (75) or the runtime's
+container-start range (125–127); the worker records the abort as a **failed
+run**, backs off and escalates like any other run failure, and
+`launcher_failure_evidence.ts` names it rather than sending the reader to the
+container runtime. Service ports stay container-internal — nothing is published
+to the host, the agent reaches the services inside the sandbox, and the
+operator observes the work through GitHub. With no `start` declared the block
+is inert, so the public Vibe Coder's entrypoint behaves exactly as it did.
+
+```mermaid
+sequenceDiagram
+    participant L as 🚀 run.sh
+    participant E as 📜 entrypoint.sh
+    participant S as 🐘 start.sh
+    participant D as 🤖 worker driver
+    L->>E: run … --env VIBE_EXTENSION_START=start.sh
+    E->>S: /opt/vibe-extension/start.sh
+    alt exits 0
+        S-->>E: services up
+        E->>D: deno run mod.ts run-entrypoint
+    else missing, not executable, or non-zero
+        S-->>E: status + path on the container log
+        E-->>L: exit 76 — driver never launched, run reported failed
+    end
+```
+
+**The definition is proved to be there before either build runs** (Issue #982).
+The validator checks what the operator *wrote*; the launch preflight checks
+what is actually *there*, while the plan is built — so a definition that is not
+on the host costs a sentence rather than the minutes a build takes to reach the
+same conclusion. Every refusal opens with `Cannot launch: the
+container_extension`, names the offending path, and says what was expected:
+
+| Fault | What the launcher prints |
+| ----- | ------------------------ |
+| The directory is absent | `Cannot launch: the container_extension directory <path> does not exist. The operator syncs their own extension into it — the Vibe Coder clones nothing.` |
+| The path is a file, not a directory | `Cannot launch: the container_extension path <path> is not a directory.` |
+| The directory cannot be read | `Cannot launch: the container_extension directory <path> is unreadable (<reason>).` |
+| The declared `containerfile` is absent | `Cannot launch: the container_extension Containerfile <path> does not exist. container_extension.containerfile names it, relative to <directory>.` |
+| The declared `containerfile` is not a file | `Cannot launch: the container_extension Containerfile <path> is not a file. container_extension.containerfile names it, relative to <directory>.` |
+| The declared `containerfile` cannot be read | `Cannot launch: the container_extension Containerfile <path> is unreadable (<reason>).` — the launcher appends `The operator syncs their own extension into <directory>.` when the read itself failed |
+| The declared `start` is absent | `Cannot launch: the container_extension start script <path> does not exist. container_extension.start names it, relative to <directory>.` |
+| The declared `start` is not a file | `Cannot launch: the container_extension start script <path> is not a file. container_extension.start names it, relative to <directory>.` |
+| An entry cannot be resolved (a dangling symlink) | `Cannot launch: the container_extension entry <entry> (<path>) cannot be resolved (<reason>).` |
+| A symlink points out of the directory | `Cannot launch: the container_extension symlink <entry> escapes the extension directory: it resolves to <target>, outside <directory>. Copy what the build needs into the extension directory — a link out of it would fold host content the operator never synced into the image.` |
+| A directory loops back into itself | `Cannot launch: the container_extension directory loops: <entry> resolves to <target>, a directory it is already inside — the build would never finish copying it.` |
+
+Three further refusals share those shapes: `Cannot launch: the
+container_extension directory <path> cannot be resolved (<reason>)` when the
+directory's own real path cannot be read, `Cannot launch: the
+container_extension entry <entry> (<path>) is unreadable (<reason>)` when a
+stat under it fails, and the same `is unreadable` wording for a declared
+`start script`.
+
+The escaping-symlink case is the one the digest also refuses; the preflight runs
+first so the operator hears it **once, early, with the remedy attached** instead
+of as a hashing failure. What is inside the *built* image — `/opt/vibe-extension/<start>`
+present and executable — is not checked here: nothing host-side can see inside
+an image that has not been built, so that contract is enforced at sandbox start.
+
+**`./setup.sh` reports the extension beside the runtime and the image.** A
+deployment that configures one gets a third line naming the configured path,
+whether the definition is readable, and the layered tag — `container_extension
+/srv/vibe-extension is readable — the layered image is vibe-coder:<extensionHash>`
+— so the `Worker image vibe-coder:<tag> is not built yet` line beneath it names
+the tag that *includes* the extension rather than one no extension deployment
+ever builds. A definition that is not there fails setup with the same preflight
+text the launcher prints, rather than being reported as an unbuildable image.
+A deployment that configures no extension sees exactly the two lines it saw
+before.
+
+**Every caller reads all three selections through one reader.** Because the tag is
 derived from the deployment's own configuration, anything that *names* the
 image must read that configuration too — otherwise it names a tag the launcher
 never builds. Setup's worker-image check and the security tabletop runner did
@@ -295,12 +440,15 @@ provider set (Issues #743, #749). Both now call
 as does `container-image-hash` itself, and
 `container_image_selection_test.ts` pins their answer to the launcher's — so a
 fourth input added to the hash cannot be added to the launcher alone.
+`container_extension` was that fourth input, and it went in through the reader.
 
 ```mermaid
 flowchart LR
     I["container/Containerfile<br/>container/entrypoint.sh<br/>container/tools.json<br/>container/install-*.sh<br/>container/providers/*.sh<br/>worker/deno/deno.lock"] --> H["container_image_hash.ts<br/>SHA-256"]
     C["container_tools<br/>(.config.json)"] --> H
     G["agent_providers<br/>(.config.json)"] --> H
+    X["container_extension<br/>(.config.json)"] --> E["container_extension_digest.ts<br/>streaming SHA-256"]
+    E --> H
     W["docs/, worker/ sources,<br/>cloned repos"] -.ignored.-> H
     H --> R["vibe-coder:&lt;short hash&gt;"]
     R --> D{"image present<br/>locally?"}
@@ -1472,6 +1620,13 @@ repositories need them. A deployment whose repositories need something else
 declares it as a top-level `container_tools` array in `.config.json`, and the build bakes it in. The
 default is an empty selection: the fleet image installs nothing extra, so a
 deployment that wants nothing pays nothing.
+
+A deployment whose environment needs more than an archive install — a package
+from the distribution's repositories, a database loaded from dumps at build
+time, a service running before the agent starts — reaches for the private
+image layer instead, and the two mechanisms are meant to be used together:
+[Container Extension](CONTAINER-EXTENSION.md) works an example that installs
+its toolchains through `container_tools` and its services through the layer.
 
 Each entry is a **declarative archive install** — download, verify the declared
 SHA-256, extract, expose `bin` directories on PATH, set `env`. There are no

@@ -102,6 +102,82 @@ export function isRootPath(path: string, style: LauncherPathStyle): boolean {
 }
 
 /**
+ * A path reduced to a comparable form.
+ *
+ * Windows paths are matched case-insensitively and either separator, so
+ * `C:\Users\Vibe` and `c:/users/vibe` are recognised as the same directory.
+ *
+ * @param path - The path to reduce
+ * @param style - The host's path spelling
+ * @returns The comparable form
+ */
+function comparablePath(path: string, style: LauncherPathStyle): string {
+  return style === "windows" ? path.replace(/\\/g, "/").toLowerCase() : path;
+}
+
+/**
+ * True when `ancestor` is `path` itself or a directory above it.
+ *
+ * The containment predicate behind "never expose the host home directory, or
+ * an ancestor of it" — shared by the launcher's mount-source allowlist
+ * (Issue #4060) and the `container_extension` validator (Issue #978), so the
+ * two cannot drift apart.
+ *
+ * @param ancestor - The candidate ancestor path
+ * @param path - The path being protected
+ * @param style - The host's path spelling
+ * @returns Whether `ancestor` is at or above `path`
+ */
+export function isAtOrAbove(
+  ancestor: string,
+  path: string,
+  style: LauncherPathStyle,
+): boolean {
+  const left = comparablePath(ancestor, style);
+  const right = comparablePath(path, style);
+  return left === right || right.startsWith(`${left}/`);
+}
+
+/**
+ * Whether a relative path stays inside the directory it is relative to.
+ *
+ * The confinement rule shared by every operator-supplied relative value: the
+ * `container_tools` install prefix (`bin`/`env`) and the `container_extension`
+ * directory (`containerfile`/`start`). `""` is the directory itself. Anything
+ * absolute, `~`-anchored, NUL-bearing, or walking above the directory with
+ * `..` is out.
+ *
+ * @param value - The operator's relative value
+ * @param style - The host's path spelling; `windows` also treats `\` as a
+ *   separator and rejects a drive-absolute value
+ * @returns Whether the value stays inside the directory
+ */
+export function isConfinedRelativePath(
+  value: string,
+  style: LauncherPathStyle = "posix",
+): boolean {
+  if (value.includes("\0")) return false;
+  if (value.startsWith("~")) return false;
+  if (isAbsolutePath(value, style)) return false;
+  // A Windows host spells its separator `\`, so `..\..` escapes exactly as
+  // `../..` does; a `\`-anchored value is absolute there too.
+  if (style === "windows" && value.startsWith("\\")) return false;
+  if (style === "posix" && value.startsWith("/")) return false;
+
+  let depth = 0;
+  for (const segment of value.split(style === "windows" ? /[\\/]/ : "/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      depth--;
+      if (depth < 0) return false;
+      continue;
+    }
+    depth++;
+  }
+  return true;
+}
+
+/**
  * Join a relative path onto a base in the host's own spelling.
  *
  * @param base - The base directory

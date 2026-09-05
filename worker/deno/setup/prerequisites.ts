@@ -47,7 +47,11 @@ import {
 } from "../lib/agent_provider.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
-import { readDeploymentImageSelection } from "../lib/container_image_selection.ts";
+import {
+  type DeploymentImageSelection,
+  readDeploymentImageSelection,
+} from "../lib/container_image_selection.ts";
+import { preflightContainerExtension } from "../lib/container_extension_preflight.ts";
 import {
   type ContainerRuntimeDescriptor,
   type ContainerRuntimeProbe,
@@ -542,27 +546,59 @@ export async function checkContainerPrerequisites(
   if (!descriptor) return [runtimeResult];
 
   const repoRoot = resolved.repoRoot ?? defaultRepoRoot();
+  /** The image result for a deployment whose tag cannot be resolved at all. */
+  const notBuildable = (error: unknown): PrerequisiteResult => ({
+    ok: false,
+    tool: "worker image",
+    message: `The worker image is not buildable: ${(error as Error).message}`,
+    hint:
+      `Restore the container definition under ${
+        repoRoot.replace(/[/\\]+$/, "")
+      }/container/ (Containerfile, entrypoint.sh, tools.json, providers) — ` +
+      `the worker runs only inside the image it builds from them.`,
+  });
+
+  // The deployment's own selections, exactly as the launcher reads them:
+  // without them this check names a tag no host that selects tools or
+  // providers ever builds, and reports a built image as missing (#743).
+  let selection: DeploymentImageSelection;
+  try {
+    selection = await readDeploymentImageSelection({
+      repoRoot,
+      env: resolved.env,
+    });
+  } catch (error) {
+    return [runtimeResult, notBuildable(error)];
+  }
+
+  // A configured extension is reported where the operator already looks
+  // (Issue #982). It is checked *before* the tag is resolved because the tag
+  // covers the extension directory's contents: an absent directory would
+  // otherwise surface as an unbuildable image, pointing at the committed
+  // container definition rather than at the extension the operator has yet to
+  // sync.
+  const extension = selection.containerExtension;
+  if (extension) {
+    try {
+      await preflightContainerExtension(extension);
+    } catch (error) {
+      return [runtimeResult, {
+        ok: false,
+        tool: "container extension",
+        message: (error as Error).message,
+        hint:
+          `container_extension names ${extension.path}; sync this deployment's ` +
+          `private extension into it. The image tag covers the directory's ` +
+          `contents, so no worker image can be named until it is there.`,
+      }];
+    }
+  }
+
   let image: string;
   try {
-    // The deployment's own selections, exactly as the launcher reads them:
-    // without them this check names a tag no host that selects tools or
-    // providers ever builds, and reports a built image as missing (#743).
-    image = await resolveContainerImageReference(
-      repoRoot,
-      (await readDeploymentImageSelection({ repoRoot, env: resolved.env }))
-        .options,
-    );
+    image = await resolveContainerImageReference(repoRoot, selection.options);
   } catch (error) {
-    return [runtimeResult, {
-      ok: false,
-      tool: "worker image",
-      message: `The worker image is not buildable: ${(error as Error).message}`,
-      hint:
-        `Restore the container definition under ${
-          repoRoot.replace(/[/\\]+$/, "")
-        }/container/ (Containerfile, entrypoint.sh, tools.json, providers) — ` +
-        `the worker runs only inside the image it builds from them.`,
-    }];
+    return [runtimeResult, notBuildable(error)];
   }
 
   const runner = resolved.runCommand ?? defaultRunCommand;
@@ -580,14 +616,29 @@ export async function checkContainerPrerequisites(
     present = false;
   }
 
-  return [runtimeResult, {
-    ok: true,
-    tool: "worker image",
-    message: present
-      ? `Worker image ${image} is built`
-      : `Worker image ${image} is not built yet — the launcher builds it on ` +
-        `first run`,
-  }];
+  return [
+    runtimeResult,
+    // The extension line names the tag the layered build produces, which is
+    // the tag the image line below reports on: a deployment that configures an
+    // extension never sees a tag no host of theirs builds (Issue #982).
+    ...(extension
+      ? [{
+        ok: true,
+        tool: "container extension",
+        message:
+          `container_extension ${extension.path} is readable — the layered ` +
+          `image is ${image}`,
+      }]
+      : []),
+    {
+      ok: true,
+      tool: "worker image",
+      message: present
+        ? `Worker image ${image} is built`
+        : `Worker image ${image} is not built yet — the launcher builds it on ` +
+          `first run`,
+    },
+  ];
 }
 
 /**

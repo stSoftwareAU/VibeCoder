@@ -65,6 +65,7 @@ import {
   type CrashNotificationParams,
 } from "../lib/crash_notification.ts";
 import { summariseSelfHealEvents } from "../lib/self_heal_events.ts";
+import { EXTENSION_START_ABORT_EXIT_STATUS } from "../lib/container_extension_start.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 const TEST_FILE_PATH = new URL(import.meta.url).pathname;
@@ -1394,4 +1395,48 @@ Deno.test("buildContainerEscalationParams - an absent host omits the line rather
   });
 
   assertEquals(params.logTail.includes("Host:"), false);
+});
+
+// ---------------------------------------------------------------------------
+// An aborted extension start (Issue #981, parent #933)
+// ---------------------------------------------------------------------------
+
+Deno.test("recordContainerRestartOutcome - an aborted extension start is a FAILED RUN, not an idle launch (Issue #981)", async () => {
+  const harness = await setupHarness();
+  try {
+    // What the entrypoint reports when the deployment's start script did not
+    // succeed: the container ran, the driver never did.
+    const outcome = await record(
+      harness,
+      EXTENSION_START_ABORT_EXIT_STATUS,
+      "container_run",
+    );
+
+    assertEquals(outcome.kind, "failure");
+    // Not the runtime's container-start range: the container started and the
+    // framework's own entrypoint ran, so the abort is the run's failure.
+    assertEquals(outcome.phase, "worker_run");
+    // The streak grows, so a host whose extension cannot start backs off and
+    // eventually escalates instead of looping silently.
+    assertEquals(outcome.consecutiveFailures, 1);
+    assertEquals(outcome.recovered, false);
+    assertEquals(outcome.backoffSeconds, FAST_CONFIG.baseSleepSeconds);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("buildContainerEscalationParams - the abort status is named, not blamed on the runtime (Issue #981)", () => {
+  const params = buildContainerEscalationParams({
+    phase: "worker_run",
+    exitStatus: EXTENSION_START_ABORT_EXIT_STATUS,
+    consecutiveFailures: 3,
+    backoffSeconds: 240,
+    threshold: 3,
+  });
+
+  assertStringIncludes(params.logTail, "extension start script");
+  // The reader must not be sent to the container runtime client: this status
+  // is the framework's own, exited deliberately.
+  assertEquals(params.logTail.includes("NOT one the worker produces"), false);
 });
