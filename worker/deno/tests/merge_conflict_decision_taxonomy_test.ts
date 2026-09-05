@@ -78,6 +78,12 @@ const SAMPLES: Record<ConflictSkipReasonKind, ConflictSkipReason> = {
   "scan-error": { kind: "scan-error", stage: "labels", message: "gh exploded" },
   "needs-human": { kind: "needs-human", label: "needs-human" },
   "budget-spent": { kind: "budget-spent", attemptsSpent: 2, maxAttempts: 2 },
+  // Issue #1115: the rung between a spent budget and a human.
+  "abandoned-restarted": {
+    kind: "abandoned-restarted",
+    issueNumber: 16,
+    attemptsSpent: 2,
+  },
   "cooldown": { kind: "cooldown", msUntilDue: 90_000 },
   "disrupted-bound": {
     kind: "disrupted-bound",
@@ -126,6 +132,12 @@ Deno.test("conflictReasonOperands - each reason carries what makes it checkable"
     attemptsSpent: 2,
     maxAttempts: 2,
   });
+  // Issue #1115: the record names the issue the work was handed back to —
+  // the abandoned PR is closed, so the issue is the only thread left to pull.
+  assertEquals(conflictReasonOperands(SAMPLES["abandoned-restarted"]), {
+    issueNumber: 16,
+    attemptsSpent: 2,
+  });
   assertEquals(conflictReasonOperands(SAMPLES["disrupted-bound"]), {
     disruptedCount: 3,
     maxDisruptedAttempts: 3,
@@ -159,6 +171,8 @@ Deno.test("isQueuedConflictReason - separates the queue from what never entered 
   assertEquals(isQueuedConflictReason("queue-empty"), false);
   assertEquals(isQueuedConflictReason("cooldown"), true);
   assertEquals(isQueuedConflictReason("lock-held"), true);
+  // Issue #1115: the PR was in the queue right up until it was closed.
+  assertEquals(isQueuedConflictReason("abandoned-restarted"), true);
   assertEquals(isQueuedConflictReason("repo-leased"), true);
   // Issue #1111: a PR the deadline or the cap left behind is a queued PR,
   // unlike the pass-level stop of the same name.
@@ -357,6 +371,7 @@ export function describe(reason: ConflictSkipReason): string {
     case "scan-error":
     case "needs-human":
     case "budget-spent":
+    case "abandoned-restarted":
     case "cooldown":
     case "disrupted-bound":
     case "lock-held":

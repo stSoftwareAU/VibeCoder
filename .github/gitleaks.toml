@@ -18,6 +18,9 @@
 #    redacts secrets echoed by the quality script.
 #  - run_callbacks_test.ts (Issue #806): a fake ghp_ token in hook stderr
 #    asserting the callback runner redacts captured output before logging.
+#  - conflict_abandon_restart_test.ts (Issue #1115): a fake ghp_ token
+#    quoted out of a failure comment, asserting the abandon-and-restart
+#    rung redacts it before it reaches a PR body.
 #  - secret_redaction_redos_test.ts (Issue #3942): fake ghp_ tokens, a
 #    fake hex API key and a fake JSON `api_key` value asserting the
 #    bounded `redactSecrets()` regexes still mask credentials.
@@ -44,7 +47,7 @@ useDefault = true
 # the key format for any issue number rather than one fixture value, so it does
 # not have to be revisited each time a new dedup key is asserted.
 [allowlist]
-description = "Synthetic secret fixtures in redaction and scrub-gate unit tests, plus non-secret dedupKey slugs (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196, #505)"
+description = "Synthetic secret fixtures in redaction and scrub-gate unit tests, plus non-secret dedupKey slugs (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196, #505, #1115)"
 regexTarget = "line"
 regexes = [
   '''self-diagnostic-unschedulable-\d+''',
@@ -75,6 +78,11 @@ paths = [
   # (Issue #806). Earlier commits in the PR range carry the literal in one
   # piece, so only a path allowlist clears the range scan.
   '''worker/deno/tests/run_callbacks_test\.ts''',
+  # Fake ghp_ token (now assembled from parts at runtime) quoted in a failure
+  # comment, asserting the abandon-and-restart rung redacts a token before it
+  # reaches a PR body (Issue #1115). Earlier commits in the PR range carry the
+  # literal in one piece, so only a path allowlist clears the range scan.
+  '''worker/deno/tests/conflict_abandon_restart_test\.ts''',
   # Fake AKIA/ghp_ values inside the gitleaks/trufflehog JSON fixtures the
   # full-history scanner tests parse and classify (Issue #4190).
   '''worker/deno/tests/secrets_history_scan_test\.ts''',

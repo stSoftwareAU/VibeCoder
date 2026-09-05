@@ -108,10 +108,20 @@ export function parseIntentOverrides(
  * printing nothing would leave a reader unable to tell it from an attempt that
  * never looked.
  */
+/**
+ * Heading of the consulted-issues section on an attempt comment.
+ *
+ * Exported because it is read back as well as written: the abandon rung
+ * (Issue #1115) recovers which issues an attempt consulted from the thread,
+ * long after the run that consulted them is gone. One constant, so the writer
+ * and the reader cannot drift apart.
+ */
+export const CONSULTED_ISSUES_HEADING = "🧭 **Issues consulted**";
+
 export function buildConsultedIssuesSection(
   context: ConflictIssueContext | null | undefined,
 ): string[] {
-  const lines = ["🧭 **Issues consulted**", ""];
+  const lines = [CONSULTED_ISSUES_HEADING, ""];
 
   if (!context) {
     lines.push(
