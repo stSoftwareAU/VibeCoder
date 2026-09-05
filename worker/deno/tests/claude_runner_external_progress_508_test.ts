@@ -274,7 +274,12 @@ Deno.test({
           policy: { enabled: true, grantSeconds: 1, activityStallSeconds: 60 },
           treeProbe: unchangedTree,
           externalProbe: () => Promise.resolve<ExternalProgressState>("active"),
-          ceilingMs: Date.now() + 600_000,
+          // An hour of runway. Since Issue #1138 the notice is written over
+          // the wider of the wind-down window and what the quality gate needs
+          // (~1080s), so "plenty of runway" has to mean plenty for both —
+          // the old 600s ceiling is now inside the gate-refusal band and a
+          // notice there is correct, not premature.
+          ceilingMs: Date.now() + 3_600_000,
           windDownSeconds: 5,
           onWindDown: (notice) => {
             notices.push(notice);

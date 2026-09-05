@@ -292,8 +292,20 @@ async function executeClaudeBody(
     };
   }
 
-  // Build prompt with per-repo quality and custom instructions (Issue #1187)
-  const qualityInstructions = buildQualityInstructions(config.repoConfig, repo);
+  // Build prompt with per-repo quality and custom instructions (Issue #1187).
+  // The baseline gate has already run this cycle, so the agent is told what
+  // the gate actually costs here rather than the fleet-wide assumption
+  // (Issue #1138) — that figure is what it weighs the run budget against.
+  const qualityInstructions = buildQualityInstructions(
+    config.repoConfig,
+    repo,
+    {
+      runBudgetSeconds: config.claudeTimeout,
+      ...(state.baselineQualityDurationSeconds === undefined
+        ? {}
+        : { typicalGateSeconds: state.baselineQualityDurationSeconds }),
+    },
+  );
   const customInstructions = getCustomInstructions(config.repoConfig, repo);
 
   // Browser/network capability is granted on need, not by default
@@ -457,6 +469,10 @@ async function executeClaudeBody(
       reportRunDeadline(deadline);
     },
     hardCap.capped ? hardCap.cap.ceilingMs : undefined,
+    // What the baseline gate cost here this cycle (Issue #1138) — the budget
+    // notice warns earlier on a repo whose gate is slow than on one whose
+    // gate is quick.
+    state.baselineQualityDurationSeconds,
   );
 
   // The run-start line an operator reads to know which budget applies. It
