@@ -488,16 +488,26 @@ deno run --allow-env --allow-read --allow-run worker/deno/mod.ts \
 # [container-image-prune] removed superseded image vibe-coder:0a1b2c3d4e5f
 ```
 
-The reference this checkout resolves to is the only one a future launch of it
-can use, so **every other `vibe-coder` tag is removed** and each removal is
-named on the host log. Three boundaries keep that safe on a machine nobody is
-watching:
+The references this checkout resolves to are the only ones a future launch of
+it can use, so **every other `vibe-coder` tag is removed** and each removal is
+named on the host log.
+
+`--keep` takes the launch's whole **image dependency chain**, comma separated:
+the launch plan's `keep` key carries the reference the container runs plus
+every image that one is built `FROM`, and both launchers pass it through
+unchanged. A deployment with a private extension layer builds two images —
+`vibe-coder:<baseHash>` and `vibe-coder:<extensionHash>` built `FROM` it — and
+a prune told only the tag being run untagged its own base on every single
+launch (Issue #1059). Nothing special-cases two tags: the keep set is a list,
+so a deeper chain rides the same key.
+
+Three boundaries keep that safe on a machine nobody is watching:
 
 | Boundary                | Behaviour                                                                                            |
 | ----------------------- | ---------------------------------------------------------------------------------------------------- |
-| Only our own image      | Same repository as the kept reference (Podman's `localhost/` prefix included) and a different tag. A foreign `vibe-coder` from a registry, a dangling `<none>` layer and every other image are untouched |
+| Only our own image      | Same repository as a kept reference (Podman's `localhost/` prefix included) and a tag none of them names. A foreign `vibe-coder` from a registry, a dangling `<none>` layer and every other image are untouched |
 | The builder cache stays | Never pruned — it is what makes a definition-change rebuild, or a rollback, cheap                     |
-| Fails loud | A refused listing, unreadable output or a refused removal exits non-zero and is logged; the launcher treats it as a warning and launches anyway, and the next launch prunes again |
+| Fails loud | A refused listing, unreadable output, a `--keep` reference that does not parse, or a refused removal exits non-zero and is logged; the launcher treats it as a warning and launches anyway, and the next launch prunes again |
 
 `worker/deno/lib/container_image_prune.ts` owns the rule and each runtime's
 listing/removal spelling lives with the rest of its dialect in

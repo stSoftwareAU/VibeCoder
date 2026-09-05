@@ -27,6 +27,7 @@ import {
 } from "../lib/container_restart_backoff.ts";
 import { NETWORK_UNAVAILABLE_MARKER } from "../lib/github_user_resolution.ts";
 import { CONTAINER_WEDGED_EXIT_STATUS } from "../lib/container_watchdog.ts";
+import { parseKeepReferences } from "../lib/container_image_prune.ts";
 import { executableLines } from "../lib/launcher_source.ts";
 import { stripContainerfile } from "../lib/containerfile_strip.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
@@ -261,6 +262,32 @@ Deno.test({
         assertStringIncludes(outcome.stderr, reference);
       }
       assert(await recorded(harness, "run"));
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - the prune is told the launch's whole image dependency chain (Issue #1059)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_IMAGE_LIST: IMAGE_STORE,
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+
+      // Same contract as run.sh: the plan's `keep` token reaches `--keep`
+      // whole, so an extension layer's base image survives the launch that
+      // built it on Windows too.
+      const args = await recorded(harness, "container-image-prune");
+      assert(args, "the prune was never invoked");
+      const keep = args[args.indexOf("--keep") + 1] ?? "";
+      assertEquals(parseKeepReferences(keep), [IMAGE]);
     } finally {
       await harness.cleanup();
     }

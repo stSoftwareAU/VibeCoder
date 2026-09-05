@@ -47,9 +47,18 @@ ARG JQ_SHA256_ARM64="8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b8
 
 # Container PATH: no Homebrew, no host-specific guessing. Everything the
 # worker needs resolves from /usr/local/bin or the system directories.
+#
+# npm caches to /tmp, not to ${HOME} (Issue #1015). Each npm layer used to
+# shrink itself by asking npm to empty its cache, which modern npm refuses
+# without the protections-off flag and warns about whenever it is given one:
+# three permanent "npm warn using" lines in every build log, and a warning
+# that always fires is one nobody reads. A cache directory the same layer
+# deletes leaves the layer exactly as small, with nothing to warn about. At
+# run time the entrypoint repoints this at the durable state root anyway.
 ENV PATH="/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin" \
     DENO_DIR="/home/vibe/.cache/deno" \
     VIBE_BASE_DIR="/workspace" \
+    npm_config_cache="/tmp/npmc" \
     LANG="C.UTF-8"
 
 COPY --from=deno /deno /usr/local/bin/deno
@@ -110,8 +119,7 @@ RUN set -eu; \
     curl -fsSL ${CURL_RETRY} -o "${tarball}" "https://registry.npmjs.org/npm/-/npm-${NPM_VERSION}.tgz"; \
     echo "${NPM_SHA256_NOARCH}  ${tarball}" | sha256sum -c -; \
     npm install -g --ignore-scripts "${tarball}"; \
-    npm cache clean --force; \
-    rm -f "${tarball}"; \
+    rm -rf /tmp/npmc "${tarball}"; \
     npm --version | grep -qxF "${NPM_VERSION}"
 
 # Coding-agent provider set (Issues #4067, #4105) — see docs/CONTAINER-IMAGE.md.
@@ -206,8 +214,7 @@ RUN set -eu; \
     curl -fsSL ${CURL_RETRY} -o "${tarball}" "https://registry.npmjs.org/markdownlint-cli2/-/markdownlint-cli2-${MARKDOWNLINT_CLI2_VERSION}.tgz"; \
     echo "${MARKDOWNLINT_CLI2_SHA256_NOARCH}  ${tarball}" | sha256sum -c -; \
     npm install -g --ignore-scripts "${tarball}"; \
-    npm cache clean --force; \
-    rm -f "${tarball}"; \
+    rm -rf /tmp/npmc "${tarball}"; \
     markdownlint-cli2 --version
 
 # The Rust toolchain the fleet's crates build and test with. The standalone
@@ -255,9 +262,20 @@ RUN set -eu; \
 # The CLI is a Python application with no standalone binary, so the pinned
 # wheel goes into its own virtualenv: the system interpreter is PEP 668
 # externally managed, and Debian ships no ensurepip, so pip itself is a
-# checksum-verified artefact. pip resolves the wheel for the build
-# architecture; the committed digest is checked before anything installs it,
-# so only semgrep's own dependency wheels come from the index unverified.
+# checksum-verified artefact.
+#
+# Both wheels are fetched by pinned URL with curl, like every other artefact in
+# this file (Issue #1016). `pip download` asked PyPI to CHOOSE the wheel, which
+# is why the 72 MB semgrep fetch was the one download not under the shared
+# policy — a build on 2026-09-04 dropped its connection halfway and recovered
+# on pip's resume, with a warning as the only evidence. `$t` is the wheel's
+# compatibility-tag string, which files.pythonhosted.org also uses as the path
+# segment; it is part of the wheel's name, so bump it with SEMGREP_VERSION —
+# a stale value 404s the fetch rather than installing the wrong bytes, and the
+# per-architecture sha256sum is what makes fetching by URL safe. The local
+# copy keeps the wheel's own file name because pip reads the wheel's tags
+# out of it — a downloaded-to `sg.whl` fails with "Invalid wheel filename".
+# Only semgrep's own dependency wheels still come from the index unverified.
 # ~350 MB, nearly all of it the bundled semgrep-core — docs/CONTAINER-IMAGE.md.
 ARG PIP_VERSION="26.2.1"
 ARG PIP_SHA256_NOARCH="71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e"
@@ -275,17 +293,19 @@ RUN set -eu; \
       aarch64) sg_sha="${SEMGREP_SHA256_ARM64}" ;; \
       *) echo "Unsupported build architecture: $(uname -m)" >&2; exit 1 ;; \
     esac; \
+    u=https://files.pythonhosted.org/packages; \
+    t=cp310.cp311.cp312.cp313.cp314.py310.py311.py312.py313.py314; \
     pip="/tmp/pip-${PIP_VERSION}-py3-none-any.whl"; py=/opt/semgrep/bin/python; \
-    curl -fsSL ${CURL_RETRY} -o "${pip}" "https://files.pythonhosted.org/packages/py3/p/pip/pip-${PIP_VERSION}-py3-none-any.whl"; \
+    curl -fsSL ${CURL_RETRY} -o "${pip}" "$u/py3/p/pip/pip-${PIP_VERSION}-py3-none-any.whl"; \
     echo "${PIP_SHA256_NOARCH}  ${pip}" | sha256sum -c -; \
     python3 -m venv --without-pip /opt/semgrep; \
-    "${py}" "${pip}/pip" download --no-deps --only-binary=:all: --no-cache-dir -q \
-      ${PIP_RETRY} -d /tmp/sg "semgrep==${SEMGREP_VERSION}"; \
-    whl="$(echo /tmp/sg/*.whl)"; echo "${sg_sha}  ${whl}" | sha256sum -c -; \
+    n="semgrep-${SEMGREP_VERSION}-$t-none-manylinux_2_34_$(uname -m).whl"; \
+    whl="/tmp/${n}"; curl -fsSL ${CURL_RETRY} -o "${whl}" "$u/$t/s/semgrep/${n}"; \
+    echo "${sg_sha}  ${whl}" | sha256sum -c -; \
     "${py}" "${pip}/pip" install --only-binary=:all: --no-cache-dir -q \
       ${PIP_RETRY} "${whl}"; \
     ln -s /opt/semgrep/bin/semgrep /usr/local/bin/semgrep; \
-    rm -rf "${pip}" /tmp/sg; chmod -R a+rX /opt/semgrep; \
+    rm -f "${pip}" "${whl}"; chmod -R a+rX /opt/semgrep; \
     semgrep --version | grep -qxF "${SEMGREP_VERSION}"
 
 # ---------------------------------------------------------------------------
@@ -307,8 +327,7 @@ RUN set -eu; \
     curl -fsSL ${CURL_RETRY} -o "${tarball}" "https://registry.npmjs.org/playwright-core/-/playwright-core-${PLAYWRIGHT_VERSION}.tgz"; \
     echo "${PLAYWRIGHT_SHA256_NOARCH}  ${tarball}" | sha256sum -c -; \
     npm install -g --ignore-scripts "${tarball}"; \
-    npm cache clean --force; \
-    rm -f "${tarball}"; \
+    rm -rf /tmp/npmc "${tarball}"; \
     playwright-core --version; \
     mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}"; \
     browsers="$(npm root -g)/playwright-core/browsers.json"; \

@@ -69,7 +69,7 @@ function stubDeps(options: {
 }
 
 /** Run a prune against the OCI dialect's argv. */
-function prune(deps: PruneDeps, keep: string) {
+function prune(deps: PruneDeps, ...keep: string[]) {
   return pruneSupersededImages(deps, {
     keep,
     listArgs: OCI.imageListArgs,
@@ -224,7 +224,7 @@ Deno.test("selectSupersededImages - every other tag of our own image", () => {
   ].join("\n"));
 
   assertEquals(
-    selectSupersededImages({ records, keep: "vibe-coder:0a1b2c3d4e5f" })
+    selectSupersededImages({ records, keep: ["vibe-coder:0a1b2c3d4e5f"] })
       .map((record) => record.reference),
     [
       "vibe-coder:ffffffffffff",
@@ -234,12 +234,86 @@ Deno.test("selectSupersededImages - every other tag of our own image", () => {
   );
 });
 
+Deno.test("selectSupersededImages - keeps the base a kept tag is built FROM (Issue #1059)", () => {
+  // #980 builds a deployment's private layer as a second image, FROM the
+  // standard one, and the container runs the extension tag. Told only that
+  // tag, the prune untagged the base its own `FROM` names on every launch.
+  const records = parseImageListing([
+    "vibe-coder:extension0001",
+    "vibe-coder:base00000001",
+    "vibe-coder:superseded01",
+  ].join("\n"));
+
+  assertEquals(
+    selectSupersededImages({
+      records,
+      keep: ["vibe-coder:extension0001", "vibe-coder:base00000001"],
+    }).map((record) => record.reference),
+    ["vibe-coder:superseded01"],
+  );
+});
+
+Deno.test("selectSupersededImages - a chain of any depth survives (Issue #1059)", () => {
+  // Nothing special-cases two tags: the keep set is the dependency chain the
+  // launch plan resolved, so a third layer needs no further change.
+  const records = parseImageListing([
+    "localhost/vibe-coder:leaf00000001",
+    "vibe-coder:middle000001",
+    "vibe-coder:base00000001",
+    "vibe-coder:superseded01",
+  ].join("\n"));
+
+  assertEquals(
+    selectSupersededImages({
+      records,
+      keep: [
+        "vibe-coder:leaf00000001",
+        "vibe-coder:middle000001",
+        "vibe-coder:base00000001",
+      ],
+    }).map((record) => record.reference),
+    ["vibe-coder:superseded01"],
+  );
+});
+
+Deno.test("pruneSupersededImages - the extension's base survives a launch that built it", async () => {
+  const deps = stubDeps({
+    listStdout: [
+      "vibe-coder:extension0001",
+      "vibe-coder:base00000001",
+      "vibe-coder:superseded01",
+    ].join("\n"),
+  });
+
+  const outcome = await prune(
+    deps,
+    "vibe-coder:extension0001",
+    "vibe-coder:base00000001",
+  );
+
+  assertEquals(outcome.ok, true);
+  assertEquals(outcome.removed, ["vibe-coder:superseded01"]);
+});
+
+Deno.test("pruneSupersededImages - a keep reference that does not parse prunes nothing", async () => {
+  // Dropping an unreadable reference silently would delete the image it names.
+  const deps = stubDeps({
+    listStdout: "vibe-coder:extension0001\nvibe-coder:superseded01\n",
+  });
+
+  const outcome = await prune(deps, "vibe-coder:extension0001", "vibe-coder");
+
+  assertEquals(outcome.ok, false);
+  assertEquals(outcome.removed, []);
+  assertStringIncludes(outcome.detail ?? "", '"vibe-coder"');
+});
+
 Deno.test("selectSupersededImages - keeps the current reference under either spelling", () => {
   const records = parseImageListing(
     "vibe-coder:0a1b2c3d4e5f\nlocalhost/vibe-coder:0a1b2c3d4e5f\n",
   );
   assertEquals(
-    selectSupersededImages({ records, keep: "vibe-coder:0a1b2c3d4e5f" }),
+    selectSupersededImages({ records, keep: ["vibe-coder:0a1b2c3d4e5f"] }),
     [],
   );
 });

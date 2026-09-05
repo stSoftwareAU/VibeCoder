@@ -88,6 +88,7 @@ import {
   type ContainerRuntimeDescriptor,
   type TmpfsOwnershipStyle,
 } from "./container_runtime.ts";
+import { renderKeepReferences } from "./container_image_prune.ts";
 import type { ContainerManifest } from "./container_manifest.ts";
 import {
   DEFAULT_CREDENTIAL_DIR_SUFFIX,
@@ -394,6 +395,18 @@ export interface ContainerLaunchPlan {
   runtime: string;
   /** Image reference to run. */
   image: string;
+  /**
+   * Every image reference this checkout's launch depends on — the one it runs
+   * and each image that one is built `FROM`, deepest last (Issue #1059).
+   *
+   * The host prune keeps exactly this set. A layered deployment builds its
+   * private extension `FROM` the standard image (Issue #980), and a prune told
+   * only the reference being run untagged the base its own `FROM` names, on
+   * every launch. The chain is resolved here — where each image and its base
+   * are actually known — so a deeper chain is a longer list and nothing
+   * downstream changes.
+   */
+  keepImages: string[];
   /** Container name. */
   containerName: string;
   /**
@@ -1254,7 +1267,10 @@ export function buildContainerLaunchPlan(
 
   return {
     runtime: descriptor.executable,
-    image: runImage,
+    image,
+    // One image today: the standard build is its own whole chain. A layered
+    // build appends the image it is built FROM (Issue #1059).
+    keepImages: [image],
     containerName,
     watchdogSeconds: Math.floor(inputs.watchdogSeconds),
     mounts,
@@ -1292,6 +1308,7 @@ export const VOLUME_INIT_UNREPAIRABLE_EXIT_STATUS = 3;
 export type ContainerLaunchPlanKey =
   | "runtime"
   | "image"
+  | "keep"
   | "name"
   | "watchdog"
   | "ensure"
@@ -1307,6 +1324,8 @@ export type ContainerLaunchPlanKey =
 export interface ParsedContainerLaunchPlan {
   runtime: string;
   image: string;
+  /** The `keep` token — the launch's image dependency chain (Issue #1059). */
+  keep: string;
   name: string;
   watchdog: string;
   ensure: string[];
@@ -1340,6 +1359,7 @@ export function renderContainerLaunchPlan(plan: ContainerLaunchPlan): string {
   const tokens: string[] = [
     `runtime=${plan.runtime}`,
     `image=${plan.image}`,
+    `keep=${renderKeepReferences(plan.keepImages)}`,
     `name=${plan.containerName}`,
     `watchdog=${plan.watchdogSeconds}`,
     ...plan.ensureDirectories.map((dir) => `ensure=${dir}`),
@@ -1387,6 +1407,7 @@ export function parseContainerLaunchPlanText(
   const parsed: ParsedContainerLaunchPlan = {
     runtime: "",
     image: "",
+    keep: "",
     name: "",
     watchdog: "",
     ensure: [],
@@ -1416,6 +1437,9 @@ export function parseContainerLaunchPlanText(
         break;
       case "image":
         parsed.image = value;
+        break;
+      case "keep":
+        parsed.keep = value;
         break;
       case "name":
         parsed.name = value;

@@ -41,12 +41,13 @@ import {
   registerTemplate,
 } from "../idle_task_template.ts";
 import { runGhCommand as defaultGhCommand } from "../github.ts";
+import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
+import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
 import { loadPrompt as defaultLoadPrompt } from "../prompt_manager.ts";
 import {
   diffNewlyFiled,
   fileFindingOnce,
   listOpenIssueNumbersByLabel,
-  parseGhJsonArray,
 } from "../idle_task_snapshot.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "../label_operations.ts";
 import { RUN_ID_ENV_VAR } from "../run_id.ts";
@@ -98,6 +99,12 @@ export const BASH_SCRIPT_REFS_BODY_FINGERPRINT =
 
 /** Injectable dependencies for {@link createBashScriptRefsTemplate}. */
 export interface BashScriptRefsTemplateDeps {
+  /**
+   * Author-verification inputs for the wrapper dedup search
+   * ({@link hasFleetAuthoredOpenIssueTitled}). Omitted — every
+   * production caller — reads the configured fleet identity.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
   /** gh CLI runner used for snapshots, dedup, filing, and the wrapper veto. */
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Prompt loader — defaults to `loadPrompt`. */
@@ -204,47 +211,6 @@ export function renderBashScriptRefsSummary(
 }
 
 // ---------------------------------------------------------------------------
-// gh snapshot helper
-// ---------------------------------------------------------------------------
-
-/** True when an open wrapper titled exactly {@link BASH_SCRIPT_REFS_ISSUE_TITLE} exists. */
-async function hasOpenWrapper(
-  repo: string,
-  ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<boolean> {
-  let raw: string;
-  try {
-    raw = await ghCommandFn([
-      "issue",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "open",
-      "--search",
-      `"${BASH_SCRIPT_REFS_ISSUE_TITLE}" in:title`,
-      "--json",
-      "number,title",
-      "--limit",
-      "10",
-    ]);
-  } catch {
-    return false;
-  }
-  for (const item of parseGhJsonArray(raw, "find bash-script-refs wrapper")) {
-    if (item === null || typeof item !== "object") continue;
-    const title = (item as { title?: unknown }).title;
-    if (
-      typeof title === "string" &&
-      title.trim() === BASH_SCRIPT_REFS_ISSUE_TITLE
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// ---------------------------------------------------------------------------
 // Finding filer
 // ---------------------------------------------------------------------------
 
@@ -292,6 +258,7 @@ export function createBashScriptRefsTemplate(
   deps: BashScriptRefsTemplateDeps = {},
 ): IdleTaskTemplate {
   const ghCommandFn = deps.ghCommandFn ?? ((args) => defaultGhCommand(args));
+  const dedupAuthors = deps.dedupAuthors ?? {};
   const loadPromptFn = deps.loadPromptFn ??
     ((name, promptsDir) => defaultLoadPrompt(name, promptsDir));
   const ensureLabelFn = deps.ensureLabelFn ??
@@ -329,7 +296,17 @@ export function createBashScriptRefsTemplate(
     opts: IdleTaskShouldFileOptions,
   ): Promise<boolean> {
     // Refuse to pile on while a wrapper is still being triaged.
-    if (await hasOpenWrapper(opts.repo, ghCommandFn)) return false;
+    if (
+      await hasFleetAuthoredOpenIssueTitled({
+        repo: opts.repo,
+        title: BASH_SCRIPT_REFS_ISSUE_TITLE,
+        context: "bash-script-refs wrapper",
+        ghCommand: ghCommandFn,
+        ...dedupAuthors,
+      })
+    ) {
+      return false;
+    }
     return true;
   }
 
