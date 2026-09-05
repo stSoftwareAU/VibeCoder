@@ -7,7 +7,8 @@
  * blocking every sibling issue in its work stream while it waited.
  *
  * These tests assert on the *ordering* inside one cycle, never on wall-clock:
- * after the issue-scan pool drains, the cycle sweeps again.
+ * after the issue-scan pool drains, the cycle sweeps again. The behaviour
+ * under test is the sequence of events, so a slower host changes nothing.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
