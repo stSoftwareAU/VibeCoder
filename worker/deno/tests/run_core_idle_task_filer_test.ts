@@ -11,13 +11,19 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import {
-  AUDIT_DISAGREEMENT_SKIP_LIMIT,
   createDefaultRunCoreConfig,
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
+import {
+  IDLE_CYCLE_OBSERVER_ID,
+  IDLE_DISAGREEMENT_BOUND_MS,
+  IDLE_DISAGREEMENT_STATE_FILE,
+  type IdleDisagreementState,
+  loadIdleDisagreementState,
+} from "../lib/idle_disagreement_streak.ts";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -135,6 +141,465 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
     ...overrides,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1051 — the bound in elapsed time, per starved observer, across runs
+// ---------------------------------------------------------------------------
+
+/**
+ * How far apart idle observations actually arrive on the fleet: the
+ * liveness-guard cadence, about nine minutes. The bound this replaced counted
+ * three observations, which silently meant "roughly thirty-six minutes"; the
+ * clock here moves at the real cadence so these tests state, in time, exactly
+ * what they are asserting.
+ */
+const OBSERVATION_GAP_MS = 9 * 60 * 1000;
+
+/** What the idle hooks should be told on every observation. */
+type Disagreement = "audit" | "census" | "none";
+
+/** One simulated worker run over a work directory that outlives it. */
+interface IdleRunOptions {
+  /** Epoch millis this run starts at — a restart continues the clock. */
+  startMs: number;
+  /** Run duration in seconds; the run stops once the clock passes it. */
+  runSeconds: number;
+  /** Idle observations to allow before the run's deadline lands. */
+  observations: number;
+  /** Milliseconds between observations (default: the liveness cadence). */
+  gapMs?: number;
+  disagreement: Disagreement;
+  logs: string[];
+  onFile: () => void;
+}
+
+/**
+ * Deps for one simulated run.
+ *
+ * The clock moves only inside the idle-detect audit — one call per idle
+ * observation — so elapsed disagreement is exactly `observations x gap` and
+ * nothing else can drift it. The end-of-cycle sleep after the last allowed
+ * observation carries the clock past this run's own deadline, which is how
+ * an hourly worker stops.
+ */
+function idleRunDeps(opts: IdleRunOptions): RunCoreDeps {
+  const endMs = opts.startMs + opts.runSeconds * 1000;
+  const gapMs = opts.gapMs ?? OBSERVATION_GAP_MS;
+  let nowValue = opts.startMs;
+  let seen = 0;
+  return createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      if (seen >= opts.observations) nowValue = Math.max(nowValue, endMs + 1);
+      return Promise.resolve();
+    },
+    log: (m: string) => opts.logs.push(m),
+    findNextIssue: () => Promise.resolve({ ok: true as const, value: null }),
+    runIdleDetectAudit: () => {
+      seen++;
+      nowValue += gapMs;
+      return Promise.resolve({
+        claimableTotal: opts.disagreement === "audit" ? 4 : 0,
+      });
+    },
+    runIdleDecisionCensus: () =>
+      Promise.resolve({ inversionDetected: opts.disagreement === "census" }),
+    runIdleTaskFiler: () => {
+      opts.onFile();
+      return Promise.resolve();
+    },
+  });
+}
+
+/** A serial config pinned to `workDir`, so the streak has somewhere to live. */
+function idleRunConfig(workDir: string, runSeconds: number) {
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = runSeconds;
+  config.maxConcurrentIssues = 1;
+  config.workDir = workDir;
+  return config;
+}
+
+/** The persisted streak, as the next worker process would read it. */
+function readStreakState(workDir: string): Promise<IdleDisagreementState> {
+  return loadIdleDisagreementState(
+    `${workDir}/${IDLE_DISAGREEMENT_STATE_FILE}`,
+  );
+}
+
+Deno.test(
+  "run_core - the disagreement streak survives a worker restart (Issue #1051)",
+  async () => {
+    // The defect: the streak lived in `runCoreLoop`'s own memory and the
+    // worker restarts roughly hourly, so the count began at zero every hour
+    // and the Issue #3526 bound could never be reached. Three disagreeing
+    // observations, a restart, two more — the bound must trip.
+    const workDir = await Deno.makeTempDir({ prefix: "idle_streak_restart_" });
+    try {
+      const logs: string[] = [];
+      let filerRuns = 0;
+      const onFile = () => filerRuns++;
+
+      // Run one: three observations, 9 minutes apart, then the deadline.
+      await runCoreLoop(
+        idleRunConfig(workDir, 1800),
+        idleRunDeps({
+          startMs: 0,
+          runSeconds: 1800,
+          observations: 3,
+          disagreement: "audit",
+          logs,
+          onFile,
+        }),
+      );
+      assertEquals(
+        filerRuns,
+        0,
+        "27 minutes of disagreement is inside the 20-minute bound only for " +
+          "the first three observations; none should have forced a file yet",
+      );
+      const afterFirstRun = await readStreakState(workDir);
+      assertEquals(
+        afterFirstRun[IDLE_CYCLE_OBSERVER_ID] !== undefined,
+        true,
+        `expected the run to be persisted; got ${
+          JSON.stringify(afterFirstRun)
+        }`,
+      );
+
+      // Run two: a fresh worker process on the same volume, the clock
+      // carrying on from where the first run stopped.
+      await runCoreLoop(
+        idleRunConfig(workDir, 1800),
+        idleRunDeps({
+          startMs: 1_800_001,
+          runSeconds: 1800,
+          observations: 2,
+          disagreement: "audit",
+          logs,
+          onFile,
+        }),
+      );
+
+      assertEquals(
+        filerRuns,
+        1,
+        "expected the restarted run to inherit the streak and force exactly " +
+          `one filer attempt; got ${filerRuns}`,
+      );
+      const forced = logs.filter((m) =>
+        m.includes("invoking=idle-task-filer") &&
+        m.includes("reason=audit_disagreement_bound_exceeded")
+      );
+      assertEquals(forced.length, 1, JSON.stringify(logs.slice(-8)));
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "run_core - a sibling slot's claim does not clear an idle slot's starvation (Issues #1051, #925)",
+  async () => {
+    // The second half of the defect: one counter shared by the whole pool,
+    // cleared whenever *the fleet* claimed anything. In a two-slot pool the
+    // busy slot's claims wiped out the starvation its idle sibling was
+    // accumulating — the same fault `slot_idle_accounting.ts` removed from
+    // the accounting half, where "half the fleet was invisible".
+    //
+    // Four eight-minute runs of a two-slot pool. In each, `s1` claims the
+    // one repository that has work and `s2` is shown an empty backlog and
+    // idles. `s2` must reach the bound even though the fleet claimed
+    // something on every single run.
+    const workDir = await Deno.makeTempDir({ prefix: "idle_streak_slots_" });
+    const BUSY_REPO = "org/busy";
+    /** Wall seconds per run — four of them span more than the bound. */
+    const RUN_SECONDS = 480;
+    try {
+      const logs: string[] = [];
+      let filerRuns = 0;
+
+      /** One run of a two-slot pool: one slot claims, its sibling starves. */
+      const runPool = async (startMs: number) => {
+        const endMs = startMs + RUN_SECONDS * 1000;
+        let nowValue = startMs;
+        let observed = 0;
+        let claims = 0;
+        /**
+         * Ends the busy slot's claim. Held until its sibling has made its
+         * idle observation, because a slot only idles while a sibling is
+         * working — the pool otherwise drains on "no eligible work" and the
+         * starved slot is never seen at all.
+         */
+        let finishClaim: (() => void) | undefined;
+        const deps = createMockDeps({
+          now: () => nowValue,
+          sleep: () => {
+            // The starved slot re-scans until the deadline, so once it has
+            // made its observation the run is carried to its own deadline —
+            // an hourly worker stopping with the fleet still divided.
+            if (observed > 0) nowValue = Math.max(nowValue, endMs + 1);
+            return Promise.resolve();
+          },
+          log: (m: string) => logs.push(m),
+          // One repository, one issue in it per run. The slot that wins it
+          // holds it; its sibling is shown an empty backlog.
+          findNextIssue: (options) =>
+            Promise.resolve({
+              ok: true as const,
+              value: claims > 0 || options?.excludeRepos?.has(BUSY_REPO)
+                ? null
+                : {
+                  repo: BUSY_REPO,
+                  issueNumber: 1051,
+                  issueTitle: "busy",
+                  milestoneTitle: "",
+                },
+            }),
+          processIssue: () => {
+            claims++;
+            return new Promise((resolve) => {
+              const done = () =>
+                resolve({ ok: true as const, value: { success: true } });
+              if (observed > 0) done();
+              else finishClaim = done;
+            });
+          },
+          runIdleDetectAudit: () => {
+            observed++;
+            nowValue += 4 * 60 * 1000;
+            finishClaim?.();
+            finishClaim = undefined;
+            return Promise.resolve({ claimableTotal: 4 });
+          },
+          runIdleDecisionCensus: () =>
+            Promise.resolve({ inversionDetected: false }),
+          runIdleTaskFiler: () => {
+            filerRuns++;
+            return Promise.resolve();
+          },
+        });
+        const config = idleRunConfig(workDir, RUN_SECONDS);
+        config.maxConcurrentIssues = 2;
+        await runCoreLoop(config, deps);
+        assertEquals(claims, 1, "the sibling must have claimed this run");
+        assertEquals(observed, 1, "the starved slot must have observed once");
+      };
+
+      let clock = 0;
+      for (let run = 1; run <= 3; run++) {
+        await runPool(clock);
+        clock += RUN_SECONDS * 1000 + 1;
+        assertEquals(
+          filerRuns,
+          0,
+          `run ${run} is inside the bound; nothing should have been forced`,
+        );
+      }
+
+      // The starvation survived three runs in which the fleet claimed work.
+      const persisted = await readStreakState(workDir);
+      const starved = Object.keys(persisted).filter((id) =>
+        id !== IDLE_CYCLE_OBSERVER_ID
+      );
+      assertEquals(
+        starved.length,
+        1,
+        `expected exactly one starved slot to be counted; got ${
+          JSON.stringify(persisted)
+        }`,
+      );
+      assertEquals(
+        persisted[IDLE_CYCLE_OBSERVER_ID],
+        undefined,
+        "the cycle gate saw the fleet claim work, so its own run — and only " +
+          "its own — must have been cleared",
+      );
+
+      // A fourth run carries the starved slot past the bound.
+      await runPool(clock);
+
+      assertEquals(
+        filerRuns,
+        1,
+        "expected the starved slot to force exactly one filer attempt " +
+          `despite its sibling claiming on every run; logs: ${
+            JSON.stringify(logs.filter((m) => m.includes("[idle-hooks]")))
+          }`,
+      );
+      const forced = logs.filter((m) =>
+        m.includes("invoking=idle-task-filer") &&
+        m.includes("reason=audit_disagreement_bound_exceeded")
+      );
+      assertEquals(forced.length, 1);
+      assertEquals(
+        forced[0]!.includes(`observer=${starved[0]}`),
+        true,
+        `the forced attempt must name the starved slot; got ${forced[0]}`,
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "run_core - a fast cadence still forces one file per bound, not one per cycle (Issues #1051, #2106)",
+  async () => {
+    // The flooding direction. Expressed in cycles, the bound fired every
+    // fourth observation — at the 30-second scan cadence that is a wrapper
+    // every two minutes. Expressed in time, the same 45 observations over
+    // 22.5 minutes force exactly one.
+    const workDir = await Deno.makeTempDir({ prefix: "idle_streak_flood_" });
+    try {
+      const logs: string[] = [];
+      let filerRuns = 0;
+      const observations = 45;
+      const gapMs = 30 * 1000;
+
+      await runCoreLoop(
+        idleRunConfig(workDir, 7200),
+        idleRunDeps({
+          startMs: 0,
+          runSeconds: 7200,
+          observations,
+          gapMs,
+          disagreement: "audit",
+          logs,
+          onFile: () => filerRuns++,
+        }),
+      );
+
+      // 45 observations 30s apart span 22 minutes — one bound, one file.
+      assertEquals(
+        (observations - 1) * gapMs > IDLE_DISAGREEMENT_BOUND_MS,
+        true,
+        "the test must span more than one bound or it proves nothing",
+      );
+      assertEquals(
+        filerRuns,
+        1,
+        `expected exactly one forced attempt across ${observations} ` +
+          `observations; got ${filerRuns}`,
+      );
+      assertEquals(
+        logs.filter((m) => m.includes("action=audit_scan_disagreement")).length,
+        observations,
+        "every observation must still emit its diagnostic",
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "run_core - a clean fleet keeps no streak and files as usual (Issue #1051)",
+  async () => {
+    // No disagreement at all: the filer runs every cycle and nothing is
+    // counted, so a quiet fleet cannot accumulate its way into a forced
+    // attempt later.
+    const workDir = await Deno.makeTempDir({ prefix: "idle_streak_clean_" });
+    try {
+      const logs: string[] = [];
+      let filerRuns = 0;
+
+      await runCoreLoop(
+        idleRunConfig(workDir, 1800),
+        idleRunDeps({
+          startMs: 0,
+          runSeconds: 1800,
+          observations: 3,
+          disagreement: "none",
+          logs,
+          onFile: () => filerRuns++,
+        }),
+      );
+
+      assertEquals(filerRuns, 3, "an undisputed idle cycle always files");
+      assertEquals(
+        logs.filter((m) => m.includes("action=audit_scan_disagreement")).length,
+        0,
+        "nothing disagreed, so nothing may be reported as a disagreement",
+      );
+      assertEquals(
+        await readStreakState(workDir),
+        {},
+        "a clean fleet leaves no run behind",
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "run_core - a state file from an older version is read, not fatal (Issue #1051)",
+  async () => {
+    // A launcher that dies parsing its own state file is worse than the bug
+    // it was tracking. The pre-#1051 shape carried `{count, lastCycleId}`
+    // and no timestamps; a half-written file carries nothing parseable at
+    // all. Both must read as "no run recorded" and the worker must run.
+    const workDir = await Deno.makeTempDir({ prefix: "idle_streak_stale_" });
+    const statePath = `${workDir}/${IDLE_DISAGREEMENT_STATE_FILE}`;
+    try {
+      const olderShape = JSON.stringify({
+        s1: { count: 5, lastCycleId: "cycle-7" },
+        cycle: "not-an-entry",
+        s2: null,
+      });
+      await Deno.writeTextFile(statePath, olderShape);
+      assertEquals(
+        await loadIdleDisagreementState(statePath),
+        {},
+        "an entry with no timestamps is not an entry — its observer starts " +
+          "a fresh run rather than inheriting a count in another unit",
+      );
+
+      const logs: string[] = [];
+      let filerRuns = 0;
+      const result = await runCoreLoop(
+        idleRunConfig(workDir, 1800),
+        idleRunDeps({
+          startMs: 0,
+          runSeconds: 1800,
+          observations: 2,
+          disagreement: "audit",
+          logs,
+          onFile: () => filerRuns++,
+        }),
+      );
+
+      assertEquals(result.plannedShutdown, true, "the run must complete");
+      assertEquals(
+        filerRuns,
+        0,
+        "an unreadable file starts a fresh run rather than forcing a file",
+      );
+
+      // A truncated file is the other half of the same promise: the read
+      // that would have thrown must not.
+      const truncated = '{"cycle": {"sinceMs": ';
+      assertThrows(() => JSON.parse(truncated));
+      await Deno.writeTextFile(statePath, truncated);
+      assertEquals(await loadIdleDisagreementState(statePath), {});
+      const second = await runCoreLoop(
+        idleRunConfig(workDir, 1800),
+        idleRunDeps({
+          startMs: 1_800_001,
+          runSeconds: 1800,
+          observations: 2,
+          disagreement: "audit",
+          logs,
+          onFile: () => filerRuns++,
+        }),
+      );
+      assertEquals(second.plannedShutdown, true);
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -386,100 +851,94 @@ Deno.test(
     // verdict both suppressed the filer AND reset the #2475 disagreement
     // streak, so the bounded escape could never fire — the worker sat idle
     // for hours, neither claiming work nor filing idle-tasks. The census
-    // branch must now participate in the streak: after
-    // AUDIT_DISAGREEMENT_SKIP_LIMIT consecutive suppressed cycles, exactly
-    // one filer attempt is forced through and the streak resets.
-    let invocations = 0;
-    let cycleCount = 0;
-    let nowValue = 0;
-    const idleCycles = AUDIT_DISAGREEMENT_SKIP_LIMIT + 1;
-    const logs: string[] = [];
-    const deps = createMockDeps({
-      now: () => nowValue,
-      sleep: () => {
-        cycleCount++;
-        if (cycleCount >= idleCycles) {
-          nowValue += 4000 * 1000;
-        }
-        return Promise.resolve();
-      },
-      log: (m: string) => logs.push(m),
-      findNextIssue: () => Promise.resolve({ ok: true, value: null }),
-      runIdleDecisionCensus: () => Promise.resolve({ inversionDetected: true }),
-      runIdleTaskFiler: () => {
-        invocations++;
-        return Promise.resolve();
-      },
-    });
-    const config = createDefaultRunCoreConfig();
-    config.runDurationSeconds = 3600;
+    // branch must participate in the streak: once the disagreement has run
+    // for longer than the bound, exactly one filer attempt is forced
+    // through and the run restarts (Issue #1051 made the bound elapsed
+    // time rather than a cycle count).
+    const workDir = await Deno.makeTempDir({ prefix: "idle_streak_census_" });
+    try {
+      const logs: string[] = [];
+      let invocations = 0;
 
-    await runCoreLoop(config, deps);
+      // Four observations, nine minutes apart: 27 minutes of uninterrupted
+      // inversion against a 20-minute bound.
+      await runCoreLoop(
+        idleRunConfig(workDir, 3600),
+        idleRunDeps({
+          startMs: 0,
+          runSeconds: 3600,
+          observations: 4,
+          disagreement: "census",
+          logs,
+          onFile: () => invocations++,
+        }),
+      );
 
-    assertEquals(
-      invocations,
-      1,
-      `expected exactly one forced filer attempt after ${AUDIT_DISAGREEMENT_SKIP_LIMIT} suppressed cycles`,
-    );
-    const suppressed = logs.filter((m) =>
-      m.includes("skipping=idle-task-filer") &&
-      m.includes("reason=unblocked_work_exists")
-    );
-    assertEquals(
-      suppressed.length,
-      AUDIT_DISAGREEMENT_SKIP_LIMIT,
-      "expected the first cycles within the bound to be suppressed",
-    );
-    const forced = logs.find((m) =>
-      m.includes("invoking=idle-task-filer") &&
-      m.includes("reason=census_inversion_bound_exceeded")
-    );
-    assertEquals(
-      forced !== undefined,
-      true,
-      `expected an [idle-hooks] invoking line with reason=census_inversion_bound_exceeded; got: ${
-        JSON.stringify(logs.filter((m) => m.includes("[idle-hooks]")))
-      }`,
-    );
+      assertEquals(
+        invocations,
+        1,
+        "expected exactly one forced filer attempt once the inversion had " +
+          "run for longer than the bound",
+      );
+      const suppressed = logs.filter((m) =>
+        m.includes("skipping=idle-task-filer") &&
+        m.includes("reason=unblocked_work_exists")
+      );
+      assertEquals(
+        suppressed.length,
+        3,
+        "expected every observation inside the bound to be suppressed",
+      );
+      const forced = logs.find((m) =>
+        m.includes("invoking=idle-task-filer") &&
+        m.includes("reason=census_inversion_bound_exceeded")
+      );
+      assertEquals(
+        forced !== undefined,
+        true,
+        `expected an [idle-hooks] invoking line with reason=census_inversion_bound_exceeded; got: ${
+          JSON.stringify(logs.filter((m) => m.includes("[idle-hooks]")))
+        }`,
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
   },
 );
 
 Deno.test(
   "run_core - census-inversion streak resets after the forced filer attempt (Issue #3526)",
   async () => {
-    // After the bound forces a filer attempt the streak must reset, so the
+    // After the bound forces a filer attempt the run must restart, so the
     // next forced attempt only happens after another full bound of
-    // suppressed cycles — wrapper flooding stays impossible.
-    let invocations = 0;
-    let cycleCount = 0;
-    let nowValue = 0;
-    const idleCycles = (AUDIT_DISAGREEMENT_SKIP_LIMIT + 1) * 2;
-    const deps = createMockDeps({
-      now: () => nowValue,
-      sleep: () => {
-        cycleCount++;
-        if (cycleCount >= idleCycles) {
-          nowValue += 4000 * 1000;
-        }
-        return Promise.resolve();
-      },
-      findNextIssue: () => Promise.resolve({ ok: true, value: null }),
-      runIdleDecisionCensus: () => Promise.resolve({ inversionDetected: true }),
-      runIdleTaskFiler: () => {
-        invocations++;
-        return Promise.resolve();
-      },
-    });
-    const config = createDefaultRunCoreConfig();
-    config.runDurationSeconds = 3600;
+    // suppressed observations — wrapper flooding stays impossible.
+    const workDir = await Deno.makeTempDir({ prefix: "idle_streak_reset_" });
+    try {
+      const logs: string[] = [];
+      let invocations = 0;
 
-    await runCoreLoop(config, deps);
+      // Seven observations nine minutes apart: the bound is crossed at the
+      // fourth (27 minutes) and again at the seventh (27 more).
+      await runCoreLoop(
+        idleRunConfig(workDir, 7200),
+        idleRunDeps({
+          startMs: 0,
+          runSeconds: 7200,
+          observations: 7,
+          disagreement: "census",
+          logs,
+          onFile: () => invocations++,
+        }),
+      );
 
-    assertEquals(
-      invocations,
-      2,
-      "expected one forced attempt per full bound of suppressed cycles",
-    );
+      assertEquals(
+        invocations,
+        2,
+        "expected one forced attempt per full bound of suppressed cycles",
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
   },
 );
 
