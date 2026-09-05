@@ -150,7 +150,7 @@ Deno.test("validateFleetConfig - effective set covers a service-account-only sib
   assertEquals(result.missingFromAllowed, [SIBLING]);
 });
 
-Deno.test("formatFleetConfigValidation - names the effective author set even when warning (Issue #209)", () => {
+Deno.test("formatFleetConfigValidation - names the effective author set every run (Issue #209)", () => {
   const result = validateFleetConfig({
     githubUser: HOST,
     allowedAuthors: ["nleck"],
@@ -158,7 +158,7 @@ Deno.test("formatFleetConfigValidation - names the effective author set even whe
     serviceAccounts: [HOST, SIBLING],
   });
   const lines = formatFleetConfigValidation(result);
-  assertStringIncludes(lines[0]!, "[fleet-config] effective-authors=");
+  assertStringIncludes(lines[0]!, "effective-authors=");
   assertStringIncludes(lines[0]!, SIBLING);
 });
 
@@ -220,6 +220,10 @@ Deno.test(
       const config = await loadConfig(configPath);
       const result = await findOldestIssue({
         ...config,
+        // Issue #1066: `allowed_authors` no longer reaches
+        // `config.allowedAuthors` — that is the derived per-cycle set, which a
+        // bare `loadConfig` leaves empty. Supply it here as the refresh would.
+        allowedAuthors: ["alice"],
         issueLabels: ["top-priority"],
         workOnLabel: "work-on",
         shuffleRepos: false,
@@ -252,6 +256,8 @@ Deno.test(
       const config = await loadConfig(configPath);
       const result = await findOldestIssue({
         ...config,
+        // Issue #1066: as above — the derived set is supplied, not loaded.
+        allowedAuthors: ["alice"],
         issueLabels: ["top-priority"],
         workOnLabel: "work-on",
         shuffleRepos: false,
