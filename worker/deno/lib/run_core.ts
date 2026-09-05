@@ -191,12 +191,13 @@ export interface RunCoreConfig {
    * Directory the worker clones repositories into — the work volume root
    * (Issue #966).
    *
-   * The lane-rotation cursor lives beside the other worker state on the
-   * volume, so the loop needs the work directory. It used to read
-   * `WORK_DIR` at the point of use; the resolved value now arrives here
-   * from `createProductionRunCoreDeps`, which already has it, and the
-   * environment read remains only as the default for a caller that does
-   * not set it.
+   * The lane-rotation cursor and the idle-disagreement streak live beside the
+   * other worker state on the volume, so the loop needs the work directory.
+   * It used to read `WORK_DIR` at the point of use; the resolved value now
+   * arrives here from `createProductionRunCoreDeps`, which already has it,
+   * and this field is the only place the loop looks (Issue #1177 — see
+   * {@link resolveRunStateWorkDir}). A caller that names none keeps that
+   * state in memory.
    */
   workDir?: string;
 }
@@ -1305,6 +1306,39 @@ export function createDefaultRunCoreConfig(): RunCoreConfig {
     // Mode's watchdog floor tracks the agent timeout it wraps.
     planningTimeoutSeconds: OPERATIONAL_DEFAULTS.planningTimeout,
   };
+}
+
+/**
+ * The directory the loop keeps run-outliving state in — the idle-disagreement
+ * streak (#1051) and the lane-rotation cursor (#608).
+ *
+ * `config.workDir` and nothing else. `commands/run_core.ts` resolves the
+ * chain once — `--work-dir`, then `WORK_DIR`, then the default — and
+ * `createProductionRunCoreDeps` copies the answer into the config, so the loop
+ * has no reason of its own to read the process environment.
+ *
+ * It used to end `|| Deno.env.get("WORK_DIR")`, and Issue #1177 is what that
+ * cost: the container exports the live work volume, so every suite driving the
+ * loop without naming a directory shared the running fleet's
+ * `idle_disagreement_streak.json`. Under `--parallel` a sibling process's
+ * load-apply-save dropped the run a test was accumulating, the elapsed-time
+ * bound was never reached and the forced filer attempt never came — `0` where
+ * `1` was expected — while the operator's real state was overwritten with test
+ * timestamps. The gate scrubs `WORK_DIR` from the test stage (Issue #1098);
+ * a plain `deno task test` does not, and state reached through an ambient
+ * variable rather than an argument is a dependency nothing declares.
+ *
+ * Exported so that guard can be tested where it lives: a child process
+ * carrying a planted `WORK_DIR` must still resolve to `undefined`.
+ *
+ * @param config - The run's configuration.
+ * @returns The work directory, or `undefined` when the caller named none —
+ *          which means the state is kept in memory for the life of the run.
+ */
+export function resolveRunStateWorkDir(
+  config: RunCoreConfig,
+): string | undefined {
+  return config.workDir?.trim() || undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -4252,26 +4286,11 @@ export async function runCoreLoop(
   // slot's claim the bound could never be reached. `filerLatch` is the
   // Issue #925 single-flight guard.
   //
-  // Worker state that outlives a run belongs on the volume, and the volume is
-  // named by `config.workDir` alone (Issue #966): `createProductionRunCoreDeps`
-  // resolves it once — from `--work-dir`, then `WORK_DIR`, then the default —
-  // and puts it in the config, so the loop has no reason to read the process
-  // environment for itself.
-  //
-  // It used to fall back to `Deno.env.get("WORK_DIR")`, and Issue #1177 is
-  // what that cost. Every suite driving the loop without naming a work
-  // directory inherited the container's live worker volume, so four parallel
-  // `deno test` processes shared one `idle_disagreement_streak.json`: a
-  // sibling's write wiped the run a test was accumulating and the forced
-  // attempt never came (`0` where `1` was expected), while the operator's real
-  // streak state was overwritten with test timestamps. The gate scrubs
-  // `WORK_DIR` from the test stage (Issue #1098), but a plain `deno task test`
-  // does not, and state reached through an ambient variable rather than an
-  // argument is a dependency nothing declares.
-  //
-  // Absent, the streak degrades to in-memory — the pre-#1051 behaviour, and
-  // honest for a caller with no volume to write to.
-  const resolvedWorkDir = config.workDir?.trim() || undefined;
+  // Where the state that outlives a run is kept — the streak here and the
+  // lane-rotation cursor below. `config.workDir` and nothing else; see
+  // {@link resolveRunStateWorkDir}. Absent, the streak degrades to in-memory,
+  // the pre-#1051 behaviour and honest for a caller with no volume.
+  const resolvedWorkDir = resolveRunStateWorkDir(config);
   const idleHookState: IdleHookState = {
     idleDetectTick: 0,
     disagreement: createIdleDisagreementTracker({
