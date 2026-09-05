@@ -15,11 +15,16 @@ import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 import { createAgentStub } from "./support/agent_stub.ts";
 import type { Logger } from "../types.ts";
 
-Deno.test("agent_transcript - enabled by VIBE_AGENT_TRANSCRIPT=true or DEBUG=true only", () => {
+// Issue #1141 changed this rule deliberately: `DEBUG=true` used to enable the
+// tee on its own, and a debug flag that silently starts capturing repository
+// content is a surprise. The switch is now `.config.json`'s
+// `agent_transcript_enabled`, which the worker driver settles into this
+// variable at start; `DEBUG` no longer participates.
+Deno.test("agent_transcript - enabled only by the settled transcript switch", () => {
   const env = (values: Record<string, string>) => (key: string) => values[key];
   assertEquals(agentTranscriptEnabled(env({})), false);
   assertEquals(agentTranscriptEnabled(env({ DEBUG: "false" })), false);
-  assertEquals(agentTranscriptEnabled(env({ DEBUG: "true" })), true);
+  assertEquals(agentTranscriptEnabled(env({ DEBUG: "true" })), false);
   assertEquals(
     agentTranscriptEnabled(env({ VIBE_AGENT_TRANSCRIPT: "true" })),
     true,
@@ -123,7 +128,7 @@ Deno.test("agent_transcript - size cap stops the tee with a warning", async () =
   }
 });
 
-Deno.test("agent_transcript - factory returns undefined when the flag is off", () => {
+Deno.test("agent_transcript - factory returns undefined when the switch is off", () => {
   const writer = maybeCreateAgentTranscriptWriter({
     env: () => undefined,
     issueNumber: 4169,
@@ -131,7 +136,7 @@ Deno.test("agent_transcript - factory returns undefined when the flag is off", (
   assertEquals(writer, undefined);
 });
 
-Deno.test("agent_transcript - factory derives ~/logs path and creates the directory", async () => {
+Deno.test("agent_transcript - factory derives the log-directory path and creates it", async () => {
   const home = await Deno.makeTempDir({ prefix: "agent_transcript_home_" });
   try {
     const env = (key: string) =>
