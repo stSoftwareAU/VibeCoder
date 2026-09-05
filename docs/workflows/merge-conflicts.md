@@ -214,8 +214,8 @@ flowchart TD
     B -->|No| Q
     B -->|Yes| C{"needs-human, closed,<br/>or already escalated?"}
     C -->|Yes| Q
-    C -->|No| D{"A conclusion since<br/>the label went on?"}
-    D -->|"Yes — resolved or failed marker"| Q
+    C -->|No| D{"Anything at all since<br/>the label or the last<br/>conclusion, within 8 h?"}
+    D -->|"Yes — a conclusion moved it"| Q
     D -->|"No — including an attempt<br/>that opened and went silent"| E["One comment on the PR:<br/>label age, the silence,<br/>the skip reasons"]
     E --> F["escalateAsWork — an issue<br/>the fleet can claim"]
     F --> G["Label the PR escalated<br/>(never needs-human)"]
@@ -231,15 +231,19 @@ Five details carry the weight:
 - **It reads the live state, not the label.** The label is only removed by a
   successful fleet merge, so a conflict that cleared by other means leaves it
   behind — the exact shape #116 ended in. A labelled PR GitHub now calls
-  `MERGEABLE` is skipped before it costs a single extra API call.
+  `MERGEABLE` is skipped before it costs a timeline or a thread read. An
+  `UNKNOWN` state — GitHub computes mergeability lazily — is re-read per PR and,
+  if it still cannot be established, said out loud rather than dropped.
 - **A conclusion, not an attempt, clears it.** An attempt that opened and then
   went silent is the disrupted case, and if the disruption bound has not fired
   either then nothing is moving the PR — so that PR *is* detected. Keying on
   "an attempt marker exists" would miss the GRQ#4408 shape exactly.
-- **The clock starts at the label.** Conclusions and markers older than the
-  `labeled` event belong to a previous conflict and say nothing about this one,
-  so a fresh label cycle starts a fresh clock — and a concluded attempt puts
-  the PR back in the ordinary ladder.
+- **The clock starts at the label, and a conclusion restarts it.** Markers
+  older than the `labeled` event belong to a previous conflict and say nothing
+  about this one. A conclusion puts the PR back in the ordinary ladder and
+  starts a fresh clock from itself — so one failed attempt in hour two does not
+  buy permanent silence for a PR that then never gets its second, which nothing
+  else watches either, because its budget is not spent.
 - **Dedupe lives on the PR.** One escalation per PR per stall, keyed on the
   `<!-- vibe-work-escalation:owner/repo#N -->` marker comment. Every host runs
   this scan every cycle, and the failure being detected is precisely the kind

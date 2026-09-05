@@ -144,6 +144,15 @@ export interface ConflictQueueStall {
   /** How long the label has been on, in milliseconds. */
   labelAgeMs: number;
   /**
+   * Epoch milliseconds the stall clock started: the label event, or the most
+   * recent attempt conclusion after it — whichever is later.
+   */
+  stalledSinceMs: number;
+  /** How long nothing has happened, in milliseconds. */
+  stalledMs: number;
+  /** Epoch milliseconds of the last concluded attempt, when there was one. */
+  lastConclusionAtMs?: number;
+  /**
    * True when an attempt opened and never concluded — the disrupted case. It
    * is still a stall: the disruption bound has not fired either, so nothing
    * is moving the PR.
@@ -196,9 +205,12 @@ function commentBody(raw: unknown): string | undefined {
 
 /** What the PR's thread says has happened since the label went on. */
 interface StallSignals {
-  /** A conclusion — merged or judged-and-failed — landed after the label. */
-  concluded: boolean;
-  /** An attempt opened after the label. */
+  /**
+   * Epoch milliseconds of the most recent conclusion — merged, or judged and
+   * failed — since the label went on, when there is one.
+   */
+  lastConclusionAtMs?: number;
+  /** An attempt opened after the most recent conclusion. */
   openAttempt: boolean;
   /** This stall has already been escalated. */
   escalated: boolean;
@@ -214,6 +226,10 @@ interface StallSignals {
  * conclusions for the opposite reason: there, a forged marker only causes an
  * extra comment.)
  *
+ * A conclusion restarts everything after it: an attempt that opened before it
+ * is no longer open, and an escalation posted before it belonged to the stall
+ * that conclusion ended.
+ *
  * @param comments - Raw REST comment objects, oldest first.
  * @param sinceMs - The label event; comments older than it belong to a
  *   previous conflict and say nothing about this one.
@@ -224,11 +240,7 @@ function readStallSignals(
   isTrustedAuthor: (login: string) => boolean,
   escalationMarker: string,
 ): StallSignals {
-  const signals: StallSignals = {
-    concluded: false,
-    openAttempt: false,
-    escalated: false,
-  };
+  const signals: StallSignals = { openAttempt: false, escalated: false };
 
   for (const raw of comments) {
     const body = commentBody(raw);
@@ -244,14 +256,21 @@ function readStallSignals(
       body.includes(CONFLICT_RESOLVED_MARKER) ||
       body.includes(CONFLICT_FAILED_MARKER)
     ) {
-      signals.concluded = true;
+      if (
+        signals.lastConclusionAtMs === undefined ||
+        createdAtMs > signals.lastConclusionAtMs
+      ) {
+        signals.lastConclusionAtMs = createdAtMs;
+      }
+      // Everything before this conclusion belongs to the stall it ended.
+      signals.openAttempt = false;
+      signals.escalated = false;
+      continue;
     }
     if (body.includes(CONFLICT_ATTEMPT_MARKER)) signals.openAttempt = true;
     if (body.includes(escalationMarker)) signals.escalated = true;
   }
 
-  // A concluded attempt is no longer open, whatever order the thread is in.
-  if (signals.concluded) signals.openAttempt = false;
   return signals;
 }
 
@@ -292,6 +311,9 @@ export function detectConflictQueueStall(
   if (labelledAtMs === undefined || !Number.isFinite(labelledAtMs)) return null;
 
   const labelAgeMs = nowMs - labelledAtMs;
+  // The clock can never start before the label, so a label inside the
+  // threshold is not a stall whatever the thread says — and the caller may
+  // skip reading the thread at all on the strength of it.
   if (labelAgeMs < thresholdHours * 3600_000) return null;
 
   const signals = readStallSignals(
@@ -300,13 +322,27 @@ export function detectConflictQueueStall(
     isTrustedAuthor,
     workEscalationMarker(observation.repo, observation.prNumber),
   );
-  if (signals.concluded || signals.escalated) return null;
+  if (signals.escalated) return null;
+
+  // A conclusion puts the PR back in the ordinary ladder and starts a fresh
+  // clock: the stall being measured is the silence *since* the last thing that
+  // happened, not since the label. Without this, one failed attempt in hour
+  // two buys permanent silence for a PR that then never gets its second — a
+  // queue nothing else watches, because its budget is not spent either.
+  const stalledSinceMs = signals.lastConclusionAtMs ?? labelledAtMs;
+  const stalledMs = nowMs - stalledSinceMs;
+  if (stalledMs < thresholdHours * 3600_000) return null;
 
   return {
     repo: observation.repo,
     prNumber: observation.prNumber,
     labelledAtMs,
     labelAgeMs,
+    stalledSinceMs,
+    stalledMs,
+    ...(signals.lastConclusionAtMs !== undefined
+      ? { lastConclusionAtMs: signals.lastConclusionAtMs }
+      : {}),
     openAttempt: signals.openAttempt,
     skipReasons: observation.skipReasons ?? [],
   };
@@ -337,10 +373,20 @@ export function buildConflictStallReason(stall: ConflictQueueStall): string {
   const lines = [
     `${stall.repo}#${stall.prNumber} has carried \`${MERGE_CONFLICT_LABEL}\` ` +
     `since ${new Date(stall.labelledAtMs).toISOString()} — ` +
-    `${formatHours(stall.labelAgeMs)} — and no resolution attempt has ` +
-    "reached a conclusion in that time: no resolved marker and no failure " +
-    "marker on the PR.",
+    `${formatHours(stall.labelAgeMs)} — and still conflicts with its base.`,
   ];
+
+  lines.push(
+    "",
+    stall.lastConclusionAtMs === undefined
+      ? "No resolution attempt has reached a conclusion in that time: no " +
+        "resolved marker and no failure marker on the PR."
+      : `The last attempt concluded at ${
+        new Date(stall.lastConclusionAtMs).toISOString()
+      } and nothing has happened in the ${
+        formatHours(stall.stalledMs)
+      } since — no further attempt, no conclusion, no escalation.`,
+  );
 
   lines.push(
     "",
@@ -348,8 +394,8 @@ export function buildConflictStallReason(stall: ConflictQueueStall): string {
       ? "An attempt did open and then went silent, so it was never judged — " +
         "and the disrupted-attempt bound has not fired either. The queue is " +
         "stalled either way."
-      : "No attempt was ever opened, so the attempt budget is untouched and " +
-        "the branch is exactly as its author pushed it.",
+      : "No attempt is open, so the attempt budget is untouched and the " +
+        "branch is exactly as its author pushed it.",
   );
 
   if (stall.skipReasons.length > 0) {
@@ -382,8 +428,8 @@ export function buildConflictStallComment(stall: ConflictQueueStall): string {
   return [
     workEscalationMarker(stall.repo, stall.prNumber),
     `⏳ **Merge-conflict queue stalled — ${
-      formatHours(stall.labelAgeMs)
-    } with no attempt concluding**`,
+      formatHours(stall.stalledMs)
+    } with nothing happening**`,
     "",
     buildConflictStallReason(stall),
     "",
@@ -474,6 +520,8 @@ export async function escalateConflictQueueStall(
     reason: buildConflictStallReason(stall),
     attempted: stall.openAttempt
       ? "One attempt opened and never reached a conclusion."
+      : stall.lastConclusionAtMs !== undefined
+      ? "An earlier attempt concluded, and nothing has followed it."
       : "Nothing — no attempt was ever opened.",
     nextStep: CONFLICT_STALL_NEXT_STEP,
   });
@@ -596,7 +644,14 @@ function parseLabelledPrs(raw: string): LabelledPr[] {
   return prs;
 }
 
-/** The skip reasons this cycle recorded for one PR (Issue #1109). */
+/**
+ * The distinct skip reasons this cycle recorded for one PR (Issue #1109).
+ *
+ * The drain calls the scan once per PR it takes, so a PR held back by the same
+ * cooldown is decided on several times in one cycle. Identical reasons are
+ * collapsed: the comment is public, and five copies of one line say no more
+ * than one does.
+ */
 function skipReasonsFor(
   decisions: readonly ConflictPrDecision[] | undefined,
   repo: string,
@@ -604,12 +659,71 @@ function skipReasonsFor(
 ): ConflictSkipReason[] {
   if (!decisions) return [];
   const key = conflictPrKey(repo, prNumber);
-  return decisions
-    .filter((decision) =>
-      decision.outcome === "skipped" &&
-      conflictPrKey(decision.repo, decision.prNumber) === key
-    )
-    .map((decision) => (decision as { reason: ConflictSkipReason }).reason);
+  const seen = new Set<string>();
+  const reasons: ConflictSkipReason[] = [];
+  for (const decision of decisions) {
+    if (decision.outcome !== "skipped") continue;
+    if (conflictPrKey(decision.repo, decision.prNumber) !== key) continue;
+    const fingerprint = JSON.stringify([
+      decision.reason.kind,
+      conflictReasonOperands(decision.reason),
+    ]);
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+    reasons.push(decision.reason);
+  }
+  return reasons;
+}
+
+/**
+ * Establish the live `mergeable` state for one labelled PR.
+ *
+ * GitHub computes mergeability lazily, so a listing can answer `UNKNOWN` for a
+ * PR it has not got to yet. Falling straight through on that would drop the
+ * stalled PR in silence — the very failure this watchdog exists to remove — so
+ * the state is asked for again per PR, exactly as the conflict scan's REST
+ * fallback does, and an answer that still cannot be established is said out
+ * loud rather than assumed benign.
+ *
+ * @returns The state, or `undefined` when it could not be established.
+ */
+async function resolveMergeableState(
+  repo: string,
+  pr: LabelledPr,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  logger: Logger,
+): Promise<string | undefined> {
+  if (pr.mergeableState !== undefined && pr.mergeableState !== "UNKNOWN") {
+    return pr.mergeableState;
+  }
+  try {
+    const raw = await ghCommandFn([
+      "pr",
+      "view",
+      String(pr.number),
+      "--repo",
+      repo,
+      "--json",
+      "mergeable",
+      "--jq",
+      ".mergeable",
+    ]);
+    const state = raw.trim().toUpperCase();
+    if (state.length > 0 && state !== "UNKNOWN") return state;
+  } catch (error) {
+    logger.warn(
+      "Merge-conflict stall watchdog: mergeable lookup failed — a labelled " +
+        "PR is being left unchecked",
+      { repo, prNumber: pr.number, error: errorMessage(error) },
+    );
+    return undefined;
+  }
+  logger.warn(
+    "Merge-conflict stall watchdog: GitHub has not computed a labelled PR's " +
+      "mergeable state — it is left unchecked this pass",
+    { repo, prNumber: pr.number },
+  );
+  return undefined;
 }
 
 /**
@@ -625,7 +739,7 @@ function skipReasonsFor(
  */
 export async function scanConflictQueueStalls(
   options: ConflictStallScanOptions,
-): Promise<Result<ConflictQueueStall[]>> {
+): Promise<ConflictQueueStall[]> {
   const {
     repos,
     ghCommandFn,
@@ -673,17 +787,21 @@ export async function scanConflictQueueStalls(
     }
 
     for (const pr of labelled) {
+      const mergeableState = await resolveMergeableState(
+        repo,
+        pr,
+        ghCommandFn,
+        logger,
+      );
       // A labelled PR that now merges cleanly is a stale label, not a stall,
       // and it is skipped before it costs a timeline or a comment read.
-      if (pr.mergeableState !== CONFLICTING_STATE) {
-        logger.debug(
-          "Merge-conflict stall watchdog: labelled PR is not conflicting",
-          {
-            repo,
-            prNumber: pr.number,
-            mergeableState: pr.mergeableState ?? "unknown",
-          },
-        );
+      if (mergeableState !== CONFLICTING_STATE) {
+        if (mergeableState !== undefined) {
+          logger.debug(
+            "Merge-conflict stall watchdog: labelled PR is not conflicting",
+            { repo, prNumber: pr.number, mergeableState },
+          );
+        }
         continue;
       }
 
@@ -699,12 +817,26 @@ export async function scanConflictQueueStalls(
           ghCommandFn,
           timelineCache,
         );
+        const labelledAtMs = lastAdd === null
+          ? undefined
+          : lastAdd.addedAt * 1000;
+        // The stall clock can never start before the label, so a label inside
+        // the threshold cannot be a stall — and the thread, which is the
+        // expensive read, is never fetched for one.
+        if (
+          labelledAtMs !== undefined &&
+          now - labelledAtMs <
+            (thresholdHours ?? DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS) *
+              3600_000
+        ) {
+          continue;
+        }
         observation = {
           repo,
           prNumber: pr.number,
           labels: pr.labels,
-          mergeableState: pr.mergeableState,
-          ...(lastAdd !== null ? { labelledAtMs: lastAdd.addedAt * 1000 } : {}),
+          mergeableState,
+          ...(labelledAtMs !== undefined ? { labelledAtMs } : {}),
           comments: await fetchIssueCommentPages(repo, pr.number, ghCommandFn),
           skipReasons: skipReasonsFor(decisions, repo, pr.number),
         };
@@ -746,7 +878,7 @@ export async function scanConflictQueueStalls(
     }
   }
 
-  return { ok: true, value: stalls };
+  return stalls;
 }
 
 function errorMessage(error: unknown): string {

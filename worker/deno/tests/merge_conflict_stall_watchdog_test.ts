@@ -167,6 +167,43 @@ Deno.test("detectConflictQueueStall - a conclusion predating the label does not 
   assertEquals(stall.labelAgeMs, 9 * HOUR);
 });
 
+Deno.test("detectConflictQueueStall - a conclusion starts a fresh clock", () => {
+  // Labelled 20h ago, one attempt concluded 9h ago, silence since: the PR is
+  // back in the ordinary ladder, and that ladder has stopped moving too.
+  const stalled = detect(
+    observation(20, [
+      comment(`${CONFLICT_ATTEMPT_MARKER} n="1" -->`, 10),
+      comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 9),
+    ]),
+  );
+  assert(stalled !== null);
+  assertEquals(stalled.stalledMs, 9 * HOUR);
+  assertEquals(stalled.labelAgeMs, 20 * HOUR);
+  assertEquals(stalled.lastConclusionAtMs, NOW - 9 * HOUR);
+  assertEquals(stalled.openAttempt, false);
+
+  // …and the fresh clock is a real clock: a conclusion 7h ago is inside it.
+  assertEquals(
+    detect(
+      observation(20, [comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 7)]),
+    ),
+    null,
+  );
+});
+
+Deno.test("detectConflictQueueStall - an escalation before the last conclusion does not suppress", () => {
+  // The previous stall was escalated, an attempt then concluded, and the queue
+  // stopped again: that is a new stall, and it gets its own escalation.
+  const stall = detect(
+    observation(30, [
+      comment(`${workEscalationMarker(REPO, PR)}\nstalled`, 20),
+      comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 12),
+    ]),
+  );
+  assert(stall !== null);
+  assertEquals(stall.stalledMs, 12 * HOUR);
+});
+
 Deno.test("detectConflictQueueStall - a forged conclusion cannot silence the watchdog", () => {
   // Any account may write a marker into a comment body on a public repo, so
   // an untrusted conclusion is ignored: the fail direction is towards saying
@@ -373,6 +410,29 @@ Deno.test("escalateConflictQueueStall - a failed filing is reported, never swall
   assertEquals(postedComments(github.calls).length, 0);
 });
 
+Deno.test("escalateConflictQueueStall - a comment that fails after filing names both", async () => {
+  const github = fakeGitHub();
+  const work = fakeEscalateWork();
+  const stall = detect(observation(9));
+  assert(stall !== null);
+
+  const result = await escalateConflictQueueStall(stall, {
+    ghCommandFn: (args: string[]) =>
+      args[0] === "pr" && args[1] === "comment"
+        ? Promise.reject(new Error("comment rejected"))
+        : github.gh(args),
+    labelPr: github.labelPr,
+    escalateWork: work.escalateWork,
+    logger,
+  });
+
+  assert(!result.ok);
+  // The filed issue is named, so the failure is diagnosable rather than a bare
+  // "could not comment".
+  assertStringIncludes(result.error.message, "900");
+  assertStringIncludes(result.error.message, "comment rejected");
+});
+
 // ---------------------------------------------------------------------------
 // Scan — cross-host dedupe and the label assertion (Issue #1112)
 // ---------------------------------------------------------------------------
@@ -397,11 +457,10 @@ Deno.test("scanConflictQueueStalls - two hosts in one window escalate once", asy
   const hostA = await scanConflictQueueStalls(scanOptions(github, work));
   const hostB = await scanConflictQueueStalls(scanOptions(github, work));
 
-  assert(hostA.ok && hostB.ok);
-  assertEquals(hostA.value.length, 1);
+  assertEquals(hostA.length, 1);
   // The second host reads the first host's marker off the PR itself, so it
   // finds no stall to escalate.
-  assertEquals(hostB.value.length, 0);
+  assertEquals(hostB.length, 0);
   assertEquals(work.filed.length, 1);
   assertEquals(postedComments(github.calls).length, 1);
 });
@@ -412,8 +471,7 @@ Deno.test("scanConflictQueueStalls - applies escalated, never needs-human", asyn
 
   const scan = await scanConflictQueueStalls(scanOptions(github, work));
 
-  assert(scan.ok);
-  assertEquals(scan.value.length, 1);
+  assertEquals(scan.length, 1);
   assertEquals(github.labelled, [ESCALATED_AS_WORK_LABEL]);
   assert(!github.labelled.includes("needs-human"));
   // No `gh` call asks for the veto label either. Comment *bodies* are exempt:
@@ -444,8 +502,7 @@ Deno.test("scanConflictQueueStalls - a concluded attempt after an escalation is 
 
   const next = await scanConflictQueueStalls(scanOptions(github, work));
 
-  assert(next.ok);
-  assertEquals(next.value.length, 0);
+  assertEquals(next.length, 0);
   assertEquals(work.filed.length, 1);
 });
 
@@ -463,8 +520,7 @@ Deno.test("scanConflictQueueStalls - carries this cycle's skip reasons into the 
     }],
   });
 
-  assert(scan.ok);
-  assertEquals(scan.value[0]?.skipReasons.length, 1);
+  assertEquals(scan[0]?.skipReasons.length, 1);
   const body = postedComments(github.calls)[0] ?? "";
   assertStringIncludes(body, "repo-leased");
   assertStringIncludes(body, "deferralStreak=6");
@@ -476,8 +532,7 @@ Deno.test("scanConflictQueueStalls - a stale label on a mergeable PR is not esca
 
   const scan = await scanConflictQueueStalls(scanOptions(github, work));
 
-  assert(scan.ok);
-  assertEquals(scan.value.length, 0);
+  assertEquals(scan.length, 0);
   assertEquals(work.filed.length, 0);
   // Not even read: the listing already said the queue is not real.
   assertEquals(postedComments(github.calls).length, 0);
@@ -485,6 +540,89 @@ Deno.test("scanConflictQueueStalls - a stale label on a mergeable PR is not esca
     github.calls.filter((call) => call[0] === "api").length,
     0,
   );
+});
+
+Deno.test("scanConflictQueueStalls - an uncomputed mergeable state is re-read, not assumed", async () => {
+  // GitHub computes mergeability lazily, so the listing can answer UNKNOWN for
+  // a PR that genuinely conflicts. Dropping it there would be the silence this
+  // watchdog exists to remove.
+  const github = fakeGitHub([], "UNKNOWN");
+  const work = fakeEscalateWork();
+  const withView = (args: string[]) => {
+    if (args[0] === "pr" && args[1] === "view") {
+      return Promise.resolve("CONFLICTING\n");
+    }
+    return github.gh(args);
+  };
+
+  const scan = await scanConflictQueueStalls({
+    ...scanOptions(github, work),
+    ghCommandFn: withView,
+  });
+
+  assertEquals(scan.length, 1);
+  assertEquals(work.filed.length, 1);
+});
+
+Deno.test("scanConflictQueueStalls - a state that stays uncomputed escalates nothing", async () => {
+  const github = fakeGitHub([], "UNKNOWN");
+  const work = fakeEscalateWork();
+  const warnings: string[] = [];
+  const withView = (args: string[]) => {
+    if (args[0] === "pr" && args[1] === "view") {
+      return Promise.resolve("UNKNOWN");
+    }
+    return github.gh(args);
+  };
+
+  const scan = await scanConflictQueueStalls({
+    ...scanOptions(github, work),
+    ghCommandFn: withView,
+    logger: { ...logger, warn: (message: string) => warnings.push(message) },
+  });
+
+  assertEquals(scan.length, 0);
+  assertEquals(work.filed.length, 0);
+  // Loud, not silent: an unestablished state is exactly what went unnoticed.
+  assert(
+    warnings.some((message) => message.includes("mergeable state")),
+    `expected a warning about the unestablished state: ${warnings.join(" | ")}`,
+  );
+});
+
+Deno.test("scanConflictQueueStalls - repeated identical skip reasons are collapsed", async () => {
+  const github = fakeGitHub();
+  const work = fakeEscalateWork();
+  const cooldown = {
+    repo: REPO,
+    prNumber: PR,
+    outcome: "skipped" as const,
+    reason: { kind: "cooldown" as const, msUntilDue: 900_000 },
+  };
+
+  const scan = await scanConflictQueueStalls({
+    ...scanOptions(github, work),
+    // The drain calls the scan once per PR it takes, so one held-back PR is
+    // decided on several times in a cycle.
+    decisions: [cooldown, cooldown, cooldown],
+  });
+
+  assertEquals(scan[0]?.skipReasons.length, 1);
+  const body = postedComments(github.calls)[0] ?? "";
+  assertEquals(body.split("`cooldown`").length - 1, 1);
+});
+
+Deno.test("scanConflictQueueStalls - a repo outside the allowlist is not touched", async () => {
+  const github = fakeGitHub();
+  const work = fakeEscalateWork();
+
+  const scan = await scanConflictQueueStalls({
+    ...scanOptions(github, work),
+    isRepoAllowed: () => false,
+  });
+
+  assertEquals(scan.length, 0);
+  assertEquals(github.calls.length, 0);
 });
 
 Deno.test("scanConflictQueueStalls - an unreadable PR does not stop the pass", async () => {
@@ -502,7 +640,6 @@ Deno.test("scanConflictQueueStalls - an unreadable PR does not stop the pass", a
     ghCommandFn: failing,
   });
 
-  assert(scan.ok);
-  assertEquals(scan.value.length, 0);
+  assertEquals(scan.length, 0);
   assertEquals(work.filed.length, 0);
 });

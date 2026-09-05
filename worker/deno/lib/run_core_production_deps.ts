@@ -2108,19 +2108,21 @@ export async function createProductionRunCoreDeps(
       // age of the `merge-conflict` label instead, and files a PR that has
       // carried it for hours with nothing concluding as work — never
       // `needs-human`, which would remove it from this very lane (Issue #569).
-      const stalls = await scanConflictQueueStalls({
-        repos,
-        ghCommandFn: runGhCommand,
-        logger,
-        isTrustedAuthor,
-        isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),
-        timelineCache,
-        needsHumanLabel: config.needsHumanLabel,
-        decisions: [...scanDecisions, ...drain.decisions],
-      });
-      if (!stalls.ok) {
-        logger.warn("Merge-conflict stall watchdog failed", {
-          error: stalls.error.message,
+      // Skipped once the cycle's deadline has passed: the drain stops there
+      // for the same reason, and a watchdog that observes is never worth
+      // running into the next pass's time.
+      if (
+        opts?.deadlineEpochMs === undefined || Date.now() < opts.deadlineEpochMs
+      ) {
+        await scanConflictQueueStalls({
+          repos,
+          ghCommandFn: runGhCommand,
+          logger,
+          isTrustedAuthor,
+          isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),
+          timelineCache,
+          needsHumanLabel: config.needsHumanLabel,
+          decisions: [...scanDecisions, ...drain.decisions],
         });
       }
 
