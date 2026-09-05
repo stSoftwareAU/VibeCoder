@@ -16,6 +16,14 @@ import {
 } from "./check_runs_batch.ts";
 import { fetchPRBranchStateBatch } from "./pr_branch_state.ts";
 import { decideMilestoneBaseMerge } from "./milestone_children_gate.ts";
+import {
+  type ApprovedDefaultBranchPolicy,
+  fetchPrReviews,
+  hasNonFleetApproval,
+  type PrReview,
+} from "./default_branch_approval.ts";
+
+export type { ApprovedDefaultBranchPolicy, PrReview };
 
 // =============================================================================
 // Types
@@ -64,6 +72,13 @@ export type MergeBlockedReason =
   | "no_checks"
   | "head_moved"
   | "head_too_recent"
+  /**
+   * The PR targets an unprotected default branch and carries no approving
+   * review from outside the fleet (Issue #1082), so the human review the
+   * blast-radius guard (Issue #2416) demands is absent. A deliberate hold,
+   * not a fault: the PR is left open and re-evaluated next scan.
+   */
+  | "default_branch_unapproved"
   | "milestone_rollup_merged"
   /**
    * The milestone's route to the default branch could not be *read*
@@ -179,6 +194,19 @@ export async function fetchHeadRecency(
   } catch {
     return null;
   }
+}
+
+/**
+ * Options accepted by {@link directMergePr} — the gate's own overrides plus
+ * the approved-default-branch policy (Issue #1082).
+ */
+export interface DirectMergeOptions extends PreMergeGateOptions {
+  /**
+   * Permit a default-branch target when the PR carries an approving review
+   * from outside the fleet. Absent (the default) keeps the Issue #2416
+   * refusal exactly as it was for every other call site.
+   */
+  approvedDefaultBranch?: ApprovedDefaultBranchPolicy;
 }
 
 /** Injectable pre-merge gate function type (enables testing). */
@@ -780,6 +808,14 @@ export async function enforcePreMergeRequirements(
  * merge is refused and retried on the next maintenance scan, so a transient
  * lookup failure never silently pushes code to the default branch.
  *
+ * Approved default branch (Issue #1082): when the caller supplies an
+ * {@link ApprovedDefaultBranchPolicy} — only `enableAutoMerge` does, and only
+ * for a base with no required checks, where native auto-merge is unusable — a
+ * default-branch PR carrying an approving review from outside the fleet
+ * proceeds to the same gate as any other PR. Without that approval it is a
+ * typed deferral (`blocked: "default_branch_unapproved"`), so the PR is held
+ * and the hold is logged rather than retried as a failure forever.
+ *
  * Pre-merge backstop (Issue #2582): before merging, {@link
  * enforcePreMergeRequirements} re-fetches CI status and branch freshness and
  * refuses to merge unless CI is green and the branch is current. A blocked
@@ -813,7 +849,7 @@ export async function directMergePr(
   prNumber: number,
   ghCommandFn: GhCommandFn = runGhCommand,
   gateFn: PreMergeGateFn = enforcePreMergeRequirements,
-  options: PreMergeGateOptions = {},
+  options: DirectMergeOptions = {},
 ): Promise<Result<MergeResult>> {
   const guard = await prTargetsDefaultBranch(repo, prNumber, ghCommandFn);
   if (!guard.ok) {
@@ -825,12 +861,44 @@ export async function directMergePr(
     };
   }
   if (guard.value) {
-    return {
-      ok: false,
-      error: new Error(
-        `Refusing to direct-merge PR #${prNumber} in ${repo}: it targets the default branch. Default-branch PRs must merge via branch protection or a human review (Issue #2416).`,
-      ),
-    };
+    const policy = options.approvedDefaultBranch;
+    if (!policy) {
+      return {
+        ok: false,
+        error: new Error(
+          `Refusing to direct-merge PR #${prNumber} in ${repo}: it targets the default branch. Default-branch PRs must merge via branch protection or a human review (Issue #2416).`,
+        ),
+      };
+    }
+
+    // Issue #1082: the guard asks for "branch protection or a human review".
+    // There is no protection on this base, so the review has to be real —
+    // an approval from a login outside the fleet. Fail closed: an unreadable
+    // review list is a refusal, never an implied approval.
+    let reviews: PrReview[];
+    try {
+      reviews = await (policy.fetchReviewsFn ?? fetchPrReviews)(
+        repo,
+        prNumber,
+        ghCommandFn,
+      );
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        ok: false,
+        error: new Error(
+          `Refusing to direct-merge PR #${prNumber} in ${repo}: its reviews could not be read (${message}), so the approval the default-branch guard requires cannot be confirmed. Failing closed; will retry on the next maintenance scan (Issue #1082).`,
+        ),
+      };
+    }
+
+    if (!hasNonFleetApproval(reviews, policy.fleetAuthors)) {
+      // A deliberate hold, not a fault — leave the PR open and say why.
+      return {
+        ok: true,
+        value: { merged: false, blocked: "default_branch_unapproved" },
+      };
+    }
   }
 
   // Pre-merge backstop gate (Issue #2582): CI must be green and branch current.

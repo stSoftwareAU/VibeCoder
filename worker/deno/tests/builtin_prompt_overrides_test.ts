@@ -42,6 +42,7 @@ import {
   validateOverrideTemplate,
 } from "../lib/builtin_prompt_overrides.ts";
 import { loadConfig } from "../lib/config.ts";
+import type { CustomLabelPromptMapping } from "../types.ts";
 
 /** A template body carrying the given placeholders. */
 function templateWith(...placeholders: string[]): string {
@@ -263,7 +264,12 @@ Deno.test("parseCustomLabelPrompts - a built-in label becomes a phase override",
     ]);
     assert(result.ok, result.ok ? "" : result.error);
     assertEquals(result.value, [
-      { label: "planning", promptPath, overridesPhase: "planning" },
+      {
+        label: "planning",
+        promptPath,
+        targetPhase: "issue",
+        overridesPhase: "planning",
+      },
     ]);
   });
 });
@@ -405,12 +411,17 @@ Deno.test("assertCustomLabelPrompts - throws naming the phase and the missing pl
 // ---------------------------------------------------------------------------
 
 Deno.test("customDispatchMappings - keeps overrides out of the label scan", () => {
-  const config = {
+  const config: { customLabelPrompts: CustomLabelPromptMapping[] } = {
     customLabelPrompts: [
-      { label: "my-custom-label", promptPath: "/opt/a.md" },
+      {
+        label: "my-custom-label",
+        promptPath: "/opt/a.md",
+        targetPhase: "issue",
+      },
       {
         label: "planning",
         promptPath: "/opt/b.md",
+        targetPhase: "issue",
         overridesPhase: "planning",
       },
     ],
@@ -445,7 +456,12 @@ Deno.test("loadConfig - a built-in override loads and is marked with its phase",
       custom_label_prompts: [{ label: "grill-me", prompt_path: promptPath }],
     });
     assertEquals(config.customLabelPrompts, [
-      { label: "grill-me", promptPath, overridesPhase: "grill-me" },
+      {
+        label: "grill-me",
+        promptPath,
+        targetPhase: "issue",
+        overridesPhase: "grill-me",
+      },
     ]);
   });
 });

@@ -301,14 +301,23 @@ Deno.test("shouldFile vetoes while a prior wrapper is still open", async () => {
     const jsonIdx = args.indexOf("--json");
     const fields = jsonIdx >= 0 ? args[jsonIdx + 1] : "";
     if (fields === "body") return Promise.resolve("[]"); // no open findings
-    // wrapper title search returns the open wrapper.
+    // The wrapper title search returns the open wrapper, authored by a fleet
+    // account: the veto now counts a title match only when the fleet wrote
+    // it, because a title alone is text anybody may write.
     return Promise.resolve(
       JSON.stringify([
-        { number: 3, title: WORKFLOW_ANNOTATION_SCAN_ISSUE_TITLE },
+        {
+          number: 3,
+          title: WORKFLOW_ANNOTATION_SCAN_ISSUE_TITLE,
+          author: { login: "vibe-bot" },
+        },
       ]),
     );
   };
-  const t = createWorkflowAnnotationScanTemplate({ ghCommandFn: fn });
+  const t = createWorkflowAnnotationScanTemplate({
+    ghCommandFn: fn,
+    dedupAuthors: { fleetAuthors: ["vibe-bot"] },
+  });
   assertEquals(await t.shouldFile!({ repo: "org/repo" }), false);
 });
 

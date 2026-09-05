@@ -1234,10 +1234,16 @@ Deno.test("selectHighestPriority - higher-nice tier reached only when lower-nice
   assertEquals(selected?.repo, "owner/high");
 });
 
-Deno.test("selectHighestPriority - nice tier gates higher priority across repos", () => {
+Deno.test("selectHighestPriority - label tier gates nice across repos (Issue #1063)", () => {
   // A configured-label (tier 1) issue lives in a high-nice repo; a work-on
-  // (tier 2) issue lives in a low-nice repo. nice is the OUTERMOST grouping,
-  // so the low-nice repo wins even though its candidate is a lower tier.
+  // (tier 2) issue lives in a low-nice repo.
+  //
+  // Business-logic change (Issue #1063, superseding Issue #2773): the LABEL
+  // TIER is now the outermost grouping and `nice` orders repos within a tier,
+  // so the configured-label issue wins despite its repo's higher `nice`. This
+  // test previously asserted the inverse ("nice tier gates higher priority
+  // across repos") — the operator's recorded decision is that `nice` is a
+  // tie-breaker inside a priority band, never a band of its own.
   const repoNice = (repo: string) => (repo === "owner/low" ? 0 : 10);
   const result: SelectionResult = {
     selected: null,
@@ -1260,8 +1266,8 @@ Deno.test("selectHighestPriority - nice tier gates higher priority across repos"
     blockedEntries: [],
   };
   const selected = selectHighestPriority(result, { repoNice });
-  assertEquals(selected?.number, 2);
-  assertEquals(selected?.repo, "owner/low");
+  assertEquals(selected?.number, 1);
+  assertEquals(selected?.repo, "owner/high");
 });
 
 Deno.test("selectHighestPriority - fair repo rotation distributes across repos within a nice tier", () => {

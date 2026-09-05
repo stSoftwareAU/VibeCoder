@@ -14,9 +14,36 @@
  * `worker/deno/setup/workflow_sync.ts`:
  *   - `<!-- vibe-coder:workflow-sync:<specId> -->` for missing-workflow issues
  *   - `<!-- vibe-coder:workflow-sync:partial:<specId> -->` for partial-match issues
+ *
+ * **The tag is not evidence the fleet filed the issue.** The search is
+ * `"<!-- vibe-coder:workflow-sync:" in:body`, and on a public repository a
+ * body is text anyone who can open an issue may write. What this module
+ * does with a match is `gh issue close`, with `dryRun` off by default — so
+ * an unverified match is untrusted content driving a destructive write on
+ * somebody else's issue. Every match is therefore author-verified against
+ * the fleet identity (`alert_dedup_authors.ts`) before it can be closed.
+ *
+ * **The fail direction is "close nothing".** Where the alerting dedups
+ * fail towards raising a duplicate — noise a human clears in a moment —
+ * this one fails towards leaving a stale issue open. A stale issue is
+ * tidied on the next pass once the fleet identity is configured; an issue
+ * closed by mistake is the one outcome nobody can undo from here.
+ *
+ * The `enhancement` label the sync tries to apply is deliberately **not**
+ * used as a second scope. It is generic, target repositories relabel these
+ * issues (the VibeCoder copy carries `work-on` instead), and
+ * `createWorkflowIssue` falls back to filing without any label when the
+ * label does not exist — so a label requirement would silently stop the
+ * purge working rather than narrow it. Authorship is the scope that holds.
  */
 
 import type { Result } from "../types.ts";
+import {
+  ALERT_DEDUP_JSON_FIELDS,
+  type AlertDedupAuthorOptions,
+  type AlertDedupRow,
+  selectFleetAuthoredMatches,
+} from "./alert_dedup_authors.ts";
 import {
   detectRepoLanguages,
   type LanguageDetectorOptions,
@@ -42,14 +69,22 @@ export interface CommandOutput {
   stderr: string;
 }
 
-/** Options for the purge operation. */
-export interface PurgeOptions {
+/**
+ * Options for the purge operation.
+ *
+ * Extends {@link AlertDedupAuthorOptions}, so `fleetAuthors` (tests) or the
+ * configured fleet identity (production) decides whose workflow-sync tag
+ * may drive a close.
+ */
+export interface PurgeOptions extends AlertDedupAuthorOptions {
   /** Override for command execution (testing). */
   runCommand?: (cmd: string[]) => Promise<CommandOutput>;
   /** Custom gh config directory (from .config.json gh_config_dir). */
   ghConfigDir?: string;
   /** When true, report what would be closed without invoking gh issue close. */
   dryRun?: boolean;
+  /** Sink for the author-verification diagnostics. Defaults to `console.warn`. */
+  log?: (message: string) => void;
 }
 
 /** Issue kind, derived from the deduplication tag. */
@@ -154,11 +189,21 @@ export function extractSpecIdFromIssueBody(
   return null;
 }
 
-/** Fetch open workflow-sync issues from a repo via `gh issue list`. */
+/** One tag-matching issue, with the author that makes the match verifiable. */
+interface PurgeCandidateRow extends AlertDedupRow {
+  body: string;
+}
+
+/**
+ * Fetch open workflow-sync issues from a repo via `gh issue list`.
+ *
+ * Requests the author alongside the body: a tag match that cannot be
+ * attributed is not a candidate for closing.
+ */
 async function listWorkflowSyncIssues(
   repo: string,
   runner: (cmd: string[]) => Promise<CommandOutput>,
-): Promise<Result<{ number: number; body: string }[], string>> {
+): Promise<Result<PurgeCandidateRow[], string>> {
   const result = await runner([
     "gh",
     "issue",
@@ -170,7 +215,7 @@ async function listWorkflowSyncIssues(
     "--search",
     `"${TAG_SEARCH_PREFIX}" in:body`,
     "--json",
-    "number,body",
+    ALERT_DEDUP_JSON_FIELDS,
     "--limit",
     "200",
   ]);
@@ -185,10 +230,7 @@ async function listWorkflowSyncIssues(
   }
 
   try {
-    const parsed = JSON.parse(result.stdout) as {
-      number: number;
-      body: string;
-    }[];
+    const parsed = JSON.parse(result.stdout) as PurgeCandidateRow[];
     return { ok: true, value: parsed };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -291,6 +333,7 @@ export async function purgeStaleWorkflowIssuesForRepo(
 ): Promise<Result<PurgeResult, string>> {
   const runner = options.runCommand ??
     createDefaultRunCommand(options.ghConfigDir);
+  const log = options.log ?? ((message: string) => console.warn(message));
 
   // 1. List candidate issues.
   const issuesResult = await listWorkflowSyncIssues(repo, runner);
@@ -298,11 +341,24 @@ export async function purgeStaleWorkflowIssuesForRepo(
     return { ok: false, error: issuesResult.error };
   }
 
-  // 2. Parse spec IDs from issue bodies.
+  // 2. Parse spec IDs from issue bodies, keeping only the tags a fleet
+  // account actually wrote. A tag anybody can type must never reach
+  // `gh issue close`, and an unresolvable fleet closes nothing at all.
+  const tagged = issuesResult.value.filter((issue) =>
+    extractSpecIdFromIssueBody(issue.body) !== null
+  );
+  const verified = await selectFleetAuthoredMatches(
+    tagged,
+    `workflow-sync purge ${repo}`,
+    options,
+    log,
+    "no issue is closed — an unverifiable match must never drive a " +
+      "destructive write, and a stale issue left open is recoverable " +
+      "where a wrongly closed one is not",
+  );
   const candidates: CandidateIssue[] = [];
-  for (const issue of issuesResult.value) {
-    const tag = extractSpecIdFromIssueBody(issue.body);
-    if (!tag) continue;
+  for (const issue of verified) {
+    const tag = extractSpecIdFromIssueBody(issue.body)!;
     candidates.push({
       number: issue.number,
       specId: tag.specId,

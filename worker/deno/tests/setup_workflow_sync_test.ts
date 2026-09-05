@@ -15,6 +15,9 @@ import {
   type WorkflowSyncOptions,
 } from "../setup/workflow_sync.ts";
 
+/** The fleet login every fixture issue is authored by. */
+const FLEET_AUTHOR = "vibe-coder-bot";
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -143,7 +146,11 @@ function buildMockRunner(config: {
         for (const specId of config.existingPartialIssues) {
           const tag = partialDeduplicationTag(specId);
           if (searchQuery.includes(tag)) {
-            return Promise.resolve(ok(JSON.stringify([{ number: 43 }])));
+            return Promise.resolve(ok(JSON.stringify([{
+              number: 43,
+              body: `The fleet raised this.\n${tag}`,
+              author: { login: FLEET_AUTHOR },
+            }])));
           }
         }
       }
@@ -151,7 +158,11 @@ function buildMockRunner(config: {
         for (const specId of config.existingIssues) {
           const tag = deduplicationTag(specId);
           if (searchQuery.includes(tag)) {
-            return Promise.resolve(ok(JSON.stringify([{ number: 42 }])));
+            return Promise.resolve(ok(JSON.stringify([{
+              number: 42,
+              body: `The fleet raised this.\n${tag}`,
+              author: { login: FLEET_AUTHOR },
+            }])));
           }
         }
       }
@@ -250,6 +261,7 @@ Deno.test("syncWorkflowsForRepo - detects missing workflows and raises issues", 
   });
 
   const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -283,6 +295,7 @@ Deno.test("syncWorkflowsForRepo - all workflows present raises no issues", async
   });
 
   const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -308,6 +321,7 @@ Deno.test("syncWorkflowsForRepo - idempotent: skips issues that already exist", 
   });
 
   const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -328,6 +342,7 @@ Deno.test("syncWorkflowsForRepo - second run creates no duplicate issues", async
   });
 
   const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -348,7 +363,10 @@ Deno.test("syncWorkflowsForRepo - issues contain deduplication tags", async () =
     workflowFiles: [],
   });
 
-  await syncWorkflowsForRepo("owner/repo", { runCommand: runner });
+  await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+  });
 
   for (const issue of state.issuesCreated) {
     // Each issue body should contain the dedup tag
@@ -367,7 +385,10 @@ Deno.test("syncWorkflowsForRepo - issues contain workflow YAML template", async 
     workflowFiles: [],
   });
 
-  await syncWorkflowsForRepo("owner/repo", { runCommand: runner });
+  await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+  });
 
   for (const issue of state.issuesCreated) {
     // Each issue body should contain a YAML code block
@@ -389,6 +410,7 @@ Deno.test("syncWorkflowsForRepo - language detection failure returns error resul
   });
 
   const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -407,6 +429,7 @@ Deno.test("syncWorkflowsForRepo - issue creation failure does not block other is
   });
 
   const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -427,6 +450,7 @@ Deno.test("syncWorkflowsForRepo - dry run does not create issues", async () => {
   });
 
   const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
     dryRun: true,
   });
@@ -565,6 +589,7 @@ Deno.test("syncWorkflowsForRepo - raises issues for partial matches", async () =
   });
 
   const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -596,7 +621,10 @@ Deno.test("syncWorkflowsForRepo - partial issue body uses capability-oriented la
     workflowContents: { "cargo-quality.yml": cargoQualityPartialYaml },
   });
 
-  await syncWorkflowsForRepo("owner/repo", { runCommand: runner });
+  await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+  });
 
   const partialIssue = state.issuesCreated.find((i) =>
     i.title.includes("Complete")
@@ -650,6 +678,7 @@ Deno.test("syncWorkflowsForRepo - partial issues are idempotent", async () => {
   });
 
   const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -675,6 +704,7 @@ Deno.test("syncWorkflowsForRepo - missing and partial tags are searched separate
   });
 
   const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -705,6 +735,7 @@ Deno.test("syncWorkflowsForRepo - dry run reports partial count without creating
   });
 
   const result = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
     dryRun: true,
   });
@@ -847,7 +878,10 @@ Deno.test(
       workflowFiles: [],
     });
 
-    await syncWorkflowsForRepo("owner/repo", { runCommand: runner });
+    await syncWorkflowsForRepo("owner/repo", {
+      fleetAuthors: [FLEET_AUTHOR],
+      runCommand: runner,
+    });
 
     // Every dedup search must request all issue states. There are 3
     // universal specs so we expect 3 issue-list calls.
@@ -867,7 +901,10 @@ Deno.test(
       }
       return runner!(cmd);
     };
-    await syncWorkflowsForRepo("owner/repo", { runCommand: wrapped });
+    await syncWorkflowsForRepo("owner/repo", {
+      fleetAuthors: [FLEET_AUTHOR],
+      runCommand: wrapped,
+    });
     assertEquals(rawListCalls.length > 0, true);
     for (const cmd of rawListCalls) {
       const stateIdx = cmd.indexOf("--state");

@@ -873,6 +873,18 @@ const RETRY_POLICY_VALUE_RE = /--retry\b/;
  */
 const PIP_RETRY_VALUE_RE = /--resume-retries\b/;
 
+/**
+ * A step asking npm to empty its cache (Issue #1015).
+ *
+ * npm refuses to clean without the protections-off flag and warns whenever it
+ * is given one, so the instruction cannot run quietly: three of them printed
+ * on every image build, for ever. A warning that always fires is one nobody
+ * reads, and the build log is the first thing an operator opens when an image
+ * build fails. Pointing `npm_config_cache` at a directory the same `RUN`
+ * deletes leaves the layer exactly as small, with nothing to warn about.
+ */
+const NPM_CACHE_CLEAN_RE = /\bnpm\s+cache\s+clean\b/;
+
 /** A download piped straight into a shell, verified by nothing. */
 const PIPE_TO_SHELL_RE = /\b(?:curl|wget)\b[^|]*\|\s*(?:ba)?sh\b/;
 
@@ -945,6 +957,14 @@ function findInstallStepViolations(containerfile: string): string[] {
   for (const run of runInstructions(containerfile)) {
     if (PIPE_TO_SHELL_RE.test(run)) {
       violations.push(`build step pipes a download into a shell: ${run}`);
+    }
+
+    if (NPM_CACHE_CLEAN_RE.test(run)) {
+      violations.push(
+        "build step cleans the npm cache, which npm cannot do without " +
+          "warning on every build: set npm_config_cache to a directory the " +
+          `same step deletes instead: ${run}`,
+      );
     }
 
     if (run.includes(TOOLS_INSTALLER)) {

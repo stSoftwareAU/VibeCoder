@@ -129,11 +129,18 @@ function fakeClient(
   } as unknown as GitHubClient;
 }
 
+/**
+ * The fleet login every fixture comment is authored by — an attempt marker
+ * only counts when a fleet account recorded it (the planted-marker case is
+ * in `tests/untrusted_marker_action_verification_test.ts`).
+ */
+const FLEET_AUTHOR = "vibe-coder";
+
 function comment(body: string): GitHubComment {
   return {
     id: 1,
     body,
-    author: "vibe-coder",
+    author: FLEET_AUTHOR,
     createdAt: new Date(0).toISOString(),
     reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
   };
@@ -258,6 +265,7 @@ Deno.test("resumeFailureDetectionRepair - a parent fixed by hand costs zero Clau
     runClaude: forbiddenClaude(claude),
     logger: silentLogger(),
     needsHumanLabel: "needs-human",
+    fleetAuthors: [FLEET_AUTHOR],
   });
 
   assertEquals(claude.calls, 0, "no Claude call for an already-clean parent");
@@ -296,6 +304,7 @@ Deno.test("resumeFailureDetectionRepair - repairs the still-offending sub-issue 
     runClaude: draftingClaude(claude),
     logger: silentLogger(),
     needsHumanLabel: "needs-human",
+    fleetAuthors: [FLEET_AUTHOR],
   });
 
   assertEquals(outcome.status, "repaired");
@@ -329,6 +338,7 @@ Deno.test("resumeFailureDetectionRepair - an un-repairable sub-issue keeps the l
     runClaude: failingClaude(claude),
     logger: silentLogger(),
     needsHumanLabel: "needs-human",
+    fleetAuthors: [FLEET_AUTHOR],
   });
 
   assertEquals(outcome.status, "outstanding");
@@ -379,6 +389,7 @@ Deno.test("resumeFailureDetectionRepair - a spent retry budget escalates to need
     runClaude: forbiddenClaude(claude),
     logger: silentLogger(),
     needsHumanLabel: "needs-human",
+    fleetAuthors: [FLEET_AUTHOR],
     // Stubbed so the escalation never reaches the network from a unit test.
     escalationDeps: {
       github: {
@@ -418,6 +429,7 @@ Deno.test("resumeFailureDetectionRepair - budget-deferred offenders do not burn 
     runClaude: forbiddenClaude(claude),
     logger: silentLogger(),
     needsHumanLabel: "needs-human",
+    fleetAuthors: [FLEET_AUTHOR],
     // A deadline already in the past: no repair can be afforded.
     deadlineMs: 0,
     now: () => 1_000,
@@ -449,6 +461,7 @@ Deno.test("resumeFailureDetectionRepair - a parent whose sub-issues cannot be en
     runClaude: forbiddenClaude({ calls: 0 }),
     logger: silentLogger(),
     needsHumanLabel: "needs-human",
+    fleetAuthors: [FLEET_AUTHOR],
   });
 
   assertEquals(outcome.status, "outstanding");
@@ -475,6 +488,7 @@ Deno.test("resumeFailureDetectionRepair - repeated enumeration failure escalates
     runClaude: forbiddenClaude({ calls: 0 }),
     logger: silentLogger(),
     needsHumanLabel: "needs-human",
+    fleetAuthors: [FLEET_AUTHOR],
     escalationDeps: {
       github: {
         ensureLabelExists: () =>
@@ -520,6 +534,7 @@ Deno.test("runFailureDetectionResumePass - processes discovered parents up to th
     runClaude: forbiddenClaude(claude),
     logger: silentLogger(),
     needsHumanLabel: "needs-human",
+    fleetAuthors: [FLEET_AUTHOR],
     maxParentsPerCycle: 1,
   });
 
@@ -543,6 +558,7 @@ Deno.test("runFailureDetectionResumePass - no labelled parents is a clean no-op"
     runClaude: forbiddenClaude({ calls: 0 }),
     logger: silentLogger(),
     needsHumanLabel: "needs-human",
+    fleetAuthors: [FLEET_AUTHOR],
   });
 
   assertEquals(result.parentsFound, 0);

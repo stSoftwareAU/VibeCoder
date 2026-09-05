@@ -32,6 +32,13 @@ import {
 // Helpers
 // =============================================================================
 
+/**
+ * The fleet account the tracking issue is filed by — a marker match only
+ * dedups when a fleet account authored it.
+ */
+const FLEET_LOGIN = "vibe-coder-bot";
+const FLEET: readonly string[] = [FLEET_LOGIN];
+
 interface RecordedGh {
   args: string[];
 }
@@ -183,8 +190,12 @@ Deno.test(
       const statePath = bumpScriptStreakPath(dir);
       const gh = makeGh({
         listAnswer: JSON.stringify([
-          { number: 9, body: "unrelated issue" },
-          { number: 11, body: formatBumpScriptFailureMarker("org/repo") },
+          { number: 9, body: "unrelated issue", author: { login: "someone" } },
+          {
+            number: 11,
+            body: formatBumpScriptFailureMarker("org/repo"),
+            author: { login: FLEET_LOGIN },
+          },
         ]),
       });
 
@@ -192,6 +203,7 @@ Deno.test(
         statePath,
         report: report(),
         ghFn: gh.fn,
+        fleetAuthors: FLEET,
         log: () => {},
       });
       for (let i = 2; i <= BUMP_SCRIPT_FAILURE_THRESHOLD; i++) {
@@ -199,6 +211,7 @@ Deno.test(
           statePath,
           report: report(),
           ghFn: gh.fn,
+          fleetAuthors: FLEET,
           log: () => {},
         });
       }

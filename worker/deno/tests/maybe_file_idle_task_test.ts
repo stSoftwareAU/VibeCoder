@@ -1138,8 +1138,9 @@ Deno.test(
           log: (line: string) => log.push(line),
           randomFn: () => 0.99,
           ensureMilestoneFn: milestone.fn,
-          // Fleet has real work somewhere — existence-based suppression.
-          anyRepoHasWorkFn: () => Promise.resolve(true),
+          // One repo holds real work, and (Issue #1083) the default of one
+          // idle slot means that one repo is enough to occupy the fleet.
+          countStartableWorkReposFn: () => Promise.resolve(1),
           // Per-repo busy is off; the fleet gate must short-circuit before
           // the per-repo loop is ever reached.
           isRepoBusyFn: () => Promise.resolve(false),
@@ -1194,7 +1195,7 @@ Deno.test(
           nowFn: () => new Date("2026-06-15T00:00:00.000Z"),
           log: (line: string) => log.push(line),
           ensureMilestoneFn: milestone.fn,
-          anyRepoHasWorkFn: () => Promise.resolve(false),
+          countStartableWorkReposFn: () => Promise.resolve(0),
           isRepoBusyFn: () => Promise.resolve(false),
         },
       },
@@ -1231,7 +1232,7 @@ Deno.test(
           nowFn: () => new Date("2026-06-15T00:00:00.000Z"),
           log: (line: string) => log.push(line),
           ensureMilestoneFn: milestone.fn,
-          anyRepoHasWorkFn: () =>
+          countStartableWorkReposFn: () =>
             Promise.reject(new Error("gh fleet probe exploded")),
           isRepoBusyFn: () => Promise.resolve(false),
         },
@@ -1872,11 +1873,77 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
-// Cross-repo wrapper dedup (Issue #2092)
+// Per-repo wrapper exclusivity (Issues #2092, #1083)
 // ---------------------------------------------------------------------------
+//
+// Documented business-logic change (Issue #1083): a wrapper open in ONE
+// monitored repo no longer suppresses filing across the whole set. The gate is
+// one wrapper per repository — the operator's "one issue in flight per work
+// stream" rule applied to idle work — so the holder is skipped and a clean
+// repo is filed instead. The whole-set refusal it replaces is the case below.
 
 Deno.test(
-  "maybe-file-idle-task - skipped with reason=existing_wrapper_open when any monitored repo has an open wrapper (Issue #2092)",
+  "maybe-file-idle-task - a repo holding a wrapper is skipped and a clean repo is filed (Issues #2092, #1083)",
+  async () => {
+    const config = buildDefaultWorkerConfig();
+    const gh = makeMockGh();
+    const log: string[] = [];
+    const milestone = makeMilestoneStub();
+
+    const result = await maybeFileIdleTaskCommand.execute(
+      {
+        "monitored-repos": "org/idle-a,org/idle-b",
+        "github-user": "VibeBot",
+        __testDeps: {
+          // The census reports one holder; the other repo stays eligible.
+          findOpenWrappersFn: (_repos: readonly string[]) =>
+            Promise.resolve([{
+              repo: "org/idle-b",
+              number: 2724,
+              url: "https://github.com/org/idle-b/issues/2724",
+            }]),
+          findExistingFn: () => Promise.resolve(null),
+          ensureLabelFn: (_repo: string) =>
+            Promise.resolve({ ok: true, value: undefined } as Result<void>),
+          ghCommandFn: gh.fn,
+          isRepoBusyFn: () => Promise.resolve(false),
+          pickTemplateFn: () => testTemplate,
+          nowFn: () => new Date("2026-05-18T00:00:00.000Z"),
+          log: (line: string) => log.push(line),
+          randomFn: () => 0.99,
+          ensureMilestoneFn: milestone.fn,
+        },
+      },
+      config,
+    );
+
+    assertEquals(result.success, true);
+    const data = result.data as
+      | { action: string; repo?: string; template?: string }
+      | undefined;
+    assertEquals(data?.action, "filed");
+    assertEquals(data?.repo, "org/idle-a");
+    assert(findCreateCall(gh.calls) !== null);
+
+    // The refusal is logged, naming the repo and the issue that held it —
+    // the line whose absence hid the fleet-wide cap for a week (#1083).
+    const skipLine = log.find((l) =>
+      l.includes("action=skipped") &&
+      l.includes("reason=existing_wrapper_open")
+    );
+    assert(
+      skipLine !== undefined,
+      "expected an action=skipped reason=existing_wrapper_open log line",
+    );
+    assertStringIncludes(skipLine!, `template=${TEST_TEMPLATE_NAME}`);
+    assertStringIncludes(skipLine!, "repo=org/idle-b");
+    assertStringIncludes(skipLine!, "issue=2724");
+    assertStringIncludes(skipLine!, "scope=repo");
+  },
+);
+
+Deno.test(
+  "maybe-file-idle-task - skipped with reason=existing_wrapper_open when EVERY monitored repo holds one (Issues #2092, #1083)",
   async () => {
     const config = buildDefaultWorkerConfig();
     const gh = makeMockGh();
@@ -1889,15 +1956,20 @@ Deno.test(
         "monitored-repos": "org/idle-a,org/idle-b",
         "github-user": "VibeBot",
         __testDeps: {
-          // Cross-repo gate returns a wrapper from a different repo.
-          findAnyOpenWrapperFn: (_repos: readonly string[]) =>
-            Promise.resolve({
-              repo: "org/idle-b",
-              number: 2724,
-              url: "https://github.com/org/idle-b/issues/2724",
-            }),
-          // Per-repo dedup is wired up but must NOT be consulted —
-          // the cross-repo gate fires first.
+          findOpenWrappersFn: (_repos: readonly string[]) =>
+            Promise.resolve([
+              {
+                repo: "org/idle-a",
+                number: 2723,
+                url: "https://github.com/org/idle-a/issues/2723",
+              },
+              {
+                repo: "org/idle-b",
+                number: 2724,
+                url: "https://github.com/org/idle-b/issues/2724",
+              },
+            ]),
+          // Per-repo dedup must NOT be consulted — no candidate survives.
           findExistingFn: (o: { repo: string }) => {
             perRepoDedupCalls.push(o.repo);
             return Promise.resolve(null);
@@ -1917,31 +1989,21 @@ Deno.test(
 
     assertEquals(result.success, true);
     const data = result.data as
-      | { action: string; reason?: string; repo?: string; template?: string }
+      | { action: string; reason?: string; template?: string }
       | undefined;
     assertEquals(data?.action, "skipped");
     assertEquals(data?.reason, "existing_wrapper_open");
-    assertEquals(data?.repo, "org/idle-b");
     assertEquals(data?.template, TEST_TEMPLATE_NAME);
-
-    // Per-repo loop did not run — milestone, label, and gh create
-    // were never consulted.
     assertEquals(perRepoDedupCalls, []);
     assertEquals(milestone.calls.length, 0);
     assertEquals(findCreateCall(gh.calls), null);
 
-    // Structured skip log emitted with the new reason.
-    const skipLine = log.find((l) =>
-      l.includes("action=skipped") &&
-      l.includes("reason=existing_wrapper_open")
+    const summary = log.find((l) =>
+      l.includes("reason=existing_wrapper_open") &&
+      l.includes("scope=monitored_set")
     );
-    assert(
-      skipLine !== undefined,
-      "expected an action=skipped reason=existing_wrapper_open log line",
-    );
-    assertStringIncludes(skipLine!, `template=${TEST_TEMPLATE_NAME}`);
-    assertStringIncludes(skipLine!, "repo=org/idle-b");
-    assertStringIncludes(skipLine!, "issue=2724");
+    assert(summary !== undefined, "expected a monitored_set summary line");
+    assertStringIncludes(summary!, "held=2");
   },
 );
 
@@ -1959,8 +2021,8 @@ Deno.test(
         "monitored-repos": "org/idle-a,org/idle-b",
         "github-user": "VibeBot",
         __testDeps: {
-          // Cross-repo gate reports the entire set clean.
-          findAnyOpenWrapperFn: () => Promise.resolve(null),
+          // The wrapper census reports the entire set clean.
+          findOpenWrappersFn: () => Promise.resolve([]),
           findExistingFn: (o: { repo: string }) => {
             perRepoDedupCalls.push(o.repo);
             return Promise.resolve(null);

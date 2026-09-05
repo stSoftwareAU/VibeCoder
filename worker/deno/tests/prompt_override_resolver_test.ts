@@ -77,7 +77,7 @@ async function override(
 ): Promise<CustomLabelPromptMapping> {
   const promptPath = `${dir}/${name}`;
   await Deno.writeTextFile(promptPath, body);
-  return { label, promptPath, overridesPhase: phase };
+  return { label, promptPath, targetPhase: "issue", overridesPhase: phase };
 }
 
 const OPERATOR_MARKER = "OPERATOR TEMPLATE — not the repository's";
@@ -216,6 +216,7 @@ Deno.test("refuseFallbackPastOverride - leaves an unoverridden phase alone", () 
     [{
       label: "planning",
       promptPath: "/opt/a.md",
+      targetPhase: "issue",
       overridesPhase: "planning",
     }],
     "question",

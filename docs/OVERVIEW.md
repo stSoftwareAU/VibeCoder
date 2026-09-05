@@ -143,9 +143,10 @@ other Vibe Coders. Coordination is through GitHub only:
   issue for the same target (default or a milestone branch) while it already has
   an open PR for that branch. So you get at most one open PR to default and one
   per milestone branch.
-- **One issue per repo/milestone** — The worker enforces that only one issue per
-  repository (or per milestone within a repository) is being worked on at any
-  given time, preventing concurrent changes to the same codebase area.
+- **One issue per work stream** — A work stream is a merge target: the default
+  branch, plus each open milestone. The worker enforces one in-flight issue per
+  work stream, so a repository runs as many issues concurrently as it has
+  streams and no two of them ever target the same branch.
 - **Claiming:** For issue-based work, the worker assigns itself, waits briefly,
   then re-reads assignees. If two workers claimed the same issue, one keeps the
   claim and the other unassigns and skips.
