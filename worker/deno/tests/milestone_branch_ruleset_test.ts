@@ -26,6 +26,7 @@ import {
   loadMilestoneBranchRuleset,
   MILESTONE_BRANCH_RULESET_PATH,
 } from "../lib/committed_rulesets.ts";
+import { createMilestoneBranchName } from "../lib/git_branch.ts";
 
 /**
  * The ruleset as GitHub applied it on 2026-08-30 — ruleset `21835173`, read
@@ -172,6 +173,44 @@ Deno.test("diffLiveRuleset - the applied milestone ruleset gates no test (the bu
     contexts.length,
     requiredContexts(committed, MILESTONE_BRANCH_RULESET_PATH).length - 2,
     "every committed context but gitleaks and semgrep must be reported missing",
+  );
+});
+
+Deno.test("diffLiveRuleset - enforcing on create is reported as drift", async () => {
+  const committed = await loadMilestoneBranchRuleset();
+  // The applied ruleset carries `false`, which would refuse the push that
+  // creates a new milestone branch once the full context set is required.
+  const drift = diffLiveRuleset(LIVE_RULESET_2026_08_30, committed);
+  const found = drift.filter((d) => d.field === "do_not_enforce_on_create");
+  assertEquals(found.length, 1);
+  assertStringIncludes(found[0]?.detail ?? "", "has no checks yet");
+});
+
+Deno.test("milestone ruleset - the ref condition covers every branch name the fleet creates", async () => {
+  // The payload covers `refs/heads/milestone/**`, while the workflows filter
+  // on `milestone/*`, which matches one path segment. The two agree only
+  // because `createMilestoneBranchName` replaces every non-alphanumeric
+  // character, so a milestone branch can never nest — if that ever changed,
+  // the nested branch would require 14 contexts no workflow reports.
+  for (
+    const title of [
+      "CI gates and repository rulesets",
+      "Feature/nested slug",
+      "863: phase 2 / part b",
+    ]
+  ) {
+    const branch = createMilestoneBranchName(title);
+    assertEquals(
+      branch.slice("milestone/".length).includes("/"),
+      false,
+      `${branch} nests, so no workflow would report on a PR into it`,
+    );
+  }
+  assertEquals(
+    (await loadMilestoneBranchRuleset()).conditions.ref_name.include,
+    [
+      "refs/heads/milestone/**",
+    ],
   );
 });
 

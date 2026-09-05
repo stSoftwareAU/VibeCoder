@@ -106,6 +106,12 @@ function strictPolicy(rule: RulesetRule | undefined): boolean {
     ?.strict_required_status_checks_policy as boolean | undefined) === true;
 }
 
+/** Whether creating a branch is exempted from the required checks. */
+function exemptOnCreate(rule: RulesetRule | undefined): boolean {
+  return (rule?.parameters
+    ?.do_not_enforce_on_create as boolean | undefined) === true;
+}
+
 /**
  * The branch-only half of the comparison: the required status-check contexts
  * and the strict policy, appended to the shared field-by-field diff.
@@ -141,6 +147,19 @@ export function diffRequiredStatusChecks(
       "strict_required_status_checks_policy",
       `applied ${strictPolicy(appliedRule)}, committed ` +
         `${strictPolicy(wantedRule)} — a stale branch could merge`,
+    );
+  }
+  // Creating a branch at the default branch's tip carries no check runs, so
+  // enforcing the required checks on create refuses the push outright — which
+  // is how a new `milestone/<slug>` branch would be blocked (Issue #1073).
+  if (
+    appliedRule && exemptOnCreate(appliedRule) !== exemptOnCreate(wantedRule)
+  ) {
+    note(
+      "do_not_enforce_on_create",
+      `applied ${exemptOnCreate(appliedRule)}, committed ` +
+        `${exemptOnCreate(wantedRule)} — enforcing on create refuses a new ` +
+        "branch whose tip has no checks yet",
     );
   }
   return drift;

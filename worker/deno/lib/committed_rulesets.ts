@@ -26,10 +26,14 @@
 import {
   type BranchRuleset,
   diffRequiredStatusChecks,
+  loadMainBranchRuleset,
   MAIN_BRANCH_RULESET_PATH,
   parseBranchRuleset,
 } from "./main_branch_ruleset.ts";
-import { RELEASE_TAG_RULESET_PATH } from "./release_tag_ruleset.ts";
+import {
+  loadReleaseTagRuleset,
+  RELEASE_TAG_RULESET_PATH,
+} from "./release_tag_ruleset.ts";
 import type { GhExec } from "./repo_rulesets.ts";
 import type { RulesetPayload } from "./ruleset_payload.ts";
 import {
@@ -54,6 +58,11 @@ export interface CommittedRuleset {
    * required status checks; a tag has no merge to gate.
    */
   target: "branch" | "tag";
+  /**
+   * Read and validate the payload. Each entry reuses the loader that already
+   * owns its file, so a payload has one reader, not two.
+   */
+  load: (root?: string) => Promise<RulesetPayload>;
 }
 
 /**
@@ -68,16 +77,19 @@ export const COMMITTED_RULESETS: readonly CommittedRuleset[] = [
     path: MAIN_BRANCH_RULESET_PATH,
     protects: "the default branch",
     target: "branch",
+    load: (root) => loadMainBranchRuleset(...rootArgs(root)),
   },
   {
     path: MILESTONE_BRANCH_RULESET_PATH,
     protects: "milestone branches",
     target: "branch",
+    load: (root) => loadMilestoneBranchRuleset(...rootArgs(root)),
   },
   {
     path: RELEASE_TAG_RULESET_PATH,
     protects: "release tags",
     target: "tag",
+    load: (root) => loadReleaseTagRuleset(...rootArgs(root)),
   },
 ];
 
@@ -87,28 +99,28 @@ function repoRoot(): string {
     .replace(/\/$/, "");
 }
 
+/** Pass a root through only when there is one, so each loader's default wins. */
+function rootArgs(root: string | undefined): [] | [string] {
+  return root === undefined ? [] : [root];
+}
+
 /** Read and validate one committed payload. Throws if missing or malformed. */
 export async function loadCommittedRuleset(
   entry: CommittedRuleset,
-  root: string = repoRoot(),
+  root?: string,
 ): Promise<RulesetPayload> {
-  const path = `${root.replace(/\/$/, "")}/${entry.path}`;
-  return parseBranchRuleset(await Deno.readTextFile(path), entry.path);
+  return await entry.load(root);
 }
 
 /** Read and validate `infra/rulesets/milestone.json`. */
 export async function loadMilestoneBranchRuleset(
   root: string = repoRoot(),
 ): Promise<BranchRuleset> {
-  const entry = COMMITTED_RULESETS.find((r) =>
-    r.path === MILESTONE_BRANCH_RULESET_PATH
+  const path = `${root.replace(/\/$/, "")}/${MILESTONE_BRANCH_RULESET_PATH}`;
+  return parseBranchRuleset(
+    await Deno.readTextFile(path),
+    MILESTONE_BRANCH_RULESET_PATH,
   );
-  if (!entry) {
-    throw new Error(
-      `${MILESTONE_BRANCH_RULESET_PATH} is not registered in COMMITTED_RULESETS`,
-    );
-  }
-  return await loadCommittedRuleset(entry, root);
 }
 
 /** Options for {@link reconcileCommittedRuleset}. */
@@ -139,10 +151,7 @@ export async function reconcileCommittedRuleset(
   options: CommittedRulesetOptions = {},
 ): Promise<RulesetReconcileResult> {
   const { repo = COMMITTED_RULESET_REPO, root, ghExec } = options;
-  const committed = await loadCommittedRuleset(
-    entry,
-    root === undefined ? repoRoot() : root,
-  );
+  const committed = await loadCommittedRuleset(entry, root);
   return await reconcileRuleset({
     repo,
     committed,
@@ -157,8 +166,10 @@ export async function reconcileCommittedRuleset(
 /**
  * Compare every committed payload against the rulesets GitHub applies.
  *
- * Sequential on purpose: three reads, and a failure on one must not be lost
- * behind another's rejection.
+ * Sequential on purpose: the output reads in registry order, and three pairs
+ * of `gh` reads need no concurrency. A failure the comparison does not
+ * recognise propagates immediately and stops the sweep — loud and unfinished
+ * beats a partial answer that reads like a clean one.
  */
 export async function reconcileCommittedRulesets(
   options: CommittedRulesetOptions = {},

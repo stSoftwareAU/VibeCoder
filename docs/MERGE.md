@@ -628,6 +628,11 @@ The differences that remain between the two rulesets are recorded, with their
 reasons, in
 [`infra/rulesets/README.md`](../infra/rulesets/README.md).
 
+The required set is derived rather than remembered here too: the same
+`pr_check_contexts.ts` expansion runs against a `milestone/` base, with
+`MILESTONE_EXEMPT_CONTEXTS` as its recorded exemption list, so a new CI job
+missing from either branch ruleset fails the test suite.
+
 One command reconciles all three committed payloads — `main`, `Milestone` and
 the release tags — against what GitHub applies. It is read-only, exits
 non-zero on drift, fails loud when a ruleset is absent, and skips (saying so)
