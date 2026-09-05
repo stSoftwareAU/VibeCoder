@@ -216,13 +216,18 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // ruleset, which had drifted from its committed payload with nothing in
   // the repository comparing the two. Each branch bumped 146 -> 147 on its
   // own; merged, both commands exist, so the count is 148.
-  // Issue #997 added `container-egress-probe` on this milestone branch
-  // (count 148 -> 149) — a host whose containers cannot reach the network
-  // now proves it rather than stalling silently.
-  assertEquals(commands.length, 149);
+  // Two commands then arrived on two different milestone branches and met
+  // here: Issue #997's `container-egress-probe` (a host whose containers
+  // cannot reach the network proves it rather than stalling silently) came
+  // in with `main`, and Issue #873's `log-dir` (the one place the platform's
+  // log directory is resolved, which the launchers ask rather than each
+  // spelling their own default) is this branch's own. Each bumped
+  // 148 -> 149 alone; together they are 150.
+  assertEquals(commands.length, 150);
   assertEquals(commands.includes("check-resurrected-files"), true);
   assertEquals(commands.includes("check-release-tag-ruleset"), true);
   assertEquals(commands.includes("container-egress-probe"), true);
+  assertEquals(commands.includes("log-dir"), true);
   assertEquals(commands.includes("callback-conformance"), true);
   // The command Issue #805 removed stays removed: a merge that quietly
   // brought it back would restore the built-in reporting that issue deleted.
