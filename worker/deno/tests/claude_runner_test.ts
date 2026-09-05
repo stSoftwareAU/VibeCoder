@@ -33,7 +33,13 @@ import type { ClaudeExecutionResult } from "../lib/claude_executor.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 import type { Result } from "../types.ts";
 import { getDailySummary } from "../lib/credit_tracker.ts";
-import { withAgentStub } from "./support/agent_stub.ts";
+import {
+  type AgentStub,
+  agentStubGate,
+  releaseAgentStub,
+  withAgentStub,
+} from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 // ---------------------------------------------------------------------------
@@ -199,22 +205,46 @@ function withStubClaude<T>(
   });
 }
 
+/**
+ * The same, but the stub also stops at a gate the caller can release.
+ *
+ * The replacement for `sleep 60` and `sleep 5` in a stub body (PR #1170
+ * follow-up). A sleeping stub forces the test to wait out the watchdog it is
+ * testing, which is where three of this file's cases spent nine of its eleven
+ * seconds — and where a loaded host turns "the watchdog fired" into "the
+ * watchdog had not fired yet".
+ */
+function withGatedStub<T>(
+  bashBody: string,
+  fn: (stub: AgentStub) => Promise<T>,
+): Promise<T> {
+  return withAgentStub(bashBody, fn, { prefix: "claude_stub_" });
+}
+
 Deno.test({
   name:
     "runClaudeWithTimeout - kills silent process via no-output watchdog (Issue #1825)",
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    // Stub claude that sleeps for 60s without emitting any stdout. The hard
-    // timeout is 30s, but the silence watchdog (2s) should fire first.
-    const result = await withStubClaude("sleep 60", async (agentBinaryPath) => {
-      return await runClaudeWithTimeout({
+    // Stub claude that never emits any stdout. The hard timeout is 30 s, but
+    // the silence watchdog (2 s) fires first — and here it fires because the
+    // test moved the clock two seconds, not because two seconds went by.
+    const result = await withGatedStub(agentStubGate(), async (stub) => {
+      const clock = fakeClock();
+      const run = runClaudeWithTimeout({
+        clock,
         prompt: "test",
-        agentBinaryPath,
+        agentBinaryPath: stub.path,
         timeoutSeconds: 30,
         killAfterSeconds: 2,
         noOutputTimeout: 2,
       });
+      // The 2 s delay belongs to the silence watchdog and nothing else, so
+      // this is "the watchdog is armed" with no guess about spawn time.
+      await clock.armedFor(2_000);
+      await clock.advance(2_000);
+      return await run;
     });
 
     assert(
@@ -243,6 +273,7 @@ Deno.test({
       `exit 0\n`;
     const result = await withStubClaude(stubBody, async (agentBinaryPath) => {
       return await runClaudeWithTimeout({
+        clock: fakeClock(),
         prompt: "test",
         agentBinaryPath,
         timeoutSeconds: 30,
@@ -269,19 +300,30 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    // Stub sleeps 5s then prints. With noOutputTimeout=0 (disabled), the run
-    // should complete normally instead of being killed.
-    const stubBody = `sleep 5\n` +
+    // The stub stays silent for five seconds of the runner's own clock and
+    // then prints. With noOutputTimeout=0 (disabled) the run must complete
+    // normally instead of being killed.
+    const stubBody = agentStubGate() +
       `printf '%s\\n' '{"type":"result","result":"late"}'\n` +
       `exit 0\n`;
-    const result = await withStubClaude(stubBody, async (agentBinaryPath) => {
-      return await runClaudeWithTimeout({
+    const result = await withGatedStub(stubBody, async (stub) => {
+      const clock = fakeClock();
+      const run = runClaudeWithTimeout({
+        clock,
         prompt: "test",
-        agentBinaryPath,
+        agentBinaryPath: stub.path,
         timeoutSeconds: 30,
         killAfterSeconds: 2,
         noOutputTimeout: 0,
+        // The five-second post-settle drain is armed at spawn, and this case
+        // advances past it; naming a larger cap keeps the drain from expiring
+        // before the agent's own output has been read.
+        streamDrainCapSeconds: 600,
       });
+      await clock.armedFor(30_000);
+      await clock.advance(5_000);
+      await releaseAgentStub(stub);
+      return await run;
     });
 
     assert(result.ok);
@@ -298,16 +340,22 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    // Stub sleeps long. noOutputTimeout=0 disables silence watchdog, so the
-    // hard timeout (2s) must fire with reason "hard-timeout".
-    const result = await withStubClaude("sleep 60", async (agentBinaryPath) => {
-      return await runClaudeWithTimeout({
+    // The stub waits at the gate for good. noOutputTimeout=0 disables the
+    // silence watchdog, so the hard timeout (2 s) must fire with reason
+    // "hard-timeout".
+    const result = await withGatedStub(agentStubGate(), async (stub) => {
+      const clock = fakeClock();
+      const run = runClaudeWithTimeout({
+        clock,
         prompt: "test",
-        agentBinaryPath,
+        agentBinaryPath: stub.path,
         timeoutSeconds: 2,
         killAfterSeconds: 2,
         noOutputTimeout: 0,
       });
+      await clock.armedFor(2_000);
+      await clock.advance(2_000);
+      return await run;
     });
 
     assert(result.ok);
@@ -343,6 +391,7 @@ Deno.test({
       `exit 7\n`;
     const result = await withStubClaude(stubBody, async (agentBinaryPath) => {
       return await runClaudeWithTimeout({
+        clock: fakeClock(),
         prompt: "test",
         agentBinaryPath,
         timeoutSeconds: 30,
@@ -613,6 +662,7 @@ Deno.test({
       const result = await withStubClaude(stubBody, async (agentBinaryPath) => {
         return await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "test",
             model: "opus",
             phase: "implementation",
@@ -722,6 +772,7 @@ Deno.test({
       const { result, spawned } = await withGhLessStubClaude(
         async (run) => {
           const result = await runClaudeWithTimeout({
+            clock: fakeClock(),
             prompt: "test",
             ...run,
             // No operator opt-in in this environment, and no `WORK_DIR`, so
@@ -760,6 +811,7 @@ Deno.test({
       const { result, spawned } = await withGhLessStubClaude(
         async (run) => {
           const result = await runClaudeWithTimeout({
+            clock: fakeClock(),
             prompt: "test",
             ...run,
             // The operator opt-in, stated for this invocation only.

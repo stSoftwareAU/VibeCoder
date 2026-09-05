@@ -37,6 +37,7 @@ import {
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 // ---------------------------------------------------------------------------
 // Selection without spawning
@@ -340,6 +341,7 @@ Deno.test({
     const active = envFrom({ [AGENT_PROVIDER_ENV]: "claude" });
     await withStubProviders(false, async (stubs) => {
       const result = await runClaudeWithTimeout({
+        clock: fakeClock(),
         prompt: "draft the plan",
         agentProvider: "codex",
         agentBinaryPath: stubs.path("codex"),
@@ -384,6 +386,7 @@ Deno.test({
     await withStubProviders(true, async (stubs) => {
       const [claudeResult, codexResult] = await Promise.all([
         runClaudeWithTimeout({
+          clock: fakeClock(),
           prompt: "claude draft",
           agentProvider: "claude",
           agentBinaryPath: stubs.path("claude"),
@@ -394,6 +397,7 @@ Deno.test({
           killAfterSeconds: 2,
         }),
         runClaudeWithTimeout({
+          clock: fakeClock(),
           prompt: "codex draft",
           agentProvider: "codex",
           agentBinaryPath: stubs.path("codex"),
@@ -462,6 +466,7 @@ Deno.test({
       const creditLogDir = await Deno.makeTempDir({ prefix: "credit_log_" });
       try {
         const result = await runClaudeWithTimeout({
+          clock: fakeClock(),
           prompt: "default run",
           phase: "issue",
           agentBinaryPath: stubs.path("claude"),

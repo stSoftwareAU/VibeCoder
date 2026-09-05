@@ -25,6 +25,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 // ---------------------------------------------------------------------------
 // Stub harness — a fake agent, named by path (Issue #959), that records its
@@ -112,6 +113,7 @@ Deno.test({
     const { result, models } = await withRateLimitStub(1, async (stub) => {
       const result = await runClaudeWithRetry(
         {
+          clock: fakeClock(),
           prompt: "test",
           agentBinaryPath: stub.path,
           model: "fable",
@@ -152,6 +154,7 @@ Deno.test({
     const { result, models } = await withRateLimitStub(1, async (stub) => {
       const result = await runClaudeWithRetry(
         {
+          clock: fakeClock(),
           prompt: "test",
           agentBinaryPath: stub.path,
           model: "sonnet",
@@ -185,6 +188,7 @@ Deno.test({
     const { result, models } = await withRateLimitStub(1, async (stub) => {
       const result = await runClaudeWithRetry(
         {
+          clock: fakeClock(),
           prompt: "test",
           agentBinaryPath: stub.path,
           model: "fable",

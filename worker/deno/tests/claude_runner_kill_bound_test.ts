@@ -9,6 +9,12 @@
  * re-parented to init before the sweep) and holds the stdout pipe open, so
  * the pumps never finish even though the agent itself is dead.
  *
+ * The clock is injected (PR #1170 follow-up). Both watchdogs and the
+ * kill-completion cap now expire because the test moved the clock there, so
+ * "the wait was abandoned at the cap" is an exact figure rather than an
+ * elapsed reading bounded at twelve seconds — this file was one of the two
+ * that went red in #1170's own loaded run.
+ *
  * The contract these tests pin:
  * - After a watchdog kill, the runner waits at most the kill-completion cap
  *   for the child to settle, then abandons the wait, logs the evidence, and
@@ -28,7 +34,8 @@ import {
 } from "../lib/claude_runner.ts";
 import { TIMEOUT_EXIT_CODE } from "../lib/claude_executor.ts";
 import type { Logger } from "../types.ts";
-import { createAgentStub } from "./support/agent_stub.ts";
+import { agentStubGate, createAgentStub } from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 Deno.test("killCompletionCapMs - scales with the grace period but never below the floor (Issue #4254)", () => {
   assertEquals(
@@ -54,11 +61,12 @@ Deno.test({
     // Double-fork: the subshell exits immediately, so the sleeper re-parents
     // to init before the watchdog's descendant sweep runs — it survives the
     // kill and keeps the inherited stdout pipe open, exactly the host-25
-    // hang shape.
+    // hang shape. The agent itself then waits at a gate it is never let
+    // through, so the only thing that ends this run is the runner.
     const stub = await createAgentStub(
       "( sleep 15 & )\n" +
         `printf '%s\\n' '{"type":"result","result":"working"}'\n` +
-        "sleep 60\n",
+        agentStubGate(),
       { prefix: "claude_kill_bound_stub_" },
     );
 
@@ -70,30 +78,36 @@ Deno.test({
     } as unknown as Logger;
 
     try {
-      const started = Date.now();
-      const result = await runClaudeWithTimeout({
+      const clock = fakeClock();
+      const firstChunk = Promise.withResolvers<void>();
+      const run = runClaudeWithTimeout({
+        clock,
         prompt: "test",
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         killCompletionCapSeconds: 2,
         logger,
         agentBinaryPath: stub.path,
+        onActivity: () => firstChunk.resolve(),
       });
-      const elapsedSeconds = (Date.now() - started) / 1000;
+      // The agent is up and the watchdogs are armed.
+      await firstChunk.promise;
+      // The hard deadline expires and the tree kill fires.
+      await clock.advance(1_000);
+      // Two more seconds — the kill-completion cap — during which the orphan
+      // still holds the pipe, so the runner abandons the wait.
+      await clock.advance(2_000);
+      const result = await run;
 
       assert(result.ok, "the runner must return a result, not an error");
       if (!result.ok) return;
       assertEquals(result.value.timedOut, true);
       assertEquals(result.value.timeoutReason, "hard-timeout");
       assertEquals(result.value.exitCode, TIMEOUT_EXIT_CODE);
-      assert(
-        result.value.killIncompleteSeconds !== undefined &&
-          result.value.killIncompleteSeconds >= 1,
-        "the abandoned wait must be recorded in killIncompleteSeconds",
-      );
-      assert(
-        elapsedSeconds < 12,
-        `the runner must return within the cap, not hang (took ${elapsedSeconds}s)`,
+      assertEquals(
+        result.value.killIncompleteSeconds,
+        2,
+        "the abandoned wait is recorded, and it is exactly the cap",
       );
       assert(
         logs.some((m) => m.includes("did not complete")),
@@ -113,19 +127,29 @@ Deno.test({
   fn: async () => {
     const stub = await createAgentStub(
       `printf '%s\\n' '{"type":"result","result":"working"}'\n` +
-        "sleep 60\n",
+        agentStubGate(),
       { prefix: "claude_kill_clean_stub_" },
     );
 
     try {
-      const result = await runClaudeWithTimeout({
+      const clock = fakeClock();
+      const firstChunk = Promise.withResolvers<void>();
+      const run = runClaudeWithTimeout({
+        clock,
         prompt: "test",
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         killCompletionCapSeconds: 30,
         logger: undefined,
         agentBinaryPath: stub.path,
+        onActivity: () => firstChunk.resolve(),
       });
+      await firstChunk.promise;
+      // The deadline expires and the kill lands. Nothing holds the pipe, so
+      // the child settles on its own and the cap is never reached — the test
+      // never advances the clock to it, which is the point.
+      await clock.advance(1_000);
+      const result = await run;
       assert(result.ok);
       if (!result.ok) return;
       assertEquals(result.value.timedOut, true);
@@ -139,6 +163,37 @@ Deno.test({
     }
   },
 });
+
+/**
+ * Wait until the pid the stub recorded has been reaped.
+ *
+ * A dead-but-unreaped process is still a live pid to `kill -0`, so a `false`
+ * here means the kernel has released it and `child.status` has settled — the
+ * precondition the #471 case is about. Bounded, so a stub that never records
+ * its pid fails the case rather than hanging the suite.
+ */
+async function waitForReaped(pidFile: string): Promise<void> {
+  let pid = 0;
+  for (let attempt = 0; attempt < 1_000; attempt++) {
+    if (pid === 0) {
+      try {
+        pid = Number((await Deno.readTextFile(pidFile)).trim());
+      } catch {
+        pid = 0;
+      }
+    }
+    if (pid > 0) {
+      const out = await new Deno.Command("kill", {
+        args: ["-0", String(pid)],
+        stdout: "null",
+        stderr: "null",
+      }).output();
+      if (!out.success) return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`the agent pid in ${pidFile} was never reaped`);
+}
 
 Deno.test({
   name:
@@ -156,9 +211,11 @@ Deno.test({
     // took the CI runner down mid-suite.
     const stub = await createAgentStub(
       "( sleep 4 & )\n" +
+        `echo $$ > "$(dirname "$0")/agent.pid"\n` +
         `printf '%s\\n' '{"type":"result","result":"done"}'\n`,
       { prefix: "claude_reaped_pid_stub_" },
     );
+    const agentPidFile = `${stub.dir}/agent.pid`;
 
     const logs: string[] = [];
     const logger = {
@@ -169,14 +226,31 @@ Deno.test({
     } as unknown as Logger;
 
     try {
-      const result = await runClaudeWithTimeout({
+      const clock = fakeClock();
+      const firstChunk = Promise.withResolvers<void>();
+      const run = runClaudeWithTimeout({
+        clock,
         prompt: "test",
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         streamDrainCapSeconds: 3,
         logger,
         agentBinaryPath: stub.path,
+        onActivity: () => firstChunk.resolve(),
       });
+      await firstChunk.promise;
+      // Wait until the agent's pid is genuinely gone. A zombie still answers
+      // `kill -0`, so it stops answering only once it has been reaped — which
+      // is exactly the state the watchdog must find. Polling for it, rather
+      // than sleeping past it, is what makes the window under test the one
+      // the case is named after on every host.
+      await waitForReaped(agentPidFile);
+      // The hard deadline expires inside the drain: the watchdog wakes with
+      // nothing left to signal.
+      await clock.advance(1_000);
+      // The drain cap ends the run; the orphan still holds the pipe.
+      await clock.advance(3_000);
+      const result = await run;
 
       assert(result.ok, "the runner must return a result, not an error");
       if (!result.ok) return;
