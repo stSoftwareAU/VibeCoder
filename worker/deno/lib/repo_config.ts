@@ -12,6 +12,7 @@
 import type { CiProviderConfig, RepoConfig, Result } from "../types.ts";
 import { DEFAULT_REPO_NICE } from "./config_defaults.ts";
 import { compileCheckNamePattern } from "./ci_log_provider.ts";
+import { buildQualityGateBudgetLines } from "./quality_gate_budget.ts";
 
 // =============================================================================
 // Per-repo config queries
@@ -108,13 +109,25 @@ export function getRepoNice(
  * `sleep`/`pgrep` poll loops. One agent sat at 38 tool calls for over seven
  * minutes doing exactly that.
  *
+ * That single end-of-run gate is now conditional on the budget left to pay
+ * for it (Issue #1138): the gate's median observed duration is 17 minutes
+ * inside a roughly one-hour run, so an agent that starts it with ten minutes
+ * left cannot finish it, cannot act on it, and loses the runway it needed to
+ * push. `quality_gate_budget.ts` holds that rule for every prompt with a
+ * `{{QUALITY_INSTRUCTIONS}}` placeholder, so no template can drift back to an
+ * unconditional "run the gate before you push".
+ *
  * @param repoConfigs - The repo_config map from ConfigFile
  * @param repo - Repository in "owner/repo" format
+ * @param options - `typicalGateSeconds`: what the gate took on this repo this
+ *   run (the baseline gate), so the guidance quotes a measurement instead of
+ *   the fleet-wide assumption
  * @returns Quality instruction text for inclusion in prompts
  */
 export function buildQualityInstructions(
   repoConfigs: Record<string, RepoConfig> | undefined,
   repo: string,
+  options: { typicalGateSeconds?: number } = {},
 ): string {
   const skipQuality = getRepoConfig(repoConfigs, repo, "skipQualityCheck");
   if (skipQuality === "true") {
@@ -126,7 +139,7 @@ export function buildQualityInstructions(
 
   return [
     `   - While you iterate, use the repository's fast checks — formatter, linter, type check, and only the test files your change touches. Seconds, not minutes.`,
-    `   - Before you finish, run ${command} < /dev/null once, in the foreground, and fix whatever it reports. Re-run it after a fix — never on a timer.`,
+    ...buildQualityGateBudgetLines(command, options.typicalGateSeconds),
     `   - Never start ${command} in the background and poll for it. A \`sleep\`/\`pgrep\` wait loop spends the execute budget without making progress; run it in the foreground and watch each check report as it completes.`,
     `   - IMPORTANT: Always redirect stdin from /dev/null (< /dev/null) when running tests, quality checks, or build commands to prevent hanging on unattended machines.`,
   ].join("\n");

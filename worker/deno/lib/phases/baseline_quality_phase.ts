@@ -54,6 +54,7 @@ export async function workOnIssueBaselineQuality(
       return { status: "continue" };
     }
 
+    const gateStartedMs = Date.now();
     const qualityResult = await deps.quality.runQualityGate({
       scriptDir: state.repoPath,
       options: { strict: false, sequential: false, validatePrompts: false },
@@ -65,6 +66,16 @@ export async function workOnIssueBaselineQuality(
       });
       return { status: "continue" };
     }
+
+    // What the gate costs on this repository, measured rather than assumed
+    // (Issue #1138). The execute phase quotes it to the agent so it can tell
+    // whether the gate fits the run budget it has left. Floored at one second
+    // because a gate that ran took *some* time, and zero would read as "not
+    // measured" downstream.
+    state.baselineQualityDurationSeconds = Math.max(
+      1,
+      Math.round((Date.now() - gateStartedMs) / 1000),
+    );
 
     if (qualityResult.value.passed) {
       state.baselineQualityPassed = true;

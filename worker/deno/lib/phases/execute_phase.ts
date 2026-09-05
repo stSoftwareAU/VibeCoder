@@ -292,8 +292,17 @@ async function executeClaudeBody(
     };
   }
 
-  // Build prompt with per-repo quality and custom instructions (Issue #1187)
-  const qualityInstructions = buildQualityInstructions(config.repoConfig, repo);
+  // Build prompt with per-repo quality and custom instructions (Issue #1187).
+  // The baseline gate has already run this cycle, so the agent is told what
+  // the gate actually costs here rather than the fleet-wide assumption
+  // (Issue #1138) — that figure is what it weighs the run budget against.
+  const qualityInstructions = buildQualityInstructions(
+    config.repoConfig,
+    repo,
+    state.baselineQualityDurationSeconds === undefined
+      ? {}
+      : { typicalGateSeconds: state.baselineQualityDurationSeconds },
+  );
   const customInstructions = getCustomInstructions(config.repoConfig, repo);
 
   // Browser/network capability is granted on need, not by default

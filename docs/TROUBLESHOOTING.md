@@ -870,6 +870,13 @@ on every check inside the last ten minutes of runway and cleared at the start
 of the next run. It is hidden, so the enforced `.gitignore` keeps it out of
 every commit.
 
+Inside that window the notice also refuses the full quality gate (Issue #1138):
+ten minutes of runway cannot cover a gate whose median run is seventeen. The
+agent is told to run the targeted checks instead and to record the skip with a
+`<!-- vibe-quality-gate-skipped … -->` note in the PR summary. If you see a PR
+carrying that note, the gate was not run **on this run** — CI's copy on the PR,
+and the worker's own gate, are what covered it.
+
 If the `Run hard cap:` line instead says the cap is not set, the run was
 uncapped and no ceiling applied: `VIBE_RUN_MAX_SECONDS` is `0`, or the worker
 was started outside `loop.sh`.

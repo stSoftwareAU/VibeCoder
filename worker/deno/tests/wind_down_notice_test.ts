@@ -19,6 +19,7 @@ import {
   WIND_DOWN_PROMPT_SECTION,
   writeWindDownNotice,
 } from "../lib/wind_down_notice.ts";
+import { GATE_SKIP_MARKER } from "../lib/quality_gate_budget.ts";
 
 Deno.test("shouldWindDown - fires at and under the window, not above it", () => {
   assertEquals(shouldWindDown(601, 600), false);
@@ -51,6 +52,58 @@ Deno.test("buildWindDownNotice - names the remaining budget and what to do with 
     /commit/i.test(notice),
     "the agent must be told to preserve its work in progress",
   );
+});
+
+// Issue #1138 — the notice is the one channel that can stop an agent starting
+// a 15-minute gate with 7 minutes left.
+
+Deno.test("buildWindDownNotice - refuses the full gate when the budget cannot cover it (Issue #1138)", () => {
+  const notice = buildWindDownNotice({
+    remainingSeconds: 420,
+    elapsedSeconds: 5_400,
+    extensionsGranted: 3,
+  });
+  assert(
+    /do not start the full quality gate/i.test(notice),
+    `the notice must refuse the gate outright: ${notice}`,
+  );
+  assert(
+    notice.includes(GATE_SKIP_MARKER),
+    `the notice must give the agent the line that records the skip: ${notice}`,
+  );
+});
+
+Deno.test("buildWindDownNotice - stays silent about the gate when the budget still covers it (Issue #1138)", () => {
+  const notice = buildWindDownNotice({
+    remainingSeconds: 3_600,
+    elapsedSeconds: 600,
+    extensionsGranted: 0,
+    typicalGateSeconds: 300,
+  });
+  assertEquals(
+    /quality gate/i.test(notice),
+    false,
+    `a gate that fits must not be discouraged: ${notice}`,
+  );
+});
+
+Deno.test("buildWindDownNotice - a measured gate duration decides the refusal (Issue #1138)", () => {
+  // 900s left is plenty for a 60s gate and nowhere near enough for a 40m one.
+  const short = buildWindDownNotice({
+    remainingSeconds: 900,
+    elapsedSeconds: 3_000,
+    extensionsGranted: 1,
+    typicalGateSeconds: 60,
+  });
+  assertEquals(/do not start the full quality gate/i.test(short), false);
+
+  const long = buildWindDownNotice({
+    remainingSeconds: 900,
+    elapsedSeconds: 3_000,
+    extensionsGranted: 1,
+    typicalGateSeconds: 2_400,
+  });
+  assert(/do not start the full quality gate/i.test(long));
 });
 
 Deno.test("writeWindDownNotice - writes the notice where the agent can read it", async () => {

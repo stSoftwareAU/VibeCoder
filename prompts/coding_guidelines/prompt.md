@@ -436,9 +436,11 @@ suite of 27+ specs can exceed 45 minutes and stall the worker.
 ## Proactive Validation
 
 Identify and fix all validation issues — lint, type, test, and quality check
-failures — as part of your normal workflow. Run the full quality gate locally
-before considering your work complete. Do not leave failures for a reviewer to
-discover.
+failures — as part of your normal workflow. Iterate on the targeted checks
+(formatter, linter, type check, the tests covering what you changed), and run
+the full gate once at the end **if the remaining run budget covers it** — the
+`<quality_instructions>` block for this run states what it costs and how to
+record a skip. Do not leave failures for a reviewer to discover.
 
 ## Unit Tests vs Benchmarks
 

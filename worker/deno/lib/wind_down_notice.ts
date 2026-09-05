@@ -31,6 +31,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  decideQualityGateRun,
+  formatQualityGateSkipNote,
+} from "./quality_gate_budget.ts";
+
 /** Where the notice is written, relative to the agent's checkout. */
 export const WIND_DOWN_NOTICE_FILENAME = ".vibe-run-budget.md";
 
@@ -51,6 +56,12 @@ export interface RunBudgetNotice {
   elapsedSeconds: number;
   /** Deadline extensions granted so far. */
   extensionsGranted: number;
+  /**
+   * What the full quality gate took on this repository, when something
+   * measured it (Issue #1138). Absent, the fleet-wide assumption in
+   * `quality_gate_budget.ts` decides whether the gate still fits.
+   */
+  typicalGateSeconds?: number;
 }
 
 /**
@@ -76,6 +87,14 @@ export function shouldWindDown(
  */
 export function buildWindDownNotice(notice: RunBudgetNotice): string {
   return [
+    ...windDownHeader(notice),
+    ...gateRefusal(notice),
+  ].join("\n");
+}
+
+/** The budget statement and the standing wind-down instructions. */
+function windDownHeader(notice: RunBudgetNotice): string[] {
+  return [
     `# Run budget: ${notice.remainingSeconds}s remaining — wind down now`,
     "",
     "The worker wrote this file because your run is approaching its hard",
@@ -100,7 +119,39 @@ export function buildWindDownNotice(notice: RunBudgetNotice): string {
     "",
     "This file is worker state. It is gitignored — never commit it.",
     "",
-  ].join("\n");
+  ];
+}
+
+/**
+ * The gate refusal (Issue #1138), emitted only when the remaining budget
+ * cannot cover the full quality gate plus the tail needed to act on it.
+ *
+ * A gate that still fits is not discussed at all: the notice's job is to stop
+ * an agent starting work it cannot finish, not to talk it out of work it can.
+ */
+function gateRefusal(notice: RunBudgetNotice): string[] {
+  const decision = decideQualityGateRun({
+    remainingSeconds: notice.remainingSeconds,
+    ...(notice.typicalGateSeconds === undefined
+      ? {}
+      : { typicalGateSeconds: notice.typicalGateSeconds }),
+  });
+  if (decision.run) return [];
+
+  return [
+    "## Do not start the full quality gate",
+    "",
+    decision.reason,
+    "",
+    "Run the targeted checks instead — formatter, linter, type check and the",
+    "tests covering what you changed — then record the skip in the PR summary",
+    "(or `.pr_response_message`) with this note, verbatim:",
+    "",
+    "```markdown",
+    formatQualityGateSkipNote(decision),
+    "```",
+    "",
+  ];
 }
 
 /**
