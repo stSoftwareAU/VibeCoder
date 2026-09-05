@@ -245,8 +245,9 @@ written before the anchor existed is adopted **explicitly** by an operator
 first so a tampered file can never be blessed.
 
 **Damage quarantines, it does not stop the trail (Issue #361).** When the
-day's journal exists but disagrees with its anchor — truncated, rewritten,
-appended past the anchored head, or carrying a torn final line — it is left
+day's journal exists and still disagrees with its anchor once an interrupted
+append has been settled (Issue #1074, below) — truncated, rewritten, appended
+past the anchored head, or torn before it — it is left
 **exactly as found** and a fresh segment is opened beside it,
 `audit-<worker>-<date>.s1.jsonl`, whose first entry records what was
 quarantined and why. A `[SECURITY] [AUDIT_JOURNAL_QUARANTINED]` line names
@@ -266,6 +267,64 @@ it stops attesting are in the future.
 The one exception is a journal with **no anchor at all** — the pre-#3712 case
 `--adopt` exists for. That still refuses, because opening a segment beside it
 would strand the chain the operator is about to adopt.
+
+**An interrupted append heals itself; damage still needs a signature (Issue
+#1074).** A journal line and its anchor are two files and cannot be written
+atomically, so a run killed between them left a chain that failed the sweep
+and asked an operator to sign the kill off with `--acknowledge-damage`. That
+is the wrong ask: a control that routinely wants a human to wave damage
+through is one that gets waved through unread, and the chain exists precisely
+so that tampering is distinguishable from ordinary breakage.
+
+What the cause turned out to be is worth recording, because the two candidate
+causes needed opposite fixes. SIGKILLing a live writer 34 times produced a
+**complete unanchored entry** in 5 of them and a **torn line in none**: a
+single `write(2)` of one line to a regular file is not interruptible, so a
+partial line comes from below the process — an unflushed page cache lost with
+the machine, or a short write from a full or failing volume — and never from
+a kill. A source check confirmed the other hypothesis was not it either:
+`audit_journal.ts` holds the only append to a journal in the tree, and the
+lock breaker cannot fire under two minutes. Either way, torn bytes land
+**past the anchored head**, because the anchor is only advanced after the
+append returns.
+
+So the writer now declares each append in its anchor before making it —
+`pending: { hash, startedAt }`, naming the entry by its chain hash
+([`audit_append_recovery.ts`](../worker/deno/lib/audit_append_recovery.ts)).
+That one fact makes recovery decidable, and the table below is the whole
+policy. **Self-healing** outcomes are reported on the sweep as
+`[SECURITY] [AUDIT_APPEND_RECOVERED]` and counted in the summary; everything
+else is `[SECURITY] [AUDIT_CHAIN_BROKEN]` and still needs
+`--acknowledge-damage`.
+
+| On disk | Verdict |
+| --- | --- |
+| Declared append, journal still at the anchored length | **heals** — rolled back |
+| Declared append, one further line that *is* the declared entry | **heals** — completed, entry kept |
+| Declared append, one further line torn or not the declared entry | **heals** — discarded to a `.torn-<n>` sidecar |
+| Unterminated, unparseable trailing bytes, no declaration (pre-#1074 journal) | **heals** — discarded to a `.torn-<n>` sidecar |
+| A further line that parses, with no declaration | **signature** — the forged-tail shape (#3949) |
+| More than one line past the anchor | **signature** — never one interrupted append |
+| Any change at or before the anchored head | **signature** — rewritten, truncated, torn middle |
+| Journal or anchor missing | **signature** — `--acknowledge-loss`/`--acknowledge-damage` |
+
+Three properties make the self-heal safe to have at all. Only bytes **past
+the anchored head** are ever touched, and the anchored head is the last
+position the chain was confirmed at, so nothing verified can be dropped.
+Discarded bytes are **moved, not deleted** — into `audit-<worker>-<date>.jsonl.torn-<n>`
+beside the journal — and the log line names how many bytes went where. And a
+tail that claims the declared hash must also **re-derive** it from its own
+payload, so satisfying a pending record with different content is a SHA-256
+second preimage, not a forgery.
+
+A run killed while holding the append lock leaves that behind too. A lock
+whose recorded pid is provably gone is now broken immediately rather than
+after the stale age ([`file_lock.ts`](../worker/deno/lib/file_lock.ts)), and
+the liveness probe falls back to a `SIGURG` signal because Deno requires
+`--allow-all` to read `/proc` and the worker runs on granular permissions —
+which had made the `/proc` check answer "assume alive" every time in
+production, wedging the audit trail for the full twenty-minute hard-stale
+window after every kill.
 
 **Scheduled verification.** `deno task audit-chain-verify`
 ([`worker/deno/commands/audit_chain_verify.ts`](../worker/deno/commands/audit_chain_verify.ts))

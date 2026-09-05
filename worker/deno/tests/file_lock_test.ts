@@ -150,3 +150,66 @@ Deno.test("withFileLock - a long-dead lock is broken even when its pid was recyc
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("withFileLock - breaks a fresh lock whose holder is provably dead", async () => {
+  const { dir, lock } = await tempLock();
+  // A pid that really did exist and really is gone: the shape a run
+  // killed mid-append leaves behind (Issue #1074). This runs under the
+  // same granular permissions as the worker — no `--allow-all`, so
+  // `/proc` is unreadable — which is exactly the case where the old
+  // liveness check silently answered "assume alive" and left the audit
+  // lock wedged.
+  const child = new Deno.Command("sleep", {
+    args: ["30"],
+    stdout: "null",
+    stderr: "null",
+  }).spawn();
+  const deadPid = child.pid;
+  child.kill("SIGKILL");
+  await child.status;
+  try {
+    await Deno.writeTextFile(
+      lock,
+      JSON.stringify({
+        token: "killed-run",
+        pid: deadPid,
+        acquiredAt: new Date().toISOString(),
+      }),
+    );
+
+    // Seconds old, not minutes: waiting out the stale age used to block
+    // the next run's audit sweep until it timed out.
+    const started = Date.now();
+    const took = await withFileLock(lock, () => Promise.resolve("taken"), {
+      timeoutMs: 2_000,
+      pollMs: 5,
+    });
+    assertEquals(took, "taken");
+    assert(
+      Date.now() - started < 1_000,
+      "a provably dead holder should not be waited out",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("withFileLock - a lock with no record yet is left alone", async () => {
+  const { dir, lock } = await tempLock();
+  try {
+    // The window between a holder's `O_EXCL` create and its first write.
+    // Breaking on "no record" would evict a lock a millisecond old.
+    await Deno.writeTextFile(lock, "");
+    await assertRejects(
+      () =>
+        withFileLock(lock, () => Promise.resolve(), {
+          timeoutMs: 150,
+          pollMs: 5,
+        }),
+      FileLockTimeoutError,
+    );
+    assertEquals(await Deno.readTextFile(lock), "");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

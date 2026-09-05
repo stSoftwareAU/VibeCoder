@@ -19,10 +19,18 @@
  * ## Abandoned locks
  *
  * A process killed while holding the lock would otherwise wedge every
- * later writer for ever. A lock file older than {@link DEFAULT_STALE_MS}
- * is therefore treated as abandoned and broken — holds are milliseconds,
- * so no live holder is ever close to that age — unless the holder's pid is
- * still visible in `/proc`, in which case it is left alone.
+ * later writer for ever. A lock whose recorded pid is no longer in
+ * `/proc` is broken **immediately** (Issue #1074): the pid check has no
+ * false negatives, and waiting two minutes to act on a holder that is
+ * provably dead is what left a killed run's successor blocking until its
+ * timeout and then reporting the audit chain broken. A lock file with no
+ * record yet is a holder between its `O_EXCL` create and its first write,
+ * and is never broken on that basis.
+ *
+ * Where the pid is *not* conclusive — it is alive, or the record is
+ * unreadable — a lock file older than {@link DEFAULT_STALE_MS} is treated
+ * as abandoned and broken anyway; holds are milliseconds, so no live
+ * holder is ever close to that age.
  *
  * That pid check has one blind spot, and it is not theoretical here: pids
  * are namespaced per container, so a lock left behind by a killed run can
@@ -117,23 +125,46 @@ async function readRecord(path: string): Promise<LockRecord | null> {
 /**
  * Is `pid` still running?
  *
- * Only answerable where `/proc` is mounted — which is where the worker
- * runs. Anywhere else this returns `true` (assume alive), so the decision
- * falls back to the age check alone and a live holder is never broken on
- * the strength of a guess.
+ * `/proc` is the obvious probe and was the only one, which made this
+ * function dead code everywhere it mattered (Issue #1074): Deno requires
+ * `--allow-all` to read `/proc`, and the worker runs on granular
+ * permissions, so the stat threw `NotCapable`, the catch read that as
+ * "assume alive", and a lock left by a killed run survived until the
+ * twenty-minute hard-stale rule broke it. Every append in that window
+ * failed to journal.
+ *
+ * The signal probe is the one that actually answers under the worker's
+ * permissions. `SIGURG`'s default disposition is *ignore*, so it asks the
+ * kernel whether the pid exists without disturbing the process if it
+ * does.
+ *
+ * Every inconclusive answer is `true` (assume alive), so a live holder is
+ * never broken on the strength of a guess and the decision falls back to
+ * the age rules.
  */
 async function holderAlive(pid: number): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
+    // Establish that `/proc` is readable here before reading anything
+    // into a miss: on macOS it does not exist at all, and treating that
+    // as "the holder is gone" would break live locks.
     await Deno.stat("/proc/self");
+    try {
+      await Deno.stat(`/proc/${pid}`);
+      return true;
+    } catch (error: unknown) {
+      if (error instanceof Deno.errors.NotFound) return false;
+    }
   } catch {
-    return true;
+    // `/proc` is absent or not permitted — fall through to the signal.
   }
   try {
-    await Deno.stat(`/proc/${pid}`);
+    Deno.kill(pid, "SIGURG");
     return true;
-  } catch {
-    return false;
+  } catch (error: unknown) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    // Alive but not ours to signal, or no run permission at all.
+    return true;
   }
 }
 
@@ -155,7 +186,26 @@ async function breakIfAbandoned(
     // Gone between the failed create and the stat: the next attempt wins.
     return true;
   }
-  if (ageMs < staleMs) return false;
+  if (ageMs < staleMs) {
+    // Issue #1074: a holder that is *provably* gone need not be waited
+    // out. A run killed mid-append leaves its lock behind, and the next
+    // run — housekeeping's audit sweep first of all — arrives well inside
+    // the two-minute window, so it used to block for the full timeout and
+    // then report the audit chain broken. Waiting out a dead holder buys
+    // nothing: the pid check has no false negatives, only false positives
+    // (a recycled pid), which is what the age and hard-stale rules below
+    // remain for.
+    const holder = await readRecord(path);
+    // No record yet means the holder is between `O_EXCL` create and its
+    // first write. That is a live lock a millisecond old, not an
+    // abandoned one.
+    if (!holder || !Number.isInteger(holder.pid) || holder.pid <= 0) {
+      return false;
+    }
+    if (await holderAlive(holder.pid)) return false;
+    await breakLock(path, ageMs, `pid ${holder.pid} is no longer running`);
+    return true;
+  }
 
   const record = await readRecord(path);
   const beyondDoubt = ageMs >= staleMs * HARD_STALE_MULTIPLIER;
@@ -165,6 +215,16 @@ async function breakIfAbandoned(
     ? `no append takes that long, whatever pid ${record?.pid ?? "unknown"} ` +
       `is now`
     : `pid ${record?.pid ?? "unknown"} is no longer running`;
+  await breakLock(path, ageMs, why);
+  return true;
+}
+
+/** Remove an abandoned lock, announcing it: a silent steal is the bug. */
+async function breakLock(
+  path: string,
+  ageMs: number,
+  why: string,
+): Promise<void> {
   console.error(
     `[SECURITY] [AUDIT_LOCK_BROKEN] ${path}: held for ${
       Math.round(ageMs / 1000)
@@ -176,7 +236,6 @@ async function breakIfAbandoned(
     // Another contender broke it first; either way it is no longer ours
     // to worry about.
   }
-  return true;
 }
 
 /**

@@ -21,6 +21,28 @@
 import type { Result } from "../types.ts";
 import { atomicWrite } from "./file_utils.ts";
 
+/**
+ * Write-ahead record of an append that is in flight (Issue #1074).
+ *
+ * A journal line and its anchor are two files and cannot be updated
+ * atomically, so a process killed between them leaves a journal that
+ * disagrees with its anchor — indistinguishable, after the fact, from a
+ * forged tail. Declaring the append **before** making it removes the
+ * ambiguity: the entry that was in flight is named by its chain hash, so
+ * recovery can finish the append, roll it back, or discard a torn line,
+ * and anything the writer never declared stays broken.
+ *
+ * Naming the *hash* rather than the payload is what keeps this from being
+ * a forgery aid: producing a different entry that satisfies a pending
+ * record means finding a SHA-256 second preimage.
+ */
+export interface PendingAppend {
+  /** Chain hash of the entry the writer was about to append. */
+  hash: string;
+  /** ISO 8601 timestamp the append was declared. */
+  startedAt: string;
+}
+
 /** Persisted head-of-chain state for one journal file. */
 export interface ChainAnchor {
   /** Basename of the journal this anchor covers. */
@@ -31,6 +53,8 @@ export interface ChainAnchor {
   headHash: string;
   /** ISO 8601 timestamp of the last anchor update. */
   updatedAt: string;
+  /** Append declared but not yet confirmed (Issue #1074). */
+  pending?: PendingAppend;
 }
 
 /** Directory name holding anchors, relative to the journal's directory. */
@@ -62,6 +86,23 @@ export function journalNameForAnchor(anchorFileName: string): string | null {
   return name.length > 0 ? name : null;
 }
 
+/**
+ * Is `value` a structurally valid pending-append record (Issue #1074)?
+ *
+ * Absent is valid — the steady state carries no pending record. Present
+ * but malformed is not: a half-written intent record is a tamper signal
+ * like any other, and `readAnchor` rejects the whole anchor for it rather
+ * than quietly reading it as "no append was in flight".
+ */
+function hasValidPending(value: Record<string, unknown>): boolean {
+  const pending = value["pending"];
+  if (pending === undefined) return true;
+  if (typeof pending !== "object" || pending === null) return false;
+  const p = pending as Record<string, unknown>;
+  return typeof p["hash"] === "string" && /^[0-9a-f]{64}$/.test(p["hash"]) &&
+    typeof p["startedAt"] === "string" && p["startedAt"].length > 0;
+}
+
 /** Is `value` a structurally valid anchor record? */
 function isAnchor(value: unknown): value is ChainAnchor {
   if (typeof value !== "object" || value === null) return false;
@@ -70,7 +111,8 @@ function isAnchor(value: unknown): value is ChainAnchor {
     typeof a["count"] === "number" &&
     Number.isInteger(a["count"]) && a["count"] >= 0 &&
     typeof a["headHash"] === "string" &&
-    typeof a["updatedAt"] === "string";
+    typeof a["updatedAt"] === "string" &&
+    hasValidPending(a);
 }
 
 /**
@@ -111,14 +153,17 @@ export async function readAnchor(
 /**
  * Write (or replace) the anchor for a journal, atomically.
  *
+ * A `pending` record is written only when the caller supplies one, so the
+ * confirming write after a successful append clears it (Issue #1074).
+ *
  * @param journalPath - Path to the `.jsonl` journal
- * @param state - Record count and head hash to anchor
+ * @param state - Record count, head hash, and any in-flight append
  * @param now - ISO timestamp override (tests)
  * @returns Result carrying the persisted anchor
  */
 export async function writeAnchor(
   journalPath: string,
-  state: { count: number; headHash: string },
+  state: { count: number; headHash: string; pending?: PendingAppend },
   now?: string,
 ): Promise<Result<ChainAnchor>> {
   const { base } = splitPath(journalPath);
@@ -129,6 +174,7 @@ export async function writeAnchor(
     count: state.count,
     headHash: state.headHash,
     updatedAt: now ?? new Date().toISOString(),
+    ...(state.pending ? { pending: state.pending } : {}),
   };
   try {
     await Deno.mkdir(anchorDir, { recursive: true });
