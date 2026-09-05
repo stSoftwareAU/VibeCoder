@@ -37,8 +37,12 @@ import { sharedTmpStateDir } from "./private_cache_dir.ts";
  * agent's prompt. It now carries a per-account suffix, and `PromptCache`
  * ownership-checks any directory under the shared temporary root.
  */
-export function defaultCodebaseMapCacheDir(): string {
-  return sharedTmpStateDir("vibe-codebase-map-deno");
+export function defaultCodebaseMapCacheDir(
+  lookup?: (key: string) => string | undefined,
+): string {
+  return lookup === undefined
+    ? sharedTmpStateDir("vibe-codebase-map-deno")
+    : sharedTmpStateDir("vibe-codebase-map-deno", lookup);
 }
 
 /**

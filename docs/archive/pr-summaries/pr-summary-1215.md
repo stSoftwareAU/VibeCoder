@@ -52,46 +52,51 @@ those are cross-referenced in the audit record rather than duplicated.
 ## Evidence
 
 Backend/CLI change with no web interface, so no screenshot applies. The evidence
-is the regression suite below, run against both the unfixed and the fixed code.
+is the regression suite below, run in both directions.
 
-Against the **unfixed** code (`git stash` of the three library files):
+With the trust check bypassed — the pre-fix behaviour, every cache directory
+trusted as it was before:
 
 ```
-issue cache - default directory is per-account and owner-only ... FAILED
+shared tmp cache dirs - every default name is per-account ... ok
+shared tmp cache dirs - the shared root is recognised wherever it is ... ok
 issue cache - refuses a planted entry in a world-writable directory ... FAILED
-issue cache - an explicit private directory is used verbatim ... ok
-prompt cache - default directory is per-account and owner-only ... FAILED
-prompt cache - refuses a planted prompt in a world-writable directory ... ok
-FAILED | 2 passed | 3 failed
+issue cache - does not write into a world-writable directory ... FAILED
+issue cache - creates its directory owner-only ... FAILED
+prompt cache - refuses a planted prompt in a world-writable directory ... FAILED
+prompt cache - fails loud rather than writing into a world-writable directory ... FAILED
+prompt cache - creates its directory owner-only and round-trips ... FAILED
+FAILED | 2 passed | 6 failed
 ```
 
-After the fix:
+With the fix in place:
 
 ```
-ok | 6 passed | 0 failed (116ms)
+ok | 8 passed | 0 failed (23ms)
 ```
 
 The regression test is
 `worker/deno/tests/shared_tmp_cache_dir_test.ts::issue cache - refuses a planted entry in a world-writable directory`.
-It reproduces the flaw — it **fails against the unfixed code** (the cache serves
-the attacker's planted entry) and **passes after the fix** (the world-writable
-directory is not trusted, so the read returns `null`). It plants the poisoned
-entry in **both** the pre-fix shared path and the per-account path, so it cannot
-pass merely by addressing a directory the new code no longer uses.
+It reproduces the flaw: it **fails against the unfixed code** — the cache reads
+the entry another account planted in a mode-0777 directory under the shared
+temporary root and serves it as a GitHub API response — and **passes after the
+fix**, where the directory is not trusted and the read returns `null`.
 
 **The original trigger is closed with no trivial bypass.** The attack input was
 a cache entry planted by another account in a directory that account created
 first. Every read and write path of both caches is now gated on
 `verifyPrivateDir`, which fails on any group/other permission bit and on a
 foreign owning uid, so a directory an attacker could have written to yields a
-cache miss rather than data. The obvious bypasses do not work: supplying the
-`/tmp` path explicitly is still checked, because `isSharedTmpPath` classifies by
-location rather than by argument; racing the worker to create the directory
-leaves it non-private and disables the cache; and per-account naming means the
-attacker cannot pre-create the path the worker will use for another uid. The
-residual — other modules that still interpolate `TMPDIR` by hand, and the
-quality-gate check that would fail the build on a new one — is stated in the
-audit record and filed as
+cache miss (and, for `PromptCache.set`, a loud error) rather than data. The
+obvious bypasses do not work: supplying the `/tmp` path explicitly is still
+checked, because `isSharedTmpPath` classifies by location rather than by
+argument — that is the codebase-map case, covered by
+`prompt cache - refuses a planted prompt in a world-writable directory`; racing
+the worker to create the directory leaves it non-private and disables the cache
+rather than granting a read; and the per-account name means the path the worker
+will use cannot be pre-created by a different uid. The residual — other modules
+that still interpolate `TMPDIR` by hand, and the quality-gate check that would
+fail the build on a new one — is stated in the audit record and filed as
 [#1242](https://github.com/stSoftwareAU/VibeCoder/issues/1242), not left
 implicit.
 
@@ -108,21 +113,26 @@ flowchart LR
 
 ## Test Plan
 
-- Added `worker/deno/tests/shared_tmp_cache_dir_test.ts` (6 tests, real classes
-  against a real filesystem):
-  - `issue cache - default directory is per-account and owner-only`
+- Added `worker/deno/tests/shared_tmp_cache_dir_test.ts` (8 tests, real classes
+  against a real filesystem; no `Deno.env` mutation, so the suite stays
+  parallel-safe per Issue #880):
+  - `shared tmp cache dirs - every default name is per-account`
+  - `shared tmp cache dirs - the shared root is recognised wherever it is`
   - `issue cache - refuses a planted entry in a world-writable directory` — the
     regression test above
-  - `issue cache - an explicit private directory is used verbatim`
-  - `prompt cache - default directory is per-account and owner-only`
-  - `prompt cache - refuses a planted prompt in a world-writable directory`
-  - `prompt cache - an explicit shared-tmp directory is checked too` — covers
-    the codebase-map bypass
+  - `issue cache - does not write into a world-writable directory`
+  - `issue cache - creates its directory owner-only`
+  - `prompt cache - refuses a planted prompt in a world-writable directory` —
+    covers the codebase-map bypass, where the `/tmp` path was supplied
+    explicitly
+  - `prompt cache - fails loud rather than writing into a world-writable directory`
+  - `prompt cache - creates its directory owner-only and round-trips`
 - Re-ran the neighbouring suites unchanged: `issue_cache_test.ts`,
   `prompt_cache_test.ts`, `prompt_cache_telemetry_test.ts`,
   `timeline_cache_test.ts`, `timeline_cache_trust_test.ts`,
   `private_cache_dir_test.ts`, `codebase_map_cache_test.ts`,
   `agent_mcp_config_test.ts` — 83 passed, 0 failed.
+- `./quality.sh` run in full after the final edit.
 - Docs updated for the changed paths: `docs/GH-API-OPTIMISATION.md` and
-  `docs/MODEL-AND-CACHING.md` now name the per-account, ownership-checked
-  directories.
+  `docs/MODEL-AND-CACHING.md` name the per-account, ownership-checked
+  directories; `_data/page_titles.yml` registers the new audit page.

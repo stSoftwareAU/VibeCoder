@@ -47,8 +47,12 @@ const DEFAULT_TTL_SECONDS = 86400;
  * The name now carries a per-account suffix and the directory is created
  * `0700` and ownership-checked before it is read or written.
  */
-function defaultPromptCacheDir(): string {
-  return sharedTmpStateDir("vibe-prompt-cache-deno");
+export function defaultPromptCacheDir(
+  lookup?: (key: string) => string | undefined,
+): string {
+  return lookup === undefined
+    ? sharedTmpStateDir("vibe-prompt-cache-deno")
+    : sharedTmpStateDir("vibe-prompt-cache-deno", lookup);
 }
 
 /** Separator between metadata header and content in cache files. */

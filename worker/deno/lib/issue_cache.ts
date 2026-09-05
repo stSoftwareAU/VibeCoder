@@ -32,6 +32,19 @@ import {
 } from "./private_cache_dir.ts";
 
 /**
+ * Default cache directory: per-account, under the shared temporary root.
+ *
+ * @param lookup - Environment reader, injectable for tests.
+ */
+export function defaultIssueCacheDir(
+  lookup?: (key: string) => string | undefined,
+): string {
+  return lookup === undefined
+    ? sharedTmpStateDir("vibe-issue-cache-deno")
+    : sharedTmpStateDir("vibe-issue-cache-deno", lookup);
+}
+
+/**
  * Cache entry stored on disk.
  */
 interface CacheEntry {
@@ -71,7 +84,7 @@ export class IssueCache {
    * @param ttlSeconds - Cache time-to-live in seconds (default: 600 = 10 minutes)
    */
   constructor(cacheDir?: string, ttlSeconds = 600) {
-    this.cacheDir = cacheDir ?? sharedTmpStateDir("vibe-issue-cache-deno");
+    this.cacheDir = cacheDir ?? defaultIssueCacheDir();
     this.sharedTmpDir = isSharedTmpPath(this.cacheDir);
     this.ttlSeconds = ttlSeconds;
     this.stats = { hits: 0, misses: 0, saved: 0 };
