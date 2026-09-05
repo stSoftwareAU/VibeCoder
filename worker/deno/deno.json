@@ -15,7 +15,7 @@
     "quality": "deno run --frozen --lock=deno.lock --allow-env --allow-read --allow-run --allow-write --allow-net quality.ts",
     "setup": "deno run --frozen --lock=deno.lock --allow-all setup/setup_cli.ts",
     "audit-log-tail": "deno run --frozen --lock=deno.lock --allow-read --allow-env mod.ts audit-log-tail",
-    "audit-chain-verify": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env mod.ts audit-chain-verify",
+    "audit-chain-verify": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname mod.ts audit-chain-verify",
     "backlog-report": "deno run --frozen --lock=deno.lock --allow-read --allow-env --allow-run mod.ts backlog-report",
     "callback-conformance": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-run --allow-env mod.ts callback-conformance",
     "green-gate-report": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname mod.ts green-gate-report",

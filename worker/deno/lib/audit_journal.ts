@@ -37,6 +37,13 @@
  * by partitioning the filename on the worker id (each worker owns its own
  * chain).
  *
+ * Crash safety: the line and the anchor are two files, so every append is
+ * declared in the anchor before it is made and settled by
+ * `audit_append_recovery.ts` on the next run (Issue #1074). A killed
+ * writer therefore leaves a chain that heals back to its last confirmed
+ * position, while an undeclared tail — the forged-tail shape — stays as
+ * broken as it ever was.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -55,8 +62,30 @@ import {
   rosterWasSeen,
   writeAnchor,
 } from "./audit_anchor.ts";
+import {
+  type AppendRecovery,
+  formatAppendRecovery,
+  settleInterruptedAppend,
+} from "./audit_append_recovery.ts";
+import {
+  type AuditEntry,
+  type AuditMutation,
+  type AuditOutcome,
+  computeEntryHash,
+} from "./audit_entry.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import { withFileLock } from "./file_lock.ts";
+
+// Entry shape and chain hashing live in `audit_entry.ts` since Issue #1074
+// so the crash-recovery module can hash an entry without importing this
+// one. Re-exported here: this module stays the front door.
+export {
+  type AuditEntry,
+  type AuditMutation,
+  type AuditOutcome,
+  computeEntryHash,
+};
+export type { AppendRecovery };
 
 /**
  * Raised when the journal on disk disagrees with its chain anchor —
@@ -87,38 +116,6 @@ export class AuditChainAnchorError extends Error {
     this.name = "AuditChainAnchorError";
     this.quarantinable = quarantinable;
   }
-}
-
-/** Outcome of the underlying network call. */
-export type AuditOutcome = "success" | "error";
-
-/** A GitHub mutation to record (caller-supplied fields). */
-export interface AuditMutation {
-  /** ISO 8601 timestamp. Filled in by {@link recordMutation} when absent. */
-  timestamp?: string;
-  /** Run-correlation id (joins to #2381). */
-  runId: string;
-  /** owner/repo target, when known. */
-  repo?: string;
-  /** Target ref / issue / PR / endpoint identifier, when known. */
-  target?: string;
-  /** Action verb, e.g. "issue-comment", "pr-merge", "git-push". */
-  verb: string;
-  /** Outcome of the underlying network call. */
-  outcome: AuditOutcome;
-  /** `gh`/`git` exit code where available. */
-  exitCode?: number;
-  /** Caller code path, e.g. "worker/deno/lib/pr_comments.ts". */
-  caller?: string;
-}
-
-/** A persisted journal entry (mutation fields plus chain fields). */
-export interface AuditEntry extends AuditMutation {
-  timestamp: string;
-  /** Hash of the previous entry in the chain ("" for the first entry). */
-  prevHash: string;
-  /** SHA-256 hex digest over prevHash + canonical payload. */
-  hash: string;
 }
 
 /** Options controlling where an entry is written. */
@@ -167,6 +164,15 @@ export interface ChainSweep {
   /** Journals whose chain or anchor failed verification. */
   broken: ChainSweepEntry[];
   /**
+   * Appends settled by this sweep (Issue #1074).
+   *
+   * Reported, never a failure and never silent: an interrupted append is
+   * expected operational damage on a host whose runs are killed, and the
+   * chain is only ever repaired back to the position it was last
+   * confirmed at.
+   */
+  recovered: AppendRecovery[];
+  /**
    * Journals that are gone and whose loss has been signed for (Issue #359).
    *
    * Reported, never hidden — but not a failure. A permanently-red integrity
@@ -195,18 +201,6 @@ export interface AcknowledgedLoss {
   acknowledgement: RosterAcknowledgement | RosterDamageAcknowledgement;
 }
 
-/** Field order used for the canonical payload (chain fields excluded). */
-const PAYLOAD_FIELDS: ReadonlyArray<keyof AuditMutation> = [
-  "timestamp",
-  "runId",
-  "repo",
-  "target",
-  "verb",
-  "outcome",
-  "exitCode",
-  "caller",
-];
-
 /** In-process per-key write queue keeping this process's appends serial. */
 const writeQueues = new Map<string, Promise<unknown>>();
 
@@ -227,43 +221,6 @@ interface ChainState {
  * disk inside the lock costs one read of a file that holds a few hundred
  * lines, which is nothing beside getting the chain wrong.
  */
-
-/** Compute the lowercase hex SHA-256 digest of a string. */
-async function sha256Hex(input: string): Promise<string> {
-  const data = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-/**
- * Produce the deterministic canonical payload for hashing.
- *
- * Only the mutation fields (never the chain fields) are included, in a
- * fixed key order, with undefined values omitted — so the same logical
- * entry always hashes to the same value regardless of object key order.
- */
-function canonicalPayload(
-  entry: AuditMutation & { timestamp: string },
-): string {
-  const ordered: Record<string, unknown> = {};
-  for (const key of PAYLOAD_FIELDS) {
-    const value = entry[key];
-    if (value !== undefined) {
-      ordered[key] = value;
-    }
-  }
-  return JSON.stringify(ordered);
-}
-
-/** Compute the chain hash for an entry given the previous hash. */
-export async function computeEntryHash(
-  entry: AuditMutation & { timestamp: string },
-  prevHash: string,
-): Promise<string> {
-  return await sha256Hex(`${prevHash}\n${canonicalPayload(entry)}`);
-}
 
 /** Today's UTC date as `YYYY-MM-DD`. */
 function todayUtc(): string {
@@ -467,10 +424,71 @@ function reconcile(
  * true for as long as no other process appends, so reading it outside the
  * lock and writing on the strength of it is the original bug.
  */
+/**
+ * Has an operator signed for this journal's current damage?
+ *
+ * Mirrors the sweep's `damageAcknowledgements` guard for the append path
+ * (Issue #1074). A signature covers the exact bytes it was given, so a
+ * journal whose acknowledgement no longer matches its digest is *not*
+ * protected — that is the alarm coming back, and healing is the lesser
+ * concern at that point.
+ *
+ * @param path - Journal file path
+ * @returns true when a current acknowledgement covers these exact bytes
+ */
+async function damageIsAcknowledged(path: string): Promise<boolean> {
+  const baseDir = path.slice(0, path.lastIndexOf("/")) || ".";
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const damage = (await readRosterContents(baseDir)).damaged.get(name);
+  if (!damage) return false;
+  const digest = await journalDigest(path);
+  return digest.ok && digest.value === damage.digest;
+}
+
 async function getChainState(path: string): Promise<ChainState> {
-  const anchor = await readAnchor(path);
-  const lines = await readJournalLines(path);
-  return reconcile(path, anchor, lines);
+  try {
+    return reconcile(
+      path,
+      await readAnchor(path),
+      await readJournalLines(path),
+    );
+  } catch (error: unknown) {
+    if (!(error instanceof AuditChainAnchorError)) throw error;
+    // Issue #1074: a journal that disagrees with its anchor may simply be
+    // one the previous process did not live long enough to confirm. Settle
+    // that here — inside the lock, and only for a journal that has already
+    // failed — before quarantining it. A journal that settles nothing
+    // keeps its original error, so nothing is repaired on the strength of
+    // a second look.
+    //
+    // Except one an operator has already signed for. The sweep refuses to
+    // heal those because the signature is pinned to the journal's exact
+    // bytes, and repairing them would lapse it; the guarantee is worth
+    // nothing if the *write* path quietly does what the sweep declines to,
+    // so the same check stands on both.
+    if (await damageIsAcknowledged(path)) throw error;
+    const settled = await settleInterruptedAppend(path);
+    if (!settled.ok) {
+      // Loud, and the original verdict stands — exactly as on the sweep.
+      // Replacing it with the recovery's own error would also replace a
+      // *quarantinable* failure with one that is not, and the caller
+      // quarantines on that flag: the journal would stop taking writes
+      // altogether and the mutation would go unrecorded, which is a
+      // worse outcome than the damage that triggered it.
+      console.error(
+        `[SECURITY] [AUDIT_APPEND_RECOVERY_FAILED] ${path}: an interrupted ` +
+          `append could not be settled: ${settled.error.message}`,
+      );
+      throw error;
+    }
+    if (!settled.value) throw error;
+    console.error(formatAppendRecovery(settled.value));
+    return reconcile(
+      path,
+      await readAnchor(path),
+      await readJournalLines(path),
+    );
+  }
 }
 
 /**
@@ -522,6 +540,22 @@ async function appendEntry(
   const payload = { ...mutation, timestamp };
   const hash = await computeEntryHash(payload, state.headHash);
   const full: AuditEntry = { ...payload, prevHash: state.headHash, hash };
+  // Issue #1074: declare the append before making it. The line and the
+  // anchor are two files and cannot be written atomically, so the writer
+  // records which entry is in flight; a process killed anywhere after
+  // this leaves evidence of what it was doing, and the next run finishes
+  // or rolls back the append instead of demanding a human signature.
+  const declared = await writeAnchor(path, {
+    count: state.count,
+    headHash: state.headHash,
+    pending: { hash, startedAt: timestamp },
+  });
+  if (!declared.ok) {
+    throw new AuditChainAnchorError(
+      `audit entry could not be declared before the append: ` +
+        declared.error.message,
+    );
+  }
   await Deno.writeTextFile(path, `${JSON.stringify(full)}\n`, {
     append: true,
   });
@@ -706,6 +740,39 @@ export async function verifyChain(
     content = await Deno.readTextFile(path);
   } catch (error: unknown) {
     if (error instanceof Deno.errors.NotFound) {
+      // An anchor that records no entries *and* declares an append is
+      // what a writer killed before its first line leaves behind (Issue
+      // #1074): it anchors nothing, so there is nothing to be missing.
+      // Without the declaration it is still a deletion, and still red.
+      //
+      // The anchor alone cannot carry that verdict, because it is plain
+      // JSON an attacker may rewrite: "delete the journal, then declare
+      // it empty and in-flight" would launder an erasure into a clean
+      // sweep. The roster is the independent witness (Issue #3949) —
+      // `addToRoster` runs only *after* an append has landed, so a
+      // journal that was never successfully written to is absent from it,
+      // while one that ever held an entry is on it for good. A missing
+      // journal that the roster expects is a deletion, whatever its
+      // anchor says.
+      if (anchor && anchor.count === 0 && anchor.pending) {
+        const baseDir = path.slice(0, path.lastIndexOf("/")) || ".";
+        const name = path.slice(path.lastIndexOf("/") + 1);
+        let expected: boolean;
+        try {
+          expected = (await readRosterContents(baseDir)).journals.includes(
+            name,
+          );
+        } catch (error: unknown) {
+          // A corrupted roster is a tamper signal, never a silent pass.
+          return {
+            ok: false,
+            error: error instanceof Error ? error : new Error(String(error)),
+          };
+        }
+        if (!expected) {
+          return { ok: true, value: { valid: true, count: 0 } };
+        }
+      }
       if (anchor) {
         return {
           ok: true,
@@ -1169,6 +1236,36 @@ export async function acknowledgeJournalLoss(
   return await acknowledgeRosterLoss(baseDir, journalName, reason, by);
 }
 
+/**
+ * Settle an interrupted append while holding the audit-directory lock.
+ *
+ * The sweep does not otherwise take the lock, but the recovery rewrites
+ * the anchor and may truncate the journal, so it must not run beside a
+ * live appender (Issue #491's rule applies to every writer, including
+ * this one).
+ *
+ * @param baseDir - Audit directory holding the journal and its lock
+ * @param path - Journal to settle
+ * @returns Result carrying the recovery performed, or `null` when there
+ *   was nothing to settle
+ */
+async function settleAppendUnderLock(
+  baseDir: string,
+  path: string,
+): Promise<Result<AppendRecovery | null>> {
+  try {
+    return await withFileLock(
+      auditLockPath(baseDir),
+      () => settleInterruptedAppend(path),
+    );
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+}
+
 /** Does `path` exist? Any stat error other than absence is propagated up. */
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -1188,6 +1285,7 @@ function completeErasureSweep(dir: string): Result<ChainSweep> {
       baseDir: dir,
       checked: 1,
       acknowledged: [],
+      recovered: [],
       broken: [{
         path: dir,
         valid: false,
@@ -1263,7 +1361,13 @@ export async function verifyAllChains(
       if (seen) return completeErasureSweep(dir);
       return {
         ok: true,
-        value: { baseDir: dir, checked: 0, broken: [], acknowledged: [] },
+        value: {
+          baseDir: dir,
+          checked: 0,
+          broken: [],
+          acknowledged: [],
+          recovered: [],
+        },
       };
     }
     dirMissing = true;
@@ -1298,6 +1402,7 @@ export async function verifyAllChains(
 
   const broken: ChainSweepEntry[] = [];
   const acknowledged: AcknowledgedLoss[] = [];
+  const recovered: AppendRecovery[] = [];
   for (const name of [...names].sort()) {
     const path = `${dir}/${name}`;
 
@@ -1328,7 +1433,35 @@ export async function verifyAllChains(
       continue;
     }
 
-    const result = await verifyChain(path);
+    // Issue #1074: a journal that fails only because the writer was killed
+    // mid-append is settled here — the sweep runs first at every worker
+    // start, so a host that was killed verifies clean on its next run
+    // rather than asking an operator to sign for the kill. Only journals
+    // that already fail are touched, and only past the anchored head.
+    //
+    // A journal an operator has already signed for is left alone: the
+    // signature is pinned to its exact bytes, so healing it would lapse
+    // the signature the operator gave and turn a closed finding back into
+    // a red one.
+    let result = await verifyChain(path);
+    if (
+      result.ok && !result.value.valid && !dirMissing &&
+      !damageAcknowledgements.has(name)
+    ) {
+      const settled = await settleAppendUnderLock(dir, path);
+      if (!settled.ok) {
+        // Loud, and the original verdict stands: the journal is still
+        // broken for its original reason and still carries the remedy
+        // that names it. Silence here would read as "nothing to settle".
+        console.error(
+          `[SECURITY] [AUDIT_APPEND_RECOVERY_FAILED] ${path}: an ` +
+            `interrupted append could not be settled: ${settled.error.message}`,
+        );
+      } else if (settled.value) {
+        recovered.push(settled.value);
+        result = await verifyChain(path);
+      }
+    }
     if (!result.ok) {
       broken.push({
         path,
@@ -1366,7 +1499,13 @@ export async function verifyAllChains(
 
   return {
     ok: true,
-    value: { baseDir: dir, checked: names.size, broken, acknowledged },
+    value: {
+      baseDir: dir,
+      checked: names.size,
+      broken,
+      acknowledged,
+      recovered,
+    },
   };
 }
 
