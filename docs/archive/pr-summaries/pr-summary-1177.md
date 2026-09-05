@@ -131,6 +131,30 @@ The issue states its criteria under "What needs to be done" rather than an
   the present tense, so this change owes them the correction
 - **unrequested** — this PR summary file — reviewer: unrequested — reason:
   required of every PR by the repository's own standards
+- **unrequested** — extracting and exporting `resolveRunStateWorkDir`
+  (`worker/deno/lib/run_core.ts:1338`) — reviewer: unrequested — reason: new
+  public API. It exists so the host-independent guard can call the real
+  resolver from a child process; without it the only guards left are ones that
+  bite on the author's host and not under the gate
+- **unrequested** — the lane-rotation cursor (`worker/deno/lib/run_core.ts:5075`)
+  takes the same resolver, so a caller with no `config.workDir` also stops
+  persisting lane rotation — reviewer: unrequested — reason: side effect of the
+  shared resolution, reachable only from tests since production always sets
+  `workDir`; recorded under Evidence and in the field's own doc
+
+Two reviewers ran on this axis. The first returned after the summary was
+written and reproduced the fault independently — four concurrent `deno test`
+processes sharing one `WORK_DIR`, 4/4 red with the fallback restored and 4/4
+green with it gone, plus five consecutive gate-shaped `--parallel` passes green
+at the final tree with `WORK_DIR` deliberately left set. It reached the same
+three `met` verdicts and found nothing implemented wrongly.
+
+**Residual, recorded rather than fixed.** The host-independent guard asserts on
+`resolveRunStateWorkDir`, so a future regression that reads
+`Deno.env.get("WORK_DIR")` inside `runCoreLoop` itself — bypassing the resolver
+— would still merge green under the gate, which scrubs that variable. The three
+loop-level cases would catch it on any host that exports `WORK_DIR`, which is
+every fleet container.
 
 ## Standards Review
 
