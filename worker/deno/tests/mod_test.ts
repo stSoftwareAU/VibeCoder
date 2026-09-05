@@ -216,7 +216,11 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // ruleset, which had drifted from its committed payload with nothing in
   // the repository comparing the two. Each branch bumped 146 -> 147 on its
   // own; merged, both commands exist, so the count is 148.
-  assertEquals(commands.length, 148);
+  // Issue #873 added `log-dir` on this milestone branch (count 148 -> 149):
+  // the launcher and the worker have to resolve the same log directory, so
+  // one command answers for both.
+  assertEquals(commands.length, 149);
+  assertEquals(commands.includes("log-dir"), true);
   assertEquals(commands.includes("check-resurrected-files"), true);
   assertEquals(commands.includes("check-release-tag-ruleset"), true);
   assertEquals(commands.includes("callback-conformance"), true);
