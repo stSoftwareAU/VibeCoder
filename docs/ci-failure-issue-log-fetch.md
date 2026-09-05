@@ -1,4 +1,4 @@
-# 🧾 CI-failure Issue Log Fetch
+# 🔎 CI-failure Issue Log Fetch
 
 When a build fails, a watcher workflow can open a GitHub issue about it. The
 issue body carries a small pre-summary of the console log — whatever window
