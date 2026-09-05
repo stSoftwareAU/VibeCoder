@@ -253,3 +253,88 @@ Deno.test("gzipOldWorkerLogs - container era: the eternal worker-1.log finally c
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("gzipOldWorkerLogs - the summary names the directory and accounts for every candidate (Issue #1021)", async () => {
+  // The reported total must reconcile against the directory an operator can
+  // `ls`: `skipped 39` with one file present is unfalsifiable, so the pass
+  // publishes the candidate count and the arithmetic that consumes it.
+  const dir = await Deno.makeTempDir({ prefix: "gzip1021_" });
+  try {
+    const current = "worker-20260904-095601.log";
+    await writeLog(dir, current, 5000, new Date());
+    // Three header-only stubs — the shape that climbed to 39 on GRQ-23.
+    await writeLog(dir, "worker-20260904-050146.log", 74, new Date());
+    await writeLog(dir, "worker-20260904-050555.log", 74, new Date());
+    await writeLog(dir, "worker-20260903-235959.log", 74, new Date());
+    // Two prior runs worth compressing.
+    await writeLog(dir, "worker-20260903-120000.log", 5000, new Date());
+    await writeLog(dir, "worker-444.log", 5000, new Date());
+    // Neither a candidate: an already-compressed log and a foreign rotation.
+    await writeLog(dir, "worker-20260902-120000.log.gz", 5000, new Date());
+    await writeLog(dir, "pull.log.1", 5000, new Date());
+
+    const result = await gzipOldWorkerLogs(dir, {
+      currentLogFile: `${dir}/${current}`,
+      isRunning: noneRunning,
+    });
+
+    // Six files match the candidate pattern; the seventh and eighth do not.
+    assertEquals(result.logDir, dir);
+    assertEquals(result.candidates, 6);
+    assertEquals(result.compressed.length, 2);
+    assertEquals(result.skipped, 3);
+    assertEquals(result.failures, []);
+    assertEquals(result.skippedByReason.belowSizeFloor, 3);
+    assertEquals(result.skippedByReason.ownerStillRunning, 0);
+    assertEquals(result.currentRunLogs, 1);
+    // Every candidate is accounted for exactly once — a count that exceeds
+    // the files present can no longer go unnoticed.
+    assertEquals(
+      result.compressed.length + result.skipped + result.failures.length +
+        result.currentRunLogs,
+      result.candidates,
+    );
+    assertStringIncludes(result.message, dir);
+    assertStringIncludes(result.message, "below the 200-byte size floor");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("gzipOldWorkerLogs - a live owning PID is reported separately from a stub (Issue #1021)", async () => {
+  // The two skip reasons mean opposite things — one is a run that logged
+  // nothing, the other a log still being written — so one total cannot serve
+  // both.
+  const dir = await Deno.makeTempDir({ prefix: "gzip1021live_" });
+  try {
+    await writeLog(dir, "worker-555.log", 5000, new Date());
+    await writeLog(dir, "worker-556.log", 74, new Date());
+
+    const result = await gzipOldWorkerLogs(dir, {
+      currentLogFile: `${dir}/worker-20260904-095601.log`,
+      isRunning: (pid) => Promise.resolve(pid === 555),
+    });
+
+    assertEquals(result.candidates, 2);
+    assertEquals(result.compressed, []);
+    assertEquals(result.skipped, 2);
+    assertEquals(result.skippedByReason.belowSizeFloor, 1);
+    assertEquals(result.skippedByReason.ownerStillRunning, 1);
+    assertEquals(result.currentRunLogs, 0);
+    assertStringIncludes(result.message, "1 owned by a live PID");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("gzipOldWorkerLogs - an unreadable directory is named in the summary (Issue #1021)", async () => {
+  const result = await gzipOldWorkerLogs("/tmp/does-not-exist-1021", {
+    currentLogFile: "worker-1.log",
+    isRunning: noneRunning,
+  });
+
+  assertEquals(result.logDir, "/tmp/does-not-exist-1021");
+  assertEquals(result.candidates, 0);
+  assertStringIncludes(result.message, "/tmp/does-not-exist-1021");
+  assertStringIncludes(result.message, "unreadable");
+});
