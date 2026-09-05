@@ -14,8 +14,9 @@ scripts — or the workflow itself); any other PR gets the required `container`
 check reported as passed without a build. Inside the image CI runs the
 container-specific checks (`deno check` plus the entrypoint, launch-plan,
 runtime, manifest, run-mode and launcher-contract tests), not the whole test
-suite — that runs on the same commit in the sharded `validate (tests N/4)`
-legs. The second-engine (Podman) build is a push-time acceptance criterion.
+suite — the unit suite runs on the same commit in the sharded
+`validate (tests N/4)` legs, and the integration suites in the separate,
+non-required `integration tests` job (PR #1170). The second-engine (Podman) build is a push-time acceptance criterion.
 
 **Container is the only mode** (Issue #4). The former host-native
 opt-in and the macOS `seatbelt` profile were

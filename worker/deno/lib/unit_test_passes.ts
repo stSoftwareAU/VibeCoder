@@ -351,3 +351,97 @@ export function integrationTestPass(
     env: testStageEnv(options.env),
   };
 }
+
+/**
+ * One CI shard's share of `files` (PR #1170).
+ *
+ * The stride split — every `count`-th file from a sorted list — is what
+ * `.github/scripts/deno-test-shard.sh` has always used, and it is kept
+ * because it is deterministic and needs no state: shard `index` on any
+ * machine, at any time, picks the same files. Sorting first is what makes
+ * that true, so it is done here rather than trusted to the caller.
+ */
+export function shardTestFiles(
+  files: readonly string[],
+  index: number,
+  count: number,
+): readonly string[] {
+  if (!Number.isInteger(count) || count < 1) {
+    throw new Error(`shard count must be a positive integer, got ${count}`);
+  }
+  if (!Number.isInteger(index) || index < 0 || index >= count) {
+    throw new Error(`shard index must be 0..${count - 1}, got ${index}`);
+  }
+  return [...files].sort().filter((_, i) => i % count === index);
+}
+
+/** What one CI shard runs, and what it deliberately does not. */
+export interface TestShardPlan {
+  /** This shard's parallel-safe unit tests, for one `--parallel` run. */
+  parallel: readonly string[];
+  /** This shard's parallel-unsafe unit tests, for one serial run. */
+  serial: readonly string[];
+  /**
+   * Every integration suite in `testFiles` — not this shard's share, the
+   * whole set. The shard prints it so a reader of the CI log can see what
+   * the gate left out and which job took it, rather than inferring a
+   * silently shrunken suite from a falling file count.
+   */
+  integration: readonly string[];
+}
+
+/** Inputs for {@link testShardPlan}. */
+export interface TestShardPlanOptions {
+  /** Every `tests/*_test.ts` on disk, in any order. */
+  testFiles: readonly string[];
+  /** 0-based shard number. */
+  index: number;
+  /** Total shards. */
+  count: number;
+  /** The manifests, injected so a test can vary them. */
+  integrationFiles?: readonly string[];
+  parallelUnsafeFiles?: readonly string[];
+}
+
+/**
+ * The CI shard's passes, built from the same manifests as `test:unit`.
+ *
+ * CI used to run `find tests -maxdepth 1 -name '*_test.ts'` and hand the
+ * whole sorted list to one `deno test`, so the gate that decides a merge and
+ * the gate a developer runs before pushing were two different suites over two
+ * different scopes. The merge gate carried the 27 integration suites #907
+ * took out of the unit suite — which is why every shard job had to install
+ * `pwsh` before it could start — and it ran the {@link PARALLEL_UNSAFE_TEST_FILES}
+ * in the same invocation as everything else, so the split those files exist
+ * for was only ever honoured on a developer's machine.
+ *
+ * The partition here is {@link unitTestPasses}' partition, taken from the
+ * manifests rather than restated: parallel-safe unit tests, then
+ * {@link serialPassFiles}, with the integration suites excluded from both and
+ * reported so the exclusion is visible. Sharding is applied inside each pass
+ * so the two stay balanced across the matrix independently — a shard that
+ * drew every serial file would be the slowest job by minutes.
+ */
+export function testShardPlan(options: TestShardPlanOptions): TestShardPlan {
+  const integrationFiles = options.integrationFiles ?? INTEGRATION_TEST_FILES;
+  const parallelUnsafeFiles = options.parallelUnsafeFiles ??
+    PARALLEL_UNSAFE_TEST_FILES;
+  const integration = new Set(integrationFiles);
+  const serial = new Set(
+    serialPassFiles(parallelUnsafeFiles, integrationFiles),
+  );
+  const known = [...options.testFiles].sort();
+  return {
+    parallel: shardTestFiles(
+      known.filter((file) => !integration.has(file) && !serial.has(file)),
+      options.index,
+      options.count,
+    ),
+    serial: shardTestFiles(
+      known.filter((file) => serial.has(file)),
+      options.index,
+      options.count,
+    ),
+    integration: known.filter((file) => integration.has(file)),
+  };
+}
