@@ -80,6 +80,29 @@ export type RunOutcome =
       wipNote?: string;
     }
     /**
+     * The run's work reached a PR, but a PR-summary document rule was not
+     * satisfied (Issue #1140) — a criterion entry naming no `reviewer:`
+     * verdict, a missing `## Acceptance Criteria` heading, an unrecorded
+     * reproduction status.
+     *
+     * Neither `pr` nor `no_pr` says that. Reporting it as `no_pr` is what
+     * cost the fleet: on 2026-09-05 four runs raised a PR that later merged
+     * and were recorded `failure` 25-68 seconds afterwards, which returned
+     * each issue to the claimable pool for another host to redo at a mean
+     * $10.80 a run. The work is done and the PR is open; the summary is what
+     * is short, so the outcome says exactly that and the issue stays attached
+     * to its PR.
+     */
+    | {
+      kind: "summary_incomplete";
+      /** Phase that found the shortfall. */
+      phase: string;
+      prUrl: string;
+      prNumber: number;
+      /** The rule the summary broke, as the gate reported it. */
+      problem: string;
+    }
+    /**
      * The claim was still legitimate when it was taken, but the world moved
      * before the PR went up (Issue #344) — the issue closed mid-cycle, or a
      * PR overtook this run. The run stopped cleanly rather than opening a PR
@@ -205,6 +228,8 @@ export function describeRunOutcome(outcome: RunOutcome | undefined): string {
       return `superseded:pr#${outcome.prNumber}`;
     case "claim_stale":
       return `claim_stale:${outcome.reason}`;
+    case "summary_incomplete":
+      return `summary_incomplete:pr#${outcome.prNumber}`;
   }
 }
 
@@ -226,6 +251,31 @@ export function supersededOutcome(options: {
     prNumber: options.prNumber,
     prState: options.prState,
     ...(options.wipNote ? { wipNote: options.wipNote } : {}),
+  };
+}
+
+/**
+ * Outcome for a run whose work reached a PR the summary does not fully
+ * document (Issue #1140).
+ *
+ * Like {@link supersededOutcome} this is not a failure: no category, no
+ * `unknown` class, nothing filed, and no contribution to the failure streak.
+ * Unlike it, the run delivered — `prUrl` is the PR the work is on, and
+ * `problem` is the rule the gate found broken, which the gate has already
+ * commented on the issue.
+ */
+export function summaryIncompleteOutcome(options: {
+  phase: string;
+  prUrl: string;
+  prNumber: number;
+  problem: string;
+}): RunOutcome {
+  return {
+    kind: "summary_incomplete",
+    phase: options.phase,
+    prUrl: options.prUrl,
+    prNumber: options.prNumber,
+    problem: options.problem,
   };
 }
 

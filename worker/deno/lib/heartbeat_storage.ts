@@ -286,6 +286,8 @@ export function describeAttemptOutcome(
       return `superseded by #${outcome.prNumber}`;
     case "claim_stale":
       return `claim went stale (\`${outcome.reason}\`)`;
+    case "summary_incomplete":
+      return `raised #${outcome.prNumber}, summary incomplete`;
   }
 }
 
@@ -552,6 +554,19 @@ function renderOutcomeKindClause(outcome: RunOutcome): string {
         : "";
       return ` Superseded by ${verb} #${outcome.prNumber} — ${url}` +
         ` (this run raised no PR).${wip}`;
+    }
+    case "summary_incomplete": {
+      // Issue #1140 — the work reached a PR and the summary did not close a
+      // document rule out. Name both: the PR, so the reader can see the work
+      // landed, and the rule, so the shortfall is fixable rather than
+      // mysterious.
+      const url = boundOutcomeText(outcome.prUrl, OUTCOME_DETAIL_MAX_LENGTH);
+      const problem = boundOutcomeText(
+        outcome.problem,
+        OUTCOME_DETAIL_MAX_LENGTH,
+      );
+      return ` Raised #${outcome.prNumber} — ${url}. The PR summary is` +
+        ` incomplete: ${problem}`;
     }
     case "claim_stale": {
       // Issue #344 — the claim was fine when it was taken and stale by the
