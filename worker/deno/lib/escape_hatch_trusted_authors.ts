@@ -9,7 +9,8 @@
  *
  * - the worker's own login (`GITHUB_USER`) — the run that filed the follow-up,
  * - sibling fleet hosts (`fleet_pr_authors`),
- * - trusted humans (`allowed_authors`, `authorized_commenters`).
+ * - trusted humans — the derived collaborator set, plus the known
+ *   `authorized_commenters` input list (Issue #1066).
  *
  * A prompt-injected message can name any pre-existing issue number, but it
  * cannot change who GitHub recorded as that issue's author — that is the
@@ -22,16 +23,17 @@ import type { Logger } from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolveFleetAuthors } from "./fleet_authors.ts";
+import { readLiveTrustedAuthors } from "./trust_snapshot.ts";
 
 /** Configuration inputs that define "a login the worker trusts to file a follow-up". */
 export interface TrustedFollowUpAuthorInput {
   /** The worker's own GitHub login. */
   githubUser: string;
-  /** Trusted issue authors (`allowed_authors`). */
+  /** Trusted issue authors — the derived collaborator set. */
   allowedAuthors?: readonly string[];
   /** Sibling fleet logins (`fleet_pr_authors`). */
   fleetPrAuthors?: readonly string[];
-  /** Humans authorised to instruct the worker (`authorized_commenters`). */
+  /** Known logins whose input the worker acts on (`authorized_commenters`). */
   authorisedCommenters?: readonly string[];
 }
 
@@ -90,11 +92,18 @@ export async function loadTrustedFollowUpAuthors(
   try {
     const configPath = env("CONFIG_PATH") ?? ".config.json";
     const config = await deps.config.loadConfig(configPath);
+    // Issue #1066: a fresh `loadConfig` returns trust CLOSED — the file's
+    // `allowed_authors` grants nothing, and the trusted humans live in the
+    // per-cycle derived snapshot. Prefer that snapshot where the running
+    // process has one, so this gate sees the same trusted set every other
+    // consumer does rather than narrowing to the fleet on every hand-off.
+    const live = readLiveTrustedAuthors();
     return resolveTrustedFollowUpAuthors({
       githubUser: workerLogin,
-      allowedAuthors: config.allowedAuthors,
+      allowedAuthors: live?.allowedAuthors ?? config.allowedAuthors,
       fleetPrAuthors: config.fleetPrAuthors,
-      authorisedCommenters: config.authorisedCommenters,
+      authorisedCommenters: live?.authorisedCommenters ??
+        config.authorisedCommenters,
     });
   } catch (err) {
     logger.error(

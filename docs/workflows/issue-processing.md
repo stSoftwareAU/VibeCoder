@@ -43,7 +43,7 @@ flowchart TD
 
 ## 📏 Preconditions / invariants
 
-- Configuration is valid; repos are in allowlist; the trusted-author set and labels are set (`allowed_authors` under `author_source: "config"`, or GitHub-derived collaborators minus exclusions under `"github"`).
+- Configuration is valid; repos are in allowlist; labels are set. The trusted-author set is derived from each repo's write collaborators minus the Vibe Coder logins and bots (Issue #1066).
 - The worker has not already chosen a higher-priority work item in this loop iteration.
 - **Label priority:** A four-tier order — `top-priority` → `work-on` → `low-priority` → `idle-task`, with the label-less self-scheduled diagnostic tier 2b sitting between `work-on` and `low-priority` (Issue #505). A lower tier is only considered when the higher tier yields **no eligible candidate in any scanned repo**. If a configured-label search fails (API error), the worker waits for the API to recover rather than falling back to `work-on` or `low-priority` — this prevents accidentally processing a lower-priority issue when higher-priority ones may exist but were invisible due to API errors. Among candidates of the same tier, the worker selects the **globally oldest** by creation date across all configured repos (after filtering and milestone-aware open-PR blocking). See [Issue selection priority](#-issue-selection-priority) for the full rules. Claim happens **before** any work.
 
@@ -328,15 +328,14 @@ flowchart TD
     style Create fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
 ```
 
-### Configuration requirement — every host must list all fleet accounts
+### Configuration requirement — every host must name all fleet accounts
 
-The guards are only as good as the fleet configuration that feeds them. Under
-`author_source: "config"`, **every host's `allowed_authors` must list every
-fleet account** (plus its own `github_user`). Under `"github"` those fleet
-logins are write collaborators — and then excluded via `service_accounts`,
-so they cannot instruct the worker. A sibling that appears only in
-`fleet_pr_authors` is still covered by the union, but the divergence is a
-configuration smell:
+The guards are only as good as the fleet configuration that feeds them.
+**Every host must name every fleet account** in `service_accounts` or
+`fleet_pr_authors` (its own `github_user` is always covered). Those fleet
+logins are write collaborators on the monitored repos — and are then excluded
+from the trusted-author set, so they cannot instruct the worker (Issue #1066).
+`allowed_authors` plays no part in this any more:
 [`validateFleetConfig`](../../worker/deno/lib/fleet_config_validation.ts) runs at
 startup and in `diagnose-repo`, emitting a `[fleet-config] WARNING` for a
 `fleet_pr_authors` sibling missing from `allowed_authors` and a
@@ -359,10 +358,9 @@ no human action: it expires with the cooldown window and the retry path
 
 Every scan cycle begins by refreshing the trusted-author snapshot
 (`refreshTrustedAuthors` in
-[`run_core.ts`](../../worker/deno/lib/run_core.ts)). Under
-`author_source: "config"` that is a re-read of the local arrays. Under
-`"github"` it is one paginated `gh api` collaborator list per monitored
-repo, plus one team-members call when `exclusion_team` is set.
+[`run_core.ts`](../../worker/deno/lib/run_core.ts)): one paginated `gh api`
+collaborator list per monitored repo, plus one team-members call when
+`exclusion_team` is set. There is no local-array mode to short-circuit it.
 
 That per-tick collaborator fetch is an intentional exception to the
 standing rate-limit warning in

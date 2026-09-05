@@ -49,8 +49,8 @@ The design model assumes the controls hold; these are the assumptions **you**
 own once the worker is running on your machine:
 
 - The machine running the worker is trusted and owned/controlled by the allowed authors
-- The GitHub token has been created with appropriate scopes, and is scoped to the repositories you monitor. When `author_source` is `"github"`, that token is also how trust is resolved: collaborator read on every monitored repo, and `read:org` when `exclusion_team` is set.
-- Trusted authors create issues in good faith, and their accounts have two-factor authentication enabled. Under `author_source: "config"` that set is `allowed_authors`; under `"github"` it is each monitored repo's write collaborators minus exclusions — anyone who can grant write access can authorise an instructor.
+- The GitHub token has been created with appropriate scopes, and is scoped to the repositories you monitor. That token is also how trust is resolved: collaborator read on every monitored repo, and `read:org` when `exclusion_team` is set.
+- Trusted authors create issues in good faith, and their accounts have two-factor authentication enabled. That set is each monitored repo's write collaborators minus the Vibe Coder logins and bots — anyone who can grant write access can authorise an instructor.
 - The credential directory is provisioned non-interactively and stays owner-only
 
 ## 🏗️ Security Architecture
@@ -514,7 +514,7 @@ exit code (126). The only escape hatch is deliberate: set
 **Configuration structure:** See the [Configuration Reference](docs/CONFIGURATION.md) for the full `.config.json` file format and field descriptions.
 
 **Security-relevant fields:**
-- `authorized_commenters`: Controls which users can trigger PR feedback processing without a thumbs-up reaction. Keep this list minimal (see [Bot Account Security](#bot-account-security-issue-36))
+- `authorized_commenters`: The **known** bot logins whose input (test results, code reviews, PR comments) the worker acts on without a thumbs-up reaction. Never a grant of the right to direct work. Keep this list minimal (see [Bot Account Security](#bot-account-security-issue-36))
 - `work_on_label`: Controls the label that allows work on issues not created by allowed authors. Verified via GitHub timeline API
 
 ### 🔐 Environment Variables
@@ -655,7 +655,7 @@ Bot accounts added to `AUTHORIZED_COMMENTERS` can trigger PR feedback processing
 
 ### ⚙️ Default Configuration
 
-**The default `authorized_commenters` list only includes your allowed authors.** Bot accounts are **opt-in** for security reasons.
+**The default `authorized_commenters` list is `["github-copilot[bot]", "github-actions[bot]"]`** — the two GitHub-native bots whose reviews and results the worker would otherwise silently stop processing, because a GitHub App is never a repository collaborator. Every other bot is **opt-in**.
 
 To add bot accounts, either:
 1. Use `VIBE_INCLUDE_BOT_COMMENTERS=true` during setup
@@ -707,7 +707,7 @@ Bot accounts are **opt-in** (not included by default) because:
 
 | Scope | Purpose |
 |-------|---------|
-| `repo` | Clone repositories, create branches, push commits. Also the collaborator-read grant that `author_source: "github"` uses to resolve trust each cycle. |
+| `repo` | Clone repositories, create branches, push commits. Also the collaborator-read grant used to resolve trust each cycle. |
 | `workflow` | Modify GitHub Actions workflow files (if needed) |
 | `read:org` | Required when `exclusion_team` is set. Lists the org team whose members are stripped from the derived allowlist. A missing `read:org` is a **403** and the cycle is skipped — it is not silently treated as "no exclusions". |
 
@@ -914,8 +914,8 @@ Use this checklist when deploying the worker:
 
 ### 🔍 Configuration Review
 
-- [ ] Review who may instruct the worker. Under `author_source: "config"` that is `allowed_authors` / `authorized_commenters`. Under `"github"` it is every write/maintain/admin collaborator on each monitored repo, minus `service_accounts`, the host login, and `exclusion_team`. Anyone who can grant write access can authorise an instructor.
-- [ ] If `author_source` is `"github"`, confirm the token can list collaborators on every monitored repo and has `read:org` when `exclusion_team` is set. A 403 skips the cycle; it does not widen trust.
+- [ ] Review who may instruct the worker: every write/maintain/admin collaborator on each monitored repo, minus `service_accounts`, `fleet_pr_authors`, the host login, bots, and `exclusion_team`. Anyone who can grant write access can authorise an instructor.
+- [ ] Confirm the token can list collaborators on every monitored repo and has `read:org` when `exclusion_team` is set. A 403 skips the cycle; it does not widen trust.
 - [ ] Ensure `repos` array only contains repositories you own/trust
 - [ ] Verify `issue_labels` are appropriate for your workflow
 
@@ -947,7 +947,7 @@ modes it fails closed on.
 ### 1. Trust-Level Comment Filtering
 
 Every comment included in the Claude prompt is annotated with the author's trust level:
-- `[TRUSTED - author]` for comments from trusted authors (`allowed_authors` / `authorized_commenters` under `"config"`, or the GitHub-derived set under `"github"`)
+- `[TRUSTED - author]` for comments from trusted authors (the GitHub-derived collaborator set, plus the known `authorized_commenters` input list)
 - `[UNTRUSTED - author]` for comments from all other users
 
 A configuration option (`include_untrusted_comments`) controls whether untrusted comments are included with annotations (default) or excluded entirely (strict mode). Suspicious pattern detection runs on untrusted comments and emits `[SECURITY]` audit events.
@@ -1151,7 +1151,7 @@ Author-trust filtering historically classified *comments* only. The issue **body
 The body and title now receive the same treatment untrusted comments do, reusing the existing machinery rather than forking a second detector:
 
 - **Neutralised output.** The body and title are wrapped in the per-invocation nonce-delimited untrusted-content boundary and run through `sanitiseDelimiterPatterns()` before entering the model prompt (in `buildIssuePrompt`, `worker/deno/lib/prompt_builder.ts`) — a forged boundary-closing marker in the body cannot break out of the boundary.
-- **Trust classification.** The issue author is classified via the shared `classifyCommentAuthor()` against the current trusted-author snapshot (`allowed_authors` + `authorized_commenters` under `"config"`, or collaborators minus exclusions under `"github"`), exactly as comment authors are.
+- **Trust classification.** The issue author is classified via the shared `classifyCommentAuthor()` against the current trusted-author snapshot (collaborators minus the Vibe Coders and bots, plus the known `authorized_commenters` input list), exactly as comment authors are.
 - **Structured audit event, not audit-only.** Suspicious patterns (`detectSuspiciousPatterns`) in an **untrusted** author's body/title now emit a `[SECURITY]` audit event through the logger, replacing the previous `console.warn`. The trusted-author fast path is preserved — no detection, no audit event.
 
 The classification helper lives in [`worker/deno/lib/issue_content_trust_filter.ts`](worker/deno/lib/issue_content_trust_filter.ts) with tests in `worker/deno/tests/issue_content_trust_filter_test.ts`; the audit-event wiring is in [`worker/deno/commands/work_on_issue.ts`](worker/deno/commands/work_on_issue.ts).
@@ -1186,7 +1186,7 @@ Use this checklist when deploying the Vibe Coder against **public repositories**
 
 - [ ] **Enable strict untrusted comment filtering**: Set `include_untrusted_comments` to `false` in `.config.json` if your workflow does not rely on public community input. This excludes all untrusted comments from the Claude prompt context entirely.
 - [ ] **Review the trusted-author set**: Ensure only genuinely trusted users can instruct the worker. On public repositories, those users' issue content is passed directly to Claude without restriction. Under `"github"`, review repository write access — that *is* the allowlist.
-- [ ] **Minimise `authorized_commenters`**: Keep this list as small as possible. Each entry represents a user whose comments bypass untrusted content filtering.
+- [ ] **Minimise `authorized_commenters`**: Keep this list as small as possible. Each entry is a bot whose comments bypass untrusted content filtering. It never grants the right to raise, label or schedule work.
 - [ ] **Set conservative comment limits**: Review and adjust comment budget settings in `config_defaults.ts` (`max_comment_length`, untrusted per-comment limit, untrusted comment count cap) to values appropriate for your workflow.
 - [ ] **Verify `work-on` label approval flow**: Confirm that the `work-on` label is only added by trusted users and that TOCTOU protection is active for external issues.
 
@@ -1204,7 +1204,7 @@ Use this checklist when deploying the Vibe Coder against **public repositories**
 
 ### 🔄 Periodic Review (Monthly)
 
-- [ ] **Review the trusted-author set.** Under `"config"`, edit `allowed_authors` and `authorized_commenters`. Under `"github"`, review who has write access on each monitored repo, who sits on `exclusion_team`, and whether `service_accounts` still names every fleet login that must not authorise itself.
+- [ ] **Review the trusted-author set.** Review who has write access on each monitored repo, who sits on `exclusion_team`, and whether `service_accounts` / `fleet_pr_authors` still name every fleet login that must not authorise itself.
 - [ ] **Check security audit logs** for patterns indicating sustained attack attempts
 - [ ] **Review any blocked issues** (TOCTOU failures) to determine whether they were legitimate edits or attack attempts
 - [ ] **Update comment filtering configuration** if community interaction patterns have changed
@@ -1218,7 +1218,7 @@ Use this checklist when deploying the Vibe Coder against **public repositories**
 **Answer:** No. Legal terms do not protect you from hostile actors who won't abide by them. What protects your deployment is **security design**, not the licence:
 
 - **Your worker runs on your machine.** The code that executes (Claude Code, scripts) runs only on infrastructure you control, behind your firewall. No one else has access to that machine unless you give it to them.
-- **Who can trigger work is not always a local file.** Under the default `author_source: "config"`, the instructor set is `allowed_authors` and `authorized_commenters` in *your* `.config.json` on *your* machine — local, secret, never committed. Under `"github"`, that set is whoever currently holds write, maintain, or admin on a monitored repo, minus the configured exclusions. Anyone who can grant write access can authorise an instructor. That is the intended design, and it is a genuinely wider set than a hand-edited allowlist.
+- **Who can trigger work is not a local file.** The instructor set is whoever currently holds write, maintain, or admin on a monitored repo, minus the Vibe Coder logins, bots, and any `exclusion_team`. Anyone who can grant write access can authorise an instructor. That is the intended design, and it is a genuinely wider set than a hand-edited allowlist.
 - **The worker's GitHub token is on the trust path.** Compromise of that token is no longer "only repo actions". It is also the credential used to *resolve* who is trusted. A stolen token plus the ability to add a write collaborator is a stolen instructor seat.
 - **Fail-closed, not fail-open.** A collaborator or exclusion-team fetch that returns 403 (missing scope), 404, malformed JSON, or any other error **skips the cycle**. The worker does not fall back to a leftover `allowed_authors` list and does not treat a failed exclusion fetch as "no exclusions". Search logs for `[TRUST_REFRESH]`.
 - **The worker cannot trust itself.** `service_accounts` and the host login are stripped from the derived set. Without that exclusion, a fleet account with write access would authorise itself, and every worker-authored comment would be self-trusted.

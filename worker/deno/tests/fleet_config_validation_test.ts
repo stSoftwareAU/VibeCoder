@@ -32,27 +32,28 @@ Deno.test("validateFleetConfig - empty effective set is an error", () => {
   assertStringIncludes(result.messages[0]!, "EMPTY");
 });
 
-Deno.test("validateFleetConfig - empty allowed_authors warns about blindness", () => {
+Deno.test("validateFleetConfig - an empty allowed_authors is the healthy state (Issue #1066)", () => {
+  // It grants nothing now, so its emptiness is expected. The host's own login
+  // still makes the effective fleet set non-empty, which is what the guard
+  // needs.
   const result = validateFleetConfig({
     githubUser: "Vibecoderbot",
     allowedAuthors: [],
     fleetPrAuthors: [],
   });
-  assertEquals(result.level, "warning");
-  assertStringIncludes(result.messages[0]!, "allowed_authors is empty");
+  assertEquals(result.level, "ok", JSON.stringify(result.messages));
+  assertEquals(result.messages, []);
 });
 
-Deno.test("validateFleetConfig - sibling only in fleet_pr_authors warns", () => {
-  // The exact #3138 blind-spot shape.
+Deno.test("validateFleetConfig - a sibling only in fleet_pr_authors is correct, not a smell (Issue #1066)", () => {
+  // The #3138 blind-spot shape is now the *right* shape: fleet identity lives
+  // in `fleet_pr_authors` / `service_accounts`, never in `allowed_authors`.
   const result = validateFleetConfig({
     githubUser: "Vibecoderbot",
-    allowedAuthors: ["Vibecoderbot", "human1"],
+    allowedAuthors: [],
     fleetPrAuthors: ["stsvcbot"],
   });
-  assertEquals(result.level, "warning");
-  assertEquals(result.missingFromAllowed, ["stsvcbot"]);
-  assertStringIncludes(result.messages.join(" "), "stsvcbot");
-  // Guard still covers it via the union.
+  assertEquals(result.level, "ok", JSON.stringify(result.messages));
   assertEquals(result.effectiveAuthors.includes("stsvcbot"), true);
 });
 

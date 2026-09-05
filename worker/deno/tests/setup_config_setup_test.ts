@@ -148,22 +148,25 @@ Deno.test("buildOverridesOnly - includes authorized_commenters when present", ()
   assertEquals(result.authorized_commenters, ["user1", "github-copilot[bot]"]);
 });
 
-Deno.test("buildOverridesOnly - includes author_source and exclusion_team when present (Issue #252)", () => {
+Deno.test("buildOverridesOnly - includes exclusion_team when present (Issue #252)", () => {
   const config: SetupConfig = {
-    author_source: "github",
     exclusion_team: "stSoftwareAU/vibe-workers",
   };
   const result = buildOverridesOnly(config);
-  assertEquals(result.author_source, "github");
   assertEquals(result.exclusion_team, "stSoftwareAU/vibe-workers");
 });
 
-Deno.test("buildOverridesOnly - omits default author_source config (Issue #252)", () => {
-  const config: SetupConfig = {
-    author_source: "config",
-  };
-  const result = buildOverridesOnly(config);
-  assertEquals(result.author_source, undefined);
+Deno.test("buildOverridesOnly - never writes author_source, which was removed (Issue #1066)", () => {
+  const config = { author_source: "github" } as unknown as SetupConfig;
+  const result = buildOverridesOnly(config) as unknown as Record<
+    string,
+    unknown
+  >;
+  assertEquals(
+    "author_source" in result,
+    false,
+    "setup must not plant a removed key in a fresh .config.json",
+  );
 });
 
 Deno.test("buildOverridesOnly - includes claude_model when present", () => {
@@ -431,12 +434,17 @@ Deno.test("mergeNonInteractive - VIBE_INCLUDE_BOT_COMMENTERS adds bot accounts",
   ]);
 });
 
-Deno.test("mergeNonInteractive - defaults authorized_commenters to first allowed author", () => {
+Deno.test("mergeNonInteractive - defaults authorized_commenters to the known bots (Issue #1066)", () => {
+  // Axis 2 is a *known* list. A human no longer belongs on it by default:
+  // write access to a monitored repo already carries input trust.
   const env = (name: string) =>
     name === "VIBE_ALLOWED_AUTHOR" ? "mainuser" : undefined;
 
   const result = mergeNonInteractive({}, env);
-  assertEquals(result.authorized_commenters, ["mainuser"]);
+  assertEquals(result.authorized_commenters, [
+    "github-copilot[bot]",
+    "github-actions[bot]",
+  ]);
 });
 
 Deno.test("mergeNonInteractive - VIBE_WORK_ON_LABEL is ignored (Issue #1834)", () => {
@@ -508,7 +516,11 @@ Deno.test("runNonInteractive - writes only overridden values to config file", as
     // Should have allowed_authors, repos, and authorized_commenters
     assertEquals(parsed.allowed_authors, ["testuser"]);
     assertEquals(parsed.repos, ["org/repo1", "org/repo2"]);
-    assertEquals(parsed.authorized_commenters, ["testuser"]);
+    // Issue #1066: the known-bot input list, not the human.
+    assertEquals(parsed.authorized_commenters, [
+      "github-copilot[bot]",
+      "github-actions[bot]",
+    ]);
 
     // Should NOT have default values
     assertEquals(parsed.issue_labels, undefined);

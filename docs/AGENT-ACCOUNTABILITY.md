@@ -436,9 +436,8 @@ collateral damage.
   (`🤖 Processed by: <displayName>`) via `buildWorkerFooter()`.
 - The trusted-author set identifies which humans are authorised to
   delegate work — only issues authored by those users (or carrying a
-  trusted `work-on` label) are picked up. Under `author_source:
-  "config"` that set is `allowed_authors` in `.config.json`; under
-  `"github"` it is write collaborators minus exclusions
+  trusted `work-on` label) are picked up. That set is each monitored repo's
+  write collaborators minus the Vibe Coder logins and bots (Issue #1066)
   ([`worker/deno/lib/config.ts`](../worker/deno/lib/config.ts) and
   [`work_on_content_integrity.ts`](../worker/deno/lib/work_on_content_integrity.ts)).
 - Operational labels (`planning`, `work-on`, `needs-revision`, etc.)

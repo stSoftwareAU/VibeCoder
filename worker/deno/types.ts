@@ -18,14 +18,6 @@ import type { CallbacksConfig } from "./lib/run_callbacks_config.ts";
 export type VerbosityLevel = "minimal" | "concise" | "standard" | "verbose";
 
 /**
- * Where trusted-author / authorised-commenter allowlists come from
- * (Issue #252). `"config"` uses the local `.config.json` arrays (the
- * historical default). `"github"` will derive them from collaborators in
- * a later wiring sub-issue; this schema lands the selector only.
- */
-export type AuthorSource = "github" | "config";
-
-/**
  * How a host tracks Vibe Coder releases (Issue #622, part of #583).
  *
  * `"dynamic"` (the default, and what every existing host does) updates the
@@ -54,9 +46,22 @@ export interface PinnedToolVersions {
  * Worker configuration loaded from .config.json.
  */
 export interface WorkerConfig {
-  /** GitHub usernames authorised to create issues (Issue #137) */
+  /**
+   * **Axis 1 — who may direct work** (raise, label, schedule): the logins
+   * resolved from repository permissions this cycle (Issue #1066).
+   *
+   * `hasWriteAccess(repo, login) && !isVibeCoder(login) && !isBot(login)`,
+   * intersected across every monitored repo. This is **not** read from
+   * `.config.json`: it is empty at load — trust starts closed — and is
+   * filled by the per-cycle collaborator resolve. The `allowed_authors` key
+   * in the file grants nothing.
+   */
   allowedAuthors: string[];
-  /** @deprecated Use allowedAuthors instead. First author for backward compatibility */
+  /**
+   * @deprecated Not a trust grant. The first `allowed_authors` entry, kept
+   * only as the default PR reviewer / assignee when `pr_reviewers` is unset.
+   * Prefer setting `pr_reviewers` explicitly.
+   */
   allowedAuthor: string;
   /** GitHub username to request as reviewer on PRs */
   prReviewer: string;
@@ -71,18 +76,23 @@ export interface WorkerConfig {
    * collectors and are NOT included here.
    */
   issueLabels: string[];
-  /** GitHub users authorised to trigger PR feedback fixes */
+  /**
+   * **Axis 2 — whose input we act on** (test results, code reviews, PR
+   * comments): axis 1 plus a *known* list (Issue #1066).
+   *
+   * At load this is the operator's `authorized_commenters` — the known bots
+   * whose feedback we accept even though a GitHub App is never a repository
+   * collaborator. After the per-cycle resolve it is that list, plus the Vibe
+   * Coder logins, plus every axis-1 author. A login here may supply input and
+   * may **not** direct work; the asymmetry is the point of the design.
+   */
   authorisedCommenters: string[];
   /**
-   * Source of the trusted-author / authorised-commenter allowlists
-   * (Issue #252). Defaults to `"config"` so existing hosts keep today's
-   * behaviour. `"github"` makes the local arrays optional and deprecated.
-   */
-  authorSource: AuthorSource;
-  /**
-   * Org team whose members are excluded from GitHub-derived allowlists
-   * (Issue #252). `org/slug` (e.g. `stSoftwareAU/vibe-workers`).
-   * Absent means team exclusion is off.
+   * Org team whose members are excluded from the derived author set, on top
+   * of the Vibe Coder logins that are always excluded (Issue #252, #1066).
+   * `org/slug` (e.g. `stSoftwareAU/vibe-workers`). Absent means team
+   * exclusion is off — it is never required to exclude the fleet's own
+   * accounts.
    */
   exclusionTeam?: string;
   /**
@@ -986,20 +996,26 @@ export interface RepoConfig {
  * Only values that differ from built-in defaults need to be present.
  */
 export interface ConfigFile {
-  /** GitHub usernames authorised to create issues (Issue #137) */
+  /**
+   * @deprecated No longer a trust grant (Issue #1066). Kept only as the
+   * default PR reviewer / assignee when `pr_reviewers` is unset; who may
+   * direct work is derived from repository collaborators every cycle.
+   */
   allowed_authors?: string[];
   /** GitHub usernames to request as reviewers on PRs (Issue #141) */
   pr_reviewers?: string[];
   repos?: string[];
+  /**
+   * Known logins whose input (test results, code reviews, PR comments) the
+   * worker acts on without their holding repository write access — Copilot,
+   * Actions, and any other bot the operator names (Issue #1066). Never a
+   * grant of the right to raise, label or schedule work.
+   */
   authorized_commenters?: string[];
   /**
-   * `"github"` derives allowlists from collaborators; `"config"` uses the
-   * local arrays. Default `"config"` (Issue #252).
-   */
-  author_source?: AuthorSource;
-  /**
-   * Org team excluded from GitHub-derived allowlists, `org/slug`
-   * (Issue #252). Absent means team exclusion is off.
+   * Org team excluded from the derived author set, `org/slug` (Issue #252).
+   * Absent means team exclusion is off; the fleet's own logins are excluded
+   * unconditionally either way (Issue #1066).
    */
   exclusion_team?: string;
   /**

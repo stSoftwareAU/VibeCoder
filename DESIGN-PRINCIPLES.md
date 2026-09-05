@@ -82,6 +82,63 @@ milestone-aware `checkRepoAvailability()` function, exposed via the
 `check-repo-availability` Deno command and called from
 `worker/deno/lib/issue_finder.ts`.
 
+### Two axes of trust
+
+**Who may direct work, and whose input we act on, are different questions with
+different answers.** Conflating them is what produced Issues #1064, #1066
+and #1068 — one array (`allowed_authors`) answering three questions at once.
+
+| Actor | May **direct** work (raise / label / schedule) | May **supply input** (test results, code reviews, PR comments) |
+| --- | --- | --- |
+| Human with write access, not a Vibe Coder | **yes** | yes |
+| Vibe Coder (`VibeCoderST`, `stservice`) | **no** | yes |
+| Known bot (`github-copilot[bot]`, `github-actions[bot]`) | **no** | yes |
+| Anyone else — the public, unknown bots | **no** | **no** |
+
+**Axis 1 — who may direct work.** Derived from repository permissions, never a
+hand-maintained allowlist:
+
+```text
+mayDirectWork(repo, login) =
+  hasWriteAccess(repo, login) && !isVibeCoder(login) && !isBot(login)
+```
+
+On a public repository this is the security boundary: someone with no write
+access cannot direct the worker, whatever they write in an issue. The
+`!isBot` term is load-bearing on its own — a bot with write access must still
+not be able to schedule work, because write access alone does not confer the
+right to direct. Resolved every cycle by
+`resolveDerivedAuthors()` (`worker/deno/lib/derived_authors.ts`) and folded
+across the monitored repos as an **intersection**, so write access on one repo
+never confers trust on another.
+
+**Axis 2 — whose input we act on.** An explicit *known* list, because "known"
+is precisely the property that cannot be derived from repository permissions:
+a GitHub App is not a collaborator at all, so a naive derived rule silently
+stops processing Copilot reviews and Actions results. It is axis 1 plus the
+Vibe Coder logins plus `authorized_commenters`.
+
+**The asymmetry is the point.** A Vibe Coder's or a known bot's review is
+accepted as input; neither may schedule or change work. Two mechanisms carry
+it and must survive any rewrite: `wasLabelAddedByAllowedAuthor()` treats any
+fleet login as an untrusted label applier (Issue #3416), and
+`strip_untrusted_work_on.ts` strips a self-applied `work-on` and comments once
+(Issue #3575), failing closed when the applier cannot be established.
+
+**The fleet exclusion needs no configuration.** The Vibe Coder accounts hold
+repository write access by necessity — they push branches — so under a
+collaborator-derived rule they would otherwise become trusted, the exact
+inverse of the requirement. The exclusion therefore defaults from the fleet
+login list the configuration already carries (`service_accounts` and
+`fleet_pr_authors`, plus the host's own login); `exclusion_team` is an
+optional *additional* exclusion for org-team-based setups. A deployment that
+resolves an empty fleet login set **fails loudly at config load** rather than
+running with the workers trusted.
+
+Trust starts **closed**: the construction-time snapshot is empty and is opened
+only by a successful resolve. A resolve failure skips the cycle rather than
+falling back to any local array.
+
 ### Locking and scheduling exist only between Vibe Coders
 
 **There is no locking or scheduling between humans and Vibe Coders.**
@@ -830,7 +887,7 @@ naming a real pre-existing issue, used to be accepted as a resolution.
 `verifyFollowUpIssueExists()` (`worker/deno/lib/escape_hatch_verify.ts`) now
 requires GitHub's own record of the follow-up: it must **exist** and its
 **author** must be the worker's own login, a fleet sibling
-(`fleet_pr_authors`), or an allowlisted human (`allowed_authors`,
+(`fleet_pr_authors`), or a trusted human (the derived collaborator set, or
 `authorized_commenters`) — the set resolved by
 `resolveTrustedFollowUpAuthors()` (`escape_hatch_trusted_authors.ts`). An issue
 filed by anyone else is rejected at ERROR and the run falls through to the

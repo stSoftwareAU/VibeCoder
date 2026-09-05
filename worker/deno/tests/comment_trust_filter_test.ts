@@ -43,12 +43,23 @@ Deno.test("trust filter - classifies unknown user as untrusted", () => {
   assertEquals(result, "UNTRUSTED");
 });
 
-Deno.test("trust filter - classification is case-sensitive", () => {
-  const result = classifyCommentAuthor("Owner", {
-    allowedAuthors: ["owner"],
-    authorisedCommenters: [],
-  });
-  assertEquals(result, "UNTRUSTED");
+Deno.test("trust filter - classification is case-insensitive, as GitHub logins are (Issue #1066)", () => {
+  // The trusted sets are derived from repository collaborators and normalised
+  // to lower case, while a comment author arrives in the account's own casing.
+  assertEquals(
+    classifyCommentAuthor("Owner", {
+      allowedAuthors: ["owner"],
+      authorisedCommenters: [],
+    }),
+    "TRUSTED",
+  );
+  assertEquals(
+    classifyCommentAuthor("owner", {
+      allowedAuthors: [],
+      authorisedCommenters: ["Copilot[Bot]"],
+    }),
+    "UNTRUSTED",
+  );
 });
 
 Deno.test("trust filter - handles empty trust lists", () => {

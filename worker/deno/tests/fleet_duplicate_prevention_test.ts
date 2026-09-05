@@ -479,21 +479,23 @@ Deno.test(
 // =============================================================================
 
 Deno.test(
-  "fleet invariant - an incomplete allowed_authors surfaces the fail-loud blind-spot warning (#3138)",
+  "fleet invariant - a sibling named only in fleet_pr_authors is covered, and is no longer a smell (#3138, Issue #1066)",
   () => {
-    // The exact incident shape: a sibling in fleet_pr_authors but missing from
-    // allowed_authors. The union still covers it (no silent blind spot), but
-    // the divergence is surfaced as a WARNING for the operator.
+    // The #3138 incident shape — a sibling in `fleet_pr_authors` but not in
+    // `allowed_authors` — is now the *correct* shape: fleet identity lives in
+    // `fleet_pr_authors` / `service_accounts`, and `allowed_authors` grants
+    // nothing. The union still covers the sibling, so there is no blind spot;
+    // what has gone is the warning, which would now fire on every healthy
+    // start-up.
     const result = validateFleetConfig({
       githubUser: HOST,
       allowedAuthors: [HOST, "alice"],
       fleetPrAuthors: [SIBLING_FLEET_ONLY],
     });
 
-    assertEquals(result.level, "warning");
-    assertEquals(result.missingFromAllowed, [SIBLING_FLEET_ONLY]);
+    assertEquals(result.level, "ok", JSON.stringify(result.messages));
+    assertEquals(result.messages, []);
     assertEquals(result.effectiveAuthors.includes(SIBLING_FLEET_ONLY), true);
-    assertStringIncludes(result.messages.join(" "), SIBLING_FLEET_ONLY);
   },
 );
 
