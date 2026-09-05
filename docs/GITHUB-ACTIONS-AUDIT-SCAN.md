@@ -214,7 +214,7 @@ sequenceDiagram
     Claude-->>Template: clean exit (no JSON, no summary)
     Template->>GH: list open `github-actions-audit` issues (AFTER snapshot)
     Template->>Template: diff AFTER − BEFORE = newly-filed issue numbers
-    Template-->>Main: close wrapper with "no findings" or<br/>"GitHub Actions audit complete. Filed N issues: …"
+    Template-->>Main: close wrapper with "no findings" or<br/>"GitHub Actions audit complete. Filed N issues: …" or<br/>"Newly-filed count unavailable …" (a snapshot lookup failed)
 ```
 
 The flowchart below summarises the same flow as a decision tree.
@@ -244,7 +244,7 @@ flowchart TD
     Cap --> FileFindings[Phase 4 — gh issue create<br/>labels: github-actions-audit, severity:&lt;level&gt;]:::phase
     FileFindings --> After[Snapshot 2 — list open<br/>`github-actions-audit` issues AFTER]:::phase
     After --> Diff[Template diff:<br/>AFTER − BEFORE = newly filed]:::output
-    Diff --> Close[Close wrapper with summary<br/>'no findings' OR<br/>'GitHub Actions audit complete. Filed N issues: …'<br/>never raises a PR]:::output
+    Diff --> Close[Close wrapper with summary<br/>'no findings' OR<br/>'GitHub Actions audit complete. Filed N issues: …' OR<br/>'Newly-filed count unavailable …'<br/>never raises a PR]:::output
 ```
 
 ## Wrapper issue layout
@@ -1168,6 +1168,9 @@ The only artefacts a GitHub Actions audit run produces are:
    #B, …` (numbers sorted ascending), with a trailing
    `Runner-deprecation pre-files: …` line when the pre-filer fired and a
    `Runner-deprecation scan failed: …` line when the scanner threw.
+   A failed before/after snapshot lookup renders the unknown-count
+   string instead (Issue #1105) — see
+   [IDLE-TASK-FRAMEWORK.md → The newly-filed diff](IDLE-TASK-FRAMEWORK.md#the-newly-filed-diff--unknown-is-not-empty).
 
 Auto-remediation is **out of scope** for the scan. Fixes are filed as
 ordinary issues that flow through the normal triage → planning →

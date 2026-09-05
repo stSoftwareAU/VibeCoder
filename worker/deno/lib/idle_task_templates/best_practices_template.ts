@@ -75,6 +75,7 @@ import {
   listAllOpenIssueTitles,
   listKnownOpenFindingIds,
   listOpenIssueNumbersByLabel,
+  NEWLY_FILED_UNKNOWN_SUMMARY,
   type OpenIssueTitle,
   renderOpenIssueTitles,
 } from "../idle_task_snapshot.ts";
@@ -612,8 +613,9 @@ async function defaultRunScan(
  */
 export function renderBestPracticesSummary(
   bucket: string,
-  newlyFiled: readonly number[],
+  newlyFiled: readonly number[] | null,
 ): string {
+  if (newlyFiled === null) return NEWLY_FILED_UNKNOWN_SUMMARY;
   if (newlyFiled.length === 0) {
     return "no findings";
   }

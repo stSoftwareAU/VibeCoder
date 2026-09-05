@@ -223,7 +223,7 @@ sequenceDiagram
     Claude-->>Template: clean exit (no JSON, no summary)
     Template->>GH: list open `best-practices` issues (AFTER snapshot)
     Template->>Template: diff AFTER − BEFORE = newly-filed issue numbers
-    Template-->>Main: close wrapper with "no findings" or<br/>"Best-practices scan complete (bucket: …). Filed N issues: …"
+    Template-->>Main: close wrapper with "no findings" or<br/>"Best-practices scan complete (bucket: …). Filed N issues: …" or<br/>"Newly-filed count unavailable …" (a snapshot lookup failed)
 ```
 
 The flowchart below summarises the same flow as a decision tree.
@@ -253,7 +253,7 @@ flowchart TD
     Cap --> FileFindings[Phase 4 — gh issue create<br/>labels: best-practices, lang:&lt;bucket&gt;, severity:&lt;level&gt;]:::phase
     FileFindings --> After[Snapshot 2 — list open<br/>`best-practices` issues AFTER]:::phase
     After --> Diff[Template diff:<br/>AFTER − BEFORE = newly filed]:::output
-    Diff --> Close[Close wrapper with summary<br/>'no findings' OR<br/>'Best-practices scan complete (bucket: X). Filed N issues: …'<br/>never raises a PR]:::output
+    Diff --> Close[Close wrapper with summary<br/>'no findings' OR<br/>'Best-practices scan complete (bucket: X). Filed N issues: …' OR<br/>'Newly-filed count unavailable …'<br/>never raises a PR]:::output
 ```
 
 ## Wrapper issue layout
@@ -771,6 +771,9 @@ The only artefacts a best-practices run produces are:
 2. **A closing comment** on the wrapper idle-task issue — either
    `no findings` or `Best-practices scan complete (bucket: <b>).
    Filed N issues: #A, #B, …`.
+   A failed before/after snapshot lookup renders the unknown-count
+   string instead (Issue #1105) — see
+   [IDLE-TASK-FRAMEWORK.md → The newly-filed diff](IDLE-TASK-FRAMEWORK.md#the-newly-filed-diff--unknown-is-not-empty).
 
 Auto-remediation is **out of scope** for the scan. Fixes are filed
 as ordinary issues that flow through the normal triage → planning →

@@ -63,6 +63,7 @@ import { loadPrompt as defaultLoadPrompt } from "../prompt_manager.ts";
 import {
   diffNewlyFiled,
   listOpenIssueNumbersByLabel,
+  NEWLY_FILED_UNKNOWN_SUMMARY,
 } from "../idle_task_snapshot.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "../label_operations.ts";
 import { buildAttributionFooter } from "../idle_task_attribution.ts";
@@ -414,12 +415,14 @@ export function renderAlertFindingBody(
  * Exported so tests can assert on the exact wording.
  */
 export function renderAlertFeedSummary(
-  newlyFiled: readonly number[],
+  newlyFiled: readonly number[] | null,
   feedNotes: readonly string[] = [],
   errors: readonly string[] = [],
 ): string {
   const parts: string[] = [];
-  if (newlyFiled.length === 0) {
+  if (newlyFiled === null) {
+    parts.push(NEWLY_FILED_UNKNOWN_SUMMARY);
+  } else if (newlyFiled.length === 0) {
     parts.push("no findings");
   } else {
     const sorted = [...newlyFiled].sort((a, b) => a - b);

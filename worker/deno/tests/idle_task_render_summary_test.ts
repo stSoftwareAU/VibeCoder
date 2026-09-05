@@ -1,9 +1,23 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { renderRunSummary } from "../lib/idle_task_templates/security_scan_template.ts";
 import { renderBestPracticesSummary } from "../lib/idle_task_templates/best_practices_template.ts";
 import { renderTestAuditSummary } from "../lib/idle_task_templates/test_audit_template.ts";
 import { renderGitHubActionsAuditSummary } from "../lib/idle_task_templates/github_actions_audit_template.ts";
 import { renderSupplyChainReadinessSummary } from "../lib/idle_task_templates/supply_chain_readiness_template.ts";
+import { renderAlertFeedSummary } from "../lib/idle_task_templates/alert_feed_template.ts";
+import { renderBashSyntaxAuditSummary } from "../lib/idle_task_templates/bash_syntax_audit_template.ts";
+import { renderBashScriptRefsSummary } from "../lib/idle_task_templates/bash_script_refs_template.ts";
+import { renderDeadCodeSummary } from "../lib/idle_task_templates/dead_code_template.ts";
+import { renderDeprecatedApiSummary } from "../lib/idle_task_templates/deprecated_api_template.ts";
+import { renderDocCoverageSummary } from "../lib/idle_task_templates/doc_coverage_template.ts";
+import { renderDocumentationAuditSummary } from "../lib/idle_task_templates/documentation_audit_template.ts";
+import { renderDuplicatedKnowledgeSummary } from "../lib/idle_task_templates/duplicated_knowledge_template.ts";
+import { renderFormatDriftSummary } from "../lib/idle_task_templates/format_drift_template.ts";
+import { renderOrphanDepsSummary } from "../lib/idle_task_templates/orphan_deps_template.ts";
+import { renderPrivateRepoReferenceSummary } from "../lib/idle_task_templates/private_repo_reference_template.ts";
+import { renderRetroSummary } from "../lib/idle_task_templates/retro_template.ts";
+import { renderWorkflowAnnotationScanSummary } from "../lib/idle_task_templates/workflow_annotation_scan_template.ts";
+import { NEWLY_FILED_UNKNOWN_SUMMARY } from "../lib/idle_task_snapshot.ts";
 
 // --- security-scan: renderRunSummary ---------------------------------------
 
@@ -138,4 +152,61 @@ Deno.test("renderRunSummary - does not mutate the caller's array", () => {
   const input = [5, 1, 3];
   renderRunSummary(input);
   assertEquals(input, [5, 1, 3]);
+});
+
+// ---------------------------------------------------------------------------
+// Unknown newly-filed set (Issue #1105)
+//
+// Every template's renderer takes `readonly number[] | null`, and `null` means
+// a before/after snapshot lookup failed. Each must say the count is unknown —
+// never "no findings" / "0 findings.", which is what a genuinely clean scan
+// renders. Table-driven so a nineteenth template cannot quietly skip the rule.
+// ---------------------------------------------------------------------------
+
+/** Every scan renderer, invoked with an unknown newly-filed set. */
+const UNKNOWN_RENDERERS: ReadonlyArray<[string, () => string]> = [
+  ["security-scan", () => renderRunSummary(null)],
+  ["best-practices", () => renderBestPracticesSummary("rust", null)],
+  ["test-audit", () => renderTestAuditSummary(null)],
+  ["github-actions-audit", () => renderGitHubActionsAuditSummary(null)],
+  ["supply-chain-readiness", () => renderSupplyChainReadinessSummary(null)],
+  ["alert-feed", () => renderAlertFeedSummary(null)],
+  ["bash-syntax-audit", () => renderBashSyntaxAuditSummary(null, [], "")],
+  ["bash-script-refs", () => renderBashScriptRefsSummary(null)],
+  ["dead-code", () => renderDeadCodeSummary(null)],
+  ["deprecated-api", () => renderDeprecatedApiSummary(null)],
+  ["doc-coverage", () => renderDocCoverageSummary(null)],
+  ["documentation-audit", () => renderDocumentationAuditSummary(null)],
+  ["duplicated-knowledge", () => renderDuplicatedKnowledgeSummary(null)],
+  ["format-drift", () => renderFormatDriftSummary(null)],
+  ["orphan-deps", () => renderOrphanDepsSummary(null, "")],
+  ["private-repo-reference", () => renderPrivateRepoReferenceSummary(null)],
+  ["retro", () => renderRetroSummary(null)],
+  ["workflow-annotation-scan", () => renderWorkflowAnnotationScanSummary(null)],
+];
+
+Deno.test("every scan renderer reports an unknown newly-filed set as unknown", () => {
+  for (const [template, render] of UNKNOWN_RENDERERS) {
+    const summary = render();
+    assertStringIncludes(summary, NEWLY_FILED_UNKNOWN_SUMMARY);
+    assertEquals(
+      /\b(no findings|no candidates|0 findings)\b/i.test(summary),
+      false,
+      `${template} rendered a clean-scan phrase for an unknown count`,
+    );
+  }
+});
+
+Deno.test("renderOrphanDepsSummary - the suppression report still follows an unknown count", () => {
+  assertEquals(
+    renderOrphanDepsSummary(null, "Suppressed: BP-x."),
+    `${NEWLY_FILED_UNKNOWN_SUMMARY} Suppressed: BP-x.`,
+  );
+});
+
+Deno.test("renderAlertFeedSummary - fetcher errors still follow an unknown count", () => {
+  assertEquals(
+    renderAlertFeedSummary(null, [], ["Dependabot fetch failed: boom"]),
+    `${NEWLY_FILED_UNKNOWN_SUMMARY} Fetcher errors: Dependabot fetch failed: boom.`,
+  );
 });

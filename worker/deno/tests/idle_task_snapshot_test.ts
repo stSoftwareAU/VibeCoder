@@ -6,6 +6,7 @@ import {
   listAllOpenIssueTitles,
   listKnownOpenFindingIds,
   listOpenIssueNumbersByLabel,
+  NEWLY_FILED_UNKNOWN_SUMMARY,
   parseGhJsonArray,
   renderOpenIssueTitles,
 } from "../lib/idle_task_snapshot.ts";
@@ -91,24 +92,46 @@ Deno.test("listOpenIssueNumbersByLabel - passes label through to gh", async () =
   assertEquals(captured[idx + 1], "best-practices");
 });
 
-Deno.test("listOpenIssueNumbersByLabel - gh failure returns empty set", async () => {
+Deno.test("listOpenIssueNumbersByLabel - an empty list is a known-empty set", async () => {
+  const gh = (_args: string[]) => Promise.resolve("[]");
+  const set = await listOpenIssueNumbersByLabel("o/r", "security", gh);
+  assertEquals(set, new Set<number>());
+});
+
+// Issue #1105 (business-logic change): a failed lookup used to return an empty
+// set, which the diff could not tell apart from "the repo has no open scan
+// issues". It now returns `null` — unknown — and logs why.
+Deno.test("listOpenIssueNumbersByLabel - gh failure returns null, not an empty set", async () => {
   const gh = (_args: string[]): Promise<string> =>
     Promise.reject(new Error("gh exploded"));
-  const set = await listOpenIssueNumbersByLabel("o/r", "security", gh);
-  assertEquals(set, new Set<number>());
+  let set: Set<number> | null = new Set<number>();
+  const logged = await captureErrors(async () => {
+    set = await listOpenIssueNumbersByLabel("o/r", "security", gh);
+  });
+  assertEquals(set, null);
+  assertEquals(logged.length, 1);
+  assertStringIncludes(logged[0] ?? "", "gh exploded");
 });
 
-Deno.test("listOpenIssueNumbersByLabel - malformed JSON returns empty set", async () => {
+Deno.test("listOpenIssueNumbersByLabel - malformed JSON returns null", async () => {
   const gh = (_args: string[]) => Promise.resolve("not json {");
-  const set = await listOpenIssueNumbersByLabel("o/r", "security", gh);
-  assertEquals(set, new Set<number>());
+  let set: Set<number> | null = new Set<number>();
+  const logged = await captureErrors(async () => {
+    set = await listOpenIssueNumbersByLabel("o/r", "security", gh);
+  });
+  assertEquals(set, null);
+  assertStringIncludes(logged[0] ?? "", "failed to parse gh JSON payload");
 });
 
-Deno.test("listOpenIssueNumbersByLabel - non-array payload returns empty set", async () => {
+Deno.test("listOpenIssueNumbersByLabel - non-array payload returns null", async () => {
   const gh = (_args: string[]) =>
     Promise.resolve(JSON.stringify({ number: 1 }));
-  const set = await listOpenIssueNumbersByLabel("o/r", "security", gh);
-  assertEquals(set, new Set<number>());
+  let set: Set<number> | null = new Set<number>();
+  const logged = await captureErrors(async () => {
+    set = await listOpenIssueNumbersByLabel("o/r", "security", gh);
+  });
+  assertEquals(set, null);
+  assertStringIncludes(logged[0] ?? "", "not an array");
 });
 
 Deno.test("listOpenIssueNumbersByLabel - skips entries without a finite number", async () => {
@@ -138,6 +161,26 @@ Deno.test("diffNewlyFiled - empty before returns all of after sorted", () => {
     6,
     8,
   ]);
+});
+
+// Issue #1105 — the two ends fail in opposite directions, so each is asserted
+// on its own: an unknown `after` must not read as a clean scan, and an unknown
+// `before` must not inflate the newly-filed set to every open issue.
+Deno.test("diffNewlyFiled - unknown after returns null, never an empty diff", () => {
+  assertEquals(diffNewlyFiled(new Set([1, 2]), null), null);
+});
+
+Deno.test("diffNewlyFiled - unknown before returns null, never every open issue", () => {
+  assertEquals(diffNewlyFiled(null, new Set([1, 2, 3])), null);
+});
+
+Deno.test("diffNewlyFiled - both snapshots unknown returns null", () => {
+  assertEquals(diffNewlyFiled(null, null), null);
+});
+
+Deno.test("NEWLY_FILED_UNKNOWN_SUMMARY - says the count is unknown, never zero", () => {
+  assertStringIncludes(NEWLY_FILED_UNKNOWN_SUMMARY, "unavailable");
+  assertEquals(/\b(0|no) findings\b/.test(NEWLY_FILED_UNKNOWN_SUMMARY), false);
 });
 
 // --- listKnownOpenFindingIds ------------------------------------------------

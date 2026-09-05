@@ -189,7 +189,7 @@ sequenceDiagram
     Claude-->>Template: clean exit (no JSON, no summary)
     Template->>GH: list open `documentation-audit` issues (AFTER snapshot)
     Template->>Template: diff AFTER − BEFORE = newly-filed issue numbers
-    Template-->>Main: close wrapper with "no findings" or<br/>"Documentation audit complete. Filed N issues: …"
+    Template-->>Main: close wrapper with "no findings" or<br/>"Documentation audit complete. Filed N issues: …" or<br/>"Newly-filed count unavailable …" (a snapshot lookup failed)
 ```
 
 ## Wrapper issue layout
@@ -293,8 +293,11 @@ The scanner recognises the marker on future runs and drops the finding in Phase
 The template sets `skipMilestone: true`, mirroring the other scan templates. A
 documentation-audit run **never raises a pull request**: each finding is filed
 as its own GitHub issue, the wrapper is closed with either `no findings` or
-`Documentation audit complete. Filed N issues: …`, and nothing else. The actual
-doc changes ride the normal `work-on` flow on the filed issues.
+`Documentation audit complete. Filed N issues: …`, and nothing else. A failed
+before/after snapshot lookup renders the unknown-count string instead
+(Issue #1105) — see
+[IDLE-TASK-FRAMEWORK.md → The newly-filed diff](IDLE-TASK-FRAMEWORK.md#the-newly-filed-diff--unknown-is-not-empty).
+The actual doc changes ride the normal `work-on` flow on the filed issues.
 
 ## Related documentation
 

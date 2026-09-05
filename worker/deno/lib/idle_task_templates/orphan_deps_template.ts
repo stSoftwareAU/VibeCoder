@@ -50,6 +50,7 @@ import {
   listAllOpenIssueTitles,
   listKnownOpenFindingIds,
   listOpenIssueNumbersByLabel,
+  NEWLY_FILED_UNKNOWN_SUMMARY,
   type OpenIssueTitle,
   renderOpenIssueTitles,
 } from "../idle_task_snapshot.ts";
@@ -229,14 +230,20 @@ export function assembleOrphanDepsPrompt(
  * Exported so tests can assert on the exact wording.
  */
 export function renderOrphanDepsSummary(
-  newlyFiled: readonly number[],
+  newlyFiled: readonly number[] | null,
   suppressionReport: string = renderSuppressionSummary(),
 ): string {
-  const head = newlyFiled.length === 0
-    ? "no findings"
-    : `Orphan-dependency scan complete. Filed ${newlyFiled.length} issues: ${
-      [...newlyFiled].sort((a, b) => a - b).map((n) => `#${n}`).join(", ")
-    }`;
+  let head: string;
+  if (newlyFiled === null) {
+    head = NEWLY_FILED_UNKNOWN_SUMMARY;
+  } else if (newlyFiled.length === 0) {
+    head = "no findings";
+  } else {
+    head = `Orphan-dependency scan complete. Filed ${newlyFiled.length} ` +
+      `issues: ${
+        [...newlyFiled].sort((a, b) => a - b).map((n) => `#${n}`).join(", ")
+      }`;
+  }
   return suppressionReport.length > 0 ? `${head} ${suppressionReport}` : head;
 }
 

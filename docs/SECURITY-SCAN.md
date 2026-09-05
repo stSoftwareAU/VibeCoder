@@ -212,7 +212,7 @@ sequenceDiagram
     Template->>Template: diff AFTER − BEFORE = newly-filed issue numbers
     Template->>GH: read back newly-filed issues, build SARIF 2.1.0
     Template->>GH: POST repos/OWNER/REPO/code-scanning/sarifs (additive, per-repo)
-    Template-->>Main: close wrapper with "0 findings." or "Filed N issues: #A, #B, …" + SARIF status
+    Template-->>Main: close wrapper with "0 findings." / "Filed N issues: #A, #B, …" /<br/>"Newly-filed count unavailable …" (a snapshot lookup failed) + SARIF status
 ```
 
 The flowchart below summarises the same flow as a decision tree. The four
@@ -247,7 +247,7 @@ flowchart TD
     Phase4 --> After[Snapshot 2 — list open<br/>`security` issues AFTER]:::phase
     After --> Diff[Template diff:<br/>AFTER − BEFORE = newly filed]:::output
     Diff --> Sarif[Additive SARIF 2.1.0 upload<br/>per-repo code scanning<br/>never fails the task]:::output
-    Sarif --> Close[Close wrapper with summary<br/>'0 findings.' OR<br/>'Filed N issues: #A, #B, …'<br/>+ SARIF status line<br/>never raises a PR]:::output
+    Sarif --> Close[Close wrapper with summary<br/>'0 findings.' OR<br/>'Filed N issues: #A, #B, …' OR<br/>'Newly-filed count unavailable …'<br/>+ SARIF status line<br/>never raises a PR]:::output
 ```
 
 ### Idle trigger
@@ -428,6 +428,7 @@ the template appends to the wrapper close comment.
 | `SARIF: code scanning unavailable (HTTP 403\|404) — findings filed as issues only.` | Code scanning is off for the repo, or the token lacks `security_events`. Issues are unaffected. |
 | `SARIF: upload failed — <error>`                     | A hard API failure. The findings still exist as issues; the next scan re-uploads.                |
 | `SARIF: emission threw — <error>`                    | An unexpected fault inside the emitter. Same remedy — the issue path is unaffected.              |
+| `SARIF upload skipped — the newly-filed set is unknown.` | A before/after snapshot lookup failed (Issue #1105), so the run does not know which issues it filed and does not publish a partial document. The findings still exist as issues; the next scan uploads them. |
 
 ### Dedup: issues, SARIF alerts, and the `alert-feed` task
 
@@ -494,7 +495,7 @@ in the framework manual.
 
 ## Close-comment shape
 
-The claim handler closes the wrapper idle-task issue with one of two
+The claim handler closes the wrapper idle-task issue with one of three
 deterministic comment strings, rendered by `renderRunSummary()` in
 [`security_scan_template.ts`](../worker/deno/lib/idle_task_templates/security_scan_template.ts)
 from the before/after snapshot diff:
@@ -509,7 +510,27 @@ from the before/after snapshot diff:
   issues contains the same set as the BEFORE snapshot. Covers clean
   scans, scans where every candidate was deduplicated against an
   existing open finding, and scans where Claude failed before filing
-  anything.
+  anything. Emitted **only** when both snapshots were actually read —
+  see the unknown-count string below.
+
+- **Unknown newly-filed count** (Issue #1105) — when either snapshot
+  lookup fails (a `gh` error, or a payload that will not parse), the
+  count is reported as unavailable rather than as zero:
+
+  ```text
+  Newly-filed count unavailable — an open-issue snapshot lookup failed, so
+  this run cannot report how many findings it filed. Findings filed by this
+  run are still open as issues; only the count is unknown. SARIF upload
+  skipped — the newly-filed set is unknown.
+  ```
+
+  A failed AFTER lookup used to render `0 findings.` with no SARIF
+  upload, indistinguishable from a genuinely clean scan; a failed BEFORE
+  lookup diffed to every open `security` issue and over-reported. Both
+  now render this string. The scan itself still ran and any findings
+  Claude filed remain open as issues — the run completes with
+  `ok: true`, and the failed lookup is logged by
+  `listOpenIssueNumbersByLabel`.
 
 - **One or more newly-filed findings** — a single line listing each
   new issue number ascending:
@@ -848,6 +869,7 @@ enforcement (LLM06, `label_security.ts`), and secret handling (LLM02).
 | Worker logs `[idle-task] … reason=output_backlog label=security count=N` | A monitored repo already has six or more open `security`-labelled findings from a previous scan. Triage the existing batch — close, fix, or add `security-scan-ignore` comments — and the next idle pass will resume scanning that repo. |
 | Worker logs `[idle-task] … reason=pending_results` | The `security-scan` template's `shouldFile` returned `false` — either an open security finding or an existing `Run a security scan` wrapper still exists. Same remedy: triage the open work first. |
 | Wrapper closed with `0 findings.`                                            | Either the scan was clean or every candidate was deduplicated against an existing open `security` issue. No action needed unless that pattern persists when you expect new findings. |
+| Wrapper closed with `Newly-filed count unavailable …`                        | A before/after snapshot `gh` lookup failed or returned an unparseable payload (Issue #1105). The scan ran and any findings it filed are open as issues — only the count and the SARIF upload were lost. Check the log for the matching `[idle-task-snapshot] list security numbers:` line; the next scan re-uploads. |
 | Wrapper closed with `security-scan failed: …` or `security-scan threw: …`    | The scanner exited non-zero, timed out, or threw before finishing. Inspect the worker log for the matching `[security-scan]` lines; the run will be retried on the next idle pass once the repo's cooldown window expires. |
 | Filed finding looks wrong                                                    | Either close the issue (the live `gh issue list` dedup query keeps the scanner from re-filing while it is open), or add a `security-scan-ignore: SEC-… — reason` comment at the cited line so future scans skip it. |
 | Scan filed a `security-scan-overflow` tracker                                | Resolve the six filed issues, then wait for the next idle trigger to run another batch against the same repo.                                                                  |

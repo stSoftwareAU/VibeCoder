@@ -54,6 +54,7 @@ import {
   listAllOpenIssueTitles,
   listKnownOpenFindingIds,
   listOpenIssueNumbersByLabel,
+  NEWLY_FILED_UNKNOWN_SUMMARY,
   type OpenIssueTitle,
   renderOpenIssueTitles,
 } from "../idle_task_snapshot.ts";
@@ -213,7 +214,10 @@ export function assembleRetroPrompt(
  *     files one issue by design, but the diff is reported as it is found
  *     rather than assumed.
  */
-export function renderRetroSummary(newlyFiled: readonly number[]): string {
+export function renderRetroSummary(
+  newlyFiled: readonly number[] | null,
+): string {
+  if (newlyFiled === null) return NEWLY_FILED_UNKNOWN_SUMMARY;
   if (newlyFiled.length === 0) return "no candidates";
   const sorted = [...newlyFiled].sort((a, b) => a - b);
   const list = sorted.map((n) => `#${n}`).join(", ");
