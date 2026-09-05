@@ -40,6 +40,11 @@ import { runMermaidCheck } from "./mermaid_check.ts";
 import { checkBuiltMermaidOutput } from "./mermaid_built_output_check.ts";
 import { runMarkdownlintCheck } from "./markdownlint_check.ts";
 import { runSemgrepCheck } from "./semgrep_check.ts";
+import { checkReleaseTagRuleset } from "./release_tag_ruleset_check.ts";
+import {
+  RELEASE_TAG_RULESET_PATH,
+  RELEASE_TAG_RULESET_REPO,
+} from "./release_tag_ruleset.ts";
 import { posixSingleQuote } from "./shell_quote.ts";
 import {
   summariseUnitTestPasses,
@@ -903,6 +908,56 @@ async function runSemgrepQualityCheck(
   return { name: "semgrep", status: result.status, output: result.output };
 }
 
+/** Whether a committed ruleset payload is present in this checkout. */
+async function payloadExists(path: string): Promise<boolean> {
+  try {
+    return (await Deno.stat(path)).isFile;
+  } catch {
+    // A payload that is not there is not this checkout's to reconcile.
+    return false;
+  }
+}
+
+/**
+ * Reconcile the applied release-tag ruleset against the committed payload
+ * (Issue #1049).
+ *
+ * `infra/rulesets/release-tags.json` called itself the source of truth for the
+ * tag ruleset and nothing compared it against GitHub, so the applied ruleset
+ * sat without its `update` rule — a released tag could still be fast-forwarded
+ * onto a later commit — and the gate stayed green.
+ *
+ * SKIPPED, never FAILED, without a credential holding `administration:read`:
+ * a check that goes red on every fork is a check that gets disabled. Strict
+ * mode promotes that skip, the same as every other credential-dependent check.
+ */
+async function runReleaseTagRulesetQualityCheck(
+  config: QualityGateConfig,
+  repo: string,
+): Promise<CheckExecutionResult> {
+  const name = "release-tag ruleset";
+  try {
+    const result = await checkReleaseTagRuleset({
+      repo,
+      root: config.scriptDir,
+    });
+    const status: CheckStatus = result.status === "ok"
+      ? "PASSED"
+      : result.status === "skipped"
+      ? "SKIPPED"
+      : "FAILED";
+    return { name, status, output: `[${name}] ${result.message}` };
+  } catch (error) {
+    // Never swallowed: an unrecognised failure is a red check, not a pass.
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      name,
+      status: "FAILED",
+      output: `[${name}] could not be reconciled — ${message}`,
+    };
+  }
+}
+
 /**
  * Run the unit suite as two `deno test` passes (Issue #940).
  *
@@ -1296,6 +1351,15 @@ export async function runQualityGate(
   // SAST finding is met before the push rather than after it. Skipped loudly
   // when semgrep is unavailable.
   mainChecks.push(() => runSemgrepQualityCheck(config));
+
+  // Release-tag ruleset reconciliation (Issue #1049) — only in a checkout that
+  // carries the committed payload, so the worker's gate over a monitored repo
+  // never compares that repo against this one's ruleset.
+  if (await payloadExists(`${config.scriptDir}/${RELEASE_TAG_RULESET_PATH}`)) {
+    mainChecks.push(() =>
+      runReleaseTagRulesetQualityCheck(config, RELEASE_TAG_RULESET_REPO)
+    );
+  }
 
   // Shellcheck is intentionally NOT run by the worker (Issue #3129). Bash
   // linting is owned by each target repo's own CI (the `shellcheck`
