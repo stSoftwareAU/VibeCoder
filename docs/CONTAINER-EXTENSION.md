@@ -241,6 +241,14 @@ A deployment whose monitored repositories are Java services built against two
 JDKs, tested against a database loaded with production-shaped schemas, and
 released through a CI server the agent has to be able to drive.
 
+Concretely, and to keep the commands real rather than notional: a **Postgres**
+server with three databases loaded from dumps at image build time, a
+**Jenkins** whose pipeline job is defined in `casc.yaml` and loads the project
+through the project's own `Jenkinsfile`, and — through `container_tools`, not
+the layer — an 8 LTS and a 21 LTS JDK side by side plus a Java build tool.
+Substitute whatever your deployment actually runs: nothing in the mechanism
+knows or cares what an extension starts.
+
 The split is the one this page opened with: the **toolchains** ride
 `container_tools`, and the **services** ride the extension layer.
 
@@ -383,10 +391,12 @@ included, so a changed dump rebuilds the image exactly once and every later run
 starts from the same loaded database in the time it takes the server to open a
 socket.
 
-The CI server's job is defined in `ci/casc.yaml` as a pipeline that reads its
-steps from the checked-out project's own pipeline definition file — so the
-agent can trigger a build of the branch it is working on, and the pipeline it
-runs is the project's, not one duplicated into the extension.
+The CI server's job is defined in `ci/casc.yaml` — configuration as code, so
+the image carries a server already holding its job rather than one waiting to
+be clicked through a setup wizard. That job is a pipeline that reads its steps
+from the checked-out project's own `Jenkinsfile`, so the agent can trigger a
+build of the branch it is working on and the pipeline it runs is the
+project's, not one duplicated into the extension.
 
 ### The start script
 
