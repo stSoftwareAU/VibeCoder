@@ -442,7 +442,9 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
   },
   VIBE_AGENT_TRANSCRIPT: {
     role: "launch_plumbing",
-    note: "the transcript path handed to the agent process",
+    note:
+      "the transcript tee switch, settled from agent_transcript_enabled at " +
+      "worker start; not an operator interface (Issue #1141)",
   },
   VIBE_SIDE_REPO_CLONE_ARGS: {
     role: "launch_plumbing",

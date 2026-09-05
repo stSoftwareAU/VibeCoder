@@ -33,9 +33,9 @@ tickets hide assumptions. If you are unsure, grill first.
 3. **`planning`** breaks the issue into sub-issues (and may create a
    milestone). You then triage each sub-issue with a work-tier label.
 4. A work-tier label means: implement, open a PR, monitor spelling /
-   quality / CI. Non-milestone PRs get auto-merge at create; milestone
-   issue PRs skip auto-merge at create (a later catch-up scan may still
-   arm it).
+   quality / CI. **Every** worker PR gets auto-merge at create — milestone
+   issue PRs included (Issue #1136); the catch-up scan is the backstop, not
+   the primary mechanism.
 
 There is no label named `human-needed` or `auto-complete`. The pause
 signal is **`needs-human`**. Merge automation is GitHub **auto-merge**.
@@ -55,7 +55,7 @@ flowchart TD
   Triage --> Work
   Work --> AM{"Issue in a milestone?"}
   AM -->|no| AutoOn["Auto-merge enabled at PR create"]
-  AM -->|yes| AutoSkip["skipAutoMerge at create"]
+  AM -->|yes| AutoSkip["Auto-merge enabled at PR create<br/>(base: milestone branch)"]
   style Brief fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
   style Round fill:#e0a050,stroke:#8b4500,color:#1a1a1a
   style NH fill:#e8d44d,stroke:#8b7500,color:#1a1a1a
@@ -260,19 +260,19 @@ driven by the worker after a PR exists.
 | Situation | At PR creation | Later |
 | --------- | -------------- | ----- |
 | Issue **not** in a milestone | Auto-merge **enabled** | Catch-up keeps open worker PRs armed when mergeable |
-| Issue **in** a milestone (PR → milestone branch) | Auto-merge **skipped** (`skipAutoMerge`) | Priority 1.65 catch-up may still enable auto-merge on open worker PRs |
+| Issue **in** a milestone (PR → milestone branch) | Auto-merge **enabled** (Issue #1136) | Priority 1.65 catch-up, plus a post-scan sweep in the same cycle, as the backstop |
 | Final consolidation PR (milestone branch → default) | Created for human review of the whole stream | Worker monitors CI / spelling / quality; catch-up may arm auto-merge when mergeable |
 
-> **Known divergence from the intent (Issue #1082).** The table above records
-> what the code does today. It contradicts **F11** in
+> **The divergence recorded here is closed (Issue #1136).** Milestone issue
+> PRs used to skip auto-merge at create, which contradicted **F11** in
 > [Every slot busy, always](../../DESIGN-PRINCIPLES.md#every-slot-busy-always--the-fleet-throughput-invariant):
 > every fleet PR is meant to carry auto-merge from the moment it is raised.
-> The stated reason for skipping it on milestone PRs — that they "need manual
-> review" — is also false under **F2a**: a milestone branch carries no approval
-> gate at all until the milestone completes and is merged to the default
-> branch, which is precisely why milestone streams parallelise. Arming
-> auto-merge a whole cycle later, or not at all, is what leaves a stream's
-> next issue waiting on a PR that was ready to land (**F10**).
+> The stated reason — that milestone PRs "need manual review" — was false
+> under **F2a**: a milestone branch carries no approval gate until the
+> milestone completes and merges to the default branch, which is precisely why
+> milestone streams parallelise. The worker now arms at create on every path,
+> and sweeps again after the issue slots drain rather than leaving a stream's
+> next issue waiting a whole cycle on a PR that was ready to land (**F10**).
 
 While a PR is open, the worker prioritises keeping **its own** PRs
 mergeable: review feedback, spelling, quality, CI fixes. See
@@ -286,8 +286,8 @@ flowchart LR
   end
   subgraph mile [In a milestone]
     M1["Implement"] --> M2["PR → milestone branch"]
-    M2 --> M3["skipAutoMerge at create"]
-    M3 --> M4["Catch-up may arm later"]
+    M2 --> M3["Auto-merge on at create"]
+    M3 --> M4["Post-scan sweep + catch-up as backstop"]
     M4 --> M5["Final PR → default for your review"]
   end
   style S1 fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
