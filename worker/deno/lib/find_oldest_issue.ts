@@ -453,14 +453,21 @@ export async function findOldestIssue(
   if (selected) {
     diag.logFinalSelection(selected.repo, selected.number, selected.source);
 
-    // Issue #1718: when a work-on candidate is selected and any
-    // configured-label candidate was considered or blocked, emit a
-    // structured selection-reasoning line so the user can see at a
-    // glance why top-priority was passed over. Suppressed when a
-    // configured-label was selected (avoids noise) or when no
-    // configured-label candidates exist at all (no surprise).
+    // Issue #1718: when a lower tier is selected and any configured-label
+    // candidate was considered or blocked, emit a structured
+    // selection-reasoning line so the user can see at a glance why
+    // top-priority was passed over. Suppressed when a configured-label was
+    // selected (avoids noise) or when no configured-label candidates exist
+    // at all (no surprise).
+    //
+    // Issue #1063 widened this from `work-on` to *every* lower tier: with the
+    // label tier now outermost, a top-priority candidate that is passed over
+    // was necessarily filtered or blocked, and the winner may equally be a
+    // self-diagnostic, low-priority or idle-task issue. Narrowing it to
+    // `work-on` left those cases silent — the starvation the operator
+    // reported is exactly the kind that goes unnoticed.
     if (
-      selected.source === "work-on" &&
+      selected.source !== "configured-label" &&
       (configuredLabelConsidered > 0 || allBlockedDetails.length > 0)
     ) {
       diag.logSelectionReasoning(
