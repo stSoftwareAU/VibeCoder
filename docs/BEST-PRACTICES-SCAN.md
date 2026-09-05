@@ -19,7 +19,7 @@ template that this manual mirrors structurally.
 
 For the **agent-facing** rules (label policy, suppression syntax,
 trigger summary) see
-[DESIGN-PRINCIPLES.md → Idle-task scans](../DESIGN-PRINCIPLES.md#security-scans-simplified-by).
+[DESIGN-PRINCIPLES.md → Idle-task scans](../DESIGN-PRINCIPLES.md#security-scans).
 
 ## Design intent — LLM-only review of code
 
@@ -788,5 +788,5 @@ individually.
   per-finding body shape live in the prompt, not in Deno code.
 - [`prompts/best_practices/buckets/`](../prompts/best_practices/buckets/)
   — Per-bucket checklists inlined into the wrapper body.
-- [`DESIGN-PRINCIPLES.md`](../DESIGN-PRINCIPLES.md#security-scans-simplified-by) —
+- [`DESIGN-PRINCIPLES.md`](../DESIGN-PRINCIPLES.md#security-scans) —
   Worker-side design principles for the idle-task scans.
