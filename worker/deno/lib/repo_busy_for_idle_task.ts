@@ -57,6 +57,11 @@
 import { runGhCommand } from "./github.ts";
 import { LABEL_DEFAULTS } from "./config_defaults.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
+// Issue #1050: the fleet-global existence gate reads its "is this issue
+// claimable" verdict from the audit's classifier rather than keeping a
+// second, laxer definition of the same thing.
+import { classifyIssues } from "./idle_detect_diagnostics.ts";
+import type { ClosedPR, OpenPR } from "./issue_query.ts";
 
 /**
  * Labels that count as "approved work in flight" for the busy check.
@@ -134,6 +139,22 @@ export interface IsRepoBusyForIdleTaskOptions {
 interface IssueRow {
   number?: number;
   labels?: Array<{ name?: string }>;
+}
+
+/**
+ * Shape of a single issue row from the fleet gate's richer fetch
+ * (Issue #1050) — assignees and milestone carry the work-stream occupancy
+ * the scan refuses on, the title carries the milestone-tracker fallback, and
+ * the body carries the dependency references.
+ */
+interface ClaimableIssueRow {
+  number?: number;
+  title?: string;
+  labels?: Array<{ name?: string }>;
+  assignees?: Array<{ login?: string }>;
+  milestone?: { title?: string } | null;
+  /** Carries the dependency references the scan's own gate reads. */
+  body?: string;
 }
 
 /** True if `row` carries at least one blocked label (Issue #2440). */
@@ -253,6 +274,53 @@ export interface AnyRepoHasUnblockedRealWorkOptions {
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Structured-log sink (Issue #2474). Defaults to `console.log`. */
   logFn?: (message: string) => void;
+  /**
+   * GitHub login of this worker (Issue #1050) — the account the claim
+   * scan's `milestone-occupied` gate is asked about. Omitted → occupancy
+   * is still modelled over {@link
+   * AnyRepoHasUnblockedRealWorkOptions.pushCapableAuthors} alone.
+   */
+  workerUser?: string;
+  /**
+   * The accounts the fleet operates, from
+   * `resolveFleetMaintenanceAuthorSet`, so the gate refuses the same work
+   * streams the scan refuses (Issues #1050, #1064). NEVER
+   * `config.allowedAuthors` — that is a permission list and holds humans,
+   * whose assignments never occupy a stream. Omitted → occupancy is
+   * modelled over `workerUser` alone, the pre-#1050 blind spot: an issue a
+   * sibling worker held made a whole repository unclaimable to the scan
+   * while this gate went on reporting its backlog as fleet work.
+   */
+  pushCapableAuthors?: readonly string[];
+  /**
+   * The open PRs the fleet owns for `repo`, as the claim scan reads them
+   * (Issue #1050). Supplied, an issue whose work stream already has a fleet
+   * PR open is **not** startable — the scan refuses it as `pr-blocked` —
+   * so it must not suppress idle filing.
+   *
+   * This is the gate's largest blind spot when omitted: on
+   * `stSoftwareAU/NEAT-AI-Ockham` six `work-on` issues sat behind one open
+   * PR, the scan could start none of them, and the gate reported the fleet
+   * as busy on all of them. Best-effort — a rejection falls back to no PR
+   * data, restoring the pre-#1050 over-count rather than inventing work.
+   */
+  openPRsFn?: (repo: string) => Promise<readonly OpenPR[]>;
+  /**
+   * The fleet's recently closed/merged PRs for `repo` (Issue #1050). Only
+   * `merged: true` entries count: those are the ones the scan refuses
+   * *permanently* as `merged-pr-permanent` (Issue #3151). Best-effort, by
+   * the same rule as {@link AnyRepoHasUnblockedRealWorkOptions.openPRsFn}.
+   */
+  mergedPRsFn?: (repo: string) => Promise<readonly ClosedPR[]>;
+  /**
+   * True when this run is holding `issueNumber` in `repo` back whatever
+   * GitHub says (Issue #1050) — the persisted retry cooldown plus this
+   * run's processed-issue registry, the same `isIssueInCooldown` predicate
+   * `find_oldest_issue.ts` filters every tier against. Work in cooldown
+   * cannot be started this cycle, so it must not suppress idle filing.
+   * Best-effort: a throw falls back to no holds.
+   */
+  runLocalHoldFn?: (repo: string, issueNumber: number) => boolean;
 }
 
 /**
@@ -260,19 +328,24 @@ export interface AnyRepoHasUnblockedRealWorkOptions {
  * repo in `opts.repos` holds an open, **unblocked**
  * `top-priority`/`work-on`/`low-priority` issue ({@link REAL_WORK_LABELS}).
  *
- * This answers "does the monitored set have real work right now?" —
- * **independent of whether that work was claimable/claimed this cycle**. A
- * `work-on` issue deferred this cycle by `nice` tiering, fair rotation, or
- * cooldown still *exists*, so it must suppress idle-task filing across the
- * whole fleet, not just in its own repo. This repairs the filing half of
- * the #2806 idle-vs-work-on inversion: the per-repo {@link
- * isRepoBusyForIdleTask} check let a quiet repo B be filed into while a
- * different repo A held the deferred backlog.
+ * This answers "does the monitored set hold work a slot **could claim**
+ * right now?". A `work-on` issue merely *deferred* this cycle by `nice`
+ * tiering, fair rotation, or cooldown still counts — it will be claimed on
+ * a later cycle, so filing an idle-task against it would invert priority.
+ * This repairs the filing half of the #2806 idle-vs-work-on inversion: the
+ * per-repo {@link isRepoBusyForIdleTask} check let a quiet repo B be filed
+ * into while a different repo A held the deferred backlog.
  *
- * Short-circuits on the first repo with surviving (unblocked) work, so a
- * busy lead-of-list repo costs a single probe. Blocked issues
- * (`needs-human`, `failed`, `failed-once`, `planning`) do not count, by the
- * same {@link BLOCKED_LABELS} filter the per-repo check uses (Issue #2440).
+ * Issue #1050 narrowed "could claim" from labels to the claim scan's own
+ * verdict. The question used to be answered by labels alone, so work the
+ * scan *permanently* refuses — a stream occupied by a sibling worker, an
+ * issue assigned to someone, a milestone tracker — suppressed idle filing
+ * across the whole fleet for as long as it stayed open. See
+ * {@link repoHasClaimableRealWork}; blocked issues still do not count, and
+ * neither now does unclaimable work.
+ *
+ * Short-circuits on the first repo with claimable work, so a busy
+ * lead-of-list repo costs a single probe.
  *
  * gh failures are surfaced as exceptions so the caller can decide how to
  * handle them — the idle-task filer treats a throw as "no work, go ahead
@@ -285,9 +358,181 @@ export async function anyRepoHasUnblockedRealWork(
   const gh = opts.ghCommandFn ?? runGhCommand;
   const log = opts.logFn ?? ((m: string) => console.log(m));
   for (const repo of opts.repos) {
-    if (await repoHasUnblockedWork(repo, REAL_WORK_LABELS, gh, log)) {
+    if (await repoHasStartableWork(repo, gh, log, opts)) {
       return true;
     }
   }
   return false;
+}
+
+/**
+ * True when `repo` holds at least one open issue a slot could **start right
+ * now** — {@link REAL_WORK_LABELS}, as classified by the audit's
+ * {@link classifyIssues} (Issue #1050).
+ *
+ * Before #1050 this asked a label-only question — "is there an open
+ * `top-priority`/`work-on`/`low-priority` issue without a blocking label?" —
+ * and answered `true` for work the scan cannot start. Two field incidents,
+ * one week apart, are the same fault:
+ *
+ *  - `stSoftwareAU/VibeCoder`: one assignment in the default-branch stream
+ *    made every one of the repository's twenty-odd work issues
+ *    `milestone-occupied` to the scan, while this gate reported the
+ *    repository as holding fleet work.
+ *  - `stSoftwareAU/NEAT-AI-Ockham`: six `work-on` issues (#104-#110) sat
+ *    behind a single open PR (#116). The scan refused every one as
+ *    `pr-blocked`; this gate counted all six.
+ *
+ * Either one suppressed idle-task filing across all eighteen monitored
+ * repositories for as long as it lasted, while seventeen of them were empty
+ * and slots sat idle. The requirement is one sentence: *if no work can be
+ * started right now, file an idle task* — so the question here is
+ * "startable", never "exists".
+ *
+ * The answer is not a third definition of claimable but the same one: the
+ * classifier the idle-detect audit runs, restricted to the real-work labels.
+ * Its gates are the scan's — discovery label, blocking label, assignee,
+ * milestone tracker, work-stream occupancy, open PR, merged PR, dependency,
+ * run-local hold — and each of the last four is applied only when the caller
+ * supplies the data for it. Omitting one restores that gate's pre-#1050
+ * over-count, which suppresses filing: the direction that starves the fleet
+ * rather than flooding it (#2106), so callers should supply all of them.
+ *
+ * One `gh issue list` per repo, unfiltered by label: occupancy is a property
+ * of the whole work stream, and the issue that occupies it need carry no
+ * discovery label at all — the 2026-08-26 issue carried none. The PR and
+ * hold probes run **only** when an issue survives the cheap gates, so an
+ * empty or plainly-busy repository still costs exactly one call.
+ *
+ * The blocking-label set is the classifier's, which is `filterAndSort`'s:
+ * `failed`, `needs-revision`, `refine-issue`, `planning`, `question`,
+ * `needs-human`. It differs from {@link BLOCKED_LABELS} — still used by the
+ * per-repo {@link isRepoBusyForIdleTask} placement check — by `failed-once`,
+ * which the scan does not treat as blocking (`cleanStaleLabels` clears it),
+ * so such an issue is startable work and suppresses filing, as the scan says
+ * it should.
+ */
+async function repoHasStartableWork(
+  repo: string,
+  gh: (args: string[]) => Promise<string>,
+  log: (message: string) => void,
+  opts: AnyRepoHasUnblockedRealWorkOptions,
+): Promise<boolean> {
+  const workerUser = opts.workerUser ?? "";
+  const pushCapableAuthors = opts.pushCapableAuthors ?? [];
+  const raw = await gh([
+    "issue",
+    "list",
+    "--repo",
+    repo,
+    "--state",
+    "open",
+    "--json",
+    // `body` carries the dependency references the scan's gate reads — one
+    // extra field on a call already being made, no extra request.
+    "number,title,labels,assignees,milestone,body",
+    "--limit",
+    String(LABEL_FETCH_CAP),
+  ]);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // A malformed response must not read as "the fleet has work" — that
+    // would suppress idle filing on a parse error. Warn and treat the repo
+    // as empty, matching the per-label check's behaviour.
+    log(
+      `[repo-busy-idle-task] repo=${repo} ` +
+        `action=warn reason=malformed_gh_output`,
+    );
+    return false;
+  }
+  if (!Array.isArray(parsed)) return false;
+  const rows = parsed as ClaimableIssueRow[];
+  const issues = rows.map((row) => ({
+    number: typeof row.number === "number" ? row.number : 0,
+    title: typeof row.title === "string" ? row.title : "",
+    labels: (row.labels ?? []).map((l) => l?.name ?? ""),
+    assignees: (row.assignees ?? []).map((a) => a?.login ?? ""),
+    milestone: row.milestone?.title ?? "",
+    body: typeof row.body === "string" ? row.body : "",
+  }));
+
+  if (issues.length >= LABEL_FETCH_CAP) {
+    // The fetch hit the cap — there may be more open issues we did not
+    // see. Surface it rather than silently truncating the verdict.
+    log(
+      `[repo-busy-idle-task] repo=${repo} ` +
+        `action=warn reason=fetch_cap_reached cap=${LABEL_FETCH_CAP}`,
+    );
+  }
+
+  const baseOptions = {
+    workerUser,
+    pushCapableAuthors,
+    claimableLabels: REAL_WORK_LABELS,
+    repo,
+    openIssueNumbers: new Set(issues.map((i) => i.number)),
+  };
+  // The cheap pass first: label, blocking label, assignee, tracker,
+  // occupancy and dependency all resolve from the response already in hand.
+  // Nothing survives it, nothing can be started, and no PR probe is worth
+  // paying for.
+  const cheapClaimable = classifyIssues(issues, baseOptions)
+    .filter((v) => v.claimable).length;
+  if (cheapClaimable === 0) {
+    log(
+      `[repo-busy-idle-task] repo=${repo} scope=real_work ` +
+        `total_open=${issues.length} startable=0 pr_probe=skipped`,
+    );
+    return false;
+  }
+
+  // Something survived, so the PR and hold gates are worth resolving. Each
+  // is best-effort: a failure restores that gate's over-count rather than
+  // inventing an empty repository.
+  let openPRs: readonly OpenPR[] = [];
+  if (opts.openPRsFn) {
+    try {
+      openPRs = await opts.openPRsFn(repo);
+    } catch {
+      openPRs = [];
+    }
+  }
+  let mergedPRs: readonly ClosedPR[] = [];
+  if (opts.mergedPRsFn) {
+    try {
+      mergedPRs = await opts.mergedPRsFn(repo);
+    } catch {
+      mergedPRs = [];
+    }
+  }
+  let runLocalHolds = new Set<number>();
+  if (opts.runLocalHoldFn) {
+    try {
+      runLocalHolds = new Set(
+        issues.filter((i) => opts.runLocalHoldFn!(repo, i.number)).map((i) =>
+          i.number
+        ),
+      );
+    } catch {
+      runLocalHolds = new Set<number>();
+    }
+  }
+
+  const startable = classifyIssues(issues, {
+    ...baseOptions,
+    openPRs,
+    mergedPRs,
+    runLocalHolds,
+  }).filter((v) => v.claimable).length;
+  // Structured, greppable audit line — one per repo, replacing the
+  // per-label pair. `startable` is the scan's own verdict now, so the count
+  // can be reconciled against the `[idle-detect]` line for the same repo.
+  log(
+    `[repo-busy-idle-task] repo=${repo} scope=real_work ` +
+      `total_open=${issues.length} startable=${startable} ` +
+      `pre_pr=${cheapClaimable} open_prs=${openPRs.length}`,
+  );
+  return startable > 0;
 }
