@@ -65,6 +65,14 @@ export interface ResolveSettingOptions<T> {
    * claiming work. {@link ResolvedSetting.source} then reads `"default"`, so
    * a caller that logs the source still shows the operator their value did
    * not take effect.
+   *
+   * A parse **may** throw instead, and one does: `agent_provider` refuses an
+   * unregistered provider id rather than falling back (Issue #3234), because
+   * the fallback there is not a number that is merely wrong — it is running a
+   * different vendor's agent under an operator's explicit selection. The
+   * distinction is the blast radius of the default, so it belongs to the
+   * setting, not to this helper: fall through where the default is harmless,
+   * throw where it is not.
    */
   readonly parse: (raw: string) => T | null;
   /**

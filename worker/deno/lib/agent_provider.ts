@@ -828,9 +828,11 @@ export function resolveAgentProviderId(
  * Claude applies when neither does. A run that still takes its provider from
  * the variable is told once, naming the key that replaces it.
  *
- * Either source is validated before it can bind — an unregistered id throws
- * rather than falling through to the default, which would silently run the
- * wrong agent under an operator's explicit selection (Issue #3234).
+ * Every source that states a value is validated, not just the one that binds:
+ * an unregistered id throws wherever it was written (Issue #3234). Losing to
+ * the file must not turn a typo in the variable into silence — the operator
+ * who exported `VIBE_AGENT_PROVIDER=aider` still has to be told the id does
+ * not exist.
  */
 function resolveSelectedProviderId(
   selection: AgentProviderSelection,
@@ -843,16 +845,31 @@ function resolveSelectedProviderId(
     env,
     configured: configured ? resolveAgentProvider(configured).id : null,
     fallback: DEFAULT_AGENT_PROVIDER_ID,
-    parse: (raw) => {
-      try {
-        return resolveAgentProvider(raw).id;
-      } catch (error) {
-        throw new Error(`${AGENT_PROVIDER_ENV}: ${(error as Error).message}`);
-      }
-    },
+    parse: parseEnvProviderId,
   });
+  // The file short-circuits the resolution, so the variable is checked here as
+  // well — set-but-unsupported fails loudly whichever source wins.
+  if (resolved.source !== "env") parseEnvProviderId(env(AGENT_PROVIDER_ENV));
   warnDeprecatedEnvSetting(resolved, AGENT_PROVIDER_CONFIG_KEY);
   return resolved.value;
+}
+
+/**
+ * Validate an id stated in {@link AGENT_PROVIDER_ENV}.
+ *
+ * @param raw - The variable's value; blank or absent states nothing.
+ * @returns The canonical id, or null when the variable states nothing.
+ * @throws When the variable names a provider that is not registered, with the
+ *   variable named so the operator knows which of the two sources to fix.
+ */
+function parseEnvProviderId(raw: string | undefined): string | null {
+  const wanted = raw?.trim();
+  if (!wanted) return null;
+  try {
+    return resolveAgentProvider(wanted).id;
+  } catch (error) {
+    throw new Error(`${AGENT_PROVIDER_ENV}: ${(error as Error).message}`);
+  }
 }
 
 /**
@@ -1092,6 +1109,12 @@ export function resolveEnabledAgentProviderIds(
   const configured = selection.configuredProviders ??
     configuredEnabledProviderIds;
 
+  const parseEnvSet = (raw: string) =>
+    parseEnabledProviderIds(
+      raw.split(","),
+      `${ENABLED_AGENT_PROVIDERS_ENV}=${JSON.stringify(raw)}`,
+    );
+
   const resolved = resolveSetting<readonly string[]>({
     configKey: ENABLED_AGENT_PROVIDERS_CONFIG_KEY,
     envVar: ENABLED_AGENT_PROVIDERS_ENV,
@@ -1101,12 +1124,14 @@ export function resolveEnabledAgentProviderIds(
       `Configuration key "${ENABLED_AGENT_PROVIDERS_CONFIG_KEY}"`,
     ),
     fallback: [activeId],
-    parse: (raw) =>
-      parseEnabledProviderIds(
-        raw.split(","),
-        `${ENABLED_AGENT_PROVIDERS_ENV}=${JSON.stringify(raw)}`,
-      ),
+    parse: parseEnvSet,
   });
+  // As with the active provider: the file short-circuits the resolution, so an
+  // unusable variable is checked here too rather than passing in silence.
+  if (resolved.source !== "env") {
+    const stated = env(ENABLED_AGENT_PROVIDERS_ENV)?.trim();
+    if (stated) parseEnvSet(stated);
+  }
   warnDeprecatedEnvSetting(resolved, ENABLED_AGENT_PROVIDERS_CONFIG_KEY);
   const ids = [...resolved.value];
 

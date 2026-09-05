@@ -1052,13 +1052,15 @@ export interface ConfigFile {
   /**
    * Coding-agent provider id (Issue #4067) — the provider seam resolves the
    * binary, credentials, environment and invocation from it. Defaults to
-   * `claude`; `VIBE_AGENT_PROVIDER` overrides it for one run.
+   * `claude`; `VIBE_AGENT_PROVIDER` selects it when this key is unset (it
+   * no longer overrides the key — Issue #1032).
    */
   agent_provider?: string;
   /**
    * Providers enabled for a run (Issue #4108) — each gets its own credential
    * file, preflight check and read-only mount. Defaults to the active
-   * provider alone; `VIBE_AGENT_PROVIDERS` overrides it for one run.
+   * provider alone; `VIBE_AGENT_PROVIDERS` applies when this key is unset
+   * (it no longer overrides the key — Issue #1032).
    */
   agent_providers?: string[];
   claude_model?: string;

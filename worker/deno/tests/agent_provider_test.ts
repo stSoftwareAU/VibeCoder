@@ -35,6 +35,7 @@ import {
   resolveEnabledAgentProviderIds,
 } from "../lib/agent_provider.ts";
 import { clearDeprecatedEnvWarnings } from "../lib/config_precedence.ts";
+import { capturingWarnings } from "./support/warnings.ts";
 import { buildClaudeEffortArgs } from "../lib/claude_executor.ts";
 import { checkCredentialPreflight } from "../lib/credential_preflight.ts";
 import { loadConfig } from "../lib/config.ts";
@@ -45,21 +46,6 @@ const repoRoot = new URL("../../../", import.meta.url).pathname;
 /** Read a repository file as text. */
 async function readRepoFile(relative: string): Promise<string> {
   return await Deno.readTextFile(`${repoRoot}${relative}`);
-}
-
-/** Run `fn` with `console.warn` captured, and return the lines it emitted. */
-function capturingWarnings(fn: () => void): string[] {
-  const lines: string[] = [];
-  const original = console.warn;
-  console.warn = (...args: unknown[]) => {
-    lines.push(args.map(String).join(" "));
-  };
-  try {
-    fn();
-  } finally {
-    console.warn = original;
-  }
-  return lines;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +276,33 @@ Deno.test("agent provider - an enabled set taken from the environment is depreca
   assertEquals(lines.length, 1);
   assert(lines[0]!.includes(ENABLED_AGENT_PROVIDERS_ENV));
   assert(lines[0]!.includes(ENABLED_AGENT_PROVIDERS_CONFIG_KEY));
+});
+
+// Losing to the file must not turn a typo into silence (Issue #3234): before
+// Issue #1032 the variable was always parsed because it always won, so a host
+// whose file now short-circuits the resolution would otherwise stop being
+// told its `VIBE_AGENT_PROVIDER(S)` names nothing.
+Deno.test("agent provider - an unsupported environment id still fails loudly when the file wins", () => {
+  assertThrows(
+    () =>
+      resolveAgentProviderId({
+        configured: "claude",
+        env: (name) => name === AGENT_PROVIDER_ENV ? "aider" : undefined,
+      }),
+    Error,
+    AGENT_PROVIDER_ENV,
+  );
+  assertThrows(
+    () =>
+      resolveEnabledAgentProviderIds({
+        configured: "claude",
+        configuredProviders: ["claude"],
+        env: (name) =>
+          name === ENABLED_AGENT_PROVIDERS_ENV ? "claude,aider" : undefined,
+      }),
+    Error,
+    ENABLED_AGENT_PROVIDERS_ENV,
+  );
 });
 
 Deno.test("agent provider - an unsupported configured or environment id fails loudly", () => {

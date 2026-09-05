@@ -25,6 +25,7 @@ import {
 import { VIBE_ENV_REGISTRY } from "../lib/vibe_env_registry.ts";
 import { envFrom } from "./support/env_lookup.ts";
 import { REPO_ROOT } from "./support/repo_root.ts";
+import { capturingWarnings } from "./support/warnings.ts";
 
 const DENO_DIR = `${REPO_ROOT}worker/deno`;
 
@@ -125,21 +126,6 @@ Deno.test("deprecationWarning - says nothing when the environment was not used",
 });
 
 // --- The warning an operator gets before 2.0.0 flips nothing further ---
-
-/** Run `fn` with `console.warn` captured, and return the lines it emitted. */
-function capturingWarnings(fn: () => void): string[] {
-  const lines: string[] = [];
-  const original = console.warn;
-  console.warn = (...args: unknown[]) => {
-    lines.push(args.map(String).join(" "));
-  };
-  try {
-    fn();
-  } finally {
-    console.warn = original;
-  }
-  return lines;
-}
 
 Deno.test("warnDeprecatedEnvSetting - one line per setting per run, however often it is resolved", () => {
   clearDeprecatedEnvWarnings();

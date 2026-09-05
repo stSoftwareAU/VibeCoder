@@ -17,6 +17,13 @@ with the exact migration and the exact rollback.
 **Behaviour change, not a fix. Read the migration before upgrading a host that
 sets both a `.config.json` key and its `VIBE_*` variable.**
 
+> **Unreleased.** The change is on
+> `milestone/configuration-one-source-of-truth` and
+> [`.release-floor`](../.release-floor) is still `1.4.0`, so no 2.0.0 tag
+> exists yet. The floor moves to `2.0.0` with the merge that takes this
+> milestone to `main` — that merge is what mints the release these notes
+> describe.
+
 ### What changed
 
 | Change | Issue |
@@ -63,9 +70,11 @@ from the environment: it silently switches to whatever the file says — a
 different coding agent, in the `agent_provider` case — so check the file before
 upgrading.
 
-The deprecation warning ships in a 1.x release **before** this flip, so the
-warning is not the first thing an operator sees after the behaviour has already
-changed.
+The warning naming the config key was introduced with the flip rather than in a
+1.x release ahead of it, so on a host that had set both, the first run after the
+upgrade is where the line appears. Issue #874's own deprecation pass — the one
+that stops these variables being read at all — is what carries the notice
+forward from here.
 
 ### Migration
 

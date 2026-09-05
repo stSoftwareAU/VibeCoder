@@ -2263,12 +2263,15 @@ An unusable value — a negative floor, a number that will not parse — is refu
 wherever it was written and falls through to the next source, so a typo in one
 variable cannot stop a host claiming work.
 
-The environment fallbacks are **deprecated**: a run that takes a setting from
-one logs a single line naming the config key that replaces it, and a later
-major stops reading them (Issue #874). Three settings changed direction in
-2.0.0 — `imgbb_api_key`, `agent_provider` and `agent_providers`, plus
-`update_gh_user_status` alongside them — where the variable used to win; see
+The environment fallbacks are **deprecated**, and a later major stops reading
+them (Issue #874). The three settings 2.0.0 reordered — `imgbb_api_key`,
+`agent_provider` and `agent_providers`, with `update_gh_user_status` moving
+alongside them — each log a single line naming the config key that replaces the
+variable, once per run, on a host that still takes them from the environment;
+see
 [Release notes](RELEASE-NOTES.md#200--the-config-file-wins-over-the-environment).
+The remaining settings report the source they resolved from without a
+deprecation line yet.
 
 ### 🔧 Setup-Time Environment Variables
 

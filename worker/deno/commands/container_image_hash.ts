@@ -96,7 +96,7 @@ export function resolveConfigFile(
  * and defaults to the process environment, so the registry and `mod.ts` see
  * the interface they always did. Two things reach the environment here: the
  * `CONFIG_PATH` fallback in {@link resolveConfigFile}, and the
- * `VIBE_AGENT_PROVIDER` / `VIBE_AGENT_PROVIDERS` overrides plus the
+ * `VIBE_AGENT_PROVIDER` / `VIBE_AGENT_PROVIDERS` fallbacks plus the
  * `VIBE_IMAGE_AGENT_PROVIDERS` image stamp that
  * `readDeploymentImageSelection` judges the configured provider set against.
  * Both are launcher-to-container plumbing rather than configuration, so the

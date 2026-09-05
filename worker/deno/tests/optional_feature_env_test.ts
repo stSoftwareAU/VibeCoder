@@ -26,21 +26,7 @@ import {
 } from "../lib/optional_feature_env.ts";
 import { clearDeprecatedEnvWarnings } from "../lib/config_precedence.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
-
-/** Run `fn` with `console.warn` captured, and return the lines it emitted. */
-function capturingWarnings(fn: () => void): string[] {
-  const lines: string[] = [];
-  const original = console.warn;
-  console.warn = (...args: unknown[]) => {
-    lines.push(args.map(String).join(" "));
-  };
-  try {
-    fn();
-  } finally {
-    console.warn = original;
-  }
-  return lines;
-}
+import { capturingWarnings } from "./support/warnings.ts";
 
 Deno.test("resolveOptionalFeatureEnv - maps the config keys to the variables their consumers read", () => {
   const out = resolveOptionalFeatureEnv({
