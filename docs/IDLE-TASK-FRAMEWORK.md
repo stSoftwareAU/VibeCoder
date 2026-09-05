@@ -560,15 +560,29 @@ local/cross-worker cooldown still counts — it will be claimed on a later cycle
 so the fleet has real work and an idle-task must not be filed.
 
 Issue #1050 narrowed "could claim" from labels to the claim scan's own
-definition. The gate used to ask a label-only question, so work the scan
-*permanently* refuses suppressed idle filing for as long as it stayed open. It
-now answers from the same `classifyIssues` the idle-detect audit runs
-(restricted to `REAL_WORK_LABELS`), reading one unfiltered `gh issue list` per
-repo — occupancy is a property of the whole work stream, and the issue that
-occupies it need carry no discovery label at all. The gates it cannot answer
-without PR or dependency data are simply not applied, so it still errs towards
-*suppressing* filing rather than towards wrapper flooding. It repairs the filing half of the
-idle-vs-work-on inversion, where the per-repo busy check (gate 5 below) only
+definition — *can a slot start this right now*, not *does it exist*. The gate
+used to ask a label-only question, so work the scan refuses suppressed idle
+filing for as long as it stayed open. Two field incidents a week apart are the
+same fault reached by different gates: on `stSoftwareAU/VibeCoder` one
+assignment made two dozen `work-on` issues `milestone-occupied`, and on
+`stSoftwareAU/NEAT-AI-Ockham` six issues (#104–#110) sat `pr-blocked` behind a
+single open PR (#116). Each suppressed idle filing across all eighteen
+monitored repositories for as long as it lasted, while seventeen of them were
+empty and slots sat idle.
+
+The gate now answers from the same `classifyIssues` the idle-detect audit runs
+(restricted to `REAL_WORK_LABELS`), and the filer supplies it the scan's own
+inputs: the fleet identity, the fleet's open and merged PRs — read through the
+shared issue cache the scan populates — and this run's hold set, passed down
+from the worker loop. The issue probe is one unfiltered `gh issue list` per
+repo, because occupancy is a property of the whole work stream and the issue
+that occupies it need carry no discovery label at all; the PR probes run only
+for a repository whose issues survive the cheap gates, so an empty or plainly
+busy repository still costs exactly one call. Any gate whose data is missing
+is simply not applied, which leaves that gate's over-count in place — the
+direction that suppresses filing rather than flooding it. It repairs the
+filing half of the idle-vs-work-on inversion, where the per-repo busy check
+(gate 5 below) only
 skipped the _individual_ busy repo and let a quiet repo B be filed into while a
 different repo A held the deferred backlog. The same suppression is also applied
 cache-backed at the `run_core.ts` idle gate: the idle-decision census (below)
@@ -753,24 +767,35 @@ streak open the way the registry did.
 
 The **work-stream occupancy** gate (Issue #1050) is the fifth instance, and the
 first to be found in the audit rather than the census. `isMilestoneOccupied`
-calls a stream occupied when an issue in it is assigned to **any** account the
-scan honours — this worker or an `allowed_authors` entry — and the census has
-modelled that account set since Issue #753. The audit matched `workerUser`
-alone. On 2026-08-26 `stSoftwareAU/VibeCoder` held two dozen unassigned
-`work-on` issues in the default-branch stream and one unlabelled issue in that
-stream assigned to a human in `allowed_authors`; the scan refused every one of
-them as `milestone-occupied`, the audit counted all 24, and
+calls a stream occupied when an issue in it is assigned to an account the fleet
+operates — this host or a sibling Vibe Coder, resolved by
+`resolveFleetMaintenanceAuthorSet` (Issue #1064). The audit matched
+`workerUser` alone. On 2026-08-26 `stSoftwareAU/VibeCoder` held two dozen
+unassigned `work-on` issues in the default-branch stream and one unlabelled
+issue in that stream carried an assignment; the scan refused every one of them
+as `milestone-occupied`, the audit counted all 24, and
 `[idle-hooks] ... reason=audit_found_claimable claimable_total=24` suppressed
 the filer. No idle task was filed anywhere in the fleet for ten days while two
 slots ran at roughly 10% occupancy. The audit now resolves occupancy by calling
-`isMilestoneOccupied` itself, over the account set the caller supplies as
-`allowedAuthors`, and applies the `filterAndSort` milestone-tracker gate
-(Issue #1134) the same way. `idle_claimable_drift_1050_test.ts` feeds one issue
-set to both `classifyIssues` and the real `collectWorkOnCandidates` and fails on
-any disagreement, and `idle_filing_composition_1050_test.ts` runs the whole
-suppressor stack against the observed fleet shape and asserts an idle task is
-still filed — the assertion no test made before, which is why ten days passed
-before a human noticed.
+`isMilestoneOccupied` itself, over the set the caller supplies as
+`pushCapableAuthors`, and applies the `filterAndSort` milestone-tracker gate
+(Issue #1134) the same way.
+
+The account set is the axis this gate can be wrong on in **both** directions,
+so all three tests pin both. Too narrow — `workerUser` alone — is #1050: a
+sibling's work reads as claimable and the filer is suppressed on work nothing
+can take. Too wide — `allowed_authors`, a permission list that legitimately
+holds humans — is #1064: a human's assignment parks a whole work stream, and
+there is no scheduling between humans and Vibe Coders.
+`idle_claimable_drift_1050_test.ts` feeds one issue set to both
+`classifyIssues` and the real `collectWorkOnCandidates` and fails on any
+disagreement; `idle_filing_composition_1050_test.ts` runs the whole suppressor
+stack against the observed fleet shape and asserts an idle task is still filed
+— the assertion no test made before, which is why ten days passed before a
+human noticed; and `idle_audit_wiring_1050_test.ts` drives the real production
+factory, because the gate is switched on by the account set
+`run_core_production_deps.ts` hands it and by nothing else, and a fix only the
+factory can activate needs a test that the factory activates it.
 
 The third reader is the **idle-detect audit** (`idle_detect_diagnostics.ts`),
 which counted those same two issues for the life of the run — so

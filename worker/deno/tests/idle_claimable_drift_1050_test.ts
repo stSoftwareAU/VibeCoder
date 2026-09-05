@@ -12,10 +12,14 @@
  *   - #655 — the audit counted issues this run was itself holding back;
  *     `mis_classification` fired for the life of the process.
  *   - #1050 — the audit's stream-occupancy gate matched `workerUser` alone
- *     while the scan's `isMilestoneOccupied` matches every trusted account.
- *     One issue assigned to a colleague made a 24-issue backlog unclaimable
- *     to the scan while the audit went on counting all 24, and no idle task
- *     was filed anywhere in the fleet for ten days.
+ *     while the scan's `isMilestoneOccupied` matches every account the fleet
+ *     operates. One assignment made a 24-issue backlog unclaimable to the
+ *     scan while the audit went on counting all 24, and no idle task was
+ *     filed anywhere in the fleet for ten days.
+ *   - #1064 — the same gate, read the other way: `allowed_authors` is a
+ *     permission list holding humans, and a human's assignment must never
+ *     park a work stream. Both definitions take the push-capable fleet set,
+ *     and the fixtures below pin both halves of that distinction.
  *
  * So this test does not assert either verdict in isolation. It builds one
  * issue set, hands it to both definitions, and asserts the two claimable
@@ -32,13 +36,25 @@ import { classifyIssues } from "../lib/idle_detect_diagnostics.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { createIssueFetcher } from "../lib/issue_finder_common.ts";
+import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import type { WorkerConfig } from "../types.ts";
 
 const REPO = "owner/repo";
 const WORKER_USER = "bot";
-/** The `.config.json` `allowed_authors` set both definitions must honour. */
-const ALLOWED_AUTHORS = ["alice", WORKER_USER];
+/**
+ * `.config.json` `allowed_authors` — a **permission** list. It holds humans,
+ * and since Issue #1064 neither definition may treat it as the occupancy set:
+ * there is no scheduling between humans and Vibe Coders.
+ */
+const ALLOWED_AUTHORS = ["alice", "human-dev", WORKER_USER];
+/** `.config.json` `fleet_pr_authors` — the accounts the fleet operates. */
+const FLEET_PR_AUTHORS = ["sibling-bot"];
+/** The occupancy set both definitions must use (Issues #1050, #1064). */
+const PUSH_CAPABLE_AUTHORS = resolveFleetMaintenanceAuthorSet({
+  githubUser: WORKER_USER,
+  fleetPrAuthors: FLEET_PR_AUTHORS,
+});
 
 /** One open issue, in the shape both definitions read. */
 interface DriftIssue {
@@ -56,6 +72,7 @@ function makeConfig(): WorkerConfig {
     ...buildDefaultWorkerConfig(),
     repos: [REPO],
     allowedAuthors: ALLOWED_AUTHORS,
+    fleetPrAuthors: FLEET_PR_AUTHORS,
     shuffleRepos: false,
     workDir: Deno.makeTempDirSync({ prefix: "claimable-drift-workdir-" }),
   };
@@ -158,7 +175,7 @@ function auditClaimable(issues: DriftIssue[]): number[] {
     })),
     {
       workerUser: WORKER_USER,
-      allowedAuthors: ALLOWED_AUTHORS,
+      pushCapableAuthors: PUSH_CAPABLE_AUTHORS,
       // The scan collector under test covers the work-on tier only.
       claimableLabels: ["work-on"],
     },
@@ -193,12 +210,27 @@ async function assertAgree(
   );
 }
 
-/** The issue that occupies the default-branch stream — no labels, as live. */
+/**
+ * The issue that occupies the default-branch stream — assigned to a sibling
+ * Vibe Coder, and carrying no labels, exactly as the live one did.
+ */
 const OCCUPYING_ISSUE: DriftIssue = {
   number: 99,
-  title: "Something a colleague is already doing",
+  title: "Something a sibling worker is already doing",
   labels: [],
-  assignees: ["alice"],
+  assignees: ["sibling-bot"],
+  milestone: "",
+};
+
+/**
+ * The same shape, assigned to a human. Issue #1064: scheduling exists only
+ * between Vibe Coders, so this must occupy nothing — for either definition.
+ */
+const HUMAN_ASSIGNED_ISSUE: DriftIssue = {
+  number: 98,
+  title: "Something a human is already doing",
+  labels: [],
+  assignees: ["human-dev"],
   milestone: "",
 };
 
@@ -229,7 +261,7 @@ Deno.test(
 );
 
 Deno.test(
-  "claimable drift - a stream occupied by a trusted account: both take nothing (Issue #1050)",
+  "claimable drift - a stream held by a sibling worker: both take nothing (Issue #1050)",
   async () => {
     await assertAgree(
       [
@@ -250,7 +282,38 @@ Deno.test(
         OCCUPYING_ISSUE,
       ],
       [],
-      "default-branch stream occupied by a colleague",
+      "default-branch stream held by a sibling worker",
+    );
+  },
+);
+
+Deno.test(
+  "claimable drift - a human's assignment occupies nothing (Issue #1064)",
+  async () => {
+    // Scheduling exists only between Vibe Coders. `human-dev` is in
+    // `allowed_authors` and not in `fleet_pr_authors`, so the stream stays
+    // free and the backlog stays claimable — for BOTH definitions. Passing
+    // the permission list to either one would fail this and park the repo.
+    await assertAgree(
+      [
+        {
+          number: 10,
+          title: "Implement one thing",
+          labels: ["work-on"],
+          assignees: [],
+          milestone: "",
+        },
+        {
+          number: 11,
+          title: "Implement another thing",
+          labels: ["work-on"],
+          assignees: [],
+          milestone: "",
+        },
+        HUMAN_ASSIGNED_ISSUE,
+      ],
+      [10, 11],
+      "default-branch stream with a human-assigned issue in it",
     );
   },
 );
@@ -296,9 +359,9 @@ Deno.test(
         },
         {
           number: 11,
-          title: "Assigned to a colleague",
+          title: "Assigned to someone",
           labels: ["work-on"],
-          assignees: ["alice"],
+          assignees: ["human-dev"],
           milestone: "M2",
         },
         {

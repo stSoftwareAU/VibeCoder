@@ -1,30 +1,36 @@
 /**
  * The composed idle-filing stack against a realistic fleet (Issue #1050).
  *
- * Every suppression test in this repository proves that its own gate
- * suppresses, and the one positive test — "run_core - idle pass invokes
- * runIdleTaskFiler (Issue #2005)" — passes because it supplies *no* audit and
- * *no* census: both suppressors are absent, not passing. Nothing asserted
- * that the stack as a whole still lets an idle task through, and it did not:
- * no idle task was filed anywhere in the fleet between 2026-08-26 and
- * 2026-09-05 while two slots sat at ~10% occupancy.
+ * The operator's requirement is one sentence: **if no work can be started
+ * right now, raise an idle task in one of the monitored repositories.** Every
+ * suppression test in this repository proves that its own gate suppresses,
+ * and the one positive test — "run_core - idle pass invokes runIdleTaskFiler
+ * (Issue #2005)" — passes because it supplies *no* audit and *no* census:
+ * both suppressors are absent, not passing. Nothing asserted that the stack
+ * as a whole still lets an idle task through, and it did not. No idle task
+ * was filed anywhere in the fleet between 2026-08-26 and 2026-09-05 while two
+ * slots sat at roughly 10% occupancy.
  *
  * These tests run the real `auditClaimableState`, the real
  * `buildIdleDecisionCensus` and the real `anyRepoHasUnblockedRealWork`
- * against one gh fixture, through the real `runCoreLoop` gate, and assert on
- * the only outcome that matters: was an idle task filed?
+ * against one fixture, through the real `runCoreLoop` gate, and assert on the
+ * only outcome that matters: was an idle task filed?
  *
- * The fixture is the observed fleet shape. One repository holds a large
- * backlog of `work-on` issues in the default-branch work stream; that stream
- * already holds an issue assigned to a trusted account, so the claim scan
- * refuses every one of them as `milestone-occupied` and can claim nothing.
- * The other seventeen repositories are empty. An idle slot must be given an
- * idle task.
+ * The fixture is the observed fleet shape — one repository holding a backlog
+ * of `work-on` issues that cannot be started, seventeen empty repositories —
+ * and it is replayed once per *reason* the backlog cannot be started, because
+ * both field incidents were the same fault reached by different gates:
  *
- * Both directions are pinned. Remove the occupying assignment and the same
- * backlog becomes genuinely claimable, at which point nothing may be filed —
- * or the fix trades the starved fleet of #1050 for the wrapper flooding of
- * #2106 and the priority inversion of #2806.
+ *   - a work stream held by a sibling Vibe Coder (`stSoftwareAU/VibeCoder`,
+ *     2026-08-26 — 24 issues, `milestone-occupied`),
+ *   - an open fleet PR in the work stream (`stSoftwareAU/NEAT-AI-Ockham`,
+ *     2026-09-05 — #104-#110 behind PR #116, `pr-blocked`),
+ *   - an assignee, and
+ *   - this run's own cooldown.
+ *
+ * The inverse is pinned just as hard: one genuinely startable issue anywhere
+ * in the fleet and **nothing** may be filed, or the fix becomes "always file"
+ * and re-introduces the #2106 wrapper flooding and the #2806 inversion.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -41,22 +47,41 @@ import {
   type CensusIssue,
 } from "../lib/idle_decision_census.ts";
 import { anyRepoHasUnblockedRealWork } from "../lib/repo_busy_for_idle_task.ts";
+import type { OpenPR } from "../lib/issue_query.ts";
 
 // ---------------------------------------------------------------------------
 // Fleet fixture
 // ---------------------------------------------------------------------------
 
 const WORKER_USER = "worker-bot";
-/** The `.config.json` `allowed_authors` set the claim scan honours. */
-const ALLOWED_AUTHORS = ["colleague", WORKER_USER];
+/** A sibling Vibe Coder — `fleet_pr_authors`, so its work occupies a stream. */
+const SIBLING = "sibling-bot";
+/**
+ * The occupancy and PR-blocking set every instrument must use (Issues #1050,
+ * #1064): the accounts the fleet operates, never the `allowed_authors`
+ * permission list, which holds humans.
+ */
+const PUSH_CAPABLE_AUTHORS = [SIBLING, WORKER_USER];
 
 const BACKLOG_REPO = "org/backlog";
 /** The seventeen quiet repositories an idle task belongs in. */
-const QUIET_REPOS = Array.from(
-  { length: 17 },
-  (_, i) => `org/quiet-${i + 1}`,
-);
+const QUIET_REPOS = Array.from({ length: 17 }, (_, i) => `org/quiet-${i + 1}`);
 const FLEET_REPOS = [BACKLOG_REPO, ...QUIET_REPOS];
+
+/** How many `work-on` issues the one busy repository holds. */
+const BACKLOG_SIZE = 24;
+
+/**
+ * Why the backlog cannot be started this cycle — one per gate the claim scan
+ * applies and the suppressors used to ignore. `none` is the control: the same
+ * backlog, genuinely startable.
+ */
+type Blocker =
+  | "sibling_occupied"
+  | "pr_blocked"
+  | "assigned"
+  | "cooled_down"
+  | "none";
 
 interface FixtureIssue {
   number: number;
@@ -66,52 +91,90 @@ interface FixtureIssue {
   milestone: string;
 }
 
-/**
- * The observed shape: 24 unassigned `work-on` issues in the default-branch
- * stream. `withOccupyingAssignment` adds the issue that occupies that stream
- * — unlabelled, exactly as the live one was — which is what makes all 24
- * unclaimable to the scan.
- */
-function backlogIssues(withOccupyingAssignment: boolean): FixtureIssue[] {
+function backlogIssues(blocker: Blocker): FixtureIssue[] {
   const issues: FixtureIssue[] = [];
-  for (let n = 100; n < 124; n++) {
+  for (let n = 100; n < 100 + BACKLOG_SIZE; n++) {
     issues.push({
       number: n,
       title: `Backlog item ${n}`,
       labels: ["work-on"],
-      assignees: [],
+      assignees: blocker === "assigned" ? ["someone"] : [],
       milestone: "",
     });
   }
-  if (withOccupyingAssignment) {
+  if (blocker === "sibling_occupied") {
+    // Unlabelled, exactly as the live one was: the issue that occupies the
+    // stream need carry no discovery label at all.
     issues.push({
       number: 99,
-      title: "Something a colleague is already doing",
+      title: "Something a sibling worker is already doing",
       labels: [],
-      assignees: ["colleague"],
+      assignees: [SIBLING],
       milestone: "",
     });
   }
   return issues;
 }
 
+/** One startable `work-on` issue, for the fleet that must file nothing. */
+function startableIssue(number: number): FixtureIssue {
+  return {
+    number,
+    title: `Startable item ${number}`,
+    labels: ["work-on"],
+    assignees: [],
+    milestone: "",
+  };
+}
+
+/** The open fleet PR that defers the whole default-branch stream. */
+const BLOCKING_PR: OpenPR = {
+  number: 116,
+  title: "Fix the thing",
+  baseRefName: "main",
+  headRefName: "issue-104-fix",
+  author: SIBLING,
+};
+
+interface Fleet {
+  issues: Map<string, FixtureIssue[]>;
+  openPRs: Map<string, readonly OpenPR[]>;
+  holds: Set<number>;
+}
+
+/**
+ * The observed shape: one repository holding a backlog nothing can start,
+ * every other repository empty. `extra` adds issues to a named repo, which
+ * the inverse test uses to plant one genuinely startable issue.
+ */
 function fleetFixture(
-  withOccupyingAssignment: boolean,
-): Map<string, FixtureIssue[]> {
-  const fleet = new Map<string, FixtureIssue[]>();
-  fleet.set(BACKLOG_REPO, backlogIssues(withOccupyingAssignment));
-  for (const repo of QUIET_REPOS) fleet.set(repo, []);
-  return fleet;
+  blocker: Blocker,
+  extra?: { repo: string; issues: FixtureIssue[] },
+): Fleet {
+  const issues = new Map<string, FixtureIssue[]>();
+  issues.set(BACKLOG_REPO, backlogIssues(blocker));
+  for (const repo of QUIET_REPOS) issues.set(repo, []);
+  if (extra) {
+    issues.set(extra.repo, [
+      ...(issues.get(extra.repo) ?? []),
+      ...extra.issues,
+    ]);
+  }
+  const openPRs = new Map<string, readonly OpenPR[]>();
+  if (blocker === "pr_blocked") openPRs.set(BACKLOG_REPO, [BLOCKING_PR]);
+  const holds = new Set<number>();
+  if (blocker === "cooled_down") {
+    for (const i of issues.get(BACKLOG_REPO) ?? []) holds.add(i.number);
+  }
+  return { issues, openPRs, holds };
 }
 
 /** `gh issue list --repo <r> --state open --json ...` over the fixture. */
-function makeGh(
-  fleet: Map<string, FixtureIssue[]>,
-): (args: string[]) => Promise<string> {
+function makeGh(fleet: Fleet): (args: string[]) => Promise<string> {
   return (args: string[]) => {
     const repoIdx = args.indexOf("--repo");
     const repo = repoIdx >= 0 ? args[repoIdx + 1] ?? "" : "";
-    const rows = (fleet.get(repo) ?? []).map((i) => ({
+    const rows = (fleet.issues.get(repo) ?? []).map((i) => ({
       number: i.number,
       title: i.title,
       labels: i.labels.map((name) => ({ name })),
@@ -246,7 +309,7 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
 }
 
 interface CompositionOutcome {
-  /** True when the filer got as far as creating an idle task. */
+  /** True when the filer got past every gate and would create an issue. */
   filed: boolean;
   /** The audit's fleet-wide claimable total for the cycle. */
   auditTotal: number;
@@ -261,7 +324,7 @@ interface CompositionOutcome {
  * to `fleet`, and report what the composed stack decided.
  */
 async function runComposedIdleCycle(
-  fleet: Map<string, FixtureIssue[]>,
+  fleet: Fleet,
 ): Promise<CompositionOutcome> {
   const gh = makeGh(fleet);
   const logs: string[] = [];
@@ -271,6 +334,10 @@ async function runComposedIdleCycle(
     inversion: false,
     logs,
   };
+  const openPRsFn = (repo: string) =>
+    Promise.resolve(fleet.openPRs.get(repo) ?? []);
+  const runLocalHoldFn = (_repo: string, issueNumber: number) =>
+    fleet.holds.has(issueNumber);
 
   let cycleCount = 0;
   let nowValue = 0;
@@ -288,10 +355,12 @@ async function runComposedIdleCycle(
       const result = await auditClaimableState({
         repos: FLEET_REPOS,
         workerUser: WORKER_USER,
-        allowedAuthors: ALLOWED_AUTHORS,
+        pushCapableAuthors: PUSH_CAPABLE_AUTHORS,
         tick,
         scanFoundClaimable,
         ghCommandFn: gh,
+        openPRsFn,
+        runLocalHoldFn,
         log: (line) => logs.push(line),
       });
       outcome.auditTotal = result.claimableTotal;
@@ -303,27 +372,35 @@ async function runComposedIdleCycle(
       const census = buildIdleDecisionCensus({
         decisionPoint,
         workerUser: WORKER_USER,
-        allowedAuthors: ALLOWED_AUTHORS,
+        // The census still names this option `allowedAuthors`; what it wants
+        // is the occupancy set, which since Issue #1064 is the fleet's
+        // push-capable logins.
+        allowedAuthors: PUSH_CAPABLE_AUTHORS,
         repos: FLEET_REPOS.map((repo) => ({
           repo,
           monitored: true,
           scannedThisCycle: claimScanCompleted,
           nice: 0,
-          issues: censusIssues(fleet.get(repo) ?? []),
+          issues: censusIssues(fleet.issues.get(repo) ?? []),
+          openPRs: [...(fleet.openPRs.get(repo) ?? [])],
+          runLocalHolds: fleet.holds,
         })),
       });
       outcome.inversion = census.inversionDetected;
       return Promise.resolve({ inversionDetected: census.inversionDetected });
     },
 
-    // Suppressor 3 — the filer's own fleet-global existence gate (#2813),
-    // which stands between run_core's decision to file and an issue being
-    // created. Filing happens only when it, too, sees nothing claimable.
+    // Suppressor 3 — the filer's own fleet-global startable-work gate
+    // (#2813, #1050), which stands between run_core's decision to file and
+    // an issue being created. Filing happens only when it, too, finds
+    // nothing a slot could start.
     runIdleTaskFiler: async () => {
       const fleetHasWork = await anyRepoHasUnblockedRealWork({
         repos: FLEET_REPOS,
         workerUser: WORKER_USER,
-        allowedAuthors: ALLOWED_AUTHORS,
+        pushCapableAuthors: PUSH_CAPABLE_AUTHORS,
+        openPRsFn,
+        runLocalHoldFn,
         ghCommandFn: gh,
         logFn: (line) => logs.push(line),
       });
@@ -337,38 +414,67 @@ async function runComposedIdleCycle(
   return outcome;
 }
 
+/**
+ * Assert the composed stack files an idle task against a fleet whose only
+ * backlog is blocked by `blocker`, and that no suppressor claimed otherwise.
+ */
+async function assertFilesIdleTask(blocker: Blocker): Promise<void> {
+  const outcome = await runComposedIdleCycle(fleetFixture(blocker));
+  assertEquals(
+    outcome.auditTotal,
+    0,
+    `the audit must not count ${blocker} work as claimable`,
+  );
+  assertEquals(
+    outcome.inversion,
+    false,
+    `the census must not report an inversion over ${blocker} work`,
+  );
+  assert(
+    outcome.filed,
+    `an idle task must be filed when the fleet's only backlog is ${blocker}; ` +
+      `logs:\n${outcome.logs.join("\n")}`,
+  );
+  assert(
+    outcome.logs.some((l) => l.includes("invoking=idle-task-filer")),
+    "the filer must be invoked, not skipped",
+  );
+}
+
 // ---------------------------------------------------------------------------
-// The case that was broken for ten days
+// If no work can be started, an idle task is filed — one test per reason
 // ---------------------------------------------------------------------------
 
 Deno.test(
-  "idle filing - a backlog no slot can claim still lets an idle task through (Issue #1050)",
+  "idle filing - a backlog behind one open fleet PR still files an idle task (Issue #1050)",
   async () => {
-    const outcome = await runComposedIdleCycle(fleetFixture(true));
+    // The 2026-09-05 shape: NEAT-AI-Ockham #104-#110 behind PR #116. The
+    // scan refuses all six as `pr-blocked`; the fleet gate counted all six
+    // and suppressed filing across all eighteen repositories.
+    await assertFilesIdleTask("pr_blocked");
+  },
+);
 
-    assertEquals(
-      outcome.auditTotal,
-      0,
-      "the audit must not count work the scan refuses as milestone-occupied",
-    );
-    assertEquals(
-      outcome.inversion,
-      false,
-      "the census already models the occupied stream and must agree",
-    );
-    assert(
-      outcome.filed,
-      "an idle task must be filed when the whole fleet backlog is unclaimable; " +
-        `logs:\n${outcome.logs.join("\n")}`,
-    );
-    assert(
-      outcome.logs.some((l) => l.includes("invoking=idle-task-filer")),
-      "the filer must be invoked, not skipped",
-    );
-    assert(
-      !outcome.logs.some((l) => l.includes("reason=audit_found_claimable")),
-      "the audit must not suppress filing on unclaimable work",
-    );
+Deno.test(
+  "idle filing - a backlog in a stream a sibling holds still files an idle task (Issue #1050)",
+  async () => {
+    // The 2026-08-26 shape: 24 issues behind one assignment in the same
+    // work stream, every one of them `milestone-occupied` to the scan.
+    await assertFilesIdleTask("sibling_occupied");
+  },
+);
+
+Deno.test(
+  "idle filing - a backlog that is entirely assigned still files an idle task (Issue #2751)",
+  async () => {
+    await assertFilesIdleTask("assigned");
+  },
+);
+
+Deno.test(
+  "idle filing - a backlog this run is holding back still files an idle task (Issue #655)",
+  async () => {
+    await assertFilesIdleTask("cooled_down");
   },
 );
 
@@ -377,14 +483,14 @@ Deno.test(
 // ---------------------------------------------------------------------------
 
 Deno.test(
-  "idle filing - the same backlog, genuinely claimable, files nothing (Issue #2106 / #2806)",
+  "idle filing - the same backlog, genuinely startable, files nothing (Issue #2106 / #2806)",
   async () => {
-    const outcome = await runComposedIdleCycle(fleetFixture(false));
+    const outcome = await runComposedIdleCycle(fleetFixture("none"));
 
     assertEquals(
       outcome.auditTotal,
-      24,
-      "with the stream free, all 24 backlog issues are claimable",
+      BACKLOG_SIZE,
+      "with nothing blocking it, the whole backlog is claimable",
     );
     assertEquals(
       outcome.inversion,
@@ -394,8 +500,26 @@ Deno.test(
     assertEquals(
       outcome.filed,
       false,
-      "no idle task may be filed while the fleet holds claimable work",
+      "no idle task may be filed while the fleet holds startable work",
     );
+  },
+);
+
+Deno.test(
+  "idle filing - one startable issue anywhere in the fleet suppresses filing (Issue #2813)",
+  async () => {
+    // Repo A's backlog is PR-blocked, but one quiet repo holds a single
+    // startable issue. The fleet is not idle, so nothing may be filed — the
+    // guard against the fix degrading into "always file".
+    const outcome = await runComposedIdleCycle(
+      fleetFixture("pr_blocked", {
+        repo: QUIET_REPOS[0]!,
+        issues: [startableIssue(7)],
+      }),
+    );
+
+    assertEquals(outcome.auditTotal, 1);
+    assertEquals(outcome.filed, false);
   },
 );
 
@@ -404,32 +528,45 @@ Deno.test(
 // ---------------------------------------------------------------------------
 
 Deno.test(
-  "idle filing - the filer's own fleet gate agrees with the audit on both fleets (Issue #1050)",
+  "idle filing - the filer's own fleet gate agrees with the audit on every fleet (Issue #1050)",
   async () => {
-    const unclaimable = await anyRepoHasUnblockedRealWork({
-      repos: FLEET_REPOS,
-      workerUser: WORKER_USER,
-      allowedAuthors: ALLOWED_AUTHORS,
-      ghCommandFn: makeGh(fleetFixture(true)),
-      logFn: () => {},
-    });
-    assertEquals(
-      unclaimable,
-      false,
-      "a backlog in an occupied stream is not work the fleet can claim",
-    );
+    const blockers: Blocker[] = [
+      "pr_blocked",
+      "sibling_occupied",
+      "assigned",
+      "cooled_down",
+    ];
+    for (const blocker of blockers) {
+      const fleet = fleetFixture(blocker);
+      const hasWork = await anyRepoHasUnblockedRealWork({
+        repos: FLEET_REPOS,
+        workerUser: WORKER_USER,
+        pushCapableAuthors: PUSH_CAPABLE_AUTHORS,
+        openPRsFn: (repo) => Promise.resolve(fleet.openPRs.get(repo) ?? []),
+        runLocalHoldFn: (_repo, n) => fleet.holds.has(n),
+        ghCommandFn: makeGh(fleet),
+        logFn: () => {},
+      });
+      assertEquals(
+        hasWork,
+        false,
+        `a ${blocker} backlog is not work the fleet can start`,
+      );
+    }
 
-    const claimable = await anyRepoHasUnblockedRealWork({
-      repos: FLEET_REPOS,
-      workerUser: WORKER_USER,
-      allowedAuthors: ALLOWED_AUTHORS,
-      ghCommandFn: makeGh(fleetFixture(false)),
-      logFn: () => {},
-    });
+    const free = fleetFixture("none");
     assertEquals(
-      claimable,
+      await anyRepoHasUnblockedRealWork({
+        repos: FLEET_REPOS,
+        workerUser: WORKER_USER,
+        pushCapableAuthors: PUSH_CAPABLE_AUTHORS,
+        openPRsFn: (repo) => Promise.resolve(free.openPRs.get(repo) ?? []),
+        runLocalHoldFn: (_repo, n) => free.holds.has(n),
+        ghCommandFn: makeGh(free),
+        logFn: () => {},
+      }),
       true,
-      "the same backlog in a free stream is exactly the work #2813 protects",
+      "the same backlog with nothing blocking it is exactly what #2813 protects",
     );
   },
 );

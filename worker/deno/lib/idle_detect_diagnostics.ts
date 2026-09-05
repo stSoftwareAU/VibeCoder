@@ -31,11 +31,11 @@
  *   4. Its work stream — the milestone title, or `""` for default
  *      branch — is not already occupied. The verdict comes from the
  *      scan's own `isMilestoneOccupied`, over the scan's own account
- *      set: `workerUser` plus the caller's `allowedAuthors` (Issue
- *      #1050). Supply that set, or a stream held by any account but
- *      this worker's own reads as free here and as `milestone-occupied`
- *      to the scan — the ten-day fleet-wide idle-task drought of
- *      2026-08-26, where one issue assigned to a colleague in the
+ *      set: `workerUser` plus the caller's `pushCapableAuthors` (Issues
+ *      #1050, #1064). Supply that set, or a stream a sibling worker
+ *      holds reads as free here and as `milestone-occupied` to the
+ *      scan — the divergence behind the ten-day fleet-wide idle-task
+ *      drought of 2026-08-26, when one assignment in the
  *      default-branch stream made a 24-issue backlog unclaimable while
  *      the audit went on counting all 24.
  *   5. No open PR blocks its work stream under the scan's own
@@ -278,18 +278,24 @@ const IGNORE_OPEN_PRS_LABEL = "ignore-open-prs";
  * True when an open PR blocks `issue` under the same milestone-aware rule the
  * Priority 2 scan applies (Issue #4223).
  *
- * The empty `pushCapableAuthors` set is deliberate and matches the census: the
- * shared `prs_open_all` cache carries no author, so no PR can be classified as
- * human-authored here and every open PR counts as a blocker. The audit only
- * counts — it never blocks a pickup — so the residual over-count is
- * observability, not policy.
+ * `pushCapableAuthors` is the fleet identity, so a human's open PR never
+ * defers an issue (Issue #4133) — the same rule the scan applies. Passing an
+ * empty set, or PRs whose author was never stamped (the shared
+ * `prs_open_all` cache does not carry one), classifies nothing as human and
+ * leaves every open PR blocking: the fail-safe `isHumanAuthoredPr` documents,
+ * and what the audit did before Issue #1050 gave callers a set to pass.
  */
 function isPrBlocked(
   issue: { labels: string[]; milestone: string },
   openPRs: readonly OpenPR[],
+  pushCapableAuthors: readonly string[],
 ): boolean {
   if (issue.labels.includes(IGNORE_OPEN_PRS_LABEL)) return false;
-  return getBlockingPRForIssue([...openPRs], issue.milestone, []) !== null;
+  return getBlockingPRForIssue(
+    [...openPRs],
+    issue.milestone,
+    pushCapableAuthors,
+  ) !== null;
 }
 
 /**
@@ -344,20 +350,25 @@ export interface IssueVerdict {
 export interface ClassifyOptions {
   workerUser: string;
   /**
-   * The fleet accounts the claim scan honours beside `workerUser` — the
-   * `.config.json` `allowed_authors` set (Issue #1050).
+   * The accounts the fleet operates beside `workerUser`, as
+   * `resolveFleetMaintenanceAuthorSet` resolves them — the host login,
+   * `fleet_pr_authors` and `service_accounts` (Issue #1050).
    *
    * `isMilestoneOccupied` treats a work stream as occupied when an issue in
    * it is assigned to ANY of those accounts, not just this worker's own
    * login, and the audit now calls that very function. Without the same set
-   * here, one issue assigned to a trusted account read as claimable to the
-   * audit and as `milestone-occupied` to the scan — the divergence that
-   * suppressed idle-task filing fleet-wide for ten days.
+   * here, an issue a *sibling* worker holds read as claimable to the audit
+   * and as `milestone-occupied` to the scan — the divergence that suppressed
+   * idle-task filing fleet-wide for ten days.
    *
-   * Omitted → the worker alone, which is what the audit counted before and
-   * what made a colleague's assignment look like claimable work.
+   * NEVER `config.allowedAuthors` (Issue #1064): that is a permission list
+   * and legitimately holds humans, and there is no scheduling between humans
+   * and Vibe Coders — a human's assignment must never park a work stream.
+   *
+   * Omitted → this worker alone, which is what the audit counted before and
+   * what made a sibling's assignment look like claimable work.
    */
-  allowedAuthors?: readonly string[];
+  pushCapableAuthors?: readonly string[];
   /**
    * The discovery labels that make an issue a candidate. Defaults to
    * {@link CLAIMABLE_LABELS}.
@@ -464,7 +475,7 @@ export function classifyIssues(
   const runLocalHolds = opts.runLocalHolds ?? new Set<number>();
   const openIssueNumbers = opts.openIssueNumbers ?? new Set<number>();
   const repo = opts.repo ?? "";
-  const allowedAuthors = opts.allowedAuthors ?? [];
+  const pushCapableAuthors = opts.pushCapableAuthors ?? [];
 
   // Issue #1050: the scan's own view of the issue set, so the two gates
   // below are answered by the scan's own functions rather than by a second
@@ -484,13 +495,13 @@ export function classifyIssues(
   }));
 
   // Streams the scan considers occupied — milestones (or "" for the
-  // default-branch stream) that already host an issue assigned to a fleet
-  // account. Issue #1050: resolved through the scan's own
+  // default-branch stream) that already host an issue assigned to an account
+  // the fleet operates. Issue #1050: resolved through the scan's own
   // `isMilestoneOccupied`, over the scan's own account set, once per
   // distinct stream. The hand-rolled version here matched `workerUser`
-  // alone, so an issue assigned to any *other* trusted account — a
-  // colleague, a sibling worker — left the stream reading as free to the
-  // audit while the scan refused every issue in it as `milestone-occupied`.
+  // alone, so an issue a sibling worker held left the stream reading as free
+  // to the audit while the scan refused every issue in it as
+  // `milestone-occupied`.
   const occupiedStreams = new Set<string>();
   for (const stream of new Set(issues.map((i) => i.milestone))) {
     if (
@@ -498,7 +509,7 @@ export function classifyIssues(
         asFilterable,
         stream,
         opts.workerUser,
-        [...allowedAuthors],
+        [...pushCapableAuthors],
       )
     ) {
       occupiedStreams.add(stream);
@@ -573,7 +584,7 @@ export function classifyIssues(
     // Applied last, so an issue excluded for a more fundamental reason keeps
     // that reason: `pr_blocked` marks only issues that would otherwise be
     // claimable right now.
-    if (openPRs.length > 0 && isPrBlocked(issue, openPRs)) {
+    if (openPRs.length > 0 && isPrBlocked(issue, openPRs, pushCapableAuthors)) {
       result.push({
         number: issue.number,
         claimable: false,
@@ -745,17 +756,18 @@ export interface AuditClaimableStateOptions {
   /** GitHub username of the worker — drives the stream-occupancy check. */
   workerUser: string;
   /**
-   * The fleet accounts the claim scan honours beside `workerUser`
-   * (`.config.json` `allowed_authors`), so the stream-occupancy gate models
-   * the scan's `milestone-occupied` refusal over the same set (Issue #1050)
-   * — as `idle_decision_census.ts` already does (Issue #753).
+   * The accounts the fleet operates beside `workerUser`, from
+   * `resolveFleetMaintenanceAuthorSet`, so the stream-occupancy gate models
+   * the scan's `milestone-occupied` refusal over the same set (Issues #1050,
+   * #1064). NEVER `config.allowedAuthors` — see
+   * {@link ClassifyOptions.pushCapableAuthors}.
    *
-   * Omitted → the worker alone, the pre-#1050 behaviour: one issue assigned
-   * to a colleague then leaves a stream reading as free here while the scan
+   * Omitted → this worker alone, the pre-#1050 behaviour: an issue a sibling
+   * worker holds then leaves a stream reading as free here while the scan
    * refuses every issue in it, and the audit's `claimableTotal` suppresses
    * the idle-task filer on work nothing can claim.
    */
-  allowedAuthors?: readonly string[];
+  pushCapableAuthors?: readonly string[];
   /** Monotonic tick counter (caller-supplied; the lib never persists it). */
   tick: number;
   /**
@@ -987,7 +999,7 @@ export async function auditClaimableState(
 
     const verdicts = classifyIssues(issues, {
       workerUser: opts.workerUser,
-      allowedAuthors: opts.allowedAuthors,
+      pushCapableAuthors: opts.pushCapableAuthors,
       openPRs,
       mergedPRs,
       runLocalHolds,

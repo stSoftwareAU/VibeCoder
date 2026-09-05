@@ -1,25 +1,25 @@
 /**
  * The audit's work-stream occupancy gate, over the scan's account set
- * (Issue #1050).
+ * (Issues #1050, #1064).
  *
  * The claim scan calls a work stream occupied when an issue in it is
- * assigned to ANY fleet account — `isMilestoneOccupied` resolves that set as
- * `workerUser` plus `.config.json`'s `allowed_authors`. The audit modelled
- * the same gate against `workerUser` alone, so a single issue assigned to
- * any other trusted account left the stream reading as free here and as
- * `milestone-occupied` to the scan.
+ * assigned to an account the fleet operates — `isMilestoneOccupied` takes
+ * that set as `workerUser` plus the push-capable logins from
+ * `resolveFleetMaintenanceAuthorSet`. The audit modelled the same gate
+ * against `workerUser` alone, so an issue a sibling worker held left the
+ * stream reading as free here and as `milestone-occupied` to the scan.
  *
  * That is what stopped idle-task filing across all eighteen monitored
  * repositories from 2026-08-26: `stSoftwareAU/VibeCoder` held two dozen
  * unassigned `work-on` issues in the default-branch stream, one unlabelled
- * issue in that stream was assigned to a human in `allowed_authors`, the
- * scan refused every one of them, and the audit's `claimable_total=24`
- * suppressed the filer on work nothing could take.
+ * issue in that stream carried an assignment, the scan refused every one of
+ * them, and the audit's `claimable_total=24` suppressed the filer on work
+ * nothing could take.
  *
- * Both directions are pinned here. Widening occupancy too far would suppress
- * nothing and re-introduce the #2106 wrapper flooding, so an assignment to
- * an account the scan does NOT trust must leave the stream claimable, just
- * as it does for the scan.
+ * Both directions are pinned here. Widening occupancy would suppress nothing
+ * and re-introduce the #2106 wrapper flooding — and widening it as far as
+ * `allowed_authors` would re-introduce #1064, where a human's assignment
+ * parked a whole work stream. Scheduling exists only between Vibe Coders.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -32,6 +32,10 @@ import {
 } from "../lib/idle_detect_diagnostics.ts";
 
 const WORKER = "worker-bot";
+/** A sibling Vibe Coder: in `fleet_pr_authors`, so its work occupies. */
+const SIBLING = "sibling-bot";
+/** The push-capable set, as `resolveFleetMaintenanceAuthorSet` builds it. */
+const FLEET = [SIBLING, WORKER];
 
 /** Two unassigned `work-on` issues, plus whatever `extra` adds. */
 function backlog(extra: Array<Record<string, unknown>> = []) {
@@ -75,22 +79,22 @@ function occupiedBy(who: string) {
 
 function claimableNumbers(
   issues: ReturnType<typeof backlog>,
-  allowedAuthors?: readonly string[],
+  pushCapableAuthors?: readonly string[],
 ): number[] {
   return classifyIssues(issues, {
     workerUser: WORKER,
-    ...(allowedAuthors === undefined ? {} : { allowedAuthors }),
+    ...(pushCapableAuthors === undefined ? {} : { pushCapableAuthors }),
   })
     .filter((v) => v.claimable)
     .map((v) => v.number);
 }
 
 Deno.test(
-  "classifyIssues - a stream held by another trusted account is occupied (Issue #1050)",
+  "classifyIssues - a stream held by a sibling worker is occupied (Issue #1050)",
   () => {
-    const verdicts = classifyIssues(backlog([occupiedBy("colleague")]), {
+    const verdicts = classifyIssues(backlog([occupiedBy(SIBLING)]), {
       workerUser: WORKER,
-      allowedAuthors: ["colleague", WORKER],
+      pushCapableAuthors: FLEET,
     });
     assertEquals(verdicts.filter((v) => v.claimable).length, 0);
     for (const number of [10, 11]) {
@@ -104,24 +108,20 @@ Deno.test(
 Deno.test(
   "classifyIssues - the worker's own assignment still occupies the stream",
   () => {
-    assertEquals(
-      claimableNumbers(backlog([occupiedBy(WORKER)]), ["colleague", WORKER]),
-      [],
-    );
+    assertEquals(claimableNumbers(backlog([occupiedBy(WORKER)]), FLEET), []);
   },
 );
 
 Deno.test(
-  "classifyIssues - an account the scan does not trust does not occupy (Issue #2106)",
+  "classifyIssues - a human's assignment never occupies (Issues #1064, #2106)",
   () => {
-    // `isMilestoneOccupied` counts fleet accounts only, so a drive-by
-    // assignment must not park the repository. Suppressing here would file
-    // no idle task while the scan happily claimed the backlog.
+    // `isMilestoneOccupied` counts the accounts the fleet operates and
+    // nothing else, so a human taking an issue must not park the
+    // repository — there is no scheduling between humans and Vibe Coders.
+    // Handing this gate `allowed_authors` instead would fail here, park the
+    // stream, and suppress filing on work the scan is happily claiming.
     assertEquals(
-      claimableNumbers(backlog([occupiedBy("passer-by")]), [
-        "colleague",
-        WORKER,
-      ]),
+      claimableNumbers(backlog([occupiedBy("human-dev")]), FLEET),
       [10, 11],
     );
   },
@@ -131,7 +131,7 @@ Deno.test(
   "classifyIssues - occupancy is per work stream, not per repository",
   () => {
     const issues = [
-      ...backlog([occupiedBy("colleague")]),
+      ...backlog([occupiedBy(SIBLING)]),
       {
         number: 30,
         title: "In a milestone of its own",
@@ -143,7 +143,7 @@ Deno.test(
     assertEquals(
       classifyIssues(issues, {
         workerUser: WORKER,
-        allowedAuthors: ["colleague", WORKER],
+        pushCapableAuthors: FLEET,
       }).filter((v) => v.claimable).map((v) => v.number),
       [30],
     );
@@ -151,14 +151,11 @@ Deno.test(
 );
 
 Deno.test(
-  "classifyIssues - omitting allowedAuthors preserves the pre-#1050 verdict",
+  "classifyIssues - omitting pushCapableAuthors preserves the pre-#1050 verdict",
   () => {
     // The option is what production must supply; without it the audit sees
     // only its own login, which is exactly the blind spot #1050 describes.
-    assertEquals(claimableNumbers(backlog([occupiedBy("colleague")])), [
-      10,
-      11,
-    ]);
+    assertEquals(claimableNumbers(backlog([occupiedBy(SIBLING)])), [10, 11]);
   },
 );
 
@@ -234,7 +231,7 @@ function ghReturning(
   return (_args: string[]) => Promise.resolve(JSON.stringify(issues));
 }
 
-/** The live fixture: 24 work-on issues behind one trusted assignment. */
+/** The live fixture: 24 work-on issues behind one sibling assignment. */
 function liveShape(withOccupyingAssignment: boolean) {
   const rows: Array<Record<string, unknown>> = [];
   for (let n = 100; n < 124; n++) {
@@ -252,7 +249,7 @@ function liveShape(withOccupyingAssignment: boolean) {
       number: 99,
       title: "Already being worked on",
       labels: [],
-      assignees: [{ login: "colleague" }],
+      assignees: [{ login: SIBLING }],
       milestone: null,
       body: "",
     });
@@ -267,7 +264,7 @@ Deno.test(
     const result = await auditClaimableState({
       repos: ["org/backlog"],
       workerUser: WORKER,
-      allowedAuthors: ["colleague", WORKER],
+      pushCapableAuthors: FLEET,
       tick: 1,
       scanFoundClaimable: false,
       ghCommandFn: ghReturning(liveShape(true)),
@@ -288,7 +285,7 @@ Deno.test(
     const result = await auditClaimableState({
       repos: ["org/backlog"],
       workerUser: WORKER,
-      allowedAuthors: ["colleague", WORKER],
+      pushCapableAuthors: FLEET,
       tick: 1,
       scanFoundClaimable: false,
       ghCommandFn: ghReturning(liveShape(false)),

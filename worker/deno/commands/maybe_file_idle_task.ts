@@ -110,6 +110,20 @@ import {
 } from "../lib/github.ts";
 import { createLogger } from "../lib/logger.ts";
 import { customLabelPromptLabels } from "../lib/custom_label_prompts_config.ts";
+// Issue #1050: the fleet identity the claim scan's occupancy gate is asked
+// about. Issue #1064: the fleet set, never `allowed_authors`.
+import {
+  resolveFleetMaintenanceAuthorSet,
+  resolveFleetPrAuthorSet,
+} from "../lib/fleet_authors.ts";
+// Issue #1050: the fleet gate answers "can any of this be started", which
+// needs the PR data the claim scan reads. Same helpers, same shared cache,
+// so a warm iteration costs no extra API call.
+import { IssueCache } from "../lib/issue_cache.ts";
+import {
+  fetchOpenPRsForFleet,
+  fetchRecentlyClosedPRsForFleet,
+} from "../lib/issue_query.ts";
 import { getRunId } from "../lib/run_id.ts";
 import { appendIdleTaskAttribution } from "../lib/idle_task_attribution.ts";
 import {
@@ -226,6 +240,21 @@ export interface MaybeFileIdleTaskData {
  * worker Logger instead of letting them sink into the inherited tty —
  * the same visibility fix #2016 applied to the fleet heartbeat.
  */
+/**
+ * What the fleet-global startable-work gate is asked (Issues #2813, #1050).
+ * `workerUser` and `pushCapableAuthors` are the claim scan's occupancy
+ * inputs; the caller supplies them so the gate refuses the same work streams
+ * the scan refuses.
+ */
+interface AnyRepoHasWorkOptions {
+  repos: readonly string[];
+  logFn?: (message: string) => void;
+  /** This worker's login, for the scan's occupancy gate (Issue #1050). */
+  workerUser?: string;
+  /** The fleet's push-capable set (Issues #1050, #1064). */
+  pushCapableAuthors?: readonly string[];
+}
+
 interface TestDeps {
   /**
    * Open-idle-task dedup lookup. Label-only dedup: any open
@@ -300,16 +329,17 @@ interface TestDeps {
    * "no work" (matches the `busy_check_failed` pattern) so a transient gh
    * hiccup never silently disables the filer.
    */
-  anyRepoHasWorkFn?: (
-    opts: {
-      repos: readonly string[];
-      logFn?: (message: string) => void;
-      /** This worker's login, for the scan's occupancy gate (Issue #1050). */
-      workerUser?: string;
-      /** The scan's trusted-account set (Issue #1050). */
-      allowedAuthors?: readonly string[];
-    },
-  ) => Promise<boolean>;
+  anyRepoHasWorkFn?: (opts: AnyRepoHasWorkOptions) => Promise<boolean>;
+  /**
+   * True when this run is holding `issueNumber` in `repo` back whatever
+   * GitHub says (Issue #1050) — the persisted retry cooldown plus this run's
+   * processed-issue registry. Work in cooldown cannot be started this cycle,
+   * so it must not suppress idle filing.
+   *
+   * Supplied by `run_core_production_deps.ts`, which owns that set; a bare
+   * CLI invocation has no run to hold anything and passes nothing.
+   */
+  runLocalHoldFn?: (repo: string, issueNumber: number) => boolean;
   /**
    * Output-backlog count for the active template (Issue #2082, "backlog
    * gate"). Returns the number of open issues in `repo` that carry the
@@ -764,17 +794,59 @@ export const maybeFileIdleTaskCommand: Command = {
           repo: opts.repo,
           ghCommandFn,
         }));
-    // Issue #2813 — fleet-global existence gate. Threads `ghCommandFn`
+    // Issue #2813 — fleet-global startable-work gate. Threads `ghCommandFn`
     // through so a caller that has already injected a gh stub does not
     // also need to stub this check separately.
+    //
+    // Issue #1050: the gate asks the claim scan's question — "can a slot
+    // start any of this right now?" — so it is given the scan's own inputs.
+    // The PR probes read through the shared issue cache the scan populates,
+    // and only run for a repository whose issues survive the cheap gates,
+    // so an idle cycle pays at most one extra call per repository that
+    // still looks busy.
+    const idleGateCache = new IssueCache();
+    // Fetch the union of every fleet account's open PRs, exactly as
+    // `findOldestIssue` does; decide *blocking* against the narrower
+    // push-capable set, so a human's open PR never defers an issue (#4133).
+    const fleetPrAuthors = resolveFleetPrAuthorSet({
+      githubUser: workerUser,
+      allowedAuthors: config.allowedAuthors,
+      fleetPrAuthors: config.fleetPrAuthors ?? [],
+    });
+    // Issue #1064: the accounts the fleet operates. Never
+    // `config.allowedAuthors` — that is a permission list holding humans,
+    // and there is no scheduling between humans and Vibe Coders.
+    const pushCapableAuthors = resolveFleetMaintenanceAuthorSet({
+      githubUser: workerUser,
+      fleetPrAuthors: config.fleetPrAuthors,
+    });
     const anyRepoHasWorkFn = deps.anyRepoHasWorkFn ??
-      ((
-        opts: { repos: readonly string[]; logFn?: (message: string) => void },
-      ) =>
+      ((opts: AnyRepoHasWorkOptions) =>
         defaultAnyRepoHasUnblockedRealWork({
           repos: opts.repos,
           ghCommandFn,
           logFn: opts.logFn,
+          workerUser: opts.workerUser,
+          pushCapableAuthors: opts.pushCapableAuthors,
+          openPRsFn: (repo: string) =>
+            fetchOpenPRsForFleet(
+              repo,
+              fleetPrAuthors,
+              idleGateCache,
+              ghCommandFn,
+            ),
+          mergedPRsFn: (repo: string) =>
+            fetchRecentlyClosedPRsForFleet(
+              repo,
+              fleetPrAuthors,
+              config.closedPrCooldownSeconds ?? 3600,
+              idleGateCache,
+              ghCommandFn,
+            ),
+          // Supplied by the worker loop, which owns the run's hold set.
+          // Absent (a bare CLI invocation) → no holds, the pre-#1050
+          // over-count, which suppresses filing rather than flooding.
+          runLocalHoldFn: deps.runLocalHoldFn,
         }));
     // Issue #2082 — backlog gate. Counts open issues on the target repo
     // carrying the template's `outputLabel`.
@@ -906,12 +978,14 @@ export const maybeFileIdleTaskCommand: Command = {
         repos: monitoredRepos,
         logFn: log,
         // Issue #1050: the gate refuses the work streams the claim scan
-        // refuses, and the scan calls a stream occupied when ANY trusted
-        // account holds an issue in it. Without this set the gate counted a
-        // colleague's assignment as fleet work the scan would never claim,
-        // and suppressed idle filing across all eighteen repositories.
+        // refuses, and the scan calls a stream occupied when an account the
+        // fleet operates holds an issue in it. Without this set the gate
+        // counted a sibling's work as claimable and suppressed idle filing
+        // across all eighteen repositories. Issue #1064: the fleet set, from
+        // the same resolver the scan uses — never `allowed_authors`, which
+        // is a permission list holding humans.
         workerUser,
-        allowedAuthors: config.allowedAuthors ?? [],
+        pushCapableAuthors,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
