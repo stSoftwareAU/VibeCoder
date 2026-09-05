@@ -20,7 +20,7 @@
  */
 
 import { runWithTimeout } from "./subprocess_timeout.ts";
-import { stripJsonc } from "./orphan_deps_scanner.ts";
+import { stripJsonc } from "./jsonc.ts";
 
 /** How long the merged-tree type check may run before it is killed. */
 export const MERGE_GATE_TIMEOUT_MS = 300_000;
