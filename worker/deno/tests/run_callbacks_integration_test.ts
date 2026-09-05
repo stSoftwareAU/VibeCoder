@@ -53,6 +53,47 @@ async function evidence(dir: string): Promise<string[]> {
   }
 }
 
+/**
+ * Run a hook once before the scenario that measures it, so its budget is
+ * spent on the hook rather than on the operating system's one-off cost for a
+ * brand-new executable (Issue #1055).
+ *
+ * Measured on macOS 15 with eight `deno test` processes competing: the first
+ * execution of a freshly written file costs 1.5–2.9s (0.4s on an idle host),
+ * while every later execution of that same file costs 5–60ms. The write
+ * itself is under 10ms and `spawn()` returns in 1–4ms, so the whole cost
+ * lands inside the first `output()` — which is exactly the window the
+ * callback runner is timing. A one-second budget was therefore below the
+ * floor of a loaded host, and the hooks were killed before they had run a
+ * single line. Nothing the runner did was at fault: it timed out at the
+ * budget it was given, then ran `always` anyway, and reported both truthfully.
+ *
+ * Warming is deterministic, never a wait on the clock: the hook is spawned
+ * exactly as the worker spawns it, and terminated the moment it either exits
+ * or writes its first byte of stdout, so a hook that goes on to sleep is
+ * warmed in milliseconds instead of being waited out. Anything the warm-up
+ * recorded is the caller's to discard before the scenario begins.
+ */
+async function warmHook(path: string): Promise<void> {
+  const child = new Deno.Command(path, {
+    stdin: "null",
+    stdout: "piped",
+    stderr: "null",
+  }).spawn();
+  const reader = child.stdout.getReader();
+  try {
+    await Promise.race([reader.read(), child.status]);
+  } finally {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // Already exited — the status below still reaps it.
+    }
+    await reader.cancel();
+    await child.status;
+  }
+}
+
 function context(
   overrides: Partial<IssueRunCallbackContext> = {},
 ): IssueRunCallbackContext {
@@ -195,6 +236,16 @@ Deno.test({
         ),
         timeoutSeconds: 1,
       };
+
+      // Both hooks are executed once first, so the one-second budget below
+      // bounds a warm hook's round trip (5–60ms measured) instead of the
+      // operating system's first-execution cost for a brand-new file
+      // (1.5–2.9s under contention) — see `warmHook`. The evidence the
+      // warm-up wrote is discarded, so the scenario still starts from
+      // nothing and "exactly once" still means exactly once.
+      await warmHook(callbacks.success!);
+      await warmHook(callbacks.always!);
+      await Deno.remove(`${dir}/evidence.txt`);
 
       const { invocations } = await run(callbacks, context());
 
