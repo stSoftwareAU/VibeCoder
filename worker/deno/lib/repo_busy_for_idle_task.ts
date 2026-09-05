@@ -355,14 +355,63 @@ export interface AnyRepoHasUnblockedRealWorkOptions {
 export async function anyRepoHasUnblockedRealWork(
   opts: AnyRepoHasUnblockedRealWorkOptions,
 ): Promise<boolean> {
+  return (await countReposWithStartableWork({ ...opts, stopAt: 1 })) > 0;
+}
+
+/** Options for {@link countReposWithStartableWork}. */
+export interface CountReposWithStartableWorkOptions
+  extends AnyRepoHasUnblockedRealWorkOptions {
+  /**
+   * Stop probing once this many repositories have been counted. The caller
+   * only ever compares the count against its idle-slot capacity, so once the
+   * bound is met the remaining repositories cannot change the verdict and
+   * their `gh` calls are not worth paying for — this preserves the
+   * short-circuit {@link anyRepoHasUnblockedRealWork} always had. Omitted or
+   * non-positive means "count them all".
+   */
+  stopAt?: number;
+}
+
+/**
+ * How many repositories in `opts.repos` hold work a slot could **start right
+ * now** (Issue #1083).
+ *
+ * The boolean question this replaces — "does *anything* anywhere have
+ * startable work?" — suppressed idle filing across all eighteen monitored
+ * repositories the moment a single issue was startable in one of them.
+ * Twenty-five `work-on` issues waiting in `stSoftwareAU/VibeCoder` therefore
+ * kept fourteen empty repositories empty while six slots sat idle. A startable
+ * issue occupies exactly one slot, not eight, so the caller compares this
+ * count against the number of idle slots and files only for the surplus.
+ *
+ * The unit is the **repository**, not the issue: work in a repository is
+ * serialised per work stream, so a repository's backlog cannot fill more than
+ * a slot's worth of capacity at a time in the common case. Counting
+ * repositories therefore under-states how much real work is available, which
+ * errs towards filing an idle task rather than towards leaving a slot empty —
+ * and an idle task is the lowest tier in the queue, so it can never take a
+ * slot from the real work it was counted beside.
+ *
+ * gh failures are surfaced as exceptions so the caller can decide how to
+ * handle them — the idle-task filer treats a throw as "no work, go ahead and
+ * try filing" so a transient gh hiccup never silently disables the filer.
+ */
+export async function countReposWithStartableWork(
+  opts: CountReposWithStartableWorkOptions,
+): Promise<number> {
   const gh = opts.ghCommandFn ?? runGhCommand;
   const log = opts.logFn ?? ((m: string) => console.log(m));
+  const bound = opts.stopAt !== undefined && opts.stopAt > 0
+    ? opts.stopAt
+    : Number.POSITIVE_INFINITY;
+  let count = 0;
   for (const repo of opts.repos) {
     if (await repoHasStartableWork(repo, gh, log, opts)) {
-      return true;
+      count += 1;
+      if (count >= bound) return count;
     }
   }
-  return false;
+  return count;
 }
 
 /**
