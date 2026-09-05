@@ -62,13 +62,6 @@ const ALWAYS_EXEMPT_CONTEXTS: readonly ExemptContext[] = [
       "advisory today — making the dependency review block a merge is a " +
       "separate operator decision from Issue #858, taken once it is green",
   },
-];
-
-/**
- * Contexts that report on a `main` PR and are deliberately **not** required.
- */
-export const EXEMPT_CONTEXTS: readonly ExemptContext[] = [
-  ...ALWAYS_EXEMPT_CONTEXTS,
   {
     context: "integration tests (not a required check)",
     reason:
@@ -77,8 +70,17 @@ export const EXEMPT_CONTEXTS: readonly ExemptContext[] = [
       "so requiring them would put a provisioned PowerShell between every " +
       "change and its merge — the exact cost #907 took out of the gate. The " +
       "job still runs on every PR and its result is still read; it just " +
-      "cannot block one",
+      "cannot block one. Its `on:` carries no branch filter, so it reports on " +
+      "a milestone PR exactly as it does on a `main` one and is exempt on " +
+      "both",
   },
+];
+
+/**
+ * Contexts that report on a `main` PR and are deliberately **not** required.
+ */
+export const EXEMPT_CONTEXTS: readonly ExemptContext[] = [
+  ...ALWAYS_EXEMPT_CONTEXTS,
   {
     context: "milestone-resurrection",
     reason:

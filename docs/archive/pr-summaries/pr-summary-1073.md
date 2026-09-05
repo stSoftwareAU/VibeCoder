@@ -152,6 +152,33 @@ current `main` is clean.
   branch, so the recorded decision needs a check behind it.
 - **unrequested** — `--repo` on `check-rulesets` — reason: matches the two
   existing ruleset commands, so the payloads can be reconciled against a fork.
+- **unrequested** — the `integration tests (not a required check)` exemption
+  moved into `ALWAYS_EXEMPT_CONTEXTS`, plus a guard test — reason: the check
+  this PR adds caught a real gap when `main` was merged in; see below.
+
+## The gap this check caught on its own branch
+
+Worth a reviewer's attention, because it is the failure mode the issue
+describes happening in miniature.
+
+PR #1170 landed on `main` while this branch was open. It added a new CI job,
+`integration tests (not a required check)`, and exempted it in
+`EXEMPT_CONTEXTS` — correctly, since that job spawns `bash`/`pwsh` and must not
+gate a merge. `MILESTONE_EXEMPT_CONTEXTS` did not exist on `main`, so #1170 had
+nothing to add it to.
+
+Merging `main` into this branch produced **no textual conflict**: one list
+gained an entry, the other was untouched. The result was a context that reports
+on every milestone PR and is neither required nor exempt — a silent hole in the
+very ruleset this PR exists to close. No compiler or linter sees it.
+
+`pr_check_contexts_test.ts::this repository - every PR check on a milestone
+branch is required or exempt` failed on the merge, naming the context. The fix
+moves the exemption into `ALWAYS_EXEMPT_CONTEXTS`, where it belongs — the job's
+`on:` carries no branch filter, so it reports identically on both rulesets — and
+a new guard pins the invariant that `milestone-resurrection` is the *only*
+exemption differing between the two lists, so the next job exempted on one
+ruleset and forgotten on the other fails the suite instead of merging.
 
 ## Standards Review
 
@@ -217,8 +244,11 @@ current `main` is clean.
   a deleted ruleset is `absent`, not skipped; no credential skips and says
   `SKIPPED`; an unexpected `gh` failure propagates; an unsafe repo slug is
   rejected.
-- `worker/deno/tests/pr_check_contexts_test.ts` (2 added) — every check a PR
-  into a milestone branch reports is required or exempt, and the resurrection
-  check is not exempt there.
+- `worker/deno/tests/pr_check_contexts_test.ts` (3 added) — every check a PR
+  into a milestone branch reports is required or exempt; the resurrection check
+  is not exempt there; and `milestone-resurrection` is the only exemption that
+  differs between the `main` and milestone lists. The last was observed failing
+  against the pre-fix `MILESTONE_EXEMPT_CONTEXTS` and passing after, which is
+  the #1170 merge gap described above.
 - `worker/deno/tests/mod_test.ts` — command count 148 → 149 for
   `check-rulesets`.

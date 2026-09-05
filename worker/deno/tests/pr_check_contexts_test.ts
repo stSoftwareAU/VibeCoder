@@ -339,3 +339,24 @@ Deno.test("MILESTONE_EXEMPT_CONTEXTS - the resurrection check is not exempt ther
     );
   }
 });
+
+Deno.test("MILESTONE_EXEMPT_CONTEXTS - milestone-resurrection is the only difference from main", () => {
+  // PR #1170 added the `integration tests` job and exempted it on `main`
+  // only, because MILESTONE_EXEMPT_CONTEXTS did not exist on that branch.
+  // The two lists merged without a textual conflict and left the job neither
+  // required nor exempt on a milestone PR — a gap no compiler catches.
+  const milestoneExempt = new Set(
+    MILESTONE_EXEMPT_CONTEXTS.map((e) => e.context),
+  );
+  const mainOnly = EXEMPT_CONTEXTS
+    .map((e) => e.context)
+    .filter((c) => !milestoneExempt.has(c));
+
+  assertEquals(
+    mainOnly,
+    ["milestone-resurrection"],
+    "every exemption on `main` applies to a milestone PR too, except " +
+      "milestone-resurrection, which is required there. A new context here " +
+      "means a job was exempted on one ruleset and forgotten on the other",
+  );
+});
