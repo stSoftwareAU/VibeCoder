@@ -768,7 +768,12 @@ async function quorumOverride(
       `{{ISSUE_LABELS}}\n{{ISSUE_BODY}}\n{{ISSUE_COMMENTS}}\n${extra}` +
       `{{BOUNDARY_INTEGRITY_INSTRUCTION}}\n`,
   );
-  return { label: "quorum", promptPath, overridesPhase: phase };
+  return {
+    label: "quorum",
+    promptPath,
+    targetPhase: "issue",
+    overridesPhase: phase,
+  };
 }
 
 const QUORUM_OPERATOR_MARKER = "OPERATOR QUORUM TEMPLATE";

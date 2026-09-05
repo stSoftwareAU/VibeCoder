@@ -14,8 +14,10 @@
  * Two invariants keep it well-behaved:
  *
  *   1. **Deduplicated** — at most one open tracker per repo. The filer
- *      searches open issues for the stable title AND a body marker before
- *      filing, mirroring `hasOpenSecurityScanWrapper`.
+ *      searches open issues for the stable title before filing, and counts a
+ *      match only when the fleet authored it (`idle_task_wrapper_dedup.ts`):
+ *      a title is text anyone may write, so an unverified match would let an
+ *      outsider suppress the tracker for good.
  *   2. **Non-fatal** — every failure is caught, logged, and swallowed. The
  *      filer must never block the bypass or the PR (mirrors the non-fatal
  *      label-sync pattern).
@@ -31,7 +33,8 @@
  */
 
 import { runGhCommand as defaultGhCommand } from "./github.ts";
-import { parseGhJsonArray } from "./idle_task_snapshot.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import { findFleetAuthoredIssuesTitled } from "./idle_task_wrapper_dedup.ts";
 import type { GenericFinding } from "./baseline_gate.ts";
 
 /** Body marker that, with the stable title, identifies an open tracker. */
@@ -57,6 +60,11 @@ interface TrackerLogger {
 export interface CarryoverTrackerDeps {
   ghCommand?: (args: string[]) => Promise<string>;
   logger?: TrackerLogger;
+  /**
+   * Author-verification inputs for the dedup search. Omitted — every
+   * production caller — reads the configured fleet identity.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
 }
 
 /**
@@ -98,36 +106,33 @@ export function formatCarryoverTrackerBody(
 }
 
 /**
- * Return true when an open tracking issue already exists for `repo` — matched
- * by the stable title. Mirrors `hasOpenSecurityScanWrapper`.
+ * Return true when the fleet already has an open tracking issue for `repo`.
+ *
+ * The stable title is what the search matches, and an issue title is text any
+ * account able to open an issue may write — so the title alone would let an
+ * outsider convince the worker a tracker exists and keep pre-existing
+ * breakage permanently unreported. `findFleetAuthoredIssuesTitled` adds the
+ * author check that makes a match evidence; an unresolvable fleet author set
+ * yields no match, so the tracker is filed rather than silently skipped.
+ *
+ * Throws whatever `gh` throws — the caller's `try` already treats a failed
+ * lookup as "do not file", which is its existing behaviour.
  */
 async function hasOpenCarryoverTracker(
   repo: string,
   ghCommand: (args: string[]) => Promise<string>,
+  dedupAuthors: AlertDedupAuthorOptions,
+  logger: TrackerLogger,
 ): Promise<boolean> {
-  const title = buildCarryoverTrackerTitle(repo);
-  const raw = await ghCommand([
-    "issue",
-    "list",
-    "--repo",
+  const matches = await findFleetAuthoredIssuesTitled({
     repo,
-    "--state",
-    "open",
-    "--search",
-    `"${title}" in:title`,
-    "--json",
-    "number,title",
-    "--limit",
-    "10",
-  ]);
-  for (const item of parseGhJsonArray(raw, "find carryover tracker")) {
-    if (item === null || typeof item !== "object") continue;
-    const itemTitle = (item as { title?: unknown }).title;
-    if (typeof itemTitle === "string" && itemTitle.trim() === title) {
-      return true;
-    }
-  }
-  return false;
+    title: buildCarryoverTrackerTitle(repo),
+    context: `carryover tracker ${repo}`,
+    ghCommand,
+    log: logger.warn,
+    ...dedupAuthors,
+  });
+  return matches.length > 0;
 }
 
 /**
@@ -150,7 +155,14 @@ export async function fileBaselineCarryoverTracker(
   const logger = deps.logger ?? { warn: (m: string) => console.error(m) };
 
   try {
-    if (await hasOpenCarryoverTracker(repo, ghCommand)) {
+    if (
+      await hasOpenCarryoverTracker(
+        repo,
+        ghCommand,
+        deps.dedupAuthors ?? {},
+        logger,
+      )
+    ) {
       // A tracker is already open — do not spam a duplicate.
       return;
     }

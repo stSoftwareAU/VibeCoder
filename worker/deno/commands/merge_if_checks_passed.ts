@@ -269,6 +269,8 @@ export function blockedReason(reason: MergeBlockedReason | undefined): string {
       return "head_moved";
     case "head_too_recent":
       return "head_too_recent";
+    case "default_branch_unapproved":
+      return "default_branch_unapproved";
     case "milestone_rollup_merged":
       return "milestone_rollup_merged";
     case "milestone_route_unreadable":

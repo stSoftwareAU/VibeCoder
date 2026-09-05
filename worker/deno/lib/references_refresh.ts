@@ -25,8 +25,15 @@
  *     fenced with the shared untrusted-content boundary, so a source we do not
  *     control cannot post instructions into our issue tracker.
  *   - **Search before filing.** Every proposal carries a stable `REF-…` id, and
- *     the sweep skips an id already present on an issue — open *or* closed, so
- *     a rejected proposal stays rejected.
+ *     the sweep skips an id already present on a **fleet-authored** issue —
+ *     open *or* closed, so a rejected proposal stays rejected. The author
+ *     check is what makes `--state all` safe: an id is a string in a body,
+ *     and without it anyone could open one closed issue per proposal and
+ *     silence the sweep for good, with no expiry and no way back. The sweep
+ *     files unlabelled by design, so there is no label to scope on and
+ *     authorship is the only control available. An unresolvable fleet files
+ *     the proposal — a duplicate a human closes beats a suggestion nobody
+ *     ever sees.
  *
  * Fail loud (Issue #3234): a malformed state file, a source that could not be
  * probed, or an issue that could not be filed is an error. Silence is never
@@ -49,6 +56,12 @@ import {
   sanitiseDelimiterPatterns,
 } from "./prompt_delimiter.ts";
 import { runGhCommand } from "./github.ts";
+import {
+  ALERT_DEDUP_JSON_FIELDS,
+  type AlertDedupAuthorOptions,
+  type AlertDedupRow,
+  selectFleetAuthoredMatches,
+} from "./alert_dedup_authors.ts";
 
 /** Token every filed suggestion carries, so the sweep can find its own work. */
 export const REFRESH_MARKER = "vibe-references-refresh";
@@ -138,8 +151,14 @@ export interface RefreshOptions {
   boundaryId?: string;
 }
 
-/** Injectable I/O so the sweep is testable without a network or a disk. */
-export interface RefreshDeps {
+/**
+ * Injectable I/O so the sweep is testable without a network or a disk.
+ *
+ * Extends {@link AlertDedupAuthorOptions}: `fleetAuthors` (tests) or the
+ * configured fleet identity (production) decides whose `REF-…` marker may
+ * suppress a proposal.
+ */
+export interface RefreshDeps extends AlertDedupAuthorOptions {
   probeFn: (
     entry: ReferenceEntry,
     since: string | undefined,
@@ -147,6 +166,8 @@ export interface RefreshDeps {
   ghCommandFn: (args: string[]) => Promise<string>;
   readTextFn: (path: string) => Promise<string>;
   writeTextFn: (path: string, contents: string) => Promise<void>;
+  /** Sink for the author-verification diagnostics. Defaults to `console.warn`. */
+  log?: (message: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -365,23 +386,39 @@ function buildKnownIdsArgs(slug: string): string[] {
     "--search",
     `${REFRESH_MARKER} in:body`,
     "--json",
-    "number,body",
+    ALERT_DEDUP_JSON_FIELDS,
     "--limit",
     "500",
   ];
 }
 
+/** One issue the dedup search returned, with the author beside the marker. */
+export interface KnownGapRow extends AlertDedupRow {
+  body: string;
+}
+
+/** Matches the sweep's own id marker in an issue body. */
+function gapIdMarker(): RegExp {
+  return new RegExp(
+    `<!--\\s*${REFRESH_MARKER}-id:\\s*(REF-[0-9a-f]+)`,
+    "gi",
+  );
+}
+
 /**
- * Extract the gap ids already present on issues.
+ * Parse the dedup search response into rows, author included.
  *
- * @param json - `gh issue list --json number,body` output
- * @returns Gap id to the issue number carrying it
- * @throws Error when the response is not valid JSON
+ * Split from {@link extractKnownGapIds} so the author survives as far as
+ * the verification step: a `REF-…` id read out of a body nobody in the
+ * fleet wrote is not evidence the proposal was ever considered.
+ *
+ * @param json - `gh issue list --json number,body,author` output
+ * @returns One row per issue carrying the sweep's marker
+ * @throws Error when the response is not a readable issue list
  */
-export function extractKnownGapIds(json: string): Map<string, number> {
-  const known = new Map<string, number>();
+export function parseKnownGapRows(json: string): KnownGapRow[] {
   const trimmed = json.trim();
-  if (trimmed === "") return known;
+  if (trimmed === "") return [];
   let parsed: unknown;
   try {
     parsed = JSON.parse(trimmed);
@@ -395,10 +432,8 @@ export function extractKnownGapIds(json: string): Map<string, number> {
   if (!Array.isArray(parsed)) {
     throw new Error("the issue list is not a JSON array");
   }
-  const marker = new RegExp(
-    `<!--\\s*${REFRESH_MARKER}-id:\\s*(REF-[0-9a-f]+)`,
-    "gi",
-  );
+  const rows: KnownGapRow[] = [];
+  const marker = gapIdMarker();
   for (const item of parsed) {
     if (item === null || typeof item !== "object" || Array.isArray(item)) {
       throw new Error("the issue list holds an entry that is not an issue");
@@ -409,9 +444,36 @@ export function extractKnownGapIds(json: string): Map<string, number> {
     if (typeof number !== "number") {
       throw new Error("the issue list holds an entry with no issue number");
     }
-    for (const match of body.matchAll(marker)) {
+    marker.lastIndex = 0;
+    if (!marker.test(body)) continue;
+    const author = record["author"];
+    rows.push({
+      number,
+      body,
+      author: author !== null && typeof author === "object"
+        ? author as { login?: string | null }
+        : null,
+    });
+  }
+  return rows;
+}
+
+/**
+ * Extract the gap ids already present on the verified issues.
+ *
+ * @param rows - Rows {@link parseKnownGapRows} produced and author
+ *   verification kept
+ * @returns Gap id to the issue number carrying it
+ */
+export function extractKnownGapIds(
+  rows: readonly KnownGapRow[],
+): Map<string, number> {
+  const known = new Map<string, number>();
+  const marker = gapIdMarker();
+  for (const row of rows) {
+    for (const match of row.body.matchAll(marker)) {
       const id = match[1];
-      if (id !== undefined && !known.has(id)) known.set(id, number);
+      if (id !== undefined && !known.has(id)) known.set(id, row.number);
     }
   }
   return known;
@@ -549,8 +611,18 @@ export async function runReferencesRefresh(
 
   let known: Map<string, number>;
   try {
-    known = extractKnownGapIds(
+    const rows = parseKnownGapRows(
       await deps.ghCommandFn(buildKnownIdsArgs(options.slug)),
+    );
+    known = extractKnownGapIds(
+      await selectFleetAuthoredMatches(
+        rows,
+        `references-refresh ${options.slug}`,
+        deps,
+        deps.log ?? ((message: string) => console.warn(message)),
+        "no proposal is treated as already raised and the sweep files it — " +
+          "a duplicate a human closes beats a suggestion silenced for ever",
+      ),
     );
   } catch (error) {
     return {
