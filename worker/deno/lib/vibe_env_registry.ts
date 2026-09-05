@@ -406,6 +406,10 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "launch_plumbing",
     note: "where the launcher records the phase it reached",
   },
+  VIBE_LAUNCH_TERMINATION_FILE: {
+    role: "launch_plumbing",
+    note: "where a signalled launcher declares its stop (Issue #1072)",
+  },
   VIBE_IMAGE_AGENT_PROVIDERS: {
     role: "launch_plumbing",
     note: "the provider set the IMAGE was built with, stamped by the build",
@@ -568,6 +572,13 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
   VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY: {
     role: "switch",
     note: "a CREDENTIAL provisioned to setup; must never reach .config.json",
+  },
+  VIBE_EGRESS_PROBE_TARGET: {
+    role: "switch",
+    note:
+      "escape hatch for the container-egress probe's address (Issue #997); " +
+      "no launcher sets it — a host whose network blocks the default literal " +
+      "points the probe elsewhere",
   },
   VIBE_TABLETOP_CANARY: {
     role: "switch",

@@ -293,6 +293,23 @@ function Get-VibeProviderCredentialTable {
     Never a keychain or Credential Manager reference, which the container
     cannot reach (Issue #4064). The login lookup completes the host entry; a
     failure there is not fatal, the token alone authenticates.
+
+    Issue #1146: `gh api` prints the API's *response body* to stdout on an HTTP
+    error, so on a token gh rejects stdout is a "Bad credentials" JSON blob
+    whose first line is `{`. Two things are needed to keep that out of the file,
+    and the twin guard in `write_gh_hosts_file` in setup.sh carries both.
+
+    First, gh's exit code has to be readable. `& gh ... | Select-Object -First 1`
+    makes it unreadable: `Select-Object -First 1` stops the upstream pipeline, so
+    the native command's exit code is never recorded and `$LASTEXITCODE` keeps
+    whatever an *earlier* native command left there — 0, during provisioning,
+    which is why the exit-code test that was written here passed a rejected
+    token straight through. Collect the output with `@( ... )` so the pipeline
+    completes, then read `$LASTEXITCODE` before anything else can overwrite it.
+
+    Second, the output must be shaped like a GitHub login before it reaches the
+    file. Anything else writes the token-only hosts.yml and says so, rather than
+    leaving the operator with corrupt YAML.
 #>
 function Write-VibeGhHostsFile {
     param(
@@ -302,14 +319,23 @@ function Write-VibeGhHostsFile {
 
     $login = ""
     if (Get-Command gh -CommandType Application -ErrorAction SilentlyContinue) {
+        $previous = $env:GH_TOKEN
         try {
-            $previous = $env:GH_TOKEN
             $env:GH_TOKEN = $Token
-            $login = (& gh api user --jq .login 2>$null | Select-Object -First 1)
-            if ($LASTEXITCODE -ne 0) { $login = "" }
-            $env:GH_TOKEN = $previous
+            $lines = @(& gh api user --jq .login 2>$null)
+            $exitCode = $LASTEXITCODE
+            $lookup = if ($lines.Count -gt 0) { "$($lines[0])".Trim() } else { "" }
+            if ($exitCode -ne 0) {
+                Write-VibeWarning "gh could not resolve the token's login (gh exited $exitCode) - writing a token-only $GhDir/hosts.yml; the token alone authenticates"
+            } elseif ($lookup -match '^[A-Za-z0-9][A-Za-z0-9-]{0,38}$') {
+                $login = $lookup
+            } else {
+                Write-VibeWarning "gh returned no usable GitHub login for the token - writing a token-only $GhDir/hosts.yml; the token alone authenticates"
+            }
         } catch {
             $login = ""
+        } finally {
+            $env:GH_TOKEN = $previous
         }
     }
 

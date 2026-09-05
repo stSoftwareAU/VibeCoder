@@ -50,6 +50,11 @@ set -euo pipefail
 #              read-only (Issue #509). A failed update is a warning, never a
 #              refused launch, and VIBE_SKIP_CHECKOUT_UPDATE turns it off for
 #              a development checkout or a CI tree.
+# Issue #1072: A run stopped by a signal declares it, so the supervisor counts
+#              a deliberate stop as a stop. This launcher exits with the
+#              runtime client's own status, which is 255 when the container is
+#              stopped under it - indistinguishable from a crash, and three of
+#              them escalated a host that was working (Issues #879, #1072).
 # Issue #690:  A frozen host behind the newest release is told so at launch -
 #              one line naming both versions and the upgrade command. The
 #              check never blocks the launch: a failure is a warning.
@@ -70,7 +75,33 @@ record_phase() {
   fi
 }
 
+# Where a run stopped from outside says so (Issue #1072).
+#
+# This launcher forwards a termination signal to the runtime client and exits
+# with THAT client's status - 255 on the fleet's macOS hosts when its container
+# is stopped under it - so the status cannot tell a deliberate stop from a
+# crash. Issue #879 counted an operator's own `kill` towards the escalation
+# streak and then pointed the reader at the container runtime; #1072 is the
+# same report from the same host. The signal trap writes what it knows, and the
+# outcome recorder consumes it.
+LAUNCH_TERMINATION_FILE="${VIBE_LAUNCH_TERMINATION_FILE:-${VIBE_STATE_DIR}/last-launch-termination}"
+record_termination() {
+  local declared_ms
+  declared_ms="$(( $(date +%s) * 1000 ))"
+  if ! { mkdir -p "$(dirname "${LAUNCH_TERMINATION_FILE}")" &&
+    printf '{"signal":"%s","declaredAtMs":%s}\n' "$1" "${declared_ms}" \
+      >"${LAUNCH_TERMINATION_FILE}"; } 2>/dev/null; then
+    echo "[run.sh] warning: cannot record the termination signal to" \
+      "${LAUNCH_TERMINATION_FILE} - this stop will be counted as a failure" >&2
+  fi
+}
+
 record_phase runtime_detection
+# Cleared before anything else: the marker describes the run that writes it, so
+# a leftover from a run whose outcome was never recorded must never explain
+# this one. The recorder consumes it as well, and refuses a stale one - three
+# ways for one file, because believing it wrongly silences a real failure.
+rm -f "${LAUNCH_TERMINATION_FILE}" 2>/dev/null || true
 
 # PATH bootstrap for cron/launchd environments. The caller's PATH stays
 # authoritative and the usual install locations are appended, so an operator
@@ -105,6 +136,14 @@ WEDGE_MARKER=""
 # Where the image build's output is captured, so a failed build can be
 # classified by container-build-heal (Issue #4441). Set only when a build runs.
 BUILD_LOG=""
+# Where container-build-heal's own output is captured (Issue #1019). When the
+# heal is what failed, this is the only account of why: the host log used to
+# record the status it exited with and discard everything it said.
+HEAL_LOG=""
+# Where the pre-build egress probe writes its hop table and routing evidence
+# (Issue #997). Set once the probe runs, and removed by the EXIT trap after the
+# outcome record has quoted it.
+EGRESS_LOG=""
 # Where the container run client's stderr is captured, so a start the runtime
 # refused can be quoted (Issue #711), and the FIFO it streams through. Both are
 # set together, immediately before the container is started.
@@ -129,6 +168,19 @@ BUILD_NOT_HEALABLE_EXIT=3
 # launcher tests.
 ANOTHER_WORKER_RUNNING_EXIT=4
 
+# Exit statuses container-egress-probe reports (Issue #997), as opposed to 0
+# (a container reaches the network, or the probe could not run - carry on).
+# Kept in step with EGRESS_BLOCKED_EXIT and NETWORK_DOWN_EXIT in
+# worker/deno/commands/container_egress_probe.ts by the launcher tests.
+EGRESS_BLOCKED_EXIT=3
+EGRESS_NETWORK_DOWN_EXIT=4
+
+# Exit status this launcher reports when it parks a host whose containers
+# cannot reach the network while the host itself can. Kept in step with
+# HOST_EGRESS_BLOCKED_EXIT_STATUS in
+# worker/deno/lib/container_egress_probe.ts by the launcher tests.
+HOST_EGRESS_BLOCKED_EXIT_STATUS=88
+
 # A wedged helper must never wedge this launcher: the helpers below run under
 # a time bound where the host has one (gtimeout on macOS, timeout on Linux).
 TIMEOUT_CMD=""
@@ -149,6 +201,23 @@ bounded() {
   else
     "$@"
   fi
+}
+
+# Whether a `bounded` status means the BOUND ended the command, rather than
+# the command ending itself (Issue #1020). `timeout` reports 124 when its
+# SIGTERM expired the run and 137 when the SIGKILL that follows was what
+# stopped it - the same pair SUPERVISOR_DEADLINE_EXIT_CODES names in
+# worker/deno/lib/container_restart_backoff.ts. A command that ran to
+# completion and failed has something to say about why; one the bound killed
+# never got to say it, and reporting the two the same way sends the reader
+# looking for words that were never written.
+#
+# Only ever true where a bound was actually applied: with no `timeout` on the
+# host, 124 is the command's own status and means whatever it means.
+# Usage: bounded_timed_out <status>
+bounded_timed_out() {
+  [[ -n "${TIMEOUT_CMD}" ]] || return 1
+  (($1 == 124 || $1 == 137))
 }
 
 # ./run.sh upgrade - move this host onto the latest release (Issue #691).
@@ -213,6 +282,7 @@ record_outcome() {
     --allow-sys=hostname \
     "${BASE_DIR}/worker/deno/mod.ts" container-restart-backoff \
     --exit-status "${status}" \
+    --termination-file "${LAUNCH_TERMINATION_FILE}" \
     ${EVIDENCE_LOG:+--launch-log "${EVIDENCE_LOG}"} </dev/null >/dev/null; then
     echo "[run.sh] warning: could not record launcher outcome ${status}" >&2
   fi
@@ -243,6 +313,17 @@ on_exit() {
   if [[ -n "${BUILD_LOG}" ]]; then
     rm -f "${BUILD_LOG}"
   fi
+  # Same ordering, same reason (Issue #1019): a failed heal's own output is
+  # what the escalation quotes when the heal is what failed. The excerpt and
+  # the preserved copy under the log directory outlive both.
+  if [[ -n "${HEAL_LOG}" ]]; then
+    rm -f "${HEAL_LOG}"
+  fi
+  # Same ordering, same reason (Issue #997): a parked host's escalation IS the
+  # hop table, so the evidence outlives the record and nothing else.
+  if [[ -n "${EGRESS_LOG}" ]]; then
+    rm -f "${EGRESS_LOG}"
+  fi
   # Same ordering, same reason (Issue #711): the refused start's evidence is
   # this capture, so it outlives the record and nothing else. The FIFO beside
   # it goes here too. A SIGKILLed launcher runs no trap and leaves both behind,
@@ -272,6 +353,11 @@ PENDING_SIGNAL=""
 # shellcheck disable=SC2317,SC2329
 forward_signal() {
   local signal="$1"
+  # Recorded before anything is forwarded, and on every branch below: whatever
+  # this launcher exits with from here on, it was stopped rather than failing
+  # (Issue #1072). A signal that arrives during the image build stops the run
+  # just as surely as one that arrives mid-worker.
+  record_termination "${signal}"
   if [[ -z "${CHILD_PID}" && -n "${LAUNCH_IN_FLIGHT}" ]]; then
     # The child exists (or is a fork away) and only its PID is missing, so
     # hold the signal here. Held, never dropped: the launch site delivers it
@@ -356,6 +442,116 @@ log_run_core() {
     >>"${RUN_CORE_LOG_DIR}/run_core.log" 2>/dev/null || true
 }
 
+# A failed build's own output, kept where a later reader can find it (Issue
+# #1019). The captures the heal classifies are mktemp files the EXIT trap
+# reaps, so run_core.log recorded that a build had failed - seven times in
+# four hours on GRQ-23 - and nothing whatsoever about why. These are the
+# bounded, named copies the log line points at, in their own sub-directory so
+# the size-based rotation of run_core.log and friends leaves them alone.
+BUILD_FAILURE_LOG_DIR="${RUN_CORE_LOG_DIR}/build-failures"
+# Diagnostics, not an archive: an unbounded directory on a host already
+# fighting for disk would be a regression, not a fix (Issues #478, #633).
+BUILD_FAILURE_LOG_KEEP=20
+# How much of the output goes into run_core.log itself, so the answer to "why"
+# is in the log an operator already reads.
+BUILD_FAILURE_EXCERPT_LINES=40
+
+# Drop all but the newest BUILD_FAILURE_LOG_KEEP preserved logs.
+prune_build_failure_logs() {
+  local logs=() candidate excess i
+  # The UTC stamp leads the filename, so the glob's own lexical order IS
+  # chronological order - no `ls` parsing and no reliance on mtime.
+  for candidate in "${BUILD_FAILURE_LOG_DIR}"/*.log; do
+    [[ -f "${candidate}" ]] && logs+=("${candidate}")
+  done
+  excess=$(( ${#logs[@]} - BUILD_FAILURE_LOG_KEEP ))
+  ((excess > 0)) || return 0
+  for ((i = 0; i < excess; i++)); do
+    rm -f "${logs[i]}" 2>/dev/null || true
+  done
+}
+
+# Copy a failed step's captured output to a stable, timestamped path and prune
+# the directory back to its bound. Prints the preserved path; fails when there
+# was nothing to preserve or the copy could not be made, so the caller says so
+# rather than naming a path that does not exist. A failure to preserve names
+# its own cause on stderr - a change made to stop discarding the account of
+# why must not discard the account of why *it* could not keep one.
+# Usage: preserve_build_failure_log <source> <slug>
+preserve_build_failure_log() {
+  local source="$1" slug="$2" preserved reason
+  if [[ ! -s "${source}" ]]; then
+    return 1
+  fi
+  if ! reason="$(mkdir -p "${BUILD_FAILURE_LOG_DIR}" 2>&1)"; then
+    echo "[run.sh] warning: cannot create ${BUILD_FAILURE_LOG_DIR}:" \
+      "${reason}" >&2
+    return 1
+  fi
+  # The PID keeps two launches that failed in the same second apart.
+  preserved="${BUILD_FAILURE_LOG_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${slug}-$$.log"
+  if ! reason="$(cp "${source}" "${preserved}" 2>&1)"; then
+    echo "[run.sh] warning: cannot preserve ${source} at ${preserved}:" \
+      "${reason}" >&2
+    return 1
+  fi
+  prune_build_failure_logs
+  printf '%s' "${preserved}"
+}
+
+# One line of a captured stderr file, for a message an operator reads.
+#
+# Empty output becomes an explicit "no explanation given" rather than a
+# message that trails off - a failure with no words is still a failure. That
+# fallback only means something where the stderr really was captured: it used
+# to be the release check's every answer, because the check's stderr went
+# nowhere (Issue #1020).
+#
+# Defined here, above every caller, so the launch steps and the volume
+# recreation share one rendering of "what the failing command said".
+runtime_error_detail() {
+  local text
+  text="$(tr '\n' ' ' <"$1" 2>/dev/null | sed 's/  */ /g; s/^ //; s/ $//')"
+  printf '%s' "${text:-no explanation given}"
+}
+
+# Append a bounded excerpt of a captured log to run_core.log (Issue #1019).
+# Usage: log_run_core_excerpt <label> <source>
+log_run_core_excerpt() {
+  local label="$1" source="$2" stamp
+  mkdir -p "${RUN_CORE_LOG_DIR}" 2>/dev/null || true
+  stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  {
+    if [[ -s "${source}" ]]; then
+      printf '%s %s (last %s lines):\n' "${stamp}" "${label}" \
+        "${BUILD_FAILURE_EXCERPT_LINES}"
+      tail -n "${BUILD_FAILURE_EXCERPT_LINES}" "${source}" | sed 's/^/  | /'
+    else
+      # Emptiness is evidence too: a step that wrote nothing died before it
+      # reached anything that reports, which is a different fault from one
+      # that explained itself (Issue #633).
+      printf '%s %s: no output was captured\n' "${stamp}" "${label}"
+    fi
+  } >>"${RUN_CORE_LOG_DIR}/run_core.log" 2>/dev/null || true
+}
+
+# One host-log record of a failed build step that carries the step's own
+# words: the decision, where the full output was kept, and an excerpt of it.
+# Usage: record_build_failure_evidence <message> <source> <label>
+record_build_failure_evidence() {
+  local message="$1" source="$2" label="$3" preserved=""
+  preserved="$(preserve_build_failure_log "${source}" "${label// /-}")" ||
+    preserved=""
+  if [[ -n "${preserved}" ]]; then
+    log_run_core "${message} - full output preserved at ${preserved}"
+  else
+    # Why it could not be is on stderr, from preserve_build_failure_log
+    # itself, unless there was simply nothing to keep.
+    log_run_core "${message} - no output could be preserved"
+  fi
+  log_run_core_excerpt "${label}" "${source}"
+}
+
 # The run mode - container, the only one (Issue #4). Still resolved by Deno
 # rather than parsed here, so a .config.json (or VIBE_RUN_MODE) that names a
 # removed mode fails loud in one place with the removal explained, and never
@@ -412,27 +608,48 @@ fi
 # host's notice is not lost.
 #
 # All the logic lives in the Deno command, exactly as the checkout update's
-# does: this shell captures stdout and prints it, nothing more. Stdout is the
-# notice or empty - a dynamic host, a host already on the newest release, a
-# commit-SHA pin and a repository with no releases all print nothing.
+# does: this shell captures what the command said and prints it, nothing
+# more. Stdout is the notice or empty - a dynamic host, a host already on the
+# newest release, a commit-SHA pin and a repository with no releases all
+# print nothing.
 #
 # Notifying only: nothing here changes a pin or moves the checkout, and a
 # failed or timed-out check is a warning, never a refused launch. The bound is
 # short because an unreachable GitHub must cost seconds, not a hung launch.
+#
+# Stdout is the notice and stderr is the account of a failure - a
+# configuration error, a `gh` that could not resolve GitHub, an uncaught
+# throw - so BOTH are captured, separately (Issue #1020). Capturing stdout
+# alone made "no explanation given" the only answer this warning could ever
+# give: the reason existed, on a stream nothing was reading, so three failed
+# checks during a DNS outage on GRQ-23 were logged as mysteries.
+RELEASE_NOTICE_TIMEOUT_SECONDS=120
 release_notice=""
 release_notice_status=0
-release_notice="$(bounded 120 "${DENO_CMD}" run \
+release_notice_err="$(mktemp -t vibe-release-notice.XXXXXX)"
+release_notice="$(bounded "${RELEASE_NOTICE_TIMEOUT_SECONDS}" "${DENO_CMD}" run \
   --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
   --allow-env --allow-read --allow-run \
   "${BASE_DIR}/worker/deno/mod.ts" release-notice \
-  --base-dir "${BASE_DIR}" </dev/null)" || release_notice_status=$?
+  --base-dir "${BASE_DIR}" </dev/null 2>"${release_notice_err}")" ||
+  release_notice_status=$?
 if ((release_notice_status != 0)); then
-  echo "[run.sh] warning: could not check for a newer release (status ${release_notice_status}) - ${release_notice:-no explanation given}" >&2
-  log_run_core "release-notice: failed (status ${release_notice_status}) - ${release_notice:-no explanation given}"
+  # A check the bound killed is a different fact from a check that ran and
+  # failed, and the log says which: the first never reached the point where
+  # it would have explained itself, so its silence is expected rather than a
+  # missing explanation.
+  if bounded_timed_out "${release_notice_status}"; then
+    release_notice_detail="timed out after ${RELEASE_NOTICE_TIMEOUT_SECONDS}s"
+  else
+    release_notice_detail="$(runtime_error_detail "${release_notice_err}")"
+  fi
+  echo "[run.sh] warning: could not check for a newer release (status ${release_notice_status}) - ${release_notice_detail}" >&2
+  log_run_core "release-notice: failed (status ${release_notice_status}) - ${release_notice_detail}"
 elif [[ -n "${release_notice}" ]]; then
   echo "${release_notice}" >&2
   log_run_core "${release_notice}"
 fi
+rm -f "${release_notice_err}"
 # The plan resolves and validates the container runtime, computes the
 # content-derived image reference, and constructs the fixed least-privilege
 # mount set. A missing runtime, config file or credential directory exits
@@ -561,9 +778,97 @@ bounded 300 "${DENO_CMD}" run \
   --refuse-live </dev/null >&2 || reap_status=$?
 if ((reap_status == ANOTHER_WORKER_RUNNING_EXIT)); then
   echo "[run.sh] another worker is already running on this host - one worker per host; not launching (Issue #26)" >&2
-  exit 1
+  # The reaper's own status leaves this launcher unchanged (Issue #1056). It
+  # used to collapse to 1, which the outcome recorder reads as "a bootstrap,
+  # config or loop failure the worker reported itself" - a healthy host
+  # describing itself as a crashed one, and climbing the escalation ladder
+  # for behaving exactly as designed. Under cron or launchd, where the
+  # scheduler's fixed interval is the retry, that is the normal case rather
+  # than an edge one.
+  exit "${ANOTHER_WORKER_RUNNING_EXIT}"
 elif ((reap_status != 0)); then
   echo "[run.sh] warning: the pre-launch container reaper did not complete" >&2
+fi
+
+# Container egress probe (Issue #997), before the build and before the launch.
+#
+# GRQ-23 spent hours reporting `image_build` for a fault in its own routing:
+# the build was simply the first thing to notice, 135 seconds into a `curl`,
+# and the report sent every reader to an image that was never broken. Runs
+# hours earlier had reached the container and died at `GITHUB-USER-FAILED` -
+# the worker was running and blind.
+#
+# One short container run answers it in seconds, against a literal address
+# (never a name: the host bridge IS a resolver, so DNS succeeds while every
+# packet past the gateway is dropped). The host is probed too, because that is
+# what separates the three conditions:
+#
+#   container reaches it            -> carry on
+#   container blocked, host reaches -> this host cannot route out of a
+#                                      container: park, and tell a person once
+#   both blocked                    -> the link is down: wait, escalate nothing
+#
+# A probe that cannot run (no image in the store yet, a runtime that refuses)
+# never blocks a launch - it says so and the launch continues exactly as
+# before.
+EGRESS_LOG="$(mktemp "${TMPDIR:-/tmp}/vibe-egress.XXXXXX")"
+egress_status=0
+bounded 180 "${DENO_CMD}" run \
+  --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+  --allow-env --allow-read --allow-run --allow-net \
+  --allow-write="${EGRESS_LOG}" \
+  "${BASE_DIR}/worker/deno/mod.ts" container-egress-probe \
+  --runtime "${RUNTIME}" \
+  --base-dir "${BASE_DIR}" \
+  --image "${IMAGE}" \
+  --name "${CONTAINER_NAME}-egress" \
+  --out "${EGRESS_LOG}" </dev/null >&2 || egress_status=$?
+
+# Print what the probe found, on the launcher's own stderr.
+#
+# The evidence has two readers and only one of them reads the file. On a
+# supervised host loop.sh sets VIBE_SUPERVISOR_RECORDS_OUTCOME, record_outcome
+# below returns immediately, and the supervisor records the outcome from the
+# launch log it tees this launcher's output into - so anything written only to
+# EGRESS_LOG never reaches the escalation, and the network-unavailable marker
+# never reaches the classifier that keeps a link outage off the failure ladder
+# (Issue #949). Printing it here puts it in front of both readers.
+print_egress_evidence() {
+  if [[ -s "${EGRESS_LOG}" ]]; then
+    cat "${EGRESS_LOG}" >&2
+  else
+    echo "[run.sh] warning: the egress probe wrote no evidence to" \
+      "${EGRESS_LOG} - the report will name the fault with no cause attached" >&2
+  fi
+}
+
+if ((egress_status == EGRESS_BLOCKED_EXIT)); then
+  # Parked, not retried: the reject route is host networking state a non-root
+  # process cannot change, so rebuilding an image that is fine would burn
+  # minutes per cycle for ever. The phase marker is what stops the outcome
+  # recorder attributing this to the build.
+  record_phase container_egress
+  print_egress_evidence
+  echo "[run.sh] parking this host: a container cannot reach the network" \
+    "while the host itself can - this is host networking, not the image" \
+    "build (Issue #997); see the hop table above" >&2
+  log_run_core "container-egress-probe: parked - container_egress_blocked; a container cannot reach the network while the host can (Issue #997)"
+  EVIDENCE_LOG="${EGRESS_LOG}"
+  exit "${HOST_EGRESS_BLOCKED_EXIT_STATUS}"
+elif ((egress_status == EGRESS_NETWORK_DOWN_EXIT)); then
+  # The host cannot reach it either, so there is nothing here for a person to
+  # fix. The probe's evidence carries the network-unavailable marker, which is
+  # what keeps this off the failure ladder (Issue #949).
+  print_egress_evidence
+  echo "[run.sh] the network is unreachable from this host as well as from a" \
+    "container - not building; the next cycle retries (Issue #997)" >&2
+  log_run_core "container-egress-probe: the network is unreachable from the host too - waiting at the base cadence, escalating nothing (Issues #949, #997)"
+  EVIDENCE_LOG="${EGRESS_LOG}"
+  exit 1
+elif ((egress_status != 0)); then
+  echo "[run.sh] warning: the container egress probe did not complete" \
+    "(status ${egress_status}) - launching anyway" >&2
+  log_run_core "container-egress-probe: did not complete (status ${egress_status}) - launching anyway"
 fi
 
 # Build the image, streaming the output and capturing it for the heal.
@@ -581,14 +886,22 @@ run_build() {
 # builder's storage is what failed, restart it (Issue #4441). Exit 0 = healed,
 # 3 = not a healable failure, anything else = the heal itself failed.
 heal_builder() {
-  local attempt="$1"
+  local attempt="$1" status=0
+  # Captured as well as streamed (Issue #1019): when the heal itself fails,
+  # what it said is the whole account of why, and the launcher used to keep
+  # only the status it exited with.
+  HEAL_LOG="${HEAL_LOG:-$(mktemp "${TMPDIR:-/tmp}/vibe-heal.XXXXXX")}"
+  set +e
   bounded 900 "${DENO_CMD}" run \
     --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
     --allow-env --allow-read --allow-run \
     "${BASE_DIR}/worker/deno/mod.ts" container-build-heal \
     --runtime "${RUNTIME}" \
     --log "${BUILD_LOG}" \
-    --attempt "${attempt}" </dev/null >&2
+    --attempt "${attempt}" </dev/null 2>&1 | tee "${HEAL_LOG}" >&2
+  status="${PIPESTATUS[0]}"
+  set -e
+  return "${status}"
 }
 
 # Content-derived identity: a changed container definition is a different
@@ -609,6 +922,9 @@ if ! "${RUNTIME}" "${exists_args[@]}" >/dev/null 2>&1; then
   # reasons still fails here, exactly as it always has.
   if ((build_status != 0)); then
     heal_status=0
+    # Set once the build's own output has reached run_core.log, so the failing
+    # exit below records it exactly once (Issue #1019).
+    build_output_recorded=""
     heal_builder 1 || heal_status=$?
 
     if ((heal_status == 0)); then
@@ -628,16 +944,39 @@ if ! "${RUNTIME}" "${exists_args[@]}" >/dev/null 2>&1; then
           "${RUNTIME} builder" >&2
       fi
     elif ((heal_status == BUILD_NOT_HEALABLE_EXIT)); then
-      log_run_core "container-build-heal: ${IMAGE} build failed for a reason the builder heal does not cover"
+      # Classifying the failure as not-healable is the right decision; logging
+      # the classification *instead of* the evidence is what left an operator
+      # reproducing by hand a failure the machine had already observed
+      # (Issue #1019).
+      record_build_failure_evidence \
+        "container-build-heal: ${IMAGE} build failed for a reason the builder heal does not cover" \
+        "${BUILD_LOG}" "build output"
+      build_output_recorded=1
     else
-      log_run_core "container-build-heal: could not heal the ${RUNTIME} builder (status ${heal_status})"
+      # The heal's own output, for the same reason: a status code says which
+      # step failed and nothing about what it found.
+      record_build_failure_evidence \
+        "container-build-heal: could not heal the ${RUNTIME} builder (status ${heal_status})" \
+        "${HEAL_LOG}" "heal output"
     fi
 
     if ((build_status != 0)); then
       echo "Error: failed to build ${IMAGE}" >&2
+      if [[ -z "${build_output_recorded}" ]]; then
+        record_build_failure_evidence \
+          "container-build: ${IMAGE} build failed (status ${build_status})" \
+          "${BUILD_LOG}" "build output"
+      fi
       # The build's own diagnostics are the only account of why this host
       # cannot reconstruct its environment, so the escalation carries them
-      # (Issue #709).
+      # (Issue #709) - and the heal's alongside them, which the auto-filed
+      # image_build issues used to reduce to a status code (Issue #1019).
+      if [[ -s "${HEAL_LOG}" ]]; then
+        {
+          printf '\n--- container-build-heal output ---\n'
+          cat "${HEAL_LOG}"
+        } >>"${BUILD_LOG}" 2>/dev/null || true
+      fi
       EVIDENCE_LOG="${BUILD_LOG}"
       exit "${build_status}"
     fi
@@ -792,16 +1131,6 @@ for volume in ${volume_names[@]+"${volume_names[@]}"}; do
     "${RUNTIME}" volume create "${volume}" </dev/null >/dev/null
   fi
 done
-# One line of a captured stderr file, for a message an operator reads.
-#
-# Empty output becomes an explicit "no explanation given" rather than a
-# message that trails off — a failure with no words is still a failure.
-runtime_error_detail() {
-  local text
-  text="$(tr '\n' ' ' <"$1" 2>/dev/null | sed 's/  */ /g; s/^ //; s/ $//')"
-  printf '%s' "${text:-no explanation given}"
-}
-
 # Recreate one named volume, loudly (Issues #229, #478, #731).
 #
 # The removal verb comes from the plan — Docker and Podman spell it

@@ -35,6 +35,7 @@ import {
   CONTAINER_START_EXIT_CODES,
   isNetworkUnavailableLaunch,
 } from "../lib/container_restart_backoff.ts";
+import { consumeLaunchTerminationMarker } from "../lib/launcher_termination.ts";
 import { NETWORK_UNAVAILABLE_MARKER } from "../lib/github_user_resolution.ts";
 import { CONTAINER_WEDGED_EXIT_STATUS } from "../lib/container_watchdog.ts";
 import { stripContainerfile } from "../lib/containerfile_strip.ts";
@@ -42,10 +43,13 @@ import { activeAgentProvider } from "../lib/agent_provider.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { formatReleaseNotice } from "../lib/release_notice.ts";
+import { ANOTHER_WORKER_RUNNING_EXIT } from "../commands/container_reap.ts";
 import {
   BASH_LAUNCHER,
   buildCount,
   builderHealed,
+  buildFailureLogDir,
+  buildFailureLogs,
   declareContainerExtension,
   denoInvocationOrder,
   type Harness,
@@ -620,10 +624,17 @@ Deno.test("run.sh - refuses to launch when another worker is already running on 
   try {
     const outcome = await runLauncher(harness);
 
-    // Loud, early, and plain: exit non-zero naming the container and the
-    // launcher pid, before anything is built or launched - never the
-    // runtime's storage-attachment error a second worker would die on.
-    assert(outcome.code !== 0, "a second worker must not launch");
+    // Loud, early, and plain: exit on the reaper's own status naming the
+    // container and the launcher pid, before anything is built or launched -
+    // never the runtime's storage-attachment error a second worker would die
+    // on. The status is ANOTHER_WORKER_RUNNING_EXIT and not a bare 1
+    // (Issue #1056): 1 is "the worker reported a failure itself", which is a
+    // healthy host describing itself as a crashed one.
+    assertEquals(
+      outcome.code,
+      ANOTHER_WORKER_RUNNING_EXIT,
+      `a second worker must not launch, and must say why: ${outcome.stderr}`,
+    );
     assertStringIncludes(outcome.stderr, "another worker is already running");
     assertStringIncludes(outcome.stderr, live);
     assertStringIncludes(outcome.stderr, `launcher pid ${Deno.pid}`);
@@ -694,6 +705,87 @@ Deno.test("run.sh - propagates SIGTERM to the container and reports its status",
       output.code,
       143,
       new TextDecoder().decode(output.stderr),
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a signalled run declares the stop so it is not counted as a failure (Issue #1072)", async () => {
+  // The launcher exits with the runtime client's own status — 255 on the
+  // fleet's macOS hosts when the container is stopped under it — so the status
+  // cannot say "somebody stopped this". The stub reproduces exactly that: it
+  // exits 255 on the forwarded signal, the shape Issues #879 and #1072 both
+  // reported as three consecutive `worker_run` failures.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_SLEEP: "60",
+    STUB_RUN_SIGNAL_EXIT: "255",
+  });
+  const markerPath =
+    `${harness.tmpDir}/home/.vibe-coder/last-launch-termination`;
+  const workDir = `${harness.tmpDir}/work`;
+  try {
+    // End to end through the real outcome recorder run.sh invokes on its way
+    // out: the declaration is worth nothing if the recorder does not act on it.
+    await Deno.mkdir(`${workDir}/logs`, { recursive: true });
+
+    const child = spawnLauncher(harness);
+    assert(await waitForRecord(harness, "run"), "the container never started");
+
+    child.kill("SIGTERM");
+    const output = await child.output();
+    // Which status arrives is itself unreliable — the client's own 255 when
+    // the wait reaped it, or 143 when the trap interrupted the wait first —
+    // and that is exactly why the classification cannot rest on it.
+    assert(
+      [143, 255].includes(output.code),
+      `expected the client's status, got ${output.code}: ` +
+        new TextDecoder().decode(output.stderr),
+    );
+
+    const state = JSON.parse(
+      await Deno.readTextFile(`${workDir}/.container_restart_state.json`),
+    );
+    assertEquals(
+      state.consecutiveFailures,
+      0,
+      "a stopped run must not climb the failure ladder (Issue #1072)",
+    );
+    assertEquals(state.lastPhase, null);
+
+    const events = await Deno.readTextFile(`${workDir}/logs/self-heal.jsonl`);
+    assertStringIncludes(events, "terminated");
+    assertStringIncludes(events, "SIGTERM");
+
+    // Consumed by the outcome it explained, so the next run is judged on its
+    // own evidence.
+    assertEquals(await consumeLaunchTerminationMarker(markerPath), null);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a launch that ends on its own leaves no termination marker (Issue #1072)", async () => {
+  // Belt and braces on the marker's own staleness: a clean launch clears any
+  // leftover, so a stop can never be inherited by the run after it.
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+  const stateDir = `${harness.tmpDir}/home/.vibe-coder`;
+  try {
+    await Deno.mkdir(stateDir, { recursive: true });
+    await Deno.writeTextFile(
+      `${stateDir}/last-launch-termination`,
+      JSON.stringify({ signal: "TERM", declaredAtMs: Date.now() }),
+    );
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+    assertEquals(
+      await consumeLaunchTerminationMarker(
+        `${stateDir}/last-launch-termination`,
+      ),
+      null,
+      "a launch that was never signalled must not leave a stop behind",
     );
   } finally {
     await harness.cleanup();
@@ -867,6 +959,110 @@ Deno.test("run.sh - a failed release check warns and the launch proceeds (Issue 
     assertStringIncludes(outcome.stderr, "could not check for a newer release");
     assertEquals(outcome.stderr.includes("A new release of Vibe Coder"), false);
     assertStringIncludes(await runCoreLog(harness), "release-notice: failed");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+/**
+ * Whether this host has the bound `run.sh` puts its helpers under (`timeout`
+ * on Linux, `gtimeout` on macOS with coreutils installed).
+ *
+ * Asked rather than assumed: with neither on PATH the launcher applies no
+ * bound at all, so a status of 124 is the command's own and means whatever
+ * the command meant by it (Issue #1020).
+ */
+async function hasTimeoutCommand(): Promise<boolean> {
+  for (const candidate of ["timeout", "gtimeout"]) {
+    try {
+      const { success } = await new Deno.Command(candidate, {
+        args: ["--version"],
+        stdout: "null",
+        stderr: "null",
+      }).output();
+      if (success) return true;
+    } catch {
+      // Not on PATH; try the other spelling.
+    }
+  }
+  return false;
+}
+
+Deno.test("run.sh - a failed release check quotes the reason the check gave (Issue #1020)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RELEASE_NOTICE_EXIT: "1",
+    // Where the real command's account of a failure goes: a configuration
+    // error, an unresolvable GitHub, an uncaught throw.
+    STUB_RELEASE_NOTICE_STDERR:
+      "Configuration error: could not resolve host github.com",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // The words the check itself wrote, in the log an operator reads - not
+    // the "no explanation given" that was the only answer this warning could
+    // ever give while stdout was the only stream captured.
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "release-notice: failed (status 1)");
+    assertStringIncludes(log, "could not resolve host github.com");
+    assertEquals(log.includes("no explanation given"), false);
+    assertStringIncludes(outcome.stderr, "could not resolve host github.com");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a release check that says nothing at all still falls back (Issue #1020)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RELEASE_NOTICE_EXIT: "1",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // The fix must not be "always print stderr", which would leave a warning
+    // trailing off into nothing. The fallback survives, and now means what it
+    // says: the command really did write no words.
+    const log = await runCoreLog(harness);
+    assertStringIncludes(
+      log,
+      "release-notice: failed (status 1) - no explanation given",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a release check the bound killed is logged as a timeout (Issue #1020)", async () => {
+  // 124 is what `timeout` reports when its SIGTERM expired the run. Driven
+  // through the stub's status rather than by really hanging for the launcher's
+  // 120s bound, which would spend a whole test budget proving one log line.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RELEASE_NOTICE_EXIT: "124",
+    // Deliberately loud: a killed check's own stderr is not the reason it
+    // ended, so it must not be reported as though it were.
+    STUB_RELEASE_NOTICE_STDERR: "checking releases...",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "release-notice: failed (status 124)");
+    if (await hasTimeoutCommand()) {
+      // The bound is what ended it, and the log says so rather than quoting
+      // words the check never got to finish.
+      assertStringIncludes(log, "timed out after 120s");
+      assertEquals(log.includes("checking releases..."), false);
+    } else {
+      // No `timeout` on this host, so nothing bounded the check: 124 is the
+      // command's own status and means whatever the command meant by it.
+      assertStringIncludes(log, "checking releases...");
+    }
   } finally {
     await harness.cleanup();
   }
@@ -1163,6 +1359,200 @@ Deno.test("run.sh - escalates to a builder recreate when the retry fails too, an
       assert(await recorded(harness, "builder-prune"));
     }
     assertStringIncludes(await runCoreLog(harness), "recreating the builder");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The build log that says WHY (Issue #1019)
+// ---------------------------------------------------------------------------
+
+/** A build failure with a line no classifier covers and no reader can miss. */
+const UNCOVERED_BUILD_FAILURE =
+  "E: Unable to locate package libgrq23-dev — apt could not resolve the index";
+
+Deno.test("run.sh - a not-healable build failure records the build's own words, not only the classification (Issue #1019)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: UNCOVERED_BUILD_FAILURE,
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "an unhealable build failure must still fail");
+
+    // The host log carried the reason it was NOT, seven times in four hours,
+    // and never the reason it was.
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "does not cover");
+    assertStringIncludes(log, UNCOVERED_BUILD_FAILURE);
+
+    // The full output outlives the run at a named path, and the log line
+    // names it — the mktemp capture used to be reaped with nothing kept.
+    const kept = await buildFailureLogs(harness);
+    assertEquals(kept.length, 1, `preserved logs: ${kept.join(", ")}`);
+    const preserved = `${buildFailureLogDir(harness)}/${kept[0]}`;
+    assertStringIncludes(log, preserved);
+    assertStringIncludes(
+      await Deno.readTextFile(preserved),
+      UNCOVERED_BUILD_FAILURE,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a heal that fails records the heal's own output (Issue #1019)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    // Healable, so the heal is attempted...
+    STUB_BUILD_STDERR: ENOSPC_BUILD_FAILURE,
+    // ...and the step that would leave a usable builder behind fails.
+    STUB_BUILDER_HEAL_EXIT: "1",
+    STUB_BUILDER_HEAL_STDERR: "Error: the builder VM is read-only",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "a build that never succeeded must fail");
+    // Not healed, so never retried.
+    assertEquals(await buildCount(harness), 1);
+
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "could not heal");
+    // The heal attempt's own account of why, which the status code is not.
+    assertStringIncludes(log, "the builder VM is read-only");
+
+    // Both accounts are kept: the heal's, and the build's underneath it.
+    const kept = await buildFailureLogs(harness);
+    const healLog = kept.find((name) => name.includes("heal-output"));
+    assert(healLog, `no preserved heal output: ${kept.join(", ")}`);
+    const preserved = `${buildFailureLogDir(harness)}/${healLog}`;
+    assertStringIncludes(log, preserved);
+    assertStringIncludes(
+      await Deno.readTextFile(preserved),
+      "the builder VM is read-only",
+    );
+    assert(
+      kept.some((name) => name.includes("build-output")),
+      `no preserved build output: ${kept.join(", ")}`,
+    );
+
+    // And the escalation carries it too, rather than a bare status (#709).
+    assertStringIncludes(outcome.stderr, "the builder VM is read-only");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a build that failed silently is recorded as having said nothing (Issue #1019)", async () => {
+  // The stub prints nothing at all, so the capture is empty. Emptiness is
+  // evidence — the build died before it reached anything that reports — and
+  // an omitted section would be indistinguishable from a log nobody read.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "a failed build must still fail");
+
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "no output could be preserved");
+    assertStringIncludes(log, "build output: no output was captured");
+    // Nothing to preserve means nothing preserved — not an empty file kept
+    // under a name that promises evidence.
+    assertEquals(await buildFailureLogs(harness), []);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a preserve that cannot be made says why, and the launch still fails loud (Issue #1019)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: UNCOVERED_BUILD_FAILURE,
+  });
+  try {
+    // A regular file where the directory must go: the copy cannot be made,
+    // and the launcher must name that cause rather than going quiet.
+    await Deno.mkdir(`${harness.tmpDir}/home/logs`, { recursive: true });
+    await Deno.writeTextFile(buildFailureLogDir(harness), "not a directory\n");
+
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "a failed build must still fail");
+    assertStringIncludes(outcome.stderr, "cannot create");
+
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "no output could be preserved");
+    // The excerpt is independent of the copy, so the reason survives even
+    // when the full log could not be kept.
+    assertStringIncludes(log, UNCOVERED_BUILD_FAILURE);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - the image_build escalation carries the heal's words, not just the build's (Issue #1019)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: ENOSPC_BUILD_FAILURE,
+    STUB_BUILDER_HEAL_EXIT: "1",
+    STUB_BUILDER_HEAL_STDERR: "Error: the builder VM is read-only",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "a build that never succeeded must fail");
+
+    const log = await recordedLaunchLog(harness);
+    assert(log !== null, "the build log was deleted before it was reported");
+    // The auto-filed image_build issues (#991, #1014) arrived with a status
+    // code where the heal's own account of the fault should have been.
+    assertStringIncludes(log, ENOSPC_BUILD_FAILURE);
+    assertStringIncludes(log, "the builder VM is read-only");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - preserved build logs are bounded, and the newest is never the one dropped (Issue #1019)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: UNCOVERED_BUILD_FAILURE,
+  });
+  try {
+    // A host that has been failing for days. An unbounded directory here
+    // would be its own incident on a host already fighting disk (#478).
+    const directory = buildFailureLogDir(harness);
+    await Deno.mkdir(directory, { recursive: true });
+    const seeded: string[] = [];
+    for (let i = 0; i < 25; i++) {
+      const name = `20200101T0000${
+        String(i).padStart(2, "0")
+      }Z-build-output-1.log`;
+      await Deno.writeTextFile(`${directory}/${name}`, "an older failure\n");
+      seeded.push(name);
+    }
+
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "the build must still fail");
+
+    const kept = await buildFailureLogs(harness);
+    assert(
+      kept.length > 0 && kept.length <= 20,
+      `retention left ${kept.length} logs: ${kept.join(", ")}`,
+    );
+    // The oldest went; this run's own log — the newest — stayed.
+    assertEquals(kept.includes(seeded[0]!), false);
+    const newest = kept[kept.length - 1]!;
+    assertStringIncludes(
+      await Deno.readTextFile(`${directory}/${newest}`),
+      UNCOVERED_BUILD_FAILURE,
+    );
   } finally {
     await harness.cleanup();
   }
