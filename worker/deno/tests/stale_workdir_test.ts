@@ -310,6 +310,10 @@ Deno.test("isReservedWorkRootEntry - reserved dirs plus the audit sidecars (Issu
   // detectable, so a sweep must not take them either.
   assert(isReservedWorkRootEntry("audit.roster.jsonl"));
   assert(isReservedWorkRootEntry("audit.roster.seen"));
+  // Issue #1202: the bytes a torn-roster repair preserved rather than
+  // deleted. Sweeping them away would destroy the only copy of them.
+  assert(isReservedWorkRootEntry("audit.roster.jsonl.torn-1"));
+  assert(isReservedWorkRootEntry("audit.roster.jsonl.torn-100"));
   // Ordinary clones and lookalikes are not reserved.
   assertEquals(isReservedWorkRootEntry("VibeCoder"), false);
   assertEquals(isReservedWorkRootEntry("audit-scratch"), false);

@@ -57,6 +57,7 @@
 import type { Result } from "../types.ts";
 import { type ChainAnchor, readAnchor, writeAnchor } from "./audit_anchor.ts";
 import { type AuditEntry, computeEntryHash } from "./audit_entry.ts";
+import { freeSidecarPath, quoteDropped } from "./torn_bytes.ts";
 
 /** How an interrupted append was settled. */
 export type AppendRecoveryKind = "completed" | "discarded";
@@ -76,30 +77,10 @@ export interface AppendRecovery {
   /**
    * The removed bytes as text, so the report names what went.
    *
-   * Quoted to {@link DROPPED_TEXT_QUOTE} characters, with the length
-   * named when it is longer; `preservedAs` holds every byte.
+   * Quoted by `torn_bytes.ts` to a length a log can carry, with the full
+   * length named when it is longer; `preservedAs` holds every byte.
    */
   droppedText?: string;
-}
-
-/** Most `.torn-<n>` sidecars one journal may accumulate before we stop. */
-const MAX_TORN_SIDECARS = 100;
-
-/**
- * How much of the discarded text the report quotes.
- *
- * The whole of it is on disk in the sidecar, so the log line only has to
- * be enough to recognise; an unbounded copy of an arbitrarily long line
- * into a log and a JSON result is not.
- */
-const DROPPED_TEXT_QUOTE = 512;
-
-/** The discarded bytes as text, quoted to a length a log can carry. */
-function quoteDropped(dropped: Uint8Array): string {
-  const text = new TextDecoder().decode(dropped);
-  if (text.length <= DROPPED_TEXT_QUOTE) return text;
-  return `${text.slice(0, DROPPED_TEXT_QUOTE)}… (${dropped.length} bytes in ` +
-    `total)`;
 }
 
 /** Journal bytes, its non-empty lines, and where each line ends. */
@@ -140,24 +121,6 @@ async function readJournalBytes(path: string): Promise<JournalBytes | null> {
 function anchoredLength(journal: JournalBytes, count: number): number {
   if (count === 0) return 0;
   return journal.lineEnds[count - 1] ?? journal.raw.length;
-}
-
-/** First free `.torn-<n>` sidecar path beside `path`. */
-async function freeSidecarPath(path: string): Promise<string> {
-  for (let n = 1; n <= MAX_TORN_SIDECARS; n++) {
-    const candidate = `${path}.torn-${n}`;
-    try {
-      await Deno.stat(candidate);
-    } catch (error: unknown) {
-      if (error instanceof Deno.errors.NotFound) return candidate;
-      throw error;
-    }
-  }
-  throw new Error(
-    `refusing to discard a torn tail from ${path}: ${MAX_TORN_SIDECARS} ` +
-      `.torn-<n> sidecars already exist beside it, so the previous ones ` +
-      `would have to be overwritten`,
-  );
 }
 
 /**

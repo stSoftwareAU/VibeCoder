@@ -792,8 +792,9 @@ already has:
   claiming.
 
 **Reserved names are neither tier (Issue #337).** `logs`, the ext4
-`lost+found`, and the `audit` trail (with its `audit.roster.jsonl` and
-`audit.roster.seen` sidecars) are worker- or filesystem-owned state, so every
+`lost+found`, and the `audit` trail (with its `audit.roster.jsonl`,
+`audit.roster.seen` and `audit.roster.jsonl.torn-<n>` sidecars) are worker- or
+filesystem-owned state, so every
 sweep — the tier reclaim, the stale-workdir scan, the worktree cleanup and
 the 90%-disk `nukeWorkDir` — skips them. `audit/` carries no `.git` and sits
 untouched between sweeps, so before #337 it tiered as disposable and the
