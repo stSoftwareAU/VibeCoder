@@ -159,7 +159,7 @@ Deno.test(
 
     assert(scan.ok, "the scan must not fail for a pr_blocked repository");
     assertEquals(
-      scan.value?.prNumber,
+      scan.value.selected?.prNumber,
       PR_NUMBER,
       "a pr_blocked repo's conflicting PR must still be selected — resolving " +
         "it is how the PR block clears",
@@ -177,10 +177,10 @@ Deno.test(
       logger: makeSilentLogger(),
       findNext: async (exclude) => {
         const scan = await scanOckham("CONFLICTING", []);
-        if (!scan.ok || scan.value === null) return null;
-        return exclude.has(`${REPO}#${scan.value.prNumber}`)
+        if (!scan.ok || scan.value.selected === null) return null;
+        return exclude.has(`${REPO}#${scan.value.selected.prNumber}`)
           ? null
-          : scan.value;
+          : scan.value.selected;
       },
       acquireLease: () => ({ release: () => {} }),
       resolve: (pr) => {
@@ -210,7 +210,7 @@ Deno.test(
 
     assert(scan.ok);
     assertEquals(
-      scan.value,
+      scan.value.selected,
       null,
       "the label is queue visibility, not the queue — only the live " +
         "mergeable state makes a PR due",
@@ -225,7 +225,7 @@ Deno.test(
       logger: makeSilentLogger(),
       findNext: async () => {
         const scan = await scanOckham("BEHIND", [MERGE_CONFLICT_LABEL]);
-        return scan.ok ? scan.value : null;
+        return scan.ok ? scan.value.selected : null;
       },
       acquireLease: () => ({ release: () => {} }),
       resolve: () => {

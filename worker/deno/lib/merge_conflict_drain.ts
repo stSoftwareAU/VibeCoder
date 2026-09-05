@@ -33,7 +33,15 @@
  */
 
 import type { Logger } from "../types.ts";
-import { type ConflictingPr, conflictPrKey } from "./pr_merge_conflict_scan.ts";
+import {
+  type ConflictingPr,
+  type ConflictPrDecision,
+  conflictPrKey,
+  conflictReasonOperands,
+  type ConflictSkipReason,
+  recordConflictDecision,
+  recordConflictPassSummary,
+} from "./pr_merge_conflict_scan.ts";
 
 /**
  * Conflicting PRs one cycle's pass will take.
@@ -87,6 +95,19 @@ export type ConflictDrainStopReason =
   /** The per-cycle cap was reached. */
   | "cap";
 
+/**
+ * The drain's stop, as a member of the closed skip taxonomy (Issue #1109).
+ *
+ * Derived from {@link ConflictSkipReason} rather than declared beside it, so
+ * the reason and its operands cannot drift from the record the pass emits —
+ * and {@link ConflictDrainResult.stopReason} is read straight off `kind`,
+ * leaving one source of truth for why the drain stopped.
+ */
+export type ConflictDrainStop = Extract<
+  ConflictSkipReason,
+  { kind: ConflictDrainStopReason }
+>;
+
 /** What the drain did this cycle. */
 export interface ConflictDrainResult {
   /** PRs selected — merged, failed and deferred alike. */
@@ -98,6 +119,8 @@ export interface ConflictDrainResult {
   /** True when any attempt did work (the priority's `processed`). */
   processed: boolean;
   stopReason: ConflictDrainStopReason;
+  /** One decision per PR the drain itself decided on (Issue #1109). */
+  decisions: readonly ConflictPrDecision[];
 }
 
 /**
@@ -121,10 +144,12 @@ export async function drainConflictingPrs(
   } = options;
 
   const handled = new Set<string>();
+  const decisions: ConflictPrDecision[] = [];
   let merged = 0;
   let deferred = 0;
   let processed = false;
-  let stopReason: ConflictDrainStopReason = "cap";
+  // The cap is the stop that needs no branch: the loop simply runs out.
+  let stop: ConflictDrainStop = { kind: "cap", maxPerCycle };
 
   for (let taken = 0; taken < maxPerCycle; taken++) {
     if (deadlineEpochMs !== undefined) {
@@ -139,14 +164,14 @@ export async function drainConflictingPrs(
             { taken, merged, remainingMs: remaining },
           );
         }
-        stopReason = "deadline";
+        stop = { kind: "deadline", remainingMs: remaining };
         break;
       }
     }
 
     const next = await findNext(handled);
     if (next === null) {
-      stopReason = "queue-empty";
+      stop = { kind: "queue-empty" };
       break;
     }
     // Excluded before the attempt, not after: a resolution that throws must
@@ -155,6 +180,16 @@ export async function drainConflictingPrs(
 
     const lease = acquireLease(next);
     if (lease === null) {
+      // The deferral is a decision on a labelled PR like any other, so it is
+      // recorded rather than left as an unstructured log line (Issue #1109).
+      const deferral: ConflictPrDecision = {
+        repo: next.repo,
+        prNumber: next.prNumber,
+        outcome: "skipped",
+        reason: { kind: "repo-leased" },
+      };
+      decisions.push(deferral);
+      recordConflictDecision(logger, deferral);
       logger.info(
         "Deferring merge-conflict resolution: an issue slot holds the repository",
         { repo: next.repo, prNumber: next.prNumber },
@@ -162,6 +197,13 @@ export async function drainConflictingPrs(
       deferred++;
       continue;
     }
+
+    const attempt: ConflictPrDecision = {
+      repo: next.repo,
+      prNumber: next.prNumber,
+      outcome: "attempted",
+    };
+    decisions.push(attempt);
 
     try {
       const outcome = await resolve(next);
@@ -177,15 +219,26 @@ export async function drainConflictingPrs(
   if (handled.size > 1) {
     logger.info(
       `Merge-conflict drain complete: ${handled.size} PR(s) taken, ` +
-        `${merged} merged, ${deferred} deferred (${stopReason})`,
+        `${merged} merged, ${deferred} deferred (${stop.kind})`,
     );
   }
+
+  // One pass-level summary, always — including the stop reason and its
+  // operands, so a cycle that took nothing still says why (Issue #1109).
+  recordConflictPassSummary(logger, "drain", decisions, {
+    ...conflictReasonOperands(stop),
+    stopReason: stop.kind,
+    taken: handled.size,
+    merged,
+    deferred,
+  });
 
   return {
     taken: handled.size,
     merged,
     deferred,
     processed,
-    stopReason,
+    stopReason: stop.kind,
+    decisions,
   };
 }

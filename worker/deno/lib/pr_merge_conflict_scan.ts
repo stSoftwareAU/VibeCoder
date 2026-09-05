@@ -31,7 +31,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Logger, Result } from "../types.ts";
+import type { LogContext, Logger, Result } from "../types.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { fetchPRBranchStateBatch } from "./pr_branch_state.ts";
@@ -106,8 +106,14 @@ export const DEFAULT_MAX_DISRUPTED_ATTEMPTS = 3;
 /** Label whose presence means a human already owns the conflict. */
 const NEEDS_HUMAN_LABEL = "needs-human";
 
-/** PR-list fields this scan needs. */
-const PR_FIELDS = "number,headRefName,baseRefName";
+/**
+ * PR-list fields this scan needs.
+ *
+ * `author` rides the listing the scan already makes (Issue #1109) — it costs
+ * no extra call, and it is what lets a PR outside the maintenance set be
+ * recorded as `out-of-scope-author` rather than assumed away.
+ */
+const PR_FIELDS = "number,headRefName,baseRefName,author";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -139,6 +145,293 @@ export interface ConflictAttemptHistory {
   pendingAttempt: boolean;
   /** ISO timestamp of the most recent attempt, when known. */
   lastAttemptAt?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Decision taxonomy (Issue #1109)
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a PR the merge-conflict pass looked at was not attempted.
+ *
+ * The taxonomy is **closed**: every exit out of {@link findConflictingPr},
+ * `drainConflictingPrs` and the resolution processor's lock gate maps to
+ * exactly one member, and each member carries the operands that make the
+ * decision checkable afterwards — the milliseconds a cooldown still has to
+ * run, the attempts a spent budget burned, the host holding the lock.
+ *
+ * Issue #1076's symptom was "the label went on and then silence": a skipped
+ * PR produced either nothing or an unstructured log line, so a stalled fleet
+ * and a fleet correctly waiting out a cooldown looked identical. A decision
+ * is a **required return value** here rather than an optional field, so an
+ * exit added without one does not compile, and {@link conflictReasonOperands}
+ * switches exhaustively so a new member with no case does not compile either.
+ *
+ * Members are per-PR except `queue-empty`, `deadline` and `cap`, which are the
+ * drain's pass-level stops.
+ */
+export type ConflictSkipReason =
+  /** The PR's branch merges cleanly — it is not in the queue at all. */
+  | { kind: "not-conflicting"; mergeableState: string }
+  /** Authored outside the push-capable maintenance set (Issue #4076). */
+  | { kind: "out-of-scope-author"; author: string }
+  /** Taken or deferred earlier in this same cycle's drain (Issue #561). */
+  | { kind: "already-handled" }
+  /** A per-PR lookup failed; the PR keeps its place in the queue. */
+  | { kind: "scan-error"; stage: "labels" | "attempt-history"; message: string }
+  /** A human already owns the conflict. */
+  | { kind: "needs-human"; label: string }
+  /** Every concluded attempt in the budget is spent. */
+  | { kind: "budget-spent"; attemptsSpent: number; maxAttempts: number }
+  /**
+   * Still inside the post-attempt cooldown. `msUntilDue` is null when the
+   * recorded attempt timestamp does not parse — the conservative case
+   * {@link isConflictAttemptDue} holds back rather than guesses.
+   */
+  | { kind: "cooldown"; msUntilDue: number | null; lastAttemptAt?: string }
+  /** Attempts keep being disrupted before they conclude (Issue #395). */
+  | {
+    kind: "disrupted-bound";
+    disruptedCount: number;
+    maxDisruptedAttempts: number;
+  }
+  /** Another host holds the cross-host PR lock. */
+  | { kind: "lock-held"; lockHolder: string }
+  /** An issue slot holds the repository's shared clone (Issue #213). */
+  | { kind: "repo-leased" }
+  /** Pass-level: nothing else was due. */
+  | { kind: "queue-empty" }
+  /** Pass-level: too little of the cycle remained for another attempt. */
+  | { kind: "deadline"; remainingMs: number }
+  /** Pass-level: the per-cycle cap was reached. */
+  | { kind: "cap"; maxPerCycle: number };
+
+/** The discriminator of {@link ConflictSkipReason}. */
+export type ConflictSkipReasonKind = ConflictSkipReason["kind"];
+
+/**
+ * Every reason kind, as a value.
+ *
+ * The `Record` is the point: a member added to {@link ConflictSkipReason}
+ * without a key here is a compile error, so the runtime list can never fall
+ * behind the type.
+ */
+const CONFLICT_SKIP_REASON_KIND_SET: Record<ConflictSkipReasonKind, true> = {
+  "not-conflicting": true,
+  "out-of-scope-author": true,
+  "already-handled": true,
+  "scan-error": true,
+  "needs-human": true,
+  "budget-spent": true,
+  "cooldown": true,
+  "disrupted-bound": true,
+  "lock-held": true,
+  "repo-leased": true,
+  "queue-empty": true,
+  "deadline": true,
+  "cap": true,
+};
+
+/** Every reason kind, in a stable order (Issue #1109). */
+export const CONFLICT_SKIP_REASON_KINDS = Object.keys(
+  CONFLICT_SKIP_REASON_KIND_SET,
+) as readonly ConflictSkipReasonKind[];
+
+/**
+ * What one pass decided about one PR — attempted, or skipped for exactly one
+ * reason (Issue #1109).
+ */
+export type ConflictPrDecision =
+  | { repo: string; prNumber: number; outcome: "attempted" }
+  | {
+    repo: string;
+    prNumber: number;
+    outcome: "skipped";
+    reason: ConflictSkipReason;
+  };
+
+/** A pass's decisions, counted (Issue #1109). */
+export interface ConflictDecisionSummary {
+  /** Every PR the pass decided on, in the queue or not. */
+  considered: number;
+  /** PRs in the merge-conflict queue — conflicting, so carrying the label. */
+  labelled: number;
+  /** Of those, the PRs selected for an attempt. */
+  attempted: number;
+  /** Skipped counts keyed by reason; only reasons actually seen appear. */
+  byReason: Partial<Record<ConflictSkipReasonKind, number>>;
+}
+
+/**
+ * Whether a reason describes a PR that is in the merge-conflict queue — that
+ * is, one the scan has labelled.
+ *
+ * Exhaustive by construction: a new reason with no case here is a compile
+ * error, which is what stops a new exit from quietly leaving the queue count
+ * wrong.
+ */
+export function isQueuedConflictReason(kind: ConflictSkipReasonKind): boolean {
+  switch (kind) {
+    // Decided before the PR ever reached the labelling step.
+    case "not-conflicting":
+    case "out-of-scope-author":
+    // Pass-level stops: about the pass, not about one queued PR.
+    case "queue-empty":
+    case "deadline":
+    case "cap":
+      return false;
+    case "already-handled":
+    case "scan-error":
+    case "needs-human":
+    case "budget-spent":
+    case "cooldown":
+    case "disrupted-bound":
+    case "lock-held":
+    case "repo-leased":
+      return true;
+  }
+  const unhandled: never = kind;
+  throw new Error(`Unhandled conflict skip reason: ${String(unhandled)}`);
+}
+
+/**
+ * The reason's operands, flattened for the structured log record.
+ *
+ * The exhaustive switch is the compile-time half of the acceptance criterion:
+ * adding a member to {@link ConflictSkipReason} without a case here fails the
+ * type check rather than shipping a record with no operands.
+ */
+export function conflictReasonOperands(
+  reason: ConflictSkipReason,
+): LogContext {
+  switch (reason.kind) {
+    case "not-conflicting":
+      return { mergeableState: reason.mergeableState };
+    case "out-of-scope-author":
+      return { author: reason.author };
+    case "already-handled":
+      return {};
+    case "scan-error":
+      return { stage: reason.stage, error: reason.message };
+    case "needs-human":
+      return { label: reason.label };
+    case "budget-spent":
+      return {
+        attemptsSpent: reason.attemptsSpent,
+        maxAttempts: reason.maxAttempts,
+      };
+    case "cooldown":
+      return {
+        msUntilDue: reason.msUntilDue,
+        ...(reason.lastAttemptAt !== undefined
+          ? { lastAttemptAt: reason.lastAttemptAt }
+          : {}),
+      };
+    case "disrupted-bound":
+      return {
+        disruptedCount: reason.disruptedCount,
+        maxDisruptedAttempts: reason.maxDisruptedAttempts,
+      };
+    case "lock-held":
+      return { lockHolder: reason.lockHolder };
+    case "repo-leased":
+    case "queue-empty":
+      return {};
+    case "deadline":
+      return { remainingMs: reason.remainingMs };
+    case "cap":
+      return { maxPerCycle: reason.maxPerCycle };
+  }
+  const unhandled: never = reason;
+  throw new Error(
+    `Unhandled conflict skip reason: ${JSON.stringify(unhandled)}`,
+  );
+}
+
+/** The structured context one per-PR record carries. */
+export function conflictDecisionContext(
+  decision: ConflictPrDecision,
+): LogContext {
+  const base = { repo: decision.repo, prNumber: decision.prNumber };
+  if (decision.outcome === "attempted") {
+    return { ...base, decision: "attempted", reason: "attempted" };
+  }
+  return {
+    ...base,
+    decision: "skipped",
+    reason: decision.reason.kind,
+    ...conflictReasonOperands(decision.reason),
+  };
+}
+
+/**
+ * Emit one record for one PR's decision (Issue #1109).
+ *
+ * Queue decisions go out at INFO — they are the ones a stall investigation
+ * queries — while a PR that was never in the queue is DEBUG, so a fleet of
+ * healthy PRs does not flood the log every 2.5-minute cycle.
+ */
+export function recordConflictDecision(
+  logger: Logger,
+  decision: ConflictPrDecision,
+): void {
+  const context = conflictDecisionContext(decision);
+  const message = `merge_conflict_decision=${context.reason} ` +
+    `repo=${decision.repo} pr=${decision.prNumber}`;
+  const queued = decision.outcome === "attempted" ||
+    isQueuedConflictReason(decision.reason.kind);
+  if (queued) logger.info(message, context);
+  else logger.debug(message, context);
+}
+
+/** Count a pass's decisions for its summary record. */
+export function summariseConflictDecisions(
+  decisions: readonly ConflictPrDecision[],
+): ConflictDecisionSummary {
+  const byReason: Partial<Record<ConflictSkipReasonKind, number>> = {};
+  let labelled = 0;
+  let attempted = 0;
+
+  for (const decision of decisions) {
+    if (decision.outcome === "attempted") {
+      attempted++;
+      labelled++;
+      continue;
+    }
+    const kind = decision.reason.kind;
+    byReason[kind] = (byReason[kind] ?? 0) + 1;
+    if (isQueuedConflictReason(kind)) labelled++;
+  }
+
+  return { considered: decisions.length, labelled, attempted, byReason };
+}
+
+/**
+ * Emit the one pass-level summary that closes a pass (Issue #1109).
+ *
+ * @param scope - Which pass this is, e.g. `scan` or `drain`.
+ * @param decisions - Every per-PR decision the pass made.
+ * @param extra - Pass-level context, such as the drain's stop reason.
+ */
+export function recordConflictPassSummary(
+  logger: Logger,
+  scope: string,
+  decisions: readonly ConflictPrDecision[],
+  extra: LogContext = {},
+): void {
+  const summary = summariseConflictDecisions(decisions);
+  const counts = Object.entries(summary.byReason)
+    .map(([kind, count]) => `${kind}=${count}`)
+    .join(" ");
+  const message = `merge_conflict_pass=${scope} labelled=${summary.labelled} ` +
+    `attempted=${summary.attempted} considered=${summary.considered}` +
+    (counts.length > 0 ? ` ${counts}` : "");
+  const context = { scope, ...summary, ...extra };
+  // A pass over a fleet with nothing in the queue is the ordinary quiet case
+  // and stays at DEBUG; the moment one PR is queued the summary is the line a
+  // stall investigation greps for, so it goes out at INFO.
+  if (summary.labelled > 0) logger.info(message, context);
+  else logger.debug(message, context);
 }
 
 /** Options for {@link findConflictingPr}. */
@@ -374,6 +667,25 @@ export function isConflictAttemptDue(
 }
 
 /**
+ * How long this PR's cooldown still has to run, in milliseconds (Issue #1109).
+ *
+ * `0` when an attempt is due now, and `null` when the recorded timestamp does
+ * not parse — the case {@link isConflictAttemptDue} holds the PR back on
+ * rather than guessing, so the record says "unknown" instead of inventing a
+ * number.
+ */
+export function conflictCooldownMsRemaining(
+  history: ConflictAttemptHistory,
+  nowMs: number,
+  cooldownHours: number = DEFAULT_CONFLICT_COOLDOWN_HOURS,
+): number | null {
+  if (history.lastAttemptAt === undefined) return 0;
+  const lastMs = Date.parse(history.lastAttemptAt);
+  if (Number.isNaN(lastMs)) return null;
+  return Math.max(0, lastMs + cooldownHours * 3600_000 - nowMs);
+}
+
+/**
  * Whether the PR has spent its attempt budget.
  *
  * @param attemptCount - Attempts that reached a conclusion (Issue #395);
@@ -579,6 +891,42 @@ async function escalateConflictingPr(args: {
 // Scan
 // ---------------------------------------------------------------------------
 
+/** What one scan pass selected, and every decision it made (Issue #1109). */
+export interface ConflictScanPass {
+  /** The PR to work on, or `null` when nothing is due. */
+  selected: ConflictingPr | null;
+  /** One entry per PR the pass decided on, in the order it decided them. */
+  decisions: readonly ConflictPrDecision[];
+}
+
+/**
+ * One PR's outcome inside the scan, before the record is built.
+ *
+ * Every path through the per-PR decision must produce one of these — that is
+ * what makes "an exit with no reason" a compile error rather than a silence
+ * (Issue #1109). Exported so the compile gate in
+ * `merge_conflict_decision_compile_test.ts` can hold a returnless exit
+ * against the real declared type rather than a copy of it.
+ */
+export type ConflictScanPrOutcome =
+  | { outcome: "attempted"; pr: ConflictingPr }
+  | { outcome: "skipped"; reason: ConflictSkipReason };
+
+/** The author login a listing entry carried, when it carried one. */
+function prAuthorLogin(pr: PrEntry): string | undefined {
+  const login = pr.author?.login;
+  return typeof login === "string" && login.trim().length > 0
+    ? login.trim()
+    : undefined;
+}
+
+/** Fold a login for comparison — GitHub logins are case-insensitive. */
+function normaliseLogin(login: string): string {
+  return login.trim().toLowerCase()
+    .replace(/^app\//, "")
+    .replace(/\[bot\]$/, "");
+}
+
 /**
  * Find one worker PR that conflicts with its base and is due an attempt.
  *
@@ -591,14 +939,21 @@ async function escalateConflictingPr(args: {
  * here rather than handed on (Issue #395) — the processor may be exactly what
  * cannot finish, so the escalation must not depend on reaching it.
  *
- * Per-repo failures are logged and skipped so one unreachable repo cannot
- * stall the scan.
+ * Every PR the pass decides on gets one {@link ConflictPrDecision} — attempted,
+ * or skipped for exactly one {@link ConflictSkipReason} — recorded through the
+ * logger and returned to the caller, so "the label went on and then silence"
+ * cannot recur (Issue #1109). The records cost no extra GitHub calls: every
+ * operand comes from data the pass already fetched.
  *
- * @returns The PR to work on, or `null` when nothing is due.
+ * Per-repo failures are logged and skipped so one unreachable repo cannot
+ * stall the scan. Those are repo-level, not PR-level, so they carry no per-PR
+ * record — no PR is known to record against.
+ *
+ * @returns The selected PR (or `null`) plus every decision the pass made.
  */
 export async function findConflictingPr(
   options: FindConflictingPrOptions,
-): Promise<Result<ConflictingPr | null>> {
+): Promise<Result<ConflictScanPass>> {
   const {
     githubUser,
     allowedAuthors = [],
@@ -626,7 +981,225 @@ export async function findConflictingPr(
     fleetPrAuthors,
   });
 
+  const scanAuthorKeys = new Set(scanAuthors.map(normaliseLogin));
+
+  /**
+   * Decide one PR, in the order the gates run.
+   *
+   * The declared return type is what closes the taxonomy: a branch that falls
+   * out of here without a decision does not compile (Issue #1109).
+   */
+  const decidePr = async (
+    repo: string,
+    pr: PrEntry,
+    mergeableState: string | undefined,
+  ): Promise<ConflictScanPrOutcome> => {
+    if (mergeableState !== "CONFLICTING") {
+      return {
+        outcome: "skipped",
+        reason: {
+          kind: "not-conflicting",
+          mergeableState: mergeableState ?? "UNKNOWN",
+        },
+      };
+    }
+
+    // Defence in depth around the listing's own `--author` filter: the pass
+    // pushes a merge commit to the head branch, so a PR outside the
+    // push-capable maintenance set is never touched (Issue #4076).
+    const author = prAuthorLogin(pr);
+    if (author !== undefined && !scanAuthorKeys.has(normaliseLogin(author))) {
+      return {
+        outcome: "skipped",
+        reason: { kind: "out-of-scope-author", author },
+      };
+    }
+
+    // Already handled or deferred by this cycle's drain (Issue #561). The
+    // skip is before the label call: the PR was labelled on the pass that
+    // selected it.
+    if (exclude?.has(conflictPrKey(repo, pr.number))) {
+      return { outcome: "skipped", reason: { kind: "already-handled" } };
+    }
+
+    let labels: string[];
+    try {
+      labels = await fetchPrLabels(repo, pr.number, ghCommandFn);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn("Merge-conflict scan: failed to read PR labels", {
+        repo,
+        prNumber: pr.number,
+        error: message,
+      });
+      return {
+        outcome: "skipped",
+        reason: { kind: "scan-error", stage: "labels", message },
+      };
+    }
+
+    // Make the queue visible before deciding whether to act — a PR the
+    // worker will not touch is exactly the one a human must be able to
+    // see (Issue #84).
+    try {
+      if (
+        await ensureMergeConflictLabel(repo, pr.number, labels, ghCommandFn)
+      ) {
+        logger.warn(
+          `PR #${pr.number} conflicts with ${
+            pr.baseRefName ?? "its base"
+          } — labelled '${MERGE_CONFLICT_LABEL}'`,
+          { repo, prNumber: pr.number },
+        );
+      }
+    } catch (err) {
+      logger.warn("Merge-conflict scan: failed to apply conflict label", {
+        repo,
+        prNumber: pr.number,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    if (labels.includes(needsHumanLabel)) {
+      return {
+        outcome: "skipped",
+        reason: { kind: "needs-human", label: needsHumanLabel },
+      };
+    }
+
+    let history: ConflictAttemptHistory;
+    try {
+      history = parseConflictAttempts(
+        await fetchIssueCommentPages(repo, pr.number, ghCommandFn),
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn("Merge-conflict scan: failed to read attempt history", {
+        repo,
+        prNumber: pr.number,
+        error: message,
+      });
+      return {
+        outcome: "skipped",
+        reason: { kind: "scan-error", stage: "attempt-history", message },
+      };
+    }
+
+    // A spent budget is only a quiet skip once the PR is visibly a human's
+    // (Issue #395). Reaching here means it is not: the label check above
+    // already let it through, so the processor's final escalation never
+    // landed and the PR would stall unowned for ever.
+    if (hasExhaustedConflictAttempts(history.count, maxAttempts)) {
+      logger.warn(
+        `PR #${pr.number} has spent its ${maxAttempts} merge-conflict ` +
+          "attempts without being handed to a human — escalating",
+        { repo, prNumber: pr.number, attempts: history.count, maxAttempts },
+      );
+      await escalateConflictingPr({
+        repo,
+        prNumber: pr.number,
+        heading: "Merge conflict needs human attention",
+        reason: buildExhaustedEscalationReason(pr.number, history.count),
+        nextStep: EXHAUSTED_CONFLICT_NEXT_STEP,
+        // The key the resolution pass uses, so a landed escalation is not
+        // duplicated — only its missing label is re-applied.
+        dedupKey: `merge-conflict-${pr.number}`,
+        needsHumanLabel,
+        ghCommandFn,
+        logger,
+      });
+      return {
+        outcome: "skipped",
+        reason: {
+          kind: "budget-spent",
+          attemptsSpent: history.count,
+          maxAttempts,
+        },
+      };
+    }
+
+    const now = nowMs();
+    if (!isConflictAttemptDue(history, now, cooldownHours)) {
+      return {
+        outcome: "skipped",
+        reason: {
+          kind: "cooldown",
+          msUntilDue: conflictCooldownMsRemaining(history, now, cooldownHours),
+          ...(history.lastAttemptAt !== undefined
+            ? { lastAttemptAt: history.lastAttemptAt }
+            : {}),
+        },
+      };
+    }
+
+    // Past the cooldown, an attempt that never concluded is a disrupted
+    // attempt, not one in flight (Issue #395). It does not spend the merge
+    // budget — but repeated disruption is its own failure, and it is
+    // escalated rather than retried silently forever.
+    const disruptedCount = countDisruptedAttempts(history);
+    if (hasExhaustedDisruptedAttempts(disruptedCount, maxDisruptedAttempts)) {
+      logger.warn(
+        `PR #${pr.number} has had ${disruptedCount} merge-conflict attempts ` +
+          "disrupted before any conclusion — escalating to a human",
+        { repo, prNumber: pr.number, disruptedCount },
+      );
+      await escalateConflictingPr({
+        repo,
+        prNumber: pr.number,
+        heading: "Merge-conflict resolution keeps being disrupted",
+        reason: buildDisruptionEscalationReason(pr.number, disruptedCount),
+        nextStep: DISRUPTED_CONFLICT_NEXT_STEP,
+        dedupKey: `merge-conflict-disrupted-${pr.number}`,
+        needsHumanLabel,
+        ghCommandFn,
+        logger,
+      });
+      return {
+        outcome: "skipped",
+        reason: {
+          kind: "disrupted-bound",
+          disruptedCount,
+          maxDisruptedAttempts,
+        },
+      };
+    }
+
+    if (disruptedCount > 0) {
+      logger.warn(
+        `PR #${pr.number} has ${disruptedCount} disrupted merge-conflict ` +
+          "attempt(s) with no conclusion — re-attempting",
+        {
+          repo,
+          prNumber: pr.number,
+          disruptedCount,
+          maxDisruptedAttempts,
+        },
+      );
+    }
+
+    logger.info("Found a conflicting PR that needs a real merge", {
+      repo,
+      prNumber: pr.number,
+      attempts: history.count,
+      disruptedCount,
+    });
+
+    return {
+      outcome: "attempted",
+      pr: {
+        repo,
+        prNumber: pr.number,
+        branchName: pr.headRefName,
+        // allow-hardcoded-branch — safe fallback when the listing omits it
+        baseBranch: pr.baseRefName || "main",
+        attemptCount: history.count,
+        disruptedCount,
+      },
+    };
+  };
+
   const orderedRepos = shuffleRepos ? shuffleRepos([...repos]) : [...repos];
+  const decisions: ConflictPrDecision[] = [];
 
   for (const repo of orderedRepos) {
     if (!isRepoAllowed(repo)) continue;
@@ -651,163 +1224,25 @@ export async function findConflictingPr(
     );
 
     for (const pr of prs) {
-      if (states.get(pr.number) !== "CONFLICTING") continue;
-      // Already handled or deferred by this cycle's drain (Issue #561). The
-      // skip is before the label call: the PR was labelled on the pass that
-      // selected it.
-      if (exclude?.has(conflictPrKey(repo, pr.number))) continue;
-
-      let labels: string[];
-      try {
-        labels = await fetchPrLabels(repo, pr.number, ghCommandFn);
-      } catch (err) {
-        logger.warn("Merge-conflict scan: failed to read PR labels", {
+      const outcome = await decidePr(repo, pr, states.get(pr.number));
+      const decision: ConflictPrDecision = outcome.outcome === "attempted"
+        ? { repo, prNumber: pr.number, outcome: "attempted" }
+        : {
           repo,
           prNumber: pr.number,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        continue;
+          outcome: "skipped",
+          reason: outcome.reason,
+        };
+      decisions.push(decision);
+      recordConflictDecision(logger, decision);
+
+      if (outcome.outcome === "attempted") {
+        recordConflictPassSummary(logger, "scan", decisions);
+        return { ok: true, value: { selected: outcome.pr, decisions } };
       }
-
-      // Make the queue visible before deciding whether to act — a PR the
-      // worker will not touch is exactly the one a human must be able to
-      // see (Issue #84).
-      try {
-        if (
-          await ensureMergeConflictLabel(repo, pr.number, labels, ghCommandFn)
-        ) {
-          logger.warn(
-            `PR #${pr.number} conflicts with ${
-              pr.baseRefName ?? "its base"
-            } — labelled '${MERGE_CONFLICT_LABEL}'`,
-            { repo, prNumber: pr.number },
-          );
-        }
-      } catch (err) {
-        logger.warn("Merge-conflict scan: failed to apply conflict label", {
-          repo,
-          prNumber: pr.number,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-
-      if (labels.includes(needsHumanLabel)) {
-        logger.debug("Conflicting PR already escalated to a human — skipping", {
-          repo,
-          prNumber: pr.number,
-        });
-        continue;
-      }
-
-      let history: ConflictAttemptHistory;
-      try {
-        history = parseConflictAttempts(
-          await fetchIssueCommentPages(repo, pr.number, ghCommandFn),
-        );
-      } catch (err) {
-        logger.warn("Merge-conflict scan: failed to read attempt history", {
-          repo,
-          prNumber: pr.number,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        continue;
-      }
-
-      // A spent budget is only a quiet skip once the PR is visibly a human's
-      // (Issue #395). Reaching here means it is not: the label check above
-      // already let it through, so the processor's final escalation never
-      // landed and the PR would stall unowned for ever.
-      if (hasExhaustedConflictAttempts(history.count, maxAttempts)) {
-        logger.warn(
-          `PR #${pr.number} has spent its ${maxAttempts} merge-conflict ` +
-            "attempts without being handed to a human — escalating",
-          { repo, prNumber: pr.number, attempts: history.count, maxAttempts },
-        );
-        await escalateConflictingPr({
-          repo,
-          prNumber: pr.number,
-          heading: "Merge conflict needs human attention",
-          reason: buildExhaustedEscalationReason(pr.number, history.count),
-          nextStep: EXHAUSTED_CONFLICT_NEXT_STEP,
-          // The key the resolution pass uses, so a landed escalation is not
-          // duplicated — only its missing label is re-applied.
-          dedupKey: `merge-conflict-${pr.number}`,
-          needsHumanLabel,
-          ghCommandFn,
-          logger,
-        });
-        continue;
-      }
-
-      if (!isConflictAttemptDue(history, nowMs(), cooldownHours)) {
-        logger.debug("Conflicting PR is still inside its attempt cooldown", {
-          repo,
-          prNumber: pr.number,
-          lastAttemptAt: history.lastAttemptAt,
-          cooldownHours,
-        });
-        continue;
-      }
-
-      // Past the cooldown, an attempt that never concluded is a disrupted
-      // attempt, not one in flight (Issue #395). It does not spend the merge
-      // budget — but repeated disruption is its own failure, and it is
-      // escalated rather than retried silently forever.
-      const disruptedCount = countDisruptedAttempts(history);
-      if (hasExhaustedDisruptedAttempts(disruptedCount, maxDisruptedAttempts)) {
-        logger.warn(
-          `PR #${pr.number} has had ${disruptedCount} merge-conflict attempts ` +
-            "disrupted before any conclusion — escalating to a human",
-          { repo, prNumber: pr.number, disruptedCount },
-        );
-        await escalateConflictingPr({
-          repo,
-          prNumber: pr.number,
-          heading: "Merge-conflict resolution keeps being disrupted",
-          reason: buildDisruptionEscalationReason(pr.number, disruptedCount),
-          nextStep: DISRUPTED_CONFLICT_NEXT_STEP,
-          dedupKey: `merge-conflict-disrupted-${pr.number}`,
-          needsHumanLabel,
-          ghCommandFn,
-          logger,
-        });
-        continue;
-      }
-
-      if (disruptedCount > 0) {
-        logger.warn(
-          `PR #${pr.number} has ${disruptedCount} disrupted merge-conflict ` +
-            "attempt(s) with no conclusion — re-attempting",
-          {
-            repo,
-            prNumber: pr.number,
-            disruptedCount,
-            maxDisruptedAttempts,
-          },
-        );
-      }
-
-      logger.info("Found a conflicting PR that needs a real merge", {
-        repo,
-        prNumber: pr.number,
-        attempts: history.count,
-        disruptedCount,
-      });
-
-      return {
-        ok: true,
-        value: {
-          repo,
-          prNumber: pr.number,
-          branchName: pr.headRefName,
-          // allow-hardcoded-branch — safe fallback when the listing omits it
-          baseBranch: pr.baseRefName || "main",
-          attemptCount: history.count,
-          disruptedCount,
-        },
-      };
     }
   }
 
-  return { ok: true, value: null };
+  recordConflictPassSummary(logger, "scan", decisions);
+  return { ok: true, value: { selected: null, decisions } };
 }
