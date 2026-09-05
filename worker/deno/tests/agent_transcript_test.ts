@@ -14,6 +14,7 @@ import {
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 import { createAgentStub } from "./support/agent_stub.ts";
 import type { Logger } from "../types.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 // Issue #1141 changed this rule deliberately: `DEBUG=true` used to enable the
 // tee on its own, and a debug flag that silently starts capturing repository
@@ -196,6 +197,7 @@ Deno.test({
         "../lib/claude_runner.ts"
       );
       const result = await runClaudeWithTimeout({
+        clock: fakeClock(),
         prompt: "test",
         agentBinaryPath: stub.path,
         phase: "execute",

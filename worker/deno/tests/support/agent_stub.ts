@@ -66,6 +66,40 @@ export interface AgentStubOptions {
 const DEFAULT_STUB_NAME = "vibe-agent-stub";
 
 /**
+ * Bash that blocks the stub until {@link releaseAgentStub} lets it through.
+ *
+ * The replacement for `sleep N` in the middle of a stub body. A stub that
+ * sleeps hands the test no way of knowing when the agent reached the point
+ * under test, so suites guessed — "two seconds should be enough" — and the
+ * guess is what goes wrong on a loaded host. This blocks on a file instead:
+ * the test drives its own clock, drives the watchdog, and only then releases
+ * the agent, in that order and no other, whatever else the machine is doing.
+ *
+ * The poll is a real 50 ms sleep, so a busy host makes the wait longer and
+ * never makes the answer different — and it is short enough that a stub the
+ * runner kills mid-gate leaves nothing holding the stdout pipe for long.
+ *
+ * @param name - Gate name, for a stub that stops more than once.
+ * @returns Bash, newline-terminated, to splice into a stub body.
+ */
+export function agentStubGate(name: string = "gate"): string {
+  return `while [ ! -f "$0.${name}" ]; do sleep 0.05; done\n`;
+}
+
+/**
+ * Let a stub blocked on {@link agentStubGate} run on.
+ *
+ * @param stub - The stub holding the gate.
+ * @param name - The gate name passed to {@link agentStubGate}.
+ */
+export function releaseAgentStub(
+  stub: AgentStub,
+  name: string = "gate",
+): Promise<void> {
+  return Deno.writeTextFile(`${stub.path}.${name}`, "go\n");
+}
+
+/**
  * Write a stub agent to a fresh temp directory and return its path.
  *
  * @param body - The bash body of the stub, after the shebang.

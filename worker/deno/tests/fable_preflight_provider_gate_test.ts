@@ -41,6 +41,7 @@ import {
 import { recordFableAvailability } from "../lib/health_check_cache.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
 import { emptyEnv } from "./support/env_lookup.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 /** Basename of the file the stub records its argv in. */
 const ARG_LOG = "argv.log";
@@ -134,6 +135,7 @@ Deno.test({
 
       const result = await runClaudeWithRetry(
         {
+          clock: fakeClock(),
           prompt: "draft a plan",
           phase: "quorum",
           cwd: stub.cwd,
@@ -192,6 +194,7 @@ Deno.test({
 
       const result = await runClaudeWithRetry(
         {
+          clock: fakeClock(),
           prompt: "draft a plan",
           phase: "quorum",
           cwd: stub.cwd,

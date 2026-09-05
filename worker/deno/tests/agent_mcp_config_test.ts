@@ -19,6 +19,7 @@ import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import { PLAYWRIGHT_MCP_VERSION } from "../setup/screenshot.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 import { envFrom } from "./support/env_lookup.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 Deno.test("agent mcp config - writes the Playwright server config to the worker cache (never the clone) with the clone's docs/evidence as output dir and the chromium channel (Issue #4355)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "mcp-cfg-" });
@@ -128,6 +129,7 @@ Deno.test({
       await withStubClaude(argvFile, async (stub) => {
         await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "P",
             model: "m",
             cwd: workDir,
@@ -150,6 +152,7 @@ Deno.test({
       await withStubClaude(argvFile, async (stub) => {
         await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "P",
             model: "m",
             cwd: workDir,
@@ -180,6 +183,7 @@ Deno.test({
       await withStubClaude(argvFile, async (stub) => {
         await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "P",
             model: "m",
             cwd: workDir,
@@ -200,6 +204,7 @@ Deno.test({
       await withStubClaude(argvFile, async (stub) => {
         await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "P",
             model: "m",
             workDir,

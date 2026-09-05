@@ -17,6 +17,13 @@
  * - A child that exits 124 by itself is reported faithfully as a plain
  *   non-zero exit, not claimed as a timeout.
  *
+ * The clock is injected (PR #1170 follow-up). Three of these cases used to
+ * sleep — 30 s of stub against a 1 s watchdog, 1.5 s before an orphan-making
+ * self-kill, 1.2 s of memory-watch ticks — and a loaded host turns each of
+ * those durations into a different test. Now the stub waits at a gate, the
+ * test moves the runner's clock to the instant it wants, and every wake is
+ * the test's decision.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -24,7 +31,15 @@ import { assert, assertEquals } from "@std/assert";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import { TIMEOUT_EXIT_CODE } from "../lib/claude_executor.ts";
 import type { Logger } from "../types.ts";
-import { createAgentStub, withAgentStub } from "./support/agent_stub.ts";
+import {
+  agentStubGate,
+  createAgentStub,
+  releaseAgentStub,
+  withAgentStub,
+} from "./support/agent_stub.ts";
+import { type AgentStub } from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
+import { DEFAULT_ORPHAN_COLLECTOR_DEPS } from "../lib/orphan_collector.ts";
 
 // ---------------------------------------------------------------------------
 // Stub harness — a fake agent, named by path (Issue #959), that records how
@@ -42,26 +57,65 @@ interface StubClaude {
   /** Absolute path to the stub, passed to the runner as `agentBinaryPath`. */
   path: string;
   runLog: string;
+  /** The stub itself, for {@link releaseAgentStub}. */
+  stub: AgentStub;
 }
 
+/**
+ * Run `fn` with a stub agent that logs its invocation, prints `lastLine` and
+ * exits `exitCode`.
+ *
+ * With `gated`, it stops after printing and waits for
+ * {@link releaseAgentStub} — the replacement for a `sleep` long enough to
+ * outlast whatever watchdog the case is about. The test then drives the
+ * watchdog on the injected clock and releases the agent (or never does, and
+ * lets the kill find it).
+ */
 function withStub<T>(
   lastLine: string,
   exitCode: number,
   fn: (stub: StubClaude) => Promise<T>,
-  sleepSeconds = 0,
+  gated = false,
 ): Promise<T> {
   // The run log is located from `$0`, so no path is baked into the body.
   const body = [
     `printf 'run\\n' >> "$(dirname "$0")/${RUN_LOG}"`,
     `printf '%s\\n' '{"type":"result","result":"${lastLine}"}'`,
-    ...(sleepSeconds > 0 ? [`sleep ${sleepSeconds}`] : []),
+    ...(gated ? [agentStubGate().trimEnd()] : []),
     `exit ${exitCode}`,
   ].join("\n");
   return withAgentStub(
     body,
-    (stub) => fn({ path: stub.path, runLog: `${stub.dir}/${RUN_LOG}` }),
+    (stub) => fn({ path: stub.path, runLog: `${stub.dir}/${RUN_LOG}`, stub }),
     { prefix: "claude_killed_stub_" },
   );
+}
+
+/** Resolves when the runner has folded the agent's nth stdout chunk in. */
+function chunkSignals() {
+  const chunks: ReturnType<typeof Promise.withResolvers<void>>[] = [];
+  let seen = 0;
+  const at = (index: number) => (chunks[index] ??= Promise.withResolvers());
+  return {
+    onActivity: () => at(seen++).resolve(),
+    chunk: (n: number) => at(n - 1).promise,
+  };
+}
+
+/** Wait for a file the stub writes, so "the child got that far" is provable. */
+async function waitForFile(path: string): Promise<string> {
+  // Bounded so a stub that never writes fails the case rather than hanging
+  // the suite; the poll is real time, which a busy host only lengthens.
+  for (let attempt = 0; attempt < 600; attempt++) {
+    try {
+      const text = (await Deno.readTextFile(path)).trim();
+      if (text.length > 0) return text;
+    } catch {
+      // not written yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`the stub never wrote ${path}`);
 }
 
 async function readRunCount(runLog: string): Promise<number> {
@@ -73,12 +127,17 @@ async function readRunCount(runLog: string): Promise<number> {
   }
 }
 
-// A retry config whose wait would overrun a bounded run if the loop ever
-// entered the rate-limit path — a fast completion proves no wait accrued.
-const SLOW_IF_RETRIED = {
+// A retry config that allows three retries and waits for none of them, so a
+// loop that wrongly entered the rate-limit path re-invokes the stub and the
+// run log says so. The previous spelling used a 300 s first wait and proved
+// the same point by the run finishing quickly — a wall-clock argument, and
+// one the injected clock cannot make: a fake sleep nobody advances does not
+// finish slowly, it does not finish at all. Counting invocations is the same
+// claim stated as behaviour.
+const NO_RETRY_WAIT = {
   maxRetries: 3,
   maxWaitSeconds: 600,
-  initialWaitInterval: 300,
+  initialWaitInterval: 0,
 } as const;
 
 const COMMON_OPTS = {
@@ -106,8 +165,8 @@ Deno.test({
       137,
       async (stub) => {
         const result = await runClaudeWithRetry(
-          { ...COMMON_OPTS, agentBinaryPath: stub.path },
-          SLOW_IF_RETRIED,
+          { ...COMMON_OPTS, clock: fakeClock(), agentBinaryPath: stub.path },
+          NO_RETRY_WAIT,
         );
         return { result, runs: await readRunCount(stub.runLog) };
       },
@@ -145,8 +204,8 @@ Deno.test({
       124,
       async (stub) => {
         const result = await runClaudeWithRetry(
-          { ...COMMON_OPTS, agentBinaryPath: stub.path },
-          SLOW_IF_RETRIED,
+          { ...COMMON_OPTS, clock: fakeClock(), agentBinaryPath: stub.path },
+          NO_RETRY_WAIT,
         );
         return { result, runs: await readRunCount(stub.runLog) };
       },
@@ -173,27 +232,37 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    // The stub sleeps past the 1 s hard timeout, so the watchdog kills it.
-    const { result } = await withStub(
+    // The stub waits at the gate past the 1 s hard timeout, so the watchdog
+    // kills it — at the instant the test moves the clock there, not whenever
+    // a loaded host gets round to the timer.
+    const { result, runs } = await withStub(
       "still working",
       0,
       async (stub) => {
-        const result = await runClaudeWithRetry(
+        const clock = fakeClock();
+        const signals = chunkSignals();
+        const run = runClaudeWithRetry(
           {
             ...COMMON_OPTS,
+            clock,
             agentBinaryPath: stub.path,
             timeoutSeconds: 1,
             killAfterSeconds: 1,
+            onActivity: signals.onActivity,
           },
-          SLOW_IF_RETRIED,
+          NO_RETRY_WAIT,
         );
+        await signals.chunk(1);
+        await clock.advance(1_000);
+        const result = await run;
         return { result, runs: await readRunCount(stub.runLog) };
       },
-      30,
+      true,
     );
 
     assert(result.ok);
     if (!result.ok) return;
+    assertEquals(runs, 1, "a watchdog timeout is terminal — no re-invocation");
 
     assertEquals(result.value.timedOut, true);
     assertEquals(result.value.timeoutReason, "hard-timeout");
@@ -224,8 +293,8 @@ Deno.test({
     );
     try {
       const result = await runClaudeWithRetry(
-        { ...COMMON_OPTS, agentBinaryPath: stub.path },
-        SLOW_IF_RETRIED,
+        { ...COMMON_OPTS, clock: fakeClock(), agentBinaryPath: stub.path },
+        NO_RETRY_WAIT,
       );
       assert(result.ok);
       if (!result.ok) return;
@@ -252,8 +321,8 @@ Deno.test({
     );
     try {
       const result = await runClaudeWithRetry(
-        { ...COMMON_OPTS, agentBinaryPath: stub.path },
-        SLOW_IF_RETRIED,
+        { ...COMMON_OPTS, clock: fakeClock(), agentBinaryPath: stub.path },
+        NO_RETRY_WAIT,
       );
       assert(result.ok);
       if (!result.ok) return;
@@ -273,7 +342,7 @@ Deno.test({
 // (e) The kill carries the memory-pressure reading (Issue #4374)
 // ---------------------------------------------------------------------------
 
-function capturingLogger(): {
+function capturingLogger(onWarn?: (message: string) => void): {
   logger: Logger;
   security: Array<{ event: string; details: string }>;
   warns: string[];
@@ -284,6 +353,7 @@ function capturingLogger(): {
     info: () => {},
     warn: (message) => {
       warns.push(message);
+      onWarn?.(message);
     },
     error: () => {},
     debug: () => {},
@@ -313,6 +383,7 @@ Deno.test({
         const result = await runClaudeWithRetry(
           {
             ...COMMON_OPTS,
+            clock: fakeClock(),
             agentBinaryPath: stub.path,
             logger,
             probeMemoryPressure: () => {
@@ -324,7 +395,7 @@ Deno.test({
               });
             },
           },
-          SLOW_IF_RETRIED,
+          NO_RETRY_WAIT,
         );
         return { result, runs: await readRunCount(stub.runLog) };
       },
@@ -372,11 +443,12 @@ Deno.test({
       const result = await runClaudeWithRetry(
         {
           ...COMMON_OPTS,
+          clock: fakeClock(),
           agentBinaryPath: stub.path,
           logger,
           probeMemoryPressure: () => Promise.reject(new Error("no sysctl")),
         },
-        SLOW_IF_RETRIED,
+        NO_RETRY_WAIT,
       );
       return { result, runs: await readRunCount(stub.runLog) };
     });
@@ -411,16 +483,20 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    // The stub emits one chunk (so a snapshot is requested straight away),
-    // spawns a detached child that outlives it, then SIGKILLs itself —
-    // the OOM-killer shape: no watchdog, exit 137, an orphan left behind.
-    // The pid file sits beside the stub, located from `$0`.
+    // The stub emits one chunk, spawns a detached child that outlives it,
+    // records its pid, emits a second chunk — which is what makes the runner
+    // snapshot a tree that now HAS the descendant in it — and only then
+    // SIGKILLs itself: the OOM-killer shape, no watchdog, exit 137, an orphan
+    // left behind. Every step waits for the test, so the snapshot provably
+    // lands between the spawn and the kill instead of inside a 1.5 s guess.
     const stub = await createAgentStub(
       [
         `printf '%s\\n' '{"type":"result","result":"working"}'`,
         `sleep 300 >/dev/null 2>&1 &`,
         `echo $! > "$(dirname "$0")/${PID_FILE}"`,
-        "sleep 1.5",
+        agentStubGate("snapshot").trimEnd(),
+        `printf '%s\\n' '{"type":"result","result":"still working"}'`,
+        agentStubGate("die").trimEnd(),
         "kill -9 $$",
       ].join("\n"),
       { prefix: "claude_orphan_stub_" },
@@ -429,18 +505,44 @@ Deno.test({
     let orphanPid = 0;
     try {
       const { logger, security, warns } = capturingLogger();
-      const result = await runClaudeWithRetry(
+      const clock = fakeClock();
+      const signals = chunkSignals();
+      // The real descendant probe, wrapped only to say when it has seen the
+      // descendant — the rendezvous the old `sleep 1.5` was standing in for.
+      const sawDescendant = Promise.withResolvers<void>();
+      const run = runClaudeWithRetry(
         {
           ...COMMON_OPTS,
+          clock,
           agentBinaryPath: stub.path,
           logger,
           descendantSnapshotIntervalMs: 200,
+          onActivity: signals.onActivity,
+          orphanCollectorDeps: {
+            ...DEFAULT_ORPHAN_COLLECTOR_DEPS,
+            getDescendants: async (pid: number) => {
+              const found = await DEFAULT_ORPHAN_COLLECTOR_DEPS.getDescendants(
+                pid,
+              );
+              if (found.length > 0) sawDescendant.resolve();
+              return found;
+            },
+          },
           probeMemoryPressure: () => Promise.resolve({ level: "ok" as const }),
         },
-        SLOW_IF_RETRIED,
+        NO_RETRY_WAIT,
       );
-      orphanPid = Number((await Deno.readTextFile(pidFile)).trim());
+      await signals.chunk(1);
+      orphanPid = Number(await waitForFile(pidFile));
       assert(orphanPid > 0, "the stub recorded its child's pid");
+      // Past the chunk-driven snapshot throttle (a quarter of the interval),
+      // so the next chunk requests a fresh snapshot rather than being skipped.
+      await clock.advance(200);
+      await releaseAgentStub(stub, "snapshot");
+      await signals.chunk(2);
+      await sawDescendant.promise;
+      await releaseAgentStub(stub, "die");
+      const result = await run;
 
       assert(
         result.ok,
@@ -497,17 +599,28 @@ Deno.test({
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    const { logger, warns } = capturingLogger();
     let probes = 0;
-    // A stub that runs long enough for several 100 ms ticks.
+    // The watch rides the descendant-snapshot tick, so the test simply moves
+    // the clock two ticks on and releases the agent. The old spelling ran the
+    // stub for 1.2 s and hoped at least two 100 ms ticks landed inside it.
+    const firstWarn = Promise.withResolvers<void>();
+    const { logger, warns } = capturingLogger((message) => {
+      if (message.startsWith("Memory pressure high during the agent run")) {
+        firstWarn.resolve();
+      }
+    });
     const { result } = await withStub("working", 0, async (stub) => {
-      const result = await runClaudeWithRetry(
+      const clock = fakeClock();
+      const signals = chunkSignals();
+      const run = runClaudeWithRetry(
         {
           ...COMMON_OPTS,
+          clock,
           agentBinaryPath: stub.path,
           logger,
           descendantSnapshotIntervalMs: 100,
           memoryWatchMinIntervalMs: 60_000,
+          onActivity: signals.onActivity,
           probeMemoryPressure: () => {
             probes++;
             return Promise.resolve({
@@ -517,13 +630,21 @@ Deno.test({
             });
           },
         },
-        SLOW_IF_RETRIED,
+        NO_RETRY_WAIT,
       );
+      await signals.chunk(1);
+      // First tick: pressure reads high, so the process table is logged.
+      await clock.advance(100);
+      await firstWarn.promise;
+      // Second tick, well inside the 60 s window: probed again, logged once.
+      await clock.advance(100);
+      await releaseAgentStub(stub.stub);
+      const result = await run;
       return { result, runs: await readRunCount(stub.runLog) };
-    }, 1.2);
+    }, true);
     assert(result.ok);
     if (!result.ok) return;
-    assert(probes >= 2, `the watch probes on the ticks: ${probes}`);
+    assertEquals(probes, 2, "the watch probes on every tick");
     const pressureWarns = warns.filter((w) =>
       w.startsWith("Memory pressure high during the agent run")
     );
@@ -559,24 +680,36 @@ Deno.test({
         // The descendant inherits stdout and holds it for 60s. Crucially it
         // is NOT redirected, so the write end of the pipe stays open.
         "sleep 60 &",
+        `echo $! > "$(dirname "$0")/${PID_FILE}"`,
         "exit 0",
       ].join("\n"),
       { prefix: "claude_pipe_holder_" },
     );
-    const startedAt = Date.now();
+    const pidFile = `${stub.dir}/${PID_FILE}`;
+    let holderPid = 0;
     try {
       const { logger } = capturingLogger();
-      const result = await runClaudeWithRetry(
+      const clock = fakeClock();
+      const signals = chunkSignals();
+      const run = runClaudeWithRetry(
         {
           ...COMMON_OPTS,
+          clock,
           agentBinaryPath: stub.path,
           logger,
           streamDrainCapSeconds: 2,
+          onActivity: signals.onActivity,
           probeMemoryPressure: () => Promise.resolve({ level: "ok" as const }),
         },
-        SLOW_IF_RETRIED,
+        NO_RETRY_WAIT,
       );
-      const elapsedMs = Date.now() - startedAt;
+      await signals.chunk(1);
+      // The drain cap expires. Everything after this is the runner refusing
+      // to wait on a pipe it will never see closed.
+      await clock.advance(2_000);
+      const result = await run;
+      holderPid = Number(await waitForFile(pidFile));
+
       // A fast return is only evidence if the agent ran (Issue #959).
       assert(result.ok, "the runner must return a result");
       if (!result.ok) return;
@@ -584,12 +717,23 @@ Deno.test({
         result.value.output.includes("working"),
         `the stub must have run: ${JSON.stringify(result.value.output)}`,
       );
-      assert(
-        elapsedMs < 30_000,
-        `settling must not wait on the held pipe; took ${elapsedMs}ms while ` +
-          `the descendant holds stdout for 60s`,
+      // The behavioural form of "it did not wait": the pipe-holder is still
+      // alive at the moment the run hands its result back. The old spelling
+      // compared a real elapsed reading against 30 s, which says the same
+      // thing only on a machine that happens to be idle.
+      assertEquals(
+        await pidAlive(holderPid),
+        true,
+        `the descendant still holds stdout, and the run returned anyway`,
       );
     } finally {
+      if (holderPid > 0) {
+        await new Deno.Command("kill", {
+          args: ["-9", String(holderPid)],
+          stdout: "null",
+          stderr: "null",
+        }).output().catch(() => {});
+      }
       await stub.dispose();
     }
   },

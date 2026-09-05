@@ -34,6 +34,7 @@ import { FABLE_PREFLIGHT_DEGRADED_REASON } from "../lib/fable_routing.ts";
 import { recordFableAvailability } from "../lib/health_check_cache.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 /** Basename of the file the stub records its routing args in. */
 const ARG_LOG = "args.log";
@@ -123,6 +124,7 @@ Deno.test({
 
       const result = await runClaudeWithRetry(
         {
+          clock: fakeClock(),
           prompt: "plan it",
           phase: "planning",
           cwd: stub.cwd,
@@ -169,6 +171,7 @@ Deno.test({
 
       const result = await runClaudeWithRetry(
         {
+          clock: fakeClock(),
           prompt: "plan it",
           phase: "planning",
           cwd: stub.cwd,
@@ -203,6 +206,7 @@ Deno.test({
       assert(rec.ok);
       const result = await runClaudeWithRetry(
         {
+          clock: fakeClock(),
           prompt: "plan it",
           phase: "planning",
           cwd: stub.cwd,
@@ -236,6 +240,7 @@ Deno.test({
       assert(rec.ok);
       const result = await runClaudeWithRetry(
         {
+          clock: fakeClock(),
           prompt: "plan it",
           phase: "planning",
           cwd: stub.cwd,
@@ -273,6 +278,7 @@ Deno.test({
       // `issue` is not in the Fable-preferring set.
       const result = await runClaudeWithRetry(
         {
+          clock: fakeClock(),
           prompt: "code it",
           phase: "issue",
           cwd: stub.cwd,

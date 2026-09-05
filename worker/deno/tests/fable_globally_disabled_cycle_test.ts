@@ -41,6 +41,7 @@ import {
 import { reportGrillMeDegradation } from "../lib/grill_me_run_stats.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
 import { emptyEnv } from "./support/env_lookup.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 // ---------------------------------------------------------------------------
 // Stub harness — a fake agent, named by path (`agentBinaryPath`, Issue #959)
@@ -339,6 +340,7 @@ Deno.test({
       withStub(disabledStubBody(), async (stub) => {
         const result = await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "plan",
             phase: "planning",
             agentBinaryPath: stub.path,
@@ -393,6 +395,7 @@ Deno.test({
       withStub(disabledStubBody(), async (stub) => {
         const result = await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "grill",
             phase: "grill_me",
             agentBinaryPath: stub.path,
@@ -442,6 +445,7 @@ Deno.test({
       withStub(silentSubstitutionStubBody(), async (stub) => {
         const result = await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "plan",
             phase: "planning",
             agentBinaryPath: stub.path,
@@ -492,6 +496,7 @@ Deno.test({
       withStub(silentSubstitutionStubBody(), async (stub) => {
         const result = await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "grill",
             phase: "grill_me",
             agentBinaryPath: stub.path,
@@ -536,6 +541,7 @@ Deno.test({
       withStub(selfHealStubBody(), async (stub) => {
         const result = await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "plan",
             phase: "planning",
             agentBinaryPath: stub.path,
@@ -581,6 +587,7 @@ Deno.test({
       withStub(selfHealStubBody(), async (stub) => {
         const result = await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "grill",
             phase: "grill_me",
             agentBinaryPath: stub.path,
@@ -630,6 +637,7 @@ Deno.test({
       return withStub(disabledStubBody(), async (stub) => {
         const result = await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "work the issue",
             phase: "issue",
             agentBinaryPath: stub.path,
