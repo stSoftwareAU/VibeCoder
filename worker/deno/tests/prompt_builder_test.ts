@@ -1471,7 +1471,7 @@ Deno.test("prompt builder - CI-failure section is covered by the boundary integr
   const boundaryId = "abc123def456";
   const ciFailureContext = formatCiFailureContext({
     boundaryId,
-    build: { number: 4347, result: "FAILURE", url: "" },
+    build: { number: "4347", result: "FAILURE", url: "" },
     log: "[ERROR] cannot find symbol\nBUILD FAILURE\n",
   });
 

@@ -198,7 +198,7 @@ Deno.test("Gap 1 - the issue prompt names the CI log when one is fenced", async 
   const prompt = await issuePrompt({
     ciFailureContext: formatCiFailureContext({
       boundaryId,
-      build: { number: 4347, result: "FAILURE", url: "" },
+      build: { number: "4347", result: "FAILURE", url: "" },
       log: "[ERROR] cannot find symbol\n",
     }),
     ciFailureBoundaryId: boundaryId,

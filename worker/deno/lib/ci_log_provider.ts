@@ -78,7 +78,17 @@ export interface CiLogProvider {
   readonly id: string;
   /** Can this provider resolve a log for this failing check? */
   matches(ctx: CiFailureContext): boolean;
-  /** Fetch a bounded root-cause log excerpt. Never throws. */
+  /**
+   * Fetch a bounded root-cause log excerpt. Never throws.
+   *
+   * **Contract (Issue #986).** `ctx.targetUrl` may be attacker-influenceable:
+   * in issue mode it comes from an issue body anyone can write. A provider
+   * must therefore treat it as a hint, derive what it fetches from its own
+   * configured base, and return in `CiLogExcerpt.url` only a URL it built
+   * itself — never the supplied one echoed back. Core renders that URL into
+   * a prompt outside the untrusted fence, and cannot validate a host it
+   * knows nothing about.
+   */
   fetchLog(ctx: CiFailureContext): Promise<Result<CiLogExcerpt, string>>;
 }
 

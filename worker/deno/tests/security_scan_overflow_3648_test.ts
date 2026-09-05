@@ -256,7 +256,7 @@ Deno.test("SEC-4024fa7fea0a - formatCiAnnotations keeps the empty-list message",
 Deno.test("SEC-3c3c066cff69 - formatCiFailureContext redacts secrets in the log tail", () => {
   const token = "ghp_" + "C".repeat(36);
   const out = formatCiFailureContext({
-    build: { number: 42, result: "FAILURE", url: "https://ci/42" },
+    build: { number: "42", result: "FAILURE", url: "https://ci/42" },
     log: `Started build\nfetching https://x:${token}@github.com/o/r\ndone`,
     boundaryId: "BOUNDARY_TEST",
   });
@@ -268,7 +268,7 @@ Deno.test("SEC-3c3c066cff69 - formatCiFailureContext redacts secrets in the log 
 
 Deno.test("SEC-3c3c066cff69 - formatCiFailureContext redacts an assignment-style secret", () => {
   const out = formatCiFailureContext({
-    build: { number: 7, result: "FAILURE", url: "https://ci/7" },
+    build: { number: "7", result: "FAILURE", url: "https://ci/7" },
     log: "+ export DEPLOY_TOKEN=super-secret-value\nerror: build failed",
     boundaryId: "BOUNDARY_TEST",
   });
