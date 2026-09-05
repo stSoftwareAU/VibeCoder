@@ -92,7 +92,10 @@ import { workOnIssue } from "./issue_worker.ts";
 import { createDefaultDeps, type WorkerDeps } from "./issue_worker_wiring.ts";
 import { fetchIssueData, type IssueData } from "./issue_data.ts";
 import { stripDiscoveryLabelsOnEscalation } from "./escalation_cleanup.ts";
-import { routeIdleTaskInProcessIssue } from "./idle_task_process_issue_route.ts";
+import {
+  idleTaskRouteRunResult,
+  routeIdleTaskInProcessIssue,
+} from "./idle_task_process_issue_route.ts";
 import { verifyPickupContentIntegrity } from "./pickup_content_integrity.ts";
 import { routeAddRepoInProcessIssue } from "./add_repo_process_issue_route.ts";
 import { routeSeedIdleTasksInProcessIssue } from "./seed_idle_tasks_process_issue_route.ts";
@@ -2985,6 +2988,12 @@ export async function createProductionRunCoreDeps(
           issueLabels: issueData.labels ?? [],
           issueBody: issueData.body ?? "",
           workDir: config.workDir,
+          // Issue #1139: the wrapper is claimed on GitHub before the scan
+          // runs, so a sibling host working from a stale issue list stands
+          // down instead of repeating the audit.
+          githubUser,
+          fleetAuthors,
+          pushCapableAuthors: maintenanceAuthors,
           // Issue #186: the scan is bounded by the cycle deadline, exactly as
           // the execute phase is (Issue #4254) — a wrapper claimed minutes
           // before the deadline must not hold its slot past it.
@@ -2995,10 +3004,9 @@ export async function createProductionRunCoreDeps(
         { logger },
       );
       if (idleRoute.routed) {
-        return {
-          ok: true,
-          value: { success: idleRoute.success, skipped: false },
-        };
+        // Issue #1139: a lost claim is a skip — it takes the cooldown and is
+        // never recorded as this host having done the work.
+        return { ok: true, value: idleTaskRouteRunResult(idleRoute) };
       }
 
       // Issue #2579: route a claimed `work-on` issue titled
