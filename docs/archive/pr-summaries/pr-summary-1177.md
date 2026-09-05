@@ -99,7 +99,38 @@ rather than from the operator's file.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-PLACEHOLDER_SPEC
+The issue states its criteria under "What needs to be done" rather than an
+`## Acceptance Criteria` heading; they are answered here in the same shape.
+
+- **met** — establish whether the streak state is shared across the concurrently
+  running suites, or whether the window is wall-clock dependent — evidence:
+  shared state, proved by measurement (six concurrent processes, 6/6 red with
+  `WORK_DIR` set, 6/6 green with it unset) and by
+  `worker/deno/tests/run_core_idle_detect_audit_test.ts::run_core - two concurrent loops without a workDir do not share a streak (Issue #1177)`
+  — reviewer: met
+- **met** — fix at the root, or list the file in the manifest with the
+  measurement — evidence: fixed at the root; the `Deno.env.get("WORK_DIR")`
+  fallback is gone and the resolution is `worker/deno/lib/run_core.ts:1338`
+  (`resolveRunStateWorkDir`), called at `worker/deno/lib/run_core.ts:4293`. No
+  entry was added to `SUBPROCESS_TIMING_TEST_FILES` or `WALL_CLOCK_TEST_FILES`
+  — reviewer: met
+- **met** — five consecutive full `--parallel` passes green — evidence: five
+  consecutive gate-shaped passes green after the fix and four more on the final
+  tree, quoted under Evidence above — reviewer: met — reason: the reviewer saw
+  only the diff and could not re-execute the passes; the runs are recorded here
+  and the gate re-ran the same parallel pass on the final tree
+- **unrequested** — the three pre-existing disagreement cases were re-pointed at
+  the new `createDisagreementDeps` / `disagreementLines` helpers — reviewer:
+  unrequested — reason: the new cases need those deps, and adding a fourth copy
+  of an inline block already written three times in the file would have been the
+  DRY violation the standards review flagged; assertions are unchanged
+- **unrequested** — comment and prose corrections in
+  `worker/deno/lib/unit_test_passes.ts`,
+  `worker/deno/tests/quality_gate_test_env_test.ts` and `CODING-STANDARDS.md` —
+  reviewer: unrequested — reason: all three described the removed fallback in
+  the present tense, so this change owes them the correction
+- **unrequested** — this PR summary file — reviewer: unrequested — reason:
+  required of every PR by the repository's own standards
 
 ## Standards Review
 
