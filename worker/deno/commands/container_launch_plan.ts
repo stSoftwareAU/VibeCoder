@@ -45,6 +45,7 @@ import { emitSelfHealEventAuto } from "../lib/self_heal_events.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
+import { resolveContainerExtensionLaunch } from "../lib/container_extension_launch.ts";
 import { readContainerToolsSelection } from "../lib/container_tools_config.ts";
 import { readConfiguredCustomPromptPaths } from "../lib/custom_label_prompts_config.ts";
 import { assertCustomPromptSourceResolvable } from "../lib/custom_prompt_mounts.ts";
@@ -175,9 +176,25 @@ export async function buildLaunchPlanForCommand(
     );
   }
 
+  // The operator's private layer (Issues #979, #980, #982, parent #933): the
+  // declaration is read, what it names is proved to be on the host, and the
+  // layered image's own content-derived tag is resolved — all before either
+  // build. A fault throws here, naming the path, so the launch never spends
+  // minutes reaching the same conclusion.
+  const extension = await resolveContainerExtensionLaunch({
+    baseDir,
+    configFile: hostPaths.configFile,
+    imageOptions: {
+      containerTools: tools,
+      ...(agentProviders ? { agentProviders } : {}),
+    },
+  });
+
   // The selected tools and providers are baked into the image, so they are part
   // of its identity (Issues #73, #729) — the plan must name the tag the build
-  // produces, not one another deployment's cache would satisfy.
+  // produces, not one another deployment's cache would satisfy. This is the
+  // **standard** image: the extension layers on top of it under its own tag
+  // (Issue #980), and both are content-derived.
   const image = await resolveContainerImageReference(baseDir, {
     containerTools: tools,
     ...(agentProviders ? { agentProviders } : {}),
@@ -295,6 +312,7 @@ export async function buildLaunchPlanForCommand(
     ...(runCap ? { runCap } : {}),
     resources,
     ...(containerfile ? { containerfile } : {}),
+    ...(extension ? { containerExtension: extension } : {}),
   });
 
   // Every read-only mount must exist on the host: a runtime asked to bind a

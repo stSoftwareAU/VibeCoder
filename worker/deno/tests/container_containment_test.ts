@@ -44,6 +44,7 @@ import {
   FORBIDDEN_RUN_FLAGS,
   resolveContainerLaunchHostPaths,
   SCRATCH_TMPFS_MOUNTS,
+  scratchTmpfsMounts,
   SECRETS_MOUNT_PATH,
 } from "../lib/container_launch.ts";
 import {
@@ -60,6 +61,7 @@ import {
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
 import { GH_CREDENTIAL_SUBDIR } from "../lib/credential_preflight.ts";
+import { isAtOrAbove } from "../lib/host_path_style.ts";
 
 const REPO_ROOT = new URL(import.meta.url).pathname.replace(
   /\/worker\/deno\/tests\/[^/]+$/,
@@ -1498,4 +1500,238 @@ Deno.test("containment harness - the read-only root and its writable exceptions 
     runArgs: samplePlan().runArgs.filter((arg) => arg !== "--read-only"),
   };
   assertEquals(readOnlyRootProbes(writableRoot), []);
+});
+
+// ---------------------------------------------------------------------------
+// The operator's private layer (Issue #980, parent #933)
+// ---------------------------------------------------------------------------
+
+/** The sample plan, extended with an operator layer (Issue #980). */
+function sampleExtensionPlan(): ContainerLaunchPlan {
+  const candidate = CONTAINER_RUNTIMES.docker;
+  return buildContainerLaunchPlan({
+    descriptor: {
+      platform: "linux",
+      kind: "docker",
+      executable: candidate.executable,
+      displayName: candidate.displayName,
+      dialect: candidate.dialect,
+      probed: ["docker"],
+    },
+    manifest: MANIFEST,
+    image: "vibe-coder:0123456789ab",
+    containerName: "vibe-containment-sample",
+    watchdogSeconds: 11_400,
+    hostPaths: {
+      homeDir: "/home/operator",
+      baseDir: "/opt/VibeCoder",
+      workDir: "/home/operator/auto-issue-work",
+      logDir: "/home/operator/logs",
+      configFile: "/opt/VibeCoder/.config.json",
+      configStageDir: "/home/operator/.vibe-coder/run-config",
+      credentialDir: "/home/operator/.vibe-coder/credentials",
+    },
+    containerExtension: {
+      spec: {
+        path: "/srv/vibe-extension",
+        containerfile: "Containerfile",
+        start: "start.sh",
+      },
+      image: "vibe-coder:fedcba987654",
+      containerfileText: "ARG VIBE_BASE_IMAGE\nFROM ${VIBE_BASE_IMAGE}\n",
+    },
+  });
+}
+
+Deno.test("containment - the extension build exposes no host path and publishes no port (Issue #980)", () => {
+  const plan = sampleExtensionPlan();
+
+  for (const flag of FORBIDDEN_RUN_FLAGS) {
+    assert(
+      !plan.extensionBuildArgs.includes(flag),
+      `The extension build carries the forbidden flag ${flag}.`,
+    );
+  }
+  for (const flag of ["--volume", "--mount", "-v", "--publish", "-p"]) {
+    assert(
+      !plan.extensionBuildArgs.includes(flag),
+      `The extension build carries a host mount or published port (${flag}).`,
+    );
+  }
+  assert(
+    !plan.extensionBuildArgs.some((arg) =>
+      arg === "host" || arg.endsWith("=host")
+    ),
+    "The extension build asks for host namespace or network access.",
+  );
+
+  // The build context is the extension directory alone: no other host path
+  // reaches the build, and neither does the worker's own checkout.
+  assertEquals(
+    plan.extensionBuildArgs.filter((arg) => arg.startsWith("/")),
+    ["/srv/vibe-extension/Containerfile", "/srv/vibe-extension"],
+  );
+});
+
+Deno.test("containment - an extension-configured launch publishes no port (Issue #981)", () => {
+  // The extension's services are container-internal: the agent reaches them
+  // inside the sandbox and the operator observes the work through GitHub, so
+  // nothing is exposed on the dedicated host. Every argument list the launch
+  // executes is checked, not just the run.
+  const plan = sampleExtensionPlan();
+
+  for (
+    const [label, args] of [
+      ["run", plan.runArgs],
+      ["build", plan.buildArgs],
+      ["extension build", plan.extensionBuildArgs],
+      ["volume init", plan.initArgs],
+    ] as const
+  ) {
+    for (const flag of ["--publish", "-p", "--publish-all", "-P"]) {
+      assert(
+        !args.includes(flag),
+        `The ${label} arguments publish a port (${flag}).`,
+      );
+    }
+    assert(
+      !args.some((arg) => arg.startsWith("--publish=")),
+      `The ${label} arguments publish a port.`,
+    );
+  }
+
+  // And the start script the entrypoint runs is carried as an environment
+  // value alone — a path, never a port mapping.
+  assert(
+    plan.runArgs.includes("VIBE_EXTENSION_START=start.sh"),
+    "the declared start script is handed to the container",
+  );
+});
+
+Deno.test("containment - the extension tag still runs read-only with its scratch (Issue #980)", () => {
+  const plan = sampleExtensionPlan();
+
+  assertEquals(plan.runArgs.at(-1), "vibe-coder:fedcba987654");
+  assert(
+    plan.runArgs.includes("--read-only"),
+    "the layered image runs on an immutable root filesystem, like the base",
+  );
+  for (const mount of scratchTmpfsMounts(MANIFEST.user)) {
+    assert(
+      plan.runArgs.includes(mount),
+      `The layered image runs without its scratch tmpfs ${mount}.`,
+    );
+  }
+  // The layer changes what the image contains, never what the container may
+  // reach: the mount set is the base plan's, unchanged.
+  assertEquals(plan.mounts, samplePlan().mounts);
+});
+
+// ---------------------------------------------------------------------------
+// The extension reaches the sandbox through the image, not the host
+// (Issue #982, parent #933)
+// ---------------------------------------------------------------------------
+
+/** The extension directory `sampleExtensionPlan` declares. */
+const EXTENSION_DIR = "/srv/vibe-extension";
+
+/** Every argument of a plan that could name a host path or a privilege. */
+function everyArgument(plan: ContainerLaunchPlan): string[] {
+  return [
+    ...plan.runArgs,
+    ...plan.initArgs,
+    ...plan.buildArgs,
+    ...plan.extensionBuildArgs,
+    ...plan.imageInspectArgs,
+    ...plan.builderStopArgs,
+    ...plan.volumeRemoveArgs,
+  ];
+}
+
+Deno.test("containment - the extension directory is never mounted into the running container (Issue #982)", () => {
+  const plan = sampleExtensionPlan();
+
+  for (const mount of plan.mounts) {
+    assert(
+      !isAtOrAbove(EXTENSION_DIR, mount.source, "posix"),
+      `The extension directory reaches the container through the mount ` +
+        `${mount.source} instead of through the image.`,
+    );
+  }
+  // Nor through any other argument of the run: the build context is the only
+  // place the extension directory is ever named.
+  for (const argument of [...plan.runArgs, ...plan.initArgs]) {
+    assert(
+      !argument.includes(EXTENSION_DIR),
+      `The run names the extension directory (${argument}).`,
+    );
+  }
+});
+
+Deno.test("containment - configuring an extension adds no writable host path (Issue #982)", () => {
+  const plan = sampleExtensionPlan();
+
+  // The launcher creates exactly the directories it created before: an
+  // extension is built, never written to.
+  assertEquals(plan.ensureDirectories, samplePlan().ensureDirectories);
+  assertEquals(plan.volumes, samplePlan().volumes);
+  for (const directory of plan.ensureDirectories) {
+    assert(
+      !isAtOrAbove(EXTENSION_DIR, directory, "posix"),
+      `The launcher would create ${directory} inside the extension directory.`,
+    );
+  }
+});
+
+Deno.test("containment - configuring an extension introduces nothing but the layer itself (Issue #982)", () => {
+  const plan = sampleExtensionPlan();
+
+  // Every argument the extension deployment carries that an identical
+  // deployment without one does not — the arguments configuring an extension
+  // genuinely *introduces*. Judging the difference rather than a filtered
+  // subset is what makes this fail when a future edit adds a flag: a
+  // `--privileged` or a `--publish` appears in the difference precisely
+  // because the extension-free plan does not carry it.
+  const carried = new Set(everyArgument(samplePlan()));
+  const introduced = everyArgument(plan).filter(
+    (argument) => !carried.has(argument),
+  );
+  assert(
+    introduced.length > 0,
+    "the sample plans are identical, so this comparison judges nothing",
+  );
+
+  for (const argument of introduced) {
+    for (const flag of FORBIDDEN_RUN_FLAGS) {
+      assert(
+        argument !== flag,
+        `Configuring an extension introduced the forbidden flag ${flag}.`,
+      );
+    }
+    assert(
+      argument !== "host" && !argument.endsWith("=host"),
+      `Configuring an extension asked for host namespace or network access ` +
+        `(${argument}).`,
+    );
+    // And nothing else: the layer's own tag, paths inside the extension
+    // directory, and the two documented build arguments.
+    const expected = argument === "vibe-coder:fedcba987654" ||
+      argument === "--build-arg" ||
+      argument === "VIBE_BASE_IMAGE=vibe-coder:0123456789ab" ||
+      argument === "VIBE_EXTENSION_START=start.sh" ||
+      isAtOrAbove(EXTENSION_DIR, argument, "posix");
+    assert(
+      expected,
+      `Configuring an extension introduced an unexpected argument ` +
+        `(${argument}).`,
+    );
+  }
+
+  // And the run itself publishes nothing, extension or not.
+  for (const flag of ["--publish", "-p", "--publish-all", "-P"]) {
+    assert(
+      !plan.runArgs.includes(flag),
+      `The extension deployment's run publishes a port (${flag}).`,
+    );
+  }
 });

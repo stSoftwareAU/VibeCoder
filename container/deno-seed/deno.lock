@@ -2,6 +2,7 @@
   "version": "5",
   "specifiers": {
     "jsr:@std/assert@1.0.18": "1.0.18",
+    "jsr:@std/crypto@1.1.0": "1.1.0",
     "jsr:@std/internal@1.0.12": "1.0.12",
     "jsr:@std/internal@^1.0.12": "1.0.12",
     "jsr:@std/yaml@1.0.12": "1.0.12",
@@ -13,6 +14,9 @@
       "dependencies": [
         "jsr:@std/internal@^1.0.12"
       ]
+    },
+    "@std/crypto@1.1.0": {
+      "integrity": "b8d6d0a6377a32b213af2661ed7bf1062d94feac0c57def5526a8e74a95c3ec8"
     },
     "@std/internal@1.0.12": {
       "integrity": "972a634fd5bc34b242024402972cd5143eac68d8dffaca5eaa4dba30ce17b027"
@@ -53,6 +57,7 @@
   "workspace": {
     "dependencies": [
       "jsr:@std/assert@1.0.18",
+      "jsr:@std/crypto@1.1.0",
       "jsr:@std/internal@1.0.12",
       "jsr:@std/yaml@1.0.12",
       "npm:@playwright/mcp@0.0.75"
