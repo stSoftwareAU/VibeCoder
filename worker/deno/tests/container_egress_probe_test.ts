@@ -380,6 +380,32 @@ Deno.test("probeContainerEgress - no image to probe with never blocks a launch",
   assertStringIncludes(result.evidence, "no image in the local store");
 });
 
+Deno.test("probeContainerEgress - a runtime that could not run the probe never parks the host", async () => {
+  // 125/126/127 are the runtime CLI's own statuses: the daemon refused, the
+  // entrypoint could not be executed, the command was not found. None of them
+  // is a packet that failed to leave — reading one as a blocked container
+  // would park a healthy host and call a person to a fault that is not there.
+  for (const runCode of [125, 126, 127]) {
+    const { deps, calls } = stubDeps({
+      present: ["vibe:1"],
+      runCode,
+      runStderr: "docker: Error response from daemon: exec: /bin/bash",
+      hostOk: true,
+    });
+    const result = await probeContainerEgress(deps, {
+      target: { host: "1.1.1.1", port: 443 },
+      images: ["vibe:1"],
+      containerName: "vibe-egress",
+    });
+
+    assertEquals(result.verdict, "inconclusive", `status ${runCode}`);
+    assertEquals(result.reading.container.result, "not-run");
+    // Nothing is claimed about the host, so nothing is measured either.
+    assertEquals(calls.hostConnects, 0);
+    assertStringIncludes(result.evidence, "could not be run");
+  }
+});
+
 Deno.test("probeContainerEgress - an unreadable routing table loses the evidence, not the verdict", async () => {
   const { deps } = stubDeps({
     present: ["vibe:1"],

@@ -83,6 +83,16 @@ export const HOST_EGRESS_BLOCKED_REASON = "container_egress_blocked";
 /** Bound on the whole container hop, including the runtime's own startup. */
 export const EGRESS_CONTAINER_TIMEOUT_MS = 60_000;
 
+/**
+ * Statuses that mean the runtime never ran the probe (Issue #997).
+ *
+ * The CLI's own range: 125 the daemon refused, 126 the entrypoint could not
+ * be executed, 127 it was not found. A probe that never ran says nothing about
+ * the network, so it is `not-run` — never a blocked container, which would
+ * park a healthy host over a missing shell.
+ */
+const RUNTIME_CLI_STATUSES: readonly number[] = [125, 126, 127];
+
 /** Where a hop was measured from. */
 export type EgressHopSource = "container" | "host";
 
@@ -469,6 +479,24 @@ export async function probeContainerEgress(
   );
   if (run.code === 0) {
     reading.container.result = "ok";
+    const verdict = classifyEgress(reading);
+    return {
+      verdict,
+      reading,
+      evidence: formatEgressEvidence(reading, verdict),
+    };
+  }
+
+  if (RUNTIME_CLI_STATUSES.includes(run.code)) {
+    // The runtime refused to run the probe — the daemon errored, the
+    // entrypoint could not be executed, the command was not found. No packet
+    // was ever sent, so there is nothing to attribute: claiming a blocked
+    // container here would park a healthy host and call a person to a fault
+    // that is not there, which is the mis-attribution this whole probe exists
+    // to end.
+    reading.container.detail = `the probe could not be run: ` +
+      (firstLine(run.stderr) || firstLine(run.stdout) ||
+        `the runtime exited ${run.code}`);
     const verdict = classifyEgress(reading);
     return {
       verdict,

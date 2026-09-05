@@ -476,7 +476,7 @@ Four boundaries keep that safe on a machine nobody is watching:
 
 | Boundary | Behaviour |
 | --- | --- |
-| Never blocks a launch on its own failure | No image in the store, an unsupported runtime, a probe that times out — all `inconclusive`, and the launch proceeds exactly as it did before |
+| Never blocks a launch on its own failure | No image in the store, an unsupported runtime, or a runtime that refused to run the probe container (its own `125`/`126`/`127`) — all `inconclusive`, and the launch proceeds exactly as it did before. A probe that *ran* and did not answer inside its bound is a blocked hop, not an inconclusive one: a silently dropped packet hangs rather than failing fast, and that is the incident |
 | An address, never a name | `--target` is validated as an IP literal and refused otherwise, so a resolver on the host bridge cannot make a blocked host look healthy |
 | Parks, does not retry | A blocked host backs off at the ceiling (30 minutes), escalates on the **first** occurrence, and reports itself as unavailable capacity with the reason `container_egress_blocked` — the reject route is host state a non-root process cannot change, so nothing here pretends it can be healed |
 | The link is not the host | Both hops blocked is a network outage: it waits at the base cadence and escalates nobody |
