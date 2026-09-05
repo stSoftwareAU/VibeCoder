@@ -150,6 +150,49 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
   };
 }
 
+/**
+ * Deps that drive `cycles` idle observations at the fleet's cadence, every one
+ * of them a probe/scan disagreement, then push the clock past the run's end.
+ *
+ * The disagreement cases below differ only in how many observations they drive
+ * and what they read back afterwards, so the deps are built once here.
+ *
+ * @param cycles - Observations before the clock jumps past the run's end.
+ * @param counters - `filerRuns` counts the attempts the bound forced through.
+ * @param logs - Collects the worker log; omit when a case reads none of it.
+ * @returns Mock deps ready to hand to `runCoreLoop`.
+ */
+function createDisagreementDeps(
+  cycles: number,
+  counters: { filerRuns: number },
+  logs: string[] = [],
+): RunCoreDeps {
+  let observed = 0;
+  let nowValue = 0;
+  return createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      if (observed >= cycles) nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    log: (m) => logs.push(m),
+    runIdleDetectAudit: () => {
+      observed++;
+      nowValue += OBSERVATION_GAP_MS;
+      return Promise.resolve({ claimableTotal: 4 });
+    },
+    runIdleTaskFiler: () => {
+      counters.filerRuns += 1;
+      return Promise.resolve();
+    },
+  });
+}
+
+/** The disagreement diagnostics a run emitted, in order. */
+function disagreementLines(logs: string[]): string[] {
+  return logs.filter((l) => l.includes("action=audit_scan_disagreement"));
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -381,28 +424,9 @@ Deno.test(
     // suppressed forever. Since Issue #1051 the bound is elapsed time,
     // so the clock — not the cycle count — is what drives it.
     const cycles = 4;
-    let observed = 0;
-    let nowValue = 0;
     const logs: string[] = [];
-    let filerRuns = 0;
-
-    const deps = createMockDeps({
-      now: () => nowValue,
-      sleep: () => {
-        if (observed >= cycles) nowValue += 4000 * 1000;
-        return Promise.resolve();
-      },
-      log: (m) => logs.push(m),
-      runIdleDetectAudit: () => {
-        observed++;
-        nowValue += OBSERVATION_GAP_MS;
-        return Promise.resolve({ claimableTotal: 4 });
-      },
-      runIdleTaskFiler: () => {
-        filerRuns += 1;
-        return Promise.resolve();
-      },
-    });
+    const counters = { filerRuns: 0 };
+    const deps = createDisagreementDeps(cycles, counters, logs);
     const config = createDefaultRunCoreConfig();
     config.runDurationSeconds = 3600;
 
@@ -413,13 +437,10 @@ Deno.test(
 
     // Exactly one filer attempt across the whole run — the bound forced
     // it through once, no more.
-    assertEquals(filerRuns, 1);
+    assertEquals(counters.filerRuns, 1);
 
     // A disagreement diagnostic on every idle cycle.
-    const diagnostics = logs.filter((l) =>
-      l.includes("action=audit_scan_disagreement")
-    );
-    assertEquals(diagnostics.length, cycles);
+    assertEquals(disagreementLines(logs).length, cycles);
 
     // The bound-exceeded forced-attempt line is present exactly once.
     const forced = logs.filter((l) =>
@@ -437,35 +458,16 @@ Deno.test(
     // remaining cycles stay skipped. This guards against re-introducing
     // the wrapper flooding the #2106 budget guard prevents.
     const cycles = 4;
-    let observed = 0;
-    let nowValue = 0;
     const logs: string[] = [];
-    let filerRuns = 0;
-
-    const deps = createMockDeps({
-      now: () => nowValue,
-      sleep: () => {
-        if (observed >= cycles) nowValue += 4000 * 1000;
-        return Promise.resolve();
-      },
-      log: (m) => logs.push(m),
-      runIdleDetectAudit: () => {
-        observed++;
-        nowValue += OBSERVATION_GAP_MS;
-        return Promise.resolve({ claimableTotal: 4 });
-      },
-      runIdleTaskFiler: () => {
-        filerRuns += 1;
-        return Promise.resolve();
-      },
-    });
+    const counters = { filerRuns: 0 };
+    const deps = createDisagreementDeps(cycles, counters, logs);
     const config = createDefaultRunCoreConfig();
     config.runDurationSeconds = 3600;
 
     await runCoreLoop(config, deps);
 
     // At most one attempt across the bound window.
-    assertEquals(filerRuns, 1);
+    assertEquals(counters.filerRuns, 1);
 
     // Every cycle inside the bound was skipped via the budget guard.
     const skips = logs.filter((l) =>
@@ -482,91 +484,83 @@ Deno.test(
     // Two full bound windows → exactly two forced attempts. Proves the
     // run restarts after each forced attempt rather than firing every
     // cycle thereafter.
-    const cycles = 7;
-    let observed = 0;
-    let nowValue = 0;
-    let filerRuns = 0;
-
-    const deps = createMockDeps({
-      now: () => nowValue,
-      sleep: () => {
-        if (observed >= cycles) nowValue += 4000 * 1000;
-        return Promise.resolve();
-      },
-      runIdleDetectAudit: () => {
-        observed++;
-        nowValue += OBSERVATION_GAP_MS;
-        return Promise.resolve({ claimableTotal: 4 });
-      },
-      runIdleTaskFiler: () => {
-        filerRuns += 1;
-        return Promise.resolve();
-      },
-    });
+    const counters = { filerRuns: 0 };
+    const deps = createDisagreementDeps(7, counters);
     const config = createDefaultRunCoreConfig();
     config.runDurationSeconds = 7200;
 
     await runCoreLoop(config, deps);
 
-    assertEquals(filerRuns, 2);
+    assertEquals(counters.filerRuns, 2);
   },
 );
 
 // ---------------------------------------------------------------------------
 // Issue #1177 — the streak's work directory is an argument, never the ambient
-// environment.
+// environment. The two cases above failed roughly three parallel runs in five
+// because the loop fell back to `WORK_DIR` and every test process then shared
+// the live fleet's `idle_disagreement_streak.json`; `resolveRunStateWorkDir`
+// carries that story. Measured here: six concurrent runs of this file failed
+// six times with the variable set and passed six times with it unset.
 //
-// The two cases above failed roughly three parallel runs in five, always with
-// a count assertion (`0` where `1` was expected) and always green on their
-// own. The loop resolved the streak's work directory from `config.workDir` and
-// then fell back to `WORK_DIR`, which the container exports as the live worker
-// volume — so four parallel `deno test` processes read and wrote one
-// `idle_disagreement_streak.json`, each one's load-apply-save dropping the run
-// another was accumulating. Six concurrent runs of this file failed six times
-// with the variable set and passed six times with it unset.
-//
-// The loop now reads `config.workDir` and nothing else. These three cases hold
-// that: no directory means no file, a named directory still persists, and two
-// loops that name none cannot reach each other's streak.
+// These four cases hold the fix — a planted `WORK_DIR` resolves to nothing, no
+// directory means no file, a named directory still persists, and two loops
+// that name none cannot reach each other's streak.
 // ---------------------------------------------------------------------------
 
-/**
- * Deps that drive `cycles` idle observations at the fleet's cadence, every one
- * of them a probe/scan disagreement, then push the clock past the run's end.
- *
- * `counters.filerRuns` counts the attempts the bound forced through; `logs`
- * collects the worker log so the `persisted=` fragment can be read back.
- */
-function createDisagreementDeps(
-  cycles: number,
-  counters: { filerRuns: number },
-  logs: string[],
-): RunCoreDeps {
-  let observed = 0;
-  let nowValue = 0;
-  return createMockDeps({
-    now: () => nowValue,
-    sleep: () => {
-      if (observed >= cycles) nowValue += 4000 * 1000;
-      return Promise.resolve();
-    },
-    log: (m) => logs.push(m),
-    runIdleDetectAudit: () => {
-      observed++;
-      nowValue += OBSERVATION_GAP_MS;
-      return Promise.resolve({ claimableTotal: 4 });
-    },
-    runIdleTaskFiler: () => {
-      counters.filerRuns += 1;
-      return Promise.resolve();
-    },
-  });
-}
+Deno.test(
+  "run_core - a planted WORK_DIR never becomes the loop's state directory (Issue #1177)",
+  async () => {
+    // The guard the other three cannot give on their own: they only go red on
+    // a host that exports `WORK_DIR`, and the gate scrubs it from the test
+    // stage (Issue #1098), so re-introducing the fallback would merge green.
+    // The variable is planted in a child process rather than in this one —
+    // mutating the runner's own environment is what the parallel-unsafe
+    // manifest exists to keep out of this pass — and the child asks the real
+    // resolver what the loop would use.
+    const planted = "/planted/by/the/parent/work-dir";
+    const named = "/named/by/the/caller";
+    const module = import.meta.resolve("../lib/run_core.ts");
+    const script = `
+      const core = await import(${JSON.stringify(module)});
+      const base = core.createDefaultRunCoreConfig();
+      console.log(JSON.stringify({
+        own: Deno.env.get("WORK_DIR") ?? "ABSENT-IN-CHILD",
+        unnamed: core.resolveRunStateWorkDir(base) ?? "ABSENT",
+        named: core.resolveRunStateWorkDir(
+          { ...base, workDir: ${JSON.stringify(named)} },
+        ) ?? "ABSENT",
+      }));
+    `;
+    const child = new Deno.Command(Deno.execPath(), {
+      args: ["eval", "--no-check", "--allow-env", "--allow-read", script],
+      env: { ...Deno.env.toObject(), WORK_DIR: planted },
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const result = await child.output();
+    const stderr = new TextDecoder().decode(result.stderr);
+    assertEquals(result.code, 0, stderr);
 
-/** The disagreement diagnostics a run emitted, in order. */
-function disagreementLines(logs: string[]): string[] {
-  return logs.filter((l) => l.includes("action=audit_scan_disagreement"));
-}
+    const observed = JSON.parse(
+      new TextDecoder().decode(result.stdout).trim().split("\n").at(-1)!,
+    );
+    assertEquals(
+      observed.own,
+      planted,
+      "the child must carry the planted variable, or this proves nothing",
+    );
+    assertEquals(
+      observed.unnamed,
+      "ABSENT",
+      "a config naming no work directory must resolve to none, whatever " +
+        "WORK_DIR says",
+    );
+    // And the argument still works: this is a removed fallback, not removed
+    // persistence.
+    assertEquals(observed.named, named);
+  },
+);
 
 Deno.test(
   "run_core - a config naming no workDir keeps the streak in memory, whatever WORK_DIR says (Issue #1177)",
@@ -670,6 +664,20 @@ Deno.test(
 
     assertEquals(first.filerRuns, 1);
     assertEquals(second.filerRuns, 1);
+
+    // Each loop counted only its own observations. Sharing one entry, the
+    // observations of the two interleave and neither reads 1,2,3,4 — which is
+    // what the `streak=` fragment is there to make visible.
+    for (const logs of [firstLogs, secondLogs]) {
+      const streaks = disagreementLines(logs).map((line) =>
+        Number(line.match(/streak=(\d+)/)?.[1])
+      );
+      assertEquals(
+        streaks,
+        [1, 2, 3, 4],
+        `interleaved run: ${logs.join("\n")}`,
+      );
+    }
   },
 );
 
