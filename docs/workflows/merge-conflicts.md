@@ -17,15 +17,14 @@ PR-feedback queue either. Priority **1.61** closes that gap: it labels every
 base branch into the PR branch **for real** — both sides' changes survive, never
 a side-pick — runs the repository's quality gate on the result, and pushes
 without force. A dependency-version conflict is settled by deterministic rules
-first, and the AI is only asked about what those rules could not decide. Two
-**concluded** attempts, at least four hours apart; after that the worker
-escalates with `needs-human` and a conflict summary instead of retrying forever.
-Every attempt ends visibly: merged, failed, or escalated. An attempt that opened
-and then went silent was disrupted, not judged — it does not spend the budget,
-it is re-attempted, and three disruptions on one PR escalate. A PR that still
-conflicts and has carried the label for **8 hours with nothing concluding** is a
-stalled queue in its own right: it is filed as work, once, whatever caused the
-silence.
+first, and the AI is only asked about what those rules could not decide. Two **concluded** attempts, at least four hours apart; after that
+the worker escalates with `needs-human` and a conflict summary instead of
+retrying forever. Every attempt ends visibly: merged, failed, or escalated. An
+attempt that opened and then went silent was disrupted, not judged — it does not
+spend the budget, it is re-attempted, and three disruptions on one PR escalate.
+A PR that still conflicts and has carried the label for **8 hours with nothing
+concluding** is a stalled queue in its own right: it is filed as work, once,
+whatever caused the silence.
 
 ```mermaid
 flowchart TD
@@ -104,17 +103,17 @@ progress and stopped on conflicts. Its contract is absolute:
 - **Both sides survive.** Every conflict has a base-branch change and a PR
   change; both were written deliberately. `-X ours`, `-X theirs`,
   `checkout --ours|--theirs`, and dropping one side's lines are all forbidden.
-- **A duplicate is the one exception.** When both sides added the _same_
-  content, keeping it once _is_ keeping both — and the agent must say so.
+- **A duplicate is the one exception.** When both sides added the *same*
+  content, keeping it once *is* keeping both — and the agent must say so.
 - **Stop rather than guess.** Two changes that genuinely contradict each other
   (the same constant set to different values) are a human's decision. The agent
   aborts the merge and explains; the worker escalates.
 - **Dependency versions are the one bounded carve-out.** The prompt says so
-  itself: the worker settles dependency-version hunks in known manifests before
-  the agent runs, and those files are absent from the agent's conflicted-file
-  list. The carve-out stops there — a conflicting constant in source code is
-  still a human's call, because a version has a total order to appeal to and a
-  source value does not.
+  itself: the worker
+  settles dependency-version hunks in known manifests before the agent runs, and
+  those files are absent from the agent's conflicted-file list. The carve-out
+  stops there — a conflicting constant in source code is still a human's call,
+  because a version has a total order to appeal to and a source value does not.
 - **No force-push, no rebase, no branch recreation.** The merge commit
   fast-forwards the remote branch, so every commit on the PR survives.
 
@@ -145,15 +144,15 @@ deterministically **before** the agent is asked anything:
   exactly those paths. If the rules resolve every conflicted path, the agent is
   not run at all: a `deno.json`/`deno.lock` version conflict costs no AI call.
 - The resolved comment on the PR **names every rule-resolved file and every
-  version decision** (`@std/fs: ^1.0.0 → ^1.2.0`, taken from the base). This is
-  a documented carve-out from the never-side-pick contract, so it states what it
+  version decision** (`@std/fs: ^1.0.0 → ^1.2.0`, taken from the base). This is a
+  documented carve-out from the never-side-pick contract, so it states what it
   did and a reviewer can audit the pick without reading the diff.
 
 ## 🔁 Bounds and escalation
 
 - **One attempt per PR per 4 hours**, at most **2 concluded attempts**.
 - The attempt is recorded as a marker comment on the PR **before** the merge
-  starts. That marker _opens_ the attempt; it does not spend it.
+  starts. That marker *opens* the attempt; it does not spend it.
 - Every attempt posts a **conclusion**: a resolved marker when the merge lands,
   or a failure comment naming the conflicted files and what went wrong. Only a
   conclusion spends one of the two attempts.
@@ -161,7 +160,7 @@ deterministically **before** the agent is asked anything:
   worker restarts and across fleet hosts.
 - A successful merge posts a resolved marker, which resets both budgets — a PR
   that conflicts again months later starts from a full budget.
-- The final _concluded_ failure applies `needs-human` and posts one summary
+- The final *concluded* failure applies `needs-human` and posts one summary
   naming the conflicted files and why the merge failed.
 - **Nothing stalls unowned.** If that final escalation never landed — the label
   add failed, or the run ended between the failure comment and the escalation —
@@ -180,12 +179,12 @@ actually used.
 
 - A disrupted attempt is detected on the next scan (past the cooldown, an open
   attempt is disrupted rather than in flight) and **re-attempted**.
-- The next attempt comment says so on the PR — how many attempts were disrupted,
-  and that a disruption does not spend the budget.
+- The next attempt comment says so on the PR — how many attempts were
+  disrupted, and that a disruption does not spend the budget.
 - Disruption has its own bound: **3 disrupted attempts** on one PR and the scan
   applies `needs-human` with a comment pointing at the worker, not the conflict.
-  That escalation runs from the scan, not the resolution pass, precisely because
-  the resolution pass may be what cannot finish.
+  That escalation runs from the scan, not the resolution pass, precisely
+  because the resolution pass may be what cannot finish.
 - One disruption source is closed outright: the cross-host PR lock is now
   **refreshed while the attempt runs**. The lock TTL is five minutes and a
   resolution runs for as long as the agent takes, so without renewal a second
@@ -203,8 +202,8 @@ A PR carrying `merge-conflict` with **no concluded attempt** after a bounded
 time is itself a defect, whatever caused it, so the watchdog in
 `worker/deno/lib/merge_conflict_stall_watchdog.ts` detects that shape directly
 rather than any one cause. Every other guard in this subsystem keys on attempt
-records; this one cannot, because the failure being detected is that _no attempt
-record exists_. It keys on the **age of the label**, read from the PR's
+records; this one cannot, because the failure being detected is that *no
+attempt record exists*. It keys on the **age of the label**, read from the PR's
 `labeled` timeline event.
 
 ```mermaid
@@ -217,13 +216,14 @@ flowchart TD
     C -->|Yes| Q
     C -->|No| D{"A conclusion since<br/>the label went on?"}
     D -->|"Yes — resolved or failed marker"| Q
-    D -->|"No — including an attempt<br/>that opened and went silent"| E["One comment on the PR:<br/>label age, the silence,<br/>the skip reasons (#1109)"]
+    D -->|"No — including an attempt<br/>that opened and went silent"| E["One comment on the PR:<br/>label age, the silence,<br/>the skip reasons"]
     E --> F["escalateAsWork — an issue<br/>the fleet can claim"]
     F --> G["Label the PR escalated<br/>(never needs-human)"]
     style A fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
     style E fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
-    style F fill:#7fb069,stroke:#2d5016,color:#1a1a1a
-    style G fill:#7fb069,stroke:#2d5016,color:#1a1a1a
+    style F fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style G fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style Q fill:#707070,stroke:,color:#fff
 ```
 
 Five details carry the weight:
@@ -234,12 +234,12 @@ Five details carry the weight:
   `MERGEABLE` is skipped before it costs a single extra API call.
 - **A conclusion, not an attempt, clears it.** An attempt that opened and then
   went silent is the disrupted case, and if the disruption bound has not fired
-  either then nothing is moving the PR — so that PR _is_ detected. Keying on "an
-  attempt marker exists" would miss the GRQ#4408 shape exactly.
+  either then nothing is moving the PR — so that PR *is* detected. Keying on
+  "an attempt marker exists" would miss the GRQ#4408 shape exactly.
 - **The clock starts at the label.** Conclusions and markers older than the
   `labeled` event belong to a previous conflict and say nothing about this one,
-  so a fresh label cycle starts a fresh clock — and a concluded attempt puts the
-  PR back in the ordinary ladder.
+  so a fresh label cycle starts a fresh clock — and a concluded attempt puts
+  the PR back in the ordinary ladder.
 - **Dedupe lives on the PR.** One escalation per PR per stall, keyed on the
   `<!-- vibe-work-escalation:owner/repo#N -->` marker comment. Every host runs
   this scan every cycle, and the failure being detected is precisely the kind
@@ -257,15 +257,15 @@ nothing visible happened for over three hours. **No merge-conflict code was at
 fault** — the pass ran, and the queue was genuinely empty (Issue #1108). The
 reconstruction, from the retained GRQ-25 worker logs and the PR's own timeline:
 
-| Time (UTC) | What the logs say                                                                                                                                                      |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 22:55:44   | PR #116 opened, 2 commits behind `Develop`.                                                                                                                            |
-| 23:00:34   | Labelled `merge-conflict` by a sibling host's scan.                                                                                                                    |
-| 23:03:06   | GRQ-25 runs priority 1.61 — 25 s later the run hits a GitHub **primary rate limit** and exits; reset at 00:03:31.                                                      |
-| 00:08:36   | Priority 1.61 leads the rotated lane, runs 18 s and 30 `gh` calls, takes nothing. Priority 1.6 reports #116 in the same cycle as `reason=behind`, **not** conflicting. |
-| 00:26:06   | Rate-limited again; reset at 01:26:06.                                                                                                                                 |
-| 01:31:23   | Priority 1.61 runs again, takes nothing.                                                                                                                               |
-| 02:50:36   | #116 merges cleanly.                                                                                                                                                   |
+| Time (UTC) | What the logs say |
+| --- | --- |
+| 22:55:44 | PR #116 opened, 2 commits behind `Develop`. |
+| 23:00:34 | Labelled `merge-conflict` by a sibling host's scan. |
+| 23:03:06 | GRQ-25 runs priority 1.61 — 25 s later the run hits a GitHub **primary rate limit** and exits; reset at 00:03:31. |
+| 00:08:36 | Priority 1.61 leads the rotated lane, runs 18 s and 30 `gh` calls, takes nothing. Priority 1.6 reports #116 in the same cycle as `reason=behind`, **not** conflicting. |
+| 00:26:06 | Rate-limited again; reset at 01:26:06. |
+| 01:31:23 | Priority 1.61 runs again, takes nothing. |
+| 02:50:36 | #116 merges cleanly. |
 
 The two decisive lines, verbatim:
 
@@ -289,27 +289,26 @@ candidates, and neither half is a merge-conflict defect:
 The three candidates considered, and why each is ruled out:
 
 1. **The launcher was down** (#1072, GRQ-23) — no. `run_core.log` records five
-   container runs starting on GRQ-25, the host monitoring NEAT-AI-Ockham, across
-   the window.
+   container runs starting on GRQ-25, the host monitoring NEAT-AI-Ockham,
+   across the window.
 2. **`claimable=0 reason=pr_blocked` gated the repo out** — no. That gate is
-   per-_issue_ and belongs to the Priority 2 claim path
+   per-*issue* and belongs to the Priority 2 claim path
    (`worker/deno/lib/idle_detect_diagnostics.ts:587`, reported at `:1026`), and
-   the audit that emits the line is invoked at
-   `worker/deno/lib/run_core.ts:3849`, inside `runIdleWorkHooks` — which runs
-   _after_ the priority dispatch and the maintenance lane, at the idle-task
-   filer's gate. The conflict pass takes no claimability input at all:
-   `findConflictingPr` filters repos by `isRepoAllowed` alone, wired to the
-   monitored-repo allowlist at
-   `worker/deno/lib/run_core_production_deps.ts:1944`. The deadlock this would
-   have been — a repo whose PRs are blocked never running the pass that unblocks
-   them — does not exist, and `merge_conflict_pr_blocked_reachability_test.ts`
-   now pins it.
+   the audit that emits the line is invoked at `worker/deno/lib/run_core.ts:3849`,
+   inside `runIdleWorkHooks` — which runs *after* the priority dispatch and the
+   maintenance lane, at the idle-task filer's gate. The conflict pass takes no
+   claimability input at all: `findConflictingPr` filters repos by
+   `isRepoAllowed` alone, wired to the monitored-repo allowlist at
+   `worker/deno/lib/run_core_production_deps.ts:1944`. The deadlock this would have been —
+   a repo whose PRs are blocked never running the pass that unblocks them —
+   does not exist, and `merge_conflict_pr_blocked_reachability_test.ts` now
+   pins it.
 3. **The lane never gave the pass its slot** (#608) — no. Rotation was working:
    1.61 led the lane at 00:08:36 and started within the same second.
 
 **The lesson for the next quiet queue: read the live `mergeable` state, not the
 label.** A PR keeps `merge-conflict` after its conflict clears, so a labelled PR
-with no attempt marker is the _expected_ shape once the base moves on — check
+with no attempt marker is the *expected* shape once the base moves on — check
 whether the pass ran, then whether GitHub still calls the PR `CONFLICTING`,
 before assuming a stall.
 
@@ -323,8 +322,8 @@ pass, because the label is the queue.
 
 ## 🧾 Every decision leaves a reason behind
 
-The label alone said _that_ a PR was stuck, never _why the worker left it
-there_. A skipped PR produced either nothing or an unstructured log line, so
+The label alone said *that* a PR was stuck, never *why the worker left it
+there*. A skipped PR produced either nothing or an unstructured log line, so
 "the label went on and then silence" — the #1076 symptom — read exactly like a
 pass that ran and correctly decided to wait. Issue #1109 closed that: every PR
 the pass decides on now emits one structured record, and every pass closes with
@@ -338,24 +337,24 @@ merge_conflict_decision=cooldown repo=org/repo pr=48
 merge_conflict_pass=scan labelled=3 attempted=0 considered=3 cooldown=1 needs-human=2
 ```
 
-The reasons are a **closed taxonomy** — every exit maps to exactly one, and each
-carries the operands that make the decision checkable afterwards:
+The reasons are a **closed taxonomy** — every exit maps to exactly one, and
+each carries the operands that make the decision checkable afterwards:
 
-| Reason                             | Operands                                 | Meaning                                                                                                                                                                 |
-| ---------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `attempted`                        | —                                        | Selected for a resolution this pass.                                                                                                                                    |
-| `not-conflicting`                  | `mergeableState`                         | GitHub no longer calls the PR `CONFLICTING` — a stale label, not a queue entry.                                                                                         |
-| `out-of-scope-author`              | `author`                                 | Outside the push-capable maintenance set.                                                                                                                               |
-| `already-handled`                  | —                                        | Taken or deferred earlier in this same cycle's drain.                                                                                                                   |
-| `scan-error`                       | `stage`, `error`                         | A per-PR lookup failed (`mergeable-state`, `labels` or `attempt-history`); the PR keeps its place. A state lookup that failed is **never** reported as merging cleanly. |
-| `needs-human`                      | `label`                                  | A human already owns the conflict.                                                                                                                                      |
-| `budget-spent`                     | `attemptsSpent`, `maxAttempts`           | Every concluded attempt is spent.                                                                                                                                       |
-| `cooldown`                         | `msUntilDue`, `lastAttemptAt`            | Still inside the 4-hour cooldown. `msUntilDue` is null when the recorded timestamp does not parse.                                                                      |
-| `disrupted-bound`                  | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude.                                                                                                                     |
-| `lock-held`                        | `lockHolder`                             | Another host holds the cross-host PR lock.                                                                                                                              |
-| `repo-leased`                      | `deferralStreak`                         | An issue slot holds the repository's shared clone. The streak is the consecutive passes that have now deferred this PR without attempting it.                           |
-| `deferred-bound`                   | `bound`, `deferralStreak`                | The deadline or the cap left this due PR in the queue before any attempt started.                                                                                       |
-| `queue-empty` / `deadline` / `cap` | —, `remainingMs`, `maxPerCycle`          | The drain's pass-level stops.                                                                                                                                           |
+| Reason | Operands | Meaning |
+| --- | --- | --- |
+| `attempted` | — | Selected for a resolution this pass. |
+| `not-conflicting` | `mergeableState` | GitHub no longer calls the PR `CONFLICTING` — a stale label, not a queue entry. |
+| `out-of-scope-author` | `author` | Outside the push-capable maintenance set. |
+| `already-handled` | — | Taken or deferred earlier in this same cycle's drain. |
+| `scan-error` | `stage`, `error` | A per-PR lookup failed (`mergeable-state`, `labels` or `attempt-history`); the PR keeps its place. A state lookup that failed is **never** reported as merging cleanly. |
+| `needs-human` | `label` | A human already owns the conflict. |
+| `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent. |
+| `cooldown` | `msUntilDue`, `lastAttemptAt` | Still inside the 4-hour cooldown. `msUntilDue` is null when the recorded timestamp does not parse. |
+| `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
+| `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |
+| `repo-leased` | `deferralStreak` | An issue slot holds the repository's shared clone. The streak is the consecutive passes that have now deferred this PR without attempting it. |
+| `deferred-bound` | `bound`, `deferralStreak` | The deadline or the cap left this due PR in the queue before any attempt started. |
+| `queue-empty` / `deadline` / `cap` | —, `remainingMs`, `maxPerCycle` | The drain's pass-level stops. |
 
 Two properties are worth knowing when reading these:
 
@@ -391,30 +390,30 @@ Three boundaries are worth knowing before reading a cycle's records as gospel:
 
 ## 🚰 One cycle empties the queue
 
-The pass takes **every** conflicting PR that is due, not one per cycle (Issue
-#561). A conflicting PR is a PR CI will not run on, and the open-PR gate holds
-new issue claims behind open PRs, so draining conflicts one per cycle — most of
-an hour once issue work is running — throttled issue throughput too.
+The pass takes **every** conflicting PR that is due, not one per cycle
+(Issue #561). A conflicting PR is a PR CI will not run on, and the open-PR gate
+holds new issue claims behind open PRs, so draining conflicts one per cycle —
+most of an hour once issue work is running — throttled issue throughput too.
 
 Three bounds keep the drain from becoming a monopoly:
 
-| Bound          | Value                  | Why                                                                                                                                                                                              |
-| -------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Cycle deadline | 10 minutes must remain | Each attempt runs an agent. One started without room is abandoned at the deadline, and an abandoned attempt is a _disrupted_ attempt on the PR's record — three of those escalate it to a human. |
-| Per-cycle cap  | 5 PRs                  | One repository's backlog cannot take the whole run.                                                                                                                                              |
-| Exclusion set  | this cycle's PRs       | A PR already taken — or deferred because an issue slot holds its repository — is not re-selected, so the drain cannot spin on it.                                                                |
+| Bound | Value | Why |
+| --- | --- | --- |
+| Cycle deadline | 10 minutes must remain | Each attempt runs an agent. One started without room is abandoned at the deadline, and an abandoned attempt is a *disrupted* attempt on the PR's record — three of those escalate it to a human. |
+| Per-cycle cap | 5 PRs | One repository's backlog cannot take the whole run. |
+| Exclusion set | this cycle's PRs | A PR already taken — or deferred because an issue slot holds its repository — is not re-selected, so the drain cannot spin on it. |
 
 The per-PR budgets are unchanged: the 4-hour cooldown, two concluded attempts
-and `needs-human` are the scan's, and the drain only decides how many of the PRs
-already due get taken now.
+and `needs-human` are the scan's, and the drain only decides how many of the
+PRs already due get taken now.
 
 ## ⏳ A deferred PR leads the next pass, and says so if it keeps losing
 
 Each of those bounds — plus the repository lease an issue slot holds — drops a
 PR that was due. Individually correct; repeated every cycle they starve one
-(Issue #1111). The scan re-derives the same order every pass, so the PR behind a
-busy repository, or at position 6 of a persistent backlog, loses the same race
-for ever, and the only trace was a log line on whichever host ran.
+(Issue #1111). The scan re-derives the same order every pass, so the PR behind
+a busy repository, or at position 6 of a persistent backlog, loses the same
+race for ever, and the only trace was a log line on whichever host ran.
 
 Two things fix that, both in `worker/deno/lib/merge_conflict_deferrals.ts`:
 
@@ -447,25 +446,25 @@ flowchart TD
 
 **A deferral is not an attempt.** Nothing was started, so it spends neither the
 two concluded attempts nor the three disrupted ones — reusing the disruption
-counter would escalate a PR to a human for a bound it never hit, the opposite of
-what this is for. The `scope=drain` summary carries `maxDeferralStreak`,
+counter would escalate a PR to a human for a bound it never hit, the opposite
+of what this is for. The `scope=drain` summary carries `maxDeferralStreak`,
 `leftBehind` and `deferralNotices`, so "deferred once, fine" and "deferred nine
-times" are no longer the same line. Losing the volume costs fairness for a cycle
-and warns; it never fails the pass.
+times" are no longer the same line. Losing the volume costs fairness for a
+cycle and warns; it never fails the pass.
 
 ## 🏷️ `needs-human` is a veto, so a mechanical stall does not get one
 
-The scan skips any PR carrying `needs-human`. That is correct for what the label
-now means — a human must decide — but it made the label a **cross-subsystem
-veto**: one lane's judgement about red CI removed a PR from this lane's queue,
-for a reason this lane had no part in. VibeCoder #549 was stranded exactly that
-way (Issue #569).
+The scan skips any PR carrying `needs-human`. That is correct for what the
+label now means — a human must decide — but it made the label a
+**cross-subsystem veto**: one lane's judgement about red CI removed a PR from
+this lane's queue, for a reason this lane had no part in. VibeCoder #549 was
+stranded exactly that way (Issue #569).
 
 A PR that is behind, conflicting, red or unmergeable is **work**. Those
 blockages are now filed as issues the fleet can claim
 (`worker/deno/lib/escalate_as_work.ts`), and the PR carries the non-vetoing
-`escalated` marker instead. `needs-human` is reserved for what genuinely needs a
-person: a policy call, a credential, confirming intent.
+`escalated` marker instead. `needs-human` is reserved for what genuinely needs
+a person: a policy call, a credential, confirming intent.
 
 ## 🔁 The lane rotates, so this pass is not always last
 
@@ -479,8 +478,8 @@ busy host, nothing:
 04:26:44Z [m1] stop reason=deadline — Resolve PR Merge Conflicts … defer
 ```
 
-The order now rotates by one each cycle (`worker/deno/lib/lane_rotation.ts`), so
-every pass leads once per turn. The offset is persisted on the work volume
+The order now rotates by one each cycle (`worker/deno/lib/lane_rotation.ts`),
+so every pass leads once per turn. The offset is persisted on the work volume
 because runs get as few as one lane cycle each, and a run-local counter would
 leave a single-cycle host always leading with the same pass. Nothing about the
 resource bound changes: still one agent-backed pass at a time.
