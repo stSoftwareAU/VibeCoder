@@ -29,6 +29,7 @@ import {
   WORK_VOLUME_NAME,
 } from "../lib/container_launch.ts";
 import { CONTAINER_RUNTIMES } from "../lib/container_runtime.ts";
+import { parseKeepReferences } from "../lib/container_image_prune.ts";
 import { executableLines } from "../lib/launcher_source.ts";
 import {
   CONTAINER_START_EXIT_CODES,
@@ -417,6 +418,27 @@ Deno.test("run.sh - prunes after a build, keeping the reference it just built", 
       false,
       "the reference this checkout resolves to must never be pruned",
     );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - the prune is told the launch's whole image dependency chain (Issue #1059)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_IMAGE_LIST: IMAGE_STORE,
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // The launcher passes the plan's `keep` token through verbatim rather than
+    // the single reference it runs, so a deployment whose extension layer is
+    // built FROM the standard image keeps that base too.
+    const args = await recorded(harness, "container-image-prune");
+    assert(args, "the prune was never invoked");
+    const keep = args[args.indexOf("--keep") + 1] ?? "";
+    assertEquals(parseKeepReferences(keep), [IMAGE]);
   } finally {
     await harness.cleanup();
   }

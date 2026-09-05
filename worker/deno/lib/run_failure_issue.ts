@@ -27,6 +27,11 @@
  */
 
 import {
+  ALERT_DEDUP_JSON_FIELDS,
+  type AlertDedupRow,
+  selectFleetAuthoredMatches,
+} from "./alert_dedup_authors.ts";
+import {
   CI_FAILURE_EXCERPT_BYTES,
   CI_FAILURE_SIGNAL_LINES,
   extractFailureSignals,
@@ -145,6 +150,18 @@ export interface FileRunFailureIssueOptions {
   /** Follow-up window override (tests). */
   followUpWindowSeconds?: number;
   log?: (message: string) => void;
+  /**
+   * Fleet logins whose escalation markers are trusted.
+   *
+   * A marker in an issue body is text anyone can write, so a dedup match is
+   * only evidence the alert already exists when a fleet account authored it.
+   * Omitted means "read the configured fleet identity"
+   * (`service_accounts` / `fleet_pr_authors` / `GITHUB_USER`), which is what
+   * every production caller does. An empty list is an *unresolved* fleet:
+   * the match cannot be attributed, so it is not treated as an existing
+   * alert and the escalation is raised.
+   */
+  fleetAuthors?: readonly string[];
 }
 
 interface FilingState {
@@ -287,7 +304,10 @@ export async function fileRunFailureIssue(
         });
       }
 
-      // 1. Existing open issue for the class — matched on the body marker.
+      // 1. Existing open issue for the class — matched on the body marker
+      // AND on the author. A body is text anyone with an issue-open button
+      // can write, so an unverified marker match would let a stranger's
+      // issue stand in for this alert and silence it.
       let existing: { number: number } | null = null;
       try {
         const raw = await opts.ghFn([
@@ -300,17 +320,18 @@ export async function fileRunFailureIssue(
           "--search",
           `"${RUN_FAILURE_MARKER_PREFIX}:${failureClass}" in:body`,
           "--json",
-          "number,body",
+          ALERT_DEDUP_JSON_FIELDS,
           "--limit",
           "20",
         ]);
-        const list = JSON.parse(raw || "[]") as {
-          number: number;
-          body?: string;
-        }[];
-        const match = list
-          .filter((i) => isRunFailureIssue(i.body ?? "", failureClass))
-          .sort((a, b) => a.number - b.number)[0];
+        const list = JSON.parse(raw || "[]") as AlertDedupRow[];
+        const verified = await selectFleetAuthoredMatches(
+          list.filter((i) => isRunFailureIssue(i.body ?? "", failureClass)),
+          `run-failure ${failureClass}`,
+          opts,
+          log,
+        );
+        const match = verified.sort((a, b) => a.number - b.number)[0];
         existing = match ? { number: match.number } : null;
       } catch (err) {
         recordFaultEvent(

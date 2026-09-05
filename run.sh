@@ -508,6 +508,7 @@ fi
 
 # Read the NUL-delimited "key=value" plan into the argument lists it names.
 IMAGE=""
+KEEP_IMAGES=""
 WATCHDOG_SECONDS=""
 ensure_dirs=()
 volume_names=()
@@ -528,6 +529,7 @@ while IFS= read -r -d '' token; do
   case "${key}" in
     runtime) RUNTIME="${value}" ;;
     image) IMAGE="${value}" ;;
+    keep) KEEP_IMAGES="${value}" ;;
     name) CONTAINER_NAME="${value}" ;;
     watchdog) WATCHDOG_SECONDS="${value}" ;;
     ensure) ensure_dirs+=("${value}") ;;
@@ -549,7 +551,8 @@ while IFS= read -r -d '' token; do
   esac
 done <"${PLAN_FILE}"
 
-if [[ -z "${RUNTIME}" || -z "${IMAGE}" ]] || [[ ${#run_args[@]} -eq 0 ]] ||
+if [[ -z "${RUNTIME}" || -z "${IMAGE}" || -z "${KEEP_IMAGES}" ]] ||
+  [[ ${#run_args[@]} -eq 0 ]] ||
   [[ ${#build_args[@]} -eq 0 ]] || [[ ${#exists_args[@]} -eq 0 ]] ||
   [[ ${#volume_names[@]} -eq 0 ]] || [[ ${#init_args[@]} -eq 0 ]] ||
   [[ ${#volume_remove_args[@]} -eq 0 ]] ||
@@ -768,16 +771,19 @@ fi
 # the next build died mid-export with "No space left on device". ${IMAGE} is the
 # only reference a future launch of this checkout can use, so every other
 # vibe-coder tag goes - a rollback rebuilds from the builder cache, which is
-# deliberately left alone. Runs on every launch, not only after a build, so a
-# host already carrying a backlog reclaims it now. Best-effort by design: a
-# prune that cannot run says so and the launch continues, because reclaiming
-# disk must never block the worker.
+# deliberately left alone. ${KEEP_IMAGES} is the plan's whole image dependency
+# chain, not just ${IMAGE}: a deployment with a private extension layer runs an
+# image built FROM the standard one, and keeping only the leaf untagged that
+# base on every launch (Issue #1059). Runs on every launch, not only after a
+# build, so a host already carrying a backlog reclaims it now. Best-effort by
+# design: a prune that cannot run says so and the launch continues, because
+# reclaiming disk must never block the worker.
 if ! bounded 600 "${DENO_CMD}" run \
   --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
   --allow-env --allow-read --allow-run \
   "${BASE_DIR}/worker/deno/mod.ts" container-image-prune \
   --runtime "${RUNTIME}" \
-  --keep "${IMAGE}" </dev/null >&2; then
+  --keep "${KEEP_IMAGES}" </dev/null >&2; then
   echo "[run.sh] warning: could not prune superseded ${IMAGE} tags" >&2
 fi
 

@@ -487,7 +487,16 @@ match**:
 | 1.75     | Issue refinement (`refine-issue` label)         | [refinement_processor.ts](../worker/deno/lib/refinement_processor.ts)   |
 | 1.8      | Question answering (`question` label)           | [question_processor.ts](../worker/deno/lib/question_processor.ts)       |
 | 1.85     | Planning (`planning` label)                     | [planning_processor.ts](../worker/deno/lib/planning_processor.ts)       |
+| 1.86     | Custom label prompts (issue phase)              | [custom_label_dispatch.ts](../worker/deno/lib/custom_label_dispatch.ts) |
+| 1.87     | Custom label PR prompts (`pr` phase)            | [custom_label_pr_dispatch.ts](../worker/deno/lib/custom_label_pr_dispatch.ts) |
 | 2        | New implementation issues (globally oldest)     | [issue_worker.ts](../worker/deno/lib/issue_worker.ts)                   |
+
+Rows 1.86 and 1.87 are **conditional**: each exists only when the operator has
+configured at least one `custom_label_prompts` mapping of that target phase
+(`issue` for 1.86, `pr` for 1.87). A fleet that configured neither gets a
+byte-identical ladder, and a fleet that configured only `pr` mappings gets 1.87
+without 1.86 — an issue-scanning row that could never match is not added. See
+[Configuration Reference — Custom Label Prompts](CONFIGURATION.md#-custom-label-prompts).
 
 #### 🚦 Primary GraphQL quota exhaustion
 

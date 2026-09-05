@@ -178,7 +178,7 @@ sequenceDiagram
     participant GH as GitHub
 
     Main->>Filer: idle pass — nothing claimable
-    Filer->>Filer: cross-repo wrapper check<br/>(any open idle-task anywhere?)
+    Filer->>Filer: per-repo wrapper census<br/>(which repos already hold one?)
     Filer->>Filer: 1/18 RNG picks supply-chain-readiness<br/>(uniform over the registered templates)
     Filer->>Template: buildIssueBody(repo)
     Template->>Template: load prompts/supply_chain_readiness/<br/>(substitute placeholders)

@@ -450,19 +450,26 @@ operational constant (see [Configuration Reference](CONFIGURATION.md)).
 
 ## 🔒 One Issue per Repository/Milestone
 
-To prevent conflicts and ensure clean branches, the worker enforces a
-one-issue-at-a-time policy:
+To prevent conflicts and ensure clean branches, the worker enforces
+one issue at a time **per work stream** — one pull request per merge target:
 
-- **Per repository**: Only one issue is worked on per repository at a time. If a
-  repository already has an in-progress issue, other eligible issues in that
-  repository are skipped until the current one completes.
-- **Per milestone**: Within a milestone, only one issue is worked on at a time.
-  If a milestone already has an assigned issue being processed, other issues in
-  the same milestone are skipped.
+- **Per milestone**: Each open milestone is its own work stream with its own
+  branch. Only one issue is worked on per milestone at a time; if a milestone
+  already has an assigned issue being processed, other issues in the same
+  milestone are skipped.
+- **Per default branch**: The issues that carry no milestone share the default
+  branch as their work stream, so only one of them is worked on per repository
+  at a time.
+
+A repository therefore runs **as many issues concurrently as it has work
+streams** — its default branch plus each open milestone. Two issues in flight
+in one repository, one on a milestone branch and one on the default branch, is
+the intended behaviour, not a duplicate-work fault; opening a milestone is how
+an operator adds a parallel stream to a busy repository.
 
 This enforcement happens during issue selection and ensures that parallel
-workers do not create conflicting branches or overlapping changes in the same
-repository or milestone.
+workers do not create conflicting branches or overlapping changes on the same
+target branch.
 
 ## 💾 Self-Healing Disk Space
 
@@ -697,12 +704,13 @@ flowchart TD
     P181["🔵 Priority 1.81 — Failure-Detection Repair Resume"]
     P185["🔵 Priority 1.85 — Question Answering Requests"]
     P186["🔵 Priority 1.86 — Custom Label Prompts (operator-configured labels)"]
+    P187["🔵 Priority 1.87 — Custom Label PR Prompts (operator-configured labels on open PRs)"]
     P19["🔵 Priority 1.9 — Stale Workflow Detection"]
     P2["🟣 Priority 2 — New Issues (globally oldest, label tiers `top-priority` > `work-on`)"]
     P25["🟤 Priority 2.5 — `low-priority` label (fallback when no eligible higher-tier candidate exists in any repo)"]
     P29["⚪ Priority 2.9 — `idle-task` label (worker-filed busywork; only self-appliable label)"]
 
-    P1 --> P15 --> P155 --> P16 --> P161 --> P162 --> P163 --> P165 --> P166 --> P167 --> P168 --> P17 --> P172 --> P175 --> P178 --> P179 --> P18 --> P181 --> P185 --> P186 --> P19 --> P2 --> P25 --> P29
+    P1 --> P15 --> P155 --> P16 --> P161 --> P162 --> P163 --> P165 --> P166 --> P167 --> P168 --> P17 --> P172 --> P175 --> P178 --> P179 --> P18 --> P181 --> P185 --> P186 --> P187 --> P19 --> P2 --> P25 --> P29
 
     style P1 fill:#d00000,stroke:#9d0208,color:#fff
     style P15 fill:#dc2f02,stroke:#d00000,color:#fff

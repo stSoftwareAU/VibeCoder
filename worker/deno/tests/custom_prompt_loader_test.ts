@@ -8,7 +8,10 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { loadCustomPromptTemplate } from "../lib/custom_prompt_loader.ts";
+import {
+  customPromptTemplateType,
+  loadCustomPromptTemplate,
+} from "../lib/custom_prompt_loader.ts";
 
 /** A template carrying both required `issue` placeholders. */
 const VALID_TEMPLATE =
@@ -96,4 +99,70 @@ Deno.test("custom prompt loader - both missing placeholders are named", async ()
   } finally {
     await Deno.remove(path);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Per-phase template validation (Issue #1008, part of #938)
+// ---------------------------------------------------------------------------
+
+/** A template carrying both required `pr_feedback` placeholders. */
+const VALID_PR_TEMPLATE =
+  "Review PR #{{PR_NUMBER}} in the private way.\n\n{{QUALITY_INSTRUCTIONS}}\n";
+
+Deno.test("custom prompt loader - a pr-phase template loads against the pr_feedback contract", async () => {
+  const path = await writeTempPrompt(VALID_PR_TEMPLATE);
+  try {
+    const result = await loadCustomPromptTemplate(
+      path,
+      "secret-squirrel",
+      customPromptTemplateType("pr"),
+    );
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value, VALID_PR_TEMPLATE);
+  } finally {
+    await Deno.remove(path);
+  }
+});
+
+Deno.test("custom prompt loader - an issue template on a pr mapping names the phase and template type", async () => {
+  const path = await writeTempPrompt(VALID_TEMPLATE);
+  try {
+    const result = await loadCustomPromptTemplate(
+      path,
+      "secret-squirrel",
+      customPromptTemplateType("pr"),
+    );
+    assertEquals(result.ok, false);
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "secret-squirrel");
+    assertStringIncludes(result.error.message, path);
+    assertStringIncludes(result.error.message, "'pr'");
+    assertStringIncludes(result.error.message, "pr_feedback");
+    assertStringIncludes(result.error.message, "PR_NUMBER");
+  } finally {
+    await Deno.remove(path);
+  }
+});
+
+Deno.test("custom prompt loader - a pr template on an issue mapping names the phase and template type", async () => {
+  const path = await writeTempPrompt(VALID_PR_TEMPLATE);
+  try {
+    const result = await loadCustomPromptTemplate(
+      path,
+      "my-custom-label",
+      customPromptTemplateType("issue"),
+    );
+    assertEquals(result.ok, false);
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "'issue'");
+    assertStringIncludes(result.error.message, "Template 'issue'");
+    assertStringIncludes(result.error.message, "ISSUE_NUMBER");
+  } finally {
+    await Deno.remove(path);
+  }
+});
+
+Deno.test("custom prompt loader - the phase to template-type map is exactly issue and pr", () => {
+  assertEquals(customPromptTemplateType("issue"), "issue");
+  assertEquals(customPromptTemplateType("pr"), "pr_feedback");
 });

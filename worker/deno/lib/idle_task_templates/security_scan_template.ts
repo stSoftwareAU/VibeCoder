@@ -19,6 +19,21 @@
  *
  * Registration happens at module load — importing this file is the
  * only thing callers need to do.
+ *
+ * **Both `shouldFile` gates are author-verified.** They ask GitHub whether
+ * an open `finding-id: SEC-…` issue exists and whether an open wrapper
+ * titled `Run a security scan` exists, and answering "yes" stands the
+ * scanner down for that repository. A body and a title are both text
+ * anyone who can open an issue may write, so on an unverified match one
+ * planted issue disables security scanning for a repo indefinitely. Every
+ * match is checked against the fleet identity
+ * (`lib/alert_dedup_authors.ts`) before it may defer a scan.
+ *
+ * **The fail direction is "scan".** An unresolvable fleet, a `gh` failure,
+ * a malformed payload — every one of them leaves the gates open and the
+ * scan runs, loudly logged. A security control that reports clean when it
+ * could not run is worse than one that runs twice: the duplicate costs a
+ * scan, the false clean costs the finding.
  */
 
 import {
@@ -53,6 +68,14 @@ import {
   emitSecuritySarif,
 } from "../security_sarif_emit.ts";
 import { repoCheckoutPath } from "../repo_checkout_path.ts";
+import {
+  ALERT_DEDUP_JSON_FIELDS,
+  ALERT_DEDUP_TITLE_JSON_FIELDS,
+  type AlertDedupAuthorOptions,
+  type AlertDedupRow,
+  type AlertIssueAuthor,
+  selectFleetAuthoredMatches,
+} from "../alert_dedup_authors.ts";
 import type { Result } from "../../types.ts";
 
 const NAME = "security-scan";
@@ -96,7 +119,7 @@ function buildIssueTitle(_repo: string): string {
  * Exposed so tests can drive `runTask` without invoking the real
  * Claude scanner or hitting GitHub.
  */
-export interface SecurityScanTemplateDeps {
+export interface SecurityScanTemplateDeps extends AlertDedupAuthorOptions {
   runSecurityScanFn: (
     opts: ScanOptions,
   ) => Promise<Result<ScanOk, ScanError>>;
@@ -125,78 +148,156 @@ export interface SecurityScanTemplateDeps {
   emitSarifFn?: (
     opts: { repo: string; checkoutDir: string; newlyFiled: readonly number[] },
   ) => Promise<EmitSarifOutcome>;
+  /**
+   * Sink for the gate diagnostics — a lookup that could not run, and a
+   * marker match discarded for want of a fleet author. Defaults to
+   * `console.warn`; nothing here is ever swallowed.
+   */
+  log?: (message: string) => void;
 }
 
+/** One gate match, carrying the author that makes it verifiable. */
+interface GateMatch extends AlertDedupRow {
+  title?: string;
+}
+
+/** Read the `author` object off a `gh issue list --json` row. */
+function rowAuthor(value: unknown): AlertIssueAuthor | null {
+  return value !== null && typeof value === "object"
+    ? value as AlertIssueAuthor
+    : null;
+}
+
+/** The consequence every gate in this file states when it cannot verify. */
+const SCAN_ANYWAY =
+  "the scan goes ahead — a security control that cannot establish who " +
+  "wrote a marker must never report clean";
+
 /**
- * Return true when at least one open scanner-filed issue exists in
- * `repo`. Keys off the hidden `<!-- finding-id: SEC-… -->` body
- * marker every scanner-filed issue carries (Issue #2063).
+ * Return true when at least one open **fleet-filed** finding exists in
+ * `repo`. Keys off the hidden `<!-- finding-id: SEC-… -->` body marker
+ * every scanner-filed issue carries (Issue #2063), and off the issue
+ * author, which is the only part of an issue an outsider cannot forge.
  *
- * Any gh failure or malformed response is treated as "no findings" so
- * the gate does not block scanning on a transient lookup hiccup.
+ * A gh failure, a malformed response or an unresolvable fleet all yield
+ * `false` — the scan runs — and every one of them is logged. Reporting
+ * "no findings" quietly on a lookup that never happened is the failure
+ * this gate exists to avoid.
  */
 async function hasOpenSecurityFindings(
   repo: string,
   ghCommandFn: (args: string[]) => Promise<string>,
+  opts: AlertDedupAuthorOptions,
+  log: (message: string) => void,
 ): Promise<boolean> {
-  const raw = await ghCommandFn([
-    "issue",
-    "list",
-    "--repo",
-    repo,
-    "--state",
-    "open",
-    "--search",
-    "SEC- in:body",
-    "--json",
-    "number,body",
-    "--limit",
-    "30",
-  ]);
+  let raw: string;
+  try {
+    raw = await ghCommandFn([
+      "issue",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--search",
+      "SEC- in:body",
+      "--json",
+      ALERT_DEDUP_JSON_FIELDS,
+      "--limit",
+      "30",
+    ]);
+  } catch (err) {
+    log(
+      `[security-scan] ${repo}: the open-findings lookup failed (` +
+        `${err instanceof Error ? err.message : String(err)}) — ` +
+        `${SCAN_ANYWAY}.`,
+    );
+    return false;
+  }
   const finder = /<!--\s*finding-id:\s*SEC-[A-Za-z0-9]+\s*-->/i;
+  const matches: GateMatch[] = [];
   for (const item of parseGhJsonArray(raw, "find SEC marker")) {
     if (item === null || typeof item !== "object") continue;
-    const body = (item as { body?: unknown }).body;
-    if (typeof body === "string" && finder.test(body)) return true;
+    const row = item as { number?: unknown; body?: unknown; author?: unknown };
+    if (typeof row.body === "string" && finder.test(row.body)) {
+      matches.push({
+        number: typeof row.number === "number" ? row.number : 0,
+        body: row.body,
+        author: rowAuthor(row.author),
+      });
+    }
   }
-  return false;
+  const verified = await selectFleetAuthoredMatches(
+    matches,
+    `security-scan findings ${repo}`,
+    opts,
+    log,
+    SCAN_ANYWAY,
+  );
+  return verified.length > 0;
 }
 
 /**
- * Return true when an open wrapper issue titled exactly
- * `Run a security scan` already exists in `repo` (Issue #2077). A
- * gh failure is treated as "no open wrapper" — matching the
- * `hasOpenSecurityFindings` behaviour, the gate must not stall
- * scanning on a transient hiccup.
+ * Return true when an open **fleet-filed** wrapper issue titled exactly
+ * `Run a security scan` already exists in `repo` (Issue #2077).
+ *
+ * A title is chosen by whoever opens the issue, so the title alone cannot
+ * stand the scanner down; the author must be a fleet account. As above,
+ * anything unverifiable leaves the gate open and the scan runs.
  */
 async function hasOpenSecurityScanWrapper(
   repo: string,
   ghCommandFn: (args: string[]) => Promise<string>,
+  opts: AlertDedupAuthorOptions,
+  log: (message: string) => void,
 ): Promise<boolean> {
-  const raw = await ghCommandFn([
-    "issue",
-    "list",
-    "--repo",
-    repo,
-    "--state",
-    "open",
-    "--search",
-    `"${SECURITY_SCAN_ISSUE_TITLE}" in:title`,
-    "--json",
-    "number,title",
-    "--limit",
-    "10",
-  ]);
+  let raw: string;
+  try {
+    raw = await ghCommandFn([
+      "issue",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "open",
+      "--search",
+      `"${SECURITY_SCAN_ISSUE_TITLE}" in:title`,
+      "--json",
+      ALERT_DEDUP_TITLE_JSON_FIELDS,
+      "--limit",
+      "10",
+    ]);
+  } catch (err) {
+    log(
+      `[security-scan] ${repo}: the open-wrapper lookup failed (` +
+        `${err instanceof Error ? err.message : String(err)}) — ` +
+        `${SCAN_ANYWAY}.`,
+    );
+    return false;
+  }
+  const matches: GateMatch[] = [];
   for (const item of parseGhJsonArray(raw, "find security wrapper")) {
     if (item === null || typeof item !== "object") continue;
-    const title = (item as { title?: unknown }).title;
+    const row = item as { number?: unknown; title?: unknown; author?: unknown };
     if (
-      typeof title === "string" && title.trim() === SECURITY_SCAN_ISSUE_TITLE
+      typeof row.title === "string" &&
+      row.title.trim() === SECURITY_SCAN_ISSUE_TITLE
     ) {
-      return true;
+      matches.push({
+        number: typeof row.number === "number" ? row.number : 0,
+        title: row.title,
+        author: rowAuthor(row.author),
+      });
     }
   }
-  return false;
+  const verified = await selectFleetAuthoredMatches(
+    matches,
+    `security-scan wrapper ${repo}`,
+    opts,
+    log,
+    SCAN_ANYWAY,
+  );
+  return verified.length > 0;
 }
 
 /**
@@ -236,6 +337,7 @@ export function createSecurityScanTemplate(
     ((name, promptsDir) => defaultLoadPrompt(name, promptsDir));
   const emitSarifFn = deps.emitSarifFn ??
     ((opts) => emitSecuritySarif(opts, { ghListFn: ghCommandFn }));
+  const log = deps.log ?? ((message: string) => console.warn(message));
 
   async function buildIssueBody(opts: IdleTaskBodyOptions): Promise<string> {
     // Issue #2077: the wrapper body IS the prompt — fully substituted
@@ -274,8 +376,12 @@ export function createSecurityScanTemplate(
   async function shouldFile(
     opts: IdleTaskShouldFileOptions,
   ): Promise<boolean> {
-    if (await hasOpenSecurityFindings(opts.repo, ghCommandFn)) return false;
-    if (await hasOpenSecurityScanWrapper(opts.repo, ghCommandFn)) return false;
+    if (await hasOpenSecurityFindings(opts.repo, ghCommandFn, deps, log)) {
+      return false;
+    }
+    if (await hasOpenSecurityScanWrapper(opts.repo, ghCommandFn, deps, log)) {
+      return false;
+    }
     return true;
   }
 

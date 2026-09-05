@@ -90,6 +90,9 @@ function langResult(
   };
 }
 
+/** A fleet login, so a stubbed wrapper reads as one the fleet filed. */
+const FLEET_DEDUP_AUTHOR = "vibe-bot";
+
 /**
  * gh stub. `--json number` calls are the before/after snapshots; the
  * `--json number,body` call is the dedup lookup; `issue create` returns a
@@ -114,13 +117,17 @@ function makeGhStub(scenario: {
     }
     const jsonIdx = args.indexOf("--json");
     const jsonField = jsonIdx >= 0 ? args[jsonIdx + 1] : "";
-    if (jsonField === "number,title") {
-      // Wrapper-open lookup used by shouldFile.
+    if (jsonField === "number,title" || (jsonField ?? "").includes("author")) {
+      // Wrapper-open lookup used by shouldFile. The search now also asks for
+      // `author`, because a title alone is text anybody may write and only
+      // the author is authenticated; the stub answers as a fleet account so
+      // the veto under test is a genuine fleet-filed wrapper.
       return Promise.resolve(
         scenario.wrapperOpen
           ? JSON.stringify([{
             number: 1,
             title: BASH_SYNTAX_AUDIT_ISSUE_TITLE,
+            author: { login: FLEET_DEDUP_AUTHOR },
           }])
           : "[]",
       );
@@ -428,7 +435,13 @@ Deno.test("bash-syntax-audit runTask - native detectors use the repo checkout, n
 Deno.test("bash-syntax-audit shouldFile - vetoes while a wrapper is open", async () => {
   const openStub = makeGhStub({ wrapperOpen: true });
   const cleanStub = makeGhStub({ wrapperOpen: false });
-  const openT = createBashSyntaxAuditTemplate({ ghCommandFn: openStub.gh });
+  const openT = createBashSyntaxAuditTemplate({
+    // The wrapper veto now counts a title match only when the fleet
+    // authored it, so the test states the fleet rather than writing
+    // a config file.
+    dedupAuthors: { fleetAuthors: [FLEET_DEDUP_AUTHOR] },
+    ghCommandFn: openStub.gh,
+  });
   const cleanT = createBashSyntaxAuditTemplate({ ghCommandFn: cleanStub.gh });
   assertEquals(await openT.shouldFile!({ repo: "acme/widget" }), false);
   assertEquals(await cleanT.shouldFile!({ repo: "acme/widget" }), true);

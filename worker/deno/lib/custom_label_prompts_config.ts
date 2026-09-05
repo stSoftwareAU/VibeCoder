@@ -22,7 +22,11 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
-import type { CustomLabelPromptMapping, Result } from "../types.ts";
+import type {
+  CustomLabelPromptMapping,
+  CustomPromptTargetPhase,
+  Result,
+} from "../types.ts";
 import { isReservedLabel } from "./config_defaults.ts";
 import { isWorkerAppliableLabel } from "./worker_label_guard.ts";
 import type { BuiltInLabelNames } from "./builtin_prompt_overrides.ts";
@@ -41,7 +45,13 @@ const KNOWN_ENTRY_KEYS: ReadonlySet<string> = new Set([
   // a built-in label, and only needed for a phase whose label owns more than
   // one template (`planning` also owns `planning_critique`).
   "phase",
+  // Issue #1008 (part of #938): which phase this entry's prompt runs in —
+  // `issue` (the default) or `pr`.
+  "target_phase",
 ]);
+
+/** The `target_phase` values a mapping may state. */
+const TARGET_PHASES: readonly CustomPromptTargetPhase[] = ["issue", "pr"];
 
 /** Whether a value is a plain (non-array, non-null) object. */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -133,6 +143,7 @@ function parseEntry(
   }
 
   const label = parseCleanString(raw.label, `${entryField}.label`);
+  const targetPhase = parseTargetPhase(raw.target_phase, entryField);
   const requestedPhase = raw.phase === undefined
     ? undefined
     : parseCleanString(raw.phase, `${entryField}.phase`);
@@ -150,6 +161,18 @@ function parseEntry(
     );
   }
   const overridesPhase = phaseResult.value;
+
+  // A built-in override replaces that phase's template; it is dispatched by
+  // the built-in label's own handler, which knows nothing of a target phase.
+  // Accepting `"target_phase": "pr"` here would silently do nothing — the
+  // exact silent drop #843 rules out — so it is refused at the boundary.
+  if (overridesPhase !== undefined && targetPhase !== "issue") {
+    reject(
+      `${entryField}.target_phase`,
+      `must be "issue" on an entry that overrides the built-in "${overridesPhase}" ` +
+        `phase, got ${show(targetPhase)}`,
+    );
+  }
 
   // RESERVED_LABELS already contains the three hardwired discovery labels
   // (top-priority/work-on/low-priority), so isReservedLabel's case-
@@ -243,8 +266,35 @@ function parseEntry(
   return {
     label,
     promptPath,
+    targetPhase,
     ...(overridesPhase !== undefined ? { overridesPhase } : {}),
   };
+}
+
+/**
+ * Validate an entry's `target_phase` (Issue #1008, part of #938).
+ *
+ * Absent or `null` is `"issue"`, so a `.config.json` written before the field
+ * existed produces exactly the mappings it always did. Anything else that is
+ * not one of the accepted values — a non-string, an empty string, or a case
+ * variant — is refused through the shared {@link reject} path rather than
+ * repaired, naming the entry, the offending value and the accepted set.
+ */
+function parseTargetPhase(
+  raw: unknown,
+  entryField: string,
+): CustomPromptTargetPhase {
+  if (raw === undefined || raw === null) return "issue";
+  if (
+    typeof raw !== "string" ||
+    !TARGET_PHASES.includes(raw as CustomPromptTargetPhase)
+  ) {
+    reject(
+      `${entryField}.target_phase`,
+      `must be one of ${TARGET_PHASES.join(", ")}, got ${show(raw)}`,
+    );
+  }
+  return raw as CustomPromptTargetPhase;
 }
 
 /**
@@ -420,13 +470,20 @@ function configuredLabelNames(
  * label newly stripped on every untrusted or unattributable add. Only a new
  * label brings a new privileged dispatch with it.
  *
+ * The optional `phase` narrows the result to one target phase (Issue #1008).
+ * `operationalDispatchLabels` deliberately calls this **unfiltered** — the
+ * trust gate applies to a custom label whichever phase it runs in — while the
+ * two dispatch paths each ask for their own.
+ *
  * @param config - Worker configuration (or any object carrying the resolved list)
+ * @param phase - Optional target-phase filter (Issue #1008)
  * @returns The dispatching labels, in configuration order and original case
  */
 export function customLabelPromptLabels(
   config: { customLabelPrompts: CustomLabelPromptMapping[] },
+  phase?: CustomPromptTargetPhase,
 ): string[] {
-  return customDispatchMappings(config).map((mapping) => mapping.label);
+  return customDispatchMappings(config, phase).map((mapping) => mapping.label);
 }
 
 /**
@@ -461,14 +518,24 @@ export function customLabelPromptPath(
  * `planning`-labelled issue through the implementation phase. Only new labels
  * belong in that scan.
  *
+ * The optional `phase` narrows the result to the mappings that run in one
+ * target phase (Issue #1008, part of #938), so the issue scanner never sees a
+ * `pr` label — it would be hunted for among issues and its template rejected
+ * for missing `{{ISSUE_NUMBER}}` — and the PR scanner never sees an `issue`
+ * one.
+ *
  * @param config - Worker configuration (or any object carrying the list)
+ * @param phase - Optional target-phase filter (Issue #1008)
  * @returns The mappings with no built-in phase to override
  */
 export function customDispatchMappings(
   config: { customLabelPrompts: CustomLabelPromptMapping[] },
+  phase?: CustomPromptTargetPhase,
 ): CustomLabelPromptMapping[] {
   return config.customLabelPrompts.filter(
-    (mapping) => mapping.overridesPhase === undefined,
+    (mapping) =>
+      mapping.overridesPhase === undefined &&
+      (phase === undefined || mapping.targetPhase === phase),
   );
 }
 

@@ -77,6 +77,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  ALERT_DEDUP_JSON_FIELDS,
+  type AlertDedupRow,
+  selectFleetAuthoredMatches,
+} from "./alert_dedup_authors.ts";
 import { atomicWrite } from "./file_utils.ts";
 import { withStateLock } from "./state_mutex.ts";
 
@@ -152,11 +157,22 @@ export interface IdleStarvationObservation {
   idleSlotSeconds: number;
   /**
    * Open `idle-task`-labelled issues across the whole monitored set,
-   * assigned or not. Non-zero means the fleet is supplying itself and the
-   * episode is over — `maybe-file-idle-task` keeps at most one open across
-   * the fleet, so one is the healthy steady state, not a shortfall.
+   * assigned or not.
    */
   openIdleTasks: number;
+  /**
+   * How many idle tasks the fleet's idle capacity can absorb — the idle
+   * slot count from the #925 ledger (Issue #1083).
+   *
+   * The detector used to treat **one** open wrapper as health, because
+   * `maybe-file-idle-task` kept at most one open across the whole fleet.
+   * That cap is gone: idle work is now raised one per repository, up to the
+   * number of idle slots, so one wrapper beside six idle slots is precisely
+   * the shortfall this detector exists to see. Absent, it falls back to one
+   * — the pre-#1083 reading, and the honest answer for a caller with no
+   * slot ledger to hand.
+   */
+  expectedIdleTasks?: number;
   /** What to put in the issue body if this episode escalates. */
   evidence: IdleStarvationEvidence;
 }
@@ -470,6 +486,18 @@ export interface RecordIdleStarvationOptions {
   thresholdIdleSlotSeconds?: number;
   /** Sink for diagnostics. */
   log?: (message: string) => void;
+  /**
+   * Fleet logins whose escalation markers are trusted.
+   *
+   * A marker in an issue body is text anyone can write, so a dedup match is
+   * only evidence the alert already exists when a fleet account authored it.
+   * Omitted means "read the configured fleet identity"
+   * (`service_accounts` / `fleet_pr_authors` / `GITHUB_USER`), which is what
+   * every production caller does. An empty list is an *unresolved* fleet:
+   * the match cannot be attributed, so it is not treated as an existing
+   * alert and the escalation is raised.
+   */
+  fleetAuthors?: readonly string[];
 }
 
 /** Parse the issue number out of `gh issue create` output. */
@@ -487,9 +515,10 @@ function parseCreatedIssueNumber(output: string): number {
  * search finds the marker in the body and adopts that issue number.
  */
 async function findOpenEscalationIssue(
-  ghFn: (args: string[]) => Promise<string>,
+  opts: RecordIdleStarvationOptions,
+  log: (message: string) => void,
 ): Promise<number | null> {
-  const raw = await ghFn([
+  const raw = await opts.ghFn([
     "issue",
     "list",
     "--repo",
@@ -499,14 +528,18 @@ async function findOpenEscalationIssue(
     "--search",
     `"${IDLE_STARVATION_MARKER}" in:body`,
     "--json",
-    "number,body",
+    ALERT_DEDUP_JSON_FIELDS,
     "--limit",
     "20",
   ]);
-  const rows = JSON.parse(raw || "[]") as { number: number; body?: string }[];
-  const match = rows
-    .filter((row) => isIdleStarvationIssue(row.body ?? ""))
-    .sort((a, b) => a.number - b.number)[0];
+  const rows = JSON.parse(raw || "[]") as AlertDedupRow[];
+  const verified = await selectFleetAuthoredMatches(
+    rows.filter((row) => isIdleStarvationIssue(row.body ?? "")),
+    "idle-starvation",
+    opts,
+    log,
+  );
+  const match = verified.sort((a, b) => a.number - b.number)[0];
   return match ? match.number : null;
 }
 
@@ -552,9 +585,11 @@ export async function recordIdleStarvationObservation(
       async () => {
         const stored = await loadIdleStarvationEpisode(opts.statePath);
 
-        // The fleet is supplying itself: at most one wrapper is open across
-        // the whole monitored set by design, so one is health, not shortfall.
-        if (obs.openIdleTasks > 0) {
+        // The fleet is supplying itself only when it has raised as much
+        // idle work as its idle slots can take (Issue #1083). One wrapper
+        // is health beside one idle slot and a shortfall beside six.
+        const expected = Math.max(1, Math.floor(obs.expectedIdleTasks ?? 1));
+        if (obs.openIdleTasks >= expected) {
           if (stored !== null) {
             await saveIdleStarvationEpisode(opts.statePath, null, log);
           }
@@ -617,7 +652,7 @@ async function decide(
 
   let existing: number | null;
   try {
-    existing = await findOpenEscalationIssue(opts.ghFn);
+    existing = await findOpenEscalationIssue(opts, log);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     log(

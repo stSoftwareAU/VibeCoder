@@ -187,7 +187,15 @@ Deno.test("notifyAuditFailure - files a tracking issue when none exists", async 
 Deno.test("notifyAuditFailure - is idempotent when a matching open issue exists", async () => {
   const built = buildAuditFailureIssue("deno");
   const existing = JSON.stringify([
-    { number: 7, title: built.title, url: "https://github.com/x/y/issues/7" },
+    {
+      number: 7,
+      title: built.title,
+      url: "https://github.com/x/y/issues/7",
+      // The idempotency lookup now counts a title match only when the fleet
+      // authored it — a title is text anybody may write, and an unverified
+      // match would report "already tracked" while nothing was tracked.
+      author: { login: "vibe-bot" },
+    },
   ]);
   const { gh, calls } = makeFakeGh((args) => {
     if (args[0] === "issue" && args[1] === "list") return existing;
@@ -201,6 +209,7 @@ Deno.test("notifyAuditFailure - is idempotent when a matching open issue exists"
     repo: "x/y",
     ecosystem: "deno",
     ghCommandFn: gh,
+    dedupAuthors: { fleetAuthors: ["vibe-bot"] },
   });
 
   assertEquals(result.action, "skipped");
