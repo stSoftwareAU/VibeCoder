@@ -27,6 +27,8 @@ import {
 } from "./coding_guidelines_overlay.ts";
 import { formatCodebaseMapSection } from "./codebase_map.ts";
 import { formatRepoContextSection } from "./repo_context_reader.ts";
+import type { ConflictIssueContext } from "./conflict_issue_context.ts";
+import { formatConflictIssueContextSection } from "./conflict_intent_context.ts";
 import {
   buildBoundaryIntegrityInstruction,
   codeFenceFor,
@@ -2051,6 +2053,12 @@ export interface MergeConflictPromptOptions {
   repoContextContent?: string;
   /** Verbosity level for controlling response detail (Issue #1332). */
   verbosityLevel?: VerbosityLevel;
+  /**
+   * Originating-issue context for both sides of the conflict (Issue #1114).
+   * Omitted or `null` renders no block at all, so a conflict with nothing to
+   * consult produces the prompt this builder produced before that change.
+   */
+  issueContext?: ConflictIssueContext | null;
 }
 
 /**
@@ -2076,6 +2084,7 @@ export async function buildMergeConflictPrompt(
     promptsDir,
     repoContextContent,
     verbosityLevel,
+    issueContext,
   } = options;
 
   const templateResult = await loadPrompt(
@@ -2102,19 +2111,27 @@ export async function buildMergeConflictPrompt(
     )
     : "- (none reported by git — run `git status` and resolve what it lists)";
 
+  // One nonce for the whole prompt: the repository guidance and the
+  // originating issues are both untrusted GitHub-supplied text, so both are
+  // fenced with this run's markers (Issue #1114).
+  const delimiters = createPromptDelimiters();
+
   const substitution = substitute(templateResult.value, {
     PR_NUMBER: prNumber,
     BASE_BRANCH: sanitiseDelimiterPatterns(baseBranch),
     CONFLICTED_FILES: fileList,
     QUALITY_INSTRUCTIONS: qualityBlock,
     VERBOSITY_INSTRUCTIONS: buildVerbosityBlock(verbosityLevel),
+    ISSUE_CONTEXT: formatConflictIssueContextSection(
+      issueContext,
+      delimiters.boundaryId,
+    ),
   });
   if (!substitution.ok) return substitution;
 
   const customSection = buildCustomInstructionsSection(customInstructions);
   const systemPrompt = guidelinesResult.value;
 
-  const delimiters = createPromptDelimiters();
   const repoContextSection = formatRepoContextSection(
     repoContextContent,
     delimiters.boundaryId,
@@ -2130,6 +2147,7 @@ ${
         ...(repoContextSection
           ? ["the repository-supplied guidance document"]
           : []),
+        ...(issueContext ? ["the originating issues quoted below"] : []),
       ])
     }
 ${repoContextSection}
