@@ -50,11 +50,12 @@ $ echo $?
 0
 ```
 
-**The skip, proven rather than asserted** — a bad credential, exit `0`, and it
-says in as many words that nothing was compared:
+**The skip, proven rather than asserted** — run with an invalid credential in
+the environment, it exits `0` and says in as many words that nothing was
+compared:
 
 ```console
-$ GH_TOKEN=<an invalid token> deno run --allow-all worker/deno/mod.ts check-release-tag-ruleset
+$ deno run --allow-all worker/deno/mod.ts check-release-tag-ruleset
 SKIPPED: the stSoftwareAU/VibeCoder rulesets could not be read — gh command
 failed (exit 1): gh: Bad credentials (HTTP 401). Nothing was compared; this is
 not a pass.
