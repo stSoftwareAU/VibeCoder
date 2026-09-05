@@ -88,6 +88,17 @@ Deno.test("classifyMergeAttempt - a stale base asks for a branch update", () => 
   );
 });
 
+Deno.test("classifyMergeAttempt - a PR held for a review is a wait, not an escalation", () => {
+  // Issue #1082: the default-branch guard is holding the PR until a review
+  // outside the fleet arrives. Escalating would hand a human a PR for doing
+  // exactly what the guard asked of it; the stall watchdog reports the repo
+  // if the hold lasts.
+  assertEquals(
+    classifyMergeAttempt({ kind: "default_branch_unapproved" }),
+    "await_checks",
+  );
+});
+
 Deno.test("classifyMergeAttempt - a green PR that will not merge escalates", () => {
   assertEquals(
     classifyMergeAttempt({

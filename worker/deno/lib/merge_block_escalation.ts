@@ -73,6 +73,13 @@ export type MergeAttemptOutcome =
    */
   | { kind: "milestone_route_unreadable" }
   /**
+   * The PR targets an unprotected default branch and carries no approving
+   * review from outside the fleet (Issue #1082). A deliberate hold, not a
+   * fault: the review may still arrive, and escalating would hand a healthy
+   * PR to a human for doing exactly what the guard asked.
+   */
+  | { kind: "default_branch_unapproved" }
+  /**
    * A milestone summary PR whose milestone still has open children (#3909).
    * Deliberately deferred, not a fault — the gate has already explained
    * itself on the PR, and the merge is retried once the children close.
@@ -169,6 +176,10 @@ export function classifyMergeAttempt(
     case "milestone_route_unreadable":
       // The route could not be read (Issue #477). Wait and re-read; a
       // transient GitHub failure must not escalate a healthy PR.
+      return "await_checks";
+    case "default_branch_unapproved":
+      // The guard is holding the PR for a review (Issue #1082). The
+      // blocking-PR stall watchdog reports the repo if the hold lasts.
       return "await_checks";
     case "behind_target":
       return "update_branch";
