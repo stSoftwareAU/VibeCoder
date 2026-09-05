@@ -19,11 +19,19 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
-  AUDIT_DISAGREEMENT_SKIP_LIMIT,
   createDefaultRunCoreConfig,
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
+import { IDLE_DISAGREEMENT_BOUND_MS } from "../lib/idle_disagreement_streak.ts";
+
+/**
+ * How far apart idle observations arrive on the fleet — the liveness-guard
+ * cadence. Since Issue #1051 the disagreement bound is elapsed time, so the
+ * cycles below advance a mock clock at the real cadence: four observations
+ * nine minutes apart span 27 minutes against a 20-minute bound.
+ */
+const OBSERVATION_GAP_MS = 9 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Test helper — reuses the shape from run_core_idle_hooks_visibility_test.ts.
@@ -361,13 +369,14 @@ Deno.test(
 Deno.test(
   "run_core - persistent audit/scan disagreement eventually forces one filer attempt and emits a diagnostic (Issue #2475)",
   async () => {
-    // Drive exactly AUDIT_DISAGREEMENT_SKIP_LIMIT + 1 idle cycles, each
-    // with the probe reporting claimable work while the scan reports
-    // none. The first LIMIT cycles must skip; the bound-exceeding cycle
-    // must force a single filer attempt. Without the #2475 bound the
-    // filer would be suppressed forever.
-    const cycles = AUDIT_DISAGREEMENT_SKIP_LIMIT + 1;
-    let cycleCount = 0;
+    // Drive idle cycles at the real observation cadence, each with the
+    // probe reporting claimable work while the scan reports none. Every
+    // cycle inside the bound must skip; the first past it must force a
+    // single filer attempt. Without the #2475 bound the filer would be
+    // suppressed forever. Since Issue #1051 the bound is elapsed time,
+    // so the clock — not the cycle count — is what drives it.
+    const cycles = 4;
+    let observed = 0;
     let nowValue = 0;
     const logs: string[] = [];
     let filerRuns = 0;
@@ -375,12 +384,15 @@ Deno.test(
     const deps = createMockDeps({
       now: () => nowValue,
       sleep: () => {
-        cycleCount++;
-        if (cycleCount >= cycles) nowValue += 4000 * 1000;
+        if (observed >= cycles) nowValue += 4000 * 1000;
         return Promise.resolve();
       },
       log: (m) => logs.push(m),
-      runIdleDetectAudit: () => Promise.resolve({ claimableTotal: 4 }),
+      runIdleDetectAudit: () => {
+        observed++;
+        nowValue += OBSERVATION_GAP_MS;
+        return Promise.resolve({ claimableTotal: 4 });
+      },
       runIdleTaskFiler: () => {
         filerRuns += 1;
         return Promise.resolve();
@@ -388,6 +400,9 @@ Deno.test(
     });
     const config = createDefaultRunCoreConfig();
     config.runDurationSeconds = 3600;
+
+    // The drive has to outlast the bound or it proves nothing.
+    assert((cycles - 1) * OBSERVATION_GAP_MS > IDLE_DISAGREEMENT_BOUND_MS);
 
     await runCoreLoop(config, deps);
 
@@ -416,8 +431,8 @@ Deno.test(
     // Over a full bound window the filer must fire at most once — the
     // remaining cycles stay skipped. This guards against re-introducing
     // the wrapper flooding the #2106 budget guard prevents.
-    const cycles = AUDIT_DISAGREEMENT_SKIP_LIMIT + 1;
-    let cycleCount = 0;
+    const cycles = 4;
+    let observed = 0;
     let nowValue = 0;
     const logs: string[] = [];
     let filerRuns = 0;
@@ -425,12 +440,15 @@ Deno.test(
     const deps = createMockDeps({
       now: () => nowValue,
       sleep: () => {
-        cycleCount++;
-        if (cycleCount >= cycles) nowValue += 4000 * 1000;
+        if (observed >= cycles) nowValue += 4000 * 1000;
         return Promise.resolve();
       },
       log: (m) => logs.push(m),
-      runIdleDetectAudit: () => Promise.resolve({ claimableTotal: 4 }),
+      runIdleDetectAudit: () => {
+        observed++;
+        nowValue += OBSERVATION_GAP_MS;
+        return Promise.resolve({ claimableTotal: 4 });
+      },
       runIdleTaskFiler: () => {
         filerRuns += 1;
         return Promise.resolve();
@@ -444,12 +462,12 @@ Deno.test(
     // At most one attempt across the bound window.
     assertEquals(filerRuns, 1);
 
-    // The remaining (LIMIT) cycles were skipped via the budget guard.
+    // Every cycle inside the bound was skipped via the budget guard.
     const skips = logs.filter((l) =>
       l.includes("skipping=idle-task-filer") &&
       l.includes("reason=audit_found_claimable")
     );
-    assertEquals(skips.length, AUDIT_DISAGREEMENT_SKIP_LIMIT);
+    assertEquals(skips.length, cycles - 1);
   },
 );
 
@@ -457,28 +475,31 @@ Deno.test(
   "run_core - disagreement streak resets after a forced attempt so a second window fires again (Issue #2475)",
   async () => {
     // Two full bound windows → exactly two forced attempts. Proves the
-    // streak resets after each forced attempt rather than firing every
+    // run restarts after each forced attempt rather than firing every
     // cycle thereafter.
-    const cycles = (AUDIT_DISAGREEMENT_SKIP_LIMIT + 1) * 2;
-    let cycleCount = 0;
+    const cycles = 7;
+    let observed = 0;
     let nowValue = 0;
     let filerRuns = 0;
 
     const deps = createMockDeps({
       now: () => nowValue,
       sleep: () => {
-        cycleCount++;
-        if (cycleCount >= cycles) nowValue += 4000 * 1000;
+        if (observed >= cycles) nowValue += 4000 * 1000;
         return Promise.resolve();
       },
-      runIdleDetectAudit: () => Promise.resolve({ claimableTotal: 4 }),
+      runIdleDetectAudit: () => {
+        observed++;
+        nowValue += OBSERVATION_GAP_MS;
+        return Promise.resolve({ claimableTotal: 4 });
+      },
       runIdleTaskFiler: () => {
         filerRuns += 1;
         return Promise.resolve();
       },
     });
     const config = createDefaultRunCoreConfig();
-    config.runDurationSeconds = 3600;
+    config.runDurationSeconds = 7200;
 
     await runCoreLoop(config, deps);
 
