@@ -273,7 +273,9 @@ export async function collectSelfDiagnosticCandidates(
         repoAllIssues,
         milestoneTitle,
         options.githubUser,
-        config.allowedAuthors,
+        // Issue #1064: fleet-operated accounts only — a human assignee
+        // never occupies a work stream.
+        pushCapableAuthors,
       )
     ) {
       diag?.logIssueSkipped(

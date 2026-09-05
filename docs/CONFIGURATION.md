@@ -170,8 +170,8 @@ These three keys are **never** derived from GitHub, under either source:
 
 | Key | Why it stays local |
 | --- | ------------------ |
-| `service_accounts` | The identity guard's allowlist of logins the worker may operate as. Under `"github"` it is **also the exclusion input**: those logins, plus the host's own `github_user`, are stripped from the collaborator set so a fleet account with write access cannot authorise itself. |
-| `fleet_pr_authors` | Sibling fleet logins whose PRs this host maintains. Membership grants the worker the right to act on a branch, not a human the right to instruct the worker. |
+| `service_accounts` | The identity guard's allowlist of logins the worker may operate as. Under `"github"` it is **also the exclusion input**: those logins, plus the host's own `github_user`, are stripped from the collaborator set so a fleet account with write access cannot authorise itself. Together with `fleet_pr_authors` it is the **fleet-identity** set that governs scheduling. |
+| `fleet_pr_authors` | Sibling fleet logins whose PRs this host maintains. Membership grants the worker the right to act on a branch, not a human the right to instruct the worker. This is the **scheduling** list: only logins here (plus `service_accounts` and the host itself) can occupy a work stream or defer an issue. |
 | `pr_reviewers` | Who is requested as a reviewer on worker PRs. Reviewer requests are an operator preference, not a trust grant. |
 
 `loadConfig` still unions `service_accounts` into the effective
@@ -246,6 +246,33 @@ either:
 `service_accounts` names fleet logins too, so it is unioned into the effective
 `fleet_pr_authors` at load — see
 [Service accounts are fleet PR authors too](#service-accounts-are-fleet-pr-authors-too).
+
+### Which list governs scheduling, and which governs permission
+
+Two different questions read these lists, and mixing them up is a scheduling
+bug, not a permissions bug:
+
+| Question                                                                    | Governed by                                                                    | Key(s)                                     |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------ |
+| **Permission** — whose issues, labels and comments may the worker act on?     | The trusted-author set                                                         | `allowed_authors` (or derived collaborators) |
+| **Scheduling** — who already holds this work stream, so I must not duplicate it? | The fleet-identity set (`resolveFleetMaintenanceAuthorSet`)                    | `github_user` + `fleet_pr_authors` + `service_accounts` |
+
+**Putting a human in `allowed_authors` does not make them a scheduler
+participant.** Locking and scheduling exist only between Vibe Coders; there is
+no locking or scheduling between humans and Vibe Coders. A human may be assigned
+an issue, hold a milestone, or have an open PR, and the worker will still pick up
+other work in that same work stream. Only another Vibe Coder — this host or a
+sibling named in `fleet_pr_authors`/`service_accounts` — occupies a work stream
+or defers an issue.
+
+So a fleet account belongs in **both** kinds of list: in `fleet_pr_authors` (or
+`service_accounts`) so it participates in scheduling, and in `allowed_authors`
+so the duplicate-PR guard can see its PRs. A human belongs in `allowed_authors`
+**only**. Adding a human to `fleet_pr_authors` would let their assignments and
+PRs stall the fleet, and would let the worker push to their branches.
+
+See
+[Design Principles — Locking and scheduling exist only between Vibe Coders](../DESIGN-PRINCIPLES.md#locking-and-scheduling-exist-only-between-vibe-coders).
 
 In one line: **trusted to command, not to be commanded.** A trusted human's PR
 is **deferred to but never adopted** — the worker waits behind it so it never
@@ -2654,6 +2681,13 @@ comments would land on a PR no running worker is scanning.
 List the **other** fleet logins here; the host's own `github_user` is always
 covered implicitly. The default `[]` preserves the prior single-author
 behaviour exactly.
+
+**This is also the scheduling list.** `github_user` + `fleet_pr_authors` +
+`service_accounts` — resolved by `resolveFleetMaintenanceAuthorSet` — is the
+set that decides whether a work stream is already occupied, so only a Vibe
+Coder's assignment can make the worker stand off an issue. `allowed_authors` is
+a permission list and never answers that question; see
+[Which list governs scheduling, and which governs permission](#which-list-governs-scheduling-and-which-governs-permission).
 
 **Scope:** Applies to every PR-maintenance scan — PR-feedback discovery
 (`findPrCommentsToFix`), CI-fix discovery (`findFailedCiChecks`), spelling
