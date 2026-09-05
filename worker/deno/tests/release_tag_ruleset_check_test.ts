@@ -19,6 +19,7 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { checkReleaseTagRuleset } from "../lib/release_tag_ruleset_check.ts";
 import { loadReleaseTagRuleset } from "../lib/release_tag_ruleset.ts";
+import { diffRulesetPayloads } from "../lib/ruleset_reconcile.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
 const RULESET_ID = 22264472;
@@ -160,10 +161,65 @@ Deno.test("checkReleaseTagRuleset - skips with no credential, and says so", asyn
     });
     // Asserted explicitly: a skip must never be reported as agreement.
     assertEquals(result.status, "skipped");
-    assertEquals(result.status === "ok", false);
     assertStringIncludes(result.message, "SKIPPED");
     assertStringIncludes(result.message, "not a pass");
   }
+});
+
+Deno.test("checkReleaseTagRuleset - the literal no-credential cases skip", async () => {
+  // None of these carry an HTTP status, so the shared classifier files them
+  // under `unknown` — they propagated, and the gate went red on every fork.
+  const messages = [
+    "gh: To get started with GitHub CLI, please run: gh auth login",
+    "Failed to spawn 'gh': entity not found",
+    "gh: command not found",
+    "gh command failed (exit 1): gh: Not Found (HTTP 404)",
+  ];
+  for (const message of messages) {
+    const result = await checkReleaseTagRuleset({
+      repo: REPO,
+      ghExec: () => Promise.reject(new Error(message)),
+    });
+    assertEquals(result.status, "skipped", `did not skip on: ${message}`);
+    assertStringIncludes(result.message, "not a pass");
+  }
+});
+
+Deno.test("checkReleaseTagRuleset - a detail read that fails skips, never passes", async () => {
+  // A credential that can list rulesets but not read one must not be able to
+  // report agreement by reading nothing.
+  const exec = (args: string[]): Promise<string> =>
+    (args[args.length - 1] ?? "").match(/rulesets\/\d+$/)
+      ? Promise.reject(new Error("HTTP 403: Forbidden"))
+      : Promise.resolve(JSON.stringify(SUMMARY));
+  const result = await checkReleaseTagRuleset({ repo: REPO, ghExec: exec });
+  assertEquals(result.status, "skipped");
+  assertStringIncludes(result.message, String(RULESET_ID));
+});
+
+Deno.test("diffRulesetPayloads - a swapped bypass actor is drift at equal count", async () => {
+  // The count-only comparison this replaced read a swap as agreement: the
+  // bypass moves to somebody else while the tally stays put.
+  const committed = await loadReleaseTagRuleset();
+  const live = await liveFromCommitted();
+  const actor = { actor_id: 5, actor_type: "Team", bypass_mode: "always" };
+  live.bypass_actors = [actor];
+  committed.bypass_actors = [{ ...actor, actor_id: 6 }];
+
+  const drift = diffRulesetPayloads(live, committed);
+  assertEquals(drift.length, 2);
+  for (const finding of drift) assertEquals(finding.field, "bypass_actors");
+  assertStringIncludes(drift.map((d) => d.detail).join(" "), "Team:6");
+  assertStringIncludes(drift.map((d) => d.detail).join(" "), "Team:5");
+});
+
+Deno.test("diffRulesetPayloads - an identical bypass list is not drift", async () => {
+  const committed = await loadReleaseTagRuleset();
+  const live = await liveFromCommitted();
+  const actor = { actor_id: 5, actor_type: "Team", bypass_mode: "always" };
+  live.bypass_actors = [actor];
+  committed.bypass_actors = [{ ...actor }];
+  assertEquals(diffRulesetPayloads(live, committed), []);
 });
 
 Deno.test("checkReleaseTagRuleset - skips when GitHub is unreachable", async () => {

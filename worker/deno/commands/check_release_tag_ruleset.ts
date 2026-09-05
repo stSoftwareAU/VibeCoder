@@ -18,12 +18,6 @@ import {
 } from "../lib/release_tag_ruleset_check.ts";
 import { RELEASE_TAG_RULESET_REPO } from "../lib/release_tag_ruleset.ts";
 
-/** Repository root, resolved from this module's location. */
-function repoRoot(): string {
-  return decodeURIComponent(new URL("../../../", import.meta.url).pathname)
-    .replace(/\/$/, "");
-}
-
 export const checkReleaseTagRulesetCommand: Command = {
   name: "check-release-tag-ruleset",
   description: "Read-only: compare the applied tag ruleset against " +
@@ -36,7 +30,8 @@ export const checkReleaseTagRulesetCommand: Command = {
       ? args["repo"]
       : RELEASE_TAG_RULESET_REPO;
 
-    const result = await checkReleaseTagRuleset({ repo, root: repoRoot() });
+    // No root: the library resolves the repository root from its own location.
+    const result = await checkReleaseTagRuleset({ repo });
 
     return {
       // A skip is not agreement, but it is not a failure the operator can act

@@ -74,19 +74,67 @@ interface RulesetSummary {
   target?: string;
 }
 
-/** Categories that mean "could not look", not "looked and found nothing". */
+/**
+ * Categories that mean "could not look", not "looked and found nothing".
+ *
+ * `NotFound` belongs here: `GET /repos/{repo}/rulesets` answers `[]` for a
+ * repository that simply has no rulesets, so a 404 is never "the ruleset is
+ * absent" — it is a repository this credential cannot see. Absence is decided
+ * from the returned list, which is why routing 404 to a skip cannot mask an
+ * unprotected ref.
+ */
 const SKIP_CATEGORIES = new Set([
   GitHubErrorCategory.Authentication,
   GitHubErrorCategory.Permission,
+  GitHubErrorCategory.NotFound,
   GitHubErrorCategory.Network,
   GitHubErrorCategory.RateLimit,
   GitHubErrorCategory.TransientServer,
 ]);
 
+/**
+ * Whether the failure means there is no usable `gh` credential at all.
+ *
+ * `classifyGitHubError` reads HTTP shapes, so it files an unauthenticated CLI
+ * ("please run: gh auth login") and a missing binary under `Unknown` — and an
+ * `Unknown` propagates, which turned "this checkout has no credential" into a
+ * red quality gate on every fork. Those two are the literal no-credential
+ * case the skip exists for, so they are matched by hand.
+ */
+function isMissingCredential(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("gh auth login") ||
+    lower.includes("not logged in") ||
+    lower.includes("no github token") ||
+    lower.includes("failed to spawn 'gh'") ||
+    lower.includes("gh: command not found");
+}
+
+/** Whether nothing could be read, as opposed to read and found wanting. */
+function couldNotLook(message: string): boolean {
+  return isMissingCredential(message) ||
+    SKIP_CATEGORIES.has(classifyGitHubError(message).category);
+}
+
 /** The rules a live payload carries, tolerating a missing or odd field. */
 export function liveRulesetRules(live: unknown): RulesetRule[] {
   const rules = (live as { rules?: unknown } | null)?.rules;
   return Array.isArray(rules) ? rules as RulesetRule[] : [];
+}
+
+/**
+ * A bypass actor reduced to who it is and how far it may bypass.
+ *
+ * Compared on the API's own identifying triple rather than the whole object,
+ * so a field GitHub adds to its representation is not read as drift.
+ */
+function bypassActorIdentity(actor: unknown): string {
+  const obj = (typeof actor === "object" && actor !== null)
+    ? actor as Record<string, unknown>
+    : {};
+  const field = (name: string) => obj[name] === undefined ? "?" : obj[name];
+  return `${field("actor_type")}:${field("actor_id")}` +
+    `/${field("bypass_mode")}`;
 }
 
 /** Coerce the live payload into the parsed shape, tolerating missing fields. */
@@ -169,6 +217,22 @@ export function diffRulesetPayloads(
         `${committed.bypass_actors.length} — a bypass actor makes an active ` +
         "ruleset protect nothing",
     );
+  } else {
+    // Equal counts are not agreement: a swapped actor grants the bypass to
+    // somebody else while the tally stays put.
+    const actorDiff = setDiff(
+      applied.bypassActors.map(bypassActorIdentity),
+      committed.bypass_actors.map(bypassActorIdentity),
+    );
+    for (const actor of actorDiff.missing) {
+      note("bypass_actors", `committed actor ${actor} is not applied`);
+    }
+    for (const actor of actorDiff.extra) {
+      note(
+        "bypass_actors",
+        `actor ${actor} may bypass this ruleset but is not committed`,
+      );
+    }
   }
 
   for (
@@ -240,23 +304,34 @@ export async function reconcileRuleset(
     throw new Error(`invalid repo slug: ${repo}`);
   }
 
-  let listText: string;
-  try {
-    listText = await ghExec(["api", `repos/${repo}/rulesets`]);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (SKIP_CATEGORIES.has(classifyGitHubError(message).category)) {
+  /** Read one endpoint, or say why nothing could be read. Never both. */
+  const read = async (
+    args: string[],
+    what: string,
+  ): Promise<{ text: string } | { skip: RulesetReconcileResult }> => {
+    try {
+      return { text: await ghExec(args) };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!couldNotLook(message)) throw error;
       return {
-        status: "skipped",
-        findings: [],
-        message: `SKIPPED: the ${repo} rulesets could not be read — ` +
-          `${message}. Nothing was compared; this is not a pass.`,
+        skip: {
+          status: "skipped",
+          findings: [],
+          message: `SKIPPED: ${what} could not be read — ${message}. ` +
+            "Nothing was compared; this is not a pass.",
+        },
       };
     }
-    throw error;
-  }
+  };
 
-  const summaries = parseJson(listText, `the ${repo} ruleset list`);
+  const list = await read(
+    ["api", `repos/${repo}/rulesets`],
+    `the ${repo} rulesets`,
+  );
+  if ("skip" in list) return list.skip;
+
+  const summaries = parseJson(list.text, `the ${repo} ruleset list`);
   const match = (Array.isArray(summaries) ? summaries as RulesetSummary[] : [])
     .find((entry) =>
       entry?.name === committed.name &&
@@ -274,11 +349,15 @@ export async function reconcileRuleset(
     };
   }
 
-  const detailText = await ghExec([
-    "api",
-    `repos/${repo}/rulesets/${match.id}`,
-  ]);
-  const live = parseJson(detailText, `ruleset ${match.id} on ${repo}`);
+  // The detail read skips on the same terms as the list: a credential that
+  // can list rulesets but not read one must not report agreement.
+  const detail = await read(
+    ["api", `repos/${repo}/rulesets/${match.id}`],
+    `ruleset ${match.id} on ${repo}`,
+  );
+  if ("skip" in detail) return detail.skip;
+
+  const live = parseJson(detail.text, `ruleset ${match.id} on ${repo}`);
   const findings = [
     ...diffRulesetPayloads(live, committed),
     ...(extraDiff ? extraDiff(live, committed) : []),

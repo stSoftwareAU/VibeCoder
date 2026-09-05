@@ -371,14 +371,15 @@ gh api --method PUT repos/stSoftwareAU/VibeCoder/rulesets/RULESET_ID \
 
 The two commands under [Verifying it](#verifying-it) are the manual read. This
 is the automated one, and it is what backs the claim that the checked-in
-payload is the source of truth — read-only, and it needs no arguments:
+payload is the source of truth — read-only, and it defaults to this
+repository (`--repo owner/repo` points it at a fork):
 
 ```bash
 deno run --allow-all worker/deno/mod.ts check-release-tag-ruleset
 ```
 
 It matches the applied ruleset by **name and target**, never by id, so
-recreating it by hand does not silently stop the check working. Three outcomes,
+recreating it by hand does not silently stop the check working. Four outcomes,
 kept apart because conflating them is how the original drift survived:
 
 | Outcome     | Meaning                                                | Exit  |

@@ -908,13 +908,20 @@ async function runSemgrepQualityCheck(
   return { name: "semgrep", status: result.status, output: result.output };
 }
 
-/** Whether a committed ruleset payload is present in this checkout. */
+/**
+ * Whether a committed ruleset payload is present in this checkout.
+ *
+ * Only a genuine absence answers `false` — the worker's gate runs over
+ * monitored repositories that carry no payload, and those have nothing to
+ * reconcile. Anything else (a permission error, an I/O fault) propagates
+ * rather than silently dropping the check from the run.
+ */
 async function payloadExists(path: string): Promise<boolean> {
   try {
     return (await Deno.stat(path)).isFile;
-  } catch {
-    // A payload that is not there is not this checkout's to reconcile.
-    return false;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
   }
 }
 
@@ -931,16 +938,14 @@ async function payloadExists(path: string): Promise<boolean> {
  * a check that goes red on every fork is a check that gets disabled. Strict
  * mode promotes that skip, the same as every other credential-dependent check.
  */
-async function runReleaseTagRulesetQualityCheck(
+export async function runReleaseTagRulesetQualityCheck(
   config: QualityGateConfig,
   repo: string,
+  reconcile: typeof checkReleaseTagRuleset = checkReleaseTagRuleset,
 ): Promise<CheckExecutionResult> {
   const name = "release-tag ruleset";
   try {
-    const result = await checkReleaseTagRuleset({
-      repo,
-      root: config.scriptDir,
-    });
+    const result = await reconcile({ repo, root: config.scriptDir });
     const status: CheckStatus = result.status === "ok"
       ? "PASSED"
       : result.status === "skipped"
