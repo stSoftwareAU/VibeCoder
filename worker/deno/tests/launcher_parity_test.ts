@@ -32,11 +32,14 @@ import {
 } from "../lib/launcher_contract.ts";
 import {
   BASH_LAUNCHER,
+  buildFailureLogDir,
+  buildFailureLogs,
   denoInvocationOrder,
   mountValues,
   POWERSHELL_LAUNCHER,
   recorded,
   REPO_ROOT,
+  runCoreLog,
   runLauncher,
   setupHarness,
 } from "./fixtures/launcher_harness.ts";
@@ -449,6 +452,45 @@ Deno.test({
           await recorded(harness, "run"),
           `${launcher.name} launched no container after a failed update`,
         );
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.sh and run.ps1 - both record the failed build's own words, not only the classification (Issue #1019)",
+  ignore: POWERSHELL_LAUNCHER === null,
+  fn: async () => {
+    const failure = "E: Unable to locate package libgrq23-dev";
+    for (const launcher of [BASH_LAUNCHER, POWERSHELL_LAUNCHER!]) {
+      const harness = await setupHarness({
+        STUB_IMAGE_INSPECT_EXIT: "1",
+        STUB_BUILD_EXIT: "1",
+        STUB_BUILD_STDERR: failure,
+      });
+      try {
+        const outcome = await runLauncher(harness, launcher);
+        assert(outcome.code !== 0, `${launcher.name} must fail the build`);
+
+        const log = await runCoreLog(harness);
+        assertStringIncludes(log, "does not cover");
+        // The excerpt: the build's own diagnostics, in the host log an
+        // operator already reads.
+        assertStringIncludes(log, failure);
+
+        // The preserved copy, at the path the line names.
+        const kept = await buildFailureLogs(harness);
+        assertEquals(
+          kept.length,
+          1,
+          `${launcher.name} preserved logs: ${kept.join(", ")}`,
+        );
+        const preserved = `${buildFailureLogDir(harness)}/${kept[0]}`;
+        assertStringIncludes(log, preserved);
+        assertStringIncludes(await Deno.readTextFile(preserved), failure);
       } finally {
         await harness.cleanup();
       }

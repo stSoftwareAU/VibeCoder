@@ -135,6 +135,76 @@ async function delay(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Spawn loop.sh with its own output redirected into `loop.log` under the
+ * temporary directory, so a test can assert on what the supervisor *said*
+ * rather than only on how often it iterated.
+ */
+function spawnLoopLogging(
+  tmpDir: string,
+  extraEnv: Record<string, string> = {},
+): Deno.ChildProcess {
+  return new Deno.Command("bash", {
+    args: ["-c", `exec ./loop.sh > loop.log 2>&1`],
+    cwd: tmpDir,
+    env: {
+      LOOP_SLEEP_SECONDS: "1",
+      PATH: `${join(tmpDir, "bin")}:${Deno.env.get("PATH") ?? ""}`,
+      HOME: tmpDir,
+      ...extraEnv,
+    },
+    stdout: "null",
+    stderr: "null",
+  }).spawn();
+}
+
+Deno.test({
+  name:
+    "loop.sh - a worker already running is reported as by design, not as a failure (Issues #26, #1056)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    // ANOTHER_WORKER_RUNNING_EXIT: the pre-launch reaper found this host's
+    // one worker already mid-run, so run.sh stopped before it built or
+    // launched anything.
+    const harness = await setupHarness({
+      runStub:
+        '#!/bin/bash\necho "$(date +%s.%N)" >> invocations.log\nexit 4\n',
+    });
+    const child = spawnLoopLogging(harness.tmpDir);
+    try {
+      await delay(3500);
+      const log = await Deno.readTextFile(join(harness.tmpDir, "loop.log"));
+
+      // Said plainly, and never as a crash the operator should investigate.
+      assert(
+        log.includes("another worker is already running on this"),
+        `the by-design stop must be named, got: ${log}`,
+      );
+      assert(
+        log.includes("this is not a failure"),
+        `the by-design stop must not read as a fault, got: ${log}`,
+      );
+      assertEquals(
+        log.includes("exited with status 4 — backing off and retrying"),
+        false,
+        "a healthy host must not be described as backing off from a failure",
+      );
+
+      // And the supervisor keeps supervising: the worker it stood aside for
+      // will finish, and the next cycle must be there when it does.
+      const count = await readInvocationCount(harness.tmpDir);
+      assert(
+        count >= 2,
+        `expected loop.sh to keep iterating, got ${count}`,
+      );
+    } finally {
+      await killTree(child);
+      await harness.cleanup();
+    }
+  },
+});
+
 Deno.test({
   name:
     "loop.sh - continues iterating when run.sh exits non-zero (Issue #1836)",

@@ -145,6 +145,9 @@ function createResumeDeps(opts: ResumeTestOptions = {}): ResumeTestDeps {
     },
     getRateLimitReset: () =>
       Promise.resolve(opts.rateLimitResetEpoch ?? FIXED_NOW_SECONDS + 60),
+    // Issue #1124: the diagnostic marker only dedups when the fleet wrote
+    // it, and the fixture comments are authored by `bot`.
+    authorOptions: { fleetAuthors: ["bot"] },
   };
 }
 

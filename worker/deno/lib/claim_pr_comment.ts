@@ -15,12 +15,32 @@
  *   5. Earliest claim comment wins; losers clean up and back off
  *   6. Winner also adds eyes reaction to prevent rediscovery
  *
+ * **A competing claim only counts when the fleet posted it (Issue #1124).**
+ * A PR comment thread on a public repository is open to anyone, so a
+ * `PR_COMMENT_CLAIM:` marker is a claim from a stranger unless the comment
+ * **author** says otherwise — and the worker-id inside the marker is chosen
+ * by whoever typed it. A planted claim sorts earliest and hands the PR to
+ * nobody: every host loses the race to an account that will never do the
+ * work. The re-read therefore carries `.user.login` and competing claims
+ * are filtered against the fleet identity (`alert_dedup_authors.ts`),
+ * exactly as `claim_issue.ts` filters `CLAIM_LOCK` authors.
+ *
+ * **The fail direction leaves the work claimable.** An unresolvable fleet
+ * identity means no competing claim can be attributed, so none is counted
+ * and this host claims. Two hosts doing the same feedback comment is a
+ * wasted run; a comment no host may ever claim is feedback nobody answers.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import type { Result } from "../types.ts";
 import { runGhCommand } from "./github.ts";
 import { type CommentType, markCommentProcessed } from "./pr_comments.ts";
+import {
+  type AlertDedupAuthorOptions,
+  type AlertDedupCommentRow,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
 
 /** The claim marker prefix used in PR comments for tie-breaking. */
 export const PR_COMMENT_CLAIM_PREFIX = "<!-- PR_COMMENT_CLAIM:";
@@ -38,6 +58,14 @@ export interface ClaimPrCommentOptions {
   sleepFn?: (ms: number) => Promise<void>;
   /** Injected gh command function (for testing). Defaults to runGhCommand. */
   ghCommandFn?: (args: string[]) => Promise<string>;
+  /**
+   * Fleet identity inputs for the competing-claim author check
+   * (Issue #1124). Omitted reads the configured fleet, which is what
+   * every production caller does.
+   */
+  authorOptions?: AlertDedupAuthorOptions;
+  /** Sink for the author-verification diagnostics. */
+  log?: (message: string) => void;
 }
 
 /** Result data from a successful claim operation. */
@@ -47,7 +75,7 @@ export interface ClaimPrCommentResult {
 }
 
 /** Claim comment parsed from the GitHub API. */
-interface ClaimComment {
+interface ClaimComment extends AlertDedupCommentRow {
   id: number;
   body: string;
   createdAt: string;
@@ -96,6 +124,7 @@ function parseClaimComments(json: string): ClaimComment[] {
         id: Number(c.id),
         body: String(c.body),
         createdAt: String(c.created_at ?? c.createdAt ?? ""),
+        author: typeof c.author === "string" ? c.author : null,
       }));
   } catch {
     return [];
@@ -209,6 +238,8 @@ export async function claimPrComment(
     workerId,
     sleepFn = defaultSleep,
     ghCommandFn = runGhCommand,
+    authorOptions = {},
+    log = (message: string) => console.warn(message),
   } = options;
 
   // Step 1: Remove stale claim comments from previous runs
@@ -260,7 +291,8 @@ export async function claimPrComment(
       "api",
       `repos/${repo}/issues/${prNumber}/comments`,
       "--jq",
-      `[.[] | select(.body | test("PR_COMMENT_CLAIM:")) | {id: .id, body: .body, created_at: .created_at}]`,
+      `[.[] | select(.body | test("PR_COMMENT_CLAIM:")) | ` +
+      `{id: .id, body: .body, created_at: .created_at, author: .user.login}]`,
     ]);
     allClaimComments = parseClaimComments(commentsJson);
   } catch {
@@ -275,11 +307,21 @@ export async function claimPrComment(
     return { ok: true, value: { claimed: false } };
   }
 
-  // Step 6: Filter to only claims for the same target comment
-  const relevantClaims = allClaimComments.filter((c) => {
-    const info = extractClaimInfo(c.body);
-    return info !== null && info.commentId === commentId;
-  });
+  // Step 6: Filter to only claims for the same target comment, then to the
+  // ones a fleet account actually posted. Verifying the relevant claims
+  // rather than the whole thread means the log names the comments that
+  // would otherwise have cost this host the race.
+  const relevantClaims = await selectFleetAuthoredComments(
+    allClaimComments.filter((c) => {
+      const info = extractClaimInfo(c.body);
+      return info !== null && info.commentId === commentId;
+    }),
+    `PR comment claim ${repo}#${prNumber}`,
+    authorOptions,
+    log,
+    "no competing claim is counted and the work stays claimable — a claim " +
+      "marker anyone can post must not hand the PR to nobody",
+  );
 
   // Step 7: Verify exclusive claim
   if (relevantClaims.length <= 1) {

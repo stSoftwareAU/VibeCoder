@@ -37,11 +37,31 @@
  * timeline fails closed (error recorded, no label written) rather than
  * risk overriding a human.
  *
+ * **The title match only counts when the fleet filed it (Issue #1124).**
+ * The wrapper titles are compile-time constants in a public repository, so
+ * anybody who can open an issue can reproduce one exactly — and the match
+ * here selects which issue gets the `idle-task` label **written**. A planted
+ * title would hand the label, and with it a place in the priority queue, to
+ * an issue the fleet never filed. The search asks GitHub for the author and
+ * keeps only fleet-authored rows, through `lib/alert_dedup_authors.ts`.
+ *
+ * **The fail direction is "write nothing".** This site drives a write rather
+ * than suppressing one, so an unresolvable fleet identity means no row can
+ * be attributed and no label is applied — the sweep is idempotent and the
+ * next run rescues the wrapper once the fleet resolves. An unwanted write is
+ * the outcome that cannot be undone.
+ *
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
 import { runGhCommand } from "./github.ts";
 import { addLabelToIssue } from "./label_operations.ts";
+import {
+  type AlertDedupAuthorOptions,
+  type AlertDedupRow,
+  selectFleetAuthoredMatches,
+} from "./alert_dedup_authors.ts";
+import { TITLE_MARKER_DEDUP_JSON_FIELDS } from "./idle_task_wrapper_dedup.ts";
 import { fetchCompleteTimeline } from "./issue_query.ts";
 import type { TimelineLabelEventJson } from "./validation.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
@@ -192,6 +212,28 @@ export interface BackfillIdleTaskLabelsOptions {
     issueNumber: number,
     ghCommandFn: (args: string[]) => Promise<string>,
   ) => Promise<TimelineLabelEventJson[] | null>;
+  /**
+   * Fleet identity inputs for the wrapper-author check (Issue #1124).
+   * Omitted reads the configured fleet, which is what every production
+   * caller does; a test states the fleet instead of writing a config file.
+   */
+  authorOptions?: AlertDedupAuthorOptions;
+  /**
+   * Sink for the author-verification diagnostics. Separate from `log`,
+   * which carries the structured sweep events rather than prose.
+   */
+  authorLog?: (message: string) => void;
+}
+
+/**
+ * One wrapper row as the title search returns it (Issue #1124).
+ *
+ * Extends {@link AlertDedupRow} so the author filter can take it directly;
+ * `labels` is the field this sweep actually decides on.
+ */
+interface BackfillWrapperRow extends AlertDedupRow {
+  number: number;
+  labels?: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +253,8 @@ export async function backfillIdleTaskLabels(
 ): Promise<BackfillSummary> {
   const gh = opts.ghCommandFn ?? runGhCommand;
   const log = opts.log ?? (() => {});
+  const authorLog = opts.authorLog ??
+    ((message: string) => console.warn(message));
   const addLabelFn = opts.addLabelFn ?? addLabelToIssue;
   const fetchTimelineFn = opts.fetchTimelineFn ??
     ((repo: string, issueNumber: number, ghFn: typeof gh) =>
@@ -246,7 +290,7 @@ export async function backfillIdleTaskLabels(
           "--search",
           `"${queriedTitle}" in:title`,
           "--json",
-          "number,title,labels",
+          `${TITLE_MARKER_DEDUP_JSON_FIELDS},labels`,
           "--limit",
           "50",
         ]);
@@ -272,23 +316,43 @@ export async function backfillIdleTaskLabels(
       }
       if (!Array.isArray(parsed)) continue;
 
+      // Defensive exact-match guard. `Run a security scan in /tmp` and
+      // other partial matches from gh's `in:title` token query are
+      // ignored; we also discard rows whose title matches a different
+      // wrapper than the one this query targeted, so each wrapper is
+      // processed exactly once per sweep.
+      const matched: BackfillWrapperRow[] = [];
       for (const item of parsed) {
         if (item === null || typeof item !== "object") continue;
         const obj = item as Record<string, unknown>;
         const title = obj.title;
         const number = obj.number;
-        const labels = obj.labels;
         if (typeof title !== "string") continue;
         const titleTrim = title.trim();
-        // Defensive exact-match guard. `Run a security scan in /tmp` and
-        // other partial matches from gh's `in:title` token query are
-        // ignored; we also discard rows whose title matches a
-        // different wrapper than the one this query targeted, so each
-        // wrapper is processed exactly once per sweep.
         if (!TITLE_SET.has(titleTrim)) continue;
         if (titleTrim !== queriedTitle) continue;
         if (typeof number !== "number" || !Number.isFinite(number)) continue;
+        matched.push({
+          number,
+          author: obj.author as BackfillWrapperRow["author"],
+          labels: obj.labels,
+        });
+      }
 
+      // Author verification before anything is written. Verifying the rows
+      // whose title already matched means the log names the issues that
+      // would otherwise have been labelled, not unrelated search noise.
+      const fleetAuthored = await selectFleetAuthoredMatches(
+        matched,
+        `idle-task wrapper backfill ${repo}`,
+        opts.authorOptions ?? {},
+        authorLog,
+        "no `idle-task` label is written — a wrapper title anyone can " +
+          "reproduce must not steer a label onto an issue the fleet did " +
+          "not file",
+      );
+
+      for (const { number, labels } of fleetAuthored) {
         const hasLabel = Array.isArray(labels) &&
           labels.some((l) =>
             l !== null && typeof l === "object" &&
@@ -353,7 +417,7 @@ export async function backfillIdleTaskLabels(
           // name is inferred from the matched title; `unknown` is
           // unreachable given the `TITLE_SET` guard above but kept as
           // belt-and-braces against future refactors.
-          const template = TITLE_TO_TEMPLATE.get(titleTrim) ?? "unknown";
+          const template = TITLE_TO_TEMPLATE.get(queriedTitle) ?? "unknown";
           log({ kind: "alert_rescued", repo, number, template });
         } else {
           const message = res.error.message;

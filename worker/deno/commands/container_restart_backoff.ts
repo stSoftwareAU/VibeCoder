@@ -11,6 +11,7 @@
  *   deno run --allow-env --allow-read --allow-write --allow-run --allow-net \
  *     mod.ts container-restart-backoff --exit-status 91 \
  *     [--phase-file ~/.vibe-coder/last-launch-phase] [--repo-dir .] \
+ *     [--termination-file ~/.vibe-coder/last-launch-termination] \
  *     [--log-dir ~/logs] [--quota-pause-sleep-seconds 3600] \
  *     [--base-sleep-seconds 60] [--work-dir /path]
  *
@@ -19,10 +20,15 @@
  * outcome is recorded as a scheduled pause on a fixed re-probe cadence, never
  * as a failure to back off from.
  *
+ * Issue #1072: a run that was stopped by a signal declares that too, in a
+ * marker under the state directory, because the status it exits with belongs
+ * to the runtime client and cannot say so. A stop is counted neither as a
+ * failure nor as a recovery.
+ *
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
 
-import type { Command, CommandResult } from "../types.ts";
+import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
   CONTAINER_RESTART_DEFAULTS,
   type ContainerRestartOutcome,
@@ -36,6 +42,10 @@ import {
 } from "../lib/crash_notification.ts";
 import { setSelfHealEventsWorkDir } from "../lib/self_heal_events.ts";
 import { consumeQuotaPauseMarker } from "../lib/quota_pause.ts";
+import {
+  consumeLaunchTerminationMarker,
+  launchTerminationMarkerPath,
+} from "../lib/launcher_termination.ts";
 import { resolveRunHostId } from "../lib/run_mode_record.ts";
 import { formatLogTail } from "../lib/launcher_failure_evidence.ts";
 import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
@@ -112,6 +122,7 @@ export const containerRestartBackoffCommand: Command = {
 
   async execute(
     args: Record<string, unknown>,
+    config: WorkerConfig,
   ): Promise<CommandResult<ContainerRestartOutcome>> {
     const exitStatus = optionalNumber(args["exit-status"]);
     if (exitStatus === undefined) {
@@ -152,6 +163,16 @@ export const containerRestartBackoffCommand: Command = {
       optionalString(args["log-dir"]) ?? logDir(),
     );
 
+    // Consumed for the same reason (Issue #1072): the launcher declares that
+    // it forwarded a termination signal, because the exit status it reports is
+    // the runtime client's — 255 when its container is stopped under it, which
+    // is indistinguishable from a crash. A stop is not a failure of this host.
+    const terminated = await consumeLaunchTerminationMarker(
+      optionalString(args["termination-file"]) ??
+        Deno.env.get("VIBE_LAUNCH_TERMINATION_FILE") ??
+        launchTerminationMarkerPath(stateDir()),
+    );
+
     // Issue #633: the alert named `unknown-host` and quoted no log, so it
     // carried nothing that was not already in the state file. Both were
     // knowable.
@@ -179,10 +200,15 @@ export const containerRestartBackoffCommand: Command = {
     const outcome = await recordContainerRestartOutcome({
       workDir,
       hostId,
+      // Issue #997: the capacity a parked host can no longer offer is the
+      // concurrency it was configured for, so the report says how much the
+      // fleet lost rather than only that it lost something.
+      slots: config.maxConcurrentIssues,
       ...(logTail !== undefined ? { logTail } : {}),
       exitStatus,
       phaseMarker: await readLaunchPhaseMarker(phaseFile),
       quotaPause,
+      terminated,
       config: {
         baseSleepSeconds: optionalNumber(args["base-sleep-seconds"]) ??
           CONTAINER_RESTART_DEFAULTS.baseSleepSeconds,

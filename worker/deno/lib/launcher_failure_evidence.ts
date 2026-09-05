@@ -54,6 +54,7 @@ export function knownWorkerStatuses(
   buildNotHealableStatus: number,
   anotherWorkerRunningStatus: number,
   extensionStartAbortStatus: number,
+  hostEgressBlockedStatus: number,
 ): KnownWorkerStatuses {
   const table = new Map<number, string>([
     [0, "a clean run"],
@@ -69,6 +70,14 @@ export function knownWorkerStatuses(
     [
       extensionStartAbortStatus,
       "the deployment's extension start script aborting the sandbox start",
+    ],
+    // Issue #997: the launcher parks itself under this status, so an alert
+    // must not send the reader to the runtime client for a decision the
+    // launcher took deliberately. Restored after the milestone merge kept
+    // only the extension-abort status of the two.
+    [
+      hostEgressBlockedStatus,
+      "a host parked because its containers cannot reach the network",
     ],
   ]);
   return {

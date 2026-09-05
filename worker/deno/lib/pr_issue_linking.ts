@@ -338,8 +338,15 @@ const CLOSED_PR_COOLDOWN_MS = 3600 * 1000;
  *
  * @param repo - Repository in "owner/repo" format
  * @param issueNumber - The issue number to search for
+ * A PR whose head branch lives in a fork is ignored (Issue #1124): the
+ * title and the body are text anyone may write, and reading a stranger's
+ * PR as "already handled" leaves the issue starved. The fail direction is
+ * towards acting — the worker files rather than skips.
+ *
  * @param ghCommandFn - Function to run gh commands (injectable for testing)
  * @param closedCooldownMs - Cooldown window for closed PRs in ms (default: 1 hour)
+ * @param cache - Iteration-scoped issue cache
+ * @param log - Sink for the ignored-PR warning
  * @returns Result with the PR URL, or error if not found
  */
 export async function findExistingPrForIssue(
@@ -348,6 +355,7 @@ export async function findExistingPrForIssue(
   ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
   closedCooldownMs: number = CLOSED_PR_COOLDOWN_MS,
   cache?: IssueCache,
+  log: (message: string) => void = console.error,
 ): Promise<Result<string, Error>> {
   const issueStr = String(issueNumber);
 
@@ -365,6 +373,7 @@ export async function findExistingPrForIssue(
       "open",
       cache,
       ghCommandFn,
+      log,
     );
     const openMatch = openPrs.find((pr) =>
       prTitleMatchesIssue(pr.title, issueNumber)
@@ -380,6 +389,7 @@ export async function findExistingPrForIssue(
       "merged",
       cache,
       ghCommandFn,
+      log,
     );
     const mergedMatch = mergedPrs.find((pr) =>
       prTitleMatchesIssue(pr.title, issueNumber)
@@ -395,6 +405,7 @@ export async function findExistingPrForIssue(
       "closed",
       cache,
       ghCommandFn,
+      log,
     );
     const closedMatch = pickRecentlyClosedMatch(
       closedPrs,
@@ -417,9 +428,12 @@ export async function findExistingPrForIssue(
 
   for (const state of statesToCheck) {
     try {
+      // `author` and `isCrossRepository` mirror the cached path
+      // (Issue #1124): a PR title and body are attacker-writable on a
+      // public repository, and a match here suppresses work on the issue.
       const fields = state === "closed"
-        ? "number,title,body,url,closedAt"
-        : "number,title,body,url";
+        ? "number,title,body,url,closedAt,author,isCrossRepository"
+        : "number,title,body,url,author,isCrossRepository";
       const output = await ghCommandFn([
         "pr",
         "list",
@@ -439,6 +453,8 @@ export async function findExistingPrForIssue(
         body?: string;
         url: string;
         closedAt?: string;
+        author?: { login?: string };
+        isCrossRepository?: boolean;
       }> = JSON.parse(output.trim() || "[]");
 
       for (const pr of prs) {
@@ -446,6 +462,21 @@ export async function findExistingPrForIssue(
         const markerMatch = pr.body ? markerPattern.test(pr.body) : false;
 
         if (!titleMatch && !markerMatch) continue;
+
+        // A fork-headed PR proves nothing: anybody may open one with any
+        // title and body, and treating it as "already handled" starves the
+        // issue. Pushing the head branch into the target repository needs
+        // write access, which is what makes a same-repository head
+        // evidence (Issue #1124). The fail direction is towards acting.
+        if (pr.isCrossRepository === true) {
+          log(
+            `[pr-linking] ${repo}#${issueNumber}: ignoring PR #${pr.number} ` +
+              `by ${pr.author?.login ?? "an unknown author"} — its head ` +
+              `branch is in a fork, so its title is not evidence the fleet ` +
+              `opened it.`,
+          );
+          continue;
+        }
 
         // For closed PRs, only block if closed within the cooldown window
         if (state === "closed") {
