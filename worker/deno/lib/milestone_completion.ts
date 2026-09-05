@@ -19,6 +19,7 @@ import {
   readHostname,
 } from "./identity_guard.ts";
 import type { IssueCache } from "./issue_cache.ts";
+import { scrubUntrustedText } from "./prompt_delimiter.ts";
 import { isIdleTaskMilestone } from "./idle_task_merge_gate.ts";
 import {
   fetchAuthoritativeOpenChildren,
@@ -529,8 +530,11 @@ export function buildMilestoneSummaryBody(
   closedIssues: ClosedIssue[],
   trackingIssueNumber?: number,
 ): string {
+  // Closed-issue titles are attacker-writable text quoted into a PR body the
+  // worker signs, so they are scrubbed before interpolation (Issue #1249,
+  // finding 8).
   const issuesList = closedIssues
-    .map((issue) => `- #${issue.number}: ${issue.title}`)
+    .map((issue) => `- #${issue.number}: ${scrubUntrustedText(issue.title)}`)
     .join("\n");
 
   const trackingRef = trackingIssueNumber
@@ -586,8 +590,10 @@ async function createMilestoneTrackingIssue(
   }
 
   const issueTitle = `Merge milestone '${milestoneTitle}' to ${defaultBranch}`;
+  // Scrubbed for the same reason as the summary body above (Issue #1249,
+  // finding 8): this list lands in a filed issue body that later runs read.
   const issuesList = closedIssues
-    .map((issue) => `- #${issue.number}: ${issue.title}`)
+    .map((issue) => `- #${issue.number}: ${scrubUntrustedText(issue.title)}`)
     .join("\n");
 
   const issueBody =

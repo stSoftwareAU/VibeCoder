@@ -57,6 +57,10 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
 import { CLAIM_MARKER_PREFIX } from "./claim_issue.ts";
 import { runGhCommand } from "./github.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
@@ -96,6 +100,14 @@ export interface IdleTaskActivityOptions {
    * {@link IDLE_TASK_ACTIVITY_WINDOW_SECONDS}.
    */
   windowSeconds?: number;
+  /**
+   * Fleet identity inputs for the claim-comment author check (Issue #1249,
+   * finding 1). Omitted reads the configured fleet, which is what every
+   * production caller does.
+   */
+  authorOptions?: AlertDedupAuthorOptions;
+  /** Sink for the author-verification diagnostics. */
+  log?: (message: string) => void;
 }
 
 /** Result of {@link latestIdleTaskActivity}. */
@@ -156,16 +168,34 @@ function parseIdleTaskIssues(raw: string): IdleTaskIssueRow[] {
 }
 
 /**
- * Find the most-recent `CLAIM_LOCK` comment epoch on an open wrapper.
+ * Find the most-recent **fleet-authored** `CLAIM_LOCK` comment epoch on an
+ * open wrapper.
  *
- * Best-effort: a `gh` failure or unparseable payload yields null so the
- * caller falls back to "no claim detected" for this wrapper without
+ * The marker's *presence* is the alive-signal, so the marker alone is not
+ * evidence: any account that can comment on a public repository may post
+ * `<!-- CLAIM_LOCK: x -->`, and that forged comment would tell
+ * `liveness_guard.ts` the fleet is claiming idle work — suppressing the
+ * liveness escalation for as long as the wrapper stays open (Issue #1249,
+ * finding 1). Only the comment **author** is authenticated, so the read now
+ * carries `.user.login` and every match is filtered through
+ * {@link selectFleetAuthoredComments}, exactly as `heartbeat_sweep.ts` gates
+ * the sibling heartbeat marker.
+ *
+ * Fail direction: an unresolvable fleet identity discards every match, so no
+ * claim is reported and the liveness escalation fires. A spurious escalation
+ * is noise a human clears in a moment; a suppressed one is silence about a
+ * fleet that has stopped working.
+ *
+ * Best-effort otherwise: a `gh` failure or unparseable payload yields null so
+ * the caller falls back to "no claim detected" for this wrapper without
  * discarding signal from the others.
  */
 async function latestClaimCommentEpoch(
   repo: string,
   issueNumber: number,
   gh: (args: string[]) => Promise<string>,
+  authorOptions: AlertDedupAuthorOptions,
+  log: (message: string) => void,
 ): Promise<number | null> {
   let raw: string;
   try {
@@ -173,7 +203,8 @@ async function latestClaimCommentEpoch(
       "api",
       `repos/${repo}/issues/${issueNumber}/comments`,
       "--jq",
-      `[.[] | select(.body | test("${CLAIM_MARKER_PREFIX}")) | .created_at]`,
+      `[.[] | select(.body | test("${CLAIM_MARKER_PREFIX}")) | ` +
+      `{author: .user.login, created_at: .created_at}]`,
     ]);
   } catch {
     return null;
@@ -187,10 +218,27 @@ async function latestClaimCommentEpoch(
   }
   if (!Array.isArray(parsed)) return null;
 
+  const rows = parsed
+    .filter((row): row is Record<string, unknown> =>
+      row !== null && typeof row === "object"
+    )
+    .map((row) => ({
+      author: typeof row.author === "string" ? row.author : null,
+      createdAt: typeof row.created_at === "string" ? row.created_at : "",
+    }));
+
+  const fleetRows = await selectFleetAuthoredComments(
+    rows,
+    `idle-task claim marker ${repo}#${issueNumber}`,
+    authorOptions,
+    log,
+    "no idle-task claim is counted and the liveness guard keeps escalating — " +
+      "a CLAIM_LOCK marker anyone can post is not evidence the fleet is alive",
+  );
+
   let latest: number | null = null;
-  for (const value of parsed) {
-    if (typeof value !== "string") continue;
-    const epoch = isoToEpochSeconds(value);
+  for (const row of fleetRows) {
+    const epoch = isoToEpochSeconds(row.createdAt);
     if (epoch !== null && (latest === null || epoch > latest)) {
       latest = epoch;
     }
@@ -217,6 +265,8 @@ export async function latestIdleTaskActivity(
     ghCommandFn = runGhCommand,
     nowFn = () => Math.floor(Date.now() / 1000),
     windowSeconds = IDLE_TASK_ACTIVITY_WINDOW_SECONDS,
+    authorOptions = {},
+    log = (message: string) => console.warn(message),
   } = options;
 
   const now = nowFn();
@@ -269,6 +319,8 @@ export async function latestIdleTaskActivity(
         repo,
         issue.number,
         ghCommandFn,
+        authorOptions,
+        log,
       );
     }
 

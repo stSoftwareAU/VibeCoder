@@ -96,9 +96,15 @@ export interface MarkerDedupCallSite {
  *   - `lib/security_tree_sweep.ts` — its open-issue lookup is `--label`
  *     scoped, and applying a label needs triage permission on the repository,
  *     so the candidate set is not attacker-supplied to begin with.
- *   - `lib/idle_task_activity.ts` — same label scoping for the wrapper
- *     listing, and the comment read takes only GitHub's own `created_at`
- *     timestamp, never the marker's payload.
+ *   - `lib/idle_task_activity.ts` — label scoping covers the wrapper listing,
+ *     and its `CLAIM_LOCK` comment read now carries `.user.login` and filters
+ *     every match through `selectFleetAuthoredComments` (Issue #1249,
+ *     finding 1). The earlier justification — that the read "takes only
+ *     GitHub's own `created_at`, never the marker's payload" — was the wrong
+ *     test: the marker's *presence* was itself the liveness signal, so a
+ *     forged comment suppressed the escalation without its payload ever being
+ *     read. A projection is safe only when neither the payload nor the match
+ *     drives a decision.
  *   - `lib/milestone_ruleset_check.ts` (`fetchMilestonePrCheckNames`) — reads
  *     GitHub-generated check names off a `base:milestone` PR search; no marker
  *     is matched, and the result is reported, never used to suppress work.

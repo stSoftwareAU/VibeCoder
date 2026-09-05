@@ -28,8 +28,13 @@
  */
 
 import type { Result } from "../types.ts";
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
 import { isMilestoneTrackingTitle } from "./milestone_completion.ts";
+import { scrubUntrustedText } from "./prompt_delimiter.ts";
 
 // ---------------------------------------------------------------------------
 // Types and constants
@@ -408,12 +413,20 @@ export function renderOpenChildrenBlockComment(
   milestoneTitle: string,
   children: readonly OpenMilestoneChild[],
 ): string {
+  // Child titles are attacker-writable GitHub text quoted into a public
+  // comment the worker signs, so they are scrubbed before interpolation
+  // (Issue #1249, finding 8) — an unscrubbed `<!-- … -->` marker in a title
+  // lands in this body and is read back as a genuine marker on a later scan.
   const list = children
-    .map((child) => `- #${child.number} (${child.kind}): ${child.title}`)
+    .map((child) =>
+      `- #${child.number} (${child.kind}): ${scrubUntrustedText(child.title)}`
+    )
     .join("\n");
   return [
     OPEN_CHILDREN_BLOCK_MARKER,
-    `## Auto-merge blocked — milestone '${milestoneTitle}' still has open children`,
+    `## Auto-merge blocked — milestone '${
+      scrubUntrustedText(milestoneTitle)
+    }' still has open children`,
     "",
     "Merging this PR deletes the milestone branch (`delete_branch_on_merge` " +
     "is on for this repository), and deleting a base branch auto-closes " +
@@ -436,6 +449,73 @@ export interface BlockCommentOptions {
   children: readonly OpenMilestoneChild[];
   ghCommandFn: GhCommandFn;
   log: (message: string) => void;
+  /** Fleet identity inputs for the marker author check (Issue #1249). */
+  authorOptions?: AlertDedupAuthorOptions;
+}
+
+/**
+ * Whether the **fleet** has already left `marker` on this PR (Issue #1249,
+ * finding 3).
+ *
+ * Both explanatory comments on this path are deduplicated by their marker, and
+ * a PR thread is open to anybody, so a stranger quoting the marker suppressed
+ * the public explanation of why a merge was refused or a base rewritten. The
+ * gate itself still ran — what went missing was the reason, which is the part
+ * a human reads. Only the comment author is authenticated, so the read carries
+ * `.user.login` and every match is filtered through
+ * {@link selectFleetAuthoredComments}.
+ *
+ * Fail direction is **towards posting**: an unreadable thread or an
+ * unresolvable fleet identity means no match can be attributed, so the comment
+ * goes out. A duplicate explanation is noise a reader scrolls past; a missing
+ * one is a silent refusal.
+ *
+ * @returns true when a fleet-authored comment already carries the marker.
+ */
+async function hasFleetAuthoredMarker(
+  repo: string,
+  prNumber: number,
+  marker: string,
+  ghCommandFn: GhCommandFn,
+  authorOptions: AlertDedupAuthorOptions,
+  log: (message: string) => void,
+): Promise<boolean> {
+  const raw = await ghCommandFn([
+    "api",
+    "--paginate",
+    `repos/${repo}/issues/${prNumber}/comments?per_page=100`,
+    "--jq",
+    "[.[] | {author: .user.login, body: .body}]",
+  ]);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // An unparseable payload cannot establish that the marker is present.
+    return false;
+  }
+  if (!Array.isArray(parsed)) return false;
+
+  const rows = parsed
+    .filter((row): row is Record<string, unknown> =>
+      row !== null && typeof row === "object"
+    )
+    .map((row) => ({
+      author: typeof row.author === "string" ? row.author : null,
+      body: typeof row.body === "string" ? row.body : "",
+    }))
+    .filter((row) => row.body.includes(marker));
+
+  const fleetRows = await selectFleetAuthoredComments(
+    rows,
+    `milestone gate marker ${marker} on ${repo}#${prNumber}`,
+    authorOptions,
+    log,
+    "the explanatory comment is posted — a marker anyone can quote must not " +
+      "suppress the reason a merge was refused",
+  );
+  return fleetRows.length > 0;
 }
 
 /**
@@ -454,15 +534,16 @@ export async function postOpenChildrenBlockComment(
 ): Promise<boolean> {
   const { repo, prNumber, ghCommandFn, log } = options;
 
-  let existing: string;
+  let alreadyPosted: boolean;
   try {
-    existing = await ghCommandFn([
-      "api",
-      "--paginate",
-      `repos/${repo}/issues/${prNumber}/comments?per_page=100`,
-      "--jq",
-      ".[].body",
-    ]);
+    alreadyPosted = await hasFleetAuthoredMarker(
+      repo,
+      prNumber,
+      OPEN_CHILDREN_BLOCK_MARKER,
+      ghCommandFn,
+      options.authorOptions ?? {},
+      log,
+    );
   } catch (err) {
     log(
       `WARNING: could not read comments on ${repo}#${prNumber} to de-duplicate ` +
@@ -472,7 +553,7 @@ export async function postOpenChildrenBlockComment(
     return false;
   }
 
-  if (existing.includes(OPEN_CHILDREN_BLOCK_MARKER)) {
+  if (alreadyPosted) {
     return false;
   }
 
@@ -753,6 +834,8 @@ export interface RetargetOrphanBoundPrOptions {
   defaultBranch: string;
   ghCommandFn: GhCommandFn;
   log: (message: string) => void;
+  /** Fleet identity inputs for the marker author check (Issue #1249). */
+  authorOptions?: AlertDedupAuthorOptions;
 }
 
 /** The comment left on the PR when its base is retargeted. */
@@ -791,19 +874,20 @@ export async function retargetOrphanBoundPr(
     `WARNING: refusing to merge ${repo}#${prNumber} into ${gate.milestoneBranch}: ${gate.detail} ` +
       `(Issue #4396) — retargeting at ${defaultBranch}`,
   );
-  let existing = "";
+  let alreadyExplained = false;
   try {
-    existing = await ghCommandFn([
-      "api",
-      "--paginate",
-      `repos/${repo}/issues/${prNumber}/comments?per_page=100`,
-      "--jq",
-      ".[].body",
-    ]);
+    alreadyExplained = await hasFleetAuthoredMarker(
+      repo,
+      prNumber,
+      ROLLUP_MERGED_RETARGET_MARKER,
+      ghCommandFn,
+      options.authorOptions ?? {},
+      log,
+    );
   } catch {
-    existing = "";
+    alreadyExplained = false;
   }
-  if (!existing.includes(ROLLUP_MERGED_RETARGET_MARKER)) {
+  if (!alreadyExplained) {
     try {
       await ghCommandFn([
         "pr",

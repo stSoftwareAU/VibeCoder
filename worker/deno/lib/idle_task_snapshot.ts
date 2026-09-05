@@ -256,6 +256,16 @@ const MAX_TITLE_CHARS = 160;
 function renderTitle(title: string, maxChars: number): string {
   const scrubbed = neutraliseHtmlComments(sanitiseDelimiterPatterns(title))
     .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")
+    // Every remaining angle bracket goes fullwidth (Issue #1249, finding 9).
+    // The prompts fence this list between *single*-angle, static, guessable
+    // tags (`<open_issue_titles>` … `</open_issue_titles>`), and
+    // `sanitiseDelimiterPatterns` only neutralises runs of two or more, so a
+    // title containing `</open_issue_titles>` closed the block and everything
+    // after it read as prompt structure. A title has no structural use for a
+    // bracket, so rewriting both to their inert fullwidth forms costs nothing
+    // and no single-angle tag can be forged.
+    .replace(/</g, "＜")
+    .replace(/>/g, "＞")
     .replace(/\s{2,}/g, " ")
     .trim();
   if (scrubbed.length === 0) return "(untitled)";
