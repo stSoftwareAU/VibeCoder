@@ -8,6 +8,10 @@
  *   - Origin allowlist enforcement (foreign host must be rejected)
  *   - Failure-signal extraction and context rendering
  *   - End-to-end context build for both fetch success and fetch failure
+ *
+ * Credentials and the configured `JENKINS_URL` reach the module through its
+ * injected `readEnv` lookup (Issue #944), so nothing here mutates the process
+ * environment and the file runs in the parallel pass.
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -20,31 +24,17 @@ import {
   parseCiFailureBuildReference,
 } from "../lib/ci_failure_issue.ts";
 import { createPromptDelimiters } from "../lib/prompt_delimiter.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 /** Fixed per-run boundary id so fence assertions are deterministic. */
 const TEST_BOUNDARY_ID = "abc123def456";
 
-const ENV_KEYS = ["JENKINS_URL", "JENKINS_USER", "JENKINS_TOKEN"] as const;
-
-function snapshotEnv(): Record<string, string | undefined> {
-  const snapshot: Record<string, string | undefined> = {};
-  for (const key of ENV_KEYS) snapshot[key] = Deno.env.get(key);
-  return snapshot;
-}
-
-function setEnv(base = "https://jenkins.example.com"): void {
-  Deno.env.set("JENKINS_URL", base);
-  Deno.env.set("JENKINS_USER", "test-user");
-  Deno.env.set("JENKINS_TOKEN", "test-token");
-}
-
-function restoreEnv(snapshot: Record<string, string | undefined>): void {
-  for (const key of ENV_KEYS) {
-    const v = snapshot[key];
-    if (v === undefined) Deno.env.delete(key);
-    else Deno.env.set(key, v);
-  }
-}
+/** The Jenkins credentials and base URL the context builder is handed. */
+const jenkinsEnv = envFrom({
+  JENKINS_URL: "https://jenkins.example.com",
+  JENKINS_USER: "test-user",
+  JENKINS_TOKEN: "test-token",
+});
 
 /**
  * Body as produced by private-repo-12's `.github/workflows/develop-build-watch.yml`.
@@ -446,135 +436,110 @@ Deno.test("formatCiFailureFetchFailure - a bare ``` in the reason cannot break o
 // ---------------------------------------------------------------------------
 
 Deno.test("buildCiFailureContext - fetches the log for the referenced build", async () => {
-  const snapshot = snapshotEnv();
-  setEnv();
   const requested: string[] = [];
-  try {
-    const section = await buildCiFailureContext({
-      boundaryId: TEST_BOUNDARY_ID,
-      issueBody: REAL_BODY,
-      fetchFn: (url) => {
-        const u = String(url);
-        requested.push(u);
-        if (u.endsWith("api/json")) {
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({
-                number: 4347,
-                result: "FAILURE",
-                url:
-                  "https://jenkins.example.com/job/Migration/job/Develop/4347/",
-              }),
-              { status: 200 },
-            ),
-          );
-        }
+  const section = await buildCiFailureContext({
+    readEnv: jenkinsEnv,
+    boundaryId: TEST_BOUNDARY_ID,
+    issueBody: REAL_BODY,
+    fetchFn: (url) => {
+      const u = String(url);
+      requested.push(u);
+      if (u.endsWith("api/json")) {
         return Promise.resolve(
-          new Response("[ERROR] cannot find symbol\nBUILD FAILURE\n", {
-            status: 200,
-          }),
+          new Response(
+            JSON.stringify({
+              number: 4347,
+              result: "FAILURE",
+              url:
+                "https://jenkins.example.com/job/Migration/job/Develop/4347/",
+            }),
+            { status: 200 },
+          ),
         );
-      },
-    });
-    assertStringIncludes(section, "fetched build #4347");
-    assertStringIncludes(section, "cannot find symbol");
-    assert(
-      requested.some((u) =>
-        u ===
-          "https://jenkins.example.com/job/Migration/job/Develop/4347/consoleText"
-      ),
-      `unexpected requests: ${requested.join(", ")}`,
-    );
-  } finally {
-    restoreEnv(snapshot);
-  }
+      }
+      return Promise.resolve(
+        new Response("[ERROR] cannot find symbol\nBUILD FAILURE\n", {
+          status: 200,
+        }),
+      );
+    },
+  });
+  assertStringIncludes(section, "fetched build #4347");
+  assertStringIncludes(section, "cannot find symbol");
+  assert(
+    requested.some((u) =>
+      u ===
+        "https://jenkins.example.com/job/Migration/job/Develop/4347/consoleText"
+    ),
+    `unexpected requests: ${requested.join(", ")}`,
+  );
 });
 
 Deno.test("buildCiFailureContext - never fetches a foreign host", async () => {
-  const snapshot = snapshotEnv();
-  setEnv();
   const requested: string[] = [];
-  try {
-    const section = await buildCiFailureContext({
-      boundaryId: TEST_BOUNDARY_ID,
-      issueBody:
-        "- **Build URL:** https://attacker.example.net/job/Develop/4347/",
-      fetchFn: (url) => {
-        requested.push(String(url));
-        return Promise.resolve(new Response("pwned", { status: 200 }));
-      },
-    });
-    assertEquals(requested.length, 0);
-    assertStringIncludes(section, "could not be fetched");
-  } finally {
-    restoreEnv(snapshot);
-  }
+  const section = await buildCiFailureContext({
+    readEnv: jenkinsEnv,
+    boundaryId: TEST_BOUNDARY_ID,
+    issueBody:
+      "- **Build URL:** https://attacker.example.net/job/Develop/4347/",
+    fetchFn: (url) => {
+      requested.push(String(url));
+      return Promise.resolve(new Response("pwned", { status: 200 }));
+    },
+  });
+  assertEquals(requested.length, 0);
+  assertStringIncludes(section, "could not be fetched");
 });
 
 Deno.test("buildCiFailureContext - build-number-only body uses the configured job path", async () => {
-  const snapshot = snapshotEnv();
-  setEnv();
   const requested: string[] = [];
-  try {
-    const section = await buildCiFailureContext({
-      boundaryId: TEST_BOUNDARY_ID,
-      issueBody: "- **Build number:** `77`",
-      jobPath: "Migration/job/Develop",
-      fetchFn: (url) => {
-        const u = String(url);
-        requested.push(u);
-        if (u.endsWith("api/json")) {
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({ number: 77, result: "FAILURE", url: "" }),
-              { status: 200 },
-            ),
-          );
-        }
+  const section = await buildCiFailureContext({
+    readEnv: jenkinsEnv,
+    boundaryId: TEST_BOUNDARY_ID,
+    issueBody: "- **Build number:** `77`",
+    jobPath: "Migration/job/Develop",
+    fetchFn: (url) => {
+      const u = String(url);
+      requested.push(u);
+      if (u.endsWith("api/json")) {
         return Promise.resolve(
-          new Response("BUILD FAILURE\n", { status: 200 }),
+          new Response(
+            JSON.stringify({ number: 77, result: "FAILURE", url: "" }),
+            { status: 200 },
+          ),
         );
-      },
-    });
-    assertStringIncludes(section, "fetched build #77");
-    assert(requested.length > 0);
-  } finally {
-    restoreEnv(snapshot);
-  }
+      }
+      return Promise.resolve(
+        new Response("BUILD FAILURE\n", { status: 200 }),
+      );
+    },
+  });
+  assertStringIncludes(section, "fetched build #77");
+  assert(requested.length > 0);
 });
 
 Deno.test("buildCiFailureContext - build-number-only body without a job path fails loudly", async () => {
-  const snapshot = snapshotEnv();
-  setEnv();
-  try {
-    const section = await buildCiFailureContext({
-      boundaryId: TEST_BOUNDARY_ID,
-      issueBody: "- **Build number:** `77`",
-      fetchFn: () => Promise.reject(new Error("must not be called")),
-    });
-    assertStringIncludes(section, "could not be fetched");
-    assertStringIncludes(section, "job path");
-  } finally {
-    restoreEnv(snapshot);
-  }
+  const section = await buildCiFailureContext({
+    readEnv: jenkinsEnv,
+    boundaryId: TEST_BOUNDARY_ID,
+    issueBody: "- **Build number:** `77`",
+    fetchFn: () => Promise.reject(new Error("must not be called")),
+  });
+  assertStringIncludes(section, "could not be fetched");
+  assertStringIncludes(section, "job path");
 });
 
 Deno.test("buildCiFailureContext - surfaces an HTTP failure explicitly", async () => {
-  const snapshot = snapshotEnv();
-  setEnv();
-  try {
-    const section = await buildCiFailureContext({
-      boundaryId: TEST_BOUNDARY_ID,
-      issueBody: REAL_BODY,
-      fetchFn: () =>
-        Promise.resolve(
-          new Response("nope", { status: 404, statusText: "Not Found" }),
-        ),
-    });
-    assertStringIncludes(section, "could not be fetched");
-    assertStringIncludes(section, "404");
-    assertStringIncludes(section, "Do NOT attempt a fix");
-  } finally {
-    restoreEnv(snapshot);
-  }
+  const section = await buildCiFailureContext({
+    readEnv: jenkinsEnv,
+    boundaryId: TEST_BOUNDARY_ID,
+    issueBody: REAL_BODY,
+    fetchFn: () =>
+      Promise.resolve(
+        new Response("nope", { status: 404, statusText: "Not Found" }),
+      ),
+  });
+  assertStringIncludes(section, "could not be fetched");
+  assertStringIncludes(section, "404");
+  assertStringIncludes(section, "Do NOT attempt a fix");
 });

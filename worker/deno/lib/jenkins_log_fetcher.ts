@@ -6,8 +6,9 @@
  * directly so it can summarise CI failures without shelling out.
  *
  * Credentials are read only from the environment (`JENKINS_URL`,
- * `JENKINS_USER`, `JENKINS_TOKEN`) and are never logged or included
- * in error messages.
+ * `JENKINS_USER`, `JENKINS_TOKEN`) — through the injectable `readEnv`
+ * lookup, which defaults to the process — and are never logged or
+ * included in error messages.
  *
  * Uses Australian English throughout (behaviour, organisation, colour).
  */
@@ -29,6 +30,7 @@ import {
   loadJenkinsCredentials,
   redactJenkinsSecrets,
 } from "./jenkins_access_check.ts";
+import type { EnvLookup } from "./env_lookup.ts";
 
 /** Default cap on log size returned to callers (64 KiB). */
 export const DEFAULT_MAX_LOG_BYTES = 64 * 1024;
@@ -66,6 +68,14 @@ interface JenkinsFetcherBaseOptions {
    * worker.
    */
   timeoutMs?: number;
+  /**
+   * Where `JENKINS_URL` / `JENKINS_USER` / `JENKINS_TOKEN` are read from
+   * (Issue #944). Defaults to the process environment, so production
+   * callers behave exactly as they did; a test states the credentials
+   * instead of setting them on the process, which races every other test
+   * running at that moment (Issue #880).
+   */
+  readEnv?: EnvLookup;
 }
 
 export type FetchStatusOptions = JenkinsFetcherBaseOptions;
@@ -110,7 +120,7 @@ function coerceResult(raw: unknown): JenkinsBuild["result"] {
 export async function fetchJenkinsBuildStatus(
   opts: FetchStatusOptions,
 ): Promise<Result<JenkinsBuild, string>> {
-  const credsResult = loadJenkinsCredentials();
+  const credsResult = loadJenkinsCredentials(opts.readEnv);
   if (!credsResult.ok) return credsResult;
   const { baseUrl, user, token } = credsResult.value;
 
@@ -215,7 +225,7 @@ export async function fetchJenkinsBuildStatus(
 export async function fetchJenkinsBuildLog(
   opts: FetchLogOptions,
 ): Promise<Result<string, string>> {
-  const credsResult = loadJenkinsCredentials();
+  const credsResult = loadJenkinsCredentials(opts.readEnv);
   if (!credsResult.ok) return credsResult;
   const { baseUrl, user, token } = credsResult.value;
 

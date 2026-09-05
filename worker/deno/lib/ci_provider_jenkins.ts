@@ -227,6 +227,7 @@ export const jenkinsCiLogProvider: CiLogProvider = {
       jobPath,
       build: build.value,
       ...(ctx.fetchFn !== undefined ? { fetchFn: ctx.fetchFn } : {}),
+      ...(ctx.readEnv !== undefined ? { readEnv: ctx.readEnv } : {}),
     });
     if (!status.ok) return status;
 
@@ -234,6 +235,7 @@ export const jenkinsCiLogProvider: CiLogProvider = {
       jobPath,
       build: build.value,
       ...(ctx.fetchFn !== undefined ? { fetchFn: ctx.fetchFn } : {}),
+      ...(ctx.readEnv !== undefined ? { readEnv: ctx.readEnv } : {}),
     });
     if (!log.ok) return log;
 

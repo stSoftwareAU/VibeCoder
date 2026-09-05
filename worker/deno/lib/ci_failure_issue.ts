@@ -21,7 +21,7 @@
  */
 
 import type { Result } from "../types.ts";
-import { getEnvOrDefault } from "./config.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import {
   type FetchFn,
   fetchJenkinsBuildLog,
@@ -477,6 +477,14 @@ export interface BuildCiFailureContextOptions {
   /** Injectable fetch function (defaults to `globalThis.fetch`). */
   fetchFn?: FetchFn;
   /**
+   * Where `JENKINS_URL` and the fetcher's credentials are read from
+   * (Issue #944). Defaults to the process environment, so production
+   * callers are unchanged; a test states the environment instead of
+   * mutating the process, which races every other test running at that
+   * moment (Issue #880).
+   */
+  readEnv?: EnvLookup;
+  /**
    * Per-run boundary id used to fence the untrusted log excerpt (Issue #3639).
    * The caller generates it and hands the same id to the prompt builder.
    */
@@ -495,8 +503,12 @@ export interface BuildCiFailureContextOptions {
 export async function buildCiFailureContext(
   options: BuildCiFailureContextOptions,
 ): Promise<string> {
-  const baseUrl = options.jenkinsBaseUrl ??
-    getEnvOrDefault("JENKINS_URL", "").trim();
+  // Resolved once so an injected lookup answers every read: a seam that
+  // silently falls back to the process for a name it does not carry would
+  // let an ambient value decide the outcome (Issue #944).
+  const readEnv = options.readEnv ?? processEnvLookup;
+  const baseUrl = (options.jenkinsBaseUrl ?? readEnv("JENKINS_URL") ?? "")
+    .trim();
   const { boundaryId } = options;
 
   const reference = parseCiFailureBuildReference(options.issueBody, {
@@ -518,6 +530,7 @@ export async function buildCiFailureContext(
     jobPath,
     build: reference.value.buildNumber,
     fetchFn: options.fetchFn,
+    readEnv,
   });
   if (!status.ok) return formatCiFailureFetchFailure(status.error, boundaryId);
 
@@ -526,6 +539,7 @@ export async function buildCiFailureContext(
     build: reference.value.buildNumber,
     maxBytes: CI_FAILURE_LOG_FETCH_BYTES,
     fetchFn: options.fetchFn,
+    readEnv,
   });
   if (!log.ok) return formatCiFailureFetchFailure(log.error, boundaryId);
 
