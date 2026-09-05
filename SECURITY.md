@@ -1307,6 +1307,15 @@ flowchart TD
     B --> J
 ```
 
+### 6b. Subprocess Chokepoints — `git` Timeouts, and a Built Environment for Repository-Supplied Code
+
+The subprocess/argv sweep of every `worker/deno/lib` module that spawns a process (Issue #1214, parent #1209) surfaced two classes, both fixed. The swept paths are recorded in [`docs/audits/security-sweep-1214-subprocess-argv.md`](docs/audits/security-sweep-1214-subprocess-argv.md).
+
+- **`git` has a chokepoint too, and it is now enforced.** `runGitCommand` (`worker/deno/lib/git_timeout.ts`) owns three controls no caller may skip: the `AbortController` timeout, the audit journal for git mutations, and the work-volume fault detector. Seven modules had grown their own `new Deno.Command("git", …)` and skipped all three — including the stale-work-dir rescue, which ran `git push origin <branch>` untimed and unjournalled, so an unresponsive remote hung the worker outright rather than timing out. All seven now route through `runGitCommand`, and the `git spawn chokepoint` quality check (`git_spawn_chokepoint_check.ts`) fails the build on any new direct spawn outside `git_timeout.ts` — the same architectural invariant `gh_spawn_chokepoint_check.ts` enforces for `gh`, sharing its scanner via `spawn_chokepoint_scan.ts`.
+- **Repository-supplied code runs with a BUILT environment, never an inherited one.** `untrusted_command_env.ts` exists because the worker executes code it did not write, and an inherited environment hands that code every credential the run holds. The control was wired into the quality-gate spawn only; three sibling spawns of repository-supplied code inherited the worker's whole environment — the pre-flight gate (whose scripts are, by documented design, supplied by the target repo), the per-repo `bump-deps.sh`, and the lock-file regeneration tools that run `npm install` / `deno install` / `cargo update` / `go mod tidy` over a manifest the repository controls. `echo $CLAUDE_CODE_OAUTH_TOKEN` in any of those was the whole exploit. All three now build the child environment from `buildUntrustedCommandEnv()` with `clearEnv: true`, so only allowlisted names — `PATH`, `HOME`, the toolchain caches — are in scope.
+
+Regression coverage: `worker/deno/tests/git_spawn_chokepoint_check_test.ts` and `worker/deno/tests/untrusted_spawn_env_test.ts`, the latter spawning for real and reading the child's own view of its environment.
+
 ### 7. Issue Body + Title Trust Filtering
 
 Author-trust filtering historically classified *comments* only. The issue **body and title** — the primary prompt-injection surface, since a GitLost-style attack lives in the public issue body — received the weakest handling: a bare `console.warn` and nothing else. The raw body/title still flowed into the model context with no structured audit trail.
