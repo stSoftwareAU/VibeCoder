@@ -35,7 +35,10 @@ import type { LogContext, Logger, Result } from "../types.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { fetchPRBranchStateBatch } from "./pr_branch_state.ts";
-import { resolveFleetMaintenanceAuthorSet } from "./fleet_authors.ts";
+import {
+  isFleetAuthor,
+  resolveFleetMaintenanceAuthorSet,
+} from "./fleet_authors.ts";
 import { listOpenPrs, type PrEntry } from "./pr_maintenance.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
@@ -178,7 +181,11 @@ export type ConflictSkipReason =
   /** Taken or deferred earlier in this same cycle's drain (Issue #561). */
   | { kind: "already-handled" }
   /** A per-PR lookup failed; the PR keeps its place in the queue. */
-  | { kind: "scan-error"; stage: "labels" | "attempt-history"; message: string }
+  | {
+    kind: "scan-error";
+    stage: "mergeable-state" | "labels" | "attempt-history";
+    message: string;
+  }
   /** A human already owns the conflict. */
   | { kind: "needs-human"; label: string }
   /** Every concluded attempt in the budget is spent. */
@@ -905,7 +912,7 @@ export interface ConflictScanPass {
  * Every path through the per-PR decision must produce one of these — that is
  * what makes "an exit with no reason" a compile error rather than a silence
  * (Issue #1109). Exported so the compile gate in
- * `merge_conflict_decision_compile_test.ts` can hold a returnless exit
+ * `merge_conflict_decision_taxonomy_test.ts` can hold a returnless exit
  * against the real declared type rather than a copy of it.
  */
 export type ConflictScanPrOutcome =
@@ -918,13 +925,6 @@ function prAuthorLogin(pr: PrEntry): string | undefined {
   return typeof login === "string" && login.trim().length > 0
     ? login.trim()
     : undefined;
-}
-
-/** Fold a login for comparison — GitHub logins are case-insensitive. */
-function normaliseLogin(login: string): string {
-  return login.trim().toLowerCase()
-    .replace(/^app\//, "")
-    .replace(/\[bot\]$/, "");
 }
 
 /**
@@ -981,8 +981,6 @@ export async function findConflictingPr(
     fleetPrAuthors,
   });
 
-  const scanAuthorKeys = new Set(scanAuthors.map(normaliseLogin));
-
   /**
    * Decide one PR, in the order the gates run.
    *
@@ -994,21 +992,36 @@ export async function findConflictingPr(
     pr: PrEntry,
     mergeableState: string | undefined,
   ): Promise<ConflictScanPrOutcome> => {
-    if (mergeableState !== "CONFLICTING") {
+    if (mergeableState === undefined) {
+      // The state lookup failed for this PR — both the batched query and the
+      // REST fallback. Reporting that as "not conflicting" would read as a
+      // healthy PR and hide a whole repository's backlog behind a DEBUG line,
+      // which is the silent failure this instrument exists to remove.
       return {
         outcome: "skipped",
         reason: {
-          kind: "not-conflicting",
-          mergeableState: mergeableState ?? "UNKNOWN",
+          kind: "scan-error",
+          stage: "mergeable-state",
+          message: "mergeable state unavailable",
         },
       };
     }
 
-    // Defence in depth around the listing's own `--author` filter: the pass
-    // pushes a merge commit to the head branch, so a PR outside the
-    // push-capable maintenance set is never touched (Issue #4076).
+    if (mergeableState !== "CONFLICTING") {
+      return {
+        outcome: "skipped",
+        reason: { kind: "not-conflicting", mergeableState },
+      };
+    }
+
+    // Author guard — defensive even though `--author` filters server-side,
+    // and the same shape the CI-nudge scan uses (`pr_ci_nudge_scan.ts`): the
+    // pass pushes a merge commit to the head branch, so a PR outside the
+    // push-capable maintenance set is never touched (Issue #4076). It cannot
+    // fire on a listing gh already filtered, so recording it changes no
+    // selection — it is what gives the reason a producer.
     const author = prAuthorLogin(pr);
-    if (author !== undefined && !scanAuthorKeys.has(normaliseLogin(author))) {
+    if (author !== undefined && !isFleetAuthor(author, [...scanAuthors])) {
       return {
         outcome: "skipped",
         reason: { kind: "out-of-scope-author", author },
@@ -1200,14 +1213,29 @@ export async function findConflictingPr(
 
   const orderedRepos = shuffleRepos ? shuffleRepos([...repos]) : [...repos];
   const decisions: ConflictPrDecision[] = [];
+  // Repo-level tallies: the two exits below know no PR to key a decision on,
+  // so they are counted for the summary instead of silently dropped.
+  let reposScanned = 0;
+  let reposNotAllowed = 0;
+  let reposListFailed = 0;
+  const passContext = () => ({
+    reposScanned,
+    reposNotAllowed,
+    reposListFailed,
+  });
 
   for (const repo of orderedRepos) {
-    if (!isRepoAllowed(repo)) continue;
+    if (!isRepoAllowed(repo)) {
+      reposNotAllowed++;
+      continue;
+    }
 
     let prs: PrEntry[];
     try {
       prs = await listOpenPrs(repo, scanAuthors, PR_FIELDS, ghCommandFn, cache);
+      reposScanned++;
     } catch (err) {
+      reposListFailed++;
       logger.warn("Merge-conflict scan: failed to list PRs", {
         repo,
         error: err instanceof Error ? err.message : String(err),
@@ -1237,12 +1265,15 @@ export async function findConflictingPr(
       recordConflictDecision(logger, decision);
 
       if (outcome.outcome === "attempted") {
-        recordConflictPassSummary(logger, "scan", decisions);
+        // The pass ends at its selection, so PRs after it are decided on the
+        // next call — the drain makes one per PR it takes, so the queue is
+        // still covered without a second listing.
+        recordConflictPassSummary(logger, "scan", decisions, passContext());
         return { ok: true, value: { selected: outcome.pr, decisions } };
       }
     }
   }
 
-  recordConflictPassSummary(logger, "scan", decisions);
+  recordConflictPassSummary(logger, "scan", decisions, passContext());
   return { ok: true, value: { selected: null, decisions } };
 }

@@ -498,11 +498,6 @@ export async function processMergeConflict(
         outcome: "skipped",
         reason: { kind: "lock-held", lockHolder: winner },
       });
-      logger.info("Conflicting PR is locked by another worker — skipping", {
-        repo,
-        prNumber,
-        winnerId: winner,
-      });
       return {
         ok: true,
         value: {

@@ -258,7 +258,7 @@ the whole stuck set at a glance. The branch updater's "needs a real merge"
 warning now fires **once per PR per process** rather than on every ~2.5-minute
 pass, because the label is the queue.
 
-## 🧾 Every labelled PR leaves a reason behind, every pass
+## 🧾 Every decision leaves a reason behind
 
 The label alone said *that* a PR was stuck, never *why the worker left it
 there*. A skipped PR produced either nothing or an unstructured log line, so
@@ -284,7 +284,7 @@ each carries the operands that make the decision checkable afterwards:
 | `not-conflicting` | `mergeableState` | GitHub no longer calls the PR `CONFLICTING` — a stale label, not a queue entry. |
 | `out-of-scope-author` | `author` | Outside the push-capable maintenance set. |
 | `already-handled` | — | Taken or deferred earlier in this same cycle's drain. |
-| `scan-error` | `stage`, `error` | A per-PR lookup failed; the PR keeps its place. |
+| `scan-error` | `stage`, `error` | A per-PR lookup failed (`mergeable-state`, `labels` or `attempt-history`); the PR keeps its place. A state lookup that failed is **never** reported as merging cleanly. |
 | `needs-human` | `label` | A human already owns the conflict. |
 | `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent. |
 | `cooldown` | `msUntilDue`, `lastAttemptAt` | Still inside the 4-hour cooldown. `msUntilDue` is null when the recorded timestamp does not parse. |
@@ -308,6 +308,22 @@ Two properties are worth knowing when reading these:
 A PR that was never in the queue (`not-conflicting`, `out-of-scope-author`) is
 recorded at DEBUG so a fleet of healthy PRs costs no log volume; everything in
 the queue is INFO.
+
+Three boundaries are worth knowing before reading a cycle's records as gospel:
+
+- **A scan pass ends at its selection.** Conflicting PRs after the selected one
+  are decided on the next call, not this one — walking past the selection would
+  cost a label read and a comment page per PR. The drain calls the scan once per
+  PR it takes, so a cycle still covers the queue, at the price of several
+  `merge_conflict_pass=scan` summaries per cycle.
+- **The two summaries count different things.** `scope=scan` counts the
+  conflicting PRs that pass walked, plus `reposScanned` / `reposNotAllowed` /
+  `reposListFailed` for the repo-level exits that know no PR to key on;
+  `scope=drain` counts only the PRs the drain itself took or deferred.
+- **A selected PR can leave two records.** The scan records `attempted` when it
+  hands the PR over; if the processor then finds another host holding the PR
+  lock, it records `lock-held`. The first is the pass's decision, the second is
+  that attempt's outcome.
 
 ## 🚰 One cycle empties the queue
 

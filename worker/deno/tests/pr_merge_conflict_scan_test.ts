@@ -101,6 +101,8 @@ interface FakeRepoState {
   labels: Record<number, string[]>;
   /** Comment thread per PR number. */
   comments: Record<number, Array<{ body: string; created_at: string }>>;
+  /** PR numbers the batched state query answers for nothing (Issue #1109). */
+  omitState?: number[];
   /** PR numbers whose label lookup fails (Issue #1109). */
   failLabels?: number[];
   /** PR numbers whose comment lookup fails (Issue #1109). */
@@ -131,6 +133,7 @@ function makeFakeGh(state: FakeRepoState): FakeGh {
     if (args[0] === "api" && args[1] === "graphql") {
       const repository: Record<string, unknown> = {};
       state.prs.forEach((pr, index) => {
+        if (state.omitState?.includes(pr.number)) return;
         repository[`p${index}`] = {
           number: pr.number,
           mergeable: state.mergeable[pr.number] ?? "MERGEABLE",
@@ -805,6 +808,20 @@ Deno.test("findConflictingPr - a mergeable PR records not-conflicting with its s
   assertEquals(recordFor(log, 48).context?.mergeableState, "MERGEABLE");
 });
 
+Deno.test("findConflictingPr - an unreadable mergeable state is an error, not a clean bill of health", async () => {
+  // Reporting a failed state lookup as "not conflicting" would hide a whole
+  // repository's backlog behind a DEBUG line — the silence this instrument
+  // exists to remove.
+  const fake = makeFakeGh(makeState({ omitState: [48] }));
+
+  const { result, log } = await scanWith(fake);
+
+  assertEquals(result.value.selected, null);
+  assertEquals(reasonFor(log, 48), "scan-error");
+  assertEquals(recordFor(log, 48).context?.stage, "mergeable-state");
+  assertEquals(recordFor(log, 48).level, "info");
+});
+
 Deno.test("findConflictingPr - a PR outside the maintenance set records its author", async () => {
   const fake = makeFakeGh(makeState({
     prs: [{
@@ -825,13 +842,13 @@ Deno.test("findConflictingPr - a PR outside the maintenance set records its auth
   assertEquals(fake.labelsAdded.length, 0);
 });
 
-Deno.test("findConflictingPr - a fleet author is matched however the listing spells it", async () => {
+Deno.test("findConflictingPr - a fleet author is matched however the listing cases it", async () => {
   const fake = makeFakeGh(makeState({
     prs: [{
       number: 48,
       headRefName: "issue-16-fix",
       baseRefName: "main",
-      author: { login: "Vibe-Bot[bot]" },
+      author: { login: "VIBE-BOT" },
     }],
   }));
 
@@ -840,7 +857,8 @@ Deno.test("findConflictingPr - a fleet author is matched however the listing spe
   assertEquals(
     result.value.selected?.prNumber,
     48,
-    "case and the [bot] suffix must not push a fleet PR out of scope",
+    "GitHub logins are case-insensitive — casing must not push a fleet PR " +
+      "out of scope",
   );
 });
 
@@ -989,6 +1007,23 @@ Deno.test("findConflictingPr - every labelled PR gets a record, plus one summary
   assertEquals(summary.context?.labelled, 3);
   assertEquals(summary.context?.attempted, 0);
   assertEquals(summary.context?.byReason, { "needs-human": 2, cooldown: 1 });
+  assertEquals(summary.context?.reposScanned, 1);
+});
+
+Deno.test("findConflictingPr - the summary counts the repos the pass never got into", async () => {
+  // The allowlist exit knows no PR to key a decision on, so it is counted
+  // rather than dropped (Issue #1109).
+  const fake = makeFakeGh(makeState());
+
+  const { log } = await scanWith(fake, {
+    repos: ["org/denied", "org/repo"],
+    isRepoAllowed: (repo: string) => repo !== "org/denied",
+  });
+
+  const summary = summaryOf(log);
+  assertEquals(summary.context?.reposNotAllowed, 1);
+  assertEquals(summary.context?.reposScanned, 1);
+  assertEquals(summary.context?.reposListFailed, 0);
 });
 
 Deno.test("findConflictingPr - the records cost no extra gh calls", async () => {
