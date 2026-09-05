@@ -47,10 +47,11 @@ const setupPath = new URL("../../../setup.sh", import.meta.url).pathname;
  */
 async function withOfflineGh<T>(
   fn: (path: string) => Promise<T>,
+  ghStub: string = "#!/usr/bin/env bash\nexit 1\n",
 ): Promise<T> {
   const bin = await Deno.makeTempDir({ prefix: "vibe_offline_gh_" });
   try {
-    await Deno.writeTextFile(`${bin}/gh`, "#!/usr/bin/env bash\nexit 1\n");
+    await Deno.writeTextFile(`${bin}/gh`, ghStub);
     await Deno.chmod(`${bin}/gh`, 0o755);
     return await fn(`${bin}:/usr/bin:/bin`);
   } finally {
@@ -58,10 +59,41 @@ async function withOfflineGh<T>(
   }
 }
 
+/**
+ * A `gh` that fails the way the real one does (Issue #1146).
+ *
+ * `gh api` prints the API's response body to **stdout** on an HTTP error and
+ * the human message to stderr, then exits non-zero. A stub that merely exits
+ * non-zero silently cannot catch the defect this shape caused, because the
+ * defect is precisely that the body was read as a username.
+ */
+const GH_REJECTS_TOKEN = `#!/usr/bin/env bash
+cat <<'JSON'
+{
+  "message": "Bad credentials",
+  "documentation_url": "https://docs.github.com/rest",
+  "status": "401"
+}
+JSON
+echo 'gh: Bad credentials (HTTP 401)' >&2
+exit 1
+`;
+
+/** A `gh` that resolves the login the way a good token does. */
+const GH_RESOLVES_LOGIN = `#!/usr/bin/env bash
+echo 'vibe-worker-bot'
+`;
+
+/** A `gh` that exits 0 but prints something that is not a login. */
+const GH_PRINTS_NON_LOGIN = `#!/usr/bin/env bash
+printf 'not a login\n'
+`;
+
 /** Run `provision_vibe_credentials` from the real setup.sh with `env` set. */
 function provision(
   tmp: string,
   env: Record<string, string>,
+  ghStub?: string,
 ): Promise<{ code: number; output: string }> {
   const script = `
     set -euo pipefail
@@ -86,7 +118,7 @@ function provision(
       output: new TextDecoder().decode(stdout) +
         new TextDecoder().decode(stderr),
     };
-  });
+  }, ghStub);
 }
 
 /** POSIX permission bits of a path. */
@@ -805,5 +837,97 @@ Deno.test("interactive_credentials_flow - a token-less source with no gh warns i
       false,
     );
     assert(/keychain/i.test(output), output);
+  });
+});
+
+// ── The login lookup and gh's exit code (Issue #1146) ───────────────────
+//
+// `write_gh_hosts_file` used to read `gh api user --jq .login` with
+// `2>/dev/null || true`, which discards the exit code — and `gh api` prints
+// the API's response body to stdout on an HTTP error. On any host whose token
+// gh rejects (an expired or revoked token, the ordinary case) the login
+// therefore became the "Bad credentials" JSON blob, and the provisioned
+// hosts.yml was corrupt YAML with JSON where the username belongs.
+//
+// These three pin the decision in both directions: a rejected token writes the
+// token-only file, an accepted one still completes the host entry, and output
+// that is not shaped like a login is refused whatever gh's exit code says.
+
+Deno.test("write_gh_hosts_file - a token gh rejects writes a token-only hosts.yml (Issue #1146)", async () => {
+  await withTempDir(async (tmp) => {
+    const { code, output } = await provision(tmp, {
+      VIBE_LAUNCHAGENT_GH_TOKEN: "gho_rejected",
+      VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY: "sk-ant-provisioned",
+    }, GH_REJECTS_TOKEN);
+    // Not fatal: the token alone authenticates, so provisioning still succeeds.
+    assertEquals(code, 0, output);
+
+    const hosts = await Deno.readTextFile(
+      `${tmp}/.vibe-coder/credentials/gh/hosts.yml`,
+    );
+    // The whole file, so nothing can hide between the assertions.
+    assertEquals(
+      hosts,
+      "github.com:\n    oauth_token: gho_rejected\n    git_protocol: ssh\n",
+    );
+    // Named individually, because each is a distinct way the bug showed.
+    assert(!hosts.includes("user:"), `hosts.yml carries a user key: ${hosts}`);
+    assert(!hosts.includes("{"), `hosts.yml carries JSON: ${hosts}`);
+    assert(
+      !hosts.includes("Bad credentials"),
+      `hosts.yml carries gh's error body: ${hosts}`,
+    );
+
+    // The discarded exit code is now reported rather than swallowed.
+    assert(
+      output.includes("gh could not resolve the token's login"),
+      `the failed lookup was not reported: ${output}`,
+    );
+  });
+});
+
+Deno.test("write_gh_hosts_file - a token gh accepts still completes the host entry (Issue #1146)", async () => {
+  await withTempDir(async (tmp) => {
+    const { code, output } = await provision(tmp, {
+      VIBE_LAUNCHAGENT_GH_TOKEN: "gho_accepted",
+      VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY: "sk-ant-provisioned",
+    }, GH_RESOLVES_LOGIN);
+    assertEquals(code, 0, output);
+
+    const hosts = await Deno.readTextFile(
+      `${tmp}/.vibe-coder/credentials/gh/hosts.yml`,
+    );
+    assertEquals(
+      hosts,
+      "github.com:\n" +
+        "    oauth_token: gho_accepted\n" +
+        "    git_protocol: ssh\n" +
+        "    user: vibe-worker-bot\n" +
+        "    users:\n" +
+        "        vibe-worker-bot:\n" +
+        "            oauth_token: gho_accepted\n",
+    );
+  });
+});
+
+Deno.test("write_gh_hosts_file - output that is not a login is refused even on exit 0 (Issue #1146)", async () => {
+  await withTempDir(async (tmp) => {
+    const { code, output } = await provision(tmp, {
+      VIBE_LAUNCHAGENT_GH_TOKEN: "gho_odd",
+      VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY: "sk-ant-provisioned",
+    }, GH_PRINTS_NON_LOGIN);
+    assertEquals(code, 0, output);
+
+    const hosts = await Deno.readTextFile(
+      `${tmp}/.vibe-coder/credentials/gh/hosts.yml`,
+    );
+    assertEquals(
+      hosts,
+      "github.com:\n    oauth_token: gho_odd\n    git_protocol: ssh\n",
+    );
+    assert(
+      output.includes("gh returned no usable GitHub login"),
+      `the unusable login was not reported: ${output}`,
+    );
   });
 });
