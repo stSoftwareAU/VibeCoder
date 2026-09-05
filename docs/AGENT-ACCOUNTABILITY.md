@@ -283,8 +283,9 @@ single `write(2)` of one line to a regular file is not interruptible, so a
 partial line comes from below the process — an unflushed page cache lost with
 the machine, or a short write from a full or failing volume — and never from
 a kill. A source check confirmed the other hypothesis was not it either:
-`audit_journal.ts` holds the only append to a journal in the tree, and the
-lock breaker cannot fire under two minutes. Either way, torn bytes land
+`audit_journal.ts` holds the only append to a *journal* in the tree — the
+roster sidecar beside it is the one other appender, and is not the file that
+broke — and the lock breaker could not fire under two minutes. Either way, torn bytes land
 **past the anchored head**, because the anchor is only advanced after the
 append returns.
 
@@ -299,7 +300,7 @@ else is `[SECURITY] [AUDIT_CHAIN_BROKEN]` and still needs
 
 | On disk | Verdict |
 | --- | --- |
-| Declared append, journal still at the anchored length | **heals** — rolled back |
+| Declared append, journal still at the anchored length | **nothing to do** — the chain already agrees with its anchor |
 | Declared append, one further line that *is* the declared entry | **heals** — completed, entry kept |
 | Declared append, one further line torn or not the declared entry | **heals** — discarded to a `.torn-<n>` sidecar |
 | Unterminated, unparseable trailing bytes, no declaration (pre-#1074 journal) | **heals** — discarded to a `.torn-<n>` sidecar |
@@ -308,23 +309,39 @@ else is `[SECURITY] [AUDIT_CHAIN_BROKEN]` and still needs
 | Any change at or before the anchored head | **signature** — rewritten, truncated, torn middle |
 | Journal or anchor missing | **signature** — `--acknowledge-loss`/`--acknowledge-damage` |
 
-Three properties make the self-heal safe to have at all. Only bytes **past
-the anchored head** are ever touched, and the anchored head is the last
-position the chain was confirmed at, so nothing verified can be dropped.
-Discarded bytes are **moved, not deleted** — into `audit-<worker>-<date>.jsonl.torn-<n>`
-beside the journal — and the log line names how many bytes went where. And a
-tail that claims the declared hash must also **re-derive** it from its own
-payload, so satisfying a pending record with different content is a SHA-256
-second preimage, not a forgery.
+Four properties make the self-heal safe to have at all. Only bytes **past the
+anchored head** are ever touched, and the anchored head is the last position
+the chain was confirmed at, so nothing verified can be dropped. Discarded
+bytes are **moved, not deleted** — into
+`audit-<worker>-<date>.jsonl.torn-<n>` beside the journal — and the log line
+names how many bytes went where. A tail that claims the declared hash must
+also **re-derive** it from its own payload, so satisfying a pending record
+with different content is a SHA-256 second preimage, not a forgery. And a
+journal an operator has already **signed for** is never healed: the signature
+is pinned to its exact bytes, so repairing it would lapse that signature and
+turn a closed finding back into a red one.
 
-A run killed while holding the append lock leaves that behind too. A lock
-whose recorded pid is provably gone is now broken immediately rather than
-after the stale age ([`file_lock.ts`](../worker/deno/lib/file_lock.ts)), and
-the liveness probe falls back to a `SIGURG` signal because Deno requires
-`--allow-all` to read `/proc` and the worker runs on granular permissions —
-which had made the `/proc` check answer "assume alive" every time in
-production, wedging the audit trail for the full twenty-minute hard-stale
-window after every kill.
+**Clearing the lock the same kill left (Issue #1074).** The abandoned lock
+and the damaged chain arrive together — the kill has to land inside the
+critical section to damage the chain — so the next run has to clear both, and
+the recovery above cannot run until it does.
+
+A lock is broken immediately only when its holder is *provably* gone
+([`file_lock.ts`](../worker/deno/lib/file_lock.ts)). That needs the record to
+name the same host this process runs under, because pids are namespaced per
+container and a `ps` miss on another container's pid would be a live holder's
+lock stolen; and it needs `ps -p` to report that pid gone, asked once per
+contended acquisition. A lock file naming **no** holder is the same kill
+caught inside the single op that creates and fills the file, and is broken on
+its second sighting — one sighting could be that op still in flight.
+
+Past the stale age the age rule decides, and there the change runs the other
+way: only a **conclusive** liveness answer now protects a lock. The probe
+used to stat `/proc`, which Deno refuses without `--allow-all`; the worker
+runs on granular permissions, so the stat threw, the catch read that as
+"assume alive", and every abandoned lock survived to the twenty-minute
+hard-stale backstop — twenty minutes of mutations that could not be
+journalled, after every kill.
 
 **Scheduled verification.** `deno task audit-chain-verify`
 ([`worker/deno/commands/audit_chain_verify.ts`](../worker/deno/commands/audit_chain_verify.ts))

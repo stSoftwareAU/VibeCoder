@@ -26,14 +26,19 @@
  * single fact separates a crash from a forgery, and recovery is then
  * decidable rather than guessed:
  *
- * | On disk after the crash                            | Settled as   |
- * | -------------------------------------------------- | ------------ |
- * | pending, journal still at the anchored length       | rolled back  |
+ * | On disk after the crash                              | Settled as |
+ * | ---------------------------------------------------- | ---------- |
  * | pending, one more line that **is** the declared entry | completed  |
  * | pending, one more line torn or not the declared entry | discarded  |
- * | no pending, one more line                           | **broken**   |
- * | anything at or before the anchored head altered     | **broken**   |
- * | more than one line past the anchor                  | **broken**   |
+ * | no pending, one more line                             | **broken** |
+ * | anything at or before the anchored head altered       | **broken** |
+ * | more than one line past the anchor                    | **broken** |
+ *
+ * A declaration whose entry never reached the file needs no settling at
+ * all: the journal already matches its anchor, and the next append
+ * overwrites the whole anchor record — declaration included — before it
+ * writes anything. Rewriting the anchor of a journal that is *not* about
+ * to be appended to would only touch evidence for nothing.
  *
  * Nothing verified is ever dropped: only bytes past the anchored head are
  * touched, and the anchored head is the last position the chain was ever
@@ -54,13 +59,13 @@ import { type ChainAnchor, readAnchor, writeAnchor } from "./audit_anchor.ts";
 import { type AuditEntry, computeEntryHash } from "./audit_entry.ts";
 
 /** How an interrupted append was settled. */
-export type AppendRecoveryKind = "rolled-back" | "completed" | "discarded";
+export type AppendRecoveryKind = "completed" | "discarded";
 
 /** What a settled append did, reported rather than done quietly. */
 export interface AppendRecovery {
   /** Journal the recovery applied to. */
   path: string;
-  /** Which of the three outcomes this was. */
+  /** Which of the two outcomes this was. */
   kind: AppendRecoveryKind;
   /** Entries the journal holds, and its anchor records, afterwards. */
   count: number;
@@ -68,17 +73,38 @@ export interface AppendRecovery {
   droppedBytes: number;
   /** Sidecar the removed bytes were moved to, when any were removed. */
   preservedAs?: string;
-  /** The removed bytes as text, so the report names exactly what went. */
+  /**
+   * The removed bytes as text, so the report names what went.
+   *
+   * Quoted to {@link DROPPED_TEXT_QUOTE} characters, with the length
+   * named when it is longer; `preservedAs` holds every byte.
+   */
   droppedText?: string;
 }
 
 /** Most `.torn-<n>` sidecars one journal may accumulate before we stop. */
 const MAX_TORN_SIDECARS = 100;
 
+/**
+ * How much of the discarded text the report quotes.
+ *
+ * The whole of it is on disk in the sidecar, so the log line only has to
+ * be enough to recognise; an unbounded copy of an arbitrarily long line
+ * into a log and a JSON result is not.
+ */
+const DROPPED_TEXT_QUOTE = 512;
+
+/** The discarded bytes as text, quoted to a length a log can carry. */
+function quoteDropped(dropped: Uint8Array): string {
+  const text = new TextDecoder().decode(dropped);
+  if (text.length <= DROPPED_TEXT_QUOTE) return text;
+  return `${text.slice(0, DROPPED_TEXT_QUOTE)}… (${dropped.length} bytes in ` +
+    `total)`;
+}
+
 /** Journal bytes, its non-empty lines, and where each line ends. */
 interface JournalBytes {
   raw: Uint8Array;
-  text: string;
   lines: string[];
   /** Byte offset just past the newline terminating each non-empty line. */
   lineEnds: number[];
@@ -107,7 +133,7 @@ async function readJournalBytes(path: string): Promise<JournalBytes | null> {
     lines.push(segment);
     lineEnds.push(offset);
   }
-  return { raw, text, lines, lineEnds, endsWithNewline: text.endsWith("\n") };
+  return { raw, lines, lineEnds, endsWithNewline: text.endsWith("\n") };
 }
 
 /** Byte offset just past the last anchored entry. */
@@ -158,7 +184,7 @@ async function discardTornTail(
     count: anchor.count,
     droppedBytes: dropped.length,
     preservedAs: sidecar,
-    droppedText: new TextDecoder().decode(dropped),
+    droppedText: quoteDropped(dropped),
   };
 }
 
@@ -196,37 +222,21 @@ async function isDeclaredEntry(
   return entry;
 }
 
-/** Tuning for {@link settleInterruptedAppend}. */
-export interface SettleOptions {
-  /**
-   * Clear an intent record whose entry never reached the journal?
-   *
-   * True for the writer, which is about to append and needs the anchor
-   * back in its steady state. False for the sweep, which only settles
-   * journals that already fail verification: a roll-back cannot make a
-   * failing journal pass, so doing one there would rewrite the anchor of
-   * a file that stays broken — touching evidence for no benefit.
-   */
-  rollBack?: boolean;
-}
-
 /**
  * Settle an append that was interrupted, if one was.
  *
  * Callers must hold the audit-directory lock: this reads the journal and
  * its anchor and may rewrite both, so a concurrent append would see a
- * half-settled state.
+ * half-settled state. Callers should also have found the journal broken
+ * first — a journal that verifies has nothing here to settle.
  *
  * @param path - Journal file path
- * @param options - Whether a never-landed append may be rolled back
  * @returns Result carrying the recovery performed, or `null` when there
  *   was nothing to settle — including every shape that must stay broken
  */
 export async function settleInterruptedAppend(
   path: string,
-  options: SettleOptions = {},
 ): Promise<Result<AppendRecovery | null>> {
-  const rollBack = options.rollBack ?? true;
   try {
     const anchor = await readAnchor(path);
     // No anchor is the pre-#3712 `--adopt` case, not an interrupted
@@ -234,36 +244,16 @@ export async function settleInterruptedAppend(
     if (!anchor) return { ok: true, value: null };
 
     const journal = await readJournalBytes(path);
-    if (journal === null) {
-      // The journal never reached disk. Only a declared append explains
-      // that; anything else is a deletion and must stay broken.
-      if (!anchor.pending || anchor.count > 0 || !rollBack) {
-        return { ok: true, value: null };
-      }
-      await clearPending(path, anchor);
-      return {
-        ok: true,
-        value: { path, kind: "rolled-back", count: 0, droppedBytes: 0 },
-      };
-    }
+    // A journal that is absent, or already the length its anchor records,
+    // has nothing past the anchored head to settle. A stale declaration
+    // may be sitting in the anchor, and is left there: it costs nothing
+    // (verification ignores it, and the next append overwrites the whole
+    // record), and rewriting the anchor of a file this call has not
+    // repaired would be touching evidence for nothing.
+    if (journal === null) return { ok: true, value: null };
 
     const extra = journal.lines.length - anchor.count;
-
-    if (extra === 0) {
-      if (!anchor.pending || !rollBack) return { ok: true, value: null };
-      // Declared, never landed: the writer died before the line reached
-      // the file, so there is nothing to keep and nothing to drop.
-      await clearPending(path, anchor);
-      return {
-        ok: true,
-        value: {
-          path,
-          kind: "rolled-back",
-          count: anchor.count,
-          droppedBytes: 0,
-        },
-      };
-    }
+    if (extra === 0) return { ok: true, value: null };
 
     // More than one line past the anchor is never an interrupted append:
     // the writer declares one entry at a time. Two torn lines, or a torn
@@ -336,10 +326,6 @@ export function formatAppendRecovery(recovery: AppendRecovery): string {
   if (recovery.kind === "completed") {
     return `${head} — the entry had reached the journal, so the anchor was ` +
       `advanced to ${recovery.count} entries; nothing was dropped`;
-  }
-  if (recovery.kind === "rolled-back") {
-    return `${head} — the entry never reached the journal, which stands at ` +
-      `${recovery.count} entries; nothing was dropped`;
   }
   return `${head} — ${recovery.droppedBytes} torn byte(s) past the anchored ` +
     `head were moved to ${recovery.preservedAs} and the journal truncated ` +

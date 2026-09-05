@@ -174,32 +174,58 @@ Deno.test("withFileLock - breaks a fresh lock whose holder is provably dead", as
         token: "killed-run",
         pid: deadPid,
         acquiredAt: new Date().toISOString(),
+        // Same pid namespace as this process, which is what makes the
+        // recorded pid one this process may look up at all.
+        host: Deno.hostname(),
       }),
     );
 
-    // Seconds old, not minutes: waiting out the stale age used to block
-    // the next run's audit sweep until it timed out.
-    const started = Date.now();
+    // Seconds old, not minutes. The timeout is two orders of magnitude
+    // below `DEFAULT_STALE_MS`, so taking the lock at all is the proof:
+    // waiting the stale age out would raise `FileLockTimeoutError` here,
+    // which is what blocked the next run's audit sweep.
     const took = await withFileLock(lock, () => Promise.resolve("taken"), {
       timeoutMs: 2_000,
       pollMs: 5,
     });
     assertEquals(took, "taken");
-    assert(
-      Date.now() - started < 1_000,
-      "a provably dead holder should not be waited out",
-    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
 });
 
-Deno.test("withFileLock - a lock with no record yet is left alone", async () => {
+Deno.test("withFileLock - an ownerless lock is broken on a second look", async () => {
   const { dir, lock } = await tempLock();
   try {
-    // The window between a holder's `O_EXCL` create and its first write.
-    // Breaking on "no record" would evict a lock a millisecond old.
+    // What a holder killed inside the single create-and-fill op leaves:
+    // a lock file naming nobody. One sighting could be that op in
+    // flight, so the break waits for a second (Issue #1074).
     await Deno.writeTextFile(lock, "");
+    const took = await withFileLock(lock, () => Promise.resolve("taken"), {
+      timeoutMs: 2_000,
+      pollMs: 5,
+    });
+    assertEquals(took, "taken");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("withFileLock - a lock from another host is never broken early", async () => {
+  const { dir, lock } = await tempLock();
+  try {
+    // Pids are namespaced, so a record written elsewhere names a pid this
+    // process cannot look up. Believing a `ps` miss there would steal a
+    // live holder's lock and put two writers in one journal.
+    await Deno.writeTextFile(
+      lock,
+      JSON.stringify({
+        token: "elsewhere",
+        pid: 999_999,
+        acquiredAt: new Date().toISOString(),
+        host: "some-other-container",
+      }),
+    );
     await assertRejects(
       () =>
         withFileLock(lock, () => Promise.resolve(), {
@@ -208,7 +234,8 @@ Deno.test("withFileLock - a lock with no record yet is left alone", async () => 
         }),
       FileLockTimeoutError,
     );
-    assertEquals(await Deno.readTextFile(lock), "");
+    const held = JSON.parse(await Deno.readTextFile(lock));
+    assertEquals(held.token, "elsewhere");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

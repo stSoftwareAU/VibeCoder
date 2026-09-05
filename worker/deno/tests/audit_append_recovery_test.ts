@@ -23,7 +23,10 @@ import {
   verifyAllChains,
   verifyChain,
 } from "../lib/audit_journal.ts";
-import { settleInterruptedAppend } from "../lib/audit_append_recovery.ts";
+import {
+  formatAppendRecovery,
+  settleInterruptedAppend,
+} from "../lib/audit_append_recovery.ts";
 import { anchorPath, type ChainAnchor } from "../lib/audit_anchor.ts";
 
 /** A fresh audit directory with `count` recorded mutations. */
@@ -160,20 +163,33 @@ Deno.test("audit recovery - a declared entry that landed is kept, not discarded"
   }
 });
 
-Deno.test("audit recovery - a declared append that never landed rolls back", async () => {
-  const { baseDir, path } = await seeded(2);
+Deno.test("audit recovery - a declared append that never landed needs no repair", async () => {
+  const { baseDir, path, opts } = await seeded(2);
   try {
     await crashMidAppend(path, FAKE_HASH, "");
 
-    const settled = await settleInterruptedAppend(path);
-    assert(settled.ok);
-    assertEquals(settled.value?.kind, "rolled-back");
-    assertEquals(settled.value?.droppedBytes, 0);
-    assertEquals((await readAnchorFile(path)).pending, undefined);
-
+    // The journal already matches its anchor, so the chain is intact and
+    // nothing is repaired — the stale declaration is left where it is
+    // rather than rewriting the anchor of a healthy file.
     const verified = await verifyChain(path);
     assert(verified.ok);
     assert(verified.value.valid, `chain broke: ${verified.value.reason}`);
+    const settled = await settleInterruptedAppend(path);
+    assert(settled.ok);
+    assertEquals(settled.value, null);
+
+    // The next append overwrites the whole anchor record, declaration
+    // included, so the stale one cannot outlive it.
+    const next = await recordMutation({
+      runId: "run-2",
+      target: "after-stale-declaration",
+      verb: "git-push",
+      outcome: "success",
+      caller: "recovery-test",
+    }, opts);
+    assert(next.ok);
+    assertEquals((await readAnchorFile(path)).pending, undefined);
+    assertEquals((await readAnchorFile(path)).count, 3);
   } finally {
     await Deno.remove(baseDir, { recursive: true });
   }
@@ -388,6 +404,10 @@ for (let i = 0; i < 100_000; i++) {
     console.error(result.error.message);
     Deno.exit(1);
   }
+  // One line, once the writer is well inside its loop: the parent kills
+  // on that signal rather than after a sleep, and the kill then lands on
+  // an append rather than on a process that has barely started.
+  if (i === 50) console.log("running");
 }
 `;
 
@@ -411,14 +431,29 @@ Deno.test("audit recovery - a real SIGKILL mid-append needs no signature", async
           "--allow-read",
           "--allow-write",
           "--allow-env",
+          "--allow-run",
+          "--allow-sys=hostname",
           script,
           baseDir,
         ],
-        stdout: "null",
-        stderr: "null",
+        stdout: "piped",
+        // Inherited so a writer that gives up says why in the test output
+        // instead of dying quietly behind a "already terminated" error.
+        stderr: "piped",
       }).spawn();
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      // Rendezvous, never sleep: the child announces itself once it is
+      // fifty appends deep, so the kill lands on a working writer rather
+      // than after a stopwatch.
+      const reader = child.stdout.getReader();
+      const announced = await reader.read();
+      if (announced.done) {
+        const why = new TextDecoder().decode(
+          (await child.stderr.getReader().read()).value ?? new Uint8Array(),
+        );
+        assert(false, `writer exited early (round ${round}): ${why}`);
+      }
       child.kill("SIGKILL");
+      await reader.cancel();
       await child.status;
 
       // This is the criterion: the next run verifies clean, with no
@@ -466,6 +501,88 @@ Deno.test("audit recovery - a malformed intent record is a tamper signal", async
       swept.value.broken[0]?.reason ?? "",
       "unexpected shape",
     );
+  } finally {
+    await Deno.remove(baseDir, { recursive: true });
+  }
+});
+
+Deno.test("audit recovery - an unreadable anchor is an error, not a repair", async () => {
+  const { baseDir, path } = await seeded(2);
+  try {
+    await Deno.writeTextFile(anchorPath(path), "{not json");
+
+    const settled = await settleInterruptedAppend(path);
+    assert(!settled.ok, "a corrupt anchor must not read as nothing to settle");
+    if (settled.ok) return;
+    assertStringIncludes(settled.error.message, "malformed JSON");
+  } finally {
+    await Deno.remove(baseDir, { recursive: true });
+  }
+});
+
+Deno.test("audit recovery - a journal out of torn sidecars refuses to discard", async () => {
+  const { baseDir, path } = await seeded(2);
+  try {
+    // Every sidecar name taken: overwriting one would destroy bytes an
+    // earlier repair set aside, so the repair refuses instead.
+    for (let n = 1; n <= 100; n++) {
+      await Deno.writeTextFile(`${path}.torn-${n}`, "earlier damage");
+    }
+    await crashMidAppend(path, FAKE_HASH, '{"torn":');
+
+    const settled = await settleInterruptedAppend(path);
+    assert(!settled.ok, "the repair must refuse rather than overwrite");
+    if (settled.ok) return;
+    assertStringIncludes(settled.error.message, "already exist beside it");
+    // The journal is untouched, so the sweep keeps reporting it.
+    assertEquals((await Deno.readTextFile(path)).endsWith('{"torn":'), true);
+  } finally {
+    await Deno.remove(baseDir, { recursive: true });
+  }
+});
+
+Deno.test("audit recovery - the report names what was dropped and where", async () => {
+  assertStringIncludes(
+    formatAppendRecovery({
+      path: "/audit/j.jsonl",
+      kind: "completed",
+      count: 7,
+      droppedBytes: 0,
+    }),
+    "nothing was dropped",
+  );
+  const discarded = formatAppendRecovery({
+    path: "/audit/j.jsonl",
+    kind: "discarded",
+    count: 7,
+    droppedBytes: 12,
+    preservedAs: "/audit/j.jsonl.torn-1",
+    droppedText: '{"half":',
+  });
+  assertStringIncludes(discarded, "[SECURITY] [AUDIT_APPEND_RECOVERED]");
+  assertStringIncludes(discarded, "12 torn byte(s)");
+  assertStringIncludes(discarded, "/audit/j.jsonl.torn-1");
+  assertStringIncludes(discarded, '{\\"half\\":');
+});
+
+Deno.test("audit recovery - a very long dropped line is quoted, not copied whole", async () => {
+  const { baseDir, path } = await seeded(2);
+  try {
+    const long = `{"torn":"${"x".repeat(4000)}`;
+    await crashMidAppend(path, FAKE_HASH, long);
+
+    const settled = await settleInterruptedAppend(path);
+    assert(settled.ok);
+    const recovery = settled.value;
+    assert(recovery?.droppedText);
+    assert(
+      recovery.droppedText.length < long.length,
+      "the report should quote the dropped bytes, not copy them",
+    );
+    assertStringIncludes(recovery.droppedText, "bytes in total");
+    // Every byte is still on disk, whatever the report quoted.
+    assert(recovery.preservedAs);
+    assertEquals(await Deno.readTextFile(recovery.preservedAs), long);
   } finally {
     await Deno.remove(baseDir, { recursive: true });
   }

@@ -19,27 +19,38 @@
  * ## Abandoned locks
  *
  * A process killed while holding the lock would otherwise wedge every
- * later writer for ever. A lock whose recorded pid is no longer in
- * `/proc` is broken **immediately** (Issue #1074): the pid check has no
- * false negatives, and waiting two minutes to act on a holder that is
- * provably dead is what left a killed run's successor blocking until its
- * timeout and then reporting the audit chain broken. A lock file with no
- * record yet is a holder between its `O_EXCL` create and its first write,
- * and is never broken on that basis.
+ * later writer for ever, and a run killed mid-append is the ordinary case
+ * this whole subsystem exists for (Issue #1074) — so the abandoned lock
+ * and the damaged chain arrive together, and the next run has to clear
+ * both.
  *
- * Where the pid is *not* conclusive — it is alive, or the record is
- * unreadable — a lock file older than {@link DEFAULT_STALE_MS} is treated
- * as abandoned and broken anyway; holds are milliseconds, so no live
- * holder is ever close to that age.
+ * A lock is broken **immediately** only when its holder is *provably*
+ * gone, which needs two things to be true at once. The record must name
+ * the same {@link ownerHost} this process runs under — pids are namespaced
+ * per container, so a pid written inside another container is not a pid
+ * this one can ask about, and asking anyway is how a *live* holder's lock
+ * gets stolen and two writers land in one journal. And `ps -p` must
+ * conclusively report the pid gone; the probe is run at most once per
+ * contended acquisition, and anything short of a conclusive answer counts
+ * as alive. A lock file that records no holder at all is broken on its
+ * **second** sighting: the op that creates and fills it is a single call,
+ * so an ownerless lock cannot survive two polls unless the process that
+ * made it is gone.
  *
- * That pid check has one blind spot, and it is not theoretical here: pids
- * are namespaced per container, so a lock left behind by a killed run can
- * name a pid that a *later* container has since reissued to something
- * else. The check would then protect a lock whose holder died days ago and
- * wedge the audit trail for good — a failure that needs a human, which is
- * itself the bug. So {@link HARD_STALE_MULTIPLIER} bounds it: past twenty
- * minutes the lock is broken whatever the pid says, because no append has
- * ever taken twenty minutes.
+ * Otherwise the age rules decide: a lock older than
+ * {@link DEFAULT_STALE_MS} is broken unless the holder is *conclusively*
+ * alive. That asymmetry is deliberate and is the second half of Issue
+ * #1074. The liveness probe used to stat `/proc`, which Deno refuses
+ * without `--allow-all`; the worker runs on granular permissions, so the
+ * stat threw, the catch read that as "assume alive", and every abandoned
+ * lock survived to {@link HARD_STALE_MULTIPLIER} — twenty minutes of
+ * unrecorded mutations after every kill. An inconclusive probe must not
+ * protect a lock the age rule has already condemned.
+ *
+ * {@link HARD_STALE_MULTIPLIER} remains the backstop for a pid that is
+ * alive but is not the holder — reissued to something else inside the same
+ * container. Past twenty minutes the lock is broken whatever the probe
+ * says, because no append has ever taken twenty minutes.
  *
  * Every break is announced on stderr: silently stealing a lock is how the
  * corruption this module exists to prevent gets reintroduced.
@@ -87,6 +98,38 @@ interface LockRecord {
   token: string;
   pid: number;
   acquiredAt: string;
+  /**
+   * Which host — in a container, which container — the pid belongs to.
+   *
+   * Pids are namespaced, so a pid is only meaningful to a reader in the
+   * same namespace. Recording the owner is what lets a reader tell "this
+   * pid is gone" from "this pid was never mine to ask about" (Issue
+   * #1074). Absent on locks written before that, which simply never take
+   * the immediate-break path.
+   */
+  host?: string;
+}
+
+/**
+ * Identity of the pid namespace this process writes locks under.
+ *
+ * The hostname is the container id inside a container and the machine
+ * name outside one; either way, two processes reporting the same value
+ * share a pid namespace, and two reporting different values do not.
+ *
+ * Reading it needs `--allow-sys=hostname`. Without that permission — or
+ * on a host where it cannot be read — the answer is the empty string,
+ * which never matches a recorded owner, so the immediate break simply
+ * does not apply and the age rules decide. `HOSTNAME` is deliberately not
+ * used: it is a shell variable that is usually not exported, so it reads
+ * as empty from a spawned process and would quietly disable this.
+ */
+function ownerHost(): string {
+  try {
+    return Deno.hostname();
+  } catch {
+    return "";
+  }
 }
 
 /** Raised when the lock could not be taken within the timeout. */
@@ -123,48 +166,30 @@ async function readRecord(path: string): Promise<LockRecord | null> {
 }
 
 /**
- * Is `pid` still running?
+ * Has `pid` conclusively gone?
  *
- * `/proc` is the obvious probe and was the only one, which made this
- * function dead code everywhere it mattered (Issue #1074): Deno requires
- * `--allow-all` to read `/proc`, and the worker runs on granular
- * permissions, so the stat threw `NotCapable`, the catch read that as
- * "assume alive", and a lock left by a killed run survived until the
- * twenty-minute hard-stale rule broke it. Every append in that window
- * failed to journal.
+ * `ps -p` is the probe rather than `/proc`, which Deno refuses to read
+ * without `--allow-all` (Issue #1074), and rather than a signal, because
+ * this repository does not signal a pid it cannot prove is still its own.
  *
- * The signal probe is the one that actually answers under the worker's
- * permissions. `SIGURG`'s default disposition is *ignore*, so it asks the
- * kernel whether the pid exists without disturbing the process if it
- * does.
- *
- * Every inconclusive answer is `true` (assume alive), so a live holder is
- * never broken on the strength of a guess and the decision falls back to
- * the age rules.
+ * @param pid - Pid recorded by the lock holder
+ * @returns `true` when `ps` reports no such process, `false` when it
+ *   reports one, and `null` when the question could not be asked at all —
+ *   no `ps`, or no run permission. Callers treat `null` as "not proven
+ *   gone", never as gone.
  */
-async function holderAlive(pid: number): Promise<boolean> {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+async function holderGone(pid: number): Promise<boolean | null> {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
-    // Establish that `/proc` is readable here before reading anything
-    // into a miss: on macOS it does not exist at all, and treating that
-    // as "the holder is gone" would break live locks.
-    await Deno.stat("/proc/self");
-    try {
-      await Deno.stat(`/proc/${pid}`);
-      return true;
-    } catch (error: unknown) {
-      if (error instanceof Deno.errors.NotFound) return false;
-    }
+    const probe = await new Deno.Command("ps", {
+      args: ["-p", String(pid)],
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    // `ps -p` exits non-zero precisely when no such process exists.
+    return !probe.success;
   } catch {
-    // `/proc` is absent or not permitted — fall through to the signal.
-  }
-  try {
-    Deno.kill(pid, "SIGURG");
-    return true;
-  } catch (error: unknown) {
-    if (error instanceof Deno.errors.NotFound) return false;
-    // Alive but not ours to signal, or no run permission at all.
-    return true;
+    return null;
   }
 }
 
@@ -177,6 +202,7 @@ async function breakIfAbandoned(
   path: string,
   staleMs: number,
   now: () => number,
+  probe: { probed: boolean; sawEmpty: boolean },
 ): Promise<boolean> {
   let ageMs: number;
   try {
@@ -186,35 +212,54 @@ async function breakIfAbandoned(
     // Gone between the failed create and the stat: the next attempt wins.
     return true;
   }
+  const record = await readRecord(path);
+
   if (ageMs < staleMs) {
-    // Issue #1074: a holder that is *provably* gone need not be waited
-    // out. A run killed mid-append leaves its lock behind, and the next
-    // run — housekeeping's audit sweep first of all — arrives well inside
-    // the two-minute window, so it used to block for the full timeout and
-    // then report the audit chain broken. Waiting out a dead holder buys
-    // nothing: the pid check has no false negatives, only false positives
-    // (a recycled pid), which is what the age and hard-stale rules below
-    // remain for.
-    const holder = await readRecord(path);
-    // No record yet means the holder is between `O_EXCL` create and its
-    // first write. That is a live lock a millisecond old, not an
-    // abandoned one.
-    if (!holder || !Number.isInteger(holder.pid) || holder.pid <= 0) {
-      return false;
+    // Issue #1074: a holder this process can prove is gone need not be
+    // waited out — a run killed mid-append leaves its lock behind, and the
+    // next run's audit sweep arrives well inside the stale window.
+    //
+    // "Prove" is the whole of it, and there are two proofs.
+    //
+    // An ownerless lock file is one whose holder was killed inside the
+    // single op that creates and fills it — microseconds wide, and not
+    // survivable across two polls, so a second sighting is the proof. One
+    // sighting is not: it could be that op in flight.
+    if (!record) {
+      if (!probe.sawEmpty) {
+        probe.sawEmpty = true;
+        return false;
+      }
+      await breakLock(path, ageMs, `it records no holder on a second look`);
+      return true;
     }
-    if (await holderAlive(holder.pid)) return false;
-    await breakLock(path, ageMs, `pid ${holder.pid} is no longer running`);
+    // Otherwise the recorded pid has to be one this process can ask
+    // about. A record from another pid namespace names a pid that is not
+    // ours to look up, and a `ps` miss there would be a *live* holder's
+    // lock stolen. The probe runs at most once per acquisition: a holder
+    // that was alive a poll ago does not need re-asking, and spawning
+    // `ps` on every poll would cost more than the wait.
+    if (!record.host || record.host !== ownerHost()) return false;
+    if (probe.probed) return false;
+    probe.probed = true;
+    if (await holderGone(record.pid) !== true) return false;
+    await breakLock(path, ageMs, `pid ${record.pid} is no longer running`);
     return true;
   }
 
-  const record = await readRecord(path);
   const beyondDoubt = ageMs >= staleMs * HARD_STALE_MULTIPLIER;
-  if (!beyondDoubt && record && await holderAlive(record.pid)) return false;
+  // Past the stale age, only a *conclusive* liveness answer protects the
+  // lock. An inconclusive probe used to read as "alive" and hold the
+  // audit trail for the full hard-stale window (Issue #1074).
+  if (!beyondDoubt && record && await holderGone(record.pid) === false) {
+    return false;
+  }
 
   const why = beyondDoubt
     ? `no append takes that long, whatever pid ${record?.pid ?? "unknown"} ` +
       `is now`
-    : `pid ${record?.pid ?? "unknown"} is no longer running`;
+    : `pid ${record?.pid ?? "unknown"} is not running, or cannot be asked ` +
+      `about from here`;
   await breakLock(path, ageMs, why);
   return true;
 }
@@ -266,29 +311,27 @@ export async function withFileLock<T>(
     token,
     pid: Deno.pid,
     acquiredAt: new Date(now()).toISOString(),
+    host: ownerHost(),
   };
   const payload = new TextEncoder().encode(JSON.stringify(record));
 
   const deadline = now() + timeoutMs;
+  const probe = { probed: false, sawEmpty: false };
   let held = false;
   for (;;) {
     try {
-      const file = await Deno.open(lockPath, {
-        createNew: true,
-        write: true,
-      });
-      try {
-        await file.write(payload);
-      } finally {
-        file.close();
-      }
+      // One op, not an open-then-write pair (Issue #1074): the pair left
+      // an `await` between creating the file and recording who owns it,
+      // and a holder killed in that window left an ownerless lock nobody
+      // could reason about. `createNew` keeps the `O_EXCL` exclusion.
+      await Deno.writeFile(lockPath, payload, { createNew: true });
       held = true;
       break;
     } catch (error: unknown) {
       if (!(error instanceof Deno.errors.AlreadyExists)) throw error;
     }
 
-    if (await breakIfAbandoned(lockPath, staleMs, now)) continue;
+    if (await breakIfAbandoned(lockPath, staleMs, now, probe)) continue;
 
     if (now() >= deadline) {
       const holder = await readRecord(lockPath);

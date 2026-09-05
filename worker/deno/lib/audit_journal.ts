@@ -425,16 +425,30 @@ function reconcile(
  * lock and writing on the strength of it is the original bug.
  */
 async function getChainState(path: string): Promise<ChainState> {
-  // Issue #1074: an append interrupted by a kill or a lost page cache is
-  // settled here, inside the lock, before the journal is judged. Without
-  // it the next append quarantines a journal whose only fault is that the
-  // previous process did not live long enough to confirm its own write.
-  const settled = await settleInterruptedAppend(path);
-  if (!settled.ok) throw settled.error;
-  if (settled.value) console.error(formatAppendRecovery(settled.value));
-  const anchor = await readAnchor(path);
-  const lines = await readJournalLines(path);
-  return reconcile(path, anchor, lines);
+  try {
+    return reconcile(
+      path,
+      await readAnchor(path),
+      await readJournalLines(path),
+    );
+  } catch (error: unknown) {
+    if (!(error instanceof AuditChainAnchorError)) throw error;
+    // Issue #1074: a journal that disagrees with its anchor may simply be
+    // one the previous process did not live long enough to confirm. Settle
+    // that here — inside the lock, and only for a journal that has already
+    // failed — before quarantining it. A journal that settles nothing
+    // keeps its original error, so nothing is repaired on the strength of
+    // a second look.
+    const settled = await settleInterruptedAppend(path);
+    if (!settled.ok) throw settled.error;
+    if (!settled.value) throw error;
+    console.error(formatAppendRecovery(settled.value));
+    return reconcile(
+      path,
+      await readAnchor(path),
+      await readJournalLines(path),
+    );
+  }
 }
 
 /**
@@ -686,10 +700,11 @@ export async function verifyChain(
     content = await Deno.readTextFile(path);
   } catch (error: unknown) {
     if (error instanceof Deno.errors.NotFound) {
-      // An anchor recording no entries has nothing to be missing: it is
-      // what an append declared and never landed leaves behind (Issue
-      // #1074), and `reconcile` has always read it the same way.
-      if (anchor && anchor.count === 0) {
+      // An anchor that records no entries *and* declares an append is
+      // what a writer killed before its first line leaves behind (Issue
+      // #1074): it anchors nothing, so there is nothing to be missing.
+      // Without the declaration it is still a deletion, and still red.
+      if (anchor && anchor.count === 0 && anchor.pending) {
         return { ok: true, value: { valid: true, count: 0 } };
       }
       if (anchor) {
@@ -1175,7 +1190,7 @@ async function settleAppendUnderLock(
   try {
     return await withFileLock(
       auditLockPath(baseDir),
-      () => settleInterruptedAppend(path, { rollBack: false }),
+      () => settleInterruptedAppend(path),
     );
   } catch (error: unknown) {
     return {
@@ -1357,21 +1372,26 @@ export async function verifyAllChains(
     // start, so a host that was killed verifies clean on its next run
     // rather than asking an operator to sign for the kill. Only journals
     // that already fail are touched, and only past the anchored head.
+    //
+    // A journal an operator has already signed for is left alone: the
+    // signature is pinned to its exact bytes, so healing it would lapse
+    // the signature the operator gave and turn a closed finding back into
+    // a red one.
     let result = await verifyChain(path);
-    if (result.ok && !result.value.valid && !dirMissing) {
+    if (
+      result.ok && !result.value.valid && !dirMissing &&
+      !damageAcknowledgements.has(name)
+    ) {
       const settled = await settleAppendUnderLock(dir, path);
       if (!settled.ok) {
-        broken.push({
-          path,
-          valid: false,
-          count: 0,
-          reason: `interrupted append could not be settled: ` +
-            settled.error.message,
-        });
-        continue;
-      }
-      if (settled.value) {
-        console.error(formatAppendRecovery(settled.value));
+        // Loud, and the original verdict stands: the journal is still
+        // broken for its original reason and still carries the remedy
+        // that names it. Silence here would read as "nothing to settle".
+        console.error(
+          `[SECURITY] [AUDIT_APPEND_RECOVERY_FAILED] ${path}: an ` +
+            `interrupted append could not be settled: ${settled.error.message}`,
+        );
+      } else if (settled.value) {
         recovered.push(settled.value);
         result = await verifyChain(path);
       }
