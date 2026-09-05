@@ -1300,6 +1300,55 @@ Deno.test("run.sh - a heal that fails records the heal's own output (Issue #1019
   }
 });
 
+Deno.test("run.sh - a build that failed silently is recorded as having said nothing (Issue #1019)", async () => {
+  // The stub prints nothing at all, so the capture is empty. Emptiness is
+  // evidence — the build died before it reached anything that reports — and
+  // an omitted section would be indistinguishable from a log nobody read.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "a failed build must still fail");
+
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "no output could be preserved");
+    assertStringIncludes(log, "build output: no output was captured");
+    // Nothing to preserve means nothing preserved — not an empty file kept
+    // under a name that promises evidence.
+    assertEquals(await buildFailureLogs(harness), []);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a preserve that cannot be made says why, and the launch still fails loud (Issue #1019)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: UNCOVERED_BUILD_FAILURE,
+  });
+  try {
+    // A regular file where the directory must go: the copy cannot be made,
+    // and the launcher must name that cause rather than going quiet.
+    await Deno.mkdir(`${harness.tmpDir}/home/logs`, { recursive: true });
+    await Deno.writeTextFile(buildFailureLogDir(harness), "not a directory\n");
+
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "a failed build must still fail");
+    assertStringIncludes(outcome.stderr, "cannot create");
+
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "no output could be preserved");
+    // The excerpt is independent of the copy, so the reason survives even
+    // when the full log could not be kept.
+    assertStringIncludes(log, UNCOVERED_BUILD_FAILURE);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 Deno.test("run.sh - the image_build escalation carries the heal's words, not just the build's (Issue #1019)", async () => {
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "1",

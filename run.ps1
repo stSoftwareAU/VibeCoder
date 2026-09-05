@@ -364,7 +364,10 @@ function Remove-OldBuildFailureLogs {
                 -ErrorAction SilentlyContinue
         }
     } catch {
-        # Best-effort by design: reclaiming disk must never fail a launch.
+        # Best-effort by design - reclaiming disk must never fail a launch -
+        # but never silent: a directory that stops being trimmed says so.
+        [Console]::Error.WriteLine(
+            "[run.ps1] warning: cannot prune $BuildFailureLogDir - $($_.Exception.Message)")
     }
 }
 
@@ -373,7 +376,10 @@ function Remove-OldBuildFailureLogs {
     Copy a failed step's captured output to a stable, timestamped path.
 .OUTPUTS
     The preserved path, or an empty string when there was nothing to preserve
-    - so the caller says so rather than naming a path that does not exist.
+    - so the caller says so rather than naming a path that does not exist. A
+    failure to preserve names its own cause on stderr: a change made to stop
+    discarding the account of why must not discard the account of why *it*
+    could not keep one.
 #>
 function Save-BuildFailureLog {
     param(
@@ -395,6 +401,8 @@ function Save-BuildFailureLog {
         Remove-OldBuildFailureLogs
         return $preserved
     } catch {
+        [Console]::Error.WriteLine(
+            "[run.ps1] warning: cannot preserve $Source under $BuildFailureLogDir - $($_.Exception.Message)")
         return ""
     }
 }

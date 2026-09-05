@@ -442,15 +442,27 @@ prune_build_failure_logs() {
 # Copy a failed step's captured output to a stable, timestamped path and prune
 # the directory back to its bound. Prints the preserved path; fails when there
 # was nothing to preserve or the copy could not be made, so the caller says so
-# rather than naming a path that does not exist.
+# rather than naming a path that does not exist. A failure to preserve names
+# its own cause on stderr - a change made to stop discarding the account of
+# why must not discard the account of why *it* could not keep one.
 # Usage: preserve_build_failure_log <source> <slug>
 preserve_build_failure_log() {
-  local source="$1" slug="$2" preserved
-  [[ -s "${source}" ]] || return 1
-  mkdir -p "${BUILD_FAILURE_LOG_DIR}" 2>/dev/null || return 1
+  local source="$1" slug="$2" preserved reason
+  if [[ ! -s "${source}" ]]; then
+    return 1
+  fi
+  if ! reason="$(mkdir -p "${BUILD_FAILURE_LOG_DIR}" 2>&1)"; then
+    echo "[run.sh] warning: cannot create ${BUILD_FAILURE_LOG_DIR}:" \
+      "${reason}" >&2
+    return 1
+  fi
   # The PID keeps two launches that failed in the same second apart.
   preserved="${BUILD_FAILURE_LOG_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${slug}-$$.log"
-  cp "${source}" "${preserved}" 2>/dev/null || return 1
+  if ! reason="$(cp "${source}" "${preserved}" 2>&1)"; then
+    echo "[run.sh] warning: cannot preserve ${source} at ${preserved}:" \
+      "${reason}" >&2
+    return 1
+  fi
   prune_build_failure_logs
   printf '%s' "${preserved}"
 }
@@ -485,6 +497,8 @@ record_build_failure_evidence() {
   if [[ -n "${preserved}" ]]; then
     log_run_core "${message} - full output preserved at ${preserved}"
   else
+    # Why it could not be is on stderr, from preserve_build_failure_log
+    # itself, unless there was simply nothing to keep.
     log_run_core "${message} - no output could be preserved"
   fi
   log_run_core_excerpt "${label}" "${source}"

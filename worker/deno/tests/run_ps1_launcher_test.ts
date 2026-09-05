@@ -612,6 +612,61 @@ Deno.test({
 
 Deno.test({
   name:
+    "run.ps1 - a build that failed silently is recorded as having said nothing (Issue #1019)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "1",
+      STUB_BUILD_EXIT: "1",
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assert(outcome.code !== 0, "a failed build must still fail");
+
+      const log = await runCoreLog(harness);
+      assertStringIncludes(log, "no output could be preserved");
+      assertStringIncludes(log, "build output: no output was captured");
+      assertEquals(await buildFailureLogs(harness), []);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - a preserve that cannot be made says why, and the launch still fails loud (Issue #1019)",
+  ignore,
+  fn: async () => {
+    const failure = "E: Unable to locate package libgrq23-dev";
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "1",
+      STUB_BUILD_EXIT: "1",
+      STUB_BUILD_STDERR: failure,
+    });
+    try {
+      // A regular file where the directory must go.
+      await Deno.mkdir(`${harness.tmpDir}/home/logs`, { recursive: true });
+      await Deno.writeTextFile(
+        buildFailureLogDir(harness),
+        "not a directory\n",
+      );
+
+      const outcome = await runLauncher(harness);
+      assert(outcome.code !== 0, "a failed build must still fail");
+      assertStringIncludes(outcome.stderr, "cannot preserve");
+
+      const log = await runCoreLog(harness);
+      assertStringIncludes(log, "no output could be preserved");
+      assertStringIncludes(log, failure);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
     "run.ps1 - the image_build escalation carries the heal's words, not just the build's (Issue #1019)",
   ignore,
   fn: async () => {
