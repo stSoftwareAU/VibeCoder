@@ -29,6 +29,9 @@ function plan(): ContainerLaunchPlan {
   return {
     runtime: "docker",
     image: "vibe-coder:abc123",
+    // The prune keeps the launch's whole image chain (Issue #1059); a
+    // single-image tabletop launch names just the image it runs.
+    keepImages: ["vibe-coder:abc123"],
     containerName: "vibe-tabletop-1234",
     watchdogSeconds: 11_400,
     mounts: [],
