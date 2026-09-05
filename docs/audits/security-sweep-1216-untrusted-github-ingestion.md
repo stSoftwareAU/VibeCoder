@@ -47,15 +47,16 @@ rather than filed.
 
 ## The class fixed in this sweep
 
-### SEC-1216-01 — comment-marker dedup with no author evidence (6 sites)
+### SEC-1216-01 — comment-marker dedup with no author evidence (4 modules, 7 call sites)
 
 `severity:high` · `confidence:high` · **fixed**
 
 A worker module decides whether to act by asking GitHub whether a marker is
 already on a comment thread. A comment body is text any GitHub account may
-write; the **author** is the only authenticated part of a match. Six sites read
-the marker and not the author, and every one of them fails towards silence —
-the direction nobody notices.
+write; the **author** is the only authenticated part of a match. Four modules —
+seven call sites, because `blocking_pr_stall_detector.ts` reads two markers and
+the shared helper has four callers — read the marker and not the author, and
+every one of them fails towards silence, the direction nobody notices.
 
 | Site (pre-fix) | Marker | What a planted comment did |
 | -------------- | ------ | -------------------------- |
@@ -72,6 +73,17 @@ comments with no `--jq` at all, or project without a `select(.body`. Both
 manifest lists were empty and stayed empty while six live instances of the class
 sat in the tree. That is the blind spot this sweep found, and it is the reason
 `MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS` exists.
+
+The five unfixed marker-dedup sites this sweep found are now recorded in that
+list — `idle_task_activity.ts`, `idle_task_snapshot.ts`,
+`milestone_children_gate.ts`, `conflict_abandon_restart.ts` and
+`pr_merge_conflict_scan.ts` — so the count is visible in the enforced constant
+rather than only in prose. `idle_task_activity.ts` moved there from the
+"deliberately absent" note above it: the note said the read "takes only
+GitHub's own `created_at`, never the marker's payload", but the marker's
+*presence* is itself the trusted signal, so the exclusion was wrong. The list
+has no staleness gate and cannot have one — the scanner is what makes the
+two-directional cap possible, and these are the sites it cannot classify.
 
 **The fix.** All six now route through `selectFleetAuthoredComments`
 (`lib/alert_dedup_authors.ts`) — the control already applied at
