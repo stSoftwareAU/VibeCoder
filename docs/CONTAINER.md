@@ -1547,6 +1547,13 @@ declares it as a top-level `container_tools` array in `.config.json`, and the bu
 default is an empty selection: the fleet image installs nothing extra, so a
 deployment that wants nothing pays nothing.
 
+A deployment whose environment needs more than an archive install — a package
+from the distribution's repositories, a database loaded from dumps at build
+time, a service running before the agent starts — reaches for the private
+image layer instead, and the two mechanisms are meant to be used together:
+[Container Extension](CONTAINER-EXTENSION.md) works an example that installs
+its toolchains through `container_tools` and its services through the layer.
+
 Each entry is a **declarative archive install** — download, verify the declared
 SHA-256, extract, expose `bin` directories on PATH, set `env`. There are no
 install commands, no package-manager entries and no installer scripts, so a

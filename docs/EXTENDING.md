@@ -2,7 +2,7 @@
 
 The Vibe Coder worker is built on a **Deno TypeScript** architecture with 103 commands, 299 libraries, and 550 test files (counts as of June 2026 — see `worker/deno/` for the current set). All business logic lives in `worker/deno/`. For a quick overview, see the [main README](../README.md).
 
-Extending the worker **from outside** — reacting to a finished issue run without adding code here — is the [post-run callback contract](CALLBACKS.md), which ships a conformance fixture an extension can run against its own hooks. Extending it with **prompts you do not publish** — a label mapped to a template on your own host — is [Custom Label Prompts](CUSTOM-PROMPTS.md).
+Extending the worker **from outside** — reacting to a finished issue run without adding code here — is the [post-run callback contract](CALLBACKS.md), which ships a conformance fixture an extension can run against its own hooks. Extending it with **prompts you do not publish** — a label mapped to a template on your own host — is [Custom Label Prompts](CUSTOM-PROMPTS.md). Extending the **container image itself** — services and toolchains of no use to the general public, built as a private layer on the standard image — is [Container Extension](CONTAINER-EXTENSION.md).
 
 ## 📋 Table of Contents
 
@@ -11,6 +11,8 @@ Extending the worker **from outside** — reacting to a finished issue run witho
 - [Adding a CI Log Provider](#adding-a-ci-log-provider)
 - [Custom Label Prompts](CUSTOM-PROMPTS.md) — the operator-side extension
   point, on its own page
+- [Container Extension](CONTAINER-EXTENSION.md) — the image-side extension
+  point, with a worked example
 - [Running Deno Commands](#running-deno-commands)
 - [Prompt Templates](#prompt-templates)
 - [Shell Integration (Internal)](#shell-integration-internal)
