@@ -3638,12 +3638,20 @@ export async function createProductionRunCoreDeps(
         const census = buildIdleDecisionCensus({
           decisionPoint,
           workerUser: githubUser,
-          // Issue #753: the scan refuses a milestone held by any trusted
-          // account, not just this worker's own. Without the same set here,
-          // a human taking three milestone issues reads as three claimable
-          // issues the scan keeps refusing — and files an inversion issue
-          // about work that is simply in flight.
-          allowedAuthors: config.allowedAuthors ?? [],
+          // Issue #753: the selector refuses a milestone held by another
+          // fleet account, not just this worker's own. Without the same set
+          // here, a sibling taking three milestone issues reads as three
+          // claimable issues the scan keeps refusing — and files an
+          // inversion issue about work that is simply in flight.
+          //
+          // Issue #1071: the same set the selector uses, which since Issue
+          // #1064 is the fleet identity resolved by
+          // `resolveFleetMaintenanceAuthorSet` and kept live by
+          // `applyTrustSnapshot`. Never `config.allowedAuthors` — that is a
+          // permission list holding humans, and there is no scheduling
+          // between humans and Vibe Coders, so a human's assignment must not
+          // read as an occupied stream here either.
+          pushCapableAuthors: maintenanceAuthors,
           repos: perRepo,
           // Issue #460: a repo the scan claimed from this cycle was served,
           // not refused — whatever the run's outcome. The census withdraws

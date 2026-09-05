@@ -199,6 +199,7 @@ import {
   isBlockedByRecentlyClosedPR,
   type OpenPR,
 } from "./issue_query.ts";
+import { type FilterableIssue, isMilestoneOccupied } from "./issue_filter.ts";
 import {
   checkRepoAvailability,
   type RepoIssueInfo,
@@ -701,39 +702,56 @@ function isDependencyBlockedByOpenIssue(
 
 /**
  * Work streams already occupied — milestones (or `""` for the default-branch
- * stream) hosting an open issue assigned to anyone the claim scan honours.
+ * stream) hosting an open issue assigned to an account the fleet operates.
  *
- * Mirrors {@link classifyIssues}' `stream_occupied` gate in
- * `idle_detect_diagnostics.ts`, which in turn mirrors the scan's
- * `isMilestoneOccupied` — **including its account set** (Issue #753). It did
- * not: the census counted only `workerUser`'s own assignments, so a milestone
- * held by anyone else read as claimable here and as `milestone-occupied`
- * there. On stSoftwareAU/VibeCoder that filed an inversion issue naming three
- * issues a human had taken, on three consecutive cycles — an alert whose
- * "one of them is wrong" is answered by "neither".
+ * The verdict is the selector's own: this **calls** `isMilestoneOccupied`
+ * rather than restating it (Issue #1071). The census had its own copy of the
+ * rule and the copy drifted twice. First on the account set (Issue #753): it
+ * matched only `workerUser`, so a milestone held by anyone else read as
+ * claimable here and as `milestone-occupied` to the scan, and on
+ * stSoftwareAU/VibeCoder that filed an inversion issue naming three issues a
+ * human had taken, on three consecutive cycles — an alert whose "one of them
+ * is wrong" is answered by "neither". Then in the other direction (Issue
+ * #1064): the selector moved occupancy onto the fleet identity because there
+ * is no scheduling between humans and Vibe Coders, and the copy here kept
+ * treating a human's assignment as occupying. One implementation cannot drift
+ * a third time.
  *
- * The narrower set was justified as keeping a sibling host's claim from
- * silencing this host's signal. It does not survive the rule this instrument
- * exists to apply: `milestone-occupied` is declared **`self`**-clearing in
- * `skip_reason_clearing.ts` — the stream frees when the work lands — and the
- * streak escalation is for gates that *never* clear. Work in flight, whoever
- * holds it, is not a contradiction to report.
+ * Delegation costs one adapter, because `isMilestoneOccupied` reads a
+ * `FilterableIssue` and answers per stream while the census holds
+ * `CensusIssue` and wants the whole occupied set. Only `milestone` and
+ * `assignees` are read, so the remaining fields are placeholders; the set is
+ * built by asking once per distinct stream.
+ *
+ * Why occupancy is reported at all: `milestone-occupied` is declared
+ * **`self`**-clearing in `skip_reason_clearing.ts` — the stream frees when
+ * the work lands — and the streak escalation is for gates that *never* clear.
+ * Work in flight, whoever in the fleet holds it, is not a contradiction to
+ * report.
  */
 function occupiedStreamsFor(
   issues: CensusIssue[],
   workerUser: string,
-  allowedAuthors: readonly string[] = [],
+  pushCapableAuthors: readonly string[] = [],
 ): ReadonlySet<string> {
-  // The scan's own set, lowercased the same way: the worker is always
-  // included, so a misconfigured `allowedAuthors` never drops this host's own
-  // assignments.
-  const honoured = new Set(
-    [workerUser, ...allowedAuthors].map((a) => a.toLowerCase()),
-  );
+  const asFilterable: FilterableIssue[] = issues.map((issue) => ({
+    number: issue.number,
+    title: "",
+    url: "",
+    author: "",
+    assignees: issue.assignees,
+    labels: issue.labels,
+    createdAt: "",
+    milestone: issue.milestone,
+  }));
   const occupied = new Set<string>();
-  for (const issue of issues) {
-    if (issue.assignees.some((a) => honoured.has(a.toLowerCase()))) {
-      occupied.add(issue.milestone);
+  for (const stream of new Set(issues.map((i) => i.milestone))) {
+    if (
+      isMilestoneOccupied(asFilterable, stream, workerUser, [
+        ...pushCapableAuthors,
+      ])
+    ) {
+      occupied.add(stream);
     }
   }
   return occupied;
@@ -802,7 +820,7 @@ function countUnblocked(
   workerUser: string,
   repo: string,
   runLocalHolds: ReadonlySet<number>,
-  allowedAuthors: readonly string[] = [],
+  pushCapableAuthors: readonly string[] = [],
 ): {
   counts: UnblockedCounts;
   prBlocked: number;
@@ -822,7 +840,7 @@ function countUnblocked(
   const occupiedStreams = occupiedStreamsFor(
     issues,
     workerUser,
-    allowedAuthors,
+    pushCapableAuthors,
   );
   // Every issue in this list is open — the census only ever reads open
   // issues — so membership is exactly "the dependency is still open".
@@ -966,13 +984,21 @@ export function buildIdleDecisionCensus(opts: {
    */
   claimedRepos?: readonly string[];
   /**
-   * The trusted accounts the claim scan honours beside `workerUser`
-   * (`.config.json` `allowed_authors`), so this census models the scan's
-   * `milestone-occupied` gate over the same set (Issue #753). Omitted → the
-   * worker alone, which is what the census counted before and what made a
-   * human's assignment read as claimable work the scan was refusing.
+   * The accounts the fleet operates beside `workerUser`, from
+   * `resolveFleetMaintenanceAuthorSet` — the host login, `fleet_pr_authors`
+   * and `service_accounts` — so this census models the selector's
+   * `milestone-occupied` gate over the same set (Issues #753, #1071).
+   *
+   * NEVER `config.allowedAuthors` (Issue #1064): that is a **permission**
+   * list, it legitimately holds humans, and scheduling exists only between
+   * Vibe Coders. Passing it made a colleague's assignment read as an
+   * occupied stream here while the selector claimed the work.
+   *
+   * Omitted → this worker alone, which is what the census counted before
+   * #753 and what made a sibling's assignment read as claimable work the
+   * scan was refusing.
    */
-  allowedAuthors?: readonly string[];
+  pushCapableAuthors?: readonly string[];
 }): IdleDecisionCensus {
   const perRepo: RepoCensusEntry[] = [];
   for (const input of opts.repos) {
@@ -992,7 +1018,7 @@ export function buildIdleDecisionCensus(opts: {
       opts.workerUser,
       input.repo,
       input.runLocalHolds ?? new Set<number>(),
-      opts.allowedAuthors ?? [],
+      opts.pushCapableAuthors ?? [],
     );
     const { verdict, availableStreams, occupiedStreams } = availabilityFor(
       input.issues,

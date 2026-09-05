@@ -372,10 +372,7 @@ async function runComposedIdleCycle(
       const census = buildIdleDecisionCensus({
         decisionPoint,
         workerUser: WORKER_USER,
-        // The census still names this option `allowedAuthors`; what it wants
-        // is the occupancy set, which since Issue #1064 is the fleet's
-        // push-capable logins.
-        allowedAuthors: PUSH_CAPABLE_AUTHORS,
+        pushCapableAuthors: PUSH_CAPABLE_AUTHORS,
         repos: FLEET_REPOS.map((repo) => ({
           repo,
           monitored: true,
