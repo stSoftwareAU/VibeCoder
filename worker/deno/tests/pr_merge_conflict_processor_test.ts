@@ -32,13 +32,14 @@ import {
   CONFLICT_RESOLVED_MARKER,
   MERGE_CONFLICT_LABEL,
 } from "../lib/pr_merge_conflict_scan.ts";
+import type { AbandonRestartRequest } from "../lib/conflict_abandon_restart.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type {
   ClaudeDeps,
   GitDeps,
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
-import type { Logger } from "../types.ts";
+import type { LogContext, Logger } from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -451,6 +452,81 @@ Deno.test("processMergeConflict - the final failed attempt escalates to a human"
 });
 
 // ---------------------------------------------------------------------------
+// Abandon-and-restart before a human (Issue #1115)
+// ---------------------------------------------------------------------------
+
+Deno.test("processMergeConflict - the final failure abandons and restarts rather than escalating", async () => {
+  // The rung sits *here*, not only in the scan: the processor is what
+  // concludes attempt 2, and escalating from it would put `needs-human` on
+  // the PR before anything could try the restart.
+  const seen: AbandonRestartRequest[] = [];
+  const { captured, result } = await runProcessor(
+    makeInput({ attemptCount: 1 }),
+    makeGitScript({ markersAfterAgent: true }),
+    {
+      abandonRestartFn: (request) => {
+        seen.push(request);
+        return Promise.resolve({ outcome: "abandoned", issueNumber: 16 });
+      },
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.escalated, false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  assertStringIncludes(result.value.summary, "re-queued issue #16");
+
+  // The rung is handed the PR it is closing, and the thread it quotes.
+  assertEquals(seen.length, 1);
+  assertEquals(seen[0]?.prNumber, 48);
+  assertEquals(seen[0]?.branchName, "issue-16-fix");
+  assertEquals(seen[0]?.baseBranch, "main");
+
+  // The failure conclusion is still posted: it is what spends the attempt.
+  assert(captured.comments.some((c) => c.includes(CONFLICT_FAILED_MARKER)));
+});
+
+Deno.test("processMergeConflict - an abandon that fails escalates naming the step", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput({ attemptCount: 1 }),
+    makeGitScript({ markersAfterAgent: true }),
+    {
+      abandonRestartFn: () =>
+        Promise.resolve({
+          outcome: "failed",
+          step: "pr-close",
+          message: "gh refused",
+        }),
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.escalated, true);
+  assertEquals(captured.labelsAdded.includes("needs-human"), true);
+  const escalation = captured.comments.at(-1) ?? "";
+  assertStringIncludes(escalation, "`pr-close` step");
+});
+
+Deno.test("processMergeConflict - a declined abandon escalates saying why", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput({ attemptCount: 1 }),
+    makeGitScript({ markersAfterAgent: true }),
+    {
+      abandonRestartFn: () =>
+        Promise.resolve({
+          outcome: "declined",
+          reason: { kind: "no-originating-issue", detail: "no-signal" },
+        }),
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.escalated, true);
+  const escalation = captured.comments.at(-1) ?? "";
+  assertStringIncludes(escalation, "names no originating issue");
+});
+
+// ---------------------------------------------------------------------------
 // Disruption robustness (Issue #395)
 // ---------------------------------------------------------------------------
 
@@ -568,6 +644,39 @@ Deno.test("processMergeConflict - a PR locked by another worker is left alone", 
   assertEquals(result.value.processed, false);
   assertEquals(captured.gitArgs.length, 0);
   assertEquals(captured.comments.length, 0);
+});
+
+Deno.test("processMergeConflict - a locked PR records lock-held and its holder", async () => {
+  // Issue #1109: the lock gate is one more exit a labelled PR can leave a
+  // pass through, so it records against the same closed taxonomy.
+  const records: Array<{ message: string; context?: LogContext }> = [];
+  const logger: Logger = {
+    ...makeSilentLogger(),
+    info: (message, context) => records.push({ message, ...{ context } }),
+  };
+
+  await runProcessor(makeInput(), makeGitScript(), {
+    logger,
+    workerId: "worker-b",
+    acquireLockFn: (() =>
+      Promise.resolve({
+        ok: true,
+        value: { acquired: false, winnerId: "worker-a" },
+      })) as unknown as MergeConflictProcessorDeps["acquireLockFn"],
+    releaseLockFn: (() =>
+      Promise.resolve({
+        ok: true,
+        value: undefined,
+      })) as unknown as MergeConflictProcessorDeps["releaseLockFn"],
+  });
+
+  const record = records.find((entry) =>
+    entry.message.startsWith("merge_conflict_decision=")
+  );
+  assert(record, "the lock gate left no decision record");
+  assertEquals(record.context?.reason, "lock-held");
+  assertEquals(record.context?.lockHolder, "worker-a");
+  assertEquals(record.context?.prNumber, makeInput().prNumber);
 });
 
 // ---------------------------------------------------------------------------

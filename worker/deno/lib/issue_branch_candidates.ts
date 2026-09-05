@@ -66,6 +66,27 @@ export function belongsToIssue(branch: string, issueNumber: number): boolean {
   return branch === prefix || branch.startsWith(`${prefix}-`);
 }
 
+/** `issue-<n>` or `issue-<n>-<slug>` — the worker's branch shape. */
+const ISSUE_BRANCH_SHAPE = /^issue-(\d+)(?:-.*)?$/;
+
+/**
+ * The issue number a worker branch names, or `null` when it names none
+ * (Issue #1113).
+ *
+ * The inverse of {@link belongsToIssue}, and it defers to that matcher rather
+ * than trusting its own regex: `issue-1160-…` yields 1160 and never 116,
+ * `wip/issue-220-…` yields nothing, and a zero-padded `issue-0116-…` is
+ * rejected instead of being read as issue 116.
+ */
+export function issueNumberFromBranch(branch: string): number | null {
+  const trimmed = branch.trim();
+  const match = ISSUE_BRANCH_SHAPE.exec(trimmed);
+  if (!match) return null;
+  const issueNumber = Number(match[1]);
+  if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) return null;
+  return belongsToIssue(trimmed, issueNumber) ? issueNumber : null;
+}
+
 /**
  * `git ls-remote` patterns that find every branch this issue could own.
  *

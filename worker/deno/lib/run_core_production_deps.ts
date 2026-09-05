@@ -27,6 +27,11 @@ import type {
 import { createDefaultRunCoreConfig } from "./run_core.ts";
 import { acquireMaintenanceRepoLease } from "./maintenance_lane.ts";
 import { drainConflictingPrs } from "./merge_conflict_drain.ts";
+import {
+  announceDeferralStreak,
+  readConflictDeferrals,
+  writeConflictDeferrals,
+} from "./merge_conflict_deferrals.ts";
 import { reactivePhaseTimeout } from "./reactive_phase_timeout.ts";
 
 // Config & logging
@@ -121,7 +126,11 @@ import {
   processCiNudgeCandidate,
 } from "./pr_ci_nudge_scan.ts";
 import { scanBlockingPrStalls as libScanBlockingPrStalls } from "./blocking_pr_stall_detector.ts";
-import { findConflictingPr } from "./pr_merge_conflict_scan.ts";
+import {
+  type ConflictPrDecision,
+  findConflictingPr,
+} from "./pr_merge_conflict_scan.ts";
+import { scanConflictQueueStalls } from "./merge_conflict_stall_watchdog.ts";
 import { processMergeConflict } from "./pr_merge_conflict_processor.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
 import {
@@ -262,6 +271,7 @@ import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
 import { getRunId } from "./run_id.ts";
 import {
   type FleetAuthorSetInput,
+  isFleetAuthor,
   resolveFleetMaintenanceAuthorSet,
   resolveFleetPrAuthorSet,
   resolveSuppressionExcludedLogins,
@@ -1958,12 +1968,52 @@ export async function createProductionRunCoreDeps(
     // they are. This wiring supplies the three side effects: the scan, the
     // repository lease, and one resolution.
     async findAndProcessMergeConflict(opts?: HandlerExecuteOptions) {
+      // A marker only dedups when the fleet wrote it: a comment body is text
+      // anyone can post, and a dedup that trusts it goes quiet
+      // (`marker_dedup_author_manifest.ts`).
+      const isTrustedAuthor = (login: string) =>
+        isFleetAuthor(login, [
+          ...resolveFleetMaintenanceAuthorSet({
+            githubUser,
+            allowedAuthors: fleetPrAuthorInput.allowedAuthors,
+            fleetPrAuthors: fleetPrAuthorInput.fleetPrAuthors,
+          }),
+        ]);
+      // Issue #1112: every decision this cycle's scans reached, so the stall
+      // watchdog can name the skip reasons recorded for a stalled PR (#1109).
+      const scanDecisions: ConflictPrDecision[] = [];
       const drain = await drainConflictingPrs({
         logger,
         ...(opts?.deadlineEpochMs !== undefined
           ? { deadlineEpochMs: opts.deadlineEpochMs }
           : {}),
-        findNext: async (exclude) => {
+        // Issue #1111: the lease, the deadline and the cap each drop a due PR.
+        // The cursor on the work volume is what stops the same PR losing that
+        // race every cycle in silence, and the notice is what says so on the
+        // PR itself once it has.
+        deferrals: {
+          load: () =>
+            readConflictDeferrals(
+              workDir,
+              undefined,
+              Date.now(),
+              (message) => logger.warn(message),
+            ),
+          save: (state) =>
+            writeConflictDeferrals(
+              workDir,
+              state,
+              undefined,
+              Date.now(),
+              (message) => logger.warn(message),
+            ),
+          announce: (notice) =>
+            announceDeferralStreak(notice, {
+              ghCommandFn: runGhCommand,
+              isTrustedAuthor,
+            }),
+        },
+        findNext: async (exclude, prefer) => {
           const scan = await findConflictingPr({
             githubUser,
             allowedAuthors: fleetPrAuthorInput.allowedAuthors,
@@ -1980,8 +2030,16 @@ export async function createProductionRunCoreDeps(
             // itself, so it needs the configured escalation label.
             needsHumanLabel: config.needsHumanLabel,
             exclude,
+            // Issue #1111: the deferral cursor, so a PR the last pass left
+            // behind leads this one.
+            ...(prefer !== undefined ? { prefer } : {}),
           });
-          return scan.ok ? scan.value : null;
+          // Issue #1109: the scan records every PR it decided on through the
+          // logger itself, so the drain needs only the selection. The
+          // decisions are kept for the stall watchdog below (Issue #1112).
+          if (!scan.ok) return null;
+          scanDecisions.push(...scan.value.decisions);
+          return scan.value.selected;
         },
         // Issue #213: lease the shared `${WORK_DIR}/<repo>` clone before the
         // merge, so this pass and an issue slot never write one tree.
@@ -2042,6 +2100,29 @@ export async function createProductionRunCoreDeps(
           };
         },
       });
+
+      // Issue #1112: the ladder above is attempt-driven, so it cannot see the
+      // stall where no attempt record exists at all. This watchdog keys on the
+      // age of the `merge-conflict` label instead, and files a PR that has
+      // carried it for hours with nothing concluding as work — never
+      // `needs-human`, which would remove it from this very lane (Issue #569).
+      // Skipped once the cycle's deadline has passed: the drain stops there
+      // for the same reason, and a watchdog that observes is never worth
+      // running into the next pass's time.
+      if (
+        opts?.deadlineEpochMs === undefined || Date.now() < opts.deadlineEpochMs
+      ) {
+        await scanConflictQueueStalls({
+          repos,
+          ghCommandFn: runGhCommand,
+          logger,
+          isTrustedAuthor,
+          isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),
+          timelineCache,
+          needsHumanLabel: config.needsHumanLabel,
+          decisions: [...scanDecisions, ...drain.decisions],
+        });
+      }
 
       return { ok: true, value: { processed: drain.processed } };
     },
