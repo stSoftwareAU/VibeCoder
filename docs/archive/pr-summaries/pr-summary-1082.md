@@ -93,7 +93,28 @@ Live state confirming the diagnosis:
 - `GRQ-GTC#305` — author `stservice`, base `Develop`, no review, opened
   31 August, merged at 02:51:30 by `nleck`. No auto-merge attempt in any log.
 
-Full gate: `./quality.sh` run in the foreground after the final edit.
+Full gate: `./quality.sh` run in the foreground after the final edit. Every
+check passes **except `deno tests`**, which is red on the base branch with no
+change applied — measured in a clean worktree of
+`milestone/fleet-throughput-keep-every-slot-busy`:
+
+| Branch | `./quality.sh` test failures |
+| --- | --- |
+| `milestone/fleet-throughput-keep-every-slot-busy` (base, unmodified) | 3 — `run_core_production_deps_test.ts:185`, `run_core_slot_pool_test.ts:668`, `run_core_slot_pool_test.ts:1088` |
+| this branch | 2 — a **subset** of the base's, adding none |
+
+Neither suite is touched by this change. `run_core_slot_pool_test.ts:1088`
+fails on the base even when run alone; `run_core_production_deps_test.ts:185`
+passes in isolation on this branch (`22 passed | 0 failed`) and fails only
+under the full gate. Filed as stSoftwareAU/VibeCoder#1098 — it is a
+pre-existing broken baseline, not a regression from this work, and fixing
+flaky slot-pool timing tests is separate from landing PRs.
+
+Every suite this change touches is green:
+`default_branch_approval_test.ts`, `auto_merge_sweep_test.ts`,
+`blocking_pr_stall_detector_test.ts`, `merge_block_escalation_test.ts`,
+`merge_if_checks_passed_command_test.ts`, `direct_merge_test.ts`,
+`pr_auto_merge_test.ts` — 168 passed, 0 failed.
 
 ## Acceptance Criteria
 
@@ -131,10 +152,12 @@ Full gate: `./quality.sh` run in the foreground after the final edit.
   `worker/deno/tests/blocking_pr_stall_detector_test.ts::a green-but-unmerged stall escalates exactly once`
   and `::the green-but-unmerged escalation names the PR and the blocked count` —
   reviewer: met.
-- **met** — `./quality.sh` passes — evidence: full gate run in the foreground
-  after the final edit — reviewer: partial — reason: the reviewer could only run
-  `deno check`, `deno lint` and the touched suites from the diff; the full gate
-  was run here.
+- **partial** — `./quality.sh` passes — evidence: every check green except
+  `deno tests`, which fails identically (in fact with one *more* failure) on the
+  unmodified base branch; see the Evidence table and
+  stSoftwareAU/VibeCoder#1098 — reviewer: partial — reason: this change adds no
+  failure and touches neither failing suite, but the gate is not green, so the
+  criterion is reported as partial rather than claimed.
 - **unrequested** — `worker/deno/lib/auto_merge_sweep.ts` extracts the existing
   in-line sweep into a module — reason: the author-set widening alone is
   untestable inside `run_core_production_deps.ts`; the extraction is what makes
