@@ -414,6 +414,18 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "launch_plumbing",
     note: "the build argument selecting extra tools (Issue #71)",
   },
+  VIBE_BASE_IMAGE: {
+    role: "launch_plumbing",
+    note:
+      "the build argument naming the image the operator's layer builds FROM " +
+      "(Issue #980)",
+  },
+  VIBE_EXTENSION_START: {
+    role: "launch_plumbing",
+    note: "the extension's start-script path, recorded by the build " +
+      "(Issue #980) and handed to the container so the entrypoint runs it " +
+      "before the driver (Issue #981)",
+  },
   VIBE_UPDATE_MODE: {
     role: "launch_plumbing",
     note:
@@ -463,6 +475,11 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
   VIBE_AUDIT_DISABLED: {
     role: "switch",
     note: "disables the audit hook; tests only",
+  },
+  VIBE_EXTENSION_PREFIX: {
+    role: "switch",
+    note: "test-only override of the fixed in-container extension prefix " +
+      "/opt/vibe-extension (Issue #981); production never sets it",
   },
   VIBE_ALLOW_UNGUARDED_AGENT_GH: {
     role: "switch",

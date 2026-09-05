@@ -41,7 +41,9 @@ background service is offered, where files land — is covered in
 [Platform differences in the automated setup](#platform-differences-in-the-automated-setup).
 
 1. **Prerequisites probe** — `setup prerequisites`. Verifies the host tools,
-   the container runtime and the worker image before anything is changed. A
+   the container runtime, the worker image and — on a deployment that
+   configures one — the private `container_extension` before anything is
+   changed. A
    host-fatal gap **exits 1** and stops the whole run; informational gaps are
    reported and never fail setup. In a terminal (or with `--auto-install`)
    each failed check with an install plan is offered as an interactive
@@ -440,6 +442,12 @@ same set, stated as the state your host must reach:
   committed definition; a missing image is fine (the launcher builds it on
   first run), a missing `container/` definition is not. The image itself is
   the [Container Image guide](CONTAINER.md)'s subject.
+- [ ] **A configured `container_extension`** — host-fatal, and only checked on
+  a deployment that declares one (Issue #982). The probe reports the
+  configured path, that the definition is readable, and the layered image tag;
+  a directory that is not there fails with the same text the launcher prints,
+  because every launch would abort on it. See
+  [Image identity](CONTAINER.md#image-identity--the-tag-is-the-definitions-hash).
 - [ ] **`jq`** and **`timeout`** — informational only. The
   [image](CONTAINER.md) provides both to the worker, so a host without them
   still passes.

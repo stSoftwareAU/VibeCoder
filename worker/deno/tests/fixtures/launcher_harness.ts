@@ -141,6 +141,10 @@ case "\${sub}" in
     # retry behave differently from the first attempt.
     count=\$(( \$(cat "\${record_dir}/build.count" 2>/dev/null || echo 0) + 1 ))
     printf '%s' "\${count}" > "\${record_dir}/build.count"
+    # Each build's own argument list (Issue #980): \`build.args\` holds only
+    # the last one, and a launch that builds the operator's private layer
+    # makes two invocations whose order is the behaviour under test.
+    printf '%s\\0' "\$@" > "\${record_dir}/build-\${count}.args"
     if [[ -n "\${STUB_BUILD_STDERR:-}" ]]; then
       printf '%s\\n' "\${STUB_BUILD_STDERR}" >&2
     fi
@@ -667,6 +671,67 @@ export async function buildCount(harness: Harness): Promise<number> {
   } catch {
     return 0;
   }
+}
+
+/**
+ * Declare a private container extension for a harness (Issue #980).
+ *
+ * Writes the operator's extension directory — outside the harness home, as the
+ * containment rule requires — and rewrites the deployment's `.config.json` to
+ * declare it. Shared by both launcher suites so `run.sh` and `run.ps1` are
+ * exercised against exactly the same deployment.
+ *
+ * @param harness - The harness to configure
+ * @param options - Containerfile text (defaults to a conforming layer) and an
+ *   optional `start` script path relative to the extension directory
+ * @returns The extension directory the declaration names
+ */
+export async function declareContainerExtension(
+  harness: Harness,
+  options: { containerfile?: string; start?: string } = {},
+): Promise<string> {
+  const directory = `${harness.tmpDir}/extension`;
+  await Deno.mkdir(directory, { recursive: true });
+  await Deno.writeTextFile(
+    `${directory}/Containerfile`,
+    options.containerfile ??
+      "ARG VIBE_BASE_IMAGE\nFROM ${VIBE_BASE_IMAGE}\nRUN true\n",
+  );
+  if (options.start) {
+    await Deno.writeTextFile(
+      `${directory}/${options.start}`,
+      "#!/bin/bash\nexit 0\n",
+    );
+  }
+  await Deno.writeTextFile(
+    `${harness.tmpDir}/config.json`,
+    JSON.stringify({
+      repos: ["org/repo1"],
+      container_extension: {
+        path: directory,
+        ...(options.start ? { start: options.start } : {}),
+      },
+    }),
+  );
+  return directory;
+}
+
+/**
+ * One build's own argument list (Issue #980).
+ *
+ * A deployment that configures a `container_extension` is built twice — the
+ * standard image, then the operator's layer `FROM` it — and the order is the
+ * behaviour under test, which the last-one-wins `build.args` cannot show.
+ *
+ * @param harness - The harness the launcher ran under
+ * @param ordinal - Which build, 1-based in invocation order
+ * @returns The recorded arguments, or null when that build never ran
+ */
+export function recordedBuild(
+  harness: Harness,
+  ordinal: number,
+): Promise<string[] | null> {
+  return recorded(harness, `build-${ordinal}`);
 }
 
 /**

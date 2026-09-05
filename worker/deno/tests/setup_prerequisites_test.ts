@@ -28,6 +28,11 @@ import type { PrerequisiteOptions } from "../setup/prerequisites.ts";
 import type { ContainerRuntimeProbe } from "../lib/container_runtime.ts";
 import type { EnvLookup } from "../lib/env_lookup.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
+import {
+  discardFixture,
+  makeExtensionDir,
+} from "./support/extension_fixture.ts";
 
 // ── Mock command runner ─────────────────────────────────────────────────
 
@@ -343,6 +348,95 @@ Deno.test("checkContainerPrerequisites - fails when the image is not buildable",
     assertStringIncludes(String(results[1]!.hint), "Containerfile");
   } finally {
     await Deno.remove(emptyRoot, { recursive: true });
+  }
+});
+
+// ── The private extension, reported by setup (Issue #982, parent #933) ──
+
+/** One throwaway deployment declaring a `container_extension`. */
+async function extensionDeployment(
+  declaration: Record<string, unknown> = {},
+): Promise<{ root: string; home: string; configFile: string }> {
+  const root = await makeExtensionDir();
+  const home = await Deno.makeTempDir({ prefix: "vibe-setup-config-" });
+  const configFile = `${home}/.config.json`;
+  await Deno.writeTextFile(
+    configFile,
+    JSON.stringify({ container_extension: { path: root, ...declaration } }),
+  );
+  return { root, home, configFile };
+}
+
+Deno.test("checkContainerPrerequisites - reports the extension and the tag that includes it", async () => {
+  const deployment = await extensionDeployment();
+  try {
+    const results = await checkContainerPrerequisites({
+      ...containerReadyOpts(["git", "gh", "deno"], false),
+      env: envFrom({ CONFIG_FILE: deployment.configFile, HOME: "/home/vibe" }),
+    });
+
+    assertEquals(results.length, 3);
+    assertEquals(results[1]!.tool, "container extension");
+    assertEquals(results[1]!.ok, true);
+    assertStringIncludes(results[1]!.message, deployment.root);
+    assertStringIncludes(results[1]!.message, "readable");
+
+    // The tag the extension line names is the tag the image line reports on,
+    // and it is the layered one — not the tag a host with no extension builds.
+    const tag = results[1]!.message.match(/vibe-coder:[0-9a-f]+/)?.[0];
+    assertEquals(typeof tag, "string");
+    assertStringIncludes(results[2]!.message, String(tag));
+    assertStringIncludes(results[2]!.message, "not built yet");
+    const standard = await resolveContainerImageReference(REPO_ROOT, {});
+    assertEquals(
+      tag === standard,
+      false,
+      "setup named the standard tag on a deployment that builds a layered one",
+    );
+  } finally {
+    await discardFixture(deployment.root, deployment.home);
+  }
+});
+
+Deno.test("checkContainerPrerequisites - an absent extension directory is named, not blamed on the image", async () => {
+  const deployment = await extensionDeployment();
+  try {
+    await Deno.remove(deployment.root, { recursive: true });
+    const results = await checkContainerPrerequisites({
+      ...containerReadyOpts(["git", "gh", "deno"]),
+      env: envFrom({ CONFIG_FILE: deployment.configFile, HOME: "/home/vibe" }),
+    });
+
+    assertEquals(results[1]!.tool, "container extension");
+    assertEquals(results[1]!.ok, false);
+    assertStringIncludes(results[1]!.message, deployment.root);
+    assertStringIncludes(results[1]!.message, "does not exist");
+    assertStringIncludes(String(results[1]!.hint), "sync this deployment");
+    // A host-fatal result: setup must not report a deployment that cannot
+    // launch as ready.
+    assertEquals(aggregatePrerequisiteOk(results, "container"), false);
+  } finally {
+    await discardFixture(deployment.root, deployment.home);
+  }
+});
+
+Deno.test("checkContainerPrerequisites - a deployment with no extension sees today's two lines", async () => {
+  const home = await Deno.makeTempDir({ prefix: "vibe-setup-config-" });
+  try {
+    const configFile = `${home}/.config.json`;
+    await Deno.writeTextFile(configFile, JSON.stringify({ repos: [] }));
+    const results = await checkContainerPrerequisites({
+      ...containerReadyOpts(["git", "gh", "deno"]),
+      env: envFrom({ CONFIG_FILE: configFile, HOME: "/home/vibe" }),
+    });
+
+    assertEquals(results.length, 2);
+    assertEquals(results.map((result) => result.tool), [
+      "container runtime",
+      "worker image",
+    ]);
+  } finally {
+    await discardFixture(home);
   }
 });
 
