@@ -30,7 +30,13 @@ skipped gate visible:
   now the *wider* of the wind-down window (600 s) and what the gate needs
   (~1080 s): under the old narrower rule an agent at 1000 s of runway got no
   notice at all, so the budget condition could not be evaluated and it started
-  a gate that outlived the run — exactly the band the measurements found.
+  a gate that outlived the run — exactly the band the measurements found. The
+  two bands log distinctly and the handover note reads the notice's contents,
+  so a gate refusal is never mistaken for a wind-down warning.
+- **The PR-side flows** (`ci_fix`, `pr_feedback`, `spelling_fix`) run no
+  progress extension, so no notice is ever written for them. They pass the
+  run's whole budget instead: a gate that cannot fit inside it is refused at
+  prompt-build time, and one that fits is quoted as a share of the run.
 - **`worker/deno/lib/prompt_gate_instruction_check.ts`** stops the drift coming
   back: no template may hard-code its own gate order, and the check runs over
   the shipped prompts on every suite run.
@@ -91,13 +97,109 @@ Full gate run in the foreground after the final edit: **PASSED** (18 checks,
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-PENDING
+- **met** — No prompt instructs an unconditional `./quality.sh` before pushing
+  — evidence: `prompts/issue/prompt.md:461-471`, `prompts/ci_fix/prompt.md`,
+  `prompts/spelling_fix/prompt.md`, `prompts/pr_feedback/prompt.md`,
+  `prompts/coding_guidelines/prompt.md`, `prompts/merge_conflict/prompt.md:70`,
+  guarded by
+  `worker/deno/tests/prompt_gate_instruction_check_test.ts::no shipped prompt orders the gate unconditionally`
+  — reviewer: met
+- **met** — A run that would exceed its budget on the gate skips it and records
+  why — evidence: `worker/deno/lib/quality_gate_budget.ts`,
+  `worker/deno/lib/wind_down_notice.ts::shouldWriteRunBudgetNotice`,
+  `worker/deno/tests/quality_gate_budget_test.ts`,
+  `worker/deno/tests/wind_down_notice_test.ts` — reviewer: partial — reason:
+  the reviewer marked this partial on two grounds, both addressed after its
+  verdict. Its first — the PR-side flows write no notice, so the prompt's
+  budget condition could never fire there, and the wording affirmatively
+  authorised the gate — is fixed by passing the whole run's budget into
+  `buildQualityInstructions`
+  (`worker/deno/commands/pr_feedback_processor.ts:156`,
+  `pr_ci_processor.ts:148`, `pr_spelling_processor.ts:155`), so a gate that
+  cannot fit the run is refused at prompt-build time. Its second — "records
+  why" is agent-voluntary, with no worker-side reader of
+  `GATE_SKIP_MARKER` — stands as stated: the record is the note on the PR,
+  which is what the issue asked for ("skip it and say so in the PR"), and a
+  worker-side verifier of the marker is not in this issue's scope.
+- **met** — Run records distinguish a deadline kill from a genuine failure —
+  evidence: `worker/deno/lib/failure_diagnosis.ts:102` (`Released on
+  schedule:`), `:144` (`scheduled_release`), `:277`
+  (`DEADLINE_BOUND_TIMEOUT_MARKER`),
+  `worker/deno/lib/run_outcome_classifier.ts:210-216`
+  (`scheduled-release`, never a code-fixable failure) — reviewer: met —
+  reason: satisfied by pre-existing code, not by this diff; the reviewer
+  verified it independently and this change deliberately adds nothing there.
+- **missing** — The share of runs ending in failure falls (6/20 baseline) —
+  reviewer: missing — reason: withdrawn by the issue author's own correction
+  ("only one of the six failures hit the deadline … rescoped accordingly —
+  this is about run budget and cost, not about the failure rate"). Nothing in
+  this diff claims it, and it cannot be demonstrated from a PR.
+- **unrequested** — `worker/deno/lib/prompt_gate_instruction_check.ts` and its
+  test — reviewer: unrequested — reason: the issue asks for the wording
+  change; this is the guard that stops it drifting back, which is how this
+  repo holds every other cross-cutting invariant. Kept.
+- **unrequested** — `GATE_TAIL_SECONDS = 180` — reviewer: unrequested —
+  reason: the issue's rule is "remaining < the gate's typical duration"; a gate
+  that finishes with nothing left to fix or push it with buys nothing, so the
+  tail is part of what the gate genuinely needs. Kept, and named in the
+  guidance so the arithmetic is visible.
+- **unrequested** — the measured-duration plumbing
+  (`PhaseState.baselineQualityDurationSeconds` through to the notice) —
+  reviewer: unrequested — reason: the issue's rule is stated against "the
+  gate's typical duration", and the baseline gate measures exactly that on
+  this repo this cycle; the 900 s constant remains the fallback. Kept.
+- **unrequested** — the docs sections in `CODING-STANDARDS.md`,
+  `docs/CONFIGURATION.md` and `docs/TROUBLESHOOTING.md` — reviewer:
+  unrequested — reason: required by the repo's own "a code change owes a docs
+  change" rule; the standards document carried the contradicting
+  unconditional rule. Kept.
+- **unrequested** — the raised ceiling in
+  `tests/claude_runner_external_progress_508_test.ts` — reviewer: unrequested
+  — reason: a consequence of the widened notice band, documented in the test
+  and in the Test Plan below rather than hidden.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-PENDING
+- **violation** — `docs/CONFIGURATION.md` described the pre-change single
+  600 s notice window — evidence: `docs/CONFIGURATION.md:2010` — reason: fixed
+  in this diff; the section now documents both bands and their distinct log
+  lines.
+- **violation** — `docs/TROUBLESHOOTING.md` asserted the refusal band and the
+  wind-down window were the same ten minutes — evidence:
+  `docs/TROUBLESHOOTING.md:868` — reason: fixed in this diff, with the
+  `run-budget notice written` grep added.
+- **violation** — the operator log called every notice a wind-down, and its
+  latch was consumed by the gate-refusal write, so the genuine wind-down
+  logged nothing — evidence: `worker/deno/lib/claude_runner.ts:1476` — reason:
+  fixed in this diff; two bands, two latches, two messages.
+- **violation** — the handover note derived "the run was warned" from the
+  notice file merely existing, which the widened band made untrue — evidence:
+  `worker/deno/lib/handover_note.ts:397` — reason: fixed in this diff; it now
+  reads the contents via `noticeOrdersWindDown`, covered by
+  `worker/deno/tests/handover_note_test.ts::a gate-refusal notice is not a
+  wind-down warning`.
+- **violation** — catch-and-ignore swallowed every prompt read failure —
+  evidence: `worker/deno/lib/prompt_gate_instruction_check.ts:133` — reason:
+  fixed; only `Deno.errors.NotFound` is benign, anything else is rethrown.
+- **violation** — `CODING-STANDARDS.md` still carried the unconditional
+  "run the gate before raising the PR" rule the change overturns — evidence:
+  `CODING-STANDARDS.md:209` — reason: fixed; the Quality Gates section now
+  carries the budget condition and the skip-note rule.
+- **clean** — Australian English throughout added prose, comments and
+  identifiers; one decision function behind the prompt lines, the notice and
+  the write trigger (no forked logic); behavioural tests with error and edge
+  paths, no wall-clock thresholds, no test removed or weakened; fail-loud
+  handling (nonsense budgets read as exhausted, `filesScanned` distinguishes
+  "nothing found" from "nothing scanned"); no new credentials, subprocesses or
+  dependencies, and the new regexes are bounded and lazy with no nested
+  quantifiers; no hidden paths staged, every commit carrying its issue
+  reference and `Vibe-Coder-Run-Id` trailer.
+- **noted, not fixed** — `buildProgressExtension` now takes four trailing
+  optional positional parameters; the reviewer's nit is that an options object
+  would age better. Left alone: changing that signature is a refactor of a
+  seam this issue only passes through.
 
 ## Test Plan
 
@@ -121,8 +223,11 @@ Extended:
   budget-conditional, quote a measured duration, and still skip everything for
   a `skip_quality_check` repo.
 - `worker/deno/tests/wind_down_notice_test.ts` — the notice band above the
-  wind-down window, a gate-only notice that does not order a wind-down, and a
-  measured duration deciding the refusal.
+  wind-down window, a gate-only notice that does not order a wind-down, a
+  measured duration deciding the refusal, and `noticeOrdersWindDown`
+  distinguishing the two.
+- `worker/deno/tests/handover_note_test.ts` — a gate-refusal notice is not
+  reported to the next run as a wind-down warning.
 
 Modified (documented business-logic change):
 
