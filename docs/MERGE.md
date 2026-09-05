@@ -393,10 +393,10 @@ left to be re-broken.
 **A PR is armed when it is created, not next cycle.** The sweep is a
 **backstop**, never the primary mechanism. Priority 1.65 runs near the top of a
 cycle and the Priority 2 issue scan — the pass that raises PRs — runs after it,
-so a PR raised by cycle N is structurally invisible to cycle N's sweep. PR
-#1133 was created 51 minutes after that cycle's sweep and sat green, unblocked
-and unarmed until a human merged it, freezing every sibling issue the blocking
-guard defers to it (Issue #1136).
+so a PR raised by cycle N is structurally invisible to cycle N's sweep.
+PR #1133 was created 51 minutes after that cycle's sweep and sat green,
+unblocked and unarmed until a human merged it, freezing every sibling issue the
+blocking guard defers to it (Issue #1136).
 
 Two changes close that window:
 
