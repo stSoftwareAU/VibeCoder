@@ -294,6 +294,9 @@ const RECORDED_DENO_COMMANDS = [
  * reach GitHub for the newest release. `STUB_RELEASE_NOTICE_STDOUT` is the
  * notice the check found, and `STUB_RELEASE_NOTICE_EXIT` makes the check
  * fail — an unreachable GitHub, a `gh` failure or a timeout.
+ * `STUB_RELEASE_NOTICE_STDERR` is what the failing check said about itself
+ * (Issue #1020); `STUB_RELEASE_NOTICE_EXIT` of 124 is what `timeout` reports
+ * when the launcher's own bound was what ended the check.
  *
  * With `full`, two more invocations are intercepted rather than performed:
  * `run-entrypoint`, which would start the whole worker on this host, and
@@ -402,6 +405,12 @@ for arg in "\$@"; do
       printf '%s\\0' "\$@" > "\${record_dir}/release-notice.args"
       if [[ -n "\${STUB_RELEASE_NOTICE_STDOUT:-}" ]]; then
         printf '%s\\n' "\${STUB_RELEASE_NOTICE_STDOUT}"
+      fi
+      # The account of a failure goes to stderr, exactly as the real command's
+      # does - a configuration error, an unresolvable GitHub, an uncaught
+      # throw (Issue #1020).
+      if [[ -n "\${STUB_RELEASE_NOTICE_STDERR:-}" ]]; then
+        printf '%s\\n' "\${STUB_RELEASE_NOTICE_STDERR}" >&2
       fi
       exit "\${STUB_RELEASE_NOTICE_EXIT:-0}"
       ;;${extraIntercepts}

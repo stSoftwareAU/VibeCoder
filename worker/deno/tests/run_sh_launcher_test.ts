@@ -43,6 +43,7 @@ import { activeAgentProvider } from "../lib/agent_provider.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { formatReleaseNotice } from "../lib/release_notice.ts";
+import { ANOTHER_WORKER_RUNNING_EXIT } from "../commands/container_reap.ts";
 import {
   BASH_LAUNCHER,
   buildCount,
@@ -589,10 +590,17 @@ Deno.test("run.sh - refuses to launch when another worker is already running on 
   try {
     const outcome = await runLauncher(harness);
 
-    // Loud, early, and plain: exit non-zero naming the container and the
-    // launcher pid, before anything is built or launched - never the
-    // runtime's storage-attachment error a second worker would die on.
-    assert(outcome.code !== 0, "a second worker must not launch");
+    // Loud, early, and plain: exit on the reaper's own status naming the
+    // container and the launcher pid, before anything is built or launched -
+    // never the runtime's storage-attachment error a second worker would die
+    // on. The status is ANOTHER_WORKER_RUNNING_EXIT and not a bare 1
+    // (Issue #1056): 1 is "the worker reported a failure itself", which is a
+    // healthy host describing itself as a crashed one.
+    assertEquals(
+      outcome.code,
+      ANOTHER_WORKER_RUNNING_EXIT,
+      `a second worker must not launch, and must say why: ${outcome.stderr}`,
+    );
     assertStringIncludes(outcome.stderr, "another worker is already running");
     assertStringIncludes(outcome.stderr, live);
     assertStringIncludes(outcome.stderr, `launcher pid ${Deno.pid}`);
@@ -917,6 +925,110 @@ Deno.test("run.sh - a failed release check warns and the launch proceeds (Issue 
     assertStringIncludes(outcome.stderr, "could not check for a newer release");
     assertEquals(outcome.stderr.includes("A new release of Vibe Coder"), false);
     assertStringIncludes(await runCoreLog(harness), "release-notice: failed");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+/**
+ * Whether this host has the bound `run.sh` puts its helpers under (`timeout`
+ * on Linux, `gtimeout` on macOS with coreutils installed).
+ *
+ * Asked rather than assumed: with neither on PATH the launcher applies no
+ * bound at all, so a status of 124 is the command's own and means whatever
+ * the command meant by it (Issue #1020).
+ */
+async function hasTimeoutCommand(): Promise<boolean> {
+  for (const candidate of ["timeout", "gtimeout"]) {
+    try {
+      const { success } = await new Deno.Command(candidate, {
+        args: ["--version"],
+        stdout: "null",
+        stderr: "null",
+      }).output();
+      if (success) return true;
+    } catch {
+      // Not on PATH; try the other spelling.
+    }
+  }
+  return false;
+}
+
+Deno.test("run.sh - a failed release check quotes the reason the check gave (Issue #1020)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RELEASE_NOTICE_EXIT: "1",
+    // Where the real command's account of a failure goes: a configuration
+    // error, an unresolvable GitHub, an uncaught throw.
+    STUB_RELEASE_NOTICE_STDERR:
+      "Configuration error: could not resolve host github.com",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // The words the check itself wrote, in the log an operator reads - not
+    // the "no explanation given" that was the only answer this warning could
+    // ever give while stdout was the only stream captured.
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "release-notice: failed (status 1)");
+    assertStringIncludes(log, "could not resolve host github.com");
+    assertEquals(log.includes("no explanation given"), false);
+    assertStringIncludes(outcome.stderr, "could not resolve host github.com");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a release check that says nothing at all still falls back (Issue #1020)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RELEASE_NOTICE_EXIT: "1",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // The fix must not be "always print stderr", which would leave a warning
+    // trailing off into nothing. The fallback survives, and now means what it
+    // says: the command really did write no words.
+    const log = await runCoreLog(harness);
+    assertStringIncludes(
+      log,
+      "release-notice: failed (status 1) - no explanation given",
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a release check the bound killed is logged as a timeout (Issue #1020)", async () => {
+  // 124 is what `timeout` reports when its SIGTERM expired the run. Driven
+  // through the stub's status rather than by really hanging for the launcher's
+  // 120s bound, which would spend a whole test budget proving one log line.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RELEASE_NOTICE_EXIT: "124",
+    // Deliberately loud: a killed check's own stderr is not the reason it
+    // ended, so it must not be reported as though it were.
+    STUB_RELEASE_NOTICE_STDERR: "checking releases...",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "release-notice: failed (status 124)");
+    if (await hasTimeoutCommand()) {
+      // The bound is what ended it, and the log says so rather than quoting
+      // words the check never got to finish.
+      assertStringIncludes(log, "timed out after 120s");
+      assertEquals(log.includes("checking releases..."), false);
+    } else {
+      // No `timeout` on this host, so nothing bounded the check: 124 is the
+      // command's own status and means whatever the command meant by it.
+      assertStringIncludes(log, "checking releases...");
+    }
   } finally {
     await harness.cleanup();
   }

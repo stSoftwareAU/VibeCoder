@@ -362,6 +362,7 @@ export type LauncherOutcomeKind =
   | "success"
   | "quota_pause"
   | "network_unavailable"
+  | "another_worker_running"
   | "terminated"
   | "failure";
 
@@ -417,6 +418,14 @@ export function classifyLauncherOutcome(
   if (quotaPause) return "quota_pause";
   if (exitStatus === QUOTA_PAUSE_EXIT_STATUS) return "quota_pause";
   if (exitStatus === 0) return "success";
+  // One worker per host is a design invariant (Issue #26), and a launch the
+  // pre-launch reaper stops for it is a healthy host, not a failing one
+  // (Issue #1056). The launchers exit on the reaper's own status so this
+  // recorder can tell the two apart; before that it collapsed to 1 and a
+  // host whose worker was legitimately mid-run reported itself broken.
+  if (exitStatus === ANOTHER_WORKER_RUNNING_STATUS) {
+    return "another_worker_running";
+  }
   // A run stopped from outside is not this host failing (Issue #1072). The
   // status cannot say so — it belongs to the runtime client, which reports 255
   // when its container is stopped under it — so the launcher's own declaration
@@ -601,6 +610,31 @@ export function nextContainerRestartDecision(
         ...previous,
         lastExitStatus: exitStatus,
         lastUpdated: now(),
+      },
+      kind,
+      phase: null,
+      backoffSeconds: config.baseSleepSeconds,
+      escalate: false,
+      recovered: false,
+      threshold: 0,
+    };
+  }
+
+  // Issue #1056: a launch stopped because this host's one worker is already
+  // running is the design invariant working, not a fault. It gets the same
+  // treatment as a quota pause and an unreachable GitHub, for the same
+  // reason: the streak resets, the wait is the base cadence, and nothing
+  // escalates, because waiting longer does not make the running worker
+  // finish any sooner and there is nothing for a human to fix.
+  if (kind === "another_worker_running") {
+    return {
+      state: {
+        consecutiveFailures: 0,
+        lastPhase: null,
+        lastExitStatus: exitStatus,
+        lastUpdated: now(),
+        streakStartedAt: 0,
+        escalation: null,
       },
       kind,
       phase: null,
@@ -1414,6 +1448,32 @@ export async function recordContainerRestartOutcome(
         exitStatus: options.exitStatus,
         sleepSeconds: decision.backoffSeconds,
         carriedFailures: decision.state.consecutiveFailures,
+      },
+    }, { workDir: options.workDir });
+    return outcome;
+  }
+
+  // One worker per host (Issues #26, #1056): recorded as the by-design
+  // condition it is. Loud in the log — the launcher already said so on
+  // stderr — but the streak is already reset above, nothing escalates, and
+  // the next attempt comes at the base cadence.
+  if (decision.kind === "another_worker_running") {
+    await emitSelfHealEvent({
+      module: SELF_HEAL_MODULE,
+      action: "another_worker_running",
+      reason:
+        "another worker is already running on this host — one worker per " +
+        `host (Issue #26), so this launch stopped before it built or ` +
+        `launched anything and re-attempts in ${decision.backoffSeconds}s` +
+        (previous.consecutiveFailures > 0
+          ? ` (failure streak of ${previous.consecutiveFailures} cleared — ` +
+            "the design invariant holding is not a failure)"
+          : ""),
+      result: "ok",
+      details: {
+        exitStatus: options.exitStatus,
+        sleepSeconds: decision.backoffSeconds,
+        previousFailures: previous.consecutiveFailures,
       },
     }, { workDir: options.workDir });
     return outcome;

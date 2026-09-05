@@ -652,10 +652,18 @@ if ($reaped.StdErr) { [Console]::Error.Write($reaped.StdErr) }
 # so a worker container somebody else is running stops this launch here,
 # plainly, rather than in the runtime's storage-attachment error. Kept in
 # step with ANOTHER_WORKER_RUNNING_EXIT in container_reap.ts.
-if ($reaped.ExitCode -eq 4) {
+#
+# The status is carried out of the launcher unchanged (Issue #1056). It used
+# to collapse to 1, which the outcome recorder reads as "a bootstrap, config
+# or loop failure the worker reported itself" - a healthy host describing
+# itself as a crashed one, and climbing the escalation ladder for behaving
+# exactly as designed. Exiting on the reaper's own status lets the recorder
+# recognise the condition and treat it as the non-failure it is.
+$AnotherWorkerRunningExit = 4
+if ($reaped.ExitCode -eq $AnotherWorkerRunningExit) {
     [Console]::Error.WriteLine(
         "[run.ps1] another worker is already running on this host - one worker per host; not launching (Issue #26)")
-    exit 1
+    Exit-Launcher $AnotherWorkerRunningExit
 }
 if ($reaped.ExitCode -ne 0) {
     [Console]::Error.WriteLine(

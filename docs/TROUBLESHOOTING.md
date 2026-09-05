@@ -311,11 +311,22 @@ The usual cause is exactly what the message says: the worker's clone is
 doubling as somebody's development tree. Commit or stash the in-flight
 work — or better, move development elsewhere and leave the appliance clone
 alone (see [Deployment — dedicated clone](DEPLOYMENT.md#the-worker-needs-its-own-dedicated-clone)).
-After three consecutive failures the host also files (or comments on) a
-`Worker checkout update failing on <host>` issue against the worker
-repository, so the stuck host is visible from GitHub rather than only in host
-logs. The streak counter lives at `~/logs/checkout-update-failure-streak` and
-resets on the first successful update. A checkout that is *meant* to be left
+After three consecutive failures **spanning at least fifteen minutes** the host
+also files (or comments on) a `Worker checkout update failing on <host>` issue
+against the worker repository, so the stuck host is visible from GitHub rather
+than only in host logs. The span is part of the rule because the count alone
+was not measuring persistence: a transient host fault took the streak from 1 to
+3 in eight seconds and escalated a glitch that was already over (Issue #1017).
+The streak lives at `~/logs/checkout-update-failure-streak` — the count and the
+first failure's timestamp — and resets on the first successful update.
+
+`No user exists for uid <n>` in that log is the *host's* directory services
+failing to resolve the user the launcher is already running as, so git cannot
+find that user's `~/.ssh` or `~/.gitconfig`. It is neither a credentials nor a
+network fault — do not go looking at deploy keys — it is a known transient
+after sleep/wake and DirectoryService restarts, and it clears on its own. The
+update retries the git step in place, briefly, so a run that recovers within
+seconds never reaches the streak at all. A checkout that is *meant* to be left
 alone — a development tree, a CI merge commit — should set
 `VIBE_SKIP_CHECKOUT_UPDATE=1` instead, which skips the update loudly and
 raises nothing.
@@ -437,7 +448,10 @@ order:
 4. **The check failed.** That is never silent: look for the
    `[run.sh] warning: could not check for a newer release` line above on stderr,
    and the matching `release-notice: failed …` line in `run_core.log`. Both
-   land on every launch that could not complete the check.
+   land on every launch that could not complete the check, and both quote the
+   check's own account of the failure — or say `timed out after 120s` when the
+   launcher's bound was what ended it. `no explanation given` means the check
+   really wrote nothing (Issue #1020).
 
 Every warning line from this path goes to **both** places — stderr for whatever
 launched the host (a cron log, a LaunchAgent log) and `~/logs/run_core.log` for

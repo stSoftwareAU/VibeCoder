@@ -22,12 +22,20 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  CHECKOUT_UPDATE_ESCALATION_MIN_SPAN_SECONDS,
   CHECKOUT_UPDATE_ESCALATION_THRESHOLD,
   CHECKOUT_UPDATE_FAILURE_STREAK_FILE,
   checkoutOverwriteNotice,
+  checkoutStreakEscalates,
   type CheckoutUpdateDeps,
+  type CheckoutUpdateStreak,
   diagnoseUpdateFailure,
+  DIRECTORY_SERVICES_RETRY_DELAYS_MS,
+  directoryServicesUid,
+  emptyCheckoutStreak,
+  parseCheckoutStreak,
   parseOriginRepo,
+  runGitStepWithRetry,
   SKIP_CHECKOUT_UPDATE_ENV,
   updateCheckout,
 } from "../lib/checkout_update.ts";
@@ -75,12 +83,13 @@ function recordingDeps(
     },
     readFailureStreak: (_logDir) => {
       order.push("readStreak");
-      return Promise.resolve(0);
+      return Promise.resolve(emptyCheckoutStreak());
     },
-    writeFailureStreak: (_logDir, count) => {
-      order.push(`writeStreak:${count}`);
+    writeFailureStreak: (_logDir, streak) => {
+      order.push(`writeStreak:${streak.count}`);
       return Promise.resolve();
     },
+    now: () => NOW_SECONDS,
     readEscalationState: (_logDir) => {
       order.push("readEscalationState");
       return Promise.resolve({ escalatedStreak: 0, pending: null });
@@ -98,6 +107,22 @@ function recordingDeps(
       return Promise.resolve();
     },
     ...overrides,
+  };
+}
+
+/** A fixed clock, so the escalation span rule is decided, never raced. */
+const NOW_SECONDS = 1_700_000_000;
+
+/**
+ * A streak of `count` failures that began long enough ago to escalate.
+ *
+ * The span matters as much as the count since Issue #1017, so a test that
+ * means "a real crash-loop" has to say when it started.
+ */
+function agedStreak(count: number): CheckoutUpdateStreak {
+  return {
+    count,
+    firstFailureAt: NOW_SECONDS - 3 * 3600,
   };
 }
 
@@ -120,7 +145,7 @@ Deno.test("updateCheckout - a successful update clears the failure streak (Issue
   const outcome = await updateCheckout(
     OPTIONS,
     recordingDeps(order, {
-      readFailureStreak: (_logDir) => Promise.resolve(2),
+      readFailureStreak: (_logDir) => Promise.resolve(agedStreak(2)),
     }),
   );
 
@@ -184,7 +209,7 @@ Deno.test("updateCheckout - the third consecutive failure escalates, once (Issue
       OPTIONS,
       recordingDeps(order, {
         resetToDefaultBranch: failingReset(order),
-        readFailureStreak: (_logDir) => Promise.resolve(2),
+        readFailureStreak: (_logDir) => Promise.resolve(agedStreak(2)),
       }),
     );
     assertEquals(outcome.ok, false);
@@ -221,7 +246,7 @@ Deno.test("updateCheckout - the third consecutive failure escalates, once (Issue
       OPTIONS,
       recordingDeps(order, {
         resetToDefaultBranch: failingReset(order),
-        readFailureStreak: (_logDir) => Promise.resolve(3),
+        readFailureStreak: (_logDir) => Promise.resolve(agedStreak(3)),
         readEscalationState: (_logDir) =>
           Promise.resolve({
             escalatedStreak: CHECKOUT_UPDATE_ESCALATION_THRESHOLD,
@@ -245,7 +270,7 @@ Deno.test("updateCheckout - escalation problems never mask the update failure (I
     OPTIONS,
     recordingDeps(order, {
       resetToDefaultBranch: failingReset(order),
-      readFailureStreak: (_logDir) => Promise.resolve(2),
+      readFailureStreak: (_logDir) => Promise.resolve(agedStreak(2)),
       escalate: (_context) => {
         order.push("escalate");
         return Promise.reject(new Error("gh is not authenticated"));
@@ -306,8 +331,10 @@ Deno.test("updateCheckout - the streak file lives under the log directory (Issue
     const logDir = `${tmp}/logs`;
     const streakFile = `${logDir}/${CHECKOUT_UPDATE_FAILURE_STREAK_FILE}`;
     const options = { repoDir: `${tmp}/repo`, logDir, defaultBranch: "trunk" };
-    // Only the git and GitHub side effects are stubbed: the streak really is
-    // read from and written to disk.
+    // Only the git, GitHub and clock side effects are stubbed: the streak
+    // really is read from and written to disk. The clock advances an hour
+    // between launches, which is the cadence the escalation was written for.
+    let clock = NOW_SECONDS;
     const failing: Partial<CheckoutUpdateDeps> = {
       resetToDefaultBranch: () =>
         Promise.resolve({
@@ -316,16 +343,27 @@ Deno.test("updateCheckout - the streak file lives under the log directory (Issue
         } as Result<void>),
       describeCheckoutState: () => Promise.resolve(null),
       escalate: () => Promise.resolve(),
+      now: () => clock,
     };
 
     const first = await updateCheckout(options, failing);
     assertEquals(first.streak, 1);
-    assertEquals((await Deno.readTextFile(streakFile)).trim(), "1");
+    assertEquals(
+      parseCheckoutStreak(await Deno.readTextFile(streakFile)),
+      { count: 1, firstFailureAt: NOW_SECONDS },
+    );
 
+    clock = NOW_SECONDS + 3600;
     const second = await updateCheckout(options, failing);
     assertEquals(second.streak, 2);
-    assertEquals((await Deno.readTextFile(streakFile)).trim(), "2");
+    // The start is the streak's, not this failure's — every failure in one
+    // ongoing condition is measured from the same moment (Issue #1017).
+    assertEquals(
+      parseCheckoutStreak(await Deno.readTextFile(streakFile)),
+      { count: 2, firstFailureAt: NOW_SECONDS },
+    );
 
+    clock = NOW_SECONDS + 2 * 3600;
     const third = await updateCheckout(options, failing);
     assertEquals(third.streak, CHECKOUT_UPDATE_ESCALATION_THRESHOLD);
     assertEquals(third.escalated, true);
@@ -337,7 +375,274 @@ Deno.test("updateCheckout - the streak file lives under the log directory (Issue
         Promise.resolve({ ok: true, value: undefined } as Result<void>),
     });
     assertEquals(recovered.ok, true);
-    assertEquals((await Deno.readTextFile(streakFile)).trim(), "0");
+    assertEquals(
+      parseCheckoutStreak(await Deno.readTextFile(streakFile)),
+      emptyCheckoutStreak(),
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// A transient host fault is not a crash-loop (Issue #1017)
+// ---------------------------------------------------------------------------
+
+const UID_FAILURE =
+  "cannot update /Users/nigelleck/src/VibeCoder to origin/main: git fetch " +
+  "origin failed (exit code 128): No user exists for uid 501\nfatal: Could " +
+  "not read from remote repository.";
+
+Deno.test("diagnoseUpdateFailure - a uid-lookup failure is a host fault, not an access-rights one (Issue #1017)", () => {
+  const detail = diagnoseUpdateFailure(UID_FAILURE, "main", null);
+
+  // Names what it actually is, and the uid it could not resolve.
+  assertStringIncludes(detail, "directory services");
+  assertStringIncludes(detail, "uid 501");
+  assertStringIncludes(detail, "clears on its own");
+  // And says what it is NOT, because that is where the operator went looking:
+  // git's own boilerplate sent them to deploy keys and SSH agents, and there
+  // was nothing wrong with either.
+  assertStringIncludes(detail, "neither a credentials nor a network fault");
+  // The original error survives, so nothing an operator had is taken away.
+  assertStringIncludes(detail, "exit code 128");
+});
+
+Deno.test("diagnoseUpdateFailure - the uid diagnosis wins over the development-tree one (Issue #1017)", () => {
+  // A dirty checkout is not why this failed, so it must not be offered as the
+  // explanation - the host could not read the passwd entry either way.
+  const detail = diagnoseUpdateFailure(UID_FAILURE, "main", {
+    branch: "wip",
+    dirtyFiles: 4,
+  });
+  assertStringIncludes(detail, "directory services");
+  assertEquals(detail.includes("active development tree"), false);
+});
+
+Deno.test("directoryServicesUid - names the uid, and only for this condition (Issue #1017)", () => {
+  assertEquals(directoryServicesUid("No user exists for uid 501"), "501");
+  assertEquals(directoryServicesUid("No user exists for uid 1000"), "1000");
+  assertEquals(
+    directoryServicesUid("Permission denied (publickey)"),
+    null,
+  );
+  assertEquals(directoryServicesUid(""), null);
+});
+
+Deno.test("runGitStepWithRetry - retries the uid-lookup failure until it clears (Issue #1017)", async () => {
+  const calls: string[][] = [];
+  const slept: number[] = [];
+  let attempt = 0;
+  const attempted = await runGitStepWithRetry(
+    ["fetch", "origin"],
+    "/tmp/repo",
+    {
+      run: (args) => {
+        calls.push(args);
+        attempt++;
+        return Promise.resolve(
+          attempt < 3
+            ? {
+              ok: true as const,
+              value: {
+                code: 128,
+                stdout: "",
+                stderr: "No user exists for uid 501\n",
+              },
+            }
+            : { ok: true as const, value: { code: 0, stdout: "", stderr: "" } },
+        );
+      },
+      sleep: (ms) => {
+        slept.push(ms);
+        return Promise.resolve();
+      },
+    },
+  );
+
+  assert(attempted.result.ok);
+  assertEquals(attempted.result.value.code, 0);
+  assertEquals(calls.length, 3, "the step is retried until the host recovers");
+  assertEquals(slept, DIRECTORY_SERVICES_RETRY_DELAYS_MS.slice(0, 2));
+  // A recovery that nobody can see is indistinguishable from a condition that
+  // never happened, and this one is worth knowing recurred.
+  assertEquals(attempted.notes.length, 2);
+  assertStringIncludes(attempted.notes[0] ?? "", "uid 501");
+});
+
+Deno.test("runGitStepWithRetry - every other failure is returned at once (Issue #1017)", async () => {
+  const calls: string[][] = [];
+  const attempted = await runGitStepWithRetry(
+    ["fetch", "origin"],
+    "/tmp/repo",
+    {
+      run: (args) => {
+        calls.push(args);
+        return Promise.resolve({
+          ok: true as const,
+          value: {
+            code: 128,
+            stdout: "",
+            stderr: "Permission denied (publickey).",
+          },
+        });
+      },
+      sleep: () => Promise.reject(new Error("must not wait")),
+    },
+  );
+
+  assert(attempted.result.ok);
+  assertEquals(attempted.result.value.code, 128);
+  assertEquals(calls.length, 1, "a real fault must not be retried");
+  assertEquals(attempted.notes, []);
+});
+
+Deno.test("runGitStepWithRetry - a condition that never clears gives up, bounded (Issue #1017)", async () => {
+  const calls: string[][] = [];
+  const slept: number[] = [];
+  const attempted = await runGitStepWithRetry(
+    ["fetch", "origin"],
+    "/tmp/repo",
+    {
+      run: (args) => {
+        calls.push(args);
+        return Promise.resolve({
+          ok: true as const,
+          value: {
+            code: 128,
+            stdout: "",
+            stderr: "No user exists for uid 501",
+          },
+        });
+      },
+      sleep: (ms) => {
+        slept.push(ms);
+        return Promise.resolve();
+      },
+    },
+  );
+
+  assert(attempted.result.ok);
+  assertEquals(attempted.result.value.code, 128);
+  assertEquals(calls.length, DIRECTORY_SERVICES_RETRY_DELAYS_MS.length + 1);
+  assertEquals(slept, [...DIRECTORY_SERVICES_RETRY_DELAYS_MS]);
+  // No "retrying" line survives a step that kept failing: the failure reports
+  // itself, and a retry note beside it would read as though the retry helped.
+  assertEquals(attempted.notes, []);
+});
+
+Deno.test("checkoutStreakEscalates - the count alone is not persistence (Issue #1017)", () => {
+  const span = CHECKOUT_UPDATE_ESCALATION_MIN_SPAN_SECONDS;
+
+  // The live case: three failures eight seconds apart, one transient glitch.
+  assertEquals(
+    checkoutStreakEscalates(
+      { count: 3, firstFailureAt: NOW_SECONDS - 8 },
+      NOW_SECONDS,
+    ),
+    false,
+  );
+  // Three across three hours is the crash-loop this escalation was written
+  // for, and still fires - so the change cannot be satisfied by never
+  // escalating.
+  assertEquals(
+    checkoutStreakEscalates(
+      { count: 3, firstFailureAt: NOW_SECONDS - 3 * 3600 },
+      NOW_SECONDS,
+    ),
+    true,
+  );
+  // Exactly on the span, and one second under it.
+  assertEquals(
+    checkoutStreakEscalates(
+      { count: 3, firstFailureAt: NOW_SECONDS - span },
+      NOW_SECONDS,
+    ),
+    true,
+  );
+  assertEquals(
+    checkoutStreakEscalates(
+      { count: 3, firstFailureAt: NOW_SECONDS - span + 1 },
+      NOW_SECONDS,
+    ),
+    false,
+  );
+  // The count still has to be met, however long the span.
+  assertEquals(
+    checkoutStreakEscalates(
+      { count: 2, firstFailureAt: NOW_SECONDS - 86_400 },
+      NOW_SECONDS,
+    ),
+    false,
+  );
+  // An unknown start does not veto: silencing a host running stale code is
+  // the worse of the two errors.
+  assertEquals(
+    checkoutStreakEscalates({ count: 3, firstFailureAt: 0 }, NOW_SECONDS),
+    true,
+  );
+});
+
+Deno.test("parseCheckoutStreak - reads the pre-#1017 file without crashing (Issue #1017)", () => {
+  // The format every worker wrote before this change. A launcher that died
+  // parsing its own state file would be worse than the bug it was fixing.
+  assertEquals(parseCheckoutStreak("3\n"), { count: 3, firstFailureAt: 0 });
+  assertEquals(parseCheckoutStreak("0\n"), emptyCheckoutStreak());
+  // The current format, round-tripped.
+  assertEquals(
+    parseCheckoutStreak(JSON.stringify({ count: 2, firstFailureAt: 99 })),
+    { count: 2, firstFailureAt: 99 },
+  );
+  // Anything that stops the file meaning what it says reads as no streak.
+  for (const rubbish of ["", "   ", "not a number", "[1,2]", "{}", "null"]) {
+    assertEquals(parseCheckoutStreak(rubbish), emptyCheckoutStreak());
+  }
+  // A negative or nonsense start is not a start.
+  assertEquals(
+    parseCheckoutStreak(JSON.stringify({ count: 4, firstFailureAt: -7 })),
+    { count: 4, firstFailureAt: 0 },
+  );
+});
+
+Deno.test("updateCheckout - three failures inside a minute do not escalate (Issue #1017)", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "checkout_update_burst_" });
+  try {
+    const logDir = `${tmp}/logs`;
+    const options = { repoDir: `${tmp}/repo`, logDir, defaultBranch: "main" };
+    const escalations: number[] = [];
+    // The observed burst: 09:47:44, 09:47:48, 09:47:52.
+    const stamps = [NOW_SECONDS, NOW_SECONDS + 4, NOW_SECONDS + 8];
+    let run = 0;
+    const failing: Partial<CheckoutUpdateDeps> = {
+      resetToDefaultBranch: () =>
+        Promise.resolve({
+          ok: false,
+          error: new Error(
+            "git fetch origin failed (exit code 128): No user exists for uid 501",
+          ),
+        } as Result<void>),
+      describeCheckoutState: () => Promise.resolve(null),
+      escalate: (context) => {
+        escalations.push(context.streak);
+        return Promise.resolve();
+      },
+      now: () => stamps[run++] ?? NOW_SECONDS,
+    };
+
+    const outcomes = [];
+    for (let i = 0; i < 3; i++) {
+      outcomes.push(await updateCheckout(options, failing));
+    }
+
+    assertEquals(outcomes.map((outcome) => outcome.streak), [1, 2, 3]);
+    assertEquals(
+      escalations,
+      [],
+      "a streak exhausted faster than the condition can clear is not persistence",
+    );
+    // The diagnosis still reaches the log, so the condition is not silent -
+    // it is simply not escalated.
+    assertStringIncludes(outcomes[2]?.error ?? "", "directory services");
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
@@ -581,7 +886,7 @@ Deno.test("updateCheckout - frozen escalates a pin that keeps failing to resolve
   const deps = recordingDeps(order, {
     resolveCommit: (_repoDir, _ref) => Promise.resolve(null),
     readFailureStreak: (_logDir) =>
-      Promise.resolve(CHECKOUT_UPDATE_ESCALATION_THRESHOLD - 1),
+      Promise.resolve(agedStreak(CHECKOUT_UPDATE_ESCALATION_THRESHOLD - 1)),
   });
 
   const outcome = await updateCheckout(FROZEN_OPTIONS, deps);
