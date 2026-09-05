@@ -17,11 +17,13 @@ import {
 import { QUOTA_PAUSE_EXIT_STATUS } from "../lib/quota_pause.ts";
 import { BUILD_NOT_HEALABLE_EXIT } from "../commands/container_build_heal.ts";
 import { ANOTHER_WORKER_RUNNING_EXIT } from "../commands/container_reap.ts";
+import { HOST_EGRESS_BLOCKED_EXIT_STATUS } from "../lib/container_egress_probe.ts";
 
 const KNOWN = knownWorkerStatuses(
   QUOTA_PAUSE_EXIT_STATUS,
   BUILD_NOT_HEALABLE_EXIT,
   ANOTHER_WORKER_RUNNING_EXIT,
+  HOST_EGRESS_BLOCKED_EXIT_STATUS,
 );
 
 // ---------------------------------------------------------------------------
@@ -60,7 +62,11 @@ Deno.test("knownWorkerStatuses - the table matches the real exit constants", () 
   assertEquals(QUOTA_PAUSE_EXIT_STATUS, 75);
   assertEquals(BUILD_NOT_HEALABLE_EXIT, 3);
   assertEquals(ANOTHER_WORKER_RUNNING_EXIT, 4);
-  assertEquals([...KNOWN.statuses].sort((a, b) => a - b), [0, 1, 3, 4, 75]);
+  // Issue #997: the parked host's status is one the launcher takes
+  // deliberately, so it belongs in the table rather than being blamed on the
+  // runtime client.
+  assertEquals(HOST_EGRESS_BLOCKED_EXIT_STATUS, 88);
+  assertEquals([...KNOWN.statuses].sort((a, b) => a - b), [0, 1, 3, 4, 75, 88]);
 });
 
 // ---------------------------------------------------------------------------

@@ -52,7 +52,7 @@ export function knownWorkerStatuses(
   quotaPauseStatus: number,
   buildNotHealableStatus: number,
   anotherWorkerRunningStatus: number,
-  egressBlockedStatus?: number,
+  egressBlockedStatus: number,
 ): KnownWorkerStatuses {
   const table = new Map<number, string>([
     [0, "a clean run"],
@@ -60,16 +60,14 @@ export function knownWorkerStatuses(
     [quotaPauseStatus, "a deliberate quota pause"],
     [buildNotHealableStatus, "an image build the heal path could not repair"],
     [anotherWorkerRunningStatus, "another worker already running"],
-  ]);
-  if (egressBlockedStatus !== undefined) {
     // Issue #997: the launcher parks itself under this status, so an alert
     // must not send the reader to the runtime client for a decision the
     // launcher took deliberately.
-    table.set(
+    [
       egressBlockedStatus,
       "a host parked because its containers cannot reach the network",
-    );
-  }
+    ],
+  ]);
   return {
     statuses: [...table.keys()],
     describe: (status: number) => table.get(status),

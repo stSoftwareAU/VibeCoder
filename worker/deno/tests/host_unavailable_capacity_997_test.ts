@@ -22,9 +22,9 @@ import {
   parkedHostCapacity,
   SlotIdleLedger,
 } from "../lib/slot_idle_accounting.ts";
-import { HOST_EGRESS_BLOCKED_REASON } from "../lib/container_egress_probe.ts";
 import {
   HOST_EGRESS_BLOCKED_EXIT_STATUS,
+  HOST_EGRESS_BLOCKED_REASON,
 } from "../lib/container_egress_probe.ts";
 import { recordContainerRestartOutcome } from "../lib/container_restart_backoff.ts";
 import type { CrashNotificationParams } from "../lib/crash_notification.ts";
