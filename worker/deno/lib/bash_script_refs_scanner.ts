@@ -35,6 +35,7 @@
  */
 
 import { makeStableId } from "./workflow_scan_common.ts";
+import { runGitCommand } from "./git_timeout.ts";
 
 /** Discriminator baked into every stable id (collision-proofs the recipe). */
 export const BASH_SCRIPT_REFS_DISCRIMINATOR = "bash-script-refs";
@@ -556,23 +557,13 @@ export async function defaultListTrackedFiles(
   } catch {
     return null;
   }
-  try {
-    const cmd = new Deno.Command("git", {
-      args: ["-C", workDir, "ls-files", "-z"],
-      stdout: "piped",
-      stderr: "null",
-    });
-    const { code, stdout } = await cmd.output();
-    if (code !== 0) return null;
-    const text = new TextDecoder().decode(stdout);
-    const set = new Set<string>();
-    for (const path of text.split("\0")) {
-      if (path) set.add(path);
-    }
-    return set;
-  } catch {
-    return null;
+  const result = await runGitCommand(["-C", workDir, "ls-files", "-z"]);
+  if (!result.ok || result.value.code !== 0) return null;
+  const set = new Set<string>();
+  for (const path of result.value.stdout.split("\0")) {
+    if (path) set.add(path);
   }
+  return set;
 }
 
 /**

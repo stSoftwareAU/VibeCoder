@@ -79,6 +79,7 @@ import {
 } from "../lib/pr_issue_linking.ts";
 import { retargetPrToMilestone } from "../lib/pr_retarget.ts";
 import { runGhCommand } from "../lib/github.ts";
+import { runGitCommand } from "../lib/git_timeout.ts";
 
 /**
  * The PR's head branch, which decides its merge method (Issue #1048).
@@ -201,14 +202,11 @@ export const prManagerCommand: Command = {
           githubRepo: githubRepo || undefined,
           imgbbApiKey: imgbbApiKey || undefined,
           uploadFn: imgbbApiKey ? createImgbbUploadFn(imgbbApiKey) : undefined,
+          // Through the shared chokepoint (Issue #1214) so the call is
+          // timeout-bounded and journalled.
           gitCommandFn: async (gitArgs: string[]) => {
-            const cmd = new Deno.Command("git", {
-              args: gitArgs,
-              stdout: "piped",
-              stderr: "piped",
-            });
-            const { stdout } = await cmd.output();
-            return new TextDecoder().decode(stdout);
+            const result = await runGitCommand(gitArgs);
+            return result.ok ? result.value.stdout : "";
           },
         });
         return {
