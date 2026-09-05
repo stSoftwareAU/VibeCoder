@@ -40,12 +40,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import type { Result } from "../types.ts";
 import { type GitRunner, resolveComparableBaseRef } from "./git_base_ref.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
-import {
-  extractClosingIssueNumbers,
-  extractIssueNumberFromPrTitle,
-} from "./pr_body.ts";
+import { extractClosingIssueNumbers } from "./pr_body.ts";
 
 /** Which signal produced the PR-side originating issue. */
 export type PrOriginSignal = "branch" | "body" | "linkage";
@@ -105,6 +103,12 @@ export interface BasePathOrigin {
   issues: OriginatingIssue[];
   /** `null` when at least one issue was resolved; otherwise why not. */
   unresolved: BaseUnresolvedReason | null;
+  /**
+   * True when some — but not all — of this path's issues resolved: a lookup
+   * failed or a bound bit part-way through. {@link issues} is then a short
+   * list rather than the whole one.
+   */
+  partial: boolean;
 }
 
 /** Which bounds bit, so a caller never mistakes a cut result for a whole one. */
@@ -227,10 +231,14 @@ interface PrView {
   closingIssues: number[];
 }
 
+/** Why a bounded lookup produced nothing. */
+interface LookupFailure {
+  /** True when a bound stopped the lookup, false when the call failed. */
+  budgetExhausted: boolean;
+}
+
 /** Outcome of a bounded lookup: the value, or why there is none. */
-type Lookup<T> =
-  | { ok: true; value: T }
-  | { ok: false; budgetExhausted: boolean };
+type Lookup<T> = Result<T, LookupFailure>;
 
 /** Mutable state threaded through one gather. */
 interface GatherState {
@@ -242,6 +250,7 @@ interface GatherState {
   warnings: string[];
   truncation: ConflictContextTruncation;
   issueCache: Map<number, OriginatingIssue>;
+  prCache: Map<number, PrView>;
 }
 
 function errorMessage(error: unknown): string {
@@ -261,14 +270,14 @@ async function runGh(
 ): Promise<Lookup<string>> {
   if (state.ghCallsUsed >= state.bounds.maxGhCalls) {
     state.truncation.ghCallCapHit = true;
-    return { ok: false, budgetExhausted: true };
+    return { ok: false, error: { budgetExhausted: true } };
   }
   state.ghCallsUsed++;
   try {
     return { ok: true, value: await state.gh(args) };
   } catch (error) {
     state.warnings.push(`${what} failed: ${errorMessage(error)}`);
-    return { ok: false, budgetExhausted: false };
+    return { ok: false, error: { budgetExhausted: false } };
   }
 }
 
@@ -301,7 +310,7 @@ async function fetchIssue(
 
   if (state.issueCache.size >= state.bounds.maxIssues) {
     state.truncation.issueCapHit = true;
-    return { ok: false, budgetExhausted: true };
+    return { ok: false, error: { budgetExhausted: true } };
   }
 
   const what = `gh issue view #${issueNumber}`;
@@ -323,7 +332,7 @@ async function fetchIssue(
     state.warnings.push(
       `${what} returned unparseable JSON: ${errorMessage(error)}`,
     );
-    return { ok: false, budgetExhausted: false };
+    return { ok: false, error: { budgetExhausted: false } };
   }
 
   const text = takeIssueText(state, issueNumber, String(parsed.body ?? ""));
@@ -338,11 +347,19 @@ async function fetchIssue(
   return { ok: true, value: issue };
 }
 
-/** Fetch a PR's title, body and closing-issue references in one call. */
+/**
+ * Fetch a PR's title, body and closing-issue references in one call.
+ *
+ * Cached for the gather: one base PR commonly touches several conflicted
+ * paths, and re-viewing it per path would spend the `gh` budget on repeats.
+ */
 async function fetchPrView(
   state: GatherState,
   prNumber: number,
 ): Promise<Lookup<PrView>> {
+  const cached = state.prCache.get(prNumber);
+  if (cached) return { ok: true, value: cached };
+
   const what = `gh pr view #${prNumber}`;
   const output = await runGh(state, [
     "pr",
@@ -366,7 +383,7 @@ async function fetchPrView(
     state.warnings.push(
       `${what} returned unparseable JSON: ${errorMessage(error)}`,
     );
-    return { ok: false, budgetExhausted: false };
+    return { ok: false, error: { budgetExhausted: false } };
   }
 
   const closingIssues: number[] = [];
@@ -380,15 +397,14 @@ async function fetchPrView(
     }
   }
 
-  return {
-    ok: true,
-    value: {
-      number: prNumber,
-      title: String(parsed.title ?? ""),
-      body: String(parsed.body ?? ""),
-      closingIssues,
-    },
+  const view: PrView = {
+    number: prNumber,
+    title: String(parsed.title ?? ""),
+    body: String(parsed.body ?? ""),
+    closingIssues,
   };
+  state.prCache.set(prNumber, view);
+  return { ok: true, value: view };
 }
 
 /** Turn a bounded-lookup failure into the matching PR-side reason. */
@@ -412,7 +428,7 @@ async function resolvePrSide(
     const issue = await fetchIssue(state, issueNumber);
     return issue.ok
       ? { resolved: true, signal, issue: issue.value }
-      : { resolved: false, reason: prReasonFor(issue.budgetExhausted) };
+      : { resolved: false, reason: prReasonFor(issue.error.budgetExhausted) };
   };
 
   // 1. The branch shape — free, and the worker's own convention.
@@ -424,7 +440,10 @@ async function resolvePrSide(
   if (request.prBody === undefined) {
     const fetched = await fetchPrView(state, request.prNumber);
     if (!fetched.ok) {
-      return { resolved: false, reason: prReasonFor(fetched.budgetExhausted) };
+      return {
+        resolved: false,
+        reason: prReasonFor(fetched.error.budgetExhausted),
+      };
     }
     view = fetched.value;
   }
@@ -437,7 +456,10 @@ async function resolvePrSide(
   if (view === null) {
     const fetched = await fetchPrView(state, request.prNumber);
     if (!fetched.ok) {
-      return { resolved: false, reason: prReasonFor(fetched.budgetExhausted) };
+      return {
+        resolved: false,
+        reason: prReasonFor(fetched.error.budgetExhausted),
+      };
     }
     view = fetched.value;
   }
@@ -509,7 +531,14 @@ function unresolvedPath(
   commitsInspected = 0,
   prNumbers: number[] = [],
 ): BasePathOrigin {
-  return { path, commitsInspected, prNumbers, issues: [], unresolved: reason };
+  return {
+    path,
+    commitsInspected,
+    prNumbers,
+    issues: [],
+    unresolved: reason,
+    partial: false,
+  };
 }
 
 /** Base commits touching one path since the merge base, bounded. */
@@ -537,7 +566,7 @@ async function inspectPathCommits(
       ? `exit ${result.value.code}: ${result.value.stderr.trim()}`
       : result.error.message;
     state.warnings.push(`git log failed for '${path}' (${detail})`);
-    return { ok: false, budgetExhausted: false };
+    return { ok: false, error: { budgetExhausted: false } };
   }
 
   const lines = result.value.stdout
@@ -586,7 +615,7 @@ async function gatherPathOrigin(
   for (const prNumber of prNumbers) {
     const view = await fetchPrView(state, prNumber);
     if (!view.ok) {
-      if (view.budgetExhausted) {
+      if (view.error.budgetExhausted) {
         budgetExhausted = true;
         break;
       }
@@ -594,18 +623,19 @@ async function gatherPathOrigin(
       continue;
     }
 
-    // GitHub's linkage first; the worker's `(#N)` title convention is the
-    // fallback for PRs whose linkage was never recorded.
-    let issueNumbers = view.value.closingIssues;
-    if (issueNumbers.length === 0) {
-      const fromTitle = extractIssueNumberFromPrTitle(view.value.title);
-      issueNumbers = fromTitle.ok ? [fromTitle.value] : [];
-    }
+    // GitHub's linkage first, then the body's closing keywords — the same two
+    // signals the PR side uses. The PR *title* is deliberately not consulted:
+    // a trailing `(#N)` is the PR's own number in a squash subject and the
+    // issue number in a worker PR title, and a wrong originating issue is
+    // worse than none.
+    const issueNumbers = view.value.closingIssues.length > 0
+      ? view.value.closingIssues
+      : extractClosingIssueNumbers(view.value.body);
 
     for (const issueNumber of issueNumbers) {
       const issue = await fetchIssue(state, issueNumber);
       if (!issue.ok) {
-        if (issue.budgetExhausted) {
+        if (issue.error.budgetExhausted) {
           budgetExhausted = true;
           break;
         }
@@ -626,6 +656,9 @@ async function gatherPathOrigin(
       prNumbers,
       issues,
       unresolved: null,
+      // Some issues resolved and some did not: the list is short, and saying
+      // so here is what stops a partial answer reading as a whole one.
+      partial: budgetExhausted || lookupFailed,
     };
   }
 
@@ -662,6 +695,7 @@ export async function gatherConflictIssueContext(
       ghCallCapHit: false,
     },
     issueCache: new Map(),
+    prCache: new Map(),
   };
 
   const prSide = await resolvePrSide(state, request);

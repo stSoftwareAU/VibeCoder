@@ -32,6 +32,15 @@ Deno.test("pr_body - extractClosingIssueNumbers keeps first-mention order and de
   );
 });
 
+Deno.test("pr_body - hasClosingKeyword honours every conjugation GitHub does", () => {
+  assertEquals(hasClosingKeyword("Fixed #42", 42), true);
+  assertEquals(hasClosingKeyword("resolve #42", 42), true);
+  // A keyword glued to a preceding word is not a closing keyword.
+  assertEquals(hasClosingKeyword("Prefixes #42", 42), false);
+  // A cross-repository reference names an issue in another repository.
+  assertEquals(hasClosingKeyword("Closes owner/repo#42", 42), false);
+});
+
 Deno.test("pr_body - extractClosingIssueNumbers ignores bare and cross-repo references", () => {
   assertEquals(extractClosingIssueNumbers("See #42, related to #7"), []);
   assertEquals(extractClosingIssueNumbers("Closes owner/repo#42"), []);

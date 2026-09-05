@@ -321,7 +321,11 @@ Deno.test("conflict issue context - a squash-merge subject resolves to its issue
       subject: "Rename the constant (#99)",
       paths: ["lib/config.ts"],
     }],
-    prs: { 5: { body: "" }, 99: { title: "Rename the constant (#77)" } },
+    prs: {
+      5: { body: "" },
+      // No closing references recorded — the body keywords are the fallback.
+      99: { title: "Rename the constant (#77)", body: "Work done. Closes #77" },
+    },
     issues: { 77: issue() },
   };
   const context = await gatherConflictIssueContext(
@@ -329,8 +333,51 @@ Deno.test("conflict issue context - a squash-merge subject resolves to its issue
     { git: makeGit(world), gh: makeGh(world) },
   );
 
-  // No closing references on the PR — the title convention is the fallback.
   assertEquals(context.baseSide[0]!.issues.map((i) => i.number), [77]);
+});
+
+Deno.test("conflict issue context - a base PR title is never read as an issue", async () => {
+  const world: FakeWorld = {
+    commits: [{
+      sha: "a".repeat(40),
+      subject: "Merge pull request #99 from someone/tidy",
+      paths: ["lib/config.ts"],
+    }],
+    // A trailing `(#204)` in a PR title is a PR cross-reference as often as an
+    // issue number — a confidently wrong origin is worse than none.
+    prs: { 5: { body: "" }, 99: { title: "Fix the thing (#204)", body: "" } },
+    issues: { 204: issue() },
+  };
+  const context = await gatherConflictIssueContext(
+    request({ prBranch: "chore/x", conflictedPaths: ["lib/config.ts"] }),
+    { git: makeGit(world), gh: makeGh(world) },
+  );
+
+  assertEquals(context.baseSide[0]!.issues, []);
+  assertEquals(context.baseSide[0]!.unresolved, "no-issue");
+});
+
+Deno.test("conflict issue context - a partly-resolved path says it is partial", async () => {
+  const world: FakeWorld = {
+    commits: [{
+      sha: "b".repeat(40),
+      subject: "Merge pull request #99 from x/y",
+      paths: ["lib/config.ts"],
+    }],
+    prs: { 5: { body: "" }, 99: { closingIssues: [77, 78] } },
+    issues: { 77: issue() },
+    // Issue 78 cannot be read: one of the two intents is missing.
+    ghFailsFor: ["issue view 78"],
+  };
+  const context = await gatherConflictIssueContext(
+    request({ prBranch: "chore/x", conflictedPaths: ["lib/config.ts"] }),
+    { git: makeGit(world), gh: makeGh(world) },
+  );
+
+  const entry = context.baseSide[0]!;
+  assertEquals(entry.issues.map((i) => i.number), [77]);
+  assertEquals(entry.unresolved, null);
+  assert(entry.partial, "a short issue list must not read as a whole one");
 });
 
 Deno.test("conflict issue context - base commits with no PR yield an unresolved entry", async () => {
@@ -555,6 +602,9 @@ Deno.test("conflict issue context - one issue touched by two paths is fetched on
 
   const issueViews = calls.filter((c) => c[0] === "issue" && c[2] === "77");
   assertEquals(issueViews.length, 1);
+  // The PR behind both paths is viewed once too — the gh budget is not spent
+  // re-reading the same base PR per conflicted path.
+  assertEquals(calls.filter((c) => c[0] === "pr" && c[2] === "99").length, 1);
   assertEquals(context.baseSide.map((e) => e.issues[0]?.number), [77, 77]);
 });
 

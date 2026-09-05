@@ -176,9 +176,14 @@ flowchart LR
   `issue-<n>-<slug>` branch shape, then the body's closing keywords, then
   GitHub's own linkage.
 - **Base side**: per conflicted path, the first-parent base commits since the
-  merge base, mapped to PRs by their merge/squash subjects, mapped to issues.
-- **Absence is stated, never an empty list.** A path whose commits name no PR
-  reports `no-pr`; a PR with no discoverable issue reports `no-signal`. The
+  merge base, mapped to PRs by their merge/squash subjects, mapped to issues by
+  the same two signals (GitHub linkage, then closing keywords). A PR *title* is
+  never read as an issue number — a trailing `(#N)` is a PR reference as often
+  as an issue, and a confidently wrong intent is worse than none.
+- **Absence is stated, never an empty list.** A conflicting PR whose own issue
+  cannot be found reports `no-signal`; on the base side, a path whose commits
+  name no PR reports `no-pr` and a PR naming no issue reports `no-issue`. A
+  path that resolved some of its issues but not all says `partial`. The
   resolver behaves differently when it has no intent to consult, and it cannot
   tell that apart from `[]`.
 - **Every bound is documented and declared**: 20 commits per path, 8 issues,
