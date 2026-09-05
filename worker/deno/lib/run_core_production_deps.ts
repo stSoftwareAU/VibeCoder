@@ -261,6 +261,16 @@ import {
   idleInversionStatePath,
   recordIdleInversion,
 } from "./idle_inversion_streak.ts";
+import {
+  describeIdleHooksRefusal,
+  idleStarvationStatePath,
+  recordIdleStarvationObservation,
+} from "./idle_starvation_escalation.ts";
+import {
+  formatSlotUtilisationSummary,
+  getSlotUtilisation,
+} from "./slot_idle_accounting.ts";
+import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { resolveRunId } from "./audit_journal.ts";
 import { createTrustSnapshotHolder } from "./trust_snapshot.ts";
 import {
@@ -866,6 +876,17 @@ export async function createProductionRunCoreDeps(
    * reading names a gate one scan out of date, never blocks a claim.
    */
   let lastScanBlockedDetails: BlockedCandidateInfo[] = [];
+
+  /**
+   * The idle-detect audit's claimable total from the most recent audit
+   * (Issue #1052). The `[idle-hooks]` refusal that suppresses the idle-task
+   * filer is decided on this number, so the idle-starvation escalation
+   * carries it — with the reason it produced — into the issue body instead of
+   * asking a human to grep the log for the line the machine already had.
+   * Diagnostics only: a stale reading names a number one audit out of date,
+   * never gates a claim.
+   */
+  let lastAuditClaimableTotal = 0;
 
   /**
    * The two disk signals' shared verdict (Issue #345). A work-volume probe
@@ -3451,6 +3472,9 @@ export async function createProductionRunCoreDeps(
         // the idle-task filer this iteration when the audit already
         // sees claimable work (Issue #2106 + private-repo-10 #45-#48
         // budget guard).
+        // Issue #1052: keep the number the idle-hooks refusal is decided
+        // on, so the idle-starvation escalation can name it as evidence.
+        lastAuditClaimableTotal = result.claimableTotal;
         return { claimableTotal: result.claimableTotal };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -3662,6 +3686,87 @@ export async function createProductionRunCoreDeps(
           }
         } catch (err) {
           logger.warn("Idle-inversion escalation failed (continuing)", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+
+        // Issue #1052: escalate on the *outcome* an operator cares about —
+        // the fleet filing no idle task while measured slot capacity sits
+        // idle. The three instruments that surround this call (the #925 slot
+        // accounting, this census, and the `[idle-hooks]` refusal it feeds)
+        // each reported that state correctly for ten days, and all three end
+        // at `log(...)`. The per-repo #321 streak above does not cover it:
+        // this is a fleet-level condition, and no single repo's inversion
+        // need be sustained enough to trip a per-repo detector.
+        //
+        // Wired here, beside the inversion streak, because this is the seam
+        // where the census, the audit's claimable total and the slot ledger
+        // are all in scope at once. Best-effort — a reporting failure must
+        // never derail the idle path — and persisted, because the counter it
+        // replaces (#1051) lived in memory for one run's lifetime and so
+        // never reached any threshold.
+        try {
+          const nowMs = Date.now();
+          const idleSlotSeconds = getSlotUtilisation(nowMs).idleSlotSeconds;
+          // `maybe-file-idle-task` keeps at most one open wrapper across the
+          // whole monitored set (the cross-repo dedup gate), so one open
+          // idle task is the healthy steady state and ends the episode.
+          // Counted from the labels rather than the census's `unblocked`
+          // tally, which excludes a wrapper the moment a slot is assigned
+          // it — the fleet is supplied either way.
+          const openIdleTasks = perRepo.reduce(
+            (total, entry) =>
+              total +
+              entry.issues.filter((i) => i.labels.includes(IDLE_TASK_LABEL))
+                .length,
+            0,
+          );
+          const decision = await recordIdleStarvationObservation({
+            statePath: idleStarvationStatePath(workDir),
+            observation: {
+              nowMs,
+              // The #925 ledger restarts with the process, so the episode
+              // banks each run's reading as a delta against this id.
+              runId: resolveRunId(),
+              idleSlotSeconds,
+              openIdleTasks,
+              evidence: {
+                slotUtilisation: formatSlotUtilisationSummary(nowMs),
+                refusalReason: describeIdleHooksRefusal({
+                  inversionDetected: census.inversionDetected,
+                  claimableTotal: lastAuditClaimableTotal,
+                }),
+                claimableTotal: lastAuditClaimableTotal,
+                censusLines,
+              },
+            },
+            ghFn: (args: string[]) => runGhCommand(args),
+            log: (message: string) => logger.warn(message),
+          });
+          // One greppable line per observation, so "the detector ran and
+          // decided nothing" stays distinguishable from "the detector never
+          // ran" — which is the failure this whole issue is about.
+          logger.info(
+            `[idle-starvation] action=${decision.action} ` +
+              `hours=${
+                "hours" in decision ? decision.hours.toFixed(1) : "0.0"
+              } ` +
+              `idle_slot_seconds=${idleSlotSeconds} ` +
+              `open_idle_tasks=${openIdleTasks}`,
+          );
+          if (decision.action === "filed") {
+            logger.warn(
+              "Idle starvation escalated: the fleet has filed no idle task " +
+                "while slot capacity sat idle (Issue #1052)",
+              {
+                issue: decision.issue,
+                hours: Number(decision.hours.toFixed(1)),
+                idleSlotSeconds: decision.idleSlotSeconds,
+              },
+            );
+          }
+        } catch (err) {
+          logger.warn("Idle-starvation escalation failed (continuing)", {
             error: err instanceof Error ? err.message : String(err),
           });
         }
