@@ -87,6 +87,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "progress_extension_stall_seconds",
   // Working-tree sampling interval (Issue #4295)
   "progress_extension_check_seconds",
+  // Agent transcript tee (Issue #1141) — off by default; the only operator
+  // switch for the raw agent stream-json transcript.
+  "agent_transcript_enabled",
   // Self-scheduled worker diagnostics (Issue #505)
   "self_schedule_diagnostics_enabled",
   "self_schedule_diagnostics_max_in_flight",
@@ -196,6 +199,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
 
   // Deployer-supplied container build-time tools (Issue #69, parent #5)
   "container_tools",
+
+  // This deployment's private environment extension (Issue #978, parent #933)
+  "container_extension",
 
   // Post-run callback hooks (Issue #806, parent #796)
   "callbacks",

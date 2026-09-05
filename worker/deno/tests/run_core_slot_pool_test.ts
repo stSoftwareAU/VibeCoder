@@ -31,6 +31,7 @@ import {
 } from "../lib/write_repo_allowlist.ts";
 import type { DiagnosticSummary } from "../lib/issue_finder_logger.ts";
 import type { InFlightClaim } from "../lib/work_stream.ts";
+import { createRendezvous, waitUntil } from "./support/rendezvous.ts";
 
 function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
   return {
@@ -205,6 +206,10 @@ Deno.test("slot pool - maxConcurrentIssues 3 with three repos: three processIssu
   const seen: string[] = [];
   let now = 0;
   const config = createDefaultRunCoreConfig();
+  // Each run holds its slot until all three are in flight (Issue #1098). A
+  // fixed sleep let the first slot finish before the third had started under
+  // the gate's own parallel suite, and reported the pool as broken.
+  const allThree = createRendezvous(3);
   const deps = createMockDeps({
     now: () => now,
     sleep: (ms?: number) => {
@@ -220,7 +225,7 @@ Deno.test("slot pool - maxConcurrentIssues 3 with three repos: three processIssu
       inFlight++;
       high = Math.max(high, inFlight);
       seen.push(i.repo);
-      await new Promise((r) => setTimeout(r, 20));
+      await allThree.arrive();
       inFlight--;
       now += config.runDurationSeconds * 400;
       return { ok: true, value: { success: true } };
@@ -624,6 +629,9 @@ Deno.test("slot pool - simulated high pressure with maxConcurrentIssues 4: fewer
   let now = 0;
   const config = createDefaultRunCoreConfig();
   const asked: number[] = [];
+  // The ceiling's two slots meet before either finishes (Issue #1098), so the
+  // high-water mark is the pool's answer rather than the host's speed.
+  const bothSlots = createRendezvous(2);
   const deps = createMockDeps({
     now: () => now,
     sleep: (ms?: number) => {
@@ -644,7 +652,7 @@ Deno.test("slot pool - simulated high pressure with maxConcurrentIssues 4: fewer
     processIssue: async () => {
       inFlight++;
       high = Math.max(high, inFlight);
-      await new Promise((r) => setTimeout(r, 10));
+      await bothSlots.arrive();
       inFlight--;
       now += config.runDurationSeconds * 400;
       return { ok: true, value: { success: true } };
@@ -666,6 +674,8 @@ Deno.test("slot pool - a ceiling above configured is clamped: configured 2 stays
   let inFlight = 0, high = 0;
   let now = 0;
   const config = createDefaultRunCoreConfig();
+  // Both configured slots meet before either finishes (Issue #1098).
+  const bothSlots = createRendezvous(2);
   const deps = createMockDeps({
     now: () => now,
     sleep: (ms?: number) => {
@@ -679,7 +689,7 @@ Deno.test("slot pool - a ceiling above configured is clamped: configured 2 stays
     processIssue: async () => {
       inFlight++;
       high = Math.max(high, inFlight);
-      await new Promise((r) => setTimeout(r, 10));
+      await bothSlots.arrive();
       inFlight--;
       now += config.runDurationSeconds * 400;
       return { ok: true, value: { success: true } };
@@ -694,6 +704,9 @@ Deno.test("slot pool - pressure spike while 3 slots run: 0 cancellations, 0 new 
   let inFlight = 0, high = 0, started = 0, completed = 0;
   let postSpikeInFlight = 0, postSpikeHigh = 0;
   let now = 0;
+  // The spike must land while all three pre-spike runs are still in flight,
+  // so they meet before any of them may finish (Issue #1098).
+  const allThree = createRendezvous(3);
   const deps = createMockDeps({
     now: () => now,
     sleep: (ms?: number) => {
@@ -713,9 +726,15 @@ Deno.test("slot pool - pressure spike while 3 slots run: 0 cancellations, 0 new 
         postSpikeInFlight++;
         postSpikeHigh = Math.max(postSpikeHigh, postSpikeInFlight);
       }
-      await new Promise((r) => setTimeout(r, 10));
-      // Spike lands while all three are mid-run.
-      ceiling = 1;
+      if (!postSpike) {
+        // Spike lands while all three are mid-run.
+        await allThree.arrive();
+        ceiling = 1;
+      }
+      // A window for a sibling the ceiling failed to stop to be seen
+      // overlapping this run. This one proves an absence, so it stays a
+      // plain wait: a slow host widens the window and can only make the
+      // overlap easier to catch, never harder.
       await new Promise((r) => setTimeout(r, 10));
       inFlight--;
       if (postSpike) postSpikeInFlight--;
@@ -738,6 +757,8 @@ Deno.test("slot pool - a slot ceiling that throws → configured count runs (Iss
   let inFlight = 0, high = 0;
   let now = 0;
   const config = createDefaultRunCoreConfig();
+  // All three configured slots meet before any of them finishes (Issue #1098).
+  const allThree = createRendezvous(3);
   const deps = createMockDeps({
     now: () => now,
     sleep: (ms?: number) => {
@@ -751,7 +772,7 @@ Deno.test("slot pool - a slot ceiling that throws → configured count runs (Iss
     processIssue: async () => {
       inFlight++;
       high = Math.max(high, inFlight);
-      await new Promise((r) => setTimeout(r, 10));
+      await allThree.arrive();
       inFlight--;
       now += config.runDurationSeconds * 400;
       return { ok: true, value: { success: true } };
@@ -1115,20 +1136,40 @@ Deno.test("slot pool - a success is followed by the normal sleep and another cla
   let now = 0;
   /** Ordered trace of everything the slot did, so the sleep's position is checked too. */
   const events: string[] = [];
-  const unclaimed = [issue("o/a", 1), issue("o/a", 2)];
+  const logs: string[] = [];
+  // The sibling slot is given work of its own rather than left to idle
+  // (Issue #1098). An idle slot re-scans and sleeps the same interval, and
+  // those sleeps land in this shared trace in whatever order the host's
+  // scheduler produced — the assertion below then measured the scheduler
+  // rather than the pool, and failed on a pool that was pacing correctly.
+  const unclaimed = [issue("o/a", 1), issue("o/a", 2), issue("o/busy", 9)];
+  let processedA = 0;
   let poolEntries = 0;
   const deps = createMockDeps({
     now: () => now,
     log: (m) => {
+      logs.push(m);
       if (m.includes("Issue scan pool:")) poolEntries++;
     },
+    // The pool is entered with two configured slots, but the memory-pressure
+    // ceiling starts one (Issue #990). With a sibling running, this trace was
+    // not the trace of one slot: the idle slot's own rescan sleeps landed
+    // between this slot's settle sleep and its next claim, in an order the
+    // event loop decided, so the assertion below failed on a loaded host. The
+    // sibling could not be attributed either — sleeps happen outside the slot
+    // context — and, once the first slot releases its hold, the sibling may
+    // legitimately take the second issue, so two slots could never prove the
+    // property this test is named for. One slot in the pool proves it exactly:
+    // the claim that follows the settle sleep is the same slot's or there is
+    // no second claim at all.
+    slotCeiling: { effectiveSlots: () => Promise.resolve(1) },
     sleep: (ms?: number) => {
       events.push(`sleep:${ms ?? 0}`);
       now += ms ?? 30_000;
       return Promise.resolve();
     },
-    // Both issues live in one repo, so only one slot can ever hold it: the
-    // second claim can only come from the slot that just succeeded. An
+    // Both `o/a` issues live in one repo, so only one slot can ever hold it:
+    // the second claim can only come from the slot that just succeeded. An
     // issue stays findable until it is actually processed, as in production
     // — a slot that loses the acquire race must not consume it.
     findNextIssue: (options) =>
@@ -1136,30 +1177,56 @@ Deno.test("slot pool - a success is followed by the normal sleep and another cla
         ok: true,
         value: unclaimed.find((i) => visibleToScan(i, options)) ?? null,
       }),
-    processIssue: (i) => {
+    processIssue: async (i) => {
       unclaimed.splice(unclaimed.indexOf(i), 1);
+      if (i.repo === "o/busy") {
+        // The sibling holds its slot — and so stays out of the trace —
+        // until the slot under test has taken both its claims. Bounded, so
+        // a regression fails the assertions below instead of hanging.
+        await waitUntil(() => processedA >= 2);
+        return { ok: true, value: { success: true } };
+      }
       events.push(`process:${i.repo}#${i.issueNumber}`);
+      processedA++;
       // End the cycle once both are done so the outer loop cannot supply
       // the second claim from a fresh pool.
-      if (events.filter((e) => e.startsWith("process:")).length >= 2) {
-        now = cycleMs + 1;
-      }
-      return Promise.resolve({ ok: true, value: { success: true } });
+      if (processedA >= 2) now = cycleMs + 1;
+      return { ok: true, value: { success: true } };
     },
   });
 
   await runOneCycle(deps, 2);
 
+  // The sibling slot finds nothing to claim — one repo, one holder — so it
+  // sleeps the same normal interval, and where its sleeps land in this shared
+  // trace is scheduling, not behaviour. What must hold is the shape between
+  // the two claims: the slot that succeeded sleeps the normal interval and
+  // claims again, so nothing but that interval may separate them.
+  const first = events.indexOf("process:o/a#1");
+  const second = events.indexOf("process:o/a#2");
+  const trace = `trace: ${events.join(", ")}`;
+  assert(first >= 0, `the first issue must be processed — ${trace}`);
+  assert(second > first, `the slot must claim again — ${trace}`);
+  const between = events.slice(first + 1, second);
+  assert(
+    between.length > 0 &&
+      between.every((event) =>
+        event === `sleep:${config.sleepInterval * 1000}`
+      ),
+    `only the normal sleep may separate the two claims — ${trace}`,
+  );
+  // The same slot took both claims, from the line the pool attributes to it.
+  const slotFor = (n: number) =>
+    logs.find((l) => l.includes(`Processing issue o/a#${n}`))
+      ?.match(/^\[(s\d+) /)?.[1];
+  assert(
+    slotFor(1) !== undefined,
+    `no attributed claim line for o/a#1: ${logs.join("\n")}`,
+  );
   assertEquals(
-    events.slice(0, 3),
-    [
-      "process:o/a#1",
-      `sleep:${config.sleepInterval * 1000}`,
-      "process:o/a#2",
-    ],
-    `a slot must sleep the normal interval and claim again: ${
-      events.join(", ")
-    }`,
+    slotFor(2),
+    slotFor(1),
+    "the second claim must come from the slot that just succeeded",
   );
   assertEquals(
     poolEntries,

@@ -348,6 +348,7 @@ explicitly overridden.
 | `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` overrides it for one run. An unsupported id fails loudly at startup, naming the supported providers. |
 | `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) overrides it for one run. The set is also what the launcher builds the image with — it is passed as `--build-arg AGENT_PROVIDERS=<ids>` and mixed into the image tag (Issue #729), so a Codex-only deployment builds a Codex image instead of reusing the default Claude one. |
 | `container_tools` | `[]` | Extra build-time tools this deployment's image bakes in. Each entry is a declarative archive install: `id`, `version`, per-architecture `url` and **mandatory** `sha256` (`amd64` / `arm64` / `noarch`), `stripComponents`, `bin` and `env`. The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin`/`env` value is relative to it, so no selection can point PATH or an environment variable at an arbitrary host path. A malformed spec, or a `url` without a matching `sha256`, fails loudly at config load. The default empty selection installs nothing — the fleet image is unchanged. Changing it needs an image rebuild; see [the worked example](CONTAINER.md#deployer-supplied-build-time-tools) and [Private Extensions](PRIVATE-EXTENSIONS.md). |
+| `container_extension` | _(none)_ | A private image layer this deployment builds on top of the standard one — for services and toolchains a declarative archive install cannot express. An object of `path` (absolute host directory holding the extension, never the home directory or an ancestor of it), optional `containerfile` (default `Containerfile`) and optional `start`, the last two **relative to `path`**. The operator syncs their own private repository into `path`; the Vibe Coder clones nothing. The Containerfile must derive `FROM ${VIBE_BASE_IMAGE}`, the extension is copied to the fixed in-image prefix `/opt/vibe-extension/`, and the image tag is a content hash of the whole directory, so changing any file rebuilds. A declared `start` runs before the worker and aborts the sandbox start with exit 76 if it fails. A malformed block fails loudly at config load, naming the field. See [Container Extension](CONTAINER-EXTENSION.md). |
 | `claude_model`               | `opus`                    | Claude model ID (Identifier) to use                                                                                                                                                                                                                                                              |
 | `best_planning_model` | `""` (derive from routing) | Configured best planning model for degraded-model detection. Empty derives the expected model from the `planning` routing chain; set it to pin a specific model the run is expected to be served by. A degraded run labels the parent + every sub-issue `degraded-model`. |
 | `phase_model_overrides`      | `{}`                      | Per-phase model tier overrides (see below)                                                                                                                                                                                                                                                       |
@@ -528,8 +529,13 @@ identically ($5 / $25 per MTok), so cost tracking is unaffected.
 `custom_label_prompts` maps a GitHub label to a **non-public prompt template
 file** — an absolute path on the host, outside the public repository — so an
 operator can extend the Vibe Coder with private prompts without publishing
-them. Add the file, add the mapping, apply the label — the Vibe Coder works the
-issue with that prompt and raises a PR.
+them. Add the file, add the mapping, apply the label — the Vibe Coder runs that
+prompt against the labelled work.
+
+Each mapping states the **phase** it runs in with `target_phase`
+(Issue #1008). An `issue`-phase mapping (the default) works a labelled *issue*
+and raises a PR; a `pr`-phase mapping works a labelled open *pull request* with
+a full checkout. A mapping is one or the other — never both.
 
 > **📚 The operator guide is [Custom Label Prompts](CUSTOM-PROMPTS.md)** — the
 > extension point, a worked example an operator can follow verbatim, the
@@ -542,7 +548,13 @@ issue with that prompt and raises a PR.
   "custom_label_prompts": [
     {
       "label": "my-custom-label",
-      "prompt_path": "/opt/vibe-secrets/prompts/my-custom-label.md"
+      "prompt_path": "/opt/vibe-secrets/prompts/my-custom-label.md",
+      "target_phase": "issue"
+    },
+    {
+      "label": "secret-squirrel-review",
+      "prompt_path": "/opt/vibe-secrets/prompts/secret-squirrel-review.md",
+      "target_phase": "pr"
     }
   ]
 }
@@ -565,6 +577,23 @@ Semantics:
   more than one template: `planning_critique` for a `planning` mapping,
   `quorum_judge` for a `quorum` one. Omitted, the mapping overrides the label's
   first-turn template.
+- **`target_phase`** (optional) — which phase the mapping's prompt runs in.
+  Accepted values are `issue` and `pr`; absent or `null` means `issue`, so a
+  `.config.json` written before the field existed produces exactly the mappings
+  it always did. Any other value — `"review"`, `""`, a number, a case variant
+  such as `"PR"` — **fails config load**, naming the entry
+  (`custom_label_prompts[<i>].target_phase`), the offending value and the
+  accepted set. `target_phase` must be `issue` on an entry that overrides a
+  built-in label: an override is dispatched by that label's own handler, which
+  has no notion of a target phase, so a `pr` value there would silently do
+  nothing and is refused instead.
+- **Per-phase placeholder contract.** An `issue` template must carry
+  `{{ISSUE_NUMBER}}` and `{{QUALITY_INSTRUCTIONS}}`; a `pr` template must carry
+  `{{PR_NUMBER}}` and `{{QUALITY_INSTRUCTIONS}}`. `{{VERBOSITY_INSTRUCTIONS}}`
+  is substituted in either where the template carries it. A template held to
+  the wrong contract is refused with both the phase and the template type named
+  — an `{{ISSUE_NUMBER}}` file on a `pr` mapping is told exactly that, rather
+  than being rejected for a placeholder it has no business carrying.
 - **Fail loud, always.** Every fault above — a non-array value, a malformed
   entry, a relative or unreadable `prompt_path`, a duplicate or reserved
   `label` — throws from config load naming the offending entry and field.
@@ -573,9 +602,9 @@ Semantics:
   dispatched.
 - **Default = off.** The default empty list changes no existing behaviour —
   an operator opts in by adding entries.
-- **Trust-gated like `planning` (Issue #847).** A configured label joins the
-  operational dispatch set, so the label **adder** must be on the
-  `allowed_authors` allowlist — a trusted issue *author* is not sufficient. An
+- **Trust-gated like `planning` (Issue #847), in both phases.** A configured
+  label joins the operational dispatch set whichever phase it targets, so the
+  label **adder** must be an account that may direct work — a trusted issue *author* is not sufficient. An
   add by an untrusted account is stripped, not honoured as a plain descriptive
   label, and an add that cannot be attributed from the issue timeline fails
   closed (the issue is skipped). The worker's own creation paths treat a
@@ -587,9 +616,10 @@ Semantics:
   login is never a trusted label adder. See
   [INTERNALS.md — Issue discovery](INTERNALS.md#-issue-discovery-modular-issue-finder).
 
-#### How a custom label dispatches (Issue #848)
+#### How an `issue`-phase custom label dispatches (Issue #848)
 
-An issue carrying a configured label is worked at **priority 1.86**, between
+An issue carrying a configured `issue`-phase label is worked at
+**priority 1.86**, between
 question answering (1.85) and stale-workflow detection (1.9). The handler runs
 the **generic implementation phase** — the same `workOnIssue` pipeline `work-on`
 runs — so the run produces a real branch, commits and a PR. Only the prompt
@@ -655,6 +685,68 @@ flowchart LR
   [CONTAINMENT.md — the mount set](CONTAINMENT.md#the-mount-set).
 - **Default = off.** With no mapping configured the priority row does not exist
   and the ladder is unchanged.
+
+#### How a `pr`-phase custom label dispatches (Issue #1011)
+
+A `pr`-phase mapping acts on a **pull request**, not an issue. Apply its label
+to an open PR and the worker runs the operator's prompt against that PR at
+**priority 1.87**, immediately after the issue-phase row, with a full checkout
+of the PR head branch and `gh` — the same working conditions a PR-feedback run
+gets. What the run then does is the private prompt's business: comment, commit,
+push.
+
+```mermaid
+flowchart TD
+    L["🏷️ pr-phase label added to an OPEN PR<br/>by an account that may direct work"] --> S["Priority 1.87<br/>scan open PRs by label"]
+    S --> T{"label adder<br/>verified from the<br/>PR timeline?"}
+    T -- "no, or unattributable" --> X["⛔ skipped, logged<br/>UNTRUSTED_LABEL_CHANGE"]
+    T -- yes --> R["Remove the label<br/>(consumed before anything runs)"]
+    R --> C{"prompt file readable,<br/>non-empty, pr placeholders?"}
+    C -- no --> F["❌ refuse the run<br/>PR comment names label + path"]
+    C -- yes --> K["Check out the PR head branch"]
+    K --> A["Run the operator's prompt<br/>PR text nonce-fenced"]
+    A --> V{"is the work on<br/>the remote?"}
+    V -- no --> F2["❌ failure comment<br/>re-apply the label to retry"]
+    V -- yes --> D["✅ outcome comment<br/>naming the verified SHA"]
+    style X fill:#d00000,stroke:#9d0208,color:#fff
+    style F fill:#d00000,stroke:#9d0208,color:#fff
+    style F2 fill:#d00000,stroke:#9d0208,color:#fff
+    style D fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+- **Open PRs only.** The scan lists PRs with `--state open`, so a label left on
+  a closed or merged PR never dispatches — there is nothing to work.
+- **The label adder must be allowlisted, exactly as for an issue-phase label.**
+  Trust is derived from repository collaborators every cycle and starts closed;
+  the PR timeline is read to attribute the add, and an add that cannot be
+  attributed — no `labeled` event, a null actor, an unreadable timeline —
+  **fails closed** and is logged. A fleet login is never a trusted adder, so
+  the worker cannot dispatch itself by labelling its own PR.
+- **A full checkout plus `gh`.** The PR head branch is fetched and checked out
+  before the agent starts, so the prompt works the PR's own tree.
+- **One shot: the run consumes the label.** The label is removed **before** the
+  agent starts — before the prompt file is even read — so a run that crashes,
+  is killed by the watchdog, or dies with its container cannot leave the
+  trigger in place for the next cycle to pick up again. Re-apply the label to
+  run again.
+- **A failure consumes it too, and says so on the PR.** Every failure path — a
+  broken prompt file, a checkout that could not be prepared, an agent that
+  threw or timed out, work that never reached the remote — posts one comment
+  naming the label and stating that it can be re-applied to retry. The built-in
+  `pr_feedback` template is never substituted for an operator's file.
+- **A claimed push that did not land is a failure.** After the run the branch's
+  local head is compared against the remote; anything but agreement — including
+  an unreachable remote — is reported as a failure rather than as success.
+- **The PR text stays untrusted.** The operator's file is configuration and is
+  not fenced. The PR title, body and any review comments it renders around
+  **are** fenced in this run's nonce boundary, with the same
+  boundary-integrity instruction the built-in PR prompts carry, so a forged
+  delimiter or a forged `[TRUSTED] author=` header in a PR body is inert.
+- **Default = off.** With no `pr` mapping configured, priority 1.87 does not
+  exist and no PR scan runs.
+
+The worked example an operator can follow verbatim lives in
+[CUSTOM-PROMPTS.md](CUSTOM-PROMPTS.md).
 
 #### Overriding a built-in label's prompt (Issue #849)
 
@@ -1473,6 +1565,7 @@ unless explicitly overridden.
 | Progress extension check interval | `progress_extension_check_seconds` | `300` | Seconds between progress samples (working tree and descendant CPU) while a run is inside its budget, so a stall is noticed within a check interval rather than a whole grant. Must be positive. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
+| Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
 | Claude kill-after              | `claude_kill_after`              | `30`       | Grace period after timeout before force-kill                                                                                                                                                         |
 | Sleep interval                 | `sleep_interval`                 | `30`       | Seconds between scans                                                                                                                                                                                |
 | Max concurrent issues | `max_concurrent_issues` | `2` | Issue slots worked concurrently per host (integer 1–8). Above `1` the Priority-2 scan runs as a pool, one clone per slot; the memory-pressure governor lowers the effective count (never raises it). `1` opts into the serial loop. Each slot keeps claiming for the whole cycle — after a success it sleeps `sleep_interval` and claims again, so a long execute in one slot never idles the others (Issue #178). A slot that finds nothing logs the scan's counts and re-scans every `sleep_interval` while a sibling still works, retiring only when nothing else is running (Issue #219). Above `1` the agent-backed PR passes also run in a **maintenance lane** beside the pool instead of ahead of it, so a long CI fix no longer idles the slots — see [Maintenance lane](workflows/README.md#-maintenance-lane-agent-backed-pr-passes-beside-the-pool) (Issue #213). |
@@ -1545,7 +1638,68 @@ unless explicitly overridden.
 | Include untrusted comments | `include_untrusted_comments` | `true` | Whether to include untrusted comments in the prompt. When `false` (strict mode), untrusted comments are excluded entirely. |
 | Include codebase map | `include_codebase_map` | `true` | Whether to inject the generated per-repo codebase map (layout, modules, canonical commands) into issue prompts. See [Codebase Map](MODEL-AND-CACHING.md#codebase-map). |
 | Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                            |
-| Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red — or with an unanswered authorised comment — before the watchdog escalates it with `needs-human`. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
+| Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red, carry an unanswered authorised comment, or sit green and unmerged, before the watchdog escalates it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
+
+### 📝 Agent transcripts
+
+`agent_transcript_enabled: true` tees every agent invocation's raw
+stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` on the host that ran
+it, and publishes that path to post-run callbacks as `sessionLogPath` /
+`VIBECODER_SESSION_LOG_PATH`.
+
+Without it, a failed run records its result, its exit code, its duration and
+its cost, and nothing about **why** it failed. That is not hypothetical: every
+one of the twenty fleet run records archived on 2026-09-05 carried
+`"absentReason": "the worker exported no VIBECODER_SESSION_LOG_PATH (agent
+transcript tee not enabled for this run)"`, and diagnosing that day's failures
+from the run records alone produced the wrong answer.
+
+**`.config.json` is the only switch.** `DEBUG=true` used to enable the tee as
+a side effect and no longer does (Issue #1141) — a debug flag that silently
+starts capturing repository content is a surprise. `VIBE_AGENT_TRANSCRIPT` is
+internal plumbing the worker settles from this key on every run, so exporting
+it by hand changes nothing.
+
+#### What is in the file
+
+A transcript is the **raw agent stream**: model output, the issue and
+repository text the agent was given, the contents of files it read, and the
+output of commands it ran. It passes through the console secret redaction on
+its way to disk, which is a net for known credential shapes — **not a
+guarantee**. Treat a transcript as carrying whatever the run touched.
+
+That is why the default is off, and why it is worth deciding deliberately
+rather than switching on across a fleet by habit.
+
+#### It has to be on for every run
+
+You cannot know in advance which run will fail, so a tee that runs only on
+failures cannot exist — the stream has to be captured while the run is still
+in progress. Every run therefore writes a transcript once the key is on.
+
+What happens to a given transcript afterwards is the **callback hook's**
+decision, not the tee's: the hook sees `sessionLogPath` and chooses whether to
+read, redact, archive or ignore it. Transcript *contents* are never exported
+by the worker — only the path. A hook that copies a transcript into a health
+repository is putting raw repository content there, and owns both the
+redaction and the read access that follow. See
+[Post-Run Callbacks](#-post-run-callbacks) and [CALLBACKS.md](CALLBACKS.md).
+
+#### Local retention
+
+Transcripts are bounded by the housekeeping every run already performs, with
+no operator action:
+
+- `log-rotation` size-rotates `*.jsonl`, transcripts included, into
+  `.jsonl.N` backups.
+- `worker-log-cleanup` then applies the worker-log retention policy to
+  `agent-*.jsonl` and its rotated and gzipped forms: deleted after **3 days**,
+  with a hard cap of **200** retained files, oldest deleted first.
+
+Nothing else sweeps them — the session sweeper covers `.claude-sessions/`, not
+transcripts — and nothing prunes a transcript a hook has copied elsewhere. On
+a busy host the practical retention is the 3-day age limit; on a host running
+more than 200 agent invocations inside that window it is the file cap.
 
 ### 🧭 Adaptive claim floor
 
@@ -3089,9 +3243,33 @@ semantics:
 Within a single tier the worker rotates fairly across repos, so a busy tier
 never starves its peers.
 
-**Worked example.** Give a filler repo a high `nice` so it is only worked when
-nothing else is queued, and jump a priority repo ahead of the default tier with
-a negative `nice`:
+> [!IMPORTANT]
+> **The label tier outranks `nice` (Issue #1063).** `nice` is a tie-breaker
+> **within** a priority band, never a band of its own. The label expresses
+> urgency; `nice` shapes throughput between repos that are equally urgent. So
+> the fleet-wide order is:
+>
+> 1. **Label tier first, across the whole fleet** — `top-priority` >
+>    `work-on` > self-scheduled diagnostic > `low-priority` > `idle-task`
+>    (see [README → Supported labels](../README.md#-supported-labels)).
+> 2. **`nice` orders repos within a label tier** — of two `top-priority`
+>    issues, the one in the lower-`nice` repo is worked first.
+> 3. Milestone priority and age break the remaining ties, unchanged.
+>
+> | candidate A | candidate B | winner |
+> | --- | --- | --- |
+> | `top-priority` @ `nice: -15` | `work-on` @ `nice: -20` | **A** — label tier first |
+> | `top-priority` @ `nice: -20` | `top-priority` @ `nice: -15` | **A** — `nice` within the tier |
+> | `work-on` @ `nice: -20` | `work-on` @ `nice: -15` | **A** — `nice` within the tier |
+> | `low-priority` @ `nice: -20` | `work-on` @ `nice: -15` | **B** — label tier first |
+>
+> Setting a repo to a very low `nice` therefore **cannot** starve another
+> repo's `top-priority` work: no amount of routine backlog in a `nice: -20`
+> repo delays a `top-priority` issue in a `nice: 0` one.
+
+**Worked example.** Give a filler repo a high `nice` so its work is only picked
+up when no lower-`nice` repo has work *of the same label tier*, and jump a
+priority repo ahead of the default tier with a negative `nice`:
 
 ```json
 {
@@ -3106,9 +3284,12 @@ a negative `nice`:
 }
 ```
 
-Here `stSoftwareAU/private-repo-18` (`nice: 99`) is picked up only when every
-lower-`nice` repo is idle, while `stSoftwareAU/priority-repo` (`nice: -1`) jumps
-ahead of every default-tier (`nice: 0`) repo.
+Here `stSoftwareAU/private-repo-18` (`nice: 99`) is picked up only when no
+lower-`nice` repo has a candidate in the same label tier, while
+`stSoftwareAU/priority-repo` (`nice: -1`) jumps ahead of every default-tier
+(`nice: 0`) repo of that tier. Neither changes the label ordering: a
+`top-priority` issue in the `nice: 99` repo is still worked before a `work-on`
+issue in the `nice: -1` one.
 
 You can confirm a repo's resolved tier without reading the config — the
 [`check-repo-availability`](workflows/issue-processing.md#-issue-selection-priority)
@@ -3130,7 +3311,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `skip_auto_merge`       | boolean | When `true`, disables auto squash merge for this repository                                                                                                                                                                                                                                                                                                               |
 | `skip_reviewer_request` | boolean | When `true`, skips requesting PR reviewers for this repository                                                                                                                                                                                                                                                                                                            |
 | `verbosity`             | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`), applied to the `issue` phase. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                                                     |
-| `nice`                  | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only. See [Per-repo `nice` rotation tier](#-per-repo-nice-rotation-tier).                                                                                                                                                                         |
+| `nice`                  | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only, and orders repos **within** a label tier — the label tier (`top-priority` > `work-on` > `low-priority` > `idle-task`) is decided first, fleet-wide, so `nice` never lets one repo's routine backlog outrank another's `top-priority` (Issue #1063). See [Per-repo `nice` rotation tier](#-per-repo-nice-rotation-tier).                                                                                                                                                                         |
 | `ciProviders`           | array   | Per-repo CI log providers consulted when a PR's CI fails, before invoking the `ci_fix` prompt. Each entry is `{ "provider": "<id>", "checkNamePattern"?: "<regex>", "jobPath"?: "<path>" }`; only `provider` is required. `jobPath` is passed through untouched — whether a provider needs one, and what shape it takes, is that provider's business. GitHub Actions is the built-in default and needs no entry; any other CI system registers its provider from a [private extension](PRIVATE-EXTENSIONS.md). Malformed entries are rejected with a named-field error at config load. See [Adding a CI log provider](EXTENDING.md#-adding-a-ci-log-provider). |
 | `pre-flight`            | array   | Mandatory pre-flight commands run in the repo working tree immediately before the worker's automated commit, at the `assertSafeToCommit()` chokepoint. The first non-zero exit **blocks both the commit and the push** — there is no override flag. A missing / non-executable / unstartable command or a timeout is a block, never a pass. See [Pre-flight enforcement gate](#-pre-flight-enforcement-gate). |
 | `ci_failure_labels`     | array   | Issue labels that mark a CI-failure report (e.g. `["develop-build-failure"]`). When an issue carries one, the worker parses the build reference from the issue body, fetches the **full** console log through the repo's configured CI log provider, and routes to the CI diagnosis-and-fix framing. Omit or leave empty to disable. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
@@ -3334,7 +3515,13 @@ which cannot block — and trips on either signal:
   fleet push, older than the threshold;
 - **unanswered authorised comment** — the newest comment from an
   `authorized_commenters` login is newer than the newest fleet reply **and** the
-  newest push, by longer than the threshold.
+  newest push, by longer than the threshold;
+- **green but unmerged** — no failing check, no auto-merge armed, and no
+  movement for longer than the threshold. Nothing is *wrong* with the PR; it
+  simply is not landing, and its repository's whole work stream is stopped
+  behind it. `GRQ-GTC#305` sat exactly like that for five days and neither of
+  the two signals above saw it. Only reported when the other two are silent —
+  a red PR is a red PR, not a green one.
 
 On a trip it posts **one** escalation comment per PR per stall reason (deduped
 by the `needs-human-escalation` HTML marker, so a long stall never accrues a
@@ -3357,7 +3544,9 @@ flowchart TD
     C -->|yes| E["Observe PR:<br/>checks · commits · comments"]
     E --> F{"red CI, no newer push,<br/>past threshold?"}
     E --> G{"authorised comment newer<br/>than fleet reply/push,<br/>past threshold?"}
+    E --> M{"green, no auto-merge armed,<br/>no movement past threshold?"}
     F -->|yes| K
+    M -->|yes| K
     G -->|yes| K{"auto-fix cap<br/>already escalated?"}
     K -->|yes| J["Suppressed — the human<br/>already owns this PR"]
     K -->|no| H["needs-human +<br/>ONE marker-deduped comment<br/>per stall reason"]

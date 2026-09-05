@@ -650,3 +650,59 @@ jobs:
           cd worker/deno
           deno run --frozen --lock=deno.lock --allow-read --allow-env \
             mod.ts supply-chain-gate --repo ../..
+
+  # Issue #1048: a milestone branch must never carry a file the default
+  # branch deleted. A squash-style "Sync main into milestone/…" applies
+  # main's content without recording it as an ancestor, so every later merge
+  # sees a modify/delete conflict where there should have been a deletion —
+  # and "keep the file" is the resolution that looks conservative and revives
+  # deliberately-removed code. On `milestone/863` that put back 1984 lines and
+  # was noticed only because the resurrected test tripped an unrelated gate.
+  #
+  # Runs on PRs INTO a milestone branch and on the milestone → default-branch
+  # rollup PR. Its own job so a resurrection reads as exactly that, and it
+  # needs full history — the check reads the default branch's deletions.
+  milestone-resurrection:
+    name: milestone-resurrection
+    if: >-
+      startsWith(github.base_ref, 'milestone/') ||
+      startsWith(github.head_ref, 'milestone/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Issue #606: Opt into Node.js 24 to avoid deprecation warnings for
+      # actions still bundled with Node.js 20 (e.g. denoland/setup-deno@v2)
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          # The check compares the PR head against the whole history of the
+          # default branch, so a shallow clone cannot answer it.
+          fetch-depth: 0
+
+      - name: Install deno
+        # denoland/setup-deno@v2.0.5
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with:
+          # Issue #4403 (GHA-SUPPLY-019): exact toolchain from the repo's single source of
+          # truth (.deno-version, tied to the container image's Deno by test), never a
+          # floating range resolved at run time.
+          deno-version-file: .deno-version
+
+      - name: Resurrected-file check
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          echo "=== milestone-resurrection (Issue #1048) ==="
+          git fetch --no-tags origin "$DEFAULT_BRANCH"
+          cd worker/deno
+          deno run --frozen --lock=deno.lock \
+            --allow-read --allow-env --allow-run \
+            mod.ts check-resurrected-files \
+            --repo-dir ../.. --branch HEAD \
+            --default-branch "origin/$DEFAULT_BRANCH"

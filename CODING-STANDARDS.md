@@ -141,6 +141,37 @@ provably yours — `captureProcessIdentity` in
 re-verify with `isSameProcess` immediately before every signal, TERM and KILL
 alike. Unproven means no signal, never "go ahead".
 
+### Never let a unit test inherit the host's state
+
+A unit test that reads ambient environment gets a different answer on every
+machine, and inside the container it gets the running fleet's own state. The
+worker exports `WORK_DIR`, `runCoreLoop` falls back to it for state that
+outlives a run, and every suite driving the loop without naming its own work
+directory therefore read and wrote the live
+`idle_disagreement_streak.json` — four `--parallel` test processes sharing one
+file, each resetting the others' streak, and the operator's real state
+overwritten with test timestamps (Issue #1098). Name the directory, the config
+path and the clock the test wants; the gate scrubs `CONFIG_PATH` and `WORK_DIR`
+from the test stage so an unnamed one degrades to memory rather than to the
+host.
+
+The same rule covers process-global caches: a module singleton keyed by a
+counter that restarts at 1 in every consumer serves one test's result to the
+next file in the same worker. Key it by something only its own owner can
+produce.
+
+### Rendezvous, never sleep, to prove concurrency
+
+"N ran at once" is not provable with `await new Promise((r) => setTimeout(r,
+10))`: on an idle laptop ten milliseconds is ample, and under the gate's own
+parallel suite the first participant finished before the third had started, so
+a correct pool was reported as `expected 3 concurrent, saw 2`. Use
+[`tests/support/rendezvous.ts`](worker/deno/tests/support/rendezvous.ts)
+(`createRendezvous`), where each participant waits until every expected one has
+arrived: a loaded host only makes the wait longer, never the answer different.
+The wait is bounded, so a participant that never arrives fails the assertion
+instead of hanging the suite.
+
 ### Test coverage expectations
 
 Every new or modified public function MUST have tests covering the happy path,
@@ -148,18 +179,62 @@ at least one error path, and the edge cases relevant to it (empty input, zero,
 maximum size, unicode, etc.). For bug fixes, add a regression test that fails against the
 unfixed code and passes after the fix, and state that linkage in the PR summary.
 
-## Unit Tests vs Benchmarks
+## Unit, Integration and Benchmark Tests
 
-- **Unit tests are for functionality testing only** — verify that code produces
-  correct results, not how fast it runs. Each test should finish well within the
-  120-second budget; most in under 10 seconds.
-- **Benchmarks are for performance testing** — use dedicated benchmarks to
-  measure and compare execution time.
-- **Why this matters** — unit tests run in parallel with other tests, making
-  performance measurements unreliable.
-- **Do not** reduce iteration counts to make "performance tests" faster in unit
-  tests. If you need to confirm performance, create proper benchmarks and
-  include results in the PR summary.
+Every test in this repository is exactly one of three things, and the category
+decides which runner it belongs to and how often it runs. The classification is
+implemented, not merely described:
+[`lib/integration_test_manifest.ts`](worker/deno/lib/integration_test_manifest.ts)
+and
+[`lib/parallel_unsafe_test_manifest.ts`](worker/deno/lib/parallel_unsafe_test_manifest.ts)
+hold the classifiers, `lib/unit_test_passes.ts` builds the gate's suite out of
+them, and a file the prose and the manifests disagree about fails a test.
+Classify from the rules below; if the machinery then disagrees with you, one of
+the two is wrong and that disagreement is the finding.
+
+### Unit tests
+
+A unit test is **behavioural**, **self-contained**, **fast** and
+**parallel-safe**, and it runs on every change.
+
+- **Behavioural** — it asserts what the code does, never how fast it runs. A
+  test whose output is a duration is a benchmark.
+- **Self-contained** — it needs nothing the repository does not carry itself:
+  no PowerShell, no container runtime, no network, no provisioned credentials,
+  and it does not copy one of this repository's own `.sh`/`.ps1` scripts into a
+  temporary tree and spawn it. That last clause is the boundary the code draws:
+  `isIntegrationTestSource` claims any test that builds a path to a repository
+  script, and a claimed file is an integration test.
+- **Fast** — it finishes within 10 seconds. Nothing times a unit test at run
+  time, so the rule is enforced by shape rather than by stopwatch: a wall-clock
+  sleep, a retry loop against the real clock, a polling wait or a spawned
+  script is a `test-audit` finding (check 13) whatever the test happens to cost
+  on your machine.
+- **Parallel-safe** — it does not mutate process-wide state (`Deno.env.set`,
+  `Deno.env.delete`, `Deno.chdir`, or a module-level singleton the rest of the
+  suite reads). Take the value as a parameter or an injected seam instead.
+  [`tests/parallel_safety_cap_test.ts`](worker/deno/tests/parallel_safety_cap_test.ts)
+  fails and names your file the moment a new test breaks this (Issue #880), and
+  the remedy is the seam — never a serial annotation, never a new manifest
+  entry.
+
+Unit tests run in the gate's `deno tests` stage and under `deno task test:unit`,
+as two passes over disjoint halves of one scope: everything parallel-safe under
+`--parallel`, then the rest one at a time.
+
+**A unit test that cannot run in parallel is still a unit test.** It is capped
+debt, not a reclassification. Exactly three reasons put a file in the serial
+pass: it mutates process state, it asserts on a real elapsed reading, or it
+races a real subprocess for the scheduler. All three are listed in
+`PARALLEL_UNSAFE_TEST_FILES`, and the mutator half of that list is **empty and
+must stay empty**. A serially-run unit test is a full member of the unit
+verdict, and one of them — the SIGKILLed-agent case in
+`claude_runner_killed_test.ts` — is what caught the orphan-collector defect of
+Issue #1135.
+
+- **Do not** reduce iteration counts to make a "performance test" fast enough
+  to pass as a unit test. If you need to confirm performance, write a benchmark
+  and include the results in the PR summary.
 - **Guard super-linearity by shape, not by clock** — catastrophic backtracking
   has no wrong output, only a runtime one, so a few tests must measure. Use
   [`tests/support/growth.ts`](worker/deno/tests/support/growth.ts)
@@ -169,7 +244,71 @@ unfixed code and passes after the fix, and state that linkage in the PR summary.
   (Issue #530). The rule in one line: **compare two readings of the same work,
   never a reading against a constant.** A ratio assertion is permitted and is
   not a `test-audit` finding; an absolute wall-clock threshold is forbidden and
-  is one (Issue #786).
+  is one (Issue #786). Such a test measures deliberately, so it runs in the
+  serial pass — and it is still a unit test.
+
+### Integration tests
+
+An integration test **drives one of the repository's own scripts**: it copies a
+real `.sh` or `.ps1` into a temporary directory, builds a stub `PATH`, spawns
+`bash` or `pwsh`, and asserts on the captured output. That is the whole
+criterion, and `lib/integration_test_manifest.ts` applies it —
+`isIntegrationTestSource` classifies, `INTEGRATION_TEST_FILES` lists, and
+`integration_test_manifest_test.ts` fails when the two disagree in either
+direction.
+
+An integration test **may need what a unit test may not**: a provisioned
+interpreter, a container runtime, `git`, the network, real credentials. That
+prerequisite must be named and enforced loudly, never skipped in silence.
+`tests/setup_ps1_test.ts` resolves PowerShell once and marks its cases
+`ignore` when it is absent — and both CI jobs that would run it fail the build
+when `pwsh` is missing, rather than reporting a green suite that tested nothing.
+
+Integration tests are **excluded from every quality run**. Both unit passes
+ignore them, because they cost roughly a third of the gate's wall time and ran
+on changes that cannot reach them (Issue #907). They run in per-PR CI, where
+the environment is provisioned and sharding absorbs the cost, and on demand
+with `deno task test:integration`.
+
+A test that **reads** a repository script without running it is a unit test,
+not an integration test — but the classifier still claims it, so it must be
+named in `SCRIPT_READING_UNIT_TESTS` with a reason. Neither list is a default:
+a file the classifier claims is placed in one or the other deliberately.
+
+### Benchmarks
+
+A benchmark's output is a **duration, not a pass/fail assertion**. It exists to
+compare two configurations of the same workload — host against container,
+before a change against after — and it reports numbers for a human or a
+dashboard to read.
+
+Benchmarks live in [`lib/benchmark.ts`](worker/deno/lib/benchmark.ts) behind
+the `benchmark` command
+([`commands/benchmark.ts`](worker/deno/commands/benchmark.ts)), never in
+`tests/`. They are **run on demand only**, never as part of a quality run, and
+never while parallel worker jobs occupy the host: a timed workload sharing a
+machine with other work measures the load, not the code, so a busy machine
+makes the timings meaningless. Run one on a **quiet machine** or do not run it
+at all.
+
+A benchmark disguised as a unit test is a gate failure, not a style point. The
+benchmark-audit stage scans `worker/deno/tests/` and fails any `Deno.test`
+whose name contains `benchmark` or `bench_` (Issue #583).
+
+### When a test does not fit
+
+Take the seam, do not reclassify. A slow unit test is fixed with an injected
+clock, a fake scheduler or an injected process runner; a parallel-unsafe one is
+fixed by taking the value as a parameter. Moving a file into the integration
+manifest to escape a rule it could have met is how a suite quietly stops
+running on every change, and re-adding a mutator to the parallel-unsafe
+manifest is the thing that manifest exists to prevent.
+
+If the seam genuinely is not available — the test really does need `pwsh`, a
+container runtime or the network — it is an integration test and belongs in
+`INTEGRATION_TEST_FILES`. If what you want is a number rather than an
+assertion, it is a benchmark and belongs behind the `benchmark` command. State
+which of the three you chose, and why, in the PR summary.
 
 ## Quality Gates
 
@@ -181,14 +320,23 @@ a fix, never on a timer. Never background it behind a `sleep`/`pgrep` poll loop
 check as each settles, so a slow run is visibly alive rather than
 indistinguishable from a hung one. The quality gate is implemented in Deno
 TypeScript (`worker/deno/quality.ts`) and runs benchmark-audit, pages-liquid,
-markdownlint, semgrep, `deno test`, `deno lint`,
-`deno check`, and `deno fmt --check`. The semgrep stage runs the same
+markdownlint, semgrep, the release-tag ruleset reconciliation, `deno test`,
+`deno lint`, `deno check`, and `deno fmt --check`. The semgrep stage runs the same
 `p/default` ruleset as the blocking `semgrep.yml` PR check, over the branch's
 changed files only, so a SAST finding is met before the push rather than after
 it (Issue #559). Shellcheck is deliberately not run here —
 bash linting is owned by each repo's own CI. See
 [CONTRIBUTING.md → Local quality gate](CONTRIBUTING.md) for how to install the
 optional checks (Ruby + `liquid`, `markdownlint-cli2`, `semgrep`).
+
+**A quality run executes the unit suite only** — no integration tests, no
+benchmarks. Its `deno test` stage is the two unit passes and nothing else:
+both of them ignore `INTEGRATION_TEST_FILES` (Issue #907), and no gate has
+ever run a benchmark. Integration tests are covered by per-PR CI, which runs
+every test file across four shards on a runner provisioned for them; run them
+locally with `deno task test:integration` when your change touches a script
+they drive. A green quality run therefore says nothing about the integration
+suites, and is not meant to.
 
 **All quality checks MUST pass before creating a PR.** The worker runs
 `./quality.sh` before creating any PR; CI re-runs the same checks. Never raise a

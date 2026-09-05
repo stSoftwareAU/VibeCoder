@@ -60,7 +60,8 @@ and the blocking-PR watchdog (1.62, 1.63), auto-merge (1.65), issue closure
 (1.67), closed-PR recovery (1.68), milestone completion and branch sync (1.7,
 1.72), refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80),
 the Failure-Detection repair resume (1.81), questions (1.85), configured
-custom-label prompts (1.86, only when an operator configured one),
+custom-label prompts (1.86) and their PR-phase twin (1.87, both only when an
+operator configured a mapping of that phase),
 stale-workflow detection (1.9), and finally new issues (2,
 oldest first across all repos). The table below is the canonical ladder; the
 dispatch table in `worker/deno/lib/run_core.ts` is the source of truth and a
@@ -163,7 +164,8 @@ flowchart TD
   P18 --> P181["1.81: Failure-Detection repair resume"]
   P181 --> P185["1.85: Question"]
   P185 --> P186["1.86: Custom label prompts"]
-  P186 --> P19["1.9: Stale workflows"]
+  P186 --> P187["1.87: Custom label PR prompts"]
+  P187 --> P19["1.9: Stale workflows"]
   P19 --> P2["2: New issues"]
   P2 --> Sleep["Sleep"]
   Sleep --> P1
@@ -207,6 +209,7 @@ flowchart TD
 | 1.81 | Failure-Detection repair resume | `needs-failure-detection-repair` label — re-gates a planning parent's sub-issues and finishes the outstanding repairs |
 | 1.85     | Question answering                                    | `question` label                                                                                                                         |
 | 1.86 | Custom label prompts | A configured `custom_label_prompts` label that names a **new** label — runs the generic implementation phase (branch, commits, PR) with the operator's private prompt file. The row exists only when such a mapping is configured; a mapping overriding a built-in label adds no row, it replaces that phase's template (Issue #849) |
+| 1.87 | Custom label PR prompts | A configured `custom_label_prompts` label whose `target_phase` is `pr`, applied to an **open** PR by an allowlisted account — the PR head branch is checked out and the operator's private prompt runs against it with `gh`. The run consumes the label, so one application dispatches at most one run. The row exists only when a `pr` mapping is configured (Issue #1011) |
 | 1.9      | Stale workflow detection                              | Flag `planning` / `question` labels left in place with no progress                                                                       |
 | 2 | New implementation issues | Configured-label tier `top-priority` then `work-on`, globally oldest across repos (`help wanted` / `claude` retired) |
 | 2.5 | Low-priority backlog | `low-priority` label — only consulted when no eligible higher-tier candidate exists in any scanned repo |
@@ -313,6 +316,25 @@ and the PR was left exactly as it is, counted as `deferred (clone held by
 another lane)` rather than `failed`, kept out of the Issue #335 failure streak
 so they can never escalate an issue against a healthy PR, and retried next
 cycle.
+
+**One shared store means one repository-wide fault (Issue #1093).** Sharing the
+object store is the right trade — the work volume does not carry a full checkout
+per slot — but it means a single damaged object poisons every slot and every
+milestone branch in that repository, and it persists across runs because nothing
+repairs it. Observed on GRQ-23 on 2026-09-05, `VibeCoder#984` failed at `setup`
+with `error: inflate: data stream error (unknown compression method)`, and the
+next issue in that repository would have failed identically.
+
+`setup` now recognises object-store corruption (`inflate:`, `loose object … is
+corrupt`, `unable to read sha1 file`, `object file … is empty`) as its own class,
+distinct from a bad ref or a missing branch. Every object is recoverable from the
+remote, so the worker repairs rather than fails: it runs `git fsck` for evidence,
+removes the shared clone **and every lane worktree hanging off it** — a surviving
+worktree directory would make `git worktree add` refuse the path — re-clones, and
+retries the branch. The repair is claimed **once per repository per run**, not
+once per issue. Only a repair that does not clear the corruption escalates, with
+the repository named, because at that point the work volume is the fault rather
+than the objects.
 
 `${WORK_DIR}/worktrees` is a reserved work-root name, so the stale-work-dir
 sweep never mistakes it for a disposable clone. The startup orphan-worktree

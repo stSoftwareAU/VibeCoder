@@ -100,6 +100,9 @@ import {
   agentProvidersBuildValue,
   enabledAgentProviders,
 } from "./agent_provider.ts";
+import { extensionBuildArguments } from "./container_extension_build.ts";
+import { EXTENSION_START_ENV } from "./container_extension_start.ts";
+import type { ContainerExtensionSpec } from "../types.ts";
 import { resolveContentApprovalStateDir } from "./content_approval_state_dir.ts";
 import {
   CUSTOM_PROMPT_PATH_MAP_ENV,
@@ -160,7 +163,11 @@ export interface ContainerLaunchInputs {
   descriptor: ContainerRuntimeDescriptor;
   /** The parsed `container/tools.json` (Issue #4061). */
   manifest: ContainerManifest;
-  /** Content-derived image reference (Issue #4062). */
+  /**
+   * Content-derived reference of the **standard** image (Issue #4062). With
+   * an extension configured this is the base the operator's layer builds
+   * `FROM`; without one it is also the image the container runs.
+   */
   image: string;
   /** Name the container is started under, so it can be stopped by name. */
   containerName: string;
@@ -253,6 +260,36 @@ export interface ContainerLaunchInputs {
    * is byte-identical to what an unconfigured host had before.
    */
   customPromptPaths?: readonly string[];
+  /**
+   * This deployment's private environment extension (Issue #980, parent
+   * #933).
+   *
+   * Absent — the public Vibe Coder and every deployment that configures none —
+   * leaves the plan byte-for-byte what it emits today: one build, one tag.
+   * Present, the plan carries a second build of the operator's own
+   * Containerfile `FROM` the standard image, and the container runs the
+   * layered tag.
+   */
+  containerExtension?: ContainerExtensionLaunch;
+}
+
+/** The operator's private layer, as the plan needs it (Issue #980). */
+export interface ContainerExtensionLaunch {
+  /** The validated declaration (Issue #978). */
+  spec: ContainerExtensionSpec;
+  /**
+   * Content-derived reference of the layered image — the enumerated inputs,
+   * the deployment's selections *and* the extension digest (Issue #979). This
+   * is the tag the container runs.
+   */
+  image: string;
+  /**
+   * The operator's Containerfile, as read from the host. Read by the caller
+   * rather than here so the plan builder stays free of filesystem access; the
+   * plan refuses one that does not derive `FROM ${VIBE_BASE_IMAGE}` before any
+   * build runs.
+   */
+  containerfileText: string;
 }
 
 /**
@@ -422,8 +459,16 @@ export interface ContainerLaunchPlan {
   claimFloorOrigin: string;
   /** Arguments that report whether the image is already present. */
   imageInspectArgs: string[];
-  /** Arguments that build the image. */
+  /** Arguments that build the standard image. */
   buildArgs: string[];
+  /**
+   * Arguments that build the operator's private layer `FROM` the standard
+   * image (Issue #980) — empty for every deployment that configures none.
+   *
+   * Run **after** {@link buildArgs}: the layer's `FROM` names the tag that
+   * build produces, so a failed first build must never reach this one.
+   */
+  extensionBuildArgs: string[];
   /**
    * Arguments that stop the runtime's persistent build helper after the
    * image exists (Issue #4331) — empty for runtimes that have none.
@@ -598,6 +643,7 @@ const CONTAINER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 // The two names container_launch has always published are re-exported here.
 import {
   isAbsolutePath,
+  isAtOrAbove,
   isRootPath,
   joinPath,
   type LauncherPathStyle,
@@ -614,16 +660,6 @@ import {
 export { type LauncherPathStyle, pathStyleFor };
 
 /**
- * A path reduced to a comparable form.
- *
- * Windows paths are matched case-insensitively and either separator, so
- * `C:\Users\Vibe` and `c:/users/vibe` are recognised as the same directory.
- */
-function comparablePath(path: string, style: LauncherPathStyle): string {
-  return style === "windows" ? path.replace(/\\/g, "/").toLowerCase() : path;
-}
-
-/**
  * True when a value carries a character the launcher's framing cannot pass.
  *
  * Scanned by code point rather than by regular expression so the check is
@@ -635,17 +671,6 @@ function hasControlCharacter(value: string): boolean {
     if (code < 0x20 || code === 0x7f) return true;
   }
   return false;
-}
-
-/** True when `ancestor` is `path` or a directory above it. */
-function isAtOrAbove(
-  ancestor: string,
-  path: string,
-  style: LauncherPathStyle,
-): boolean {
-  const left = comparablePath(ancestor, style);
-  const right = comparablePath(path, style);
-  return left === right || right.startsWith(`${left}/`);
 }
 
 /**
@@ -903,6 +928,9 @@ export function buildContainerLaunchPlan(
 ): ContainerLaunchPlan {
   const { descriptor, manifest, image, containerName, hostPaths } = inputs;
   const providers = inputs.agentProviders ?? enabledAgentProviders();
+  // The image the container runs: the operator's layer when one is configured
+  // (Issue #980), else the standard image, exactly as before.
+  const runImage = inputs.containerExtension?.image ?? image;
 
   if (!CONTAINER_NAME_RE.test(containerName)) {
     throw new Error(
@@ -911,12 +939,17 @@ export function buildContainerLaunchPlan(
       } is not a plain name the runtime accepts.`,
     );
   }
-  if (image.trim() === "" || hasControlCharacter(image) || /\s/.test(image)) {
-    throw new Error(
-      `Refusing to launch: image reference ${
-        JSON.stringify(image)
-      } is empty or unframeable.`,
-    );
+  for (const reference of [image, runImage]) {
+    if (
+      reference.trim() === "" || hasControlCharacter(reference) ||
+      /\s/.test(reference)
+    ) {
+      throw new Error(
+        `Refusing to launch: image reference ${
+          JSON.stringify(reference)
+        } is empty or unframeable.`,
+      );
+    }
   }
   // A launcher with no usable deadline would wait on a wedged container for
   // ever, which is the whole failure Issue #4173 exists to end.
@@ -1095,6 +1128,17 @@ export function buildContainerLaunchPlan(
   if (customPromptMap) {
     runArgs.push("--env", `${CUSTOM_PROMPT_PATH_MAP_ENV}=${customPromptMap}`);
   }
+  // The deployment's extension start script (Issue #981, parent #933): the
+  // entrypoint runs `${EXTENSION_PREFIX}/<start>` before the driver and
+  // aborts the sandbox start when it does not succeed. Emitted only when the
+  // declaration states a `start`, so an extension that starts nothing — and
+  // the public Vibe Coder — hands the container no such environment and the
+  // entrypoint's block stays inert. No port is published for it: the services
+  // are container-internal and the agent reaches them from inside.
+  const extensionStart = inputs.containerExtension?.spec.start;
+  if (extensionStart !== undefined) {
+    runArgs.push("--env", `${EXTENSION_START_ENV}=${extensionStart}`);
+  }
   // Fleet telemetry names the real host, not the per-run container name.
   if (inputs.hostId) {
     runArgs.push("--env", `VIBE_HOST_ID=${inputs.hostId}`);
@@ -1128,7 +1172,7 @@ export function buildContainerLaunchPlan(
     );
   }
   // Last, so the launcher can append the worker's own arguments after it.
-  runArgs.push(image);
+  runArgs.push(runImage);
 
   assertRunArgumentsContained(runArgs, readOnlyRoot, tmpfsArguments);
 
@@ -1158,7 +1202,7 @@ export function buildContainerLaunchPlan(
     ...volumeMounts.flatMap(
       (mount) => buildMountArguments(descriptor, mount),
     ),
-    image,
+    runImage,
     `${manifest.user.uid}:${manifest.user.gid}`,
     ...volumeMounts.map((mount) => mount.target),
   ];
@@ -1197,6 +1241,24 @@ export function buildContainerLaunchPlan(
   }
   buildArgs.push(joinPath(base, "container", style));
 
+  // The operator's private layer (Issue #980, parent #933): a second build,
+  // after the first, of their own Containerfile `FROM` the tag the first one
+  // produces. The build context is the extension directory alone — no host
+  // mount, no published port — and the finished list goes through the same
+  // containment assertion the run and init lists do, so a later edit cannot
+  // quietly broaden it. A Containerfile that does not derive from the standard
+  // image is refused inside here, before any build runs.
+  const extensionBuildArgs = inputs.containerExtension
+    ? extensionBuildArguments({
+      spec: inputs.containerExtension.spec,
+      baseImage: image,
+      extensionImage: inputs.containerExtension.image,
+      containerfileText: inputs.containerExtension.containerfileText,
+      style,
+    })
+    : [];
+  assertRunArgumentsContained(extensionBuildArgs);
+
   // The floor the launcher's own disk decisions compare against, and where
   // each term came from, so `run.sh` names the number that refused a launch
   // instead of recomputing it from two environment variables (Issue #732).
@@ -1205,10 +1267,14 @@ export function buildContainerLaunchPlan(
 
   return {
     runtime: descriptor.executable,
-    image,
-    // One image today: the standard build is its own whole chain. A layered
-    // build appends the image it is built FROM (Issue #1059).
-    keepImages: [image],
+    // What the container runs: the operator's layer when one is configured
+    // (Issue #980), else the standard image, exactly as before.
+    image: runImage,
+    // The chain the launch depends on, deepest last (Issue #1059). One image
+    // without an extension — the standard build is its own whole chain; two
+    // with one, because the layer is built FROM the standard image and a
+    // prune told only the leaf would untag that base on every launch.
+    keepImages: runImage === image ? [image] : [runImage, image],
     containerName,
     watchdogSeconds: Math.floor(inputs.watchdogSeconds),
     mounts,
@@ -1227,8 +1293,12 @@ export function buildContainerLaunchPlan(
     claimFloorGb: floors.lowFloorGb,
     claimFloorPercent: floors.lowFloorPercent,
     claimFloorOrigin: diskFloorOrigin(floors),
-    imageInspectArgs: [...dialect.imageInspectArgs, image],
+    // The presence check names the image that runs, so a host whose layered
+    // image is absent runs both builds and one whose layer is present runs
+    // neither (Issue #980): the extension tag covers the base's inputs too.
+    imageInspectArgs: [...dialect.imageInspectArgs, runImage],
     buildArgs,
+    extensionBuildArgs,
     builderStopArgs: [...dialect.builderStopArgs],
     builderAbsentPatterns: [...dialect.builderAbsentPatterns],
     runArgs,
@@ -1250,6 +1320,8 @@ export type ContainerLaunchPlanKey =
   | "init"
   | "exists"
   | "build"
+  // The operator's private layer, built after `build` (Issue #980).
+  | "extension-build"
   | "run";
 
 /** A parsed plan, as the launcher reconstructs it. */
@@ -1271,6 +1343,8 @@ export interface ParsedContainerLaunchPlan {
   claimFloorOrigin: string;
   exists: string[];
   build: string[];
+  /** The operator's private layer build, empty when none is configured. */
+  extensionBuild: string[];
   run: string[];
 }
 
@@ -1301,6 +1375,9 @@ export function renderContainerLaunchPlan(plan: ContainerLaunchPlan): string {
     `claim-floor-origin=${plan.claimFloorOrigin}`,
     ...plan.imageInspectArgs.map((arg) => `exists=${arg}`),
     ...plan.buildArgs.map((arg) => `build=${arg}`),
+    // After the standard build, so a launcher executing the stream in order
+    // builds the operator's layer on an image that already exists (#980).
+    ...plan.extensionBuildArgs.map((arg) => `extension-build=${arg}`),
     ...plan.builderStopArgs.map((arg) => `builder-stop=${arg}`),
     ...plan.builderAbsentPatterns.map((p) => `builder-absent=${p}`),
     ...plan.runArgs.map((arg) => `run=${arg}`),
@@ -1346,6 +1423,7 @@ export function parseContainerLaunchPlanText(
     claimFloorOrigin: "",
     exists: [],
     build: [],
+    extensionBuild: [],
     run: [],
   };
 
@@ -1399,6 +1477,9 @@ export function parseContainerLaunchPlanText(
         break;
       case "build":
         parsed.build.push(value);
+        break;
+      case "extension-build":
+        parsed.extensionBuild.push(value);
         break;
       case "run":
         parsed.run.push(value);

@@ -155,6 +155,43 @@ async function runGitOrThrow(
 }
 
 /**
+ * Arm auto-merge on a PR the moment it exists, and say what happened
+ * (Issues #1136, #470).
+ *
+ * Arming at creation is the fleet's *primary* landing mechanism — the
+ * priority 1.65 sweep runs before the work that raises PRs, so it cannot see
+ * a PR its own cycle created. That makes this the call whose refusals matter:
+ * a gate may refuse the merge, but it may not refuse silently, or an unarmed
+ * PR blocks its work stream with nothing in the log to say why.
+ */
+async function armAutoMergeAtCreation(
+  repo: string,
+  prNumber: number,
+  deps: WorkerDeps,
+): Promise<void> {
+  const logger = deps.logger;
+  const result = await deps.pr.finalisePr({
+    repo,
+    prNumber,
+    skipAutoMerge: false,
+    // Route the milestone gates' warnings into the worker log rather than
+    // `console.warn`, which no operator reads.
+    log: (message: string) => logger.warn(message, { repo, prNumber }),
+  });
+  if (result.ok) {
+    logger.info(`Auto-merge armed at creation: ${result.value}`, {
+      repo,
+      prNumber,
+    });
+    return;
+  }
+  logger.warn(`Auto-merge NOT armed at creation: ${result.error.message}`, {
+    repo,
+    prNumber,
+  });
+}
+
+/**
  * Recover an existing PR by updating its body and labels, then finalise (Issue #1189).
  *
  * Issue #1559: When the recovered PR is already merged, skip the redundant
@@ -218,13 +255,10 @@ export async function recoverAndFinaliseExistingPr(
       );
     }
 
+    // Issue #1136: arm auto-merge here, on the recovery path too — see the
+    // note on the creation path below.
     if (prNumber > 0) {
-      const isMilestonePr = Boolean(milestoneTitle && state.milestoneBranch);
-      await deps.pr.finalisePr({
-        repo,
-        prNumber,
-        skipAutoMerge: isMilestonePr,
-      });
+      await armAutoMergeAtCreation(repo, prNumber, deps);
     }
   } catch (err) {
     logger.warn("Post-recovery finalisation error (non-fatal)", {
@@ -1340,14 +1374,21 @@ async function completionBody(
       );
     }
 
-    // Skip auto-merge for milestone PRs — they are larger and need manual review (Issue #1125)
+    // Arm auto-merge the moment the PR exists (Issue #1136). GitHub then
+    // lands it as soon as its checks pass, with no cycle boundary to wait
+    // for. The priority 1.65 sweep runs *before* the issue work that raises
+    // PRs, so it structurally cannot see a PR this cycle created — leaving
+    // arming to the sweep meant a green, unblocked PR sat open for up to an
+    // hour, freezing every sibling issue the blocking guard defers to it.
+    //
+    // Issue #1125 skipped this for "milestone PRs". The PR raised here is a
+    // milestone *child* — this run's branch into `milestone/**` — not the
+    // summary PR into the default branch, which `milestone_completion.ts`
+    // raises and `decideSummaryPrMerge` re-gates on open children at merge
+    // time (Issue #3909). The sweep already merged these children, so the
+    // skip only ever delayed them.
     if (prNumber > 0) {
-      const isMilestonePr = Boolean(milestoneTitle && state.milestoneBranch);
-      await deps.pr.finalisePr({
-        repo,
-        prNumber,
-        skipAutoMerge: isMilestonePr,
-      });
+      await armAutoMergeAtCreation(repo, prNumber, deps);
     }
 
     // Issue #1613: Surface a rejected dependency bump on the PR thread

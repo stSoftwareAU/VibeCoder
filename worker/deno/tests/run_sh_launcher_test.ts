@@ -46,6 +46,7 @@ import {
   BASH_LAUNCHER,
   buildCount,
   builderHealed,
+  declareContainerExtension,
   denoInvocationOrder,
   type Harness,
   initCount,
@@ -53,6 +54,7 @@ import {
   type LaunchOutcome,
   mountValues,
   recorded,
+  recordedBuild,
   recordedLaunchLog,
   removedImages,
   removedVolumes,
@@ -2057,6 +2059,140 @@ Deno.test("run.sh - an unconfigured host reports the default floor as default (I
     const log = await runCoreLog(harness);
     assertStringIncludes(log, "larger of 20 GB and 10% of");
     assertStringIncludes(log, "gb=default,percent=default");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The operator's private layer (Issue #980, parent #933)
+// ---------------------------------------------------------------------------
+
+Deno.test("run.sh - builds the operator's private layer after the standard image (Issue #980)", async () => {
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "1" });
+  try {
+    const directory = await declareContainerExtension(harness, {
+      start: "start.sh",
+    });
+    const spec = {
+      path: directory,
+      containerfile: "Containerfile",
+      start: "start.sh",
+    };
+    const extensionImage = await resolveContainerImageReference(REPO_ROOT, {
+      containerExtension: spec,
+    });
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // Two builds, in plan order: the standard image, then the layer.
+    assertEquals(await buildCount(harness), 2);
+    const standard = await recordedBuild(harness, 1);
+    assert(standard, "the standard image must be built first");
+    assertEquals(standard[standard.indexOf("--tag") + 1], IMAGE);
+    assertEquals(standard.at(-1), `${REPO_ROOT}/container`);
+
+    const layer = await recordedBuild(harness, 2);
+    assert(layer, "the operator's layer must be built second");
+    assertEquals(layer[0], "build");
+    assertEquals(
+      layer[layer.indexOf("--file") + 1],
+      `${directory}/Containerfile`,
+    );
+    assertEquals(layer[layer.indexOf("--tag") + 1], extensionImage);
+    // The layer names the tag the first build produced, exactly.
+    assert(
+      layer.includes(`VIBE_BASE_IMAGE=${IMAGE}`),
+      `the layer must build FROM ${IMAGE}: ${layer.join(" ")}`,
+    );
+    assert(layer.includes("VIBE_EXTENSION_START=start.sh"));
+    // The build context is the extension directory alone.
+    assertEquals(layer.at(-1), directory);
+
+    // ...and the container runs the layered tag, not the standard one.
+    const run = await recorded(harness, "run");
+    assert(run, `no container run was recorded: ${outcome.stderr}`);
+    assertEquals(run.at(-1), extensionImage);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a failed standard build never reaches the extension build (Issue #980)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+  });
+  try {
+    await declareContainerExtension(harness);
+
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "a failed build must fail the launch");
+    assertStringIncludes(outcome.stderr, "failed to build");
+
+    // The layer builds `FROM` a tag that was never produced, so it must not
+    // have been attempted — and nothing was launched.
+    assertEquals(await buildCount(harness), 1);
+    assertEquals(await recordedBuild(harness, 2), null);
+    assertEquals(await recorded(harness, "run"), null);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a failed extension build fails the launch and starts nothing (Issue #980)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    // The standard build is the first invocation and succeeds; the layer is
+    // the second, which is where the stub fails.
+    STUB_BUILD_RETRY_EXIT: "9",
+  });
+  try {
+    await declareContainerExtension(harness);
+
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 9, outcome.stderr);
+    assertStringIncludes(outcome.stderr, "container extension");
+    assertEquals(await buildCount(harness), 2);
+    assertEquals(await recorded(harness, "run"), null);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a Containerfile that is not FROM the standard image builds nothing (Issue #980)", async () => {
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "1" });
+  try {
+    await declareContainerExtension(harness, {
+      containerfile: "FROM ubuntu:24.04\nRUN echo private\n",
+    });
+
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "the launch must be refused");
+    assertStringIncludes(outcome.stderr, "VIBE_BASE_IMAGE");
+    // Refused while the plan was built: not one build ran, and nothing
+    // started.
+    assertEquals(await buildCount(harness), 0);
+    assertEquals(await recorded(harness, "run"), null);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - no extension leaves the launch exactly as it was (Issue #980)", async () => {
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "1" });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    assertEquals(await buildCount(harness), 1);
+    const build = await recordedBuild(harness, 1);
+    assert(build, "the standard image must still be built");
+    assertEquals(build[build.indexOf("--tag") + 1], IMAGE);
+    const run = await recorded(harness, "run");
+    assert(run, `no container run was recorded: ${outcome.stderr}`);
+    assertEquals(run.at(-1), IMAGE);
   } finally {
     await harness.cleanup();
   }

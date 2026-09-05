@@ -261,6 +261,22 @@ export interface WorkerConfig {
    */
   progressExtensionCheckSeconds?: number;
   /**
+   * Tee every agent invocation's raw stream-json to a redacted transcript
+   * under the worker log directory (`.config.json` `agent_transcript_enabled`,
+   * Issue #1141; default: false).
+   *
+   * A transcript is the raw agent stream — model output, issue and repository
+   * text, file contents the agent read and command output — so this is off
+   * unless a deployment asks for it. It has to be on for **every** run for a
+   * failed one to have a transcript, because which run fails is not knowable
+   * in advance; what happens to a transcript afterwards is the callback
+   * hook's decision, not the tee's.
+   *
+   * Optional so the existing `WorkerConfig` literals stay valid; `loadConfig`
+   * always populates it from `OPERATIONAL_DEFAULTS`.
+   */
+  agentTranscriptEnabled?: boolean;
+  /**
    * Let the worker schedule its own auto-filed diagnostics (Issue #505;
    * default: true).
    *
@@ -1062,6 +1078,11 @@ export interface ConfigFile {
   /** Seconds between working-tree progress checks (Issue #4295) */
   progress_extension_check_seconds?: number;
   /**
+   * Tee the raw agent stream to a redacted transcript (Issue #1141; default
+   * false). Off unless asked for — the transcript carries repository content.
+   */
+  agent_transcript_enabled?: boolean;
+  /**
    * Let the worker schedule its own auto-filed diagnostics (Issue #505;
    * default true). `false` restores the human-`work-on`-only behaviour.
    */
@@ -1237,6 +1258,17 @@ export interface ConfigFile {
    */
   container_tools?: ContainerToolSpec[];
   /**
+   * This deployment's private environment extension (Issue #978, parent
+   * #933).
+   *
+   * Deliberately untyped here: the block arrives untrusted from the
+   * operator's file, and only `parseContainerExtension()` /
+   * `assertContainerExtension()` in `lib/container_extension_config.ts` may be
+   * trusted to produce a {@link ContainerExtensionSpec}. They fail loud on any
+   * fault rather than repairing it.
+   */
+  container_extension?: unknown;
+  /**
    * Custom GitHub label → non-public prompt file mappings (Issue #846, part
    * of #843).
    *
@@ -1299,6 +1331,30 @@ export interface ContainerToolSpec {
 }
 
 /**
+ * A validated per-deployment private environment extension (Issue #978,
+ * parent #933).
+ *
+ * The operator syncs their own private extension definition into {@link path}
+ * on the host; the Vibe Coder clones nothing. Only
+ * `parseContainerExtension()` / `assertContainerExtension()` in
+ * `lib/container_extension_config.ts` produce this shape, so anything holding
+ * one already knows the path is absolute, contained (never the host home
+ * directory, an ancestor of it, or a filesystem root) and that
+ * `containerfile`/`start` stay inside it.
+ */
+export interface ContainerExtensionSpec {
+  /** Absolute host directory holding the extension definition. */
+  path: string;
+  /** Containerfile relative to {@link path}; defaults to `Containerfile`. */
+  containerfile: string;
+  /**
+   * Service start script relative to {@link path}, run before the worker.
+   * Absent means a toolchain-only extension with no services to start.
+   */
+  start?: string;
+}
+
+/**
  * Raw `idle_task_cadence` block as it appears in `.config.json` (Issue #4011).
  *
  * Every field is optional and deliberately loosely typed: the block arrives
@@ -1323,6 +1379,22 @@ export interface IdleTaskCadenceFileConfig {
 }
 
 /**
+ * The phase a `custom_label_prompts` mapping runs in (Issue #1008, part of
+ * #938).
+ *
+ * - `issue` — today's behaviour: a labelled **issue** runs the generic
+ *   implementation phase with the operator's template, producing a branch,
+ *   commits and a PR.
+ * - `pr` — a labelled open **pull request** gets a full checkout plus `gh`,
+ *   like a PR-feedback run, and the operator's prompt decides what happens
+ *   next. The run consumes the label.
+ *
+ * The two values carry different placeholder contracts — see
+ * `lib/custom_prompt_loader.ts`.
+ */
+export type CustomPromptTargetPhase = "issue" | "pr";
+
+/**
  * A validated operator mapping from a GitHub label to a non-public prompt
  * template file on the host (Issue #846, part of #843).
  *
@@ -1336,6 +1408,15 @@ export interface CustomLabelPromptMapping {
   label: string;
   /** Absolute host path of the prompt template file. */
   promptPath: string;
+  /**
+   * Which phase this mapping's prompt runs in (Issue #1008, part of #938).
+   *
+   * Required on the validated type and defaulted during parse, so no call
+   * site can dispatch a mapping without having considered its phase. An entry
+   * that states no `target_phase` parses as `issue`, which is byte-identical
+   * to the behaviour every mapping had before the field existed.
+   */
+  targetPhase: CustomPromptTargetPhase;
   /**
    * The built-in phase this mapping overrides (Issue #849, part of #843).
    *

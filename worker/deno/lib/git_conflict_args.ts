@@ -42,3 +42,19 @@ export function buildCheckoutStrategyArgs(
 ): string[] {
   return ["checkout", `--${strategy}`, "--", file];
 }
+
+/**
+ * Build the argv for removing a (untrusted) conflicted path, with the `--`
+ * end-of-options separator before the filename.
+ *
+ * Used when the incoming branch deleted the file (Issue #1048): there is no
+ * incoming side to check out, so accepting that side means removing it here.
+ * `--force` because the path is conflicted, and `--ignore-unmatch` so a file
+ * git has already dropped from the working tree is not a failure.
+ *
+ * @param file - The conflicted path to remove (untrusted positional).
+ * @returns The git argument array, e.g. `["rm", "--force", "--", file]`.
+ */
+export function buildRemovePathArgs(file: string): string[] {
+  return ["rm", "--force", "--ignore-unmatch", "--", file];
+}

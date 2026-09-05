@@ -20,6 +20,11 @@ import {
   type SummaryPrMergeDecision,
 } from "./milestone_children_gate.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
+import {
+  isMergeCommitNotAllowed,
+  mergeMethodFlagForHead,
+  squashedSyncWarning,
+} from "./milestone_sync_pr.ts";
 
 /** Auto-merge enablement result codes. */
 export enum AutoMergeResult {
@@ -148,6 +153,13 @@ export interface EnableAutoMergeOptions {
   directMergeFn?: typeof directMergePr;
   /** Base branch, when the caller already knows it (saves a lookup). */
   baseRefName?: string;
+  /**
+   * Fleet logins, so the gated direct merge can tell a genuine review from a
+   * sibling fleet account's approval (Issue #1082). Supplying them arms the
+   * approved-default-branch path on an unprotected base — the only path that
+   * can land such a PR at all. Omitted, the Issue #2416 refusal stands.
+   */
+  fleetAuthors?: readonly string[];
 }
 
 /** Result of enabling auto-merge. */
@@ -392,10 +404,20 @@ export async function enableAutoMerge(
       baseProtectionMemo.set(memoKey, protectedBase);
     }
     if (protectedBase !== true) {
+      // Issue #1082: an unprotected base is the only place the default-branch
+      // guard has no alternative path to offer, so hand the gated merge the
+      // fleet logins and let a genuine outside approval stand in for the
+      // branch protection that is not there.
       const merge = await (options.directMergeFn ?? directMergePr)(
         repo,
         prNumber,
         ghCommandFn,
+        undefined,
+        options.fleetAuthors && options.fleetAuthors.length > 0
+          ? {
+            approvedDefaultBranch: { fleetAuthors: options.fleetAuthors },
+          }
+          : {},
       );
       if (!merge.ok) {
         return {
@@ -411,6 +433,13 @@ export async function enableAutoMerge(
             `PR #${prNumber} merged directly onto unprotected '${baseRefName}' after the pre-merge gate (Issue #4375)`,
         };
       }
+      if (merge.value.blocked === "default_branch_unapproved") {
+        return {
+          result: AutoMergeResult.Deferred,
+          message:
+            `PR #${prNumber} held on default branch '${baseRefName}': no approving review from outside the fleet, and the base has no required checks to enforce one (Issue #1082)`,
+        };
+      }
       return {
         result: AutoMergeResult.Deferred,
         message:
@@ -421,6 +450,11 @@ export async function enableAutoMerge(
     }
   }
 
+  // A milestone sync must land as a merge commit, not a squash (Issue #1048):
+  // squashed, the default branch never becomes an ancestor of the milestone
+  // branch and its deletions return as conflicts. Everything else squashes.
+  let mergeMethod = mergeMethodFlagForHead(options.headRefName);
+
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       await ghCommandFn([
@@ -430,14 +464,27 @@ export async function enableAutoMerge(
         "--repo",
         repo,
         "--auto",
-        "--squash",
+        mergeMethod,
       ]);
       return {
         result: AutoMergeResult.Enabled,
-        message: `Auto squash merge enabled on PR #${prNumber}`,
+        message: `Auto ${
+          mergeMethod === "--merge" ? "merge-commit" : "squash"
+        } merge enabled on PR #${prNumber}`,
       };
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
+
+      // A repository that forbids merge commits cannot take the sync as one
+      // (Issue #1048). Downgrade to the squash it can take — loudly, naming
+      // the setting — rather than leaving the branch to drift unsynced. The
+      // check-resurrected-files gate is what catches the consequence.
+      if (mergeMethod === "--merge" && isMergeCommitNotAllowed(errorMsg)) {
+        log(squashedSyncWarning(repo, options.headRefName ?? "", errorMsg));
+        mergeMethod = "--squash";
+        continue;
+      }
+
       const classification = classifyAutoMergeFailure(errorMsg);
 
       if (classification === AutoMergeResult.NotAllowed) {

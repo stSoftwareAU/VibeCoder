@@ -25,6 +25,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
+import { readContainerExtensionSelection } from "../lib/container_extension_config.ts";
 import {
   CONTAINER_IMAGE_INPUTS,
   resolveContainerImageReference,
@@ -36,7 +37,7 @@ import { resolveTabletopImage } from "../lib/tabletop_container_runner.ts";
 import { checkContainerPrerequisites } from "../setup/prerequisites.ts";
 import type { PrerequisiteOptions } from "../setup/prerequisites.ts";
 import type { EnvLookup } from "../lib/env_lookup.ts";
-import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname.replace(
   /\/$/,
@@ -102,24 +103,34 @@ async function launcherImage(root: string): Promise<string> {
     manifest.installedProviders,
     HOST_ENV,
   );
+  const containerExtension = await readContainerExtensionSelection(
+    `${root}/.config.json`,
+    { env: HOST_ENV },
+  );
   return await resolveContainerImageReference(root, {
     containerTools: tools,
     ...(buildValue ? { agentProviders: buildValue } : {}),
+    ...(containerExtension ? { containerExtension } : {}),
   });
 }
 
 /**
  * The environment every caller below is driven with (Issue #962).
  *
- * Deliberately empty. Two families of variable would otherwise decide the
+ * Deliberately bare. Two families of variable would otherwise decide the
  * answer instead of the fixture: `CONFIG_FILE` / `CONFIG_PATH`, which name a
  * different configuration file, and `VIBE_AGENT_PROVIDER` /
  * `VIBE_IMAGE_AGENT_PROVIDERS`, which override or constrain the provider set
  * the suite itself runs under. Every one of them reads as absent here, so a
  * caller that fell back to `Deno.env.get` would be answered by the host
  * rather than by this map — and the tags below would stop agreeing.
+ *
+ * `HOME` is the one entry (Issue #978): the `container_extension` containment
+ * rule refuses a declaration it cannot check against a home directory, so a
+ * lookup that states none could not read the extension case at all. It names a
+ * directory no fixture is ever created under.
  */
-const HOST_ENV = emptyEnv;
+const HOST_ENV = envFrom({ HOME: "/vibe-operator-home" });
 
 /** Setup's container check against a host whose image is already built. */
 function prerequisiteOptions(
@@ -156,9 +167,23 @@ async function setupImage(
   return match[0];
 }
 
-/** The three configurations, and the tag each must produce everywhere. */
-const CONFIGURATIONS: Array<{ name: string; config: Record<string, unknown> }> =
-  [
+/** A throwaway extension directory, as an operator would sync one (#979). */
+async function extensionDirectory(): Promise<string> {
+  const root = await Deno.makeTempDir({ prefix: "vibe-image-extension-" });
+  await Deno.writeTextFile(`${root}/Containerfile`, "FROM vibe-coder:base\n");
+  await Deno.mkdir(`${root}/seed`);
+  await Deno.writeTextFile(
+    `${root}/seed/schema.sql`,
+    "CREATE TABLE jobs (id int);\n",
+  );
+  return root;
+}
+
+/** The four configurations, and the tag each must produce everywhere. */
+function configurations(
+  extension: string,
+): Array<{ name: string; config: Record<string, unknown> }> {
+  return [
     { name: "no selections", config: {} },
     {
       name: "a container_tools selection",
@@ -168,47 +193,96 @@ const CONFIGURATIONS: Array<{ name: string; config: Record<string, unknown> }> =
       name: "a non-default agent_providers set",
       config: { agent_providers: ["codex"], agent_provider: "codex" },
     },
+    {
+      name: "a container_extension declaration",
+      config: { container_extension: { path: extension } },
+    },
   ];
+}
 
 Deno.test("every caller names the image the launcher builds (Issues #743, #749)", async () => {
-  for (const { name, config } of CONFIGURATIONS) {
-    const root = await checkout(config);
-    try {
-      const expected = await launcherImage(root);
-      assertEquals(await setupImage(root), expected, `setup: ${name}`);
-      assertEquals(
-        await resolveTabletopImage({ repoRoot: root, env: HOST_ENV }),
-        expected,
-        `tabletop: ${name}`,
-      );
-    } finally {
-      await Deno.remove(root, { recursive: true });
+  const extension = await extensionDirectory();
+  try {
+    for (const { name, config } of configurations(extension)) {
+      const root = await checkout(config);
+      try {
+        const expected = await launcherImage(root);
+        assertEquals(await setupImage(root), expected, `setup: ${name}`);
+        assertEquals(
+          await resolveTabletopImage({ repoRoot: root, env: HOST_ENV }),
+          expected,
+          `tabletop: ${name}`,
+        );
+      } finally {
+        await Deno.remove(root, { recursive: true });
+      }
     }
+  } finally {
+    await Deno.remove(extension, { recursive: true });
   }
 });
 
 Deno.test("the tag changes with the selection, for every caller (Issue #749)", async () => {
   const setup: string[] = [];
   const tabletop: string[] = [];
-  for (const { config } of CONFIGURATIONS) {
-    const root = await checkout(config);
-    try {
-      setup.push(await setupImage(root));
-      tabletop.push(
-        await resolveTabletopImage({ repoRoot: root, env: HOST_ENV }),
-      );
-    } finally {
-      await Deno.remove(root, { recursive: true });
+  const extension = await extensionDirectory();
+  const cases = configurations(extension);
+  try {
+    for (const { config } of cases) {
+      const root = await checkout(config);
+      try {
+        setup.push(await setupImage(root));
+        tabletop.push(
+          await resolveTabletopImage({ repoRoot: root, env: HOST_ENV }),
+        );
+      } finally {
+        await Deno.remove(root, { recursive: true });
+      }
     }
+  } finally {
+    await Deno.remove(extension, { recursive: true });
   }
-  // Three distinct configurations, three distinct tags — agreement on one
-  // tag for all three would be the defect wearing a passing test.
-  assertEquals(new Set(setup).size, CONFIGURATIONS.length, setup.join(" "));
-  assertEquals(
-    new Set(tabletop).size,
-    CONFIGURATIONS.length,
-    tabletop.join(" "),
-  );
+  // Four distinct configurations, four distinct tags — agreement on one tag
+  // for all four would be the defect wearing a passing test.
+  assertEquals(new Set(setup).size, cases.length, setup.join(" "));
+  assertEquals(new Set(tabletop).size, cases.length, tabletop.join(" "));
+});
+
+// The extension's contents are what the tag names, not the declaration alone:
+// a host whose operator edited a dump must rebuild rather than reuse the image
+// built from the previous contents (Issue #979).
+Deno.test("editing the extension moves the tag for every caller (Issue #979)", async () => {
+  const extension = await extensionDirectory();
+  const root = await checkout({ container_extension: { path: extension } });
+  try {
+    const before = {
+      launcher: await launcherImage(root),
+      setup: await setupImage(root),
+      tabletop: await resolveTabletopImage({ repoRoot: root, env: HOST_ENV }),
+    };
+    assertEquals(before.setup, before.launcher);
+    assertEquals(before.tabletop, before.launcher);
+
+    await Deno.writeTextFile(
+      `${extension}/seed/schema.sql`,
+      "CREATE TABLE jobs (id bigint);\n",
+    );
+
+    const after = {
+      launcher: await launcherImage(root),
+      setup: await setupImage(root),
+      tabletop: await resolveTabletopImage({ repoRoot: root, env: HOST_ENV }),
+    };
+    assert(
+      after.launcher !== before.launcher,
+      `editing the extension left the tag at ${before.launcher}`,
+    );
+    assertEquals(after.setup, after.launcher);
+    assertEquals(after.tabletop, after.launcher);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(extension, { recursive: true });
+  }
 });
 
 Deno.test("a checkout with no configuration selects nothing (Issues #743, #749)", async () => {
@@ -220,6 +294,7 @@ Deno.test("a checkout with no configuration selects nothing (Issues #743, #749)"
     });
     assertEquals(selection.tools, []);
     assertEquals(selection.agentProviders, undefined);
+    assertEquals(selection.containerExtension, undefined);
     assertEquals(
       await setupImage(root),
       await resolveContainerImageReference(root, {}),

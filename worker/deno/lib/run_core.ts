@@ -373,6 +373,19 @@ export interface WorkProgressTracker {
   resetScanProgress: () => void;
 }
 
+/** Options for one auto-merge sweep (Issue #1136). */
+export interface EnsureAutoMergeOptions {
+  /**
+   * Bypass the iteration-scoped open-PR cache and list live.
+   *
+   * The priority 1.65 sweep populates `prs_${author}` before the issue scan
+   * runs. A second sweep in the same cycle that read that cache would be
+   * served the pre-scan list — precisely the list with the cycle's own new
+   * PRs missing — and would attempt nothing.
+   */
+  refreshOpenPrs?: boolean;
+}
+
 /**
  * Dependency injection interface for the main event loop.
  *
@@ -473,8 +486,16 @@ export interface RunCoreDeps {
    */
   scanBlockingPrStalls?: () => Promise<Result<void>>;
 
-  // Priority 1.65: Auto-merge
-  ensureAutoMerge: () => Promise<Result<void>>;
+  /**
+   * Priority 1.65: Auto-merge, and the post-scan pass that repeats it once
+   * the issue-scan pool has drained (Issue #1136).
+   *
+   * The priority runs it with no options — the cached open-PR list is fresh
+   * enough that early in the cycle. The post-scan pass sets
+   * `refreshOpenPrs`, because the PRs it exists to catch were raised *after*
+   * that cache was populated.
+   */
+  ensureAutoMerge: (opts?: EnsureAutoMergeOptions) => Promise<Result<void>>;
 
   // Priority 1.66: Branch cleanup
   cleanupMergedBranches: () => Promise<Result<void>>;
@@ -549,6 +570,22 @@ export interface RunCoreDeps {
    * who never opts in gets a byte-identical ladder.
    */
   findAndProcessCustomLabelPrompts?: (
+    opts?: HandlerExecuteOptions,
+  ) => Promise<Result<PriorityHandlerResult>>;
+
+  /**
+   * Priority 1.87: PR-phase custom label prompts (Issue #1011, part of #938).
+   *
+   * Dispatches an **open PR** carrying a configured `pr`-phase
+   * `custom_label_prompts` label: the label is consumed, the PR head branch is
+   * checked out, and the operator's prompt runs against it with a full working
+   * tree and `gh` — like a PR-feedback run. Each label application dispatches
+   * at most one run; the developer re-applies the label to run again.
+   *
+   * Optional, and **absent when no `pr` mapping is configured**, so an
+   * operator who never opts in gets a byte-identical ladder.
+   */
+  findAndProcessCustomLabelPrPrompts?: (
     opts?: HandlerExecuteOptions,
   ) => Promise<Result<PriorityHandlerResult>>;
 
@@ -1546,6 +1583,18 @@ export function buildPriorityDispatchTable(
         name: "Custom Label Prompts",
         agentBacked: true,
         execute: deps.findAndProcessCustomLabelPrompts,
+      }]
+      : []),
+    // Issue #1011 (part of #938): the PR-phase half of the same family. An
+    // open PR carrying a configured `pr` mapping's label gets a full checkout
+    // and the operator's prompt, and the run consumes the label. Like 1.86 the
+    // row exists only when a mapping of that phase is configured.
+    ...(deps.findAndProcessCustomLabelPrPrompts
+      ? [{
+        priority: 1.87,
+        name: "Custom Label PR Prompts",
+        agentBacked: true,
+        execute: deps.findAndProcessCustomLabelPrPrompts,
       }]
       : []),
     {
@@ -3817,6 +3866,69 @@ interface IdleHookOutcome {
 }
 
 /**
+ * Sweep auto-merge again once the issue-scan pool has drained (Issue #1136).
+ *
+ * The priority 1.65 sweep runs at the top of the cycle and the Priority 2
+ * scan — the pass that actually raises PRs — runs after it. The ordering
+ * guaranteed that a PR raised by cycle N was never swept by cycle N, so it
+ * waited for cycle N+1: up to an hour of a green, unblocked PR sitting with
+ * auto-merge unarmed, freezing every sibling issue the blocking guard defers
+ * to it. Five fleet PRs in one day needed a human to arm or merge them.
+ *
+ * Arming at PR creation is the primary fix; this is the structural backstop
+ * for the paths that cannot arm (a PR whose arming call failed, an
+ * unprotected base whose gated merge deferred because CI was still running
+ * when the PR was raised).
+ *
+ * Runs only when the cycle actually did work — an idle cycle raised no PR,
+ * so a second sweep would cost a `gh pr list` per repo per fleet author and
+ * find exactly what the first one did. Both branches log: "swept nothing"
+ * and "did not sweep" must never look the same from outside.
+ *
+ * The gate is a **claim**, not a success. A run that raised its PR and then
+ * failed — the security gate refused, the watchdog took the run at the
+ * deadline — leaves exactly the PR this pass exists for, and records only
+ * `recordClaim`. Gating on success would skip the sweep in the case where
+ * arming at creation is most likely to have been missed.
+ *
+ * Best-effort — a failure is logged loudly and the cycle continues.
+ */
+async function runPostScanAutoMerge(
+  deps: RunCoreDeps,
+  tracker: WorkProgressTracker,
+): Promise<void> {
+  const claimed = tracker.claimedRepos.size > 0;
+  const state = `claimedRepos=${tracker.claimedRepos.size} ` +
+    `foundClaimableIssue=${tracker.foundClaimableIssue} ` +
+    `scanHadSuccess=${tracker.scanHadSuccess}`;
+  if (!claimed && !tracker.scanHadSuccess && !tracker.foundClaimableIssue) {
+    deps.log(
+      `[post-scan-auto-merge] skipped reason=no-work-this-cycle ${state}`,
+    );
+    return;
+  }
+  deps.log(
+    `[post-scan-auto-merge] sweeping reason=work-this-cycle ${state}`,
+  );
+  try {
+    // Live listing, not the cache the 1.65 sweep filled before these PRs
+    // existed (see {@link EnsureAutoMergeOptions.refreshOpenPrs}).
+    const result = await deps.ensureAutoMerge({ refreshOpenPrs: true });
+    if (!result.ok) {
+      deps.logError(
+        `[post-scan-auto-merge] sweep failed: ${result.error.message}`,
+      );
+    }
+  } catch (err) {
+    deps.logError(
+      `[post-scan-auto-merge] sweep threw: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+/**
  * Run the idle-detect audit, the idle-decision census and the idle-task
  * filer for one "no claimable work" observation (Issues #2005, #2018,
  * #2023, #2048, #2106, #2475, #2811, #2813, #3526, #437, #460, #898).
@@ -4909,6 +5021,19 @@ export async function runCoreLoop(
           ) {
             throw laneSettled.value.rateLimitError;
           }
+
+          // --- Post-scan auto-merge sweep (Issue #1136) ---
+          // Every slot has drained, so every PR this cycle raised now
+          // exists. Sweep once more here rather than leaving them to the
+          // next cycle's priority 1.65 pass, which is up to an hour away
+          // and blocks every sibling issue while it waits.
+          //
+          // Placed BEFORE the cycle-ending breaks below: a cycle that
+          // stops on the failure threshold or the spend ceiling still
+          // raised the PRs it raised, and they must not be stranded until
+          // the next cycle — which, on those two paths, may never come.
+          await runPostScanAutoMerge(deps, tracker);
+
           if (scanResult.exitOuterLoop) {
             exitedOnFailures = true;
             break;
@@ -4927,7 +5052,6 @@ export async function runCoreLoop(
           if (scanResult.workVolumeFaulted) {
             workVolumeFaultReported = true;
           }
-
           // --- Idle-task issue filer (Issue #2005, #2023, #2048) ---
           // After a Priority 2 scan that found no claimable issue, fire
           // the framework filer so an `idle-task` issue is raised

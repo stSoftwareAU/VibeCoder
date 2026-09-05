@@ -18,6 +18,7 @@ import {
 } from "./issue_worker_types.ts";
 import type {
   DiscoveredIssue,
+  EnsureAutoMergeOptions,
   HandlerExecuteOptions,
   PriorityHandlerResult,
   RunCoreConfig,
@@ -76,9 +77,10 @@ import type {
 } from "./issue_finder_logger.ts";
 import {
   fetchAllOpenPRs,
-  fetchOpenPRsByUser,
+  fetchOpenPRsForFleet,
   fetchRecentlyClosedPRsForFleet,
 } from "./issue_query.ts";
+import { sweepAutoMerge } from "./auto_merge_sweep.ts";
 import { TimelineCache } from "./timeline_cache.ts";
 import { TimelineBatchRegistry } from "./timeline_batch_registry.ts";
 import { clearCommentCache } from "./comment_cache.ts";
@@ -173,6 +175,11 @@ import { processGrillMe } from "./grill_me_processor.ts";
 import { processQuorum } from "./quorum_processor.ts";
 import { dispatchCustomLabelPrompts } from "./custom_label_dispatch.ts";
 import { customDispatchMappings } from "./custom_label_prompts_config.ts";
+import { findCustomLabelPrCandidates } from "./custom_label_pr_finder.ts";
+import { dispatchCustomLabelPrPrompts } from "./custom_label_pr_dispatch.ts";
+import { buildCustomPrPrompt } from "./prompt_builder.ts";
+import { preparePrBranch } from "./pr_branch_preparation.ts";
+import { verifyPushLanded } from "./push_claim_verification.ts";
 
 // Failure & circuit breaker
 import {
@@ -248,11 +255,13 @@ import {
   resumeStateSurvivesRelease,
 } from "./resume_state_store.ts";
 import { invokeRunCallbacks } from "./run_callbacks.ts";
+import { recordCallbackOutcomes } from "./callback_failure_streak.ts";
 import { hasAnyCallback } from "./run_callbacks_config.ts";
 import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
 import { getRunId } from "./run_id.ts";
 import {
   type FleetAuthorSetInput,
+  resolveFleetMaintenanceAuthorSet,
   resolveFleetPrAuthorSet,
   resolveSuppressionExcludedLogins,
 } from "./fleet_authors.ts";
@@ -423,6 +432,15 @@ function resolveClaimHardCap(
     windowSeconds: Math.max(0, Math.round((ceilingMs - startedMs) / 1000)),
   };
 }
+
+/**
+ * How many deps factories this process has built (Issue #1098).
+ *
+ * Scopes each factory's trusted-author cache key, so two factories in one
+ * process — or a factory and any other consumer of the resolver — cannot
+ * share a cache entry by both counting cycles from one.
+ */
+let productionDepsFactoryCount = 0;
 
 /**
  * Create production RunCoreDeps wired to real implementations.
@@ -745,6 +763,16 @@ export async function createProductionRunCoreDeps(
 
   // Issue #256: identifies the cycle for the resolver's per-cycle cache, so
   // repeated reads inside one cycle cost no further `gh` calls.
+  //
+  // Issue #1098: the cache is a module singleton keyed by whatever the caller
+  // passes, so a bare counter restarting at 1 for every factory lets one
+  // consumer's result be served to another in the same process — the second
+  // factory's first refresh returned the first's cached verdict, including a
+  // cached failure it never made a call for. The id is therefore scoped to
+  // this factory as well as to the cycle: repeated reads inside one cycle
+  // still hit the cache, and nothing outside this factory can collide with
+  // it.
+  const trustRefreshScope = `run-core-deps-${++productionDepsFactoryCount}`;
   let trustRefreshCycle = 0;
 
   applyTrustSnapshot(trustSeed);
@@ -2187,68 +2215,81 @@ export async function createProductionRunCoreDeps(
     },
 
     // -- Priority 1.65: Auto-merge --
-    async ensureAutoMerge() {
-      try {
-        for (const repo of repos) {
-          if (!isRepoAllowed(repos, repo)) continue;
-          // Issue #1787: list open worker PRs through the cached
-          // `fetchOpenPRsByUser` helper so the auto-merge sweep
-          // shares the iteration-scoped `prs_${user}` cache.
-          try {
-            const prs = await fetchOpenPRsByUser(
-              repo,
-              githubUser,
-              issueCache,
-              runGhCommand,
-            );
-            let mutated = false;
-            for (const pr of prs) {
-              try {
-                // Issue #3909: pass the head branch so the milestone
-                // open-children gate needs no extra lookup.
-                const outcome = await enableAutoMerge({
-                  repo,
-                  prNumber: pr.number,
-                  headRefName: pr.headRefName,
-                  // Issue #4375: the base decides between GitHub's --auto
-                  // (protected: waits for checks) and the gated direct
-                  // merge (unprotected: --auto would merge immediately).
-                  baseRefName: pr.baseRefName,
-                  log: (message: string) => logger.warn(message),
-                });
-                // Issue #470: this outcome used to be discarded. A gate that
-                // refused every merge in the fleet was therefore invisible —
-                // the priority logged its name and a duration while nothing
-                // merged, no milestone child closed, and no milestone ever
-                // completed. A gate may refuse; it may not refuse silently.
-                logAutoMergeOutcome(logger, repo, pr.number, outcome);
-                mutated = true;
-              } catch (err) {
-                // Best-effort per PR — but say so. A silent catch here is how
-                // the same class of failure hides next time (Issue #470).
-                logger.warn("Auto-merge attempt threw", {
-                  repo,
-                  prNumber: pr.number,
-                  error: err instanceof Error ? err.message : String(err),
-                });
-              }
-            }
-            // Issue #1799: enabling auto-merge can immediately close a
-            // PR when all checks already pass. Invalidate the cached
-            // open-PR list for this repo so the next reader inside the
-            // same iteration sees current state.
-            if (mutated) {
-              await issueCache.invalidate(repo, `prs_${githubUser}`);
-            }
-          } catch { /* best-effort per repo */ }
-        }
-        return { ok: true, value: undefined };
-      } catch (err) {
-        return {
-          ok: false,
-          error: err instanceof Error ? err : new Error(String(err)),
-        };
-      }
+    async ensureAutoMerge(opts?: EnsureAutoMergeOptions) {
+      // Issue #1082: the sweep walks the monitored repo list, not the repos
+      // with claimable work, and covers every push-capable fleet author —
+      // the same set the blocking guard defers `work-on` issues to. A
+      // single-login sweep left a sibling account's PR unattended, and with
+      // it every issue that PR blocked.
+      const refreshOpenPrs = opts?.refreshOpenPrs === true;
+      const sweep = await sweepAutoMerge({
+        repos,
+        isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),
+        fleetAuthors: maintenanceAuthors,
+        // Issue #1787: list through the cached helper so the sweep shares
+        // the iteration-scoped `prs_${author}` cache.
+        // Issue #1136: the post-scan pass forces a live listing — the cache
+        // it would otherwise read was filled before this cycle's own PRs
+        // existed, so a cached sweep would attempt exactly nothing new.
+        listOpenPrs: (repo, authors) =>
+          fetchOpenPRsForFleet(
+            repo,
+            [...authors],
+            issueCache,
+            runGhCommand,
+            undefined,
+            refreshOpenPrs,
+          ),
+        attemptMerge: (repo, pr) =>
+          enableAutoMerge({
+            repo,
+            prNumber: pr.number,
+            // Issue #3909: pass the head branch so the milestone
+            // open-children gate needs no extra lookup.
+            headRefName: pr.headRefName,
+            // Issue #4375: the base decides between GitHub's --auto
+            // (protected: waits for checks) and the gated direct
+            // merge (unprotected: --auto would merge immediately).
+            baseRefName: pr.baseRefName,
+            // Issue #1082: lets the gated merge tell a genuine review
+            // from a sibling fleet account's approval.
+            fleetAuthors: maintenanceAuthors,
+            log: (message: string) => logger.warn(message),
+          }),
+        // Issue #470: this outcome used to be discarded. A gate that
+        // refused every merge in the fleet was therefore invisible —
+        // the priority logged its name and a duration while nothing
+        // merged, no milestone child closed, and no milestone ever
+        // completed. A gate may refuse; it may not refuse silently.
+        recordOutcome: (repo, prNumber, outcome) =>
+          logAutoMergeOutcome(logger, repo, prNumber, outcome),
+        // Issue #1799: enabling auto-merge can immediately close a PR when
+        // all checks already pass. Invalidate every author's cached
+        // open-PR list for this repo so the next reader inside the same
+        // iteration sees current state.
+        invalidateOpenPrCache: async (repo: string) => {
+          for (const author of maintenanceAuthors) {
+            await issueCache.invalidate(repo, `prs_${author}`);
+          }
+        },
+        logger,
+      });
+      if (!sweep.ok) return { ok: false, error: sweep.error };
+      // Say what the sweep covered. A silent sweep is how a coverage gap
+      // hides: the single-login version attempted nothing in a repo whose
+      // PR belonged to a sibling account, and looked identical to a sweep
+      // with nothing to do (Issue #1082).
+      logger.info("Auto-merge sweep complete", {
+        repos: sweep.value.reposVisited.length,
+        prsAttempted: sweep.value.prsAttempted,
+        // Issue #1136: name the repos that offered nothing, and which pass
+        // this was, so "swept and found nothing" is legible in the log.
+        reposWithNoCandidates: sweep.value.reposWithNoCandidates.join(", ") ||
+          "none",
+        pass: refreshOpenPrs ? "post-scan" : "priority-1.65",
+        authors: maintenanceAuthors.join(", "),
+      });
+      return { ok: true, value: undefined };
     },
 
     // -- Priority 1.66: Branch cleanup --
@@ -2473,13 +2514,16 @@ export async function createProductionRunCoreDeps(
     // that phase's template and is worked by that phase's own handler —
     // scanning for it here would run a planning issue through the
     // implementation phase.
-    ...(customDispatchMappings(config).length > 0
+    // Issue #1008: only `issue`-phase mappings belong here. A config carrying
+    // only `pr` mappings must not add an issue-scanning row that can never
+    // match.
+    ...(customDispatchMappings(config, "issue").length > 0
       ? {
         async findAndProcessCustomLabelPrompts(
           opts?: { deadlineEpochMs: number },
         ) {
           const value = await dispatchCustomLabelPrompts(
-            customDispatchMappings(config),
+            customDispatchMappings(config, "issue"),
             // Issue #937: the only PR-producing label route, so the only one
             // that opts into the `work-on` eligibility gates.
             (scanLabel, scanProcessFn, scanDeadlineEpochMs) =>
@@ -2496,6 +2540,128 @@ export async function createProductionRunCoreDeps(
               onFault: (fault) => logger.error(fault.message),
             },
           );
+          return { ok: true as const, value };
+        },
+      }
+      : {}),
+
+    // -- Priority 1.87: PR-phase custom label prompts (Issue #1011, #938) --
+    // The PR half of the same family: an open PR carrying a configured `pr`
+    // mapping's label gets a full checkout plus `gh`, and the operator's
+    // private prompt decides what happens next. The run consumes the label,
+    // so each application dispatches at most one run. Wired only when a `pr`
+    // mapping is configured, so an operator who never opts in keeps a
+    // byte-identical ladder and pays for no PR scan.
+    ...(customDispatchMappings(config, "pr").length > 0
+      ? {
+        async findAndProcessCustomLabelPrPrompts(
+          opts?: { deadlineEpochMs: number },
+        ) {
+          // The repo clone the checkout landed in, so the agent runs — and the
+          // push is verified — in the PR's own working tree rather than the
+          // worker directory. Set by `checkout`, read by the two seams after
+          // it; scoped to this invocation, so no cycle sees another's.
+          let prRunWorkDir: string | undefined;
+          const value = await dispatchCustomLabelPrPrompts({
+            logger,
+            ghCommandFn: runGhCommand,
+            findCandidates: () =>
+              findCustomLabelPrCandidates({
+                repos,
+                mappings: config.customLabelPrompts,
+                // The per-cycle collaborator-derived set (Issue #1066) —
+                // empty until it resolves, so trust starts closed.
+                allowedAuthors: config.allowedAuthors,
+                // "Is this the fleet": service accounts, sibling PR authors
+                // and this host, so the worker cannot self-dispatch by
+                // labelling its own PR.
+                fleetWorkerLogins: resolveFleetMaintenanceAuthorSet({
+                  githubUser,
+                  fleetPrAuthors: config.fleetPrAuthors,
+                  serviceAccounts: config.serviceAccounts ?? [],
+                }),
+                ghCommandFn: runGhCommand,
+                logger,
+                timelineCache,
+              }),
+            checkout: async (candidate) => {
+              // Issue #213: lease the repository, as PR feedback does — a
+              // slot already working there owns the working tree.
+              const lease = acquireMaintenanceRepoLease(
+                candidate.repo,
+                candidate.prNumber,
+              );
+              if (lease === null) {
+                return {
+                  ok: false,
+                  reason: "checkout_failed",
+                  detail: "an issue slot holds the repository this cycle",
+                };
+              }
+              try {
+                const setup = await setupRepo(candidate.repo, workDir);
+                if (!setup.success) {
+                  return {
+                    ok: false,
+                    reason: "checkout_failed",
+                    detail: setup.message,
+                  };
+                }
+                prRunWorkDir = setup.message;
+                return await preparePrBranch(candidate.headRefName, {
+                  logger,
+                  git: workerDeps.git,
+                  cwd: prRunWorkDir,
+                });
+              } finally {
+                lease.release();
+              }
+            },
+            buildPrompt: (candidate) =>
+              buildCustomPrPrompt({
+                repo: candidate.repo,
+                prNumber: String(candidate.prNumber),
+                mapping: candidate.mapping,
+                prTitle: candidate.title,
+                qualityInstructions: buildQualityInstructions(
+                  config.repoConfig,
+                  candidate.repo,
+                ),
+                customInstructions: getCustomInstructions(
+                  config.repoConfig,
+                  candidate.repo,
+                ),
+              }),
+            runAgent: async (_candidate, parts) => {
+              const run = await workerDeps.claude.runClaudeWithRetry(
+                {
+                  prompt: parts.prompt,
+                  systemPrompt: parts.systemPrompt,
+                  timeoutSeconds: reactivePhaseTimeout(config, "pr-feedback"),
+                  noOutputTimeout: config.claudeNoOutputTimeout,
+                  phase: "pr_feedback",
+                  cwd: prRunWorkDir ?? workDir,
+                  logger,
+                },
+                { maxRetries: config.maxRateLimitRetries },
+              );
+              if (!run.ok) throw run.error;
+              if (run.value.timedOut) {
+                throw new Error(
+                  run.value.timeoutReason === "no-output"
+                    ? `the agent produced no output for ${config.claudeNoOutputTimeout} seconds`
+                    : "the agent timed out",
+                );
+              }
+            },
+            verifyPush: (candidate) =>
+              verifyPushLanded(candidate.headRefName, {
+                cwd: prRunWorkDir ?? workDir,
+              }),
+            ...(opts?.deadlineEpochMs !== undefined
+              ? { deadlineEpochMs: opts.deadlineEpochMs }
+              : {}),
+          });
           return { ok: true as const, value };
         },
       }
@@ -3245,7 +3411,7 @@ export async function createProductionRunCoreDeps(
       const key = `${run.repo}#${run.issueNumber}`;
       const sessionId = releasedSessionIds.get(key);
       releasedSessionIds.delete(key);
-      await invokeRunCallbacks({
+      const invocations = await invokeRunCallbacks({
         callbacks: config.callbacks,
         context: buildIssueRunCallbackContext(run, {
           runId: getRunId(),
@@ -3259,6 +3425,19 @@ export async function createProductionRunCoreDeps(
         log: (message) => logger.info(message),
         logError: (message) => logger.error(message),
       });
+      // Issue #1092: a hook that fails on every issue costs slot time on
+      // every issue and, until now, raised nothing across days of runs. The
+      // streak crossing the threshold raises exactly one deduplicated issue
+      // in the worker's own repository; a success clears it. Never throws.
+      await recordCallbackOutcomes(
+        config.workDir,
+        invocations,
+        { repository: run.repo, issueNumber: run.issueNumber },
+        {
+          log: (message) => logger.info(message),
+          logError: (message) => logger.error(message),
+        },
+      );
     },
     async cleanupInProgressIssue() {
       try {
@@ -3384,7 +3563,7 @@ export async function createProductionRunCoreDeps(
           knownInputLogins,
         },
         {
-          cycleId: trustRefreshCycle,
+          cycleId: `${trustRefreshScope}:${trustRefreshCycle}`,
           log: (message: string) => logger.info(message),
         },
       );

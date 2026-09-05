@@ -21,7 +21,13 @@ import { buildBranchDeleteArgs } from "./git_branch_args.ts";
 import {
   buildAddPathArgs,
   buildCheckoutStrategyArgs,
+  buildRemovePathArgs,
 } from "./git_conflict_args.ts";
+import {
+  hasAnyStage,
+  parseUnmergedStages,
+  resolveTowardsIncoming,
+} from "./merge_conflict_stages.ts";
 import { ensureDefaultBranchCurrent } from "./git_push.ts";
 import {
   assertSafeGitRef,
@@ -35,6 +41,11 @@ import { checkoutPrBranchAtRemoteHead } from "./pr_branch_checkout.ts";
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
+import {
+  checkMergedTree,
+  mergeGateFailureError,
+  type MergeGateFn,
+} from "./milestone_merge_gate.ts";
 
 /**
  * Describe a failed `git checkout` with git's own stderr (Issue #49, #335).
@@ -307,9 +318,205 @@ async function pushSyncedMilestoneBranch(
 }
 
 /**
+ * Type-check the merged tree, then push it — or refuse (Issue #974).
+ *
+ * Git reporting no conflict says only that both sides were internally
+ * consistent; three merges that passed that bar deleted live wiring and were
+ * pushed unchecked, because `milestone/*` has no required checks to catch the
+ * result downstream. So the merge commit is judged before it is published: it
+ * is pushed when the repository's own type check passes, and reset away with
+ * a typed refusal when it does not.
+ *
+ * @param preMergeSha - Where the branch stood before the merge, so a rejected
+ *   merge can be undone exactly
+ * @returns The note to append to the sync outcome, or the gate's refusal
+ */
+async function gateThenPushMilestoneBranch(
+  milestoneBranch: string,
+  defaultBranch: string,
+  options: GitCommandOptions,
+  repo: string | undefined,
+  mergeGate: MergeGateFn,
+  preMergeSha: string,
+): Promise<Result<string>> {
+  const outcome = await mergeGate(options.cwd ?? ".");
+
+  if (outcome.status === "failed") {
+    // The caller refuses to merge at all without a pre-merge SHA, so there is
+    // always one to roll back to here.
+    let resetNote = "";
+    const reset = await runGitCommand(
+      ["reset", "--hard", preMergeSha],
+      options,
+    );
+    if (!reset.ok || reset.value.code !== 0) {
+      resetNote = ` — and the local merge could NOT be reset to ` +
+        `${preMergeSha}: ${
+          (reset.ok ? reset.value.stderr : reset.error.message).trim() ||
+          "git reported no stderr"
+        }`;
+    }
+    return {
+      ok: false,
+      error: mergeGateFailureError(milestoneBranch, defaultBranch, {
+        ...outcome,
+        detail: `${outcome.detail}${resetNote}`,
+      }),
+    };
+  }
+
+  const pushNote = await pushSyncedMilestoneBranch(
+    milestoneBranch,
+    defaultBranch,
+    options,
+    repo,
+  );
+  // Say when nothing verified the tree, rather than let an unchecked push
+  // read exactly like a checked one.
+  const gateNote = outcome.status === "skipped"
+    ? `UNGATED: ${outcome.detail} (Issue #974) — `
+    : "";
+  return { ok: true, value: `${gateNote}${pushNote}` };
+}
+
+/** Build the refusal for a conflicted path whose incoming side would not take. */
+function takeSideError(
+  what: string,
+  file: string,
+  defaultBranch: string,
+  milestoneBranch: string,
+  detail: string,
+): Error {
+  return new Error(
+    `Failed to ${what} '${defaultBranch}'s version of '${file}' while ` +
+      `merging into '${milestoneBranch}' — refusing to commit a resolution ` +
+      `that would keep this branch's side instead (Issue #1048): ${
+        detail.trim() || "git reported no stderr"
+      }`,
+  );
+}
+
+/**
+ * Resolve every conflicted path in favour of the default branch (Issue #1048).
+ *
+ * "In favour of the default branch" is not the same as "keep the file". Where
+ * the default branch **deleted** a file the milestone branch edited, git
+ * reports a modify/delete conflict with no incoming stage: `git checkout
+ * --theirs` cannot produce a version, so the old loop staged the working-tree
+ * copy — the milestone branch's own edit — and the deletion was silently
+ * undone. That is how `lib/fleet_health.ts` came back on `milestone/863`.
+ *
+ * Each path is therefore resolved by what its merge stages actually say, and a
+ * path whose stages cannot be read fails the whole resolution rather than
+ * being guessed at.
+ *
+ * @returns A note naming what was deleted, for the sync's own outcome message.
+ */
+async function resolveConflictsTowardsDefault(
+  conflictedFiles: string[],
+  defaultBranch: string,
+  milestoneBranch: string,
+  options: GitCommandOptions,
+): Promise<Result<string>> {
+  const deleted: string[] = [];
+  for (const file of conflictedFiles) {
+    const staged = await runGitCommand(
+      ["ls-files", "-u", "--", file],
+      options,
+    );
+    const stages = staged.ok && staged.value.code === 0
+      ? parseUnmergedStages(staged.value.stdout)
+      : { base: false, ours: false, theirs: false };
+    if (!hasAnyStage(stages)) {
+      // Every conflicted path has stages. None means git could not be read,
+      // and guessing here is precisely the silent wrong answer (Issue #1048).
+      const detail = staged.ok
+        ? staged.value.stderr.trim()
+        : staged.error.message;
+      return {
+        ok: false,
+        error: new Error(
+          `Refusing to resolve the merge of '${defaultBranch}' into ` +
+            `'${milestoneBranch}': the merge stages of conflicted file ` +
+            `'${file}' could not be read, so whether '${defaultBranch}' ` +
+            `deleted it is unknown (Issue #1048): ${
+              detail || "git reported no stderr"
+            }`,
+        ),
+      };
+    }
+
+    if (resolveTowardsIncoming(stages) === "delete") {
+      const removed = await runGitCommand(buildRemovePathArgs(file), options);
+      if (!removed.ok || removed.value.code !== 0) {
+        const detail = removed.ok
+          ? removed.value.stderr.trim()
+          : removed.error.message;
+        return {
+          ok: false,
+          error: new Error(
+            `Failed to delete '${file}' while merging '${defaultBranch}' ` +
+              `into '${milestoneBranch}' — '${defaultBranch}' deleted it, so ` +
+              `keeping it would revive removed code (Issue #1048): ${
+                detail || "git reported no stderr"
+              }`,
+          ),
+        };
+      }
+      deleted.push(file);
+      continue;
+    }
+
+    // Both exit codes matter (Issue #1048): a `checkout --theirs` that failed
+    // leaves the milestone branch's own working-tree copy in place, and the
+    // `add` below would stage exactly the wrong side under a merge commit
+    // that claims the default branch won.
+    const checkedOut = await runGitCommand(
+      buildCheckoutStrategyArgs("theirs", file),
+      options,
+    );
+    if (!checkedOut.ok || checkedOut.value.code !== 0) {
+      return {
+        ok: false,
+        error: takeSideError(
+          "check out",
+          file,
+          defaultBranch,
+          milestoneBranch,
+          checkedOut.ok ? checkedOut.value.stderr : checkedOut.error.message,
+        ),
+      };
+    }
+    const added = await runGitCommand(buildAddPathArgs(file), options);
+    if (!added.ok || added.value.code !== 0) {
+      return {
+        ok: false,
+        error: takeSideError(
+          "stage",
+          file,
+          defaultBranch,
+          milestoneBranch,
+          added.ok ? added.value.stderr : added.error.message,
+        ),
+      };
+    }
+  }
+
+  if (deleted.length === 0) return { ok: true, value: "" };
+  return {
+    ok: true,
+    value: `deleted ${deleted.length} file(s) '${defaultBranch}' had removed (${
+      deleted.slice(0, 3).join(", ")
+    }${deleted.length > 3 ? `, +${deleted.length - 3} more` : ""}) — `,
+  };
+}
+
+/**
  * Sync a milestone branch with the default branch (Issue #422, #605).
  *
- * Uses merge (not rebase) to preserve milestone commit history.
+ * Uses merge (not rebase) to preserve milestone commit history. The merge is
+ * type-checked before it is pushed (Issue #974) — see
+ * {@link gateThenPushMilestoneBranch}.
  *
  * @param milestoneBranch - The milestone branch name
  * @param defaultBranch - The default branch to sync from
@@ -326,6 +533,11 @@ export async function syncMilestoneBranchWithDefault(
    * says so in the outcome rather than failing silently.
    */
   repo?: string,
+  /**
+   * The gate the merged tree must pass before it is pushed (Issue #974).
+   * Defaults to the repository's own type check; tests inject a verdict.
+   */
+  mergeGate: MergeGateFn = checkMergedTree,
 ): Promise<Result<string>> {
   // Pre-check disk space before pull/merge (Issue #1174)
   if (options.cwd) {
@@ -478,6 +690,31 @@ export async function syncMilestoneBranchWithDefault(
     };
   }
 
+  // Where the branch stands before any merge, so the gate can undo one
+  // exactly when the merged tree does not compile (Issue #974). Read it
+  // BEFORE merging: without it a refused merge cannot be rolled back, so the
+  // honest move is to refuse to start rather than to discover it afterwards.
+  const preMergeShaResult = await runGitCommand(["rev-parse", "HEAD"], options);
+  const preMergeSha = preMergeShaResult.ok &&
+      preMergeShaResult.value.code === 0
+    ? preMergeShaResult.value.stdout.trim()
+    : "";
+  if (!preMergeSha) {
+    const detail = (preMergeShaResult.ok
+      ? preMergeShaResult.value.stderr
+      : preMergeShaResult.error.message).trim();
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to merge '${defaultBranch}' into '${milestoneBranch}': ` +
+          `its pre-merge HEAD could not be read, so a merge the gate rejects ` +
+          `could not be rolled back (Issue #974): ${
+            detail || "git reported no stderr"
+          }`,
+      ),
+    };
+  }
+
   // Merge default into milestone (preserve commit history)
   const mergeResult = await runGitCommand(
     ["merge", defaultBranch, "--no-edit"],
@@ -486,17 +723,21 @@ export async function syncMilestoneBranchWithDefault(
 
   if (mergeResult.ok && mergeResult.value.code === 0) {
     // Push the synced milestone branch (Issue #605), or raise a PR for it
-    // where a repository rule refuses the push (Issue #589).
-    const cleanPushNote = await pushSyncedMilestoneBranch(
+    // where a repository rule refuses the push (Issue #589) — but only once
+    // the merged tree has passed the repo's own gate (Issue #974).
+    const gated = await gateThenPushMilestoneBranch(
       milestoneBranch,
       defaultBranch,
       options,
       repo,
+      mergeGate,
+      preMergeSha,
     );
+    if (!gated.ok) return gated;
     return {
       ok: true,
       value:
-        `${selfHealNote}${cleanPushNote}Successfully merged '${defaultBranch}' into '${milestoneBranch}' (${behindCount} commit(s) integrated)`,
+        `${selfHealNote}${gated.value}Successfully merged '${defaultBranch}' into '${milestoneBranch}' (${behindCount} commit(s) integrated)`,
     };
   }
 
@@ -510,16 +751,19 @@ export async function syncMilestoneBranchWithDefault(
   );
 
   if (retryResult.ok && retryResult.value.code === 0) {
-    const pushNote = await pushSyncedMilestoneBranch(
+    const gated = await gateThenPushMilestoneBranch(
       milestoneBranch,
       defaultBranch,
       options,
       repo,
+      mergeGate,
+      preMergeSha,
     );
+    if (!gated.ok) return gated;
     return {
       ok: true,
       value:
-        `${selfHealNote}${pushNote}Issue #605: Auto-resolved merge conflicts (favouring '${defaultBranch}' changes)`,
+        `${selfHealNote}${gated.value}Issue #605: Auto-resolved merge conflicts (favouring '${defaultBranch}' changes)`,
     };
   }
 
@@ -531,6 +775,10 @@ export async function syncMilestoneBranchWithDefault(
     ["merge", defaultBranch, "--no-edit"],
     options,
   );
+
+  // What accepting the default branch's side actually removed (Issue #1048),
+  // reported with the outcome so a deletion is never a silent one.
+  let deletionNote = "";
 
   if (!finalMergeResult.ok || finalMergeResult.value.code !== 0) {
     // Get conflicted files and resolve each
@@ -566,10 +814,17 @@ export async function syncMilestoneBranchWithDefault(
       };
     }
 
-    for (const file of conflictedFiles) {
-      await runGitCommand(buildCheckoutStrategyArgs("theirs", file), options);
-      await runGitCommand(buildAddPathArgs(file), options);
+    const resolved = await resolveConflictsTowardsDefault(
+      conflictedFiles,
+      defaultBranch,
+      milestoneBranch,
+      options,
+    );
+    if (!resolved.ok) {
+      await runGitCommand(["merge", "--abort"], options);
+      return resolved;
     }
+    deletionNote = resolved.value;
 
     const commitResult = await runGitCommand(["commit", "--no-edit"], options);
     if (!commitResult.ok || commitResult.value.code !== 0) {
@@ -589,16 +844,19 @@ export async function syncMilestoneBranchWithDefault(
     }
   }
 
-  const resolvedPushNote = await pushSyncedMilestoneBranch(
+  const gatedResolved = await gateThenPushMilestoneBranch(
     milestoneBranch,
     defaultBranch,
     options,
     repo,
+    mergeGate,
+    preMergeSha,
   );
+  if (!gatedResolved.ok) return gatedResolved;
   return {
     ok: true,
     value:
-      `${selfHealNote}${resolvedPushNote}Issue #605: Resolved merge conflicts for '${milestoneBranch}' (accepted '${defaultBranch}' changes)`,
+      `${selfHealNote}${gatedResolved.value}${deletionNote}Issue #605: Resolved merge conflicts for '${milestoneBranch}' (accepted '${defaultBranch}' changes)`,
   };
 }
 

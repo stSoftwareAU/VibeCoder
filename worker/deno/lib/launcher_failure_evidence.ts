@@ -34,8 +34,9 @@
 /**
  * Exit statuses the worker itself can produce.
  *
- * Keep in step with `run_worker.ts` (0, 1, `QUOTA_PAUSE_EXIT_STATUS`) and the
- * commands that name their own — `container_build_heal` and `container_reap`.
+ * Keep in step with `run_worker.ts` (0, 1, `QUOTA_PAUSE_EXIT_STATUS`), the
+ * commands that name their own — `container_build_heal` and `container_reap` —
+ * and the entrypoint's `EXTENSION_START_ABORT_EXIT_STATUS` (Issue #981).
  * Being wrong here costs a misleading sentence in an alert, so the wording
  * below hedges to "not a status the worker is known to produce" rather than
  * claiming the runtime is definitely at fault.
@@ -52,6 +53,7 @@ export function knownWorkerStatuses(
   quotaPauseStatus: number,
   buildNotHealableStatus: number,
   anotherWorkerRunningStatus: number,
+  extensionStartAbortStatus: number,
 ): KnownWorkerStatuses {
   const table = new Map<number, string>([
     [0, "a clean run"],
@@ -59,6 +61,15 @@ export function knownWorkerStatuses(
     [quotaPauseStatus, "a deliberate quota pause"],
     [buildNotHealableStatus, "an image build the heal path could not repair"],
     [anotherWorkerRunningStatus, "another worker already running"],
+    // The container's own entrypoint, not the driver, but framework code
+    // exiting deliberately all the same (Issue #981): the deployment's
+    // extension start script did not succeed, so the sandbox start was
+    // aborted rather than handing the agent a half-started environment. The
+    // container log names the script and its own status.
+    [
+      extensionStartAbortStatus,
+      "the deployment's extension start script aborting the sandbox start",
+    ],
   ]);
   return {
     statuses: [...table.keys()],

@@ -163,6 +163,10 @@ docs/CONTAINER-IMAGE.md:
   title: "Vibe Coder: Worker Image Design"
   page_icon: "📦"
 
+docs/CONTAINER-EXTENSION.md:
+  title: "Vibe Coder: Container Extension"
+  page_icon: "🧩"
+
 docs/CONTAINMENT.md:
   title: "Vibe Coder: Containment"
   page_icon: "🔒"

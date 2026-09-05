@@ -168,6 +168,7 @@ import { callbackConformanceCommand } from "./commands/callback_conformance.ts";
 import { checkMermaidCommand } from "./commands/check_mermaid.ts";
 import { checkMermaidBuiltOutputCommand } from "./commands/check_mermaid_built_output.ts";
 import { checkMarkdownlintCommand } from "./commands/check_markdownlint.ts";
+import { checkResurrectedFilesCommand } from "./commands/check_resurrected_files.ts";
 import { notifyAuditFailureCommand } from "./commands/notify_audit_failure.ts";
 import { purgeStaleWorkflowIssuesCommand } from "./commands/purge_stale_workflow_issues.ts";
 import { sweepHeartbeatCommentsCommand } from "./commands/sweep_heartbeat_comments.ts";
@@ -183,6 +184,8 @@ import { containerBuildHealCommand } from "./commands/container_build_heal.ts";
 import { runModeCommand } from "./commands/run_mode.ts";
 import { workerCheckoutUpdateCommand } from "./commands/worker_checkout_update.ts";
 import { auditDefaultBranchRulesetsCommand } from "./commands/audit_default_branch_rulesets.ts";
+import { checkMainRulesetCommand } from "./commands/check_main_ruleset.ts";
+import { checkReleaseTagRulesetCommand } from "./commands/check_release_tag_ruleset.ts";
 import { secretsHistoryScanCommand } from "./commands/secrets_history_scan.ts";
 import { securityTabletopCommand } from "./commands/security_tabletop.ts";
 import { publishDecisionCheckCommand } from "./commands/publish_decision_check.ts";
@@ -363,6 +366,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(checkMermaidBuiltOutputCommand);
   registry.register(notifyAuditFailureCommand);
   registry.register(checkMarkdownlintCommand);
+  registry.register(checkResurrectedFilesCommand);
   registry.register(purgeStaleWorkflowIssuesCommand);
   registry.register(sweepHeartbeatCommentsCommand);
   registry.register(containerImageHashCommand);
@@ -377,6 +381,8 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(runModeCommand);
   registry.register(workerCheckoutUpdateCommand);
   registry.register(auditDefaultBranchRulesetsCommand);
+  registry.register(checkMainRulesetCommand);
+  registry.register(checkReleaseTagRulesetCommand);
   registry.register(secretsHistoryScanCommand);
   registry.register(securityTabletopCommand);
   registry.register(publishDecisionCheckCommand);
@@ -621,6 +627,13 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "worker-checkout-update",
       // Read-only sweep; runs against --org/--repos with no config (Issue #4356).
       "audit-default-branch-rulesets",
+      // Read-only ruleset reconciliation; needs no config (Issue #858).
+      "check-main-ruleset",
+      // The same, for the release-tag ruleset; needs no config (Issue #1049).
+      "check-release-tag-ruleset",
+      // Reads git history through --repo-dir/--branch/--default-branch; runs
+      // in CI on a checkout that has no .config.json (Issue #1048).
+      "check-resurrected-files",
       // Full-history secrets sweep; runs in CI with no config (Issue #4190).
       "secrets-history-scan",
       // Hostile-fixture tabletop; runs on a schedule with no config (#4194).
@@ -736,6 +749,13 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "worker-checkout-update",
       // Read-only sweep; runs against --org/--repos with no config (Issue #4356).
       "audit-default-branch-rulesets",
+      // Read-only ruleset reconciliation; needs no config (Issue #858).
+      "check-main-ruleset",
+      // The same, for the release-tag ruleset; needs no config (Issue #1049).
+      "check-release-tag-ruleset",
+      // Reads git history through --repo-dir/--branch/--default-branch; runs
+      // in CI on a checkout that has no .config.json (Issue #1048).
+      "check-resurrected-files",
       // Hostile-fixture tabletop; runs on a schedule with no config (#4194).
       "security-tabletop",
       // Dossier checker; a pure file check with no config (Issue #4200).

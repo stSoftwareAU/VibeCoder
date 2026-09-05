@@ -290,7 +290,10 @@ Deno.test("test_audit - the integration exclusion names the live manifest (Issue
 Deno.test("test_audit - the definition is cited, not restated (Issue #943)", async () => {
   const prompt = await testAuditPrompt();
   assertStringIncludes(collapse(prompt), "CODING-STANDARDS.md");
-  assertStringIncludes(collapse(prompt), '"Unit Tests vs Benchmarks"');
+  assertStringIncludes(
+    collapse(prompt),
+    '"Unit, Integration and Benchmark Tests"',
+  );
   const slow = checkBody(prompt, 13);
   assertStringIncludes(slow, "that section is normative, not this check");
   assertEquals(
