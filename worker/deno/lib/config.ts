@@ -223,12 +223,69 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
 };
 
 /**
+ * Per-repo keys this worker once honoured, mapped to the migration an
+ * operator still carrying one has to make (Issue #986).
+ *
+ * The top-level equivalent is `REMOVED_CONFIG_KEYS` in `validation.ts`
+ * (Issue #805), and the reason is the same: a removed key is refused rather
+ * than dropped, because a setting that reads as live and does nothing is the
+ * silent failure the config load exists to prevent. Both spellings of each
+ * key are listed — the normaliser accepts snake_case and camelCase alike, so
+ * refusing only one spelling would let the other through.
+ */
+export const REMOVED_REPO_CONFIG_KEYS: ReadonlyMap<string, string> = new Map(
+  [
+    "prFailureActions",
+    "pr_failure_actions",
+  ].map((key) =>
+    [
+      key,
+      "The deprecated `prFailureActions` block was removed with its only " +
+      "action type, `fetch-jenkins-log` (Issue #986). Replace it with a " +
+      "`ciProviders` entry naming a registered provider — see " +
+      "docs/per-repo-pr-failure-actions.md.",
+    ] as [string, string]
+  ).concat(
+    ["ciFailureJobPath", "ci_failure_job_path"].map((key) =>
+      [
+        key,
+        "`ci_failure_job_path` was a job path for the removed Jenkins CI " +
+        "provider (Issue #986). The CI log provider now resolves the build " +
+        "itself; remove the key — see docs/ci-failure-issue-log-fetch.md.",
+      ] as [string, string]
+    ),
+  ),
+);
+
+/**
  * Normalise a single RepoConfig object from snake_case to camelCase keys.
  *
  * Accepts both snake_case and camelCase — snake_case keys are converted,
  * camelCase keys are kept as-is. Unknown keys are dropped.
+ *
+ * @throws Error when the config carries a key listed in
+ * {@link REMOVED_REPO_CONFIG_KEYS} — see that map for why.
  */
-function normaliseRepoConfig(raw: Record<string, unknown>): RepoConfig {
+function normaliseRepoConfig(
+  raw: Record<string, unknown>,
+  repo: string,
+): RepoConfig {
+  const stale = [...REMOVED_REPO_CONFIG_KEYS.keys()].filter(
+    (key) => raw[key] !== undefined,
+  );
+  if (stale.length > 0) {
+    // One message for the whole migration — fixing one key and rediscovering
+    // the next on the following start is not actionable.
+    const guidance = [
+      ...new Set(stale.map((key) => REMOVED_REPO_CONFIG_KEYS.get(key)!)),
+    ];
+    throw new Error(
+      `repo_config for ${repo} carries removed ${
+        stale.length === 1 ? "key" : "keys"
+      } ${stale.map((key) => `"${key}"`).join(" and ")}. ${guidance.join(" ")}`,
+    );
+  }
+
   const normalised: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(raw)) {
@@ -260,6 +317,7 @@ function normaliseRepoConfigs(
   for (const [repo, config] of Object.entries(raw)) {
     result[repo] = normaliseRepoConfig(
       config as unknown as Record<string, unknown>,
+      repo,
     );
   }
   return result;

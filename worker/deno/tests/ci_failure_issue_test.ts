@@ -477,6 +477,42 @@ Deno.test("buildCiFailureContext - surfaces a provider fetch failure explicitly"
   assertStringIncludes(section, "Do NOT attempt a fix");
 });
 
+Deno.test("buildCiFailureContext - a provider that throws is reported, not propagated", async () => {
+  const throwing: typeof fetchGithubActionsLogExcerpt = (() => {
+    throw new Error("socket hang up");
+  }) as typeof fetchGithubActionsLogExcerpt;
+  const section = await buildCiFailureContext({
+    repo: TEST_REPO,
+    boundaryId: TEST_BOUNDARY_ID,
+    issueBody: REAL_BODY,
+    ghFn: unusedGh,
+    actionsLogFn: throwing,
+  });
+  assertStringIncludes(section, "could not be fetched");
+  assertStringIncludes(section, "threw");
+  assertStringIncludes(section, "socket hang up");
+});
+
+Deno.test("buildCiFailureContext - a provider reporting no status never claims FAILURE", async () => {
+  // The built-in Actions provider omits `status`. Rendering "FAILURE" for a
+  // cancelled or unstable run would state a build result nothing reported.
+  const actions = fakeActionsLog({
+    kind: "excerpt",
+    providerId: GITHUB_ACTIONS_PROVIDER_ID,
+    jobId: 12,
+    excerpt: "[ERROR] boom\n",
+  });
+  const section = await buildCiFailureContext({
+    repo: TEST_REPO,
+    boundaryId: TEST_BOUNDARY_ID,
+    issueBody: REAL_BODY,
+    ghFn: unusedGh,
+    actionsLogFn: actions.fn,
+  });
+  assertStringIncludes(section, "**Build result:** UNKNOWN");
+  assertEquals(section.includes("**Build result:** FAILURE"), false);
+});
+
 Deno.test("buildCiFailureContext - an empty excerpt is a failure, never a hollow success", async () => {
   const actions = fakeActionsLog({
     kind: "excerpt",

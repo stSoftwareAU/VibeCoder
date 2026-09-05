@@ -44,9 +44,6 @@ import {
   sanitiseDelimiterPatterns,
 } from "./prompt_delimiter.ts";
 
-/** Bytes of console log requested from the provider (256 KiB). */
-export const CI_FAILURE_LOG_FETCH_BYTES = 256 * 1024;
-
 /** Bytes of console log rendered into the prompt (24 KiB). */
 export const CI_FAILURE_EXCERPT_BYTES = 24 * 1024;
 
@@ -157,13 +154,12 @@ export function parseCiFailureBuildReference(
         error: `build URL scheme '${url.protocol}' is not http(s)`,
       };
     }
+    const buildNumber = lastNumericSegment(url.pathname);
     return {
       ok: true,
       value: {
         buildUrl: url.href,
-        ...(lastNumericSegment(url.pathname) !== undefined
-          ? { buildNumber: lastNumericSegment(url.pathname) }
-          : {}),
+        ...(buildNumber !== undefined ? { buildNumber } : {}),
         source: "url",
       },
     };
@@ -472,10 +468,10 @@ export async function buildCiFailureContext(
   return formatCiFailureContext({
     build: {
       number: reference.value.buildNumber ?? outcome.value.buildId,
-      result: outcome.value.status ?? "FAILURE",
+      result: outcome.value.status ?? "UNKNOWN",
       url: outcome.value.url,
     },
-    log: truncateLogTail(outcome.value.logText, CI_FAILURE_LOG_FETCH_BYTES),
+    log: outcome.value.logText,
     boundaryId,
   });
 }

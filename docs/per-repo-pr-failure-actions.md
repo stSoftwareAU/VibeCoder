@@ -17,8 +17,12 @@ per-repo configuration.
 > itself runs on that CI system — GitHub Actions qualifies. A provider for
 > the CI system **one deployment happens to use** is a private extension
 > and lives in that deployment's own repository (Issue #986). Core owns
-> the extension point; it never learns what is plugged into it. See
-> [Private Extensions](PRIVATE-EXTENSIONS.md) and
+> the extension point; it never learns what is plugged into it.
+>
+> Note the gap that comes with that boundary: the registry is not exported
+> for out-of-tree use and there is no extension loader, so a private
+> provider cannot register itself without a fork today. See
+> [Private Extensions](PRIVATE-EXTENSIONS.md#-known-gaps) and
 > [Adding a CI log provider](EXTENDING.md#-adding-a-ci-log-provider).
 
 ## End-to-end flow
@@ -141,7 +145,7 @@ does not have.
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| Worker log shows `no CI log provider registered for '<id>'` | `ciProviders` names an id nothing has registered — a typo, or an extension that did not load. | Correct the id, or confirm the extension registered its provider at start-up. |
+| Worker log shows `no CI log provider registered for '<id>'` | `ciProviders` names an id nothing has registered — almost always a typo, since out-of-tree registration is a [known gap](PRIVATE-EXTENSIONS.md#-known-gaps) rather than a supported mechanism today. | Correct the id. `github-actions` is the only id core registers. |
 | Worker log shows `no failing check matched provider '<id>'` | The failing check name does not match `checkNamePattern`. | Inspect the actual check name on the PR (`gh pr checks <pr>`) and tighten or relax the regex. |
 | Worker log shows `provider '<id>' returned an empty log excerpt` | The provider fetched successfully but the log was empty. | Check the build actually produced console output, and that the provider's byte caps are not trimming it to nothing. |
 | Worker log shows `No CI log provider produced an excerpt` with `provider: github-actions` | The failing check is not a GitHub Actions job, or its job log could not be retrieved. | Check the `reason` field in the same log line. A status check owned by another CI system is expected to be "not applicable"; an HTTP error means the `gh` credentials lack `actions: read` on the repo. |

@@ -83,12 +83,13 @@
  * removed is one more file that runs in the fast pass.
  */
 export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [
-  // Empty since Issue #986: the last three entries were the CI suites that
-  // installed JENKINS_* credentials in the process. The Jenkins
-  // implementation they covered left the public tree, and the suites that
-  // replaced them drive the provider registry through an injected seam, so
-  // every test file now runs in the fast parallel pass. A new *test* still
-  // may not join this list — take the value as a parameter instead.
+  // Empty since Issue #986. Seven entries went: four were the Jenkins suites
+  // deleted with the implementation they covered, and the remaining three —
+  // ci_failure_issue, ci_log_provider and pr_failure_actions — installed
+  // JENKINS_* credentials in the process and were rewritten to drive the
+  // provider registry through an injected seam instead. Every test file now
+  // runs in the fast parallel pass. A new *test* still may not join this
+  // list — take the value as a parameter instead.
 ];
 
 /**

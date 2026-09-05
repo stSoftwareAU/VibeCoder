@@ -19,7 +19,6 @@
  */
 
 import type {
-  CiProviderConfig,
   CustomLabelPromptMapping,
   Logger,
   RepoConfig,
@@ -809,22 +808,14 @@ export async function runExecuteClaudePhase(
     );
     const fetchContext = deps.buildCiFailureContext ?? buildCiFailureContext;
     ciFailureBoundaryId = generateBoundaryId();
-    // Malformed provider config must not sink the run — the fetch then
-    // reports its own failure block rather than throwing here.
-    let ciProviders: CiProviderConfig[] = [];
-    try {
-      ciProviders = getCiProviders(repoConfigs, repo);
-    } catch (err: unknown) {
-      deps.log(
-        `Ignoring malformed ciProviders for ${repo}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
+    // `getCiProviders` throws on malformed configuration and is deliberately
+    // not caught: `repo_config.ts` surfaces a bad `ciProviders` block loudly
+    // so the worker fails fast rather than silently dropping a provider, and
+    // `getCiFailureLabels` above is uncaught for the same reason.
     ciFailureContext = await fetchContext({
       repo,
       issueBody,
-      providers: ciProviders,
+      providers: getCiProviders(repoConfigs, repo),
       ghFn: (args: string[]) => runGhOrThrow(args),
       boundaryId: ciFailureBoundaryId,
     });

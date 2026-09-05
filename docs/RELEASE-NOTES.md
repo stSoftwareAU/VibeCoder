@@ -12,6 +12,83 @@ major, are minted from [the release floor](RELEASE-TAGGING.md#the-release-floor)
 rather than from the automatic increment, and are recorded here newest first,
 with the exact migration and the exact rollback.
 
+## 1.3.0 — the Jenkins implementation leaves the public repository
+
+**Per-repo configuration contract change. Read the migration before
+upgrading a host.**
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| The Jenkins CI log provider, its HTTP client, its credentials preflight, and the `fetch-jenkins-log` / `check-jenkins-access` commands were removed | #986 |
+| `ci_log_provider.ts` registers exactly one built-in provider: `github-actions`, the CI this project itself runs on | #986 |
+| The issue-mode CI-failure log fetch resolves through the same provider registry as the PR-mode path, instead of calling a vendor client directly | #986 |
+
+The point of the three together: **a deployment's own CI system leaves
+VibeCoder**. Jenkins was one deployment's extension example that had been
+hard-registered in core, which taught the next deployment to add its vendor
+to the shared tree. Core keeps the `CiLogProvider` extension point and
+never learns what is plugged into it. The boundary — and the gaps that
+still stand in the way of registering a provider from outside — is
+[Private Extensions](PRIVATE-EXTENSIONS.md).
+
+### Breaking: two per-repo configuration keys were removed
+
+| Removed `repo_config` key | What replaces it |
+| ------------------------- | ---------------- |
+| `prFailureActions` (`pr_failure_actions`) | a `ciProviders` entry naming a registered provider id — the deprecated block's only action type was `fetch-jenkins-log` |
+| `ci_failure_job_path` (`ciFailureJobPath`) | nothing — the CI log provider resolves the build itself from the issue body's `Build URL` |
+
+A `repo_config` that still carries either key **fails the config load**,
+naming the repository, both spellings and the replacement; the worker stops
+and claims no issue. This follows the `fleet_health_*` precedent from 1.2.0
+(Issue #805) for the same reason: a key that reads as live and quietly does
+nothing is the silent failure the config load exists to prevent. It is also
+why this release moves the minor rather than the patch.
+
+The `jenkins` provider id is gone with it. A `ciProviders` entry naming it
+parses — core validates ids at dispatch, not at load — and is then reported
+as an explicit `no CI log provider registered for 'jenkins'` error rather
+than a silent no-op.
+
+### Migrating a host
+
+```mermaid
+flowchart TD
+    G["grep .config.json for<br/>prFailureActions / ci_failure_job_path"] --> D{"Any hits?"}
+    D -- no --> U["./run.sh upgrade → 1.3.0"]
+    D -- yes --> R["Remove both keys in the same<br/>edit window as the pin move"]
+    R --> C{"Was the repo fetching<br/>Jenkins logs?"}
+    C -- no --> U
+    C -- yes --> P["Rebuild the provider as a private<br/>extension (see Known gaps)"]
+    P --> U
+    U --> L["Relaunch — first 1.3.0 run"]
+    L --> O["Observe: a failing PR check still<br/>yields a github-actions excerpt"]
+```
+
+1. **Find the keys.** `grep -n 'prFailureActions\|pr_failure_actions\|ci_failure_job_path\|ciFailureJobPath' .config.json`.
+   No hits means nothing to migrate — the upgrade is a normal one.
+2. **Remove them**, in the same edit window as the pin move. A 1.2.x worker
+   ignores their absence; a 1.3.0 worker refuses their presence, so they
+   cannot be staged early the way `callbacks` could.
+3. **If a repo genuinely fetched logs from that CI system**, the provider
+   has to be rebuilt as a private extension. Read
+   [Private Extensions — Known gaps](PRIVATE-EXTENSIONS.md#-known-gaps)
+   first: the registry is not exported for out-of-tree use and there is no
+   extension loader, so this is not a drop-in today. Until it is, that
+   repo falls back to the built-in GitHub Actions provider, which yields an
+   excerpt only for Actions checks.
+4. **Upgrade and relaunch**, then confirm on a failing PR that the worker
+   log still shows `CI log provider selected` with
+   `provider: github-actions`.
+
+### Rolling back
+
+Re-pin to the previous release and restore the two keys in the same edit.
+Nothing in this release rewrites operator state, so the rollback is the
+migration run backwards.
+
 ## 1.2.0 — the post-run callback extension point
 
 **Configuration contract change. Read the migration before upgrading a host.**

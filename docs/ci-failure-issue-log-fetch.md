@@ -39,7 +39,7 @@ sequenceDiagram
     P->>R: resolveCiLogProvider(ctx)
     R-->>P: registered provider (github-actions by default)
     P->>R: provider.fetchLog(ctx)
-    R-->>P: build status + console log (≤ 256 KiB)
+    R-->>P: build status + console log excerpt
     P->>P: scrub + fence the log in the nonce boundary
     P-->>W: diagnosis context (signals + log tail)
     W->>B: buildIssuePrompt({ ciFailureContext, ciFailureBoundaryId })
@@ -79,7 +79,10 @@ treated as data all the way through:
 
 - Core checks only what it can check without knowing the CI vendor: the URL
   must parse and name an `http:` or `https:` scheme. Anything else is
-  rejected outright.
+  rejected outright. The origin allowlist this replaced could only be
+  expressed against one vendor's base URL, so it left with that vendor
+  (Issue #986); what stands in its place is the non-dereference rule below,
+  which is stronger because it holds for every provider rather than one.
 - Core then hands the URL to the resolved provider as `targetUrl` and
   **never fetches it**. The built-in GitHub Actions provider reads run and
   job ids out of the path and fetches through the worker's authenticated
@@ -137,12 +140,12 @@ means the path did not fire and the run fell back to the pre-summary alone.
 ## Configuration
 
 Both keys live under `repo_config.<owner>/<repo>` in the worker's
-`.config.json` and accept snake_case or camelCase.
+`.config.json`.
 
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
 | `ci_failure_labels` | string[] | yes (to enable) | Issue labels that mark a CI-failure report. Omit or leave empty to disable. Matched per label, case-insensitively. |
-| `ci_providers` | array | no | The CI log providers consulted for the fetch, in order. GitHub Actions is the built-in default and needs no entry; see [per-repository PR failure actions](per-repo-pr-failure-actions.md). |
+| `ciProviders` | array | no | The CI log providers consulted for the fetch, in order — camelCase only, as `ciProviders` has no snake_case alias in `REPO_CONFIG_KEY_MAP`. GitHub Actions is the built-in default and needs no entry; see [per-repository PR failure actions](per-repo-pr-failure-actions.md). |
 
 Any credentials a provider needs are the provider's own concern and come
 from the worker environment, never from repository configuration.
