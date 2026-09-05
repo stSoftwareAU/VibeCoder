@@ -477,6 +477,30 @@ async function pidAlive(pid: number): Promise<boolean> {
   return out.success;
 }
 
+/**
+ * Wait for a collected pid to actually leave the process table.
+ *
+ * `collectOrphans` promises the signals were *sent*, not that the kernel has
+ * finished with the processes: `sendSignal(pid, "KILL")` returns on delivery,
+ * and the target is then torn down asynchronously — and lingers as a zombie
+ * until whoever inherited it reaps it. Sampling `kill -0` once, immediately
+ * after the run resolves, therefore asserts a post-condition the collector
+ * never offered, and fails whenever the machine is busy enough to widen that
+ * window. That is what made this suite flake in the parallel pass while
+ * passing every time in isolation.
+ *
+ * The bound is generous and is not a measurement: nothing asserts how long
+ * the reap took, only that it happens. SIGKILL cannot be blocked, so a pid
+ * still present at the deadline is a real collection failure.
+ */
+async function waitForPidGone(pid: number, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (await pidAlive(pid)) {
+    if (Date.now() > deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
 Deno.test({
   name:
     "runClaudeWithRetry - a SIGKILLed agent's surviving descendant is collected and the kill diagnostics name it (Issue #4382)",
@@ -550,12 +574,10 @@ Deno.test({
       );
       if (!result.ok) return;
       assertEquals(result.value.killed, true);
-      // The orphan is gone.
-      assertEquals(
-        await pidAlive(orphanPid),
-        false,
-        `orphan ${orphanPid} must have been collected`,
-      );
+      // The cause first, then the effect: a failure here says the collector
+      // never ran or never saw this pid, which is a different defect from a
+      // pid that was signalled and has not finished dying. Asserting the pid
+      // first hid that distinction behind "orphan N survived".
       const collected = security.find((s) => s.event === "ORPHANS_COLLECTED");
       assert(
         collected,
@@ -565,6 +587,16 @@ Deno.test({
         collected.details.includes(`${orphanPid}`) &&
           collected.details.includes("after=AGENT_KILLED"),
         collected.details,
+      );
+      // And it really is gone -- waited for, not sampled once (see
+      // waitForPidGone): the collector sends SIGKILL, the kernel finishes
+      // afterwards.
+      await waitForPidGone(orphanPid);
+      assertEquals(
+        await pidAlive(orphanPid),
+        false,
+        `orphan ${orphanPid} was signalled (${collected.details}) but was ` +
+          `still in the process table 10s later`,
       );
       // And the kill diagnostics carried the process table.
       assert(
