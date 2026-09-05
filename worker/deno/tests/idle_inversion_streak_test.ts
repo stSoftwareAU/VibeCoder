@@ -29,6 +29,14 @@ import {
 
 const REPO = "stSoftwareAU/VibeCoder";
 
+/**
+ * The fleet account the escalation issue is filed by. A marker in an issue
+ * body is only evidence the alert exists when a fleet account authored it,
+ * so the dedup fixtures name one.
+ */
+const FLEET_LOGIN = "vibe-coder-bot";
+const FLEET: readonly string[] = [FLEET_LOGIN];
+
 /** A scripted `gh` recording every call. */
 function gh(replies: { match: RegExp; reply: string | Error }[]) {
   const calls: string[][] = [];
@@ -162,7 +170,11 @@ Deno.test("#321 - an open escalation issue is reused, not duplicated", async () 
     const { fn, calls } = gh([
       {
         match: /issue list/,
-        reply: JSON.stringify([{ number: 555, body: `${marker}\nolder` }]),
+        reply: JSON.stringify([{
+          number: 555,
+          body: `${marker}\nolder`,
+          author: { login: FLEET_LOGIN },
+        }]),
       },
       CREATE_OK,
     ]);
@@ -173,6 +185,7 @@ Deno.test("#321 - an open escalation issue is reused, not duplicated", async () 
         cycleId: `run-${cycle}`,
         report,
         ghFn: fn,
+        fleetAuthors: FLEET,
       });
     }
     assertEquals(last?.action, "already-open");
