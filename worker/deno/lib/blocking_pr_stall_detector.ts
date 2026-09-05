@@ -14,10 +14,14 @@
  * stopped making progress:
  *
  * - **red CI** — a failing check whose run has not been superseded by a
- *   newer fleet push, older than the configured threshold; or
+ *   newer fleet push, older than the configured threshold;
  * - **unanswered authorised comment** — the newest comment from an
  *   `authorized_commenters` login is newer than the newest fleet reply or
- *   push, by longer than the threshold.
+ *   push, by longer than the threshold; or
+ * - **green but unmerged** (Issue #1082) — no failing check, no auto-merge
+ *   armed, and no movement for longer than the threshold. Nothing is wrong
+ *   with the PR; it simply is not landing, and the repository's whole work
+ *   stream is stopped behind it.
  *
  * On trip it escalates through the shared `escalateToHuman()` chokepoint —
  * one deduped comment per PR per stall reason, plus `needs-human`. It never
@@ -68,8 +72,19 @@ const FAILING_CONCLUSIONS = new Set([
   "ERROR",
 ]);
 
-/** Why a blocking PR is considered stalled. */
-export type BlockingPrStallReason = "red-ci" | "unanswered-comment";
+/**
+ * Why a blocking PR is considered stalled.
+ *
+ * `unmerged-green` is the third shape (Issue #1082): nothing is *wrong* with
+ * the PR — CI is green and no comment is outstanding — it simply is not
+ * landing, and while it does not land its repository's whole work stream is
+ * stopped. `GRQ-GTC#305` sat exactly like that for five days and no host
+ * said a word about it, because the two signals above both looked healthy.
+ */
+export type BlockingPrStallReason =
+  | "red-ci"
+  | "unanswered-comment"
+  | "unmerged-green";
 
 /** A failing check observed on a blocking PR. */
 export interface FailingCheck {
@@ -95,6 +110,10 @@ export interface BlockingPrObservation {
   lastAuthorisedCommentAt?: string;
   /** ISO timestamp of the newest comment from a fleet account. */
   lastFleetReplyAt?: string;
+  /** ISO timestamp the PR was opened (Issue #1082). */
+  createdAt?: string;
+  /** True when GitHub's native auto-merge is armed on the PR (Issue #1082). */
+  autoMergeEnabled?: boolean;
 }
 
 /** One tripped staleness signal. */
@@ -229,6 +248,26 @@ export function detectBlockingPrStall(
     }
   }
 
+  // -- Green but not landing (Issue #1082) --------------------------------
+  // Only when nothing else has tripped: a red or unanswered PR is already
+  // being reported, and a second reason for the same PR would be noise.
+  if (
+    signals.length === 0 && observation.failingChecks.length === 0 &&
+    observation.autoMergeEnabled !== true
+  ) {
+    const since = maxDefined(pushAt, epochSeconds(observation.createdAt));
+    const stalledSeconds = since === undefined ? undefined : nowSeconds - since;
+    if (stalledSeconds !== undefined && stalledSeconds >= thresholdSeconds) {
+      signals.push({
+        reason: "unmerged-green",
+        stalledSeconds,
+        detail: `been open and green for ${
+          formatDuration(stalledSeconds)
+        } with no auto-merge armed and no merge`,
+      });
+    }
+  }
+
   if (signals.length === 0) return null;
   return {
     repo: observation.repo,
@@ -255,27 +294,35 @@ export function buildBlockingPrStallReason(
   stall: BlockingPrStall,
   signal: BlockingPrStallSignal,
 ): string {
+  const count = stall.blockedIssues.length;
   const issues = stall.blockedIssues.map((issue) => `#${issue}`).join(", ");
-  const plural = stall.blockedIssues.length === 1 ? "" : "s";
+  const plural = count === 1 ? "" : "s";
   return (
-    `This PR has ${signal.detail}, and it is blocking the \`work-on\` ` +
-    `issue${plural} ${issues} from being picked up. The worker defers ` +
-    `${plural === "" ? "that issue" : "those issues"} to this PR, so the ` +
-    "work stream is stopped until the PR moves."
+    `${stall.repo}#${stall.prNumber} has ${signal.detail}, and it is ` +
+    `blocking ${count} \`work-on\` issue${plural} (${issues}) from being ` +
+    `picked up. The worker defers ${
+      plural === "" ? "that issue" : "those issues"
+    } to this PR, so the work stream is stopped until the PR moves.`
   );
 }
 
 /** Next step printed in the escalation comment. */
 /** Short noun phrase naming the stall, for the escalation issue's title. */
 export function describeStallSummary(reason: BlockingPrStallReason): string {
-  return reason === "red-ci"
-    ? "CI is red and no fix has landed"
-    : "an authorised comment is unanswered";
+  switch (reason) {
+    case "red-ci":
+      return "CI is red and no fix has landed";
+    case "unanswered-comment":
+      return "an authorised comment is unanswered";
+    case "unmerged-green":
+      return "the PR is green but is not being merged";
+  }
 }
 
 export const BLOCKING_PR_STALL_NEXT_STEP =
-  "Push a fix, reply to the outstanding comment, or close the PR — whichever " +
-  "unblocks it — so the deferred `work-on` issues can be picked up again.";
+  "Push a fix, reply to the outstanding comment, approve or merge the PR, or " +
+  "close it — whichever unblocks it — so the deferred `work-on` issues can be " +
+  "picked up again.";
 
 // ---------------------------------------------------------------------------
 // Escalation
@@ -622,7 +669,7 @@ async function observeBlockingPr(params: {
     "--repo",
     repo,
     "--json",
-    "comments,commits,statusCheckRollup",
+    "comments,commits,statusCheckRollup,createdAt,autoMergeRequest",
   ]);
 
   const view = parseObject(raw);
@@ -631,7 +678,14 @@ async function observeBlockingPr(params: {
     prNumber,
     blockedIssues: [...blockedIssues],
     failingChecks: parseFailingChecks(view.statusCheckRollup),
+    // Issue #1082: an armed auto-merge means the PR is already on its way.
+    autoMergeEnabled: view.autoMergeRequest !== null &&
+      typeof view.autoMergeRequest === "object",
   };
+
+  if (typeof view.createdAt === "string" && view.createdAt) {
+    observation.createdAt = view.createdAt;
+  }
 
   const lastFleetPushAt = newestCommitDate(view.commits);
   if (lastFleetPushAt) observation.lastFleetPushAt = lastFleetPushAt;

@@ -10,7 +10,9 @@ import {
   AUTO_FIX_CAP_MARKER_PREFIX,
   type BlockingPrObservation,
   blockingPrStallMarker,
+  buildBlockingPrStallReason,
   DEFAULT_BLOCKING_PR_STALL_THRESHOLD_SECONDS,
+  describeStallSummary,
   detectBlockingPrStall,
   escalateBlockingPrStall,
   findBlockingPrObservations,
@@ -127,6 +129,10 @@ Deno.test("a push after the authorised comment counts as an answer", () => {
     observation({
       lastAuthorisedCommentAt: "2026-08-11T16:36:00Z",
       lastFleetPushAt: "2026-08-11T16:50:00Z",
+      // Issue #1082: this fixture is also green and unmerged, which the new
+      // third signal would trip on. Arming auto-merge says the PR is already
+      // on its way, isolating the comment rule this test is about.
+      autoMergeEnabled: true,
     }),
     { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
   );
@@ -593,4 +599,172 @@ Deno.test("escalateBlockingPrStall - files the stall as work and never applies n
     ["escalated"],
     "the PR gets the non-vetoing marker and nothing else",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Green-but-unmerged signal (Issue #1082) — the shape that froze GRQ-GTC for
+// five days: nothing red, nothing unanswered, nothing landing.
+// ---------------------------------------------------------------------------
+
+Deno.test("a green blocking PR with no auto-merge trips past the threshold", () => {
+  const stall = detectBlockingPrStall(
+    observation({
+      createdAt: "2026-08-06T05:46:00Z",
+      autoMergeEnabled: false,
+    }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assert(stall, "expected a stall");
+  assertEquals(stall.signals.map((s) => s.reason), ["unmerged-green"]);
+  assertEquals(stall.blockedIssues, [93, 94]);
+  assertStringIncludes(stall.signals[0]!.detail, "no auto-merge armed");
+});
+
+Deno.test("a green blocking PR inside the threshold does not trip", () => {
+  const stall = detectBlockingPrStall(
+    observation({
+      createdAt: "2026-08-11T19:30:00Z",
+      lastFleetPushAt: "2026-08-11T19:30:00Z",
+    }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assertEquals(stall, null);
+});
+
+Deno.test("an armed auto-merge is not a stall — the PR is already on its way", () => {
+  const stall = detectBlockingPrStall(
+    observation({
+      createdAt: "2026-08-06T05:46:00Z",
+      autoMergeEnabled: true,
+    }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assertEquals(stall, null);
+});
+
+Deno.test("a red PR reports red-ci only, never green-but-unmerged as well", () => {
+  const stall = detectBlockingPrStall(
+    observation({
+      createdAt: "2026-08-06T05:46:00Z",
+      failingChecks: [{ name: "quality", completedAt: "2026-08-11T12:07:00Z" }],
+    }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assert(stall);
+  assertEquals(stall.signals.map((s) => s.reason), ["red-ci"]);
+});
+
+Deno.test("a PR whose checks failed recently is not reported as green", () => {
+  // Red 10 minutes ago on a PR opened five days ago: the red-CI signal has
+  // not matured, and calling that PR "green but unmerged" would be a lie.
+  const stall = detectBlockingPrStall(
+    observation({
+      createdAt: "2026-08-06T05:46:00Z",
+      failingChecks: [{ name: "quality", completedAt: "2026-08-11T19:50:00Z" }],
+    }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assertEquals(stall, null);
+});
+
+Deno.test("a green PR blocking nothing is out of scope", () => {
+  const stall = detectBlockingPrStall(
+    observation({ blockedIssues: [], createdAt: "2026-08-06T05:46:00Z" }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assertEquals(stall, null);
+});
+
+Deno.test("the green-but-unmerged escalation names the PR and the blocked count", () => {
+  const stall = detectBlockingPrStall(
+    observation({ createdAt: "2026-08-06T05:46:00Z" }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assert(stall);
+  const reason = buildBlockingPrStallReason(stall, stall.signals[0]!);
+  assertStringIncludes(reason, `${REPO}#103`);
+  assertStringIncludes(reason, "blocking 2 `work-on` issues");
+  assertStringIncludes(reason, "#93, #94");
+  assertStringIncludes(
+    describeStallSummary("unmerged-green"),
+    "green but is not being merged",
+  );
+});
+
+Deno.test("a green-but-unmerged stall escalates exactly once", async () => {
+  const comments: string[] = [];
+  const writes: string[][] = [];
+  const gh = buildEscalationGh(comments, writes);
+  const stall = {
+    repo: REPO,
+    prNumber: 305,
+    blockedIssues: [93],
+    signals: [
+      {
+        reason: "unmerged-green" as const,
+        stalledSeconds: 432000,
+        detail: "been open and green for 120 hours with no auto-merge armed" +
+          " and no merge",
+      },
+    ],
+  };
+  const deps = {
+    ghCommandFn: gh,
+    needsHumanLabel: "needs-human",
+    ensureLabelExists: () =>
+      Promise.resolve({ ok: true as const, value: undefined }),
+    escalateWork: () =>
+      Promise.resolve({
+        ok: true as const,
+        value: { issueNumber: 900, filed: true },
+      }),
+    logger,
+  };
+
+  const first = await escalateBlockingPrStall(stall, deps);
+  assert(first.ok);
+  assertEquals(first.value.postedReasons, ["unmerged-green"]);
+
+  const second = await escalateBlockingPrStall(stall, deps);
+  assert(second.ok);
+  assertEquals(second.value.postedReasons, []);
+
+  const posted = comments.filter((c) =>
+    c.includes(blockingPrStallMarker("unmerged-green"))
+  );
+  assertEquals(posted.length, 1, "exactly one comment for the stalled repo");
+  assertStringIncludes(posted[0]!, `${REPO}#305`);
+});
+
+Deno.test("a PR that merges inside the threshold is never escalated", async () => {
+  // A merged PR is not open, so the observation gatherer never sees it — the
+  // scan finds no blocking PR at all and nothing is escalated.
+  const gh = (args: string[]): Promise<string> => {
+    const joined = args.join(" ");
+    if (joined.includes("issue list")) return Promise.resolve("[]");
+    if (joined.includes("pr list")) return Promise.resolve("[]");
+    throw new Error(`Unexpected gh command: ${joined}`);
+  };
+
+  const result = await scanBlockingPrStalls({
+    repos: [REPO],
+    workOnLabel: "work-on",
+    fleetAuthors: ["VibeCoderST"],
+    authorisedCommenters: ["nleck"],
+    ghCommandFn: gh,
+    config: { blockingPrStallThresholdSeconds: THRESHOLD },
+    needsHumanLabel: "needs-human",
+    logger,
+    nowSeconds: () => NOW,
+  });
+
+  assert(result.ok);
+  assertEquals(result.value, []);
 });
