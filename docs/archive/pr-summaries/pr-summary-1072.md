@@ -92,13 +92,14 @@ third — this issue, and #879 before it.
   outcome recorder to `consecutiveFailures: 0`, a `terminated` event naming
   `SIGTERM`, and a consumed marker; and a launch that ends on its own clears a
   leftover marker.
-- Full gate: `./quality.sh` — every check passes except
-  `run_core_production_deps_test.ts::createProductionRunCoreDeps - static trust
-  refresh succeeds and does not throw`, which is **pre-existing**: it fails the
-  same way on the base commit (`f0d67a7`, this change reverted) and is already
-  filed as stSoftwareAU/VibeCoder#1118, which names this exact test as an
-  intermittent failure of the parallel pass. It passes in isolation, and nothing
-  in this change is reachable from it.
+- Full gate: `./quality.sh` — lint, type check, fmt, mermaid, markdownlint,
+  semgrep and every other check pass. The `deno tests` stage reports the
+  **pre-existing** parallel-pass flakes tracked by
+  stSoftwareAU/VibeCoder#1118: `run_core_production_deps_test.ts::…static trust
+  refresh…` (named in that issue) and, on two of three runs,
+  `run_core_idle_detect_audit_test.ts::…Issue #2475…`. Both were reproduced on
+  the base commit (`f0d67a7`) with this change absent, both pass in isolation,
+  and nothing in this change is reachable from either.
 
 ## Docs
 
