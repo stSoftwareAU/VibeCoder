@@ -436,8 +436,15 @@ Deno.test(
     // Repo A holds an unblocked work-on issue; repo B is empty. The fleet
     // gate must report work exists so the filer skips filing into quiet
     // repo B — the AC2 cross-repo suppression case.
-    const recorder = makeRepoRecorder((repo, label) =>
-      repo === "org/a" && label === "work-on" ? '[{"number":7}]' : "[]"
+    //
+    // Issue #1050: the gate now reads one unfiltered open-issue list per
+    // repo (work-stream occupancy is a property of the whole stream, and
+    // the issue that occupies it need carry no discovery label), so the
+    // stub answers per repo and the row carries its own labels.
+    const recorder = makeRepoRecorder((repo, _label) =>
+      repo === "org/a"
+        ? '[{"number":7,"labels":[{"name":"work-on"}],"assignees":[]}]'
+        : "[]"
     );
     const hasWork = await anyRepoHasUnblockedRealWork({
       repos: ["org/a", "org/b"],
@@ -453,9 +460,9 @@ Deno.test(
     // The issue carries only `work-on` and no blocking label and no
     // assignee — it was simply deferred this cycle (nice/rotation/cooldown)
     // rather than claimed. Existence alone must register as work (AC1).
-    const recorder = makeRepoRecorder((repo, label) =>
-      repo === "org/deferred" && label === "work-on"
-        ? '[{"number":99,"labels":[{"name":"work-on"}]}]'
+    const recorder = makeRepoRecorder((repo, _label) =>
+      repo === "org/deferred"
+        ? '[{"number":99,"labels":[{"name":"work-on"}],"assignees":[]}]'
         : "[]"
     );
     const hasWork = await anyRepoHasUnblockedRealWork({
@@ -472,9 +479,10 @@ Deno.test(
     // The only work-on issue also carries `failed`, so the worker cannot
     // pick it up — it must NOT register as fleet work (Issue #2440 filter
     // reused).
-    const recorder = makeRepoRecorder((repo, label) =>
-      repo === "org/blocked" && label === "work-on"
-        ? '[{"number":5,"labels":[{"name":"work-on"},{"name":"failed"}]}]'
+    const recorder = makeRepoRecorder((repo, _label) =>
+      repo === "org/blocked"
+        ? '[{"number":5,"labels":[{"name":"work-on"},{"name":"failed"}],' +
+          '"assignees":[]}]'
         : "[]"
     );
     const hasWork = await anyRepoHasUnblockedRealWork({
@@ -490,20 +498,16 @@ Deno.test(
   async () => {
     // An open idle-task wrapper is handled by the cross-repo dedup, not by
     // this existence gate — REAL_WORK_LABELS excludes idle-task.
-    const recorder = makeRepoRecorder((repo, label) =>
-      repo === "org/idle" && label === "idle-task" ? '[{"number":3}]' : "[]"
+    const recorder = makeRepoRecorder((repo, _label) =>
+      repo === "org/idle"
+        ? '[{"number":3,"labels":[{"name":"idle-task"}],"assignees":[]}]'
+        : "[]"
     );
     const hasWork = await anyRepoHasUnblockedRealWork({
       repos: ["org/idle"],
       ghCommandFn: recorder.fn,
     });
     assertEquals(hasWork, false);
-    // idle-task must never be probed by the existence gate.
-    const probedIdleTask = recorder.calls.some((c) => {
-      const i = c.args.indexOf("--label");
-      return i >= 0 && c.args[i + 1] === "idle-task";
-    });
-    assertEquals(probedIdleTask, false);
   },
 );
 

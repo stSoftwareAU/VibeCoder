@@ -552,13 +552,22 @@ repo:
 
 **Fleet-global existence gate.** Before the per-repo loop — right
 after the cross-repo wrapper check — the filer asks one whole-set question: does
-**any** monitored repo hold an open, **unblocked**
-`top-priority`/`work-on`/`low-priority` issue? If so it skips filing entirely
-(`action=skipped reason=approved_work_in_flight scope=monitored_set`). This is
-deliberately an **existence** check, not a "claimable right now" check: a
-`work-on` issue merely _deferred_ this cycle by `nice` tiering, fair rotation,
-or local/cross-worker cooldown still _exists_, so the fleet has real work and an
-idle-task must not be filed. It repairs the filing half of the
+**any** monitored repo hold an open `top-priority`/`work-on`/`low-priority`
+issue **a slot could claim**? If so it skips filing entirely
+(`action=skipped reason=approved_work_in_flight scope=monitored_set`). Work
+merely _deferred_ this cycle by `nice` tiering, fair rotation, or
+local/cross-worker cooldown still counts — it will be claimed on a later cycle,
+so the fleet has real work and an idle-task must not be filed.
+
+Issue #1050 narrowed "could claim" from labels to the claim scan's own
+definition. The gate used to ask a label-only question, so work the scan
+*permanently* refuses suppressed idle filing for as long as it stayed open. It
+now answers from the same `classifyIssues` the idle-detect audit runs
+(restricted to `REAL_WORK_LABELS`), reading one unfiltered `gh issue list` per
+repo — occupancy is a property of the whole work stream, and the issue that
+occupies it need carry no discovery label at all. The gates it cannot answer
+without PR or dependency data are simply not applied, so it still errs towards
+*suppressing* filing rather than towards wrapper flooding. It repairs the filing half of the
 idle-vs-work-on inversion, where the per-repo busy check (gate 5 below) only
 skipped the _individual_ busy repo and let a quiet repo B be filed into while a
 different repo A held the deferred backlog. The same suppression is also applied
@@ -735,6 +744,27 @@ hands the same set to all three readers, and excluded issues are reported as
 `run_local_hold=<n>`. The per-cycle adaptive-floor deferral (Issue #245) is the
 one source still unmodelled; it is rebuilt every cycle, so it cannot hold a
 streak open the way the registry did.
+
+The **work-stream occupancy** gate (Issue #1050) is the fifth instance, and the
+first to be found in the audit rather than the census. `isMilestoneOccupied`
+calls a stream occupied when an issue in it is assigned to **any** account the
+scan honours — this worker or an `allowed_authors` entry — and the census has
+modelled that account set since Issue #753. The audit matched `workerUser`
+alone. On 2026-08-26 `stSoftwareAU/VibeCoder` held two dozen unassigned
+`work-on` issues in the default-branch stream and one unlabelled issue in that
+stream assigned to a human in `allowed_authors`; the scan refused every one of
+them as `milestone-occupied`, the audit counted all 24, and
+`[idle-hooks] ... reason=audit_found_claimable claimable_total=24` suppressed
+the filer. No idle task was filed anywhere in the fleet for ten days while two
+slots ran at roughly 10% occupancy. The audit now resolves occupancy by calling
+`isMilestoneOccupied` itself, over the account set the caller supplies as
+`allowedAuthors`, and applies the `filterAndSort` milestone-tracker gate
+(Issue #1134) the same way. `idle_claimable_drift_1050_test.ts` feeds one issue
+set to both `classifyIssues` and the real `collectWorkOnCandidates` and fails on
+any disagreement, and `idle_filing_composition_1050_test.ts` runs the whole
+suppressor stack against the observed fleet shape and asserts an idle task is
+still filed — the assertion no test made before, which is why ten days passed
+before a human noticed.
 
 The third reader is the **idle-detect audit** (`idle_detect_diagnostics.ts`),
 which counted those same two issues for the life of the run — so

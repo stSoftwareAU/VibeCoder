@@ -289,10 +289,11 @@ interface TestDeps {
   ) => Promise<boolean>;
   /**
    * Fleet-global existence gate (Issue #2813). Returns true when ANY
-   * monitored repo holds an open, unblocked
-   * `top-priority`/`work-on`/`low-priority` issue — even one merely
-   * *deferred* this cycle by `nice` tiering, fair rotation, or cooldown
-   * rather than claimed. When true the filer suppresses idle-task creation
+   * monitored repo holds an open `top-priority`/`work-on`/`low-priority`
+   * issue a slot could claim — including one merely *deferred* this cycle
+   * by `nice` tiering, fair rotation, or cooldown rather than claimed.
+   * Issue #1050: "could claim" is the claim scan's own definition, so work
+   * the scan permanently refuses no longer suppresses filing. When true the filer suppresses idle-task creation
    * across the whole set, repairing the filing half of the #2806
    * idle-vs-work-on inversion. Defaults to `anyRepoHasUnblockedRealWork`
    * from `lib/repo_busy_for_idle_task.ts`. A helper throw is treated as
@@ -300,7 +301,14 @@ interface TestDeps {
    * hiccup never silently disables the filer.
    */
   anyRepoHasWorkFn?: (
-    opts: { repos: readonly string[]; logFn?: (message: string) => void },
+    opts: {
+      repos: readonly string[];
+      logFn?: (message: string) => void;
+      /** This worker's login, for the scan's occupancy gate (Issue #1050). */
+      workerUser?: string;
+      /** The scan's trusted-account set (Issue #1050). */
+      allowedAuthors?: readonly string[];
+    },
   ) => Promise<boolean>;
   /**
    * Output-backlog count for the active template (Issue #2082, "backlog
@@ -897,6 +905,13 @@ export const maybeFileIdleTaskCommand: Command = {
       fleetHasWork = await anyRepoHasWorkFn({
         repos: monitoredRepos,
         logFn: log,
+        // Issue #1050: the gate refuses the work streams the claim scan
+        // refuses, and the scan calls a stream occupied when ANY trusted
+        // account holds an issue in it. Without this set the gate counted a
+        // colleague's assignment as fleet work the scan would never claim,
+        // and suppressed idle filing across all eighteen repositories.
+        workerUser,
+        allowedAuthors: config.allowedAuthors ?? [],
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
