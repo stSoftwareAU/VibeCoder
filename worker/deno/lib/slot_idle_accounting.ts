@@ -186,6 +186,28 @@ export class SlotIdleLedger {
   }
 
   /**
+   * How many slots are idle right now (Issue #1083): the configured
+   * capacity less the slots currently holding a claim.
+   *
+   * This module is already the authority on "is any slot doing nothing?",
+   * so it is also the authority on how much idle work the fleet can pick
+   * up. The idle-task filer bounds its filing by this rather than by a
+   * constant, so the fleet fills its empty slots without flooding itself
+   * with more issues than it can handle.
+   *
+   * A slot with no open span is counted idle: at the end-of-cycle gate
+   * every slot has drained, and a drained pool is idle capacity, not
+   * occupancy.
+   */
+  idleSlotCapacity(): number {
+    let claiming = 0;
+    for (const span of this.open.values()) {
+      if (span.activity === "claim") claiming += 1;
+    }
+    return Math.max(0, this.slots - claiming);
+  }
+
+  /**
    * Fleet-wide pause on a quota. Every configured slot was blocked for that
    * wall time, so the capacity it consumed is `seconds × slots` — booked to
    * the block, never to idle.
@@ -288,41 +310,69 @@ export function formatSlotUtilisation(
 }
 
 /**
- * Single-flight guard for the idle-task filer (Issue #925).
+ * Capacity guard for the idle-task filer (Issues #925, #1083).
  *
- * Making the filer per-slot introduces a multiplication the fleet-wide gate
+ * Making the filer per-slot introduced a multiplication the fleet-wide gate
  * never had: the filer picks a repository with no open `idle-task` issue, so
- * N slots going idle in the same cycle would file N issues, and one slot
- * re-scanning 74 times would file 74. The latch makes an *idle episode*, not
- * a scan, the unit of filing:
+ * one slot re-scanning 74 times would file 74 issues. Issue #925 answered
+ * that with a single boolean — one filing per idle *episode* per host — and
+ * in doing so also refused the case the operator actually wants: **N slots
+ * going idle should produce up to N idle tasks**, because an idle slot is a
+ * fault rather than a resting state. That latch alone held a host at one
+ * idle task however many of its slots were empty (Issue #1083).
  *
- *   - {@link tryConsume} succeeds for the first slot to observe an empty
- *     scan and fails for every later one — the flag is set synchronously,
- *     before the caller's first `await`, so two slots cannot both win;
+ * The unit of filing is therefore an *idle observer within an episode*,
+ * bounded by the fleet's idle capacity:
+ *
+ *   - {@link tryConsume} succeeds once per `observerId` per episode, so a
+ *     slot re-scanning 74 times still files once, while six idle slots may
+ *     file six. The observer is recorded synchronously, before the caller's
+ *     first `await`, so two slots cannot both win one permit;
+ *   - the total is bounded by `capacityFn()` — the slots not currently
+ *     holding a claim, from this module's own ledger — so the fleet never
+ *     files more idle work than it can pick up. A fully occupied fleet has
+ *     capacity zero and files nothing;
  *   - {@link release} is called when any slot takes a claim, so once the
  *     fleet is supplied again a later idle episode may file again;
- *   - {@link fired} lets the end-of-cycle gate skip its own filer call when
- *     a slot has already filed this cycle, so the two paths together file at
- *     most once per episode.
+ *   - {@link fired} and {@link filedCount} let the end-of-cycle gate see
+ *     what the slots already did this episode.
  */
 export class IdleFilerLatch {
-  private consumed = false;
+  private readonly consumedBy = new Set<string>();
 
-  /** True for the first caller of an idle episode, false thereafter. */
-  tryConsume(): boolean {
-    if (this.consumed) return false;
-    this.consumed = true;
+  /**
+   * @param capacityFn How many slots are idle right now. Read at each
+   * {@link tryConsume} rather than captured at construction, because the
+   * fleet's occupancy changes across an episode. Defaults to one — the
+   * pre-#1083 bound, and the honest answer for a caller with no ledger.
+   */
+  constructor(private readonly capacityFn: () => number = () => 1) {}
+
+  /**
+   * True the first time `observerId` observes this idle episode, while the
+   * episode's filings remain under the fleet's idle capacity.
+   */
+  tryConsume(observerId: string): boolean {
+    if (this.consumedBy.has(observerId)) return false;
+    const capacity = Math.floor(this.capacityFn());
+    if (this.consumedBy.size >= capacity) return false;
+    this.consumedBy.add(observerId);
     return true;
   }
 
   /** A slot took a claim: the next idle episode may file again. */
   release(): void {
-    this.consumed = false;
+    this.consumedBy.clear();
   }
 
   /** Whether this episode has already filed. */
   get fired(): boolean {
-    return this.consumed;
+    return this.consumedBy.size > 0;
+  }
+
+  /** How many observers have filed this episode. */
+  get filedCount(): number {
+    return this.consumedBy.size;
   }
 }
 
@@ -363,6 +413,11 @@ export function recordBlockedSlotSeconds(
 /** See {@link SlotIdleLedger.recordBlockedStop}. */
 export function recordSlotBlockedStop(kind: FleetBlockKind): void {
   ledger.recordBlockedStop(kind);
+}
+
+/** See {@link SlotIdleLedger.idleSlotCapacity}. */
+export function getIdleSlotCapacity(): number {
+  return ledger.idleSlotCapacity();
 }
 
 /** See {@link SlotIdleLedger.snapshot}. */

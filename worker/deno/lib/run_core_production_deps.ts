@@ -269,6 +269,7 @@ import {
 } from "./idle_starvation_escalation.ts";
 import {
   formatSlotUtilisationSummary,
+  getIdleSlotCapacity,
   getSlotUtilisation,
 } from "./slot_idle_accounting.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
@@ -3431,6 +3432,12 @@ export async function createProductionRunCoreDeps(
                 "monitored-repos": repos.join(","),
                 "github-user": githubUser,
                 "worker-user": githubUser,
+                // Issue #1083: how many slots are idle right now, from the
+                // #925 ledger — the authority on slot occupancy. The filer
+                // bounds every one of its gates by this rather than by a
+                // constant, so it raises enough idle work to fill the empty
+                // slots and no more.
+                "idle-slots": String(getIdleSlotCapacity()),
                 // Issue #2467: the `worker-repo`/queue-gate (#2082) arg
                 // was removed because the gate fired on every open
                 // `work-on` issue in the worker repo and starved
@@ -3777,9 +3784,9 @@ export async function createProductionRunCoreDeps(
         try {
           const nowMs = Date.now();
           const idleSlotSeconds = getSlotUtilisation(nowMs).idleSlotSeconds;
-          // `maybe-file-idle-task` keeps at most one open wrapper across the
-          // whole monitored set (the cross-repo dedup gate), so one open
-          // idle task is the healthy steady state and ends the episode.
+          // `maybe-file-idle-task` raises one wrapper per repository, up to
+          // the fleet's idle capacity (Issue #1083), so the episode ends
+          // only when there are as many open idle tasks as idle slots.
           // Counted from the labels rather than the census's `unblocked`
           // tally, which excludes a wrapper the moment a slot is assigned
           // it — the fleet is supplied either way.
@@ -3799,6 +3806,9 @@ export async function createProductionRunCoreDeps(
               runId: resolveRunId(),
               idleSlotSeconds,
               openIdleTasks,
+              // Issue #1083: one wrapper is health beside one idle slot and
+              // a shortfall beside six.
+              expectedIdleTasks: getIdleSlotCapacity(),
               evidence: {
                 slotUtilisation: formatSlotUtilisationSummary(nowMs),
                 refusalReason: describeIdleHooksRefusal({
