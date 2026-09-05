@@ -795,9 +795,10 @@ export interface AuditClaimableStateOptions {
   claimGateActive?: boolean;
   /**
    * Repositories the claim scan was never shown this cycle (Issue #898) —
-   * every repo an issue slot (Issue #4176) or the maintenance lane
-   * (Issue #213) held, which `findOldestIssue` skips before any eligibility
-   * check runs.
+   * since Issue #1091 the repos the maintenance lane leased wholesale
+   * (Issue #213), which `findOldestIssue` skips before any eligibility check
+   * runs. A sibling slot's hold is not one of them: it occupies one work
+   * stream, and the scan evaluates the repository around it.
    *
    * The scan cannot disagree with the audit about a repository it was not
    * allowed to see, so such a repo raises no ALERT. Its per-repo line and its
@@ -1027,8 +1028,8 @@ export async function auditClaimableState(
   }
 
   const claimableTotal = perRepo.reduce((sum, r) => sum + r.claimable, 0);
-  // Issue #898: a repo a slot held was skipped before any eligibility check
-  // ran, so the scan claiming nothing from it is not a disagreement.
+  // Issue #898: a repo held wholesale was skipped before any eligibility
+  // check ran, so the scan claiming nothing from it is not a disagreement.
   const heldRepos = new Set(opts.heldRepos ?? []);
   const misClassificationRepos = perRepo
     .filter((r) => r.claimable > 0 && !heldRepos.has(r.repo))

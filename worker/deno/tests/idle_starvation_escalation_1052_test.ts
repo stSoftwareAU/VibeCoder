@@ -28,6 +28,14 @@ import {
   recordIdleStarvationObservation,
 } from "../lib/idle_starvation_escalation.ts";
 
+/**
+ * The fleet account a host files as. Hosts authenticate as different
+ * accounts, so the dedup filter is the fleet set — never "me".
+ */
+const FLEET_LOGIN = "vibe-coder-bot";
+const SIBLING_LOGIN = "vibe-coder-grq23";
+const FLEET: readonly string[] = [FLEET_LOGIN, SIBLING_LOGIN];
+
 const HOUR_MS = 3_600_000;
 
 /** 2026-08-26T00:00:00Z — the day the last idle task was created. */
@@ -62,7 +70,12 @@ const EVIDENCE = {
  * the two-host dedup test observes real convergence.
  */
 function fleetGh() {
-  const issues: { number: number; body: string; open: boolean }[] = [];
+  const issues: {
+    number: number;
+    body: string;
+    open: boolean;
+    author: string;
+  }[] = [];
   const calls: string[][] = [];
   let next = 900;
   const fn = (args: string[]): Promise<string> => {
@@ -79,7 +92,11 @@ function fleetGh() {
       const openOnly = args[args.indexOf("--state") + 1] === "open";
       const rows = issues
         .filter((i) => (openOnly ? i.open : true) && i.body.includes(term))
-        .map((i) => ({ number: i.number, body: i.body }));
+        .map((i) => ({
+          number: i.number,
+          body: i.body,
+          author: { login: i.author },
+        }));
       return Promise.resolve(JSON.stringify(rows));
     }
     if (args[1] === "create") {
@@ -88,6 +105,7 @@ function fleetGh() {
         number,
         body: args[args.indexOf("--body") + 1]!,
         open: true,
+        author: FLEET_LOGIN,
       });
       return Promise.resolve(
         `https://github.com/${IDLE_STARVATION_TARGET_REPO}/issues/${number}\n`,
@@ -252,6 +270,10 @@ Deno.test("#1052 - two hosts observing one episode file one issue", async () => 
               runId: statePath === hostA ? "run-a" : "run-b",
             }),
             ghFn: gh.fn,
+            // Host B authenticates as a different account; the marker it
+            // finds was filed by host A. Convergence depends on the filter
+            // being the whole fleet, not this host alone.
+            fleetAuthors: FLEET,
             log: () => {},
           });
           if (decision.action === "filed") filedBy = decision.issue;
