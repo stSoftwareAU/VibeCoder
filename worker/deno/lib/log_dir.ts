@@ -206,9 +206,11 @@ export function legacyLogDirNotice(
   if (!exists(legacy)) return undefined;
   if (exists(resolved)) return undefined;
 
+  // The destination does not exist — that is the condition this notice fires
+  // on — so the move has to create it, or the command as printed fails.
   const move = style === "windows"
-    ? `move "${legacy}\\*" "${resolved}"`
-    : `mv ${legacy}/* ${resolved}/`;
+    ? `mkdir "${resolved}" && move "${legacy}\\*" "${resolved}"`
+    : `mkdir -p ${resolved} && mv ${legacy}/* ${resolved}/`;
   return `[log-dir] Logs now default to ${resolved} (Issue #873). ` +
     `The previous default ${legacy} was left untouched — nothing has been ` +
     `moved or deleted. To bring its history across: ${move}. To keep the ` +

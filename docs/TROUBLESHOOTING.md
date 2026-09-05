@@ -93,6 +93,9 @@ If old tags are still there, the prune is failing rather than idle, and the
 launcher log says why:
 
 ```bash
+# ${LOG_DIR} is this host's log directory — see "Where the logs land on the
+# host" below, or Configuration → Where the logs go.
+LOG_DIR="$(deno run --allow-env --allow-read worker/deno/mod.ts log-dir)"
 grep container-image-prune "${LOG_DIR}"/cron.log | tail -n 20
 ```
 
@@ -426,7 +429,8 @@ caller's `PATH` and also probes `~/.deno/bin/deno`. When either tool lives
 somewhere else, set `PATH` in the crontab entry itself:
 
 ```bash
-*/5 * * * * PATH=/opt/custom/bin:/usr/bin:/bin /path/to/VibeCoder/run.sh >> /home/USER/.local/state/vibe-coder/cron.log 2>&1
+# Linux; on macOS the log directory is ~/Library/Logs/vibe-coder
+*/5 * * * * PATH=/opt/custom/bin:/usr/bin:/bin /path/to/VibeCoder/run.sh >> ~/.local/state/vibe-coder/cron.log 2>&1
 ```
 
 ## 📦 Dependency bumps never land on one host

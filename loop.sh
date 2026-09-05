@@ -51,10 +51,11 @@ WORKER_MOD="${SCRIPT_DIR}/worker/deno/mod.ts"
 
 # Issue #633: where each cycle's console output is captured, so a failed
 # launch has evidence to report. The log directory is the one the host and the
-# container share — the work volume is not readable from the host.
-# Set empty per cycle until the file is known to be writable. Resolved below,
-# once Deno has been located.
-LAUNCH_LOG_DIR=""
+# container share — the work volume is not readable from the host. It is
+# resolved below, once Deno has been located; the operator's own
+# LAUNCH_LOG_DIR is left exactly as it was found, because blanking it here
+# would blank it for the `log-dir` command and for every child run.sh too.
+# LAUNCH_LOG is set empty per cycle until the file is known to be writable.
 LAUNCH_LOG=""
 
 # Keep the newest 50 and no more: these are diagnostics, not an archive, and
@@ -115,6 +116,10 @@ resolve_launch_log_dir() {
         printf '%s\n' "${resolved}"
         return 0
     fi
+    # The overrides are still honoured here — they are the operator's own
+    # words, not a default this script may not spell. Only the last resort,
+    # $HOME/logs, is the pre-#873 value, and reaching it means deno is missing
+    # or broken, which run.sh treats as a refused launch anyway.
     local fallback="${LAUNCH_LOG_DIR:-${LOG_DIR:-${HOME}/logs}}"
     echo "loop.sh: cannot resolve the log directory (deno or ${WORKER_MOD}" \
         "missing, or the log-dir command failed) — falling back to ${fallback}" >&2

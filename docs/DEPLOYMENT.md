@@ -598,7 +598,8 @@ The script is designed to be run from cron every 5 minutes. It will:
 crontab -e
 
 # Add this line to run every 5 minutes:
-*/5 * * * * /path/to/VibeCoder/run.sh >> /home/USER/.local/state/vibe-coder/cron.log 2>&1
+# Linux; on macOS the log directory is ~/Library/Logs/vibe-coder
+*/5 * * * * /path/to/VibeCoder/run.sh >> ~/.local/state/vibe-coder/cron.log 2>&1
 ```
 
 > **📝 Note on cron PATH (macOS/Homebrew):**

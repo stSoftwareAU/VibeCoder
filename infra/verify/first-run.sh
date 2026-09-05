@@ -117,12 +117,20 @@ REPORT="${TRANSCRIPT_DIR}/report.md"
 FRESH_STATE_JSON="${TRANSCRIPT_DIR}/fresh-state.json"
 # The host's log directory is asked for, never assumed: its default is the
 # platform's own location (Issue #873), so a hard-coded `$HOME/logs` here would
-# read a directory the run no longer writes to.
+# read a directory the run no longer writes to. The command's own stderr is
+# left on stderr — it carries both the reason for a failure and the one-off
+# legacy-location notice, and swallowing either would leave the message below
+# naming no cause.
+# No `--frozen --lock` here, unlike the launchers: `verify()` below does not
+# use it either, because `--repo-root` may name a checkout that carries no
+# lockfile of its own — the sandbox this script is tested against is exactly
+# that.
 HOST_LOG_DIR="$(cd -P "${REPO_ROOT}" && deno run --allow-env --allow-read \
-  worker/deno/mod.ts log-dir </dev/null 2>/dev/null)" || HOST_LOG_DIR=""
+  worker/deno/mod.ts log-dir </dev/null)" || HOST_LOG_DIR=""
 HOST_LOG_DIR="${HOST_LOG_DIR##*$'\n'}"
 if [[ -z "${HOST_LOG_DIR// }" ]]; then
-  echo "[first-run] cannot resolve the host log directory (deno mod.ts log-dir)" >&2
+  echo "[first-run] cannot resolve the host log directory (see above):" \
+    "deno run worker/deno/mod.ts log-dir gave nothing usable" >&2
   exit 1
 fi
 RUN_CORE_LOG="${HOST_LOG_DIR}/run_core.log"

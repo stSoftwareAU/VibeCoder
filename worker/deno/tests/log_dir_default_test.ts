@@ -154,7 +154,12 @@ Deno.test("log dir - the legacy location is named, never migrated (Issue #873)",
   assertStringIncludes(message, "/home/vibe/.local/state/vibe-coder");
   // The old directory is left alone: the notice offers the move, it does not
   // make it, and it says nothing was deleted.
-  assertStringIncludes(message, "mv /home/vibe/logs");
+  // The destination does not exist yet — that is what the notice is about —
+  // so the command it offers has to create it, or it fails as printed.
+  assertStringIncludes(
+    message,
+    "mkdir -p /home/vibe/.local/state/vibe-coder && mv /home/vibe/logs",
+  );
   assertStringIncludes(message, "left untouched");
   assertEquals(legacyLogDir("/home/vibe", "posix"), "/home/vibe/logs");
 });
@@ -230,6 +235,7 @@ Deno.test("log dir - the Windows notice offers a Windows move (Issue #873)", () 
     platform: "windows",
     exists: (path) => path === "C:\\Users\\vibe\\logs",
   });
+  assertStringIncludes(notice as string, "mkdir ");
   assertStringIncludes(notice as string, "move ");
   assertStringIncludes(notice as string, "C:\\Users\\vibe\\logs");
 });
@@ -283,4 +289,31 @@ Deno.test("log-dir command - fails loud with no home directory (Issue #873)", ()
     message = (error as Error).message;
   }
   assertStringIncludes(message, "HOME");
+});
+
+Deno.test("log-dir command - stdout is the path alone, even under OUTPUT_JSON (Issue #873)", async () => {
+  // `mod.ts` appends a result's `data` to stdout as JSON when OUTPUT_JSON is
+  // set, and every launcher captures this stdout as the directory to write to.
+  // A command that returned data would hand them `}`.
+  const output = await new Deno.Command(Deno.execPath(), {
+    args: [
+      "run",
+      "--allow-env",
+      "--allow-read",
+      new URL("../mod.ts", import.meta.url).pathname,
+      "log-dir",
+    ],
+    clearEnv: true,
+    env: {
+      HOME: "/tmp/vibe-log-dir-probe",
+      OUTPUT_JSON: "true",
+      PATH: Deno.env.get("PATH") ?? "",
+      DENO_DIR: Deno.env.get("DENO_DIR") ?? "",
+    },
+    stdout: "piped",
+    stderr: "null",
+  }).output();
+  const lines = new TextDecoder().decode(output.stdout).trim().split("\n");
+  assertEquals(lines.length, 1, `stdout must be one line: ${lines.join("|")}`);
+  assertEquals(lines[0], "/tmp/vibe-log-dir-probe/.local/state/vibe-coder");
 });

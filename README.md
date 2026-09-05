@@ -289,8 +289,8 @@ For production, run via cron (macOS/Linux) or Task Scheduler (Windows) every 5
 minutes:
 
 ```bash
-# macOS / Linux (cron)
-*/5 * * * * /path/to/VibeCoder/run.sh >> /home/USER/.local/state/vibe-coder/cron.log 2>&1
+# Linux (cron) — on macOS use ~/Library/Logs/vibe-coder/cron.log
+*/5 * * * * /path/to/VibeCoder/run.sh >> ~/.local/state/vibe-coder/cron.log 2>&1
 ```
 
 See the [Deployment Guide](docs/DEPLOYMENT.md) for systemd, launchd, Task

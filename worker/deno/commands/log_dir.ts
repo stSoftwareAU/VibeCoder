@@ -14,7 +14,11 @@
  * Stdout carries exactly the directory and nothing else, so a launcher can
  * capture it with `LOG_DIR=$(… mod.ts log-dir)`. The legacy-location notice
  * goes to **stderr**, where it reaches the operator without being captured as
- * part of the path.
+ * part of the path — and the command returns **no** `data`, because `mod.ts`
+ * appends a result's `data` to stdout as JSON under `OUTPUT_JSON=true`
+ * (mod.ts `outputResult`). A launcher capturing this path would then read `}`
+ * on a host that exports that variable, which is precisely the silently-wrong
+ * path this command exists to prevent.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
@@ -98,14 +102,15 @@ export const logDirCommand: Command = {
   async execute(
     _args: Record<string, unknown>,
     _config: WorkerConfig,
-  ): Promise<CommandResult<LogDirResult>> {
+  ): Promise<CommandResult> {
     const resolved = resolveLogDirForCommand();
     // The notice belongs on stderr: stdout is the captured path.
     if (resolved.notice) console.error(resolved.notice);
+    // No `data`: see the module comment — it would be appended to stdout as
+    // JSON under OUTPUT_JSON=true and captured as part of the path.
     return {
       success: true,
       message: resolved.logDir,
-      data: resolved,
     };
   },
 };
