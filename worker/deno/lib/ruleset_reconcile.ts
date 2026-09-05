@@ -274,7 +274,10 @@ export async function reconcileRuleset(
     };
   }
 
-  const detailText = await ghExec(["api", `repos/${repo}/rulesets/${match.id}`]);
+  const detailText = await ghExec([
+    "api",
+    `repos/${repo}/rulesets/${match.id}`,
+  ]);
   const live = parseJson(detailText, `ruleset ${match.id} on ${repo}`);
   const findings = [
     ...diffRulesetPayloads(live, committed),

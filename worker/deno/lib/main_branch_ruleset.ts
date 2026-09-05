@@ -126,7 +126,10 @@ export function diffRequiredStatusChecks(
     );
   }
   for (const context of contextDiff.extra) {
-    note("required_status_checks", `"${context}" is required but not committed`);
+    note(
+      "required_status_checks",
+      `"${context}" is required but not committed`,
+    );
   }
   if (appliedRule && strictPolicy(appliedRule) !== strictPolicy(wantedRule)) {
     note(

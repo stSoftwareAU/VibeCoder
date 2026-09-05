@@ -26,8 +26,7 @@ function repoRoot(): string {
 
 export const checkReleaseTagRulesetCommand: Command = {
   name: "check-release-tag-ruleset",
-  description:
-    "Read-only: compare the applied tag ruleset against " +
+  description: "Read-only: compare the applied tag ruleset against " +
     "infra/rulesets/release-tags.json",
 
   async execute(
