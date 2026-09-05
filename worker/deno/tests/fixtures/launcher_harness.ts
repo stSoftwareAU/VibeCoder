@@ -239,6 +239,16 @@ case "\${sub}" in
       fi
       exit "\${STUB_BUILDER_STOP_EXIT:-0}"
     fi
+    # The step that leaves a usable builder behind — \`builder start\` on Apple
+    # container, \`builder prune\` on Docker/Podman. A heal that cannot leave
+    # one is what makes container-build-heal itself fail (Issue #1019), so the
+    # stub has to be able to fail it, and to say why.
+    if [[ "\${sub}" == "builder-start" || "\${sub}" == "builder-prune" ]]; then
+      if [[ -n "\${STUB_BUILDER_HEAL_STDERR:-}" ]]; then
+        printf '%s\\n' "\${STUB_BUILDER_HEAL_STDERR}" >&2
+      fi
+      exit "\${STUB_BUILDER_HEAL_EXIT:-0}"
+    fi
     exit 0
     ;;
   *)
@@ -788,6 +798,38 @@ export async function runCoreLog(harness: Harness): Promise<string> {
   } catch {
     return "";
   }
+}
+
+/**
+ * Where the launcher preserves a failed build's own output (Issue #1019).
+ *
+ * @param harness - The harness the launcher ran under
+ * @returns The preserved build-failure log directory
+ */
+export function buildFailureLogDir(harness: Harness): string {
+  return `${harness.tmpDir}/home/logs/build-failures`;
+}
+
+/**
+ * The preserved build-failure logs, oldest first (Issue #1019).
+ *
+ * The filenames lead with a UTC stamp, so their lexical order is also their
+ * chronological order — which is what the launcher's own retention pass
+ * relies on when it drops the oldest.
+ *
+ * @param harness - The harness the launcher ran under
+ * @returns The file names, oldest first, or an empty list when none was kept
+ */
+export async function buildFailureLogs(harness: Harness): Promise<string[]> {
+  const names: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(buildFailureLogDir(harness))) {
+      if (entry.isFile) names.push(entry.name);
+    }
+  } catch {
+    return [];
+  }
+  return names.sort();
 }
 
 /**

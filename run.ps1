@@ -185,6 +185,12 @@ $EvidenceLog = ""
 # the outcome recorder has had its chance to quote it.
 $RunLog = ""
 
+# container-build-heal's own output (Issue #1019). When the heal is what
+# failed, this is the only account of why: the host log used to record the
+# status it exited with and discard everything it said. Same lifetime as
+# $RunLog - quoted by the outcome recorder, then removed by Exit-Launcher.
+$HealLog = ""
+
 # The pre-build egress probe's hop table and routing evidence (Issue #997).
 # Same lifetime as $RunLog: written before the build, quoted by the outcome
 # recorder when the host is parked, removed by Exit-Launcher afterwards.
@@ -267,6 +273,12 @@ function Exit-Launcher {
     if ($EgressLog) {
         Remove-Item -LiteralPath $EgressLog -Force -ErrorAction SilentlyContinue
     }
+    # Same ordering, same reason (Issue #1019): a failed heal's own output is
+    # what the escalation quotes when the heal is what failed. The excerpt and
+    # the preserved copy under the log directory outlive both.
+    if ($HealLog) {
+        Remove-Item -LiteralPath $HealLog -Force -ErrorAction SilentlyContinue
+    }
     exit $Code
 }
 
@@ -321,6 +333,135 @@ function Write-RunCoreLog {
     } catch {
         # Best-effort by design.
     }
+}
+
+# A failed build's own output, kept where a later reader can find it (Issue
+# #1019). The captures the heal classifies are temporary files the launcher
+# removes on its way out, so run_core.log recorded that a build had failed and
+# nothing whatsoever about why. These are the bounded, named copies the log
+# line points at, in their own sub-directory so the size-based rotation of
+# run_core.log and friends leaves them alone.
+$BuildFailureLogDir = Join-Path $HomeDir_ "logs/build-failures"
+# Diagnostics, not an archive: an unbounded directory on a host already
+# fighting for disk would be a regression, not a fix (Issues #478, #633).
+$BuildFailureLogKeep = 20
+# How much of the output goes into run_core.log itself, so the answer to "why"
+# is in the log an operator already reads.
+$BuildFailureExcerptLines = 40
+
+<#
+.SYNOPSIS
+    Drop all but the newest $BuildFailureLogKeep preserved logs (Issue #1019).
+#>
+function Remove-OldBuildFailureLogs {
+    try {
+        # The UTC stamp leads the filename, so name order IS chronological
+        # order - no reliance on the filesystem's modification times.
+        $logs = @(Get-ChildItem -LiteralPath $BuildFailureLogDir -Filter "*.log" `
+                -File -ErrorAction Stop | Sort-Object -Property Name)
+        for ($i = 0; $i -lt ($logs.Count - $BuildFailureLogKeep); $i++) {
+            Remove-Item -LiteralPath $logs[$i].FullName -Force `
+                -ErrorAction SilentlyContinue
+        }
+    } catch {
+        # Best-effort by design - reclaiming disk must never fail a launch -
+        # but never silent: a directory that stops being trimmed says so.
+        [Console]::Error.WriteLine(
+            "[run.ps1] warning: cannot prune $BuildFailureLogDir - $($_.Exception.Message)")
+    }
+}
+
+<#
+.SYNOPSIS
+    Copy a failed step's captured output to a stable, timestamped path.
+.OUTPUTS
+    The preserved path, or an empty string when there was nothing to preserve
+    - so the caller says so rather than naming a path that does not exist. A
+    failure to preserve names its own cause on stderr: a change made to stop
+    discarding the account of why must not discard the account of why *it*
+    could not keep one.
+#>
+function Save-BuildFailureLog {
+    param(
+        [Parameter(Mandatory = $true)][string] $Source,
+        [Parameter(Mandatory = $true)][string] $Slug
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $Source)) { return "" }
+        if ((Get-Item -LiteralPath $Source).Length -eq 0) { return "" }
+        New-Item -ItemType Directory -Force -Path $BuildFailureLogDir | Out-Null
+        # The backslashes escape the literal T and Z, so the stamp matches
+        # run.sh's `date -u +%Y%m%dT%H%M%SZ` exactly; the PID keeps two
+        # launches that failed in the same second apart.
+        $stamp = [DateTime]::UtcNow.ToString("yyyyMMdd\THHmmss\Z")
+        $preserved = Join-Path $BuildFailureLogDir "$stamp-$Slug-$PID.log"
+        Copy-Item -LiteralPath $Source -Destination $preserved -Force `
+            -ErrorAction Stop
+        Remove-OldBuildFailureLogs
+        return $preserved
+    } catch {
+        [Console]::Error.WriteLine(
+            "[run.ps1] warning: cannot preserve $Source under $BuildFailureLogDir - $($_.Exception.Message)")
+        return ""
+    }
+}
+
+<#
+.SYNOPSIS
+    Append a bounded excerpt of a captured log to run_core.log (Issue #1019).
+#>
+function Write-RunCoreExcerpt {
+    param(
+        [Parameter(Mandatory = $true)][string] $Label,
+        [Parameter(Mandatory = $true)][string] $Source
+    )
+
+    $lines = @()
+    try {
+        $lines = @(Get-Content -LiteralPath $Source -ErrorAction Stop)
+    } catch {
+        # An unreadable capture is reported as an absent one, below.
+        $lines = @()
+    }
+    if ($lines.Count -eq 0) {
+        # Emptiness is evidence too: a step that wrote nothing died before it
+        # reached anything that reports, which is a different fault from one
+        # that explained itself (Issue #633).
+        Write-RunCoreLog "${Label}: no output was captured"
+        return
+    }
+    Write-RunCoreLog "$Label (last $BuildFailureExcerptLines lines):"
+    try {
+        $tail = @($lines | Select-Object -Last $BuildFailureExcerptLines)
+        Add-Content -LiteralPath (Join-Path $HomeDir_ "logs/run_core.log") `
+            -Value ($tail | ForEach-Object { "  | $_" }) -ErrorAction Stop
+    } catch {
+        # Best-effort by design, exactly as Write-RunCoreLog is.
+    }
+}
+
+<#
+.SYNOPSIS
+    Record a failed build step with the step's own words (Issue #1019).
+.DESCRIPTION
+    The decision, where the full output was kept, and an excerpt of it - so
+    the host log answers "why" without a second run.
+#>
+function Write-BuildFailureEvidence {
+    param(
+        [Parameter(Mandatory = $true)][string] $Message,
+        [Parameter(Mandatory = $true)][string] $Source,
+        [Parameter(Mandatory = $true)][string] $Label
+    )
+
+    $preserved = Save-BuildFailureLog -Source $Source -Slug ($Label -replace " ", "-")
+    if ($preserved) {
+        Write-RunCoreLog "$Message - full output preserved at $preserved"
+    } else {
+        Write-RunCoreLog "$Message - no output could be preserved"
+    }
+    Write-RunCoreExcerpt -Label $Label -Source $Source
 }
 
 # Update the worker checkout on the host, before the container is launched
@@ -669,8 +810,16 @@ function Invoke-BuildHeal {
         "--log", $LogPath,
         "--attempt", "$Attempt"
     )
-    if ($healed.StdOut) { [Console]::Error.Write($healed.StdOut) }
-    if ($healed.StdErr) { [Console]::Error.Write($healed.StdErr) }
+    # Kept as well as streamed (Issue #1019): when the heal itself fails, what
+    # it said is the whole account of why, and the launcher used to keep only
+    # the status it exited with.
+    if (-not $HealLog) {
+        $script:HealLog = Join-Path ([System.IO.Path]::GetTempPath()) `
+            ("vibe-heal-" + [System.Guid]::NewGuid().ToString("N") + ".log")
+    }
+    $text = "$($healed.StdOut)$($healed.StdErr)"
+    [System.IO.File]::WriteAllText($HealLog, $text)
+    if ($text) { [Console]::Error.Write($text) }
     return $healed.ExitCode
 }
 
@@ -684,6 +833,9 @@ if ($present.ExitCode -ne 0) {
         ("vibe-build-" + [System.Guid]::NewGuid().ToString("N") + ".log")
     try {
         $buildStatus = Invoke-ImageBuild -LogPath $BuildLog
+        # Set once the build's own output has reached run_core.log, so the
+        # failing exit below records it exactly once (Issue #1019).
+        $buildOutputRecorded = $false
 
         # Builder self-heal (Issue #4441). A build that ran the builder's
         # store out of space leaves it unusable until it is restarted, and
@@ -710,18 +862,49 @@ if ($present.ExitCode -ne 0) {
                     }
                 }
             } elseif ($healStatus -eq $BuildNotHealableExit) {
-                Write-RunCoreLog "container-build-heal: $Image build failed for a reason the builder heal does not cover"
+                # Classifying the failure as not-healable is the right
+                # decision; logging the classification *instead of* the
+                # evidence is what left an operator reproducing by hand a
+                # failure the machine had already observed (Issue #1019).
+                Write-BuildFailureEvidence `
+                    -Message "container-build-heal: $Image build failed for a reason the builder heal does not cover" `
+                    -Source $BuildLog -Label "build output"
+                $buildOutputRecorded = $true
             } else {
-                Write-RunCoreLog "container-build-heal: could not heal the $Runtime builder (status $healStatus)"
+                # The heal's own output, for the same reason: a status code
+                # says which step failed and nothing about what it found.
+                Write-BuildFailureEvidence `
+                    -Message "container-build-heal: could not heal the $Runtime builder (status $healStatus)" `
+                    -Source $HealLog -Label "heal output"
             }
         }
 
         if ($buildStatus -ne 0) {
             [Console]::Error.WriteLine("Error: failed to build $Image")
+            if (-not $buildOutputRecorded) {
+                Write-BuildFailureEvidence `
+                    -Message "container-build: $Image build failed (status $buildStatus)" `
+                    -Source $BuildLog -Label "build output"
+            }
             # The build's own diagnostics are the only account of why this host
             # cannot reconstruct its environment, so the escalation carries
-            # them (Issue #709). Exit-Launcher records the outcome before it
+            # them (Issue #709) - and the heal's alongside them, which the
+            # auto-filed image_build issues used to reduce to a status code
+            # (Issue #1019). Exit-Launcher records the outcome before it
             # exits, so the log is still there when the recorder reads it.
+            # An empty capture is appended as nothing at all, exactly as
+            # run.sh's `[[ -s ]]` guard does: a bare heading with no output
+            # under it would read as evidence and carry none.
+            if ($HealLog -and (Test-Path -LiteralPath $HealLog) -and
+                (Get-Item -LiteralPath $HealLog).Length -gt 0) {
+                try {
+                    Add-Content -LiteralPath $BuildLog -ErrorAction Stop `
+                        -Value ("`n--- container-build-heal output ---`n" +
+                            [System.IO.File]::ReadAllText($HealLog))
+                } catch {
+                    # Best-effort: the build's own output still stands.
+                }
+            }
             $EvidenceLog = $BuildLog
             Exit-Launcher $buildStatus
         }

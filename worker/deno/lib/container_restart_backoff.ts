@@ -1039,6 +1039,10 @@ export function buildContainerEscalationParams(
         BUILD_NOT_HEALABLE_STATUS,
         ANOTHER_WORKER_RUNNING_STATUS,
         EXTENSION_START_ABORT_EXIT_STATUS,
+        // The park (Issue #997) is this launcher's own status, so an
+        // escalation must not send the reader hunting the runtime client for
+        // a status the worker chose deliberately.
+        HOST_EGRESS_BLOCKED_EXIT_STATUS,
       ),
     ),
     `Next attempt after a ${input.backoffSeconds}s backoff`,

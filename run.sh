@@ -136,6 +136,10 @@ WEDGE_MARKER=""
 # Where the image build's output is captured, so a failed build can be
 # classified by container-build-heal (Issue #4441). Set only when a build runs.
 BUILD_LOG=""
+# Where container-build-heal's own output is captured (Issue #1019). When the
+# heal is what failed, this is the only account of why: the host log used to
+# record the status it exited with and discard everything it said.
+HEAL_LOG=""
 # Where the pre-build egress probe writes its hop table and routing evidence
 # (Issue #997). Set once the probe runs, and removed by the EXIT trap after the
 # outcome record has quoted it.
@@ -292,6 +296,12 @@ on_exit() {
   if [[ -n "${BUILD_LOG}" ]]; then
     rm -f "${BUILD_LOG}"
   fi
+  # Same ordering, same reason (Issue #1019): a failed heal's own output is
+  # what the escalation quotes when the heal is what failed. The excerpt and
+  # the preserved copy under the log directory outlive both.
+  if [[ -n "${HEAL_LOG}" ]]; then
+    rm -f "${HEAL_LOG}"
+  fi
   # Same ordering, same reason (Issue #997): a parked host's escalation IS the
   # hop table, so the evidence outlives the record and nothing else.
   if [[ -n "${EGRESS_LOG}" ]]; then
@@ -398,6 +408,100 @@ log_run_core() {
   mkdir -p "${RUN_CORE_LOG_DIR}" 2>/dev/null || true
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" \
     >>"${RUN_CORE_LOG_DIR}/run_core.log" 2>/dev/null || true
+}
+
+# A failed build's own output, kept where a later reader can find it (Issue
+# #1019). The captures the heal classifies are mktemp files the EXIT trap
+# reaps, so run_core.log recorded that a build had failed - seven times in
+# four hours on GRQ-23 - and nothing whatsoever about why. These are the
+# bounded, named copies the log line points at, in their own sub-directory so
+# the size-based rotation of run_core.log and friends leaves them alone.
+BUILD_FAILURE_LOG_DIR="${RUN_CORE_LOG_DIR}/build-failures"
+# Diagnostics, not an archive: an unbounded directory on a host already
+# fighting for disk would be a regression, not a fix (Issues #478, #633).
+BUILD_FAILURE_LOG_KEEP=20
+# How much of the output goes into run_core.log itself, so the answer to "why"
+# is in the log an operator already reads.
+BUILD_FAILURE_EXCERPT_LINES=40
+
+# Drop all but the newest BUILD_FAILURE_LOG_KEEP preserved logs.
+prune_build_failure_logs() {
+  local logs=() candidate excess i
+  # The UTC stamp leads the filename, so the glob's own lexical order IS
+  # chronological order - no `ls` parsing and no reliance on mtime.
+  for candidate in "${BUILD_FAILURE_LOG_DIR}"/*.log; do
+    [[ -f "${candidate}" ]] && logs+=("${candidate}")
+  done
+  excess=$(( ${#logs[@]} - BUILD_FAILURE_LOG_KEEP ))
+  ((excess > 0)) || return 0
+  for ((i = 0; i < excess; i++)); do
+    rm -f "${logs[i]}" 2>/dev/null || true
+  done
+}
+
+# Copy a failed step's captured output to a stable, timestamped path and prune
+# the directory back to its bound. Prints the preserved path; fails when there
+# was nothing to preserve or the copy could not be made, so the caller says so
+# rather than naming a path that does not exist. A failure to preserve names
+# its own cause on stderr - a change made to stop discarding the account of
+# why must not discard the account of why *it* could not keep one.
+# Usage: preserve_build_failure_log <source> <slug>
+preserve_build_failure_log() {
+  local source="$1" slug="$2" preserved reason
+  if [[ ! -s "${source}" ]]; then
+    return 1
+  fi
+  if ! reason="$(mkdir -p "${BUILD_FAILURE_LOG_DIR}" 2>&1)"; then
+    echo "[run.sh] warning: cannot create ${BUILD_FAILURE_LOG_DIR}:" \
+      "${reason}" >&2
+    return 1
+  fi
+  # The PID keeps two launches that failed in the same second apart.
+  preserved="${BUILD_FAILURE_LOG_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${slug}-$$.log"
+  if ! reason="$(cp "${source}" "${preserved}" 2>&1)"; then
+    echo "[run.sh] warning: cannot preserve ${source} at ${preserved}:" \
+      "${reason}" >&2
+    return 1
+  fi
+  prune_build_failure_logs
+  printf '%s' "${preserved}"
+}
+
+# Append a bounded excerpt of a captured log to run_core.log (Issue #1019).
+# Usage: log_run_core_excerpt <label> <source>
+log_run_core_excerpt() {
+  local label="$1" source="$2" stamp
+  mkdir -p "${RUN_CORE_LOG_DIR}" 2>/dev/null || true
+  stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  {
+    if [[ -s "${source}" ]]; then
+      printf '%s %s (last %s lines):\n' "${stamp}" "${label}" \
+        "${BUILD_FAILURE_EXCERPT_LINES}"
+      tail -n "${BUILD_FAILURE_EXCERPT_LINES}" "${source}" | sed 's/^/  | /'
+    else
+      # Emptiness is evidence too: a step that wrote nothing died before it
+      # reached anything that reports, which is a different fault from one
+      # that explained itself (Issue #633).
+      printf '%s %s: no output was captured\n' "${stamp}" "${label}"
+    fi
+  } >>"${RUN_CORE_LOG_DIR}/run_core.log" 2>/dev/null || true
+}
+
+# One host-log record of a failed build step that carries the step's own
+# words: the decision, where the full output was kept, and an excerpt of it.
+# Usage: record_build_failure_evidence <message> <source> <label>
+record_build_failure_evidence() {
+  local message="$1" source="$2" label="$3" preserved=""
+  preserved="$(preserve_build_failure_log "${source}" "${label// /-}")" ||
+    preserved=""
+  if [[ -n "${preserved}" ]]; then
+    log_run_core "${message} - full output preserved at ${preserved}"
+  else
+    # Why it could not be is on stderr, from preserve_build_failure_log
+    # itself, unless there was simply nothing to keep.
+    log_run_core "${message} - no output could be preserved"
+  fi
+  log_run_core_excerpt "${label}" "${source}"
 }
 
 # The run mode - container, the only one (Issue #4). Still resolved by Deno
@@ -706,14 +810,22 @@ run_build() {
 # builder's storage is what failed, restart it (Issue #4441). Exit 0 = healed,
 # 3 = not a healable failure, anything else = the heal itself failed.
 heal_builder() {
-  local attempt="$1"
+  local attempt="$1" status=0
+  # Captured as well as streamed (Issue #1019): when the heal itself fails,
+  # what it said is the whole account of why, and the launcher used to keep
+  # only the status it exited with.
+  HEAL_LOG="${HEAL_LOG:-$(mktemp "${TMPDIR:-/tmp}/vibe-heal.XXXXXX")}"
+  set +e
   bounded 900 "${DENO_CMD}" run \
     --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
     --allow-env --allow-read --allow-run \
     "${BASE_DIR}/worker/deno/mod.ts" container-build-heal \
     --runtime "${RUNTIME}" \
     --log "${BUILD_LOG}" \
-    --attempt "${attempt}" </dev/null >&2
+    --attempt "${attempt}" </dev/null 2>&1 | tee "${HEAL_LOG}" >&2
+  status="${PIPESTATUS[0]}"
+  set -e
+  return "${status}"
 }
 
 # Content-derived identity: a changed container definition is a different
@@ -734,6 +846,9 @@ if ! "${RUNTIME}" "${exists_args[@]}" >/dev/null 2>&1; then
   # reasons still fails here, exactly as it always has.
   if ((build_status != 0)); then
     heal_status=0
+    # Set once the build's own output has reached run_core.log, so the failing
+    # exit below records it exactly once (Issue #1019).
+    build_output_recorded=""
     heal_builder 1 || heal_status=$?
 
     if ((heal_status == 0)); then
@@ -753,16 +868,39 @@ if ! "${RUNTIME}" "${exists_args[@]}" >/dev/null 2>&1; then
           "${RUNTIME} builder" >&2
       fi
     elif ((heal_status == BUILD_NOT_HEALABLE_EXIT)); then
-      log_run_core "container-build-heal: ${IMAGE} build failed for a reason the builder heal does not cover"
+      # Classifying the failure as not-healable is the right decision; logging
+      # the classification *instead of* the evidence is what left an operator
+      # reproducing by hand a failure the machine had already observed
+      # (Issue #1019).
+      record_build_failure_evidence \
+        "container-build-heal: ${IMAGE} build failed for a reason the builder heal does not cover" \
+        "${BUILD_LOG}" "build output"
+      build_output_recorded=1
     else
-      log_run_core "container-build-heal: could not heal the ${RUNTIME} builder (status ${heal_status})"
+      # The heal's own output, for the same reason: a status code says which
+      # step failed and nothing about what it found.
+      record_build_failure_evidence \
+        "container-build-heal: could not heal the ${RUNTIME} builder (status ${heal_status})" \
+        "${HEAL_LOG}" "heal output"
     fi
 
     if ((build_status != 0)); then
       echo "Error: failed to build ${IMAGE}" >&2
+      if [[ -z "${build_output_recorded}" ]]; then
+        record_build_failure_evidence \
+          "container-build: ${IMAGE} build failed (status ${build_status})" \
+          "${BUILD_LOG}" "build output"
+      fi
       # The build's own diagnostics are the only account of why this host
       # cannot reconstruct its environment, so the escalation carries them
-      # (Issue #709).
+      # (Issue #709) - and the heal's alongside them, which the auto-filed
+      # image_build issues used to reduce to a status code (Issue #1019).
+      if [[ -s "${HEAL_LOG}" ]]; then
+        {
+          printf '\n--- container-build-heal output ---\n'
+          cat "${HEAL_LOG}"
+        } >>"${BUILD_LOG}" 2>/dev/null || true
+      fi
       EVIDENCE_LOG="${BUILD_LOG}"
       exit "${build_status}"
     fi

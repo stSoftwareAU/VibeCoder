@@ -47,6 +47,8 @@ import {
   BASH_LAUNCHER,
   buildCount,
   builderHealed,
+  buildFailureLogDir,
+  buildFailureLogs,
   declareContainerExtension,
   denoInvocationOrder,
   type Harness,
@@ -1211,6 +1213,200 @@ Deno.test("run.sh - escalates to a builder recreate when the retry fails too, an
       assert(await recorded(harness, "builder-prune"));
     }
     assertStringIncludes(await runCoreLog(harness), "recreating the builder");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The build log that says WHY (Issue #1019)
+// ---------------------------------------------------------------------------
+
+/** A build failure with a line no classifier covers and no reader can miss. */
+const UNCOVERED_BUILD_FAILURE =
+  "E: Unable to locate package libgrq23-dev — apt could not resolve the index";
+
+Deno.test("run.sh - a not-healable build failure records the build's own words, not only the classification (Issue #1019)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: UNCOVERED_BUILD_FAILURE,
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "an unhealable build failure must still fail");
+
+    // The host log carried the reason it was NOT, seven times in four hours,
+    // and never the reason it was.
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "does not cover");
+    assertStringIncludes(log, UNCOVERED_BUILD_FAILURE);
+
+    // The full output outlives the run at a named path, and the log line
+    // names it — the mktemp capture used to be reaped with nothing kept.
+    const kept = await buildFailureLogs(harness);
+    assertEquals(kept.length, 1, `preserved logs: ${kept.join(", ")}`);
+    const preserved = `${buildFailureLogDir(harness)}/${kept[0]}`;
+    assertStringIncludes(log, preserved);
+    assertStringIncludes(
+      await Deno.readTextFile(preserved),
+      UNCOVERED_BUILD_FAILURE,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a heal that fails records the heal's own output (Issue #1019)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    // Healable, so the heal is attempted...
+    STUB_BUILD_STDERR: ENOSPC_BUILD_FAILURE,
+    // ...and the step that would leave a usable builder behind fails.
+    STUB_BUILDER_HEAL_EXIT: "1",
+    STUB_BUILDER_HEAL_STDERR: "Error: the builder VM is read-only",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "a build that never succeeded must fail");
+    // Not healed, so never retried.
+    assertEquals(await buildCount(harness), 1);
+
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "could not heal");
+    // The heal attempt's own account of why, which the status code is not.
+    assertStringIncludes(log, "the builder VM is read-only");
+
+    // Both accounts are kept: the heal's, and the build's underneath it.
+    const kept = await buildFailureLogs(harness);
+    const healLog = kept.find((name) => name.includes("heal-output"));
+    assert(healLog, `no preserved heal output: ${kept.join(", ")}`);
+    const preserved = `${buildFailureLogDir(harness)}/${healLog}`;
+    assertStringIncludes(log, preserved);
+    assertStringIncludes(
+      await Deno.readTextFile(preserved),
+      "the builder VM is read-only",
+    );
+    assert(
+      kept.some((name) => name.includes("build-output")),
+      `no preserved build output: ${kept.join(", ")}`,
+    );
+
+    // And the escalation carries it too, rather than a bare status (#709).
+    assertStringIncludes(outcome.stderr, "the builder VM is read-only");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a build that failed silently is recorded as having said nothing (Issue #1019)", async () => {
+  // The stub prints nothing at all, so the capture is empty. Emptiness is
+  // evidence — the build died before it reached anything that reports — and
+  // an omitted section would be indistinguishable from a log nobody read.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "a failed build must still fail");
+
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "no output could be preserved");
+    assertStringIncludes(log, "build output: no output was captured");
+    // Nothing to preserve means nothing preserved — not an empty file kept
+    // under a name that promises evidence.
+    assertEquals(await buildFailureLogs(harness), []);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a preserve that cannot be made says why, and the launch still fails loud (Issue #1019)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: UNCOVERED_BUILD_FAILURE,
+  });
+  try {
+    // A regular file where the directory must go: the copy cannot be made,
+    // and the launcher must name that cause rather than going quiet.
+    await Deno.mkdir(`${harness.tmpDir}/home/logs`, { recursive: true });
+    await Deno.writeTextFile(buildFailureLogDir(harness), "not a directory\n");
+
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "a failed build must still fail");
+    assertStringIncludes(outcome.stderr, "cannot create");
+
+    const log = await runCoreLog(harness);
+    assertStringIncludes(log, "no output could be preserved");
+    // The excerpt is independent of the copy, so the reason survives even
+    // when the full log could not be kept.
+    assertStringIncludes(log, UNCOVERED_BUILD_FAILURE);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - the image_build escalation carries the heal's words, not just the build's (Issue #1019)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: ENOSPC_BUILD_FAILURE,
+    STUB_BUILDER_HEAL_EXIT: "1",
+    STUB_BUILDER_HEAL_STDERR: "Error: the builder VM is read-only",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "a build that never succeeded must fail");
+
+    const log = await recordedLaunchLog(harness);
+    assert(log !== null, "the build log was deleted before it was reported");
+    // The auto-filed image_build issues (#991, #1014) arrived with a status
+    // code where the heal's own account of the fault should have been.
+    assertStringIncludes(log, ENOSPC_BUILD_FAILURE);
+    assertStringIncludes(log, "the builder VM is read-only");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - preserved build logs are bounded, and the newest is never the one dropped (Issue #1019)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "1",
+    STUB_BUILD_EXIT: "1",
+    STUB_BUILD_STDERR: UNCOVERED_BUILD_FAILURE,
+  });
+  try {
+    // A host that has been failing for days. An unbounded directory here
+    // would be its own incident on a host already fighting disk (#478).
+    const directory = buildFailureLogDir(harness);
+    await Deno.mkdir(directory, { recursive: true });
+    const seeded: string[] = [];
+    for (let i = 0; i < 25; i++) {
+      const name = `20200101T0000${
+        String(i).padStart(2, "0")
+      }Z-build-output-1.log`;
+      await Deno.writeTextFile(`${directory}/${name}`, "an older failure\n");
+      seeded.push(name);
+    }
+
+    const outcome = await runLauncher(harness);
+    assert(outcome.code !== 0, "the build must still fail");
+
+    const kept = await buildFailureLogs(harness);
+    assert(
+      kept.length > 0 && kept.length <= 20,
+      `retention left ${kept.length} logs: ${kept.join(", ")}`,
+    );
+    // The oldest went; this run's own log — the newest — stayed.
+    assertEquals(kept.includes(seeded[0]!), false);
+    const newest = kept[kept.length - 1]!;
+    assertStringIncludes(
+      await Deno.readTextFile(`${directory}/${newest}`),
+      UNCOVERED_BUILD_FAILURE,
+    );
   } finally {
     await harness.cleanup();
   }
