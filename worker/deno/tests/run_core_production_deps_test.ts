@@ -185,10 +185,35 @@ Deno.test("createProductionRunCoreDeps - all deps methods are functions", async 
 Deno.test(
   "createProductionRunCoreDeps - static trust refresh succeeds and does not throw",
   async () => {
-    const options = createTestOptions();
-    const { deps } = await createProductionRunCoreDeps(options);
-    const outcome = await deps.refreshTrustedAuthors!();
-    assertEquals(outcome.ok, true);
+    // Issue #990: this used to leave `resolveTrustedAuthors` unset, so the
+    // refresh shelled out to `gh` against whatever repos the host's own
+    // `.config.json` names, and shared `derived_authors.ts`'s process-wide
+    // per-cycle cache with every other test file in the same worker. Green
+    // on its own, red inside the gate. The resolver is the injectable seam
+    // — stub it and the wiring under test (the refresh returns ok and never
+    // throws) is decided by this test alone.
+    const options = createTestOptions({
+      githubUser: "host-bot",
+      config: buildDefaultWorkerConfig({
+        repos: ["org/a"],
+        serviceAccounts: ["host-bot"],
+      }),
+      resolveTrustedAuthors: () =>
+        Promise.resolve({
+          ok: true,
+          byRepo: new Map([[
+            "org/a",
+            { allowedAuthors: ["alice"], authorisedCommenters: ["alice"] },
+          ]]),
+        }),
+    });
+    const { deps, cleanup } = await createProductionRunCoreDeps(options);
+    try {
+      const outcome = await deps.refreshTrustedAuthors!();
+      assertEquals(outcome.ok, true);
+    } finally {
+      cleanup();
+    }
   },
 );
 
