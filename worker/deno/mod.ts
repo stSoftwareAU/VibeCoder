@@ -631,6 +631,9 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "check-main-ruleset",
       // The same, for the release-tag ruleset; needs no config (Issue #1049).
       "check-release-tag-ruleset",
+      // Reads git history through --repo-dir/--branch/--default-branch; runs
+      // in CI on a checkout that has no .config.json (Issue #1048).
+      "check-resurrected-files",
       // Full-history secrets sweep; runs in CI with no config (Issue #4190).
       "secrets-history-scan",
       // Hostile-fixture tabletop; runs on a schedule with no config (#4194).
@@ -750,6 +753,9 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "check-main-ruleset",
       // The same, for the release-tag ruleset; needs no config (Issue #1049).
       "check-release-tag-ruleset",
+      // Reads git history through --repo-dir/--branch/--default-branch; runs
+      // in CI on a checkout that has no .config.json (Issue #1048).
+      "check-resurrected-files",
       // Hostile-fixture tabletop; runs on a schedule with no config (#4194).
       "security-tabletop",
       // Dossier checker; a pure file check with no config (Issue #4200).
