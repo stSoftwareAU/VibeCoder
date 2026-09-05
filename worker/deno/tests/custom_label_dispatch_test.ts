@@ -88,6 +88,7 @@ Deno.test("custom label dispatch - runs the implementation pipeline with the ope
     const mapping: CustomLabelPromptMapping = {
       label: "my-custom-label",
       promptPath: path,
+      targetPhase: "issue",
     };
     const seen: IssueContext[] = [];
     const result = await processCustomLabelIssue(
@@ -126,7 +127,7 @@ Deno.test("custom label dispatch - a failed pipeline reports declined, not handl
   try {
     const result = await processCustomLabelIssue(
       issueContext(buildDefaultWorkerConfig()),
-      { label: "my-custom-label", promptPath: path },
+      { label: "my-custom-label", promptPath: path, targetPhase: "issue" },
       {
         logger: recordingLogger([]),
         deps: createMockDeps(),
@@ -156,7 +157,7 @@ Deno.test("custom label dispatch - a missing prompt file fails loud and never ru
     () =>
       processCustomLabelIssue(
         issueContext(buildDefaultWorkerConfig()),
-        { label: "my-custom-label", promptPath: path },
+        { label: "my-custom-label", promptPath: path, targetPhase: "issue" },
         {
           logger: recordingLogger([]),
           deps: createMockDeps(),
@@ -187,7 +188,7 @@ Deno.test("custom label dispatch - an empty prompt file fails loud", async () =>
       () =>
         processCustomLabelIssue(
           issueContext(buildDefaultWorkerConfig()),
-          { label: "my-custom-label", promptPath: path },
+          { label: "my-custom-label", promptPath: path, targetPhase: "issue" },
           { logger: recordingLogger([]), deps: createMockDeps() },
         ),
       Error,
@@ -205,7 +206,7 @@ Deno.test("custom label dispatch - a prompt missing a required placeholder fails
       () =>
         processCustomLabelIssue(
           issueContext(buildDefaultWorkerConfig()),
-          { label: "my-custom-label", promptPath: path },
+          { label: "my-custom-label", promptPath: path, targetPhase: "issue" },
           { logger: recordingLogger([]), deps: createMockDeps() },
         ),
       Error,
@@ -227,9 +228,21 @@ Deno.test("custom label scan - tries labels in configuration order and stops at 
 
   const result = await dispatchCustomLabelPrompts(
     [
-      { label: "first-label", promptPath: "/opt/prompts/first.md" },
-      { label: "second-label", promptPath: "/opt/prompts/second.md" },
-      { label: "third-label", promptPath: "/opt/prompts/third.md" },
+      {
+        label: "first-label",
+        promptPath: "/opt/prompts/first.md",
+        targetPhase: "issue",
+      },
+      {
+        label: "second-label",
+        promptPath: "/opt/prompts/second.md",
+        targetPhase: "issue",
+      },
+      {
+        label: "third-label",
+        promptPath: "/opt/prompts/third.md",
+        targetPhase: "issue",
+      },
     ],
     scan,
   );
@@ -270,8 +283,8 @@ Deno.test("custom label scan - each label is wired to its own mapping's prompt",
       () =>
         dispatchCustomLabelPrompts(
           [
-            { label: "second-label", promptPath: second },
-            { label: "first-label", promptPath: first },
+            { label: "second-label", promptPath: second, targetPhase: "issue" },
+            { label: "first-label", promptPath: first, targetPhase: "issue" },
           ],
           drivingScan,
         ),
@@ -305,8 +318,12 @@ Deno.test("custom label scan - a broken prompt does not starve the labels behind
       () =>
         dispatchCustomLabelPrompts(
           [
-            { label: "broken-label", promptPath: broken },
-            { label: "healthy-label", promptPath: healthy },
+            { label: "broken-label", promptPath: broken, targetPhase: "issue" },
+            {
+              label: "healthy-label",
+              promptPath: healthy,
+              targetPhase: "issue",
+            },
           ],
           scan,
           { onFault: (fault) => faults.push(fault.message) },
@@ -341,8 +358,12 @@ Deno.test("custom label scan - work done elsewhere still reports processed, with
 
   const result = await dispatchCustomLabelPrompts(
     [
-      { label: "broken-label", promptPath: broken },
-      { label: "working-label", promptPath: "/opt/prompts/working.md" },
+      { label: "broken-label", promptPath: broken, targetPhase: "issue" },
+      {
+        label: "working-label",
+        promptPath: "/opt/prompts/working.md",
+        targetPhase: "issue",
+      },
     ],
     scan,
     { onFault: (fault) => faults.push(fault.message) },
@@ -363,8 +384,16 @@ Deno.test("custom label scan - a non-prompt failure propagates immediately", asy
     () =>
       dispatchCustomLabelPrompts(
         [
-          { label: "first-label", promptPath: "/opt/prompts/first.md" },
-          { label: "second-label", promptPath: "/opt/prompts/second.md" },
+          {
+            label: "first-label",
+            promptPath: "/opt/prompts/first.md",
+            targetPhase: "issue",
+          },
+          {
+            label: "second-label",
+            promptPath: "/opt/prompts/second.md",
+            targetPhase: "issue",
+          },
         ],
         scan,
       ),
@@ -497,7 +526,7 @@ Deno.test("production wiring - the handler is wired only when a mapping is confi
 
     const withMapping = buildDefaultWorkerConfig();
     withMapping.customLabelPrompts = [
-      { label: "my-custom-label", promptPath: path },
+      { label: "my-custom-label", promptPath: path, targetPhase: "issue" },
     ];
     const configured = await createProductionRunCoreDeps({
       ...baseOptions,
@@ -556,4 +585,74 @@ Deno.test("priority table - a wired custom-label handler runs between Question A
   const result = await row.execute();
   assertEquals(result.ok, true);
   assertEquals(ran, 1);
+});
+
+Deno.test("production wiring - a pr-only config wires 1.87 and leaves 1.86 unwired", async () => {
+  // The PR-phase contract, so the mapping validates against `pr_feedback`.
+  const path = await writeTempPrompt(
+    "Review PR #{{PR_NUMBER}}.\n\n{{QUALITY_INSTRUCTIONS}}\n",
+  );
+  try {
+    const prOnly = buildDefaultWorkerConfig();
+    prOnly.customLabelPrompts = [
+      { label: "secret-squirrel", promptPath: path, targetPhase: "pr" },
+    ];
+
+    const configured = await createProductionRunCoreDeps({
+      repoDir: "/tmp/test-repo",
+      workDir: "/tmp/test-work",
+      githubUser: "test-user",
+      logger: recordingLogger([]),
+      config: prOnly,
+    });
+    try {
+      assertEquals(
+        configured.deps.findAndProcessCustomLabelPrompts,
+        undefined,
+        "a pr-only config must not add an issue-scanning row that can never match",
+      );
+      assertEquals(
+        typeof configured.deps.findAndProcessCustomLabelPrPrompts,
+        "function",
+      );
+      const table = buildPriorityDispatchTable(configured.deps);
+      assertEquals(table.some((h) => h.priority === 1.86), false);
+      assert(table.some((h) => h.priority === 1.87));
+    } finally {
+      configured.cleanup();
+    }
+  } finally {
+    await Deno.remove(path);
+  }
+});
+
+Deno.test("production wiring - an issue-only config leaves 1.87 unwired", async () => {
+  const path = await writeTempPrompt(CUSTOM_TEMPLATE);
+  try {
+    const issueOnly = buildDefaultWorkerConfig();
+    issueOnly.customLabelPrompts = [
+      { label: "my-custom-label", promptPath: path, targetPhase: "issue" },
+    ];
+
+    const configured = await createProductionRunCoreDeps({
+      repoDir: "/tmp/test-repo",
+      workDir: "/tmp/test-work",
+      githubUser: "test-user",
+      logger: recordingLogger([]),
+      config: issueOnly,
+    });
+    try {
+      assertEquals(
+        configured.deps.findAndProcessCustomLabelPrPrompts,
+        undefined,
+        "an issue-only config must not add a PR scan",
+      );
+      const table = buildPriorityDispatchTable(configured.deps);
+      assertEquals(table.some((h) => h.priority === 1.87), false);
+    } finally {
+      configured.cleanup();
+    }
+  } finally {
+    await Deno.remove(path);
+  }
 });

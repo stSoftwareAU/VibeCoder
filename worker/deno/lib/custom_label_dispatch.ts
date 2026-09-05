@@ -35,7 +35,10 @@ import type {
 import type { IssueContext, WorkOnIssueResult } from "./issue_worker_types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { workOnIssue } from "./issue_worker.ts";
-import { loadCustomPromptTemplate } from "./custom_prompt_loader.ts";
+import {
+  customPromptTemplateType,
+  loadCustomPromptTemplate,
+} from "./custom_prompt_loader.ts";
 
 /**
  * A mapped prompt file that is missing, unreadable, empty or invalid.
@@ -96,6 +99,10 @@ export async function processCustomLabelIssue(
   const template = await loadCustomPromptTemplate(
     mapping.promptPath,
     mapping.label,
+    // Issue #1008: the mapping's own phase, stated rather than defaulted, so a
+    // future refactor cannot silently hold a `pr` template to the `issue`
+    // contract. Only `issue`-phase mappings reach this scanner today.
+    customPromptTemplateType(mapping.targetPhase),
   );
   if (!template.ok) {
     throw new CustomPromptDispatchError(

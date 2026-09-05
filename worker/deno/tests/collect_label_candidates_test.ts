@@ -462,7 +462,11 @@ Deno.test(
   async () => {
     const config = makeConfig({
       customLabelPrompts: [
-        { label: "deploy-review", promptPath: "/srv/prompts/deploy-review.md" },
+        {
+          label: "deploy-review",
+          promptPath: "/srv/prompts/deploy-review.md",
+          targetPhase: "issue",
+        },
       ],
     });
     const mockGh = createMockGh({

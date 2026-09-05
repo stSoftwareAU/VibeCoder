@@ -552,6 +552,22 @@ export interface RunCoreDeps {
     opts?: HandlerExecuteOptions,
   ) => Promise<Result<PriorityHandlerResult>>;
 
+  /**
+   * Priority 1.87: PR-phase custom label prompts (Issue #1011, part of #938).
+   *
+   * Dispatches an **open PR** carrying a configured `pr`-phase
+   * `custom_label_prompts` label: the label is consumed, the PR head branch is
+   * checked out, and the operator's prompt runs against it with a full working
+   * tree and `gh` — like a PR-feedback run. Each label application dispatches
+   * at most one run; the developer re-applies the label to run again.
+   *
+   * Optional, and **absent when no `pr` mapping is configured**, so an
+   * operator who never opts in gets a byte-identical ladder.
+   */
+  findAndProcessCustomLabelPrPrompts?: (
+    opts?: HandlerExecuteOptions,
+  ) => Promise<Result<PriorityHandlerResult>>;
+
   // Priority 1.9: Stale workflow detection (Issue #1240)
   // Issue #1781: caller passes `shouldShutdown` so the rate-limit
   // pause-and-resume loop can abort cleanly on SIGTERM/SIGINT.
@@ -1546,6 +1562,18 @@ export function buildPriorityDispatchTable(
         name: "Custom Label Prompts",
         agentBacked: true,
         execute: deps.findAndProcessCustomLabelPrompts,
+      }]
+      : []),
+    // Issue #1011 (part of #938): the PR-phase half of the same family. An
+    // open PR carrying a configured `pr` mapping's label gets a full checkout
+    // and the operator's prompt, and the run consumes the label. Like 1.86 the
+    // row exists only when a mapping of that phase is configured.
+    ...(deps.findAndProcessCustomLabelPrPrompts
+      ? [{
+        priority: 1.87,
+        name: "Custom Label PR Prompts",
+        agentBacked: true,
+        execute: deps.findAndProcessCustomLabelPrPrompts,
       }]
       : []),
     {
