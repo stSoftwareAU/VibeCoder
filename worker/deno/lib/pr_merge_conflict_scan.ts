@@ -40,6 +40,11 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "./fleet_authors.ts";
 import { listOpenPrs, type PrEntry } from "./pr_maintenance.ts";
+import {
+  abandonAndRestart,
+  type AbandonRestartOutcome,
+  type AbandonRestartRequest,
+} from "./conflict_abandon_restart.ts";
 import { orderByPreference, preferredRepos } from "./conflict_queue_order.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
@@ -192,6 +197,17 @@ export type ConflictSkipReason =
   /** Every concluded attempt in the budget is spent. */
   | { kind: "budget-spent"; attemptsSpent: number; maxAttempts: number }
   /**
+   * The budget was spent, so the PR was closed and its originating issue
+   * re-queued for a fresh PR off the current base (Issue #1115). The last
+   * automatic rung: `needs-human` is what happens when this one declines,
+   * fails, or has already been used for that issue.
+   */
+  | {
+    kind: "abandoned-restarted";
+    issueNumber: number;
+    attemptsSpent: number;
+  }
+  /**
    * Still inside the post-attempt cooldown. `msUntilDue` is null when the
    * recorded attempt timestamp does not parse — the conservative case
    * {@link isConflictAttemptDue} holds back rather than guesses.
@@ -246,6 +262,7 @@ const CONFLICT_SKIP_REASON_KIND_SET: Record<ConflictSkipReasonKind, true> = {
   "scan-error": true,
   "needs-human": true,
   "budget-spent": true,
+  "abandoned-restarted": true,
   "cooldown": true,
   "disrupted-bound": true,
   "lock-held": true,
@@ -308,6 +325,7 @@ export function isQueuedConflictReason(kind: ConflictSkipReasonKind): boolean {
     case "scan-error":
     case "needs-human":
     case "budget-spent":
+    case "abandoned-restarted":
     case "cooldown":
     case "disrupted-bound":
     case "lock-held":
@@ -346,6 +364,11 @@ export function conflictReasonOperands(
       return {
         attemptsSpent: reason.attemptsSpent,
         maxAttempts: reason.maxAttempts,
+      };
+    case "abandoned-restarted":
+      return {
+        issueNumber: reason.issueNumber,
+        attemptsSpent: reason.attemptsSpent,
       };
     case "cooldown":
       return {
@@ -494,6 +517,13 @@ export interface FindConflictingPrOptions {
   maxDisruptedAttempts?: number;
   /** Label applied on escalation. Defaults to `needs-human`. */
   needsHumanLabel?: string;
+  /**
+   * Abandon-and-restart seam (Issue #1115) — the rung between a spent budget
+   * and `needs-human`. Defaults to {@link abandonAndRestart}.
+   */
+  abandonRestart?: (
+    request: AbandonRestartRequest,
+  ) => Promise<AbandonRestartOutcome>;
   /** Clock override (epoch milliseconds). */
   nowMs?: () => number;
   /**
@@ -656,8 +686,26 @@ export const DISRUPTED_CONFLICT_NEXT_STEP =
   "worker try again.";
 
 /**
+ * Which route through the ladder ended at a human (Issue #1115).
+ *
+ * A spent budget no longer means one thing. Abandon-and-restart sits between
+ * it and `needs-human`, so the escalation must say which of its three exits
+ * produced the hand-over — a human who cannot tell "the fleet could not find
+ * the issue" from "the fleet already restarted this once" cannot act on
+ * either.
+ */
+export type ExhaustedEscalationRoute =
+  /** A precondition refused the abandon; nothing was closed. */
+  | { kind: "abandon-declined"; detail: string }
+  /** The abandon started and a step failed; the state may be partial. */
+  | { kind: "abandon-failed"; step: string; detail: string }
+  /** This issue was already restarted once; the fresh PR exhausted too. */
+  | { kind: "restart-exhausted"; issueNumber: number };
+
+/**
  * Why a PR that is out of attempts but owned by nobody is being handed over
- * (Issue #395).
+ * (Issue #395), and which route through the ladder brought it here
+ * (Issue #1115).
  *
  * The last concluded attempt escalates from the resolution pass — but that
  * escalation can itself fail, or the run can end between the failure
@@ -667,16 +715,103 @@ export const DISRUPTED_CONFLICT_NEXT_STEP =
 export function buildExhaustedEscalationReason(
   prNumber: number,
   attemptCount: number,
+  route: ExhaustedEscalationRoute,
 ): string {
+  const routeLines = (): string[] => {
+    switch (route.kind) {
+      case "abandon-declined":
+        return [
+          "**The automatic restart was declined, so nothing was closed.** " +
+          `${route.detail}`,
+        ];
+      case "abandon-failed":
+        return [
+          "**The automatic restart failed part-way through, at the " +
+          `\`${route.step}\` step.** ${route.detail}`,
+          "",
+          "Check what that step leaves behind before doing anything else: " +
+          "this PR may already carry the abandon comment, and its issue may " +
+          "already be re-queued.",
+        ];
+      case "restart-exhausted":
+        return [
+          `**This work has already been restarted once** — issue ` +
+          `#${route.issueNumber} was re-queued after an earlier PR ` +
+          "conflicted irreconcilably, and the PR that replaced it has now " +
+          "spent its budget too. The fleet restarts once and then stops, so " +
+          "it does not close and re-raise PRs in a loop.",
+        ];
+    }
+    const unhandled: never = route;
+    throw new Error(
+      `Unhandled exhausted escalation route: ${JSON.stringify(unhandled)}`,
+    );
+  };
+
   return [
     `PR #${prNumber} has spent all ${attemptCount} of its merge-conflict ` +
-    "resolution attempts and still conflicts with its base, but was never " +
-    "handed to a human — the escalation on the final attempt did not land.",
+    "resolution attempts and still conflicts with its base.",
+    "",
+    ...routeLines(),
     "",
     "The failure comments above say what each attempt tripped on. The " +
     "branch was left exactly as its author pushed it, so no change has been " +
     "lost.",
   ].join("\n");
+}
+
+/**
+ * Which escalation route an abandon that did not happen produced
+ * (Issue #1115).
+ *
+ * Exhaustive over both non-abandoning outcomes, so a decline reason added
+ * without a route here fails the type check rather than reaching a human as
+ * an unexplained `needs-human`.
+ */
+export function exhaustedEscalationRoute(
+  outcome: Exclude<AbandonRestartOutcome, { outcome: "abandoned" }>,
+): ExhaustedEscalationRoute {
+  if (outcome.outcome === "failed") {
+    return {
+      kind: "abandon-failed",
+      step: outcome.step,
+      detail: outcome.message,
+    };
+  }
+
+  const reason = outcome.reason;
+  switch (reason.kind) {
+    case "no-originating-issue":
+      return {
+        kind: "abandon-declined",
+        detail: "This PR names no originating issue " +
+          `(${reason.detail}): neither its branch name, nor a closing ` +
+          "keyword in its body, nor GitHub's own linkage points at one. " +
+          "Closing a PR the fleet cannot re-raise would lose the work " +
+          "outright, so it was left open.",
+      };
+    case "already-restarted":
+      return { kind: "restart-exhausted", issueNumber: reason.issueNumber };
+    case "other-open-pr":
+      return {
+        kind: "abandon-declined",
+        detail: `Issue #${reason.issueNumber} already has another PR ` +
+          `(${reason.prUrl}), so re-queuing it would have raced that one.`,
+      };
+    case "requeue-not-permitted":
+      return {
+        kind: "abandon-declined",
+        detail: `Issue #${reason.issueNumber} does not carry ` +
+          `\`${reason.workLabel}\`, and the worker is not permitted to ` +
+          "apply it (worker_label_guard.ts). Closing this PR would have " +
+          "left the issue open but unqueued — invisible to the fleet and " +
+          "to you.",
+      };
+  }
+  const unhandled: never = reason;
+  throw new Error(
+    `Unhandled abandon decline reason: ${JSON.stringify(unhandled)}`,
+  );
 }
 
 /** What the human must do about a conflict the worker is out of attempts for. */
@@ -1009,6 +1144,10 @@ export async function findConflictingPr(
     prefer,
   } = options;
 
+  const abandonRestart = options.abandonRestart ??
+    ((request: AbandonRestartRequest) =>
+      abandonAndRestart(request, { gh: ghCommandFn, logger }));
+
   // The pass pushes a merge commit to the PR branch, so it is scoped to
   // the push-capable maintenance set (Issue #4076) — never an uninvited
   // human's PR.
@@ -1118,10 +1257,13 @@ export async function findConflictingPr(
     }
 
     let history: ConflictAttemptHistory;
+    // Kept, not just counted: an abandon quotes what each failed attempt
+    // recorded, and this thread is the only place that survives the run
+    // (Issue #1115).
+    let prComments: readonly unknown[] = [];
     try {
-      history = parseConflictAttempts(
-        await fetchIssueCommentPages(repo, pr.number, ghCommandFn),
-      );
+      prComments = await fetchIssueCommentPages(repo, pr.number, ghCommandFn);
+      history = parseConflictAttempts(prComments);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn("Merge-conflict scan: failed to read attempt history", {
@@ -1140,16 +1282,59 @@ export async function findConflictingPr(
     // already let it through, so the processor's final escalation never
     // landed and the PR would stall unowned for ever.
     if (hasExhaustedConflictAttempts(history.count, maxAttempts)) {
+      // Issue #1115: a human is not the next rung any more. A branch that has
+      // defeated two concluded merges is usually cheaper to redo than to
+      // reconcile, so the PR is closed and its issue re-queued for a fresh PR
+      // off the current base. `needs-human` is what happens when that is
+      // declined, fails, or was already used for this issue.
+      const abandon = await abandonRestart({
+        repo,
+        prNumber: pr.number,
+        branchName: pr.headRefName,
+        // allow-hardcoded-branch — safe fallback when the listing omits it
+        baseBranch: pr.baseRefName || "main",
+        prComments,
+      });
+
+      if (abandon.outcome === "abandoned") {
+        logger.warn(
+          `PR #${pr.number} spent its ${maxAttempts} merge-conflict ` +
+            `attempts — closed it and re-queued issue #${abandon.issueNumber}`,
+          {
+            repo,
+            prNumber: pr.number,
+            issueNumber: abandon.issueNumber,
+            attempts: history.count,
+            maxAttempts,
+          },
+        );
+        return {
+          outcome: "skipped",
+          reason: {
+            kind: "abandoned-restarted",
+            issueNumber: abandon.issueNumber,
+            attemptsSpent: history.count,
+          },
+        };
+      }
+
+      const route = exhaustedEscalationRoute(abandon);
       logger.warn(
         `PR #${pr.number} has spent its ${maxAttempts} merge-conflict ` +
-          "attempts without being handed to a human — escalating",
-        { repo, prNumber: pr.number, attempts: history.count, maxAttempts },
+          `attempts and could not be restarted (${route.kind}) — escalating`,
+        {
+          repo,
+          prNumber: pr.number,
+          attempts: history.count,
+          maxAttempts,
+          route: route.kind,
+        },
       );
       await escalateConflictingPr({
         repo,
         prNumber: pr.number,
         heading: "Merge conflict needs human attention",
-        reason: buildExhaustedEscalationReason(pr.number, history.count),
+        reason: buildExhaustedEscalationReason(pr.number, history.count, route),
         nextStep: EXHAUSTED_CONFLICT_NEXT_STEP,
         // The key the resolution pass uses, so a landed escalation is not
         // duplicated — only its missing label is re-applied.
