@@ -18,6 +18,10 @@ import {
 } from "../lib/run_core_production_deps.ts";
 import { createLogger } from "../lib/logger.ts";
 import {
+  _resetDerivedAuthorsCache,
+  resolveDerivedAuthors,
+} from "../lib/derived_authors.ts";
+import {
   rateLimitSignalPath,
   writeRateLimitSignal,
 } from "../lib/rate_limit_signal.ts";
@@ -61,7 +65,15 @@ async function captureSleepDelays(
   return requestedDelays;
 }
 
-/** Create test options for the production deps factory. */
+/**
+ * Create test options for the production deps factory.
+ *
+ * The config is named rather than loaded (Issue #1098). Left to the factory,
+ * it comes from `CONFIG_PATH` — so with the operator's own config in the
+ * environment these tests resolved trusted authors against the real monitored
+ * repositories, making live `gh` calls from a unit test and failing whenever
+ * one of them did.
+ */
 function createTestOptions(
   overrides?: Partial<ProductionDepsOptions>,
 ): ProductionDepsOptions {
@@ -70,6 +82,7 @@ function createTestOptions(
     workDir: "/tmp/test-work",
     githubUser: "test-user",
     logger: testLogger,
+    config: buildDefaultWorkerConfig(),
     ...overrides,
   };
 }
@@ -188,7 +201,42 @@ Deno.test(
     const options = createTestOptions();
     const { deps } = await createProductionRunCoreDeps(options);
     const outcome = await deps.refreshTrustedAuthors!();
-    assertEquals(outcome.ok, true);
+    assertEquals(outcome.ok, true, JSON.stringify(outcome));
+  },
+);
+
+Deno.test(
+  "createProductionRunCoreDeps - another consumer's cycle 1 is not served to this factory's first refresh (Issue #1098)",
+  async () => {
+    // The resolver caches one result per `cycleId` in module state. A factory
+    // that counted cycles from 1 shared that key with every other consumer in
+    // the process, so whoever resolved first decided the answer — under the
+    // gate's parallel pass this test file inherited a cached *failure* from a
+    // file that had run before it in the same worker, and the refresh above
+    // failed without making a call.
+    const poisoned = await resolveDerivedAuthors(
+      {
+        repos: [],
+        serviceAccounts: [],
+        fleetPrAuthors: [],
+        // No fleet login at all, so the resolve refuses — the cheapest
+        // failure the resolver has, and no `gh` call is made for it.
+        githubUser: "",
+        knownInputLogins: [],
+      },
+      { cycleId: 1, log: () => {} },
+    );
+    assertEquals(poisoned.ok, false, "the poisoning resolve must have failed");
+
+    try {
+      const { deps } = await createProductionRunCoreDeps(createTestOptions());
+      const outcome = await deps.refreshTrustedAuthors!();
+      assertEquals(outcome.ok, true, JSON.stringify(outcome));
+    } finally {
+      // Leave no poisoned entry behind for the next file in this worker —
+      // the fault this test covers, in the direction this test creates it.
+      _resetDerivedAuthorsCache();
+    }
   },
 );
 

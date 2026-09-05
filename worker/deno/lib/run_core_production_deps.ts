@@ -432,6 +432,15 @@ function resolveClaimHardCap(
 }
 
 /**
+ * How many deps factories this process has built (Issue #1098).
+ *
+ * Scopes each factory's trusted-author cache key, so two factories in one
+ * process — or a factory and any other consumer of the resolver — cannot
+ * share a cache entry by both counting cycles from one.
+ */
+let productionDepsFactoryCount = 0;
+
+/**
  * Create production RunCoreDeps wired to real implementations.
  *
  * This factory connects every RunCoreDeps method to its corresponding
@@ -752,6 +761,16 @@ export async function createProductionRunCoreDeps(
 
   // Issue #256: identifies the cycle for the resolver's per-cycle cache, so
   // repeated reads inside one cycle cost no further `gh` calls.
+  //
+  // Issue #1098: the cache is a module singleton keyed by whatever the caller
+  // passes, so a bare counter restarting at 1 for every factory lets one
+  // consumer's result be served to another in the same process — the second
+  // factory's first refresh returned the first's cached verdict, including a
+  // cached failure it never made a call for. The id is therefore scoped to
+  // this factory as well as to the cycle: repeated reads inside one cycle
+  // still hit the cache, and nothing outside this factory can collide with
+  // it.
+  const trustRefreshScope = `run-core-deps-${++productionDepsFactoryCount}`;
   let trustRefreshCycle = 0;
 
   applyTrustSnapshot(trustSeed);
@@ -3518,7 +3537,7 @@ export async function createProductionRunCoreDeps(
           knownInputLogins,
         },
         {
-          cycleId: trustRefreshCycle,
+          cycleId: `${trustRefreshScope}:${trustRefreshCycle}`,
           log: (message: string) => logger.info(message),
         },
       );
