@@ -1107,6 +1107,55 @@ self-diagnostics**, which is the failure mode these alerts exist to prevent.
   they already hold over every other fleet decision. Non-fleet content can no
   longer do it.
 
+#### 5c. Idle-task wrapper dedup — the title match is author-verified, and the class is capped
+
+The same defect had eighteen further copies. Every idle-task template decides
+whether to file this run's wrapper by asking GitHub whether one is already
+open, matching a **constant title** with `in:title`. The constants live in a
+public repository, so anybody who can open an issue can reproduce one exactly,
+and the search proved nothing about who wrote the match. The consequence is
+not one missing alert: eighteen open issues with those titles would convince
+every host in the fleet that every idle task was already filed, taking out a
+repository's entire idle-task supply. The operator's standing goal is to keep
+every worker slot busy, so this is a direct throughput kill — and a silent one,
+because a suppressed wrapper produces no error and no log line.
+
+- **The control.** The lookup moved out of the eighteen templates into one
+  module,
+  [`idle_task_wrapper_dedup.ts`](worker/deno/lib/idle_task_wrapper_dedup.ts),
+  which requests `author` alongside the title and keeps only the matches
+  `isFleetAuthor` accepts, reusing `alert_dedup_authors.ts` for the fleet
+  resolution and the row filter. The comparison set and the fail direction are
+  exactly §5b's: the fleet identity rather than `--author @me`, and an
+  unresolvable set files the wrapper rather than suppressing it. The two
+  trackers that shared the shape —
+  [`baseline_carryover_tracker.ts`](worker/deno/lib/baseline_carryover_tracker.ts)
+  and
+  [`audit_failure_notifier.ts`](worker/deno/lib/audit_failure_notifier.ts) —
+  call the same module.
+- **Why one place, not eighteen fixes.** Copy-paste is how the class spread:
+  each template carried its own near-identical `hasOpen…Wrapper` helper, so the
+  missing check was written eighteen times. Fixing the same five lines
+  eighteen times would leave the nineteenth template free to copy the
+  eighteenth.
+- **The class is capped.** Nothing in the build could observe "every dedup call
+  site in the tree" — no type, no lint rule, and no runtime seam, because a
+  module nobody imports makes no call at all.
+  [`marker_dedup_author_manifest.ts`](worker/deno/lib/marker_dedup_author_manifest.ts)
+  classifies every `gh` dedup lookup in `worker/deno/lib/**` and
+  `worker/deno/setup/**` — title and body searches, and comment reads that take
+  the marker's payload back — and `marker_dedup_author_cap_test.ts` fails on
+  any that does not request the author. Sites not yet fixed are named in a
+  shrink-only manifest with a note each, capped in **both** directions: an
+  unlisted violation fails, and so does an entry whose site was fixed, so a
+  fix has to delete its own entry. The test reads source text deliberately —
+  the invariant is a property of the source, and the file says so at the top so
+  the next reader does not remove it as implementation-coupled.
+- **Residual risk, stated.** The manifest is not empty. The lookups still named
+  in it trust an unverified marker today; each carries a one-line note saying
+  what a planted marker there would suppress, and the cap stops the list
+  growing while it is paid down.
+
 ### 6. Egress Containment — Per-Run Write-Repo Allowlist
 
 The mitigations above narrow what untrusted content can *say* to the worker; egress containment narrows what a successful injection can *do*. Without it, an injection that reads a private repo can post the contents as a public comment in a different repo (four of the monitored repos are public, so the exfiltration sink is real).
