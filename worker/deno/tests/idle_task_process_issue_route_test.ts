@@ -25,6 +25,12 @@
  *      template runs; a clone that cannot be made fails loud (comment,
  *      wrapper left open, `success: false`) and never runs the template.
  *
+ * Issue #1139 adds the cross-host claim: every recognised wrapper is
+ * claimed before the clone and the scan, and a wrapper another host holds
+ * is never scanned. The tests below therefore inject a claim stub —
+ * `okClaim` for the paths that assume this host wins — and the two-host
+ * behaviour itself is covered in `idle_task_cross_host_claim_1139_test.ts`.
+ *
  * Australian English spelling used throughout.
  */
 
@@ -72,6 +78,10 @@ const okClone = () =>
     cloned: false,
   });
 
+/** Claim stub for the paths that assume this host holds the wrapper. */
+const okClaim = () =>
+  Promise.resolve({ claimed: true as const, workerId: "vibe-coder-1" });
+
 /** Minimal registered-template stand-in for the clone-path tests. */
 function fakeTemplate(name: string): IdleTaskTemplate {
   return {
@@ -91,6 +101,9 @@ const WRAPPER_INPUT = {
   issueBody: "# MythOS-style Security Audit — Four-Phase Scan (v5)\n\n" +
     "Audit `owner/widget` for vulnerabilities...",
   workDir: "/tmp/widget",
+  githubUser: "vibe-coder",
+  fleetAuthors: ["vibe-coder"],
+  pushCapableAuthors: ["vibe-coder"],
 };
 
 // ---------------------------------------------------------------------------
@@ -113,6 +126,7 @@ Deno.test(
       logger,
       handleIdleTaskFn: () => Promise.resolve(handlerResult),
       ensureCloneFn: okClone,
+      claimWrapperFn: okClaim,
       ghCommandFn: (args) => {
         ghCalls.push(args);
         return Promise.resolve("");
@@ -157,6 +171,7 @@ Deno.test(
           summary: "security-scan threw: timeout",
         }),
       ensureCloneFn: okClone,
+      claimWrapperFn: okClaim,
       ghCommandFn: (args) => {
         ghCalls.push(args);
         return Promise.resolve("");
@@ -190,11 +205,15 @@ Deno.test(
         issueLabels: ["bug"],
         issueBody: "The parser drops the timezone offset.",
         workDir: "/tmp/widget",
+        githubUser: "vibe-coder",
+        fleetAuthors: ["vibe-coder"],
+        pushCapableAuthors: ["vibe-coder"],
       },
       {
         logger,
         handleIdleTaskFn: () => Promise.resolve({ handled: false }),
         ensureCloneFn: okClone,
+        claimWrapperFn: okClaim,
         ghCommandFn: (args) => {
           ghCalls.push(args);
           return Promise.resolve("");
@@ -219,6 +238,7 @@ Deno.test(
       handleIdleTaskFn: () =>
         Promise.resolve({ handled: true, ok: true, summary: "ran" }),
       ensureCloneFn: okClone,
+      claimWrapperFn: okClaim,
       ghCommandFn: () => Promise.reject(new Error("gh: rate limited")),
     });
 
@@ -246,6 +266,7 @@ Deno.test(
       logger,
       handleIdleTaskFn: () => Promise.resolve({ handled: true, ok: true }),
       ensureCloneFn: okClone,
+      claimWrapperFn: okClaim,
       ghCommandFn: (args) => {
         ghCalls.push(args);
         return Promise.resolve("");
@@ -273,6 +294,7 @@ Deno.test(
     const outcome = await routeIdleTaskInProcessIssue(WRAPPER_INPUT, {
       logger,
       findTemplateFn: () => fakeTemplate("security-scan"),
+      claimWrapperFn: okClaim,
       ensureCloneFn: (repo, workDir) => {
         cloneCalls.push([repo, workDir]);
         return Promise.resolve({
@@ -308,6 +330,7 @@ Deno.test(
     const outcome = await routeIdleTaskInProcessIssue(WRAPPER_INPUT, {
       logger,
       findTemplateFn: () => fakeTemplate("security-scan"),
+      claimWrapperFn: okClaim,
       ensureCloneFn: (_repo, workDir) =>
         Promise.resolve({
           ok: false,
@@ -353,6 +376,9 @@ Deno.test(
         issueLabels: ["bug"],
         issueBody: "The parser drops the timezone offset.",
         workDir: "/tmp/widget",
+        githubUser: "vibe-coder",
+        fleetAuthors: ["vibe-coder"],
+        pushCapableAuthors: ["vibe-coder"],
       },
       {
         logger,
@@ -389,6 +415,7 @@ Deno.test(
           return Promise.resolve({ handled: true, ok: true, summary: "ran" });
         },
         ensureCloneFn: okClone,
+        claimWrapperFn: okClaim,
         ghCommandFn: () => Promise.resolve(""),
       },
     );
@@ -410,9 +437,89 @@ Deno.test(
         return Promise.resolve({ handled: true, ok: true, summary: "ran" });
       },
       ensureCloneFn: okClone,
+      claimWrapperFn: okClaim,
       ghCommandFn: () => Promise.resolve(""),
     });
 
     assertEquals(sawKey, false);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Cross-host claim (Issue #1139)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "routeIdleTaskInProcessIssue - claims the wrapper before cloning or scanning",
+  async () => {
+    const { logger } = makeLogger();
+    const order: string[] = [];
+
+    await routeIdleTaskInProcessIssue(WRAPPER_INPUT, {
+      logger,
+      findTemplateFn: () => fakeTemplate("security-scan"),
+      claimWrapperFn: (input) => {
+        order.push("claim");
+        assertEquals(input.repo, "owner/widget");
+        assertEquals(input.issueNumber, 2726);
+        assertEquals(input.githubUser, "vibe-coder");
+        return okClaim();
+      },
+      ensureCloneFn: () => {
+        order.push("clone");
+        return okClone();
+      },
+      handleIdleTaskFn: () => {
+        order.push("scan");
+        return Promise.resolve({ handled: true, ok: true, summary: "ran" });
+      },
+      ghCommandFn: () => Promise.resolve(""),
+    });
+
+    assertEquals(order, ["claim", "clone", "scan"]);
+  },
+);
+
+Deno.test(
+  "routeIdleTaskInProcessIssue - a wrapper a sibling host holds is never cloned, scanned or written to",
+  async () => {
+    const { logger } = makeLogger();
+    const ghCalls: string[][] = [];
+    let cloned = false;
+    let scanned = false;
+
+    const outcome = await routeIdleTaskInProcessIssue(WRAPPER_INPUT, {
+      logger,
+      findTemplateFn: () => fakeTemplate("security-scan"),
+      claimWrapperFn: () =>
+        Promise.resolve({
+          claimed: false as const,
+          reason: "already_assigned" as const,
+          detail: "assigned to a sibling host",
+        }),
+      ensureCloneFn: () => {
+        cloned = true;
+        return okClone();
+      },
+      handleIdleTaskFn: () => {
+        scanned = true;
+        return Promise.resolve({ handled: true, ok: true, summary: "ran" });
+      },
+      ghCommandFn: (args) => {
+        ghCalls.push(args);
+        return Promise.resolve("");
+      },
+    });
+
+    assertEquals(outcome, {
+      routed: true,
+      success: false,
+      claimLost: true,
+      claimReason: "already_assigned",
+      claimDetail: "assigned to a sibling host",
+    });
+    assertEquals(cloned, false);
+    assertEquals(scanned, false);
+    assertEquals(ghCalls, []);
   },
 );
