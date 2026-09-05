@@ -39,7 +39,10 @@ import {
   MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS,
   MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES,
 } from "../lib/marker_dedup_author_manifest.ts";
-import { ALERT_DEDUP_JSON_FIELDS } from "../lib/alert_dedup_authors.ts";
+import {
+  ALERT_DEDUP_JSON_FIELDS,
+  ALERT_DEDUP_TITLE_JSON_FIELDS,
+} from "../lib/alert_dedup_authors.ts";
 import { TITLE_MARKER_DEDUP_JSON_FIELDS } from "../lib/idle_task_wrapper_dedup.ts";
 
 const DENO_DIR = new URL("..", import.meta.url).pathname;
@@ -236,6 +239,7 @@ Deno.test("marker dedup - the author-bearing constants really carry the author",
   // not become a way round the cap.
   const values: Record<string, string> = {
     ALERT_DEDUP_JSON_FIELDS,
+    ALERT_DEDUP_TITLE_JSON_FIELDS,
     TITLE_MARKER_DEDUP_JSON_FIELDS,
   };
   assertEquals(

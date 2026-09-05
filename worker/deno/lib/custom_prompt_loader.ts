@@ -24,11 +24,48 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
-import type { Result } from "../types.ts";
+import type { CustomPromptTargetPhase, Result } from "../types.ts";
 import { validatePromptTemplate } from "./prompt_manager.ts";
 
+/**
+ * Target phase → the registered template type whose placeholder contract that
+ * phase's prompt must satisfy (Issue #1008, part of #938).
+ *
+ * An `issue`-phase template replaces `prompts/issue/` and needs
+ * `{{ISSUE_NUMBER}}` + `{{QUALITY_INSTRUCTIONS}}`; a `pr`-phase one replaces
+ * `prompts/pr_feedback/` and needs `{{PR_NUMBER}}` + `{{QUALITY_INSTRUCTIONS}}`.
+ * Before this map the type was hardwired to `issue`, so a PR-phase template
+ * was rejected for missing a placeholder it has no business carrying.
+ */
+const TEMPLATE_TYPE_BY_PHASE: Readonly<
+  Record<CustomPromptTargetPhase, string>
+> = {
+  issue: "issue",
+  pr: "pr_feedback",
+};
+
 /** Template type a custom prompt must satisfy — it replaces `prompts/issue/`. */
-export const CUSTOM_PROMPT_TEMPLATE_TYPE = "issue";
+export const CUSTOM_PROMPT_TEMPLATE_TYPE = TEMPLATE_TYPE_BY_PHASE.issue;
+
+/**
+ * The template type a mapping's target phase is held to (Issue #1008).
+ *
+ * @param phase - The mapping's validated target phase
+ * @returns The registered template type whose placeholders must be present
+ */
+export function customPromptTemplateType(
+  phase: CustomPromptTargetPhase,
+): string {
+  return TEMPLATE_TYPE_BY_PHASE[phase];
+}
+
+/** The target phase a template type belongs to, for error messages. */
+function targetPhaseOf(
+  templateType: string,
+): CustomPromptTargetPhase | undefined {
+  return (Object.keys(TEMPLATE_TYPE_BY_PHASE) as CustomPromptTargetPhase[])
+    .find((phase) => TEMPLATE_TYPE_BY_PHASE[phase] === templateType);
+}
 
 /**
  * Read and validate an operator's custom prompt template.
@@ -41,13 +78,15 @@ export const CUSTOM_PROMPT_TEMPLATE_TYPE = "issue";
  *
  * @param promptPath - Absolute host path of the operator's template
  * @param label - Optional label the mapping dispatches, named in errors
- * @param phase - Template type to validate against (default `issue`)
+ * @param templateType - Template type to validate against (default `issue`).
+ *   A mapping-driven caller passes {@link customPromptTemplateType} of its
+ *   target phase; a built-in override passes the phase it replaces.
  * @returns The template content, or an error naming the path and the fault
  */
 export async function loadCustomPromptTemplate(
   promptPath: string,
   label?: string,
-  phase: string = CUSTOM_PROMPT_TEMPLATE_TYPE,
+  templateType: string = CUSTOM_PROMPT_TEMPLATE_TYPE,
 ): Promise<Result<string>> {
   const subject = label
     ? `Custom prompt for label '${label}' at ${promptPath}`
@@ -71,11 +110,20 @@ export async function loadCustomPromptTemplate(
     return { ok: false, error: new Error(`${subject} is empty`) };
   }
 
-  const validation = validatePromptTemplate(phase, content);
+  const validation = validatePromptTemplate(templateType, content);
   if (!validation.ok) {
+    // Name the target phase as well as the template type, so an operator who
+    // wrote an `{{ISSUE_NUMBER}}` template against a `pr` mapping is told
+    // exactly that rather than being left to infer it (Issue #1008).
+    const phase = targetPhaseOf(templateType);
+    const forPhase = phase === undefined
+      ? ""
+      : ` for the '${phase}' target phase`;
     return {
       ok: false,
-      error: new Error(`${subject} is invalid: ${validation.error.message}`),
+      error: new Error(
+        `${subject} is invalid${forPhase}: ${validation.error.message}`,
+      ),
     };
   }
 

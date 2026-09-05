@@ -41,7 +41,11 @@ function makeConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
     shuffleRepos: false,
     // A configured custom label — the route #937 is about. Built here rather
     // than through the parser so the test needs no prompt file on disk.
-    customLabelPrompts: [{ label: CUSTOM_LABEL, promptPath: "/srv/deploy.md" }],
+    customLabelPrompts: [{
+      label: CUSTOM_LABEL,
+      promptPath: "/srv/deploy.md",
+      targetPhase: "issue",
+    }],
     ...overrides,
   };
 }

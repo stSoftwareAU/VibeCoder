@@ -27,6 +27,7 @@
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   assertCustomLabelPrompts,
+  customDispatchMappings,
   customLabelPromptLabels,
   customLabelPromptPath,
   parseCustomLabelPrompts,
@@ -37,6 +38,7 @@ import {
   KNOWN_CONFIG_KEYS,
 } from "../lib/config_unknown_keys.ts";
 import { loadConfig } from "../lib/config.ts";
+import type { CustomLabelPromptMapping } from "../types.ts";
 import { DISCOVERY_LABELS, RESERVED_LABELS } from "../lib/config_defaults.ts";
 
 /** Write a scratch prompt file and return its absolute path. */
@@ -77,7 +79,7 @@ Deno.test("parseCustomLabelPrompts - a valid mapping parses", async () => {
     ]);
     assert(result.ok, result.ok ? "" : result.error);
     assertEquals(result.value, [
-      { label: "my-custom-label", promptPath },
+      { label: "my-custom-label", promptPath, targetPhase: "issue" },
     ]);
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -242,7 +244,7 @@ Deno.test("assertCustomLabelPrompts - returns mappings or throws loudly", async 
         label: "custom-label",
         prompt_path: promptPath,
       }]),
-      [{ label: "custom-label", promptPath }],
+      [{ label: "custom-label", promptPath, targetPhase: "issue" }],
     );
 
     const error = assertThrows(
@@ -281,9 +283,13 @@ Deno.test("custom_label_prompts is a known config key", async () => {
 Deno.test("customLabelPromptPath - resolves a configured label, case-insensitively", () => {
   const config = {
     customLabelPrompts: [
-      { label: "my-custom-label", promptPath: "/opt/prompts/a.md" },
+      {
+        label: "my-custom-label",
+        promptPath: "/opt/prompts/a.md",
+        targetPhase: "issue",
+      },
     ],
-  };
+  } satisfies { customLabelPrompts: CustomLabelPromptMapping[] };
   assertEquals(
     customLabelPromptPath(config, "my-custom-label"),
     "/opt/prompts/a.md",
@@ -303,7 +309,11 @@ Deno.test("customLabelPromptPath - returns undefined for an unmapped label", () 
     customLabelPromptPath(
       {
         customLabelPrompts: [
-          { label: "other-label", promptPath: "/opt/prompts/a.md" },
+          {
+            label: "other-label",
+            promptPath: "/opt/prompts/a.md",
+            targetPhase: "issue",
+          },
         ],
       },
       "no-such-label",
@@ -345,7 +355,7 @@ Deno.test("loadConfig - a valid custom_label_prompts block loads and exposes cam
     );
     const config = await loadConfig(path);
     assertEquals(config.customLabelPrompts, [
-      { label: "my-custom-label", promptPath },
+      { label: "my-custom-label", promptPath, targetPhase: "issue" },
     ]);
   });
 });
@@ -421,8 +431,16 @@ Deno.test("customLabelPromptLabels - returns the configured labels in order", ()
   assertEquals(
     customLabelPromptLabels({
       customLabelPrompts: [
-        { label: "deploy-review", promptPath: "/opt/prompts/a.md" },
-        { label: "Ops-Audit", promptPath: "/opt/prompts/b.md" },
+        {
+          label: "deploy-review",
+          promptPath: "/opt/prompts/a.md",
+          targetPhase: "issue",
+        },
+        {
+          label: "Ops-Audit",
+          promptPath: "/opt/prompts/b.md",
+          targetPhase: "issue",
+        },
       ],
     }),
     ["deploy-review", "Ops-Audit"],
@@ -465,7 +483,7 @@ Deno.test("loadConfig - inside the container the configured path resolves onto t
           : undefined,
     });
     assertEquals(config.customLabelPrompts, [
-      { label: "private-label", promptPath: mounted },
+      { label: "private-label", promptPath: mounted, targetPhase: "issue" },
     ]);
     // Dispatch reads the mounted path, so the operator's template loads.
     assertEquals(
@@ -515,7 +533,7 @@ Deno.test("parseCustomLabelPrompts - no translation leaves the host path unchang
     );
     assert(result.ok, result.ok ? "" : result.error);
     assertEquals(result.value, [
-      { label: "native-label", promptPath },
+      { label: "native-label", promptPath, targetPhase: "issue" },
     ]);
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -608,6 +626,126 @@ Deno.test("parseCustomLabelPrompts - a traversal segment in prompt_path is rejec
       { label: "canonical-label", prompt_path: promptPath },
     ]);
     assertEquals(ok.ok, true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Target phase (Issue #1008, part of #938)
+// ---------------------------------------------------------------------------
+
+Deno.test("target phase - an entry with no target_phase parses as the issue phase", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "custom-label-phase-" });
+  try {
+    const promptPath = await writePromptFile(dir, "legacy.md");
+    const result = parseCustomLabelPrompts([
+      { label: "legacy-label", prompt_path: promptPath },
+    ]);
+    assert(result.ok, result.ok ? "" : result.error);
+    assertEquals(result.value, [
+      { label: "legacy-label", promptPath, targetPhase: "issue" },
+    ]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("target phase - an explicit null is the same as absent", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "custom-label-phase-" });
+  try {
+    const promptPath = await writePromptFile(dir, "nulled.md");
+    const result = parseCustomLabelPrompts([
+      { label: "nulled-label", prompt_path: promptPath, target_phase: null },
+    ]);
+    assert(result.ok, result.ok ? "" : result.error);
+    assertEquals(result.value[0]?.targetPhase, "issue");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("target phase - both accepted values parse", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "custom-label-phase-" });
+  try {
+    const issuePath = await writePromptFile(dir, "issue-phase.md");
+    const prPath = await writePromptFile(dir, "pr-phase.md");
+    const result = parseCustomLabelPrompts([
+      { label: "issue-label", prompt_path: issuePath, target_phase: "issue" },
+      { label: "pr-label", prompt_path: prPath, target_phase: "pr" },
+    ]);
+    assert(result.ok, result.ok ? "" : result.error);
+    assertEquals(result.value.map((m) => m.targetPhase), ["issue", "pr"]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("target phase - an unknown value is rejected naming entry, value and accepted set", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "custom-label-phase-" });
+  try {
+    const promptPath = await writePromptFile(dir, "bad-phase.md");
+    for (const bad of ["review", "", "PR", 42, true, []]) {
+      const message = assertRejected(
+        [{ label: "a-label", prompt_path: promptPath, target_phase: bad }],
+        "custom_label_prompts[0].target_phase",
+        "issue, pr",
+      );
+      assert(
+        message.includes(
+          typeof bad === "string" ? JSON.stringify(bad) : String(bad),
+        ),
+        `expected the message to quote the bad value, got: ${message}`,
+      );
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("target phase - a pr target on a built-in override is rejected rather than ignored", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "custom-label-phase-" });
+  try {
+    const promptPath = await writePromptFile(
+      dir,
+      "planning-override.md",
+      "{{REPO}} {{ISSUE_NUMBER}} {{PLANNING_LABEL}}",
+    );
+    assertRejected(
+      [{ label: "planning", prompt_path: promptPath, target_phase: "pr" }],
+      "custom_label_prompts[0].target_phase",
+      "overrides the built-in",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("target phase - customDispatchMappings filters by phase, labels do not", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "custom-label-phase-" });
+  try {
+    const issuePath = await writePromptFile(dir, "i.md");
+    const prPath = await writePromptFile(dir, "p.md");
+    const parsed = parseCustomLabelPrompts([
+      { label: "issue-label", prompt_path: issuePath },
+      { label: "pr-label", prompt_path: prPath, target_phase: "pr" },
+    ]);
+    assert(parsed.ok, parsed.ok ? "" : parsed.error);
+    const config = { customLabelPrompts: parsed.value };
+
+    // The trust gate covers a custom label in either phase.
+    assertEquals(customLabelPromptLabels(config), ["issue-label", "pr-label"]);
+    assertEquals(customLabelPromptLabels(config, "pr"), ["pr-label"]);
+    assertEquals(customLabelPromptLabels(config, "issue"), ["issue-label"]);
+    assertEquals(
+      customDispatchMappings(config, "pr").map((m) => m.label),
+      ["pr-label"],
+    );
+    assertEquals(
+      customDispatchMappings(config, "issue").map((m) => m.label),
+      ["issue-label"],
+    );
+    assertEquals(customDispatchMappings(config).length, 2);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

@@ -1358,6 +1358,22 @@ export interface IdleTaskCadenceFileConfig {
 }
 
 /**
+ * The phase a `custom_label_prompts` mapping runs in (Issue #1008, part of
+ * #938).
+ *
+ * - `issue` — today's behaviour: a labelled **issue** runs the generic
+ *   implementation phase with the operator's template, producing a branch,
+ *   commits and a PR.
+ * - `pr` — a labelled open **pull request** gets a full checkout plus `gh`,
+ *   like a PR-feedback run, and the operator's prompt decides what happens
+ *   next. The run consumes the label.
+ *
+ * The two values carry different placeholder contracts — see
+ * `lib/custom_prompt_loader.ts`.
+ */
+export type CustomPromptTargetPhase = "issue" | "pr";
+
+/**
  * A validated operator mapping from a GitHub label to a non-public prompt
  * template file on the host (Issue #846, part of #843).
  *
@@ -1371,6 +1387,15 @@ export interface CustomLabelPromptMapping {
   label: string;
   /** Absolute host path of the prompt template file. */
   promptPath: string;
+  /**
+   * Which phase this mapping's prompt runs in (Issue #1008, part of #938).
+   *
+   * Required on the validated type and defaulted during parse, so no call
+   * site can dispatch a mapping without having considered its phase. An entry
+   * that states no `target_phase` parses as `issue`, which is byte-identical
+   * to the behaviour every mapping had before the field existed.
+   */
+  targetPhase: CustomPromptTargetPhase;
   /**
    * The built-in phase this mapping overrides (Issue #849, part of #843).
    *

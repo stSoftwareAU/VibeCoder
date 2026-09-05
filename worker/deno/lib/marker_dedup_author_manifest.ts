@@ -41,6 +41,13 @@
 export const AUTHOR_BEARING_JSON_FIELD_CONSTANTS: readonly string[] = [
   "ALERT_DEDUP_JSON_FIELDS",
   "TITLE_MARKER_DEDUP_JSON_FIELDS",
+  // `alert_dedup_authors.ts`'s own title constant (`number,title,author`).
+  // Two title field lists exist because #1100 and #1101 landed in parallel
+  // and each named one; both request `author`, which is all this
+  // classification turns on. Omitting it here left every site #1100 fixed
+  // still reading as unverified debt — a manifest that overstates the debt
+  // invites someone to "fix" code that is already correct.
+  "ALERT_DEDUP_TITLE_JSON_FIELDS",
 ];
 
 /** How a call site reads the marker. */
@@ -101,17 +108,9 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES: readonly string[] = [
   // `PR_COMMENT_CLAIM:` comment markers arbitrate which host owns a PR
   // comment; a planted claim hands the PR to nobody.
   "lib/claim_pr_comment.ts",
-  // `in:title` search for the wrapper title dispatched as real work — an
-  // escalation that is silently already "in flight" is never escalated.
-  "lib/escalate_as_work.ts",
-  // Same `in:title` shape for the per-host escalation issue.
-  "lib/host_escalation.ts",
   // Reconciles filed wrappers by `in:title`; a planted title reads as a
   // wrapper the fleet filed and suppresses the backfill.
   "lib/idle_task_backfill.ts",
-  // Security-scan wrapper dedup — the eighteenth copy of the template
-  // defect, owned by a concurrent change.
-  "lib/idle_task_templates/security_scan_template.ts",
   // `fetchPRsForIssueByTitle` searches `in:title (#N)` without `author`, and
   // its consumers `pr_issue_linking.ts` and `pr_linkage.ts` inherit the gap.
   "lib/issue_query.ts",

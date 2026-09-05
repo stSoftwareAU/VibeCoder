@@ -242,12 +242,15 @@ intervene.
 
 ### 🟢 Priority 1.65 — Auto-merge
 
-- **All PRs by the configured GitHub user should be marked for auto-merge**
-  (squash), so they merge automatically when reviews and checks pass.
+- **Every open PR by any push-capable fleet author should be marked for
+  auto-merge** (squash), so they merge automatically when reviews and checks
+  pass. The sweep covers the whole fleet author set, not just this host's own
+  login — a sibling account's PR blocks `work-on` issues exactly as this
+  host's does, so it must be swept exactly as this host's is.
 - **Auto-merge can only be enabled when merge issues have been fixed** — i.e.
   when the PR is mergeable (no conflicts, branch up to date with base). The
   worker must resolve merge issues first, then enable auto-merge.
-- **Catch-up** — For each open PR by this user, if auto-merge is not yet enabled
+- **Catch-up** — For each open PR by any fleet author, if auto-merge is not yet enabled
   and the repo supports it and the PR **is mergeable**: enable auto-merge. This
   catches PRs where auto-merge was not set due to transient failures during
   creation or where merge issues have since been fixed.

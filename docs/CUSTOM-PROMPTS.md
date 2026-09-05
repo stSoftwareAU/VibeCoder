@@ -3,7 +3,9 @@
 Map a GitHub label to a **prompt template that lives outside this repository**,
 so a deployment can run its own instructions without publishing them and
 without forking. Add the file, add the mapping, apply the label — the Vibe
-Coder works the issue with your prompt and raises a PR.
+Coder runs your prompt against the labelled work. A mapping's `target_phase`
+decides what "the labelled work" is: an **issue** by default, or an open
+**pull request** with `"target_phase": "pr"`.
 
 The governing rule is the one [Private Extensions](PRIVATE-EXTENSIONS.md)
 states:
@@ -51,16 +53,20 @@ willing to publish. It is configuration-only: no fork, no code in this
 repository, and nothing about your prompt ever appears here.
 
 A mapping does one of two things, decided by whether its `label` matches a
-built-in one:
+built-in one — and a new label additionally chooses the phase it runs in:
 
 ```mermaid
 flowchart TD
     M["custom_label_prompts entry"] --> Q{"label matches a<br/>built-in label?"}
-    Q -- no --> N["➕ New dispatch label<br/>priority 1.86, generic<br/>implementation phase"]
+    Q -- no --> P{"target_phase?"}
     Q -- yes --> O["♻️ Override only<br/>same handler, priority<br/>and trust gate — new template"]
+    P -- "issue (default)" --> N["➕ New issue-phase label<br/>priority 1.86, generic<br/>implementation phase"]
+    P -- pr --> PR["➕ New pr-phase label<br/>priority 1.87, checkout of<br/>the labelled open PR"]
     N --> R["Branch → commits → PR"]
     O --> R
+    PR --> RC["Your prompt decides:<br/>comment, commit, push<br/>— the label is consumed"]
     style N fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style PR fill:#2d6a4f,stroke:#1b4332,color:#fff
     style O fill:#3a86ff,stroke:#023e8a,color:#fff
 ```
 
@@ -69,6 +75,14 @@ flowchart TD
   and a PR. Only the prompt body differs, and — because it raises a PR — it is
   held by the same eligibility gates `work-on` is
   ([When a labelled issue is dispatched](#-when-a-labelled-issue-is-dispatched)).
+- **A `pr`-phase new label acts on an open pull request instead.** Give the
+  entry `"target_phase": "pr"` and applying the label to an **open** PR runs
+  your prompt at priority 1.87 with the PR head branch checked out and `gh`
+  available. The run **consumes** the label — including when it fails, which is
+  reported as a PR comment — so one application is one run and you re-apply the
+  label to run again. A label on a closed or merged PR never dispatches. The
+  full semantics are in
+  [Configuration — How a `pr`-phase custom label dispatches](CONFIGURATION.md#how-a-pr-phase-custom-label-dispatches-issue-1011).
 - **A built-in label overrides that phase's template.** A mapping naming
   `planning`, `question`, `grill-me`, `quorum` or `work-on` (which owns the
   implementation phase, and so covers `top-priority` and `low-priority`
@@ -243,16 +257,28 @@ loudly rather than reaching the agent half-rendered:
 Prompt template has unsubstituted placeholder(s): {{DEPLOY_TARGET}}
 ```
 
-### A new custom label
+### A new custom label — `issue` phase (the default)
 
-A new label runs the generic implementation phase, so its template is an
-`issue` template:
+An `issue`-phase label runs the generic implementation phase, so its template
+is an `issue` template:
 
 | Placeholder | Required | What it carries |
 | --- | --- | --- |
 | `{{ISSUE_NUMBER}}` | ✅ | The issue being worked |
 | `{{QUALITY_INSTRUCTIONS}}` | ✅ | The repository's quality-gate commands |
 | `{{REPO}}` | optional | `owner/repo` |
+| `{{VERBOSITY_INSTRUCTIONS}}` | optional | The configured response-verbosity block |
+
+### A new custom label — `pr` phase
+
+A `pr`-phase label runs against a pull request, so its template answers to the
+`pr_feedback` contract instead. Writing an `{{ISSUE_NUMBER}}` template here is
+refused with both the phase and the template type named:
+
+| Placeholder | Required | What it carries |
+| --- | --- | --- |
+| `{{PR_NUMBER}}` | ✅ | The pull request being worked |
+| `{{QUALITY_INSTRUCTIONS}}` | ✅ | The repository's quality-gate commands |
 | `{{VERBOSITY_INSTRUCTIONS}}` | optional | The configured response-verbosity block |
 
 ### An override of a built-in label
