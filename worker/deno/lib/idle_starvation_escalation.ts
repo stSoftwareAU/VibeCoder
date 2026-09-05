@@ -152,11 +152,22 @@ export interface IdleStarvationObservation {
   idleSlotSeconds: number;
   /**
    * Open `idle-task`-labelled issues across the whole monitored set,
-   * assigned or not. Non-zero means the fleet is supplying itself and the
-   * episode is over — `maybe-file-idle-task` keeps at most one open across
-   * the fleet, so one is the healthy steady state, not a shortfall.
+   * assigned or not.
    */
   openIdleTasks: number;
+  /**
+   * How many idle tasks the fleet's idle capacity can absorb — the idle
+   * slot count from the #925 ledger (Issue #1083).
+   *
+   * The detector used to treat **one** open wrapper as health, because
+   * `maybe-file-idle-task` kept at most one open across the whole fleet.
+   * That cap is gone: idle work is now raised one per repository, up to the
+   * number of idle slots, so one wrapper beside six idle slots is precisely
+   * the shortfall this detector exists to see. Absent, it falls back to one
+   * — the pre-#1083 reading, and the honest answer for a caller with no
+   * slot ledger to hand.
+   */
+  expectedIdleTasks?: number;
   /** What to put in the issue body if this episode escalates. */
   evidence: IdleStarvationEvidence;
 }
@@ -552,9 +563,11 @@ export async function recordIdleStarvationObservation(
       async () => {
         const stored = await loadIdleStarvationEpisode(opts.statePath);
 
-        // The fleet is supplying itself: at most one wrapper is open across
-        // the whole monitored set by design, so one is health, not shortfall.
-        if (obs.openIdleTasks > 0) {
+        // The fleet is supplying itself only when it has raised as much
+        // idle work as its idle slots can take (Issue #1083). One wrapper
+        // is health beside one idle slot and a shortfall beside six.
+        const expected = Math.max(1, Math.floor(obs.expectedIdleTasks ?? 1));
+        if (obs.openIdleTasks >= expected) {
           if (stored !== null) {
             await saveIdleStarvationEpisode(opts.statePath, null, log);
           }

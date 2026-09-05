@@ -195,7 +195,7 @@ sequenceDiagram
     Repo-->>Main: nothing claimable
     Main->>Main: tracker.scanHadSuccess === false
     Main->>Filer: runIdleTaskFiler()
-    Filer->>Filer: cross-repo wrapper check (any open idle-task anywhere?)
+    Filer->>Filer: per-repo wrapper census (which repos already hold one?)
     Filer->>Filer: shuffle monitoredRepos randomly
     Filer->>Filer: per-repo dedup + cooldown gate
     Filer->>GH: gh issue create — title `Run a security scan`, label `idle-task`, no milestone (skipMilestone)
@@ -231,9 +231,9 @@ flowchart TD
 
     Idle[Idle trigger<br/>run_core: scanHadSuccess === false]
 
-    Idle --> Cross{Any monitored repo has<br/>an open idle-task wrapper?}
+    Idle --> Cross{Every monitored repo already<br/>holds an open idle-task wrapper?}
     Cross -- yes --> SkipWrapper[skip — existing_wrapper_open]:::skip
-    Cross -- no --> Shuffle[Shuffle monitoredRepos randomly]
+    Cross -- no --> Shuffle[Shuffle the repos that hold none]
     Shuffle --> Pick{Per-repo: dedup +<br/>cooldown + busy gates pass?}
     class Cross,Pick gate;
     Pick -- no --> SkipDedup[skip — duplicate / cooldown_active / busy]:::skip
@@ -843,7 +843,7 @@ enforcement (LLM06, `label_security.ts`), and secret handling (LLM02).
 
 | Symptom                                                                      | What to do                                                                                                                                                                     |
 | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Worker logs `[idle-task] action=skipped reason=existing_wrapper_open` repeatedly | A `Run a security scan` wrapper (or any other `idle-task` issue) is open somewhere in the monitored set. Let the worker claim and close it, or close it by hand — the idle-task filer will resume on the next idle pass. |
+| Worker logs `[idle-task] action=skipped reason=existing_wrapper_open` repeatedly | A `Run a security scan` wrapper (or any other `idle-task` issue) is already open in that repo — one per repository is the limit (Issue #1083). A `scope=repo` line names the repo and issue that held it; `scope=monitored_set` means every monitored repo holds one. Let the worker claim and close them, or close one by hand — the filer resumes on the next idle pass. |
 | Worker logs `[idle-task] action=skipped reason=all_repos_cooled_down` | Every monitored repo is inside its 24-hour per-repo cooldown window. No action needed; the idle-task filer will resume after a repo's window expires. |
 | Worker logs `[idle-task] … reason=output_backlog label=security count=N` | A monitored repo already has six or more open `security`-labelled findings from a previous scan. Triage the existing batch — close, fix, or add `security-scan-ignore` comments — and the next idle pass will resume scanning that repo. |
 | Worker logs `[idle-task] … reason=pending_results` | The `security-scan` template's `shouldFile` returned `false` — either an open security finding or an existing `Run a security scan` wrapper still exists. Same remedy: triage the open work first. |
