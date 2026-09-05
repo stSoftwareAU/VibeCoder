@@ -44,6 +44,22 @@ Deno.test("test stage env - CONFIG_PATH is not handed to the suite (Issue #891)"
   );
 });
 
+Deno.test("test stage env - WORK_DIR is not handed to the suite (Issue #1098)", () => {
+  // The same class as CONFIG_PATH, found on the milestone base branch: the
+  // container exports the live worker volume, `runCoreLoop` falls back to it
+  // for state that outlives a run, and every suite driving the loop then
+  // shared the running fleet's `idle_disagreement_streak.json` with three
+  // sibling test processes. Removed, not blanked — the fallback treats an
+  // empty string as absent, but a caller reading the raw variable should not
+  // see one either.
+  const env = testStageEnv({
+    WORK_DIR: "/home/vibe/auto-issue-work",
+    PATH: "/usr/bin",
+  });
+  assertEquals(Object.hasOwn(env, "WORK_DIR"), false);
+  assertEquals(env.PATH, "/usr/bin");
+});
+
 Deno.test("test stage env - everything else is passed through (Issue #891)", () => {
   const env = testStageEnv({
     CONFIG_PATH: "/home/vibe/.vibe-coder/run-config/.config.json",
@@ -54,7 +70,6 @@ Deno.test("test stage env - everything else is passed through (Issue #891)", () 
   });
   assertEquals(env.PATH, "/usr/bin:/bin");
   assertEquals(env.HOME, "/home/vibe");
-  assertEquals(env.WORK_DIR, "/home/vibe/auto-issue-work");
   assertEquals(env.VIBE_IMAGE_AGENT_PROVIDERS, "claude");
 });
 

@@ -17,6 +17,7 @@ import {
   type ProductionDepsOptions,
 } from "../lib/run_core_production_deps.ts";
 import { createLogger } from "../lib/logger.ts";
+import { resolveDerivedAuthors } from "../lib/derived_authors.ts";
 import {
   rateLimitSignalPath,
   writeRateLimitSignal,
@@ -187,6 +188,35 @@ Deno.test(
   async () => {
     const options = createTestOptions();
     const { deps } = await createProductionRunCoreDeps(options);
+    const outcome = await deps.refreshTrustedAuthors!();
+    assertEquals(outcome.ok, true);
+  },
+);
+
+Deno.test(
+  "createProductionRunCoreDeps - another consumer's cycle 1 is not served to this factory's first refresh (Issue #1098)",
+  async () => {
+    // The resolver caches one result per `cycleId` in module state. A factory
+    // that counted cycles from 1 shared that key with every other consumer in
+    // the process, so whoever resolved first decided the answer — under the
+    // gate's parallel pass this test file inherited a cached *failure* from a
+    // file that had run before it in the same worker, and the refresh above
+    // failed without making a call.
+    const poisoned = await resolveDerivedAuthors(
+      {
+        repos: [],
+        serviceAccounts: [],
+        fleetPrAuthors: [],
+        // No fleet login at all, so the resolve refuses — the cheapest
+        // failure the resolver has, and no `gh` call is made for it.
+        githubUser: "",
+        knownInputLogins: [],
+      },
+      { cycleId: 1, log: () => {} },
+    );
+    assertEquals(poisoned.ok, false, "the poisoning resolve must have failed");
+
+    const { deps } = await createProductionRunCoreDeps(createTestOptions());
     const outcome = await deps.refreshTrustedAuthors!();
     assertEquals(outcome.ok, true);
   },
