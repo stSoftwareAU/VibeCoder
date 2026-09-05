@@ -492,13 +492,14 @@ reviewer.
 
 - Fix lint errors, type errors, and test failures immediately as part of your
   normal workflow. Do not commit code that has known failures.
-- Run the checks the `<quality_instructions>` block above prescribes before
-  creating a Pull Request: the targeted ones (formatter, linter, type check,
-  the tests covering your change) always, and the full gate once at the end
-  when the remaining run budget covers it.
-- Every check you run must pass before PR creation. When the budget did not
-  cover the full gate, record the skip in the PR summary with the note the
-  `<quality_instructions>` block gives you — CI runs the same checks on the PR.
+- Run the checks the `<quality_instructions>` block above prescribes and ensure
+  all checks pass BEFORE creating a Pull Request: the targeted ones (formatter,
+  linter, type check, the tests covering your change) always, and the full gate
+  once at the end when the remaining run budget covers it.
+- All checks must pass before PR creation: lint, type checks, unit tests, and
+  every other gate you ran. When the run budget did not cover the full gate,
+  record the skip in the PR summary with the note the `<quality_instructions>`
+  block gives you — CI runs the same checks on the PR.
 
 ## Change Scope
 
