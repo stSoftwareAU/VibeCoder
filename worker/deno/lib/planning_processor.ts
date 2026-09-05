@@ -70,12 +70,6 @@ import {
   runPlanCoverageGate,
 } from "./plan_coverage_gate.ts";
 import {
-  escalateMissingMvpSlice,
-  MVP_SLICE_REQUIREMENT,
-  type MvpSliceVerdict,
-  runMvpSliceGate,
-} from "./mvp_slice_gate.ts";
-import {
   FAILURE_DETECTION_REPAIR_LABEL,
   recordPartialFailureDetectionRepair,
 } from "./failure_detection_repair_label.ts";
@@ -122,17 +116,6 @@ export interface PlanningResult {
    * completes. Absent on a run whose every ask is accounted for.
    */
   uncoveredAsks?: string[];
-  /**
-   * Ways the published plan fails to name a single MVP slice (Issue #522) —
-   * no marker and no explicit no-slice line, more than one marker, a marker
-   * with no statement of the value it delivers alone, or a sub-issue listed
-   * before its prerequisite.
-   *
-   * Present only when the MVP-slice gate failed: as with coverage, the plan is
-   * published, the parent is left open and labelled `needs-human`, and the run
-   * still completes.
-   */
-  mvpSliceOffences?: string[];
 }
 
 /** Options for the planning processor. */
@@ -734,7 +717,7 @@ ${delimiters.bodyEnd}
 ${commentsSection}${delimiters.untrustedEnd}
 ${buildBoundaryIntegrityInstruction(delimiters.boundaryId)}
 
-Break this issue into independently implementable sub-issues. Use \`gh issue create\` to create each one in the ${repo} repository — do not just describe a plan. Every sub-issue body must include \`Part of #${issueNumber}\`, testable acceptance criteria, and any \`Depends on #N\` links. ${FAILURE_DETECTION_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION} Then post one summary comment on issue #${issueNumber} listing the sub-issues created, and close it as completed. ${COVERAGE_TABLE_REQUIREMENT} ${MVP_SLICE_REQUIREMENT}${milestoneNote}`;
+Break this issue into independently implementable sub-issues. Use \`gh issue create\` to create each one in the ${repo} repository — do not just describe a plan. Every sub-issue body must include \`Part of #${issueNumber}\`, testable acceptance criteria, and any \`Depends on #N\` links. ${FAILURE_DETECTION_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION} Then post one summary comment on issue #${issueNumber} listing the sub-issues created, and close it as completed. ${COVERAGE_TABLE_REQUIREMENT}${milestoneNote}`;
 }
 
 /**
@@ -891,7 +874,7 @@ export function buildCritiqueFallbackPublishPrompt(opts: {
     }"\` in every \`gh issue create\` command.`
     : "";
 
-  return `You drafted a plan for issue #${issueNumber} in the previous turn. First, adversarially critique that draft — ask "what's wrong with this approach?" (missing work, mis-scoping, wrong dependencies, over-engineering, duplication, weak acceptance criteria). Then revise the plan once. Only after revising, create the final sub-issues with \`gh issue create\` in the ${repo} repository, post a single summary comment on issue #${issueNumber}, and close it as completed. Do NOT post your critique anywhere — publish only the final revised sub-issues. ${FAILURE_DETECTION_REQUIREMENT} ${COVERAGE_TABLE_REQUIREMENT} ${MVP_SLICE_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION}${milestoneCritiqueFallback}`;
+  return `You drafted a plan for issue #${issueNumber} in the previous turn. First, adversarially critique that draft — ask "what's wrong with this approach?" (missing work, mis-scoping, wrong dependencies, over-engineering, duplication, weak acceptance criteria). Then revise the plan once. Only after revising, create the final sub-issues with \`gh issue create\` in the ${repo} repository, post a single summary comment on issue #${issueNumber}, and close it as completed. Do NOT post your critique anywhere — publish only the final revised sub-issues. ${FAILURE_DETECTION_REQUIREMENT} ${COVERAGE_TABLE_REQUIREMENT} ${RESERVED_LABEL_PROHIBITION}${milestoneCritiqueFallback}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1987,66 +1970,12 @@ async function closePlanningIssue(
       });
     }
   }
+  // Issue #1120: coverage is deliberately the only plan gate here. A planning
+  // run puts its sub-issues in a milestone, and a milestone merges as a whole
+  // from its own feature branch (docs/workflows/milestones.md), so ordering
+  // partial value inside one — the removed MVP-slice gate — delivers nothing.
   const coverageFailed = coverageVerdict !== undefined &&
     !coverageVerdict.passed;
-
-  // Issue #522: deterministic MVP-slice gate, on the same published summary
-  // comment and the same chokepoint as the coverage gate above — no new
-  // artefact and no new comment type. Dependency order says what can be built
-  // first, never whether building only that leaves the repo better off, so the
-  // publish turn marks exactly one sub-issue `**MVP slice**` with what value it
-  // delivers alone (or states that no slice is independently valuable), ordered
-  // MVP-first inside its `Depends on` edges. Gated on the run's *published* set
-  // for the same reason as the gates above: a run with zero sub-issues has no
-  // plan to slice.
-  let mvpVerdict: MvpSliceVerdict | undefined;
-  if (textSubIssueNumbers.length > 0) {
-    mvpVerdict = await runMvpSliceGate({
-      repo,
-      parentIssueNumber: issueNumber,
-      ghCommandFn: deps.github.runGhCommand,
-      logger,
-    });
-    if (mvpVerdict.passed) {
-      logger.info(
-        "MVP-slice gate: the published plan names its MVP slice (Issue #522)",
-        {
-          repo,
-          issueNumber,
-          subIssues: mvpVerdict.entries.length,
-          noSlice: mvpVerdict.markerCount === 0,
-        },
-      );
-    } else {
-      logger.warn(
-        "MVP-slice gate: the published plan names no single MVP slice — escalating to a human (Issue #522)",
-        {
-          repo,
-          issueNumber,
-          markers: mvpVerdict.markerCount,
-          offences: mvpVerdict.offenders.map((o) => `${o.subject}: ${o.reason}`)
-            .join(" | "),
-        },
-      );
-      // The shared needs-human chokepoint again — which sub-issue is the MVP
-      // slice is a value judgement no self-repair can make.
-      await escalateMissingMvpSlice({
-        ghClient,
-        repo,
-        parentIssueNumber: issueNumber,
-        needsHumanLabel: config.needsHumanLabel,
-        verdict: mvpVerdict,
-        githubUser,
-        logger,
-        deps: labelDepsFor(deps.github.runGhCommand),
-      });
-    }
-  }
-  const mvpSliceFailed = mvpVerdict !== undefined && !mvpVerdict.passed;
-
-  // Both plan gates escalate to a human, so either one failing must leave the
-  // parent open and its outcome noted on the run.
-  const planGateFailed = coverageFailed || mvpSliceFailed;
 
   // Per-run model stats + degraded-model verdict (Issue #2649). The configured
   // best planning model (Issue #2654, per-repo override aware) is the model the
@@ -2193,10 +2122,10 @@ async function closePlanningIssue(
     );
   }
 
-  // Issue #520 / #522: a plan gate escalated to a human, so the parent must be
+  // Issue #520: the coverage gate escalated to a human, so the parent must be
   // open for that human to act on. Reopen it when the planner closed it inline.
   // Best-effort — a reopen failure never aborts closure.
-  if (planGateFailed && alreadyClosed) {
+  if (coverageFailed && alreadyClosed) {
     try {
       await deps.github.runGhCommand([
         "issue",
@@ -2277,10 +2206,10 @@ async function closePlanningIssue(
   }
 
   // Issue #59: a partial repair leaves the parent open — closing it would bury
-  // the outstanding repairs where the resume pass cannot pick them up. Issues
-  // #520 and #522: a failed plan gate does the same, for the same reason — the
+  // the outstanding repairs where the resume pass cannot pick them up. Issue
+  // #520: a failed coverage gate does the same, for the same reason — the
   // `needs-human` decision it raised must stay visible on an open issue.
-  if (!alreadyClosed && pendingRepair.length === 0 && !planGateFailed) {
+  if (!alreadyClosed && pendingRepair.length === 0 && !coverageFailed) {
     const closeComment = carrier.created
       ? "Planning complete — created a carrier sub-issue for the remaining work (Issue #2995)."
       : subIssueUrls.length > 0
@@ -2324,7 +2253,6 @@ async function closePlanningIssue(
   const coverageNote = coverageFailed
     ? " — plan coverage escalated to a human"
     : "";
-  const mvpNote = mvpSliceFailed ? " — MVP slice escalated to a human" : "";
 
   return {
     ok: true,
@@ -2333,7 +2261,7 @@ async function closePlanningIssue(
       subIssueCount: subIssueUrls.length,
       subIssueUrls,
       summary: subIssueUrls.length > 0
-        ? `Created ${subIssueUrls.length} sub-issue(s)${repairNote}${coverageNote}${mvpNote}`
+        ? `Created ${subIssueUrls.length} sub-issue(s)${repairNote}${coverageNote}`
         : "Planning complete — no sub-issues required",
       degradation: verdict,
       ...(pendingRepair.length > 0
@@ -2342,13 +2270,6 @@ async function closePlanningIssue(
       ...(coverageFailed
         ? {
           uncoveredAsks: coverageVerdict?.offenders.map((o) => o.ask) ?? [],
-        }
-        : {}),
-      ...(mvpSliceFailed
-        ? {
-          mvpSliceOffences:
-            mvpVerdict?.offenders.map((o) => `${o.subject} — ${o.reason}`) ??
-              [],
         }
         : {}),
     },

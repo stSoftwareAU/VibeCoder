@@ -84,21 +84,12 @@ Each proposed sub-issue must be:
 - **Right-sized** — completable in a single PR of under ~500 lines. Split anything spanning more than ~5 files or multiple unrelated modules; group trivial one-line changes with related work.
 - **Ordered** — drafted in implementation order with explicit dependencies.
 
-### Name the MVP slice
-
-Dependency order is *technical* order. It says what can be built first, never whether building only that leaves the repo better off — and a milestone can stop part-way (a run times out, a human pauses it, the backlog shifts). So name the **MVP slice**: the one sub-issue whose landing *alone* delivers value, with nothing after it ever built.
-
-- Mark **exactly one** proposed sub-issue as the MVP slice, and in its `## Summary` state in one sentence what value lands if nothing after it is built.
-- Order the draft **MVP-first** — the slice as early as the dependency graph allows. Value ordering never overrides a real dependency: a sub-issue must not precede one it `Depends on`, so anything ahead of the slice is a genuine prerequisite of it.
-- Where nothing in the plan is independently valuable — a pure refactor, a mechanical migration whose value arrives only once every step lands — say so plainly with the line `No independently valuable slice — <reason>` in your draft, and mark nothing. Silently omitting the marker is not the same statement, and the publish turn is gated on one of the two.
-
 Use this body structure for each proposed sub-issue:
 
 <sub_issue_body_template>
 ```
 ## Summary
 [One-sentence description of the task]
-[On the MVP slice only, a second line: "**MVP slice** — <what value lands if nothing after this is ever built>". Omit this line entirely on every other sub-issue.]
 
 ## What Needs to Be Done
 [Concrete list of changes required]
@@ -144,7 +135,7 @@ The project's coding guidelines are supplied in the system prompt for this run, 
 - If scope is unclear, prefer fewer broad sub-issues over many speculative ones.
 - **Never name a file, directory, or module you have not read in this turn.** Right-sizing ("more than ~5 files") and technology choices are claims about this repository, so verify them before you assert them. If a sub-issue needs to reference code you have not opened, either open it first or state the reference as an assumption in that sub-issue's `## Context` section, prefixed `Assumption:`. The critique turn does not read the repository either, so an invented path published here sends the implementing run looking for something that was never there.
 
-Before finishing the draft, confirm every ask on your list is either covered by a proposed sub-issue or marked out of scope with a reason, that the draft names exactly one MVP slice (or carries the explicit `No independently valuable slice — <reason>` line), and that each proposed sub-issue has testable acceptance criteria, a non-empty `## Failure Detection` section (a concrete test/CI-gate/alert, or an explicit `N/A — <reason>`), no dependency cycle, no duplicate of an existing open issue, a `Part of #{{ISSUE_NUMBER}}` reference, a single-PR scope, and no file, directory, or module reference that you have neither read nor marked `Assumption:`.
+Before finishing the draft, confirm every ask on your list is either covered by a proposed sub-issue or marked out of scope with a reason, and that each proposed sub-issue has testable acceptance criteria, a non-empty `## Failure Detection` section (a concrete test/CI-gate/alert, or an explicit `N/A — <reason>`), no dependency cycle, no duplicate of an existing open issue, a `Part of #{{ISSUE_NUMBER}}` reference, a single-PR scope, and no file, directory, or module reference that you have neither read nor marked `Assumption:`.
 
 ### Output (draft only)
 
@@ -154,4 +145,4 @@ Produce your draft plan as text in this turn. **Do not run `gh issue create`, an
 - the full body using the structure above (including `Part of #{{ISSUE_NUMBER}}` and any `Depends on: <working title>` lines — symbolic, never an invented `#N`),
 - the descriptive labels you would apply.
 
-Then give the ask list — each ask with the proposed sub-issue covering it, or `Out of scope` and the reason — followed by the suggested implementation order (MVP-first inside the dependency edges, naming which sub-issue is the MVP slice and what value it delivers alone, or the `No independently valuable slice — <reason>` line), the dependency relationships, and any assumptions you made. This draft is internal working material — it is **not** posted to the issue. The next turn will adversarially critique and revise it before anything is published.
+Then give the ask list — each ask with the proposed sub-issue covering it, or `Out of scope` and the reason — followed by the suggested implementation order (dependencies first), the dependency relationships, and any assumptions you made. This draft is internal working material — it is **not** posted to the issue. The next turn will adversarially critique and revise it before anything is published.

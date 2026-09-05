@@ -18,7 +18,6 @@ Adversarially critique the draft plan shown above. Ask **"what's wrong with this
 - **Over-engineering** — speculative sub-issues, premature abstraction, or scope the issue never asked for (KISS).
 - **Duplication** — sub-issues that recreate an existing open issue. The draft turn listed open issues; you re-list them yourself in Step 3, so treat any duplicate the draft missed as a criticism to raise here.
 - **Weak acceptance criteria** — criteria that are not specific or testable.
-- **No named MVP slice** — the draft orders by dependency but never says which single sub-issue, landing alone, leaves the repo better off. Ask what a reader gets if the milestone stops after the first sub-issue: if the honest answer is "nothing usable", either re-order so the first slice does deliver something, or record that no slice is independently valuable and why.
 - **A simpler alternative** — a materially simpler plan that still satisfies the issue.
 </step>
 
@@ -54,7 +53,6 @@ Now, and only now, create the **final, revised** sub-issues as real GitHub issue
 ```
 ## Summary
 One-sentence description of the task.
-**MVP slice** — what value lands if nothing after this sub-issue is ever built. (This second line appears on the MVP slice only; omit it on every other sub-issue.)
 
 ## What Needs to Be Done
 Concrete list of the changes required.
@@ -129,7 +127,7 @@ If a sub-issue's `## Failure Detection` section is missing, empty, or still a br
 {{MILESTONE_INSTRUCTIONS}}
 </milestone_instructions>
 
-Publish the sub-issues MVP-first inside their dependency edges (see "Name the MVP slice in the summary" below) and do not stop early — your context is compacted, not exhausted, so keep going until every sub-issue in the revised plan exists. For example:
+Publish the sub-issues in dependency order and do not stop early — your context is compacted, not exhausted, so keep going until every sub-issue in the revised plan exists. For example:
 
 ```bash
 gh issue create --repo {{REPO}} --title "Sub-task title" --body "Description
@@ -140,18 +138,6 @@ Part of #{{ISSUE_NUMBER}}" --label "enhancement" --milestone "<milestone>"
 ```
 
 Omit `--milestone` only when no milestone instructions appear above.
-
-#### Name the MVP slice in the summary
-
-Dependency order says what can be built first; it never says whether building only that leaves the repo better off. A milestone can stop part-way — a run times out, a human pauses it, the backlog shifts — so the plan must say which single sub-issue, landing alone, still delivers value.
-
-Reuse the summary comment's numbered sub-issue list for it; do not add another comment or another section.
-
-- **Mark exactly one entry** with `**MVP slice**`, followed by one sentence saying what value lands if nothing after it is ever built. One marker, never two — naming two slices names none.
-- **Order the list MVP-first**, but never across a dependency: a sub-issue must not be listed before one it `Depends on #N`, so everything ahead of the slice is a genuine prerequisite of it. Value ordering does not override a real dependency edge.
-- **Where nothing is independently valuable** — a pure refactor, a mechanical migration that delivers only once every step lands — write the line `No independently valuable slice — <reason>` in the summary and mark nothing. Omitting the marker silently is not the same statement.
-
-A deterministic gate at the end of the run rejects a published plan that carries no marker and no such line, more than one marker, a marker with no value sentence, or a sub-issue listed before its prerequisite.
 
 #### Publish the coverage table
 
@@ -177,9 +163,9 @@ Then post **one** summary comment on issue #{{ISSUE_NUMBER}} in this shape:
 ````
 ## Plan published
 
-Sub-issues created, MVP slice first (dependencies still lead their dependants):
+Sub-issues created (dependencies lead their dependants):
 
-1. #101 — Add the query result cache (`enhancement`) — **MVP slice**: repeated dashboard queries are served from memory, even if nothing after this ever lands
+1. #101 — Add the query result cache (`enhancement`)
 2. #102 — Rewrite the query planner (`enhancement`, depends on #101)
 
 ## Plan Coverage
@@ -198,7 +184,7 @@ flowchart LR
 Assumptions: the cache API stays in-process; no migration is needed.
 ````
 
-Include the `## Plan Coverage` table in every summary comment, mark exactly one entry `**MVP slice**` (or carry the `No independently valuable slice — <reason>` line instead), include the Mermaid `flowchart` of the dependency graph whenever there are three or more sub-issues, and list every assumption you made — an unstated assumption is the one the implementing run gets wrong.
+Include the `## Plan Coverage` table in every summary comment, include the Mermaid `flowchart` of the dependency graph whenever there are three or more sub-issues, and list every assumption you made — an unstated assumption is the one the implementing run gets wrong.
 
 Your only artefacts are the GitHub issues you create and the summary comment. Create no files in the working tree; if you write a scratch file for your own working, delete it before the turn ends.
 </step>
@@ -214,7 +200,6 @@ If your revision concludes the issue is simple enough that it needs **zero** sub
 - **There is still real work to do** (the issue describes a genuine change, just small enough that breaking it into multiple sub-issues adds no value). This is the **default** for any zero-sub-issue outcome. You **must** create exactly **one** carrier sub-issue that captures the remaining work, before closing the parent:
   - Label it exactly the way you label sibling sub-issues in Step 3 (a descriptive `bug` or `enhancement`, never a reserved workflow label) so the worker's new-work scan claims and implements it — an unlabelled carrier would never be picked up and would reproduce the bug.
   - Its body must include `Part of #{{ISSUE_NUMBER}}` and testable acceptance criteria, exactly like any other sub-issue. Apply the same `## Failure Detection` verification from Step 3 to the carrier before you publish it.
-  - The carrier is the whole plan, so it is the MVP slice: mark it `**MVP slice**` in the summary comment with a sentence saying what value it delivers, or carry the `No independently valuable slice — <reason>` line instead. The gate checks a carrier plan exactly like any other.
   - Your summary comment still carries the `## Plan Coverage` table from Step 3, with every ask covered by the carrier (or an explained `Out of scope` row) — the gate checks a carrier plan exactly like any other.
 
   ```bash
