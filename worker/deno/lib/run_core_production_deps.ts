@@ -2240,6 +2240,15 @@ export async function createProductionRunCoreDeps(
         logger,
       });
       if (!sweep.ok) return { ok: false, error: sweep.error };
+      // Say what the sweep covered. A silent sweep is how a coverage gap
+      // hides: the single-login version attempted nothing in a repo whose
+      // PR belonged to a sibling account, and looked identical to a sweep
+      // with nothing to do (Issue #1082).
+      logger.info("Auto-merge sweep complete", {
+        repos: sweep.value.reposVisited.length,
+        prsAttempted: sweep.value.prsAttempted,
+        authors: maintenanceAuthors.join(", "),
+      });
       return { ok: true, value: undefined };
     },
 

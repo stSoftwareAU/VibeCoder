@@ -1,5 +1,6 @@
 /**
- * Tests for the approved-default-branch merge path (Issue #1082).
+ * Tests for `default_branch_approval.ts` and the merge path it unlocks in
+ * `direct_merge.ts` / `pr_auto_merge.ts` (Issue #1082).
  *
  * The live fixture is the pair the issue was filed from: `NEAT-AI-Ockham#116`
  * (green, approved by a human, unprotected default base) and `GRQ-GTC#305`
@@ -11,12 +12,11 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { directMergePr, type PreMergeGateFn } from "../lib/direct_merge.ts";
 import {
-  directMergePr,
   hasNonFleetApproval,
-  type PreMergeGateFn,
   type PrReview,
-} from "../lib/direct_merge.ts";
+} from "../lib/default_branch_approval.ts";
 import {
   _resetBaseProtectionMemo,
   AutoMergeResult,
@@ -80,6 +80,45 @@ Deno.test("a withdrawn approval no longer counts", () => {
   const reviews: PrReview[] = [
     { author: "nleck", state: "APPROVED" },
     { author: "nleck", state: "CHANGES_REQUESTED" },
+  ];
+  assertEquals(hasNonFleetApproval(reviews, FLEET), false);
+});
+
+Deno.test("the latest verdict is decided by timestamp, not array order", () => {
+  // GitHub documents no ordering for `reviews`. If the withdrawal arrives
+  // first in the array it must still win — reading the stale approval as
+  // current would merge work the reviewer had already blocked.
+  const reviews: PrReview[] = [
+    {
+      author: "nleck",
+      state: "CHANGES_REQUESTED",
+      submittedAt: "2026-09-05T02:00:00Z",
+    },
+    { author: "nleck", state: "APPROVED", submittedAt: "2026-09-05T00:37:00Z" },
+  ];
+  assertEquals(hasNonFleetApproval(reviews, FLEET), false);
+});
+
+Deno.test("an approval submitted after a withdrawal counts again", () => {
+  const reviews: PrReview[] = [
+    { author: "nleck", state: "APPROVED", submittedAt: "2026-09-05T02:00:00Z" },
+    {
+      author: "nleck",
+      state: "CHANGES_REQUESTED",
+      submittedAt: "2026-09-05T00:37:00Z",
+    },
+  ];
+  assertEquals(hasNonFleetApproval(reviews, FLEET), true);
+});
+
+Deno.test("an undated review never displaces a dated verdict", () => {
+  const reviews: PrReview[] = [
+    { author: "nleck", state: "APPROVED" },
+    {
+      author: "nleck",
+      state: "CHANGES_REQUESTED",
+      submittedAt: "2026-09-05T00:37:00Z",
+    },
   ];
   assertEquals(hasNonFleetApproval(reviews, FLEET), false);
 });

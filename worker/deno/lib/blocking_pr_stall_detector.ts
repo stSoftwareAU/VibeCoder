@@ -18,7 +18,8 @@
  * - **unanswered authorised comment** — the newest comment from an
  *   `authorized_commenters` login is newer than the newest fleet reply or
  *   push, by longer than the threshold; or
- * - **green but unmerged** (Issue #1082) — no failing check, no auto-merge
+ * - **green but unmerged** (Issue #1082) — genuinely green (at least one
+ *   check ran, none failing, none still running), not a draft, no auto-merge
  *   armed, and no movement for longer than the threshold. Nothing is wrong
  *   with the PR; it simply is not landing, and the repository's whole work
  *   stream is stopped behind it.
@@ -114,6 +115,15 @@ export interface BlockingPrObservation {
   createdAt?: string;
   /** True when GitHub's native auto-merge is armed on the PR (Issue #1082). */
   autoMergeEnabled?: boolean;
+  /** True when the PR is a draft (Issue #1082) — not waiting on anyone. */
+  isDraft?: boolean;
+  /**
+   * Checks on the head commit, by state (Issue #1082). "Green" means at
+   * least one check ran and none is failing or still running — "not red" is
+   * not green, and a head with no checks at all is unverified, which this
+   * repo refuses to call passed (`docs/MERGE.md`, Issue #3705).
+   */
+  checkCounts?: { total: number; pending: number };
 }
 
 /** One tripped staleness signal. */
@@ -252,8 +262,8 @@ export function detectBlockingPrStall(
   // Only when nothing else has tripped: a red or unanswered PR is already
   // being reported, and a second reason for the same PR would be noise.
   if (
-    signals.length === 0 && observation.failingChecks.length === 0 &&
-    observation.autoMergeEnabled !== true
+    signals.length === 0 && isGreen(observation) &&
+    observation.autoMergeEnabled !== true && observation.isDraft !== true
   ) {
     const since = maxDefined(pushAt, epochSeconds(observation.createdAt));
     const stalledSeconds = since === undefined ? undefined : nowSeconds - since;
@@ -275,6 +285,19 @@ export function detectBlockingPrStall(
     blockedIssues: [...observation.blockedIssues],
     signals,
   };
+}
+
+/**
+ * Whether the head is genuinely green: at least one check ran, none failed,
+ * and none is still running. Absent counts mean the checks were not read, so
+ * the answer is no — the watchdog says nothing rather than calling an
+ * unverified head green.
+ */
+function isGreen(observation: BlockingPrObservation): boolean {
+  if (observation.failingChecks.length > 0) return false;
+  const counts = observation.checkCounts;
+  if (!counts) return false;
+  return counts.total > 0 && counts.pending === 0;
 }
 
 /** Dedup key handed to `escalateToHuman` for one stall reason. */
@@ -669,7 +692,7 @@ async function observeBlockingPr(params: {
     "--repo",
     repo,
     "--json",
-    "comments,commits,statusCheckRollup,createdAt,autoMergeRequest",
+    "comments,commits,statusCheckRollup,createdAt,autoMergeRequest,isDraft",
   ]);
 
   const view = parseObject(raw);
@@ -678,9 +701,12 @@ async function observeBlockingPr(params: {
     prNumber,
     blockedIssues: [...blockedIssues],
     failingChecks: parseFailingChecks(view.statusCheckRollup),
-    // Issue #1082: an armed auto-merge means the PR is already on its way.
+    // Issue #1082: an armed auto-merge means the PR is already on its way,
+    // and a draft is not waiting on anyone.
     autoMergeEnabled: view.autoMergeRequest !== null &&
       typeof view.autoMergeRequest === "object",
+    isDraft: view.isDraft === true,
+    checkCounts: countChecks(view.statusCheckRollup),
   };
 
   if (typeof view.createdAt === "string" && view.createdAt) {
@@ -851,6 +877,30 @@ function parseFailingChecks(value: unknown): FailingCheck[] {
     out.push({ name, completedAt });
   }
   return out;
+}
+
+/**
+ * Count the head's checks and how many have not finished (Issue #1082).
+ * A check run is pending unless `status` is `COMPLETED`; a legacy commit
+ * status is pending while its `state` is `PENDING` or `EXPECTED`.
+ */
+function countChecks(value: unknown): { total: number; pending: number } {
+  let total = 0;
+  let pending = 0;
+  for (const entry of asArray(value)) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const obj = entry as Record<string, unknown>;
+    total++;
+    const status = typeof obj.status === "string"
+      ? obj.status.toUpperCase()
+      : "";
+    const state = typeof obj.state === "string" ? obj.state.toUpperCase() : "";
+    if (status && status !== "COMPLETED") pending++;
+    else if (!status && (state === "PENDING" || state === "EXPECTED")) {
+      pending++;
+    }
+  }
+  return { total, pending };
 }
 
 /** Newest `committedDate` across the PR's commits. */

@@ -611,6 +611,7 @@ Deno.test("a green blocking PR with no auto-merge trips past the threshold", () 
     observation({
       createdAt: "2026-08-06T05:46:00Z",
       autoMergeEnabled: false,
+      checkCounts: { total: 12, pending: 0 },
     }),
     { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
   );
@@ -626,6 +627,7 @@ Deno.test("a green blocking PR inside the threshold does not trip", () => {
     observation({
       createdAt: "2026-08-11T19:30:00Z",
       lastFleetPushAt: "2026-08-11T19:30:00Z",
+      checkCounts: { total: 12, pending: 0 },
     }),
     { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
   );
@@ -638,6 +640,7 @@ Deno.test("an armed auto-merge is not a stall — the PR is already on its way",
     observation({
       createdAt: "2026-08-06T05:46:00Z",
       autoMergeEnabled: true,
+      checkCounts: { total: 12, pending: 0 },
     }),
     { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
   );
@@ -674,7 +677,11 @@ Deno.test("a PR whose checks failed recently is not reported as green", () => {
 
 Deno.test("a green PR blocking nothing is out of scope", () => {
   const stall = detectBlockingPrStall(
-    observation({ blockedIssues: [], createdAt: "2026-08-06T05:46:00Z" }),
+    observation({
+      blockedIssues: [],
+      createdAt: "2026-08-06T05:46:00Z",
+      checkCounts: { total: 12, pending: 0 },
+    }),
     { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
   );
 
@@ -683,7 +690,10 @@ Deno.test("a green PR blocking nothing is out of scope", () => {
 
 Deno.test("the green-but-unmerged escalation names the PR and the blocked count", () => {
   const stall = detectBlockingPrStall(
-    observation({ createdAt: "2026-08-06T05:46:00Z" }),
+    observation({
+      createdAt: "2026-08-06T05:46:00Z",
+      checkCounts: { total: 12, pending: 0 },
+    }),
     { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
   );
 
@@ -767,4 +777,52 @@ Deno.test("a PR that merges inside the threshold is never escalated", async () =
 
   assert(result.ok);
   assertEquals(result.value, []);
+});
+
+Deno.test("a head with checks still running is not called green", () => {
+  const stall = detectBlockingPrStall(
+    observation({
+      createdAt: "2026-08-06T05:46:00Z",
+      checkCounts: { total: 12, pending: 1 },
+    }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assertEquals(stall, null);
+});
+
+Deno.test("a head with no checks at all is not called green", () => {
+  // "Zero checks is not passed" (docs/MERGE.md, Issue #3705) — the watchdog
+  // must not claim green for a head nothing verified.
+  const stall = detectBlockingPrStall(
+    observation({
+      createdAt: "2026-08-06T05:46:00Z",
+      checkCounts: { total: 0, pending: 0 },
+    }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assertEquals(stall, null);
+});
+
+Deno.test("checks that were never read are not called green", () => {
+  const stall = detectBlockingPrStall(
+    observation({ createdAt: "2026-08-06T05:46:00Z" }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assertEquals(stall, null);
+});
+
+Deno.test("a draft PR is not reported as a stalled repository", () => {
+  const stall = detectBlockingPrStall(
+    observation({
+      createdAt: "2026-08-06T05:46:00Z",
+      checkCounts: { total: 12, pending: 0 },
+      isDraft: true,
+    }),
+    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
+  );
+
+  assertEquals(stall, null);
 });

@@ -379,13 +379,16 @@ fix PR actually lands. Two things make that true.
 **Every repo and every fleet author is swept.** The main loop's priority 1.65
 sweep (`sweepAutoMerge` in
 [`worker/deno/lib/auto_merge_sweep.ts`](../worker/deno/lib/auto_merge_sweep.ts))
-walks the **monitored repo list**, not the repos with claimable work — a repo
-whose only PR blocks all of its own issues has no claimable work by
-construction, so a work-driven sweep would never revisit it. It lists PRs for
-**every push-capable fleet author**, the same set `getBlockingPRForIssue()`
-defers `work-on` issues to. A single-login sweep left `GRQ-GTC#305` — authored
-by a sibling fleet account — with no merge attempt logged against it for five
-days while its repository stayed frozen.
+lists PRs for **every push-capable fleet author**, the same set
+`getBlockingPRForIssue()` defers `work-on` issues to. A single-login sweep left
+`GRQ-GTC#305` — authored by a sibling fleet account — with no merge attempt
+logged against it for five days while its repository stayed frozen.
+
+It also walks the **monitored repo list**, not the repos with claimable work: a
+repo whose only PR blocks all of its own issues has no claimable work by
+construction, so a work-driven sweep would never revisit it. That was already
+true before the sweep was extracted; it is now asserted by a test rather than
+left to be re-broken.
 
 **Precedence is fixed, not a race.** The auto-merge scan
 (`ensureAutoMergeOnOpenPrs` in

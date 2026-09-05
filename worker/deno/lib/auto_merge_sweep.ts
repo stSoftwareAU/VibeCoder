@@ -4,18 +4,21 @@
  * Extracted from `run_core_production_deps.ts` so the two invariants the
  * fleet's throughput depends on are testable rather than asserted in prose:
  *
- * 1. **Every monitored repo is swept, every cycle** — the sweep is driven by
- *    the repo list, never by which repo has claimable work. A repo whose only
- *    PR blocks all of its own issues has no claimable work by construction,
- *    so a work-driven sweep would never revisit it and the block would be
- *    permanent.
- * 2. **Every fleet author's PRs are swept** — not just this host's own login.
+ * 1. **Every fleet author's PRs are swept** — not just this host's own login.
+ *    This is the defect the extraction was made for.
  *    `getBlockingPRForIssue()` defers a `work-on` issue to a PR from *any*
  *    push-capable fleet account, so a sweep that only listed
  *    `prs_${githubUser}` left a sibling account's PR unattended forever.
  *    `GRQ-GTC#305` sat open for five days with no auto-merge attempt logged
  *    against it at all: it was authored by `stservice` while the scanning
  *    host was `VibeCoderST`.
+ * 2. **Every monitored repo is swept, every cycle** — the sweep is driven by
+ *    the repo list, never by which repo has claimable work. A repo whose only
+ *    PR blocks all of its own issues has no claimable work by construction,
+ *    so a work-driven sweep would never revisit it and the block would be
+ *    permanent. This property was already true of the code this module
+ *    replaces; it is now covered by a test, so it cannot quietly stop being
+ *    true.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
