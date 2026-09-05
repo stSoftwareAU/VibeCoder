@@ -5,27 +5,22 @@
  * Issue #289 already settled the rule for every knob the worker has: **the
  * `.config.json` key wins over the environment variable, and the default
  * applies only when neither states a usable value.** What #289 did not settle
- * was where that rule lives, so each call site implemented it again — and by
- * the time #874 was filed the two sites that resolve both sources had come to
- * disagree:
+ * was where that rule lives, so each call site implemented it again, and by
+ * the time #874 was filed the three sites that resolve both sources disagreed:
+ * `host_disk.ts` followed the rule, while `optional_feature_env.ts` (the
+ * bash-era `${VAR:-config}` expansion) and `agent_provider.ts` resolved
+ * `env ?? config`.
  *
- *   - `resolveDiskFloors` (`host_disk.ts`) resolves `config ?? env ?? default`
- *     and cites #289 for it.
- *   - `resolveOptionalFeatureEnv` (`optional_feature_env.ts`) resolves
- *     `env ?? config`, deliberately reproducing the bash-era `load-config`
- *     script's `${VAR:-config}` expansion.
- *
- * So an operator who states `imgbb_api_key` in the file and exports
- * `VIBE_IMGBB_API_KEY` gets the environment; one who states
- * `host_disk_low_floor_gb` and exports `VIBE_HOST_DISK_LOW_FLOOR_GB` gets the
- * file. Neither is documented as an exception, because a rule applied per call
- * site cannot be documented without enumerating call sites — which is #874's
- * complaint, and this module is the answer to it.
+ * All three now resolve through {@link resolveSetting} (Issue #1032), so the
+ * rule is stated once and an operator who sets both sources gets the file
+ * whichever setting it is.
  *
  * Nothing here removes an environment fallback. Removing them is an
  * incompatible change and belongs in 2.0.0, as #874 says; until then the
  * variable still works and {@link resolveSetting} reports that it was used, so
- * a caller can warn once and name the key that replaces it.
+ * {@link warnDeprecatedEnvSetting} names the key that replaces it — once per
+ * setting per run, because a warning on every read is noise operators learn
+ * to filter.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -167,4 +162,48 @@ export function deprecationWarning<T>(
   return `${resolved.deprecatedEnvVar} is deprecated and will stop being ` +
     `read in 2.0.0 — state "${configKey}" in .config.json instead ` +
     "(Issue #874). The environment value is in force for this run.";
+}
+
+/**
+ * The settings already warned about, once per worker process.
+ *
+ * Keyed by `.config.json` key rather than by variable: the operator has one
+ * setting to move whichever name they wrote it under, and a resolver a run
+ * calls hundreds of times (the provider seam resolves per invocation) must
+ * still state it once.
+ */
+const _warnedSettings = new Set<string>();
+
+/**
+ * Clear the per-process deprecation-warning state (Issue #1032).
+ *
+ * Exposed so a test — or any caller deliberately re-running a resolution as a
+ * fresh scenario — can observe the first warning again.
+ */
+export function clearDeprecatedEnvWarnings(): void {
+  _warnedSettings.clear();
+}
+
+/**
+ * Warn once that a setting was taken from its deprecated environment variable.
+ *
+ * Says nothing at all when the file supplied the value or the default applied
+ * — there is no deprecation to report, and an operator who has already moved
+ * the setting must not be told to move it again.
+ *
+ * @param resolved - A setting {@link resolveSetting} returned
+ * @param configKey - The `.config.json` key that replaces the variable
+ * @returns The message emitted, or `null` when nothing was warned about
+ *   (either the value did not come from the environment, or this setting has
+ *   already been reported this run)
+ */
+export function warnDeprecatedEnvSetting<T>(
+  resolved: ResolvedSetting<T>,
+  configKey: string,
+): string | null {
+  const message = deprecationWarning(resolved, configKey);
+  if (message === null || _warnedSettings.has(configKey)) return null;
+  _warnedSettings.add(configKey);
+  console.warn(message);
+  return message;
 }

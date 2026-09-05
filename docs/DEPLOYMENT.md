@@ -940,7 +940,11 @@ navigate-and-screenshot smoke test with `--network none`.
 **Option 1: Automatic Upload via ImgBB (Recommended)**
 
 1. Get a free API key from https://api.imgbb.com/
-2. Set the environment variable: `export VIBE_IMGBB_API_KEY="your-api-key-here"`
+2. State it in `.config.json` as `"imgbb_api_key": "your-api-key-here"`. The
+   `VIBE_IMGBB_API_KEY` variable still works when the file states no key, but
+   since 2.0.0 the file wins when both are set (Issue #1032) and a run that
+   uses the variable says so once — see
+   [Release notes](RELEASE-NOTES.md#200--the-config-file-wins-over-the-environment).
 3. Screenshots will be automatically uploaded and URLs embedded in the PR
 
 **Option 2: Manual Upload**

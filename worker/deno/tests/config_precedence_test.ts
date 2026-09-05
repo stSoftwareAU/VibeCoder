@@ -1,23 +1,26 @@
 /**
- * The precedence rule holds, and only one module is allowed to disagree
- * (Issue #874).
+ * The precedence rule holds, and no module is allowed to disagree
+ * (Issues #874, #1032).
  *
  * Issue #289 settled the rule — the `.config.json` key wins over the
  * environment variable, the default applies when neither states a usable
  * value — but not where it lives, so each call site implemented it again and
- * the two that resolve both sources drifted apart. This suite pins the rule
- * and caps the drift: a third precedence order cannot appear without failing
- * here.
+ * the three that resolve both sources drifted apart. #1032 reordered the two
+ * that contradicted it, so the exception list below is empty and the
+ * conformance test is now absolute: any module resolving both sources without
+ * `resolveSetting` fails here.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  clearDeprecatedEnvWarnings,
   deprecationWarning,
   isNonNegative,
   parseNumber,
   resolveSetting,
+  warnDeprecatedEnvSetting,
 } from "../lib/config_precedence.ts";
 import { VIBE_ENV_REGISTRY } from "../lib/vibe_env_registry.ts";
 import { envFrom } from "./support/env_lookup.ts";
@@ -121,33 +124,89 @@ Deno.test("deprecationWarning - says nothing when the environment was not used",
   );
 });
 
+// --- The warning an operator gets before 2.0.0 flips nothing further ---
+
+/** Run `fn` with `console.warn` captured, and return the lines it emitted. */
+function capturingWarnings(fn: () => void): string[] {
+  const lines: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  };
+  try {
+    fn();
+  } finally {
+    console.warn = original;
+  }
+  return lines;
+}
+
+Deno.test("warnDeprecatedEnvSetting - one line per setting per run, however often it is resolved", () => {
+  clearDeprecatedEnvWarnings();
+  const lines = capturingWarnings(() => {
+    for (let i = 0; i < 5; i++) {
+      warnDeprecatedEnvSetting(
+        floor(undefined, { VIBE_HOST_DISK_LOW_FLOOR_GB: "99" }),
+        "host_disk_low_floor_gb",
+      );
+    }
+  });
+
+  assertEquals(lines.length, 1, "a warning on every read is noise");
+  assert(lines[0]!.includes("VIBE_HOST_DISK_LOW_FLOOR_GB"));
+  assert(lines[0]!.includes("host_disk_low_floor_gb"));
+});
+
+Deno.test("warnDeprecatedEnvSetting - says nothing when the file or the default supplied the value", () => {
+  clearDeprecatedEnvWarnings();
+  const lines = capturingWarnings(() => {
+    warnDeprecatedEnvSetting(
+      floor(50, { VIBE_HOST_DISK_LOW_FLOOR_GB: "99" }),
+      "host_disk_low_floor_gb",
+    );
+    warnDeprecatedEnvSetting(floor(undefined, {}), "host_disk_low_floor_gb");
+  });
+
+  assertEquals(lines, []);
+});
+
+Deno.test("warnDeprecatedEnvSetting - each setting is reported on its own", () => {
+  clearDeprecatedEnvWarnings();
+  const lines = capturingWarnings(() => {
+    warnDeprecatedEnvSetting(
+      floor(undefined, { VIBE_HOST_DISK_LOW_FLOOR_GB: "99" }),
+      "host_disk_low_floor_gb",
+    );
+    warnDeprecatedEnvSetting(
+      resolveSetting<string>({
+        configKey: "imgbb_api_key",
+        envVar: "VIBE_IMGBB_API_KEY",
+        env: envFrom({ VIBE_IMGBB_API_KEY: "from-env" }),
+        fallback: "",
+        parse: (raw) => raw,
+      }),
+      "imgbb_api_key",
+    );
+  });
+
+  assertEquals(lines.length, 2);
+  assert(lines[1]!.includes("imgbb_api_key"));
+});
+
 // --- The divergence is capped ---
 
 /**
  * The modules that resolve a config key against a `VIBE_*` variable **without**
- * {@link resolveSetting}, and why each is allowed to for now.
+ * {@link resolveSetting}, and why each is allowed to.
  *
- * Both resolve `env ?? config` — the reverse of the rule Issue #289 states and
- * `host_disk.ts` follows. That is the whole of #874's "precedence is decided
- * per call site": an operator who sets both gets the file for a disk floor and
- * the environment for a provider or an imgbb key, and no document can say
- * which without listing the call sites.
- *
- *   - `optional_feature_env.ts` deliberately reproduces the bash-era
- *     `load-config` script's `${VAR:-config}` expansion.
- *   - `agent_provider.ts` documents environment-then-config on
- *     `resolveSelectedProviderId` and mirrors it for the provider set.
- *
- * Neither is corrected here. Reordering precedence changes which value an
- * operator who set both already gets, so it is incompatible and belongs with
- * the 2.0.0 removal of the fallbacks that #874 specifies. Declaring them caps
- * the divergence at two and makes it visible, which is the difference between
- * a known exception and a surprise.
+ * **Empty, and meant to stay that way** (Issue #1032). It held
+ * `optional_feature_env.ts` and `agent_provider.ts`, the two that resolved
+ * `env ?? config` — the reverse of the rule Issue #289 states. Both were
+ * moved onto {@link resolveSetting} in the 2.0.0 flip, so every module that
+ * resolves both sources now obeys one order and any new divergence fails the
+ * conformance test below immediately, with nothing to hide behind.
  */
-const DECLARED_PRECEDENCE_EXCEPTIONS = [
-  "lib/optional_feature_env.ts",
-  "lib/agent_provider.ts",
-];
+const DECLARED_PRECEDENCE_EXCEPTIONS: string[] = [];
 
 Deno.test("config precedence - no undeclared module decides the rule for itself", async () => {
   // Driven by the registry rather than by a source pattern: a module resolves

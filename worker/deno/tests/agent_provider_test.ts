@@ -17,19 +17,24 @@
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
+  AGENT_PROVIDER_CONFIG_KEY,
   AGENT_PROVIDER_ENV,
   agentProviderIds,
   assertImageInstalledProvider,
   CLAUDE_PROVIDER_ID,
   CODEX_PROVIDER_ID,
   DEFAULT_AGENT_PROVIDER_ID,
+  ENABLED_AGENT_PROVIDERS_CONFIG_KEY,
+  ENABLED_AGENT_PROVIDERS_ENV,
   GEMINI_PROVIDER_ID,
   IMAGE_AGENT_PROVIDERS_ENV,
   imageAgentProviderIds,
   PROVIDER_FRAGMENT_DIR,
   resolveAgentProvider,
   resolveAgentProviderId,
+  resolveEnabledAgentProviderIds,
 } from "../lib/agent_provider.ts";
+import { clearDeprecatedEnvWarnings } from "../lib/config_precedence.ts";
 import { buildClaudeEffortArgs } from "../lib/claude_executor.ts";
 import { checkCredentialPreflight } from "../lib/credential_preflight.ts";
 import { loadConfig } from "../lib/config.ts";
@@ -40,6 +45,21 @@ const repoRoot = new URL("../../../", import.meta.url).pathname;
 /** Read a repository file as text. */
 async function readRepoFile(relative: string): Promise<string> {
   return await Deno.readTextFile(`${repoRoot}${relative}`);
+}
+
+/** Run `fn` with `console.warn` captured, and return the lines it emitted. */
+function capturingWarnings(fn: () => void): string[] {
+  const lines: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  };
+  try {
+    fn();
+  } finally {
+    console.warn = original;
+  }
+  return lines;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,18 +201,95 @@ Deno.test("agent provider - selection defaults to Claude", () => {
   assertEquals(DEFAULT_AGENT_PROVIDER_ID, CLAUDE_PROVIDER_ID);
 });
 
-Deno.test("agent provider - configuration selects the provider and the environment overrides it", () => {
+Deno.test("agent provider - configuration selects the provider and the environment applies when it states none", () => {
+  // Config alone.
   assertEquals(
-    resolveAgentProviderId({ configured: "claude", env: () => undefined }),
-    "claude",
+    resolveAgentProviderId({ configured: "codex", env: () => undefined }),
+    "codex",
   );
+  // Environment alone — still honoured, deprecated until 2.0.0 (Issue #874).
+  assertEquals(
+    resolveAgentProviderId({
+      env: (name) => name === AGENT_PROVIDER_ENV ? "codex" : undefined,
+    }),
+    "codex",
+  );
+});
+
+// The behaviour change Issue #1032 makes, asserted rather than assumed: this
+// resolver used to answer "codex" here, because the environment won. A
+// deployment overriding the file from the environment switches providers on
+// upgrade, which is why it ships in 2.0.0 with a migration note.
+Deno.test("agent provider - a host that sets both takes the config file (Issue #1032)", () => {
   assertEquals(
     resolveAgentProviderId({
       configured: "claude",
-      env: (name) => name === AGENT_PROVIDER_ENV ? "claude" : undefined,
+      env: (name) => name === AGENT_PROVIDER_ENV ? "codex" : undefined,
     }),
     "claude",
   );
+});
+
+Deno.test("agent provider - the enabled set follows the same order (Issue #1032)", () => {
+  const bothSet = {
+    configured: "claude",
+    configuredProviders: ["claude", "codex"],
+    env: (name: string) =>
+      name === ENABLED_AGENT_PROVIDERS_ENV ? "claude,gemini" : undefined,
+  };
+  assertEquals(resolveEnabledAgentProviderIds(bothSet), ["claude", "codex"]);
+
+  // Config alone, and environment alone.
+  assertEquals(
+    resolveEnabledAgentProviderIds({
+      configured: "claude",
+      configuredProviders: ["claude", "codex"],
+      env: () => undefined,
+    }),
+    ["claude", "codex"],
+  );
+  assertEquals(
+    resolveEnabledAgentProviderIds({
+      configured: "claude",
+      env: (name) =>
+        name === ENABLED_AGENT_PROVIDERS_ENV ? "claude,gemini" : undefined,
+    }),
+    ["claude", "gemini"],
+  );
+});
+
+Deno.test("agent provider - a provider taken from the environment is deprecated once, naming the config key", () => {
+  clearDeprecatedEnvWarnings();
+  const lines = capturingWarnings(() => {
+    for (let i = 0; i < 3; i++) {
+      resolveAgentProviderId({
+        env: (name) => name === AGENT_PROVIDER_ENV ? "codex" : undefined,
+      });
+    }
+    // The file supplied this one, so it adds nothing.
+    resolveAgentProviderId({ configured: "codex", env: () => undefined });
+  });
+
+  assertEquals(lines.length, 1, "a warning on every read is noise");
+  assert(lines[0]!.includes(AGENT_PROVIDER_ENV));
+  assert(lines[0]!.includes(AGENT_PROVIDER_CONFIG_KEY));
+});
+
+Deno.test("agent provider - an enabled set taken from the environment is deprecated once", () => {
+  clearDeprecatedEnvWarnings();
+  const lines = capturingWarnings(() => {
+    for (let i = 0; i < 3; i++) {
+      resolveEnabledAgentProviderIds({
+        configured: "claude",
+        env: (name) =>
+          name === ENABLED_AGENT_PROVIDERS_ENV ? "claude,codex" : undefined,
+      });
+    }
+  });
+
+  assertEquals(lines.length, 1);
+  assert(lines[0]!.includes(ENABLED_AGENT_PROVIDERS_ENV));
+  assert(lines[0]!.includes(ENABLED_AGENT_PROVIDERS_CONFIG_KEY));
 });
 
 Deno.test("agent provider - an unsupported configured or environment id fails loudly", () => {

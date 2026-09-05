@@ -1089,7 +1089,10 @@ vendor whose credentials are provisioned, preflighted and mounted:
 
 Omit both and the worker uses Claude Code alone, exactly as a deployment that
 predates the choice. `VIBE_AGENT_PROVIDER` and `VIBE_AGENT_PROVIDERS`
-(comma-separated) override them for a single run. The enabled set must include
+(comma-separated) select the provider on a host whose file names none — since
+2.0.0 they no longer override the file, because the file wins
+([Issue #1032](RELEASE-NOTES.md#200--the-config-file-wins-over-the-environment)).
+The enabled set must include
 the active provider — a set that excludes it fails loudly at startup, because
 its agent would have no credential mounted, as does an id that is not
 registered.

@@ -82,8 +82,11 @@ Select one with the `agent_provider` key in `.config.json`:
 `agent_providers` lists every provider enabled for a run: each gets its own
 credential file, its own startup preflight and its own read-only container
 mount, so no vendor's secret reaches another vendor's agent. It must include
-the active provider. For a single run, `VIBE_AGENT_PROVIDER` and
-`VIBE_AGENT_PROVIDERS` (comma-separated) override both keys.
+the active provider. `VIBE_AGENT_PROVIDER` and `VIBE_AGENT_PROVIDERS`
+(comma-separated) still select a provider on a host whose configuration file
+names none, but they no longer override the file — the file wins, as it does
+for every other setting
+([2.0.0](docs/RELEASE-NOTES.md#200--the-config-file-wins-over-the-environment)).
 
 An id that is set but not registered fails loudly at startup with the supported
 ids named — the worker never silently falls back to the default and runs an
