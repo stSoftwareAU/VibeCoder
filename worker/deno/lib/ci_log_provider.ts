@@ -34,7 +34,6 @@ import type {
   GhCommandFn,
 } from "./github_actions_log_fetcher.ts";
 import { githubActionsCiLogProvider } from "./ci_provider_github_actions.ts";
-import { jenkinsCiLogProvider } from "./ci_provider_jenkins.ts";
 
 /** The failing check a provider is asked to resolve a log for. */
 export interface CiFailureContext {
@@ -200,8 +199,8 @@ export function resolveCiLogProvider(ctx: CiFailureContext): CiLogProvider {
   return githubActionsCiLogProvider;
 }
 
-// Built-in providers. Jenkins is registered ahead of GitHub Actions so a
-// repo that configures Jenkins wins over the default; GitHub Actions is
-// also the fall-back returned when nothing matches.
-registerCiLogProvider(jenkinsCiLogProvider);
+// The one built-in provider. It is here because it is the CI this project
+// itself runs on, and it is also the fall-back `resolveCiLogProvider`
+// returns when nothing matches. Nothing vendor-specific joins it — see
+// `tests/ci_log_provider_core_only_test.ts`, which fails if anything does.
 registerCiLogProvider(githubActionsCiLogProvider);

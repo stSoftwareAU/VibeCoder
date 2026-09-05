@@ -14,14 +14,11 @@ import {
   buildQualityInstructions,
   buildReviewerFlags,
   buildReviewerFlagsForRepo,
-  ciProviderFromPrFailureAction,
   getCiProviders,
   getCustomInstructions,
-  getPrFailureActions,
   getRepoConfig,
   getRepoNice,
   parseCiProviders,
-  parsePrFailureActions,
   runPreSetupCommand,
 } from "../lib/repo_config.ts";
 import { DEFAULT_REPO_NICE } from "../lib/config_defaults.ts";
@@ -433,224 +430,16 @@ Deno.test("repo_config - runPreSetupCommand returns error for invalid repo path"
   }
 });
 
-Deno.test("repo_config - runPreSetupCommand passes REPO_PATH and REPO_NAME env vars", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  const markerFile = `${tmpDir}/env_check.txt`;
-  try {
-    const repoConfigs: Record<string, RepoConfig> = {
-      "org/test-repo": {
-        preSetupCommand: `echo "$REPO_NAME|$REPO_PATH" > env_check.txt`,
-      },
-    };
-    const result = await runPreSetupCommand(
-      "org/test-repo",
-      tmpDir,
-      repoConfigs,
-    );
-    assertEquals(result.ok, true);
-    const content = await Deno.readTextFile(markerFile);
-    assertEquals(content.trim(), `org/test-repo|${tmpDir}`);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-// =============================================================================
-// parsePrFailureActions / getPrFailureActions tests (Issue #1890)
-// =============================================================================
-
-Deno.test("repo_config - parsePrFailureActions returns empty array for undefined", () => {
-  const result = parsePrFailureActions(undefined);
-  assertEquals(result.ok, true);
-  if (result.ok) assertEquals(result.value, []);
-});
-
-Deno.test("repo_config - parsePrFailureActions returns empty array for null", () => {
-  const result = parsePrFailureActions(null);
-  assertEquals(result.ok, true);
-  if (result.ok) assertEquals(result.value, []);
-});
-
-Deno.test("repo_config - parsePrFailureActions returns empty array for []", () => {
-  const result = parsePrFailureActions([]);
-  assertEquals(result.ok, true);
-  if (result.ok) assertEquals(result.value, []);
-});
-
-Deno.test("repo_config - parsePrFailureActions parses a valid fetch-jenkins-log action", () => {
-  const result = parsePrFailureActions([
-    {
-      type: "fetch-jenkins-log",
-      jobPath: "stSoftwareAU/private-repo-25/Develop",
-    },
-  ]);
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    assertEquals(result.value.length, 1);
-    const action = result.value[0];
-    if (!action) throw new Error("expected one action");
-    assertEquals(action.type, "fetch-jenkins-log");
-    assertEquals(action.jobPath, "stSoftwareAU/private-repo-25/Develop");
-    assertEquals(action.checkNamePattern, undefined);
-  }
-});
-
-Deno.test("repo_config - parsePrFailureActions preserves optional checkNamePattern", () => {
-  const result = parsePrFailureActions([
-    {
-      type: "fetch-jenkins-log",
-      jobPath: "org/job",
-      checkNamePattern: "^Jenkins/.*",
-    },
-  ]);
-  assertEquals(result.ok, true);
-  if (result.ok) {
-    const action = result.value[0];
-    if (!action) throw new Error("expected one action");
-    assertEquals(action.checkNamePattern, "^Jenkins/.*");
-  }
-});
-
-Deno.test("repo_config - parsePrFailureActions rejects non-array input", () => {
-  const result = parsePrFailureActions({ type: "fetch-jenkins-log" });
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertEquals(result.error.includes("must be an array"), true);
-  }
-});
-
-Deno.test("repo_config - parsePrFailureActions rejects unknown action type", () => {
-  const result = parsePrFailureActions([
-    { type: "fetch-circleci-log", jobPath: "x" },
-  ]);
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertEquals(result.error.includes("fetch-circleci-log"), true);
-    assertEquals(result.error.includes("not a known action"), true);
-  }
-});
-
-Deno.test("repo_config - parsePrFailureActions rejects missing jobPath", () => {
-  const result = parsePrFailureActions([{ type: "fetch-jenkins-log" }]);
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertEquals(result.error.includes("jobPath is required"), true);
-  }
-});
-
-Deno.test("repo_config - parsePrFailureActions rejects empty jobPath", () => {
-  const result = parsePrFailureActions([
-    { type: "fetch-jenkins-log", jobPath: "" },
-  ]);
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertEquals(result.error.includes("jobPath is required"), true);
-  }
-});
-
-Deno.test("repo_config - parsePrFailureActions rejects malformed regex in checkNamePattern", () => {
-  const result = parsePrFailureActions([
-    {
-      type: "fetch-jenkins-log",
-      jobPath: "org/job",
-      checkNamePattern: "[unterminated",
-    },
-  ]);
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertEquals(result.error.includes("not a valid regex"), true);
-  }
-});
-
-Deno.test("repo_config - parsePrFailureActions rejects non-object entry", () => {
-  const result = parsePrFailureActions(["not-an-object"]);
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertEquals(result.error.includes("must be an object"), true);
-  }
-});
-
-Deno.test("repo_config - parsePrFailureActions rejects non-string type", () => {
-  const result = parsePrFailureActions([{ type: 42, jobPath: "x" }]);
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertEquals(result.error.includes("type must be a string"), true);
-  }
-});
-
-Deno.test("repo_config - parsePrFailureActions rejects non-string checkNamePattern", () => {
-  const result = parsePrFailureActions([
-    { type: "fetch-jenkins-log", jobPath: "x", checkNamePattern: 7 },
-  ]);
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertEquals(
-      result.error.includes("checkNamePattern must be a string"),
-      true,
-    );
-  }
-});
-
-Deno.test("repo_config - getPrFailureActions returns [] when repoConfigs is undefined", () => {
-  assertEquals(getPrFailureActions(undefined, "org/any"), []);
-});
-
-Deno.test("repo_config - getPrFailureActions returns [] when repo not configured", () => {
-  assertEquals(getPrFailureActions({}, "org/missing"), []);
-});
-
-Deno.test("repo_config - getPrFailureActions returns [] when field absent", () => {
-  const repoConfigs: Record<string, RepoConfig> = {
-    "org/r": { customInstructions: "x" },
-  };
-  assertEquals(getPrFailureActions(repoConfigs, "org/r"), []);
-});
-
-Deno.test("repo_config - getPrFailureActions returns parsed list", () => {
-  const repoConfigs: Record<string, RepoConfig> = {
-    "org/r": {
-      prFailureActions: [
-        { type: "fetch-jenkins-log", jobPath: "org/job/Develop" },
-      ],
-    },
-  };
-  const actions = getPrFailureActions(repoConfigs, "org/r");
-  assertEquals(actions.length, 1);
-  const action = actions[0];
-  if (!action) throw new Error("expected one action");
-  assertEquals(action.type, "fetch-jenkins-log");
-  assertEquals(action.jobPath, "org/job/Develop");
-});
-
-Deno.test("repo_config - getPrFailureActions throws on malformed config", () => {
-  // Bypass the typed interface to inject a malformed value (as would
-  // arrive from .config.json before validation).
-  const repoConfigs = {
-    "org/r": {
-      prFailureActions: [{ type: "fetch-unknown" }],
-    },
-  } as unknown as Record<string, RepoConfig>;
-  assertThrows(
-    () => getPrFailureActions(repoConfigs, "org/r"),
-    Error,
-    "Invalid prFailureActions",
-  );
-});
-
-// =============================================================================
-// parseCiProviders / getCiProviders tests (Issue #3579)
-// =============================================================================
-
 Deno.test("repo_config - parseCiProviders returns empty array for undefined", () => {
   const result = parseCiProviders(undefined);
   assertEquals(result.ok, true);
   if (result.ok) assertEquals(result.value, []);
 });
 
-Deno.test("repo_config - parseCiProviders parses a jenkins entry", () => {
+Deno.test("repo_config - parseCiProviders parses an extension-supplied entry", () => {
   const result = parseCiProviders([
     {
-      provider: "jenkins",
+      provider: "example-ci",
       jobPath: "org/job/Develop",
       checkNamePattern: "private-repo-25",
     },
@@ -659,7 +448,7 @@ Deno.test("repo_config - parseCiProviders parses a jenkins entry", () => {
   if (result.ok) {
     assertEquals(result.value, [
       {
-        provider: "jenkins",
+        provider: "example-ci",
         checkNamePattern: "private-repo-25",
         jobPath: "org/job/Develop",
       },
@@ -674,13 +463,13 @@ Deno.test("repo_config - parseCiProviders accepts a provider with no options", (
 });
 
 Deno.test("repo_config - parseCiProviders rejects non-array input", () => {
-  const result = parseCiProviders({ provider: "jenkins" });
+  const result = parseCiProviders({ provider: "example-ci" });
   assertEquals(result.ok, false);
   if (!result.ok) assertEquals(result.error, "ciProviders must be an array");
 });
 
 Deno.test("repo_config - parseCiProviders rejects a non-object entry", () => {
-  const result = parseCiProviders(["jenkins"]);
+  const result = parseCiProviders(["example-ci"]);
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
@@ -704,22 +493,11 @@ Deno.test("repo_config - parseCiProviders rejects a missing provider field", () 
 });
 
 Deno.test("repo_config - parseCiProviders rejects a non-string jobPath", () => {
-  const result = parseCiProviders([{ provider: "jenkins", jobPath: 7 }]);
+  const result = parseCiProviders([{ provider: "example-ci", jobPath: 7 }]);
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertEquals(
       result.error.includes("ciProviders[0].jobPath must be a string"),
-      true,
-    );
-  }
-});
-
-Deno.test("repo_config - parseCiProviders requires jobPath for jenkins", () => {
-  const result = parseCiProviders([{ provider: "jenkins" }]);
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertEquals(
-      result.error.includes("ciProviders[0].jobPath is required"),
       true,
     );
   }
@@ -748,49 +526,6 @@ Deno.test("repo_config - parseCiProviders rejects an unsafe checkNamePattern", (
   }
 });
 
-Deno.test("repo_config - ciProviderFromPrFailureAction converts a legacy action", () => {
-  assertEquals(
-    ciProviderFromPrFailureAction({
-      type: "fetch-jenkins-log",
-      jobPath: "org/job/Develop",
-      checkNamePattern: "Jenkins",
-    }),
-    {
-      provider: "jenkins",
-      jobPath: "org/job/Develop",
-      checkNamePattern: "Jenkins",
-    },
-  );
-});
-
-Deno.test("repo_config - getCiProviders includes converted legacy prFailureActions", () => {
-  const repoConfigs: Record<string, RepoConfig> = {
-    "org/r": {
-      prFailureActions: [
-        { type: "fetch-jenkins-log", jobPath: "org/job/Develop" },
-      ],
-    },
-  };
-  assertEquals(getCiProviders(repoConfigs, "org/r"), [
-    { provider: "jenkins", jobPath: "org/job/Develop" },
-  ]);
-});
-
-Deno.test("repo_config - getCiProviders lists ciProviders ahead of legacy entries", () => {
-  const repoConfigs: Record<string, RepoConfig> = {
-    "org/r": {
-      ciProviders: [{ provider: "github-actions" }],
-      prFailureActions: [
-        { type: "fetch-jenkins-log", jobPath: "org/job/Develop" },
-      ],
-    },
-  };
-  assertEquals(getCiProviders(repoConfigs, "org/r"), [
-    { provider: "github-actions" },
-    { provider: "jenkins", jobPath: "org/job/Develop" },
-  ]);
-});
-
 Deno.test("repo_config - getCiProviders returns [] when nothing is configured", () => {
   assertEquals(getCiProviders(undefined, "org/any"), []);
   assertEquals(getCiProviders({}, "org/missing"), []);
@@ -802,7 +537,7 @@ Deno.test("repo_config - getCiProviders returns [] when nothing is configured", 
 
 Deno.test("repo_config - getCiProviders throws on malformed config", () => {
   const repoConfigs = {
-    "org/r": { ciProviders: [{ provider: "jenkins" }] },
+    "org/r": { ciProviders: [{ provider: "" }] },
   } as unknown as Record<string, RepoConfig>;
   assertThrows(
     () => getCiProviders(repoConfigs, "org/r"),

@@ -1,14 +1,14 @@
 /**
  * CI log provider dispatcher (Issues #1892, #3579).
  *
- * Given a failing PR and the repo's configured `ciProviders` (legacy
- * `prFailureActions` entries are converted upstream by `repo_config.ts`),
- * runs each configured provider and returns a structured result the CI
- * fix flow can consume.
+ * Given a failing PR and the repo's configured `ciProviders`, runs each
+ * configured provider and returns a structured result the CI fix flow can
+ * consume.
  *
  * The dispatcher is generic: it resolves each config entry against the
- * provider registry in `ci_log_provider.ts`, so adding a third CI system
- * needs no edit to this file.
+ * provider registry in `ci_log_provider.ts`, so a CI system core has never
+ * heard of needs no edit to this file — which is the whole point, and is
+ * what `docs/PRIVATE-EXTENSIONS.md` relies on.
  *
  * The dispatcher never throws on provider-level failures — every failure
  * is captured in the returned `PrFailureActionResult` so the caller can

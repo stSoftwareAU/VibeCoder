@@ -250,7 +250,7 @@ Deno.test("SEC-4024fa7fea0a - formatCiAnnotations keeps the empty-list message",
 });
 
 // ---------------------------------------------------------------------------
-// SEC-3c3c066cff69 — Jenkins console log rendered into the prompt unredacted
+// SEC-3c3c066cff69 — CI console log rendered into the prompt unredacted
 // ---------------------------------------------------------------------------
 
 Deno.test("SEC-3c3c066cff69 - formatCiFailureContext redacts secrets in the log tail", () => {

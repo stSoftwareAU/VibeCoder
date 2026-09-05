@@ -7,12 +7,11 @@
  * endless response body, and assert the client aborts rather than waits and
  * cancels the stream rather than buffering it.
  *
- * The Jenkins credentials the clients need used to be installed in the process
- * for the duration of each case, which races every other worker under
- * `deno test --parallel` and kept this suite in the gate's slow serial pass
- * (Issues #880, #944, #969). They are now handed to each client through the
- * `readEnv` seam `checkJenkinsAccess` already carried, so the suite states the
- * credentials and mutates nothing.
+ * Issue #986 removed the CI-server clients this suite also covered, along
+ * with the vendor they belonged to. What remains are the clients core owns
+ * outright. A private extension's own client is bounded by the extension —
+ * `bounded_fetch.ts` is exported for exactly that, and the provider contract
+ * in `ci_log_provider.ts` says a provider never throws.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
@@ -23,23 +22,8 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import {
-  fetchJenkinsBuildLog,
-  fetchJenkinsBuildStatus,
-} from "../lib/jenkins_log_fetcher.ts";
-import { checkJenkinsAccess } from "../lib/jenkins_access_check.ts";
 import { uploadToImgbb } from "../lib/imgbb_upload.ts";
 import { fetchNpmTimeData } from "../lib/npm_package_age.ts";
-import { envFrom } from "./support/env_lookup.ts";
-
-const jenkinsEnv = {
-  JENKINS_URL: "https://jenkins.example.com",
-  JENKINS_USER: "ci-bot",
-  JENKINS_TOKEN: "secret-token",
-};
-
-/** The three Jenkins credentials as a lookup — nothing ambient is visible. */
-const readJenkinsEnv = envFrom(jenkinsEnv);
 
 /** A response body that never ends, reporting cancellation. */
 function endlessResponse(chunkBytes = 64 * 1024): {
@@ -100,164 +84,6 @@ function capturingFetch(response: () => Response): {
     init: () => seen,
   };
 }
-
-// ── Jenkins status ──────────────────────────────────────────────────────
-
-Deno.test("fetchJenkinsBuildStatus - request carries an abort signal", async () => {
-  const cap = capturingFetch(() =>
-    new Response(JSON.stringify({ number: 1, result: "SUCCESS" }))
-  );
-  const result = await fetchJenkinsBuildStatus({
-    jobPath: "MyJob",
-    build: 1,
-    readEnv: readJenkinsEnv,
-    fetchFn: cap.fetchFn,
-  });
-  assert(result.ok);
-  assert(
-    cap.init()?.signal instanceof AbortSignal,
-    "status request must be bounded by a signal",
-  );
-});
-
-Deno.test("fetchJenkinsBuildStatus - a timed-out request fails loud", async () => {
-  const result = await fetchJenkinsBuildStatus({
-    jobPath: "MyJob",
-    build: 1,
-    readEnv: readJenkinsEnv,
-    fetchFn: timingOutFetch(),
-    timeoutMs: 25,
-  });
-  assert(!result.ok);
-  assertStringIncludes(result.error, "timed out after 25ms");
-});
-
-Deno.test("fetchJenkinsBuildStatus - an endless body is cancelled, not parsed", async () => {
-  const endless = endlessResponse();
-  const result = await fetchJenkinsBuildStatus({
-    jobPath: "MyJob",
-    build: 1,
-    readEnv: readJenkinsEnv,
-    fetchFn: () => Promise.resolve(endless.response),
-  });
-  assert(!result.ok);
-  assertStringIncludes(result.error, "exceeded");
-  assert(endless.cancelled(), "the status body stream must be cancelled");
-});
-
-Deno.test("fetchJenkinsBuildStatus - an error body is discarded unread", async () => {
-  const endless = endlessResponse();
-  const errorResponse = new Response(endless.response.body, { status: 500 });
-  const result = await fetchJenkinsBuildStatus({
-    jobPath: "MyJob",
-    build: 1,
-    readEnv: readJenkinsEnv,
-    fetchFn: () => Promise.resolve(errorResponse),
-  });
-  assert(!result.ok);
-  assert(endless.cancelled(), "a 5xx body must be cancelled, not buffered");
-  // At most the stream's own initial pull; the client never reads a chunk.
-  assert(
-    endless.bytesEmitted() <= 64 * 1024,
-    `buffered ${endless.bytesEmitted()} bytes of a 5xx body`,
-  );
-});
-
-// ── Jenkins console log ─────────────────────────────────────────────────
-
-Deno.test("fetchJenkinsBuildLog - request carries an abort signal", async () => {
-  const cap = capturingFetch(() => new Response("log body"));
-  const result = await fetchJenkinsBuildLog({
-    jobPath: "MyJob",
-    build: 1,
-    readEnv: readJenkinsEnv,
-    fetchFn: cap.fetchFn,
-  });
-  assert(result.ok);
-  assert(
-    cap.init()?.signal instanceof AbortSignal,
-    "log request must be bounded by a signal",
-  );
-});
-
-Deno.test("fetchJenkinsBuildLog - a timed-out request fails loud", async () => {
-  const result = await fetchJenkinsBuildLog({
-    jobPath: "MyJob",
-    build: 1,
-    readEnv: readJenkinsEnv,
-    fetchFn: timingOutFetch(),
-    timeoutMs: 40,
-  });
-  assert(!result.ok);
-  assertStringIncludes(result.error, "timed out after 40ms");
-});
-
-Deno.test("fetchJenkinsBuildLog - an endless log stream is cancelled at the hard limit", async () => {
-  const endless = endlessResponse(4096);
-  const maxStreamBytes = 128 * 1024;
-  const result = await fetchJenkinsBuildLog({
-    jobPath: "MyJob",
-    build: 1,
-    readEnv: readJenkinsEnv,
-    maxBytes: 8 * 1024,
-    maxStreamBytes,
-    fetchFn: () => Promise.resolve(endless.response),
-  });
-  assert(result.ok);
-  assertStringIncludes(result.value, "truncated");
-  const size = new TextEncoder().encode(result.value).byteLength;
-  assert(size <= 8 * 1024, `returned ${size} bytes, expected <= 8192`);
-  assert(endless.cancelled(), "the log stream must be cancelled");
-  assert(
-    endless.bytesEmitted() <= maxStreamBytes + 4096,
-    `read ${endless.bytesEmitted()} bytes past the ${maxStreamBytes} ceiling`,
-  );
-});
-
-// ── Jenkins preflight ───────────────────────────────────────────────────
-
-Deno.test("checkJenkinsAccess - probe carries an abort signal", async () => {
-  const cap = capturingFetch(() => new Response("{}", { status: 200 }));
-  const diagnosis = await checkJenkinsAccess({
-    jobPath: "MyJob",
-    fetchFn: cap.fetchFn,
-    readEnv: readJenkinsEnv,
-  });
-  assertEquals(diagnosis.ok, true);
-  assert(
-    cap.init()?.signal instanceof AbortSignal,
-    "preflight probe must be bounded by a signal",
-  );
-});
-
-Deno.test("checkJenkinsAccess - a timed-out probe is a network diagnosis", async () => {
-  const diagnosis = await checkJenkinsAccess({
-    jobPath: "MyJob",
-    fetchFn: timingOutFetch(),
-    timeoutMs: 15,
-    readEnv: readJenkinsEnv,
-  });
-  assertEquals(diagnosis.ok, false);
-  assertEquals(diagnosis.status, "network-error");
-  assertStringIncludes(diagnosis.summary, "timed out after 15ms");
-});
-
-Deno.test("checkJenkinsAccess - the probe body is discarded unread", async () => {
-  const endless = endlessResponse();
-  const diagnosis = await checkJenkinsAccess({
-    jobPath: "MyJob",
-    fetchFn: () =>
-      Promise.resolve(new Response(endless.response.body, { status: 403 })),
-    readEnv: readJenkinsEnv,
-  });
-  assertEquals(diagnosis.ok, false);
-  assert(endless.cancelled(), "the probe body must be cancelled, not buffered");
-  // At most the stream's own initial pull; the client never reads a chunk.
-  assert(
-    endless.bytesEmitted() <= 64 * 1024,
-    `buffered ${endless.bytesEmitted()} bytes of a probe body`,
-  );
-});
 
 // ── ImgBB ───────────────────────────────────────────────────────────────
 

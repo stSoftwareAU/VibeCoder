@@ -38,7 +38,7 @@ function everyVendorParent(): Record<string, string> {
     GEMINI_API_KEY: "sk-gemini",
     GOOGLE_API_KEY: "sk-google",
     GITHUB_APP_PRIVATE_KEY_PATH: "/keys/app.pem",
-    JENKINS_TOKEN: "jenkins",
+    EXTENSION_CI_TOKEN: "extension-ci",
     SOME_SECRET: "nope",
   };
 }
@@ -67,7 +67,7 @@ Deno.test("buildDeepSeekChildEnv - the worker-only secrets are absent", () => {
   const env = buildDeepSeekChildEnv(everyVendorParent());
 
   assertEquals(env.GITHUB_APP_PRIVATE_KEY_PATH, undefined);
-  assertEquals(env.JENKINS_TOKEN, undefined);
+  assertEquals(env.EXTENSION_CI_TOKEN, undefined);
   assertEquals(env.SOME_SECRET, undefined);
 });
 
