@@ -174,6 +174,11 @@ import { processGrillMe } from "./grill_me_processor.ts";
 import { processQuorum } from "./quorum_processor.ts";
 import { dispatchCustomLabelPrompts } from "./custom_label_dispatch.ts";
 import { customDispatchMappings } from "./custom_label_prompts_config.ts";
+import { findCustomLabelPrCandidates } from "./custom_label_pr_finder.ts";
+import { dispatchCustomLabelPrPrompts } from "./custom_label_pr_dispatch.ts";
+import { buildCustomPrPrompt } from "./prompt_builder.ts";
+import { preparePrBranch } from "./pr_branch_preparation.ts";
+import { verifyPushLanded } from "./push_claim_verification.ts";
 
 // Failure & circuit breaker
 import {
@@ -254,6 +259,7 @@ import { buildIssueRunCallbackContext } from "./run_callback_context.ts";
 import { getRunId } from "./run_id.ts";
 import {
   type FleetAuthorSetInput,
+  resolveFleetMaintenanceAuthorSet,
   resolveFleetPrAuthorSet,
   resolveSuppressionExcludedLogins,
 } from "./fleet_authors.ts";
@@ -2476,13 +2482,16 @@ export async function createProductionRunCoreDeps(
     // that phase's template and is worked by that phase's own handler —
     // scanning for it here would run a planning issue through the
     // implementation phase.
-    ...(customDispatchMappings(config).length > 0
+    // Issue #1008: only `issue`-phase mappings belong here. A config carrying
+    // only `pr` mappings must not add an issue-scanning row that can never
+    // match.
+    ...(customDispatchMappings(config, "issue").length > 0
       ? {
         async findAndProcessCustomLabelPrompts(
           opts?: { deadlineEpochMs: number },
         ) {
           const value = await dispatchCustomLabelPrompts(
-            customDispatchMappings(config),
+            customDispatchMappings(config, "issue"),
             // Issue #937: the only PR-producing label route, so the only one
             // that opts into the `work-on` eligibility gates.
             (scanLabel, scanProcessFn, scanDeadlineEpochMs) =>
@@ -2499,6 +2508,128 @@ export async function createProductionRunCoreDeps(
               onFault: (fault) => logger.error(fault.message),
             },
           );
+          return { ok: true as const, value };
+        },
+      }
+      : {}),
+
+    // -- Priority 1.87: PR-phase custom label prompts (Issue #1011, #938) --
+    // The PR half of the same family: an open PR carrying a configured `pr`
+    // mapping's label gets a full checkout plus `gh`, and the operator's
+    // private prompt decides what happens next. The run consumes the label,
+    // so each application dispatches at most one run. Wired only when a `pr`
+    // mapping is configured, so an operator who never opts in keeps a
+    // byte-identical ladder and pays for no PR scan.
+    ...(customDispatchMappings(config, "pr").length > 0
+      ? {
+        async findAndProcessCustomLabelPrPrompts(
+          opts?: { deadlineEpochMs: number },
+        ) {
+          // The repo clone the checkout landed in, so the agent runs — and the
+          // push is verified — in the PR's own working tree rather than the
+          // worker directory. Set by `checkout`, read by the two seams after
+          // it; scoped to this invocation, so no cycle sees another's.
+          let prRunWorkDir: string | undefined;
+          const value = await dispatchCustomLabelPrPrompts({
+            logger,
+            ghCommandFn: runGhCommand,
+            findCandidates: () =>
+              findCustomLabelPrCandidates({
+                repos,
+                mappings: config.customLabelPrompts,
+                // The per-cycle collaborator-derived set (Issue #1066) —
+                // empty until it resolves, so trust starts closed.
+                allowedAuthors: config.allowedAuthors,
+                // "Is this the fleet": service accounts, sibling PR authors
+                // and this host, so the worker cannot self-dispatch by
+                // labelling its own PR.
+                fleetWorkerLogins: resolveFleetMaintenanceAuthorSet({
+                  githubUser,
+                  fleetPrAuthors: config.fleetPrAuthors,
+                  serviceAccounts: config.serviceAccounts ?? [],
+                }),
+                ghCommandFn: runGhCommand,
+                logger,
+                timelineCache,
+              }),
+            checkout: async (candidate) => {
+              // Issue #213: lease the repository, as PR feedback does — a
+              // slot already working there owns the working tree.
+              const lease = acquireMaintenanceRepoLease(
+                candidate.repo,
+                candidate.prNumber,
+              );
+              if (lease === null) {
+                return {
+                  ok: false,
+                  reason: "checkout_failed",
+                  detail: "an issue slot holds the repository this cycle",
+                };
+              }
+              try {
+                const setup = await setupRepo(candidate.repo, workDir);
+                if (!setup.success) {
+                  return {
+                    ok: false,
+                    reason: "checkout_failed",
+                    detail: setup.message,
+                  };
+                }
+                prRunWorkDir = setup.message;
+                return await preparePrBranch(candidate.headRefName, {
+                  logger,
+                  git: workerDeps.git,
+                  cwd: prRunWorkDir,
+                });
+              } finally {
+                lease.release();
+              }
+            },
+            buildPrompt: (candidate) =>
+              buildCustomPrPrompt({
+                repo: candidate.repo,
+                prNumber: String(candidate.prNumber),
+                mapping: candidate.mapping,
+                prTitle: candidate.title,
+                qualityInstructions: buildQualityInstructions(
+                  config.repoConfig,
+                  candidate.repo,
+                ),
+                customInstructions: getCustomInstructions(
+                  config.repoConfig,
+                  candidate.repo,
+                ),
+              }),
+            runAgent: async (_candidate, parts) => {
+              const run = await workerDeps.claude.runClaudeWithRetry(
+                {
+                  prompt: parts.prompt,
+                  systemPrompt: parts.systemPrompt,
+                  timeoutSeconds: reactivePhaseTimeout(config, "pr-feedback"),
+                  noOutputTimeout: config.claudeNoOutputTimeout,
+                  phase: "pr_feedback",
+                  cwd: prRunWorkDir ?? workDir,
+                  logger,
+                },
+                { maxRetries: config.maxRateLimitRetries },
+              );
+              if (!run.ok) throw run.error;
+              if (run.value.timedOut) {
+                throw new Error(
+                  run.value.timeoutReason === "no-output"
+                    ? `the agent produced no output for ${config.claudeNoOutputTimeout} seconds`
+                    : "the agent timed out",
+                );
+              }
+            },
+            verifyPush: (candidate) =>
+              verifyPushLanded(candidate.headRefName, {
+                cwd: prRunWorkDir ?? workDir,
+              }),
+            ...(opts?.deadlineEpochMs !== undefined
+              ? { deadlineEpochMs: opts.deadlineEpochMs }
+              : {}),
+          });
           return { ok: true as const, value };
         },
       }

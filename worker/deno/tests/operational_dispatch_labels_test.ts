@@ -83,8 +83,16 @@ Deno.test("requiresLabelAdderTrust - honours custom configured label names", () 
 Deno.test("operationalDispatchLabels - includes every custom_label_prompts label (Issue #847)", () => {
   const config = makeConfig({
     customLabelPrompts: [
-      { label: "deploy-review", promptPath: "/srv/prompts/deploy-review.md" },
-      { label: "Ops-Audit", promptPath: "/srv/prompts/ops-audit.md" },
+      {
+        label: "deploy-review",
+        promptPath: "/srv/prompts/deploy-review.md",
+        targetPhase: "issue",
+      },
+      {
+        label: "Ops-Audit",
+        promptPath: "/srv/prompts/ops-audit.md",
+        targetPhase: "issue",
+      },
     ],
   });
   assertEquals(operationalDispatchLabels(config), [
@@ -108,7 +116,11 @@ Deno.test("operationalDispatchLabels - unchanged when no custom labels are confi
 Deno.test("requiresLabelAdderTrust - true for a custom_label_prompts label, case-insensitively (Issue #847)", () => {
   const config = makeConfig({
     customLabelPrompts: [
-      { label: "deploy-review", promptPath: "/srv/prompts/deploy-review.md" },
+      {
+        label: "deploy-review",
+        promptPath: "/srv/prompts/deploy-review.md",
+        targetPhase: "issue",
+      },
     ],
   });
   assertEquals(requiresLabelAdderTrust(config, "deploy-review"), true);
