@@ -19,6 +19,7 @@ import {
   loadSyncStreaks,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
   milestoneSyncStreakPath,
+  saveSyncStreaks,
 } from "../lib/milestone_sync_streak.ts";
 
 const MILESTONE_TITLE = "#974 CI gates";
@@ -131,11 +132,61 @@ Deno.test(
       );
       const streaks = await loadSyncStreaks(streakPath);
       const entry = streaks[`owner/repo|${MILESTONE_BRANCH}`];
-      assert(entry?.escalated, "the streak records that it escalated");
+      assert(entry?.gateEscalated, "the streak records that it escalated");
       assertEquals(entry?.count, 4, "every failing cycle is still counted");
     } finally {
       await Deno.remove(dir, { recursive: true });
     }
+  },
+);
+
+Deno.test(
+  "milestone sync - a gate failure still speaks up after an ordinary escalation (Issue #974)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-974-escalation-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+      // The branch has already escalated for an ordinary sync failure.
+      await saveSyncStreaks(streakPath, {
+        [`owner/repo|${MILESTONE_BRANCH}`]: { count: 5, escalated: true },
+      });
+
+      const calls: string[][] = [];
+      await syncMilestoneBranches(gateFailingDeps(calls, streakPath));
+
+      assertEquals(
+        commentCalls(calls).length,
+        1,
+        "the refused merge is reported even though the branch already escalated",
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "milestone sync - without a streak file the refusal is logged, not re-commented every cycle (Issue #974)",
+  async () => {
+    const calls: string[][] = [];
+    const logs: string[] = [];
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const deps = gateFailingDeps(calls);
+      deps.log = (m: string) => logs.push(m);
+      await syncMilestoneBranches(deps);
+    }
+    assertEquals(
+      commentCalls(calls).length,
+      0,
+      "nothing can record that a comment went out, so none is repeated",
+    );
+    assert(
+      logs.some((l) =>
+        l.includes("WARNING") && l.includes("onSlotIdle") &&
+        l.includes(MILESTONE_BRANCH)
+      ),
+      "the refusal is still loud in the log",
+    );
   },
 );
 

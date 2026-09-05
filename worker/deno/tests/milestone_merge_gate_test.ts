@@ -14,7 +14,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildMergeGateEscalationComment,
   checkMergedTree,
-  findTypeCheckProject,
+  findTypeCheckProjects,
   isMergeGateFailure,
   mergeGateFailureError,
   type TypeCheckProject,
@@ -36,35 +36,62 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
-Deno.test("findTypeCheckProject - prefers the repo's own `check` task (Issue #974)", async () => {
+Deno.test("findTypeCheckProjects - prefers the repo's own `check` task (Issue #974)", async () => {
   await withTempDir(async (dir) => {
     await writeFile(
       `${dir}/deno.json`,
       JSON.stringify({ tasks: { check: "deno check '**/*.ts'" } }),
     );
-    const project = await findTypeCheckProject(dir);
-    assert(project, "a root deno.json is a type-checkable project");
-    assertEquals(project.dir, dir);
-    assertEquals(project.args, ["task", "check"]);
+    const projects = await findTypeCheckProjects(dir);
+    assertEquals(projects.length, 1, "a root deno.json is one project");
+    assertEquals(projects[0]!.dir, dir);
+    assertEquals(projects[0]!.args, ["task", "check"]);
   });
 });
 
-Deno.test("findTypeCheckProject - finds a nested project and falls back to `deno check` (Issue #974)", async () => {
+Deno.test("findTypeCheckProjects - reads a `check` task out of a commented deno.jsonc (Issue #974)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      `${dir}/deno.jsonc`,
+      `{\n  // the repo's own gate\n  "tasks": { "check": "deno check" }\n}\n`,
+    );
+    const projects = await findTypeCheckProjects(dir);
+    assertEquals(projects[0]!.args, ["task", "check"]);
+  });
+});
+
+Deno.test("findTypeCheckProjects - finds a nested project and falls back to `deno check` (Issue #974)", async () => {
   await withTempDir(async (dir) => {
     // This repository's own shape: the Deno project lives in worker/deno.
     await writeFile(`${dir}/README.md`, "root\n");
     await writeFile(`${dir}/worker/deno/deno.json`, JSON.stringify({}));
-    const project = await findTypeCheckProject(dir);
-    assert(project, "a nested deno.json is found");
-    assertEquals(project.dir, `${dir}/worker/deno`);
-    assertEquals(project.args, ["check", "**/*.ts"]);
+    const projects = await findTypeCheckProjects(dir);
+    assertEquals(projects.length, 1, "a nested deno.json is found");
+    assertEquals(projects[0]!.dir, `${dir}/worker/deno`);
+    assertEquals(projects[0]!.args, ["check", "**/*.ts"]);
   });
 });
 
-Deno.test("findTypeCheckProject - no manifest means no project (Issue #974)", async () => {
+Deno.test("findTypeCheckProjects - finds EVERY project, not just the first (Issue #974)", async () => {
+  await withTempDir(async (dir) => {
+    // This repository's real shape: a one-file seed project sits beside the
+    // worker. Checking whichever the filesystem happened to return first
+    // would let a broken worker tree through behind a seed that always passes.
+    await writeFile(`${dir}/container/deno-seed/deno.json`, JSON.stringify({}));
+    await writeFile(`${dir}/worker/deno/deno.json`, JSON.stringify({}));
+    const dirs = (await findTypeCheckProjects(dir)).map((p) => p.dir);
+    assertEquals(
+      dirs,
+      [`${dir}/container/deno-seed`, `${dir}/worker/deno`],
+      "both projects are checked, in a deterministic order",
+    );
+  });
+});
+
+Deno.test("findTypeCheckProjects - no manifest means no project (Issue #974)", async () => {
   await withTempDir(async (dir) => {
     await writeFile(`${dir}/src/main.rs`, "fn main() {}\n");
-    assertEquals(await findTypeCheckProject(dir), null);
+    assertEquals(await findTypeCheckProjects(dir), []);
   });
 });
 
@@ -170,13 +197,35 @@ Deno.test("buildMergeGateEscalationComment - names the merge and the check outpu
   assertStringIncludes(body, "not pushed");
 });
 
-Deno.test("findTypeCheckProject - a project the search cannot read is reported, not assumed clean (Issue #974)", async () => {
+Deno.test("checkMergedTree - a tree the gate cannot read fails, it is not assumed clean (Issue #974)", async () => {
   const missing = "/nonexistent-path-for-issue-974";
-  const project: TypeCheckProject | null = await findTypeCheckProject(missing);
-  assertEquals(project, null);
+  const projects: TypeCheckProject[] = await findTypeCheckProjects(missing);
+  assertEquals(projects, []);
   const outcome = await checkMergedTree(
     missing,
     () => Promise.resolve({ code: 0, output: "" }),
   );
-  assertEquals(outcome.status, "skipped");
+  // "skipped" is the push-anyway branch — an unreadable tree must not take it.
+  assertEquals(outcome.status, "failed");
+  assertStringIncludes(outcome.detail, "could not be read");
+});
+
+Deno.test("checkMergedTree - every project is checked, so a passing one cannot mask a failing one (Issue #974)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/container/deno-seed/deno.json`, JSON.stringify({}));
+    await writeFile(`${dir}/worker/deno/deno.json`, JSON.stringify({}));
+    const seen: string[] = [];
+    const outcome = await checkMergedTree(dir, (project) => {
+      seen.push(project.dir);
+      // The seed passes; the worker does not.
+      return Promise.resolve(
+        project.dir.endsWith("worker/deno")
+          ? { code: 1, output: "TS2339 [ERROR]: Property 'onSlotIdle'" }
+          : { code: 0, output: "" },
+      );
+    });
+    assertEquals(outcome.status, "failed");
+    assertStringIncludes(outcome.output, "onSlotIdle");
+    assertEquals(seen.length, 2, "the passing project did not end the sweep");
+  });
 });

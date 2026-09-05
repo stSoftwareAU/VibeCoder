@@ -336,22 +336,19 @@ async function gateThenPushMilestoneBranch(
   const outcome = await mergeGate(options.cwd ?? ".");
 
   if (outcome.status === "failed") {
+    // The caller refuses to merge at all without a pre-merge SHA, so there is
+    // always one to roll back to here.
     let resetNote = "";
-    if (preMergeSha) {
-      const reset = await runGitCommand(
-        ["reset", "--hard", preMergeSha],
-        options,
-      );
-      if (!reset.ok || reset.value.code !== 0) {
-        resetNote = ` — and the local merge could NOT be reset to ` +
-          `${preMergeSha}: ${
-            (reset.ok ? reset.value.stderr : reset.error.message).trim() ||
-            "git reported no stderr"
-          }`;
-      }
-    } else {
-      resetNote = ` — and the local merge could NOT be reset: the pre-merge ` +
-        `HEAD was unreadable`;
+    const reset = await runGitCommand(
+      ["reset", "--hard", preMergeSha],
+      options,
+    );
+    if (!reset.ok || reset.value.code !== 0) {
+      resetNote = ` — and the local merge could NOT be reset to ` +
+        `${preMergeSha}: ${
+          (reset.ok ? reset.value.stderr : reset.error.message).trim() ||
+          "git reported no stderr"
+        }`;
     }
     return {
       ok: false,
@@ -556,12 +553,29 @@ export async function syncMilestoneBranchWithDefault(
   }
 
   // Where the branch stands before any merge, so the gate can undo one
-  // exactly when the merged tree does not compile (Issue #974).
+  // exactly when the merged tree does not compile (Issue #974). Read it
+  // BEFORE merging: without it a refused merge cannot be rolled back, so the
+  // honest move is to refuse to start rather than to discover it afterwards.
   const preMergeShaResult = await runGitCommand(["rev-parse", "HEAD"], options);
   const preMergeSha = preMergeShaResult.ok &&
       preMergeShaResult.value.code === 0
     ? preMergeShaResult.value.stdout.trim()
     : "";
+  if (!preMergeSha) {
+    const detail = (preMergeShaResult.ok
+      ? preMergeShaResult.value.stderr
+      : preMergeShaResult.error.message).trim();
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to merge '${defaultBranch}' into '${milestoneBranch}': ` +
+          `its pre-merge HEAD could not be read, so a merge the gate rejects ` +
+          `could not be rolled back (Issue #974): ${
+            detail || "git reported no stderr"
+          }`,
+      ),
+    };
+  }
 
   // Merge default into milestone (preserve commit history)
   const mergeResult = await runGitCommand(

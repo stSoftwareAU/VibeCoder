@@ -2719,7 +2719,10 @@ deleted from `run_core.ts` three times by a clean sync merge, and because
 closes that gap: after the merge commit is created locally and **before** the
 push, the merged tree is type-checked with the repository's own gate — its
 `deno task check` where the manifest defines one, otherwise a whole-tree
-`deno check`.
+`deno check`. **Every** Deno project in the tree is checked, not the first one
+found: this repository carries `container/deno-seed/deno.json` beside
+`worker/deno/deno.json`, and checking whichever the filesystem returned first
+would pass a broken worker tree behind a one-file seed project.
 
 ```mermaid
 flowchart TD
@@ -2734,15 +2737,22 @@ flowchart TD
 Three properties matter:
 
 - **Nothing unverified is published.** A check that cannot be run — a spawn
-  failure, a timeout past `MERGE_GATE_TIMEOUT_MS` — counts as a failure, not a
-  pass: absence of a failure is not success.
+  failure, a timeout past `MERGE_GATE_TIMEOUT_MS`, a working tree that cannot be
+  read — counts as a failure, not a pass: absence of a failure is not success.
 - **The refusal leaves no residue.** The local branch is reset to the commit it
   stood at before the merge, so the next cycle starts from the remote head
-  rather than a half-merged tree.
-- **It escalates on the first occurrence.** A tree that does not compile is not
-  transient, so the needs-human comment (carrying the type-check output) goes to
-  the milestone's tracking issue immediately rather than waiting for the
-  `MILESTONE_SYNC_ESCALATION_THRESHOLD` failure streak, and is posted once.
+  rather than a half-merged tree. The pre-merge SHA is read *before* merging and
+  the sync refuses to merge at all without it, since a merge it could not roll
+  back is one it must not start.
+- **It escalates on the first occurrence.** A tree the check rejects is not
+  transient, so the needs-human comment (carrying the check output) goes to the
+  milestone's tracking issue immediately rather than waiting for the
+  `MILESTONE_SYNC_ESCALATION_THRESHOLD` failure streak. It is posted once, via
+  its own `gateEscalated` flag in the streak file — a branch that already
+  escalated for an ordinary sync failure still reports a refused merge. Without
+  a streak file (the ad hoc `sync-milestone-branches` command) nothing can
+  record that the comment went out, so the refusal stays in the log rather than
+  being re-posted every cycle.
 
 A repository with no Deno project is still synced, but the outcome says
 `UNGATED` so an unchecked push never reads like a checked one.

@@ -20,6 +20,7 @@
  */
 
 import { runWithTimeout } from "./subprocess_timeout.ts";
+import { stripJsonc } from "./orphan_deps_scanner.ts";
 
 /** How long the merged-tree type check may run before it is killed. */
 export const MERGE_GATE_TIMEOUT_MS = 300_000;
@@ -91,44 +92,63 @@ async function isFile(path: string): Promise<boolean> {
  * Which arguments run this project's type check.
  *
  * A `check` task in the manifest is the repository's own gate — flags,
- * lockfile pins and all — so it is preferred. Manifests that define no such
- * task (or that cannot be parsed, `deno.jsonc` permitting comments) fall back
- * to a whole-tree `deno check`.
+ * lockfile pins and all — so it is preferred. `deno.jsonc` may carry comments,
+ * so the manifest is stripped before parsing rather than quietly losing the
+ * repo's own task to a `JSON.parse` failure. A manifest that still cannot be
+ * read falls back to a whole-tree `deno check`, which type-checks the same
+ * files with default flags.
  */
 async function resolveCheckArgs(manifestPath: string): Promise<string[]> {
   try {
-    const parsed = JSON.parse(await Deno.readTextFile(manifestPath));
+    const parsed = JSON.parse(
+      stripJsonc(await Deno.readTextFile(manifestPath)),
+    );
     const task = parsed?.tasks?.check;
     if (typeof task === "string" && task.trim()) return ["task", "check"];
   } catch {
-    // Unreadable or comment-bearing manifest — the generic check still holds.
+    // Unparseable manifest — the generic check still type-checks the tree.
   }
   return ["check", "**/*.ts"];
 }
 
+/** The manifest in a directory, or null when it holds none. */
+async function manifestIn(dir: string): Promise<string | null> {
+  for (const manifest of ["deno.json", "deno.jsonc"]) {
+    const path = `${dir}/${manifest}`;
+    if (await isFile(path)) return path;
+  }
+  return null;
+}
+
 /**
- * Locate the repository's Deno project, breadth-first from the repo root.
+ * Locate every Deno project in the tree, breadth-first from the repo root.
  *
- * The root is tried first and then each shallower level, because a repository
- * frequently keeps its Deno project one level down — this one lives in
- * `worker/deno`. Returns null when the tree defines no Deno project, which is
- * a skip rather than a failure: not every repository has one.
+ * **All** of them, not the first one found: this repository carries
+ * `container/deno-seed/deno.json` alongside `worker/deno/deno.json`, and a
+ * search that stopped at whichever `Deno.readDir` happened to return first
+ * would type-check a single-file seed project and call a broken
+ * `worker/deno` clean — a gate that passes everything, which is the state
+ * this issue exists to end.
+ *
+ * A directory that holds a manifest is not descended into: its own project
+ * covers what lies beneath it. Each level is sorted, so the same tree yields
+ * the same order on every host.
  *
  * @param repoDir - Root of the merged working tree
- * @returns The project to check, or null when there is none
+ * @returns Every project to check; empty when the tree defines none
  */
-export async function findTypeCheckProject(
+export async function findTypeCheckProjects(
   repoDir: string,
-): Promise<TypeCheckProject | null> {
+): Promise<TypeCheckProject[]> {
+  const found: TypeCheckProject[] = [];
   let level = [repoDir];
   for (let depth = 0; depth <= MERGE_GATE_MAX_DEPTH && level.length; depth++) {
     const next: string[] = [];
-    for (const dir of level) {
-      for (const manifest of ["deno.json", "deno.jsonc"]) {
-        const path = `${dir}/${manifest}`;
-        if (await isFile(path)) {
-          return { dir, args: await resolveCheckArgs(path) };
-        }
+    for (const dir of level.sort()) {
+      const manifest = await manifestIn(dir);
+      if (manifest) {
+        found.push({ dir, args: await resolveCheckArgs(manifest) });
+        continue;
       }
       if (depth === MERGE_GATE_MAX_DEPTH) continue;
       try {
@@ -138,12 +158,13 @@ export async function findTypeCheckProject(
           next.push(`${dir}/${entry.name}`);
         }
       } catch {
-        // An unreadable directory simply contributes no candidates.
+        // An unreadable subdirectory simply contributes no candidates; an
+        // unreadable *root* is caught by checkMergedTree, which fails.
       }
     }
     level = next;
   }
-  return null;
+  return found;
 }
 
 /** Keep the tail of the output — the errors sit at the end of a check run. */
@@ -184,8 +205,27 @@ export async function checkMergedTree(
   repoDir: string,
   runner: TypeCheckRunner = spawnTypeCheck,
 ): Promise<MergeGateOutcome> {
-  const project = await findTypeCheckProject(repoDir);
-  if (!project) {
+  // A tree that cannot be read is a check that could not be run, not a
+  // repository without one — refuse rather than wave it through as "skipped".
+  try {
+    if (!(await Deno.stat(repoDir)).isDirectory) {
+      return {
+        status: "failed",
+        detail:
+          `merged tree '${repoDir}' is not a directory — nothing checked it`,
+        output: "",
+      };
+    }
+  } catch (err) {
+    return {
+      status: "failed",
+      detail: `merged tree '${repoDir}' could not be read — nothing checked it`,
+      output: tail(err instanceof Error ? err.message : String(err)),
+    };
+  }
+
+  const projects = await findTypeCheckProjects(repoDir);
+  if (projects.length === 0) {
     return {
       status: "skipped",
       detail:
@@ -194,27 +234,36 @@ export async function checkMergedTree(
     };
   }
 
-  const where = `deno ${project.args.join(" ")} in ${project.dir}`;
-  let result: { code: number; output: string };
-  try {
-    result = await runner(project);
-  } catch (err) {
-    // Unrunnable is not clean: refuse the push rather than assume it compiles.
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      status: "failed",
-      detail: `${where} could not be run`,
-      output: tail(message),
-    };
+  const checked: string[] = [];
+  for (const project of projects) {
+    const where = `deno ${project.args.join(" ")} in ${project.dir}`;
+    let result: { code: number; output: string };
+    try {
+      result = await runner(project);
+    } catch (err) {
+      // Unrunnable is not clean: refuse the push rather than assume it
+      // compiles.
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        status: "failed",
+        detail: `${where} could not be run`,
+        output: tail(message),
+      };
+    }
+    if (result.code !== 0) {
+      return {
+        status: "failed",
+        detail: `${where} failed (exit ${result.code})`,
+        output: tail(result.output),
+      };
+    }
+    checked.push(where);
   }
 
-  if (result.code === 0) {
-    return { status: "passed", detail: `${where} passed`, output: "" };
-  }
   return {
-    status: "failed",
-    detail: `${where} failed (exit ${result.code})`,
-    output: tail(result.output),
+    status: "passed",
+    detail: `${checked.join("; ")} passed`,
+    output: "",
   };
 }
 
@@ -233,7 +282,7 @@ export function mergeGateFailureError(
   const err = new Error(
     `Refused to push the merge of '${defaultBranch}' into ` +
       `'${milestoneBranch}': the merged tree does not pass the repository's ` +
-      `own type check (Issue #974) — ${outcome.detail}${
+      `own check (Issue #974) — ${outcome.detail}${
         outcome.output ? `\n${outcome.output}` : ""
       }`,
   );
@@ -265,15 +314,16 @@ export interface MergeGateEscalation {
 export function buildMergeGateEscalationComment(
   e: MergeGateEscalation,
 ): string {
-  return `## Milestone sync merge does not compile — needs a human\n\n` +
+  return `## Milestone sync merge fails the repo's own check — needs a human\n\n` +
     `Merging \`${e.defaultBranch}\` into \`${e.milestoneBranch}\` in ` +
-    `\`${e.repo}\` produced a tree that fails the repository's own type ` +
-    `check, so it was **not pushed** and the local merge was discarded ` +
-    `(Issue #974).\n\n` +
+    `\`${e.repo}\` produced a tree that fails the repository's own check ` +
+    `(a type error, or whatever else that check enforces — a stale lockfile ` +
+    `under \`--frozen\`, say), so it was **not pushed** and the local merge ` +
+    `was discarded (Issue #974).\n\n` +
     `Git reported no conflict: both sides were internally consistent and ` +
     `only their combination is not, which is how the same wiring was lost ` +
     `three times before this gate existed (#928, #796).\n\n` +
-    `Type check output:\n\n\`\`\`\n${e.reason}\n\`\`\`\n\n` +
+    `Check output:\n\n\`\`\`\n${e.reason}\n\`\`\`\n\n` +
     `Resolve the merge by hand on \`${e.milestoneBranch}\`. The sync will ` +
     `keep refusing to push until the merged tree compiles.`;
 }

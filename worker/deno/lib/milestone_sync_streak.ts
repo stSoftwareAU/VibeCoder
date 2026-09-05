@@ -26,6 +26,13 @@ export interface SyncStreakEntry {
   count: number;
   /** True once the needs-human comment has been posted for this streak. */
   escalated: boolean;
+  /**
+   * True once the merge-gate escalation has been posted for this streak
+   * (Issue #974). Tracked apart from {@link escalated} so a branch that has
+   * already escalated for an ordinary sync failure still reports a merge the
+   * type check refused — the silence this gate exists to end.
+   */
+  gateEscalated?: boolean;
 }
 
 /** Streak state keyed by "owner/repo|milestone-branch". */
@@ -51,6 +58,7 @@ export async function loadSyncStreaks(path: string): Promise<SyncStreaks> {
           streaks[key] = {
             count: Math.max(0, Math.floor((value as SyncStreakEntry).count)),
             escalated: (value as SyncStreakEntry).escalated === true,
+            gateEscalated: (value as SyncStreakEntry).gateEscalated === true,
           };
         }
       }

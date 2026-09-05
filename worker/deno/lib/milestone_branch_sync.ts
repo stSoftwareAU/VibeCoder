@@ -468,10 +468,15 @@ export async function syncMilestoneBranches(
           }
 
           if (isMergeGateFailure(syncResult.error)) {
-            // Issue #974: a merged tree that does not compile is not a
+            // Issue #974: a merged tree the repo's own check rejects is not a
             // transient condition a retry clears — it needs a human now, not
-            // after three more cycles of the same refusal.
-            if (!entry?.escalated) {
+            // after three more cycles of the same refusal. `gateEscalated` is
+            // tracked apart from the ordinary streak flag, so a branch that
+            // already escalated for a different reason still reports this.
+            // Without a streak file there is nowhere to record that the
+            // comment was posted, so escalating would repeat every cycle —
+            // the loud WARNING log above stands on its own there.
+            if (entry && !entry.gateEscalated) {
               const escalated = await escalateMergeGateFailure(
                 repo,
                 milestone,
@@ -479,8 +484,8 @@ export async function syncMilestoneBranches(
                 ghCommandFn,
                 log,
               );
-              if (escalated && entry) {
-                entry.escalated = true;
+              if (escalated) {
+                entry.gateEscalated = true;
               }
             }
           } else if (
@@ -551,13 +556,40 @@ async function escalateMergeGateFailure(
     return false;
   }
 
-  const body = buildMergeGateEscalationComment({
+  return await postEscalationComment(
     repo,
-    milestoneBranch: milestone.milestoneBranch,
-    defaultBranch: milestone.defaultBranch,
-    reason,
-  });
+    issueNumber,
+    buildMergeGateEscalationComment({
+      repo,
+      milestoneBranch: milestone.milestoneBranch,
+      defaultBranch: milestone.defaultBranch,
+      reason,
+    }),
+    ghCommandFn,
+    log,
+    `a refused milestone sync merge for '${milestone.milestoneBranch}' ` +
+      `(Issue #974)`,
+  );
+}
 
+/**
+ * Post one escalation comment on a tracking issue, best-effort.
+ *
+ * Shared by both milestone-sync escalations so there is one place that knows
+ * how the comment is posted and how a failure to post it is reported. Returns
+ * true only when the comment went out, so a caller marks its streak escalated
+ * and does not repeat it every cycle.
+ *
+ * @param what - Names the escalation in both log lines
+ */
+async function postEscalationComment(
+  repo: string,
+  issueNumber: number,
+  body: string,
+  ghCommandFn: GhCommandFn,
+  log: (message: string) => void,
+  what: string,
+): Promise<boolean> {
   try {
     await ghCommandFn([
       "issue",
@@ -568,18 +600,13 @@ async function escalateMergeGateFailure(
       "--body",
       body,
     ]);
-    log(
-      `Escalated a refused milestone sync merge for ` +
-        `'${milestone.milestoneBranch}' in ${repo} to issue #${issueNumber} ` +
-        `(Issue #974).`,
-    );
+    log(`Escalated ${what} in ${repo} to issue #${issueNumber}.`);
     return true;
   } catch (err) {
     log(
-      `Failed to post the merge-gate escalation for ` +
-        `'${milestone.milestoneBranch}' in ${repo}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+      `Failed to post the escalation for ${what} in ${repo}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
     );
     return false;
   }
@@ -635,29 +662,13 @@ async function escalateSyncFailure(
     `The worker will keep retrying but cannot resolve this itself. Once the ` +
     `branch syncs, this escalation clears automatically (Issue #4260).`;
 
-  try {
-    await ghCommandFn([
-      "issue",
-      "comment",
-      String(issueNumber),
-      "--repo",
-      repo,
-      "--body",
-      body,
-    ]);
-    log(
-      `Escalated stuck milestone sync for '${milestone.milestoneBranch}' in ` +
-        `${repo} to issue #${issueNumber} after ${failureCount} cycles ` +
-        `(Issue #4260).`,
-    );
-    return true;
-  } catch (err) {
-    log(
-      `Failed to post milestone-sync escalation for ` +
-        `'${milestone.milestoneBranch}' in ${repo}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-    );
-    return false;
-  }
+  return await postEscalationComment(
+    repo,
+    issueNumber,
+    body,
+    ghCommandFn,
+    log,
+    `stuck milestone sync for '${milestone.milestoneBranch}' after ` +
+      `${failureCount} cycles (Issue #4260)`,
+  );
 }
