@@ -55,7 +55,9 @@ identically.
 **No PR, ever.** The template sets `skipMilestone: true`, mirroring the other
 scan templates. Each missing gate is filed as its own GitHub issue; the wrapper
 is closed with `no findings` or `Bash syntax audit complete. Filed N issues: …`
-and nothing else.
+and nothing else. A failed before/after snapshot lookup renders the
+unknown-count string instead (Issue #1105) — see
+[IDLE-TASK-FRAMEWORK.md → The newly-filed diff](IDLE-TASK-FRAMEWORK.md#the-newly-filed-diff--unknown-is-not-empty).
 
 ## The two detectors
 

@@ -16,9 +16,11 @@
  * malformed-JSON handling lives in exactly one place.
  *
  * Robustness (sub-issue #2411): a malformed `gh … --json` payload is no longer
- * silently swallowed — the parse error is logged with a label before the safe
- * empty result is returned, so an operator can tell a genuinely-empty repo
- * apart from a transient gh hiccup that produced unparseable output.
+ * silently swallowed — the parse error is logged with a label before the
+ * defensive result is returned, so an operator can tell a genuinely-empty repo
+ * apart from a transient gh hiccup that produced unparseable output. That
+ * defensive result is `[]` for the dedup look-ups and `null` for the
+ * before/after snapshot (see the next paragraph).
  *
  * Unknown ≠ empty (Issue #1105): the before/after snapshot
  * ({@link listOpenIssueNumbersByLabel}) returns `null` rather than an empty

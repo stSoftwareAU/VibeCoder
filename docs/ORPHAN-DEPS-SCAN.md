@@ -166,7 +166,7 @@ sequenceDiagram
     Claude-->>Template: clean exit (no JSON, no summary)
     Template->>GH: list open `orphan-deps` issues (AFTER snapshot)
     Template->>Template: diff AFTER − BEFORE = newly-filed issue numbers
-    Template-->>Main: close wrapper with "no findings" or<br/>"Orphan-dependency scan complete. Filed N issues: …"
+    Template-->>Main: close wrapper with "no findings" or<br/>"Orphan-dependency scan complete. Filed N issues: …" or<br/>"Newly-filed count unavailable …" (a snapshot lookup failed)
 ```
 
 The flowchart below summarises the same flow as a decision tree.
@@ -188,7 +188,7 @@ flowchart TD
     Cap --> FileFindings[Phase 4 — gh issue create<br/>labels: orphan-deps, severity:&lt;level&gt;]:::phase
     FileFindings --> After[Snapshot 2 — list open<br/>`orphan-deps` issues AFTER]:::phase
     After --> Diff[Template diff:<br/>AFTER − BEFORE = newly filed]:::output
-    Diff --> Close[Close wrapper with summary<br/>'no findings' OR<br/>'Orphan-dependency scan complete. Filed N issues: …'<br/>never raises a PR]:::output
+    Diff --> Close[Close wrapper with summary<br/>'no findings' OR<br/>'Orphan-dependency scan complete. Filed N issues: …' OR<br/>'Newly-filed count unavailable …'<br/>never raises a PR]:::output
     class Pick gate;
 ```
 
@@ -397,6 +397,9 @@ The only artefacts an orphan-deps run produces are:
    `no findings` or
    `Orphan-dependency scan complete. Filed N issues: #A, #B, …`
    (numbers sorted ascending so the comment is deterministic).
+   A failed before/after snapshot lookup renders the unknown-count
+   string instead (Issue #1105) — see
+   [IDLE-TASK-FRAMEWORK.md → The newly-filed diff](IDLE-TASK-FRAMEWORK.md#the-newly-filed-diff--unknown-is-not-empty).
 
 Auto-remediation is **out of scope** for the scan. Fixes are filed as
 ordinary issues that flow through the normal triage → planning →
