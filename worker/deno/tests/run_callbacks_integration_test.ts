@@ -14,6 +14,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   CALLBACK_SCHEMA_VERSION,
+  type CallbackInvocation,
   invokeRunCallbacks,
   type IssueRunCallbackContext,
 } from "../lib/run_callbacks.ts";
@@ -126,6 +127,25 @@ async function run(
   return { invocations, logs, errors };
 }
 
+/**
+ * Every invocation with the status, exit code and streams behind it.
+ *
+ * Attached to the assertions about what the hooks recorded on disk: an empty
+ * evidence file says only "nothing ran", and the reason a hook did not run
+ * lives in its invocation record. Without this, a spawn fault and a timeout
+ * are the same unexplained empty list (Issue #1055).
+ */
+function describe(invocations: CallbackInvocation[]): string {
+  if (invocations.length === 0) return "no callback ran";
+  return invocations
+    .map((one) =>
+      `${one.event}: ${one.status} (exit ${one.exitCode}, ${one.durationMs}ms)` +
+      `${one.stdout ? ` stdout: ${one.stdout}` : ""}` +
+      `${one.stderr ? ` stderr: ${one.stderr}` : ""}`
+    )
+    .join("\n");
+}
+
 Deno.test({
   name:
     "run_callbacks integration - a successful run runs success then always, exactly once",
@@ -143,7 +163,11 @@ Deno.test({
 
       const { invocations } = await run(callbacks, context());
 
-      assertEquals(await evidence(dir), ["success", "always"]);
+      assertEquals(
+        await evidence(dir),
+        ["success", "always"],
+        describe(invocations),
+      );
       assertEquals(invocations.map((i) => i.status), ["ok", "ok"]);
     });
   },
@@ -167,7 +191,11 @@ Deno.test({
       const ctx = context({ result: "failure", exitCode: 1 });
       const { invocations } = await run(callbacks, ctx);
 
-      assertEquals(await evidence(dir), ["failure", "always"]);
+      assertEquals(
+        await evidence(dir),
+        ["failure", "always"],
+        describe(invocations),
+      );
       assertEquals(invocations.map((i) => i.status), ["ok", "ok"]);
       // The hooks observed the original result and never altered it.
       assertEquals(ctx.result, "failure");
@@ -199,7 +227,11 @@ Deno.test({
       const ctx = context();
       const { invocations, errors } = await run(callbacks, ctx);
 
-      assertEquals(await evidence(dir), ["success", "always"]);
+      assertEquals(
+        await evidence(dir),
+        ["success", "always"],
+        describe(invocations),
+      );
       assertEquals(invocations[0]?.status, "failed");
       assertEquals(invocations[0]?.exitCode, 7);
       assert(invocations[0]?.stderr.includes("hook exploded"));
@@ -249,7 +281,11 @@ Deno.test({
 
       const { invocations } = await run(callbacks, context());
 
-      assertEquals(await evidence(dir), ["success", "always"]);
+      assertEquals(
+        await evidence(dir),
+        ["success", "always"],
+        describe(invocations),
+      );
       assertEquals(invocations[0]?.status, "timed_out");
       assertEquals(invocations[0]?.exitCode, 124);
       // What the hook printed before the kill survives, alongside the
@@ -279,7 +315,11 @@ Deno.test({
 
       const { invocations } = await run(callbacks, context());
 
-      assertEquals(await evidence(dir), ["always"]);
+      assertEquals(
+        await evidence(dir),
+        ["always"],
+        describe(invocations),
+      );
       assertEquals(invocations[0]?.status, "spawn_failed");
       assertEquals(invocations[1]?.status, "ok");
     });
@@ -307,7 +347,11 @@ Deno.test({
       const { invocations } = await run(callbacks, context());
 
       assertEquals(invocations[0]?.status, "spawn_failed");
-      assertEquals(await evidence(dir), []);
+      assertEquals(
+        await evidence(dir),
+        [],
+        describe(invocations),
+      );
     });
   },
 });
