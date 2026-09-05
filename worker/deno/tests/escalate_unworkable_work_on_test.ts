@@ -189,6 +189,9 @@ Deno.test(
         ghClient: recordingClient(recorder, [planted]),
         ensureLabelExists: ensureOk,
         now: () => Date.parse("2026-06-13T01:00:00Z"),
+        // Named, not inherited: without it the dedup check reads the host's
+        // `.config.json` for the fleet identity.
+        dedupAuthors: { fleetAuthors: ["bot"] },
       },
     });
 
