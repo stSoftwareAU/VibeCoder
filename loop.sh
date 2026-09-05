@@ -28,6 +28,10 @@ set -uo pipefail
 #   #342  — a launcher that stopped because the host is out of Claude quota is
 #           a scheduled pause, not a failure: it exits QUOTA_PAUSE_EXIT and the
 #           recorder re-probes on a fixed cadence instead of backing off.
+#   #1072 — a launcher stopped by a signal is recorded as a stop, not as a
+#           failure of this host: run.sh exits with the runtime client's own
+#           status (255 when its container is stopped under it), so it declares
+#           the signal in a marker the recorder consumes.
 #   #4072 — a failed launcher is now recorded rather than retried blindly: the
 #           worker's `container-restart-backoff` command grows the wait across
 #           consecutive failures, records the recovery as a self-heal event and
@@ -45,7 +49,11 @@ LOOP_SLEEP_SECONDS="${LOOP_SLEEP_SECONDS:-60}"
 # runtime detection, image build, container start or the worker run itself.
 VIBE_STATE_DIR="${VIBE_STATE_DIR:-${HOME:-/tmp}/.vibe-coder}"
 VIBE_LAUNCH_PHASE_FILE="${VIBE_LAUNCH_PHASE_FILE:-${VIBE_STATE_DIR}/last-launch-phase}"
-export VIBE_STATE_DIR VIBE_LAUNCH_PHASE_FILE
+# Where run.sh declares that it was signalled rather than that it failed
+# (Issue #1072). Exported so the launcher writing it and the recorder consuming
+# it below can never disagree about the path.
+VIBE_LAUNCH_TERMINATION_FILE="${VIBE_LAUNCH_TERMINATION_FILE:-${VIBE_STATE_DIR}/last-launch-termination}"
+export VIBE_STATE_DIR VIBE_LAUNCH_PHASE_FILE VIBE_LAUNCH_TERMINATION_FILE
 
 WORKER_MOD="${SCRIPT_DIR}/worker/deno/mod.ts"
 
@@ -208,6 +216,13 @@ readonly RUN_KILLED_EXIT=137
 # scheduled pause, not a crash - the recorder answers with the fixed re-probe
 # cadence rather than a grown backoff.
 readonly QUOTA_PAUSE_EXIT=75
+
+# The launcher's "this host's one worker is already running" status
+# (ANOTHER_WORKER_RUNNING_EXIT in worker/deno/commands/container_reap.ts,
+# Issues #26, #1056). The design invariant holding, not a crash - so the
+# supervisor says so rather than calling a healthy host a failing one, and the
+# recorder answers with the base cadence.
+readonly ANOTHER_WORKER_RUNNING_EXIT=4
 
 # Reap what a killed run.sh leaves behind (Issue #322).
 #
@@ -403,6 +418,10 @@ while true; do
     elif [[ "${run_status}" -eq "${QUOTA_PAUSE_EXIT}" ]]; then
         echo "loop.sh: ./run.sh paused — this host is out of quota (status ${run_status});" \
              "re-probing on the quota cadence, not backing off (Issue #342)"
+    elif [[ "${run_status}" -eq "${ANOTHER_WORKER_RUNNING_EXIT}" ]]; then
+        echo "loop.sh: ./run.sh did not launch — another worker is already running on this" \
+             "host (status ${run_status}); one worker per host, so this is not a failure" \
+             "(Issues #26, #1056)"
     elif [[ "${run_status}" -ne 0 ]]; then
         echo "loop.sh: ./run.sh exited with status ${run_status} — backing off and retrying"
     fi
