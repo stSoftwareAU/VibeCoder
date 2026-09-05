@@ -66,7 +66,9 @@ Deno.test("in_flight_repos - heldHeartbeatKeys includes the maintenance lane whi
   registry.tryAcquire("o/b", 4408, "m1", { maintenance: true });
 
   // The finder's claim-shaped view is untouched (Issue #213).
-  assertEquals(registry.heldIssues(), [{ repo: "o/a", issueNumber: 42 }]);
+  assertEquals(registry.heldIssues(), [
+    { repo: "o/a", issueNumber: 42, milestone: "" },
+  ]);
 
   // The sweep's view counts every hold that owns a heartbeat, tagged by kind.
   assertEquals(registry.heldHeartbeatKeys(), [

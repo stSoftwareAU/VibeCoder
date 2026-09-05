@@ -26,6 +26,7 @@ import {
   buildRefreshIssueTitle,
   extractKnownGapIds,
   gapId,
+  parseKnownGapRows,
   parseRefreshState,
   REFRESH_MARKER,
   type RefreshDeps,
@@ -37,6 +38,9 @@ import {
 import type { ReferenceEntry } from "../lib/references_doc.ts";
 
 const NOW = new Date("2026-09-01T00:00:00Z");
+
+/** The fleet login every fixture issue is authored by. */
+const FLEET_AUTHOR = "vibe-coder-bot";
 
 const REFERENCES = [
   "| Source | What we took | Where it shows up |",
@@ -131,7 +135,11 @@ function harness(options: {
           issues
             .filter((issue) => state === "all" || issue.state === "OPEN")
             .filter((issue) => issue.body.includes(term))
-            .map((issue) => ({ number: issue.number, body: issue.body })),
+            .map((issue) => ({
+              number: issue.number,
+              body: issue.body,
+              author: { login: FLEET_AUTHOR },
+            })),
         ));
       }
       if (args[0] === "issue" && args[1] === "create") {
@@ -152,6 +160,9 @@ function harness(options: {
       }
       return Promise.reject(new Error(`unexpected gh call: ${args.join(" ")}`));
     },
+    // Every seeded issue is fleet-authored, so the dedup marker on it is
+    // verifiable — the planted-marker case has its own suite.
+    fleetAuthors: [FLEET_AUTHOR],
   };
   return { deps, issues, writes };
 }
@@ -335,7 +346,11 @@ Deno.test("a hostile unit name cannot forge a dedup marker", async () => {
   );
 
   assertEquals(
-    [...extractKnownGapIds(JSON.stringify([{ number: 1, body }])).keys()],
+    [
+      ...extractKnownGapIds(
+        parseKnownGapRows(JSON.stringify([{ number: 1, body }])),
+      ).keys(),
+    ],
     ["REF-000000000000"],
     "only the sweep's own marker may be read back out of the body",
   );

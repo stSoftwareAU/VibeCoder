@@ -30,9 +30,14 @@ function fail(stderr: string): CommandOutput {
   return { success: false, stdout: "", stderr };
 }
 
+/** The fleet login every fixture issue is authored by. */
+const FLEET_AUTHOR = "vibe-coder-bot";
+
 interface MockIssue {
   number: number;
   body: string;
+  /** Issue author; defaults to the fleet so the tag is verifiable. */
+  author?: string;
 }
 
 interface MockState {
@@ -124,7 +129,11 @@ function buildMockRunner(opts: MockOptions): {
           .trim();
         return i.body.includes(stripped);
       });
-      const json = matched.map((i) => ({ number: i.number, body: i.body }));
+      const json = matched.map((i) => ({
+        number: i.number,
+        body: i.body,
+        author: { login: i.author ?? FLEET_AUTHOR },
+      }));
       return Promise.resolve(ok(JSON.stringify(json)));
     }
 
@@ -261,6 +270,7 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - closes partial-match issue when aud
   });
 
   const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -295,6 +305,7 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - leaves issue open when audit still 
   });
 
   const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -326,6 +337,7 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - closes missing-workflow issue when 
   });
 
   const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -355,6 +367,7 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - dry-run does not call gh issue clos
   });
 
   const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
     dryRun: true,
   });
@@ -382,6 +395,7 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - surfaces audit errors via Result ty
   });
 
   const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -407,6 +421,7 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - surfaces gh issue list errors via R
   });
 
   const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -438,6 +453,7 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - records close failures without thro
   });
 
   const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -471,6 +487,7 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - private repo: closes public-only sp
   });
 
   const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -518,6 +535,7 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - private repo: partial-match public-
   });
 
   const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -550,6 +568,7 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - public repo: dependency-review issu
   });
 
   const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -583,6 +602,7 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - public repo: dependency-review issu
   });
 
   const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -610,6 +630,7 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - dry-run on private repo: lists not 
   });
 
   const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
     dryRun: true,
   });
@@ -639,6 +660,7 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - private repo: close failure for not
   });
 
   const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -673,6 +695,7 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - private repo: non-public-only candi
   });
 
   const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 
@@ -695,6 +718,7 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - issue with no recognisable tag is i
   });
 
   const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
     runCommand: runner,
   });
 

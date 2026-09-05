@@ -20,6 +20,14 @@ import {
 import { CI_FAILURE_EXCERPT_BYTES } from "../lib/ci_failure_issue.ts";
 import { formatRunFailureExcerpt } from "../lib/run_failure_issue.ts";
 
+/**
+ * The fleet account these fixtures file as. A dedup match is only evidence
+ * the alert already exists when a fleet account authored it, so every seeded
+ * and created issue carries an author and every call states the fleet.
+ */
+const FLEET_LOGIN = "vibe-coder-bot";
+const FLEET: readonly string[] = [FLEET_LOGIN];
+
 interface Recorded {
   calls: string[][];
   creates: string[][];
@@ -42,7 +50,11 @@ function fakeGh(
     rec.calls.push(args);
     if (behaviour.failAll) return Promise.reject(new Error("gh: HTTP 500"));
     if (args[0] === "issue" && args[1] === "list") {
-      return Promise.resolve(JSON.stringify(issues));
+      return Promise.resolve(
+        JSON.stringify(
+          issues.map((i) => ({ ...i, author: { login: FLEET_LOGIN } })),
+        ),
+      );
     }
     if (args[0] === "issue" && args[1] === "create") {
       rec.creates.push(args);
@@ -100,6 +112,7 @@ Deno.test("run failure issue - code_fixable + no existing issue → exactly one 
       report: OOM_REPORT,
       ghFn,
       workDir: dir,
+      fleetAuthors: FLEET,
       nowSeconds: () => 1_700_000_000,
     });
     assertEquals(decision.action, "filed");
@@ -139,6 +152,7 @@ Deno.test("run failure issue - code_fixable + existing open issue for the class 
       report: OOM_REPORT,
       ghFn,
       workDir: dir,
+      fleetAuthors: FLEET,
       nowSeconds: () => 1_700_000_000,
     });
     assertEquals(decision, {
@@ -170,6 +184,7 @@ Deno.test("run failure issue - a second occurrence within the follow-up window u
       report: OOM_REPORT,
       ghFn: gh.ghFn,
       workDir: dir,
+      fleetAuthors: FLEET,
       nowSeconds: () => now,
       minWriteIntervalSeconds: 60,
     });
@@ -180,6 +195,7 @@ Deno.test("run failure issue - a second occurrence within the follow-up window u
       report: { ...OOM_REPORT, sourceIssueNumber: 148 },
       ghFn: gh.ghFn,
       workDir: dir,
+      fleetAuthors: FLEET,
       nowSeconds: () => now,
       minWriteIntervalSeconds: 60,
     });
@@ -202,6 +218,7 @@ Deno.test("run failure issue - a second occurrence within the follow-up window u
       report: OOM_REPORT,
       ghFn: gh.ghFn,
       workDir: dir,
+      fleetAuthors: FLEET,
       nowSeconds: () => now,
       minWriteIntervalSeconds: 60,
     });
@@ -229,6 +246,7 @@ Deno.test("run failure issue - not_code_fixable (usage limit) and unknown (timeo
       },
       ghFn,
       workDir: dir,
+      fleetAuthors: FLEET,
       nowSeconds: () => 1,
     });
     assertEquals(limit, {
@@ -249,6 +267,7 @@ Deno.test("run failure issue - not_code_fixable (usage limit) and unknown (timeo
       },
       ghFn,
       workDir: dir,
+      fleetAuthors: FLEET,
       nowSeconds: () => 1,
     });
     assertEquals(timeout, {
@@ -281,6 +300,7 @@ Deno.test("run failure issue - a run on a different monitored repo still files i
       },
       ghFn,
       workDir: dir,
+      fleetAuthors: FLEET,
       nowSeconds: () => 1,
     });
     const create = rec.creates[0]!;
@@ -307,6 +327,7 @@ Deno.test("run failure issue - every GitHub call failing → resolves suppressed
         report: OOM_REPORT,
         ghFn,
         workDir: dir,
+        fleetAuthors: FLEET,
         nowSeconds: () => 1,
       });
       releaseCompleted = true;
@@ -333,6 +354,7 @@ Deno.test("run failure issue - per-class write interval is enforced on the injec
       report: OOM_REPORT,
       ghFn: gh.ghFn,
       workDir: dir,
+      fleetAuthors: FLEET,
       nowSeconds: () => now,
       minWriteIntervalSeconds: 3600,
     });
@@ -342,6 +364,7 @@ Deno.test("run failure issue - per-class write interval is enforced on the injec
       report: OOM_REPORT,
       ghFn: gh.ghFn,
       workDir: dir,
+      fleetAuthors: FLEET,
       nowSeconds: () => now,
       minWriteIntervalSeconds: 3600,
     });
@@ -365,6 +388,7 @@ Deno.test("run failure issue - per-class write interval is enforced on the injec
       },
       ghFn: gh.ghFn,
       workDir: dir,
+      fleetAuthors: FLEET,
       nowSeconds: () => now,
       minWriteIntervalSeconds: 3600,
     });
@@ -375,6 +399,7 @@ Deno.test("run failure issue - per-class write interval is enforced on the injec
       report: OOM_REPORT,
       ghFn: gh.ghFn,
       workDir: dir,
+      fleetAuthors: FLEET,
       nowSeconds: () => now,
       minWriteIntervalSeconds: 3600,
     });
