@@ -68,6 +68,7 @@ import type {
 import type { SlotCeiling } from "./slot_governor.ts";
 import {
   formatSlotUtilisationSummary,
+  getIdleSlotCapacity,
   IdleFilerLatch,
   noteSlotActivity,
   noteSlotRetired,
@@ -3043,7 +3044,7 @@ async function runSlot(
         // together must not become N. The first observer of an idle episode
         // wins; `tryConsume` sets the flag synchronously, before the first
         // `await` below, so two slots cannot both win it.
-        if (pool.idleHooks && pool.idleHooks.filerLatch.tryConsume()) {
+        if (pool.idleHooks && pool.idleHooks.filerLatch.tryConsume(slotId)) {
           // Issue #898, extended by Issue #925: the repos this pass was
           // never shown. `excludedRepos` was read before the scan, and a
           // sibling can acquire a repository between that read and this
@@ -3718,11 +3719,11 @@ interface IdleHookState {
    */
   disagreement: IdleDisagreementTracker;
   /**
-   * Single-flight guard so N idle slots file at most one idle-task per idle
-   * episode (Issue #925). Reset at the start of every cycle — preserving
-   * today's at-most-once-per-cycle filing — and released whenever a slot
-   * takes a claim, so a long cycle that keeps cycling between work and idle
-   * can still supply the fleet.
+   * Capacity guard so each idle slot files at most one idle-task per idle
+   * episode, and the episode's total never exceeds the fleet's idle
+   * capacity (Issues #925, #1083). Reset at the start of every cycle, and
+   * released whenever a slot takes a claim, so a long cycle that keeps
+   * cycling between work and idle can still supply the fleet.
    */
   filerLatch: IdleFilerLatch;
 }
@@ -4061,7 +4062,11 @@ export async function runCoreLoop(
       workDir: resolvedWorkDir,
       log: (message) => deps.logError(message),
     }),
-    filerLatch: new IdleFilerLatch(),
+    // Issue #1083: the latch is bounded by the fleet's idle capacity, read
+    // from the #925 ledger at each attempt rather than fixed at one. Six
+    // idle slots may raise six idle tasks; a fully occupied fleet raises
+    // none.
+    filerLatch: new IdleFilerLatch(() => getIdleSlotCapacity()),
   };
   // Issue #2479: monotonic per-cycle counter so the liveness guard runs on
   // a bounded cadence (see LIVENESS_CHECK_CADENCE) instead of every cycle.
@@ -4916,9 +4921,10 @@ export async function runCoreLoop(
           // slot has drained and the answer is the same either way. What
           // changed is that it is no longer the ONLY place the hooks run:
           // an idle slot runs them mid-cycle (see `runSlot`), and the
-          // shared latch stops the two paths filing twice for one episode.
+          // shared latch bounds the two paths together by the fleet's idle
+          // capacity for one episode (Issue #1083).
           if (!tracker.foundClaimableIssue) {
-            if (idleHookState.filerLatch.tryConsume()) {
+            if (idleHookState.filerLatch.tryConsume(IDLE_CYCLE_OBSERVER_ID)) {
               const hookOutcome = await runIdleWorkHooks(deps, idleHookState, {
                 log: (message) => deps.log(message),
                 // The fleet-wide question, asked once every slot has
@@ -4938,9 +4944,12 @@ export async function runCoreLoop(
                 fleetIdleReason = hookOutcome.idleReason;
               }
             } else {
-              // An idle slot already filed for this episode (Issue #925).
+              // The idle slots have already used the episode's capacity
+              // (Issues #925, #1083) — the count names how many filed, so
+              // "the fleet raised nothing" is distinguishable in the log
+              // from "the fleet raised all it had capacity for".
               deps.log(
-                `[idle-hooks] foundClaimableIssue=${tracker.foundClaimableIssue} scanHadSuccess=${tracker.scanHadSuccess} skipping=idle-task-filer reason=slot_already_filed`,
+                `[idle-hooks] foundClaimableIssue=${tracker.foundClaimableIssue} scanHadSuccess=${tracker.scanHadSuccess} skipping=idle-task-filer reason=idle_capacity_used filed=${idleHookState.filerLatch.filedCount} idle_slots=${getIdleSlotCapacity()}`,
               );
             }
           } else {

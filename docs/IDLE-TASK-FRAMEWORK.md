@@ -533,31 +533,75 @@ repo:
    of the priority order so idle-task work is selected only when every higher
    tier is empty. It will never pre-empt PR feedback, CI fixes, planning, or
    new-issue work.
-4. **Single-flight idle episode** (Issue #925) — since the filer fires when *a
-   slot* has no claimable work, rather than only when the whole fleet found
-   nothing, one idle observation must not become many issues. The filer picks a
-   repo with no open `idle-task` issue, so three slots idling in the same cycle
-   would file three, and one slot re-scanning 74 times would file 74. An
-   `IdleFilerLatch` makes the **idle episode**, not the scan, the unit of
-   filing: the first slot to observe an empty scan wins it (the flag is set
-   synchronously, before that slot's first `await`, so two slots cannot both
-   win), every later observation in the same episode is refused
-   (`[idle-hooks] ... skipping=idle-task-filer reason=slot_already_filed` when
-   the end-of-cycle gate is the one refused), and the latch is released
-   whenever a slot takes a claim — the fleet has work again, so a later idle
-   stretch may file again. It is also released at the start of every cycle,
-   which preserves the pre-#925 cadence of at most one idle-task per cycle
-   whichever path files it. The audit and the census run behind the same
-   latch, so an idle slot's 74 re-scans cost one probe, not 74.
+4. **Idle capacity, per episode** (Issues #925, #1083) — since the filer
+   fires when *a slot* has no claimable work, rather than only when the whole
+   fleet found nothing, one slot re-scanning 74 times would otherwise file 74
+   issues. The `IdleFilerLatch` makes the **idle observer within an episode**
+   the unit of filing, bounded by the fleet's idle capacity: each slot wins one
+   permit per episode (recorded synchronously, before that slot's first
+   `await`, so two slots cannot both win one), its later observations are
+   refused, and the episode's total can never exceed the number of slots not
+   currently holding a claim — read at each attempt from the same
+   `slot_idle_accounting` ledger that measures idle time (Issue #925). Six idle
+   slots may therefore each raise one idle task, and a fully occupied fleet
+   raises none. Issue #925's original latch was a single boolean, which capped a host
+   at **one** idle task however many of its slots were empty; that is the cap
+   Issue #1083 measured live as four Vibe Coders, eight slots and one idle
+   task. When the end-of-cycle gate is the one refused it logs
+   `[idle-hooks] ... skipping=idle-task-filer reason=idle_capacity_used
+   filed=<n> idle_slots=<n>`. The latch is released whenever a slot takes a
+   claim — the fleet has work again, so a later idle stretch may file again —
+   and at the start of every cycle. The audit and the census run behind the
+   same latch, so an idle slot's 74 re-scans cost one probe, not 74.
 
-**Fleet-global existence gate.** Before the per-repo loop — right
-after the cross-repo wrapper check — the filer asks one whole-set question: does
-**any** monitored repo hold an open `top-priority`/`work-on`/`low-priority`
-issue **a slot could claim**? If so it skips filing entirely
-(`action=skipped reason=approved_work_in_flight scope=monitored_set`). Work
-merely _deferred_ this cycle by `nice` tiering, fair rotation, or
-local/cross-worker cooldown still counts — it will be claimed on a later cycle,
-so the fleet has real work and an idle-task must not be filed.
+**Per-repo wrapper exclusivity (Issues #2092, #1083).** Before the per-repo
+loop the filer takes a census of every monitored repo already holding an open
+`idle-task` wrapper and subtracts them from the candidate set. Each refusal is
+logged by name —
+`[idle-task] template=<t> repo=<owner/repo> issue=<n> action=skipped
+reason=existing_wrapper_open scope=repo` — and only when *every* monitored repo
+holds one does the tick skip altogether
+(`reason=existing_wrapper_open scope=monitored_set held=<n>`).
+
+The gate used to be one open wrapper across the **entire** monitored set
+(#2092). That does prevent the #2089 fan-out, and it also prevents the fleet
+ever using more than one slot on idle work: Issue #1083 measured four Vibe
+Coders, eight slots, two issues in flight, fourteen empty repositories and
+exactly one idle task. The operator's concurrency rule is *one issue in flight
+per work stream*, and applied to idle work that reads **one wrapper per
+repository**. #2089's actual protection is kept: no repository accumulates two
+wrappers, and a single tick files at most one, so the next tick re-decides from
+fresh state rather than scattering wrappers across the fleet in one pass.
+
+**Fleet-global startable-work gate, bounded by idle capacity.** After the
+wrapper census the filer counts the monitored repos holding an open
+`top-priority`/`work-on`/`low-priority` issue **a slot could claim**, and skips
+filing only when that count reaches the number of idle slots
+(`action=skipped reason=approved_work_in_flight scope=monitored_set
+startable_repos=<n> idle_slots=<n>`). Work merely _deferred_ this cycle by
+`nice` tiering, fair rotation, or local/cross-worker cooldown still counts — it
+will be claimed on a later cycle, so that slot has real work waiting.
+
+Issue #1083 turned this from a boolean into a comparison. As a boolean, **one**
+startable issue anywhere suppressed **all** idle filing everywhere, so
+twenty-five `work-on` issues waiting in one repository kept fourteen empty
+repositories empty while six slots idled. A startable issue occupies one slot,
+not eight. The unit counted is the repository rather than the issue, because
+work inside a repository is serialised per work stream; that under-states the
+real work available, which errs towards filling an idle slot rather than
+leaving it empty, and an idle task is the lowest tier in the queue so it can
+never take a slot from the work it was counted beside. A separate
+`reason=no_idle_capacity` skip covers the quiet case: every slot busy means no
+slot needs an idle task, however many repositories are empty.
+
+The reading arrives on the command's `--idle-slots` flag, which the worker
+loop fills from `getIdleSlotCapacity()` in
+[`worker/deno/lib/slot_idle_accounting.ts`](../worker/deno/lib/slot_idle_accounting.ts)
+— the configured slot count less the slots currently holding a claim. It is
+never a constant: the operator's rule is *raise only enough idle tasks to keep
+the Vibe Coders busy, and never more*, so both halves of that sentence are
+answered by the same number. A bare CLI invocation that omits the flag is
+treated as one idle slot, which is the pre-Issue-#1083 bound.
 
 Issue #1050 narrowed "could claim" from labels to the claim scan's own
 definition — *can a slot start this right now*, not *does it exist*. The gate
@@ -602,7 +646,7 @@ before filing a fresh wrapper. The full per-repo evaluation order (logged with
 
 | Order | Gate                          | Skips when                                                                                                                                                                                                                          |
 | ----- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 | Cross-repo wrapper check | Any monitored repo already has an open `idle-task` issue. Reason: `existing_wrapper_open`. |
+| 1 | Per-repo wrapper census | The target repo already holds an open `idle-task` issue, or every monitored repo does. Reason: `existing_wrapper_open` (`scope=repo` per refusal, `scope=monitored_set` for the whole-tick skip). |
 | 2     | Per-repo label dedup          | The target repo already has an open `idle-task` issue (defence-in-depth against the cross-repo TOCTOU). Reason: `duplicate`.                                                                                                        |
 | 3 | Output-backlog gate | The target repo has `BACKLOG_THRESHOLD` (currently 6) or more open issues carrying `template.outputLabel`. The previous batch is still being remediated. Reason: `output_backlog`. |
 | 4 | `shouldFile` veto | The template's own `shouldFile` returns `false`. `security-scan` uses this to refuse a new run while open `security` findings or an existing `Run a security scan` wrapper still exists. Reason: `pending_results`. |
@@ -1112,23 +1156,23 @@ stays distinguishable from "the detector never ran":
 ([`worker/deno/commands/maybe_file_idle_task.ts`](../worker/deno/commands/maybe_file_idle_task.ts))
 applies two layered checks before filing.
 
-1. **Cross-repo wrapper check.** Before any per-repo work, the
-   command calls
-   [`findAnyOpenIdleTaskWrapper`](../worker/deno/lib/idle_task_issue.ts) which
-   scans **every** monitored repo for an open `idle-task`-labelled issue. If a
-   wrapper exists anywhere in the monitored set, filing is skipped entirely with
-   `action=skipped reason=existing_wrapper_open`, and the existing wrapper is
-   picked up by the next iteration of the main loop through the standard
-   priority-dispatch path. This guarantees at most one open `idle-task` wrapper
-   across the entire monitored set, and prevents the failure mode of where
-   successive idle ticks each picked a different "clean" repo from the per-repo
-   shuffle and fanned wrappers out across the fleet.
-2. **Per-repo shuffle and file.** Only when the entire monitored set is clean
-   does the command shuffle the repo list with a Fisher–Yates pass backed by
-   `crypto.getRandomValues` and walk the shuffled list, filing
-   into the first repo whose per-repo dedup query also comes back clean. The
-   per-repo dedup loop is preserved as defence-in-depth against TOCTOU races
-   between the cross-repo check and the per-repo file.
+1. **Per-repo wrapper census.** Before any per-repo work, the command calls
+   [`findOpenIdleTaskWrappers`](../worker/deno/lib/idle_task_issue.ts) which
+   scans **every** monitored repo for an open `idle-task`-labelled issue and
+   returns each repo that holds one. Those repos are removed from the candidate
+   set, each with a logged refusal naming the repo and the issue
+   (`action=skipped reason=existing_wrapper_open scope=repo`); only when every
+   monitored repo holds one is the whole tick skipped
+   (`scope=monitored_set`). This guarantees at most one open `idle-task`
+   wrapper **per repository** (Issue #1083) — never one across the fleet, which
+   capped eight slots at a single idle task — while keeping the protection
+   #2089 was really built for: a tick files at most one wrapper, so successive
+   idle ticks cannot fan wrappers out across the fleet in one pass.
+2. **Per-repo shuffle and file.** The command shuffles the surviving candidates
+   with a Fisher–Yates pass backed by `crypto.getRandomValues` and walks the
+   shuffled list, filing into the first repo whose per-repo dedup query also
+   comes back clean. The per-repo dedup loop is preserved as defence-in-depth
+   against TOCTOU races between the census and the per-repo file.
 
 The shuffle prevents a busy lead-of-list repo from starving the rest: if the
 first repo by declaration order already has an open idle-task issue, every
@@ -1554,9 +1598,9 @@ weighted-template + shuffled-repo path.
 
 ```mermaid
 flowchart TD
-    T["idle tick"] --> X{"cross-repo wrapper<br/>open anywhere?"}
+    T["idle tick"] --> X{"every repo already<br/>holds a wrapper?"}
     X -- yes --> S1["skip — existing_wrapper_open"]
-    X -- no --> F{"fleet holds approved<br/>work-on work?"}
+    X -- no --> F{"startable repos ≥<br/>idle slots?"}
     F -- yes --> S2["skip — approved_work_in_flight"]
     F -- no --> D["due list (cached 6 h)"]
     D --> G{"first overdue pair<br/>clears every gate?"}
@@ -1569,8 +1613,8 @@ flowchart TD
 
 The load-bearing rules:
 
-- **Preference, never permission.** An overdue pair still passes cross-repo
-  wrapper dedup, the fleet-global `approved_work_in_flight` gate,
+- **Preference, never permission.** An overdue pair still passes the per-repo
+  wrapper census, the capacity-bounded `approved_work_in_flight` gate,
   per-repo dedup, cooldown, busy, backlog and the
   template's own `shouldFile` veto. Both paths share one implementation
   of that gate sequence, so the bias cannot file where the random path could not.
@@ -1719,9 +1763,9 @@ offenders, most overdue first).
 
 The report is **reporting only** — a miss raises no issue and files nothing,
 consistent with the module's read-only contract. Whether the floor is reachable
-at all given one open wrapper fleet-wide and the `approved_work_in_flight`
-suppression is an empirical question; this is how it gets answered with
-data rather than argument.
+at all given one open wrapper per repository and the capacity-bounded
+`approved_work_in_flight` suppression is an empirical question; this is how it
+gets answered with data rather than argument.
 
 ### Per-repo cooldown gate
 
