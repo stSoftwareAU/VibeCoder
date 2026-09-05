@@ -531,7 +531,8 @@ reviewer told what to conclude is not a reviewer.
   for** (scope creep); (3) which requirements **look implemented but are
   implemented wrongly**. Ask it to return one `met` / `partial` / `missing`
   verdict per stated criterion, plus an `unrequested` entry per change it cannot
-  trace to the issue.
+  trace to the issue. All four are verdicts and all four are recorded the same
+  way, so an `unrequested` entry carries `reviewer: unrequested` like the rest.
 - **Standards reviewer** — inputs: the same diff and `CODING-STANDARDS.md`. One
   question: where does the diff depart from the repo's documented standards?
   Ask it to return one `violation` entry per departure, with the `file:line` it
@@ -562,7 +563,11 @@ the summary says who judged it:
 ```
 
 - **Every criterion entry names the reviewer's verdict** — `reviewer: met`,
-  `reviewer: partial`, `reviewer: missing` or `reviewer: unrequested`.
+  `reviewer: partial`, `reviewer: missing` or `reviewer: unrequested`. **Every
+  entry, `unrequested` included**: an `unrequested` line is the Spec reviewer's
+  own finding, so it carries `reviewer: unrequested` exactly like the other
+  three. Leaving that field off an `unrequested` entry is the single most
+  common way this gate stops a finished run.
 - **The reviewer's verdict challenges yours; it does not silently lose.** A
   reviewer that saw only the diff is sometimes wrong about a criterion satisfied
   by code it could not see. You may depart from its verdict, but only out loud:
@@ -620,7 +625,9 @@ one is broken:
 - **Every `partial` and `missing` carries a one-line reason.** An unexplained gap
   is a failure to surface, not a pass.
 - **Name your scope creep.** Add an `unrequested` entry for any change in the
-  diff that is not traceable to the issue, with a one-line reason. This is the
+  diff that is not traceable to the issue, carrying **both**
+  `reviewer: unrequested` and a one-line `reason:` — copy the `unrequested` line
+  from the block above and fill in the two angle-bracket slots. This is the
   output surface for the Change Scope rule above — if you cannot justify the
   change in one line, revert it instead of listing it.
 - **Do not inflate a status.** `met` means the criterion is genuinely satisfied
@@ -768,7 +775,7 @@ The file MUST contain:
    block described in [Acceptance-Criteria Closure](#acceptance-criteria-closure--answer-the-criteria-before-the-pr)
    — the Spec reviewer's provenance marker, then one `met` / `partial` /
    `missing` entry per criterion with its `reviewer:` verdict, plus any
-   `unrequested` change
+   `unrequested` change, which carries `reviewer: unrequested` and a `reason:`
 5. **Standards Review** (only when the issue states criteria): the Standards
    reviewer's block described in [Independent Review Before the PR](#independent-review-before-the-pr--spec-and-standards-on-separate-axes)
    — its provenance marker, then each `violation` with evidence and outcome, and

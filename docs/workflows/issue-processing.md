@@ -827,6 +827,75 @@ flowchart TD
     style X fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
+## 🧾 A summary shortfall after the PR is not a failed run
+
+The three summary gates above — acceptance-criteria closure, independent review,
+reproduction status — sit at the completion phase's PR-creation chokepoint, so
+blocking one normally costs the next attempt a rewrite and nothing else. The
+chokepoint is not always ahead of the PR: the agent raises its own PR from inside
+the execute phase often enough that the completion phase carries a self-healing
+recovery path for exactly that.
+
+On 2026-09-05 that gap cost the fleet nearly half its spend. Four of six failed
+runs created their PR **25–68 seconds before** being recorded as failures, and
+all four PRs merged. Nine of the day's twenty-five phase failures were summary
+format rules — most of them an `unrequested` entry naming no `reviewer:` verdict.
+A `failure` cools the issue down, releases the claim and returns the issue to the
+claimable pool, so a sibling host redid finished work at a mean $10.80 a run; and
+with nine format blocks in the channel, a genuine defect was one signal in noise.
+
+**The rule.** A document rule broken when the run has already raised its PR is
+reported as what it is — the work is done, the summary is short:
+
+| Outcome | When | What follows |
+| --- | --- | --- |
+| `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
+| `summary_incomplete` | a PR exists and a summary rule is unmet | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
+
+With **no** PR for the run's branch the gate blocks exactly as before — the whole
+point of a pre-PR gate is that the next attempt writes the summary the comment
+asks for. Either way the gate's remediation comment is posted, so the shortfall
+is on the issue thread rather than only in one host's log.
+
+**The security gate is the deliberate exception, and it runs first.** A PR that
+closes a `security`-labelled finding without its vulnerability-fix evidence stops
+the run, PR or no PR: that one is not a documentation shortfall. Order is what
+enforces it — a `security` run whose summary also broke a format rule would
+otherwise leave through the first summary gate and never be asked for its
+evidence, so the security gate is now evaluated ahead of all three.
+
+**Satisfy the rule rather than fail it.** An `unrequested` entry with no
+`reviewer:` is a template filled in wrongly, not a judgement the run got wrong —
+`prompts/issue/` now states the verdict field on every surface that names
+`unrequested` (the reviewer brief, the closure rules, the summary contents list),
+not only in the example block.
+
+**Implementation.** `reportSummaryRuleBlock` in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
+`summaryIncompleteOutcome` in
+[`run_outcome.ts`](../../worker/deno/lib/run_outcome.ts), and the release-comment
+rendering in [`heartbeat_storage.ts`](../../worker/deno/lib/heartbeat_storage.ts)
+(Issue #1140).
+
+```mermaid
+flowchart TD
+    A["Branch pushed, quality gate passed"] --> SEC{"Security-fix gate<br/>vulnerability-fix evidence?"}
+    SEC -->|"missing"| F2["Run fails — PR or no PR"]
+    SEC -->|"satisfied or inactive"| G{"Summary gates<br/>rule satisfied?"}
+    G -->|yes| PR["gh pr create"]
+    G -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
+    Q -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
+    Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
+    style SEC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style Q fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style S fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style F fill:#c45858,stroke:#6b2020,color:#fff
+    style F2 fill:#c45858,stroke:#6b2020,color:#fff
+```
+
 ## 🩹 Orphaned milestone merge — self-heal, then bounce
 
 A merged PR is not a landed change. When a child PR merges into
