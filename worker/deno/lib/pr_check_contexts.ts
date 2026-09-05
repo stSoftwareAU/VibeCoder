@@ -45,12 +45,12 @@ export interface ExemptContext {
 }
 
 /**
- * Contexts that report on a `main` PR and are deliberately **not** required.
+ * Contexts exempt on **every** branch, whatever the ruleset.
  *
  * Each entry is a decision, not an oversight — a new CI job is missing from
  * the ruleset until someone either requires it or adds it here with a reason.
  */
-export const EXEMPT_CONTEXTS: readonly ExemptContext[] = [
+const ALWAYS_EXEMPT_CONTEXTS: readonly ExemptContext[] = [
   {
     context: "Full-history secrets sweep (gitleaks + trufflehog)",
     reason: "the weekly full-history sweep; its `if:` skips it on every pull " +
@@ -62,6 +62,13 @@ export const EXEMPT_CONTEXTS: readonly ExemptContext[] = [
       "advisory today — making the dependency review block a merge is a " +
       "separate operator decision from Issue #858, taken once it is green",
   },
+];
+
+/**
+ * Contexts that report on a `main` PR and are deliberately **not** required.
+ */
+export const EXEMPT_CONTEXTS: readonly ExemptContext[] = [
+  ...ALWAYS_EXEMPT_CONTEXTS,
   {
     context: "milestone-resurrection",
     reason:
@@ -70,6 +77,18 @@ export const EXEMPT_CONTEXTS: readonly ExemptContext[] = [
       "gate ordinary merges on a job that never reports",
   },
 ];
+
+/**
+ * Contexts that report on a `milestone/**` PR and are deliberately **not**
+ * required (Issue #1073).
+ *
+ * The one difference from `main` is `milestone-resurrection`: its `if:` is
+ * true for every PR whose base is a milestone branch, so on this ruleset it
+ * reports on every PR and is required rather than exempt — which is the check
+ * that would have caught the resurrection of Issue #1042 at the door.
+ */
+export const MILESTONE_EXEMPT_CONTEXTS: readonly ExemptContext[] =
+  ALWAYS_EXEMPT_CONTEXTS;
 
 /** The result of comparing the required contexts against the derived ones. */
 export interface ContextReconciliation {

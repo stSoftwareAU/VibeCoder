@@ -608,6 +608,45 @@ gh api --method PUT repos/stSoftwareAU/VibeCoder/rulesets/21019403 \
   --input infra/rulesets/main.json
 ```
 
+## This repository's own `Milestone` ruleset
+
+The `Milestone` ruleset required exactly two contexts — `gitleaks` and
+`semgrep`. No tests, no `validate`, no shards, so **a PR into a milestone
+branch could merge with the entire test suite red**, which is how PR #1039
+landed with `validate (tests 1/4)` failing and rode a resurrected
+`fleet_health.ts` onto the milestone branch (Issue #1042). A permanently-red
+check on the milestone branch is indistinguishable from no check, so every PR
+after it inherited the red.
+
+Milestone branches need the gate more than `main`, not less: a milestone branch
+is where a multi-PR feature is assembled and where the fault is introduced,
+while `main`'s ruleset is only the last net.
+[`infra/rulesets/milestone.json`](../infra/rulesets/milestone.json) therefore
+requires every context `main` requires, plus `milestone-resurrection` — the
+Issue #1048 check that reports on milestone PRs and on no ordinary `main` PR.
+The differences that remain between the two rulesets are recorded, with their
+reasons, in
+[`infra/rulesets/README.md`](../infra/rulesets/README.md).
+
+One command reconciles all three committed payloads — `main`, `Milestone` and
+the release tags — against what GitHub applies. It is read-only, exits
+non-zero on drift, fails loud when a ruleset is absent, and skips (saying so)
+without a credential:
+
+```bash
+deno run --allow-all worker/deno/mod.ts check-rulesets
+```
+
+```mermaid
+flowchart LR
+    P["infra/rulesets/*.json<br/>main · milestone · release-tags"] --> C{"check-rulesets"}
+    G["Rulesets GitHub applies"] --> C
+    C -->|differs| D["Per-field diff + the gh api command"]
+    C -->|no ruleset| A["ABSENT — fails loud"]
+    C -->|no credential| S["SKIPPED — never a pass"]
+    C -->|agrees| K["Every gate is the committed one"]
+```
+
 ## Failure and recovery modes
 
 | Situation                                           | Worker behaviour                                           | Recovery                                                                       |
@@ -648,6 +687,10 @@ gh api --method PUT repos/stSoftwareAU/VibeCoder/rulesets/21019403 \
 - [`worker/deno/lib/main_branch_ruleset_check.ts`](../worker/deno/lib/main_branch_ruleset_check.ts)
   — `checkMainBranchRuleset()`, the read-only live-versus-committed
   reconciliation behind `check-main-ruleset`.
+- [`worker/deno/lib/committed_rulesets.ts`](../worker/deno/lib/committed_rulesets.ts)
+  — `COMMITTED_RULESETS` / `reconcileCommittedRulesets()`, the registry of every
+  payload under `infra/rulesets/` and the one reconciliation behind
+  `check-rulesets` (Issue #1073). A payload nobody registers fails the suite.
 - [`worker/deno/lib/ruleset_reconcile.ts`](../worker/deno/lib/ruleset_reconcile.ts)
   — `reconcileRuleset()` / `diffRulesetPayloads()`, the fetch and the
   drift/absent/skipped semantics that check shares with the release-tag one

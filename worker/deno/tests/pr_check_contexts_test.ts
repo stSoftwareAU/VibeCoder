@@ -17,6 +17,7 @@ import type { WorkflowFile } from "../lib/workflow_scan_common.ts";
 import { readWorkflowFiles } from "../lib/workflow_scan_common.ts";
 import {
   EXEMPT_CONTEXTS,
+  MILESTONE_EXEMPT_CONTEXTS,
   pullRequestCheckContexts,
   reconcileRequiredContexts,
 } from "../lib/pr_check_contexts.ts";
@@ -24,6 +25,10 @@ import {
   loadMainBranchRuleset,
   requiredContexts,
 } from "../lib/main_branch_ruleset.ts";
+import {
+  loadMilestoneBranchRuleset,
+  MILESTONE_BRANCH_RULESET_PATH,
+} from "../lib/committed_rulesets.ts";
 
 /** Build a parsed workflow file from YAML source. */
 function workflow(name: string, yaml: string): WorkflowFile {
@@ -278,4 +283,59 @@ Deno.test("this repository - every PR check on main is required or exempt", asyn
       result.staleExemptions.join(", ")
     }`,
   );
+});
+
+Deno.test("this repository - every PR check on a milestone branch is required or exempt", async () => {
+  // The milestone branch is where a multi-PR feature is assembled, so its
+  // ruleset is reconciled against the workflows exactly as `main`'s is
+  // (Issue #1073). Any branch under `milestone/` derives the same contexts.
+  const files = await readWorkflowFiles(repoRoot());
+  const derived = pullRequestCheckContexts(files, "milestone/example");
+  assert(derived.length > 0, "no PR check contexts derived from the workflows");
+  const required = requiredContexts(
+    await loadMilestoneBranchRuleset(),
+    MILESTONE_BRANCH_RULESET_PATH,
+  );
+  const result = reconcileRequiredContexts(
+    required,
+    derived,
+    MILESTONE_EXEMPT_CONTEXTS,
+  );
+  assertEquals(
+    result.missing,
+    [],
+    `these checks run on every milestone PR but are not required: ${
+      result.missing.join(", ")
+    }`,
+  );
+  assertEquals(
+    result.phantom,
+    [],
+    `these contexts are required but nothing reports them: ${
+      result.phantom.join(", ")
+    }`,
+  );
+  assertEquals(
+    result.staleExemptions,
+    [],
+    `these exemptions name a check that no longer exists: ${
+      result.staleExemptions.join(", ")
+    }`,
+  );
+});
+
+Deno.test("MILESTONE_EXEMPT_CONTEXTS - the resurrection check is not exempt there", () => {
+  // It is exempt on `main`, where its `if:` never fires, and required on a
+  // milestone branch, where it reports on every PR (Issue #1048).
+  const exempt = MILESTONE_EXEMPT_CONTEXTS.map((e) => e.context);
+  assert(!exempt.includes("milestone-resurrection"), exempt.join(", "));
+  assert(
+    EXEMPT_CONTEXTS.map((e) => e.context).includes("milestone-resurrection"),
+  );
+  for (const entry of MILESTONE_EXEMPT_CONTEXTS) {
+    assert(
+      entry.reason.length > 20,
+      `${entry.context} needs a reason, got "${entry.reason}"`,
+    );
+  }
 });

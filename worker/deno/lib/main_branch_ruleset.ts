@@ -83,13 +83,18 @@ function contextsOf(rule: RulesetRule | undefined): string[] {
  * A ruleset with no `required_status_checks` rule throws rather than
  * returning an empty list: "no contexts" and "no rule" are the same value but
  * very different facts, and the second one means nothing is gated at all.
+ *
+ * `source` names the payload in that error — the milestone ruleset of Issue
+ * #1073 is read by the same function.
  */
-export function requiredContexts(ruleset: BranchRuleset): string[] {
+export function requiredContexts(
+  ruleset: BranchRuleset,
+  source: string = MAIN_BRANCH_RULESET_PATH,
+): string[] {
   const rule = statusCheckRule(ruleset.rules);
   if (!rule) {
     throw new Error(
-      `${MAIN_BRANCH_RULESET_PATH}: no required_status_checks rule — ` +
-        "nothing would gate a merge",
+      `${source}: no required_status_checks rule — nothing would gate a merge`,
     );
   }
   return contextsOf(rule);

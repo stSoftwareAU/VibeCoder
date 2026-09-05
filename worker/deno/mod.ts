@@ -186,6 +186,7 @@ import { workerCheckoutUpdateCommand } from "./commands/worker_checkout_update.t
 import { auditDefaultBranchRulesetsCommand } from "./commands/audit_default_branch_rulesets.ts";
 import { checkMainRulesetCommand } from "./commands/check_main_ruleset.ts";
 import { checkReleaseTagRulesetCommand } from "./commands/check_release_tag_ruleset.ts";
+import { checkRulesetsCommand } from "./commands/check_rulesets.ts";
 import { secretsHistoryScanCommand } from "./commands/secrets_history_scan.ts";
 import { securityTabletopCommand } from "./commands/security_tabletop.ts";
 import { publishDecisionCheckCommand } from "./commands/publish_decision_check.ts";
@@ -383,6 +384,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(auditDefaultBranchRulesetsCommand);
   registry.register(checkMainRulesetCommand);
   registry.register(checkReleaseTagRulesetCommand);
+  registry.register(checkRulesetsCommand);
   registry.register(secretsHistoryScanCommand);
   registry.register(securityTabletopCommand);
   registry.register(publishDecisionCheckCommand);
@@ -634,6 +636,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       // Reads git history through --repo-dir/--branch/--default-branch; runs
       // in CI on a checkout that has no .config.json (Issue #1048).
       "check-resurrected-files",
+      // All three committed rulesets at once; needs no config (Issue #1073).
+      "check-rulesets",
       // Full-history secrets sweep; runs in CI with no config (Issue #4190).
       "secrets-history-scan",
       // Hostile-fixture tabletop; runs on a schedule with no config (#4194).
@@ -756,6 +760,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       // Reads git history through --repo-dir/--branch/--default-branch; runs
       // in CI on a checkout that has no .config.json (Issue #1048).
       "check-resurrected-files",
+      // All three committed rulesets at once; needs no config (Issue #1073).
+      "check-rulesets",
       // Hostile-fixture tabletop; runs on a schedule with no config (#4194).
       "security-tabletop",
       // Dossier checker; a pure file check with no config (Issue #4200).

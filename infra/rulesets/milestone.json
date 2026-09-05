@@ -1,0 +1,45 @@
+{
+  "name": "Milestone",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": {
+    "ref_name": {
+      "include": [
+        "refs/heads/milestone/**"
+      ],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "non_fast_forward"
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": true,
+        "required_status_checks": [
+          { "context": "changes", "integration_id": 15368 },
+          { "context": "container", "integration_id": 15368 },
+          { "context": "gitleaks", "integration_id": 15368 },
+          { "context": "markdownlint", "integration_id": 15368 },
+          { "context": "milestone-resurrection", "integration_id": 15368 },
+          { "context": "semgrep", "integration_id": 15368 },
+          { "context": "supply-chain-gate", "integration_id": 15368 },
+          { "context": "validate", "integration_id": 15368 },
+          { "context": "validate (container)", "integration_id": 15368 },
+          { "context": "validate (no-runtime)", "integration_id": 15368 },
+          { "context": "validate (tests 1/4)", "integration_id": 15368 },
+          { "context": "validate (tests 2/4)", "integration_id": 15368 },
+          { "context": "validate (tests 3/4)", "integration_id": 15368 },
+          { "context": "validate (tests 4/4)", "integration_id": 15368 }
+        ]
+      }
+    }
+  ]
+}
