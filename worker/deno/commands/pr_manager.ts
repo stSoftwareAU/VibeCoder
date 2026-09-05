@@ -308,7 +308,8 @@ export const prManagerCommand: Command = {
           if (merge.value.merged) {
             return {
               success: true,
-              message: `PR #${prNumber} merged directly after the pre-merge gate`,
+              message:
+                `PR #${prNumber} merged directly after the pre-merge gate`,
             };
           }
           return {

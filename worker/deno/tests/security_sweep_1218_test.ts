@@ -187,9 +187,8 @@ Deno.test("workerLogCleanupCommand - leaves unrelated old files in the log direc
         `${kept} must survive the sweep`,
       );
     }
-    const foreign =
-      (result.data as { foreignDeleted?: string[] } | undefined)
-        ?.foreignDeleted ?? [];
+    const foreign = (result.data as { foreignDeleted?: string[] } | undefined)
+      ?.foreignDeleted ?? [];
     assertEquals(foreign.length, 2);
     assertEquals(
       foreign.every((p: string) =>
@@ -206,25 +205,29 @@ Deno.test("isForeignDebrisName - names worker debris only", async () => {
   const { isForeignDebrisName } = await import(
     "../lib/worker_log_cleanup.ts"
   );
-  for (const debris of [
-    "node-17422.log",
-    "node-17422.log.gz",
-    "stage-build.state",
-    "launch-2026-01-01.log",
-    "worker-99.log.3",
-    "agent-vibe-abc.jsonl.1",
-  ]) {
+  for (
+    const debris of [
+      "node-17422.log",
+      "node-17422.log.gz",
+      "stage-build.state",
+      "launch-2026-01-01.log",
+      "worker-99.log.3",
+      "agent-vibe-abc.jsonl.1",
+    ]
+  ) {
     assertEquals(isForeignDebrisName(debris), true, debris);
   }
-  for (const keep of [
-    ".bash_history",
-    ".gitconfig",
-    ".netrc",
-    "notes.txt",
-    "postgres.log",
-    "id_rsa",
-    "backup.tar.gz",
-  ]) {
+  for (
+    const keep of [
+      ".bash_history",
+      ".gitconfig",
+      ".netrc",
+      "notes.txt",
+      "postgres.log",
+      "id_rsa",
+      "backup.tar.gz",
+    ]
+  ) {
     assertEquals(isForeignDebrisName(keep), false, keep);
   }
 });
@@ -245,14 +248,16 @@ Deno.test("isSafeShellIdentifier - accepts identifiers and refuses injection sha
   for (const good of ["PLAN", "CLAUDE_MODEL_PLAN", "_x9"]) {
     assertEquals(isSafeShellIdentifier(good), true, good);
   }
-  for (const bad of [
-    "PLAN; PATH=/TMP/EVIL; #",
-    "PLAN`id`",
-    "PLAN$(id)",
-    "PLAN PLAN",
-    "9PLAN",
-    "",
-  ]) {
+  for (
+    const bad of [
+      "PLAN; PATH=/TMP/EVIL; #",
+      "PLAN`id`",
+      "PLAN$(id)",
+      "PLAN PLAN",
+      "9PLAN",
+      "",
+    ]
+  ) {
     assertEquals(isSafeShellIdentifier(bad), false, bad);
   }
 });
