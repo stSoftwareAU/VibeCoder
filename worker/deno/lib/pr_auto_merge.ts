@@ -148,6 +148,13 @@ export interface EnableAutoMergeOptions {
   directMergeFn?: typeof directMergePr;
   /** Base branch, when the caller already knows it (saves a lookup). */
   baseRefName?: string;
+  /**
+   * Fleet logins, so the gated direct merge can tell a genuine review from a
+   * sibling fleet account's approval (Issue #1082). Supplying them arms the
+   * approved-default-branch path on an unprotected base — the only path that
+   * can land such a PR at all. Omitted, the Issue #2416 refusal stands.
+   */
+  fleetAuthors?: readonly string[];
 }
 
 /** Result of enabling auto-merge. */
@@ -392,10 +399,20 @@ export async function enableAutoMerge(
       baseProtectionMemo.set(memoKey, protectedBase);
     }
     if (protectedBase !== true) {
+      // Issue #1082: an unprotected base is the only place the default-branch
+      // guard has no alternative path to offer, so hand the gated merge the
+      // fleet logins and let a genuine outside approval stand in for the
+      // branch protection that is not there.
       const merge = await (options.directMergeFn ?? directMergePr)(
         repo,
         prNumber,
         ghCommandFn,
+        undefined,
+        options.fleetAuthors && options.fleetAuthors.length > 0
+          ? {
+            approvedDefaultBranch: { fleetAuthors: options.fleetAuthors },
+          }
+          : {},
       );
       if (!merge.ok) {
         return {
@@ -409,6 +426,13 @@ export async function enableAutoMerge(
           result: AutoMergeResult.MergedDirectly,
           message:
             `PR #${prNumber} merged directly onto unprotected '${baseRefName}' after the pre-merge gate (Issue #4375)`,
+        };
+      }
+      if (merge.value.blocked === "default_branch_unapproved") {
+        return {
+          result: AutoMergeResult.Deferred,
+          message:
+            `PR #${prNumber} held on default branch '${baseRefName}': no approving review from outside the fleet, and the base has no required checks to enforce one (Issue #1082)`,
         };
       }
       return {

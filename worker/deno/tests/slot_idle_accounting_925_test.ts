@@ -318,18 +318,25 @@ Deno.test(
       `expected a named occupied slot in: ${line}`,
     );
 
-    // The audit ran wherever the filer ran, told the truth about this slot,
-    // and was shown the sibling's repo as excluded — without which it would
-    // raise `mis_classification` on every observation (Issue #898).
+    // The audit ran wherever the filer ran and told the truth about this slot.
+    //
+    // Issue #1091: the sibling's repository is deliberately **not** excluded
+    // any more. Issue #898 excluded it because the scan skipped the whole
+    // repository unseen, so the two instruments had never disagreed about it;
+    // a slot's hold now occupies one work stream, the scan evaluates every
+    // other stream of that repository, and a disagreement about them is real
+    // evidence rather than an artefact of the hold. Only the maintenance
+    // lane's whole-repository lease still reaches this set.
     assert(audits.length > 0, "the audit ran at the slot's gate");
     const slotAudit = audits[0] as {
       scanFoundClaimable: boolean;
       scanExcludedRepos: readonly string[];
     };
     assertEquals(slotAudit.scanFoundClaimable, false);
-    assert(
-      slotAudit.scanExcludedRepos.includes("o/busy"),
-      `expected the sibling's repo in scanExcludedRepos; got ${
+    assertEquals(
+      [...slotAudit.scanExcludedRepos],
+      [],
+      `a sibling slot's hold must not hide its repository from the audit; got ${
         JSON.stringify(slotAudit.scanExcludedRepos)
       }`,
     );
@@ -364,8 +371,16 @@ Deno.test(
 );
 
 Deno.test(
-  "two slots idling in the same cycle file one idle-task, not two (Issue #925)",
+  "two slots idling beside a busy one file two idle-tasks, one each (Issues #925, #1083)",
   async () => {
+    // Documented business-logic change (Issue #1083). This test used to
+    // assert one filing for the whole host, which is what held four Vibe
+    // Coders with eight slots at a single idle task. An idle slot is a
+    // fault, not a resting state, so each idle slot may raise one idle task
+    // — and no more: the bound is the fleet's idle capacity, here three
+    // configured slots less the one holding a claim. Eight empty scans by
+    // those two slots are still one episode, so eight filings would be the
+    // #925 defect and are what the count below rules out.
     const { filerCalls } = await runFleet({
       slots: 3,
       busyRepos: ["o/busy"],
@@ -373,8 +388,8 @@ Deno.test(
     });
     assertEquals(
       filerCalls,
-      1,
-      "the filer picks a repo with no open idle-task; N idle slots must not file N issues",
+      2,
+      "two idle slots may each file once; re-scans must not multiply it",
     );
   },
 );
@@ -603,18 +618,32 @@ Deno.test(
 // The latch
 // ---------------------------------------------------------------------------
 
+// Documented business-logic change (Issue #1083): the latch no longer refuses
+// every observer after the first. A second *slot* going idle is exactly what
+// the operator wants filled, so the bound is the fleet's idle capacity, not
+// one. What #925 was really protecting — one slot re-scanning 74 times must
+// not file 74 issues — is unchanged, and is what these two tests now pin. The
+// capacity case lives in `idle_task_capacity_1083_test.ts`.
+
 Deno.test(
-  "IdleFilerLatch - the first idle observer of an episode wins and the rest are refused (Issue #925)",
+  "IdleFilerLatch - a one-slot fleet files once per episode however often it re-scans (Issues #925, #1083)",
   () => {
+    // Default capacity is one slot, so the second observer is refused for
+    // want of capacity rather than on principle.
     const latch = new IdleFilerLatch();
-    assertEquals(latch.tryConsume(), true, "s1 observes an empty scan");
+    assertEquals(latch.tryConsume("s1"), true, "s1 observes an empty scan");
     assertEquals(
-      latch.tryConsume(),
+      latch.tryConsume("s1"),
       false,
-      "s2 observes one in the same cycle",
+      "s1 re-scans and observes again",
     );
-    assertEquals(latch.tryConsume(), false, "s1 re-scans and observes again");
+    assertEquals(
+      latch.tryConsume("s2"),
+      false,
+      "one idle slot grants one permit",
+    );
     assertEquals(latch.fired, true);
+    assertEquals(latch.filedCount, 1);
   },
 );
 
@@ -622,9 +651,9 @@ Deno.test(
   "IdleFilerLatch - a claim ends the episode, so a later idle stretch may file again (Issue #925)",
   () => {
     const latch = new IdleFilerLatch();
-    assertEquals(latch.tryConsume(), true);
+    assertEquals(latch.tryConsume("s1"), true);
     latch.release(); // a slot took a claim — the fleet has work again
     assertEquals(latch.fired, false);
-    assertEquals(latch.tryConsume(), true);
+    assertEquals(latch.tryConsume("s1"), true);
   },
 );

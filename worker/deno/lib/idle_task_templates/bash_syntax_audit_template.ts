@@ -54,12 +54,13 @@ import {
   registerTemplate,
 } from "../idle_task_template.ts";
 import { runGhCommand as defaultGhCommand } from "../github.ts";
+import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
+import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
 import { loadPrompt as defaultLoadPrompt } from "../prompt_manager.ts";
 import {
   diffNewlyFiled,
   fileFindingOnce,
   listOpenIssueNumbersByLabel,
-  parseGhJsonArray,
 } from "../idle_task_snapshot.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "../label_operations.ts";
 import { repoCheckoutPath } from "../repo_checkout_path.ts";
@@ -152,6 +153,12 @@ export interface GateFinding {
 
 /** Injectable dependencies for {@link createBashSyntaxAuditTemplate}. */
 export interface BashSyntaxAuditTemplateDeps {
+  /**
+   * Author-verification inputs for the wrapper dedup search
+   * ({@link hasFleetAuthoredOpenIssueTitled}). Omitted — every
+   * production caller — reads the configured fleet identity.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
   /** gh CLI runner used for snapshots, dedup, filing, and the wrapper veto. */
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Prompt loader — defaults to `loadPrompt`. */
@@ -335,47 +342,6 @@ export function renderBashSyntaxAuditSummary(
 }
 
 // ---------------------------------------------------------------------------
-// gh snapshot helper
-// ---------------------------------------------------------------------------
-
-/** True when an open wrapper titled exactly {@link BASH_SYNTAX_AUDIT_ISSUE_TITLE} exists. */
-async function hasOpenWrapper(
-  repo: string,
-  ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<boolean> {
-  let raw: string;
-  try {
-    raw = await ghCommandFn([
-      "issue",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "open",
-      "--search",
-      `"${BASH_SYNTAX_AUDIT_ISSUE_TITLE}" in:title`,
-      "--json",
-      "number,title",
-      "--limit",
-      "10",
-    ]);
-  } catch {
-    return false;
-  }
-  for (const item of parseGhJsonArray(raw, "find bash-syntax-audit wrapper")) {
-    if (item === null || typeof item !== "object") continue;
-    const title = (item as { title?: unknown }).title;
-    if (
-      typeof title === "string" &&
-      title.trim() === BASH_SYNTAX_AUDIT_ISSUE_TITLE
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// ---------------------------------------------------------------------------
 // Default suppression collector
 // ---------------------------------------------------------------------------
 
@@ -468,6 +434,7 @@ export function createBashSyntaxAuditTemplate(
   deps: BashSyntaxAuditTemplateDeps = {},
 ): IdleTaskTemplate {
   const ghCommandFn = deps.ghCommandFn ?? ((args) => defaultGhCommand(args));
+  const dedupAuthors = deps.dedupAuthors ?? {};
   const loadPromptFn = deps.loadPromptFn ??
     ((name, promptsDir) => defaultLoadPrompt(name, promptsDir));
   const ensureLabelFn = deps.ensureLabelFn ??
@@ -513,7 +480,17 @@ export function createBashSyntaxAuditTemplate(
     opts: IdleTaskShouldFileOptions,
   ): Promise<boolean> {
     // Refuse to pile on while a wrapper is still being triaged.
-    if (await hasOpenWrapper(opts.repo, ghCommandFn)) return false;
+    if (
+      await hasFleetAuthoredOpenIssueTitled({
+        repo: opts.repo,
+        title: BASH_SYNTAX_AUDIT_ISSUE_TITLE,
+        context: "bash-syntax-audit wrapper",
+        ghCommand: ghCommandFn,
+        ...dedupAuthors,
+      })
+    ) {
+      return false;
+    }
     return true;
   }
 

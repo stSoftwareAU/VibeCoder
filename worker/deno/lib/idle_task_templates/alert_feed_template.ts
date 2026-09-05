@@ -57,11 +57,12 @@ import {
   registerTemplate,
 } from "../idle_task_template.ts";
 import { runGhCommand as defaultGhCommand } from "../github.ts";
+import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
+import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
 import { loadPrompt as defaultLoadPrompt } from "../prompt_manager.ts";
 import {
   diffNewlyFiled,
   listOpenIssueNumbersByLabel,
-  parseGhJsonArray,
 } from "../idle_task_snapshot.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "../label_operations.ts";
 import { buildAttributionFooter } from "../idle_task_attribution.ts";
@@ -170,6 +171,12 @@ export interface CollectedAlertFindings {
 
 /** Injectable dependencies for {@link createAlertFeedTemplate}. */
 export interface AlertFeedTemplateDeps {
+  /**
+   * Author-verification inputs for the wrapper dedup search
+   * ({@link hasFleetAuthoredOpenIssueTitled}). Omitted — every
+   * production caller — reads the configured fleet identity.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
   /** gh CLI runner used for snapshots, dedup, filing, and the wrapper veto. */
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Prompt loader — defaults to `loadPrompt`. */
@@ -431,44 +438,6 @@ export function renderAlertFeedSummary(
 }
 
 // ---------------------------------------------------------------------------
-// gh snapshot helper
-// ---------------------------------------------------------------------------
-
-/** True when an open wrapper titled exactly {@link ALERT_FEED_ISSUE_TITLE} exists. */
-async function hasOpenWrapper(
-  repo: string,
-  ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<boolean> {
-  let raw: string;
-  try {
-    raw = await ghCommandFn([
-      "issue",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "open",
-      "--search",
-      `"${ALERT_FEED_ISSUE_TITLE}" in:title`,
-      "--json",
-      "number,title",
-      "--limit",
-      "10",
-    ]);
-  } catch {
-    return false;
-  }
-  for (const item of parseGhJsonArray(raw, "find alert-feed wrapper")) {
-    if (item === null || typeof item !== "object") continue;
-    const title = (item as { title?: unknown }).title;
-    if (typeof title === "string" && title.trim() === ALERT_FEED_ISSUE_TITLE) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// ---------------------------------------------------------------------------
 // Finding filer
 // ---------------------------------------------------------------------------
 
@@ -516,6 +485,7 @@ export function createAlertFeedTemplate(
   deps: AlertFeedTemplateDeps = {},
 ): IdleTaskTemplate {
   const ghCommandFn = deps.ghCommandFn ?? ((args) => defaultGhCommand(args));
+  const dedupAuthors = deps.dedupAuthors ?? {};
   const loadPromptFn = deps.loadPromptFn ??
     ((name, promptsDir) => defaultLoadPrompt(name, promptsDir));
   const ensureLabelFn = deps.ensureLabelFn ??
@@ -556,7 +526,17 @@ export function createAlertFeedTemplate(
     opts: IdleTaskShouldFileOptions,
   ): Promise<boolean> {
     // Refuse to pile on while a wrapper is still being triaged.
-    if (await hasOpenWrapper(opts.repo, ghCommandFn)) return false;
+    if (
+      await hasFleetAuthoredOpenIssueTitled({
+        repo: opts.repo,
+        title: ALERT_FEED_ISSUE_TITLE,
+        context: "alert-feed wrapper",
+        ghCommand: ghCommandFn,
+        ...dedupAuthors,
+      })
+    ) {
+      return false;
+    }
     return true;
   }
 

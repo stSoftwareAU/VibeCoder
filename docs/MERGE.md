@@ -270,6 +270,48 @@ flowchart TD
     E -- yes --> G[Worse of the two verdicts wins]
 ```
 
+### An unprotected default branch needs an approval, not a refusal
+
+Two guards used to intersect at nothing. On a base with **no required checks**
+the worker refuses GitHub's `--auto` (it would merge immediately whatever CI
+said) and routes the PR through the gated direct merge instead — which then
+refuses **every** default-branch target as a blast-radius guard. A repo whose
+default branch carries no ruleset therefore had no path at all:
+`NEAT-AI-Ockham#116` was green, approved and mergeable, and the worker logged
+the same refusal roughly forty times over four hours while all six `work-on`
+issues behind it stayed blocked.
+
+The blast-radius guard asks for "branch protection or a human review". On an
+unprotected default branch there is no protection to bypass, so the worker now
+asks for the review explicitly:
+
+- **An approving review from a login outside the fleet** — the PR proceeds to
+  the same pre-merge gate as any other: green CI, current branch, settled head,
+  SHA-pinned merge. Nothing is relaxed except the target-branch refusal.
+- **No such approval** — a typed deferral (`default_branch_unapproved`), so the
+  PR is *held* and the hold is logged. It is not retried as a failure and it is
+  not escalated to a human.
+- **A sibling fleet account's approval does not count.** The fleet cannot
+  review itself into a merge; only a login outside `service_accounts` /
+  `fleet_pr_authors` / the host login satisfies the guard.
+- **An unreadable review list fails closed** — refused and retried next scan,
+  never treated as an implied approval.
+
+A **protected** base is untouched: it still goes through native auto-merge,
+which GitHub holds until the required checks are green.
+
+```mermaid
+flowchart TD
+    A[PR targets the default branch] --> B{Required checks on the base?}
+    B -- yes --> C["gh pr merge --auto — GitHub holds it"]
+    B -- no --> D{Approving review from<br/>outside the fleet?}
+    D -- no --> E["Held: default_branch_unapproved<br/>(logged, re-read next scan)"]
+    D -- unreadable --> F[Refused — fail closed]
+    D -- yes --> G[Pre-merge gate:<br/>green · current · settled head]
+    G -- passes --> H["gh pr merge --squash<br/>--match-head-commit"]
+    G -- blocks --> E
+```
+
 ### Zero checks is not "passed"
 
 A head commit with **no check runs and no commit statuses** has been verified by
@@ -329,6 +371,20 @@ sequenceDiagram
 
 The auto-fix loop (fetch → diagnose → fix → merge) is only hands-off if a green
 fix PR actually lands. Two things make that true.
+
+**Every repo and every fleet author is swept.** The main loop's priority 1.65
+sweep (`sweepAutoMerge` in
+[`worker/deno/lib/auto_merge_sweep.ts`](../worker/deno/lib/auto_merge_sweep.ts))
+lists PRs for **every push-capable fleet author**, the same set
+`getBlockingPRForIssue()` defers `work-on` issues to. A single-login sweep left
+`GRQ-GTC#305` — authored by a sibling fleet account — with no merge attempt
+logged against it for five days while its repository stayed frozen.
+
+It also walks the **monitored repo list**, not the repos with claimable work: a
+repo whose only PR blocks all of its own issues has no claimable work by
+construction, so a work-driven sweep would never revisit it. That was already
+true before the sweep was extracted; it is now asserted by a test rather than
+left to be re-broken.
 
 **Precedence is fixed, not a race.** The auto-merge scan
 (`ensureAutoMergeOnOpenPrs` in

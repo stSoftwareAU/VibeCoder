@@ -263,6 +263,17 @@ driven by the worker after a PR exists.
 | Issue **in** a milestone (PR → milestone branch) | Auto-merge **skipped** (`skipAutoMerge`) | Priority 1.65 catch-up may still enable auto-merge on open worker PRs |
 | Final consolidation PR (milestone branch → default) | Created for human review of the whole stream | Worker monitors CI / spelling / quality; catch-up may arm auto-merge when mergeable |
 
+> **Known divergence from the intent (Issue #1082).** The table above records
+> what the code does today. It contradicts **F11** in
+> [Every slot busy, always](../../DESIGN-PRINCIPLES.md#every-slot-busy-always--the-fleet-throughput-invariant):
+> every fleet PR is meant to carry auto-merge from the moment it is raised.
+> The stated reason for skipping it on milestone PRs — that they "need manual
+> review" — is also false under **F2a**: a milestone branch carries no approval
+> gate at all until the milestone completes and is merged to the default
+> branch, which is precisely why milestone streams parallelise. Arming
+> auto-merge a whole cycle later, or not at all, is what leaves a stream's
+> next issue waiting on a PR that was ready to land (**F10**).
+
 While a PR is open, the worker prioritises keeping **its own** PRs
 mergeable: review feedback, spelling, quality, CI fixes. See
 [PR feedback and upkeep](pr-feedback.md) and [CI fix](ci-fix.md).

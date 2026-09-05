@@ -69,6 +69,9 @@ const STUB_PROMPT = [
 const okPrompt = (): Promise<Result<string>> =>
   Promise.resolve({ ok: true, value: STUB_PROMPT });
 
+/** A fleet login, so a stubbed wrapper reads as one the fleet filed. */
+const FLEET_DEDUP_AUTHOR = "vibe-bot";
+
 /**
  * gh stub. Distinguishes the snapshot calls (`--json number`), the
  * known-open lookup (`--json number,body`), and the wrapper-veto title
@@ -98,10 +101,20 @@ function makeGhStub(scenario: {
     if (jsonField === "number,body") {
       return Promise.resolve(JSON.stringify(scenario.knownOpen ?? []));
     }
-    if (jsonField === "number,title") {
+    // The wrapper-veto search now also asks for `author`, because a
+    // title alone is text anybody may write and only the author is
+    // authenticated. The stub answers as a fleet account so the veto
+    // under test is a genuine fleet-filed wrapper.
+    if (jsonField === "number,title" || (jsonField ?? "").includes("author")) {
       const titles = scenario.openWrapperTitles ?? [];
       return Promise.resolve(
-        JSON.stringify(titles.map((title, i) => ({ number: i + 1, title }))),
+        JSON.stringify(
+          titles.map((title, i) => ({
+            number: i + 1,
+            title,
+            author: { login: FLEET_DEDUP_AUTHOR },
+          })),
+        ),
       );
     }
     return Promise.resolve("[]");
@@ -345,6 +358,10 @@ Deno.test("shouldFile - vetoes while an open wrapper exists", async () => {
     openWrapperTitles: [ORPHAN_DEPS_ISSUE_TITLE],
   });
   const t = createOrphanDepsTemplate({
+    // The wrapper veto now counts a title match only when the fleet
+    // authored it, so the test states the fleet rather than writing
+    // a config file.
+    dedupAuthors: { fleetAuthors: [FLEET_DEDUP_AUTHOR] },
     ghCommandFn: gh,
     loadPromptFn: okPrompt,
   });
