@@ -22,6 +22,7 @@ import {
   runPreSetupCommand,
 } from "../lib/repo_config.ts";
 import { DEFAULT_REPO_NICE } from "../lib/config_defaults.ts";
+import { GATE_SKIP_MARKER } from "../lib/quality_gate_budget.ts";
 
 // =============================================================================
 // Test data
@@ -261,6 +262,48 @@ Deno.test("repo_config - buildQualityInstructions applies the same no-polling ru
     true,
     `the custom command must be run once in the foreground:\n${result}`,
   );
+});
+
+// Issue #1138 — the gate is the most expensive thing an agent can start, so
+// the instruction to run it must be conditional on the budget left, and a
+// skipped gate must be recorded rather than silently dropped.
+
+Deno.test("repo_config - buildQualityInstructions makes the gate conditional on the run budget (Issue #1138)", () => {
+  const result = buildQualityInstructions(undefined, "org/any-repo");
+  assertEquals(
+    result.includes(".vibe-run-budget.md"),
+    true,
+    `guidance must point at the run-budget notice:\n${result}`,
+  );
+  assertEquals(
+    result.includes(GATE_SKIP_MARKER),
+    true,
+    `guidance must give the agent a way to record a skipped gate:\n${result}`,
+  );
+});
+
+Deno.test("repo_config - buildQualityInstructions quotes the measured gate duration when one is known (Issue #1138)", () => {
+  const measured = buildQualityInstructions(undefined, "org/any-repo", {
+    typicalGateSeconds: 1800,
+  });
+  assertEquals(
+    measured.includes("30m"),
+    true,
+    `guidance must state the measured duration:\n${measured}`,
+  );
+  assertEquals(
+    measured.includes("measured"),
+    true,
+    `guidance must say the duration was measured, not assumed:\n${measured}`,
+  );
+});
+
+Deno.test("repo_config - buildQualityInstructions still skips everything for a skip_quality_check repo (Issue #1138)", () => {
+  const repoConfigs = createRepoConfigMap();
+  const result = buildQualityInstructions(repoConfigs, "org/repo-a", {
+    typicalGateSeconds: 1800,
+  });
+  assertEquals(result, "Note: Quality checks are skipped for this repository.");
 });
 
 // =============================================================================
