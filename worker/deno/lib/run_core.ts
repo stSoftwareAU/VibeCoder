@@ -2204,15 +2204,40 @@ async function runIssueScanLoop(
     try {
       processResult = await deps.processIssue(issue, endTime, "serial");
     } catch (thrown) {
-      // A throw is a terminal run, so the failure and always callbacks fire
-      // exactly once before it propagates (Issue #806). Covered by
-      // `run_core_callbacks_test.ts` — a sync merge has collapsed this
+      // Issue #1222: a throw is a terminal run, so it releases its claim —
+      // the same unassign-and-clear the ordinary failure path makes. Without
+      // it the heartbeat stopped (the pipeline and `runWithRouteClaim` both
+      // stop it in a `finally`) but the assignee stayed, so every host read
+      // the issue as a live claim until the 30-minute
+      // assigned-without-heartbeat recovery freed it. The slot pool's own
+      // catch has done this since Issue #4178; this is the serial loop's.
+      //
+      // Released unconditionally: `claimNotHeld` (Issue #1139) travels on a
+      // *returned* result, and every stand-down — the pipeline's setup phase
+      // and all three pre-pipeline routes — returns rather than throws, so a
+      // throw reaching here never carries one.
+      const message = thrown instanceof Error ? thrown.message : String(thrown);
+      // The release states what happened (Issue #4325) rather than going out
+      // blank, and carries the failure/always callbacks exactly once
+      // (Issue #806). Covered by `run_core_callbacks_test.ts` and
+      // `run_core_throw_release_test.ts` — a sync merge has collapsed this
       // `catch` into the `finally` below twice, silently.
-      await dispatchIssueCallbacks(deps, issue.repo, issue.issueNumber, {
-        result: "failure",
-        startedAtEpochMs: claimedAtEpochMs,
-        guard: callbackGuard,
-      });
+      await releaseIssueClaim(
+        deps,
+        issue.repo,
+        issue.issueNumber,
+        deriveRunOutcome({
+          success: false,
+          phase: "serial",
+          reason: message,
+          elapsedSeconds: Math.max(0, deps.now() - claimedAtEpochMs) / 1000,
+        }),
+        {
+          result: "failure",
+          startedAtEpochMs: claimedAtEpochMs,
+          guard: callbackGuard,
+        },
+      );
       throw thrown;
     } finally {
       // In a `finally` so a throw cannot leave the stream marked busy
