@@ -884,7 +884,11 @@ if ($present.ExitCode -ne 0) {
             # auto-filed image_build issues used to reduce to a status code
             # (Issue #1019). Exit-Launcher records the outcome before it
             # exits, so the log is still there when the recorder reads it.
-            if ($HealLog -and (Test-Path -LiteralPath $HealLog)) {
+            # An empty capture is appended as nothing at all, exactly as
+            # run.sh's `[[ -s ]]` guard does: a bare heading with no output
+            # under it would read as evidence and carry none.
+            if ($HealLog -and (Test-Path -LiteralPath $HealLog) -and
+                (Get-Item -LiteralPath $HealLog).Length -gt 0) {
                 try {
                     Add-Content -LiteralPath $BuildLog -ErrorAction Stop `
                         -Value ("`n--- container-build-heal output ---`n" +

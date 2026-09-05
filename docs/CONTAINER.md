@@ -585,11 +585,15 @@ reproducing the build by hand.
 So both launchers now record the failing step's own words, on the not-healable
 branch and on the `could not heal the builder` branch alike:
 
-| What is recorded                       | Where                                                     |
-| -------------------------------------- | --------------------------------------------------------- |
-| A bounded excerpt (last 40 lines)      | `~/logs/run_core.log`, under the decision line             |
-| The full output                        | `~/logs/build-failures/<UTC stamp>-<build\|heal>-output-<pid>.log`, named in that line |
-| The heal's own output                  | The same, and appended to the evidence the `image_build` escalation quotes |
+| What is recorded                  | Where                                                                      |
+| --------------------------------- | -------------------------------------------------------------------------- |
+| A bounded excerpt (last 40 lines) | `run_core.log`, under the decision line                                     |
+| The full output                   | `build-failures/<UTC stamp>-<build\|heal>-output-<pid>.log` beside it, named in that line |
+| The heal's own output             | The same, and appended to the evidence the `image_build` escalation quotes  |
+
+Both live in the launcher's own log directory — `~/logs` unless `LOG_DIR` or
+`LAUNCH_LOG_DIR` moves it — so the preserved copies are always beside the
+`run_core.log` line that names them.
 
 Retention is count-based, like the launch logs `loop.sh` keeps: the newest 20
 files stay and the rest go, so a host that fails several times a day cannot

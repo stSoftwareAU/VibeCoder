@@ -612,6 +612,35 @@ Deno.test({
 
 Deno.test({
   name:
+    "run.ps1 - the image_build escalation carries the heal's words, not just the build's (Issue #1019)",
+  ignore,
+  fn: async () => {
+    const buildFailure =
+      'Error: resourceExhausted: "failed to solve: write /out.tar: no space ' +
+      'left on device"';
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "1",
+      STUB_BUILD_EXIT: "1",
+      STUB_BUILD_STDERR: buildFailure,
+      STUB_BUILDER_HEAL_EXIT: "1",
+      STUB_BUILDER_HEAL_STDERR: "Error: the builder VM is read-only",
+    }, { denoStub: true });
+    try {
+      const outcome = await runLauncher(harness);
+      assert(outcome.code !== 0, "a build that never succeeded must fail");
+
+      const log = await recordedLaunchLog(harness);
+      assert(log !== null, "the build log was deleted before it was reported");
+      assertStringIncludes(log, buildFailure);
+      assertStringIncludes(log, "the builder VM is read-only");
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
     "run.ps1 - preserved build logs are bounded, and the newest is never the one dropped (Issue #1019)",
   ignore,
   fn: async () => {
