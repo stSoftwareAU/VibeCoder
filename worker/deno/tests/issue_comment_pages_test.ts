@@ -11,10 +11,22 @@ import {
   MAX_COMMENT_PAGES,
 } from "../lib/issue_comment_pages.ts";
 
-/** Build a page of `n` comment objects, each carrying `body`. */
-function page(n: number, body = "hello"): string {
+/** The fleet login every verified-marker test writes its comments as. */
+const FLEET_LOGIN = "vibe-coder-bot";
+
+/** Fleet identity the marker check is given instead of reading a config. */
+const FLEET = { fleetAuthors: [FLEET_LOGIN] };
+
+/** Swallow the author-verification diagnostics so test output stays readable. */
+const quiet = () => {};
+
+/**
+ * Build a page of `n` comment objects, each carrying `body` and authored by
+ * `login` — the `user.login` shape the REST comments endpoint returns.
+ */
+function page(n: number, body = "hello", login = FLEET_LOGIN): string {
   return JSON.stringify(
-    Array.from({ length: n }, (_, i) => ({ id: i, body })),
+    Array.from({ length: n }, (_, i) => ({ id: i, body, user: { login } })),
   );
 }
 
@@ -91,7 +103,7 @@ Deno.test("issue_comment_pages - marker check short-circuits on the first matchi
     page(1),
   ]);
   assertEquals(
-    await issueCommentsContainMarker("owner/repo", 7, marker, fn),
+    await issueCommentsContainMarker("owner/repo", 7, marker, fn, FLEET, quiet),
     true,
   );
   assertEquals(calls.length, 1, "must stop at the first page that matches");
@@ -100,7 +112,14 @@ Deno.test("issue_comment_pages - marker check short-circuits on the first matchi
 Deno.test("issue_comment_pages - marker check returns false after reading every page", async () => {
   const { fn, calls } = pagingGh([page(COMMENTS_PER_PAGE), page(2)]);
   assertEquals(
-    await issueCommentsContainMarker("owner/repo", 7, "<!-- absent -->", fn),
+    await issueCommentsContainMarker(
+      "owner/repo",
+      7,
+      "<!-- absent -->",
+      fn,
+      FLEET,
+      quiet,
+    ),
     false,
   );
   assertEquals(calls.length, 2);
@@ -114,8 +133,114 @@ Deno.test("issue_comment_pages - marker check honours the page cap", async () =>
     ),
   );
   assertEquals(
-    await issueCommentsContainMarker("owner/repo", 7, "<!-- absent -->", fn),
+    await issueCommentsContainMarker(
+      "owner/repo",
+      7,
+      "<!-- absent -->",
+      fn,
+      FLEET,
+      quiet,
+    ),
     false,
   );
   assertEquals(calls.length, MAX_COMMENT_PAGES);
+});
+
+// ---------------------------------------------------------------------------
+// Author verification (Issue #1216)
+//
+// A comment body is text any GitHub account may write, and every caller of
+// `issueCommentsContainMarker` uses a match to SUPPRESS an action. Matching on
+// the body alone therefore let one planted comment silence the blocking-PR
+// stall escalation, a stall-reason comment, a self-schedule announcement or a
+// CI nudge on that thread for good.
+// ---------------------------------------------------------------------------
+
+Deno.test("issue_comment_pages - a planted marker from outside the fleet does not count", async () => {
+  const marker = "<!-- vibe-coder:ci-nudge -->";
+  const { fn, calls } = pagingGh([
+    page(3, `nothing to see here ${marker}`, "drive-by-attacker"),
+  ]);
+  assertEquals(
+    await issueCommentsContainMarker("owner/repo", 7, marker, fn, FLEET, quiet),
+    false,
+    "an outsider's marker comment must not suppress the worker's action",
+  );
+  assertEquals(calls.length, 1);
+});
+
+Deno.test("issue_comment_pages - a fleet marker still counts on a thread an outsider also marked", async () => {
+  const marker = "<!-- vibe-coder:ci-nudge -->";
+  const thread = JSON.stringify([
+    { id: 1, body: `planted ${marker}`, user: { login: "drive-by-attacker" } },
+    { id: 2, body: `nudged ${marker}`, user: { login: FLEET_LOGIN } },
+  ]);
+  const { fn } = pagingGh([thread]);
+  assertEquals(
+    await issueCommentsContainMarker("owner/repo", 7, marker, fn, FLEET, quiet),
+    true,
+    "the fleet's own marker is still evidence beside a planted one",
+  );
+});
+
+Deno.test("issue_comment_pages - the search continues past a page of planted markers", async () => {
+  const marker = "<!-- vibe-coder:ci-nudge -->";
+  const { fn, calls } = pagingGh([
+    page(COMMENTS_PER_PAGE, `planted ${marker}`, "drive-by-attacker"),
+    page(1, `nudged ${marker}`),
+  ]);
+  assertEquals(
+    await issueCommentsContainMarker("owner/repo", 7, marker, fn, FLEET, quiet),
+    true,
+    "a page an outsider flooded must not hide the fleet's marker behind it",
+  );
+  assertEquals(calls.length, 2);
+});
+
+Deno.test("issue_comment_pages - an authorless comment carrying the marker does not count", async () => {
+  const marker = "<!-- vibe-coder:ci-nudge -->";
+  const thread = JSON.stringify([{ id: 1, body: `ghost ${marker}` }]);
+  const { fn } = pagingGh([thread]);
+  assertEquals(
+    await issueCommentsContainMarker("owner/repo", 7, marker, fn, FLEET, quiet),
+    false,
+    "a comment whose author cannot be read is unattributable, so it fails towards acting",
+  );
+});
+
+Deno.test("issue_comment_pages - an unresolvable fleet identity fails towards acting", async () => {
+  const marker = "<!-- vibe-coder:ci-nudge -->";
+  const { fn } = pagingGh([page(2, `nudged ${marker}`)]);
+  const logged: string[] = [];
+  assertEquals(
+    await issueCommentsContainMarker(
+      "owner/repo",
+      7,
+      marker,
+      fn,
+      { fleetAuthors: [] },
+      (message) => logged.push(message),
+    ),
+    false,
+    "no fleet identity means no marker can be attributed",
+  );
+  assertEquals(
+    logged.some((m) => m.includes("fleet author set unresolved")),
+    true,
+    "the unverifiable condition must be logged loudly, never inferred",
+  );
+});
+
+Deno.test("issue_comment_pages - the marker must be in a comment body, not anywhere in the payload", async () => {
+  // The old check substring-matched the raw page JSON, so a marker appearing
+  // in any field at all — a login, a URL — read as a marker comment.
+  const marker = "<!-- vibe-coder:ci-nudge -->";
+  const thread = JSON.stringify([
+    { id: 1, body: "unrelated", user: { login: FLEET_LOGIN }, note: marker },
+  ]);
+  const { fn } = pagingGh([thread]);
+  assertEquals(
+    await issueCommentsContainMarker("owner/repo", 7, marker, fn, FLEET, quiet),
+    false,
+  );
 });

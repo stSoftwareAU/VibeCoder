@@ -37,6 +37,7 @@ import type { Logger, Result, WorkerConfig } from "../types.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import type { IssueCache } from "./issue_cache.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import { issueCommentsContainMarker } from "./issue_comment_pages.ts";
 import {
   fetchIssuesByLabel,
@@ -375,6 +376,11 @@ export interface EscalateBlockingPrStallDeps {
     colour?: string,
     description?: string,
   ) => Promise<Result<void>>;
+  /**
+   * Fleet identity used to verify who wrote a suppressing marker (Issue
+   * #1216). Omitted in production, which reads the configured fleet identity.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
   /** Logger. */
   logger: Logger;
 }
@@ -423,6 +429,8 @@ export async function escalateBlockingPrStall(
       stall.prNumber,
       AUTO_FIX_CAP_MARKER_PREFIX,
       ghCommandFn,
+      deps.dedupAuthors,
+      (message) => logger.warn(message),
     );
   } catch (err) {
     return {
@@ -458,6 +466,8 @@ export async function escalateBlockingPrStall(
         stall.prNumber,
         marker,
         ghCommandFn,
+        deps.dedupAuthors,
+        (message) => logger.warn(message),
       );
     } catch (err) {
       return {
@@ -762,6 +772,8 @@ export interface ScanBlockingPrStallsOptions
   logger: Logger;
   /** Optional `ensureLabelExists` override (tests). */
   ensureLabelExists?: EscalateBlockingPrStallDeps["ensureLabelExists"];
+  /** Fleet identity the marker-author check uses (Issue #1216). */
+  dedupAuthors?: EscalateBlockingPrStallDeps["dedupAuthors"];
   /** Optional clock override (epoch seconds). */
   nowSeconds?: () => number;
 }
@@ -811,6 +823,9 @@ export async function scanBlockingPrStalls(
       ...(githubUser !== undefined ? { githubUser } : {}),
       ...(opts.ensureLabelExists !== undefined
         ? { ensureLabelExists: opts.ensureLabelExists }
+        : {}),
+      ...(opts.dedupAuthors !== undefined
+        ? { dedupAuthors: opts.dedupAuthors }
         : {}),
       logger,
     });

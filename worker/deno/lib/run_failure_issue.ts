@@ -29,6 +29,7 @@
 import {
   ALERT_DEDUP_JSON_FIELDS,
   type AlertDedupRow,
+  selectFleetAuthoredComments,
   selectFleetAuthoredMatches,
 } from "./alert_dedup_authors.ts";
 import {
@@ -380,17 +381,35 @@ export async function fileRunFailureIssue(
 
       // 3. Exists → at most one follow-up per window; update it in place.
       try {
+        // Issue #1216: the follow-up marker carries an attacker-choosable
+        // epoch and lives in a comment body anyone may write, so the author
+        // is asked for and checked exactly as step 1 checks the issue's. An
+        // unverified match let one planted comment absorb every later
+        // occurrence of the class — or, when the edit was refused, suppress
+        // the class outright.
         const rawComments = await opts.ghFn([
           "api",
           `repos/${targetRepo}/issues/${existing.number}/comments`,
           "--jq",
-          "[.[] | {id: .id, body: .body}]",
+          "[.[] | {id: .id, body: .body, author: .user.login}]",
         ]);
         const comments = JSON.parse(rawComments || "[]") as {
           id: number;
           body?: string;
+          author?: string | null;
         }[];
-        const inWindow = comments
+        const fleetComments = await selectFleetAuthoredComments(
+          comments.filter((c) =>
+            parseRunFailureFollowUpMarker(c.body ?? "") !== null
+          ),
+          `run-failure follow-up ${failureClass}`,
+          opts,
+          log,
+          "none counts as an existing follow-up and a fresh comment is " +
+            "posted. A duplicate follow-up is noise; a suppressed one hides " +
+            "a recurring worker fault",
+        );
+        const inWindow = fleetComments
           .map((c) => ({ c, m: parseRunFailureFollowUpMarker(c.body ?? "") }))
           .filter((x) =>
             x.m !== null && x.m.failureClass === failureClass &&
