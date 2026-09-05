@@ -73,6 +73,14 @@ import {
   parseIntentOverrides,
 } from "./conflict_intent_audit.ts";
 import {
+  abandonAndRestart,
+  type AbandonRestartOutcome,
+  type AbandonRestartRequest,
+  describeExhaustedRoute,
+  exhaustedEscalationDedupKey,
+  exhaustedEscalationRoute,
+} from "./conflict_abandon_restart.ts";
+import {
   clearMergeConflictLabel,
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
@@ -166,6 +174,14 @@ export interface MergeConflictProcessorDeps {
    * {@link gatherConflictIssueContext}.
    */
   gatherIssueContextFn?: typeof gatherConflictIssueContext;
+  /**
+   * Injectable abandon-and-restart rung (Issue #1115) — what the final
+   * concluded failure tries before a human. Defaults to
+   * {@link abandonAndRestart}.
+   */
+  abandonRestartFn?: (
+    request: AbandonRestartRequest,
+  ) => Promise<AbandonRestartOutcome>;
 }
 
 const DEFAULT_CLAUDE_TIMEOUT = OPERATIONAL_DEFAULTS.prFeedbackTimeout;
@@ -1214,8 +1230,12 @@ async function failAttempt(
       ),
     );
   } catch (err) {
-    // The attempt then reads as disrupted on the next scan and is retried —
-    // the safe direction, and bounded by the disruption budget. Say so.
+    // Below the cap the attempt then reads as disrupted on the next scan and
+    // is retried — the safe direction, and bounded by the disruption budget.
+    // At the cap the abandon rung runs next, and it re-reads this thread: a
+    // missing conclusion means it quotes one failure instead of two, and if
+    // `gh` is down for its calls too it stops at a named step. Say so either
+    // way rather than swallowing this.
     logger.error("Failed to post the merge-conflict failure conclusion", {
       repo,
       prNumber,
@@ -1237,20 +1257,63 @@ async function failAttempt(
     };
   }
 
+  // Issue #1115: a human is not the next rung any more. The budget is spent,
+  // so the branch has defeated two real merges — usually cheaper to redo than
+  // to reconcile, and redoing it needs nobody. Only when that is declined or
+  // fails does the escalation below run, and it then says which route it took.
+  const abandon = await (processorDeps.abandonRestartFn ??
+    ((request: AbandonRestartRequest) =>
+      abandonAndRestart(request, {
+        gh: deps.github.runGhCommand,
+        logger,
+      })))({
+      repo,
+      prNumber,
+      branchName: input.branchName,
+      baseBranch: input.baseBranch,
+      // No thread passed: the rung fetches it, and fails loud if it cannot —
+      // "no failure comment survives" must never be published because a read
+      // failed.
+    });
+
+  if (abandon.outcome === "abandoned") {
+    logger.warn(
+      `Merge-conflict attempts exhausted on PR #${prNumber} — closed it and ` +
+        `re-queued issue #${abandon.issueNumber}`,
+      { repo, prNumber, issueNumber: abandon.issueNumber, maxAttempts },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: true,
+        merged: false,
+        escalated: false,
+        summary:
+          `Merge-conflict attempts exhausted on PR #${prNumber} — abandoned ` +
+          `it and re-queued issue #${abandon.issueNumber}`,
+      },
+    };
+  }
+
+  const route = exhaustedEscalationRoute(abandon);
   const escalation = await escalateToHuman({
     ghClient: createGhEscalationClient(deps.github.runGhCommand),
     repo,
     target: { kind: "pr", number: prNumber },
     needsHumanLabel: processorDeps.needsHumanLabel ?? "needs-human",
     heading: "Merge conflict needs human attention",
-    reason: buildConflictEscalationReason(
-      input,
-      conflictedFiles,
-      failureDetail,
-      maxAttempts,
-    ),
+    reason: [
+      buildConflictEscalationReason(
+        input,
+        conflictedFiles,
+        failureDetail,
+        maxAttempts,
+      ),
+      "",
+      ...describeExhaustedRoute(route),
+    ].join("\n"),
     nextStep: CONFLICT_ESCALATION_NEXT_STEP,
-    dedupKey: `merge-conflict-${prNumber}`,
+    dedupKey: exhaustedEscalationDedupKey(prNumber, route),
     ensureLabelColour: "d4c5f9",
     ensureLabelDescription:
       "Worker could not produce a fix; human review required",
