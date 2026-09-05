@@ -63,6 +63,72 @@ export function syncBranchFor(milestoneBranch: string): string {
   return `${SYNC_BRANCH_PREFIX}-${leaf}`;
 }
 
+/** Whether a PR head branch is one this module raised. */
+export function isMilestoneSyncBranch(headRefName?: string | null): boolean {
+  return typeof headRefName === "string" &&
+    headRefName.startsWith(`${SYNC_BRANCH_PREFIX}-`);
+}
+
+/**
+ * The `gh pr merge` method for a PR from this head branch (Issue #1048).
+ *
+ * Everything else squashes, and should: one commit per change keeps the
+ * default branch readable. A **milestone sync is the exception**, because its
+ * whole purpose is ancestry. Squashed, the sync commit carries the default
+ * branch's content with a single parent, so the default branch is not an
+ * ancestor of the milestone branch: every later merge computes its base from
+ * before the sync, and a file the default branch deleted in the meantime comes
+ * back as a modify/delete conflict rather than as a deletion. That is exactly
+ * how `milestone/863` revived a deleted subsystem.
+ *
+ * A merge commit records the default branch as a parent, so its deletions are
+ * genuinely in the branch's history and never have to be re-derived.
+ */
+export function mergeMethodFlagForHead(
+  headRefName?: string | null,
+): "--merge" | "--squash" {
+  return isMilestoneSyncBranch(headRefName) ? "--merge" : "--squash";
+}
+
+/**
+ * Whether GitHub refused a merge because the repository does not permit merge
+ * commits (`allow_merge_commit: false`, or a ruleset whose
+ * `allowed_merge_methods` omits `merge`).
+ *
+ * This is the one refusal the sync answers by changing method rather than by
+ * retrying: no number of retries turns a repository setting on.
+ */
+export function isMergeCommitNotAllowed(message: string): boolean {
+  const text = message.toLowerCase();
+  return text.includes("merge commits are not allowed") ||
+    text.includes("merge commit is not allowed") ||
+    (text.includes("merge method") && text.includes("not allowed")) ||
+    text.includes("not allowed for this repository");
+}
+
+/**
+ * The warning a squashed sync earns, naming the repository setting to change.
+ *
+ * A squashed sync is a real fault — it leaves the default branch outside the
+ * milestone branch's ancestry — so it is never silent. It is not fatal either:
+ * the `check-resurrected-files` gate on every milestone PR catches the
+ * consequence, and a sync that refused to land would leave the branch drifting
+ * instead.
+ */
+export function squashedSyncWarning(
+  repo: string,
+  milestoneBranch: string,
+  detail: string,
+): string {
+  return `WARNING: the sync PR for '${milestoneBranch}' in ${repo} had to be ` +
+    `armed as a SQUASH — ${repo} does not permit merge commits (${detail}). ` +
+    `The default branch will not be an ancestor of '${milestoneBranch}', so ` +
+    `its deletions can return as modify/delete conflicts. Enable merge ` +
+    `commits on ${repo} (Settings → Pull Requests → Allow merge commits) to ` +
+    `close this off; until then the check-resurrected-files gate is what ` +
+    `catches the consequence (Issue #1048).`;
+}
+
 /** Injected seams so the whole path is testable without git or GitHub. */
 export interface MilestoneSyncPrDeps {
   /** Runs git in the clone; resolves with the exit code and stderr. */
@@ -78,6 +144,35 @@ export interface MilestoneSyncPrOutcome {
   branch: string;
   /** True when this call opened the PR rather than updating an open one. */
   opened: boolean;
+}
+
+/**
+ * Arm auto-merge on a freshly-raised sync PR, as a merge commit (Issue #1048).
+ *
+ * A repository that forbids merge commits gets the squash it can take, with a
+ * loud warning naming the setting — never a quiet downgrade. Any other failure
+ * is left for `ensureAutoMergeOnOpenPrs` to retry, as before.
+ */
+async function armSyncPrAutoMerge(
+  repo: string,
+  prNumber: string,
+  branch: string,
+  deps: MilestoneSyncPrDeps,
+): Promise<void> {
+  const arm = (method: "--merge" | "--squash") =>
+    deps.gh(["pr", "merge", prNumber, "--repo", repo, "--auto", method]);
+  try {
+    await arm(mergeMethodFlagForHead(branch));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!isMergeCommitNotAllowed(message)) return;
+    try {
+      await arm("--squash");
+      deps.log?.(squashedSyncWarning(repo, branch, message.trim()));
+    } catch {
+      // Left for `ensureAutoMergeOnOpenPrs` to arm on its next pass.
+    }
+  }
 }
 
 /**
@@ -158,6 +253,10 @@ export async function raiseMilestoneSyncPr(
       "arms auto-merge only when something blocks the merge — so this lands " +
       "unattended once its checks are green.",
       "",
+      `Lands as a **merge commit**, never a squash: the point of the sync is ` +
+      `to put \`${defaultBranch}\` in this branch's *ancestry*, so its ` +
+      `deletions are history here rather than conflicts later (Issue #1048).`,
+      "",
       "Filed by the milestone branch sync (Issue #589).",
     ].join("\n");
 
@@ -180,19 +279,7 @@ export async function raiseMilestoneSyncPr(
     // own auto-merge pass, so a failure here is not the sync's failure.
     const number = created.trim().split("/").pop() ?? "";
     if (number) {
-      try {
-        await deps.gh([
-          "pr",
-          "merge",
-          number,
-          "--repo",
-          repo,
-          "--auto",
-          "--squash",
-        ]);
-      } catch {
-        // Left for `ensureAutoMergeOnOpenPrs` to arm on its next pass.
-      }
+      await armSyncPrAutoMerge(repo, number, branch, deps);
     }
     deps.log?.(
       `milestone sync: raised PR ${created.trim()} to merge ` +
