@@ -16,11 +16,11 @@
 #     install PowerShell before it could start — and they are excluded from
 #     every quality run for exactly that cost. They now run in the
 #     `integration tests` job, which is not a required check.
-#   * The 42 files in PARALLEL_UNSAFE_TEST_FILES (#880, #940) ran in the same
+#   * The files in PARALLEL_UNSAFE_TEST_FILES (#880, #940) ran in the same
 #     invocation as everything else. They are listed because they mutate
 #     process state, measure a real elapsed reading, or race a real
-#     subprocess, so they get their own serial invocation here — the same
-#     split `lib/unit_test_passes.ts` builds for the gate.
+#     subprocess, so they get their own invocation here — the same split
+#     `lib/unit_test_passes.ts` builds for the gate.
 #
 # The split is not restated here. `test_shard_files.ts` prints it from the two
 # manifests, so this script and `deno task test:unit` cannot disagree about
@@ -95,9 +95,22 @@ echo "=== deno unit test shard ${index}/${count}:" \
 echo "=== ${#integration_files[@]} integration suites are excluded here and" \
   "run in the 'integration tests' job (CODING-STANDARDS.md, #907) ==="
 
+# No `--parallel` here, deliberately, and this is measured rather than
+# cautious. Adding it to the shard turned `validate (tests 2/4)` red with
+# seven `Failed to spawn 'deno': entity not found` failures in
+# `quality_gate_test.ts` — suites that pass in the same shard sequentially,
+# and pass under `--parallel` on a developer's machine. Something in the
+# shard is not parallel-safe in a way neither `mutatesProcessState` nor
+# `measuresWallClock` claims, and a gate is the wrong place to find out.
+#
+# A shard is already its own process on its own runner, so the pass split
+# below still does its job: the parallel-unsafe files never share an
+# invocation with the rest, and the integration suites never run here at all.
+# `--parallel` is a speed change on top of that, and it lands once the file
+# that breaks under it is named.
 if (( ${#parallel_files[@]} > 0 )); then
-  echo "--- parallel pass: ${#parallel_files[@]} files"
-  deno task test --parallel ${parallel_files[@]+"${parallel_files[@]}"}
+  echo "--- parallel-safe pass: ${#parallel_files[@]} files"
+  deno task test ${parallel_files[@]+"${parallel_files[@]}"}
 fi
 
 # No --parallel: these are the files that cannot share a process. Sharding is
