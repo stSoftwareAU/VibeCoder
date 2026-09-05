@@ -8,6 +8,7 @@ import { assertEquals } from "@std/assert";
 import {
   belongsToIssue,
   issueBranchPatterns,
+  issueNumberFromBranch,
   mostRecentBranch,
   parseLsRemoteHeads,
   preferredIssueBranch,
@@ -64,6 +65,30 @@ Deno.test("issue branch candidates - branch identity keys on the issue number", 
   // Namespaced branches are not the worker's naming convention.
   assertEquals(belongsToIssue("wip/issue-220-x", 220), false);
   assertEquals(belongsToIssue("main", 220), false);
+});
+
+// ---------------------------------------------------------------------------
+// issueNumberFromBranch — the same identity read the other way (Issue #1113)
+// ---------------------------------------------------------------------------
+
+Deno.test("issue branch candidates - branch names its own issue number", () => {
+  assertEquals(issueNumberFromBranch("issue-116-foo"), 116);
+  assertEquals(issueNumberFromBranch("issue-116"), 116);
+  assertEquals(issueNumberFromBranch(" issue-116-foo \n"), 116);
+});
+
+Deno.test("issue branch candidates - branch number reading avoids the traps", () => {
+  // The documented trap: a longer neighbouring number is not issue 116.
+  assertEquals(issueNumberFromBranch("issue-1160-something-else"), 1160);
+  // Namespaced branches are not the worker's convention.
+  assertEquals(issueNumberFromBranch("wip/issue-220-x"), null);
+  // Zero padding is not the worker's convention either.
+  assertEquals(issueNumberFromBranch("issue-0116-foo"), null);
+  assertEquals(issueNumberFromBranch("issue-0"), null);
+  assertEquals(issueNumberFromBranch("issue-abc-foo"), null);
+  assertEquals(issueNumberFromBranch("milestone/1076-thing"), null);
+  assertEquals(issueNumberFromBranch("main"), null);
+  assertEquals(issueNumberFromBranch(""), null);
 });
 
 Deno.test("issue branch candidates - patterns cover the number and the persisted branch", () => {

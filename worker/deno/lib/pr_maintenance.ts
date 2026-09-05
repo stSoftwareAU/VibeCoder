@@ -18,6 +18,7 @@
  */
 
 import type { Logger, Result } from "../types.ts";
+import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { verifyMergeLanded } from "./merge_landing.ts";
 import type { CommentType, PrCommentToFix } from "./pr_comments.ts";
 import type { FailedCiCheck } from "./pr_ci_checks.ts";
@@ -636,14 +637,19 @@ export async function fetchCheckAnnotations(
 }
 
 /**
- * Extract an issue number from a branch name matching `issue-{num}-` pattern.
+ * Extract an issue number from a worker branch name (`issue-{num}[-slug]`).
+ *
+ * Delegates to {@link issueNumberFromBranch} (Issue #1113) so the repository
+ * has one branch-shape parser rather than two that can disagree — that one
+ * cross-checks against `belongsToIssue`, so `issue-1160-…` is issue 1160 and
+ * never 116.
  *
  * @param branchName - The branch name
  * @returns Issue number string, or null if no match
  */
 export function extractIssueFromBranch(branchName: string): string | null {
-  const match = branchName.match(/^issue-(\d+)-/);
-  return match ? match[1]! : null;
+  const issueNumber = issueNumberFromBranch(branchName);
+  return issueNumber === null ? null : String(issueNumber);
 }
 
 // ---------------------------------------------------------------------------
