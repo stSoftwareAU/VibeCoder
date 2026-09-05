@@ -360,7 +360,12 @@ function Write-RunCoreLog {
 # nothing whatsoever about why. These are the bounded, named copies the log
 # line points at, in their own sub-directory so the size-based rotation of
 # run_core.log and friends leaves them alone.
-$BuildFailureLogDir = Join-Path $HomeDir_ "logs/build-failures"
+# Under the resolved log directory, not $HOME/logs: Issue #873 moved the
+# default onto the platform's own location and this line was left behind, so
+# a host that logged anywhere else preserved its build failures where neither
+# run_core.log's pointer nor the operator would look. run.sh derives it the
+# same way (BUILD_FAILURE_LOG_DIR).
+$BuildFailureLogDir = Join-Path $LogDir_ "build-failures"
 # Diagnostics, not an archive: an unbounded directory on a host already
 # fighting for disk would be a regression, not a fix (Issues #478, #633).
 $BuildFailureLogKeep = 20
@@ -453,7 +458,11 @@ function Write-RunCoreExcerpt {
     Write-RunCoreLog "$Label (last $BuildFailureExcerptLines lines):"
     try {
         $tail = @($lines | Select-Object -Last $BuildFailureExcerptLines)
-        Add-Content -LiteralPath (Join-Path $HomeDir_ "logs/run_core.log") `
+        # $LogDir_, the same file Write-RunCoreLog wrote the header to. This
+        # said $HomeDir_/logs (Issue #873's old default), so the header landed
+        # in one file and the excerpt under it in another - the excerpt read
+        # as empty, which is the one thing Issue #1019 exists to prevent.
+        Add-Content -LiteralPath (Join-Path $LogDir_ "run_core.log") `
             -Value ($tail | ForEach-Object { "  | $_" }) -ErrorAction Stop
     } catch {
         # Best-effort by design, exactly as Write-RunCoreLog is.

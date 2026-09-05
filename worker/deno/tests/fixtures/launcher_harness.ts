@@ -844,11 +844,18 @@ export async function runCoreLog(harness: Harness): Promise<string> {
 /**
  * Where the launcher preserves a failed build's own output (Issue #1019).
  *
+ * Derived from `harness.logDir` rather than spelled out, so it follows the
+ * launcher wherever the log directory resolves to. It was written as
+ * `<tmp>/home/logs` back when `$HOME/logs` was the only answer; once Issue
+ * #873 moved the default onto the platform's own location, run.sh preserved
+ * logs where it was told to and this helper went on reading the old path,
+ * reporting every kept log as missing.
+ *
  * @param harness - The harness the launcher ran under
  * @returns The preserved build-failure log directory
  */
 export function buildFailureLogDir(harness: Harness): string {
-  return `${harness.tmpDir}/home/logs/build-failures`;
+  return `${harness.logDir}/build-failures`;
 }
 
 /**

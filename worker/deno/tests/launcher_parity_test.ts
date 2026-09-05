@@ -30,6 +30,7 @@ import {
   LAUNCH_PLAN_KEYS,
   launcherContractFaults,
 } from "../lib/launcher_contract.ts";
+import { executableLines } from "../lib/launcher_source.ts";
 import {
   BASH_LAUNCHER,
   buildFailureLogDir,
@@ -572,4 +573,41 @@ Deno.test({
       mountValues(normalise(bash)),
     );
   },
+});
+
+// ---------------------------------------------------------------------------
+// The resolved log directory is the only one (Issues #873, #1019)
+// ---------------------------------------------------------------------------
+
+Deno.test("launcher parity - neither launcher spells a log path beside the resolved one", () => {
+  // Both launchers ask `mod.ts log-dir` where the logs go, then must use that
+  // answer for everything they write. Issue #873 moved the default off
+  // `$HOME/logs`; run.ps1 converted two of its four uses and kept the literal
+  // for the other two, so preserved build logs went to a directory nothing
+  // read, and an excerpt's header and body landed in different files — the
+  // excerpt read as empty, which is the fault Issue #1019 exists to prevent.
+  //
+  // Written against the source rather than behaviour because the damage is
+  // silent: both paths are writable, so every launch "succeeds" and only the
+  // operator reading the wrong directory ever finds out.
+  const offenders: string[] = [];
+
+  executableLines(RUN_PS1_SOURCE, "powershell").forEach((line, index) => {
+    if (/\$HomeDir_[^\n]*["']logs/.test(line)) {
+      offenders.push(`run.ps1:${index + 1}: ${line.trim()}`);
+    }
+  });
+  executableLines(RUN_SH_SOURCE, "bash").forEach((line, index) => {
+    if (/\$\{?HOME\}?\/logs/.test(line)) {
+      offenders.push(`run.sh:${index + 1}: ${line.trim()}`);
+    }
+  });
+
+  assertEquals(
+    offenders,
+    [],
+    "a launcher built a log path from $HOME instead of the directory it " +
+      "resolved — use $LogDir_ (run.ps1) or ${RUN_CORE_LOG_DIR} (run.sh):\n" +
+      offenders.join("\n"),
+  );
 });

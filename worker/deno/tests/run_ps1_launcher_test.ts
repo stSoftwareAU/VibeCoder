@@ -654,7 +654,7 @@ Deno.test({
     });
     try {
       // A regular file where the directory must go.
-      await Deno.mkdir(`${harness.tmpDir}/home/logs`, { recursive: true });
+      await Deno.mkdir(harness.logDir, { recursive: true });
       await Deno.writeTextFile(
         buildFailureLogDir(harness),
         "not a directory\n",

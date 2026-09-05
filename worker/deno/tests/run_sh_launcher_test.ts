@@ -1478,7 +1478,7 @@ Deno.test("run.sh - a preserve that cannot be made says why, and the launch stil
   try {
     // A regular file where the directory must go: the copy cannot be made,
     // and the launcher must name that cause rather than going quiet.
-    await Deno.mkdir(`${harness.tmpDir}/home/logs`, { recursive: true });
+    await Deno.mkdir(harness.logDir, { recursive: true });
     await Deno.writeTextFile(buildFailureLogDir(harness), "not a directory\n");
 
     const outcome = await runLauncher(harness);
