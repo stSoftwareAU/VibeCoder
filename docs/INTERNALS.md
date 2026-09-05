@@ -498,6 +498,15 @@ byte-identical ladder, and a fleet that configured only `pr` mappings gets 1.87
 without 1.86 — an issue-scanning row that could never match is not added. See
 [Configuration Reference — Custom Label Prompts](CONFIGURATION.md#-custom-label-prompts).
 
+After Priority 2 — once every issue slot has drained — the cycle runs the
+auto-merge sweep **a second time** (`runPostScanAutoMerge` in
+[run_core.ts](../worker/deno/lib/run_core.ts)). Priority 1.65 runs before the
+work that raises PRs, so it can never see a PR its own cycle created; the
+post-scan pass does, and lists live rather than from the cache 1.65 filled.
+It is skipped, with a logged reason, on a cycle that did no work — see
+[Merge Enforcement — hands-off landing](MERGE.md#hands-off-landing--precedence-and-loud-failure)
+(Issue #1136).
+
 #### 🚦 Primary GraphQL quota exhaustion
 
 GitHub's **primary GraphQL quota** and its **core (REST) quota** are separate

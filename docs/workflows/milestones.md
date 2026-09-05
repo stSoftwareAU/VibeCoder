@@ -6,7 +6,7 @@ This page is part of the **user manual** for the Vibe Coder. It describes how mi
 
 ## Why milestones? (Productivity + safety)
 
-**Milestones unlock the potential** of the Vibe Coder: it can **safely** work on many issues in the background overnight or over the weekend. Each milestone-issue PR targets the **milestone branch**. At **PR creation** the worker **skips** enabling auto-merge for those PRs (`skipAutoMerge` —); a later Priority 1.65 catch-up scan may still arm auto-merge on open worker PRs when mergeable. You still get **one final PR** to default with many issues completed and quality checks already exercised on the milestone line.
+**Milestones unlock the potential** of the Vibe Coder: it can **safely** work on many issues in the background overnight or over the weekend. Each milestone-issue PR targets the **milestone branch**, and the worker **enables auto-merge at PR creation** for those PRs like any other (Issue #1136). The Priority 1.65 catch-up scan — and the post-scan sweep that repeats it once the issue slots drain — are the backstop when arming is refused or fails. You still get **one final PR** to default with many issues completed and quality checks already exercised on the milestone line.
 
 **Safety is unchanged.** Every PR (including every milestone-issue PR) runs the full quality gate (e.g. `./quality.sh`). **No code reaches the default branch without your review:** the only path to default is the **final PR** from the milestone branch, which you approve when ready. Productivity gain without sacrificing oversight.
 
@@ -16,7 +16,7 @@ This page is part of the **user manual** for the Vibe Coder. It describes how mi
 
 ## ⚡ TL;DR
 
-**One branch per milestone; one PR (Pull Request) at a time per branch.** Put issues in a GitHub milestone → the worker creates a `milestone/<name>` branch and implements issues one by one, each with a PR **to the milestone branch** (not default). At create time those PRs use **`skipAutoMerge`** (unlike non-milestone PRs, which enable auto-merge immediately). The Priority 1.65 catch-up path may still enable auto-merge later when a PR is mergeable — see [Label Flows](label-flows.md) and [PR feedback](pr-feedback.md). When **all** milestone issues are done, the worker creates a **tracking issue**, then opens **one final PR** from the milestone branch to default — the human review gate for the whole stream. The worker **monitors the final PR for CI failures** (including integration tests that may only run against the default branch) and automatically fixes them. Milestone issues **branch off the milestone branch** so the integration line stays clean. Spelling/quality/merge fixes run automatically on worker-authored PRs.
+**One branch per milestone; one PR (Pull Request) at a time per branch.** Put issues in a GitHub milestone → the worker creates a `milestone/<name>` branch and implements issues one by one, each with a PR **to the milestone branch** (not default). Those PRs enable auto-merge at create, exactly as non-milestone PRs do (Issue #1136); the Priority 1.65 catch-up path and the post-scan sweep are the backstop — see [Label Flows](label-flows.md) and [PR feedback](pr-feedback.md). When **all** milestone issues are done, the worker creates a **tracking issue**, then opens **one final PR** from the milestone branch to default — the human review gate for the whole stream. The worker **monitors the final PR for CI failures** (including integration tests that may only run against the default branch) and automatically fixes them. Milestone issues **branch off the milestone branch** so the integration line stays clean. Spelling/quality/merge fixes run automatically on worker-authored PRs.
 
 ```mermaid
 flowchart TD
@@ -90,7 +90,7 @@ This means: if a non-milestone issue has a stuck PR targeting the default branch
 1. **Select** — Issue is in a milestone; no other open PR by the configured GitHub user for **this milestone branch**; issue is otherwise eligible (labels, author, not blocked by dependencies or open children).
 2. **Branch** — Ensure `milestone/<name>` exists (from default); sync it with default (merge); **create feature branch from the milestone branch** (not from default).
 3. **Implement** — Same as non-milestone: clarify if needed, Claude, quality, commit, push.
-4. **PR** — Create PR targeting **milestone branch** (not default). Use "Closes #N" in the PR body (not "Addresses #N" — see [Issue closure for milestone issues](#issue-closure-for-milestone-issues)). **Do not** enable auto-merge at create (`skipAutoMerge` —); catch-up may arm it later.
+4. **PR** — Create PR targeting **milestone branch** (not default). Use "Closes #N" in the PR body (not "Addresses #N" — see [Issue closure for milestone issues](#issue-closure-for-milestone-issues)). Enable auto-merge at create, like any other PR (Issue #1136); the catch-up scan and post-scan sweep are the backstop.
 
 ### ✅ Milestone completion
 

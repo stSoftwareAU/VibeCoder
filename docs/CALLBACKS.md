@@ -209,7 +209,9 @@ understand instead of misreading it.
 ## Session logs are sensitive — redaction is the hook author's job
 
 `VIBECODER_SESSION_LOG_PATH` is present only when the agent transcript tee was
-enabled for that run **and** the file exists on disk. When it is present:
+enabled for that run — `"agent_transcript_enabled": true` in `.config.json`,
+off by default (Issue #1141) — **and** the file exists on disk. When it is
+present:
 
 - The transcript is the **raw agent stream** for that run: model output, issue
   and repository text, file contents the agent read, and command output. It is
@@ -300,7 +302,11 @@ Hook paths are validated by the same parser `.config.json` uses, so a path the
 fixture accepts is a path the worker will load. `--timeout-seconds` overrides
 the budget the fixture gives each hook (its own default is 10 seconds — short,
 because a conformance run should not take a minute to fail; the contract's
-own default remains 60).
+own default remains 60). The one exception is the scenario that deliberately
+hangs a hook, which keeps a one-second budget of its own so that proving the
+timeout does not cost the whole budget; the `always` hook it runs alongside
+has already been driven by the preceding scenario, so a loaded host cannot
+turn that second into a false failure.
 
 | Check                                | Proves                                                        |
 | ------------------------------------ | ------------------------------------------------------------- |

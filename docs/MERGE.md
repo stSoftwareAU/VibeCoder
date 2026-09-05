@@ -388,6 +388,47 @@ construction, so a work-driven sweep would never revisit it. That was already
 true before the sweep was extracted; it is now asserted by a test rather than
 left to be re-broken.
 
+**A PR is armed when it is created, not next cycle.** The sweep is a
+**backstop**, never the primary mechanism. Priority 1.65 runs near the top of a
+cycle and the Priority 2 issue scan — the pass that raises PRs — runs after it,
+so a PR raised by cycle N is structurally invisible to cycle N's sweep.
+PR #1133 was created 51 minutes after that cycle's sweep and sat green,
+unblocked and unarmed until a human merged it, freezing every sibling issue the
+blocking guard defers to it (Issue #1136).
+
+Two changes close that window:
+
+- **Arm at creation.** The completion phase calls `finalisePr` immediately
+  after `gh pr create` for **every** PR it raises, milestone children
+  included. GitHub then lands the PR the moment its checks pass, with no cycle
+  boundary involved. The milestone *summary* PR is raised by
+  `milestone_completion.ts`, not here, and is re-gated on open children at
+  merge time by `decideSummaryPrMerge` (Issue #3909) — so arming a child PR
+  never merges a milestone early.
+- **Sweep again once the slots drain.** `runPostScanAutoMerge` in
+  [`worker/deno/lib/run_core.ts`](../worker/deno/lib/run_core.ts) repeats the
+  sweep at the end of a cycle that did work, catching the paths arming cannot:
+  an arming call that failed, a host that died mid-run, and an unprotected base
+  whose gated direct merge deferred because CI was still running when the PR
+  was raised. It lists **live**, not from the iteration-scoped `prs_${author}`
+  cache the 1.65 sweep filled before those PRs existed. An idle cycle skips it
+  and says so — it raised nothing to sweep.
+
+```mermaid
+sequenceDiagram
+    participant C as Cycle N
+    participant S as Auto-merge sweep
+    participant W as Issue work (Priority 2)
+    participant G as GitHub
+    C->>S: priority 1.65 sweep
+    S->>G: arm/merge PRs that already existed
+    C->>W: claim issue, run agent
+    W->>G: gh pr create
+    W->>G: gh pr merge --auto --squash (armed at creation)
+    C->>S: post-scan sweep (slots drained, live listing)
+    S->>G: backstop — anything arming missed
+```
+
 **Precedence is fixed, not a race.** The auto-merge scan
 (`ensureAutoMergeOnOpenPrs` in
 [`worker/deno/lib/pr_maintenance.ts`](../worker/deno/lib/pr_maintenance.ts))
@@ -396,6 +437,14 @@ merge when native auto-merge is refused because the target branch is
 unprotected. Native auto-merge is idempotent, so a consuming repo's own
 `auto-merge.yml` arming the same PR converges on the identical state rather than
 competing with the worker — there is no winner to determine.
+
+**A sweep that does nothing says so.** Every repository the sweep visits
+produces a line: the candidate PR numbers it found, or `no candidates` when the
+fleet had no open PR there. Every attempt's outcome is logged by
+`logAutoMergeOutcome` with the repo, PR number and result. Without those lines
+"the sweep found nothing" and "the sweep refused everything" read identically,
+which is why five unarmed PRs in one day were each treated as an isolated
+omission rather than one defect (Issues #470, #1136).
 
 **A blocked merge is never silent.** Every outcome runs through
 `handleMergeAttempt()` in
