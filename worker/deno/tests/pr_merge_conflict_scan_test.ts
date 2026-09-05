@@ -30,6 +30,7 @@ import {
 } from "../lib/pr_merge_conflict_scan.ts";
 import {
   type AbandonRestartRequest,
+  type AbandonStep,
   CONFLICT_RESTART_MARKER,
   conflictRestartMarker,
 } from "../lib/conflict_abandon_restart.ts";
@@ -1359,5 +1360,44 @@ Deno.test("findConflictingPr - the abandon seam receives the PR's failure thread
   assertEquals(seen[0]?.prNumber, 48);
   assertEquals(seen[0]?.branchName, "issue-16-fix");
   assertEquals(seen[0]?.baseBranch, "main");
-  assertEquals(seen[0]?.prComments.length, exhaustedComments().length);
+  assertEquals(seen[0]?.prComments?.length, exhaustedComments().length);
+});
+
+Deno.test("findConflictingPr - a failure at any abandon step rests at needs-human, named", async () => {
+  // The Failure Detection clause of Issue #1115: inject a failure at each step
+  // in turn, and the resting state is always a human owning the PR with the
+  // step named. The dangerous state — PR closed, issue not re-queued — is a
+  // late step, so the late steps matter most here.
+  const steps: AbandonStep[] = [
+    "originating-issue",
+    "issue-state",
+    "restart-marker",
+    "existing-pr",
+    "pr-thread",
+    "issue-comment",
+    "pr-comment",
+    "pr-close",
+    "issue-reopen",
+    "issue-label",
+  ];
+
+  for (const step of steps) {
+    const fake = makeFakeGh(exhaustedState());
+    const { log } = await scanWith(fake, {
+      abandonRestart: () =>
+        Promise.resolve({
+          outcome: "failed",
+          step,
+          message: `${step} blew up`,
+        }),
+    });
+
+    assertEquals(reasonFor(log, 48), "budget-spent", `${step} record`);
+    assertEquals(escalatedToHuman(fake, 48), true, `${step} needs-human`);
+    const escalation = fake.commentsPosted.find((c) =>
+      c.prNumber === 48 && c.body.includes("Next step")
+    );
+    assert(escalation, `${step}: no escalation comment`);
+    assertStringIncludes(escalation.body, `\`${step}\` step`);
+  }
 });

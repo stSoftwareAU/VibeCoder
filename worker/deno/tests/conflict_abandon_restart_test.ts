@@ -37,11 +37,13 @@ import {
   exhaustedEscalationDedupKey,
   exhaustedEscalationRoute,
   findOtherPrsForIssue,
-  hasConflictRestartMarker,
   restartMarkerPrNumbers,
   summariseFailedAttempts,
 } from "../lib/conflict_abandon_restart.ts";
-import { CONFLICT_FAILED_MARKER } from "../lib/pr_merge_conflict_scan.ts";
+import {
+  CONFLICT_ATTEMPT_MARKER,
+  CONFLICT_FAILED_MARKER,
+} from "../lib/pr_merge_conflict_scan.ts";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -247,12 +249,8 @@ Deno.test("restartMarkerPrNumbers - names the PR each claim was made for", () =>
   );
 });
 
-Deno.test("hasConflictRestartMarker - finds the marker whichever PR wrote it", () => {
-  assertEquals(hasConflictRestartMarker([{ body: "hello" }]), false);
-  assertEquals(
-    hasConflictRestartMarker([{ body: conflictRestartMarker(REPO, 99) }]),
-    true,
-  );
+Deno.test("restartMarkerPrNumbers - a thread with no claim records none", () => {
+  assertEquals(restartMarkerPrNumbers([{ body: "hello" }, null, 7]), []);
 });
 
 // ---------------------------------------------------------------------------
@@ -515,7 +513,7 @@ Deno.test("abandonAndRestart - a failed label add names the label step", async (
 Deno.test("buildAbandonPrComment - states the absence when nothing was recorded", () => {
   const body = buildAbandonPrComment({
     request: makeRequest({ prComments: [] }),
-    history: { attempts: [], conflictedPaths: [] },
+    history: { attempts: [], conflictedPaths: [], consultedIssues: [] },
     context: {
       repo: REPO,
       prNumber: PR_NUMBER,
@@ -690,8 +688,12 @@ Deno.test("abandonAndRestart - quoted failure text cannot forge a marker or leak
     !prBody.includes("ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
     "a token quoted out of a failure comment must be redacted",
   );
-  // Exactly one marker: the one this module wrote, at the top.
-  assertEquals(prBody.split(CONFLICT_RESTART_MARKER).length - 1, 1);
+  // No restart marker on the PR at all: the claim is the issue's, and a
+  // quoted body must not be able to forge one anywhere.
+  assertEquals(prBody.split(CONFLICT_RESTART_MARKER).length - 1, 0);
+  // Exactly one on the issue — the claim this rung wrote.
+  const issueBody = fake.state.issueComments[0]?.body ?? "";
+  assertEquals(issueBody.split(CONFLICT_RESTART_MARKER).length - 1, 1);
 });
 
 Deno.test("findOtherPrsForIssue - the body marker matches this issue, not a longer one", async () => {
@@ -710,4 +712,119 @@ Deno.test("findOtherPrsForIssue - the body marker matches this issue, not a long
     () => Promise.resolve(JSON.stringify(listed)),
   );
   assertEquals(others.map((pr) => pr.number), [90]);
+});
+
+// ---------------------------------------------------------------------------
+// Bounds and read-back
+// ---------------------------------------------------------------------------
+
+Deno.test("summariseFailedAttempts - bounded detail and path list", () => {
+  const paths = Array.from({ length: 25 }, (_, i) => `- \`src/f${i}.ts\``);
+  const history = summariseFailedAttempts([{
+    body: [
+      `${CONFLICT_FAILED_MARKER} n="1" -->`,
+      "x".repeat(900),
+      "Conflicted files:",
+      ...paths,
+    ].join("\n"),
+  }]);
+
+  // A comment is not a log: both the quoted reason and the path list are cut
+  // rather than pasting a whole failing run into a PR.
+  assertEquals(history.attempts[0]?.detail.length, 500);
+  assertEquals(history.conflictedPaths.length, 20);
+  assertEquals(history.conflictedPaths[0], "src/f0.ts");
+});
+
+Deno.test("summariseFailedAttempts - the issues consulted come off the attempt comments", () => {
+  // #1114 records them on the attempt comment, not the conclusion, and no
+  // later run can re-derive the base side without a clone.
+  const history = summariseFailedAttempts([
+    {
+      body: [
+        `${CONFLICT_ATTEMPT_MARKER} n="1" -->`,
+        "🧭 **Issues consulted**",
+        "",
+        "- **PR side** — #16: Raise the cap (via branch)",
+        "- **Base side**, by conflicted path:",
+        "  - `worker/deno/lib/limits.ts` — #21 (Lower the cap)",
+      ].join("\n"),
+    },
+    { body: `${CONFLICT_FAILED_MARKER} n="1" -->\nfailed` },
+    // A number outside that section is not a consulted issue.
+    { body: "see #999 for background" },
+  ]);
+
+  assertEquals(history.consultedIssues, [16, 21]);
+});
+
+Deno.test("abandonAndRestart - an unreadable PR thread stops the abandon before the close", async () => {
+  // Publishing "no failure comment survives in this thread" because the read
+  // failed would be a fabricated fact on a permanent comment.
+  const fake = makeFake({
+    failOn: `api repos/${REPO}/issues/${PR_NUMBER}/comments`,
+  });
+  const request = { ...makeRequest(), prComments: undefined };
+
+  const outcome = await abandonAndRestart(request, { gh: fake.gh });
+
+  assert(outcome.outcome === "failed");
+  assertEquals(outcome.step, "pr-thread");
+  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+});
+
+Deno.test("abandonAndRestart - an unreadable issue view is not an open, unlabelled issue", async () => {
+  const fake = makeFake();
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh: (args) =>
+      args[0] === "issue" && args[1] === "view" &&
+        String(args[args.indexOf("--json") + 1] ?? "").includes("labels")
+        ? Promise.resolve("")
+        : fake.gh(args),
+  });
+
+  assert(outcome.outcome === "failed");
+  assertEquals(outcome.step, "issue-state");
+  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+});
+
+Deno.test("findOtherPrsForIssue - an unanswered listing is not an empty one", async () => {
+  await assertRejects(
+    () =>
+      findOtherPrsForIssue(
+        REPO,
+        ISSUE_NUMBER,
+        PR_NUMBER,
+        () => Promise.resolve(""),
+      ),
+    Error,
+    "Empty PR listing",
+  );
+});
+
+Deno.test("exhaustedEscalationRoute - the other two declines say what blocked them", () => {
+  const otherPr = exhaustedEscalationRoute({
+    outcome: "declined",
+    reason: {
+      kind: "other-open-pr",
+      issueNumber: ISSUE_NUMBER,
+      prUrl: "https://github.com/org/repo/pull/91",
+    },
+  });
+  assertEquals(otherPr.kind, "abandon-declined");
+  assertStringIncludes(describeExhaustedRoute(otherPr).join("\n"), "pull/91");
+
+  const unqueueable = exhaustedEscalationRoute({
+    outcome: "declined",
+    reason: {
+      kind: "requeue-not-permitted",
+      issueNumber: ISSUE_NUMBER,
+      workLabel: "work-on",
+    },
+  });
+  assertEquals(unqueueable.kind, "abandon-declined");
+  assertStringIncludes(
+    describeExhaustedRoute(unqueueable).join("\n"),
+    "unqueued",
+  );
 });

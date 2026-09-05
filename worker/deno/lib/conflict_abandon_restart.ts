@@ -55,7 +55,11 @@ import {
   type OriginatingIssue,
   type PrUnresolvedReason,
 } from "./conflict_issue_context.ts";
-import { CONFLICT_FAILED_MARKER } from "./merge_conflict_markers.ts";
+import {
+  CONFLICT_ATTEMPT_MARKER,
+  CONFLICT_FAILED_MARKER,
+} from "./merge_conflict_markers.ts";
+import { CONSULTED_ISSUES_HEADING } from "./conflict_intent_audit.ts";
 import { DEFAULT_WORK_LABEL } from "./escalate_as_work.ts";
 import { prTitleMatchesIssue } from "./pr_title_issue_ref.ts";
 import { sanitiseIssueText } from "./conflict_intent_context.ts";
@@ -83,13 +87,6 @@ export const CONFLICT_RESTART_MARKER = "<!-- vibe-merge-conflict-restart";
 /** The marker comment line for one abandoned PR. */
 export function conflictRestartMarker(repo: string, prNumber: number): string {
   return `${CONFLICT_RESTART_MARKER} pr="${repo}#${prNumber}" -->`;
-}
-
-/** True when a comment thread already records a restart (any PR). */
-export function hasConflictRestartMarker(
-  comments: readonly unknown[],
-): boolean {
-  return restartMarkerPrNumbers(comments).length > 0;
 }
 
 /**
@@ -139,11 +136,31 @@ export interface FailedAttemptSummary {
   detail: string;
 }
 
-/** What the failed attempts on a PR recorded. */
+/** What the attempts on a PR recorded. */
 export interface FailedAttemptHistory {
   attempts: FailedAttemptSummary[];
   /** Conflicted paths named across those attempts, newest first, deduped. */
   conflictedPaths: string[];
+  /**
+   * Issues the attempts consulted, from the consulted-issues section #1114
+   * writes onto each attempt comment. Read back rather than re-derived: the
+   * base side needs a clone to walk, and by now there is none.
+   */
+  consultedIssues: number[];
+}
+
+/** Issues named in one attempt comment's consulted-issues section. */
+function consultedIssuesFrom(body: string): number[] {
+  const start = body.indexOf(CONSULTED_ISSUES_HEADING);
+  if (start < 0) return [];
+  const numbers: number[] = [];
+  for (
+    const match of body.slice(start).matchAll(/#(\d{1,9})\b/g)
+  ) {
+    const number = Number(match[1]);
+    if (Number.isSafeInteger(number) && number > 0) numbers.push(number);
+  }
+  return numbers;
 }
 
 /** The attempt number a failure marker names, or `null`. */
@@ -166,11 +183,23 @@ export function summariseFailedAttempts(
 ): FailedAttemptHistory {
   const attempts: FailedAttemptSummary[] = [];
   const conflictedPaths: string[] = [];
+  const consultedIssues: number[] = [];
 
   for (const raw of comments) {
     if (typeof raw !== "object" || raw === null) continue;
     const body = (raw as { body?: unknown }).body;
     if (typeof body !== "string") continue;
+
+    // The consulted-issues record rides the *attempt* comment (Issue #1114),
+    // not the failure conclusion, so it is collected from the whole thread.
+    if (body.includes(CONFLICT_ATTEMPT_MARKER)) {
+      for (const issueNumber of consultedIssuesFrom(body)) {
+        if (!consultedIssues.includes(issueNumber)) {
+          consultedIssues.push(issueNumber);
+        }
+      }
+    }
+
     if (!body.includes(CONFLICT_FAILED_MARKER)) continue;
 
     const lines = body.split("\n");
@@ -196,6 +225,7 @@ export function summariseFailedAttempts(
   return {
     attempts,
     conflictedPaths: conflictedPaths.slice(0, MAX_CONFLICTED_PATHS),
+    consultedIssues,
   };
 }
 
@@ -228,6 +258,7 @@ export type AbandonStep =
   | "issue-state"
   | "restart-marker"
   | "existing-pr"
+  | "pr-thread"
   | "issue-comment"
   | "pr-comment"
   | "pr-close"
@@ -395,8 +426,13 @@ export interface AbandonRestartRequest {
   branchName: string;
   /** The base branch the PR conflicts with. */
   baseBranch: string;
-  /** The PR's comment thread, oldest first — the scan already has it. */
-  prComments: readonly unknown[];
+  /**
+   * The PR's comment thread, oldest first, when the caller already has it —
+   * the scan does. Omit it and the rung fetches the thread itself; it is
+   * never assumed empty, because "no failure comment survives" is a claim
+   * this comment makes in public and an unread thread is not evidence for it.
+   */
+  prComments?: readonly unknown[];
 }
 
 /** Injected seams so the whole path is testable without GitHub. */
@@ -515,7 +551,16 @@ export async function findOtherPrsForIssue(
     "--limit",
     String(OPEN_PR_LOOKUP_LIMIT),
   ]);
-  const parsed: unknown = JSON.parse(raw.trim() || "[]");
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    // `gh pr list --json` prints `[]` when there is nothing; empty output
+    // means the call answered with nothing at all, which is not an absence.
+    throw new Error(
+      `Empty PR listing for ${repo} issue #${issueNumber} — an unanswered ` +
+        "lookup must not be read as 'no other PR'",
+    );
+  }
+  const parsed: unknown = JSON.parse(trimmed);
   if (!Array.isArray(parsed)) {
     throw new Error(
       `Expected a PR array for ${repo} issue #${issueNumber}, got ` +
@@ -565,18 +610,38 @@ function conflictedPathLines(history: FailedAttemptHistory): string[] {
     : ["- (no conflicted path was recorded)"];
 }
 
-/** The issues the two attempts consulted, PR side first (Issue #1113/#1114). */
-function consultedIssues(context: ConflictIssueContext): OriginatingIssue[] {
-  const issues: OriginatingIssue[] = [];
-  if (context.prSide.resolved) issues.push(context.prSide.issue);
+/**
+ * The issues consulted, as comment lines (Issues #1113/#1114).
+ *
+ * Two sources, because neither alone is the answer: the context this rung
+ * gathered names the PR side (and the base side, when the caller had a clone),
+ * while the attempts' own comments name every issue the resolver was actually
+ * shown — a record no later run can re-derive once the clone is gone.
+ */
+function consultedIssueLines(
+  context: ConflictIssueContext,
+  history: FailedAttemptHistory,
+): string[] {
+  const known: OriginatingIssue[] = [];
+  if (context.prSide.resolved) known.push(context.prSide.issue);
   for (const path of context.baseSide) {
     for (const issue of path.issues) {
-      if (!issues.some((known) => known.number === issue.number)) {
-        issues.push(issue);
+      if (!known.some((seen) => seen.number === issue.number)) {
+        known.push(issue);
       }
     }
   }
-  return issues;
+
+  const lines = known.map((issue) =>
+    `- #${issue.number} — ${sanitiseIssueText(issue.title)}`
+  );
+  for (const issueNumber of history.consultedIssues) {
+    if (known.some((seen) => seen.number === issueNumber)) continue;
+    lines.push(`- #${issueNumber} — recorded on an attempt comment`);
+  }
+  return lines.length > 0
+    ? lines
+    : ["- (none — no originating issue was resolvable for either side)"];
 }
 
 /**
@@ -612,20 +677,18 @@ export function buildAbandonPrComment(args: {
 
   const paths = conflictedPathLines(history);
 
-  const issues = consultedIssues(context);
-  const consulted = issues.length > 0
-    ? issues.map((issue) =>
-      `- #${issue.number} — ${sanitiseIssueText(issue.title)}`
-    )
-    : ["- (none — no originating issue was resolvable for either side)"];
+  const consulted = consultedIssueLines(context, history);
 
   const branch = sanitiseIssueText(request.branchName);
+  const base = sanitiseIssueText(request.baseBranch);
+  // No restart marker here: the marker is the issue's (Issue #1115). This PR
+  // is closed moments later and a replacement takes its place, so a claim
+  // recorded on it would be read back against the wrong PR.
   return [
-    conflictRestartMarker(request.repo, request.prNumber),
     "♻️ **Abandoning this PR and restarting the work**",
     "",
     `Two merge-conflict resolution attempts on \`${branch}\` ` +
-    `concluded and failed, so \`${request.baseBranch}\` has moved too far ` +
+    `concluded and failed, so \`${base}\` has moved too far ` +
     "from this branch to reconcile. Redoing the work off the current base " +
     "is cheaper than reconciling it, and needs no human.",
     "",
@@ -640,15 +703,15 @@ export function buildAbandonPrComment(args: {
     "",
     ...consulted,
     "",
-    "_Base-side issues are listed only when the caller had a clone to walk " +
-    "(Issue #1113); the scan does not, so from there this is the PR side " +
-    "alone._",
+    "_Base-side issues are resolvable only with a clone to walk " +
+    "(Issue #1113); where the caller had none, the list above is the PR side " +
+    "plus whatever the attempt comments recorded._",
     "",
     "**What happens now**",
     "",
     `This PR is being **closed** — not merged — and issue #${issueNumber} is ` +
     `being re-queued (\`${workLabel}\`) so the fleet raises a fresh PR off ` +
-    `\`${request.baseBranch}\`.`,
+    `\`${base}\`.`,
     "",
     `The branch \`${branch}\` is **not** deleted and has **not** ` +
     "been force-pushed: every commit on it stays exactly as its author " +
@@ -677,9 +740,8 @@ export function buildRestartIssueComment(args: {
     "",
     `${request.repo}#${request.prNumber} put this issue's work on ` +
     `\`${sanitiseIssueText(request.branchName)}\`, and that branch ` +
-    "conflicts with " +
-    `\`${request.baseBranch}\` in a way two concluded merge attempts could ` +
-    "not resolve.",
+    `conflicts with \`${sanitiseIssueText(request.baseBranch)}\` in a way ` +
+    "two concluded merge attempts could not resolve.",
     "",
     "Conflicted paths:",
     "",
@@ -723,13 +785,23 @@ async function fetchIssueSnapshot(
   ]);
   const parsed = JSON.parse(raw.trim() || "{}") as {
     state?: unknown;
-    labels?: Array<{ name?: unknown }>;
+    labels?: unknown;
   };
-  const labels: string[] = [];
-  for (const label of parsed.labels ?? []) {
-    if (typeof label?.name === "string") labels.push(label.name);
+  // An unreadable issue must not become `{ state: "", labels: [] }`: that
+  // reads as "open and unlabelled", which silently skips the reopen and can
+  // let the close proceed on an issue nobody could see.
+  if (typeof parsed.state !== "string" || !Array.isArray(parsed.labels)) {
+    throw new Error(
+      `Unusable issue view for ${repo}#${issueNumber}: no state/labels in ` +
+        "the response",
+    );
   }
-  return { state: String(parsed.state ?? ""), labels };
+  const labels: string[] = [];
+  for (const label of parsed.labels) {
+    const name = (label as { name?: unknown } | null)?.name;
+    if (typeof name === "string") labels.push(name);
+  }
+  return { state: parsed.state, labels };
 }
 
 /**
@@ -853,7 +925,18 @@ export async function abandonAndRestart(
     };
   }
 
-  const history = summariseFailedAttempts(request.prComments);
+  let history: FailedAttemptHistory;
+  try {
+    history = summariseFailedAttempts(
+      request.prComments ??
+        await fetchIssueCommentPages(repo, prNumber, gh),
+    );
+  } catch (error) {
+    // The abandon comment quotes this thread. Publishing "no failure comment
+    // survives" because the read failed would be a fabricated fact on a
+    // permanent comment, so the rung stops and the caller escalates.
+    return failed("pr-thread", error, issueNumber);
+  }
 
   // --- Step 1: claim the restart on the issue, marker first. --------------
   try {
