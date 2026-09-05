@@ -7,7 +7,8 @@ ideas in spec-kit that we have missed?**
 This is not a migration proposal. The Vibe Coder workflow is close to mature and
 stays as it is; nothing in spec-kit's CLI, templates or extension system is being
 adopted directly. What follows extracts ideas, judges each one, and ends with
-recommendations — five adopted, five deliberately rejected.
+recommendations — five adopted (one since removed by design), five
+deliberately rejected.
 
 Assessed against spec-kit `main` as at August 2026.
 
@@ -68,7 +69,9 @@ this assessment was worth doing.
 
 ## Ideas worth adopting
 
-Five, each filed as its own issue. Each is a native adaptation, not a port.
+Five, each filed as its own issue. Each is a native adaptation, not a port. The
+fifth was adopted and then removed by design (#1120) — it is kept here as the
+record of that decision, not as current behaviour.
 
 ### 1. Close the acceptance-criteria loop (from `/speckit.converge`) — #518
 
@@ -160,28 +163,33 @@ section of the issue-processing
 manual](workflows/issue-processing.md#-reproduction-status-on-a-bug-fix). No new
 label, no new tier, no separate lane.
 
-### 5. Name the MVP slice (from the spec template) — #522
+### 5. Name the MVP slice (from the spec template) — #522, considered and removed by #1120
 
 spec-kit's spec template forces every user story to be independently testable —
 "if you implement just ONE of them, you should still have a viable MVP" — and its
-tasks template puts a checkpoint after each story.
+tasks template puts a checkpoint after each story. Adopted as #522: the publish
+turn marked one sub-issue `**MVP slice**` and a gate rejected a plan that did
+not.
 
-The Vibe Coder orders sub-issues by *dependency*
-(`prompts/planning/`), which is technical ordering, not value ordering.
-A milestone that stops part-way therefore delivers whatever the dependency graph
-unblocked first, which may be nothing usable. Naming one MVP slice — or stating
-plainly that no slice is independently valuable — costs the planner a sentence.
+**Considered and removed** (#1120): **a milestone merges as a whole, so no MVP
+slice is required.** The adoption rested on a premise that does not hold here —
+that a milestone can stop part-way and leave only its first sub-issue landed. It
+cannot: a planning run puts its sub-issues in a milestone, every sub-issue PR
+merges into that milestone's own feature branch, and the default branch is
+updated by one final milestone PR raised only once every milestone issue is
+closed ([milestone workflow](workflows/milestones.md)). Nothing partial reaches
+the default branch, so ordering partial value inside a milestone buys nothing and
+the marker cost the planner a sentence for it. A plan with a single sub-issue
+gets no milestone at all, and an MVP marker on a one-entry list is meaningless
+anyway.
 
-**Adopted** (#522): the publish turn marks exactly one entry in the summary
-comment's sub-issue list `**MVP slice**` with what value it delivers alone — or
-carries an explicit `No independently valuable slice — <reason>` line — and
-orders the list MVP-first without ever placing a sub-issue ahead of one it
-`Depends on`. [`mvp_slice_gate.ts`](../worker/deno/lib/mvp_slice_gate.ts)
-enforces both at the same `closePlanningIssue()` chokepoint as the coverage
-gate, escalating through the shared `escalateToHuman()` path. See [the MVP-slice
-section of the planning
-manual](workflows/planning-and-questions.md#-mvp-slice-marker-and-gate-issue-522).
-No new comment type, no new label.
+The gate, its prompt instructions and its escalation are gone: no
+`mvp_slice_gate.ts`, no marker in the planning prompts, no `needs-human`
+escalation for a plan that names no slice. The value-ordering rule went with it —
+sub-issues are published in dependency order. The other four adoptions above are
+unaffected; the coverage gate (#520) still runs at the same
+`closePlanningIssue()` chokepoint. See [the design-decision note in the planning
+manual](workflows/planning-and-questions.md#-no-mvp-slice-gate--milestones-merge-as-a-whole-issue-1120).
 
 ## Considered and rejected
 
@@ -234,7 +242,8 @@ per-feature working directory. The ideas transfer; the plumbing does not.
 2. **Then #520**, because it has a working precedent in the Failure-Detection
    gate and reuses that chokepoint, repair and resume machinery.
 3. **#519, #521 and #522 are prompt-level changes** with small deterministic
-   tests behind them; take them in any order as capacity allows.
+   tests behind them; take them in any order as capacity allows. #522 was taken,
+   then removed by #1120 — see section 5 for why.
 4. **Do not adopt spec-kit itself, and do not revisit the five rejections**
    without new evidence — each is a consequence of the unattended, multi-worker,
    GitHub-native design rather than a gap in it.
