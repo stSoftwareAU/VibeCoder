@@ -136,6 +136,45 @@ flowchart LR
 - Statuses a hook invocation can record: `ok`, `failed`, `timed_out`,
   `spawn_failed`.
 
+## A hook that fails on every issue is reported once
+
+A hook fault is reported per invocation, which is right for a hook that fails
+once and wrong for a hook that cannot succeed at all. Observed on GRQ-23 on
+2026-09-05: the `always` hook failed on **every** issue across at least five
+runs, each failure costing about 100 seconds of slot time, and raised nothing
+a human ever saw. A fault that needs a human is itself a bug, so the worker
+now counts the streak and escalates it.
+
+- The worker keeps a consecutive-failure count **per event** in
+  `$WORK_DIR/callback-failure-streaks.json`. It survives the run boundary,
+  because the condition does.
+- On the **third** consecutive failing issue, the worker files (or comments
+  on) one deduplicated issue in its **own** repository, titled
+  `Post-run <event> callback failing on <host>` — the shared host-escalation
+  channel, so an ongoing condition stays one incident however long it runs.
+- **One report per streak.** The fourth failure and the four-hundredth add
+  nothing. A single successful invocation clears the count, so the next fault
+  is reported afresh.
+- The report names the hook path, the last run, the exit code, the duration
+  and the hook's captured (redacted) stderr.
+- Delivery is best-effort in one direction only: a report that could not be
+  filed is logged as an error, and nothing about it alters the run's own
+  result.
+
+**What a hook author owes in return.** The worker bounds a hook's wall clock
+and reports its outcome; it cannot see inside it. A hook that retries must
+classify its own failures:
+
+- **Fail fast on a permanent authorisation failure.** `HTTP 403`,
+  `Write access to repository not granted` and `permission denied` will not be
+  cleared by a retry, and rebase-and-retry is the answer to a rejected
+  non-fast-forward push, never to a refused one. Retrying such a failure five
+  times spends the timeout budget to reach the same answer, on every issue.
+- **Bound anything the hook carries forward.** A hook that queues work it
+  could not deliver — an unpushed record, a spooled file — must cap the queue
+  and say what it dropped when the cap is reached. An unbounded backlog makes
+  each run more expensive than the last.
+
 ## What a hook receives
 
 The environment is **cleared** before it is populated: only `PATH`, `HOME`,
