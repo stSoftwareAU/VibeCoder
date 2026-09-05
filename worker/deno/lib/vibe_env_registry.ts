@@ -655,6 +655,10 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "marker",
     note: "idle-inversion escalation comment marker prefix",
   },
+  VIBE_IDLE_STARVATION: {
+    role: "marker",
+    note: "idle-starvation escalation issue-body dedup marker (Issue #1052)",
+  },
   VIBE_PR_BRANCH_UPDATE_FAILURE: {
     role: "marker",
     note: "branch-update failure-streak marker prefix",

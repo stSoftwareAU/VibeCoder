@@ -25,7 +25,8 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
-import type { Command, CommandResult } from "../types.ts";
+import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import {
   AGENT_PROVIDERS_HASH_INPUT,
   computeContainerImageHash,
@@ -87,22 +88,51 @@ export function resolveConfigFile(
   return isAbsolute(configured) ? configured : `${root}/${configured}`;
 }
 
-export const containerImageHashCommand: Command = {
+/**
+ * The command, plus the environment seam its selections are read through
+ * (Issue #944).
+ *
+ * Declared as a widening of {@link Command} — the extra parameter is optional
+ * and defaults to the process environment, so the registry and `mod.ts` see
+ * the interface they always did. Two things reach the environment here: the
+ * `CONFIG_PATH` fallback in {@link resolveConfigFile}, and the
+ * `VIBE_AGENT_PROVIDER` / `VIBE_AGENT_PROVIDERS` overrides plus the
+ * `VIBE_IMAGE_AGENT_PROVIDERS` image stamp that
+ * `readDeploymentImageSelection` judges the configured provider set against.
+ * Both are launcher-to-container plumbing rather than configuration, so the
+ * seam is an injected lookup and not a new `.config.json` key.
+ */
+export interface ContainerImageHashCommand extends Command {
+  execute(
+    args: Record<string, unknown>,
+    config: WorkerConfig,
+    env?: EnvLookup,
+  ): Promise<CommandResult<ContainerImageHashResult>>;
+}
+
+export const containerImageHashCommand: ContainerImageHashCommand = {
   name: "container-image-hash",
   description:
     "Print the content-derived container image reference (Issue #4062)",
+  /**
+   * @param args - `--base-dir` and `--config`.
+   * @param _config - The worker configuration, which this command never reads:
+   *   it runs on the host before the worker has loaded one.
+   * @param env - Where `CONFIG_PATH` and the provider overrides are read from
+   *   (Issue #944). Defaults to the process environment, so launcher callers
+   *   are unchanged; a test states the environment instead of deleting the
+   *   variables from the process it shares with every other test.
+   */
   async execute(
     args: Record<string, unknown>,
+    _config: WorkerConfig,
+    env: EnvLookup = processEnvLookup,
   ): Promise<CommandResult<ContainerImageHashResult>> {
     const baseDir = typeof args["base-dir"] === "string"
       ? (args["base-dir"] as string)
       : Deno.cwd();
 
-    const configFile = resolveConfigFile(
-      baseDir,
-      args,
-      (name) => Deno.env.get(name),
-    );
+    const configFile = resolveConfigFile(baseDir, args, env);
 
     try {
       // The selected tools and the enabled providers are both part of the
@@ -113,6 +143,7 @@ export const containerImageHashCommand: Command = {
         await readDeploymentImageSelection({
           repoRoot: baseDir,
           configFile,
+          env,
         });
       const hash = await computeContainerImageHash(baseDir, options);
       const image = await resolveContainerImageReference(baseDir, options);

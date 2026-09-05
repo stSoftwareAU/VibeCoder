@@ -34,7 +34,7 @@ import {
   resolveConfigFile,
 } from "../commands/container_image_hash.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { withoutProviderEnv } from "./fixtures/provider_env.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname.replace(
   /\/$/,
@@ -654,6 +654,13 @@ Deno.test("container/ - the committed definition installs the manifest's provide
  * the worker's own container sets it, so leaving it out would hash whichever
  * deployment happens to be running the suite. Points at a path inside the fake
  * repo, so a case that writes no configuration selects no tools.
+ *
+ * The environment is stated too — every run below passes {@link emptyEnv} as
+ * the command's third argument (Issue #944), so neither `CONFIG_PATH` nor the
+ * `VIBE_AGENT_PROVIDER(S)` overrides and the `VIBE_IMAGE_AGENT_PROVIDERS`
+ * image stamp this suite's own container carries can reach the resolution.
+ * That used to be `withoutProviderEnv`, which deleted and restored the three
+ * provider variables on the process every parallel worker shares.
  */
 function commandArgs(root: string): Record<string, unknown> {
   return { "base-dir": root, config: `${root}/.config.json` };
@@ -697,6 +704,7 @@ Deno.test("container-image-hash - prints the reference for the given base dir", 
     const result = await containerImageHashCommand.execute(
       commandArgs(root),
       buildDefaultWorkerConfig(),
+      emptyEnv,
     );
 
     assertEquals(result.success, true);
@@ -712,6 +720,7 @@ Deno.test("container-image-hash - reports the hash and inputs as data", async ()
     const result = await containerImageHashCommand.execute(
       commandArgs(root),
       buildDefaultWorkerConfig(),
+      emptyEnv,
     );
 
     const data = result.data as {
@@ -741,6 +750,7 @@ Deno.test("container-image-hash - reports the selected tool spec as an input", a
     const result = await containerImageHashCommand.execute(
       commandArgs(root),
       buildDefaultWorkerConfig(),
+      emptyEnv,
     );
 
     const data = result.data as {
@@ -776,12 +786,14 @@ Deno.test("container-image-hash - a changed tool version changes the printed ref
     const before = await containerImageHashCommand.execute(
       commandArgs(root),
       buildDefaultWorkerConfig(),
+      emptyEnv,
     );
 
     await writeConfig(root, [{ ...javaSpec(), version: "21.0.6+7" }]);
     const after = await containerImageHashCommand.execute(
       commandArgs(root),
       buildDefaultWorkerConfig(),
+      emptyEnv,
     );
 
     assertEquals(before.success, true);
@@ -803,6 +815,7 @@ Deno.test("container-image-hash - a malformed spec fails the command, naming the
     const result = await containerImageHashCommand.execute(
       commandArgs(root),
       buildDefaultWorkerConfig(),
+      emptyEnv,
     );
 
     assertEquals(result.success, false);
@@ -819,6 +832,7 @@ Deno.test("container-image-hash - an absent config selects no tools", async () =
     const result = await containerImageHashCommand.execute(
       { "base-dir": root, config: `${root}/nowhere/.config.json` },
       buildDefaultWorkerConfig(),
+      emptyEnv,
     );
 
     assertEquals(result.success, true);
@@ -836,11 +850,10 @@ Deno.test("container-image-hash - the configured provider set moves the printed 
   try {
     await writeProviderConfig(root, "codex", ["codex"]);
 
-    const result = await withoutProviderEnv(() =>
-      containerImageHashCommand.execute(
-        commandArgs(root),
-        buildDefaultWorkerConfig(),
-      )
+    const result = await containerImageHashCommand.execute(
+      commandArgs(root),
+      buildDefaultWorkerConfig(),
+      emptyEnv,
     );
 
     const data = result.data as {
@@ -872,11 +885,10 @@ Deno.test("container-image-hash - selecting the image's own provider set keeps t
   try {
     await writeProviderConfig(root, "claude", ["claude"]);
 
-    const result = await withoutProviderEnv(() =>
-      containerImageHashCommand.execute(
-        commandArgs(root),
-        buildDefaultWorkerConfig(),
-      )
+    const result = await containerImageHashCommand.execute(
+      commandArgs(root),
+      buildDefaultWorkerConfig(),
+      emptyEnv,
     );
 
     const data = result.data as { agentProviders: string; inputs: string[] };
@@ -894,11 +906,10 @@ Deno.test("container-image-hash - an unsupported provider fails the command, nam
   try {
     await writeProviderConfig(root, "kimi", ["kimi"]);
 
-    const result = await withoutProviderEnv(() =>
-      containerImageHashCommand.execute(
-        commandArgs(root),
-        buildDefaultWorkerConfig(),
-      )
+    const result = await containerImageHashCommand.execute(
+      commandArgs(root),
+      buildDefaultWorkerConfig(),
+      emptyEnv,
     );
 
     assertEquals(result.success, false);
@@ -990,6 +1001,7 @@ Deno.test("container-image-hash - a missing input fails the command, naming the 
     const result = await containerImageHashCommand.execute(
       commandArgs(root),
       buildDefaultWorkerConfig(),
+      emptyEnv,
     );
 
     assertEquals(result.success, false);

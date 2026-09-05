@@ -23,12 +23,13 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
-import type { Command, CommandResult } from "../types.ts";
+import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
   resolveRunMode,
   RUN_MODE_CONFIG_KEY,
   type RunMode,
 } from "../lib/run_mode.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 
 /** What the command reports alongside the printed mode. */
 export interface RunModeResult {
@@ -89,22 +90,52 @@ export async function readConfiguredRunMode(
   return value;
 }
 
-export const runModeCommand: Command = {
+/**
+ * The run-mode command, widened with the environment it reads (Issue #969).
+ *
+ * `CONFIG_PATH` and `VIBE_RUN_MODE` used to be reached through `Deno.env` and
+ * could only be stated by a test that wrote them into the process — a mutation
+ * every parallel worker shares, which is what kept this suite in the gate's
+ * slow serial pass (Issues #880, #944). The extra parameter is optional and
+ * defaults to the process environment, so the registry, `mod.ts` and every
+ * launcher see the {@link Command} interface they always did.
+ */
+export interface RunModeCommand extends Command {
+  execute(
+    args: Record<string, unknown>,
+    config: WorkerConfig,
+    env?: EnvLookup,
+  ): Promise<CommandResult<RunModeResult>>;
+}
+
+export const runModeCommand: RunModeCommand = {
   name: "run-mode",
   description:
     "Print the resolved run mode — container, the only one (Issues #4146, #4)",
+  /**
+   * @param args - Command arguments; `--config` names the configuration file.
+   * @param _config - The loaded worker configuration, deliberately unused: the
+   *   file is re-read here so an invalid `run_mode` cannot be masked by
+   *   `mod.ts` falling back to the default configuration.
+   * @param env - Where `CONFIG_PATH` and `VIBE_RUN_MODE` are read from
+   *   (Issue #969). Defaults to the process environment.
+   * @returns The resolved mode, printed verbatim on stdout.
+   */
   async execute(
     args: Record<string, unknown>,
+    _config: WorkerConfig,
+    env: EnvLookup = processEnvLookup,
   ): Promise<CommandResult<RunModeResult>> {
     const configFile = typeof args["config"] === "string"
       ? (args["config"] as string)
-      : Deno.env.get("CONFIG_PATH") ?? ".config.json";
+      : env("CONFIG_PATH") ?? ".config.json";
 
     // Both the read and the resolution throw on a bad value: the registry
     // turns that into a non-zero exit with the reason on stderr, leaving the
     // launcher's `$(...)` capture empty.
     const mode = resolveRunMode({
       configured: await readConfiguredRunMode(configFile),
+      env,
     });
 
     return {

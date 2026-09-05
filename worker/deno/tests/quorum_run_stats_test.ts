@@ -30,18 +30,24 @@ import {
   setActiveRepoModelEffortOverrides,
   setPhaseModelConfigOverrides,
 } from "../lib/claude_executor.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Reset module-level model resolution so quorum derives the default tier. */
+/**
+ * Reset module-level model resolution so quorum derives the default tier.
+ *
+ * The environment half of this reset used to remove `CLAUDE_MODEL_QUORUM`
+ * and `CLAUDE_MODEL` from the process (Issue #944). Every call below now
+ * hands the recorder {@link emptyEnv} through its new `env` seam, so the
+ * routing chain sees no operator override without the process the other
+ * parallel workers share being changed underneath them.
+ */
 function resetModelResolution(): void {
   setPhaseModelConfigOverrides({});
   setActiveRepoModelEffortOverrides(undefined);
-  for (const v of ["CLAUDE_MODEL_QUORUM", "CLAUDE_MODEL"]) {
-    Deno.env.delete(v);
-  }
 }
 
 function recordingLogger(): { logger: Logger; warnings: string[] } {
@@ -208,6 +214,7 @@ Deno.test("reportQuorumDegradation - a fable-served plan-off is not degraded and
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assertEquals(verdict.degraded, false);
@@ -229,6 +236,7 @@ Deno.test("reportQuorumDegradation - a run with no observations reports nothing"
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assertEquals(verdict.degraded, false);
@@ -264,6 +272,7 @@ Deno.test("reportQuorumDegradation - a rerouted draft labels the issue and posts
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assert(verdict.degraded, "a pre-flight reroute must be degraded");
@@ -304,6 +313,7 @@ Deno.test("reportQuorumDegradation - a rerouted judgement is degraded too", asyn
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assert(verdict.degraded, "a rerouted judgement degrades the plan-off");
@@ -328,6 +338,7 @@ Deno.test("reportQuorumDegradation - an opus-served plan-off is degraded", async
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assert(verdict.degraded, "opus served when fable expected must be degraded");
@@ -353,6 +364,7 @@ Deno.test("reportQuorumDegradation - a rate-limit fallbackModel is degraded", as
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assert(verdict.degraded);
@@ -379,6 +391,7 @@ Deno.test("reportQuorumDegradation - a comment failure is non-fatal and still la
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assert(verdict.degraded);
@@ -403,6 +416,7 @@ Deno.test("reportQuorumDegradation - a label failure is non-fatal; the stats sti
     runGhCommand: ghCommandFn,
     logger,
     cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
   });
 
   assert(verdict.degraded);

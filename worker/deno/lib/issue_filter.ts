@@ -120,41 +120,50 @@ export function filterByAssignee(issues: FilterableIssue[]): FilterableIssue[] {
 }
 
 /**
- * Check if a milestone already has an assigned issue.
+ * Check whether a work stream is already occupied by a Vibe Coder.
  *
- * Prevents multiple workers from working on different issues in the same
- * repo/milestone simultaneously.
+ * Scheduling exists only **between Vibe Coders**. There is no locking or
+ * scheduling between humans and Vibe Coders, so a human assignee never
+ * occupies a work stream and never stalls the worker.
  *
  * Fleet-aware (Issue #3099): a work stream is "occupied" when an issue in the
- * same milestone/branch is assigned to ANY fleet account — the current worker
- * OR any other fleet login in `allowedAuthors`. In a multi-account fleet
+ * same milestone/branch is assigned to ANY account the fleet operates — the
+ * current host OR a sibling host. In a multi-account fleet
  * (e.g. `Vibecoderbot`, `stsvcbot`) another host's assignment is otherwise
  * invisible, so a second host would not consider the work stream occupied and
  * would start the same issue — the root cause of duplicate PRs (#3095). The
  * underlying issue data already carries every assignee, so widening the match
  * set requires no extra GitHub calls.
  *
- * Human assignments must NOT block any work stream — only fleet logins count
- * as occupying, preserving the original "don't wait on humans" intent.
+ * Issue #1064: the fleet set MUST be resolved by
+ * `resolveFleetMaintenanceAuthorSet` (host login + `fleet_pr_authors` +
+ * `service_accounts`) — the same push-capable set `getBlockingPRForIssue`
+ * uses. Callers used to pass `config.allowedAuthors`, which is a
+ * **permission** list ("whose issues may we work on") and legitimately holds
+ * humans; one human-assigned issue therefore parked a whole work stream for
+ * ~21 hours while higher-priority unassigned work sat filtered out. The
+ * parameter is named `pushCapableAuthors` rather than `allowedAuthors`
+ * precisely so the permission list cannot be handed to it again by habit.
  *
  * @param allIssues - All open issues in the repo
  * @param milestoneTitle - Milestone to check (empty string for non-milestone)
  * @param workerUser - The current host's GitHub login
- * @param allowedAuthors - The fleet-account set (every fleet login). The
- *   current worker is always counted even if omitted here.
- * @returns True if the milestone has a fleet-assigned issue (occupied)
+ * @param pushCapableAuthors - The accounts the fleet operates, from
+ *   `resolveFleetMaintenanceAuthorSet`. NEVER `config.allowedAuthors`. The
+ *   current host is always counted even if omitted here.
+ * @returns True if the work stream holds a fleet-assigned issue (occupied)
  */
 export function isMilestoneOccupied(
   allIssues: FilterableIssue[],
   milestoneTitle: string,
   workerUser: string,
-  allowedAuthors: string[] = [],
+  pushCapableAuthors: string[] = [],
 ): boolean {
   // Case-insensitive fleet set, matching the lowercase convention used by
-  // `filterByAllowedAuthors`. The current worker is always included so a
-  // misconfigured `allowedAuthors` never drops the host's own assignments.
+  // `filterByAllowedAuthors`. The current host is always included so a
+  // misconfigured fleet list never drops this host's own assignments.
   const fleetAccounts = new Set(
-    [workerUser, ...allowedAuthors].map((a) => a.toLowerCase()),
+    [workerUser, ...pushCapableAuthors].map((a) => a.toLowerCase()),
   );
   return allIssues.some((issue) => {
     if (issue.milestone !== milestoneTitle) return false;

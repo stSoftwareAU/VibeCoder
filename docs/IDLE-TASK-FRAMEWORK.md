@@ -552,14 +552,37 @@ repo:
 
 **Fleet-global existence gate.** Before the per-repo loop — right
 after the cross-repo wrapper check — the filer asks one whole-set question: does
-**any** monitored repo hold an open, **unblocked**
-`top-priority`/`work-on`/`low-priority` issue? If so it skips filing entirely
-(`action=skipped reason=approved_work_in_flight scope=monitored_set`). This is
-deliberately an **existence** check, not a "claimable right now" check: a
-`work-on` issue merely _deferred_ this cycle by `nice` tiering, fair rotation,
-or local/cross-worker cooldown still _exists_, so the fleet has real work and an
-idle-task must not be filed. It repairs the filing half of the
-idle-vs-work-on inversion, where the per-repo busy check (gate 5 below) only
+**any** monitored repo hold an open `top-priority`/`work-on`/`low-priority`
+issue **a slot could claim**? If so it skips filing entirely
+(`action=skipped reason=approved_work_in_flight scope=monitored_set`). Work
+merely _deferred_ this cycle by `nice` tiering, fair rotation, or
+local/cross-worker cooldown still counts — it will be claimed on a later cycle,
+so the fleet has real work and an idle-task must not be filed.
+
+Issue #1050 narrowed "could claim" from labels to the claim scan's own
+definition — *can a slot start this right now*, not *does it exist*. The gate
+used to ask a label-only question, so work the scan refuses suppressed idle
+filing for as long as it stayed open. Two field incidents a week apart are the
+same fault reached by different gates: on `stSoftwareAU/VibeCoder` one
+assignment made two dozen `work-on` issues `milestone-occupied`, and on
+`stSoftwareAU/NEAT-AI-Ockham` six issues (#104–#110) sat `pr-blocked` behind a
+single open PR (#116). Each suppressed idle filing across all eighteen
+monitored repositories for as long as it lasted, while seventeen of them were
+empty and slots sat idle.
+
+The gate now answers from the same `classifyIssues` the idle-detect audit runs
+(restricted to `REAL_WORK_LABELS`), and the filer supplies it the scan's own
+inputs: the fleet identity, the fleet's open and merged PRs — read through the
+shared issue cache the scan populates — and this run's hold set, passed down
+from the worker loop. The issue probe is one unfiltered `gh issue list` per
+repo, because occupancy is a property of the whole work stream and the issue
+that occupies it need carry no discovery label at all; the PR probes run only
+for a repository whose issues survive the cheap gates, so an empty or plainly
+busy repository still costs exactly one call. Any gate whose data is missing
+is simply not applied, which leaves that gate's over-count in place — the
+direction that suppresses filing rather than flooding it. It repairs the
+filing half of the idle-vs-work-on inversion, where the per-repo busy check
+(gate 5 below) only
 skipped the _individual_ busy repo and let a quiet repo B be filed into while a
 different repo A held the deferred backlog. The same suppression is also applied
 cache-backed at the `run_core.ts` idle gate: the idle-decision census (below)
@@ -647,13 +670,22 @@ still counts: the census exists precisely to refute the "a `degraded-model`
 filter is hiding the work" hypothesis.
 
 Work streams are milestones, plus `""` for the default-branch stream. A stream
-is **occupied** once it hosts an open issue assigned to any account the scan
-honours — this worker or an `allowed_authors` entry — and the Priority 2 scan
+is **occupied** once it hosts an open issue assigned to a Vibe Coder — this host
+or a sibling in `fleet_pr_authors`/`service_accounts` — and the Priority 2 scan
 then refuses every sibling in it (`isMilestoneOccupied` → the
-`milestone-occupied` skip). The census applies the same gate **over the same
-account set** and reports the excluded siblings as `stream_occupied=<n>`,
-alongside `pr_blocked=<n>`, so both deferrals stay observable without inflating
-the inversion signal:
+`milestone-occupied` skip). The census applies the same gate and reports the
+excluded siblings as `stream_occupied=<n>`, alongside `pr_blocked=<n>`, so both
+deferrals stay observable without inflating the inversion signal.
+
+Since Issue #1071 it is not merely "the same gate" but the same **function**:
+`occupiedStreamsFor` calls `isMilestoneOccupied`, over the fleet-identity set
+`run_core_production_deps.ts` resolves for the selector. The census used to
+restate the rule, and the restatement drifted twice — first on the account set
+(#753), then in the opposite direction when #1064 moved occupancy off
+`allowed_authors` and the copy here kept counting a human's assignment as
+occupied. One implementation cannot drift a third time, and
+`census_occupancy_drift_1071_test.ts` feeds one issue set to both and fails on
+any disagreement.
 
 ```mermaid
 flowchart LR
@@ -735,6 +767,38 @@ hands the same set to all three readers, and excluded issues are reported as
 `run_local_hold=<n>`. The per-cycle adaptive-floor deferral (Issue #245) is the
 one source still unmodelled; it is rebuilt every cycle, so it cannot hold a
 streak open the way the registry did.
+
+The **work-stream occupancy** gate (Issue #1050) is the fifth instance, and the
+first to be found in the audit rather than the census. `isMilestoneOccupied`
+calls a stream occupied when an issue in it is assigned to an account the fleet
+operates — this host or a sibling Vibe Coder, resolved by
+`resolveFleetMaintenanceAuthorSet` (Issue #1064). The audit matched
+`workerUser` alone. On 2026-08-26 `stSoftwareAU/VibeCoder` held two dozen
+unassigned `work-on` issues in the default-branch stream and one unlabelled
+issue in that stream carried an assignment; the scan refused every one of them
+as `milestone-occupied`, the audit counted all 24, and
+`[idle-hooks] ... reason=audit_found_claimable claimable_total=24` suppressed
+the filer. No idle task was filed anywhere in the fleet for ten days while two
+slots ran at roughly 10% occupancy. The audit now resolves occupancy by calling
+`isMilestoneOccupied` itself, over the set the caller supplies as
+`pushCapableAuthors`, and applies the `filterAndSort` milestone-tracker gate
+(Issue #1134) the same way.
+
+The account set is the axis this gate can be wrong on in **both** directions,
+so all three tests pin both. Too narrow — `workerUser` alone — is #1050: a
+sibling's work reads as claimable and the filer is suppressed on work nothing
+can take. Too wide — `allowed_authors`, a permission list that legitimately
+holds humans — is #1064: a human's assignment parks a whole work stream, and
+there is no scheduling between humans and Vibe Coders.
+`idle_claimable_drift_1050_test.ts` feeds one issue set to both
+`classifyIssues` and the real `collectWorkOnCandidates` and fails on any
+disagreement; `idle_filing_composition_1050_test.ts` runs the whole suppressor
+stack against the observed fleet shape and asserts an idle task is still filed
+— the assertion no test made before, which is why ten days passed before a
+human noticed; and `idle_audit_wiring_1050_test.ts` drives the real production
+factory, because the gate is switched on by the account set
+`run_core_production_deps.ts` hands it and by nothing else, and a fix only the
+factory can activate needs a test that the factory activates it.
 
 The third reader is the **idle-detect audit** (`idle_detect_diagnostics.ts`),
 which counted those same two issues for the life of the run — so
@@ -971,6 +1035,76 @@ The pure builder lives in
 [`worker/deno/lib/run_core_production_deps.ts`](../worker/deno/lib/run_core_production_deps.ts),
 wired into the idle gate in
 [`worker/deno/lib/run_core.ts`](../worker/deno/lib/run_core.ts).
+
+### Idle capacity that files no idle task (Issue #1052)
+
+The census above escalates a **per-repo** contradiction. It does not cover the
+**fleet-level** one that followed: between 2026-08-26 and 2026-09-04 the fleet
+filed no `idle-task` issue at all — zero open across all eighteen monitored
+repos — while slot capacity sat unused, and nothing said so. The operator found
+it by noticing the fleet did not look busy.
+
+Every instrument needed to notice was present, running and correct, and all of
+them end at `log(...)`:
+
+```text
+slot-utilisation: slots=2 available=1616s occupied=171s occupied_pct=10.6
+idle_pct=31.4 unstaffed=937s occupied_by_slot=s2=171s
+[idle-hooks] … skipping=idle-task-filer reason=audit_found_claimable
+claimable_total=24 streak=2
+[idle-census] repo=… availability=available …   (× 18, every cycle)
+```
+
+[`idle_starvation_escalation.ts`](../worker/deno/lib/idle_starvation_escalation.ts)
+watches the **outcome** instead, and needs both halves of it before it says
+anything:
+
+```mermaid
+flowchart TD
+    O["Observation at the census hook"] --> A{"Any open idle-task<br/>anywhere in the fleet?"}
+    A -- yes --> S["supplied → episode ends,<br/>state file removed"]
+    A -- no --> E["Episode runs: bank elapsed hours<br/>and idle slot-seconds (#925)"]
+    E --> T{"≥ 12h AND<br/>≥ 14,400 idle slot-seconds?"}
+    T -- no --> W["watching → one greppable line"]
+    T -- yes --> F["File one issue in VibeCoder,<br/>deduped on the body marker"]
+```
+
+- **A busy fleet** files no idle task for days by design; its slots are
+  occupied, so the idle slot-seconds never reach four slot-hours.
+- **A genuinely quiet fleet** files an idle task, and `maybe-file-idle-task`
+  keeps at most one open across the whole monitored set — so one open wrapper
+  is the healthy steady state, which ends the episode and restarts the clock.
+- **Idle capacity with no idle task** is neither, and is the ten-day state
+  nothing watched.
+
+The thresholds are 12 hours and 14,400 idle slot-seconds (four slot-hours). The
+incident measured `idle_pct=31.4` on a two-slot host — about 2,250 idle
+slot-seconds per wall hour — so a fleet idling like that meets the capacity half
+in under seven hours and the alert lands on the elapsed half at twelve.
+
+The episode is persisted to `idle_starvation.json` in the work directory,
+atomically, exactly as the #321 streak is. This is not incidental: the counter
+this replaces (Issue #1051) lived in memory for the length of one run and so
+never reached any threshold. The #925 ledger is per-run too, so each observation
+banks the **delta** of that run's reading against what the episode last saw from
+it — a restart contributes its whole reading and the episode's total survives.
+
+The issue is filed into `stSoftwareAU/VibeCoder` for the Issue #459 reason
+above, deduped on a `<!-- VIBE_IDLE_STARVATION -->` body marker so two hosts
+observing the same episode converge on one issue, and filed once per episode: a
+continuing episode does not file again, and a later episode does. The body
+carries the evidence — the `slot-utilisation:` line, the last `[idle-hooks]`
+refusal reason with its `claimable_total`, the per-repo census, and how long the
+fleet has gone without an idle task — so the alert arrives diagnosable rather
+than asking a human to reproduce what the machine already saw
+(Issues #1019 and #1020).
+
+Every observation emits one line, so "the detector ran and decided nothing"
+stays distinguishable from "the detector never ran":
+
+```text
+[idle-starvation] action=watching hours=3.5 idle_slot_seconds=7800 open_idle_tasks=0
+```
 
 ### Random repo selection
 
@@ -1977,6 +2111,14 @@ calls escape. It fails closed when any of the following regressions land:
 
 When you touch any of these wiring points, run this test first — it is the
 canonical regression detector for the trigger pipeline.
+
+The two escalations that watch the pipeline from outside have their own suites:
+[`idle_inversion_streak_test.ts`](../worker/deno/tests/idle_inversion_streak_test.ts)
+for the per-repo inversion streak (Issue #321) and
+[`idle_starvation_escalation_1052_test.ts`](../worker/deno/tests/idle_starvation_escalation_1052_test.ts)
+for fleet-wide idle starvation (Issue #1052) — the latter replays the ten-day
+incident, both healthy directions (busy and genuinely quiet), two-host dedup,
+restart persistence and one-issue-per-episode.
 
 ## Related documentation
 

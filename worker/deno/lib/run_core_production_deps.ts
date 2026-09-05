@@ -261,6 +261,16 @@ import {
   idleInversionStatePath,
   recordIdleInversion,
 } from "./idle_inversion_streak.ts";
+import {
+  describeIdleHooksRefusal,
+  idleStarvationStatePath,
+  recordIdleStarvationObservation,
+} from "./idle_starvation_escalation.ts";
+import {
+  formatSlotUtilisationSummary,
+  getSlotUtilisation,
+} from "./slot_idle_accounting.ts";
+import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { resolveRunId } from "./audit_journal.ts";
 import { createTrustSnapshotHolder } from "./trust_snapshot.ts";
 import {
@@ -365,6 +375,22 @@ export interface ProductionDepsOptions {
    * the environment every parallel worker shares.
    */
   env?: EnvLookup;
+  /**
+   * Override the `gh` runner the **idle-detect audit** uses — its issue
+   * probe and its two PR probes (Issue #1050).
+   *
+   * Production leaves this unset and gets {@link runGhCommand}. Tests inject
+   * a stub because the thing worth testing here is the *wiring*: which
+   * account set this factory hands `auditClaimableState`. That question was
+   * unanswerable by any test before #1050, and the answer being wrong is
+   * what suppressed idle-task filing across the whole fleet for ten days —
+   * a fix that only the production factory could activate, with nothing
+   * asserting the factory activated it.
+   *
+   * Scoped deliberately to the audit: it is one probe, and a factory-wide
+   * `gh` override would be a much larger surface for a much smaller reason.
+   */
+  idleDetectGhCommandFn?: (args: string[]) => Promise<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -845,7 +871,12 @@ export async function createProductionRunCoreDeps(
    * treat a rejection as "no merged-PR data" and fall back to the pre-GRQ#4419
    * over-count rather than reporting a repo as having nothing to do.
    */
-  const fetchMergedPRsForCensus = (repo: string) =>
+  const fetchMergedPRsForCensus = (
+    repo: string,
+    // Issue #1050: the audit's probes route through the same injectable
+    // runner its issue probe does, so a wiring test costs no network call.
+    ghFn: (args: string[]) => Promise<string> = runGhCommand,
+  ) =>
     fetchRecentlyClosedPRsForFleet(
       repo,
       resolveFleetPrAuthorSet({
@@ -855,6 +886,7 @@ export async function createProductionRunCoreDeps(
       }),
       config.closedPrCooldownSeconds ?? 3600,
       issueCache,
+      ghFn,
     );
 
   /**
@@ -866,6 +898,17 @@ export async function createProductionRunCoreDeps(
    * reading names a gate one scan out of date, never blocks a claim.
    */
   let lastScanBlockedDetails: BlockedCandidateInfo[] = [];
+
+  /**
+   * The idle-detect audit's claimable total from the most recent audit
+   * (Issue #1052). The `[idle-hooks]` refusal that suppresses the idle-task
+   * filer is decided on this number, so the idle-starvation escalation
+   * carries it — with the reason it produced — into the issue body instead of
+   * asking a human to grep the log for the line the machine already had.
+   * Diagnostics only: a stale reading names a number one audit out of date,
+   * never gates a claim.
+   */
+  let lastAuditClaimableTotal = 0;
 
   /**
    * The two disk signals' shared verdict (Issue #345). A work-volume probe
@@ -3363,6 +3406,13 @@ export async function createProductionRunCoreDeps(
           repos,
           log: (line) => logger.info(line),
           fileFn: async () => {
+            // Issue #1050: the filer's fleet-global gate asks "can any of
+            // this be started right now?", and work this run is holding
+            // back — the persisted retry cooldown plus its processed-issue
+            // registry — cannot be. Resolved from the one hold set the
+            // scan, the census and the audit already share, so all four
+            // instruments agree.
+            const runLocalHold = await loadRunLocalHolds();
             await maybeFileIdleTaskCommand.execute(
               {
                 "monitored-repos": repos.join(","),
@@ -3382,7 +3432,10 @@ export async function createProductionRunCoreDeps(
                 // the worker log — making "filer never fires" indistinguishable
                 // from "filer fired but silently failed". Same root cause
                 // and same fix shape as PR #2016 for the fleet heartbeat.
-                __testDeps: { log: (line: string) => logger.info(line) },
+                __testDeps: {
+                  log: (line: string) => logger.info(line),
+                  runLocalHoldFn: runLocalHold,
+                },
               },
               config,
             );
@@ -3408,6 +3461,9 @@ export async function createProductionRunCoreDeps(
       const { auditClaimableState } = await import(
         "./idle_detect_diagnostics.ts"
       );
+      // Issue #1050: production leaves the override unset and gets the real
+      // runner; a wiring test hands in a stub for all three probes.
+      const auditGh = options.idleDetectGhCommandFn ?? runGhCommand;
       try {
         // Issue #655: the same holds the claim scan and the census read, so
         // the audit stops counting work this run is itself withholding — the
@@ -3418,19 +3474,32 @@ export async function createProductionRunCoreDeps(
         const result = await auditClaimableState({
           repos,
           workerUser: githubUser,
+          // Issue #1050: the scan calls a work stream occupied when an
+          // account the fleet operates holds an issue in it, so the audit
+          // must be asked the same question over the same set — without it
+          // one sibling assignment left a whole repository's backlog
+          // reading as claimable here and as `milestone-occupied` to the
+          // scan, and `claimable_total` suppressed the filer fleet-wide for
+          // ten days. Issue #1064: the push-capable set, resolved and kept
+          // live by `applyTrustSnapshot` — never `allowedAuthors`, which is
+          // a permission list holding humans whose assignments must never
+          // park a stream.
+          pushCapableAuthors: maintenanceAuthors,
           tick,
           scanFoundClaimable,
+          ghCommandFn: auditGh,
           // Issue #4223: read each repo's open PRs through the same shared
           // `prs_open_all` cache the census uses (Issue #3526), so the audit
           // stops counting PR-blocked work as claimable. Whichever of the two
           // runs first populates the cache, so the gate adds no API call.
           // `auditClaimableState` catches a rejection itself and falls back to
           // no PR blocking.
-          openPRsFn: (repo: string) => fetchAllOpenPRs(repo, issueCache),
+          openPRsFn: (repo: string) =>
+            fetchAllOpenPRs(repo, issueCache, 50, auditGh),
           // GRQ#4419: an issue named by a merged fleet PR is refused
           // permanently by the scan, so counting it as claimable kept the
           // `mis_classification` ALERT firing against a scan that was right.
-          mergedPRsFn: fetchMergedPRsForCensus,
+          mergedPRsFn: (repo: string) => fetchMergedPRsForCensus(repo, auditGh),
           // Issue #655: this run's persisted retry cooldown and its
           // processed-issue registry, resolved above from the one hold set
           // `findNextIssue` filters its candidates against.
@@ -3451,6 +3520,9 @@ export async function createProductionRunCoreDeps(
         // the idle-task filer this iteration when the audit already
         // sees claimable work (Issue #2106 + private-repo-10 #45-#48
         // budget guard).
+        // Issue #1052: keep the number the idle-hooks refusal is decided
+        // on, so the idle-starvation escalation can name it as evidence.
+        lastAuditClaimableTotal = result.claimableTotal;
         return { claimableTotal: result.claimableTotal };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -3566,12 +3638,20 @@ export async function createProductionRunCoreDeps(
         const census = buildIdleDecisionCensus({
           decisionPoint,
           workerUser: githubUser,
-          // Issue #753: the scan refuses a milestone held by any trusted
-          // account, not just this worker's own. Without the same set here,
-          // a human taking three milestone issues reads as three claimable
-          // issues the scan keeps refusing — and files an inversion issue
-          // about work that is simply in flight.
-          allowedAuthors: config.allowedAuthors ?? [],
+          // Issue #753: the selector refuses a milestone held by another
+          // fleet account, not just this worker's own. Without the same set
+          // here, a sibling taking three milestone issues reads as three
+          // claimable issues the scan keeps refusing — and files an
+          // inversion issue about work that is simply in flight.
+          //
+          // Issue #1071: the same set the selector uses, which since Issue
+          // #1064 is the fleet identity resolved by
+          // `resolveFleetMaintenanceAuthorSet` and kept live by
+          // `applyTrustSnapshot`. Never `config.allowedAuthors` — that is a
+          // permission list holding humans, and there is no scheduling
+          // between humans and Vibe Coders, so a human's assignment must not
+          // read as an occupied stream here either.
+          pushCapableAuthors: maintenanceAuthors,
           repos: perRepo,
           // Issue #460: a repo the scan claimed from this cycle was served,
           // not refused — whatever the run's outcome. The census withdraws
@@ -3662,6 +3742,87 @@ export async function createProductionRunCoreDeps(
           }
         } catch (err) {
           logger.warn("Idle-inversion escalation failed (continuing)", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+
+        // Issue #1052: escalate on the *outcome* an operator cares about —
+        // the fleet filing no idle task while measured slot capacity sits
+        // idle. The three instruments that surround this call (the #925 slot
+        // accounting, this census, and the `[idle-hooks]` refusal it feeds)
+        // each reported that state correctly for ten days, and all three end
+        // at `log(...)`. The per-repo #321 streak above does not cover it:
+        // this is a fleet-level condition, and no single repo's inversion
+        // need be sustained enough to trip a per-repo detector.
+        //
+        // Wired here, beside the inversion streak, because this is the seam
+        // where the census, the audit's claimable total and the slot ledger
+        // are all in scope at once. Best-effort — a reporting failure must
+        // never derail the idle path — and persisted, because the counter it
+        // replaces (#1051) lived in memory for one run's lifetime and so
+        // never reached any threshold.
+        try {
+          const nowMs = Date.now();
+          const idleSlotSeconds = getSlotUtilisation(nowMs).idleSlotSeconds;
+          // `maybe-file-idle-task` keeps at most one open wrapper across the
+          // whole monitored set (the cross-repo dedup gate), so one open
+          // idle task is the healthy steady state and ends the episode.
+          // Counted from the labels rather than the census's `unblocked`
+          // tally, which excludes a wrapper the moment a slot is assigned
+          // it — the fleet is supplied either way.
+          const openIdleTasks = perRepo.reduce(
+            (total, entry) =>
+              total +
+              entry.issues.filter((i) => i.labels.includes(IDLE_TASK_LABEL))
+                .length,
+            0,
+          );
+          const decision = await recordIdleStarvationObservation({
+            statePath: idleStarvationStatePath(workDir),
+            observation: {
+              nowMs,
+              // The #925 ledger restarts with the process, so the episode
+              // banks each run's reading as a delta against this id.
+              runId: resolveRunId(),
+              idleSlotSeconds,
+              openIdleTasks,
+              evidence: {
+                slotUtilisation: formatSlotUtilisationSummary(nowMs),
+                refusalReason: describeIdleHooksRefusal({
+                  inversionDetected: census.inversionDetected,
+                  claimableTotal: lastAuditClaimableTotal,
+                }),
+                claimableTotal: lastAuditClaimableTotal,
+                censusLines,
+              },
+            },
+            ghFn: (args: string[]) => runGhCommand(args),
+            log: (message: string) => logger.warn(message),
+          });
+          // One greppable line per observation, so "the detector ran and
+          // decided nothing" stays distinguishable from "the detector never
+          // ran" — which is the failure this whole issue is about.
+          logger.info(
+            `[idle-starvation] action=${decision.action} ` +
+              `hours=${
+                "hours" in decision ? decision.hours.toFixed(1) : "0.0"
+              } ` +
+              `idle_slot_seconds=${idleSlotSeconds} ` +
+              `open_idle_tasks=${openIdleTasks}`,
+          );
+          if (decision.action === "filed") {
+            logger.warn(
+              "Idle starvation escalated: the fleet has filed no idle task " +
+                "while slot capacity sat idle (Issue #1052)",
+              {
+                issue: decision.issue,
+                hours: Number(decision.hours.toFixed(1)),
+                idleSlotSeconds: decision.idleSlotSeconds,
+              },
+            );
+          }
+        } catch (err) {
+          logger.warn("Idle-starvation escalation failed (continuing)", {
             error: err instanceof Error ? err.message : String(err),
           });
         }

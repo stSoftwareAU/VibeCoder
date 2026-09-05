@@ -5,19 +5,15 @@
  * we don't re-query the GitHub API every run_core cycle. Stale entries
  * can be invalidated when callers detect a branch has been renamed.
  *
- * **Deferred from the Issue #964 migration, deliberately.** The other four
- * branch-cache suites moved onto the cache-path parameter and left the
- * manifest; this one cannot yet. What it asserts is the *resolution of the
- * default path itself* — that `WORK_DIR` unset means no cache directory at
- * all (Issue #132) and that the legacy `$HOME/.vibe-coder` location is not
- * even read. Those two variables are read by `lib/worker_cache_dir.ts`,
- * which `worker_cache_dir_test.ts` (a different batch of #944) also covers,
- * so draining them belongs to that module's batch rather than to this one.
- * Until then this suite keeps `tests/support/env.ts` and stays in
- * `PROCESS_STATE_MUTATOR_TEST_FILES`.
- *
- * The half that *can* move has: `defaultBranchCachePath` takes an
- * `EnvLookup`, asserted directly below.
+ * **Fully migrated off the now-deleted `tests/support/env.ts` (Issues #944,
+ * #969).** What the last three cases assert is the *resolution of the default
+ * path itself* — that `WORK_DIR` unset means no cache directory at all
+ * (Issue #132) and that the legacy `$HOME/.vibe-coder` location is not even
+ * read. Both variables are read by `lib/worker_cache_dir.ts`, and
+ * `defaultBranchCachePath` now hands it the `EnvLookup` it was given rather
+ * than letting it reach the process environment on its own; the
+ * legacy-fallback read inside `loadDefaultBranchCache` takes the same lookup.
+ * So the suite states the environment it wants and mutates nothing.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -34,7 +30,6 @@ import {
   saveDefaultBranchCache,
   setCachedDefaultBranch,
 } from "../lib/default_branch_cache.ts";
-import { withEnv } from "./support/env.ts";
 import { workerCachePath } from "../lib/worker_cache_dir.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
@@ -55,15 +50,28 @@ Deno.test("default_branch_cache - defaultBranchCachePath answers from the lookup
   );
 
   // No override in the map means the worker cache directory decides, and an
-  // empty override is not an override.
+  // empty override is not an override. The same lookup reaches
+  // `workerCachePath`, so `WORK_DIR` in the map is the WORK_DIR that counts —
+  // a resolution that fell through to the process environment would answer
+  // with whatever the host running the suite happens to export (Issue #969).
+  const onWorkVolume = envFrom({ WORK_DIR: "/vol/work" });
   assertEquals(
-    defaultBranchCachePath(emptyEnv),
-    workerCachePath(DEFAULT_BRANCH_CACHE_FILE),
+    defaultBranchCachePath(onWorkVolume),
+    workerCachePath(DEFAULT_BRANCH_CACHE_FILE, { env: onWorkVolume }),
   );
   assertEquals(
-    defaultBranchCachePath(envFrom({ [DEFAULT_BRANCH_CACHE_PATH_ENV]: "" })),
-    workerCachePath(DEFAULT_BRANCH_CACHE_FILE),
+    defaultBranchCachePath(onWorkVolume),
+    "/vol/work/.vibe-cache/default-branch-cache.json",
   );
+  assertEquals(
+    defaultBranchCachePath(
+      envFrom({ WORK_DIR: "/vol/work", [DEFAULT_BRANCH_CACHE_PATH_ENV]: "" }),
+    ),
+    "/vol/work/.vibe-cache/default-branch-cache.json",
+  );
+
+  // No WORK_DIR means no cache directory at all (Issue #131).
+  assertEquals(defaultBranchCachePath(emptyEnv), undefined);
 });
 
 Deno.test("default_branch_cache - TTL constant is 7 days", () => {
@@ -176,45 +184,42 @@ Deno.test("default_branch_cache - loadDefaultBranchCache tolerates corrupt JSON"
 
 Deno.test("default_branch_cache - WORK_DIR unset: save/set/invalidate create no directory or file anywhere (Issue #132)", async () => {
   const home = await Deno.makeTempDir({ prefix: "vibe-dbcache-home-" });
+  // No WORK_DIR and no override: the resolver must answer "no cache at all".
+  // HOME is named so the legacy fallback, if it were ever consulted, would
+  // land inside this temp tree and be caught by the emptiness assertion below.
+  const env = envFrom({ HOME: home });
   try {
-    await withEnv(
-      {
-        WORK_DIR: undefined,
-        VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH: undefined,
-        HOME: home,
-      },
-      async () => {
-        assertEquals(defaultBranchCachePath(), undefined);
+    const path = defaultBranchCachePath(env);
+    assertEquals(path, undefined);
 
-        await setCachedDefaultBranch("owner/repo", "main");
-        await invalidateCachedDefaultBranch("owner/repo");
-        await saveDefaultBranchCache(
-          new Map([["owner/repo", { branch: "main", fetchedAt: Date.now() }]]),
-        );
-
-        // The parent directory the old HOME-derived default used to
-        // create (Issue #118) must be ABSENT — not merely empty.
-        let strayExists = true;
-        try {
-          await Deno.stat(`${home}/auto-issue-work`);
-        } catch (err) {
-          assertEquals(err instanceof Deno.errors.NotFound, true);
-          strayExists = false;
-        }
-        assertEquals(strayExists, false);
-
-        // Nothing at all may be created under HOME by the no-op calls.
-        const entries: string[] = [];
-        for await (const entry of Deno.readDir(home)) {
-          entries.push(entry.name);
-        }
-        assertEquals(entries, []);
-
-        // Reads return empty/null.
-        assertEquals((await loadDefaultBranchCache()).size, 0);
-        assertEquals(await getCachedDefaultBranch("owner/repo"), null);
-      },
+    await setCachedDefaultBranch("owner/repo", "main", path, env);
+    await invalidateCachedDefaultBranch("owner/repo", path, env);
+    await saveDefaultBranchCache(
+      new Map([["owner/repo", { branch: "main", fetchedAt: Date.now() }]]),
+      path,
     );
+
+    // The parent directory the old HOME-derived default used to
+    // create (Issue #118) must be ABSENT — not merely empty.
+    let strayExists = true;
+    try {
+      await Deno.stat(`${home}/auto-issue-work`);
+    } catch (err) {
+      assertEquals(err instanceof Deno.errors.NotFound, true);
+      strayExists = false;
+    }
+    assertEquals(strayExists, false);
+
+    // Nothing at all may be created under HOME by the no-op calls.
+    const entries: string[] = [];
+    for await (const entry of Deno.readDir(home)) {
+      entries.push(entry.name);
+    }
+    assertEquals(entries, []);
+
+    // Reads return empty/null.
+    assertEquals((await loadDefaultBranchCache(path, env)).size, 0);
+    assertEquals(await getCachedDefaultBranch("owner/repo", path, env), null);
   } finally {
     await Deno.remove(home, { recursive: true }).catch(() => undefined);
   }
@@ -222,50 +227,85 @@ Deno.test("default_branch_cache - WORK_DIR unset: save/set/invalidate create no 
 
 Deno.test("default_branch_cache - WORK_DIR unset: load does not even read the legacy HOME location (Issue #132)", async () => {
   const home = await Deno.makeTempDir({ prefix: "vibe-dbcache-home-" });
+  const env = envFrom({ HOME: home });
   try {
-    await withEnv(
-      {
-        WORK_DIR: undefined,
-        VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH: undefined,
-        HOME: home,
-      },
-      async () => {
-        // Plant a valid legacy cache file; with no cache directory the
-        // load must ignore it entirely (no filesystem access at all).
-        await Deno.mkdir(`${home}/.vibe-coder`, { recursive: true });
-        await Deno.writeTextFile(
-          `${home}/.vibe-coder/default-branch-cache.json`,
-          JSON.stringify({
-            "owner/repo": { branch: "main", fetchedAt: Date.now() },
-          }),
-        );
-
-        assertEquals((await loadDefaultBranchCache()).size, 0);
-        assertEquals(await getCachedDefaultBranch("owner/repo"), null);
-      },
+    // Plant a valid legacy cache file at exactly the path the legacy
+    // fallback would read for this lookup; with no cache directory the
+    // load must ignore it entirely (no filesystem access at all).
+    await Deno.mkdir(`${home}/.vibe-coder`, { recursive: true });
+    await Deno.writeTextFile(
+      `${home}/.vibe-coder/default-branch-cache.json`,
+      JSON.stringify({
+        "owner/repo": { branch: "main", fetchedAt: Date.now() },
+      }),
     );
+
+    const path = defaultBranchCachePath(env);
+    assertEquals(path, undefined);
+    assertEquals((await loadDefaultBranchCache(path, env)).size, 0);
+    assertEquals(await getCachedDefaultBranch("owner/repo", path, env), null);
   } finally {
     await Deno.remove(home, { recursive: true }).catch(() => undefined);
   }
 });
 
 Deno.test("default_branch_cache - VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH stays honoured with WORK_DIR unset", async () => {
-  const path = await tempCachePath();
-  await withEnv(
-    {
-      WORK_DIR: undefined,
-      VIBE_CODER_DEFAULT_BRANCH_CACHE_PATH: path,
-    },
-    async () => {
-      assertEquals(defaultBranchCachePath(), path);
+  const file = await tempCachePath();
+  // An override with no WORK_DIR beside it: the override alone decides.
+  const env = envFrom({ [DEFAULT_BRANCH_CACHE_PATH_ENV]: file });
+  const path = defaultBranchCachePath(env);
+  assertEquals(path, file);
 
-      await setCachedDefaultBranch("owner/repo", "main");
-      assertEquals(await getCachedDefaultBranch("owner/repo"), "main");
+  await setCachedDefaultBranch("owner/repo", "main", path, env);
+  assertEquals(await getCachedDefaultBranch("owner/repo", path, env), "main");
 
-      await invalidateCachedDefaultBranch("owner/repo");
-      assertEquals(await getCachedDefaultBranch("owner/repo"), null);
-    },
-  );
+  await invalidateCachedDefaultBranch("owner/repo", path, env);
+  assertEquals(await getCachedDefaultBranch("owner/repo", path, env), null);
+});
+
+Deno.test("default_branch_cache - an explicit undefined path means no cache directory, not the default (Issue #969)", async () => {
+  const work = await Deno.makeTempDir({ prefix: "vibe-dbcache-work-" });
+  // A lookup that *does* resolve to a cache file. Passing on the `undefined`
+  // a caller was handed must not silently re-resolve to it: a default
+  // parameter fires on an explicit `undefined` as readily as on an omitted
+  // argument, which is how the accessors used to write the very file they had
+  // just reported did not exist (Issue #132's failure mode).
+  const env = envFrom({ WORK_DIR: work });
+  try {
+    assertEquals(
+      defaultBranchCachePath(env),
+      `${work}/.vibe-cache/default-branch-cache.json`,
+    );
+
+    await setCachedDefaultBranch("owner/repo", "main", undefined, env);
+    await invalidateCachedDefaultBranch("owner/repo", undefined, env);
+    await saveDefaultBranchCache(
+      new Map([["owner/repo", { branch: "main", fetchedAt: Date.now() }]]),
+      undefined,
+      env,
+    );
+    assertEquals((await loadDefaultBranchCache(undefined, env)).size, 0);
+    assertEquals(
+      await getCachedDefaultBranch("owner/repo", undefined, env),
+      null,
+    );
+
+    // Nothing was created under the work volume the lookup names.
+    const entries: string[] = [];
+    for await (const entry of Deno.readDir(work)) entries.push(entry.name);
+    assertEquals(entries, []);
+
+    // Naming the path the same lookup resolves still writes there, so the
+    // guard above is the explicit `undefined` and not a broken accessor.
+    const resolved = defaultBranchCachePath(env);
+    await setCachedDefaultBranch("owner/repo", "main", resolved, env);
+    assertEquals(
+      await getCachedDefaultBranch("owner/repo", resolved, env),
+      "main",
+    );
+  } finally {
+    await Deno.remove(work, { recursive: true }).catch(() => undefined);
+  }
 });
 
 Deno.test("default_branch_cache - saveDefaultBranchCache creates parent directory if missing", async () => {

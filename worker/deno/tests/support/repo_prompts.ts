@@ -26,14 +26,17 @@
  * `processGrillMe` all accept. Issue #1024 tracks finishing that off and
  * deleting this module.
  *
- * {@link withRepoRootCwd} adds the cwd the idle-task body builders need for
- * their own cwd-relative reads.
+ * Issue #969 deleted the cwd-moving helper this module used to export for the
+ * idle-task body builders' own cwd-relative reads. Its last callers went with
+ * #1024, and `Deno.chdir` is process-wide state that races every other worker
+ * under `deno test --parallel`. Nothing here moves the cwd any more.
  *
- * Both of those mutate process-wide state, so importing this module puts a
- * suite in the gate's serial pass (Issues #880, #940). A suite that only needs
- * the repo root — because it names its prompts directory explicitly — imports
- * {@link REPO_ROOT} from `tests/support/repo_root.ts`, which has no side
- * effects. It is re-exported here so existing callers keep one import.
+ * {@link pinPromptsToThisCheckout} still mutates process-wide state, so
+ * calling it puts a suite in the gate's serial pass (Issues #880, #940). A
+ * suite that only needs the repo root — because it names its prompts directory
+ * explicitly — imports {@link REPO_ROOT} from `tests/support/repo_root.ts`,
+ * which has no side effects. It is re-exported here so existing callers keep
+ * one import.
  *
  * Australian English throughout (behaviour, colour, organisation).
  */
@@ -52,23 +55,4 @@ const PROMPT_DIR_ENV_VARS = ["PROMPTS_DIR", "VIBE_BASE_DIR"] as const;
  */
 export function pinPromptsToThisCheckout(): void {
   for (const name of PROMPT_DIR_ENV_VARS) Deno.env.delete(name);
-}
-
-/**
- * Run `body` with cwd at the repo root and the prompt-directory overrides
- * cleared, restoring the original cwd afterwards.
- *
- * @param body - The test body to run
- * @returns Whatever `body` returns
- */
-export async function withRepoRootCwd<T>(body: () => Promise<T>): Promise<T> {
-  // Re-pin: a test that set an override of its own must not leak it here.
-  pinPromptsToThisCheckout();
-  const original = Deno.cwd();
-  Deno.chdir(REPO_ROOT);
-  try {
-    return await body();
-  } finally {
-    Deno.chdir(original);
-  }
 }

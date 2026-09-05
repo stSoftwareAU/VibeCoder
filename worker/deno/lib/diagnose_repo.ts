@@ -73,17 +73,18 @@ export interface RepoIssueDiagnosticInput {
   /** The worker's GitHub username (for milestone occupancy checks). */
   workerUser: string;
   /**
-   * The fleet-account set (every fleet login). Fleet-aware milestone
-   * occupancy counts an assignment by any fleet account, not just the
-   * current host (Issue #3099). Optional — defaults to empty; the worker's
-   * own login is always counted.
-   */
-  allowedAuthors?: string[];
-  /**
-   * The fleet's push-capable logins (`resolveFleetMaintenanceAuthorSet`).
-   * Only these accounts' open PRs block an issue — a human's open PR is
-   * theirs to manage (Issue #4133). Optional: omitted or empty keeps the
-   * fail-safe where an unclassifiable PR still blocks.
+   * The fleet's push-capable logins (`resolveFleetMaintenanceAuthorSet`:
+   * host login + `fleet_pr_authors` + `service_accounts`).
+   *
+   * One set answers both fleet questions this diagnostic asks. Only these
+   * accounts' open PRs block an issue — a human's open PR is theirs to
+   * manage (Issue #4133) — and only these accounts occupy a work stream:
+   * scheduling exists between Vibe Coders, never between a human and a
+   * Vibe Coder (Issue #1064). Never pass `config.allowedAuthors`, which is
+   * a permission list and legitimately holds humans.
+   *
+   * Optional: omitted or empty keeps the fail-safe where an unclassifiable
+   * PR still blocks, and leaves only this host's own assignments occupying.
    */
   pushCapableAuthors?: string[];
   /** Whether the issue is currently in cooldown. */
@@ -254,15 +255,16 @@ export function diagnoseRepoIssue(
     isBlocked = true;
   }
 
-  // Check milestone occupancy (fleet-only — human assignments don't block).
-  // Fleet-aware: any fleet account's assignment occupies (Issue #3099).
+  // Check work-stream occupancy. Fleet-aware: any fleet account's
+  // assignment occupies (Issue #3099), and only a fleet account's does
+  // (Issue #1064) — a human assignee never occupies a stream.
   if (issue.milestone && allIssues.length > 0) {
     if (
       isMilestoneOccupied(
         allIssues,
         issue.milestone,
         input.workerUser,
-        input.allowedAuthors ?? [],
+        input.pushCapableAuthors ?? [],
       )
     ) {
       reasons.push(

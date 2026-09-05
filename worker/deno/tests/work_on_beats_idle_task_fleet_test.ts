@@ -190,9 +190,15 @@ interface FleetIssue {
 
 /**
  * gh stub backed by an in-memory `repo -> open issues` map. Answers every
- * `gh issue list --label <L>` query (cross-repo wrapper dedup *and* the real
- * `anyRepoHasUnblockedRealWork` fleet gate) from the fixture, and records any
+ * `gh issue list --label <L>` query (cross-repo wrapper dedup) from the
+ * fixture, and — since Issue #1050, when the real
+ * `anyRepoHasUnblockedRealWork` fleet gate reads one unfiltered open-issue
+ * list per repo — every unlabelled `gh issue list` too. Records any
  * `gh issue create` so the test can assert none was attempted.
+ *
+ * Every fixture issue is unassigned and carries no milestone, so it sits in
+ * the default-branch work stream with nothing occupying it: genuinely
+ * claimable work, which is what these assertions are about.
  */
 function makeFleetGh(open: Map<string, FleetIssue[]>): {
   fn: (args: string[]) => Promise<string>;
@@ -209,11 +215,14 @@ function makeFleetGh(open: Map<string, FleetIssue[]>): {
 
     if (subcommand === "list") {
       const rows = (open.get(repo) ?? [])
-        .filter((i) => i.labels.includes(label))
+        .filter((i) => label === "" || i.labels.includes(label))
         .map((i) => ({
           number: i.number,
+          title: `Issue ${i.number}`,
           url: i.url,
           labels: i.labels.map((name) => ({ name })),
+          assignees: [],
+          milestone: null,
         }));
       return Promise.resolve(JSON.stringify(rows));
     }
