@@ -50,6 +50,11 @@ set -euo pipefail
 #              read-only (Issue #509). A failed update is a warning, never a
 #              refused launch, and VIBE_SKIP_CHECKOUT_UPDATE turns it off for
 #              a development checkout or a CI tree.
+# Issue #1072: A run stopped by a signal declares it, so the supervisor counts
+#              a deliberate stop as a stop. This launcher exits with the
+#              runtime client's own status, which is 255 when the container is
+#              stopped under it - indistinguishable from a crash, and three of
+#              them escalated a host that was working (Issues #879, #1072).
 # Issue #690:  A frozen host behind the newest release is told so at launch -
 #              one line naming both versions and the upgrade command. The
 #              check never blocks the launch: a failure is a warning.
@@ -70,7 +75,33 @@ record_phase() {
   fi
 }
 
+# Where a run stopped from outside says so (Issue #1072).
+#
+# This launcher forwards a termination signal to the runtime client and exits
+# with THAT client's status - 255 on the fleet's macOS hosts when its container
+# is stopped under it - so the status cannot tell a deliberate stop from a
+# crash. Issue #879 counted an operator's own `kill` towards the escalation
+# streak and then pointed the reader at the container runtime; #1072 is the
+# same report from the same host. The signal trap writes what it knows, and the
+# outcome recorder consumes it.
+LAUNCH_TERMINATION_FILE="${VIBE_LAUNCH_TERMINATION_FILE:-${VIBE_STATE_DIR}/last-launch-termination}"
+record_termination() {
+  local declared_ms
+  declared_ms="$(( $(date +%s) * 1000 ))"
+  if ! { mkdir -p "$(dirname "${LAUNCH_TERMINATION_FILE}")" &&
+    printf '{"signal":"%s","declaredAtMs":%s}\n' "$1" "${declared_ms}" \
+      >"${LAUNCH_TERMINATION_FILE}"; } 2>/dev/null; then
+    echo "[run.sh] warning: cannot record the termination signal to" \
+      "${LAUNCH_TERMINATION_FILE} - this stop will be counted as a failure" >&2
+  fi
+}
+
 record_phase runtime_detection
+# Cleared before anything else: the marker describes the run that writes it, so
+# a leftover from a run whose outcome was never recorded must never explain
+# this one. The recorder consumes it as well, and refuses a stale one - three
+# ways for one file, because believing it wrongly silences a real failure.
+rm -f "${LAUNCH_TERMINATION_FILE}" 2>/dev/null || true
 
 # PATH bootstrap for cron/launchd environments. The caller's PATH stays
 # authoritative and the usual install locations are appended, so an operator
@@ -230,6 +261,7 @@ record_outcome() {
     --allow-sys=hostname \
     "${BASE_DIR}/worker/deno/mod.ts" container-restart-backoff \
     --exit-status "${status}" \
+    --termination-file "${LAUNCH_TERMINATION_FILE}" \
     ${EVIDENCE_LOG:+--launch-log "${EVIDENCE_LOG}"} </dev/null >/dev/null; then
     echo "[run.sh] warning: could not record launcher outcome ${status}" >&2
   fi
@@ -294,6 +326,11 @@ PENDING_SIGNAL=""
 # shellcheck disable=SC2317,SC2329
 forward_signal() {
   local signal="$1"
+  # Recorded before anything is forwarded, and on every branch below: whatever
+  # this launcher exits with from here on, it was stopped rather than failing
+  # (Issue #1072). A signal that arrives during the image build stops the run
+  # just as surely as one that arrives mid-worker.
+  record_termination "${signal}"
   if [[ -z "${CHILD_PID}" && -n "${LAUNCH_IN_FLIGHT}" ]]; then
     # The child exists (or is a fork away) and only its PID is missing, so
     # hold the signal here. Held, never dropped: the launch site delivers it

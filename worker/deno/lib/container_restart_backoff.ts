@@ -33,7 +33,17 @@
  *      in which a worker most needs to raise its hand, so an escalation that
  *      never lands is recorded as a failure in the self-heal health report and
  *      carried into the next report that does.
- *   5. **Quota pauses are not failures** (Issue #342). A run that stops
+ *   5. **A stop is not a failure either** (Issue #1072). `run.sh` forwards a
+ *      termination signal to the runtime client and exits with that client's
+ *      status — 255 on the fleet's macOS hosts — so an operator's `kill`, a
+ *      launchd stop or a host shutdown was counted towards the escalation
+ *      streak and reported as a runtime fault. The launcher declares the
+ *      signal in a marker this recorder consumes, and a declared stop is
+ *      counted neither up nor down: the streak it interrupted is carried
+ *      through, nothing escalates, and the next attempt comes at the base
+ *      cadence. The supervisor's own deadline kill is exempt — a cycle that
+ *      had to be killed is a fault (Issue #322).
+ *   6. **Quota pauses are not failures** (Issue #342). A run that stops
  *      because the host is out of Claude quota exits on purpose, with the
  *      reset already known. It resets the failure streak, escalates nothing,
  *      claims no recovery, and re-probes at a fixed cadence — because the
@@ -77,6 +87,7 @@ import {
   formatSlotUtilisation,
   parkedHostCapacity,
 } from "./slot_idle_accounting.ts";
+import type { LaunchTerminationMarker } from "./launcher_termination.ts";
 
 /**
  * Statuses the worker's own commands return deliberately (Issue #633).
@@ -345,7 +356,20 @@ export type LauncherOutcomeKind =
   | "success"
   | "quota_pause"
   | "network_unavailable"
+  | "terminated"
   | "failure";
+
+/**
+ * Statuses that mean the supervisor's own deadline ended the run (Issue #322).
+ *
+ * `timeout` reports 124 when its SIGTERM expired the run and 137 when its own
+ * SIGKILL was what stopped it. That SIGTERM reaches `run.sh` like any other, so
+ * the launcher declares a termination for it — and a cycle the supervisor had
+ * to kill is a fault the host must escalate for, never a deliberate stop. The
+ * statuses are checked here so that rule lives in one place rather than in the
+ * shell.
+ */
+export const SUPERVISOR_DEADLINE_EXIT_CODES: readonly number[] = [124, 137];
 
 /**
  * Whether the launch died because GitHub was unreachable (Issue #949).
@@ -374,15 +398,28 @@ export function isNetworkUnavailableLaunch(
  *
  * @param exitStatus - Exit status the launcher reported (0 is success)
  * @param quotaPause - Marker the run wrote, when it declared a quota pause
+ * @param networkUnavailable - True when the run died with GitHub unreachable
+ * @param terminated - Declaration the launcher wrote when it forwarded a
+ *   termination signal (Issue #1072)
  */
 export function classifyLauncherOutcome(
   exitStatus: number,
   quotaPause?: QuotaPauseMarker | null,
   networkUnavailable?: boolean,
+  terminated?: LaunchTerminationMarker | null,
 ): LauncherOutcomeKind {
   if (quotaPause) return "quota_pause";
   if (exitStatus === QUOTA_PAUSE_EXIT_STATUS) return "quota_pause";
   if (exitStatus === 0) return "success";
+  // A run stopped from outside is not this host failing (Issue #1072). The
+  // status cannot say so — it belongs to the runtime client, which reports 255
+  // when its container is stopped under it — so the launcher's own declaration
+  // is what carries the fact. Checked after success, so a run that reached the
+  // end is never reclassified by a signal that arrived on its way out; and
+  // never for the supervisor's own deadline kill, which is a fault.
+  if (terminated && !SUPERVISOR_DEADLINE_EXIT_CODES.includes(exitStatus)) {
+    return "terminated";
+  }
   // Checked after success so a run that reached the end is never reclassified
   // by a marker left earlier in the same log (Issue #949).
   if (networkUnavailable === true) return "network_unavailable";
@@ -525,6 +562,9 @@ export interface ContainerRestartDecision {
  * @param config - Resolved tunables
  * @param now - Clock seam, in Unix seconds
  * @param quotaPause - Quota-pause marker the run wrote, when it declared one
+ * @param networkUnavailable - True when the run died with GitHub unreachable
+ * @param terminated - Termination marker the launcher wrote, when it was
+ *   signalled (Issue #1072)
  */
 export function nextContainerRestartDecision(
   previous: ContainerRestartState,
@@ -534,12 +574,36 @@ export function nextContainerRestartDecision(
   now: () => number = nowSeconds,
   quotaPause?: QuotaPauseMarker | null,
   networkUnavailable?: boolean,
+  terminated?: LaunchTerminationMarker | null,
 ): ContainerRestartDecision {
   const kind = classifyLauncherOutcome(
     exitStatus,
     quotaPause,
     networkUnavailable,
+    terminated,
   );
+
+  // A run somebody stopped says nothing about this host's health, so it is
+  // counted neither up nor down (Issue #1072): the streak it interrupted is
+  // carried through untouched, so a genuine fault still escalates on the
+  // failure it would have escalated on, and an operator restarting a broken
+  // host cannot accidentally hide the breakage. The wait is the base cadence —
+  // whoever stopped the run wants it back, not a doubling backoff.
+  if (kind === "terminated") {
+    return {
+      state: {
+        ...previous,
+        lastExitStatus: exitStatus,
+        lastUpdated: now(),
+      },
+      kind,
+      phase: null,
+      backoffSeconds: config.baseSleepSeconds,
+      escalate: false,
+      recovered: false,
+      threshold: 0,
+    };
+  }
 
   // Issue #949: an unreachable GitHub is not this host misbehaving, so it
   // does not climb the ladder. The streak resets and the wait is the base
@@ -1120,6 +1184,12 @@ export interface RecordContainerOutcomeOptions {
    * consumed by the caller, so it describes this invocation and no other.
    */
   quotaPause?: QuotaPauseMarker | null;
+  /**
+   * Termination marker the launcher wrote when it forwarded a signal (Issue
+   * #1072). Already consumed by the caller, so it describes this invocation
+   * and no other.
+   */
+  terminated?: LaunchTerminationMarker | null;
   /** Tunable overrides. */
   config?: Partial<ContainerRestartConfig>;
   /** Crash-notification channel configuration (cooldown, webhook, state). */
@@ -1245,6 +1315,7 @@ export async function recordContainerRestartOutcome(
     now,
     options.quotaPause,
     isNetworkUnavailableLaunch(options.logTail),
+    options.terminated,
   );
 
   const persisted = await persistContainerRestartState(
@@ -1283,8 +1354,11 @@ export async function recordContainerRestartOutcome(
   // that outage, so record it rather than letting it vanish with the streak.
   // `reported` means the loss already reached the health report when the
   // attempt cap was hit; recording it again would double-count one outage.
+  // A stop is exempt (Issue #1072): it carries the streak through rather than
+  // ending it, so the queued escalation still belongs to a live incident.
   const abandoned = previous.escalation?.pending &&
-      !previous.escalation.pending.reported
+      !previous.escalation.pending.reported &&
+      decision.kind !== "terminated"
     ? (!decision.phase ||
       previous.escalation.phase !== decision.phase ||
       previous.escalation.streakStartedAt !== decision.state.streakStartedAt)
@@ -1308,6 +1382,31 @@ export async function recordContainerRestartOutcome(
         endedBy: decision.phase ? "phase_change" : "streak_end",
       },
     }, { workDir: options.workDir });
+  }
+
+  // A run that was stopped from outside (Issue #1072): recorded so the stop is
+  // visible to an operator reading `self-heal-summary`, and recorded as a stop
+  // — no failure counted, no escalation, no recovery claimed. The streak it
+  // interrupted is stated, because "2 failures, then somebody stopped it" is
+  // the context a reader of the next escalation needs.
+  if (decision.kind === "terminated") {
+    await emitSelfHealEvent({
+      module: SELF_HEAL_MODULE,
+      action: "terminated",
+      reason:
+        `launcher stopped by SIG${
+          options.terminated?.signal ?? "unknown"
+        } — not counted as a failure (Issue #1072); next attempt in ` +
+        `${decision.backoffSeconds}s`,
+      result: "ok",
+      details: {
+        signal: options.terminated?.signal ?? null,
+        exitStatus: options.exitStatus,
+        sleepSeconds: decision.backoffSeconds,
+        carriedFailures: decision.state.consecutiveFailures,
+      },
+    }, { workDir: options.workDir });
+    return outcome;
   }
 
   // Quota pause (Issue #342): recorded as the scheduled outcome it is, with
