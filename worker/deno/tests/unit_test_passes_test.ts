@@ -283,6 +283,27 @@ Deno.test("unit passes - CONFIG_PATH is scrubbed from both passes (Issue #940)",
   }
 });
 
+Deno.test("unit passes - WORK_DIR is scrubbed from both passes (Issue #1098)", () => {
+  // The container exports the live worker volume. Inherited, every suite that
+  // drives the main loop without naming its own work directory shares the
+  // running fleet's state files with three sibling test processes — the
+  // idle-disagreement suites failed on a streak a sibling had reset, and the
+  // operator's own state was overwritten with test timestamps.
+  for (
+    const pass of passes({
+      ...HOST_ENV,
+      WORK_DIR: "/home/vibe/auto-issue-work",
+    })
+  ) {
+    assertEquals(
+      Object.hasOwn(pass.env, "WORK_DIR"),
+      false,
+      `${pass.label} inherited the container's WORK_DIR`,
+    );
+    assertEquals(pass.env.PATH, "/usr/bin");
+  }
+});
+
 Deno.test("unit passes - the caller's environment is not mutated (Issue #940)", () => {
   const base: Record<string, string> = {
     PATH: "/usr/bin",

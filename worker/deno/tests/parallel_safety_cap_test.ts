@@ -20,8 +20,16 @@
  * `getPromptsDir` an injected environment lookup — which is the whole point of
  * the list going down.)
  *
- * Measured with `DENO_JOBS=4`: 48 failures, of which 32 were the pre-existing
- * pwsh failures and ~16 were genuine races. Only a handful collided — the
+ * Measured with `DENO_JOBS=4`: 48 failures, ~16 of them genuine races. The
+ * remainder were written off as "the pre-existing pwsh failures" and quoted
+ * that way ever since. They were neither pre-existing nor 32: #971 re-measured
+ * the three PowerShell suites on a host with PowerShell 7.6.5 and found 18
+ * failures, none of them a race — 16 were `setup_ps1_test.ts` resolving `pwsh`
+ * against the developer's own `PATH` and then spawning it with a sanitised
+ * one, and 2 were a test's own clock. All 18 were fixed in #988, so nothing
+ * from that half is debt this cap has to carry.
+ *
+ * Of the races, only a handful collided — the
  * rest of the listed files are latent. Bounding the worker count reduces the
  * probability of a collision without removing it, which is the worst outcome
  * for a gate: intermittent red on unrelated work trains everyone to re-run
