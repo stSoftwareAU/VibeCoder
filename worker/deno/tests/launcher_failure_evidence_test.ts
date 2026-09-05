@@ -18,12 +18,14 @@ import { QUOTA_PAUSE_EXIT_STATUS } from "../lib/quota_pause.ts";
 import { BUILD_NOT_HEALABLE_EXIT } from "../commands/container_build_heal.ts";
 import { ANOTHER_WORKER_RUNNING_EXIT } from "../commands/container_reap.ts";
 import { EXTENSION_START_ABORT_EXIT_STATUS } from "../lib/container_extension_start.ts";
+import { HOST_EGRESS_BLOCKED_EXIT_STATUS } from "../lib/container_egress_probe.ts";
 
 const KNOWN = knownWorkerStatuses(
   QUOTA_PAUSE_EXIT_STATUS,
   BUILD_NOT_HEALABLE_EXIT,
   ANOTHER_WORKER_RUNNING_EXIT,
   EXTENSION_START_ABORT_EXIT_STATUS,
+  HOST_EGRESS_BLOCKED_EXIT_STATUS,
 );
 
 // ---------------------------------------------------------------------------
@@ -66,7 +68,19 @@ Deno.test("knownWorkerStatuses - the table matches the real exit constants", () 
   // must collide with none of the others — 75 in particular, which resets the
   // failure streak as a scheduled pause.
   assertEquals(EXTENSION_START_ABORT_EXIT_STATUS, 76);
-  assertEquals([...KNOWN.statuses].sort((a, b) => a - b), [0, 1, 3, 4, 75, 76]);
+  // The park (Issue #997) is the launcher's own status and belongs in the
+  // table beside them; the milestone merge kept only the extension abort of
+  // the two, and an alert then blamed 88 on the runtime client.
+  assertEquals(HOST_EGRESS_BLOCKED_EXIT_STATUS, 88);
+  assertEquals([...KNOWN.statuses].sort((a, b) => a - b), [
+    0,
+    1,
+    3,
+    4,
+    75,
+    76,
+    88,
+  ]);
 });
 
 Deno.test("explainExitStatus - an aborted extension start is named, not blamed on the runtime (Issue #981)", () => {

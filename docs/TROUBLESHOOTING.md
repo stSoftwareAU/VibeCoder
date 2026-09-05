@@ -66,6 +66,60 @@ self-heal escalation reports that phase through GitHub after two consecutive
 failures. That report quotes the failing build's own output, so the cause is in
 the issue itself rather than only in whatever the scheduler captured of stderr.
 
+### The host is parked: `container_egress`
+
+A launcher that exits **88** having written `container_egress` to the phase
+marker has not failed to build anything — it never tried. Its pre-build probe
+found that a container on this host cannot reach the network **while the host
+itself can**, which is the host's own routing and not something the worker can
+repair (Issue #997). The escalation carries the hop table and the likely cause:
+
+```text
+| container → 1.1.1.1:443 | FAIL — connect: no route to host |
+| host → 1.1.1.1:443      | OK |
+- reject route(s): default link#22 UCSIg bridge100 !
+- tunnel interface holding a default route: default 100.100.100.100 UGScIg utun8
+```
+
+Check the same two things by hand, on the host:
+
+```bash
+netstat -rn | grep -E 'default|bridge'   # macOS; `ip route show` on Linux
+container run --rm --entrypoint /bin/bash "$IMAGE" \
+  -c 'exec 3<>/dev/tcp/1.1.1.1/443'      # 0 = a container gets out
+```
+
+A reject route (`!` on macOS, `unreachable`/`prohibit` on Linux) on the
+container bridge is the usual finding, and a VPN or tunnel interface holding a
+default route is the usual reason for it. Restarting the container service or
+creating a fresh container network does **not** clear it — the fault is
+host-wide. Until a person fixes the route the host parks for 30 minutes at a
+time, claims nothing, and reports itself as unavailable capacity with the
+reason `container_egress_blocked`. There is no host run mode to fall back on:
+containment is mandatory (Issue #4).
+
+When the probe finds the address unreachable **from the host as well**, the
+launcher says so and waits instead — a link outage is not this host's fault and
+escalates nobody.
+
+Four hosts share this configuration, so the park is reported as lost capacity
+rather than as a machine that went quiet. Every parked cycle writes a
+`host_parked` self-heal event carrying the slot-utilisation line for the
+capacity nobody can use:
+
+```text
+slot-utilisation: host=GRQ-23 slots=2 wall=1800s available=3600s occupied=0s …
+  unavailable=3600s unavailable_pct=100.0 unavailable_reason=container_egress_blocked
+```
+
+and the [green-gate report](CONTAINMENT.md#green-gate-evidence-is-the-fleet-actually-running-contained)
+for that host leads with it:
+
+```text
+| GRQ-23 | Availability | unavailable — container_egress_blocked |
+| GRQ-23 | Parked cycles (host could not run a container) | 14 |
+```
+
 ### Where a launcher failure is reported
 
 A launcher that fails before claiming work has no issue to comment on, so the
@@ -76,6 +130,17 @@ per phase, updated on the decaying re-notify schedule rather than re-filed
 channel can deliver, the attempt is queued and the streak carries it, and
 `self-heal-summary` shows it as `escalation_undeliverable` — a host that cannot
 report is itself the thing to look at.
+
+A run **you** stopped is not reported at all. `run.sh` exits with the runtime
+client's own status — 255 on macOS when the container is stopped under it —
+which reads as a crash, so a `kill`, a launchd stop or a host shutdown used to
+count towards the streak and escalate a host that was working
+(Issues #879, #1072). The signal trap declares the stop in
+`${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-termination` and the recorder
+consumes it: `self-heal-summary` shows a `terminated` event, the failure count
+is unchanged, and nothing is filed. If you see a `worker_run` escalation for a
+run you stopped by hand, that marker was not written — the launcher says so on
+stderr when it cannot write it.
 
 A report titled `unknown-host` is a fault in the reporter, not a nameless
 machine: the outcome recorder was invoked without `--allow-sys=hostname`, so
@@ -114,7 +179,7 @@ read/write — so the usual files are read on the host exactly as before:
 ```bash
 tail -n 200 ~/logs/worker.log      # worker activity (symlink to the latest run)
 tail -n 50 ~/logs/cron.log         # launcher output under cron
-cat ~/.vibe-coder/last-launch-phase # runtime_detection | image_build | volume_init | container_run
+cat ~/.vibe-coder/last-launch-phase # runtime_detection | container_egress | image_build | volume_init | container_run
 ```
 
 `.config.json` is likewise the host's own file. The workspace is not: the
@@ -246,14 +311,44 @@ The usual cause is exactly what the message says: the worker's clone is
 doubling as somebody's development tree. Commit or stash the in-flight
 work — or better, move development elsewhere and leave the appliance clone
 alone (see [Deployment — dedicated clone](DEPLOYMENT.md#the-worker-needs-its-own-dedicated-clone)).
-After three consecutive failures the host also files (or comments on) a
-`Worker checkout update failing on <host>` issue against the worker
-repository, so the stuck host is visible from GitHub rather than only in host
-logs. The streak counter lives at `~/logs/checkout-update-failure-streak` and
-resets on the first successful update. A checkout that is *meant* to be left
+After three consecutive failures **spanning at least fifteen minutes** the host
+also files (or comments on) a `Worker checkout update failing on <host>` issue
+against the worker repository, so the stuck host is visible from GitHub rather
+than only in host logs. The span is part of the rule because the count alone
+was not measuring persistence: a transient host fault took the streak from 1 to
+3 in eight seconds and escalated a glitch that was already over (Issue #1017).
+The streak lives at `~/logs/checkout-update-failure-streak` — the count and the
+first failure's timestamp — and resets on the first successful update.
+
+`No user exists for uid <n>` in that log is the *host's* directory services
+failing to resolve the user the launcher is already running as, so git cannot
+find that user's `~/.ssh` or `~/.gitconfig`. It is neither a credentials nor a
+network fault — do not go looking at deploy keys — it is a known transient
+after sleep/wake and DirectoryService restarts, and it clears on its own. The
+update retries the git step in place, briefly, so a run that recovers within
+seconds never reaches the streak at all. A checkout that is *meant* to be left
 alone — a development tree, a CI merge commit — should set
 `VIBE_SKIP_CHECKOUT_UPDATE=1` instead, which skips the update loudly and
 raises nothing.
+
+That report has to reach `api.github.com`, and the commonest reason the
+checkout update fails is that the host cannot (Issue #1018). So a send that
+fails is retried on every later failing run until one lands, and the evidence
+is queued at `~/logs/checkout-update-escalation` — one entry per streak,
+overwritten — so an outage is reported once connectivity returns instead of
+never:
+
+```text
+Checkout update escalation failed, spooled for the next run with connectivity
+(Issue #1018): gh issue create exited 1: error connecting to api.github.com
+```
+
+The run that recovers is usually the first that can reach GitHub, so it
+delivers the queued report itself — marked as an outage that has **since
+ended**, naming the time it was queued — and then clears the streak and the
+queue together. A queued report therefore never outlives the condition it
+describes, and an outage that ends is reported rather than forgotten. A flush
+that still cannot be delivered is dropped, loudly, in `run_core.log`.
 
 On a host running `update_mode: "frozen"` the same warning appears with a
 different message (Issue #624):
@@ -353,7 +448,10 @@ order:
 4. **The check failed.** That is never silent: look for the
    `[run.sh] warning: could not check for a newer release` line above on stderr,
    and the matching `release-notice: failed …` line in `run_core.log`. Both
-   land on every launch that could not complete the check.
+   land on every launch that could not complete the check, and both quote the
+   check's own account of the failure — or say `timed out after 120s` when the
+   launcher's bound was what ended it. `no explanation given` means the check
+   really wrote nothing (Issue #1020).
 
 Every warning line from this path goes to **both** places — stderr for whatever
 launched the host (a cron log, a LaunchAgent log) and `~/logs/run_core.log` for

@@ -181,6 +181,7 @@ import { containerReapCommand } from "./commands/container_reap.ts";
 import { containerImagePruneCommand } from "./commands/container_image_prune.ts";
 import { containerStorePruneCommand } from "./commands/container_store_prune.ts";
 import { containerBuildHealCommand } from "./commands/container_build_heal.ts";
+import { containerEgressProbeCommand } from "./commands/container_egress_probe.ts";
 import { runModeCommand } from "./commands/run_mode.ts";
 import { workerCheckoutUpdateCommand } from "./commands/worker_checkout_update.ts";
 import { auditDefaultBranchRulesetsCommand } from "./commands/audit_default_branch_rulesets.ts";
@@ -378,6 +379,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(containerImagePruneCommand);
   registry.register(containerStorePruneCommand);
   registry.register(containerBuildHealCommand);
+  registry.register(containerEgressProbeCommand);
   registry.register(runModeCommand);
   registry.register(workerCheckoutUpdateCommand);
   registry.register(auditDefaultBranchRulesetsCommand);
@@ -621,6 +623,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "container-store-prune",
       // The launchers call this when a build fails (Issue #4441).
       "container-build-heal",
+      // The launchers probe container egress before the build (Issue #997).
+      "container-egress-probe",
       // The launchers ask this which mode to run in (Issue #4146).
       "run-mode",
       // The launchers update the checkout before each launch (Issue #512).
@@ -743,6 +747,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "container-image-prune",
       // The launchers call this to reclaim the host store (Issue #227).
       "container-store-prune",
+      // The launchers probe container egress before the build (Issue #997).
+      "container-egress-probe",
       // The launchers ask this which mode to run in (Issue #4146).
       "run-mode",
       // The launchers update the checkout before each launch (Issue #512).
