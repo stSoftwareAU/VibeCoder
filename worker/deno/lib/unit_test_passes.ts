@@ -19,10 +19,19 @@
  * The halves are built from the two manifests rather than written out, so
  * dropping a file from `PARALLEL_UNSAFE_TEST_FILES` moves it from the slow
  * pass to the fast one and nothing else has to change. Both passes exclude
- * `INTEGRATION_TEST_FILES`, which is also what keeps the 32 pre-existing pwsh
- * failures out of the verdict: every suite that spawns `pwsh` is an
+ * `INTEGRATION_TEST_FILES` (#907): every suite that spawns `pwsh` is an
  * integration suite, and CI runs those where the environment is provisioned
  * for them.
+ *
+ * That exclusion used to be described here as what "keeps the 32 pre-existing
+ * pwsh failures out of the verdict". There are no such failures to keep out,
+ * and describing the split that way is what made a standing red sound like a
+ * property of the gate. #971 re-measured those suites on a host with
+ * PowerShell installed and found test-side defects, not a standing failure —
+ * chiefly `setup_ps1_test.ts` resolving `pwsh` against the developer's own
+ * `PATH` and then spawning it with `clearEnv: true` and
+ * `PATH: "/usr/bin:/bin"` — all fixed in #988. The suites are excluded because
+ * they need a provisioned environment, never because they are expected to fail.
  *
  * `DENO_JOBS` is bounded to {@link CONTAINER_DENO_JOBS} inside the container
  * and left at Deno's default on the host. The container has a memory ceiling
