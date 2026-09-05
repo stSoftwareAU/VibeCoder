@@ -117,7 +117,8 @@ set -euo pipefail
 #                             has no interactive login, so this variable is the
 #                             only way its credential is ever provisioned
 #   VIBE_LAUNCHAGENT_FALLBACK_PATHS - PATH fallback for LaunchAgent (e.g., /opt/homebrew/bin)
-#   VIBE_LOGS_DIR           - Logs directory (default: ~/logs)
+#   VIBE_LOGS_DIR           - Logs directory (default: the platform's own
+#                             location, see docs/CONFIGURATION.md)
 #   VIBE_SKIP_LAUNCHCTL     - Set to "true" to skip launchctl commands (for testing)
 #
 # Screenshot capability setup (for UI change evidence):
@@ -851,7 +852,7 @@ prompt_interactive_credentials() {
 #
 # Resolved by the Deno seam (worker/deno/setup/agent_providers.ts) rather than
 # parsed out of .config.json here: `agent_provider`, `agent_providers`, the
-# VIBE_AGENT_PROVIDER(S) overrides and the default all live there, and jq —
+# VIBE_AGENT_PROVIDER(S) fallbacks and the default all live there, and jq —
 # which this script would otherwise need — is container-owned and may not
 # exist on the host at all. Prints one id per line.
 #

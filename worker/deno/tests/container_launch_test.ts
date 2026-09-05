@@ -803,14 +803,20 @@ Deno.test("buildContainerLaunchPlan - refuses a plan with no usable watchdog dea
 });
 
 Deno.test("resolveContainerLaunchHostPaths - defaults follow the worker's own resolution", () => {
-  const paths = resolveContainerLaunchHostPaths("/opt/VibeCoder", (name) =>
-    ({
-      HOME: "/home/operator",
-    })[name]);
+  // The platform is stated rather than inferred, so the expectation is the
+  // same on every host the suite runs on (Issue #873).
+  const paths = resolveContainerLaunchHostPaths(
+    "/opt/VibeCoder",
+    (name) => ({ HOME: "/home/operator" })[name],
+    "posix",
+    "linux",
+  );
 
   assertEquals(paths.homeDir, "/home/operator");
   assertEquals(paths.workDir, "/home/operator/auto-issue-work");
-  assertEquals(paths.logDir, "/home/operator/logs");
+  // Issue #873 moved the default off `$HOME/logs` onto the XDG state
+  // directory; the mount source follows the same resolution as the shell.
+  assertEquals(paths.logDir, "/home/operator/.local/state/vibe-coder");
   assertEquals(paths.configFile, "/opt/VibeCoder/.config.json");
   assertEquals(
     paths.configStageDir,
@@ -1018,11 +1024,17 @@ Deno.test("resolveContainerLaunchHostPaths - Windows defaults follow USERPROFILE
   const paths = resolveContainerLaunchHostPaths(
     "C:\\VibeCoder",
     (name) => env[name],
+    "windows",
+    "windows",
   );
 
   assertEquals(paths.homeDir, "C:\\Users\\operator");
   assertEquals(paths.workDir, "C:\\Users\\operator\\auto-issue-work");
-  assertEquals(paths.logDir, "C:\\Users\\operator\\logs");
+  // Issue #873: a Windows host keeps its logs under LOCALAPPDATA.
+  assertEquals(
+    paths.logDir,
+    "C:\\Users\\operator\\AppData\\Local\\vibe-coder\\logs",
+  );
   assertEquals(paths.configFile, "C:\\VibeCoder\\.config.json");
   assertEquals(
     paths.credentialDir,

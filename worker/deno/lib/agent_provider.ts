@@ -38,6 +38,10 @@
  */
 
 import { resolveClaudeEffort, resolveClaudeModel } from "./claude_executor.ts";
+import {
+  resolveSetting,
+  warnDeprecatedEnvSetting,
+} from "./config_precedence.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { getCheaperModel } from "./config_defaults.ts";
 import {
@@ -792,9 +796,9 @@ export interface AgentProviderSelection {
 /**
  * Resolve the active provider id.
  *
- * Precedence: `VIBE_AGENT_PROVIDER` (an explicit per-run override, which is
- * how the container is pointed at a provider), then the `.config.json`
- * `agent_provider` key, then Claude. Any value that is set but unsupported
+ * Precedence is the rule `config_precedence.ts` states for every knob
+ * (Issue #1032): the `.config.json` `agent_provider` key, then
+ * `VIBE_AGENT_PROVIDER`, then Claude. Any value that is set but unsupported
  * fails loudly rather than falling back.
  *
  * The resolved id is checked against the set the running image installed
@@ -816,26 +820,56 @@ export function resolveAgentProviderId(
   return id;
 }
 
-/** The id configuration, the environment, or the default selects. */
+/**
+ * The id configuration, the environment, or the default selects.
+ *
+ * The order is `resolveSetting`'s, not this module's own (Issue #1032): the
+ * file wins, `VIBE_AGENT_PROVIDER` applies when the file selects nothing, and
+ * Claude applies when neither does. A run that still takes its provider from
+ * the variable is told once, naming the key that replaces it.
+ *
+ * Every source that states a value is validated, not just the one that binds:
+ * an unregistered id throws wherever it was written (Issue #3234). Losing to
+ * the file must not turn a typo in the variable into silence — the operator
+ * who exported `VIBE_AGENT_PROVIDER=aider` still has to be told the id does
+ * not exist.
+ */
 function resolveSelectedProviderId(
   selection: AgentProviderSelection,
   env: (name: string) => string | undefined,
 ): string {
-  const override = env(AGENT_PROVIDER_ENV)?.trim();
-  if (override) {
-    try {
-      return resolveAgentProvider(override).id;
-    } catch (error) {
-      throw new Error(
-        `${AGENT_PROVIDER_ENV}: ${(error as Error).message}`,
-      );
-    }
-  }
-
   const configured = (selection.configured ?? configuredProviderId)?.trim();
-  if (configured) return resolveAgentProvider(configured).id;
+  const resolved = resolveSetting<string>({
+    configKey: AGENT_PROVIDER_CONFIG_KEY,
+    envVar: AGENT_PROVIDER_ENV,
+    env,
+    configured: configured ? resolveAgentProvider(configured).id : null,
+    fallback: DEFAULT_AGENT_PROVIDER_ID,
+    parse: parseEnvProviderId,
+  });
+  // The file short-circuits the resolution, so the variable is checked here as
+  // well — set-but-unsupported fails loudly whichever source wins.
+  if (resolved.source !== "env") parseEnvProviderId(env(AGENT_PROVIDER_ENV));
+  warnDeprecatedEnvSetting(resolved, AGENT_PROVIDER_CONFIG_KEY);
+  return resolved.value;
+}
 
-  return DEFAULT_AGENT_PROVIDER_ID;
+/**
+ * Validate an id stated in {@link AGENT_PROVIDER_ENV}.
+ *
+ * @param raw - The variable's value; blank or absent states nothing.
+ * @returns The canonical id, or null when the variable states nothing.
+ * @throws When the variable names a provider that is not registered, with the
+ *   variable named so the operator knows which of the two sources to fix.
+ */
+function parseEnvProviderId(raw: string | undefined): string | null {
+  const wanted = raw?.trim();
+  if (!wanted) return null;
+  try {
+    return resolveAgentProvider(wanted).id;
+  } catch (error) {
+    throw new Error(`${AGENT_PROVIDER_ENV}: ${(error as Error).message}`);
+  }
 }
 
 /**
@@ -1049,11 +1083,12 @@ export function setConfiguredEnabledAgentProviderIds(
 /**
  * Resolve the ids of every provider enabled for this run (Issue #4108).
  *
- * Precedence mirrors {@link resolveAgentProviderId}:
- * {@link ENABLED_AGENT_PROVIDERS_ENV}, then the `.config.json`
- * {@link ENABLED_AGENT_PROVIDERS_CONFIG_KEY} key, then the active provider
- * alone — so a deployment that configures neither behaves exactly as it did
- * before the set existed.
+ * Precedence mirrors {@link resolveAgentProviderId}, which is the rule
+ * `config_precedence.ts` states (Issue #1032): the `.config.json`
+ * {@link ENABLED_AGENT_PROVIDERS_CONFIG_KEY} key, then
+ * {@link ENABLED_AGENT_PROVIDERS_ENV}, then the active provider alone — so a
+ * deployment that configures neither behaves exactly as it did before the set
+ * existed.
  *
  * Every enabled id is checked against the set the running image installed, so
  * enabling an agent this image does not carry fails here rather than as a
@@ -1071,24 +1106,34 @@ export function resolveEnabledAgentProviderIds(
   const env = selection.env ?? ((name: string) => Deno.env.get(name));
   const activeId = resolveAgentProviderId(selection);
 
-  const override = env(ENABLED_AGENT_PROVIDERS_ENV)?.trim();
   const configured = selection.configuredProviders ??
     configuredEnabledProviderIds;
 
-  let ids: string[];
-  if (override) {
-    ids = parseEnabledProviderIds(
-      override.split(","),
-      `${ENABLED_AGENT_PROVIDERS_ENV}=${JSON.stringify(override)}`,
+  const parseEnvSet = (raw: string) =>
+    parseEnabledProviderIds(
+      raw.split(","),
+      `${ENABLED_AGENT_PROVIDERS_ENV}=${JSON.stringify(raw)}`,
     );
-  } else if (configured !== undefined) {
-    ids = parseEnabledProviderIds(
+
+  const resolved = resolveSetting<readonly string[]>({
+    configKey: ENABLED_AGENT_PROVIDERS_CONFIG_KEY,
+    envVar: ENABLED_AGENT_PROVIDERS_ENV,
+    env,
+    configured: configured === undefined ? null : parseEnabledProviderIds(
       configured,
       `Configuration key "${ENABLED_AGENT_PROVIDERS_CONFIG_KEY}"`,
-    );
-  } else {
-    ids = [activeId];
+    ),
+    fallback: [activeId],
+    parse: parseEnvSet,
+  });
+  // As with the active provider: the file short-circuits the resolution, so an
+  // unusable variable is checked here too rather than passing in silence.
+  if (resolved.source !== "env") {
+    const stated = env(ENABLED_AGENT_PROVIDERS_ENV)?.trim();
+    if (stated) parseEnvSet(stated);
   }
+  warnDeprecatedEnvSetting(resolved, ENABLED_AGENT_PROVIDERS_CONFIG_KEY);
+  const ids = [...resolved.value];
 
   if (!ids.includes(activeId)) {
     throw new Error(

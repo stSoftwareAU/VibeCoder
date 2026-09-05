@@ -30,6 +30,7 @@ import { createSpendCeilingCheck } from "../lib/spend_ceiling.ts";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 import { emptyEnv } from "./support/env_lookup.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -400,6 +401,7 @@ Deno.test({
         stub,
         (agent) =>
           runClaudeWithTimeout({
+            clock: fakeClock(),
             prompt: "test",
             agentBinaryPath: agent.path,
             env: emptyEnv,

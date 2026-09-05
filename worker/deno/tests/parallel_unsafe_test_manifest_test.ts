@@ -422,6 +422,56 @@ Deno.test("parallel-unsafe manifest - driving the real runner is measuring (Issu
   );
 });
 
+Deno.test("parallel-unsafe manifest - a run on an injected clock is not measuring (PR #1170 follow-up)", () => {
+  // `RunClaudeOptions.clock` (lib/clock.ts) takes the deadline off the wall
+  // clock: the watchdog fires when the test advances the clock and never a
+  // moment before, so the suite sleeps for nothing and measures nothing.
+  assertEquals(
+    measuresWallClock(
+      'await runClaudeWithTimeout({ prompt: "p", timeoutSeconds: 1, clock });',
+    ),
+    false,
+  );
+  assertEquals(
+    measuresWallClock(
+      'await runClaudeWithRetry({ prompt: "p", killAfterSeconds: 2, clock });',
+    ),
+    false,
+  );
+});
+
+Deno.test("parallel-unsafe manifest - the clock is read per call site, not per file (PR #1170 follow-up)", () => {
+  // A half-converted file is the dangerous case: one case on the seam and
+  // one still against a real second. Reading the whole file would clear it
+  // and put the sleeping case into the parallel pass.
+  assert(
+    measuresWallClock(
+      'await runClaudeWithTimeout({ prompt: "a", timeoutSeconds: 1, clock });\n' +
+        'await runClaudeWithTimeout({ prompt: "b", timeoutSeconds: 1 });',
+    ),
+    "a run left on the real clock is still measuring, whatever its neighbour does",
+  );
+});
+
+Deno.test("parallel-unsafe manifest - a bracket inside a prompt does not end the argument list (PR #1170 follow-up)", () => {
+  // The call-site read balances brackets and skips string literals; a `)`
+  // in a prompt used to be able to cut the arguments short and hide the
+  // deadline that follows it.
+  assert(
+    measuresWallClock(
+      'await runClaudeWithTimeout({ prompt: "a ) b", timeoutSeconds: 1 });',
+    ),
+    "the deadline after a bracketed string literal is still a deadline",
+  );
+  assertEquals(
+    measuresWallClock(
+      'await runClaudeWithTimeout({ prompt: "a ) b", timeoutSeconds: 1, clock });',
+    ),
+    false,
+    "and the clock after it is still a clock",
+  );
+});
+
 Deno.test("parallel-unsafe manifest - a deadline a test only inspects is not measuring (Issue #940)", () => {
   // Both halves are required. Plenty of suites build a policy object naming
   // `timeoutSeconds` and assert on its shape without ever running anything;

@@ -183,6 +183,7 @@ import { containerStorePruneCommand } from "./commands/container_store_prune.ts"
 import { containerBuildHealCommand } from "./commands/container_build_heal.ts";
 import { containerEgressProbeCommand } from "./commands/container_egress_probe.ts";
 import { runModeCommand } from "./commands/run_mode.ts";
+import { logDirCommand } from "./commands/log_dir.ts";
 import { workerCheckoutUpdateCommand } from "./commands/worker_checkout_update.ts";
 import { auditDefaultBranchRulesetsCommand } from "./commands/audit_default_branch_rulesets.ts";
 import { checkMainRulesetCommand } from "./commands/check_main_ruleset.ts";
@@ -381,6 +382,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(containerBuildHealCommand);
   registry.register(containerEgressProbeCommand);
   registry.register(runModeCommand);
+  registry.register(logDirCommand);
   registry.register(workerCheckoutUpdateCommand);
   registry.register(auditDefaultBranchRulesetsCommand);
   registry.register(checkMainRulesetCommand);
@@ -627,6 +629,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "container-egress-probe",
       // The launchers ask this which mode to run in (Issue #4146).
       "run-mode",
+      // The launchers ask this where the host's logs go (Issue #873).
+      "log-dir",
       // The launchers update the checkout before each launch (Issue #512).
       "worker-checkout-update",
       // Read-only sweep; runs against --org/--repos with no config (Issue #4356).
@@ -751,6 +755,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "container-egress-probe",
       // The launchers ask this which mode to run in (Issue #4146).
       "run-mode",
+      // The launchers ask this where the host's logs go (Issue #873).
+      "log-dir",
       // The launchers update the checkout before each launch (Issue #512).
       "worker-checkout-update",
       // Read-only sweep; runs against --org/--repos with no config (Issue #4356).

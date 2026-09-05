@@ -19,7 +19,7 @@
  * Usage:
  *   deno run --allow-env --allow-read --allow-write --allow-run \
  *     mod.ts worker-checkout-update --base-dir /path/to/checkout \
- *     [--default-branch trunk] [--log-dir ~/logs]
+ *     [--default-branch trunk] [--log-dir <host log directory>]
  *
  * Failure is loud here — a non-zero exit naming what went wrong — and the
  * launchers treat that as a warning rather than a fatal error, so a host that
@@ -54,6 +54,9 @@ import {
 import { DEFAULT_UPDATE_MODE, UPDATE_MODES } from "../lib/config_defaults.ts";
 import { pinValueErrors } from "../lib/config_validator.ts";
 import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
+import { pathStyleFor } from "../lib/host_path_style.ts";
+import { readConfiguredLogDirSync, resolveLogDir } from "../lib/log_dir.ts";
+import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 
 // The name lives beside the update it turns off, so the variable this command
 // reads and the one an overwrite advertises cannot drift (Issue #735).
@@ -196,10 +199,25 @@ function updateSkipped(env: EnvLookup): boolean {
   return value !== "" && !["0", "false", "no", "off"].includes(value);
 }
 
-/** Where git output is logged when the caller names no directory. */
+/**
+ * Where git output is logged when the caller names no directory.
+ *
+ * The host's log directory, resolved exactly as the launcher and the shell
+ * resolve it (Issues #872, #873) — this command runs on the host, and its
+ * failure-streak file is read from the same place the operator reads the logs.
+ */
 function defaultLogDir(env: EnvLookup): string {
   const home = env("HOME") ?? env("USERPROFILE");
-  return home ? `${home}/logs` : "logs";
+  if (!home) return "logs";
+  return resolveLogDir(
+    home,
+    env,
+    pathStyleFor(home),
+    undefined,
+    readConfiguredLogDirSync(
+      resolveHostConfigPath({ baseDir: Deno.cwd(), env }),
+    ),
+  );
 }
 
 export const workerCheckoutUpdateCommand: Command = {

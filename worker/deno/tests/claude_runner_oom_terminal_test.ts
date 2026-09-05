@@ -25,6 +25,7 @@ import { assert, assertEquals } from "@std/assert";
 import { OOM_EXIT_CODE, runClaudeWithRetry } from "../lib/claude_runner.ts";
 import { TIMEOUT_EXIT_CODE } from "../lib/claude_executor.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 // ---------------------------------------------------------------------------
 // Stub harness — a fake agent, named by path (Issue #959), that records how
@@ -83,12 +84,13 @@ async function readRunCount(runLog: string): Promise<number> {
   }
 }
 
-// A retry config whose wait would be long enough to overrun a bounded run if
-// the loop ever entered the rate-limit path — proving no wait accrued on OOM.
-const SLOW_IF_RETRIED = {
+// A retry config that allows three retries and waits for none of them, so a
+// loop that wrongly entered the rate-limit path re-invokes the stub and the
+// run log says so.
+const NO_RETRY_WAIT = {
   maxRetries: 3,
   maxWaitSeconds: 600,
-  initialWaitInterval: 300,
+  initialWaitInterval: 0,
 } as const;
 
 const COMMON_OPTS = {
@@ -114,8 +116,8 @@ Deno.test({
       1,
       async (stub) => {
         const result = await runClaudeWithRetry(
-          { ...COMMON_OPTS, agentBinaryPath: stub.path },
-          SLOW_IF_RETRIED,
+          { ...COMMON_OPTS, clock: fakeClock(), agentBinaryPath: stub.path },
+          NO_RETRY_WAIT,
         );
         return { result, runs: await readRunCount(stub.runLog) };
       },
@@ -153,8 +155,8 @@ Deno.test({
       1,
       async (stub) => {
         const result = await runClaudeWithRetry(
-          { ...COMMON_OPTS, agentBinaryPath: stub.path },
-          SLOW_IF_RETRIED,
+          { ...COMMON_OPTS, clock: fakeClock(), agentBinaryPath: stub.path },
+          NO_RETRY_WAIT,
         );
         return { result, runs: await readRunCount(stub.runLog) };
       },
@@ -189,8 +191,8 @@ Deno.test({
       137,
       async (stub) => {
         const result = await runClaudeWithRetry(
-          { ...COMMON_OPTS, agentBinaryPath: stub.path },
-          SLOW_IF_RETRIED,
+          { ...COMMON_OPTS, clock: fakeClock(), agentBinaryPath: stub.path },
+          NO_RETRY_WAIT,
         );
         return { result, runs: await readRunCount(stub.runLog) };
       },
@@ -221,8 +223,8 @@ Deno.test({
       137,
       async (stub) => {
         const result = await runClaudeWithRetry(
-          { ...COMMON_OPTS, agentBinaryPath: stub.path },
-          SLOW_IF_RETRIED,
+          { ...COMMON_OPTS, clock: fakeClock(), agentBinaryPath: stub.path },
+          NO_RETRY_WAIT,
         );
         return { result, runs: await readRunCount(stub.runLog) };
       },

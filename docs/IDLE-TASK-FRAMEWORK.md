@@ -69,6 +69,11 @@ sequenceDiagram
     Main->>Route: routeIdleTaskInProcessIssue(issue #N)
     Route->>Registry: findIdleTaskTemplate(title/body)
     Registry-->>Route: IdleTaskTemplate
+    Route->>GH: claimIdleTaskWrapper — assign + CLAIM_LOCK (Issue #1139)
+    alt a sibling host already holds it
+        GH-->>Route: already assigned / race lost
+        Route-->>Main: skip — nothing scanned, nothing written
+    end
     Route->>Route: ensureRepoClone(repo, workDir)
     Route->>Claim: handleIdleTaskIssue(issue #N)
     Claim->>Runner: runTask({ repo, workDir, idleTaskIssueNumber })
@@ -100,6 +105,26 @@ Key points:
   normally. The single thing special about `idle-task` is that the worker may
   self-apply it (the other three are reserved for trusted humans). See
   [Issue selection priority](workflows/issue-processing.md#-issue-selection-priority).
+- **A recognised wrapper is claimed before it is cloned or scanned** (Issue
+  #1139). The route runs _before_ `workOnIssue`, whose setup phase held the only
+  `claimIssue` call, so a routed wrapper used to collect neither an assignee nor
+  a `CLAIM_LOCK` comment — nothing on GitHub said "taken", and every host's scan
+  kept offering it. Measured on 2026-09-05: `NEAT-AI-Lamarck#206` ran on GRQ-3
+  (01:56:42 → 02:01:32) and on Mac-Ultra-M2 (02:00:25 → 02:05:25), both
+  recording `success`, and the issue's timeline carries no `assigned` event at
+  all.
+  [`claimIdleTaskWrapper`](../worker/deno/lib/idle_task_wrapper_claim.ts) now
+  takes the same lock the standard pipeline uses — assignee, `CLAIM_LOCK`
+  comment, earliest-comment race resolution, and a heartbeat that beats for as
+  long as the scan runs so a claim whose assignee is dropped mid-scan is still
+  readable as live (Issue #214). A host that does not hold the wrapper **stands
+  down before any work**: it clones nothing, scans nothing, writes nothing to
+  the wrapper, and — because the fleet shares one GitHub login — releases
+  nothing either, so the holder keeps its assignee and its marker. The refusal
+  reason is logged, and the run is recorded as a **skip** (another run holds
+  it) or as a **failure** (the claim itself could not be made — a `gh` outage,
+  a non-collaborator worker) — never as the ordinary success that made two
+  hosts' duplicate audits look like one host working twice.
 - The claim handler **never throws** — every failure mode (malformed body,
   unknown template, runner error) logs a structured warning and returns a
   `{ handled: true, ok: false }` result so the queue does not stall.
@@ -528,7 +553,11 @@ repo:
    repo until it is closed.
 2. **Issue-claim atomicity** — the same atomic claim machinery used for regular
    issues prevents two workers from running the same `runTask()` invocation.
-   Only the worker that successfully assigns itself proceeds.
+   Only the worker that successfully assigns itself proceeds. Taken by
+   [`claimIdleTaskWrapper`](../worker/deno/lib/idle_task_wrapper_claim.ts)
+   inside the route, before the clone and the scan — until Issue #1139 this
+   guard was documented but never armed on the production path, and two hosts
+   ran the same audit minutes apart.
 3. **Lowest-priority queue position** — the `idle-task` label sits at the bottom
    of the priority order so idle-task work is selected only when every higher
    tier is empty. It will never pre-empt PR feedback, CI fixes, planning, or

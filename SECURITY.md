@@ -886,14 +886,15 @@ To extract security events from logs:
 
 ```bash
 # Filter all security events
-grep '\[SECURITY\]' ~/logs/worker.log
+LOG_DIR="$(deno run --allow-env --allow-read worker/deno/mod.ts log-dir)"
+grep '\[SECURITY\]' "${LOG_DIR}/worker.log"
 
 # Filter specific event types
-grep '\[SECURITY\] \[AUTH_FAILURE\]' ~/logs/worker.log
-grep '\[SECURITY\] \[ISSUE_PICKED_UP\]' ~/logs/worker.log
+grep '\[SECURITY\] \[AUTH_FAILURE\]' "${LOG_DIR}/worker.log"
+grep '\[SECURITY\] \[ISSUE_PICKED_UP\]' "${LOG_DIR}/worker.log"
 
 # Real-time monitoring of security events
-tail -f ~/logs/worker.log | grep '\[SECURITY\]'
+tail -f "${LOG_DIR}/worker.log" | grep '\[SECURITY\]'
 ```
 
 ### 📝 Existing Security Logging
@@ -1201,10 +1202,35 @@ because a suppressed wrapper produces no error and no log line.
   fix has to delete its own entry. The test reads source text deliberately —
   the invariant is a property of the source, and the file says so at the top so
   the next reader does not remove it as implementation-coupled.
-- **Residual risk, stated.** The manifest is not empty. The lookups still named
-  in it trust an unverified marker today; each carries a one-line note saying
-  what a planted marker there would suppress, and the cap stops the list
-  growing while it is paid down.
+- **The manifest is now empty (Issue #1124).** The last six scanned sites —
+  `issue_query.ts`'s `fetchPRsForIssueByTitle`, `claim_pr_comment.ts`,
+  `idle_task_backfill.ts`, `pr_branch_lock.ts`, `shared_cooldown.ts`'s expired-
+  comment cleanup and `setup/best_practices_sync.ts` — and the four consumers
+  that decided from rows those lookups returned were paid down, each through
+  `alert_dedup_authors.ts` or `idle_task_wrapper_dedup.ts` rather than a third
+  helper. **The fail direction was chosen per site, not copied**, because the
+  harmless outcome differs: a site that *writes* (the `idle-task` back-fill's
+  label, the cooldown cleanup's delete) writes nothing when the author cannot
+  be resolved; a site that *suppresses* (the stale-workflow diagnostic) does
+  not suppress; the best-practices sync files a fresh issue rather than
+  commenting on an unattributable one; and the two ownership arbiters
+  (`claim_pr_comment.ts`, `pr_branch_lock.ts`) leave the work claimable rather
+  than locked. Each direction is asserted by a test and logged when taken.
+- **The two PR lookups needed a different control.** `issue_query.ts` and
+  `pr_issue_linking.ts` read **PRs**, where the head branch is stronger
+  evidence than the author: pushing a branch into the target repository needs
+  write access there, so a same-repository head is evidence and a fork head is
+  a claim anybody can make. Both request `author` **and** `isCrossRepository`
+  and drop every fork-headed row, naming the author in the log line. That is
+  also the *right* boundary for them — a human maintainer's PR for an issue
+  legitimately means "already in hand", so a fleet-only filter would have the
+  worker duplicate it.
+- **Residual risk, stated.** An empty manifest means no *scanned* lookup trusts
+  an unverified marker; it does not mean the class cannot return. The scanner
+  sees `gh` call sites, not data flow, so a module that matches markers
+  client-side over rows another module fetched is invisible to it — the
+  reason the consumer list exists alongside the scanned one. The cap keeps the
+  scanned set clean; a new consumer still has to be reasoned about by hand.
 
 ### 6. Egress Containment — Per-Run Write-Repo Allowlist
 

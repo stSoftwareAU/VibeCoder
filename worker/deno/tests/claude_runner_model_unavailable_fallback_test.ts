@@ -35,6 +35,7 @@ import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import { setActiveRepoModelEffortOverrides } from "../lib/claude_executor.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
 import { emptyEnv } from "./support/env_lookup.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 // ---------------------------------------------------------------------------
 // Stub harness — a fake agent, named by path (Issue #959), that records its
@@ -173,6 +174,7 @@ for (const phase of ["planning", "grill_me"] as const) {
           async (stub) => {
             const result = await runClaudeWithRetry(
               {
+                clock: fakeClock(),
                 prompt: "test",
                 phase,
                 agentBinaryPath: stub.path,
@@ -219,6 +221,7 @@ Deno.test({
         async (stub) => {
           const result = await runClaudeWithRetry(
             {
+              clock: fakeClock(),
               prompt: "test",
               phase: "issue",
               agentBinaryPath: stub.path,
@@ -259,6 +262,7 @@ Deno.test({
         async (stub) => {
           const result = await runClaudeWithRetry(
             {
+              clock: fakeClock(),
               prompt: "test",
               phase: "planning",
               agentBinaryPath: stub.path,
@@ -300,6 +304,7 @@ Deno.test({
         async (stub) => {
           const result = await runClaudeWithRetry(
             {
+              clock: fakeClock(),
               prompt: "test",
               phase: "grill_me",
               agentBinaryPath: stub.path,

@@ -27,6 +27,19 @@ import {
 /** No-op sleep for fast tests. */
 const noSleep = () => Promise.resolve();
 
+/**
+ * The fleet service account every fixture lock is posted by (Issue #1124).
+ *
+ * Fleet hosts share a service account and are told apart by the worker-id
+ * inside the marker, so a race between `worker-01` and `worker-02` is a race
+ * between two comments from the same authenticated author. The planted lock
+ * is the one from outside this set.
+ */
+const FLEET_AUTHOR = "vibe-coder-bot";
+
+/** Author-verification inputs the fixtures pass instead of a config file. */
+const FLEET_OPTIONS = { fleetAuthors: [FLEET_AUTHOR] } as const;
+
 /** Create a mock gh command function that records calls and returns scripted responses. */
 function createMockGh(
   handler?: (args: string[]) => string | Error,
@@ -117,6 +130,7 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock succeeds when no other locks
           id: 100,
           body: "<!-- BRANCH_UPDATE_LOCK:worker-01:1700000000 -->",
           created_at: "2023-11-14T22:13:20Z",
+          author: FLEET_AUTHOR,
         },
       ]);
     }
@@ -124,6 +138,8 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock succeeds when no other locks
   });
 
   const result = await acquireBranchUpdateLock({
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
     repo: "org/repo",
     prNumber: 42,
     workerId: "worker-01",
@@ -155,11 +171,13 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock wins when earliest lock", as
           id: 100,
           body: "<!-- BRANCH_UPDATE_LOCK:worker-01:1700000000 -->",
           created_at: "2023-11-14T22:13:20Z",
+          author: FLEET_AUTHOR,
         },
         {
           id: 200,
           body: "<!-- BRANCH_UPDATE_LOCK:worker-02:1700000001 -->",
           created_at: "2023-11-14T22:13:21Z",
+          author: FLEET_AUTHOR,
         },
       ]);
     }
@@ -167,6 +185,8 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock wins when earliest lock", as
   });
 
   const result = await acquireBranchUpdateLock({
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
     repo: "org/repo",
     prNumber: 42,
     workerId: "worker-01",
@@ -202,11 +222,13 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock loses when not earliest lock
           id: 100,
           body: "<!-- BRANCH_UPDATE_LOCK:worker-01:1700000000 -->",
           created_at: "2023-11-14T22:13:20Z",
+          author: FLEET_AUTHOR,
         },
         {
           id: 200,
           body: "<!-- BRANCH_UPDATE_LOCK:worker-02:1700000001 -->",
           created_at: "2023-11-14T22:13:21Z",
+          author: FLEET_AUTHOR,
         },
       ]);
     }
@@ -220,6 +242,8 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock loses when not earliest lock
   });
 
   const result = await acquireBranchUpdateLock({
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
     repo: "org/repo",
     prNumber: 42,
     workerId: "worker-02",
@@ -270,6 +294,7 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock cleans stale locks first", a
           id: 100,
           body: "<!-- BRANCH_UPDATE_LOCK:worker-01:1700000300 -->",
           created_at: "2023-11-14T22:18:20Z",
+          author: FLEET_AUTHOR,
         },
       ]);
     }
@@ -283,6 +308,8 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock cleans stale locks first", a
   });
 
   const result = await acquireBranchUpdateLock({
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
     repo: "org/repo",
     prNumber: 42,
     workerId: "worker-01",
@@ -313,6 +340,8 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock returns not-acquired on post
   });
 
   const result = await acquireBranchUpdateLock({
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
     repo: "org/repo",
     prNumber: 42,
     workerId: "worker-01",
@@ -340,6 +369,8 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock returns not-acquired on veri
   });
 
   const result = await acquireBranchUpdateLock({
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
     repo: "org/repo",
     prNumber: 42,
     workerId: "worker-01",
@@ -491,11 +522,13 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock tie-breaks by created_at whe
           id: 100,
           body: "<!-- BRANCH_UPDATE_LOCK:worker-01:1700000000 -->",
           created_at: "2023-11-14T22:13:21Z",
+          author: FLEET_AUTHOR,
         },
         {
           id: 200,
           body: "<!-- BRANCH_UPDATE_LOCK:worker-02:1700000000 -->",
           created_at: "2023-11-14T22:13:20Z",
+          author: FLEET_AUTHOR,
         },
       ]);
     }
@@ -504,6 +537,8 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock tie-breaks by created_at whe
 
   // worker-02 posted earlier (created_at) so should win
   const result = await acquireBranchUpdateLock({
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
     repo: "org/repo",
     prNumber: 42,
     workerId: "worker-01",
@@ -536,6 +571,7 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock returns correct lockCommentI
           id: 777,
           body: "<!-- BRANCH_UPDATE_LOCK:my-worker:1700000000 -->",
           created_at: "2023-11-14T22:13:20Z",
+          author: FLEET_AUTHOR,
         },
       ]);
     }
@@ -543,6 +579,8 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock returns correct lockCommentI
   });
 
   const result = await acquireBranchUpdateLock({
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
     repo: "org/repo",
     prNumber: 42,
     workerId: "my-worker",
@@ -596,6 +634,7 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock posts the note with the mark
           id: 900,
           body: postedBody,
           created_at: "2023-11-14T22:13:20Z",
+          author: FLEET_AUTHOR,
         },
       ]);
     }
@@ -603,6 +642,8 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock posts the note with the mark
   });
 
   await acquireBranchUpdateLock({
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
     repo: "org/repo",
     prNumber: 42,
     workerId: "worker-01",
@@ -675,4 +716,157 @@ Deno.test("pr_branch_lock - startBranchUpdateLockRenewal reports failures loudly
 
   assertEquals(errors.length >= 1, true);
   assertStringIncludes(errors[0]!, "API down");
+});
+
+// ---------------------------------------------------------------------------
+// Competing-lock author verification (Issue #1124)
+// ---------------------------------------------------------------------------
+
+Deno.test("pr_branch_lock - asks GitHub who posted each lock comment", async () => {
+  const calls: string[][] = [];
+  const ghCommandFn = (args: string[]): Promise<string> => {
+    calls.push(args);
+    return Promise.resolve("[]");
+  };
+  await acquireBranchUpdateLock({
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
+    repo: "org/repo",
+    prNumber: 42,
+    workerId: "worker-01",
+    sleepFn: noSleep,
+    ghCommandFn,
+    nowFn: () => 1700000000,
+  });
+  const read = calls.find((args) => args.includes("--jq"));
+  const jq = read![read!.indexOf("--jq") + 1] ?? "";
+  assertEquals(
+    jq.includes(".user.login"),
+    true,
+    "a lock marker is text anyone may post; without the commenter there " +
+      "is nothing to check it against",
+  );
+});
+
+Deno.test("pr_branch_lock - a planted lock does not stall the branch", async () => {
+  // Issue #1124: an outsider's `BRANCH_UPDATE_LOCK` with a fresh timestamp
+  // never expires and sorts earliest, so every host loses the race forever.
+  const ghCommandFn = (args: string[]): Promise<string> => {
+    if (args[0] === "api" && args.includes("--jq")) {
+      return Promise.resolve(JSON.stringify([
+        {
+          id: 100,
+          body: "<!-- BRANCH_UPDATE_LOCK:squatter:1700000000 -->",
+          created_at: "2023-11-14T22:13:19Z",
+          author: "drive-by-account",
+        },
+        {
+          id: 101,
+          body: "<!-- BRANCH_UPDATE_LOCK:worker-01:1700000000 -->",
+          created_at: "2023-11-14T22:13:20Z",
+          author: FLEET_AUTHOR,
+        },
+      ]));
+    }
+    return Promise.resolve("");
+  };
+
+  const result = await acquireBranchUpdateLock({
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
+    repo: "org/repo",
+    prNumber: 42,
+    workerId: "worker-01",
+    sleepFn: noSleep,
+    ghCommandFn,
+    nowFn: () => 1700000000,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.acquired, true);
+    assertEquals(result.value.lockCommentId, 101);
+  }
+});
+
+Deno.test("pr_branch_lock - a sibling fleet host's earlier lock still wins", async () => {
+  // The guard that stops the fix becoming "always acquire": a genuine
+  // fleet lock is still honoured, which is what the lock exists for.
+  const ghCommandFn = (args: string[]): Promise<string> => {
+    if (args[0] === "api" && args.includes("--jq")) {
+      return Promise.resolve(JSON.stringify([
+        {
+          id: 100,
+          body: "<!-- BRANCH_UPDATE_LOCK:worker-02:1700000000 -->",
+          created_at: "2023-11-14T22:13:19Z",
+          author: "sibling-fleet-host",
+        },
+        {
+          id: 101,
+          body: "<!-- BRANCH_UPDATE_LOCK:worker-01:1700000000 -->",
+          created_at: "2023-11-14T22:13:20Z",
+          author: FLEET_AUTHOR,
+        },
+      ]));
+    }
+    return Promise.resolve("");
+  };
+
+  const result = await acquireBranchUpdateLock({
+    authorOptions: { fleetAuthors: [FLEET_AUTHOR, "sibling-fleet-host"] },
+    log: () => {},
+    repo: "org/repo",
+    prNumber: 42,
+    workerId: "worker-01",
+    sleepFn: noSleep,
+    ghCommandFn,
+    nowFn: () => 1700000000,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.acquired, false);
+    assertEquals(result.value.winnerId, "worker-02");
+  }
+});
+
+Deno.test("pr_branch_lock - an unresolvable fleet leaves the branch updatable", async () => {
+  // The chosen fail direction, asserted: two hosts updating one branch is
+  // a conflict git resolves; a branch no host may update never merges.
+  const lines: string[] = [];
+  const ghCommandFn = (args: string[]): Promise<string> => {
+    if (args[0] === "api" && args.includes("--jq")) {
+      return Promise.resolve(JSON.stringify([
+        {
+          id: 100,
+          body: "<!-- BRANCH_UPDATE_LOCK:worker-02:1700000000 -->",
+          created_at: "2023-11-14T22:13:19Z",
+          author: FLEET_AUTHOR,
+        },
+        {
+          id: 101,
+          body: "<!-- BRANCH_UPDATE_LOCK:worker-01:1700000000 -->",
+          created_at: "2023-11-14T22:13:20Z",
+          author: FLEET_AUTHOR,
+        },
+      ]));
+    }
+    return Promise.resolve("");
+  };
+
+  const result = await acquireBranchUpdateLock({
+    authorOptions: { fleetAuthors: [] },
+    log: (message) => lines.push(message),
+    repo: "org/repo",
+    prNumber: 42,
+    workerId: "worker-01",
+    sleepFn: noSleep,
+    ghCommandFn,
+    nowFn: () => 1700000000,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.acquired, true);
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0]!, "the branch stays updatable");
 });

@@ -58,6 +58,9 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   "tests/install_tools_test.ts",
   "tests/launcher_egress_probe_test.ts",
   "tests/launcher_parity_test.ts",
+  // Issue #873: runs loop.sh in a sandbox to prove the operator's log-directory
+  // override reaches the resolver and is written to.
+  "tests/log_dir_launcher_test.ts",
   "tests/loop_supervisor_test.ts",
   "tests/run_ps1_launcher_test.ts",
   "tests/run_sh_launcher_test.ts",

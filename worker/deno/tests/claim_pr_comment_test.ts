@@ -20,6 +20,19 @@ import {
 /** No-op sleep for fast tests. */
 const noSleep = () => Promise.resolve();
 
+/**
+ * The fleet service account every fixture claim is posted by (Issue #1124).
+ *
+ * Hosts share a service account and are told apart by the worker-id inside
+ * the marker, so a race between `worker-alpha` and `worker-beta` is a race
+ * between two comments from the same authenticated author. The planted
+ * claim is the one from outside this set.
+ */
+const FLEET_AUTHOR = "vibe-coder-bot";
+
+/** Author-verification inputs the fixtures pass instead of a config file. */
+const FLEET_OPTIONS = { fleetAuthors: [FLEET_AUTHOR] } as const;
+
 /** Check if a specific pattern was called. */
 function wasCalledWith(calls: string[][], pattern: string): boolean {
   return calls.some((call) => call.join(" ").includes(pattern));
@@ -65,6 +78,7 @@ Deno.test("claim pr comment - succeeds when sole claimant", async () => {
       id: 100,
       body: "<!-- PR_COMMENT_CLAIM:my-worker:555 -->",
       created_at: "2026-04-01T00:00:00Z",
+      author: FLEET_AUTHOR,
     },
   ]);
 
@@ -90,6 +104,8 @@ Deno.test("claim pr comment - succeeds when sole claimant", async () => {
     workerId: "my-worker",
     sleepFn: noSleep,
     ghCommandFn: mockGh,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
   });
 
   assertEquals(result.ok, true);
@@ -114,11 +130,13 @@ Deno.test("claim pr comment - loses when another worker claimed earlier", async 
       id: 100,
       body: "<!-- PR_COMMENT_CLAIM:worker-alpha:555 -->",
       created_at: "2026-04-01T00:00:01Z",
+      author: FLEET_AUTHOR,
     },
     {
       id: 101,
       body: "<!-- PR_COMMENT_CLAIM:worker-beta:555 -->",
       created_at: "2026-04-01T00:00:02Z",
+      author: FLEET_AUTHOR,
     },
   ]);
 
@@ -144,6 +162,8 @@ Deno.test("claim pr comment - loses when another worker claimed earlier", async 
     workerId: "worker-beta",
     sleepFn: noSleep,
     ghCommandFn: mockGh,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
   });
 
   assertEquals(result.ok, true);
@@ -166,11 +186,13 @@ Deno.test("claim pr comment - wins when this worker claimed earliest", async () 
       id: 100,
       body: "<!-- PR_COMMENT_CLAIM:worker-alpha:555 -->",
       created_at: "2026-04-01T00:00:01Z",
+      author: FLEET_AUTHOR,
     },
     {
       id: 101,
       body: "<!-- PR_COMMENT_CLAIM:worker-beta:555 -->",
       created_at: "2026-04-01T00:00:02Z",
+      author: FLEET_AUTHOR,
     },
   ]);
 
@@ -194,6 +216,8 @@ Deno.test("claim pr comment - wins when this worker claimed earliest", async () 
     workerId: "worker-alpha",
     sleepFn: noSleep,
     ghCommandFn: mockGh,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
   });
 
   assertEquals(result.ok, true);
@@ -213,11 +237,13 @@ Deno.test("claim pr comment - ignores claims for different target comment IDs", 
       id: 100,
       body: "<!-- PR_COMMENT_CLAIM:other-worker:999 -->",
       created_at: "2026-04-01T00:00:01Z",
+      author: FLEET_AUTHOR,
     },
     {
       id: 101,
       body: "<!-- PR_COMMENT_CLAIM:my-worker:555 -->",
       created_at: "2026-04-01T00:00:02Z",
+      author: FLEET_AUTHOR,
     },
   ]);
 
@@ -241,6 +267,8 @@ Deno.test("claim pr comment - ignores claims for different target comment IDs", 
     workerId: "my-worker",
     sleepFn: noSleep,
     ghCommandFn: mockGh,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
   });
 
   assertEquals(result.ok, true);
@@ -275,6 +303,8 @@ Deno.test("claim pr comment - returns false when claim comment fails", async () 
     workerId: "test-worker",
     sleepFn: noSleep,
     ghCommandFn: mockGh,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
   });
 
   assertEquals(result.ok, true);
@@ -293,16 +323,19 @@ Deno.test("claim pr comment - handles three-way race correctly", async () => {
       id: 100,
       body: "<!-- PR_COMMENT_CLAIM:charlie:555 -->",
       created_at: "2026-04-01T00:00:03Z",
+      author: FLEET_AUTHOR,
     },
     {
       id: 101,
       body: "<!-- PR_COMMENT_CLAIM:alice:555 -->",
       created_at: "2026-04-01T00:00:01Z",
+      author: FLEET_AUTHOR,
     },
     {
       id: 102,
       body: "<!-- PR_COMMENT_CLAIM:bob:555 -->",
       created_at: "2026-04-01T00:00:02Z",
+      author: FLEET_AUTHOR,
     },
   ]);
 
@@ -327,6 +360,8 @@ Deno.test("claim pr comment - handles three-way race correctly", async () => {
     workerId: "charlie",
     sleepFn: noSleep,
     ghCommandFn: mockGh,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
   });
 
   assertEquals(result.ok, true);
@@ -347,6 +382,7 @@ Deno.test("claim pr comment - cleans up stale claim comments before claiming", a
       id: 200,
       body: "<!-- PR_COMMENT_CLAIM:my-worker:555 -->",
       created_at: "2026-04-01T00:00:00Z",
+      author: FLEET_AUTHOR,
     },
   ]);
 
@@ -372,6 +408,8 @@ Deno.test("claim pr comment - cleans up stale claim comments before claiming", a
     workerId: "my-worker",
     sleepFn: noSleep,
     ghCommandFn: mockGh,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
   });
 
   assertEquals(result.ok, true);
@@ -415,6 +453,7 @@ Deno.test("claim pr comment - posted body contains visible text, not only HTML c
             id: 200,
             body: postedBody ?? "",
             created_at: "2026-04-01T00:00:00Z",
+            author: FLEET_AUTHOR,
           },
         ]);
       }
@@ -429,6 +468,8 @@ Deno.test("claim pr comment - posted body contains visible text, not only HTML c
     workerId: "my-worker",
     sleepFn: noSleep,
     ghCommandFn: mockGh,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
   });
 
   assertEquals(result.ok, true);
@@ -476,6 +517,7 @@ Deno.test("claim pr comment - backs off when verification API fails", async () =
           id: 200,
           body: "<!-- PR_COMMENT_CLAIM:test-worker:555 -->",
           created_at: "2026-04-01T00:00:00Z",
+          author: FLEET_AUTHOR,
         }]);
       }
     }
@@ -489,10 +531,134 @@ Deno.test("claim pr comment - backs off when verification API fails", async () =
     workerId: "test-worker",
     sleepFn: noSleep,
     ghCommandFn: mockGh,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
   });
 
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.claimed, false);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Competing-claim author verification (Issue #1124)
+// ---------------------------------------------------------------------------
+
+Deno.test("claim pr comment - asks GitHub who posted each competing claim", async () => {
+  const calls: string[][] = [];
+  let apiCallCount = 0;
+  const mockGh = async (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[0] === "api" && !args.includes("-X")) {
+      apiCallCount++;
+      return apiCallCount === 1 ? "[]" : "[]";
+    }
+    return "";
+  };
+  await claimPrComment({
+    repo: "org/repo",
+    prNumber: 42,
+    commentId: "555",
+    workerId: "worker-beta",
+    sleepFn: noSleep,
+    ghCommandFn: mockGh,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
+  });
+  const verification =
+    calls.filter((args) => args[0] === "api" && !args.includes("-X"))[1];
+  const jq = verification![verification!.indexOf("--jq") + 1] ?? "";
+  assertEquals(
+    jq.includes(".user.login"),
+    true,
+    "a claim marker is text anyone may post; without the commenter there " +
+      "is nothing to check it against",
+  );
+});
+
+Deno.test("claim pr comment - a planted claim does not cost this host the race", async () => {
+  // Issue #1124: an outsider's `PR_COMMENT_CLAIM:` sorts earliest and hands
+  // the PR to nobody. It must not be counted as a competing claim at all.
+  const claims = JSON.stringify([
+    {
+      id: 100,
+      body: "<!-- PR_COMMENT_CLAIM:squatter:555 -->",
+      created_at: "2026-04-01T00:00:01Z",
+      author: "drive-by-account",
+    },
+    {
+      id: 101,
+      body: "<!-- PR_COMMENT_CLAIM:worker-beta:555 -->",
+      created_at: "2026-04-01T00:00:02Z",
+      author: FLEET_AUTHOR,
+    },
+  ]);
+  let apiCallCount = 0;
+  const mockGh = async (args: string[]): Promise<string> => {
+    if (args[0] === "api" && !args.includes("-X")) {
+      apiCallCount++;
+      return apiCallCount === 1 ? "[]" : claims;
+    }
+    return "";
+  };
+
+  const result = await claimPrComment({
+    repo: "org/repo",
+    prNumber: 42,
+    commentId: "555",
+    workerId: "worker-beta",
+    sleepFn: noSleep,
+    ghCommandFn: mockGh,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.claimed, true);
+});
+
+Deno.test("claim pr comment - an unresolvable fleet leaves the work claimable", async () => {
+  // The chosen fail direction, asserted: two hosts answering the same
+  // feedback comment is a wasted run; a comment no host may ever claim is
+  // feedback nobody answers.
+  const claims = JSON.stringify([
+    {
+      id: 100,
+      body: "<!-- PR_COMMENT_CLAIM:worker-alpha:555 -->",
+      created_at: "2026-04-01T00:00:01Z",
+      author: FLEET_AUTHOR,
+    },
+    {
+      id: 101,
+      body: "<!-- PR_COMMENT_CLAIM:worker-beta:555 -->",
+      created_at: "2026-04-01T00:00:02Z",
+      author: FLEET_AUTHOR,
+    },
+  ]);
+  let apiCallCount = 0;
+  const lines: string[] = [];
+  const mockGh = async (args: string[]): Promise<string> => {
+    if (args[0] === "api" && !args.includes("-X")) {
+      apiCallCount++;
+      return apiCallCount === 1 ? "[]" : claims;
+    }
+    return "";
+  };
+
+  const result = await claimPrComment({
+    repo: "org/repo",
+    prNumber: 42,
+    commentId: "555",
+    workerId: "worker-beta",
+    sleepFn: noSleep,
+    ghCommandFn: mockGh,
+    authorOptions: { fleetAuthors: [] },
+    log: (message) => lines.push(message),
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.claimed, true);
+  assertEquals(lines.length, 1);
+  assertEquals(lines[0]?.includes("the work stays claimable"), true);
 });

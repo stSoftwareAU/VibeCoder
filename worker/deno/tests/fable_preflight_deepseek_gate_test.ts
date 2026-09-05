@@ -68,6 +68,7 @@ import {
 import { recordFableAvailability } from "../lib/health_check_cache.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
 import { emptyEnv } from "./support/env_lookup.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 /** The phase under test: Quorum names its provider per call with no model. */
 const PHASE = "quorum";
@@ -199,6 +200,7 @@ Deno.test({
 
         const result = await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "draft a plan",
             phase: PHASE,
             cwd: stub.cwd,

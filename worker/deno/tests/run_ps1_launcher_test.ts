@@ -99,7 +99,7 @@ Deno.test({
         // (Issue #4186): no host directory holds the worker's repositories.
         `${WORK_VOLUME_NAME}:${TARGETS.work}`,
         `${APPROVAL_STATE_VOLUME_NAME}:${TARGETS.approvalState}`,
-        `${harness.tmpDir}/home/logs:${TARGETS.logs}`,
+        `${harness.logDir}:${TARGETS.logs}`,
         `${harness.tmpDir}/home/.vibe-coder/run-config:${TARGETS.config}:ro`,
         // Issue #4067: only the worker's `gh` material and the active
         // provider's credential sub-directory are exposed.
@@ -111,7 +111,7 @@ Deno.test({
       // The read/write host mounts are created by the launcher, so the
       // runtime never invents a root-owned empty directory for them.
       assertEquals(
-        (await Deno.stat(`${harness.tmpDir}/home/logs`)).isDirectory,
+        (await Deno.stat(harness.logDir)).isDirectory,
         true,
       );
 
@@ -654,7 +654,7 @@ Deno.test({
     });
     try {
       // A regular file where the directory must go.
-      await Deno.mkdir(`${harness.tmpDir}/home/logs`, { recursive: true });
+      await Deno.mkdir(harness.logDir, { recursive: true });
       await Deno.writeTextFile(
         buildFailureLogDir(harness),
         "not a directory\n",

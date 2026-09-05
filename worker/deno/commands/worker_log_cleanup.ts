@@ -23,7 +23,10 @@ function asNumber(value: unknown): number | undefined {
 
 /**
  * Args:
- *   --log-dir <string>                  Directory containing logs (default: $HOME/logs)
+ *   --log-dir <string>                  Directory containing logs (default:
+ *                                       `$HOME/logs` — the fixed in-container
+ *                                       mount, not the host's own log
+ *                                       directory, Issue #873)
  *   --header-only-max-bytes <number>    Size threshold for stubs (default: 200)
  *   --header-only-min-age-minutes <num> Min age before stub deletion (default: 60)
  *   --max-age-days <number>             Max age before any log is deleted (default: 3)

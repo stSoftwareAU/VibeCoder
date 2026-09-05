@@ -46,6 +46,8 @@ import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
 import { resolveContainerExtensionLaunch } from "../lib/container_extension_launch.ts";
+import { readConfiguredLogDir } from "../lib/log_dir.ts";
+import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 import { readContainerToolsSelection } from "../lib/container_tools_config.ts";
 import { readConfiguredCustomPromptPaths } from "../lib/custom_label_prompts_config.ts";
 import { assertCustomPromptSourceResolvable } from "../lib/custom_prompt_mounts.ts";
@@ -115,9 +117,21 @@ export async function buildLaunchPlanForCommand(
   ]);
 
   const manifest = parseContainerManifest(manifestText);
+  // The pinned log directory (Issue #873), read before the paths are resolved
+  // because it decides one of them. The configuration file is resolved the
+  // same way `resolveContainerLaunchHostPaths` resolves it, so the key is read
+  // from the file this plan goes on to stage — and the writable log mount then
+  // points where the launcher's own `log-dir` command says it does.
+  const env = (name: string) => Deno.env.get(name);
+  const configuredLogDir = await readConfiguredLogDir(
+    resolveHostConfigPath({ baseDir, env }),
+  );
   const hostPaths = resolveContainerLaunchHostPaths(
     baseDir,
-    (name) => Deno.env.get(name),
+    env,
+    undefined,
+    undefined,
+    configuredLogDir,
   );
 
   // Read before the plan is built: the configuration decides which providers
