@@ -580,12 +580,65 @@ async function fileActionlintMissingIssue(
 // Summary builder
 // ---------------------------------------------------------------------------
 
+/**
+ * The fine-grained permission the Actions policy endpoints need.
+ *
+ * Named in the log line and in the audit summary so the reader is told what
+ * to grant rather than left to work it out from a bare 403 (Issue #1094).
+ */
+export const ACTIONS_POLICY_PERMISSION =
+  'the repository "Actions policies" fine-grained read permission';
+
+/**
+ * Signatures of a lookup the token is simply **not permitted** to make
+ * (Issue #1094).
+ *
+ * A 403 on `actions/permissions*` is a static property of the token's
+ * scopes, not a fault: it says the same thing on every run of every affected
+ * repository. Logging it at ERROR trains the reader to ignore ERROR in the
+ * worker log, which is the fleet's primary diagnostic surface. A 5xx, a
+ * network failure or a malformed response is a genuine fault and stays loud.
+ *
+ * Deliberately narrow: an unrecognised reason is treated as a fault, so
+ * under-matching costs one benign ERROR and over-matching would hide a real
+ * one.
+ */
+const NOT_PERMITTED_SIGNATURES: readonly RegExp[] = [
+  /\bHTTP 403\b/i,
+  /\brepository Actions policies fine-grained permission\b/i,
+  /\bmust have repository read permissions\b/i,
+  /\bresource not accessible\b/i,
+];
+
+/** True when `reason` names a permission limit rather than a fault. */
+export function isNotPermittedLookup(reason: string): boolean {
+  return NOT_PERMITTED_SIGNATURES.some((re) => re.test(reason));
+}
+
+/**
+ * One repository-settings check this run could **not** make (Issue #1094).
+ *
+ * An audit that silently omits a check reads as one that passed, which is
+ * worse than one that fails because the gap is invisible in the result. Every
+ * skipped check is therefore carried into the summary.
+ */
+export interface SkippedAuditCheck {
+  /** The settings surface that could not be read. */
+  check: string;
+  /** Why — `gh`'s own words. */
+  reason: string;
+  /** True when the token lacks the scope; false for a genuine fault. */
+  notPermitted: boolean;
+}
+
 /** Optional extras included in the close-comment summary. */
 export interface GitHubActionsAuditSummaryExtras {
   /** Issue numbers of runner-deprecation findings pre-filed this run. */
   preFiledRunner?: readonly number[];
   /** Error message captured if the runner-deprecation scanner threw. */
   runnerScanError?: string;
+  /** Repository-settings checks that could not run (Issue #1094). */
+  skippedChecks?: readonly SkippedAuditCheck[];
 }
 
 /**
@@ -621,6 +674,19 @@ export function renderGitHubActionsAuditSummary(
   }
   if (extras.runnerScanError) {
     lines.push(`Runner-deprecation scan failed: ${extras.runnerScanError}.`);
+  }
+  if (extras.skippedChecks && extras.skippedChecks.length > 0) {
+    // Never let a skipped check pass as a clean one (Issue #1094): the
+    // summary names every surface this run could not read, and what it
+    // would take to read it.
+    const parts = extras.skippedChecks.map((skipped) =>
+      skipped.notPermitted
+        ? `${skipped.check} (not permitted — grant ${ACTIONS_POLICY_PERMISSION})`
+        : `${skipped.check} (${skipped.reason})`
+    );
+    lines.push(
+      `Checks skipped — NOT covered by this audit: ${parts.join("; ")}.`,
+    );
   }
   return lines.join(" ");
 }
@@ -894,6 +960,9 @@ export function createGitHubActionsAuditTemplate(
       //    `github-actions-audit` (NOT `best-practices`); no `lang:*`
       //    label since this template is single-scope.
       const preFiledRunnerIssueNumbers: number[] = [];
+      // Repository-settings checks that could not run this pass (Issue
+      // #1094). Declared out here so the summary can name them.
+      const skippedChecks: SkippedAuditCheck[] = [];
       let runnerScanError: string | undefined;
       let runnerFindings: DeprecationFinding[] = [];
       try {
@@ -1387,11 +1456,29 @@ export function createGitHubActionsAuditTemplate(
               hasCodeowners,
               knownOpenFindingIds: seenIds,
               requiredActionPatterns,
-              onLookupFailure: (what, reason) =>
+              onLookupFailure: (what, reason) => {
+                // Issue #1094: a 403 here is a static limit of the token's
+                // scopes, not a fault — WARNING, once, naming the scope it
+                // would take. Everything else stays ERROR. Either way the
+                // check is recorded as skipped, so the audit's own result
+                // says what it could not cover.
+                const notPermitted = isNotPermittedLookup(reason);
+                skippedChecks.push({ check: what, reason, notPermitted });
+                const context = { repo: opts.repo, template: NAME, runId };
+                if (notPermitted) {
+                  logger.warn(
+                    `github-actions-audit: repository settings check '${what}' not permitted ` +
+                      `(${reason}) — grant ${ACTIONS_POLICY_PERMISSION}; the check is reported ` +
+                      `as skipped, never as passed`,
+                    context,
+                  );
+                  return;
+                }
                 logger.error(
                   `github-actions-audit: repository settings lookup failed (${what}): ${reason}`,
-                  { repo: opts.repo, template: NAME, runId },
-                ),
+                  context,
+                );
+              },
             });
           for (const finding of settingsFindings) {
             if (seenIds.has(finding.findingId)) continue;
@@ -1541,6 +1628,7 @@ export function createGitHubActionsAuditTemplate(
         summary: renderGitHubActionsAuditSummary(newlyFiled, {
           preFiledRunner: preFiledRunnerIssueNumbers,
           runnerScanError,
+          skippedChecks,
         }),
       };
     } catch (err) {
