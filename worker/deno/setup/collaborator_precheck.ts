@@ -22,6 +22,12 @@
  */
 
 import { readHostname } from "../lib/identity_guard.ts";
+import {
+  ALERT_DEDUP_JSON_FIELDS,
+  type AlertDedupAuthorOptions,
+  type AlertDedupRow,
+  selectFleetAuthoredMatches,
+} from "../lib/alert_dedup_authors.ts";
 
 /** Output from a shell command. */
 export interface CommandOutput {
@@ -42,8 +48,14 @@ export interface CollaboratorMiss {
   status: Exclude<RepoAccessStatus, "ok">;
 }
 
-/** Options for the precheck. */
-export interface CollaboratorPrecheckOptions {
+/**
+ * Options for the precheck.
+ *
+ * Extends {@link AlertDedupAuthorOptions}: `fleetAuthors` (tests) or the
+ * configured fleet identity (production) decides whose dedup tag may
+ * receive the follow-up comment.
+ */
+export interface CollaboratorPrecheckOptions extends AlertDedupAuthorOptions {
   /** `org/repo` slugs from `.config.json`. */
   repos: readonly string[];
   /** Custom gh config directory (from `.config.json` `gh_config_dir`). */
@@ -62,6 +74,8 @@ export interface CollaboratorPrecheckOptions {
   runCommand?: RunCommand;
   /** Repo the consolidated issue is filed against. */
   targetRepo?: string;
+  /** Sink for the author-verification diagnostics. Defaults to `console.warn`. */
+  log?: (message: string) => void;
 }
 
 /** Outcome of a full precheck pass. */
@@ -269,10 +283,23 @@ ${guardSection}
 ${PRECHECK_DEDUP_TAG}`;
 }
 
-/** Find an existing open precheck issue by dedup tag. Returns its number. */
+/**
+ * Find an existing open **fleet-filed** precheck issue by dedup tag.
+ *
+ * The follow-up posted onto a match is not a bare "still broken" note: it
+ * carries the ready-to-run `gh api …/collaborators` invite commands for
+ * every affected repository. A dedup tag is a string in an issue body, so
+ * an unverified match would hand that text to an issue somebody else
+ * opened. Only a fleet-authored match counts, and `--limit 1` is widened
+ * so one planted issue cannot occupy the only slot the search returns.
+ *
+ * @returns The issue number, or `undefined` — which files a fresh issue.
+ */
 async function findOpenPrecheckIssue(
   targetRepo: string,
   runner: RunCommand,
+  options: AlertDedupAuthorOptions,
+  log: (message: string) => void,
 ): Promise<number | undefined> {
   const result = await runner([
     "gh",
@@ -285,17 +312,26 @@ async function findOpenPrecheckIssue(
     "--search",
     `"${PRECHECK_DEDUP_TAG}" in:body`,
     "--json",
-    "number",
+    ALERT_DEDUP_JSON_FIELDS,
     "--limit",
-    "1",
+    "20",
   ]);
   if (!result.success) return undefined;
+  let rows: (AlertDedupRow & { body?: string })[];
   try {
-    const issues = JSON.parse(result.stdout) as { number: number }[];
-    return issues.length > 0 ? issues[0]!.number : undefined;
+    rows = JSON.parse(result.stdout) as (AlertDedupRow & { body?: string })[];
   } catch {
     return undefined;
   }
+  const verified = await selectFleetAuthoredMatches(
+    rows.filter((row) => (row.body ?? "").includes(PRECHECK_DEDUP_TAG)),
+    `collaborator precheck ${targetRepo}`,
+    options,
+    log,
+    "a fresh issue is filed — the follow-up carries collaborator-invite " +
+      "commands and must never be posted onto an issue the fleet did not open",
+  );
+  return verified[0]?.number;
 }
 
 /**
@@ -353,7 +389,12 @@ export async function verifyMonitoredCollaborators(
     identityGuardInactive,
     readHostname(),
   );
-  const existing = await findOpenPrecheckIssue(targetRepo, runner);
+  const existing = await findOpenPrecheckIssue(
+    targetRepo,
+    runner,
+    options,
+    options.log ?? ((message: string) => console.warn(message)),
+  );
 
   if (existing !== undefined) {
     const comment = await runner([
