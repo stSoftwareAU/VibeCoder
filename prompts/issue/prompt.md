@@ -458,12 +458,17 @@ When things go wrong during implementation, follow these guidelines:
 1. **Test failures after changes**: Fix the failing tests before committing. Do
    NOT commit code with known test failures. Investigate the root cause and fix
    the implementation — never revert a test to make it pass.
-2. **Quality check loop**: Limit quality check fix-and-rerun cycles to 3
+2. **Quality check loop**: Iterate on the targeted checks, not on the full
+   gate — three cycles of a gate that takes a quarter of an hour is most of the
+   run budget spent before anything is pushed. Limit fix-and-rerun cycles to 3
    attempts, so a run cannot burn itself looping. Exhausting that cap is a
-   hand-off, **not** a licence to raise the PR anyway — every check must pass
-   before a PR exists, and the gate includes the semgrep SAST stage, so a PR
-   raised over it ships an unresolved security finding. If `./quality.sh` still
-   fails after 3 attempts:
+   hand-off, **not** a licence to raise the PR anyway — every check you ran
+   must pass before a PR exists, and the gate includes the semgrep SAST stage,
+   so a PR raised over a failing one ships an
+   unresolved security finding. (A gate the run budget could not cover is a
+   different thing entirely: it is skipped, recorded with the skip note, and
+   left to CI — that is not a failing check.) If a check still fails after
+   three attempts:
    - do **not** create a pull request;
    - commit and push what you have, so the branch is preserved and the next
      run resumes from it rather than starting again;

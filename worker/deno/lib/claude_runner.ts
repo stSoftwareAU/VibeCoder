@@ -108,7 +108,7 @@ import {
   type TreeProgressSample,
   type TreeProgressState,
 } from "./progress_extension.ts";
-import { shouldWindDown } from "./wind_down_notice.ts";
+import { shouldWriteRunBudgetNotice } from "./wind_down_notice.ts";
 import {
   buildExtensionTelemetry,
   buildTimeoutKillMessage,
@@ -1436,11 +1436,27 @@ export async function runClaudeWithTimeout(
         0,
         Math.round((opts.ceilingMs - nowMs) / 1000),
       );
-      if (!shouldWindDown(remainingSeconds, opts.windDownSeconds)) return;
+      // Wider than the wind-down window itself (Issue #1138): the quality
+      // gate needs more runway than the window is, so an agent with 1000s
+      // left has to be told the gate no longer fits even though it is not
+      // winding down.
+      if (
+        !shouldWriteRunBudgetNotice(
+          remainingSeconds,
+          opts.windDownSeconds,
+          opts.typicalGateSeconds,
+        )
+      ) return;
       const notice = {
         remainingSeconds,
         elapsedSeconds: Math.round((nowMs - startMs) / 1000),
         extensionsGranted,
+        ...(opts.windDownSeconds === undefined
+          ? {}
+          : { windDownSeconds: opts.windDownSeconds }),
+        ...(opts.typicalGateSeconds === undefined
+          ? {}
+          : { typicalGateSeconds: opts.typicalGateSeconds }),
       };
       try {
         await opts.onWindDown(notice);

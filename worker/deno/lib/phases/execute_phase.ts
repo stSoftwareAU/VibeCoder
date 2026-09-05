@@ -466,6 +466,10 @@ async function executeClaudeBody(
       reportRunDeadline(deadline);
     },
     hardCap.capped ? hardCap.cap.ceilingMs : undefined,
+    // What the baseline gate cost here this cycle (Issue #1138) — the budget
+    // notice warns earlier on a repo whose gate is slow than on one whose
+    // gate is quick.
+    state.baselineQualityDurationSeconds,
   );
 
   // The run-start line an operator reads to know which budget applies. It

@@ -59,13 +59,36 @@ export const GATE_INSTRUCTION_ALLOWLIST: ReadonlySet<string> = new Set([
   "github_actions_audit/prompt.md",
 ]);
 
-/** Instruction to run the gate: an imperative verb reaching the gate command. */
-const RUN_GATE_RE =
-  /\b(?:run|re-?run|execute|invoke)\b[^\n]{0,60}?(?:\.\/)?quality\.sh/i;
+/**
+ * How a template can name the gate: the script itself, or the phrase a
+ * template uses when it does not want to hard-code the command.
+ * `merge_conflict` said "the repository's quality gate" and slipped past a
+ * check that only knew the script's name.
+ */
+const GATE_NAME = String
+  .raw`(?:(?:\.\/)?quality\.sh|(?:full |repository's |repo's )?quality gate)`;
 
-/** Assertion that the gate has passed — a gate by another name. */
-const GATE_PASSED_RE =
-  /quality\.sh[^\n]{0,80}?\b(?:passed|passes|pass\b|zero errors)/i;
+/** Instruction to run the gate: an imperative verb reaching the gate name. */
+const RUN_GATE_RE = new RegExp(
+  String.raw`\b(?:run|re-?run|execute|invoke)\b[^\n]{0,60}?${GATE_NAME}`,
+  "i",
+);
+
+/**
+ * A requirement that the gate has passed — a gate order by another name.
+ *
+ * Deliberately narrower than "names the gate near the word pass": prose
+ * *about* the gate ("a green quality gate is the signal to stop") is not an
+ * instruction to spend the budget on one, and flagging it would push
+ * templates into vaguer language rather than better behaviour.
+ */
+const GATE_PASSED_RE = new RegExp(
+  String
+    .raw`(?:must|confirm|ensure|make sure|verify)\b[^\n]{0,60}?${GATE_NAME}` +
+    String
+      .raw`|${GATE_NAME}[^\n]{0,60}?\b(?:passed locally|must pass|returns zero errors)`,
+  "i",
+);
 
 /**
  * Wording that makes the instruction conditional on the run budget.
@@ -81,6 +104,14 @@ const QUALIFIED_RE = /budget|\.vibe-run-budget\.md|\bskip(?:ped|s|ping)?\b/i;
  * Fenced code blocks are ignored: a fence is an example of output or of
  * another repository's script, never an instruction this run must obey.
  *
+ * Prompt Markdown is hard-wrapped, so an instruction can straddle a newline:
+ * "Run the repository's\nquality gate on the merged result" is one order and
+ * neither half of it matches. Each line is therefore also tested joined to the
+ * one before it — but only counted when the match genuinely *spans* the break
+ * (neither line offends alone), so a clean line is never condemned for its
+ * neighbour's words. A wrapped instruction is reported against its second
+ * line, the one that completes it.
+ *
  * @param file - Path reported in each violation.
  * @param source - The template's full text.
  * @returns One entry per offending line, in source order.
@@ -93,19 +124,36 @@ export function findUnconditionalGateInstructions(
   let inFence = false;
 
   const lines = source.split("\n");
+  let previous = "";
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index]!;
     if (/^\s*(?:```|~~~)/.test(line)) {
       inFence = !inFence;
+      previous = "";
       continue;
     }
     if (inFence) continue;
-    if (QUALIFIED_RE.test(line)) continue;
-    if (!RUN_GATE_RE.test(line) && !GATE_PASSED_RE.test(line)) continue;
+
+    const joined = `${previous} ${line}`.trim();
+    previous = line;
+
+    // A qualifier anywhere in the instruction excuses it, wrap included.
+    if (QUALIFIED_RE.test(joined)) continue;
+    // The match must live on this line, or span onto it from the one before.
+    if (
+      !offends(line) && !(offends(joined) && !offends(lines[index - 1] ?? ""))
+    ) {
+      continue;
+    }
 
     violations.push({ file, line: index + 1, text: line.trim() });
   }
   return violations;
+}
+
+/** True when the text orders the gate or asserts it passed. */
+function offends(text: string): boolean {
+  return RUN_GATE_RE.test(text) || GATE_PASSED_RE.test(text);
 }
 
 /**
@@ -130,9 +178,13 @@ export async function scanPromptsForUnconditionalGate(
     let source: string;
     try {
       source = await Deno.readTextFile(`${promptsDir}/${relative}`);
-    } catch {
-      // A prompt type without a template is not this check's business.
-      continue;
+    } catch (err) {
+      // A prompt type without a template is not this check's business. Any
+      // other read failure is: a template this check cannot read is a
+      // template it cannot clear, and reporting green over it is the silent
+      // pass this gate exists to prevent.
+      if (err instanceof Deno.errors.NotFound) continue;
+      throw err;
     }
     filesScanned++;
     violations.push(...findUnconditionalGateInstructions(relative, source));

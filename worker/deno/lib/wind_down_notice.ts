@@ -62,21 +62,57 @@ export interface RunBudgetNotice {
    * `quality_gate_budget.ts` decides whether the gate still fits.
    */
   typicalGateSeconds?: number;
+  /**
+   * The wind-down window this run is using, when it is not the default
+   * (Issue #1138). The notice is written over a wider band than the window —
+   * see {@link shouldWriteRunBudgetNotice} — so it has to know where the
+   * window itself ends before it can tell an agent to wind down.
+   */
+  windDownSeconds?: number;
 }
 
 /**
- * Whether the run is close enough to the cap to warn the agent.
+ * Whether the run is close enough to the cap to tell the agent to wind down.
  *
  * @param remainingSeconds - Runway left before the hard cap.
  * @param windDownSeconds - Window width; defaults to
  *   {@link DEFAULT_WIND_DOWN_SECONDS}.
- * @returns true when the notice should be written or refreshed.
+ * @returns true when the wind-down instructions apply.
  */
 export function shouldWindDown(
   remainingSeconds: number,
   windDownSeconds: number = DEFAULT_WIND_DOWN_SECONDS,
 ): boolean {
   return remainingSeconds <= windDownSeconds;
+}
+
+/**
+ * Whether the notice should be written at all (Issue #1138).
+ *
+ * Wider than {@link shouldWindDown}, and deliberately so. The wind-down
+ * window is ten minutes; the quality gate needs closer to twenty. An agent at
+ * 1000 s of runway is not winding down — but it cannot finish a gate either,
+ * and under the narrower rule nothing told it so: no notice existed, so the
+ * budget condition in its prompt could not be evaluated and it started a gate
+ * that outlived the run. That band is where the Issue #1138 measurements
+ * found agents dying, so the notice has to reach into it.
+ *
+ * @param remainingSeconds - Runway left before the hard cap.
+ * @param windDownSeconds - Wind-down window; defaults to
+ *   {@link DEFAULT_WIND_DOWN_SECONDS}.
+ * @param typicalGateSeconds - Measured gate duration, when known.
+ * @returns true when the notice should be written or refreshed.
+ */
+export function shouldWriteRunBudgetNotice(
+  remainingSeconds: number,
+  windDownSeconds: number = DEFAULT_WIND_DOWN_SECONDS,
+  typicalGateSeconds?: number,
+): boolean {
+  if (shouldWindDown(remainingSeconds, windDownSeconds)) return true;
+  return !decideQualityGateRun({
+    remainingSeconds,
+    ...(typicalGateSeconds === undefined ? {} : { typicalGateSeconds }),
+  }).run;
 }
 
 /**
@@ -87,15 +123,24 @@ export function shouldWindDown(
  */
 export function buildWindDownNotice(notice: RunBudgetNotice): string {
   return [
-    ...windDownHeader(notice),
+    ...budgetHeader(notice),
+    ...windDownInstructions(notice),
     ...gateRefusal(notice),
+    "This file is worker state. It is gitignored — never commit it.",
+    "",
   ].join("\n");
 }
 
-/** The budget statement and the standing wind-down instructions. */
-function windDownHeader(notice: RunBudgetNotice): string[] {
+/** The budget statement, whether or not the run is winding down. */
+function budgetHeader(notice: RunBudgetNotice): string[] {
+  const winding = shouldWindDown(
+    notice.remainingSeconds,
+    notice.windDownSeconds,
+  );
   return [
-    `# Run budget: ${notice.remainingSeconds}s remaining — wind down now`,
+    `# Run budget: ${notice.remainingSeconds}s remaining${
+      winding ? " — wind down now" : ""
+    }`,
     "",
     "The worker wrote this file because your run is approaching its hard",
     "wall-clock cap. When the cap is reached the run is stopped: SIGTERM,",
@@ -106,6 +151,21 @@ function windDownHeader(notice: RunBudgetNotice): string[] {
     `- Elapsed so far: ${notice.elapsedSeconds}s`,
     `- Deadline extensions granted: ${notice.extensionsGranted}`,
     "",
+  ];
+}
+
+/**
+ * What to do inside the wind-down window itself — emitted only there.
+ *
+ * A run with more runway than the window is not winding down; telling it to
+ * stop waiting and push would end perfectly good runs early, which is the
+ * opposite of what the wider notice band is for.
+ */
+function windDownInstructions(notice: RunBudgetNotice): string[] {
+  if (!shouldWindDown(notice.remainingSeconds, notice.windDownSeconds)) {
+    return [];
+  }
+  return [
     "## What to do now",
     "",
     "1. **Stop waiting.** Do not start another poll of a background job, and",
@@ -116,8 +176,6 @@ function windDownHeader(notice: RunBudgetNotice): string[] {
     "   summary — saying what you were waiting for, how far it had got, and",
     "   the exact next step. The next run reads that instead of paying the",
     "   whole ramp-up again.",
-    "",
-    "This file is worker state. It is gitignored — never commit it.",
     "",
   ];
 }
@@ -204,11 +262,16 @@ Your run has a wall-clock cap. While you supervise a long-running job the
 worker keeps extending your deadline as long as the job is genuinely
 consuming CPU, but the cap itself is absolute.
 
-When the run comes within a few minutes of that cap the worker writes
-\`${WIND_DOWN_NOTICE_FILENAME}\` in the repository root, holding the seconds
-you have left. **Read it between polls of any long-running job**
-(\`cat ${WIND_DOWN_NOTICE_FILENAME}\`). If the file exists, stop waiting: commit
-and push what you have, then record in your final message what you were
+The worker writes \`${WIND_DOWN_NOTICE_FILENAME}\` in the repository root once
+the runway left can no longer cover something you might be about to start —
+the full quality gate first, then the run itself. **Read it between polls of
+any long-running job, and before you start the gate**
+(\`cat ${WIND_DOWN_NOTICE_FILENAME}\`).
+
+Do what the file says, not what its existence implies: it states the seconds
+remaining, refuses the full quality gate when the runway cannot cover it, and
+— inside the last few minutes before the cap — tells you to stop waiting,
+commit and push what you have, and record in your final message what you were
 waiting for and the exact next step, so the next run resumes instead of
 starting again.
 

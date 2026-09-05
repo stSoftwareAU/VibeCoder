@@ -45,6 +45,42 @@ Deno.test("gate instruction check - catches the bare command with no leading ./"
   assertEquals(found.length, 1);
 });
 
+Deno.test("gate instruction check - catches the gate named in prose rather than by script", () => {
+  const found = findUnconditionalGateInstructions(
+    "x/prompt.md",
+    "3. Run the repository's quality gate on the merged result.\n",
+  );
+  assertEquals(found.length, 1);
+});
+
+Deno.test("gate instruction check - catches an instruction wrapped across two lines", () => {
+  const found = findUnconditionalGateInstructions(
+    "x/prompt.md",
+    "3. Run the repository's\n   quality gate on the merged result.\n",
+  );
+  assertEquals(found.length, 1);
+  // Reported against the line that completes the instruction.
+  assertEquals(found[0]!.line, 2);
+});
+
+Deno.test("gate instruction check - a clean line is not condemned by its neighbour", () => {
+  const found = findUnconditionalGateInstructions(
+    "x/prompt.md",
+    "Run `./quality.sh` before pushing.\nThis sentence is innocent.\n",
+  );
+  assertEquals(found.map((v) => v.line), [1]);
+});
+
+Deno.test("gate instruction check - prose about the gate is not an order to run it", () => {
+  // Flagging this would push templates into vaguer language, not better
+  // behaviour: it tells the agent when to STOP, which is the point.
+  const found = findUnconditionalGateInstructions(
+    "x/prompt.md",
+    "- **Trust the quality gate.** A green quality gate is the signal to stop.\n",
+  );
+  assertEquals(found.length, 0);
+});
+
 Deno.test("gate instruction check - allows a budget-conditional instruction", () => {
   const found = findUnconditionalGateInstructions(
     "x/prompt.md",

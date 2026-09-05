@@ -198,8 +198,8 @@ export function buildQualityGateBudgetLines(
     : `it takes about ${duration}`;
 
   return [
-    `   - Before you finish, run ${command} < /dev/null once, in the foreground, and fix whatever it reports. Re-run it after a fix — never on a timer.`,
-    `   - The gate is not free: ${cost}, so it needs about ${decision.requiredSeconds}s of run budget including the time to fix, commit and push what it reports. Check \`.vibe-run-budget.md\` before you start it — if that file exists and the remaining budget is smaller than that, do NOT start the gate.`,
+    `   - Before you finish, and only when the run budget covers it (next line), run ${command} < /dev/null once, in the foreground, and fix whatever it reports. Re-run it after a fix — never on a timer.`,
+    `   - The gate is not free: ${cost}, so it needs about ${decision.requiredSeconds}s of run budget including the time to fix, commit and push what it reports. Read \`.vibe-run-budget.md\` before you start it — the worker writes that file once the runway can no longer cover the gate, and it says so explicitly. If it exists and refuses the gate, do NOT start it; if it does not exist, the run still has the runway and the gate is yours to run.`,
     `   - A skipped gate must be recorded, never silent. Put the \`${GATE_SKIP_MARKER} … -->\` note in the PR summary (or \`.pr_response_message\`) saying the gate was skipped for budget, and push what you have. CI runs the same checks on the PR and the worker runs the gate again before the PR is raised.`,
   ];
 }

@@ -15,6 +15,7 @@ import {
   clearWindDownNotice,
   DEFAULT_WIND_DOWN_SECONDS,
   shouldWindDown,
+  shouldWriteRunBudgetNotice,
   WIND_DOWN_NOTICE_FILENAME,
   WIND_DOWN_PROMPT_SECTION,
   writeWindDownNotice,
@@ -55,7 +56,44 @@ Deno.test("buildWindDownNotice - names the remaining budget and what to do with 
 });
 
 // Issue #1138 — the notice is the one channel that can stop an agent starting
-// a 15-minute gate with 7 minutes left.
+// a 15-minute gate with 7 minutes left. It has to reach the agent while there
+// is still more runway than the wind-down window, because that is exactly the
+// band in which a gate is started and never finishes.
+
+Deno.test("shouldWriteRunBudgetNotice - fires while the gate no longer fits, above the wind-down window (Issue #1138)", () => {
+  // 1000s left: too much to be "winding down", far too little for a 900s gate
+  // plus the tail. This is the band the measurements found agents dying in.
+  assertEquals(shouldWindDown(1000, 600), false);
+  assertEquals(shouldWriteRunBudgetNotice(1000, 600), true);
+});
+
+Deno.test("shouldWriteRunBudgetNotice - stays quiet on a run with runway for both (Issue #1138)", () => {
+  assertEquals(shouldWriteRunBudgetNotice(3600, 600), false);
+  // A repo with a fast gate goes quiet much sooner than one with a slow gate.
+  assertEquals(shouldWriteRunBudgetNotice(1000, 600, 60), false);
+  assertEquals(shouldWriteRunBudgetNotice(1000, 600, 2400), true);
+});
+
+Deno.test("buildWindDownNotice - a gate-only notice does not order a wind-down (Issue #1138)", () => {
+  const notice = buildWindDownNotice({
+    remainingSeconds: 1000,
+    elapsedSeconds: 2600,
+    extensionsGranted: 1,
+  });
+  assert(
+    /do not start the full quality gate/i.test(notice),
+    `the gate must be refused: ${notice}`,
+  );
+  assertEquals(
+    /wind down now/i.test(notice),
+    false,
+    `a run with 1000s left is not winding down: ${notice}`,
+  );
+  assert(
+    /1000/.test(notice),
+    "the remaining budget must still be stated",
+  );
+});
 
 Deno.test("buildWindDownNotice - refuses the full gate when the budget cannot cover it (Issue #1138)", () => {
   const notice = buildWindDownNotice({
