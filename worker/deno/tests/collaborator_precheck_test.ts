@@ -16,6 +16,9 @@ import {
   verifyMonitoredCollaborators,
 } from "../setup/collaborator_precheck.ts";
 
+/** The fleet login the seeded precheck issue is authored by. */
+const FLEET_AUTHOR = "vibe-coder-bot";
+
 /** Build a fake runner from a map of command-key → output. */
 function fakeRunner(
   handler: (cmd: string[]) => CommandOutput,
@@ -198,7 +201,11 @@ Deno.test("verifyMonitoredCollaborators - existing open issue is commented not d
     if (cmd.includes("list")) {
       return {
         success: true,
-        stdout: JSON.stringify([{ number: 42 }]),
+        stdout: JSON.stringify([{
+          number: 42,
+          body: `Filed by the fleet.\n${PRECHECK_DEDUP_TAG}`,
+          author: { login: FLEET_AUTHOR },
+        }]),
         stderr: "",
       };
     }
@@ -211,6 +218,7 @@ Deno.test("verifyMonitoredCollaborators - existing open issue is commented not d
   const result = await verifyMonitoredCollaborators({
     repos: ["org/bad"],
     runCommand: runner,
+    fleetAuthors: [FLEET_AUTHOR],
   });
 
   assertEquals(result.issueUpdated, true);

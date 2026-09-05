@@ -118,23 +118,11 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES: readonly string[] = [
   // `BRANCH_UPDATE_LOCK` comment markers gate PR branch updates; a planted
   // lock stalls the update indefinitely.
   "lib/pr_branch_lock.ts",
-  // `in:body` tag search decides which workflow issues are stale enough to
-  // purge — the marker also drives a destructive action.
-  "lib/purge_stale_workflow_issues.ts",
-  // `in:body` refresh marker; a planted marker stops references ever being
-  // refreshed for the repository.
-  "lib/references_refresh.ts",
   // `--jq` projects the comment body without `user.login`, so a planted
   // cooldown comment suppresses work on any issue for the cooldown window.
   "lib/shared_cooldown.ts",
-  // `in:body` marker for the best-practices relabel pass.
-  "setup/best_practices_relabel.ts",
   // `in:title` search for the best-practices sync issue.
   "setup/best_practices_sync.ts",
-  // `in:body` dedup tag on the collaborator-invitation precheck issue.
-  "setup/collaborator_precheck.ts",
-  // `in:body` tag search deciding whether the workflow sync issue exists.
-  "setup/workflow_sync.ts",
 ];
 
 /**

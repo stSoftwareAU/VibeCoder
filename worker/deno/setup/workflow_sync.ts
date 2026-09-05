@@ -7,6 +7,15 @@
  * create duplicates.
  *
  * Issue #1395: Add workflow-sync subcommand to setup CLI.
+ *
+ * The dedup search runs `--state all`, so a match suppresses the issue
+ * **permanently** — no expiry, no recovery. A dedup tag is a string in an
+ * issue body, which on a public repository anyone who can open an issue
+ * writes, so the match is author-verified against the fleet identity
+ * (`lib/alert_dedup_authors.ts`) before it may suppress anything. The fail
+ * direction is towards filing: an unresolvable fleet raises the issue, and
+ * a duplicate a maintainer closes beats a missing-workflow issue that is
+ * never raised again.
  */
 
 import {
@@ -27,6 +36,12 @@ import {
   checkNamesFromWorkflow,
   requiredStatusCheckSection,
 } from "../lib/required_status_check_guidance.ts";
+import {
+  ALERT_DEDUP_JSON_FIELDS,
+  type AlertDedupAuthorOptions,
+  type AlertDedupRow,
+  selectFleetAuthoredMatches,
+} from "../lib/alert_dedup_authors.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -39,14 +54,21 @@ export interface CommandOutput {
   stderr: string;
 }
 
-/** Options for workflow sync operations. */
-export interface WorkflowSyncOptions {
+/**
+ * Options for workflow sync operations.
+ *
+ * Extends {@link AlertDedupAuthorOptions}: `fleetAuthors` (tests) or the
+ * configured fleet identity (production) decides whose dedup tag counts.
+ */
+export interface WorkflowSyncOptions extends AlertDedupAuthorOptions {
   /** Override for command execution (testing). */
   runCommand?: (cmd: string[]) => Promise<CommandOutput>;
   /** Custom gh config directory (from .config.json gh_config_dir). */
   ghConfigDir?: string;
   /** Whether to perform a dry run (report only, no issue creation). */
   dryRun?: boolean;
+  /** Sink for the author-verification diagnostics. Defaults to `console.warn`. */
+  log?: (message: string) => void;
   /**
    * Path to the local working tree of the repository being synced.
    * When provided, the auditor reads workflow files from disk instead
@@ -133,12 +155,19 @@ async function issueExistsByTag(
   repo: string,
   tag: string,
   runner: (cmd: string[]) => Promise<CommandOutput>,
+  options: AlertDedupAuthorOptions,
+  log: (message: string) => void,
 ): Promise<boolean> {
   // Search across both open and closed states so a previously-raised
   // (and possibly closed) issue suppresses recreation. Issue #1829: a
   // dedup limited to `--state open` allowed setup to re-raise issues
   // for workflows that were already present and had a prior sync issue
   // closed against them.
+  //
+  // `--limit 1` would let a single planted issue occupy the only slot the
+  // search returns, so the limit is wide enough to see past one and the
+  // tag is re-checked against each body rather than trusted from the
+  // search alone.
   const result = await runner([
     "gh",
     "issue",
@@ -150,9 +179,9 @@ async function issueExistsByTag(
     "--search",
     `"${tag}" in:body`,
     "--json",
-    "number",
+    ALERT_DEDUP_JSON_FIELDS,
     "--limit",
-    "1",
+    "20",
   ]);
 
   if (!result.success) {
@@ -160,12 +189,21 @@ async function issueExistsByTag(
     return false;
   }
 
+  let rows: (AlertDedupRow & { body?: string })[];
   try {
-    const issues = JSON.parse(result.stdout) as { number: number }[];
-    return issues.length > 0;
+    rows = JSON.parse(result.stdout) as (AlertDedupRow & { body?: string })[];
   } catch {
     return false;
   }
+  const verified = await selectFleetAuthoredMatches(
+    rows.filter((row) => (row.body ?? "").includes(tag)),
+    `workflow-sync ${repo} ${tag}`,
+    options,
+    log,
+    "the issue is raised — a tag anyone can type must not suppress a " +
+      "workflow-sync issue for ever",
+  );
+  return verified.length > 0;
 }
 
 /** Build the issue title for a missing workflow. */
@@ -430,6 +468,7 @@ export async function syncWorkflowsForRepo(
 ): Promise<WorkflowSyncResult> {
   const runner = options.runCommand ??
     createDefaultRunCommand(options.ghConfigDir);
+  const log = options.log ?? ((message: string) => console.warn(message));
   const langOpts: LanguageDetectorOptions = {
     runCommand: runner,
     ghConfigDir: options.ghConfigDir,
@@ -523,6 +562,8 @@ export async function syncWorkflowsForRepo(
           repo,
           deduplicationTag(spec.id),
           runner,
+          options,
+          log,
         );
         if (exists) {
           issuesSkipped++;
@@ -545,6 +586,8 @@ export async function syncWorkflowsForRepo(
           repo,
           partialDeduplicationTag(partialMatch.spec.id),
           runner,
+          options,
+          log,
         );
         if (exists) {
           partialIssuesSkipped++;

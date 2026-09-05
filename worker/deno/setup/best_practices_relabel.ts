@@ -20,6 +20,22 @@
  *
  * Recovers silently: per-issue and per-repo failures are caught and skipped
  * so the pass never crashes on unattended machines.
+ *
+ * **The marker is not evidence the fleet filed the issue.** The search is
+ * `"<!-- vibe-coder:best-practices-sync -->" in:body`, the severities are
+ * parsed straight out of the matched body, and the derived labels are then
+ * **written** onto every match. A body is text anyone who can open an
+ * issue may write, so an unverified match lets an outsider choose which
+ * issues the fleet labels and what it labels them. Every match is
+ * author-verified against the fleet identity
+ * (`lib/alert_dedup_authors.ts`) before a label is written.
+ *
+ * **The fail direction is "write nothing".** An unresolvable fleet
+ * relabels no issue at all: an un-backfilled label is fixed by the next
+ * pass, a label written onto a stranger's issue is a write the fleet
+ * should never have made. The category label the sync applies is
+ * deliberately not used as a second scope — the historic issues this
+ * backfill exists for are precisely the ones that lack it.
  */
 
 import type { BestPracticeFinding } from "../lib/workflow_best_practices.ts";
@@ -31,13 +47,25 @@ import {
   ensureDerivedLabels,
   type GhCommandFn,
 } from "./best_practices_sync.ts";
+import {
+  ALERT_DEDUP_JSON_FIELDS,
+  type AlertDedupAuthorOptions,
+  type AlertDedupRow,
+  selectFleetAuthoredMatches,
+} from "../lib/alert_dedup_authors.ts";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-/** Options for `relabelBestPracticesForRepo`. */
-export interface RelabelRepoOptions {
+/**
+ * Options for `relabelBestPracticesForRepo`.
+ *
+ * Extends {@link AlertDedupAuthorOptions}: `fleetAuthors` (tests) or the
+ * configured fleet identity (production) decides whose marker issue may be
+ * relabelled.
+ */
+export interface RelabelRepoOptions extends AlertDedupAuthorOptions {
   /** Command runner override (testing). */
   ghCommandFn?: GhCommandFn;
   /** Custom `gh` config directory. */
@@ -46,6 +74,8 @@ export interface RelabelRepoOptions {
   labelCacheDir?: string;
   /** When true, report intended changes without mutating any issue. */
   dryRun?: boolean;
+  /** Sink for the author-verification diagnostics. Defaults to `console.warn`. */
+  log?: (message: string) => void;
 }
 
 /** Options for `relabelBestPracticesForAllRepos`. */
@@ -122,12 +152,19 @@ function defaultRunner(ghConfigDir?: string): GhCommandFn {
 }
 
 /**
- * List open issues carrying the best-practices marker, returning each
- * issue's number, labels, and body. Returns an empty list on failure.
+ * List open **fleet-filed** issues carrying the best-practices marker,
+ * returning each issue's number, labels, and body.
+ *
+ * The author is requested alongside the body and the match is verified
+ * before the issue becomes a relabel candidate — a marker in a body is not
+ * evidence the fleet filed the issue, and what happens to a candidate is a
+ * label write.
  */
 async function findMarkerIssues(
   repo: string,
   runner: GhCommandFn,
+  options: AlertDedupAuthorOptions,
+  log: (message: string) => void,
 ): Promise<ExistingIssue[]> {
   const result = await runner([
     "gh",
@@ -140,19 +177,25 @@ async function findMarkerIssues(
     "--search",
     `"${BEST_PRACTICES_MARKER}" in:body`,
     "--json",
-    "number,labels,body",
+    `${ALERT_DEDUP_JSON_FIELDS},labels`,
     "--limit",
     "100",
   ]);
   if (!result.success) {
     throw new Error(result.stderr || result.stdout || "gh issue list failed");
   }
-  const parsed = JSON.parse(result.stdout) as {
-    number: number;
+  const parsed = JSON.parse(result.stdout) as (AlertDedupRow & {
     labels?: { name: string }[];
-    body?: string;
-  }[];
-  return parsed.map((iss) => ({
+  })[];
+  const verified = await selectFleetAuthoredMatches(
+    parsed.filter((iss) => (iss.body ?? "").includes(BEST_PRACTICES_MARKER)),
+    `best-practices relabel ${repo}`,
+    options,
+    log,
+    "no label is written — the backfill must never write labels onto an " +
+      "issue the fleet did not file",
+  );
+  return verified.map((iss) => ({
     number: iss.number,
     labels: (iss.labels ?? []).map((l) => l.name),
     body: iss.body ?? "",
@@ -177,7 +220,12 @@ export async function relabelBestPracticesForRepo(
 
   let issues: ExistingIssue[];
   try {
-    issues = await findMarkerIssues(repo, runner);
+    issues = await findMarkerIssues(
+      repo,
+      runner,
+      options,
+      options.log ?? ((message: string) => console.warn(message)),
+    );
   } catch (err) {
     return {
       ok: false,
@@ -243,6 +291,14 @@ export async function relabelBestPracticesForAllRepos(
       ghCommandFn: runner,
       labelCacheDir: options.labelCacheDir,
       dryRun: options.dryRun,
+      ...(options.fleetAuthors !== undefined
+        ? { fleetAuthors: options.fleetAuthors }
+        : {}),
+      ...(options.env !== undefined ? { env: options.env } : {}),
+      ...(options.loadConfigFn !== undefined
+        ? { loadConfigFn: options.loadConfigFn }
+        : {}),
+      ...(options.log !== undefined ? { log: options.log } : {}),
     });
     results.push(result);
   }

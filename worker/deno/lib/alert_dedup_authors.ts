@@ -1,5 +1,5 @@
 /**
- * Author verification for the escalation modules' dedup searches.
+ * Author verification for the worker's marker-driven dedup searches.
  *
  * Every self-diagnostic escalation the worker files is deduped by searching
  * the target repository for a machine-readable marker in an issue body:
@@ -24,13 +24,24 @@
  * issue another host filed, and fleet hosts authenticate as different
  * accounts, so a self-only filter would raise one duplicate alert per host.
  *
- * **The fail direction is towards raising the alert.** When the fleet
- * author set cannot be resolved — no configuration, an unreadable config —
- * a marker match cannot be attributed, and this module treats it as *no
- * match* so the escalation is filed. For an alerting system silence is the
- * worse failure: a duplicate escalation is noise a human closes in a
- * moment, a missing one is an incident nobody hears about. The condition is
- * logged loudly every time so it is visible rather than inferred.
+ * **The fail direction is always "discard the unverifiable match".** When
+ * the fleet author set cannot be resolved — no configuration, an unreadable
+ * config — a marker match cannot be attributed, and this module treats it as
+ * *no match*. What that means for the caller differs by site, and every
+ * caller states its own consequence in the log through `unverifiedOutcome`:
+ *
+ * - A marker that **suppresses** an action (an alert already filed, a
+ *   cooldown, a proposal already raised, a scan already covered) is
+ *   discarded, so the action goes ahead. A duplicate alert is noise a human
+ *   closes in a moment; a suppressed one is an incident nobody hears about.
+ * - A marker that **drives** an action (an issue to close, a label to
+ *   write) is discarded, so the write does not happen. An unwanted
+ *   destructive write is the one outcome that cannot be undone.
+ *
+ * The single rule underneath both: *fail towards the action that cannot
+ * cause harm*. Discarding the row is that action in both shapes, which is
+ * why one helper serves every site. The condition is logged loudly every
+ * time so it is visible rather than inferred.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -51,6 +62,14 @@ import type { WorkerConfig } from "../types.ts";
  */
 export const ALERT_DEDUP_JSON_FIELDS = "number,body,author";
 
+/**
+ * The `--json` field list a **title**-keyed dedup search must request.
+ *
+ * A title is as writable as a body — anyone who can open an issue chooses
+ * it — so a title-match dedup needs exactly the same author evidence.
+ */
+export const ALERT_DEDUP_TITLE_JSON_FIELDS = "number,title,author";
+
 /** The `author` object `gh issue list --json author` returns. */
 export interface AlertIssueAuthor {
   login?: string | null;
@@ -61,6 +80,18 @@ export interface AlertDedupRow {
   number: number;
   body?: string;
   author?: AlertIssueAuthor | null;
+}
+
+/**
+ * One comment carrying a marker.
+ *
+ * `gh issue view --json comments` and the worker's own `GitHubComment`
+ * both render the author as a bare login rather than the `{ login }`
+ * object `gh issue list --json author` returns, so comment-marker sites
+ * get their own row shape instead of reshaping the data to fit.
+ */
+export interface AlertDedupCommentRow {
+  author?: string | null;
 }
 
 /** Author-verification inputs an escalation module threads through. */
@@ -124,41 +155,37 @@ export async function resolveAlertDedupAuthors(
 }
 
 /**
- * Keep only the marker matches a fleet account actually authored.
+ * Default consequence sentence — the alerting shape #1095 established.
  *
- * Call it with the rows a module's own marker predicate already accepted,
- * so the discard log names genuine marker matches from outside the fleet
- * rather than unrelated search noise.
- *
- * Fail direction: an unresolved fleet author set discards **every** row, so
- * the caller sees no existing alert and files one. See the module comment
- * for why silence is the worse failure here.
- *
- * @param rows - Marker-matching rows from the dedup search.
- * @param context - Identifies the escalation in the log line.
- * @param opts - Author-verification inputs.
- * @param log - Sink for the discard and unresolved-set warnings.
- * @returns The rows authored by a fleet account.
+ * A caller whose marker *drives* an action rather than suppressing one
+ * passes its own sentence, because "the escalation is raised" would be a
+ * lie in the log of a module that closes issues.
  */
-export async function selectFleetAuthoredMatches<T extends AlertDedupRow>(
+const DEFAULT_UNVERIFIED_OUTCOME =
+  "none is treated as an existing alert and the escalation is raised. A " +
+  "duplicate alert is recoverable; a suppressed one is not";
+
+/** Shared body of the two selectors — one author check, two row shapes. */
+async function selectVerified<T>(
   rows: readonly T[],
+  loginOf: (row: T) => string | null | undefined,
   context: string,
   opts: AlertDedupAuthorOptions,
   log: (message: string) => void,
+  unverifiedOutcome: string,
 ): Promise<T[]> {
   if (rows.length === 0) return [];
   const fleet = await resolveAlertDedupAuthors(opts, log);
   if (fleet.length === 0) {
     log(
       `[alert-dedup] ${context}: fleet author set unresolved — cannot ` +
-        `verify who wrote ${rows.length} marker match(es), so none is ` +
-        `treated as an existing alert and the escalation is raised. A ` +
-        `duplicate alert is recoverable; a suppressed one is not. Configure ` +
-        `service_accounts / fleet_pr_authors to restore dedup.`,
+        `verify who wrote ${rows.length} marker match(es), so ` +
+        `${unverifiedOutcome}. Configure service_accounts / ` +
+        `fleet_pr_authors to restore dedup.`,
     );
     return [];
   }
-  const kept = rows.filter((row) => isFleetAuthor(row.author?.login, fleet));
+  const kept = rows.filter((row) => isFleetAuthor(loginOf(row), fleet));
   const discarded = rows.length - kept.length;
   if (discarded > 0) {
     log(
@@ -168,4 +195,73 @@ export async function selectFleetAuthoredMatches<T extends AlertDedupRow>(
     );
   }
   return kept;
+}
+
+/**
+ * Keep only the marker matches a fleet account actually authored.
+ *
+ * Call it with the rows a module's own marker predicate already accepted,
+ * so the discard log names genuine marker matches from outside the fleet
+ * rather than unrelated search noise.
+ *
+ * Fail direction: an unresolved fleet author set discards **every** row.
+ * See the module comment for why that is the harmless direction whether
+ * the marker suppresses an action or drives one.
+ *
+ * @param rows - Marker-matching rows from the dedup search.
+ * @param context - Identifies the dedup site in the log line.
+ * @param opts - Author-verification inputs.
+ * @param log - Sink for the discard and unresolved-set warnings.
+ * @param unverifiedOutcome - What the caller does with an unverifiable
+ *   match, in its own words, completing "so …". Defaults to the
+ *   alerting shape ("the escalation is raised").
+ * @returns The rows authored by a fleet account.
+ */
+export function selectFleetAuthoredMatches<T extends AlertDedupRow>(
+  rows: readonly T[],
+  context: string,
+  opts: AlertDedupAuthorOptions,
+  log: (message: string) => void,
+  unverifiedOutcome: string = DEFAULT_UNVERIFIED_OUTCOME,
+): Promise<T[]> {
+  return selectVerified(
+    rows,
+    (row) => row.author?.login,
+    context,
+    opts,
+    log,
+    unverifiedOutcome,
+  );
+}
+
+/**
+ * Keep only the marker **comments** a fleet account actually authored.
+ *
+ * The comment shape of {@link selectFleetAuthoredMatches}: a cooldown
+ * signal or a retry-attempt tally lives in a comment thread anyone can
+ * post to, and the author is the only authenticated part of it.
+ *
+ * @param rows - Marker-carrying comments.
+ * @param context - Identifies the dedup site in the log line.
+ * @param opts - Author-verification inputs.
+ * @param log - Sink for the discard and unresolved-set warnings.
+ * @param unverifiedOutcome - What the caller does with an unverifiable
+ *   comment, completing "so …".
+ * @returns The comments authored by a fleet account.
+ */
+export function selectFleetAuthoredComments<T extends AlertDedupCommentRow>(
+  rows: readonly T[],
+  context: string,
+  opts: AlertDedupAuthorOptions,
+  log: (message: string) => void,
+  unverifiedOutcome: string = DEFAULT_UNVERIFIED_OUTCOME,
+): Promise<T[]> {
+  return selectVerified(
+    rows,
+    (row) => row.author,
+    context,
+    opts,
+    log,
+    unverifiedOutcome,
+  );
 }
