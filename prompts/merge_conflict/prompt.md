@@ -67,7 +67,7 @@ The hard call is "is this really a duplicate, or am I about to drop someone's wo
 
 1. Run `git status` to see the conflicted paths. The worker has listed them below as well.
 2. For each conflicted file, read the surrounding code, work out what each side intended, and write a resolution that keeps both. Remove every conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) — the worker refuses to push a tree that still contains one.
-3. Run the repository's quality gate on the merged result. A conflicting PR has had **no CI at all** since it started conflicting, so this run may be the first time its tests have executed against current base code — expect it to catch real regressions, and fix them rather than merging around them.
+3. Check the merged result with the checks the `<quality_instructions>` block below prescribes — the targeted ones always, the full gate when the run budget covers it and the skip note when it does not. A conflicting PR has had **no CI at all** since it started conflicting, so this may be the first time its tests have executed against current base code — expect real regressions, and fix them rather than merging around them.
 4. Stage the resolutions and commit the merge (`git add <paths>` then `git commit --no-edit`, or let the worker's final-mile commit do it). Do **not** force-push.
 5. Write `.pr_response_message` describing the merge for the PR comment: which files conflicted, how each was resolved, anything you kept once because both sides were identical, and the quality-gate result. The worker reports the rule-resolved dependency files itself — leave them out of your reply.
 
