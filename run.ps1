@@ -348,6 +348,8 @@ $PlanFile = Join-Path ([System.IO.Path]::GetTempPath()) `
 
 $Runtime = ""
 $Image = ""
+# The launch's image dependency chain, comma separated (Issue #1059).
+$KeepImages = ""
 $WatchdogSeconds = ""
 $EnsureDirs = [System.Collections.Generic.List[string]]::new()
 $VolumeNames = [System.Collections.Generic.List[string]]::new()
@@ -410,6 +412,7 @@ try {
         switch -CaseSensitive ($key) {
             "runtime" { $Runtime = $value }
             "image" { $Image = $value }
+            "keep" { $KeepImages = $value }
             "name" { $ContainerName = $value }
             "watchdog" { $WatchdogSeconds = $value }
             "ensure" { $EnsureDirs.Add($value) }
@@ -435,7 +438,8 @@ try {
     Remove-Item -LiteralPath $PlanFile -Force -ErrorAction SilentlyContinue
 }
 
-if (-not $Runtime -or -not $Image -or $RunArgs.Count -eq 0 -or
+if (-not $Runtime -or -not $Image -or -not $KeepImages -or
+    $RunArgs.Count -eq 0 -or
     $BuildArgs.Count -eq 0 -or $ExistsArgs.Count -eq 0 -or
     $VolumeNames.Count -eq 0 -or $InitArgs.Count -eq 0 -or
     $VolumeRemoveArgs.Count -eq 0) {
@@ -619,16 +623,20 @@ if ($present.ExitCode -ne 0) {
 # multi-gigabyte image until the disk filled. $Image is the only reference a
 # future launch of this checkout can use, so every other vibe-coder tag goes - a
 # rollback rebuilds from the builder cache, which is deliberately left alone.
-# Runs on every launch, not only after a build, so a host already carrying a
-# backlog reclaims it now. Best-effort by design: a prune that cannot run says so
-# and the launch continues, because reclaiming disk must never block the worker.
+# $KeepImages is the plan's whole image dependency chain, not just $Image: a
+# deployment with a private extension layer runs an image built FROM the
+# standard one, and keeping only the leaf untagged that base on every launch
+# (Issue #1059). Runs on every launch, not only after a build, so a host
+# already carrying a backlog reclaims it now. Best-effort by design: a prune
+# that cannot run says so and the launch continues, because reclaiming disk
+# must never block the worker.
 $pruned = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
     "run",
     "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
     "--allow-env", "--allow-read", "--allow-run",
     "$BaseDir/worker/deno/mod.ts", "container-image-prune",
     "--runtime", $Runtime,
-    "--keep", $Image
+    "--keep", $KeepImages
 )
 if ($pruned.StdOut) { [Console]::Error.Write($pruned.StdOut) }
 if ($pruned.StdErr) { [Console]::Error.Write($pruned.StdErr) }
