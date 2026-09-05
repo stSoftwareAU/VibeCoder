@@ -266,7 +266,9 @@ async function breakIfAbandoned(
     return false;
   }
   try {
-    return await decideAndBreak(path, staleMs, now, probe);
+    const broke = await decideAndBreak(path, staleMs, now, probe);
+    if (broke) await sweepStaleTemps(path, staleMs, now);
+    return broke;
   } finally {
     try {
       await Deno.remove(breakPath);
@@ -384,6 +386,9 @@ async function breakLock(
  * together.
  *
  * The temp file is a sibling because a hard link cannot cross filesystems.
+ * A process killed between the write and the unlink leaves one behind;
+ * {@link sweepStaleTemps} clears those, since a kill is the ordinary case
+ * here and an audit directory that fills with debris is its own problem.
  *
  * @param lockPath - Lock file to publish; its directory must already exist
  * @param payload - Encoded {@link LockRecord} to publish with it
@@ -404,6 +409,43 @@ async function createLockAtomically(
       // The link either landed or did not; a leftover sibling would be
       // noise, not a lock, and must not mask the outcome of the link.
     }
+  }
+}
+
+/**
+ * Remove temp siblings stranded by a kill mid-publication.
+ *
+ * Run only while breaking an abandoned lock — already the "clean up after
+ * a kill" moment, and rare — and only for siblings older than the stale
+ * age, so a temp file belonging to an acquisition in flight is never
+ * touched. Failures are ignored deliberately: this is tidying, and it must
+ * not stop the break it rides along with.
+ *
+ * @param lockPath - Lock file whose siblings to sweep
+ * @param staleMs - Age past which a temp file is certainly abandoned
+ * @param now - Clock seam
+ */
+async function sweepStaleTemps(
+  lockPath: string,
+  staleMs: number,
+  now: () => number,
+): Promise<void> {
+  const slash = lockPath.lastIndexOf("/");
+  const dir = slash === -1 ? "." : lockPath.slice(0, slash);
+  const prefix = `${lockPath.slice(slash + 1)}.`;
+  try {
+    for await (const entry of Deno.readDir(dir)) {
+      if (!entry.isFile) continue;
+      if (!entry.name.startsWith(prefix) || !entry.name.endsWith(".tmp")) {
+        continue;
+      }
+      const candidate = `${dir}/${entry.name}`;
+      const stat = await Deno.stat(candidate);
+      if (now() - (stat.mtime?.getTime() ?? now()) < staleMs) continue;
+      await Deno.remove(candidate);
+    }
+  } catch {
+    // Tidying only. The break itself is what matters here.
   }
 }
 

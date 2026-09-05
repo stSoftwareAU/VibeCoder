@@ -468,7 +468,19 @@ async function getChainState(path: string): Promise<ChainState> {
     // so the same check stands on both.
     if (await damageIsAcknowledged(path)) throw error;
     const settled = await settleInterruptedAppend(path);
-    if (!settled.ok) throw settled.error;
+    if (!settled.ok) {
+      // Loud, and the original verdict stands — exactly as on the sweep.
+      // Replacing it with the recovery's own error would also replace a
+      // *quarantinable* failure with one that is not, and the caller
+      // quarantines on that flag: the journal would stop taking writes
+      // altogether and the mutation would go unrecorded, which is a
+      // worse outcome than the damage that triggered it.
+      console.error(
+        `[SECURITY] [AUDIT_APPEND_RECOVERY_FAILED] ${path}: an interrupted ` +
+          `append could not be settled: ${settled.error.message}`,
+      );
+      throw error;
+    }
     if (!settled.value) throw error;
     console.error(formatAppendRecovery(settled.value));
     return reconcile(

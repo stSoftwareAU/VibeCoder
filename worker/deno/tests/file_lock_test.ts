@@ -5,6 +5,16 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { FileLockTimeoutError, withFileLock } from "../lib/file_lock.ts";
 
+/** Does `path` exist? */
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** A temp directory and the lock path inside it. */
 async function tempLock(): Promise<{ dir: string; lock: string }> {
   const dir = await Deno.makeTempDir({ prefix: "file-lock-" });
@@ -366,6 +376,51 @@ Deno.test("withFileLock - a contender does not break the lock of whoever won the
       ),
     );
     assertEquals(maxInside, 1, "a contender evicted the winner of the race");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("withFileLock - clears temp siblings stranded by a kill", async () => {
+  const { dir, lock } = await tempLock();
+  try {
+    // Publishing a lock writes its record to a sibling and links it into
+    // place; a kill between the two strands the sibling. Since a kill is
+    // the ordinary case here, breaking an abandoned lock also clears them.
+    const stranded = `${lock}.11111111-2222-3333-4444-555555555555.tmp`;
+    await Deno.writeTextFile(stranded, "{}");
+    const old = new Date(Date.now() - 600_000);
+    await Deno.utime(stranded, old, old);
+    // One still in flight, which must survive: it belongs to a live
+    // acquisition, not to a dead one.
+    const inFlight = `${lock}.99999999-8888-7777-6666-555555555555.tmp`;
+    await Deno.writeTextFile(inFlight, "{}");
+
+    await Deno.writeTextFile(
+      lock,
+      JSON.stringify({
+        token: "gone",
+        pid: 0,
+        acquiredAt: new Date(0).toISOString(),
+      }),
+    );
+    await Deno.utime(lock, old, old);
+
+    const took = await withFileLock(lock, () => Promise.resolve("taken"), {
+      timeoutMs: 2_000,
+      pollMs: 5,
+    });
+    assertEquals(took, "taken");
+    assertEquals(
+      await exists(stranded),
+      false,
+      "a stranded temp must be cleared",
+    );
+    assertEquals(
+      await exists(inFlight),
+      true,
+      "an in-flight temp must survive",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
