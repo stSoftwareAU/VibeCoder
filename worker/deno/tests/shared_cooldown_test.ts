@@ -16,6 +16,15 @@ import {
   postCooldownComment,
 } from "../lib/shared_cooldown.ts";
 
+/**
+ * The fleet login every fixture comment is authored by.
+ *
+ * A cooldown marker only parks an issue when a fleet account posted it —
+ * the planted-comment case lives in
+ * `tests/untrusted_marker_action_verification_test.ts`.
+ */
+const FLEET_AUTHOR = "vibe-coder-bot";
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -153,7 +162,10 @@ Deno.test("shared cooldown - hasActiveCooldownSignal returns true for recent coo
   const nowSeconds = Math.floor(Date.now() / 1000);
   const recentTimestamp = nowSeconds - 60; // 60 seconds ago
   const commentsJson = JSON.stringify([
-    { body: `<!-- COOLDOWN:other-worker:${recentTimestamp} -->` },
+    {
+      body: `<!-- COOLDOWN:other-worker:${recentTimestamp} -->`,
+      author: FLEET_AUTHOR,
+    },
   ]);
 
   const mockGh = async (_args: string[]): Promise<string> => {
@@ -165,6 +177,8 @@ Deno.test("shared cooldown - hasActiveCooldownSignal returns true for recent coo
     42,
     600,
     mockGh,
+    { fleetAuthors: [FLEET_AUTHOR] },
+    () => {},
   );
 
   assertEquals(result, true);
@@ -174,7 +188,10 @@ Deno.test("shared cooldown - hasActiveCooldownSignal returns false for expired c
   const nowSeconds = Math.floor(Date.now() / 1000);
   const expiredTimestamp = nowSeconds - 700; // 700 seconds ago (beyond 600s default)
   const commentsJson = JSON.stringify([
-    { body: `<!-- COOLDOWN:other-worker:${expiredTimestamp} -->` },
+    {
+      body: `<!-- COOLDOWN:other-worker:${expiredTimestamp} -->`,
+      author: FLEET_AUTHOR,
+    },
   ]);
 
   const mockGh = async (_args: string[]): Promise<string> => {
@@ -186,6 +203,8 @@ Deno.test("shared cooldown - hasActiveCooldownSignal returns false for expired c
     42,
     600,
     mockGh,
+    { fleetAuthors: [FLEET_AUTHOR] },
+    () => {},
   );
 
   assertEquals(result, false);
@@ -201,6 +220,8 @@ Deno.test("shared cooldown - hasActiveCooldownSignal returns false for no cooldo
     42,
     600,
     mockGh,
+    { fleetAuthors: [FLEET_AUTHOR] },
+    () => {},
   );
 
   assertEquals(result, false);
@@ -216,6 +237,8 @@ Deno.test("shared cooldown - hasActiveCooldownSignal fails open on API error", a
     42,
     600,
     mockGh,
+    { fleetAuthors: [FLEET_AUTHOR] },
+    () => {},
   );
 
   assertEquals(result, false);
@@ -231,6 +254,8 @@ Deno.test("shared cooldown - hasActiveCooldownSignal fails open on invalid JSON"
     42,
     600,
     mockGh,
+    { fleetAuthors: [FLEET_AUTHOR] },
+    () => {},
   );
 
   assertEquals(result, false);
@@ -241,8 +266,14 @@ Deno.test("shared cooldown - hasActiveCooldownSignal detects cooldown from multi
   const expiredTimestamp = nowSeconds - 700; // expired
   const recentTimestamp = nowSeconds - 30; // active
   const commentsJson = JSON.stringify([
-    { body: `<!-- COOLDOWN:worker-a:${expiredTimestamp} -->` },
-    { body: `<!-- COOLDOWN:worker-b:${recentTimestamp} -->` },
+    {
+      body: `<!-- COOLDOWN:worker-a:${expiredTimestamp} -->`,
+      author: FLEET_AUTHOR,
+    },
+    {
+      body: `<!-- COOLDOWN:worker-b:${recentTimestamp} -->`,
+      author: FLEET_AUTHOR,
+    },
   ]);
 
   const mockGh = async (_args: string[]): Promise<string> => {
@@ -254,6 +285,8 @@ Deno.test("shared cooldown - hasActiveCooldownSignal detects cooldown from multi
     42,
     600,
     mockGh,
+    { fleetAuthors: [FLEET_AUTHOR] },
+    () => {},
   );
 
   assertEquals(result, true);
@@ -261,8 +294,8 @@ Deno.test("shared cooldown - hasActiveCooldownSignal detects cooldown from multi
 
 Deno.test("shared cooldown - hasActiveCooldownSignal ignores non-cooldown comments", async () => {
   const commentsJson = JSON.stringify([
-    { body: "<!-- CLAIM_LOCK:worker-01 -->" },
-    { body: "Regular comment" },
+    { body: "<!-- CLAIM_LOCK:worker-01 -->", author: FLEET_AUTHOR },
+    { body: "Regular comment", author: FLEET_AUTHOR },
   ]);
 
   const mockGh = async (_args: string[]): Promise<string> => {
@@ -274,6 +307,8 @@ Deno.test("shared cooldown - hasActiveCooldownSignal ignores non-cooldown commen
     42,
     600,
     mockGh,
+    { fleetAuthors: [FLEET_AUTHOR] },
+    () => {},
   );
 
   assertEquals(result, false);
@@ -283,7 +318,10 @@ Deno.test("shared cooldown - hasActiveCooldownSignal uses default cooldown perio
   const nowSeconds = Math.floor(Date.now() / 1000);
   const recentTimestamp = nowSeconds - 300; // 5 minutes ago (within 600s default)
   const commentsJson = JSON.stringify([
-    { body: `<!-- COOLDOWN:worker-a:${recentTimestamp} -->` },
+    {
+      body: `<!-- COOLDOWN:worker-a:${recentTimestamp} -->`,
+      author: FLEET_AUTHOR,
+    },
   ]);
 
   const mockGh = async (_args: string[]): Promise<string> => {
@@ -296,6 +334,8 @@ Deno.test("shared cooldown - hasActiveCooldownSignal uses default cooldown perio
     42,
     undefined as unknown as number,
     mockGh,
+    { fleetAuthors: [FLEET_AUTHOR] },
+    () => {},
   );
 
   // Even without explicit period, should use COOLDOWN_DEFAULTS.issueRetryCooldown (600)
@@ -306,7 +346,10 @@ Deno.test("shared cooldown - hasActiveCooldownSignal ignores future timestamps",
   const nowSeconds = Math.floor(Date.now() / 1000);
   const futureTimestamp = nowSeconds + 1000; // future
   const commentsJson = JSON.stringify([
-    { body: `<!-- COOLDOWN:worker-a:${futureTimestamp} -->` },
+    {
+      body: `<!-- COOLDOWN:worker-a:${futureTimestamp} -->`,
+      author: FLEET_AUTHOR,
+    },
   ]);
 
   const mockGh = async (_args: string[]): Promise<string> => {
@@ -318,6 +361,8 @@ Deno.test("shared cooldown - hasActiveCooldownSignal ignores future timestamps",
     42,
     600,
     mockGh,
+    { fleetAuthors: [FLEET_AUTHOR] },
+    () => {},
   );
 
   // age = nowSeconds - futureTimestamp = negative, so age >= 0 is false

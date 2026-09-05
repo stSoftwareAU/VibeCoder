@@ -21,6 +21,13 @@ import { assert, assertEquals } from "@std/assert";
 
 import { createSecurityScanTemplate } from "../lib/idle_task_templates/security_scan_template.ts";
 
+/**
+ * The fleet login every stubbed issue is authored by — a marker only
+ * stands a scan down when a fleet account wrote it (the planted-marker
+ * case is in `tests/untrusted_marker_action_verification_test.ts`).
+ */
+const FLEET_AUTHOR = "vibe-coder-bot";
+
 function makeGhStub(opts: {
   open: number;
   capture?: { args: string[][] };
@@ -34,6 +41,7 @@ function makeGhStub(opts: {
       const items = Array.from({ length: opts.open }).map((_, i) => ({
         number: i + 1,
         body: `<!-- finding-id: SEC-stubbody${String(i).padStart(4, "0")} -->`,
+        author: { login: FLEET_AUTHOR },
       }));
       return Promise.resolve(JSON.stringify(items));
     }
@@ -48,6 +56,7 @@ Deno.test(
       runSecurityScanFn: () =>
         Promise.reject(new Error("must not invoke scanner from shouldFile")),
       ghCommandFn: makeGhStub({ open: 3 }),
+      fleetAuthors: [FLEET_AUTHOR],
     });
     assert(tpl.shouldFile !== undefined, "template must implement shouldFile");
     const ok = await tpl.shouldFile({ repo: "org/repo" });
@@ -66,6 +75,7 @@ Deno.test(
       runSecurityScanFn: () =>
         Promise.reject(new Error("must not invoke scanner from shouldFile")),
       ghCommandFn: makeGhStub({ open: 0 }),
+      fleetAuthors: [FLEET_AUTHOR],
     });
     assert(tpl.shouldFile !== undefined);
     const ok = await tpl.shouldFile({ repo: "org/repo" });
@@ -81,6 +91,7 @@ Deno.test(
       runSecurityScanFn: () =>
         Promise.reject(new Error("must not invoke scanner from shouldFile")),
       ghCommandFn: makeGhStub({ open: 0, capture }),
+      fleetAuthors: [FLEET_AUTHOR],
     });
     assert(tpl.shouldFile !== undefined);
     await tpl.shouldFile({ repo: "org/some-repo" });
@@ -122,7 +133,11 @@ Deno.test(
       if (query.includes("SEC- in:body")) return Promise.resolve("[]");
       if (query.includes("Run a security scan")) {
         return Promise.resolve(JSON.stringify([
-          { number: 71, title: "Run a security scan" },
+          {
+            number: 71,
+            title: "Run a security scan",
+            author: { login: FLEET_AUTHOR },
+          },
         ]));
       }
       return Promise.resolve("[]");
@@ -131,6 +146,7 @@ Deno.test(
       runSecurityScanFn: () =>
         Promise.reject(new Error("must not invoke scanner from shouldFile")),
       ghCommandFn,
+      fleetAuthors: [FLEET_AUTHOR],
     });
     assert(tpl.shouldFile !== undefined);
     const ok = await tpl.shouldFile({ repo: "org/repo" });
@@ -163,6 +179,7 @@ Deno.test(
       runSecurityScanFn: () =>
         Promise.reject(new Error("must not invoke scanner from shouldFile")),
       ghCommandFn,
+      fleetAuthors: [FLEET_AUTHOR],
     });
     assert(tpl.shouldFile !== undefined);
     const ok = await tpl.shouldFile({ repo: "org/repo" });

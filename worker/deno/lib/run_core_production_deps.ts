@@ -76,9 +76,10 @@ import type {
 } from "./issue_finder_logger.ts";
 import {
   fetchAllOpenPRs,
-  fetchOpenPRsByUser,
+  fetchOpenPRsForFleet,
   fetchRecentlyClosedPRsForFleet,
 } from "./issue_query.ts";
+import { sweepAutoMerge } from "./auto_merge_sweep.ts";
 import { TimelineCache } from "./timeline_cache.ts";
 import { TimelineBatchRegistry } from "./timeline_batch_registry.ts";
 import { clearCommentCache } from "./comment_cache.ts";
@@ -301,6 +302,7 @@ import { isRepoAllowed } from "./config_validator.ts";
 import { isAuthorisedCommenter } from "./security.ts";
 import { createGitHubClient, runGhCommand } from "./github.ts";
 import { InFlightRepoRegistry } from "./in_flight_repos.ts";
+import type { InFlightClaim } from "./work_stream.ts";
 import { setLiveSlotHolds } from "./live_slot_holds.ts";
 import { setScanCacheForCloseInvalidation } from "./issue_close_notifier.ts";
 import { sharedProcessedIssues } from "./processed_issue_registry.ts";
@@ -2187,67 +2189,69 @@ export async function createProductionRunCoreDeps(
 
     // -- Priority 1.65: Auto-merge --
     async ensureAutoMerge() {
-      try {
-        for (const repo of repos) {
-          if (!isRepoAllowed(repos, repo)) continue;
-          // Issue #1787: list open worker PRs through the cached
-          // `fetchOpenPRsByUser` helper so the auto-merge sweep
-          // shares the iteration-scoped `prs_${user}` cache.
-          try {
-            const prs = await fetchOpenPRsByUser(
-              repo,
-              githubUser,
-              issueCache,
-              runGhCommand,
-            );
-            let mutated = false;
-            for (const pr of prs) {
-              try {
-                // Issue #3909: pass the head branch so the milestone
-                // open-children gate needs no extra lookup.
-                const outcome = await enableAutoMerge({
-                  repo,
-                  prNumber: pr.number,
-                  headRefName: pr.headRefName,
-                  // Issue #4375: the base decides between GitHub's --auto
-                  // (protected: waits for checks) and the gated direct
-                  // merge (unprotected: --auto would merge immediately).
-                  baseRefName: pr.baseRefName,
-                  log: (message: string) => logger.warn(message),
-                });
-                // Issue #470: this outcome used to be discarded. A gate that
-                // refused every merge in the fleet was therefore invisible —
-                // the priority logged its name and a duration while nothing
-                // merged, no milestone child closed, and no milestone ever
-                // completed. A gate may refuse; it may not refuse silently.
-                logAutoMergeOutcome(logger, repo, pr.number, outcome);
-                mutated = true;
-              } catch (err) {
-                // Best-effort per PR — but say so. A silent catch here is how
-                // the same class of failure hides next time (Issue #470).
-                logger.warn("Auto-merge attempt threw", {
-                  repo,
-                  prNumber: pr.number,
-                  error: err instanceof Error ? err.message : String(err),
-                });
-              }
-            }
-            // Issue #1799: enabling auto-merge can immediately close a
-            // PR when all checks already pass. Invalidate the cached
-            // open-PR list for this repo so the next reader inside the
-            // same iteration sees current state.
-            if (mutated) {
-              await issueCache.invalidate(repo, `prs_${githubUser}`);
-            }
-          } catch { /* best-effort per repo */ }
-        }
-        return { ok: true, value: undefined };
-      } catch (err) {
-        return {
-          ok: false,
-          error: err instanceof Error ? err : new Error(String(err)),
-        };
-      }
+      // Issue #1082: the sweep walks the monitored repo list, not the repos
+      // with claimable work, and covers every push-capable fleet author —
+      // the same set the blocking guard defers `work-on` issues to. A
+      // single-login sweep left a sibling account's PR unattended, and with
+      // it every issue that PR blocked.
+      const sweep = await sweepAutoMerge({
+        repos,
+        isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),
+        fleetAuthors: maintenanceAuthors,
+        // Issue #1787: list through the cached helper so the sweep shares
+        // the iteration-scoped `prs_${author}` cache.
+        listOpenPrs: (repo, authors) =>
+          fetchOpenPRsForFleet(
+            repo,
+            [...authors],
+            issueCache,
+            runGhCommand,
+          ),
+        attemptMerge: (repo, pr) =>
+          enableAutoMerge({
+            repo,
+            prNumber: pr.number,
+            // Issue #3909: pass the head branch so the milestone
+            // open-children gate needs no extra lookup.
+            headRefName: pr.headRefName,
+            // Issue #4375: the base decides between GitHub's --auto
+            // (protected: waits for checks) and the gated direct
+            // merge (unprotected: --auto would merge immediately).
+            baseRefName: pr.baseRefName,
+            // Issue #1082: lets the gated merge tell a genuine review
+            // from a sibling fleet account's approval.
+            fleetAuthors: maintenanceAuthors,
+            log: (message: string) => logger.warn(message),
+          }),
+        // Issue #470: this outcome used to be discarded. A gate that
+        // refused every merge in the fleet was therefore invisible —
+        // the priority logged its name and a duration while nothing
+        // merged, no milestone child closed, and no milestone ever
+        // completed. A gate may refuse; it may not refuse silently.
+        recordOutcome: (repo, prNumber, outcome) =>
+          logAutoMergeOutcome(logger, repo, prNumber, outcome),
+        // Issue #1799: enabling auto-merge can immediately close a PR when
+        // all checks already pass. Invalidate every author's cached
+        // open-PR list for this repo so the next reader inside the same
+        // iteration sees current state.
+        invalidateOpenPrCache: async (repo: string) => {
+          for (const author of maintenanceAuthors) {
+            await issueCache.invalidate(repo, `prs_${author}`);
+          }
+        },
+        logger,
+      });
+      if (!sweep.ok) return { ok: false, error: sweep.error };
+      // Say what the sweep covered. A silent sweep is how a coverage gap
+      // hides: the single-login version attempted nothing in a repo whose
+      // PR belonged to a sibling account, and looked identical to a sweep
+      // with nothing to do (Issue #1082).
+      logger.info("Auto-merge sweep complete", {
+        repos: sweep.value.reposVisited.length,
+        prsAttempted: sweep.value.prsAttempted,
+        authors: maintenanceAuthors.join(", "),
+      });
+      return { ok: true, value: undefined };
     },
 
     // -- Priority 1.66: Branch cleanup --
@@ -2531,6 +2535,7 @@ export async function createProductionRunCoreDeps(
 
     async findNextIssue(options?: {
       excludeRepos?: ReadonlySet<string>;
+      inFlightClaims?: readonly InFlightClaim[];
       excludeIssues?: ReadonlySet<string>;
       onScanSummary?: (summary: DiagnosticSummary) => void;
     }) {
@@ -2555,10 +2560,17 @@ export async function createProductionRunCoreDeps(
         isIssueInCooldown: (repo, num) =>
           runLocalHold(repo, num) ||
           options?.excludeIssues?.has(issueClaimKey(repo, num)) === true,
-        // Repositories held by sibling slots (Issue #4176): skipped so no
-        // two slots share a clone.
+        // Repositories the maintenance lane has leased wholesale (Issues
+        // #4176, #213, narrowed by #1091): skipped before any eligibility
+        // check, because that pass may touch any branch of the clone.
         ...(options?.excludeRepos
           ? { excludeRepos: options.excludeRepos }
+          : {}),
+        // Issue #1091: the streams sibling slots hold, carried as the claims
+        // that occupy them, so `isMilestoneOccupied` refuses those streams
+        // and the rest of the repository stays claimable.
+        ...(options?.inFlightClaims
+          ? { inFlightClaims: options.inFlightClaims }
           : {}),
         closedPrCooldownSeconds: config.closedPrCooldownSeconds,
         // Issue #4024: the set the PR-maintenance scans actually use, so
@@ -3526,10 +3538,13 @@ export async function createProductionRunCoreDeps(
           // Read from the same signals the census and the fleet-board note
           // use, so all three agree about why this host is idle.
           claimGateActive: claimGateReason() !== "cycle_deadline",
-          // Issue #898: a repo a slot — or the maintenance lane — held was
-          // skipped by the scan before any eligibility check ran, so the two
-          // never disagreed about it. The claimable counts stay; the ALERT
-          // goes, exactly as it does for a claim gate.
+          // Issue #898: a repo the maintenance lane leased was skipped by the
+          // scan before any eligibility check ran, so the two never disagreed
+          // about it. The claimable counts stay; the ALERT goes, exactly as
+          // it does for a claim gate. Issue #1091: a sibling slot's hold is
+          // no longer in this set — the scan evaluated that repository and
+          // refused only the held stream, so a disagreement about the rest of
+          // it is real.
           heldRepos: scanExcludedRepos,
           log: (line: string) => logger.info(line),
         });
@@ -3566,7 +3581,8 @@ export async function createProductionRunCoreDeps(
       try {
         const host = `${Deno.hostname()}:${Deno.pid}`;
         // Issue #898: the repos this cycle's eligibility pass was never shown
-        // because a slot — or the maintenance lane — held them.
+        // because the maintenance lane leased them (Issue #1091: a slot's
+        // hold no longer hides a repository — it occupies one work stream).
         const heldRepos = new Set(scanExcludedRepos);
         // Issue #655: the same holds the claim scan filtered its candidates
         // against, so the two instruments cannot disagree about them.

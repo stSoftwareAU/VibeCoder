@@ -44,6 +44,7 @@ import {
   isRateLimitError,
 } from "./issue_finder_common.ts";
 import { shuffleArray } from "./array_utils.ts";
+import { applyInFlightClaims } from "./work_stream.ts";
 import { collectLabelCandidates } from "./collect_label_candidates.ts";
 import { collectWorkOnCandidates } from "./collect_work_on_candidates.ts";
 import { collectLowPriorityCandidates } from "./collect_low_priority_candidates.ts";
@@ -90,6 +91,10 @@ export async function findOldestIssue(
     ? shuffleArray([...config.repos])
     : [...config.repos];
 
+  // Issue #1091: what a slot on this host already holds. Empty for the
+  // serial loop and every single-shot CLI path, which hold nothing.
+  const inFlightClaims = options.inFlightClaims ?? [];
+
   // Categorise repos as free or busy
   const freeRepos: string[] = [];
   const busyRepos: string[] = [];
@@ -110,8 +115,11 @@ export async function findOldestIssue(
       continue;
     }
 
-    // Held by another slot on this host (Issue #4176): no two slots may
-    // share a clone, so this repository is invisible to this scan.
+    // Leased wholesale on this host (Issue #4176, narrowed by Issue #1091):
+    // the maintenance lane's pass may touch any branch of the clone, so the
+    // repository is invisible to this scan. A sibling *slot*'s hold is not
+    // here — it occupies one work stream, and `isMilestoneOccupied` refuses
+    // that stream below, having been shown the claim.
     if (options.excludeRepos?.has(repo)) {
       diag.logRepoClassification(repo, "in-flight");
       continue;
@@ -119,7 +127,16 @@ export async function findOldestIssue(
 
     // Check availability using milestone-aware logic
     try {
-      const allIssuesForCheck = await fetchAllIssues(repo, cache, 200, ghFn);
+      // Issue #1091: the host's live claims are overlaid before the first
+      // check that reads assignment, so every downstream gate — this
+      // availability classification and every collector's
+      // `isMilestoneOccupied` — asks its question of the same truth.
+      const allIssuesForCheck = applyInFlightClaims(
+        repo,
+        await fetchAllIssues(repo, cache, 200, ghFn),
+        inFlightClaims,
+        options.githubUser,
+      );
       issuesByRepo.set(repo, allIssuesForCheck);
       const repoIssueInfos: RepoIssueInfo[] = allIssuesForCheck.map((i) => ({
         number: i.number,
@@ -251,7 +268,12 @@ export async function findOldestIssue(
     // map does not contain this repo (e.g., classification raised an error
     // before issuesByRepo.set could run).
     const repoAllIssues = issuesByRepo.get(repo) ??
-      await fetchAllIssues(repo, cache, 200, ghFn);
+      applyInFlightClaims(
+        repo,
+        await fetchAllIssues(repo, cache, 200, ghFn),
+        inFlightClaims,
+        options.githubUser,
+      );
 
     const labelResult = await collectLabelCandidates(
       repo,

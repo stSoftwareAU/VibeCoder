@@ -1545,7 +1545,7 @@ unless explicitly overridden.
 | Include untrusted comments | `include_untrusted_comments` | `true` | Whether to include untrusted comments in the prompt. When `false` (strict mode), untrusted comments are excluded entirely. |
 | Include codebase map | `include_codebase_map` | `true` | Whether to inject the generated per-repo codebase map (layout, modules, canonical commands) into issue prompts. See [Codebase Map](MODEL-AND-CACHING.md#codebase-map). |
 | Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                            |
-| Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red — or with an unanswered authorised comment — before the watchdog escalates it with `needs-human`. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
+| Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red, carry an unanswered authorised comment, or sit green and unmerged, before the watchdog escalates it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
 
 ### 🧭 Adaptive claim floor
 
@@ -3361,7 +3361,13 @@ which cannot block — and trips on either signal:
   fleet push, older than the threshold;
 - **unanswered authorised comment** — the newest comment from an
   `authorized_commenters` login is newer than the newest fleet reply **and** the
-  newest push, by longer than the threshold.
+  newest push, by longer than the threshold;
+- **green but unmerged** — no failing check, no auto-merge armed, and no
+  movement for longer than the threshold. Nothing is *wrong* with the PR; it
+  simply is not landing, and its repository's whole work stream is stopped
+  behind it. `GRQ-GTC#305` sat exactly like that for five days and neither of
+  the two signals above saw it. Only reported when the other two are silent —
+  a red PR is a red PR, not a green one.
 
 On a trip it posts **one** escalation comment per PR per stall reason (deduped
 by the `needs-human-escalation` HTML marker, so a long stall never accrues a
@@ -3384,7 +3390,9 @@ flowchart TD
     C -->|yes| E["Observe PR:<br/>checks · commits · comments"]
     E --> F{"red CI, no newer push,<br/>past threshold?"}
     E --> G{"authorised comment newer<br/>than fleet reply/push,<br/>past threshold?"}
+    E --> M{"green, no auto-merge armed,<br/>no movement past threshold?"}
     F -->|yes| K
+    M -->|yes| K
     G -->|yes| K{"auto-fix cap<br/>already escalated?"}
     K -->|yes| J["Suppressed — the human<br/>already owns this PR"]
     K -->|no| H["needs-human +<br/>ONE marker-deduped comment<br/>per stall reason"]

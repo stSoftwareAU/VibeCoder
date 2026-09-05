@@ -1069,6 +1069,94 @@ whose eligibility rests on provenance.
   self-scheduling grants no new capability, and issue content still reaches the
   agent inside the untrusted-content boundary.
 
+#### 5b. Self-diagnostic alert dedup — the marker match is author-verified
+
+The worker's own escalations — run/launcher failures, idle inversion,
+bump-script failures, PR branch-update failures and idle starvation — are
+deduplicated by searching the target repository for a machine-readable marker
+in an **issue body** (`gh issue list --search '"<MARKER>" in:body'`). A body is
+content any account able to open an issue may write, so a marker match on its
+own carries no provenance; only the issue **author** is authenticated. Trusting
+the match alone means an alert can be concluded "already filed" on the strength
+of an issue the fleet never wrote — a **suppression of the fleet's own
+self-diagnostics**, which is the failure mode these alerts exist to prevent.
+
+- **The control.** Every escalation dedup search requests `author` alongside
+  `number,body`, and a match counts as an existing alert only when
+  [`isFleetAuthor`](worker/deno/lib/fleet_authors.ts) accepts its author. This
+  is the same author gate `claim_issue.ts` applies to `CLAIM_LOCK` comment
+  markers (Issue #3664), applied to body-marker dedup, and it lives in one
+  module — [`alert_dedup_authors.ts`](worker/deno/lib/alert_dedup_authors.ts) —
+  so the five escalations cannot drift apart.
+- **The comparison set is the fleet, not this host.** Membership is
+  `service_accounts` ∪ `fleet_pr_authors` ∪ this host's login
+  (`resolveFleetMaintenanceAuthorSet`). Deliberately **not** `--author @me`:
+  cross-host convergence depends on one host finding the issue another host
+  filed, and fleet hosts authenticate as different accounts, so a self-only
+  filter would raise one duplicate alert per host.
+- **Fails towards raising the alert.** When the fleet author set cannot be
+  resolved — no configuration, an unreadable config — the match cannot be
+  attributed, and it is therefore **not** treated as an existing alert: the
+  escalation is filed. For an alerting system silence is the worse failure; a
+  duplicate is noise a human closes in a moment, a missing alert is an incident
+  nobody hears about. The condition is logged in full (`[alert-dedup] … fleet
+  author set unresolved`) so it is visible rather than inferred, and the
+  direction is pinned by test.
+- **Residual risk, stated.** A fleet account is by definition trusted here, so
+  an actor who controls one can still suppress an alert — the same capability
+  they already hold over every other fleet decision. Non-fleet content can no
+  longer do it.
+
+#### 5c. Marker-driven actions — the match is author-verified, and each fails safe
+
+§5b covers the dedups whose only power is to keep an alert quiet. The same
+search pattern — *find a marker in an issue body or title, then act* — also
+drives writes, and there the consequence of trusting an unauthenticated match
+is larger than silence. On a public repository a body and a title are both
+text anyone who can open an issue may write; only the **author** is
+authenticated. So every one of these sites now verifies the author against the
+fleet identity (`resolveFleetMaintenanceAuthorSet` — `service_accounts` ∪
+`fleet_pr_authors` ∪ this host's login) through
+[`alert_dedup_authors.ts`](worker/deno/lib/alert_dedup_authors.ts), and each
+one states which way it fails.
+
+**The rule is not "always raise".** It is *fail towards the action that cannot
+cause harm*, and that differs by site — a marker that suppresses an action and
+a marker that drives one need opposite outcomes from the same "cannot verify"
+condition. Discarding the unverifiable row delivers both, which is why one
+helper serves every site. The directions are pinned by test in
+`worker/deno/tests/untrusted_marker_action_verification_test.ts`.
+
+| Site | What the marker drives | Unverifiable match means |
+| ---- | ---------------------- | ------------------------ |
+| [`purge_stale_workflow_issues.ts`](worker/deno/lib/purge_stale_workflow_issues.ts) | `gh issue close` on the matched issue | **Close nothing.** The destructive write is the one outcome nobody can undo; a stale issue left open is tidied next pass. |
+| [`idle_task_templates/security_scan_template.ts`](worker/deno/lib/idle_task_templates/security_scan_template.ts) | Standing the security scan down | **Scan.** A `gh` failure, a malformed payload and an unresolvable fleet all leave the gate open, loudly logged. A security control that reports clean when it could not run is worse than one that runs twice. |
+| [`references_refresh.ts`](worker/deno/lib/references_refresh.ts) | Suppressing a proposal, `--state all`, for ever | **File the proposal.** No expiry exists to recover from a wrong suppression. The sweep files unlabelled by design, so authorship is the only scope available. |
+| [`setup/workflow_sync.ts`](worker/deno/setup/workflow_sync.ts) | Suppressing a workflow issue, `--state all` | **File the issue.** |
+| [`shared_cooldown.ts`](worker/deno/lib/shared_cooldown.ts) | The whole fleet skipping an issue | **Do not suppress the work.** The `--jq` projection now carries `.user.login` through — it previously discarded the author before the check, leaving nothing to check. |
+| [`failure_detection_resume.ts`](worker/deno/lib/failure_detection_resume.ts) | Spending the retry budget, forcing `escalated` | **Retry.** An unverifiable tally counts as zero attempts rather than giving up on evidence it cannot read. |
+| [`escalate_as_work.ts`](worker/deno/lib/escalate_as_work.ts) | Posting the escalation body onto the matched issue | **File a fresh escalation.** Scoped by the work label *and* the author — applying a label needs triage permission. |
+| [`host_escalation.ts`](worker/deno/lib/host_escalation.ts) | Posting the host report onto the matched issue | **Create.** Reporting `"commented"` — success — for a report that landed on an issue the fleet never opened would be a lie. |
+| [`setup/collaborator_precheck.ts`](worker/deno/setup/collaborator_precheck.ts) | Posting the follow-up, which carries `gh api …/collaborators` invite commands | **File a fresh issue.** |
+| [`setup/best_practices_relabel.ts`](worker/deno/setup/best_practices_relabel.ts) | Writing derived labels onto the matched issue | **Write no labels.** |
+
+- **Label scope where it holds, and only there.** Where a label is reliably
+  present on the fleet's own issues it is applied alongside the author check
+  (`escalate_as_work`), because applying a label needs triage permission —
+  the pattern `security_tree_sweep.ts` and `idle_task_activity.ts` already
+  use. It is deliberately *not* applied where the label is generic or absent:
+  workflow-sync issues get relabelled by their target repositories and the
+  sync falls back to filing without a label at all, and the historic issues
+  `best_practices_relabel` exists to backfill are precisely the ones missing
+  the category label. A label requirement there would silently stop the pass
+  working rather than narrow it.
+- **Never `--author @me`.** Fleet hosts authenticate as different accounts and
+  cross-host convergence depends on one host finding what a sibling filed.
+- **Residual risk, stated.** A fleet account is trusted here by definition, so
+  an actor who controls one retains these capabilities — the same ones they
+  already hold over every other fleet decision. Non-fleet content no longer
+  has them.
+
 ### 6. Egress Containment — Per-Run Write-Repo Allowlist
 
 The mitigations above narrow what untrusted content can *say* to the worker; egress containment narrows what a successful injection can *do*. Without it, an injection that reads a private repo can post the contents as a public comment in a different repo (four of the monitored repos are public, so the exfiltration sink is real).
