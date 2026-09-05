@@ -314,17 +314,25 @@ export async function escalateToHuman(
       // every dedup key is derivable from public numbers, so a match on the
       // body alone let one planted `<!-- needs-human-escalation: … -->`
       // suppress the hand-off's "why / next step" comment for 24 hours. The
-      // author is the only authenticated part of the match; an unresolvable
-      // fleet identity discards every row, so the escalation is posted.
-      const verified = await selectFleetAuthoredComments(
-        matched,
-        `needs-human escalation dedup on ${repo}#${target.number}`,
-        deps?.dedupAuthors ?? {},
-        (message) => logger.warn(message),
-        "the escalation comment is posted — a marker anyone can write must " +
-          "not silence a hand-off to a human",
-      );
-      dedupSkipped = verified.length > 0;
+      // author is the only authenticated part of the match.
+      //
+      // `githubUser` is this worker's own login — the `GITHUB_USER` half of
+      // the fleet identity, and worker configuration rather than anything a
+      // pull request can influence — so a marker it wrote is evidence without
+      // reading a config. Everything else goes to the shared fleet check,
+      // which discards every row when the fleet cannot be resolved, so the
+      // escalation is posted.
+      const ownMarker = githubUser !== undefined &&
+        matched.some((comment) => comment.author === githubUser);
+      dedupSkipped = ownMarker ||
+        (await selectFleetAuthoredComments(
+            matched,
+            `needs-human escalation dedup on ${repo}#${target.number}`,
+            deps?.dedupAuthors ?? {},
+            (message) => logger.warn(message),
+            "the escalation comment is posted — a marker anyone can write " +
+              "must not silence a hand-off to a human",
+          )).length > 0;
     } catch (err) {
       // Dedup is an optimisation. If the lookup fails, post the comment
       // anyway rather than silently drop the escalation.

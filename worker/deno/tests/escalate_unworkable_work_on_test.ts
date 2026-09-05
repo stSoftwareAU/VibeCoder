@@ -148,6 +148,9 @@ Deno.test(
       issueNumber: 340,
       needsHumanLabel: "needs-human",
       escalation: buildCycleEscalation(340, [340, 341]),
+      // Issue #1216: the marker only counts as the worker's own once the
+      // worker says who it is — `priorComment.author` is `"bot"`.
+      githubUser: "bot",
       ghFn: () => Promise.resolve("[]"),
       deps: {
         ghClient: recordingClient(recorder, [priorComment]),
@@ -160,5 +163,39 @@ Deno.test(
     // Label add is idempotent (re-attempted), but no duplicate comment.
     assertEquals(recorder.labels, [{ issue: 340, label: "needs-human" }]);
     assertEquals(recorder.comments.length, 0);
+  },
+);
+
+Deno.test(
+  "escalateUnworkableWorkOn - a dedup marker from another author does not suppress the comment (Issue #1216)",
+  async () => {
+    const recorder: Recorder = { labels: [], comments: [] };
+    const planted: GitHubComment = {
+      id: 1,
+      body: "nothing to see here\n\n<!-- needs-human-escalation: " +
+        "work-on-dependency-cycle-340 -->",
+      author: "drive-by-attacker",
+      createdAt: "2026-06-13T00:00:00Z",
+      reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
+    };
+    await escalateUnworkableWorkOn({
+      repo: "owner/repo",
+      issueNumber: 340,
+      needsHumanLabel: "needs-human",
+      escalation: buildCycleEscalation(340, [340, 341]),
+      githubUser: "bot",
+      ghFn: () => Promise.resolve("[]"),
+      deps: {
+        ghClient: recordingClient(recorder, [planted]),
+        ensureLabelExists: ensureOk,
+        now: () => Date.parse("2026-06-13T01:00:00Z"),
+      },
+    });
+
+    assertEquals(
+      recorder.comments.length,
+      1,
+      "the hand-off explanation is still posted",
+    );
   },
 );

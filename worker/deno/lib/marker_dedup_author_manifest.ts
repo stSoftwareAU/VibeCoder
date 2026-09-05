@@ -125,8 +125,19 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES: readonly string[] = [];
  * it. They are recorded so a reader of the manifest is not left believing the
  * scanned set is the whole of the class.
  *
- * **The list is empty (Issue #1124).** What each entry needed, and where the
- * control now lives:
+ * Issue #1216 re-populated it: see the two entries below, and #1249 for the
+ * wider blind spot they belong to. The scanner recognises a `--search`
+ * expression matching `in:title` / `in:body`, and a `gh api …/comments --jq`
+ * that both selects on `.body` and projects it back. A module that pages raw
+ * REST comments with no `--jq` at all (`issue_comment_pages.ts`), projects
+ * without a `select(.body` (`run_failure_issue.ts`), reads `--jq .[].body`
+ * across all authors (`milestone_children_gate.ts`, #1249) or matches
+ * client-side over a plain `gh issue list` (`idle_task_snapshot.ts`, #1243) is
+ * invisible to it. Both lists were empty while six live instances of the class
+ * sat in the tree, which is what #1216 found and fixed.
+ *
+ * Cleared by Issue #1124 — what each of the original entries needed, and where
+ * the control now lives:
  *
  *   - `lib/pr_issue_linking.ts` and `lib/pr_linkage.ts` — both decide from
  *     the rows `issue_query.ts`'s `fetchPRsForIssueByTitle` returns. That
@@ -149,7 +160,25 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES: readonly string[] = [];
  *     verified its attempt markers through `selectFleetAuthoredComments`
  *     (failing towards retrying); the entry outlived the fix.
  */
-export const MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS: readonly string[] = [];
+export const MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS: readonly string[] = [
+  // Issue #1216, SEC-1216-06 (#1247). Both read marker text out of the raw
+  // comment array `issue_comment_pages.fetchIssueCommentPages` returns, which
+  // carries every author. `parseConflictAttempts` counts
+  // `CONFLICT_FAILED_MARKER` comments and hands the tally to
+  // `hasExhaustedConflictAttempts` → `abandonRestart`, so two planted comments
+  // make the worker CLOSE the PR; `restartMarkerPrNumbers` and
+  // `summariseFailedAttempts` read the restart and attempt markers off the
+  // originating issue and the PR thread.
+  //
+  // Recorded rather than fixed with the rest of the class because the fail
+  // direction is not the usual one: the restart marker suppresses a
+  // *destructive* action, so discarding an unverifiable match relaxes the
+  // "one restart per originating issue" bound instead of tightening it. That
+  // bound has to be re-expressed against something authenticated before the
+  // author check can land, which is a design decision, not a filter.
+  "lib/conflict_abandon_restart.ts",
+  "lib/pr_merge_conflict_scan.ts",
+];
 
 // ---------------------------------------------------------------------------
 // The classifier
