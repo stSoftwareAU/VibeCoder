@@ -75,7 +75,12 @@ import {
   classifyExistingPrForIssue,
   formatSupersededReason,
 } from "../superseding_pr.ts";
-import { claimStaleOutcome, supersededOutcome } from "../run_outcome.ts";
+import {
+  claimStaleOutcome,
+  prNumberFromUrl,
+  summaryIncompleteOutcome,
+  supersededOutcome,
+} from "../run_outcome.ts";
 import { healStaleBranchLineage } from "../stale_branch_lineage.ts";
 import {
   checkClaimFreshness,
@@ -192,6 +197,120 @@ async function armAutoMergeAtCreation(
 }
 
 /**
+ * Report a PR-summary document rule the run broke (Issue #1140).
+ *
+ * The three summary gates — acceptance-criteria closure, independent review,
+ * reproduction status — sit at this phase's PR-creation chokepoint, so
+ * blocking one normally costs the next attempt a rewrite and nothing else.
+ * The chokepoint is not always ahead of the PR: the agent raises its own PR
+ * from inside the execute phase often enough that this module already carries
+ * a self-healing recovery path for exactly that. On 2026-09-05 four fleet runs
+ * raised a PR and were recorded `failure` 25-68 seconds later for a summary
+ * rule — a missing `reviewer:` name, most of them — and all four PRs merged.
+ * A `failure` releases the claim, cools the issue down and returns it to the
+ * claimable pool, so a sibling host redoes finished work at a mean $10.80 a
+ * run, and nine such format blocks in twenty-five phase failures buried the
+ * genuine ones.
+ *
+ * The rule is worth checking; reporting it as "the code did not work" is not.
+ * So the outcome depends on whether the work reached a PR:
+ *
+ * - **no PR for this run's branch** — the gate blocks exactly as before, and
+ *   the next attempt writes the summary the comment asks for;
+ * - **a PR already exists** — the PR is finalised the way the recovery path
+ *   finalises it (body, labels, link, auto-merge), and the run reports
+ *   `summary_incomplete`: the work is done, the summary is short, and the
+ *   issue stays attached to its PR instead of going back in the queue.
+ *
+ * Either way the gate's remediation comment is posted, so the shortfall is on
+ * the issue thread rather than only in this host's log.
+ *
+ * The security-fix gate deliberately does not route through here. A PR that
+ * closes a security-labelled finding without its vulnerability-fix evidence
+ * must stop, PR or no PR.
+ *
+ * @param reason - The phase-failure reason the gate would have reported.
+ * @param comment - The gate's remediation comment for the issue thread.
+ * @returns `failure` when no PR exists, `early_exit` carrying the
+ *   `summary_incomplete` outcome when one does.
+ */
+async function reportSummaryRuleBlock(
+  reason: string,
+  comment: string,
+  ctx: IssueContext,
+  state: PhaseState,
+  prBody: string,
+  deps: WorkerDeps,
+): Promise<PhaseResult> {
+  const { repo, issueNumber } = ctx;
+  const logger = deps.logger;
+  const client = deps.github.createClient(logger);
+  await client.postComment(repo, issueNumber, comment);
+
+  const existingPr = await deps.pr.findExistingPrForBranch(
+    repo,
+    state.branchName,
+  );
+  if (!existingPr.ok) {
+    // `findExistingPrForBranch` returns the same shape for "no open PR" and
+    // for a `gh` fault, and only one of those is a fact about the run. Say
+    // which was seen: an outage reported as "this run raised no PR" is the
+    // silent downgrade the fail-loud rule exists to stop.
+    logger.warn(
+      "No open PR found for this run's branch — the summary rule fails the " +
+        "run as before",
+      {
+        repo,
+        issueNumber,
+        branch: state.branchName,
+        lookup: existingPr.error.message,
+      },
+    );
+    return { status: "failure", reason };
+  }
+
+  const prUrl = existingPr.value;
+  logger.warn(
+    "PR-summary rule broken on a run that had already raised its PR — " +
+      "recording the shortfall against that PR instead of failing the run " +
+      "(Issue #1140)",
+    { repo, issueNumber, prUrl, reason },
+  );
+  const recovered = await recoverAndFinaliseExistingPr(
+    prUrl,
+    ctx,
+    state,
+    prBody,
+    deps,
+  );
+  if (recovered.status !== "continue") return recovered;
+
+  const prNumber = state.prNumber ?? 0;
+  if (prNumber <= 0) {
+    // A PR URL this phase cannot number is a PR it cannot name on the
+    // outcome, and an outcome that reads "Raised #0" is worse than a
+    // failure. Fail loud and let the ordinary retry path have it.
+    logger.warn(
+      "Could not read a PR number from the existing PR URL — reporting the " +
+        "summary rule as a failure rather than naming an unnumbered PR",
+      { repo, issueNumber, prUrl },
+    );
+    return { status: "failure", reason };
+  }
+
+  return {
+    status: "early_exit",
+    reason,
+    outcome: summaryIncompleteOutcome({
+      phase: "completion",
+      prUrl,
+      prNumber,
+      problem: reason,
+    }),
+  };
+}
+
+/**
  * Recover an existing PR by updating its body and labels, then finalise (Issue #1189).
  *
  * Issue #1559: When the recovered PR is already merged, skip the redundant
@@ -210,8 +329,7 @@ export async function recoverAndFinaliseExistingPr(
 ): Promise<PhaseResult> {
   const { repo, issueNumber, githubUser, milestoneTitle, issueLabels } = ctx;
   const logger = deps.logger;
-  const prNumMatch = prUrl.match(/\/pull\/(\d+)/);
-  const prNumber = prNumMatch ? parseInt(prNumMatch[1]!, 10) : 0;
+  const prNumber = prNumberFromUrl(prUrl);
   // The run outcome names this PR at claim release (Issue #4325).
   state.prUrl = prUrl;
   state.prNumber = prNumber;
@@ -992,111 +1110,8 @@ async function completionBody(
     }
   }
 
-  // ---------------------------------------------------------------------
-  // Acceptance-criteria closure gate (Issue #518).
-  //
-  // The planner writes a `## Acceptance Criteria` checklist into every
-  // sub-issue and nothing used to read it back. When the issue carries
-  // criteria, the summary must close each one out as met / partial / missing
-  // with the evidence observed, and explain every gap — an unexplained gap is
-  // a failure to surface, not a pass. Issues with no criteria are unaffected.
-  // ---------------------------------------------------------------------
-  const closure = validateAcceptanceClosure({
-    issueBody: ctx.issueBody,
-    prSummaryContent: prBody,
-  });
-  if (closure.applicable && !closure.valid) {
-    logger.warn("Acceptance-criteria closure gate blocked PR creation", {
-      criteria: closure.criteria.length,
-      problems: closure.problems,
-    });
-    const client = deps.github.createClient(logger);
-    await client.postComment(
-      repo,
-      issueNumber,
-      buildClosureGateComment(closure),
-    );
-    return {
-      status: "failure",
-      reason: `Acceptance criteria not closed out in the PR summary: ${
-        closure.problems[0] ?? "closure block missing"
-      }`,
-    };
-  }
-
-  // ---------------------------------------------------------------------
-  // Independent two-axis review gate (Issue #663).
-  //
-  // The closure block above says which criteria were met; this says who
-  // judged them. A verdict written by the agent that wrote the code, in the
-  // context that produced it, is not a review — so the criteria block must
-  // carry the independent Spec reviewer's provenance and its per-entry
-  // verdict, with any departure from that verdict recorded out loud. The
-  // Standards axis is reported under its own heading: a change can pass one
-  // axis and fail the other, and merging them lets one mask the other.
-  // Issues with no criteria are unaffected.
-  // ---------------------------------------------------------------------
-  const review = validateIndependentReview({
-    issueBody: ctx.issueBody,
-    prSummaryContent: prBody,
-  });
-  if (review.applicable && !review.valid) {
-    logger.warn("Independent two-axis review gate blocked PR creation", {
-      specEntries: review.specEntries.length,
-      standardsEntries: review.standardsEntries.length,
-      problems: review.problems,
-    });
-    const client = deps.github.createClient(logger);
-    await client.postComment(
-      repo,
-      issueNumber,
-      buildIndependentReviewComment(review),
-    );
-    return {
-      status: "failure",
-      reason:
-        `Independent Spec/Standards review not reported in the PR summary: ${
-          review.problems[0] ?? "review blocks missing"
-        }`,
-    };
-  }
-
-  // ---------------------------------------------------------------------
-  // Bug-fix reproduction-status gate (Issue #521).
-  //
-  // `bug` is a descriptive label on the one shared pipeline, so a summary
-  // claiming "added a regression test" used to read identically whether the
-  // test was watched to fail before the fix or merely written afterwards. A
-  // bug-labelled issue must now record the symptom, the reproduction status as
-  // verified / partial / not-run, and the covering regression test — with
-  // `verified` reserved for a test actually observed failing before and passing
-  // after. A not-run reproduction is a legitimate, reportable outcome; the
-  // silent over-claim is what is blocked. Non-`bug` issues are unaffected.
-  // ---------------------------------------------------------------------
+  // The label list every gate below reads, as one comma-joined string.
   const issueLabels = ctx.issueLabels.join(",");
-
-  const reproduction = validateReproductionStatus({
-    issueLabels,
-    prSummaryContent: prBody,
-  });
-  if (reproduction.applicable && !reproduction.valid) {
-    logger.warn("Reproduction-status gate blocked PR creation", {
-      status: reproduction.block.status,
-      problems: reproduction.problems,
-    });
-    const client = deps.github.createClient(logger);
-    await client.postComment(
-      repo,
-      issueNumber,
-      buildReproductionGateComment(reproduction),
-    );
-    return {
-      status: "failure",
-      reason: `Reproduction status not recorded in the PR summary: ${
-        reproduction.problems[0] ?? "`## Reproduction` block missing"
-      }`,
-    };
-  }
 
   // ---------------------------------------------------------------------
   // Security-fix patch-verification gate (Issue #3540, hardened by #3652,
@@ -1110,6 +1125,13 @@ async function completionBody(
   // human-review aid. Fail loud rather than mask a fault as success (Issue
   // #3234). Per-repo only (Issue #3239); opt out with the
   // `skip_security_fix_check` repo config.
+  //
+  // It runs **first** of the four PR gates (Issue #1140). The three summary
+  // gates below stop being a hard failure once the run has raised its PR, and
+  // a `security` run whose summary also broke a format rule would otherwise
+  // leave through the first of those and never be asked for its
+  // vulnerability-fix evidence. Order is the guard: nothing downgrades a
+  // block this gate has not already had its say on.
   // ---------------------------------------------------------------------
   const skipSecurityFixCheck =
     getRepoConfig(config.repoConfig, repo, "skipSecurityFixCheck") === "true";
@@ -1177,6 +1199,103 @@ async function completionBody(
     // Gate satisfied (or inactive) — drop any stale verdict so a later run on
     // this issue is not told to fix something it has already fixed.
     await clearSecurityFixGateBlock(gateStateDir, repo, issueNumber);
+  }
+
+  // ---------------------------------------------------------------------
+  // Acceptance-criteria closure gate (Issue #518).
+  //
+  // The planner writes a `## Acceptance Criteria` checklist into every
+  // sub-issue and nothing used to read it back. When the issue carries
+  // criteria, the summary must close each one out as met / partial / missing
+  // with the evidence observed, and explain every gap — an unexplained gap is
+  // a failure to surface, not a pass. Issues with no criteria are unaffected.
+  // ---------------------------------------------------------------------
+  const closure = validateAcceptanceClosure({
+    issueBody: ctx.issueBody,
+    prSummaryContent: prBody,
+  });
+  if (closure.applicable && !closure.valid) {
+    logger.warn("Acceptance-criteria closure gate blocked PR creation", {
+      criteria: closure.criteria.length,
+      problems: closure.problems,
+    });
+    return await reportSummaryRuleBlock(
+      `Acceptance criteria not closed out in the PR summary: ${
+        closure.problems[0] ?? "closure block missing"
+      }`,
+      buildClosureGateComment(closure),
+      ctx,
+      state,
+      prBody,
+      deps,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Independent two-axis review gate (Issue #663).
+  //
+  // The closure block above says which criteria were met; this says who
+  // judged them. A verdict written by the agent that wrote the code, in the
+  // context that produced it, is not a review — so the criteria block must
+  // carry the independent Spec reviewer's provenance and its per-entry
+  // verdict, with any departure from that verdict recorded out loud. The
+  // Standards axis is reported under its own heading: a change can pass one
+  // axis and fail the other, and merging them lets one mask the other.
+  // Issues with no criteria are unaffected.
+  // ---------------------------------------------------------------------
+  const review = validateIndependentReview({
+    issueBody: ctx.issueBody,
+    prSummaryContent: prBody,
+  });
+  if (review.applicable && !review.valid) {
+    logger.warn("Independent two-axis review gate blocked PR creation", {
+      specEntries: review.specEntries.length,
+      standardsEntries: review.standardsEntries.length,
+      problems: review.problems,
+    });
+    return await reportSummaryRuleBlock(
+      `Independent Spec/Standards review not reported in the PR summary: ${
+        review.problems[0] ?? "review blocks missing"
+      }`,
+      buildIndependentReviewComment(review),
+      ctx,
+      state,
+      prBody,
+      deps,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Bug-fix reproduction-status gate (Issue #521).
+  //
+  // `bug` is a descriptive label on the one shared pipeline, so a summary
+  // claiming "added a regression test" used to read identically whether the
+  // test was watched to fail before the fix or merely written afterwards. A
+  // bug-labelled issue must now record the symptom, the reproduction status as
+  // verified / partial / not-run, and the covering regression test — with
+  // `verified` reserved for a test actually observed failing before and passing
+  // after. A not-run reproduction is a legitimate, reportable outcome; the
+  // silent over-claim is what is blocked. Non-`bug` issues are unaffected.
+  // ---------------------------------------------------------------------
+  const reproduction = validateReproductionStatus({
+    issueLabels,
+    prSummaryContent: prBody,
+  });
+  if (reproduction.applicable && !reproduction.valid) {
+    logger.warn("Reproduction-status gate blocked PR creation", {
+      status: reproduction.block.status,
+      problems: reproduction.problems,
+    });
+    return await reportSummaryRuleBlock(
+      `Reproduction status not recorded in the PR summary: ${
+        reproduction.problems[0] ?? "`## Reproduction` block missing"
+      }`,
+      buildReproductionGateComment(reproduction),
+      ctx,
+      state,
+      prBody,
+      deps,
+    );
   }
 
   // Issue #869 (by issue number), #623 (by branch), #872 (defence in depth),

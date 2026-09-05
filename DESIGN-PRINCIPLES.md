@@ -2544,6 +2544,52 @@ in the `WARNING` line, never swallowed.
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) →
 Orphaned milestone merge for the operator detail.
 
+### A finished PR with an unfinished summary is not a failed run
+
+The PR summary gates are worth having — a summary that closes its acceptance
+criteria out, names the independent reviewer's verdict and records how far the
+bug was reproduced is genuinely more useful than one that does not. What was
+wrong was the **outcome** they produced: a documentation shortfall read
+identically to "the code did not work".
+
+On 2026-09-05 four of the fleet's six failed runs created their PR **25–68
+seconds before** being recorded as failures, and all four of those PRs merged.
+Nine of the day's twenty-five phase failures were summary format rules, most of
+them an `unrequested` entry naming no `reviewer:` verdict. Because a `failure`
+cools the issue down, releases the claim and returns the issue to the claimable
+pool, each one invited a sibling host to redo finished work — at a mean $10.80 a
+run, 46% of the day's spend on runs recorded as failures. And a channel carrying
+nine format blocks hides the tenth failure that is real, for the same reason a
+permanently-red test stops being read.
+
+**The rule.** The outcome names what happened, and the three cases are distinct:
+**work failed** (`no_pr`, with its diagnosed category — the deadline-exceeded
+case is `timeout`), **work done, summary incomplete** (`summary_incomplete`), and
+everything the existing outcomes already covered. A run that raised a mergeable
+PR is never recorded `failure` for a summary-format shortfall alone, and its
+issue stays attached to that PR instead of going back in the queue. With **no**
+PR the gate blocks exactly as before: that is what a pre-PR gate is for.
+
+**Satisfy the rule mechanically where you can.** An `unrequested` entry with no
+`reviewer:` is a template filled in wrongly, so the fix belongs in
+`prompts/issue/prompt.md` — stating the verdict field on every surface that names
+`unrequested`, not only showing it in the example — rather than in a gate that
+fails the run afterwards.
+
+**The security case keeps its hard block, and goes first.** A PR closing a
+`security`-labelled finding without its vulnerability-fix evidence stops the run
+whether or not a PR exists — that is not a documentation shortfall. Because the
+summary gates stop being a hard failure once a PR exists, order is what enforces
+it: the security gate is evaluated ahead of all three, so nothing downgrades a
+block it has not already had its say on.
+
+**Implementation:** `reportSummaryRuleBlock` in
+[`phases/completion_phase.ts`](worker/deno/lib/phases/completion_phase.ts) and
+`summaryIncompleteOutcome` in
+[`run_outcome.ts`](worker/deno/lib/run_outcome.ts). See
+[`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) →
+A summary shortfall after the PR is not a failed run.
+
 ### An issue this run finished is never re-offered to the scan
 
 The scan ranks a cached issue list whose TTL is 600 s, and until Issue #181 the

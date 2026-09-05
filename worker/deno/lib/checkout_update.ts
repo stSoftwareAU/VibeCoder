@@ -16,7 +16,33 @@
  * `git clean -fd` — and, on failure, enriches the error, counts the streak in
  * `<logDir>/checkout-update-failure-streak`, and raises exactly one GitHub
  * issue per streak once {@link CHECKOUT_UPDATE_ESCALATION_THRESHOLD}
- * consecutive failures are reached. A success resets the streak to zero.
+ * consecutive failures are reached **and** they span at least
+ * {@link CHECKOUT_UPDATE_ESCALATION_MIN_SPAN_SECONDS}. A success resets the
+ * streak to zero.
+ *
+ * The span is half the rule because the count alone was not measuring
+ * persistence (Issue #1017): on GRQ-23 the streak went 1 → 2 → 3 in eight
+ * seconds for one transient macOS `No user exists for uid 501` — the host's
+ * directory services failing to resolve the user the launcher was already
+ * running as — and tripped an escalation written to mean an hour of stale
+ * code. That condition is now recognised by name rather than passed through
+ * as git's "correct access rights" boilerplate, and retried in place with a
+ * short bounded backoff, so a run that recovers within seconds never reaches
+ * the streak at all.
+ *
+ * That escalation used to fire at the single run where the streak *equalled*
+ * the threshold, and its transport — `gh issue create` against
+ * `api.github.com` — needs the network whose loss is the dominant cause of the
+ * streak. So the one observed firing threw and was lost for ever (Issue
+ * #1018). It is now re-armed and queued: delivery is attempted on every
+ * failing run at or above the threshold until one attempt lands, the
+ * escalated-at marker is recorded **only** on success, and evidence that could
+ * not be sent is spooled in `<logDir>/checkout-update-escalation` — one entry
+ * per streak, overwritten — so the next run with connectivity delivers it. The
+ * run that recovers is usually that run, and it flushes the queue marked as an
+ * outage that has since ended; the spool is then cleared with the streak,
+ * whatever became of that send, because a queued report must never outlive the
+ * condition it describes.
  *
  * Under `update_mode: "frozen"` (Issue #624, part of #583) the sequence above
  * would defeat the pin, so the checkout is held at `pinned_ref` instead: fetch
@@ -41,6 +67,7 @@
 
 import type { Result, UpdateMode } from "../types.ts";
 import { DEFAULT_UPDATE_MODE } from "./config_defaults.ts";
+import { atomicWrite } from "./file_utils.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import {
   appendRunCoreLogLine,
@@ -68,6 +95,84 @@ export { parseOriginRepo };
 export const CHECKOUT_UPDATE_ESCALATION_THRESHOLD = 3;
 
 /**
+ * The shortest span those consecutive failures may cover before the host
+ * escalates (Issue #1017).
+ *
+ * "3 consecutive runs" was written meaning three hourly launches — an hour of
+ * a host running stale code, and a genuine crash-loop. On GRQ-23 it meant
+ * three launches **eight seconds apart**: the streak file went 1 → 2 → 3
+ * between 09:47:44 and 09:47:52 for one transient uid-lookup glitch that was
+ * over before the third run started. A streak that can be exhausted faster
+ * than the condition can clear is not measuring persistence, so the count is
+ * now qualified by the elapsed span as well.
+ *
+ * Fifteen minutes is chosen to sit well above any burst of launches and well
+ * below the two hours three hourly launches span, so the hourly case this
+ * threshold was written for still escalates on its third failure.
+ */
+export const CHECKOUT_UPDATE_ESCALATION_MIN_SPAN_SECONDS = 15 * 60;
+
+/**
+ * The persisted consecutive-failure streak (Issues #4204, #1017).
+ *
+ * The count alone could not tell three failures in eight seconds from three
+ * across three hours, so the first failure's time is persisted beside it.
+ */
+export interface CheckoutUpdateStreak {
+  /** Consecutive failures recorded so far; 0 when there is no streak. */
+  count: number;
+  /**
+   * Unix seconds of the first failure in this streak.
+   *
+   * `0` means "not known" — either there is no streak, or the file was
+   * written by a worker from before this field existed. An unknown start
+   * never *blocks* an escalation: silencing a host that is running stale code
+   * is the worse of the two errors, and the very next failure records a real
+   * start.
+   */
+  firstFailureAt: number;
+}
+
+/** Whether a streak has both the count and the span to escalate (#1017). */
+export function checkoutStreakEscalates(
+  streak: CheckoutUpdateStreak,
+  nowSeconds: number,
+): boolean {
+  if (streak.count < CHECKOUT_UPDATE_ESCALATION_THRESHOLD) return false;
+  // An unknown start is not evidence of a short span, so it does not veto.
+  if (streak.firstFailureAt <= 0) return true;
+  return nowSeconds - streak.firstFailureAt >=
+    CHECKOUT_UPDATE_ESCALATION_MIN_SPAN_SECONDS;
+}
+
+/**
+ * The uid in a macOS Directory Services lookup failure, or `null` (#1017).
+ *
+ * `No user exists for uid 501` is the host failing to resolve the *invoking*
+ * user — 501 being the operator's own uid. `git` and `ssh` could not read the
+ * passwd entry for the user they were already running as, so they could not
+ * find `~/.ssh` or `~/.gitconfig` and gave up with git's "make sure you have
+ * the correct access rights" boilerplate attached. It is neither a
+ * credentials fault nor a network one, it is a known transient after certain
+ * sleep/wake cycles and DirectoryService restarts, and it clears on its own.
+ */
+export function directoryServicesUid(text: string): string | null {
+  const match = /No user exists for uid (\d+)/.exec(text);
+  return match?.[1] ?? null;
+}
+
+/**
+ * Backoff between retries of a git step the host's directory services broke
+ * (Issue #1017). Short and bounded: the condition typically clears within
+ * seconds, and a launcher must not sit on the checkout waiting for it.
+ */
+export const DIRECTORY_SERVICES_RETRY_DELAYS_MS: readonly number[] = [
+  500,
+  1_500,
+  3_000,
+];
+
+/**
  * Environment variable that turns the checkout update off (Issue #735).
  *
  * The single source of truth: the command re-exports this name, and the
@@ -79,6 +184,14 @@ export const SKIP_CHECKOUT_UPDATE_ENV = "VIBE_SKIP_CHECKOUT_UPDATE";
 /** File under the log directory persisting the consecutive-failure count. */
 export const CHECKOUT_UPDATE_FAILURE_STREAK_FILE =
   "checkout-update-failure-streak";
+
+/**
+ * File beside the streak holding the escalation marker and the spool (Issue
+ * #1018) — a single JSON object, so one entry per streak is the shape of the
+ * store rather than a convention a directory of files could drift from.
+ */
+export const CHECKOUT_UPDATE_ESCALATION_SPOOL_FILE =
+  "checkout-update-escalation";
 
 /** What the worker checkout looks like, for collision diagnosis (#4204). */
 export interface CheckoutState {
@@ -100,6 +213,58 @@ export interface CheckoutUpdateEscalationContext {
   error: string;
   /** Checkout state at failure time, when it could be read. */
   checkout: CheckoutState | null;
+  /**
+   * ISO-8601 time the first undelivered attempt was made, when this report
+   * comes off the spool (Issue #1018); undefined for a first-attempt report.
+   * The issue body says so, so a late report is never read as a fresh one.
+   */
+  spooledAt?: string;
+  /**
+   * True when this report is flushed by a run that updated cleanly (Issue
+   * #1018) — the outage is over, and the body says so, so a report that
+   * arrives after the fact is never read as a live one.
+   */
+  recovered?: boolean;
+}
+
+/**
+ * Evidence of an escalation that could not be delivered (Issue #1018). Each
+ * further failed attempt in the same streak overwrites the evidence — the
+ * newest failure is the one worth reporting — while keeping the timestamp of
+ * the first, so the report says how long the host has been unable to speak.
+ */
+export interface SpooledCheckoutEscalation {
+  /** The worker checkout that could not be updated. */
+  repoDir: string;
+  /** Consecutive failures as at the most recent failed attempt. */
+  streak: number;
+  /** The enriched failure detail of the most recent failed attempt. */
+  error: string;
+  /** Checkout state at that failure, when it could be read. */
+  checkout: CheckoutState | null;
+  /** ISO-8601 time of the **first** delivery attempt that failed. */
+  spooledAt: string;
+}
+
+/**
+ * What the host knows about escalating the streak it is currently in (Issue
+ * #1018). Cleared — the file removed — whenever a successful update ends the
+ * streak.
+ */
+export interface CheckoutEscalationState {
+  /**
+   * The streak an escalation was **successfully delivered** for; 0 when none
+   * has been. Non-zero is what keeps the rest of the streak quiet, so a send
+   * that threw leaves the streak eligible for the next run to retry.
+   */
+  escalatedStreak: number;
+  /** The single queued report awaiting connectivity, or null. */
+  pending: SpooledCheckoutEscalation | null;
+}
+
+/** Nothing escalated, nothing queued. */
+function emptyEscalationState(): CheckoutEscalationState {
+  return { escalatedStreak: 0, pending: null };
 }
 
 /** Inputs to a single checkout update. */
@@ -183,10 +348,35 @@ export interface CheckoutUpdateDeps {
    * new failure mode.
    */
   describeCheckoutState(repoDir: string): Promise<CheckoutState | null>;
-  /** Read the persisted consecutive-failure count (0 when absent). */
-  readFailureStreak(logDir: string): Promise<number>;
-  /** Persist the consecutive-failure count. */
-  writeFailureStreak(logDir: string, count: number): Promise<void>;
+  /**
+   * Read the persisted streak — the consecutive-failure count and when the
+   * streak started (Issue #1017). An absent or unreadable file reads as
+   * {@link emptyCheckoutStreak}.
+   */
+  readFailureStreak(logDir: string): Promise<CheckoutUpdateStreak>;
+  /** Persist the streak. */
+  writeFailureStreak(
+    logDir: string,
+    streak: CheckoutUpdateStreak,
+  ): Promise<void>;
+  /** Clock seam, in Unix seconds, so the span rule is testable (#1017). */
+  now(): number;
+  /**
+   * Read the escalation marker and spool (Issue #1018). An absent or
+   * unreadable store reads as {@link emptyEscalationState}: the worst that
+   * costs is one duplicate attempt, which the deduplicated escalation channel
+   * folds into the open issue — a lost alert has no such recovery.
+   */
+  readEscalationState(logDir: string): Promise<CheckoutEscalationState>;
+  /**
+   * Persist the escalation marker and spool (Issue #1018). An empty state
+   * removes the file, so "the streak reset" and "nothing is queued" are the
+   * same observable fact.
+   */
+  writeEscalationState(
+    logDir: string,
+    state: CheckoutEscalationState,
+  ): Promise<void>;
   /**
    * Raise the crash-loop through the control plane (Issue #4204) — the
    * default files (or comments on) a deduplicated GitHub issue against the
@@ -211,18 +401,22 @@ async function appendLine(filePath: string, line: string): Promise<void> {
  * Output is appended to `pull.log` **under the log directory**, which is a
  * mounted host directory — never the checkout. The first failing command
  * short-circuits and returns a fail-loud error (Issue #3234).
+ *
+ * `deps` is the seam {@link runGitStepWithRetry} needs (Issue #1017); it
+ * defaults to the real git runner, so production callers pass nothing.
  */
 export function resetCheckoutToDefaultBranch(
   repoDir: string,
   branch: string,
   logDir: string,
+  deps: GitStepDeps = defaultGitStepDeps(),
 ): Promise<Result<void>> {
   return runGitSteps(repoDir, logDir, [
     ["fetch", "origin"],
     ["checkout", branch],
     ["reset", "--hard", `origin/${branch}`],
     ["clean", "-fd"],
-  ]);
+  ], deps);
 }
 
 /**
@@ -236,8 +430,9 @@ export function resetCheckoutToDefaultBranch(
 export function fetchOrigin(
   repoDir: string,
   logDir: string,
+  deps: GitStepDeps = defaultGitStepDeps(),
 ): Promise<Result<void>> {
-  return runGitSteps(repoDir, logDir, [["fetch", "--tags", "origin"]]);
+  return runGitSteps(repoDir, logDir, [["fetch", "--tags", "origin"]], deps);
 }
 
 /**
@@ -254,12 +449,87 @@ export function checkoutPinnedRef(
   repoDir: string,
   ref: string,
   logDir: string,
+  deps: GitStepDeps = defaultGitStepDeps(),
 ): Promise<Result<void>> {
   return runGitSteps(repoDir, logDir, [
     ["checkout", "--force", "--detach", ref],
     ["reset", "--hard", ref],
     ["clean", "-fd"],
-  ]);
+  ], deps);
+}
+
+/** Seams the retrying git-step runner needs, so it is testable (#1017). */
+export interface GitStepDeps {
+  /** Run one git invocation in the checkout. */
+  run(
+    args: string[],
+    options: { cwd: string },
+  ): Promise<Result<{ code: number; stdout: string; stderr: string }>>;
+  /** Wait, between retries. */
+  sleep(ms: number): Promise<void>;
+}
+
+/** The production seams: the bounded git runner and a real wait. */
+export function defaultGitStepDeps(): GitStepDeps {
+  return {
+    run: (args, options) => runGitCommand(args, options),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  };
+}
+
+/** One git step's outcome, plus anything worth saying about how it got there. */
+export interface GitStepAttempt {
+  result: Result<{ code: number; stdout: string; stderr: string }>;
+  /** Lines for `pull.log` — empty unless the step had to be retried. */
+  notes: string[];
+}
+
+/**
+ * Run one git step, retrying while the host's directory services are the
+ * reason it failed (Issue #1017).
+ *
+ * `No user exists for uid <n>` clears on its own, usually within seconds, so
+ * giving up on the first occurrence throws away the run: the launcher went on
+ * with a stale checkout and burned a third of its escalation streak in eight
+ * seconds. The retries are few and short — this runs before the launch, so it
+ * must cost seconds, not minutes — and every other failure returns
+ * immediately, exactly as before.
+ */
+export async function runGitStepWithRetry(
+  args: string[],
+  repoDir: string,
+  deps: GitStepDeps = defaultGitStepDeps(),
+): Promise<GitStepAttempt> {
+  const notes: string[] = [];
+  let result = await deps.run(args, { cwd: repoDir });
+
+  for (const delayMs of DIRECTORY_SERVICES_RETRY_DELAYS_MS) {
+    const uid = directoryServicesFailureUid(result);
+    if (uid === null) break;
+    notes.push(
+      `git ${args.join(" ")}: the host could not resolve uid ${uid} ` +
+        `(directory services); retrying in ${delayMs}ms (Issue #1017)`,
+    );
+    await deps.sleep(delayMs);
+    result = await deps.run(args, { cwd: repoDir });
+  }
+
+  // Only a step that ended up succeeding gets to claim a recovery; one that
+  // kept failing already reports the fault itself, and a "retried" line
+  // beside it would read as though the retry had helped.
+  if (notes.length > 0 && !(result.ok && result.value.code === 0)) {
+    return { result, notes: [] };
+  }
+  return { result, notes };
+}
+
+/** The uid a git step failed on, or `null` when that was not the fault. */
+function directoryServicesFailureUid(
+  result: Result<{ code: number; stdout: string; stderr: string }>,
+): string | null {
+  if (!result.ok) return directoryServicesUid(result.error.message);
+  if (result.value.code === 0) return null;
+  return directoryServicesUid(`${result.value.stderr}${result.value.stdout}`);
 }
 
 /**
@@ -271,13 +541,26 @@ async function runGitSteps(
   repoDir: string,
   logDir: string,
   steps: string[][],
+  deps: GitStepDeps = defaultGitStepDeps(),
 ): Promise<Result<void>> {
   const pullLog = `${logDir}/pull.log`;
 
   for (const args of steps) {
-    const result = await runGitCommand(args, { cwd: repoDir });
+    const attempt = await runGitStepWithRetry(args, repoDir, deps);
+    const result = attempt.result;
     if (!result.ok) {
       return { ok: false, error: result.error };
+    }
+    // A step that only succeeded because it was retried says so in the log
+    // the operator already reads for this update (Issue #1017): a silent
+    // recovery is indistinguishable from a condition that never happened,
+    // and this one is worth knowing recurred.
+    for (const note of attempt.notes) {
+      try {
+        await appendLine(pullLog, note);
+      } catch {
+        // Best-effort logging — never masks the git outcome.
+      }
     }
     const { code, stdout, stderr } = result.value;
     const output = `${stdout}${stderr}`;
@@ -435,28 +718,185 @@ function streakFilePath(logDir: string): string {
   return `${logDir}/${CHECKOUT_UPDATE_FAILURE_STREAK_FILE}`;
 }
 
-/** Read the persisted streak; absent or unreadable reads as zero. */
-async function defaultReadFailureStreak(logDir: string): Promise<number> {
+/** The empty streak — no failures, no start. */
+export function emptyCheckoutStreak(): CheckoutUpdateStreak {
+  return { count: 0, firstFailureAt: 0 };
+}
+
+/**
+ * Parse the streak file's contents (Issue #1017).
+ *
+ * Two formats are accepted, because a host upgrades in place and a launcher
+ * that dies parsing its own state file is worse than the bug it was fixing:
+ * the JSON object written since this change, and the bare decimal count every
+ * worker wrote before it. A bare count has no start, which reads as "unknown"
+ * — never as "just now", which would postpone an escalation the host had
+ * already earned.
+ */
+export function parseCheckoutStreak(text: string): CheckoutUpdateStreak {
+  const trimmed = text.trim();
+  if (trimmed === "") return emptyCheckoutStreak();
+
+  let parsed: unknown;
   try {
-    const text = await Deno.readTextFile(streakFilePath(logDir));
-    const parsed = Number.parseInt(text.trim(), 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    parsed = JSON.parse(trimmed);
   } catch {
-    return 0;
+    parsed = undefined;
+  }
+  if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+    const record = parsed as Record<string, unknown>;
+    const count = record["count"];
+    const started = record["firstFailureAt"];
+    if (typeof count === "number" && Number.isFinite(count) && count > 0) {
+      return {
+        count: Math.floor(count),
+        firstFailureAt:
+          typeof started === "number" && Number.isFinite(started) &&
+            started > 0
+            ? Math.floor(started)
+            : 0,
+      };
+    }
+    return emptyCheckoutStreak();
+  }
+
+  // The pre-#1017 format: a bare count on its own line.
+  const legacy = Number.parseInt(trimmed, 10);
+  return Number.isFinite(legacy) && legacy > 0
+    ? { count: legacy, firstFailureAt: 0 }
+    : emptyCheckoutStreak();
+}
+
+/** Read the persisted streak; absent, unreadable or malformed reads as empty. */
+async function defaultReadFailureStreak(
+  logDir: string,
+): Promise<CheckoutUpdateStreak> {
+  try {
+    return parseCheckoutStreak(await Deno.readTextFile(streakFilePath(logDir)));
+  } catch {
+    return emptyCheckoutStreak();
   }
 }
 
 /** Persist the streak. Best-effort — a write failure only loses the count. */
 async function defaultWriteFailureStreak(
   logDir: string,
-  count: number,
+  streak: CheckoutUpdateStreak,
 ): Promise<void> {
   try {
     await Deno.mkdir(logDir, { recursive: true });
-    await Deno.writeTextFile(streakFilePath(logDir), `${count}\n`);
+    await Deno.writeTextFile(
+      streakFilePath(logDir),
+      `${JSON.stringify(streak)}\n`,
+    );
   } catch {
     // Best-effort persistence.
   }
+}
+
+/** Path of the escalation marker and spool (Issue #1018). */
+function escalationSpoolPath(logDir: string): string {
+  return `${logDir}/${CHECKOUT_UPDATE_ESCALATION_SPOOL_FILE}`;
+}
+
+/** A spool entry read back off disk, or null when the record is not one. */
+function parseSpooledEscalation(
+  value: unknown,
+): SpooledCheckoutEscalation | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const { repoDir, streak, error, spooledAt } = record;
+  if (
+    typeof repoDir !== "string" || typeof error !== "string" ||
+    typeof spooledAt !== "string" || typeof streak !== "number" ||
+    !Number.isFinite(streak)
+  ) {
+    return null;
+  }
+  const rawCheckout = record["checkout"];
+  let checkout: CheckoutState | null = null;
+  if (
+    typeof rawCheckout === "object" && rawCheckout !== null &&
+    !Array.isArray(rawCheckout)
+  ) {
+    const state = rawCheckout as Record<string, unknown>;
+    if (
+      typeof state["branch"] === "string" &&
+      typeof state["dirtyFiles"] === "number"
+    ) {
+      checkout = {
+        branch: state["branch"],
+        dirtyFiles: state["dirtyFiles"],
+      };
+    }
+  }
+  return { repoDir, streak, error, checkout, spooledAt };
+}
+
+/**
+ * Read the escalation marker and spool (Issue #1018).
+ *
+ * Anything that stops the file meaning what it says — absent, unreadable,
+ * malformed — reads as "nothing escalated, nothing queued". That is the safe
+ * direction: it re-attempts an escalation the deduplicated channel folds into
+ * the issue already open, rather than silencing a host running stale code.
+ */
+async function defaultReadEscalationState(
+  logDir: string,
+): Promise<CheckoutEscalationState> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await Deno.readTextFile(escalationSpoolPath(logDir)));
+  } catch {
+    return emptyEscalationState();
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return emptyEscalationState();
+  }
+  const record = parsed as Record<string, unknown>;
+  const marker = record["escalatedStreak"];
+  return {
+    escalatedStreak: typeof marker === "number" && Number.isFinite(marker) &&
+        marker > 0
+      ? marker
+      : 0,
+    pending: parseSpooledEscalation(record["pending"]),
+  };
+}
+
+/**
+ * Persist the escalation marker and spool (Issue #1018).
+ *
+ * Fail-loud: a store that could not be written is thrown, because the caller
+ * would otherwise log "spooled for the next run" over evidence that is not
+ * anywhere — a claim of success for something that failed. The caller catches,
+ * says so, and carries on; the update failure itself is never masked. A file
+ * that was already absent is not a failure to remove.
+ */
+async function defaultWriteEscalationState(
+  logDir: string,
+  state: CheckoutEscalationState,
+): Promise<void> {
+  const path = escalationSpoolPath(logDir);
+  if (state.escalatedStreak === 0 && state.pending === null) {
+    try {
+      await Deno.remove(path);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    return;
+  }
+  await Deno.mkdir(logDir, { recursive: true });
+  // Written through the temp-file-and-rename helper: a launch interrupted
+  // mid-write must not leave a half-written store, because the queued report
+  // is the only remaining record of an outage nobody could report.
+  const written = await atomicWrite({
+    targetFile: path,
+    content: `${JSON.stringify(state, null, 2)}\n`,
+  });
+  if (!written.ok) throw written.error;
 }
 
 /**
@@ -470,6 +910,20 @@ export function diagnoseUpdateFailure(
   branch: string,
   checkout: CheckoutState | null,
 ): string {
+  // Named before the development-tree diagnosis is even considered, because
+  // this one is about the *host*, not the checkout (Issue #1017). Left
+  // unnamed, git's own "make sure you have the correct access rights"
+  // boilerplate sent an operator to the deploy keys and the SSH agent, and
+  // there was nothing wrong with either.
+  const uid = directoryServicesUid(error);
+  if (uid !== null) {
+    return `${error} — this is the host's directory services failing to ` +
+      `resolve uid ${uid}, the user this launcher is already running as: ` +
+      `git could not read that user's passwd entry, so it could not find ` +
+      `their ~/.ssh or ~/.gitconfig. It is neither a credentials nor a ` +
+      `network fault, it is a known transient after sleep/wake and ` +
+      `DirectoryService restarts, and it clears on its own (Issue #1017).`;
+  }
   if (
     !checkout || branch === "" ||
     (checkout.dirtyFiles === 0 && checkout.branch === branch)
@@ -498,10 +952,16 @@ export async function escalateCheckoutUpdateFailure(
   const host = escalationHostId();
   const title = `Worker checkout update failing on ${host}`;
   const body = [
-    `The host-side worker checkout update on \`${host}\` has failed ` +
-    `${context.streak} consecutive runs — the worker keeps launching on the ` +
-    `checkout it already has, so that host is running stale code ` +
-    `(Issues #4204, #513).`,
+    context.recovered
+      ? `The host-side worker checkout update on \`${host}\` failed ` +
+        `${context.streak} consecutive runs and has **since recovered** — it ` +
+        `updated cleanly on the run that delivered this report. The host was ` +
+        `launching on stale code for the duration, and could not reach GitHub ` +
+        `to say so at the time (Issues #4204, #1018).`
+      : `The host-side worker checkout update on \`${host}\` has failed ` +
+        `${context.streak} consecutive runs — the worker keeps launching on ` +
+        `the checkout it already has, so that host is running stale code ` +
+        `(Issues #4204, #513).`,
     "",
     "```",
     context.error,
@@ -512,6 +972,17 @@ export async function escalateCheckoutUpdateFailure(
         `${context.checkout.dirtyFiles} uncommitted change(s).`
       : "Checkout state could not be read.",
     "",
+    // A report that could not be sent when the fault started says so, rather
+    // than reading as though the fault only began now (Issue #1018).
+    ...(context.spooledAt
+      ? [
+        `This report was queued on \`${context.spooledAt}\` — the host could ` +
+        `not reach GitHub at the time — and delivered on the first run that ` +
+        `could (Issue #1018). The evidence above is from the last failing ` +
+        `run before delivery.`,
+        "",
+      ]
+      : []),
     "If this checkout doubles as a development tree, commit or stash the " +
     "in-flight work, or give the worker its own dedicated clone — see " +
     "docs/DEPLOYMENT.md (Dedicated clone).",
@@ -532,6 +1003,9 @@ export function createDefaultCheckoutUpdateDeps(): CheckoutUpdateDeps {
     describeCheckoutState,
     readFailureStreak: defaultReadFailureStreak,
     writeFailureStreak: defaultWriteFailureStreak,
+    now: () => Math.floor(Date.now() / 1000),
+    readEscalationState: defaultReadEscalationState,
+    writeEscalationState: defaultWriteEscalationState,
     escalate: escalateCheckoutUpdateFailure,
     log: appendRunCoreLogLine,
   };
@@ -588,11 +1062,194 @@ async function holdAtPinnedRef(
   return undefined;
 }
 
+/** The message of a thrown value, whatever it was. */
+function failureText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Persist the escalation state, saying so when it could not be persisted.
+ *
+ * Never masks the update failure — the caller carries on either way — but a
+ * store that did not survive is said out loud rather than reported as queued:
+ * the operator has to know that the evidence is only in this log.
+ *
+ * @returns Whether the state actually reached the disk
+ */
+async function saveEscalationState(
+  deps: CheckoutUpdateDeps,
+  logDir: string,
+  state: CheckoutEscalationState,
+): Promise<boolean> {
+  try {
+    await deps.writeEscalationState(logDir, state);
+    return true;
+  } catch (error) {
+    await deps.log(
+      logDir,
+      `Could not persist the checkout-update escalation state in ${logDir} ` +
+        `(Issue #1018): ${failureText(error)}`,
+    );
+    return false;
+  }
+}
+
+/**
+ * Deliver the crash-loop escalation for the current streak (Issues #4204,
+ * #1018).
+ *
+ * Called on every failing run at or above the threshold. The marker — not the
+ * streak count — decides whether to stay quiet, so an attempt that threw
+ * leaves the streak eligible and the next run tries again; only a delivered
+ * report silences the rest of the streak. Evidence that could not be sent is
+ * spooled, and a run whose network has come back sends the spooled evidence
+ * rather than pretending the fault started now.
+ *
+ * Every step is best-effort: nothing here may mask the underlying update
+ * failure.
+ *
+ * @param deps - The injected side effects
+ * @param current - This run's failure, as the escalation would report it
+ * @returns Whether a report actually reached GitHub on this run
+ */
+async function deliverEscalation(
+  deps: CheckoutUpdateDeps,
+  current: CheckoutUpdateEscalationContext,
+): Promise<boolean> {
+  const { logDir, streak } = current;
+
+  let state: CheckoutEscalationState;
+  try {
+    state = await deps.readEscalationState(logDir);
+  } catch {
+    state = emptyEscalationState();
+  }
+  // One delivered report per streak — a crash-loop must not spam the repo.
+  //
+  // The marker is only believed while this run is *later in the same streak*
+  // than the delivery it records, which is what the count strictly increasing
+  // within a streak means. A marker left behind by an earlier streak — the
+  // clear on recovery could not remove the file, say — is therefore ignored
+  // rather than silencing the host for ever, which would be a worse failure
+  // than the duplicate report the deduplicated channel folds into one issue.
+  if (state.escalatedStreak > 0 && streak > state.escalatedStreak) return false;
+
+  const spooled = state.pending;
+  const context: CheckoutUpdateEscalationContext = spooled === null
+    ? current
+    : {
+      ...current,
+      error: spooled.error,
+      checkout: spooled.checkout,
+      spooledAt: spooled.spooledAt,
+    };
+
+  await deps.log(
+    logDir,
+    `The worker checkout update has failed ${streak} consecutive runs — ` +
+      `escalating through the control plane (Issue #4204)` +
+      (spooled === null
+        ? ""
+        : `, delivering the report spooled at ${spooled.spooledAt} ` +
+          `(Issue #1018)`),
+  );
+
+  try {
+    await deps.escalate(context);
+  } catch (escalationError) {
+    // Queue the evidence — one entry per streak, overwritten — and leave the
+    // marker unset so the next failing run attempts delivery again (#1018).
+    const queued = await saveEscalationState(deps, logDir, {
+      escalatedStreak: 0,
+      pending: {
+        repoDir: current.repoDir,
+        streak,
+        error: current.error,
+        checkout: current.checkout,
+        spooledAt: spooled?.spooledAt ?? new Date().toISOString(),
+      },
+    });
+    await deps.log(
+      logDir,
+      `Checkout update escalation failed, ${
+        queued
+          ? "spooled for the next run with connectivity"
+          : "and the evidence could NOT be queued — it exists only in this log"
+      } (Issue #1018): ${failureText(escalationError)}`,
+    );
+    return false;
+  }
+
+  await saveEscalationState(deps, logDir, {
+    escalatedStreak: streak,
+    pending: null,
+  });
+  return true;
+}
+
+/**
+ * End the streak, delivering whatever it never managed to say (Issue #1018).
+ *
+ * A queued report exists precisely because the host could not reach GitHub,
+ * and the run that recovers is the first that can — so it is sent, marked as
+ * an outage that has since ended, which is how "the operator learns about an
+ * outage after it ends rather than never" actually holds. Nothing is ever
+ * re-armed by it: only a report that was never delivered is flushed, so a
+ * streak that already escalated stays at one issue.
+ *
+ * The spool is then cleared **whatever happened to that send**, because the
+ * condition it describes has cleared — carrying it forward would be the stale
+ * state that caught Issues #805 and #808. A flush that could not be delivered
+ * is said out loud instead, so the operator can see in `run_core.log` that an
+ * alert existed and why it never arrived.
+ */
+async function clearEscalationState(
+  deps: CheckoutUpdateDeps,
+  repoDir: string,
+  logDir: string,
+): Promise<void> {
+  let state: CheckoutEscalationState;
+  try {
+    state = await deps.readEscalationState(logDir);
+  } catch {
+    state = emptyEscalationState();
+  }
+  const pending = state.pending;
+  if (pending !== null) {
+    await deps.log(
+      logDir,
+      `The checkout update succeeded — delivering the escalation spooled at ` +
+        `${pending.spooledAt} after ${pending.streak} consecutive failures, ` +
+        `now that this host can reach GitHub again (Issue #1018)`,
+    );
+    try {
+      await deps.escalate({
+        repoDir,
+        logDir,
+        streak: pending.streak,
+        error: pending.error,
+        checkout: pending.checkout,
+        spooledAt: pending.spooledAt,
+        recovered: true,
+      });
+    } catch (escalationError) {
+      await deps.log(
+        logDir,
+        `The spooled checkout update escalation could not be delivered and ` +
+          `is being discarded, because the condition it reports has already ` +
+          `cleared (Issue #1018): ${failureText(escalationError)}`,
+      );
+    }
+  }
+  await saveEscalationState(deps, logDir, emptyEscalationState());
+}
+
 /**
  * Bring a checkout to where this host's update mode says it belongs — the tip
  * of `origin/<default-branch>` under `dynamic`, the pinned ref under `frozen`
  * (Issue #624) — counting consecutive failures and escalating a crash-loop
- * exactly once per streak (#4204).
+ * exactly once per streak (#4204), retrying until one report is delivered
+ * (#1018).
  *
  * @param options - The checkout, the log directory, an optional branch, and
  *   the update mode with its pinned ref.
@@ -666,12 +1323,14 @@ export async function updateCheckout(
       await deps.log(logDir, overwriteNotice);
     }
 
-    // A successful update ends any failure streak (Issue #4204).
+    // A successful update ends any failure streak (Issue #4204) and takes the
+    // escalation marker and any queued report with it (Issue #1018).
     try {
-      await deps.writeFailureStreak(logDir, 0);
+      await deps.writeFailureStreak(logDir, emptyCheckoutStreak());
     } catch {
       // Best-effort persistence.
     }
+    await clearEscalationState(deps, repoDir, logDir);
     return {
       ok: true,
       branch,
@@ -693,43 +1352,45 @@ export async function updateCheckout(
   await deps.log(logDir, `Checkout update failed: ${detail}`);
 
   // Consecutive-failure escalation (Issue #4204): one blip stays a log line;
-  // a crash-loop is raised through the control plane exactly once per streak,
-  // so an unattended host running stale code is visible where the operator
-  // actually looks. Every step is best-effort — nothing here may mask the
-  // underlying failure.
-  let streak: number;
+  // a crash-loop is raised through the control plane once per streak, so an
+  // unattended host running stale code is visible where the operator actually
+  // looks. Delivery is attempted on every run from the threshold on until one
+  // report lands (Issue #1018). Every step is best-effort — nothing here may
+  // mask the underlying failure.
+  const nowSeconds = deps.now();
+  let previous: CheckoutUpdateStreak;
   try {
-    streak = (await deps.readFailureStreak(logDir)) + 1;
+    previous = await deps.readFailureStreak(logDir);
   } catch {
-    streak = 1;
+    previous = emptyCheckoutStreak();
   }
+  // The start survives the whole streak, so every failure in one ongoing
+  // condition is measured from the same moment; a streak that begins here
+  // starts now (Issue #1017).
+  const streak: CheckoutUpdateStreak = {
+    count: previous.count + 1,
+    firstFailureAt: previous.count > 0 && previous.firstFailureAt > 0
+      ? previous.firstFailureAt
+      : nowSeconds,
+  };
   try {
     await deps.writeFailureStreak(logDir, streak);
   } catch {
     // Best-effort persistence.
   }
 
-  let escalated = false;
-  if (streak === CHECKOUT_UPDATE_ESCALATION_THRESHOLD) {
-    await deps.log(
+  // Both the count AND the span (Issue #1017): three failures eight seconds
+  // apart are one transient glitch, not the hour of stale code this
+  // escalation was written to report.
+  const escalated = checkoutStreakEscalates(streak, nowSeconds)
+    ? await deliverEscalation(deps, {
+      repoDir,
       logDir,
-      `The worker checkout update has failed ${streak} consecutive runs — ` +
-        `escalating through the control plane (Issue #4204)`,
-    );
-    try {
-      await deps.escalate({ repoDir, logDir, streak, error: detail, checkout });
-      escalated = true;
-    } catch (escalationError) {
-      await deps.log(
-        logDir,
-        `Checkout update escalation failed (continuing): ${
-          escalationError instanceof Error
-            ? escalationError.message
-            : String(escalationError)
-        }`,
-      );
-    }
-  }
+      streak: streak.count,
+      error: detail,
+      checkout,
+    })
+    : false;
 
   // A failed update reports the failure, which already carries the
   // development-tree diagnosis; the overwrite hint belongs to updates that
@@ -740,7 +1401,7 @@ export async function updateCheckout(
     mode,
     ref,
     error: detail,
-    streak,
+    streak: streak.count,
     escalated,
     overwriteNotice: "",
   };
