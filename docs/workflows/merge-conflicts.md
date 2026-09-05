@@ -22,6 +22,9 @@ the worker escalates with `needs-human` and a conflict summary instead of
 retrying forever. Every attempt ends visibly: merged, failed, or escalated. An
 attempt that opened and then went silent was disrupted, not judged — it does not
 spend the budget, it is re-attempted, and three disruptions on one PR escalate.
+A PR that still conflicts and has carried the label for **8 hours with nothing
+concluding** is a stalled queue in its own right: it is filed as work, once,
+whatever caused the silence.
 
 ```mermaid
 flowchart TD
@@ -187,6 +190,69 @@ actually used.
   resolution runs for as long as the agent takes, so without renewal a second
   host cleaned the lock as stale and started a competing attempt on the same
   branch — racing the first one's push and leaving it looking disrupted.
+
+### ⏰ A label with nothing behind it escalates itself
+
+"Nothing stalls unowned" above covers a stall at the **end** of the ladder — a
+PR out of budget whose final escalation never landed. Nothing covered a stall
+**before the first attempt**, which is the case that actually happened: the
+label went on NEAT-AI-Ockham#116 and nothing followed for hours.
+
+A PR carrying `merge-conflict` with **no concluded attempt** after a bounded
+time is itself a defect, whatever caused it, so the watchdog in
+`worker/deno/lib/merge_conflict_stall_watchdog.ts` detects that shape directly
+rather than any one cause. Every other guard in this subsystem keys on attempt
+records; this one cannot, because the failure being detected is that *no
+attempt record exists*. It keys on the **age of the label**, read from the PR's
+`labeled` timeline event.
+
+```mermaid
+flowchart TD
+    A[PR carries merge-conflict] --> S{"Still CONFLICTING<br/>on the live state?"}
+    S -->|"No — stale label"| Q[Nothing to say]
+    S -->|Yes| B{"Label older than 8 h?<br/>(2× the cooldown)"}
+    B -->|No| Q
+    B -->|Yes| C{"needs-human, closed,<br/>or already escalated?"}
+    C -->|Yes| Q
+    C -->|No| D{"Anything at all since<br/>the label or the last<br/>conclusion, within 8 h?"}
+    D -->|"Yes — a conclusion moved it"| Q
+    D -->|"No — including an attempt<br/>that opened and went silent"| E["One comment on the PR:<br/>label age, the silence,<br/>the skip reasons"]
+    E --> F["escalateAsWork — an issue<br/>the fleet can claim"]
+    F --> G["Label the PR escalated<br/>(never needs-human)"]
+    style A fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+    style E fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style F fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style G fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style Q fill:#707070,stroke:,color:#fff
+```
+
+Five details carry the weight:
+
+- **It reads the live state, not the label.** The label is only removed by a
+  successful fleet merge, so a conflict that cleared by other means leaves it
+  behind — the exact shape #116 ended in. A labelled PR GitHub now calls
+  `MERGEABLE` is skipped before it costs a timeline or a thread read. An
+  `UNKNOWN` state — GitHub computes mergeability lazily — is re-read per PR and,
+  if it still cannot be established, said out loud rather than dropped.
+- **A conclusion, not an attempt, clears it.** An attempt that opened and then
+  went silent is the disrupted case, and if the disruption bound has not fired
+  either then nothing is moving the PR — so that PR *is* detected. Keying on
+  "an attempt marker exists" would miss the GRQ#4408 shape exactly.
+- **The clock starts at the label, and a conclusion restarts it.** Markers
+  older than the `labeled` event belong to a previous conflict and say nothing
+  about this one. A conclusion puts the PR back in the ordinary ladder and
+  starts a fresh clock from itself — so one failed attempt in hour two does not
+  buy permanent silence for a PR that then never gets its second, which nothing
+  else watches either, because its budget is not spent.
+- **Dedupe lives on the PR.** One escalation per PR per stall, keyed on the
+  `<!-- vibe-work-escalation:owner/repo#N -->` marker comment. Every host runs
+  this scan every cycle, and the failure being detected is precisely the kind
+  that recurs every cycle, so host-local dedupe would turn a stalled PR into a
+  comment flood. Suppressing signals are trusted only from a fleet author: a
+  forged marker must never buy silence.
+- **It escalates, it never retries.** Forcing an attempt from a watchdog would
+  race the ordinary pass and manufacture the disrupted state the workflow works
+  hard to avoid.
 
 ### 🤫 Why #116 went silent
 
