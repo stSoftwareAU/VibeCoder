@@ -600,12 +600,31 @@ bounded 180 "${DENO_CMD}" run \
   --name "${CONTAINER_NAME}-egress" \
   --out "${EGRESS_LOG}" </dev/null >&2 || egress_status=$?
 
+# Print what the probe found, on the launcher's own stderr.
+#
+# The evidence has two readers and only one of them reads the file. On a
+# supervised host loop.sh sets VIBE_SUPERVISOR_RECORDS_OUTCOME, record_outcome
+# below returns immediately, and the supervisor records the outcome from the
+# launch log it tees this launcher's output into - so anything written only to
+# EGRESS_LOG never reaches the escalation, and the network-unavailable marker
+# never reaches the classifier that keeps a link outage off the failure ladder
+# (Issue #949). Printing it here puts it in front of both readers.
+print_egress_evidence() {
+  if [[ -s "${EGRESS_LOG}" ]]; then
+    cat "${EGRESS_LOG}" >&2
+  else
+    echo "[run.sh] warning: the egress probe wrote no evidence to" \
+      "${EGRESS_LOG} - the report will name the fault with no cause attached" >&2
+  fi
+}
+
 if ((egress_status == EGRESS_BLOCKED_EXIT)); then
   # Parked, not retried: the reject route is host networking state a non-root
   # process cannot change, so rebuilding an image that is fine would burn
   # minutes per cycle for ever. The phase marker is what stops the outcome
   # recorder attributing this to the build.
   record_phase container_egress
+  print_egress_evidence
   echo "[run.sh] parking this host: a container cannot reach the network" \
     "while the host itself can - this is host networking, not the image" \
     "build (Issue #997); see the hop table above" >&2
@@ -616,6 +635,7 @@ elif ((egress_status == EGRESS_NETWORK_DOWN_EXIT)); then
   # The host cannot reach it either, so there is nothing here for a person to
   # fix. The probe's evidence carries the network-unavailable marker, which is
   # what keeps this off the failure ladder (Issue #949).
+  print_egress_evidence
   echo "[run.sh] the network is unreachable from this host as well as from a" \
     "container - not building; the next cycle retries (Issue #997)" >&2
   log_run_core "container-egress-probe: the network is unreachable from the host too - waiting at the base cadence, escalating nothing (Issues #949, #997)"

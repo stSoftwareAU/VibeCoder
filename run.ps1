@@ -536,6 +536,32 @@ $EgressBlockedExit = 3
 $EgressNetworkDownExit = 4
 $HostEgressBlockedExitStatus = 88
 
+<#
+.SYNOPSIS
+    Print what the probe found, on this launcher's own stderr (Issue #997).
+.DESCRIPTION
+    The evidence has two readers and only one of them reads the file. On a
+    supervised host loop.ps1 sets VIBE_SUPERVISOR_RECORDS_OUTCOME, this
+    launcher's own recorder returns immediately, and the supervisor records the
+    outcome from the launch log it captures this launcher's output into — so
+    anything written only to $EgressLog never reaches the escalation, and the
+    network-unavailable marker never reaches the classifier that keeps a link
+    outage off the failure ladder (Issue #949).
+#>
+function Write-EgressEvidence {
+    $text = ""
+    if (Test-Path -LiteralPath $EgressLog) {
+        $text = (Get-Content -LiteralPath $EgressLog -Raw -ErrorAction SilentlyContinue)
+    }
+    if ($text) {
+        [Console]::Error.Write($text)
+        if (-not $text.EndsWith("`n")) { [Console]::Error.WriteLine("") }
+    } else {
+        [Console]::Error.WriteLine(
+            "[run.ps1] warning: the egress probe wrote no evidence to $EgressLog - the report will name the fault with no cause attached")
+    }
+}
+
 $EgressLog = Join-Path ([System.IO.Path]::GetTempPath()) `
     ("vibe-egress-" + [System.Guid]::NewGuid().ToString("N") + ".log")
 $egress = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
@@ -558,6 +584,7 @@ if ($egress.ExitCode -eq $EgressBlockedExit) {
     # would burn minutes per cycle for ever. The phase marker is what stops
     # the outcome recorder attributing this to the build.
     Write-LaunchPhase "container_egress"
+    Write-EgressEvidence
     [Console]::Error.WriteLine(
         "[run.ps1] parking this host: a container cannot reach the network while the host itself can - this is host networking, not the image build (Issue #997); see the hop table above")
     Write-RunCoreLog "container-egress-probe: parked - container_egress_blocked; a container cannot reach the network while the host can (Issue #997)"
@@ -567,6 +594,7 @@ if ($egress.ExitCode -eq $EgressBlockedExit) {
     # The host cannot reach it either, so there is nothing here for a person
     # to fix. The probe's evidence carries the network-unavailable marker,
     # which is what keeps this off the failure ladder (Issue #949).
+    Write-EgressEvidence
     [Console]::Error.WriteLine(
         "[run.ps1] the network is unreachable from this host as well as from a container - not building; the next cycle retries (Issue #997)")
     Write-RunCoreLog "container-egress-probe: the network is unreachable from the host too - waiting at the base cadence, escalating nothing (Issues #949, #997)"

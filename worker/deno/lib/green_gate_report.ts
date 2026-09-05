@@ -357,13 +357,16 @@ export async function gatherGreenGateEvidence(
       }
       continue;
     }
+    // A parked cycle emits more than the park: the backoff record and its
+    // escalation both name the same phase. Counting those as restarts would
+    // put the host that ran nothing back among the ones that kept retrying —
+    // the whole phase is skipped, not just the `host_parked` action.
+    if (event.details?.phase === EGRESS_PHASE) continue;
     restarts++;
     // Everything else from this module describes a launcher that got as far
     // as running, or failing at, a phase the park replaces.
-    if (event.details?.phase !== EGRESS_PHASE) {
-      if (latestRunningAt === undefined || at > latestRunningAt) {
-        latestRunningAt = at;
-      }
+    if (latestRunningAt === undefined || at > latestRunningAt) {
+      latestRunningAt = at;
     }
   }
   const parked: HostParkedEvidence = {

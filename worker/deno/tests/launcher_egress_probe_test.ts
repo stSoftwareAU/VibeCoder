@@ -117,6 +117,15 @@ for (const launcher of LAUNCHERS) {
           // A blocked host is not a link outage: it must not be suppressed.
           assertEquals(isNetworkUnavailableLaunch(handedOver), false);
 
+          // The evidence must survive whoever records the outcome. Under
+          // `loop.sh` the supervisor records it from its own tee'd launch log
+          // (VIBE_SUPERVISOR_RECORDS_OUTCOME), so a hop table that only ever
+          // reached the launcher's own recorder would be lost on every
+          // supervised host — and the message says "see the hop table above".
+          assertStringIncludes(outcome.stderr, "| hop | result |");
+          assertStringIncludes(outcome.stderr, "bridge100");
+          assertStringIncludes(outcome.stderr, "utun8");
+
           // Per host, in the host's own log: unavailable capacity, named.
           assertStringIncludes(
             await runCoreLog(harness),
@@ -150,6 +159,12 @@ for (const launcher of LAUNCHERS) {
           assert(handedOver !== null, "no evidence reached the recorder");
           assertEquals(isNetworkUnavailableLaunch(handedOver), true);
           assertEquals(await launchPhaseMarker(harness), "runtime_detection");
+
+          // And on a supervised host, where the launcher's own recorder is a
+          // no-op and the supervisor reads its tee'd launch log instead: the
+          // marker has to be in what the launcher printed, or the outage
+          // climbs the failure ladder it exists to stay off (Issue #949).
+          assertEquals(isNetworkUnavailableLaunch(outcome.stderr), true);
         },
         launcher,
       );

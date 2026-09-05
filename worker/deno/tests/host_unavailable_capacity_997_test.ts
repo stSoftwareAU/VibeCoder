@@ -216,6 +216,64 @@ Deno.test("green-gate report - a parked host is unavailable capacity with a reas
   assertEquals(report.host.restarts, 0);
 });
 
+Deno.test("green-gate report - reads the recorder's own events, not a hand-written park", async () => {
+  // The synthetic fixtures above carry one event per parked cycle. The real
+  // recorder writes three — the park, the backoff record and its escalation,
+  // all naming the same phase — and a report built only against the tidy
+  // fixture would count two of them as restarts and describe a host that ran
+  // nothing as one that kept retrying.
+  const workDir = await Deno.makeTempDir({ prefix: "vibe_egress_report_" });
+  try {
+    let clock = 1_755_000_000;
+    for (const cycle of [0, 1]) {
+      clock += cycle * 1800;
+      await recordContainerRestartOutcome({
+        workDir,
+        exitStatus: HOST_EGRESS_BLOCKED_EXIT_STATUS,
+        phaseMarker: "container_egress",
+        crashConfig: {
+          workerName: "test-worker",
+          cooldownSeconds: 0,
+          logTailMaxBytes: 50_000,
+          stateDir: `${workDir}/state`,
+        },
+        hostId: "GRQ-23",
+        slots: 2,
+        now: () => clock,
+        send: () => Promise.resolve({ ok: true, value: { notified: true } }),
+      });
+    }
+
+    const events = await Deno.readTextFile(`${workDir}/logs/self-heal.jsonl`);
+    // More than one event per cycle — that is the point of this test.
+    assert(events.split("\n").filter((line) => line.trim()).length > 2);
+
+    // `emitSelfHealEvent` stamps its own events from the wall clock, so the
+    // window is measured from the wall clock too — the injected clock above
+    // drives the backoff, not the log.
+    const evidence = await gatherGreenGateEvidence(
+      sources({
+        now: () => new Date(Date.now() + 60_000),
+        readSelfHealEvents: () => Promise.resolve(events),
+      }),
+      { windowDays: 30, minWindowDays: 30, regressionIssues: [] },
+    );
+    const report = analyseGreenGate(evidence, {
+      windowDays: 30,
+      minWindowDays: 30,
+      regressionIssues: [],
+    });
+
+    assertEquals(report.host.availability, "unavailable");
+    assertEquals(report.host.unavailableReason, HOST_EGRESS_BLOCKED_REASON);
+    assertEquals(report.host.parkedCycles, 2);
+    // Nothing was rebuilt, so nothing is reported as a restart.
+    assertEquals(report.host.restarts, 0);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
 Deno.test("green-gate report - a host that launched again is available", async () => {
   const events = [
     selfHealEvent("2026-08-17T01:00:00Z", "host_parked", PARK_DETAILS),
