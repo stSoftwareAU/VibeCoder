@@ -1849,7 +1849,8 @@ restart:
 > symptom #399 cites — an issue claim is no longer killed at the hour with a
 > partial budget. It does **not** address what #399 is actually about: the cost
 > of a slow `./quality.sh` gate inside the execute budget. Both were true at
-> once; only the first is fixed here.
+> once; only the first is fixed here. The second is Issue #1138 — see
+> [The full gate is conditional on the budget left](#the-full-gate-is-conditional-on-the-budget-left-issue-1138).
 
 ### ⏱️ How timeouts interact
 
@@ -2007,17 +2008,87 @@ only place a still-progressing agent is stopped. Extensions are bounded by it:
 #### The agent is told to wind down before the cap (Issue #508)
 
 An agent cannot be interrupted mid-session — its stdin carries the prompt and
-is closed — so the remaining budget is written where it can read it. Inside the
-last **600 s** of runway the worker writes `.vibe-run-budget.md` into the
-checkout and refreshes it at every later check: seconds remaining, elapsed,
-extensions granted, and the instruction to stop waiting, commit and push, and
-leave a resumable note. The issue prompt tells the agent to read that file
-between polls of any long-running job.
+is closed — so the remaining budget is written where it can read it. The worker
+writes `.vibe-run-budget.md` into the checkout, and refreshes it at every later
+check, once the runway can no longer cover something the agent might start.
+That is **two bands, one file** (Issue #1138):
+
+- **Inside the last 600 s** — the wind-down window. The notice states the
+  seconds remaining, elapsed, extensions granted, and the instruction to stop
+  waiting, commit and push, and leave a resumable note. The operator log says
+  `wind-down notice written`.
+- **Above the window, while the runway is still short of what the quality gate
+  needs** (~1080 s by default, more on a repo whose gate is measurably slower)
+  — the notice refuses the gate and says the run itself continues. No
+  stop-waiting instruction is emitted there: the run is fine, only the gate
+  does not fit. The operator log says `run-budget notice written`.
+
+The issue prompt tells the agent to read that file between polls of any
+long-running job, and before starting the gate. Because the file now means two
+different things, anything asking "was this run warned?" — the handover note
+does — reads its contents rather than its presence.
 
 The name is hidden, so the enforced `.gitignore` keeps it out of every commit
 and `git status` never reports it — writing it cannot move the working-tree
 probe. Any notice left by a previous run is cleared when the next execute phase
 starts.
+
+#### The full gate is conditional on the budget left (Issue #1138)
+
+The quality gate is the most expensive thing an agent can start. Across 407
+observations of a run's most recent tool call being `./quality.sh`, the median
+elapsed time was **17 minutes** — inside a run budget of roughly an hour — and
+agents were still inside it at 49 to 68 minutes. Starting it with ten minutes
+left cannot end well: the gate does not finish, nothing it reports gets fixed,
+and the runway needed to commit and push is gone.
+
+Nothing is lost by skipping it. CI runs the same checks on the PR in parallel
+shards on dedicated runners, and the worker runs its own gate
+(`phases/quality_gate_remediation_phase.ts`) after the agent stops. The agent's
+run is the third copy — the only one paid for out of the run budget.
+
+So the instruction the agent receives is budget-aware, and it comes from one
+place: `buildQualityInstructions()` (`worker/deno/lib/repo_config.ts`), spliced
+into every prompt with a `{{QUALITY_INSTRUCTIONS}}` placeholder. It states what
+the gate costs — the duration the baseline gate actually took on this
+repository this cycle, or a 900 s fleet assumption when the baseline was reused
+— and tells the agent to check `.vibe-run-budget.md` before starting it. The
+wind-down notice refuses the gate outright when the runway cannot cover it, and
+hands over the note that records the skip:
+
+```markdown
+<!-- vibe-quality-gate-skipped required="1080s" remaining="420s" -->
+```
+
+A skipped gate is never silent: that note goes in the PR summary (or
+`.pr_response_message`), because a gate nobody ran reads exactly like a gate
+that passed.
+
+**A slow gate is refused for most of a run, by design.** The refusal band is
+`gate + 180 s`, so a repo whose gate measurably takes 40 minutes refuses it
+from about 17 minutes into an hour-long run and does not offer it again. That
+is the intended trade: on such a repo the agent could never have finished the
+gate and acted on it anyway, and CI runs it in parallel shards regardless. A
+repo in that position should shorten its gate or set `quality_command` to the
+subset worth running locally.
+
+```mermaid
+flowchart TD
+    A["Agent finishing its change"] --> B{".vibe-run-budget.md exists?"}
+    B -- "no" --> C["Run the full gate once, in the foreground"]
+    B -- "yes" --> D{"remaining ≥ gate + 180s tail?"}
+    D -- "yes" --> C
+    D -- "no" --> E["Targeted checks only<br/>+ skip note in the PR"]
+    C --> F["Worker gate, then CI"]
+    E --> F
+    style E fill:#f4a261,stroke:#b5651d,color:#000
+    style C fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+No prompt template may hard-code its own "run the gate before you push":
+`prompt_gate_instruction_check.ts` scans every `prompts/*/prompt.md` and fails
+the suite when one does, so the fleet cannot drift back to an instruction its
+budget will not pay for.
 
 #### A capped run is released, not failed (Issue #424)
 
