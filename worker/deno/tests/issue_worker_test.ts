@@ -2251,7 +2251,15 @@ Deno.test("completion - adds milestone section when milestone present", async ()
   assertEquals(prBody.includes("Closes #42"), true);
 });
 
-Deno.test("completion - skips auto-merge for milestone PRs (Issue #1125)", async () => {
+// Issue #1136 supersedes the Issue #1125 skip below. #1125 skipped auto-merge
+// for "milestone PRs", but the PR this path raises is a milestone *child* — the
+// worker branch into `milestone/**` — not the summary PR into the default
+// branch, which `milestone_completion.ts` raises and `decideSummaryPrMerge`
+// re-gates at merge time (Issue #3909). The skip therefore left every child PR
+// unarmed at creation, so the only mechanism that could land it was the
+// once-per-cycle sweep that runs *before* the work which creates it. PR #1133
+// sat green and unmerged for 51 minutes as a result.
+Deno.test("completion - arms auto-merge on a milestone child PR at creation (Issue #1136)", async () => {
   const ctx = makeContext({ milestoneTitle: "OIDC Auth" });
   const state = makeState({ milestoneBranch: "milestone/oidc-auth" });
   let capturedSkipAutoMerge: boolean | undefined;
@@ -2274,8 +2282,8 @@ Deno.test("completion - skips auto-merge for milestone PRs (Issue #1125)", async
   assertEquals(result.status, "continue");
   assertEquals(
     capturedSkipAutoMerge,
-    true,
-    "Auto-merge should be skipped for milestone PRs",
+    false,
+    "A milestone child PR is armed at creation, not left for the next cycle",
   );
 });
 
@@ -2307,7 +2315,9 @@ Deno.test("completion - enables auto-merge for non-milestone PRs (Issue #1125)",
   );
 });
 
-Deno.test("completion - skips auto-merge for existing milestone PR (idempotency, Issue #1125)", async () => {
+// Issue #1136: the recovery path arms the same way the creation path does —
+// see the note above the milestone child test.
+Deno.test("completion - arms auto-merge on a recovered milestone child PR (idempotency, Issue #1136)", async () => {
   const ctx = makeContext({ milestoneTitle: "OIDC Auth" });
   const state = makeState({ milestoneBranch: "milestone/oidc-auth" });
   let capturedSkipAutoMerge: boolean | undefined;
@@ -2330,8 +2340,8 @@ Deno.test("completion - skips auto-merge for existing milestone PR (idempotency,
   assertEquals(result.status, "continue");
   assertEquals(
     capturedSkipAutoMerge,
-    true,
-    "Auto-merge should be skipped for existing milestone PRs",
+    false,
+    "A recovered milestone child PR is armed too — the sweep is the backstop",
   );
 });
 
