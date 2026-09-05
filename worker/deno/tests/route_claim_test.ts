@@ -1,5 +1,5 @@
 /**
- * Unit tests for `claimIdleTaskWrapper` (Issue #1139).
+ * Unit tests for `claimRoutedIssue` (Issue #1139).
  *
  * The two-host behaviour this claim exists for lives in
  * `idle_task_cross_host_claim_1139_test.ts`, which drives the real
@@ -15,10 +15,10 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
-  claimIdleTaskWrapper,
-  IDLE_TASK_CLAIM_REFUSED_MESSAGE,
-  isWrapperUnavailable,
-} from "../lib/idle_task_wrapper_claim.ts";
+  claimRoutedIssue,
+  isRouteClaimUnavailable,
+  ROUTE_CLAIM_REFUSED_MESSAGE,
+} from "../lib/route_claim.ts";
 import type { Logger } from "../types.ts";
 
 const REPO = "stSoftwareAU/NEAT-AI-Lamarck";
@@ -26,6 +26,7 @@ const ISSUE = 206;
 const FLEET_USER = "stservice";
 
 const INPUT = {
+  route: "idle-task",
   repo: REPO,
   issueNumber: ISSUE,
   githubUser: FLEET_USER,
@@ -66,12 +67,12 @@ const okDeps = (logger: Logger) => ({
 });
 
 Deno.test(
-  "claimIdleTaskWrapper - a won claim returns the worker id and a beating heartbeat",
+  "claimRoutedIssue - a won claim returns the worker id and a beating heartbeat",
   async () => {
     const { logger } = makeLogger();
     let seen: Record<string, unknown> = {};
 
-    const claim = await claimIdleTaskWrapper(INPUT, {
+    const claim = await claimRoutedIssue(INPUT, {
       ...okDeps(logger),
       workerIdFn: (user) => `${user}-worker`,
       claimIssueFn: (options) => {
@@ -98,11 +99,11 @@ Deno.test(
 );
 
 Deno.test(
-  "claimIdleTaskWrapper - a refusal with no detail still names what holds the wrapper",
+  "claimRoutedIssue - a refusal with no detail still names what holds the issue",
   async () => {
     const { logger, records } = makeLogger();
 
-    const claim = await claimIdleTaskWrapper(INPUT, {
+    const claim = await claimRoutedIssue(INPUT, {
       ...okDeps(logger),
       claimIssueFn: () =>
         Promise.resolve({
@@ -113,10 +114,8 @@ Deno.test(
 
     assert(!claim.claimed);
     assertEquals(claim.reason, "already_assigned");
-    assertEquals(claim.detail, "the wrapper is assigned to another run");
-    const refusal = records.find(([m]) =>
-      m === IDLE_TASK_CLAIM_REFUSED_MESSAGE
-    );
+    assertEquals(claim.detail, "the issue is assigned to another run");
+    const refusal = records.find(([m]) => m === ROUTE_CLAIM_REFUSED_MESSAGE);
     assert(refusal !== undefined, "the stand-down must be logged");
     assertEquals(
       (refusal[1] as Record<string, unknown>).unavailable,
@@ -127,11 +126,11 @@ Deno.test(
 );
 
 Deno.test(
-  "claimIdleTaskWrapper - fails closed when the claim call itself errors",
+  "claimRoutedIssue - fails closed when the claim call itself errors",
   async () => {
     const { logger, records } = makeLogger();
 
-    const claim = await claimIdleTaskWrapper(INPUT, {
+    const claim = await claimRoutedIssue(INPUT, {
       ...okDeps(logger),
       claimIssueFn: () => Promise.reject(new Error("gh: 503 unavailable")),
     });
@@ -139,9 +138,7 @@ Deno.test(
     assert(!claim.claimed);
     assertEquals(claim.reason, "claim_error");
     assert(claim.detail.includes("503"));
-    const refusal = records.find(([m]) =>
-      m === IDLE_TASK_CLAIM_REFUSED_MESSAGE
-    );
+    const refusal = records.find(([m]) => m === ROUTE_CLAIM_REFUSED_MESSAGE);
     assert(refusal !== undefined, "a claim that could not be made must say so");
     assertEquals(
       (refusal[1] as Record<string, unknown>).unavailable,
@@ -152,11 +149,11 @@ Deno.test(
 );
 
 Deno.test(
-  "claimIdleTaskWrapper - a Result-shaped claim failure is a claim_error too",
+  "claimRoutedIssue - a Result-shaped claim failure is a claim_error too",
   async () => {
     const { logger } = makeLogger();
 
-    const claim = await claimIdleTaskWrapper(INPUT, {
+    const claim = await claimRoutedIssue(INPUT, {
       ...okDeps(logger),
       claimIssueFn: () =>
         Promise.resolve({ ok: false as const, error: new Error("no route") }),
@@ -169,7 +166,7 @@ Deno.test(
 );
 
 Deno.test(
-  "claimIdleTaskWrapper - no machine id means no liveness, so the claim is refused",
+  "claimRoutedIssue - no machine id means no liveness, so the claim is refused",
   async () => {
     // A claim with no heartbeat marker is the state this module exists to
     // prevent: drop the assignee mid-scan and a sibling host reads the
@@ -177,7 +174,7 @@ Deno.test(
     const { logger } = makeLogger();
     let claimAttempted = false;
 
-    const thrown = await claimIdleTaskWrapper(INPUT, {
+    const thrown = await claimRoutedIssue(INPUT, {
       logger,
       machineIdFn: () => Promise.reject(new Error("no /etc/machine-id")),
       claimIssueFn: () => {
@@ -194,7 +191,7 @@ Deno.test(
     assert(thrown.detail.includes("machine id"));
     assertEquals(claimAttempted, false, "no claim is made without liveness");
 
-    const empty = await claimIdleTaskWrapper(INPUT, {
+    const empty = await claimRoutedIssue(INPUT, {
       logger,
       machineIdFn: () => Promise.resolve(""),
       claimIssueFn: () =>
@@ -206,14 +203,14 @@ Deno.test(
 );
 
 Deno.test(
-  "claimIdleTaskWrapper - a heartbeat that will not start is loud, and the claim stands",
+  "claimRoutedIssue - a heartbeat that will not start is loud, and the claim stands",
   async () => {
     // The assignee and the claim comment's initial marker still hold the
     // wrapper, so losing the refreshes costs liveness after the marker goes
     // stale — not the claim itself. It must not pass silently.
     const { logger, records } = makeLogger();
 
-    const claim = await claimIdleTaskWrapper(INPUT, {
+    const claim = await claimRoutedIssue(INPUT, {
       logger,
       machineIdFn: () => Promise.resolve("machine-1"),
       startHeartbeatFn: () =>
@@ -235,11 +232,11 @@ Deno.test(
 );
 
 Deno.test(
-  "claimIdleTaskWrapper - a heartbeat that throws is caught and reported",
+  "claimRoutedIssue - a heartbeat that throws is caught and reported",
   async () => {
     const { logger, records } = makeLogger();
 
-    const claim = await claimIdleTaskWrapper(INPUT, {
+    const claim = await claimRoutedIssue(INPUT, {
       logger,
       machineIdFn: () => Promise.resolve("machine-1"),
       startHeartbeatFn: () => {
@@ -258,7 +255,7 @@ Deno.test(
   },
 );
 
-Deno.test("isWrapperUnavailable - held-or-unclaimable versus fault", () => {
+Deno.test("isRouteClaimUnavailable - held-or-unclaimable versus fault", () => {
   for (
     const reason of [
       "already_assigned",
@@ -270,7 +267,7 @@ Deno.test("isWrapperUnavailable - held-or-unclaimable versus fault", () => {
       "already_closed",
     ] as const
   ) {
-    assertEquals(isWrapperUnavailable(reason), true, reason);
+    assertEquals(isRouteClaimUnavailable(reason), true, reason);
   }
   for (
     const reason of [
@@ -283,6 +280,6 @@ Deno.test("isWrapperUnavailable - held-or-unclaimable versus fault", () => {
       "verification_failed",
     ] as const
   ) {
-    assertEquals(isWrapperUnavailable(reason), false, reason);
+    assertEquals(isRouteClaimUnavailable(reason), false, reason);
   }
 });

@@ -1,9 +1,9 @@
 /**
  * Production-loop routing helper for idle-task seeding requests (Issue #3860).
  *
- * Routes a claimed issue whose title starts with `seed-idle-tasks:` (for
- * example `seed-idle-tasks: stSoftwareAU/private-repo-14`) to the
- * `process-seed-idle-tasks` command instead of the standard Claude-driven
+ * Claims an issue whose title starts with `seed-idle-tasks:` (for
+ * example `seed-idle-tasks: stSoftwareAU/private-repo-14`) and routes it to
+ * the `process-seed-idle-tasks` command instead of the standard Claude-driven
  * coding/PR flow. That matters for more than tidiness: the standard flow
  * spawns the agent, whose baked `gh` allowlist carries only the claimed
  * issue's own repo (#3643), so every `gh issue create` against the target was
@@ -19,18 +19,27 @@
  * the real command `execute`; tests inject a stub so the routing shape is
  * exercised with no real network.
  *
+ * Issue #1193: the request is **claimed** before the seeding runs. This route
+ * dispatches ahead of `workOnIssue`, whose setup phase held the only
+ * `claimIssue` call, so a `seed-idle-tasks:` request took no claim lock at all
+ * and two hosts scanning the same repo both seeded the target — filing every
+ * wrapper issue twice. See `route_claim.ts`.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { CommandResult, Logger, WorkerConfig } from "../types.ts";
+import type { CommandResult, WorkerConfig } from "../types.ts";
 import { isSeedIdleTasksTitle } from "./seed_idle_tasks_request.ts";
 import { processSeedIdleTasksCommand } from "../commands/process_seed_idle_tasks.ts";
+import {
+  type RouteClaimDeps,
+  type RouteClaimInput,
+  type RouteClaimLost,
+  runWithRouteClaim,
+} from "./route_claim.ts";
 
-/** Input describing the claimed issue under consideration. */
-export interface RouteSeedIdleTasksInput {
-  /** The repo the issue lives in (where to comment/close). */
-  repo: string;
-  issueNumber: number;
+/** Input describing the issue under consideration. */
+export interface RouteSeedIdleTasksInput extends RouteClaimInput {
   issueTitle: string;
   /** Worker config — carries the operator-controlled `repos` allowlist. */
   config: WorkerConfig;
@@ -43,8 +52,7 @@ export type ProcessSeedIdleTasksExecuteFn = (
 ) => Promise<CommandResult>;
 
 /** Injectable seams. Defaults wire the production implementation. */
-export interface RouteSeedIdleTasksDeps {
-  logger: Logger;
+export interface RouteSeedIdleTasksDeps extends RouteClaimDeps {
   executeFn?: ProcessSeedIdleTasksExecuteFn;
 }
 
@@ -54,14 +62,22 @@ export interface RouteSeedIdleTasksDeps {
  *   standard `workOnIssue` pipeline.
  * - `{ routed: true, success }` — `process-seed-idle-tasks` took ownership
  *   and has commented (and closed) the issue.
+ * - `{ routed: true, success: false, claimLost: true, … }` — this host does
+ *   not hold the request (Issue #1193). Nothing was seeded and nothing was
+ *   written to the issue.
  */
 export type RouteSeedIdleTasksOutcome =
   | { routed: false }
-  | { routed: true; success: boolean };
+  | { routed: true; success: boolean }
+  | ({ routed: true; success: false } & RouteClaimLost);
 
 /**
- * Dispatch a claimed issue to `process-seed-idle-tasks` when its title starts
- * with `seed-idle-tasks:`; otherwise pass through unchanged.
+ * Dispatch an issue to `process-seed-idle-tasks` when its title starts with
+ * `seed-idle-tasks:`; otherwise pass through unchanged.
+ *
+ * A recognised request is claimed first (Issue #1193): seeding files issues
+ * in the target repo, so two hosts running one request file every wrapper
+ * twice. A host that is refused the claim seeds nothing.
  */
 export async function routeSeedIdleTasksInProcessIssue(
   input: RouteSeedIdleTasksInput,
@@ -74,23 +90,39 @@ export async function routeSeedIdleTasksInProcessIssue(
   const execute: ProcessSeedIdleTasksExecuteFn = deps.executeFn ??
     ((args, config) => processSeedIdleTasksCommand.execute(args, config));
 
-  deps.logger.info(
-    "Routing idle-task seeding issue to process-seed-idle-tasks",
+  const held = await runWithRouteClaim(
     {
+      route: "seed-idle-tasks",
       repo: input.repo,
       issueNumber: input.issueNumber,
-      issueTitle: input.issueTitle,
+      githubUser: input.githubUser,
+      workDir: input.workDir,
+      fleetAuthors: input.fleetAuthors,
+      pushCapableAuthors: input.pushCapableAuthors,
+    },
+    deps,
+    async () => {
+      deps.logger.info(
+        "Routing idle-task seeding issue to process-seed-idle-tasks",
+        {
+          repo: input.repo,
+          issueNumber: input.issueNumber,
+          issueTitle: input.issueTitle,
+        },
+      );
+      const result = await execute(
+        {
+          "repo": input.repo,
+          "issue-number": input.issueNumber,
+          "title": input.issueTitle,
+        },
+        input.config,
+      );
+      return result.success;
     },
   );
 
-  const result = await execute(
-    {
-      "repo": input.repo,
-      "issue-number": input.issueNumber,
-      "title": input.issueTitle,
-    },
-    input.config,
-  );
-
-  return { routed: true, success: result.success };
+  return held.claimed
+    ? { routed: true, success: held.value }
+    : { routed: true, success: false, ...held.lost };
 }
