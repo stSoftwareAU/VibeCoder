@@ -32,7 +32,7 @@ Deno.test("scanContentForGitSpawn - flags a direct git spawn", () => {
 Deno.test("scanContentForGitSpawn - flags an inline spawn with no intermediate variable", () => {
   const violations = scanContentForGitSpawn(
     [
-      "const out = await new Deno.Command(\"git\", {",
+      'const out = await new Deno.Command("git", {',
       '  args: ["-C", repoDir, "push", "origin", branch],',
       "}).output();",
     ].join("\n"),

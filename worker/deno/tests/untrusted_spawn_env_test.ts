@@ -72,7 +72,10 @@ Deno.test("bump-deps script - a repo-supplied bump script cannot read the worker
         false,
         "the bump script inherited a worker credential",
       );
-      assert(output.includes("PATH="), "expected PATH in the built environment");
+      assert(
+        output.includes("PATH="),
+        "expected PATH in the built environment",
+      );
     } finally {
       await Deno.remove(dir, { recursive: true });
     }

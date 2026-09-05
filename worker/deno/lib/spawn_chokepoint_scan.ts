@@ -144,10 +144,12 @@ export async function scanDirectoriesForDirectSpawn(
   let filesScanned = 0;
 
   for (const relDir of relDirs) {
-    for await (const absFile of walkTsFiles(
-      `${root}/${relDir}`,
-      options.excludeTests ?? false,
-    )) {
+    for await (
+      const absFile of walkTsFiles(
+        `${root}/${relDir}`,
+        options.excludeTests ?? false,
+      )
+    ) {
       const repoRel = absFile.slice(root.length + 1);
       if (options.allowlist.has(repoRel)) continue;
       filesScanned++;

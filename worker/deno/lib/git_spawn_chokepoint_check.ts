@@ -22,9 +22,9 @@
  */
 
 import {
+  directSpawnPattern,
   type DirectSpawnScanResult,
   type DirectSpawnViolation,
-  directSpawnPattern,
   scanContentForDirectSpawn,
   scanDirectoriesForDirectSpawn,
 } from "./spawn_chokepoint_scan.ts";
