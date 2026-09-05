@@ -378,8 +378,16 @@ Deno.test("shared cooldown - cleanExpiredCooldownComments deletes expired commen
   const expiredTimestamp = nowSeconds - 700;
   const recentTimestamp = nowSeconds - 30;
   const commentsJson = JSON.stringify([
-    { id: 101, body: `<!-- COOLDOWN:worker-a:${expiredTimestamp} -->` },
-    { id: 102, body: `<!-- COOLDOWN:worker-b:${recentTimestamp} -->` },
+    {
+      id: 101,
+      body: `<!-- COOLDOWN:worker-a:${expiredTimestamp} -->`,
+      author: FLEET_AUTHOR,
+    },
+    {
+      id: 102,
+      body: `<!-- COOLDOWN:worker-b:${recentTimestamp} -->`,
+      author: FLEET_AUTHOR,
+    },
   ]);
 
   const calls: string[][] = [];
@@ -396,12 +404,102 @@ Deno.test("shared cooldown - cleanExpiredCooldownComments deletes expired commen
     42,
     600,
     mockGh,
+    { fleetAuthors: [FLEET_AUTHOR] },
+    () => {},
   );
 
   // Should delete expired comment (id 101) but not recent one (id 102)
   assertEquals(wasCalledWith(calls, "DELETE"), true);
   assertEquals(wasCalledWith(calls, "101"), true);
   assertEquals(wasCalledWith(calls, "102"), false);
+});
+
+Deno.test("shared cooldown - cleanup asks GitHub who wrote each cooldown comment", async () => {
+  const calls: string[][] = [];
+  const mockGh = async (args: string[]): Promise<string> => {
+    calls.push(args);
+    return "[]";
+  };
+  await cleanExpiredCooldownComments(
+    "org/repo",
+    42,
+    600,
+    mockGh,
+    { fleetAuthors: [FLEET_AUTHOR] },
+    () => {},
+  );
+  const jq = calls[0]![calls[0]!.indexOf("--jq") + 1] ?? "";
+  assertEquals(
+    jq.includes(".user.login"),
+    true,
+    "a projection that drops the commenter leaves the author check with " +
+      "nothing to check",
+  );
+});
+
+Deno.test("shared cooldown - cleanup leaves an outsider's expired marker alone", async () => {
+  // Issue #1124: the expiry decision reads a timestamp anybody may write
+  // and the outcome is a delete. The worker tidies its own signals only.
+  const expiredTimestamp = Math.floor(Date.now() / 1000) - 700;
+  const calls: string[][] = [];
+  const mockGh = async (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[0] === "api" && !args.includes("-X")) {
+      return JSON.stringify([
+        {
+          id: 201,
+          body: `<!-- COOLDOWN:worker-a:${expiredTimestamp} -->`,
+          author: "drive-by-account",
+        },
+      ]);
+    }
+    return "";
+  };
+
+  await cleanExpiredCooldownComments(
+    "org/repo",
+    42,
+    600,
+    mockGh,
+    { fleetAuthors: [FLEET_AUTHOR] },
+    () => {},
+  );
+
+  assertEquals(wasCalledWith(calls, "DELETE"), false);
+});
+
+Deno.test("shared cooldown - cleanup deletes nothing when the fleet cannot be resolved", async () => {
+  // The chosen fail direction, asserted: an unwanted delete cannot be
+  // undone, so an unattributable marker is left where it is.
+  const expiredTimestamp = Math.floor(Date.now() / 1000) - 700;
+  const calls: string[][] = [];
+  const lines: string[] = [];
+  const mockGh = async (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[0] === "api" && !args.includes("-X")) {
+      return JSON.stringify([
+        {
+          id: 301,
+          body: `<!-- COOLDOWN:worker-a:${expiredTimestamp} -->`,
+          author: FLEET_AUTHOR,
+        },
+      ]);
+    }
+    return "";
+  };
+
+  await cleanExpiredCooldownComments(
+    "org/repo",
+    42,
+    600,
+    mockGh,
+    { fleetAuthors: [] },
+    (message) => lines.push(message),
+  );
+
+  assertEquals(wasCalledWith(calls, "DELETE"), false);
+  assertEquals(lines.length, 1);
+  assertEquals(lines[0]?.includes("no comment is deleted"), true);
 });
 
 Deno.test("shared cooldown - cleanExpiredCooldownComments handles API failure gracefully", async () => {

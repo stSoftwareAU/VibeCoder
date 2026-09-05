@@ -46,6 +46,17 @@ function makeIssue(overrides: Partial<GitHubIssue> = {}): GitHubIssue {
   };
 }
 
+/**
+ * The fleet login `makeComment` defaults to (Issue #1124).
+ *
+ * A stale-diagnostic marker only suppresses the diagnostic when a fleet
+ * account wrote it; the planted-marker case is asserted below.
+ */
+const FLEET_AUTHOR = "bot";
+
+/** Author-verification inputs the fixtures pass instead of a config file. */
+const FLEET_OPTIONS = { fleetAuthors: [FLEET_AUTHOR] } as const;
+
 function makeComment(overrides: Partial<GitHubComment> = {}): GitHubComment {
   return {
     id: 1,
@@ -111,6 +122,7 @@ function createTestDeps(
     shouldShutdown: () => false,
     sleep: () => Promise.resolve(),
     getRateLimitReset: () => Promise.resolve(Math.floor(FIXED_NOW_MS / 1000)),
+    authorOptions: FLEET_OPTIONS,
     ...overrides,
   };
 }
@@ -139,28 +151,106 @@ Deno.test("stale workflow - daysSince returns 0 for future dates", () => {
 // hasExistingStaleComment
 // ============================================================================
 
-Deno.test("stale workflow - hasExistingStaleComment finds marker", () => {
+Deno.test("stale workflow - hasExistingStaleComment finds marker", async () => {
   const comments = [
     makeComment({ body: "<!-- vibe-coder-stale-workflow -->\nSome text" }),
   ];
   assertEquals(
-    hasExistingStaleComment(comments, "<!-- vibe-coder-stale-workflow -->"),
+    await hasExistingStaleComment(
+      comments,
+      "<!-- vibe-coder-stale-workflow -->",
+      FLEET_OPTIONS,
+      () => {},
+    ),
     true,
   );
 });
 
-Deno.test("stale workflow - hasExistingStaleComment returns false when absent", () => {
+Deno.test("stale workflow - hasExistingStaleComment returns false when absent", async () => {
   const comments = [
     makeComment({ body: "Normal comment" }),
   ];
   assertEquals(
-    hasExistingStaleComment(comments, "<!-- vibe-coder-stale-workflow -->"),
+    await hasExistingStaleComment(
+      comments,
+      "<!-- vibe-coder-stale-workflow -->",
+      FLEET_OPTIONS,
+      () => {},
+    ),
     false,
   );
 });
 
-Deno.test("stale workflow - hasExistingStaleComment handles empty array", () => {
-  assertEquals(hasExistingStaleComment([], "<!-- marker -->"), false);
+Deno.test("stale workflow - hasExistingStaleComment handles empty array", async () => {
+  assertEquals(
+    await hasExistingStaleComment(
+      [],
+      "<!-- marker -->",
+      FLEET_OPTIONS,
+      () => {},
+    ),
+    false,
+  );
+});
+
+Deno.test("stale workflow - a planted marker does not silence the diagnostic", async () => {
+  // Issue #1124: the marker lives in a comment body anybody may write, and
+  // a match suppresses the diagnostic. Only the fleet's own marker counts.
+  const comments = [
+    makeComment({
+      body: "<!-- vibe-coder-stale-diagnostic -->",
+      author: "drive-by-account",
+    }),
+  ];
+  assertEquals(
+    await hasExistingStaleComment(
+      comments,
+      "<!-- vibe-coder-stale-diagnostic -->",
+      FLEET_OPTIONS,
+      () => {},
+    ),
+    false,
+  );
+});
+
+Deno.test("stale workflow - a sibling fleet account's marker still dedups", async () => {
+  // The guard that stops the fix becoming "always post": cross-host
+  // convergence depends on one host seeing another's marker.
+  const comments = [
+    makeComment({
+      body: "<!-- vibe-coder-stale-diagnostic -->",
+      author: "sibling-fleet-host",
+    }),
+  ];
+  assertEquals(
+    await hasExistingStaleComment(
+      comments,
+      "<!-- vibe-coder-stale-diagnostic -->",
+      { fleetAuthors: [FLEET_AUTHOR, "sibling-fleet-host"] },
+      () => {},
+    ),
+    true,
+  );
+});
+
+Deno.test("stale workflow - an unresolvable fleet posts the diagnostic and logs", async () => {
+  // The chosen fail direction, asserted: a second diagnostic comment is
+  // noise; a suppressed one is a stale issue nobody hears about.
+  const lines: string[] = [];
+  const comments = [
+    makeComment({ body: "<!-- vibe-coder-stale-diagnostic -->" }),
+  ];
+  assertEquals(
+    await hasExistingStaleComment(
+      comments,
+      "<!-- vibe-coder-stale-diagnostic -->",
+      { fleetAuthors: [] },
+      (message) => lines.push(message),
+    ),
+    false,
+  );
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0]!, "the diagnostic is posted");
 });
 
 // ============================================================================

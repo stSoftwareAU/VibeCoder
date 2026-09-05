@@ -228,9 +228,23 @@ pass: it mutates process state, it asserts on a real elapsed reading, or it
 races a real subprocess for the scheduler. All three are listed in
 `PARALLEL_UNSAFE_TEST_FILES`, and the mutator half of that list is **empty and
 must stay empty**. A serially-run unit test is a full member of the unit
-verdict, and one of them — the SIGKILLed-agent case in
-`claude_runner_killed_test.ts` — is what caught the orphan-collector defect of
-Issue #1135.
+verdict.
+
+The wall-clock half is nearly empty too, and the way it emptied is the lesson.
+Twenty-five suites were listed there for driving `runClaudeWithTimeout` against
+a real one- to four-second deadline — 108 seconds of the serial pass spent
+asleep, and, worse, a watchdog woken late by a busy host reported as a
+correctness failure four times in PR #1170's own run. The fix was the seam, not
+a longer budget: [`lib/clock.ts`](worker/deno/lib/clock.ts) is what the runner
+reads time and arms every watchdog through, production passes nothing and gets
+the real one, and a test passes
+[`tests/support/fake_clock.ts`](worker/deno/tests/support/fake_clock.ts) and
+*drives* the deadline. The stubs stop at a gate
+(`agentStubGate`/`releaseAgentStub`) instead of sleeping, so the agent reaches
+the point under test because the test said so. The SIGKILLed-agent case in
+`claude_runner_killed_test.ts` — what caught the orphan-collector defect of
+Issue #1135 — still spawns a real agent and still lets the runner kill it; it
+simply no longer waits out a stopwatch to do it.
 
 - **Do not** reduce iteration counts to make a "performance test" fast enough
   to pass as a unit test. If you need to confirm performance, write a benchmark

@@ -18,6 +18,10 @@ import type { GitHubComment, GitHubIssue, Result } from "../types.ts";
 import { classifyGitHubError, GitHubErrorCategory } from "./github_errors.ts";
 import { formatRateLimitReset } from "./rate_limit_signal.ts";
 import { waitUntilRateLimitReset } from "./rate_limit_wait.ts";
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -144,6 +148,13 @@ export interface StaleWorkflowDeps {
    * Issue #1781: pause-and-resume on rate-limit hit.
    */
   getRateLimitReset: () => Promise<number>;
+  /**
+   * Fleet identity inputs for the diagnostic-marker author check
+   * (Issue #1124). Omitted reads the configured fleet, which is what every
+   * production caller does; a test states the fleet instead of writing a
+   * config file.
+   */
+  authorOptions?: AlertDedupAuthorOptions;
 }
 
 // ---------------------------------------------------------------------------
@@ -176,19 +187,43 @@ export function daysSince(isoTimestamp: string, nowMs: number): number {
 }
 
 /**
- * Check whether an issue's comments already contain a stale bot marker.
+ * Check whether **the fleet** has already left a stale bot marker on an
+ * issue.
  *
- * Prevents duplicate comments from being posted on subsequent scans.
+ * Prevents duplicate comments from being posted on subsequent scans. The
+ * marker lives in a comment body anybody who can see the issue may write,
+ * and a match here suppresses the diagnostic, so the comment **author** is
+ * checked against the fleet identity before the match counts
+ * (Issue #1124). Without that, one planted
+ * `<!-- vibe-coder-stale-diagnostic -->` silences the diagnostic on that
+ * issue for good, and silence is the direction nobody notices.
+ *
+ * **The fail direction is towards posting.** An unresolvable fleet identity
+ * means no marker can be attributed, so none counts and the diagnostic goes
+ * out. A second diagnostic comment is noise a human scrolls past; a
+ * suppressed one is a stale issue nobody hears about.
  *
  * @param comments - Existing comments on the issue
  * @param marker - The HTML comment marker to search for
- * @returns true if a comment with this marker already exists
+ * @param authorOptions - Fleet identity inputs
+ * @param log - Sink for the author-verification diagnostics
+ * @returns true if a fleet-authored comment with this marker already exists
  */
-export function hasExistingStaleComment(
+export async function hasExistingStaleComment(
   comments: GitHubComment[],
   marker: string,
-): boolean {
-  return comments.some((c) => c.body.includes(marker));
+  authorOptions: AlertDedupAuthorOptions = {},
+  log: (message: string) => void = (message) => console.warn(message),
+): Promise<boolean> {
+  const matches = await selectFleetAuthoredComments(
+    comments.filter((c) => c.body.includes(marker)),
+    `stale-workflow marker ${marker}`,
+    authorOptions,
+    log,
+    "the diagnostic is posted — a marker anyone can write must not " +
+      "silence a stale issue",
+  );
+  return matches.length > 0;
 }
 
 /**
@@ -315,7 +350,14 @@ export async function processStaleFailed(
         }
       }
 
-      if (hasExistingStaleComment(comments, STALE_DIAGNOSTIC_MARKER)) {
+      if (
+        await hasExistingStaleComment(
+          comments,
+          STALE_DIAGNOSTIC_MARKER,
+          deps.authorOptions ?? {},
+          deps.log,
+        )
+      ) {
         continue;
       }
 

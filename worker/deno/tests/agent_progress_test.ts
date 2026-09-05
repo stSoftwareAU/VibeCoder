@@ -15,7 +15,12 @@ import {
   type AgentActivitySnapshot,
   AgentProgressTracker,
 } from "../lib/agent_progress.ts";
-import { createAgentStub } from "./support/agent_stub.ts";
+import {
+  agentStubGate,
+  createAgentStub,
+  releaseAgentStub,
+} from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 import type { Logger } from "../types.ts";
 
 function toolUseLine(name: string, input: Record<string, unknown>): string {
@@ -289,9 +294,14 @@ Deno.test({
       },
     });
     // Named by path, never installed on the process-wide `PATH` (Issue #960).
+    // The gap between the two chunks is the test's to place, not a `sleep`'s
+    // (PR #1170 follow-up): the stub blocks on the gate, the test advances the
+    // runner's own clock past the progress interval, and only then releases
+    // it — so the second chunk is provably on the far side of the interval on
+    // any host under any load.
     const stub = await createAgentStub(
       `printf '%s\\n' '${toolLine}'\n` +
-        "sleep 2\n" +
+        agentStubGate() +
         `printf '%s\\n' '${toolLine}'\n` +
         `printf '%s\\n' '{"type":"result","result":"done"}'\n`,
       { prefix: "agent_progress_stub_" },
@@ -308,7 +318,10 @@ Deno.test({
       const { runClaudeWithTimeout } = await import(
         "../lib/claude_runner.ts"
       );
-      const result = await runClaudeWithTimeout({
+      const clock = fakeClock();
+      const firstChunk = Promise.withResolvers<void>();
+      const run = runClaudeWithTimeout({
+        clock,
         prompt: "test",
         agentBinaryPath: stub.path,
         phase: "execute",
@@ -316,7 +329,14 @@ Deno.test({
         killAfterSeconds: 1,
         progressIntervalMs: 1_000,
         logger,
+        onActivity: () => firstChunk.resolve(),
       });
+      // The first chunk has landed, so the tracker's emit clock is set.
+      await firstChunk.promise;
+      // One interval passes — the deadline is 30 s away and untouched.
+      await clock.advance(1_000);
+      await releaseAgentStub(stub);
+      const result = await run;
       assert(result.ok);
       const progressLines = logs.filter((m) =>
         m.includes("[agent-progress] execute")
@@ -374,7 +394,11 @@ Deno.test({
         phase: "execute",
         timeoutSeconds: 30,
         killAfterSeconds: 1,
-        progressIntervalMs: 1, // would emit on every chunk IF a sink existed
+        clock: fakeClock(),
+        // Zero, not one (PR #1170 follow-up): on the injected clock no time
+        // passes between chunks, so only a zero interval still means "would
+        // emit on every chunk IF a sink existed" — which is the whole claim.
+        progressIntervalMs: 0,
         onActivity: (snap) => snapshots.push(snap),
         // no logger
       });

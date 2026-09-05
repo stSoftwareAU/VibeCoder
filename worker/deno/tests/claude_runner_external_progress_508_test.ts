@@ -15,14 +15,24 @@
  *
  * The agent is a stub script named by path (Issue #959) and both probes are
  * injected, so no test needs a git repository or a real workload, and
- * nothing here touches the process-wide `PATH`.
+ * nothing here touches the process-wide `PATH`. The clock is injected too
+ * (PR #1170 follow-up): the stub stops at a gate rather than polling on a
+ * `sleep` ladder, and each check happens because the test moved the deadline
+ * there — so "the probe was consulted at each check" is an exact count rather
+ * than a lower bound that a loaded host can miss.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals } from "@std/assert";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
-import { type AgentStub, createAgentStub } from "./support/agent_stub.ts";
+import {
+  type AgentStub,
+  agentStubGate,
+  createAgentStub,
+  releaseAgentStub,
+} from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 import type {
   ExternalProgressState,
   TreeProgressState,
@@ -44,15 +54,36 @@ function installStub(body: string): Promise<AgentStub> {
 }
 
 /**
- * A stub that polls a background job: it emits a tool call every
- * `gapSeconds` and never touches the checkout — the shape #508 is about.
+ * A stub that supervises a background job: it reports one tool call and then
+ * waits, never touching the checkout — the shape #508 is about.
+ *
+ * @param finishes - Whether it prints a result and exits once released; a
+ *   case that ends in a kill leaves the gate shut for good.
  */
-function pollingStub(count: number, gapSeconds: string): string {
-  return `for i in $(seq 1 ${count}); do\n` +
-    `  printf '%s\\n' '${TOOL_LINE}'\n` +
-    `  sleep ${gapSeconds}\n` +
-    `done\n` +
-    `printf '%s\\n' '{"type":"result","result":"done"}'\n`;
+function pollingStub(finishes: boolean): string {
+  return `printf '%s\\n' '${TOOL_LINE}'\n` +
+    agentStubGate() +
+    (finishes ? `printf '%s\\n' '{"type":"result","result":"done"}'\n` : "");
+}
+
+/**
+ * Rendezvous on the run's own reported state, so an advance is never a guess.
+ */
+function rendezvous() {
+  const chunks: ReturnType<typeof Promise.withResolvers<void>>[] = [];
+  const extensions: ReturnType<typeof Promise.withResolvers<void>>[] = [];
+  let chunksSeen = 0;
+  let extensionsSeen = 0;
+  const at = (
+    list: ReturnType<typeof Promise.withResolvers<void>>[],
+    index: number,
+  ) => (list[index] ??= Promise.withResolvers<void>());
+  return {
+    onActivity: () => at(chunks, chunksSeen++).resolve(),
+    onExtensionSeen: () => at(extensions, extensionsSeen++).resolve(),
+    chunk: (n: number) => at(chunks, n - 1).promise,
+    extension: (n: number) => at(extensions, n - 1).promise,
+  };
 }
 
 function recordingLogger(): { logger: Logger; lines: string[] } {
@@ -73,16 +104,20 @@ Deno.test({
   name:
     "runClaudeWithTimeout - a live descendant doing work keeps a supervising agent alive despite an unchanged tree (Issue #508)",
   fn: async () => {
-    const stub = await installStub(pollingStub(30, "0.1"));
+    const stub = await installStub(pollingStub(true));
     const { logger, lines } = recordingLogger();
     const probedPids: number[] = [];
+    const clock = fakeClock();
+    const meet = rendezvous();
     try {
-      const result = await runClaudeWithTimeout({
+      const run = runClaudeWithTimeout({
+        clock,
         prompt: "test",
         agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
+        onActivity: meet.onActivity,
         progressExtension: {
           policy: { enabled: true, grantSeconds: 1, activityStallSeconds: 60 },
           treeProbe: unchangedTree,
@@ -90,8 +125,16 @@ Deno.test({
             probedPids.push(agentPid);
             return Promise.resolve<ExternalProgressState>("active");
           },
+          onExtension: meet.onExtensionSeen,
         },
       });
+      await meet.chunk(1);
+      await clock.advance(1_000);
+      await meet.extension(1);
+      await clock.advance(1_000);
+      await meet.extension(2);
+      await releaseAgentStub(stub);
+      const result = await run;
 
       assert(result.ok, "the runner must return a result");
       if (!result.ok) return;
@@ -100,9 +143,10 @@ Deno.test({
         false,
         "an agent supervising a live job must not be killed at the base budget",
       );
-      assert(
-        probedPids.length >= 2,
-        `the external probe must be consulted at each check: ${probedPids.length}`,
+      assertEquals(
+        probedPids.length,
+        2,
+        "the external probe must be consulted at each check",
       );
       assert(
         probedPids.every((pid) => pid > 0 && pid === probedPids[0]),
@@ -125,32 +169,35 @@ Deno.test({
   name:
     "runClaudeWithTimeout - tool calls with no tree delta and no live descendant are still killed (Issue #508)",
   fn: async () => {
-    const stub = await installStub(pollingStub(120, "0.1"));
+    const stub = await installStub(pollingStub(false));
     const { logger, lines } = recordingLogger();
+    const clock = fakeClock();
+    const meet = rendezvous();
     try {
-      const started = Date.now();
-      const result = await runClaudeWithTimeout({
+      const run = runClaudeWithTimeout({
+        clock,
         prompt: "test",
         agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
+        onActivity: meet.onActivity,
         progressExtension: {
           policy: { enabled: true, grantSeconds: 1, activityStallSeconds: 60 },
           treeProbe: unchangedTree,
           externalProbe: () => Promise.resolve<ExternalProgressState>("idle"),
         },
       });
-      const elapsedSeconds = (Date.now() - started) / 1000;
+      await meet.chunk(1);
+      // The base budget expires exactly once, and with both signals stalled
+      // that single check is the kill — no grant, no second chance.
+      await clock.advance(1_000);
+      const result = await run;
 
       assert(result.ok, "the runner must return a result");
       if (!result.ok) return;
       assertEquals(result.value.timedOut, true, "a spinning agent still dies");
       assertEquals(result.value.timeoutReason, "hard-timeout");
-      assert(
-        elapsedSeconds < 4,
-        `the kill must land on schedule (took ${elapsedSeconds}s)`,
-      );
       assert(
         lines.some((l) =>
           l.includes("not extending") && l.includes("descendant")
@@ -167,21 +214,28 @@ Deno.test({
   name:
     "runClaudeWithTimeout - an external probe that throws is unknown and never earns an extension (Issue #508)",
   fn: async () => {
-    const stub = await installStub(pollingStub(120, "0.1"));
+    const stub = await installStub(pollingStub(false));
     const { logger } = recordingLogger();
+    const clock = fakeClock();
+    const meet = rendezvous();
     try {
-      const result = await runClaudeWithTimeout({
+      const run = runClaudeWithTimeout({
+        clock,
         prompt: "test",
         agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
+        onActivity: meet.onActivity,
         progressExtension: {
           policy: { enabled: true, grantSeconds: 1, activityStallSeconds: 60 },
           treeProbe: unchangedTree,
           externalProbe: () => Promise.reject(new Error("ps exploded")),
         },
       });
+      await meet.chunk(1);
+      await clock.advance(1_000);
+      const result = await run;
 
       assert(result.ok, "the runner must return a result");
       if (!result.ok) return;
@@ -200,16 +254,20 @@ Deno.test({
   name:
     "runClaudeWithTimeout - an agent approaching the hard cap is told its remaining budget before the kill (Issue #508)",
   fn: async () => {
-    const stub = await installStub(pollingStub(120, "0.1"));
+    const stub = await installStub(pollingStub(false));
     const { logger, lines } = recordingLogger();
     const notices: RunBudgetNotice[] = [];
+    const clock = fakeClock();
+    const meet = rendezvous();
     try {
-      const result = await runClaudeWithTimeout({
+      const run = runClaudeWithTimeout({
+        clock,
         prompt: "test",
         agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
+        onActivity: meet.onActivity,
         progressExtension: {
           policy: {
             enabled: true,
@@ -219,15 +277,24 @@ Deno.test({
           },
           treeProbe: unchangedTree,
           externalProbe: () => Promise.resolve<ExternalProgressState>("active"),
-          ceilingMs: Date.now() + 3_000,
+          ceilingMs: clock.now() + 3_000,
           windDownSeconds: 5,
           onWindDown: (notice) => {
             notices.push(notice);
             // A faulty notice sink must never decide whether the run lives.
             throw new Error("notice sink blew up");
           },
+          onExtension: meet.onExtensionSeen,
         },
       });
+      await meet.chunk(1);
+      // Two grants, each clamped by the ceiling, and then no runway left.
+      await clock.advance(1_000);
+      await meet.extension(1);
+      await clock.advance(1_000);
+      await meet.extension(2);
+      await clock.advance(1_000);
+      const result = await run;
 
       assert(result.ok, "the runner must return a result");
       if (!result.ok) return;
@@ -260,32 +327,42 @@ Deno.test({
   name:
     "runClaudeWithTimeout - a run with plenty of runway is never told to wind down (Issue #508)",
   fn: async () => {
-    const stub = await installStub(pollingStub(20, "0.1"));
+    const stub = await installStub(pollingStub(true));
     const { logger } = recordingLogger();
     const notices: RunBudgetNotice[] = [];
+    const clock = fakeClock();
+    const meet = rendezvous();
     try {
-      const result = await runClaudeWithTimeout({
+      const run = runClaudeWithTimeout({
+        clock,
         prompt: "test",
         agentBinaryPath: stub.path,
         timeoutSeconds: 1,
         killAfterSeconds: 1,
         logger,
+        onActivity: meet.onActivity,
         progressExtension: {
           policy: { enabled: true, grantSeconds: 1, activityStallSeconds: 60 },
           treeProbe: unchangedTree,
           externalProbe: () => Promise.resolve<ExternalProgressState>("active"),
+          onExtension: meet.onExtensionSeen,
           // An hour of runway. Since Issue #1138 the notice is written over
           // the wider of the wind-down window and what the quality gate needs
           // (~1080s), so "plenty of runway" has to mean plenty for both —
           // the old 600s ceiling is now inside the gate-refusal band and a
           // notice there is correct, not premature.
-          ceilingMs: Date.now() + 3_600_000,
+          ceilingMs: clock.now() + 3_600_000,
           windDownSeconds: 5,
           onWindDown: (notice) => {
             notices.push(notice);
           },
         },
       });
+      await meet.chunk(1);
+      await clock.advance(1_000);
+      await meet.extension(1);
+      await releaseAgentStub(stub);
+      const result = await run;
 
       assert(result.ok, "the runner must return a result");
       if (!result.ok) return;

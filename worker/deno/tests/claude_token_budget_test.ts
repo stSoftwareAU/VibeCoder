@@ -171,7 +171,7 @@ Deno.test("a timeout is reported as a timeout and never throws", async () => {
   assertStringIncludes(result.detail ?? "", "25ms");
 });
 
-Deno.test("the probe returns within its configured timeout", async () => {
+Deno.test("the probe aborts itself rather than waiting on the network", async () => {
   // A fetch that never settles on its own: only the injected signal ends it,
   // which is what guarantees startup cannot stall behind this probe.
   const fetcher = countingFetch((_url, init) =>
@@ -184,17 +184,21 @@ Deno.test("the probe returns within its configured timeout", async () => {
     })
   );
 
-  const started = Date.now();
   const result = await probeClaudeTokenBudget(TOKEN, {
     label: "provider",
     fetchFn: fetcher.fetchFn,
     timeoutMs: 50,
   });
-  const elapsed = Date.now() - started;
 
+  // The behavioural form of "startup cannot stall behind this probe"
+  // (PR #1170 follow-up): the fetch never settles on its own, so a probe that
+  // did not abort itself would not return at all and this case would hang
+  // until the runner killed it — a failure on every host under every load.
+  // The `elapsed < 2000` reading it used to carry was forty times the bound
+  // it names and could only ever add flakiness to that.
   assert(!result.known);
   assertEquals(result.reason, "timeout");
-  assert(elapsed < 2000, `probe took ${elapsed}ms, well past its 50ms bound`);
+  assertEquals(fetcher.calls(), 1, "a timed-out probe must not try again");
 });
 
 Deno.test("a network failure is unknown, distinct from a timeout", async () => {

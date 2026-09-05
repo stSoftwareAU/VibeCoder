@@ -19,6 +19,11 @@
  * enforced as what it actually is — a property of the source text — by
  * {@link findMarkerDedupCallSites} plus `tests/marker_dedup_author_cap_test.ts`.
  *
+ * Issue #1124 cleared the last six scanned sites and the four consumers, so
+ * both lists below are now empty. The scanner and the cap test are what keep
+ * them empty; the lists are where a deliberately-deferred site would be
+ * recorded.
+ *
  * {@link MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES} is the shrink-only manifest of
  * what has not been fixed yet, in the shape of
  * {@link file://./parallel_unsafe_test_manifest.ts}'s
@@ -98,53 +103,53 @@ export interface MarkerDedupCallSite {
  *     GitHub-generated check names off a `base:milestone` PR search; no marker
  *     is matched, and the result is reported, never used to suppress work.
  *
- * Several entries below are being fixed under a separate change; they are
- * recorded here as known-remaining rather than left invisible. Conflicts on
- * this list resolve as the **union of removals** — a fix landing elsewhere
- * takes its entry with it, and a branch that still sees the unfixed code must
- * not restore it.
+ * Conflicts on this list resolve as the **union of removals** — a fix landing
+ * elsewhere takes its entry with it, and a branch that still sees the unfixed
+ * code must not restore it.
+ *
+ * **The list is empty (Issue #1124).** Every scanned lookup in the tree now
+ * asks GitHub who wrote the match. An empty manifest is not a dead file: the
+ * cap test's forward direction is what keeps it empty, and this is where the
+ * next unfixed site would be recorded if one were introduced deliberately.
+ * Adding an entry is a decision to ship the defect, so it needs the same
+ * justification the entries above once carried — what a planted marker there
+ * would do, and why it cannot be fixed now.
  */
-export const MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES: readonly string[] = [
-  // `PR_COMMENT_CLAIM:` comment markers arbitrate which host owns a PR
-  // comment; a planted claim hands the PR to nobody.
-  "lib/claim_pr_comment.ts",
-  // Reconciles filed wrappers by `in:title`; a planted title reads as a
-  // wrapper the fleet filed and suppresses the backfill.
-  "lib/idle_task_backfill.ts",
-  // `fetchPRsForIssueByTitle` searches `in:title (#N)` without `author`, and
-  // its consumers `pr_issue_linking.ts` and `pr_linkage.ts` inherit the gap.
-  "lib/issue_query.ts",
-  // `BRANCH_UPDATE_LOCK` comment markers gate PR branch updates; a planted
-  // lock stalls the update indefinitely.
-  "lib/pr_branch_lock.ts",
-  // `--jq` projects the comment body without `user.login`, so a planted
-  // cooldown comment suppresses work on any issue for the cooldown window.
-  "lib/shared_cooldown.ts",
-  // `in:title` search for the best-practices sync issue.
-  "setup/best_practices_sync.ts",
-];
+export const MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES: readonly string[] = [];
 
 /**
  * Files whose dedup decision is made from rows another module fetched, so no
  * `gh` invocation in them can be classified.
  *
- * The scanner sees call sites, not data flow, so these cannot be capped by it.
- * They are recorded so a reader of the manifest is not left believing the
+ * The scanner sees call sites, not data flow, so these cannot be capped by
+ * it. They are recorded so a reader of the manifest is not left believing the
  * scanned set is the whole of the class.
  *
+ * **The list is empty (Issue #1124).** What each entry needed, and where the
+ * control now lives:
+ *
  *   - `lib/pr_issue_linking.ts` and `lib/pr_linkage.ts` — both decide from
- *     the rows `issue_query.ts`'s `fetchPRsForIssueByTitle` returns, which
- *     carry no `author`. Adding `author` to that one query unblocks both.
- *   - `lib/stale_workflow_detector.ts` (`hasExistingStaleComment`) and
- *     `lib/failure_detection_resume.ts` — pure predicates over comment arrays
- *     that carry a body and no author.
+ *     the rows `issue_query.ts`'s `fetchPRsForIssueByTitle` returns. That
+ *     query now asks for `author` **and** `isCrossRepository`, and drops
+ *     every fork-headed row before returning: pushing a branch into the
+ *     target repository needs write access there, so a same-repository head
+ *     is evidence and a fork head is a claim anybody can make. The row that
+ *     survives was opened by a repository writer, which is the same trust
+ *     boundary the label-scoped listings below rely on — and it is the right
+ *     one here, because a human maintainer's PR for an issue legitimately
+ *     means "already in hand" while a fleet-only filter would have the
+ *     worker duplicate it. `pr_issue_linking.ts`'s uncached fallback,
+ *     which the scanner cannot see because it matches titles client-side,
+ *     applies the same head check.
+ *   - `lib/stale_workflow_detector.ts` (`hasExistingStaleComment`) — now
+ *     filters the marker-carrying comments through
+ *     `selectFleetAuthoredComments` before the match counts, failing towards
+ *     posting the diagnostic.
+ *   - `lib/failure_detection_resume.ts` — `readRecordedAttempts` already
+ *     verified its attempt markers through `selectFleetAuthoredComments`
+ *     (failing towards retrying); the entry outlived the fix.
  */
-export const MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS: readonly string[] = [
-  "lib/failure_detection_resume.ts",
-  "lib/pr_issue_linking.ts",
-  "lib/pr_linkage.ts",
-  "lib/stale_workflow_detector.ts",
-];
+export const MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS: readonly string[] = [];
 
 // ---------------------------------------------------------------------------
 // The classifier

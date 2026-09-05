@@ -14,6 +14,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 /** Usage figures the stub reports on its result line. */
 interface StubUsage {
@@ -74,6 +75,7 @@ Deno.test({
       { input: 5_000, output: 1_000, cacheWrite: 15_000, cacheRead: 180_000 },
       (stub) =>
         runClaudeWithTimeout({
+          clock: fakeClock(),
           prompt: "test",
           agentBinaryPath: stub.path,
           model: "claude-opus-4-8",
@@ -106,6 +108,7 @@ Deno.test({
       { input: 180_000, output: 1_000, cacheWrite: 0, cacheRead: 20_000 },
       (stub) =>
         runClaudeWithTimeout({
+          clock: fakeClock(),
           prompt: "test",
           agentBinaryPath: stub.path,
           model: "claude-opus-4-8",
@@ -135,6 +138,7 @@ Deno.test({
       { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
       (stub) =>
         runClaudeWithTimeout({
+          clock: fakeClock(),
           prompt: "test",
           agentBinaryPath: stub.path,
           model: "claude-opus-4-8",

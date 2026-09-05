@@ -126,6 +126,21 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
  * serial pass, where the machine is theirs and the measurement means what it
  * says.
  *
+ * Two entries left, and neither of them is a `claude_runner_*` suite any
+ * more. The twenty-five that were took a clock instead (`lib/clock.ts`):
+ * `RunClaudeOptions.clock` is what the runner reads time and arms its
+ * watchdogs through, so a test drives the deadline rather than sleeping
+ * through it. That was 108 s of the serial pass spent asleep against real
+ * one- to four-second windows, and — the reason it had to go rather than
+ * merely being slow — a watchdog woken late by a busy host reads exactly
+ * like a watchdog that did not fire, which is how `claude_runner_kill_bound`
+ * and `claude_runner_progress_extension_4296` produced four of PR #1170's
+ * own failures. What is left genuinely measures: `growth_bound_test.ts` is
+ * the ratio helper's own suite, whose last case has to time real quadratic
+ * work on a real clock or it is testing nothing, and
+ * `run_ps1_launcher_test.ts` times a launcher watchdog against a container
+ * it spawns for real.
+ *
  * The serial pass is not a cure, only a smaller dose, and PR #1170 is where
  * that ran out. Twelve ReDoS and scan-bound suites sat here and still went red
  * on `main`: an absolute millisecond budget reports a host 8% slower as a
@@ -136,8 +151,8 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
  * for the same adversarial input — a super-linear pattern at those sizes never
  * returns, so the runner's own timeout is the detector — and they left this
  * list for the parallel pass. What remains here genuinely races a real clock:
- * suites that drive `runClaudeWithTimeout` against a one- to four-second
- * window, and the growth helper's own tests.
+ * the growth helper's own tests, and a launcher watchdog timed against a real
+ * container.
  *
  * The asymmetry here runs the opposite way to the integration manifest, and
  * that is why {@link measuresWallClock} can afford to be broad. A file wrongly
@@ -145,34 +160,8 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
  * left out goes red one run in five, on somebody else's change.
  */
 export const WALL_CLOCK_TEST_FILES: readonly string[] = [
-  "tests/agent_mcp_config_test.ts",
-  "tests/agent_progress_test.ts",
-  "tests/agent_provider_per_invocation_test.ts",
-  "tests/agent_run_termination_test.ts",
-  "tests/agent_transcript_test.ts",
-  "tests/claude_runner_agent_binary_path_959_test.ts",
-  "tests/claude_runner_check_interval_4295_test.ts",
-  "tests/claude_runner_external_progress_508_test.ts",
-  "tests/claude_runner_invalid_session_id_204_test.ts",
-  "tests/claude_runner_invocation_budget_3648_test.ts",
-  "tests/claude_runner_kill_bound_test.ts",
-  "tests/claude_runner_killed_test.ts",
-  "tests/claude_runner_model_unavailable_fallback_test.ts",
-  "tests/claude_runner_oom_terminal_test.ts",
-  "tests/claude_runner_progress_extension_4296_test.ts",
-  "tests/claude_runner_rate_limit_fallback_test.ts",
-  "tests/claude_runner_stdin_prompt_test.ts",
-  "tests/claude_runner_test.ts",
-  "tests/claude_runner_usage_limit_test.ts",
-  "tests/claude_token_budget_test.ts",
-  "tests/fable_globally_disabled_cycle_test.ts",
-  "tests/fable_preflight_deepseek_gate_test.ts",
-  "tests/fable_preflight_provider_gate_test.ts",
-  "tests/fable_preflight_reroute_wiring_test.ts",
   "tests/growth_bound_test.ts",
   "tests/run_ps1_launcher_test.ts",
-  "tests/timeout_extension_report_768_test.ts",
-  "tests/timeout_extension_telemetry_4298_test.ts",
 ];
 
 /**
@@ -192,8 +181,73 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
 export function measuresWallClock(source: string): boolean {
   const code = stripComments(source);
   if (GROWTH_HELPER.test(code)) return true;
-  if (REAL_DEADLINE_RUN.test(code) && REAL_DEADLINE_ARG.test(code)) return true;
+  if (drivesRealDeadline(code)) return true;
   return REAL_CLOCK.test(code) && ELAPSED_BOUND.test(code);
+}
+
+/**
+ * Whether any `runClaudeWith*` call in `code` sets a deadline and leaves it
+ * on the real clock.
+ *
+ * Per call site, not per file. The first spelling asked only whether the
+ * file mentioned a run *somewhere* and a deadline argument *somewhere*,
+ * which was the right question while the only clock was the real one. Now
+ * that `RunClaudeOptions.clock` exists, "a run with `timeoutSeconds`" and "a
+ * run that will actually sleep for a second" are different facts, and only
+ * the second belongs in the serial pass — so the arguments of each call are
+ * read together with the call.
+ *
+ * A call whose options arrive through a spread cannot be read at its own
+ * site, so it falls back to the file-wide question the first spelling asked:
+ * a deadline named anywhere and no clock named anywhere is a real deadline.
+ * The asymmetry runs the safe way — a file wrongly listed runs a second
+ * later than it might, a file wrongly cleared goes red one run in five on
+ * somebody else's change.
+ */
+function drivesRealDeadline(code: string): boolean {
+  for (const match of code.matchAll(REAL_DEADLINE_RUN)) {
+    const open = (match.index ?? 0) + match[0].length - 1;
+    const args = balancedArgumentText(code, open);
+    if (args === undefined) continue;
+    const scope = SPREAD_ARG.test(args) ? code : args;
+    if (!REAL_DEADLINE_ARG.test(scope)) continue;
+    if (INJECTED_CLOCK_ARG.test(scope)) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * The text between the parenthesis at `openIndex` and its match.
+ *
+ * Nested brackets are balanced and string literals skipped, so a `)` inside
+ * a prompt or a regex cannot end the argument list early. `undefined` when
+ * the parenthesis never closes, which only a truncated source can produce.
+ */
+function balancedArgumentText(
+  code: string,
+  openIndex: number,
+): string | undefined {
+  let depth = 0;
+  let quote: string | undefined;
+  for (let i = openIndex; i < code.length; i++) {
+    const char = code[i]!;
+    if (quote !== undefined) {
+      if (char === "\\") i++;
+      else if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === "(" || char === "[" || char === "{") depth++;
+    else if (char === ")" || char === "]" || char === "}") {
+      depth--;
+      if (depth === 0) return code.slice(openIndex + 1, i);
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -211,10 +265,29 @@ export function measuresWallClock(source: string): boolean {
  * signal are required: naming `timeoutSeconds` in a config object a test
  * merely inspects is not running against it.
  */
-const REAL_DEADLINE_RUN = /await runClaudeWith(Timeout|Retry)\(/;
+const REAL_DEADLINE_RUN = /runClaudeWith(?:Timeout|Retry)\(/g;
 
 /** The deadline arguments that make such a run wall-clock bound. */
 const REAL_DEADLINE_ARG = /\b(timeoutSeconds|killAfterSeconds)\s*:/;
+
+/**
+ * The seam that takes the deadline off the wall clock.
+ *
+ * `RunClaudeOptions.clock` (`lib/clock.ts`) is what the runner reads time
+ * and arms its timers through, so a run that names one expires when the test
+ * advances it and never a moment before. The suite then measures nothing,
+ * sleeps for nothing, and belongs in the parallel pass with everything else.
+ */
+const INJECTED_CLOCK_ARG = /\bclock\s*[:,}]/;
+
+/**
+ * Options handed in through a spread, which the call site cannot resolve.
+ *
+ * `claude_runner_oom_terminal_test.ts` builds one `baseOptions` carrying the
+ * deadline and spreads it into four runs; reading only each call's own text
+ * would clear all four. Such a call is judged on the whole file instead.
+ */
+const SPREAD_ARG = /\.\.\./;
 
 /**
  * The shared ratio helper, which does its callers' timing for them.

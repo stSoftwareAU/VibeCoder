@@ -213,19 +213,37 @@ export async function hasActiveCooldownSignal(
 /**
  * Clean up expired cooldown comments from an issue.
  *
- * Removes cooldown comments that are older than the cooldown period.
- * This is best-effort — failures are silently ignored.
+ * Removes **the fleet's own** cooldown comments once they are older than
+ * the cooldown period. This is best-effort — failures are silently ignored.
+ *
+ * The expiry decision reads the timestamp out of the comment body, which
+ * anybody who can see the issue may write, and the outcome is a delete.
+ * The projection therefore carries `.user.login` and only fleet-authored
+ * markers are considered (Issue #1124) — the worker tidies its own
+ * signals, never a stranger's comment on the strength of a payload the
+ * stranger chose.
+ *
+ * **The fail direction is "delete nothing".** An unresolvable fleet
+ * identity means no comment can be attributed, and an unwanted delete is
+ * the one outcome that cannot be undone; a cooldown marker left behind
+ * expires on its own reading and suppresses nothing, because
+ * {@link hasActiveCooldownSignal} verifies the author too.
  *
  * @param repo - Repository in "owner/repo" format
  * @param issueNumber - The issue number
  * @param cooldownPeriodSeconds - Cooldown period in seconds
  * @param ghCommandFn - Injected gh command function (for testing)
+ * @param authorOptions - Fleet identity inputs; omitted reads the
+ *   configured fleet, which is what every production caller does
+ * @param log - Sink for the author-verification diagnostics
  */
 export async function cleanExpiredCooldownComments(
   repo: string,
   issueNumber: number,
   cooldownPeriodSeconds: number = COOLDOWN_DEFAULTS.issueRetryCooldown,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+  authorOptions: AlertDedupAuthorOptions = {},
+  log: (message: string) => void = (message) => console.warn(message),
 ): Promise<void> {
   let commentsJson: string;
   try {
@@ -233,7 +251,8 @@ export async function cleanExpiredCooldownComments(
       "api",
       `repos/${repo}/issues/${issueNumber}/comments`,
       "--jq",
-      `[.[] | select(.body | test("${COOLDOWN_MARKER_PREFIX}")) | {id: .id, body: .body}]`,
+      `[.[] | select(.body | test("${COOLDOWN_MARKER_PREFIX}")) | ` +
+      `{id: .id, body: .body, author: .user.login}]`,
     ]);
   } catch (err) {
     console.warn(
@@ -244,11 +263,13 @@ export async function cleanExpiredCooldownComments(
     return;
   }
 
-  let comments: Array<{ id: number; body: string }>;
+  let comments: Array<AlertDedupCommentRow & { id: number; body: string }>;
   try {
     const parsed: unknown = JSON.parse(commentsJson);
     if (!Array.isArray(parsed)) return;
-    comments = parsed as Array<{ id: number; body: string }>;
+    comments = parsed as Array<
+      AlertDedupCommentRow & { id: number; body: string }
+    >;
   } catch (err) {
     console.warn(
       `[shared-cooldown] Failed to parse cooldown comments for cleanup on ${repo}#${issueNumber}: ${
@@ -260,26 +281,37 @@ export async function cleanExpiredCooldownComments(
 
   const nowSeconds = Math.floor(Date.now() / 1000);
 
-  for (const comment of comments) {
+  // Verify the author before deleting anything. Filtering the expired
+  // markers rather than the whole thread means the log names comments the
+  // worker would otherwise have deleted.
+  const expired = comments.filter((comment) => {
     const cooldownData = parseCooldownComment(String(comment.body ?? ""));
-    if (!cooldownData) continue;
+    if (!cooldownData) return false;
+    return nowSeconds - cooldownData.timestamp >= cooldownPeriodSeconds;
+  });
+  const ours = await selectFleetAuthoredComments(
+    expired,
+    `cooldown cleanup ${repo}#${issueNumber}`,
+    authorOptions,
+    log,
+    "no comment is deleted — the worker tidies its own cooldown markers " +
+      "and never a stranger's comment",
+  );
 
-    const age = nowSeconds - cooldownData.timestamp;
-    if (age >= cooldownPeriodSeconds) {
-      try {
-        await ghCommandFn([
-          "api",
-          "-X",
-          "DELETE",
-          `repos/${repo}/issues/comments/${comment.id}`,
-        ]);
-      } catch (err) {
-        console.warn(
-          `[shared-cooldown] Failed to delete expired cooldown comment ${comment.id} on ${repo}#${issueNumber}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      }
+  for (const comment of ours) {
+    try {
+      await ghCommandFn([
+        "api",
+        "-X",
+        "DELETE",
+        `repos/${repo}/issues/comments/${comment.id}`,
+      ]);
+    } catch (err) {
+      console.warn(
+        `[shared-cooldown] Failed to delete expired cooldown comment ${comment.id} on ${repo}#${issueNumber}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
   }
 }

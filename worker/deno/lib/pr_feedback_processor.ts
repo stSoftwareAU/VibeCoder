@@ -23,6 +23,7 @@ import {
 } from "./prompt_builder.ts";
 import { readRepoContext } from "./repo_context_reader.ts";
 import { claimPrComment } from "./claim_pr_comment.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import {
   preparePrBranch,
   readPrResponseMessage,
@@ -97,6 +98,13 @@ export interface PrFeedbackProcessorDeps {
   deps: WorkerDeps;
   /** Working directory for repo operations. */
   workDir: string;
+  /**
+   * Fleet identity inputs for the PR-comment claim's author check
+   * (Issue #1124). Omitted reads the configured fleet, which is what
+   * production does; a test states the fleet instead of writing a config
+   * file.
+   */
+  claimAuthorOptions?: AlertDedupAuthorOptions;
   /**
    * Override the remote push verification (Issue #579). Injected by tests so
    * the "a failed push produces no success claim" regression can be exercised
@@ -267,6 +275,10 @@ export async function processPrFeedback(
       commentType,
       workerId,
       ghCommandFn: (args: string[]) => deps.github.runGhCommand(args),
+      ...(processorDeps.claimAuthorOptions !== undefined
+        ? { authorOptions: processorDeps.claimAuthorOptions }
+        : {}),
+      log: (message: string) => logger.warn(message, { repo, prNumber }),
     });
 
     if (!claimResult.ok) {

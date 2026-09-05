@@ -21,6 +21,7 @@ import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import { detectInvalidSessionId } from "../lib/claude_executor.ts";
 import type { Logger } from "../types.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 // ---------------------------------------------------------------------------
 // Pure detection
@@ -159,6 +160,7 @@ Deno.test({
       async (stub) => {
         const result = await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "test",
             phase: "issue",
             agentBinaryPath: stub.path,
@@ -215,6 +217,7 @@ Deno.test({
       async (stub) => {
         const result = await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "test",
             phase: "issue",
             agentBinaryPath: stub.path,
@@ -246,6 +249,7 @@ Deno.test({
       async (stub) => {
         const result = await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "test",
             phase: "issue",
             agentBinaryPath: stub.path,

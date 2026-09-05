@@ -740,7 +740,11 @@ Deno.test("run_core - sweeps leaked heartbeats before processing a claim (Issue 
  * capture which release helper the loop invoked.
  */
 async function runSingleIssueScan(
-  processValue: { success: boolean; skipped?: boolean },
+  processValue: {
+    success: boolean;
+    skipped?: boolean;
+    claimNotHeld?: boolean;
+  },
   releaseClaim?: (repo: string, issueNumber: number) => Promise<void>,
 ): Promise<{ clearHeartbeatCalls: number }> {
   let findCalls = 0;
@@ -837,6 +841,48 @@ Deno.test("run_core - skip-after-claim path releases the claim", async () => {
   assertEquals(released.length >= 1, true, "skip path must release the claim");
   assertEquals(released[0], { repo: "org/repo", issueNumber: 2648 });
 });
+
+Deno.test(
+  "run_core - a run that never held the claim releases nothing (Issue #1139)",
+  async () => {
+    // The fleet shares one GitHub login, so `--remove-assignee <githubUser>`
+    // from a host that stood down strips the assignment off the host that is
+    // still working the issue — leaving a live run unassigned and the issue
+    // claimable by a third host. A stand-down has nothing of its own to
+    // release, and says so.
+    const released: Array<{ repo: string; issueNumber: number }> = [];
+    await runSingleIssueScan(
+      { success: false, skipped: true, claimNotHeld: true },
+      (repo, issueNumber) => {
+        released.push({ repo, issueNumber });
+        return Promise.resolve();
+      },
+    );
+
+    // `releaseClaim` is the unassign-and-clear-the-marker call: not made, so
+    // the holder keeps both its assignee and its beating marker.
+    assertEquals(released, [], "a run holding no claim must release nothing");
+  },
+);
+
+Deno.test(
+  "run_core - a failed run that never held the claim releases nothing (Issue #1139)",
+  async () => {
+    // The same rule on the failure path: a claim that errored (a `gh`
+    // outage) is reported as a failure, but there is still no claim of ours
+    // to release.
+    const released: Array<{ repo: string; issueNumber: number }> = [];
+    await runSingleIssueScan(
+      { success: false, claimNotHeld: true },
+      (repo, issueNumber) => {
+        released.push({ repo, issueNumber });
+        return Promise.resolve();
+      },
+    );
+
+    assertEquals(released, [], "a run holding no claim must release nothing");
+  },
+);
 
 Deno.test("run_core - a skip is cooled down and not counted as a processed issue (Issue #175)", async () => {
   // The merged-PR pre-check bounce arrives here as a skip. It must record the

@@ -16,6 +16,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 /** Basename of the file the stub records its argv in. */
 const ARGV_LOG = "argv.log";
@@ -58,6 +59,7 @@ Deno.test({
     await withStdinStub(async (stub) => {
       const result = await runClaudeWithRetry(
         {
+          clock: fakeClock(),
           prompt,
           agentBinaryPath: stub.path,
           model: "sonnet",
@@ -101,6 +103,7 @@ Deno.test({
       async (stub) => {
         const result = await runClaudeWithRetry(
           {
+            clock: fakeClock(),
             prompt: "y".repeat(600_000), // far more than a pipe buffer holds
             agentBinaryPath: stub.path,
             model: "sonnet",

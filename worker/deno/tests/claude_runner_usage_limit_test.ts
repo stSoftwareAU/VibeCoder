@@ -23,6 +23,7 @@ import {
 } from "../lib/claude_runner.ts";
 import { rateLimitSignalPath } from "../lib/rate_limit_signal.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 
 /**
  * Run `fn` with a stub agent that refuses with `stderrMessage` and logs
@@ -60,6 +61,7 @@ Deno.test({
         async (stub) => {
           const result = await runClaudeWithRetry(
             {
+              clock: fakeClock(),
               prompt: "test",
               model: "fable",
               enableModelFallback: true,
@@ -135,6 +137,7 @@ Deno.test({
         async (stub) => ({
           result: await runClaudeWithRetry(
             {
+              clock: fakeClock(),
               prompt: "t",
               model: "opus",
               timeoutSeconds: 30,
