@@ -1247,9 +1247,10 @@ deno run --allow-env --allow-read --allow-write --allow-run --allow-sys=hostname
   failing run attempts delivery again — and the evidence is spooled in
   `~/logs/checkout-update-escalation`, one entry per streak, overwritten. The
   escalated-at marker is recorded only on a successful send, which is what
-  keeps the rest of the streak quiet; a successful update clears the streak and
-  the spool together, so a queued report never describes a condition that has
-  already cleared.
+  keeps the rest of the streak quiet. The run that recovers delivers whatever
+  is still queued — marked as an outage that has since ended — and then clears
+  the streak and the spool together, so an outage is reported after it ends and
+  a queued report never outlives the condition it describes.
 - **A frozen host is held at its pin instead** (Issue #624). Under
   `update_mode: "frozen"` the reset to `origin/<default-branch>` would defeat
   the pin, so the command fetches (a tag pushed since the last launch has to

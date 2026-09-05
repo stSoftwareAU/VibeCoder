@@ -216,9 +216,8 @@ Deno.test("updateCheckout - undelivered evidence is spooled and delivered once (
   });
 });
 
-Deno.test("updateCheckout - a successful update clears the streak and the spool (Issue #1018)", async () => {
+Deno.test("updateCheckout - a successful update flushes the spool and clears it with the streak (Issue #1018)", async () => {
   await withLogDir(async (options, paths) => {
-    const logged: string[] = [];
     for (let run = 0; run < 3; run++) {
       await updateCheckout(options, {
         ...FAILING_RESET,
@@ -231,30 +230,30 @@ Deno.test("updateCheckout - a successful update clears the streak and the spool 
       "precondition: an undelivered report is queued",
     );
 
-    let escalatedAfterRecovery = false;
+    // The run that recovers is the first that can reach GitHub, so it says
+    // what the outage never managed to — marked as already over.
+    const flushed: CheckoutUpdateEscalationContext[] = [];
     const recovered = await updateCheckout(options, {
       ...OK_RESET,
-      escalate: () => {
-        escalatedAfterRecovery = true;
-        return Promise.resolve();
-      },
-      log: (_logDir, message) => {
-        logged.push(message);
+      escalate: (context) => {
+        flushed.push(context);
         return Promise.resolve();
       },
     });
 
     assertEquals(recovered.ok, true);
-    assertEquals(escalatedAfterRecovery, false, "the condition has cleared");
+    assertEquals(flushed.length, 1, "the outage is reported after it ends");
+    assertEquals(flushed[0]?.recovered, true);
+    assertEquals(flushed[0]?.streak, 3);
+    assertStringIncludes(
+      flushed[0]?.error ?? "",
+      "Could not resolve hostname github.com",
+    );
     assertEquals((await Deno.readTextFile(paths.streakFile)).trim(), "0");
     assertEquals(
       await readState(paths.spoolFile),
       null,
       "a stale spool cannot report a condition that has already cleared",
-    );
-    assert(
-      logged.some((message) => message.includes("discard")),
-      "dropping a queued report is said out loud, never silent",
     );
 
     // The next streak starts clean: it escalates again at the threshold.
@@ -269,5 +268,99 @@ Deno.test("updateCheckout - a successful update clears the streak and the spool 
       });
     }
     assertEquals(attempts, [3], "a cleared streak escalates afresh");
+  });
+});
+
+Deno.test("updateCheckout - a flush that cannot be delivered still clears the spool, loudly (Issue #1018)", async () => {
+  await withLogDir(async (options, paths) => {
+    for (let run = 0; run < 3; run++) {
+      await updateCheckout(options, {
+        ...FAILING_RESET,
+        escalate: () => Promise.reject(new Error("api.github.com is down")),
+      });
+    }
+
+    const logged: string[] = [];
+    await updateCheckout(options, {
+      ...OK_RESET,
+      escalate: () => Promise.reject(new Error("gh is not authenticated")),
+      log: (_logDir, message) => {
+        logged.push(message);
+        return Promise.resolve();
+      },
+    });
+
+    assertEquals(
+      await readState(paths.spoolFile),
+      null,
+      "the queue never outlives the condition it describes",
+    );
+    assert(
+      logged.some((message) =>
+        message.includes("could not be delivered") &&
+        message.includes("discard")
+      ),
+      "a report that never arrived is said out loud, never dropped in silence",
+    );
+  });
+});
+
+Deno.test("updateCheckout - a corrupt escalation store re-escalates rather than silencing the host (Issue #1018)", async () => {
+  await withLogDir(async (options, paths) => {
+    await Deno.mkdir(options.logDir, { recursive: true });
+    await Deno.writeTextFile(paths.spoolFile, "{ not json at all");
+
+    const attempts: number[] = [];
+    for (let run = 0; run < 3; run++) {
+      await updateCheckout(options, {
+        ...FAILING_RESET,
+        escalate: (context) => {
+          attempts.push(context.streak);
+          return Promise.resolve();
+        },
+      });
+    }
+
+    assertEquals(
+      attempts,
+      [3],
+      "an unreadable store means nothing is known to have been delivered",
+    );
+    assertEquals(
+      (await readState(paths.spoolFile))?.escalatedStreak,
+      3,
+      "and the repaired store then keeps the rest of the streak quiet",
+    );
+  });
+});
+
+Deno.test("updateCheckout - a spool that cannot be written is reported as unqueued (Issue #1018)", async () => {
+  await withLogDir(async (options) => {
+    const logged: string[] = [];
+    for (let run = 0; run < 3; run++) {
+      await updateCheckout(options, {
+        ...FAILING_RESET,
+        escalate: () =>
+          Promise.reject(new Error("error connecting to api.github.com")),
+        writeEscalationState: () =>
+          Promise.reject(new Error("read-only file system")),
+        log: (_logDir, message) => {
+          logged.push(message);
+          return Promise.resolve();
+        },
+      });
+    }
+
+    assert(
+      logged.some((message) => message.includes("could NOT be queued")),
+      "evidence that did not reach the disk is never reported as spooled",
+    );
+    assert(
+      logged.some((message) =>
+        message.includes("Could not persist") &&
+        message.includes("read-only file system")
+      ),
+      "the persistence failure names its own cause",
+    );
   });
 });

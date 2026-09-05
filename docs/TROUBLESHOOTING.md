@@ -332,10 +332,12 @@ Checkout update escalation failed, spooled for the next run with connectivity
 (Issue #1018): gh issue create exited 1: error connecting to api.github.com
 ```
 
-The queued report names the time it was spooled when it is finally delivered.
-An update that succeeds clears the streak and the queue together, logging
-`discarding the escalation spooled at …`, so a stale entry can never report a
-condition that has already cleared.
+The run that recovers is usually the first that can reach GitHub, so it
+delivers the queued report itself — marked as an outage that has **since
+ended**, naming the time it was queued — and then clears the streak and the
+queue together. A queued report therefore never outlives the condition it
+describes, and an outage that ends is reported rather than forgotten. A flush
+that still cannot be delivered is dropped, loudly, in `run_core.log`.
 
 On a host running `update_mode: "frozen"` the same warning appears with a
 different message (Issue #624):
