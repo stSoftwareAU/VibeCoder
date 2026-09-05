@@ -209,16 +209,28 @@ for (const launcher of LAUNCHERS) {
 // keeps the Windows launcher pinned to the same three numbers as the command
 // and the bash launcher — a constant, in three languages, that no single
 // process can execute.
+// Each launcher is named as a literal path, never interpolated: that is the
+// construction `integration_test_manifest.ts` classifies on, and a suite it
+// stops recognising drops out of its manifest and back into the fast gate it
+// is too slow for.
 Deno.test("the launchers hardcode the probe's exit statuses correctly", async () => {
   for (
-    const [name, dialect, pattern] of [
-      ["run.sh", "bash", /EGRESS_BLOCKED_EXIT=(\d+)/],
-      ["run.ps1", "powershell", /\$EgressBlockedExit\s*=\s*(\d+)/],
+    const [name, dialect, url, pattern] of [
+      [
+        "run.sh",
+        "bash",
+        new URL("../../../run.sh", import.meta.url),
+        /EGRESS_BLOCKED_EXIT=(\d+)/,
+      ],
+      [
+        "run.ps1",
+        "powershell",
+        new URL("../../../run.ps1", import.meta.url),
+        /\$EgressBlockedExit\s*=\s*(\d+)/,
+      ],
     ] as const
   ) {
-    const source = await Deno.readTextFile(
-      new URL(`../../../${name}`, import.meta.url),
-    );
+    const source = await Deno.readTextFile(url);
     const body = executableLines(source, dialect).join("\n");
     const blocked = pattern.exec(body);
     assert(blocked, `${name} does not name the egress-blocked status`);
