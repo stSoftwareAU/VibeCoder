@@ -27,6 +27,10 @@ import type { GitHubClient, GitHubComment, Logger, Result } from "../types.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "./label_operations.ts";
 import { assertWorkerCanApplyLabel } from "./worker_label_guard.ts";
 import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
+import {
   getLabelColour,
   getLabelDescription,
 } from "../setup/label_definitions.ts";
@@ -68,6 +72,13 @@ export interface EscalateToHumanDeps {
    * inject a recorder (Issue #13).
    */
   labelGuardLogFn?: (line: string) => void;
+  /**
+   * Fleet identity used to verify who wrote a dedup marker (Issue #1216).
+   *
+   * Omitted in production, which reads the configured fleet identity; tests
+   * state the fleet rather than writing a config file.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
 }
 
 /** Options accepted by {@link escalateToHuman}. */
@@ -292,17 +303,36 @@ export async function escalateToHuman(
       // come last in the REST default ordering, so iterate the tail.
       const recent = comments.slice(-COMMENT_SCAN_LIMIT);
       const cutoff = now() - DEDUP_WINDOW_MS;
-      outer: for (const comment of recent) {
-        for (const marker of markers) {
-          if (!comment.body.includes(marker)) continue;
-          const createdMs = Date.parse(comment.createdAt);
-          if (Number.isNaN(createdMs)) continue;
-          if (createdMs >= cutoff) {
-            dedupSkipped = true;
-            break outer;
-          }
+      const matched = recent.filter((comment) => {
+        if (!markers.some((marker) => comment.body.includes(marker))) {
+          return false;
         }
-      }
+        const createdMs = Date.parse(comment.createdAt);
+        return !Number.isNaN(createdMs) && createdMs >= cutoff;
+      });
+      // Issue #1216: the marker lives in a comment body anybody may write and
+      // every dedup key is derivable from public numbers, so a match on the
+      // body alone let one planted `<!-- needs-human-escalation: … -->`
+      // suppress the hand-off's "why / next step" comment for 24 hours. The
+      // author is the only authenticated part of the match.
+      //
+      // `githubUser` is this worker's own login — the `GITHUB_USER` half of
+      // the fleet identity, and worker configuration rather than anything a
+      // pull request can influence — so a marker it wrote is evidence without
+      // reading a config. Everything else goes to the shared fleet check,
+      // which discards every row when the fleet cannot be resolved, so the
+      // escalation is posted.
+      const ownMarker = githubUser !== undefined &&
+        matched.some((comment) => comment.author === githubUser);
+      dedupSkipped = ownMarker ||
+        (await selectFleetAuthoredComments(
+            matched,
+            `needs-human escalation dedup on ${repo}#${target.number}`,
+            deps?.dedupAuthors ?? {},
+            (message) => logger.warn(message),
+            "the escalation comment is posted — a marker anyone can write " +
+              "must not silence a hand-off to a human",
+          )).length > 0;
     } catch (err) {
       // Dedup is an optimisation. If the lookup fails, post the comment
       // anyway rather than silently drop the escalation.

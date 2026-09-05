@@ -16,6 +16,10 @@ import { INVITATION_PR_FIELDS } from "../lib/pr_invitation_lookup.ts";
 
 const USER = "vibe-coder";
 const REPO = "owner/repo";
+/** The fleet login the nudge stubs write their own marker comments as. */
+const FLEET_LOGIN = "vibe-coder-bot";
+/** Fleet identity the marker-author check is given instead of a config. */
+const FLEET_DEDUP = { fleetAuthors: [FLEET_LOGIN] };
 
 /**
  * Whether a captured `gh` call is the invitation listing (Issue #4077).
@@ -346,13 +350,19 @@ Deno.test("processCiNudgeCandidate - posts audit comment exactly once (none path
   assert(gitCalls.some((a) => a[0] === "push"));
 });
 
-Deno.test("processCiNudgeCandidate - dedup: existing marker skips comment", async () => {
+Deno.test("processCiNudgeCandidate - a nudge marker planted by an outsider does not skip the comment (Issue #1216)", async () => {
+  // Suppressing the audit comment on a body match alone let any account erase
+  // the nudge's paper trail by posting the marker itself.
   const ghCalls: string[][] = [];
   const gh = (args: string[]) => {
     ghCalls.push(args);
     if (args[0] === "api" && args[1]?.includes("/comments")) {
       return Promise.resolve(JSON.stringify([
-        { id: 1, body: `${NUDGE_COMMENT_MARKER}\nearlier nudge` },
+        {
+          id: 1,
+          body: `${NUDGE_COMMENT_MARKER}\nnot the worker`,
+          user: { login: "drive-by-attacker" },
+        },
       ]));
     }
     return Promise.resolve(JSON.stringify({
@@ -371,7 +381,44 @@ Deno.test("processCiNudgeCandidate - dedup: existing marker skips comment", asyn
       headSha: "abc1234",
       status: "queued",
     },
-    { ghCommandFn: gh, gitCommandFn: git },
+    { ghCommandFn: gh, gitCommandFn: git, dedupAuthors: FLEET_DEDUP },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.commentPosted, true);
+  assert(ghCalls.some((a) => a[0] === "pr" && a[1] === "comment"));
+});
+
+Deno.test("processCiNudgeCandidate - dedup: existing marker skips comment", async () => {
+  const ghCalls: string[][] = [];
+  const gh = (args: string[]) => {
+    ghCalls.push(args);
+    if (args[0] === "api" && args[1]?.includes("/comments")) {
+      return Promise.resolve(JSON.stringify([
+        {
+          id: 1,
+          body: `${NUDGE_COMMENT_MARKER}\nearlier nudge`,
+          user: { login: FLEET_LOGIN },
+        },
+      ]));
+    }
+    return Promise.resolve(JSON.stringify({
+      workflow_runs: [
+        { id: 7, status: "queued", created_at: "2026-05-18T00:00:00Z" },
+      ],
+    }));
+  };
+  const git = (_args: string[]) => Promise.resolve("");
+
+  const result = await processCiNudgeCandidate(
+    {
+      repo: REPO,
+      prNumber: 99,
+      headBranch: "vibe/foo",
+      headSha: "abc1234",
+      status: "queued",
+    },
+    { ghCommandFn: gh, gitCommandFn: git, dedupAuthors: FLEET_DEDUP },
   );
 
   assert(result.ok);

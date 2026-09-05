@@ -65,6 +65,7 @@ import {
   type FindIssuesOptions,
   isDependencyBlocked,
 } from "./issue_finder_common.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import { issueCommentsContainMarker } from "./issue_comment_pages.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { escalateUnworkableWorkOn } from "./escalate_unworkable_work_on.ts";
@@ -118,6 +119,11 @@ export interface SelfDiagnosticDeps {
   }) => Promise<boolean>;
   /** Sink for refusal/decision lines. Defaults to `console.error`. */
   log?: (message: string) => void;
+  /**
+   * Fleet identity used to verify who wrote the announcement marker (Issue
+   * #1216). Omitted in production, which reads the configured fleet identity.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
 }
 
 /** A fresh empty result — never a shared mutable object. */
@@ -361,6 +367,8 @@ export async function collectSelfDiagnosticCandidates(
         issue.number,
         marker,
         ghFn,
+        deps.dedupAuthors,
+        log,
       );
     } catch (err) {
       const detail = `could not read comments: ${errorText(err)}`;

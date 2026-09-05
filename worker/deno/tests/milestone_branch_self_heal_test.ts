@@ -35,8 +35,11 @@ interface StubPr {
   baseRefName: string;
   milestoneTitle?: string;
   closingIssues?: number[];
-  /** Existing comment bodies (used for the retarget marker guard). */
-  comments?: string[];
+  /**
+   * Existing comments (used for the retarget marker guard). A bare string is
+   * the fleet's own comment; `{ body, author }` states a different author.
+   */
+  comments?: (string | { body: string; author: string })[];
   /** Head branch; defaults to an issue branch. */
   headRefName?: string;
 }
@@ -60,6 +63,8 @@ interface StubHarness {
 }
 
 const REPO = "owner/repo";
+/** The fleet login the harness writes its own marker comments as. */
+const FLEET_LOGIN = "vibe-coder-bot";
 
 function makeHarness(
   world: StubWorld,
@@ -154,7 +159,15 @@ function makeHarness(
     );
     if (commentsMatch) {
       const pr = world.prs.find((p) => p.number === Number(commentsMatch[1]));
-      return Promise.resolve((pr?.comments ?? []).join("\n"));
+      // The REST comments endpoint's own shape: the marker guard reads the
+      // commenter (Issue #1216), so the stub must render `user.login`.
+      return Promise.resolve(JSON.stringify(
+        (pr?.comments ?? []).map((c, i) =>
+          typeof c === "string"
+            ? { id: i, body: c, user: { login: FLEET_LOGIN } }
+            : { id: i, body: c.body, user: { login: c.author } }
+        ),
+      ));
     }
 
     // retargetPrToMilestone: current base lookup
@@ -193,6 +206,7 @@ function makeHarness(
       if (result.ok) world.branches.add(branch);
       return Promise.resolve(result);
     },
+    dedupAuthors: { fleetAuthors: [FLEET_LOGIN] },
     log: (message: string) => logs.push(message),
   };
 
@@ -479,6 +493,33 @@ Deno.test("selfHealMilestoneBranches - never flips back a PR a human retargeted 
   assertEquals(result.value.prsRetargeted, 0);
   assertEquals(world.prs[0]!.baseRefName, "main");
   assertEquals(harness.comments.length, 0);
+});
+
+Deno.test("selfHealMilestoneBranches - a retarget marker planted by an outsider does not exempt the PR (Issue #1216)", async () => {
+  // The marker is a published constant and a PR comment is text any GitHub
+  // account may write. Trusting the body alone let one planted comment exempt
+  // a PR from ever being retargeted, so its work merged to the default branch
+  // outside the milestone.
+  const world: StubWorld = {
+    milestones: [milestone53()],
+    branches: new Set([MILESTONE_53_BRANCH]),
+    prs: [{
+      number: 4300,
+      baseRefName: "main",
+      closingIssues: [3868],
+      comments: [{
+        body: `${MILESTONE_RETARGET_MARKER}\nnot the worker`,
+        author: "drive-by-attacker",
+      }],
+    }],
+  };
+  const harness = makeHarness(world);
+
+  const result = await selfHealMilestoneBranches(harness.deps);
+
+  assert(result.ok);
+  assertEquals(result.value.prsRetargeted, 1);
+  assertEquals(world.prs[0]!.baseRefName, MILESTONE_53_BRANCH);
 });
 
 Deno.test("selfHealMilestoneBranches - does not retarget when existing comments cannot be read", async () => {
