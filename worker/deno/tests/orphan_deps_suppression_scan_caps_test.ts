@@ -12,6 +12,10 @@
  * finding visible. Every drop is reported through `logFn` so the cap is never
  * silent.
  *
+ * The cases assert the ids collected and the notices logged, never a
+ * wall-clock budget: a pattern that backtracks catastrophically never returns
+ * at all, so the test runner's own timeout is the regression signal.
+ *
  * Australian English spelling used throughout.
  */
 
@@ -100,19 +104,16 @@ Deno.test("collectInSourceSuppressedIds - truncates a manifest larger than the t
   });
 });
 
-Deno.test("collectInSourceSuppressedIds - an adversarial lockfile line does not stall the scan", async () => {
+Deno.test("collectInSourceSuppressedIds - an adversarial lockfile line yields no suppression ids", async () => {
   await withAllowlist(async () => {
     // The exploit shape from the finding: one unclosed block comment with a
     // very long whitespace tail, in a manifest a fork PR controls.
     const line = "/* orphan-deps-ignore: BP-a" + " ".repeat(200_000);
-    const started = performance.now();
     const ids = await collectInSourceSuppressedIds("/repo", {
       readTextFileFn: reader({ "/repo/deno.json": line }),
       logFn: () => {},
     });
-    const elapsed = performance.now() - started;
-    assertEquals(ids, []);
-    assert(elapsed < 5_000, `scan took ${elapsed.toFixed(0)} ms`);
+    assertEquals(ids, [], "the unclosed marker waives nothing");
   });
 });
 

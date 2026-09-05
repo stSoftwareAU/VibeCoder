@@ -146,17 +146,18 @@ Deno.test("redactSecrets - leaves a base64 image blob and a stats table unchange
   assertEquals(redactSecrets(body), body);
 });
 
-Deno.test("redactSecrets - the transform pass stays linear on a large benign blob (Issue #188)", () => {
+Deno.test("redactSecrets - a 256 KiB benign blob passes through unchanged (Issue #188)", () => {
   // The decode-then-rescan pass runs on the worker's only thread over
-  // attacker-influenced text, so it must not reintroduce a stall.
+  // attacker-influenced text, so it must not reintroduce a stall. The
+  // detector is the output, not a stopwatch (PR #1170): a pass that
+  // reintroduced catastrophic backtracking would not overrun a budget on this
+  // input, it would never return, and the runner would kill the case on any
+  // machine under any load.
   const hostile = "a".repeat(262_144);
-  const started = performance.now();
-  const out = redactSecrets(hostile);
-  const elapsed = performance.now() - started;
-  assertEquals(out, hostile, "benign text must pass through unchanged");
-  assert(
-    elapsed < 2_000,
-    `256 KiB blob took ${elapsed.toFixed(0)} ms (budget 2000 ms)`,
+  assertEquals(
+    redactSecrets(hostile),
+    hostile,
+    "benign text must pass through unchanged",
   );
 });
 

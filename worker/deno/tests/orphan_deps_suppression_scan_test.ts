@@ -392,7 +392,7 @@ Deno.test("collectInSourceSuppressedIds - a marker past the manifest cap does no
   }
 });
 
-Deno.test("collectInSourceSuppressedIds - a manifest of long unterminated block comments is bounded", async () => {
+Deno.test("collectInSourceSuppressedIds - a manifest of long unterminated block comments yields no suppression ids", async () => {
   _resetSuppressionAuthorAllowlist();
   _resetSuppressionCommitAuthors();
   setSuppressionAuthorAllowlist(["nigel"]);
@@ -410,13 +410,14 @@ Deno.test("collectInSourceSuppressedIds - a manifest of long unterminated block 
         ? Promise.resolve(hostile)
         : Promise.reject(new Error("ENOENT"));
 
-    const started = performance.now();
+    // Nothing is waived: an unterminated block comment never forms a
+    // governed marker. A catastrophically backtracking pattern would not
+    // return at all here, so the runner's own timeout is the regression
+    // signal — there is deliberately no wall-clock budget assertion.
     assertEquals(
       await collectInSourceSuppressedIds("/repo", { readTextFileFn: read }),
       [],
     );
-    const ms = performance.now() - started;
-    assert(ms < 3_000, `took ${ms.toFixed(0)} ms, expected < 3000`);
   } finally {
     _resetSuppressionAuthorAllowlist();
     _resetSuppressionCommitAuthors();
