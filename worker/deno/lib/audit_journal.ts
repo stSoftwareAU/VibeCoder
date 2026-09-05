@@ -58,7 +58,9 @@ import {
   readAnchor,
   readRosterContents,
   type RosterAcknowledgement,
+  type RosterContents,
   type RosterDamageAcknowledgement,
+  rosterPath,
   rosterWasSeen,
   writeAnchor,
 } from "./audit_anchor.ts";
@@ -67,6 +69,11 @@ import {
   formatAppendRecovery,
   settleInterruptedAppend,
 } from "./audit_append_recovery.ts";
+import {
+  formatRosterRecovery,
+  type RosterRecovery,
+  settleTornRosterLine,
+} from "./audit_roster_recovery.ts";
 import {
   type AuditEntry,
   type AuditMutation,
@@ -85,7 +92,7 @@ export {
   type AuditOutcome,
   computeEntryHash,
 };
-export type { AppendRecovery };
+export type { AppendRecovery, RosterRecovery };
 
 /**
  * Raised when the journal on disk disagrees with its chain anchor —
@@ -172,6 +179,15 @@ export interface ChainSweep {
    * confirmed at.
    */
   recovered: AppendRecovery[];
+  /**
+   * Torn roster line discarded by this sweep (Issue #1202).
+   *
+   * Absent on every sweep that repaired nothing. Present, it is reported
+   * and never a failure — for the same reason an interrupted append is:
+   * the bytes a kill left behind were never a complete roster line, and
+   * they are preserved beside the roster rather than deleted.
+   */
+  rosterRepaired?: RosterRecovery;
   /**
    * Journals that are gone and whose loss has been signed for (Issue #359).
    *
@@ -1054,6 +1070,12 @@ export async function acknowledgeJournalDamage(
   const { baseDir, journalName, reason, by } = params;
   const path = `${baseDir}/${journalName}`;
 
+  // Issue #1202: every write below eventually appends to the roster, so a
+  // roster torn by a kill would block this exit before it began. Repair
+  // that one shape first; any other unreadable roster still fails loud.
+  const healed = await healRoster(baseDir);
+  if (!healed.ok) return { ok: false, error: healed.error };
+
   if (!await pathExists(path)) {
     return {
       ok: false,
@@ -1182,7 +1204,10 @@ export async function acknowledgeJournalLoss(
 
   let rostered: string[];
   try {
-    rostered = (await readRosterContents(baseDir)).journals;
+    // Issue #1202: a roster torn by a kill would otherwise block this exit
+    // outright — it is read here and appended to below — leaving no way out
+    // but hand-editing the tamper-evidence file.
+    rostered = (await readRosterHealed(baseDir)).contents.journals;
   } catch (error: unknown) {
     return {
       ok: false,
@@ -1266,6 +1291,95 @@ async function settleAppendUnderLock(
   }
 }
 
+/**
+ * Settle a torn roster line while holding the audit-directory lock.
+ *
+ * The lock lives *inside* the audit directory while the roster lives
+ * beside it, so a directory that has been removed has no lock to take —
+ * and no appender to exclude either, since every roster writer creates the
+ * directory before it writes. The repair then runs directly, and refuses
+ * to truncate a roster that grew underneath it.
+ *
+ * @param baseDir - Audit directory the roster covers
+ * @returns Result carrying the repair performed, or `null` when there was
+ *   nothing to settle
+ */
+async function settleRosterUnderLock(
+  baseDir: string,
+): Promise<Result<RosterRecovery | null>> {
+  try {
+    if (!await pathExists(baseDir)) return await settleTornRosterLine(baseDir);
+    return await withFileLock(
+      auditLockPath(baseDir),
+      () => settleTornRosterLine(baseDir),
+    );
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+}
+
+/**
+ * Read the roster, repairing a torn final line first if that is what is
+ * wrong with it (Issue #1202).
+ *
+ * Every reader of the roster that a torn line locks out goes through here:
+ * the sweep, and both acknowledgement exits. A roster that fails for any
+ * other reason keeps its original error — nothing is repaired on the
+ * strength of a second look.
+ *
+ * @param baseDir - Audit directory the roster covers
+ * @returns The roster contents, plus the repair performed to read them
+ * @throws The original read error when no repair applied, or the second
+ *   read's error when a repair did not make the roster readable
+ */
+async function readRosterHealed(
+  baseDir: string,
+): Promise<{ contents: RosterContents; repaired: RosterRecovery | null }> {
+  try {
+    return { contents: await readRosterContents(baseDir), repaired: null };
+  } catch (error: unknown) {
+    const settled = await settleRosterUnderLock(baseDir);
+    if (!settled.ok) {
+      // Loud, and the original verdict stands: the roster is still
+      // unreadable for its original reason. Silence here would read as
+      // "nothing to settle".
+      console.error(
+        `[SECURITY] [AUDIT_ROSTER_RECOVERY_FAILED] ${rosterPath(baseDir)}: a ` +
+          `torn roster line could not be settled: ${settled.error.message}`,
+      );
+      throw error;
+    }
+    if (!settled.value) throw error;
+    console.error(formatRosterRecovery(settled.value));
+    return {
+      contents: await readRosterContents(baseDir),
+      repaired: settled.value,
+    };
+  }
+}
+
+/**
+ * Repair a torn roster line before a writer needs the roster (Issue #1202).
+ *
+ * @param baseDir - Audit directory the roster covers
+ * @returns Result; ok when the roster is readable (already or after the
+ *   repair), an error carrying the original read failure otherwise
+ */
+async function healRoster(baseDir: string): Promise<Result<void>> {
+  try {
+    await readRosterHealed(baseDir);
+    return { ok: true, value: undefined };
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+}
+
 /** Does `path` exist? Any stat error other than absence is propagated up. */
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -1278,7 +1392,10 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 /** Sweep verdict for complete erasure of the journal directory and roster. */
-function completeErasureSweep(dir: string): Result<ChainSweep> {
+function completeErasureSweep(
+  dir: string,
+  rosterRepaired?: RosterRecovery,
+): Result<ChainSweep> {
   return {
     ok: true,
     value: {
@@ -1286,6 +1403,7 @@ function completeErasureSweep(dir: string): Result<ChainSweep> {
       checked: 1,
       acknowledged: [],
       recovered: [],
+      ...(rosterRepaired ? { rosterRepaired } : {}),
       broken: [{
         path: dir,
         valid: false,
@@ -1324,8 +1442,14 @@ export async function verifyAllChains(
   let acknowledgements: Map<string, RosterAcknowledgement>;
   let damageAcknowledgements: Map<string, RosterDamageAcknowledgement>;
   let seen: boolean;
+  // Issue #1202: a roster whose final line was torn by a kill is repaired
+  // here, before it can fail the whole directory's sweep. Only that one
+  // shape is repaired; every other unreadable roster still fails loud.
+  let rosterRepaired: RosterRecovery | undefined;
   try {
-    const contents = await readRosterContents(dir);
+    const healed = await readRosterHealed(dir);
+    rosterRepaired = healed.repaired ?? undefined;
+    const contents = healed.contents;
     rostered = contents.journals;
     acknowledgements = contents.acknowledged;
     damageAcknowledgements = contents.damaged;
@@ -1358,7 +1482,7 @@ export async function verifyAllChains(
     // Issue #270: a missing roster after a previously observed non-empty
     // one is the same erasure, not a first-ever start.
     if (rostered.length === 0) {
-      if (seen) return completeErasureSweep(dir);
+      if (seen) return completeErasureSweep(dir, rosterRepaired);
       return {
         ok: true,
         value: {
@@ -1367,6 +1491,7 @@ export async function verifyAllChains(
           broken: [],
           acknowledged: [],
           recovered: [],
+          ...(rosterRepaired ? { rosterRepaired } : {}),
         },
       };
     }
@@ -1398,7 +1523,9 @@ export async function verifyAllChains(
 
   // Issue #270: directory present but empty of journals/anchors, roster
   // gone, marker still there — the same complete erasure as a missing dir.
-  if (names.size === 0 && seen) return completeErasureSweep(dir);
+  if (names.size === 0 && seen) {
+    return completeErasureSweep(dir, rosterRepaired);
+  }
 
   const broken: ChainSweepEntry[] = [];
   const acknowledged: AcknowledgedLoss[] = [];
@@ -1505,6 +1632,7 @@ export async function verifyAllChains(
       broken,
       acknowledged,
       recovered,
+      ...(rosterRepaired ? { rosterRepaired } : {}),
     },
   };
 }
