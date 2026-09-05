@@ -23,6 +23,7 @@ import {
   runEntrypointCommand,
 } from "../commands/run_entrypoint.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { withChildlessPid } from "./support/childless_pid.ts";
 import { runWorker } from "../lib/run_worker.ts";
 import { envFrom } from "./support/env_lookup.ts";
 
@@ -251,47 +252,54 @@ Deno.test("run-entrypoint command - blocked guard yields exit 0 without a shadow
     // `Deno.env.get("HOME")` would resolve the operator's own directory and
     // leave `${tmpDir}/logs` empty, failing the pollution guard below.
     const exported: Record<string, string> = {};
-    const cmd = await runEntrypoint(
-      { "base-dir": tmpDir },
-      buildDefaultWorkerConfig(),
-      {
-        // PATH is read, never written, and the bootstrap resolves the real
-        // one from it — so it is passed through as the host has it.
-        env: envFrom({
-          HOME: tmpDir,
-          USERPROFILE: tmpDir,
-          PATH: Deno.env.get("PATH") ?? "",
-        }),
-        setEnv: (name, value) => {
-          exported[name] = value;
+    // The run's last step SIGTERMs every descendant of its pid. Under
+    // `--parallel` `Deno.pid` is shared with every other suite, so the
+    // default swept their live subprocesses (Issue #1055) — this run claims a
+    // childless pid of its own, reaped even if an assertion below throws.
+    await withChildlessPid(async (sweepPid) => {
+      const cmd = await runEntrypoint(
+        { "base-dir": tmpDir },
+        buildDefaultWorkerConfig(),
+        {
+          // PATH is read, never written, and the bootstrap resolves the real
+          // one from it — so it is passed through as the host has it.
+          env: envFrom({
+            HOME: tmpDir,
+            USERPROFILE: tmpDir,
+            PATH: Deno.env.get("PATH") ?? "",
+          }),
+          setEnv: (name, value) => {
+            exported[name] = value;
+          },
+          pid: sweepPid,
         },
-      },
-    );
-    assertEquals(typeof cmd.message, "string");
-    assertEquals(cmd.message.includes(".run_core.sh"), false);
-    // The driver's own exports went to the injected map, not the process.
-    assertEquals(exported.WORK_DIR, `${tmpDir}/auto-issue-work`);
-    assertEquals(
-      Deno.env.get("WORK_DIR") === `${tmpDir}/auto-issue-work`,
-      false,
-      "the driver must not export this fixture's work dir into the process",
-    );
+      );
+      assertEquals(typeof cmd.message, "string");
+      assertEquals(cmd.message.includes(".run_core.sh"), false);
+      // The driver's own exports went to the injected map, not the process.
+      assertEquals(exported.WORK_DIR, `${tmpDir}/auto-issue-work`);
+      assertEquals(
+        Deno.env.get("WORK_DIR") === `${tmpDir}/auto-issue-work`,
+        false,
+        "the driver must not export this fixture's work dir into the process",
+      );
 
-    // The pollution guard itself: everything the real run wrote must have
-    // landed inside the fixture, never in the operator's log directory.
-    const fixtureLogs: string[] = [];
-    try {
-      for await (const entry of Deno.readDir(`${tmpDir}/logs`)) {
-        fixtureLogs.push(entry.name);
+      // The pollution guard itself: everything the real run wrote must have
+      // landed inside the fixture, never in the operator's log directory.
+      const fixtureLogs: string[] = [];
+      try {
+        for await (const entry of Deno.readDir(`${tmpDir}/logs`)) {
+          fixtureLogs.push(entry.name);
+        }
+      } catch {
+        // No logs directory — the run failed before logging, which is fine.
       }
-    } catch {
-      // No logs directory — the run failed before logging, which is fine.
-    }
-    assert(
-      fixtureLogs.some((name) => name.startsWith("worker-")) ||
-        fixtureLogs.length === 0,
-      "the real command's logs must land under the fixture HOME",
-    );
+      assert(
+        fixtureLogs.some((name) => name.startsWith("worker-")) ||
+          fixtureLogs.length === 0,
+        "the real command's logs must land under the fixture HOME",
+      );
+    });
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
