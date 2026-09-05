@@ -287,6 +287,10 @@ docs/audits/security-sweep-1214-subprocess-argv.md:
   title: "Vibe Coder: Subprocess and Argv Security Sweep"
   page_icon: "🔎"
 
+docs/audits/filesystem-path-temp-sweep-1215.md:
+  title: "Vibe Coder: Filesystem, Path and Temp-File Security Sweep"
+  page_icon: "🔎"
+
 AGENTS.md:
   title: "Vibe Coder: AGENTS"
   page_icon: "🤖"
