@@ -265,6 +265,35 @@ step, and reports this one too if the spec comes from anywhere but
 or if the argument is declared and never acted on. `install-tools.sh` is part
 of the hashed definition, so editing it changes the image tag.
 
+## The deployment's private layer — a second build
+
+A deployment that declares `container_extension` in `.config.json` gets **two**
+builds rather than one: this image exactly as every host builds it, tagged
+`vibe-coder:<baseHash>`, and then the operator's own Containerfile built on top
+of it as `vibe-coder:<extensionHash>` — the tag the container actually runs.
+The layer is handed the base as `--build-arg VIBE_BASE_IMAGE`, its build
+context is the operator's extension directory alone, and a Containerfile that
+does not derive `FROM ${VIBE_BASE_IMAGE}` is refused before either build runs,
+so "layered on the standard image" is a guarantee rather than a comment. A
+failed first build never reaches the second, and either failure aborts the
+launch.
+
+The layer changes what the image *contains*, never what the container may
+*reach*: no host path is mounted into the build, no port is published, and the
+run arguments are the same contained set. The extension directory's contents
+are hashed into `<extensionHash>`, so changing any file under it rebuilds and
+changing nothing does not. The operator's manual, with a worked example, is
+[Container Extension](CONTAINER-EXTENSION.md).
+
+```mermaid
+flowchart LR
+    B1["🐳 vibe-coder:&lt;baseHash&gt;<br/>this image"] -->|"--build-arg VIBE_BASE_IMAGE"| B2["🐳 vibe-coder:&lt;extensionHash&gt;<br/>the deployment's layer"]
+    X["📁 container_extension<br/>directory"] --> B2
+    B2 --> R["🚀 the container runs this tag"]
+    style B2 fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style R fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
 ## Built from a comment-stripped copy
 
 Apple `container` rejects a Dockerfile over 16,384 bytes (apple/container),

@@ -27,6 +27,7 @@ import { resolveEffectiveFleetPrAuthors } from "./fleet_authors.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
 import { parseIdleTaskCadence } from "./idle_task_cadence_config.ts";
 import { parseContainerTools } from "./container_tools_config.ts";
+import { parseContainerExtension } from "./container_extension_config.ts";
 import { assertCallbacksConfig } from "./run_callbacks_config.ts";
 import { assertCustomLabelPrompts } from "./custom_label_prompts_config.ts";
 import {
@@ -266,7 +267,18 @@ function normaliseRepoConfigs(
   return result;
 }
 
-async function loadConfigFile(configPath: string): Promise<ConfigFile> {
+/**
+ * Read, validate and return the raw `.config.json`.
+ *
+ * @param configPath - Path to the config file
+ * @param env - Environment lookup the validators read through (Issue #956);
+ *   the `container_extension` containment rule needs the host home directory.
+ * @returns The validated config file contents (empty when the file is absent)
+ */
+async function loadConfigFile(
+  configPath: string,
+  env: EnvLookup = processEnvLookup,
+): Promise<ConfigFile> {
   let content: string;
   try {
     content = await Deno.readTextFile(configPath);
@@ -310,6 +322,19 @@ async function loadConfigFile(configPath: string): Promise<ConfigFile> {
   );
   if (!tools.ok) {
     throw new Error(`Config file ${configPath} is invalid: ${tools.error}`);
+  }
+
+  // Issue #978 (parent #933): the private environment extension is the trust
+  // boundary for what the operator's own layer builds and runs — a malformed
+  // declaration fails the config load loudly, naming the field, rather than
+  // reaching the build. An absent key declares no extension and changes
+  // nothing.
+  const extension = parseContainerExtension(
+    (validated.value as ConfigFile).container_extension,
+    { env },
+  );
+  if (!extension.ok) {
+    throw new Error(`Config file ${configPath} is invalid: ${extension.error}`);
   }
 
   // Issue #622 (part of #583): the pinned ref and tool versions are meant to
@@ -361,10 +386,10 @@ export async function loadConfig(
   configPath: string,
   options?: LoadConfigOptions,
 ): Promise<WorkerConfig> {
-  const file = await loadConfigFile(configPath);
-  warnRemovedTrustKeys(file);
   // The one environment seam this loader reads through (Issue #956).
   const env = options?.env ?? processEnvLookup;
+  const file = await loadConfigFile(configPath, env);
+  warnRemovedTrustKeys(file);
 
   // Issue #1066: `allowed_authors` no longer grants anything. Who may direct
   // work is derived from repository collaborators every cycle, so trust

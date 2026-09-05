@@ -138,12 +138,28 @@ export class DescendantTracker {
   /**
    * Take a fresh snapshot. One probe at a time: a call that lands while a
    * probe is in flight joins it rather than starting another.
+   *
+   * An empty result never erases a tree already seen (Issue #1135). The
+   * probe is on an interval, so on a busy host one of its ticks lands in
+   * the moment the child is dying — and `getDescendants` answers `[]` to
+   * three different questions: the tree really is empty, the parent has
+   * gone (`pid_guard.getDescendants` returns `[]` for a parent it cannot
+   * see), and the probe itself failed (a `pgrep` that could not spawn under
+   * load answers `[]` too). Letting that last tick overwrite the snapshot
+   * destroys the only record of the tree at exactly the moment the record
+   * is about to be needed, and `collectOrphans` then collects nothing —
+   * the orphan survives, which is the whole failure #4382 exists to
+   * prevent, and it strikes hardest under the memory pressure that causes
+   * the external kill in the first place. Keeping the older members costs
+   * nothing: `collectOrphans` re-checks liveness, parentage and age before
+   * it signals any of them.
    */
   refresh(): Promise<void> {
     if (this.#inFlight) return this.#inFlight;
     const takenAt = this.#nowMs();
     this.#inFlight = this.#deps.getDescendants(this.#childPid)
       .then((pids) => {
+        if (pids.length === 0 && this.#snapshot.length > 0) return;
         this.#snapshot = pids;
         this.#snapshotAtMs = takenAt;
       })

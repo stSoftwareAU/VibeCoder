@@ -5,13 +5,15 @@
  * `run.sh` and `run.ps1` can decide whether the required image already exists
  * without duplicating the hashing rule in shell and PowerShell.
  *
- * The reference covers the deployment's `container_tools` selection (Issue #73)
- * and its `agent_providers` set (Issue #729) as well as the committed
+ * The reference covers the deployment's `container_tools` selection (Issue
+ * #73), its `agent_providers` set (Issue #729) and its private
+ * `container_extension` directory (Issue #979) as well as the committed
  * definition, so the decision this command drives is made against what the
  * image actually bakes in — a Codex host is told to rebuild rather than handed
- * the tag of the Claude image it already has. Both are read from `--config`,
- * else `CONFIG_PATH`, else `<base-dir>/.config.json`; a checkout with no
- * configuration selects neither and gets the same reference it did before.
+ * the tag of the Claude image it already has. All three are read from
+ * `--config`, else `CONFIG_PATH`, else `<base-dir>/.config.json`; a checkout
+ * with no configuration selects none and gets the same reference it did
+ * before.
  *
  * Usage:
  *   deno run --allow-env --allow-read mod.ts container-image-hash \
@@ -28,6 +30,7 @@ import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import {
   AGENT_PROVIDERS_HASH_INPUT,
   computeContainerImageHash,
+  CONTAINER_EXTENSION_HASH_INPUT,
   CONTAINER_IMAGE_INPUTS,
   CONTAINER_TOOLS_HASH_INPUT,
   resolveContainerImageReference,
@@ -54,6 +57,11 @@ export interface ContainerImageHashResult {
    * the deployment takes the image's default provider set.
    */
   agentProviders: string;
+  /**
+   * The configured extension directory (Issue #979), or `""` when the
+   * deployment configures none.
+   */
+  containerExtension: string;
 }
 
 /** Whether a path is absolute on either host style. */
@@ -131,7 +139,7 @@ export const containerImageHashCommand: ContainerImageHashCommand = {
       // image's identity: a host that rebuilds off this reference alone must
       // rebuild when either changes. Read through the one reader setup's check
       // and the tabletop runner also use, so the three cannot disagree (#743).
-      const { options, tools, agentProviders } =
+      const { options, tools, agentProviders, containerExtension } =
         await readDeploymentImageSelection({
           repoRoot: baseDir,
           configFile,
@@ -150,10 +158,12 @@ export const containerImageHashCommand: ContainerImageHashCommand = {
             ...CONTAINER_IMAGE_INPUTS,
             ...(tools.length > 0 ? [CONTAINER_TOOLS_HASH_INPUT] : []),
             ...(agentProviders ? [AGENT_PROVIDERS_HASH_INPUT] : []),
+            ...(containerExtension ? [CONTAINER_EXTENSION_HASH_INPUT] : []),
           ],
           configFile,
           containerTools: tools.map((tool) => tool.id),
           agentProviders: agentProviders ?? "",
+          containerExtension: containerExtension?.path ?? "",
         },
       };
     } catch (error) {
