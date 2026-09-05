@@ -20,6 +20,19 @@
  * does not strip them. On the update path the same labels are reconciled
  * onto the existing issue so drift self-heals on subsequent runs.
  *
+ * **The marker only counts when the fleet wrote it (Issue #1124).** The
+ * idempotency search matches `<!-- vibe-coder:best-practices-sync -->` in an
+ * issue **body**, which anybody who can open an issue may write, and the
+ * match selects the issue this sync comments on and re-labels. A planted
+ * marker therefore redirects a write: the findings land in a stranger's
+ * issue and the repo never gets its own. The search asks for the author and
+ * keeps only fleet-authored matches, through `lib/alert_dedup_authors.ts`.
+ *
+ * **The fail direction is "file fresh, never comment".** An unresolvable
+ * fleet identity means no match can be attributed, so the sync files its own
+ * issue. A duplicate follow-up issue is closed in a moment; findings
+ * commented into somebody else's issue are findings nobody reads.
+ *
  * Issue #2102: setup.sh best-practice sync. Part of #2094.
  */
 
@@ -30,6 +43,12 @@ import {
 import { addLabelToIssue, ensureLabelExists } from "../lib/label_operations.ts";
 import type { LabelManagerDeps } from "../lib/label_types.ts";
 import { retryWithBackoff } from "../lib/retry.ts";
+import {
+  ALERT_DEDUP_JSON_FIELDS,
+  type AlertDedupAuthorOptions,
+  type AlertDedupRow,
+  selectFleetAuthoredMatches,
+} from "../lib/alert_dedup_authors.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -77,6 +96,14 @@ export interface SyncRepoOptions {
   labelCacheDir?: string;
   /** When true, report findings but do not file or update issues. */
   dryRun?: boolean;
+  /**
+   * Fleet identity inputs for the marker author check (Issue #1124).
+   * Omitted reads the configured fleet, which is what every production
+   * caller does.
+   */
+  authorOptions?: AlertDedupAuthorOptions;
+  /** Sink for the author-verification diagnostics. */
+  log?: (message: string) => void;
 }
 
 /** Per-repo result of a sync run. */
@@ -237,10 +264,20 @@ function defaultRunner(ghConfigDir?: string): GhCommandFn {
   };
 }
 
-/** Find the existing follow-up issue (open) by marker — returns its number or null. */
+/**
+ * Find the **fleet's own** open follow-up issue by marker — returns its
+ * number, or null when there is none to comment on.
+ *
+ * `--limit` is deliberately larger than one: a single planted match would
+ * otherwise crowd the genuine issue out of the result and the sync would
+ * file a duplicate on every run. Null means "file fresh", which is the
+ * harmless outcome whenever the match cannot be attributed (Issue #1124).
+ */
 async function findExistingIssue(
   repo: string,
   runner: GhCommandFn,
+  authorOptions: AlertDedupAuthorOptions,
+  log: (message: string) => void,
 ): Promise<number | null> {
   const result = await runner([
     "gh",
@@ -253,17 +290,31 @@ async function findExistingIssue(
     "--search",
     `"${BEST_PRACTICES_MARKER}" in:body`,
     "--json",
-    "number",
+    ALERT_DEDUP_JSON_FIELDS,
     "--limit",
-    "1",
+    "20",
   ]);
   if (!result.success) return null;
+  let issues: AlertDedupRow[];
   try {
-    const issues = JSON.parse(result.stdout) as { number: number }[];
-    return issues.length > 0 ? issues[0]!.number : null;
+    const parsed: unknown = JSON.parse(result.stdout);
+    if (!Array.isArray(parsed)) return null;
+    issues = (parsed as AlertDedupRow[]).filter((issue) =>
+      typeof issue?.number === "number" &&
+      String(issue.body ?? "").includes(BEST_PRACTICES_MARKER)
+    );
   } catch {
     return null;
   }
+  const ours = await selectFleetAuthoredMatches(
+    issues,
+    `best-practices sync ${repo}`,
+    authorOptions,
+    log,
+    "a fresh follow-up issue is filed — findings are never commented into " +
+      "an issue the fleet did not open",
+  );
+  return ours.length > 0 ? ours[0]!.number : null;
 }
 
 /**
@@ -515,7 +566,12 @@ export async function syncBestPracticesForRepo(
 
   let existing: number | null = null;
   try {
-    existing = await findExistingIssue(repo, runner);
+    existing = await findExistingIssue(
+      repo,
+      runner,
+      options.authorOptions ?? {},
+      options.log ?? ((message: string) => console.warn(message)),
+    );
   } catch (err) {
     return {
       ok: false,

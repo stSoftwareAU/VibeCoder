@@ -114,6 +114,11 @@ interface MockState {
   existingLabels: string[];
   /** Issue number to return for search; null means none exists. */
   existingIssue: number | null;
+  /**
+   * Login the search result is authored by (Issue #1124). Defaults to a
+   * fleet account, because the ordinary fixture is the fleet's own issue.
+   */
+  existingIssueAuthor?: string;
   /** When true, `gh issue create` with any `--label` fails first attempt. */
   failLabelledCreate?: boolean;
   /** When true, label creation (`gh api .../labels`, `gh label create`) fails. */
@@ -175,7 +180,11 @@ function buildMockRunner(state: MockState): GhCommandFn {
         query: searchIdx >= 0 ? cmd[searchIdx + 1]! : "",
       });
       const payload = state.existingIssue !== null
-        ? JSON.stringify([{ number: state.existingIssue }])
+        ? JSON.stringify([{
+          number: state.existingIssue,
+          body: `preamble\n${BEST_PRACTICES_MARKER}`,
+          author: { login: state.existingIssueAuthor ?? FLEET_AUTHOR },
+        }])
         : "[]";
       return ok(payload);
     }
@@ -224,6 +233,12 @@ function newState(): MockState {
     existingIssue: null,
   };
 }
+
+/** The fleet login every fixture's follow-up issue is authored by. */
+const FLEET_AUTHOR = "vibe-coder-bot";
+
+/** Author-verification inputs the fixtures pass instead of a config file. */
+const FLEET_OPTIONS = { fleetAuthors: [FLEET_AUTHOR] };
 
 /** Fresh temp dir for the label cache so tests stay hermetic. */
 async function withLabelCacheDir(
@@ -320,6 +335,8 @@ Deno.test(
           localRepoPath: tmp,
           ghCommandFn: buildMockRunner(state1),
           labelCacheDir: cacheDir,
+          authorOptions: FLEET_OPTIONS,
+          log: () => {},
         });
         assertEquals(r1.issueCreated, true);
         assertEquals(state1.creates.length, 1);
@@ -331,6 +348,8 @@ Deno.test(
           localRepoPath: tmp,
           ghCommandFn: buildMockRunner(state2),
           labelCacheDir: cacheDir,
+          authorOptions: FLEET_OPTIONS,
+          log: () => {},
         });
         assertEquals(r2.ok, true);
         assertEquals(r2.issueCreated, false);
@@ -645,3 +664,120 @@ Deno.test("buildUpdateCommentBody - includes finding count and marker", () => {
   assertStringIncludes(body, "pr-creator-token");
   assertStringIncludes(body, BEST_PRACTICES_MARKER);
 });
+
+// ---------------------------------------------------------------------------
+// Marker author verification (Issue #1124)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "syncBestPracticesForRepo - a planted marker never redirects the comment",
+  async () => {
+    // The marker lives in an issue body anybody may write, and the match
+    // decides which issue the findings are commented into. A stranger's
+    // issue must not collect them.
+    await withTempRepo({ "bad.yml": badWorkflowGithubToken }, async (tmp) => {
+      await withLabelCacheDir(async (cacheDir) => {
+        const state = newState();
+        state.existingIssue = 4242;
+        state.existingIssueAuthor = "drive-by-account";
+        const result = await syncBestPracticesForRepo("owner/repo", {
+          localRepoPath: tmp,
+          ghCommandFn: buildMockRunner(state),
+          labelCacheDir: cacheDir,
+          authorOptions: FLEET_OPTIONS,
+          log: () => {},
+        });
+        assertEquals(result.ok, true);
+        assertEquals(result.issueUpdated, false);
+        assertEquals(result.issueCreated, true);
+        assertEquals(state.comments.length, 0);
+        assertEquals(state.creates.length, 1);
+      });
+    });
+  },
+);
+
+Deno.test(
+  "syncBestPracticesForRepo - a sibling fleet account's issue is still updated",
+  async () => {
+    // The guard that stops the fix becoming "always file": a marker from
+    // another fleet host still dedups, which is what cross-host
+    // convergence depends on.
+    await withTempRepo({ "bad.yml": badWorkflowGithubToken }, async (tmp) => {
+      await withLabelCacheDir(async (cacheDir) => {
+        const state = newState();
+        state.existingIssue = 77;
+        state.existingIssueAuthor = "sibling-fleet-host";
+        const result = await syncBestPracticesForRepo("owner/repo", {
+          localRepoPath: tmp,
+          ghCommandFn: buildMockRunner(state),
+          labelCacheDir: cacheDir,
+          authorOptions: {
+            fleetAuthors: [FLEET_AUTHOR, "sibling-fleet-host"],
+          },
+          log: () => {},
+        });
+        assertEquals(result.issueUpdated, true);
+        assertEquals(state.comments.length, 1);
+        assertEquals(state.comments[0]!.issue, "77");
+      });
+    });
+  },
+);
+
+Deno.test(
+  "syncBestPracticesForRepo - an unresolvable fleet files fresh and logs",
+  async () => {
+    // The chosen fail direction, asserted: a duplicate follow-up issue is
+    // closed in a moment; findings commented into somebody else's issue
+    // are findings nobody reads.
+    await withTempRepo({ "bad.yml": badWorkflowGithubToken }, async (tmp) => {
+      await withLabelCacheDir(async (cacheDir) => {
+        const state = newState();
+        state.existingIssue = 99;
+        const lines: string[] = [];
+        const result = await syncBestPracticesForRepo("owner/repo", {
+          localRepoPath: tmp,
+          ghCommandFn: buildMockRunner(state),
+          labelCacheDir: cacheDir,
+          authorOptions: { fleetAuthors: [] },
+          log: (message) => lines.push(message),
+        });
+        assertEquals(result.issueCreated, true);
+        assertEquals(state.comments.length, 0);
+        assertEquals(lines.length, 1);
+        assertStringIncludes(lines[0]!, "a fresh follow-up issue is filed");
+      });
+    });
+  },
+);
+
+Deno.test(
+  "syncBestPracticesForRepo - the marker search asks who wrote the match",
+  async () => {
+    await withTempRepo({ "bad.yml": badWorkflowGithubToken }, async (tmp) => {
+      await withLabelCacheDir(async (cacheDir) => {
+        const state = newState();
+        const seen: string[][] = [];
+        const inner = buildMockRunner(state);
+        const runner: GhCommandFn = (cmd: string[]) => {
+          seen.push(cmd);
+          return inner(cmd);
+        };
+        await syncBestPracticesForRepo("owner/repo", {
+          localRepoPath: tmp,
+          ghCommandFn: runner,
+          labelCacheDir: cacheDir,
+          authorOptions: FLEET_OPTIONS,
+          log: () => {},
+        });
+        const list = seen.find((cmd) =>
+          cmd[1] === "issue" && cmd[2] === "list"
+        );
+        assertEquals(list !== undefined, true);
+        const json = list![list!.indexOf("--json") + 1] ?? "";
+        assertEquals(json.split(",").includes("author"), true);
+      });
+    });
+  },
+);

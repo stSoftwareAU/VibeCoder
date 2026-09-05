@@ -708,6 +708,30 @@ export interface TitleSearchPR {
   headRefName: string;
   mergedAt: string | null;
   closedAt: string | null;
+  /**
+   * The PR author's login, or `""` when GitHub did not report one
+   * (Issue #1124).
+   *
+   * A PR title is text anybody who can open a PR chooses, so a title
+   * match on its own proves nothing; the author is the only
+   * authenticated part of the row. Consumers that treat a match as
+   * "the fleet already has this in hand" check this against the fleet
+   * identity before believing it.
+   */
+  author: string;
+  /**
+   * True when the PR's head branch lives in a fork rather than in the
+   * target repository (Issue #1124).
+   *
+   * This is the head-branch check. Pushing the head branch into the
+   * target repository needs write access there, so a same-repository
+   * head is evidence no unprivileged account could manufacture; a fork
+   * head is exactly what an attacker planting a `(#N)` title on a
+   * public repository has. Absent from cache entries written before
+   * #1124, where it reads as `false` — the behaviour those entries were
+   * written under.
+   */
+  isCrossRepository: boolean;
 }
 
 /**
@@ -876,6 +900,21 @@ export async function invalidatePRsByBranch(
  * this all-author cache.
  *
  * Returns an empty array on parse failure rather than throwing.
+ *
+ * **Fork-headed PRs are dropped (Issue #1124).** The search matches an
+ * attacker-writable title on a public repository, and every consumer reads
+ * a match as "the fleet already has this issue in hand" and stays quiet.
+ * The head branch is the part of the row nobody outside the repository can
+ * produce: pushing it into the target repository needs write access, so a
+ * same-repository head is evidence and a fork head is a claim. The claims
+ * are dropped, loudly, and the author GitHub authenticated is named in the
+ * log line and kept on the row so consumers can check it too.
+ *
+ * The fail direction is towards **acting**: a dropped row means "no PR
+ * found", so the worker files or recovers. A duplicate PR is recoverable in
+ * a moment; an issue silently starved by a planted title is not.
+ *
+ * @param log - Sink for the dropped-row warning. Defaults to `console.error`.
  */
 export async function fetchPRsForIssueByTitle(
   repo: string,
@@ -883,6 +922,7 @@ export async function fetchPRsForIssueByTitle(
   state: PRStateFilter,
   cache?: IssueCache,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+  log: (message: string) => void = console.error,
 ): Promise<TitleSearchPR[]> {
   const cacheKey = `prs_title_${state}_${issueNumber}`;
 
@@ -906,7 +946,7 @@ export async function fetchPRsForIssueByTitle(
       "--search",
       search,
       "--json",
-      "number,title,baseRefName,headRefName,mergedAt,closedAt",
+      "number,title,baseRefName,headRefName,mergedAt,closedAt,author,isCrossRepository",
       "--limit",
       "50",
     ]);
@@ -926,6 +966,19 @@ export async function fetchPRsForIssueByTitle(
   for (const item of parsed) {
     if (!isRecord(item)) continue;
     if (typeof item.number !== "number") continue;
+    const author =
+      isRecord(item.author) && typeof item.author.login === "string"
+        ? item.author.login
+        : "";
+    if (item.isCrossRepository === true) {
+      log(
+        `[title-search] ${repo}#${issueNumber}: ignoring PR #${item.number} ` +
+          `by ${author || "an unknown author"} — its head branch is in a ` +
+          `fork, so the "(#${issueNumber})" title is not evidence the fleet ` +
+          `opened it. Treating the issue as having no PR.`,
+      );
+      continue;
+    }
     prs.push({
       number: item.number,
       title: typeof item.title === "string" ? item.title : "",
@@ -933,6 +986,8 @@ export async function fetchPRsForIssueByTitle(
       headRefName: typeof item.headRefName === "string" ? item.headRefName : "",
       mergedAt: typeof item.mergedAt === "string" ? item.mergedAt : null,
       closedAt: typeof item.closedAt === "string" ? item.closedAt : null,
+      author,
+      isCrossRepository: false,
     });
   }
 
