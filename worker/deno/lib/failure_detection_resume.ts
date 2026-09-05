@@ -29,6 +29,17 @@
  * handler budget merely **deferred** (Issue #58 — never attempted) do not spend
  * an attempt: a budget shortfall is not evidence that a repair is impossible.
  *
+ * **Only the fleet may spend the budget.** The tally lives in the parent's
+ * comment thread, which anyone who can see the issue may post to, so an
+ * attempt marker on its own is a stranger asserting how many repairs have
+ * been tried. Left unchecked, one planted `<!-- failure-detection-resume-
+ * attempt: N -->` exhausts the budget and forces the `escalated` outcome —
+ * the label dropped, the parent handed to a human, the repair abandoned.
+ * The comment **author** is checked against the fleet identity
+ * (`alert_dedup_authors.ts`) before an attempt counts. The fail direction
+ * is towards **retrying**: an unverifiable tally counts as zero attempts,
+ * so the pass tries again rather than giving up on evidence it cannot read.
+ *
  * Running outside the Planning handler takes the repair off that handler's
  * watchdog budget entirely.
  *
@@ -36,6 +47,10 @@
  */
 
 import type { GitHubClient, GitHubComment, Logger } from "../types.ts";
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
 import { FAILURE_DETECTION_REPAIR_LABEL } from "./config_defaults.ts";
 import {
   type FailureDetectionOffender,
@@ -71,6 +86,15 @@ const ATTEMPT_MARKER_PREFIX = "<!-- failure-detection-resume-attempt:";
 /** Matches {@link buildResumeAttemptMarker} in a comment body. */
 const ATTEMPT_MARKER_RE =
   /<!--\s*failure-detection-resume-attempt:\s*(\d+)\s*-->/g;
+
+/**
+ * The same marker without `g`, for a one-shot predicate.
+ *
+ * A `g` regex carries `lastIndex` between calls, so `.test()` on the shared
+ * constant would skip every second comment.
+ */
+const ATTEMPT_MARKER_TEST =
+  /<!--\s*failure-detection-resume-attempt:\s*\d+\s*-->/;
 
 /** What the resume pass did to one parent. */
 export type FailureDetectionResumeStatus =
@@ -110,6 +134,10 @@ export function buildResumeAttemptMarker(attempt: number): string {
  *
  * The count lives in the comments rather than on disk so it survives a worker
  * restart and is the same number for every worker in the fleet.
+ *
+ * Pass only comments a fleet account authored — {@link readRecordedAttempts}
+ * filters them first. A marker in an arbitrary comment is a claim, not a
+ * record.
  *
  * @returns 0 when no attempt has been recorded.
  */
@@ -222,6 +250,12 @@ export interface ResumeFailureDetectionRepairOptions {
   now?: () => number;
   /** GitHub login used in the escalation comment footer. */
   githubUser?: string;
+  /**
+   * Fleet logins whose attempt markers count towards the retry budget.
+   * Omitted reads the configured fleet identity, which is what every
+   * production caller does.
+   */
+  fleetAuthors?: AlertDedupAuthorOptions["fleetAuthors"];
   /**
    * Injected {@link escalateToHuman} dependencies — used by tests to stub the
    * label creation so no test reaches the network.
@@ -480,7 +514,20 @@ async function readRecordedAttempts(
       opts.repo,
       opts.parentIssueNumber,
     );
-    return countRecordedResumeAttempts(comments);
+    return countRecordedResumeAttempts(
+      await selectFleetAuthoredComments(
+        comments.filter((comment) => ATTEMPT_MARKER_TEST.test(comment.body)),
+        `failure-detection-resume ${opts.repo}#${opts.parentIssueNumber}`,
+        { fleetAuthors: opts.fleetAuthors },
+        (message) =>
+          opts.logger.warn(message, {
+            repo: opts.repo,
+            issueNumber: opts.parentIssueNumber,
+          }),
+        "no attempt is counted and the repair is retried rather than " +
+          "escalated — a marker anyone can post must not spend the budget",
+      ),
+    );
   } catch (err) {
     // Loud: the retry bound is derived from these comments, so an unreadable
     // thread means this cycle's attempt cannot be counted.
@@ -566,6 +613,11 @@ export async function runFailureDetectionResumePass(opts: {
   deadlineMs?: number;
   now?: () => number;
   githubUser?: string;
+  /**
+   * Fleet logins whose attempt markers count towards the retry budget.
+   * Omitted reads the configured fleet identity.
+   */
+  fleetAuthors?: AlertDedupAuthorOptions["fleetAuthors"];
 }): Promise<FailureDetectionResumePassResult> {
   const parents = await findFailureDetectionRepairParents({
     repos: opts.repos,
@@ -602,6 +654,9 @@ export async function runFailureDetectionResumePass(opts: {
           : {}),
         ...(opts.now ? { now: opts.now } : {}),
         ...(opts.githubUser ? { githubUser: opts.githubUser } : {}),
+        ...(opts.fleetAuthors !== undefined
+          ? { fleetAuthors: opts.fleetAuthors }
+          : {}),
       }),
     );
   }

@@ -29,10 +29,30 @@
  * should be rare, and it should mean the fleet has correctly decided a human
  * is the next actor — never that the fleet ran out of road.
  *
+ * **The dedup match is author-verified.** The escalation deduplicates on
+ * the exact issue title and, on a match, posts the escalation body as a
+ * **comment on the matched issue**. A title is chosen by whoever opens the
+ * issue, so an unverified match does two things at once: it suppresses the
+ * escalation, and it redirects the escalation's contents onto an issue
+ * somebody else picked. The match therefore counts only when a fleet
+ * account wrote it (`alert_dedup_authors.ts`) *and* the issue carries the
+ * work label — applying a label needs triage permission, so the two
+ * together are belt and braces rather than one check.
+ *
+ * **The fail direction is towards filing.** An unresolvable fleet files a
+ * fresh escalation: a duplicate is noise a human closes, a redirected or
+ * silenced one is a stuck PR nobody hears about.
+ *
  * Australian English spelling throughout (behaviour, organisation).
  */
 
 import type { Logger, Result } from "../types.ts";
+import {
+  ALERT_DEDUP_TITLE_JSON_FIELDS,
+  type AlertDedupAuthorOptions,
+  type AlertDedupRow,
+  selectFleetAuthoredMatches,
+} from "./alert_dedup_authors.ts";
 import { spawnGh } from "./gh_spawn.ts";
 
 /** Label marking a PR whose blockage has been filed as work (Issue #569). */
@@ -71,8 +91,14 @@ export interface WorkEscalationOutcome {
   filed: boolean;
 }
 
-/** Injected seams so the whole path is testable without GitHub. */
-export interface EscalateAsWorkDeps {
+/**
+ * Injected seams so the whole path is testable without GitHub.
+ *
+ * Extends {@link AlertDedupAuthorOptions}: `fleetAuthors` (tests) or the
+ * configured fleet identity (production) decides whose title match may
+ * receive the escalation body.
+ */
+export interface EscalateAsWorkDeps extends AlertDedupAuthorOptions {
   /** Runs `gh`, returning stdout; throws on failure. */
   gh?: (args: string[]) => Promise<string>;
   logger?: Logger;
@@ -145,6 +171,10 @@ export async function escalateAsWork(
   const title = workEscalationTitle(escalation);
   const body = buildWorkEscalationBody(escalation);
   const workLabel = escalation.workLabel ?? DEFAULT_WORK_LABEL;
+  const log = (message: string) => {
+    if (deps.logger?.warn) deps.logger.warn(message, { repo });
+    else console.warn(message);
+  };
 
   try {
     // Dedup by exact title among OPEN issues: a closed one means the blockage
@@ -157,18 +187,31 @@ export async function escalateAsWork(
       repo,
       "--state",
       "open",
+      // Belt: only issues carrying the work label, which needs triage
+      // permission to apply and which every escalation this module files
+      // carries.
+      "--label",
+      workLabel,
       "--search",
       `in:title "${title}"`,
       "--json",
-      "number,title",
+      ALERT_DEDUP_TITLE_JSON_FIELDS,
     ]);
     let existing: number | undefined;
     try {
-      const parsed = JSON.parse(listed || "[]") as {
-        number: number;
-        title: string;
-      }[];
-      existing = parsed.find((issue) => issue.title === title)?.number;
+      const parsed = JSON.parse(listed || "[]") as (AlertDedupRow & {
+        title?: string;
+      })[];
+      // Braces: and only issues a fleet account authored.
+      const verified = await selectFleetAuthoredMatches(
+        parsed.filter((issue) => issue.title === title),
+        `work escalation ${repo}#${escalation.prNumber}`,
+        deps,
+        (message) => log(message),
+        "a fresh escalation is filed — the escalation body must never be " +
+          "posted onto an issue the fleet did not open",
+      );
+      existing = verified[0]?.number;
     } catch {
       // Unparseable listing — fall through to filing, since a duplicate is
       // recoverable and a lost escalation is not.
