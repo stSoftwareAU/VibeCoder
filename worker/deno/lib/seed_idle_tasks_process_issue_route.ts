@@ -19,14 +19,25 @@
  * the real command `execute`; tests inject a stub so the routing shape is
  * exercised with no real network.
  *
+ * Issue #1193: the request is **claimed** before the seeding runs. This route
+ * dispatches ahead of `workOnIssue`, whose setup phase held the only
+ * `claimIssue` call, so a `seed-idle-tasks:` request took no claim lock at all
+ * and two hosts scanning the same repo both seeded the target — filing every
+ * wrapper issue twice. See `route_claim.ts`.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { CommandResult, Logger, WorkerConfig } from "../types.ts";
+import type { CommandResult, WorkerConfig } from "../types.ts";
 import { isSeedIdleTasksTitle } from "./seed_idle_tasks_request.ts";
 import { processSeedIdleTasksCommand } from "../commands/process_seed_idle_tasks.ts";
+import {
+  type RouteClaimDeps,
+  type RouteClaimLost,
+  runWithRouteClaim,
+} from "./route_claim.ts";
 
-/** Input describing the claimed issue under consideration. */
+/** Input describing the issue under consideration. */
 export interface RouteSeedIdleTasksInput {
   /** The repo the issue lives in (where to comment/close). */
   repo: string;
@@ -34,6 +45,28 @@ export interface RouteSeedIdleTasksInput {
   issueTitle: string;
   /** Worker config — carries the operator-controlled `repos` allowlist. */
   config: WorkerConfig;
+  /**
+   * This host's GitHub login — the assignee that locks a recognised request
+   * against a sibling host (Issue #1193). Required: a route that cannot
+   * claim must not silently seed.
+   */
+  githubUser: string;
+  /** Working directory holding the heartbeat and marker state. */
+  workDir: string;
+  /**
+   * Fleet logins whose `CLAIM_LOCK` markers are trusted and whose open PRs
+   * defer the claim (`resolveFleetAuthors`), forwarded to `claimIssue`.
+   * Required, not optional: an omitted set silently narrows the claim's
+   * trust to this login and switches off the live fleet-PR re-check, and a
+   * guard that can be disabled by forgetting a field is no guard.
+   */
+  fleetAuthors: string[];
+  /**
+   * The fleet's push-capable logins (`resolveFleetMaintenanceAuthorSet`) —
+   * only their open PRs defer the claim (Issue #4133). Required for the
+   * same reason as `fleetAuthors`.
+   */
+  pushCapableAuthors: string[];
 }
 
 /** Seam for the underlying command call. */
@@ -43,8 +76,7 @@ export type ProcessSeedIdleTasksExecuteFn = (
 ) => Promise<CommandResult>;
 
 /** Injectable seams. Defaults wire the production implementation. */
-export interface RouteSeedIdleTasksDeps {
-  logger: Logger;
+export interface RouteSeedIdleTasksDeps extends RouteClaimDeps {
   executeFn?: ProcessSeedIdleTasksExecuteFn;
 }
 
@@ -54,14 +86,22 @@ export interface RouteSeedIdleTasksDeps {
  *   standard `workOnIssue` pipeline.
  * - `{ routed: true, success }` — `process-seed-idle-tasks` took ownership
  *   and has commented (and closed) the issue.
+ * - `{ routed: true, success: false, claimLost: true, … }` — this host does
+ *   not hold the request (Issue #1193). Nothing was seeded and nothing was
+ *   written to the issue.
  */
 export type RouteSeedIdleTasksOutcome =
   | { routed: false }
-  | { routed: true; success: boolean };
+  | { routed: true; success: boolean }
+  | ({ routed: true; success: false } & RouteClaimLost);
 
 /**
- * Dispatch a claimed issue to `process-seed-idle-tasks` when its title starts
- * with `seed-idle-tasks:`; otherwise pass through unchanged.
+ * Dispatch an issue to `process-seed-idle-tasks` when its title starts with
+ * `seed-idle-tasks:`; otherwise pass through unchanged.
+ *
+ * A recognised request is claimed first (Issue #1193): seeding files issues
+ * in the target repo, so two hosts running one request file every wrapper
+ * twice. A host that is refused the claim seeds nothing.
  */
 export async function routeSeedIdleTasksInProcessIssue(
   input: RouteSeedIdleTasksInput,
@@ -74,23 +114,39 @@ export async function routeSeedIdleTasksInProcessIssue(
   const execute: ProcessSeedIdleTasksExecuteFn = deps.executeFn ??
     ((args, config) => processSeedIdleTasksCommand.execute(args, config));
 
-  deps.logger.info(
-    "Routing idle-task seeding issue to process-seed-idle-tasks",
+  const held = await runWithRouteClaim(
     {
+      route: "seed-idle-tasks",
       repo: input.repo,
       issueNumber: input.issueNumber,
-      issueTitle: input.issueTitle,
+      githubUser: input.githubUser,
+      workDir: input.workDir,
+      fleetAuthors: input.fleetAuthors,
+      pushCapableAuthors: input.pushCapableAuthors,
+    },
+    deps,
+    async () => {
+      deps.logger.info(
+        "Routing idle-task seeding issue to process-seed-idle-tasks",
+        {
+          repo: input.repo,
+          issueNumber: input.issueNumber,
+          issueTitle: input.issueTitle,
+        },
+      );
+      const result = await execute(
+        {
+          "repo": input.repo,
+          "issue-number": input.issueNumber,
+          "title": input.issueTitle,
+        },
+        input.config,
+      );
+      return result.success;
     },
   );
 
-  const result = await execute(
-    {
-      "repo": input.repo,
-      "issue-number": input.issueNumber,
-      "title": input.issueTitle,
-    },
-    input.config,
-  );
-
-  return { routed: true, success: result.success };
+  return held.claimed
+    ? { routed: true, success: held.value }
+    : { routed: true, success: false, ...held.lost };
 }

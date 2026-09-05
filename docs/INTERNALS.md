@@ -1098,6 +1098,17 @@ network hiccups, and even its own mistakes:
   failure in one never blocks the other, and a double-unassign is a harmless
   no-op. This fixes incident, where the failure path cleared the marker but left
   the issue permanently assigned, blocking all future pickup.
+- **A run that never held the claim releases nothing** (Issues #1139, #1193) —
+  the fleet runs every host under one GitHub login, so
+  `gh issue edit --remove-assignee <githubUser>` removes **whichever** host's
+  assignment is on the issue. A run refused the claim therefore used to strip
+  the *winner's* assignee and clear the winner's live marker, leaving a running
+  agent unassigned and the issue claimable by a third host. Every path that can
+  stand down now reports `claimNotHeld` — the pre-pipeline routes through
+  `routeRunResult` ([`route_claim.ts`](../worker/deno/lib/route_claim.ts)) and
+  the standard pipeline through `WorkOnIssueResult.claimNotHeld`, set by the
+  setup phase's claim refusal — and `releaseIssueClaim` then releases nothing.
+  The post-run callbacks still fire, so the stand-down is reported.
 - **Claim-lock integrity** — the assignee _is_ the claim lock every host checks,
   so an issue must never be "unassigned with a live heartbeat". VibeCoder#185
   was unassigned at 06:31Z with no release comment while its heartbeat kept

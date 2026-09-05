@@ -69,7 +69,7 @@ sequenceDiagram
     Main->>Route: routeIdleTaskInProcessIssue(issue #N)
     Route->>Registry: findIdleTaskTemplate(title/body)
     Registry-->>Route: IdleTaskTemplate
-    Route->>GH: claimIdleTaskWrapper — assign + CLAIM_LOCK (Issue #1139)
+    Route->>GH: claimRoutedIssue — assign + CLAIM_LOCK (Issues #1139, #1193)
     alt a sibling host already holds it
         GH-->>Route: already assigned / race lost
         Route-->>Main: skip — nothing scanned, nothing written
@@ -113,7 +113,7 @@ Key points:
   (01:56:42 → 02:01:32) and on Mac-Ultra-M2 (02:00:25 → 02:05:25), both
   recording `success`, and the issue's timeline carries no `assigned` event at
   all.
-  [`claimIdleTaskWrapper`](../worker/deno/lib/idle_task_wrapper_claim.ts) now
+  [`claimRoutedIssue`](../worker/deno/lib/route_claim.ts) now
   takes the same lock the standard pipeline uses — assignee, `CLAIM_LOCK`
   comment, earliest-comment race resolution, and a heartbeat that beats for as
   long as the scan runs so a claim whose assignee is dropped mid-scan is still
@@ -595,10 +595,12 @@ repo:
 2. **Issue-claim atomicity** — the same atomic claim machinery used for regular
    issues prevents two workers from running the same `runTask()` invocation.
    Only the worker that successfully assigns itself proceeds. Taken by
-   [`claimIdleTaskWrapper`](../worker/deno/lib/idle_task_wrapper_claim.ts)
+   [`claimRoutedIssue`](../worker/deno/lib/route_claim.ts)
    inside the route, before the clone and the scan — until Issue #1139 this
    guard was documented but never armed on the production path, and two hosts
-   ran the same audit minutes apart.
+   ran the same audit minutes apart. Issue #1193 generalised that module so
+   the other two pre-pipeline routes — `add-repo:` and `seed-idle-tasks:` —
+   take the same lock before they run.
 3. **Lowest-priority queue position** — the `idle-task` label sits at the bottom
    of the priority order so idle-task work is selected only when every higher
    tier is empty. It will never pre-empt PR feedback, CI fixes, planning, or
@@ -1440,7 +1442,9 @@ the agent is spawned — to `process-seed-idle-tasks`
 flowchart TD
     I["Issue: seed-idle-tasks: owner/repo"] --> R{"title prefix?"}
     R -- no --> P["standard issue → PR pipeline"]
-    R -- yes --> C{"target in .config.json repos?"}
+    R -- yes --> K{"claim taken?<br/>assignee + CLAIM_LOCK"}
+    K -- refused --> KS["stand down:<br/>nothing seeded, nothing released"]
+    K -- held --> C{"target in .config.json repos?"}
     C -- no --> X["refusal comment + close<br/>(allowlist untouched)"]
     C -- yes --> G["registerWriteRepo(config entry)"]
     G --> S["createAllIdleTaskWrappers<br/>via spawnGh → audit journal"]
@@ -1448,6 +1452,14 @@ flowchart TD
     style X fill:#c9184a,stroke:#800f2f,color:#fff
     style D fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
+
+**The request is claimed before it is seeded** (Issue #1193). This route also
+runs before `workOnIssue`, whose setup phase held the only `claimIssue` call,
+so a `seed-idle-tasks:` request took no claim lock and two hosts scanning the
+same repo both seeded the target — filing every wrapper issue twice. A host
+that is refused the claim seeds nothing, writes nothing to the request, and
+releases nothing, so the holder keeps its assignee and its heartbeat marker.
+See [`route_claim.ts`](../worker/deno/lib/route_claim.ts).
 
 Three properties make this safe to expose:
 

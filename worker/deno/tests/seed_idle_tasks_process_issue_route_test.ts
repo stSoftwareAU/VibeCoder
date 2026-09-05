@@ -14,6 +14,7 @@
 import { assertEquals } from "@std/assert";
 import {
   type ProcessSeedIdleTasksExecuteFn,
+  type RouteSeedIdleTasksDeps,
   routeSeedIdleTasksInProcessIssue,
 } from "../lib/seed_idle_tasks_process_issue_route.ts";
 import type { CommandResult, Logger, WorkerConfig } from "../types.ts";
@@ -53,6 +54,21 @@ function makeExecuteStub(
   return { fn, calls };
 }
 
+/**
+ * The claim fields `processIssue` supplies (Issue #1193). A route that
+ * cannot claim must not seed.
+ */
+const CLAIM_INPUT = {
+  githubUser: "stservice",
+  workDir: "/tmp/work",
+  fleetAuthors: ["stservice"],
+  pushCapableAuthors: ["stservice"],
+};
+
+/** Grant the claim without touching GitHub — the routing is what is tested. */
+const GRANT_CLAIM: RouteSeedIdleTasksDeps["claimRouteFn"] = () =>
+  Promise.resolve({ claimed: true, workerId: "stservice-1" });
+
 Deno.test("routeSeedIdleTasksInProcessIssue - routes a seeding title", async () => {
   const { fn, calls } = makeExecuteStub({ success: true, message: "seeded" });
 
@@ -62,8 +78,9 @@ Deno.test("routeSeedIdleTasksInProcessIssue - routes a seeding title", async () 
       issueNumber: 3858,
       issueTitle: "seed-idle-tasks: stSoftwareAU/private-repo-14",
       config: CONFIG,
+      ...CLAIM_INPUT,
     },
-    { logger: makeLogger(), executeFn: fn },
+    { logger: makeLogger(), executeFn: fn, claimRouteFn: GRANT_CLAIM },
   );
 
   assertEquals(outcome, { routed: true, success: true });
@@ -88,8 +105,9 @@ Deno.test("routeSeedIdleTasksInProcessIssue - mirrors command failure", async ()
       issueNumber: 99,
       issueTitle: "SEED-IDLE-TASKS: stSoftwareAU/private-repo-14",
       config: CONFIG,
+      ...CLAIM_INPUT,
     },
-    { logger: makeLogger(), executeFn: fn },
+    { logger: makeLogger(), executeFn: fn, claimRouteFn: GRANT_CLAIM },
   );
 
   assertEquals(outcome, { routed: true, success: false });
@@ -104,8 +122,9 @@ Deno.test("routeSeedIdleTasksInProcessIssue - normal title passes through", asyn
       issueNumber: 1234,
       issueTitle: "Fix the date parser",
       config: CONFIG,
+      ...CLAIM_INPUT,
     },
-    { logger: makeLogger(), executeFn: fn },
+    { logger: makeLogger(), executeFn: fn, claimRouteFn: GRANT_CLAIM },
   );
 
   assertEquals(outcome, { routed: false });
