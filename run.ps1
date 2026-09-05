@@ -185,6 +185,17 @@ $EvidenceLog = ""
 # the outcome recorder has had its chance to quote it.
 $RunLog = ""
 
+# container-build-heal's own output (Issue #1019). When the heal is what
+# failed, this is the only account of why: the host log used to record the
+# status it exited with and discard everything it said. Same lifetime as
+# $RunLog - quoted by the outcome recorder, then removed by Exit-Launcher.
+$HealLog = ""
+
+# The pre-build egress probe's hop table and routing evidence (Issue #997).
+# Same lifetime as $RunLog: written before the build, quoted by the outcome
+# recorder when the host is parked, removed by Exit-Launcher afterwards.
+$EgressLog = ""
+
 <#
 .SYNOPSIS
     Record this launcher's outcome for the self-heal backoff (Issue #4072).
@@ -257,6 +268,17 @@ function Exit-Launcher {
     if ($RunLog) {
         Remove-Item -LiteralPath $RunLog -Force -ErrorAction SilentlyContinue
     }
+    # Same ordering, same reason (Issue #997): a parked host's escalation IS
+    # the hop table, so the evidence outlives the record and nothing else.
+    if ($EgressLog) {
+        Remove-Item -LiteralPath $EgressLog -Force -ErrorAction SilentlyContinue
+    }
+    # Same ordering, same reason (Issue #1019): a failed heal's own output is
+    # what the escalation quotes when the heal is what failed. The excerpt and
+    # the preserved copy under the log directory outlive both.
+    if ($HealLog) {
+        Remove-Item -LiteralPath $HealLog -Force -ErrorAction SilentlyContinue
+    }
     exit $Code
 }
 
@@ -311,6 +333,135 @@ function Write-RunCoreLog {
     } catch {
         # Best-effort by design.
     }
+}
+
+# A failed build's own output, kept where a later reader can find it (Issue
+# #1019). The captures the heal classifies are temporary files the launcher
+# removes on its way out, so run_core.log recorded that a build had failed and
+# nothing whatsoever about why. These are the bounded, named copies the log
+# line points at, in their own sub-directory so the size-based rotation of
+# run_core.log and friends leaves them alone.
+$BuildFailureLogDir = Join-Path $HomeDir_ "logs/build-failures"
+# Diagnostics, not an archive: an unbounded directory on a host already
+# fighting for disk would be a regression, not a fix (Issues #478, #633).
+$BuildFailureLogKeep = 20
+# How much of the output goes into run_core.log itself, so the answer to "why"
+# is in the log an operator already reads.
+$BuildFailureExcerptLines = 40
+
+<#
+.SYNOPSIS
+    Drop all but the newest $BuildFailureLogKeep preserved logs (Issue #1019).
+#>
+function Remove-OldBuildFailureLogs {
+    try {
+        # The UTC stamp leads the filename, so name order IS chronological
+        # order - no reliance on the filesystem's modification times.
+        $logs = @(Get-ChildItem -LiteralPath $BuildFailureLogDir -Filter "*.log" `
+                -File -ErrorAction Stop | Sort-Object -Property Name)
+        for ($i = 0; $i -lt ($logs.Count - $BuildFailureLogKeep); $i++) {
+            Remove-Item -LiteralPath $logs[$i].FullName -Force `
+                -ErrorAction SilentlyContinue
+        }
+    } catch {
+        # Best-effort by design - reclaiming disk must never fail a launch -
+        # but never silent: a directory that stops being trimmed says so.
+        [Console]::Error.WriteLine(
+            "[run.ps1] warning: cannot prune $BuildFailureLogDir - $($_.Exception.Message)")
+    }
+}
+
+<#
+.SYNOPSIS
+    Copy a failed step's captured output to a stable, timestamped path.
+.OUTPUTS
+    The preserved path, or an empty string when there was nothing to preserve
+    - so the caller says so rather than naming a path that does not exist. A
+    failure to preserve names its own cause on stderr: a change made to stop
+    discarding the account of why must not discard the account of why *it*
+    could not keep one.
+#>
+function Save-BuildFailureLog {
+    param(
+        [Parameter(Mandatory = $true)][string] $Source,
+        [Parameter(Mandatory = $true)][string] $Slug
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $Source)) { return "" }
+        if ((Get-Item -LiteralPath $Source).Length -eq 0) { return "" }
+        New-Item -ItemType Directory -Force -Path $BuildFailureLogDir | Out-Null
+        # The backslashes escape the literal T and Z, so the stamp matches
+        # run.sh's `date -u +%Y%m%dT%H%M%SZ` exactly; the PID keeps two
+        # launches that failed in the same second apart.
+        $stamp = [DateTime]::UtcNow.ToString("yyyyMMdd\THHmmss\Z")
+        $preserved = Join-Path $BuildFailureLogDir "$stamp-$Slug-$PID.log"
+        Copy-Item -LiteralPath $Source -Destination $preserved -Force `
+            -ErrorAction Stop
+        Remove-OldBuildFailureLogs
+        return $preserved
+    } catch {
+        [Console]::Error.WriteLine(
+            "[run.ps1] warning: cannot preserve $Source under $BuildFailureLogDir - $($_.Exception.Message)")
+        return ""
+    }
+}
+
+<#
+.SYNOPSIS
+    Append a bounded excerpt of a captured log to run_core.log (Issue #1019).
+#>
+function Write-RunCoreExcerpt {
+    param(
+        [Parameter(Mandatory = $true)][string] $Label,
+        [Parameter(Mandatory = $true)][string] $Source
+    )
+
+    $lines = @()
+    try {
+        $lines = @(Get-Content -LiteralPath $Source -ErrorAction Stop)
+    } catch {
+        # An unreadable capture is reported as an absent one, below.
+        $lines = @()
+    }
+    if ($lines.Count -eq 0) {
+        # Emptiness is evidence too: a step that wrote nothing died before it
+        # reached anything that reports, which is a different fault from one
+        # that explained itself (Issue #633).
+        Write-RunCoreLog "${Label}: no output was captured"
+        return
+    }
+    Write-RunCoreLog "$Label (last $BuildFailureExcerptLines lines):"
+    try {
+        $tail = @($lines | Select-Object -Last $BuildFailureExcerptLines)
+        Add-Content -LiteralPath (Join-Path $HomeDir_ "logs/run_core.log") `
+            -Value ($tail | ForEach-Object { "  | $_" }) -ErrorAction Stop
+    } catch {
+        # Best-effort by design, exactly as Write-RunCoreLog is.
+    }
+}
+
+<#
+.SYNOPSIS
+    Record a failed build step with the step's own words (Issue #1019).
+.DESCRIPTION
+    The decision, where the full output was kept, and an excerpt of it - so
+    the host log answers "why" without a second run.
+#>
+function Write-BuildFailureEvidence {
+    param(
+        [Parameter(Mandatory = $true)][string] $Message,
+        [Parameter(Mandatory = $true)][string] $Source,
+        [Parameter(Mandatory = $true)][string] $Label
+    )
+
+    $preserved = Save-BuildFailureLog -Source $Source -Slug ($Label -replace " ", "-")
+    if ($preserved) {
+        Write-RunCoreLog "$Message - full output preserved at $preserved"
+    } else {
+        Write-RunCoreLog "$Message - no output could be preserved"
+    }
+    Write-RunCoreExcerpt -Label $Label -Source $Source
 }
 
 # Update the worker checkout on the host, before the container is launched
@@ -501,14 +652,115 @@ if ($reaped.StdErr) { [Console]::Error.Write($reaped.StdErr) }
 # so a worker container somebody else is running stops this launch here,
 # plainly, rather than in the runtime's storage-attachment error. Kept in
 # step with ANOTHER_WORKER_RUNNING_EXIT in container_reap.ts.
-if ($reaped.ExitCode -eq 4) {
+#
+# The status is carried out of the launcher unchanged (Issue #1056). It used
+# to collapse to 1, which the outcome recorder reads as "a bootstrap, config
+# or loop failure the worker reported itself" - a healthy host describing
+# itself as a crashed one, and climbing the escalation ladder for behaving
+# exactly as designed. Exiting on the reaper's own status lets the recorder
+# recognise the condition and treat it as the non-failure it is.
+$AnotherWorkerRunningExit = 4
+if ($reaped.ExitCode -eq $AnotherWorkerRunningExit) {
     [Console]::Error.WriteLine(
         "[run.ps1] another worker is already running on this host - one worker per host; not launching (Issue #26)")
-    exit 1
+    Exit-Launcher $AnotherWorkerRunningExit
 }
 if ($reaped.ExitCode -ne 0) {
     [Console]::Error.WriteLine(
         "[run.ps1] warning: the pre-launch container reaper did not complete")
+}
+
+# Container egress probe (Issue #997), before the build and before the launch.
+#
+# GRQ-23 spent hours reporting `image_build` for a fault in its own routing:
+# the build was simply the first thing to notice, 135 seconds into a `curl`,
+# and the report sent every reader to an image that was never broken. One
+# short container run answers it in seconds, against a literal address (never
+# a name: the host bridge IS a resolver, so DNS succeeds while every packet
+# past the gateway is dropped). The host is probed too, because that is what
+# separates the three conditions:
+#
+#   container reaches it            -> carry on
+#   container blocked, host reaches -> this host cannot route out of a
+#                                      container: park, and tell a person once
+#   both blocked                    -> the link is down: wait, escalate nothing
+#
+# Exit statuses kept in step with EGRESS_BLOCKED_EXIT and NETWORK_DOWN_EXIT in
+# worker/deno/commands/container_egress_probe.ts, and with
+# HOST_EGRESS_BLOCKED_EXIT_STATUS in worker/deno/lib/container_egress_probe.ts,
+# by the launcher tests.
+$EgressBlockedExit = 3
+$EgressNetworkDownExit = 4
+$HostEgressBlockedExitStatus = 88
+
+<#
+.SYNOPSIS
+    Print what the probe found, on this launcher's own stderr (Issue #997).
+.DESCRIPTION
+    The evidence has two readers and only one of them reads the file. On a
+    supervised host loop.ps1 sets VIBE_SUPERVISOR_RECORDS_OUTCOME, this
+    launcher's own recorder returns immediately, and the supervisor records the
+    outcome from the launch log it captures this launcher's output into — so
+    anything written only to $EgressLog never reaches the escalation, and the
+    network-unavailable marker never reaches the classifier that keeps a link
+    outage off the failure ladder (Issue #949).
+#>
+function Write-EgressEvidence {
+    $text = ""
+    if (Test-Path -LiteralPath $EgressLog) {
+        $text = (Get-Content -LiteralPath $EgressLog -Raw -ErrorAction SilentlyContinue)
+    }
+    if ($text) {
+        [Console]::Error.Write($text)
+        if (-not $text.EndsWith("`n")) { [Console]::Error.WriteLine("") }
+    } else {
+        [Console]::Error.WriteLine(
+            "[run.ps1] warning: the egress probe wrote no evidence to $EgressLog - the report will name the fault with no cause attached")
+    }
+}
+
+$EgressLog = Join-Path ([System.IO.Path]::GetTempPath()) `
+    ("vibe-egress-" + [System.Guid]::NewGuid().ToString("N") + ".log")
+$egress = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
+    "run",
+    "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
+    "--allow-env", "--allow-read", "--allow-run", "--allow-net",
+    "--allow-write=$EgressLog",
+    "$BaseDir/worker/deno/mod.ts", "container-egress-probe",
+    "--runtime", $Runtime,
+    "--base-dir", $BaseDir,
+    "--image", $Image,
+    "--name", "$($ContainerName)-egress",
+    "--out", $EgressLog
+)
+if ($egress.StdOut) { [Console]::Error.Write($egress.StdOut) }
+if ($egress.StdErr) { [Console]::Error.Write($egress.StdErr) }
+if ($egress.ExitCode -eq $EgressBlockedExit) {
+    # Parked, not retried: the reject route is host networking state a
+    # non-root process cannot change, so rebuilding an image that is fine
+    # would burn minutes per cycle for ever. The phase marker is what stops
+    # the outcome recorder attributing this to the build.
+    Write-LaunchPhase "container_egress"
+    Write-EgressEvidence
+    [Console]::Error.WriteLine(
+        "[run.ps1] parking this host: a container cannot reach the network while the host itself can - this is host networking, not the image build (Issue #997); see the hop table above")
+    Write-RunCoreLog "container-egress-probe: parked - container_egress_blocked; a container cannot reach the network while the host can (Issue #997)"
+    $EvidenceLog = $EgressLog
+    Exit-Launcher $HostEgressBlockedExitStatus
+} elseif ($egress.ExitCode -eq $EgressNetworkDownExit) {
+    # The host cannot reach it either, so there is nothing here for a person
+    # to fix. The probe's evidence carries the network-unavailable marker,
+    # which is what keeps this off the failure ladder (Issue #949).
+    Write-EgressEvidence
+    [Console]::Error.WriteLine(
+        "[run.ps1] the network is unreachable from this host as well as from a container - not building; the next cycle retries (Issue #997)")
+    Write-RunCoreLog "container-egress-probe: the network is unreachable from the host too - waiting at the base cadence, escalating nothing (Issues #949, #997)"
+    $EvidenceLog = $EgressLog
+    Exit-Launcher 1
+} elseif ($egress.ExitCode -ne 0) {
+    [Console]::Error.WriteLine(
+        "[run.ps1] warning: the container egress probe did not complete (status $($egress.ExitCode)) - launching anyway")
+    Write-RunCoreLog "container-egress-probe: did not complete (status $($egress.ExitCode)) - launching anyway"
 }
 
 # Exit status container-build-heal reports for a build failure it does not
@@ -566,8 +818,16 @@ function Invoke-BuildHeal {
         "--log", $LogPath,
         "--attempt", "$Attempt"
     )
-    if ($healed.StdOut) { [Console]::Error.Write($healed.StdOut) }
-    if ($healed.StdErr) { [Console]::Error.Write($healed.StdErr) }
+    # Kept as well as streamed (Issue #1019): when the heal itself fails, what
+    # it said is the whole account of why, and the launcher used to keep only
+    # the status it exited with.
+    if (-not $HealLog) {
+        $script:HealLog = Join-Path ([System.IO.Path]::GetTempPath()) `
+            ("vibe-heal-" + [System.Guid]::NewGuid().ToString("N") + ".log")
+    }
+    $text = "$($healed.StdOut)$($healed.StdErr)"
+    [System.IO.File]::WriteAllText($HealLog, $text)
+    if ($text) { [Console]::Error.Write($text) }
     return $healed.ExitCode
 }
 
@@ -581,6 +841,9 @@ if ($present.ExitCode -ne 0) {
         ("vibe-build-" + [System.Guid]::NewGuid().ToString("N") + ".log")
     try {
         $buildStatus = Invoke-ImageBuild -LogPath $BuildLog
+        # Set once the build's own output has reached run_core.log, so the
+        # failing exit below records it exactly once (Issue #1019).
+        $buildOutputRecorded = $false
 
         # Builder self-heal (Issue #4441). A build that ran the builder's
         # store out of space leaves it unusable until it is restarted, and
@@ -607,18 +870,49 @@ if ($present.ExitCode -ne 0) {
                     }
                 }
             } elseif ($healStatus -eq $BuildNotHealableExit) {
-                Write-RunCoreLog "container-build-heal: $Image build failed for a reason the builder heal does not cover"
+                # Classifying the failure as not-healable is the right
+                # decision; logging the classification *instead of* the
+                # evidence is what left an operator reproducing by hand a
+                # failure the machine had already observed (Issue #1019).
+                Write-BuildFailureEvidence `
+                    -Message "container-build-heal: $Image build failed for a reason the builder heal does not cover" `
+                    -Source $BuildLog -Label "build output"
+                $buildOutputRecorded = $true
             } else {
-                Write-RunCoreLog "container-build-heal: could not heal the $Runtime builder (status $healStatus)"
+                # The heal's own output, for the same reason: a status code
+                # says which step failed and nothing about what it found.
+                Write-BuildFailureEvidence `
+                    -Message "container-build-heal: could not heal the $Runtime builder (status $healStatus)" `
+                    -Source $HealLog -Label "heal output"
             }
         }
 
         if ($buildStatus -ne 0) {
             [Console]::Error.WriteLine("Error: failed to build $Image")
+            if (-not $buildOutputRecorded) {
+                Write-BuildFailureEvidence `
+                    -Message "container-build: $Image build failed (status $buildStatus)" `
+                    -Source $BuildLog -Label "build output"
+            }
             # The build's own diagnostics are the only account of why this host
             # cannot reconstruct its environment, so the escalation carries
-            # them (Issue #709). Exit-Launcher records the outcome before it
+            # them (Issue #709) - and the heal's alongside them, which the
+            # auto-filed image_build issues used to reduce to a status code
+            # (Issue #1019). Exit-Launcher records the outcome before it
             # exits, so the log is still there when the recorder reads it.
+            # An empty capture is appended as nothing at all, exactly as
+            # run.sh's `[[ -s ]]` guard does: a bare heading with no output
+            # under it would read as evidence and carry none.
+            if ($HealLog -and (Test-Path -LiteralPath $HealLog) -and
+                (Get-Item -LiteralPath $HealLog).Length -gt 0) {
+                try {
+                    Add-Content -LiteralPath $BuildLog -ErrorAction Stop `
+                        -Value ("`n--- container-build-heal output ---`n" +
+                            [System.IO.File]::ReadAllText($HealLog))
+                } catch {
+                    # Best-effort: the build's own output still stands.
+                }
+            }
             $EvidenceLog = $BuildLog
             Exit-Launcher $buildStatus
         }

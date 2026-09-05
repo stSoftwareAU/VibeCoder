@@ -33,7 +33,17 @@
  *      in which a worker most needs to raise its hand, so an escalation that
  *      never lands is recorded as a failure in the self-heal health report and
  *      carried into the next report that does.
- *   5. **Quota pauses are not failures** (Issue #342). A run that stops
+ *   5. **A stop is not a failure either** (Issue #1072). `run.sh` forwards a
+ *      termination signal to the runtime client and exits with that client's
+ *      status — 255 on the fleet's macOS hosts — so an operator's `kill`, a
+ *      launchd stop or a host shutdown was counted towards the escalation
+ *      streak and reported as a runtime fault. The launcher declares the
+ *      signal in a marker this recorder consumes, and a declared stop is
+ *      counted neither up nor down: the streak it interrupted is carried
+ *      through, nothing escalates, and the next attempt comes at the base
+ *      cadence. The supervisor's own deadline kill is exempt — a cycle that
+ *      had to be killed is a fault (Issue #322).
+ *   6. **Quota pauses are not failures** (Issue #342). A run that stops
  *      because the host is out of Claude quota exits on purpose, with the
  *      reset already known. It resets the failure streak, escalates nothing,
  *      claims no recovery, and re-probes at a fixed cadence — because the
@@ -70,6 +80,15 @@ import {
   explainExitStatus,
   knownWorkerStatuses,
 } from "./launcher_failure_evidence.ts";
+import {
+  HOST_EGRESS_BLOCKED_EXIT_STATUS,
+  HOST_EGRESS_BLOCKED_REASON,
+} from "./container_egress_probe.ts";
+import {
+  formatSlotUtilisation,
+  parkedHostCapacity,
+} from "./slot_idle_accounting.ts";
+import type { LaunchTerminationMarker } from "./launcher_termination.ts";
 
 /**
  * Statuses the worker's own commands return deliberately (Issue #633).
@@ -108,13 +127,23 @@ export const LAUNCH_PHASE_MARKER_FILENAME = "last-launch-phase";
  */
 export type LaunchPhaseMarker =
   | "runtime_detection"
+  | "container_egress"
   | "image_build"
   | "volume_init"
   | "container_run";
 
-/** The phase a launcher failure is attributed to. */
+/**
+ * The phase a launcher failure is attributed to.
+ *
+ * `container_egress` is the host-networking fault of Issue #997: the launcher's
+ * pre-build probe found that a container on this host cannot reach the network
+ * while the host itself can. It was previously reported as `image_build` —
+ * the build was the first thing to notice, 135 seconds into a `curl` — which
+ * sent every reader to an image that was never broken.
+ */
 export type ContainerFailurePhase =
   | "runtime_detection"
+  | "container_egress"
   | "image_build"
   | "volume_init"
   | "container_start"
@@ -146,6 +175,12 @@ export interface ContainerRestartConfig {
   /** Lower threshold used when the image itself cannot be built. */
   imageBuildEscalationThreshold: number;
   /**
+   * Threshold used when a container on this host cannot reach the network
+   * (Issue #997). One, by default: the host cannot repair its own routing, so
+   * the first occurrence is already everything a later one would say.
+   */
+  egressEscalationThreshold: number;
+  /**
    * Fixed re-probe interval while the host is out of quota (Issue #342).
    *
    * Backoff is for unknown faults. Quota exhaustion is a known fault whose
@@ -163,6 +198,7 @@ export const CONTAINER_RESTART_DEFAULTS: Readonly<ContainerRestartConfig> = {
   maxBackoffSeconds: 1800,
   escalationThreshold: 3,
   imageBuildEscalationThreshold: 2,
+  egressEscalationThreshold: 1,
   quotaPauseSleepSeconds: 3600,
 } as const;
 
@@ -306,6 +342,10 @@ export function resolveContainerRestartConfig(
       overrides.imageBuildEscalationThreshold,
       CONTAINER_RESTART_DEFAULTS.imageBuildEscalationThreshold,
     ),
+    egressEscalationThreshold: positiveInteger(
+      overrides.egressEscalationThreshold,
+      CONTAINER_RESTART_DEFAULTS.egressEscalationThreshold,
+    ),
     quotaPauseSleepSeconds: positiveInteger(
       overrides.quotaPauseSleepSeconds,
       CONTAINER_RESTART_DEFAULTS.quotaPauseSleepSeconds,
@@ -322,7 +362,21 @@ export type LauncherOutcomeKind =
   | "success"
   | "quota_pause"
   | "network_unavailable"
+  | "another_worker_running"
+  | "terminated"
   | "failure";
+
+/**
+ * Statuses that mean the supervisor's own deadline ended the run (Issue #322).
+ *
+ * `timeout` reports 124 when its SIGTERM expired the run and 137 when its own
+ * SIGKILL was what stopped it. That SIGTERM reaches `run.sh` like any other, so
+ * the launcher declares a termination for it — and a cycle the supervisor had
+ * to kill is a fault the host must escalate for, never a deliberate stop. The
+ * statuses are checked here so that rule lives in one place rather than in the
+ * shell.
+ */
+export const SUPERVISOR_DEADLINE_EXIT_CODES: readonly number[] = [124, 137];
 
 /**
  * Whether the launch died because GitHub was unreachable (Issue #949).
@@ -351,15 +405,36 @@ export function isNetworkUnavailableLaunch(
  *
  * @param exitStatus - Exit status the launcher reported (0 is success)
  * @param quotaPause - Marker the run wrote, when it declared a quota pause
+ * @param networkUnavailable - True when the run died with GitHub unreachable
+ * @param terminated - Declaration the launcher wrote when it forwarded a
+ *   termination signal (Issue #1072)
  */
 export function classifyLauncherOutcome(
   exitStatus: number,
   quotaPause?: QuotaPauseMarker | null,
   networkUnavailable?: boolean,
+  terminated?: LaunchTerminationMarker | null,
 ): LauncherOutcomeKind {
   if (quotaPause) return "quota_pause";
   if (exitStatus === QUOTA_PAUSE_EXIT_STATUS) return "quota_pause";
   if (exitStatus === 0) return "success";
+  // One worker per host is a design invariant (Issue #26), and a launch the
+  // pre-launch reaper stops for it is a healthy host, not a failing one
+  // (Issue #1056). The launchers exit on the reaper's own status so this
+  // recorder can tell the two apart; before that it collapsed to 1 and a
+  // host whose worker was legitimately mid-run reported itself broken.
+  if (exitStatus === ANOTHER_WORKER_RUNNING_STATUS) {
+    return "another_worker_running";
+  }
+  // A run stopped from outside is not this host failing (Issue #1072). The
+  // status cannot say so — it belongs to the runtime client, which reports 255
+  // when its container is stopped under it — so the launcher's own declaration
+  // is what carries the fact. Checked after success, so a run that reached the
+  // end is never reclassified by a signal that arrived on its way out; and
+  // never for the supervisor's own deadline kill, which is a fault.
+  if (terminated && !SUPERVISOR_DEADLINE_EXIT_CODES.includes(exitStatus)) {
+    return "terminated";
+  }
   // Checked after success so a run that reached the end is never reclassified
   // by a marker left earlier in the same log (Issue #949).
   if (networkUnavailable === true) return "network_unavailable";
@@ -402,6 +477,8 @@ export function resolveFailurePhase(
   switch ((marker ?? "").trim()) {
     case "runtime_detection":
       return "runtime_detection";
+    case "container_egress":
+      return "container_egress";
     case "image_build":
       return "image_build";
     case "volume_init":
@@ -424,6 +501,8 @@ export function describeFailurePhase(phase: ContainerFailurePhase): string {
   switch (phase) {
     case "runtime_detection":
       return "container runtime detection";
+    case "container_egress":
+      return "container egress (host networking)";
     case "image_build":
       return "container image build";
     case "volume_init":
@@ -441,11 +520,17 @@ export function describeFailurePhase(phase: ContainerFailurePhase): string {
  * A failed image build means the known-good environment cannot be
  * reconstructed on this host at all, so it escalates ahead of a phase that a
  * plain retry can plausibly clear.
+ *
+ * Blocked container egress escalates on the first failure (Issue #997): the
+ * reject route is host networking state a non-root process cannot change, so
+ * the worker cannot repair it however many cycles it spends discovering it
+ * again. Waiting for a streak only delays the person who can.
  */
 export function escalationThresholdFor(
   phase: ContainerFailurePhase,
   config: ContainerRestartConfig,
 ): number {
+  if (phase === "container_egress") return config.egressEscalationThreshold;
   return phase === "image_build"
     ? config.imageBuildEscalationThreshold
     : config.escalationThreshold;
@@ -492,6 +577,9 @@ export interface ContainerRestartDecision {
  * @param config - Resolved tunables
  * @param now - Clock seam, in Unix seconds
  * @param quotaPause - Quota-pause marker the run wrote, when it declared one
+ * @param networkUnavailable - True when the run died with GitHub unreachable
+ * @param terminated - Termination marker the launcher wrote, when it was
+ *   signalled (Issue #1072)
  */
 export function nextContainerRestartDecision(
   previous: ContainerRestartState,
@@ -501,12 +589,61 @@ export function nextContainerRestartDecision(
   now: () => number = nowSeconds,
   quotaPause?: QuotaPauseMarker | null,
   networkUnavailable?: boolean,
+  terminated?: LaunchTerminationMarker | null,
 ): ContainerRestartDecision {
   const kind = classifyLauncherOutcome(
     exitStatus,
     quotaPause,
     networkUnavailable,
+    terminated,
   );
+
+  // A run somebody stopped says nothing about this host's health, so it is
+  // counted neither up nor down (Issue #1072): the streak it interrupted is
+  // carried through untouched, so a genuine fault still escalates on the
+  // failure it would have escalated on, and an operator restarting a broken
+  // host cannot accidentally hide the breakage. The wait is the base cadence —
+  // whoever stopped the run wants it back, not a doubling backoff.
+  if (kind === "terminated") {
+    return {
+      state: {
+        ...previous,
+        lastExitStatus: exitStatus,
+        lastUpdated: now(),
+      },
+      kind,
+      phase: null,
+      backoffSeconds: config.baseSleepSeconds,
+      escalate: false,
+      recovered: false,
+      threshold: 0,
+    };
+  }
+
+  // Issue #1056: a launch stopped because this host's one worker is already
+  // running is the design invariant working, not a fault. It gets the same
+  // treatment as a quota pause and an unreachable GitHub, for the same
+  // reason: the streak resets, the wait is the base cadence, and nothing
+  // escalates, because waiting longer does not make the running worker
+  // finish any sooner and there is nothing for a human to fix.
+  if (kind === "another_worker_running") {
+    return {
+      state: {
+        consecutiveFailures: 0,
+        lastPhase: null,
+        lastExitStatus: exitStatus,
+        lastUpdated: now(),
+        streakStartedAt: 0,
+        escalation: null,
+      },
+      kind,
+      phase: null,
+      backoffSeconds: config.baseSleepSeconds,
+      escalate: false,
+      recovered: false,
+      threshold: 0,
+    };
+  }
 
   // Issue #949: an unreachable GitHub is not this host misbehaving, so it
   // does not climb the ladder. The streak resets and the wait is the base
@@ -590,6 +727,14 @@ export function nextContainerRestartDecision(
       ? previous.streakStartedAt
       : now();
 
+  // A host that cannot route out of a container is parked, not retried
+  // (Issue #997): the fault is host networking state the worker cannot change,
+  // so the ladder's first rungs are spent re-discovering it. The wait goes
+  // straight to the ceiling and stays there until the condition clears.
+  const backoffSeconds = phase === "container_egress"
+    ? config.maxBackoffSeconds
+    : computeBackoffSeconds(consecutiveFailures, config);
+
   return {
     state: {
       consecutiveFailures,
@@ -601,7 +746,7 @@ export function nextContainerRestartDecision(
     },
     kind,
     phase,
-    backoffSeconds: computeBackoffSeconds(consecutiveFailures, config),
+    backoffSeconds,
     escalate: consecutiveFailures >= threshold,
     recovered: false,
     threshold,
@@ -875,6 +1020,12 @@ export interface ContainerEscalationInput {
    * alert and the log agree. Omitted only when it genuinely cannot be read.
    */
   hostId?: string;
+  /**
+   * The parked host's slot-utilisation line (Issue #997) — the capacity the
+   * fleet has lost, in the vocabulary of Issue #925. Set only for the
+   * `container_egress` phase, where a host offers no capacity at all.
+   */
+  capacityLine?: string;
   /** Unix seconds the streak began — identifies the report (Issue #343). */
   streakStartedAt?: number;
   /** Escalations already delivered for this streak (Issue #343). */
@@ -922,6 +1073,10 @@ export function buildContainerEscalationParams(
         BUILD_NOT_HEALABLE_STATUS,
         ANOTHER_WORKER_RUNNING_STATUS,
         EXTENSION_START_ABORT_EXIT_STATUS,
+        // The park (Issue #997) is this launcher's own status, so an
+        // escalation must not send the reader hunting the runtime client for
+        // a status the worker chose deliberately.
+        HOST_EGRESS_BLOCKED_EXIT_STATUS,
       ),
     ),
     `Next attempt after a ${input.backoffSeconds}s backoff`,
@@ -945,6 +1100,28 @@ export function buildContainerEscalationParams(
     lines.push(
       "The container image could not be built, so the known-good environment " +
         "cannot be reconstructed on this host — a retry alone will not fix it.",
+    );
+  }
+  if (input.phase === "container_egress") {
+    // Issue #997: this report exists because the same fault used to arrive as
+    // `image_build`, and the reader went looking at an image that was fine.
+    lines.push(
+      "A container on this host cannot reach the network, while the host " +
+        "itself reaches the same address — so this is the host's own " +
+        "networking, not the image build and not the link. The hop table " +
+        "below shows which hop failed; a reject route on the container " +
+        "bridge, or a tunnel interface holding a default route, is the usual " +
+        "cause.",
+      "The worker cannot repair this itself: the routing is host state a " +
+        `non-root process cannot change. The host is parked for ` +
+        `${input.backoffSeconds}s at a time and will keep re-probing, but it ` +
+        "claims nothing until a person clears the route.",
+      `Fleet capacity: this host is unavailable — reason: ` +
+        `${HOST_EGRESS_BLOCKED_REASON}.`,
+      // The same statement as a number, in the Issue #925 vocabulary, so the
+      // lost capacity can be read rather than inferred from a host that
+      // stopped reporting.
+      ...(input.capacityLine ? [input.capacityLine] : []),
     );
   }
   if (input.logTail) lines.push("", input.logTail);
@@ -1051,6 +1228,12 @@ export interface RecordContainerOutcomeOptions {
    * consumed by the caller, so it describes this invocation and no other.
    */
   quotaPause?: QuotaPauseMarker | null;
+  /**
+   * Termination marker the launcher wrote when it forwarded a signal (Issue
+   * #1072). Already consumed by the caller, so it describes this invocation
+   * and no other.
+   */
+  terminated?: LaunchTerminationMarker | null;
   /** Tunable overrides. */
   config?: Partial<ContainerRestartConfig>;
   /** Crash-notification channel configuration (cooldown, webhook, state). */
@@ -1063,6 +1246,12 @@ export interface RecordContainerOutcomeOptions {
   logTail?: string;
   /** The machine this alert is about (Issue #633). */
   hostId?: string;
+  /**
+   * The host's configured concurrency (Issue #997) — the capacity a parked
+   * host can no longer offer the fleet. Defaults to one slot, so an
+   * unresolved capacity is understated rather than invented.
+   */
+  slots?: number;
   /** Clock seam, in Unix seconds. */
   now?: () => number;
   /** Notification seam (tests inject a recorder). */
@@ -1170,6 +1359,7 @@ export async function recordContainerRestartOutcome(
     now,
     options.quotaPause,
     isNetworkUnavailableLaunch(options.logTail),
+    options.terminated,
   );
 
   const persisted = await persistContainerRestartState(
@@ -1183,6 +1373,11 @@ export async function recordContainerRestartOutcome(
       `[container-restart] ${persisted.error.message}`,
     );
   }
+
+  // The parked host's lost capacity, in the Issue #925 vocabulary (Issue
+  // #997). Built where the park is recorded and carried into the escalation,
+  // so the event and the report quote one line rather than two spellings.
+  let capacityLine: string | undefined;
 
   const outcome: ContainerRestartOutcome = {
     kind: decision.kind,
@@ -1203,8 +1398,11 @@ export async function recordContainerRestartOutcome(
   // that outage, so record it rather than letting it vanish with the streak.
   // `reported` means the loss already reached the health report when the
   // attempt cap was hit; recording it again would double-count one outage.
+  // A stop is exempt (Issue #1072): it carries the streak through rather than
+  // ending it, so the queued escalation still belongs to a live incident.
   const abandoned = previous.escalation?.pending &&
-      !previous.escalation.pending.reported
+      !previous.escalation.pending.reported &&
+      decision.kind !== "terminated"
     ? (!decision.phase ||
       previous.escalation.phase !== decision.phase ||
       previous.escalation.streakStartedAt !== decision.state.streakStartedAt)
@@ -1228,6 +1426,57 @@ export async function recordContainerRestartOutcome(
         endedBy: decision.phase ? "phase_change" : "streak_end",
       },
     }, { workDir: options.workDir });
+  }
+
+  // A run that was stopped from outside (Issue #1072): recorded so the stop is
+  // visible to an operator reading `self-heal-summary`, and recorded as a stop
+  // — no failure counted, no escalation, no recovery claimed. The streak it
+  // interrupted is stated, because "2 failures, then somebody stopped it" is
+  // the context a reader of the next escalation needs.
+  if (decision.kind === "terminated") {
+    await emitSelfHealEvent({
+      module: SELF_HEAL_MODULE,
+      action: "terminated",
+      reason:
+        `launcher stopped by SIG${
+          options.terminated?.signal ?? "unknown"
+        } — not counted as a failure (Issue #1072); next attempt in ` +
+        `${decision.backoffSeconds}s`,
+      result: "ok",
+      details: {
+        signal: options.terminated?.signal ?? null,
+        exitStatus: options.exitStatus,
+        sleepSeconds: decision.backoffSeconds,
+        carriedFailures: decision.state.consecutiveFailures,
+      },
+    }, { workDir: options.workDir });
+    return outcome;
+  }
+
+  // One worker per host (Issues #26, #1056): recorded as the by-design
+  // condition it is. Loud in the log — the launcher already said so on
+  // stderr — but the streak is already reset above, nothing escalates, and
+  // the next attempt comes at the base cadence.
+  if (decision.kind === "another_worker_running") {
+    await emitSelfHealEvent({
+      module: SELF_HEAL_MODULE,
+      action: "another_worker_running",
+      reason:
+        "another worker is already running on this host — one worker per " +
+        `host (Issue #26), so this launch stopped before it built or ` +
+        `launched anything and re-attempts in ${decision.backoffSeconds}s` +
+        (previous.consecutiveFailures > 0
+          ? ` (failure streak of ${previous.consecutiveFailures} cleared — ` +
+            "the design invariant holding is not a failure)"
+          : ""),
+      result: "ok",
+      details: {
+        exitStatus: options.exitStatus,
+        sleepSeconds: decision.backoffSeconds,
+        previousFailures: previous.consecutiveFailures,
+      },
+    }, { workDir: options.workDir });
+    return outcome;
   }
 
   // Quota pause (Issue #342): recorded as the scheduled outcome it is, with
@@ -1276,6 +1525,41 @@ export async function recordContainerRestartOutcome(
   }
 
   if (!decision.phase) return outcome;
+
+  // Issue #997: a host that cannot run containers is unavailable capacity, and
+  // it says so with the reason attached — per host, every cycle it is parked,
+  // so the fleet's record answers "why is that host claiming nothing?" without
+  // anyone reading its console.
+  if (decision.phase === "container_egress") {
+    const capacity = parkedHostCapacity({
+      ...(options.hostId ? { host: options.hostId } : {}),
+      slots: options.slots ?? 1,
+      parkedSeconds: decision.backoffSeconds,
+      reason: HOST_EGRESS_BLOCKED_REASON,
+    });
+    capacityLine = formatSlotUtilisation(capacity);
+    await emitSelfHealEvent({
+      module: SELF_HEAL_MODULE,
+      action: "host_parked",
+      reason:
+        `this host is unavailable capacity: ${HOST_EGRESS_BLOCKED_REASON}` +
+        ` — a container cannot reach the network while the host can, so it ` +
+        `claims nothing and re-probes in ${decision.backoffSeconds}s`,
+      result: "failed",
+      details: {
+        availability: "unavailable",
+        reason: HOST_EGRESS_BLOCKED_REASON,
+        hostId: options.hostId ?? null,
+        phase: decision.phase,
+        exitStatus: options.exitStatus,
+        consecutiveFailures: decision.state.consecutiveFailures,
+        parkedSeconds: decision.backoffSeconds,
+        unavailableSlotSeconds: capacity.unavailable?.slotSeconds ?? 0,
+        slots: capacity.slots,
+        slotUtilisation: capacityLine,
+      },
+    }, { workDir: options.workDir });
+  }
 
   await emitSelfHealEvent({
     module: SELF_HEAL_MODULE,
@@ -1326,6 +1610,7 @@ export async function recordContainerRestartOutcome(
     issueNumber: target?.issueNumber,
     logTail: options.logTail,
     ...(options.hostId ? { hostId: options.hostId } : {}),
+    ...(capacityLine ? { capacityLine } : {}),
     streakStartedAt: decision.state.streakStartedAt,
     priorEscalations: plan.delivered,
     ...(carried

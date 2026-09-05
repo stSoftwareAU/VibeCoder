@@ -354,6 +354,7 @@ Deno.test("nextContainerRestartDecision - a streak keeps its start, a new one re
     maxBackoffSeconds: 100,
     escalationThreshold: 3,
     imageBuildEscalationThreshold: 2,
+    egressEscalationThreshold: 1,
     quotaPauseSleepSeconds: 50,
   };
   const first = nextContainerRestartDecision(

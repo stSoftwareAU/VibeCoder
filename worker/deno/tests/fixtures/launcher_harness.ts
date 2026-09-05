@@ -239,6 +239,16 @@ case "\${sub}" in
       fi
       exit "\${STUB_BUILDER_STOP_EXIT:-0}"
     fi
+    # The step that leaves a usable builder behind — \`builder start\` on Apple
+    # container, \`builder prune\` on Docker/Podman. A heal that cannot leave
+    # one is what makes container-build-heal itself fail (Issue #1019), so the
+    # stub has to be able to fail it, and to say why.
+    if [[ "\${sub}" == "builder-start" || "\${sub}" == "builder-prune" ]]; then
+      if [[ -n "\${STUB_BUILDER_HEAL_STDERR:-}" ]]; then
+        printf '%s\\n' "\${STUB_BUILDER_HEAL_STDERR}" >&2
+      fi
+      exit "\${STUB_BUILDER_HEAL_EXIT:-0}"
+    fi
     exit 0
     ;;
   *)
@@ -262,6 +272,7 @@ const RECORDED_DENO_COMMANDS = [
   "container-image-prune",
   "container-store-prune",
   "container-build-heal",
+  "container-egress-probe",
   "container-restart-backoff",
   "run-entrypoint",
 ];
@@ -283,6 +294,9 @@ const RECORDED_DENO_COMMANDS = [
  * reach GitHub for the newest release. `STUB_RELEASE_NOTICE_STDOUT` is the
  * notice the check found, and `STUB_RELEASE_NOTICE_EXIT` makes the check
  * fail — an unreachable GitHub, a `gh` failure or a timeout.
+ * `STUB_RELEASE_NOTICE_STDERR` is what the failing check said about itself
+ * (Issue #1020); `STUB_RELEASE_NOTICE_EXIT` of 124 is what `timeout` reports
+ * when the launcher's own bound was what ended the check.
  *
  * With `full`, two more invocations are intercepted rather than performed:
  * `run-entrypoint`, which would start the whole worker on this host, and
@@ -369,12 +383,34 @@ for arg in "\$@"; do
       printf '%s\\0' "\$@" > "\${record_dir}/upgrade.args"
       exit "\${STUB_UPGRADE_EXIT:-0}"
       ;;
+    container-egress-probe)
+      # Never really start a probe container (Issue #997): the test decides
+      # what the probe found, and writes the evidence the launcher hands to
+      # its outcome recorder. Intercepted unconditionally, like the checkout
+      # update above - a real probe here would run the runtime stub and its
+      # \`run\` record would be mistaken for the worker's own.
+      printf '%s\\0' "\$@" > "\${record_dir}/container-egress-probe.args"
+      prev=""
+      for a in "\$@"; do
+        if [[ "\${prev}" == "--out" ]]; then
+          printf '%b\\n' "\${STUB_EGRESS_EVIDENCE:-Container egress probe: reachable}" > "\${a}"
+        fi
+        prev="\${a}"
+      done
+      exit "\${STUB_EGRESS_EXIT:-0}"
+      ;;
     release-notice)
       # Never really reach GitHub for the new-release check (Issue #690):
       # the test decides what the check found, and how it failed.
       printf '%s\\0' "\$@" > "\${record_dir}/release-notice.args"
       if [[ -n "\${STUB_RELEASE_NOTICE_STDOUT:-}" ]]; then
         printf '%s\\n' "\${STUB_RELEASE_NOTICE_STDOUT}"
+      fi
+      # The account of a failure goes to stderr, exactly as the real command's
+      # does - a configuration error, an unresolvable GitHub, an uncaught
+      # throw (Issue #1020).
+      if [[ -n "\${STUB_RELEASE_NOTICE_STDERR:-}" ]]; then
+        printf '%s\\n' "\${STUB_RELEASE_NOTICE_STDERR}" >&2
       fi
       exit "\${STUB_RELEASE_NOTICE_EXIT:-0}"
       ;;${extraIntercepts}
@@ -552,6 +588,29 @@ export async function recordedLaunchLog(
 ): Promise<string | null> {
   try {
     return await Deno.readTextFile(`${harness.recordDir}/outcome-launch.log`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The phase marker the launcher last wrote (Issues #4072, #997).
+ *
+ * The marker is how a failure is attributed — `container_egress` and
+ * `image_build` are the same exit status with completely different operator
+ * actions — so a test asserting on attribution reads it here.
+ *
+ * @param harness - The harness the launcher ran under
+ * @returns The marker's contents, or null when none was written
+ */
+export async function launchPhaseMarker(
+  harness: Harness,
+): Promise<string | null> {
+  try {
+    const text = await Deno.readTextFile(
+      `${harness.tmpDir}/home/.vibe-coder/last-launch-phase`,
+    );
+    return text.trim();
   } catch {
     return null;
   }
@@ -748,6 +807,38 @@ export async function runCoreLog(harness: Harness): Promise<string> {
   } catch {
     return "";
   }
+}
+
+/**
+ * Where the launcher preserves a failed build's own output (Issue #1019).
+ *
+ * @param harness - The harness the launcher ran under
+ * @returns The preserved build-failure log directory
+ */
+export function buildFailureLogDir(harness: Harness): string {
+  return `${harness.tmpDir}/home/logs/build-failures`;
+}
+
+/**
+ * The preserved build-failure logs, oldest first (Issue #1019).
+ *
+ * The filenames lead with a UTC stamp, so their lexical order is also their
+ * chronological order — which is what the launcher's own retention pass
+ * relies on when it drops the oldest.
+ *
+ * @param harness - The harness the launcher ran under
+ * @returns The file names, oldest first, or an empty list when none was kept
+ */
+export async function buildFailureLogs(harness: Harness): Promise<string[]> {
+  const names: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(buildFailureLogDir(harness))) {
+      if (entry.isFile) names.push(entry.name);
+    }
+  } catch {
+    return [];
+  }
+  return names.sort();
 }
 
 /**
