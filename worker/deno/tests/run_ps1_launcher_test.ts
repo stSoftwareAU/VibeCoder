@@ -576,7 +576,8 @@ Deno.test({
 });
 
 Deno.test({
-  name: "run.ps1 - a heal that fails records the heal's own output (Issue #1019)",
+  name:
+    "run.ps1 - a heal that fails records the heal's own output (Issue #1019)",
   ignore,
   fn: async () => {
     const harness = await setupHarness({
@@ -625,7 +626,9 @@ Deno.test({
       await Deno.mkdir(directory, { recursive: true });
       const seeded: string[] = [];
       for (let i = 0; i < 25; i++) {
-        const name = `20200101T0000${String(i).padStart(2, "0")}Z-build-output-1.log`;
+        const name = `20200101T0000${
+          String(i).padStart(2, "0")
+        }Z-build-output-1.log`;
         await Deno.writeTextFile(`${directory}/${name}`, "an older failure\n");
         seeded.push(name);
       }

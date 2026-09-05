@@ -1248,7 +1248,10 @@ Deno.test("run.sh - a not-healable build failure records the build's own words, 
     assertEquals(kept.length, 1, `preserved logs: ${kept.join(", ")}`);
     const preserved = `${buildFailureLogDir(harness)}/${kept[0]}`;
     assertStringIncludes(log, preserved);
-    assertStringIncludes(await Deno.readTextFile(preserved), UNCOVERED_BUILD_FAILURE);
+    assertStringIncludes(
+      await Deno.readTextFile(preserved),
+      UNCOVERED_BUILD_FAILURE,
+    );
   } finally {
     await harness.cleanup();
   }
@@ -1333,7 +1336,9 @@ Deno.test("run.sh - preserved build logs are bounded, and the newest is never th
     await Deno.mkdir(directory, { recursive: true });
     const seeded: string[] = [];
     for (let i = 0; i < 25; i++) {
-      const name = `20200101T0000${String(i).padStart(2, "0")}Z-build-output-1.log`;
+      const name = `20200101T0000${
+        String(i).padStart(2, "0")
+      }Z-build-output-1.log`;
       await Deno.writeTextFile(`${directory}/${name}`, "an older failure\n");
       seeded.push(name);
     }
