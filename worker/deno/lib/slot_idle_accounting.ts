@@ -47,6 +47,12 @@
  * Idle and occupied are recorded **per slot**, so `s2` idling beside a busy
  * `s1` is visible by name.
  *
+ * A fifth span sits outside that partition because it describes a host that
+ * ran **no** slot at all: **unavailable** — capacity lost because the host
+ * cannot start a container (Issue #997). It is produced by the launcher, not
+ * by the ledger, and carries the reason with it; see
+ * {@link parkedHostCapacity}.
+ *
  * # Why the reasons are not invented here
  *
  * The operator's demand is that idle time be near zero *and visible*, not
@@ -78,10 +84,38 @@ import type { FleetBlockKind } from "./fleet_telemetry.ts";
  */
 export type SlotActivity = "idle" | "claim";
 
+/**
+ * Capacity a host has but cannot staff at all, and why (Issue #997).
+ *
+ * The four spans above all describe a host that is *running*. A host whose
+ * containers cannot reach the network runs no slot at all, and reporting that
+ * as an absence — no line, no numbers — is what let GRQ-23 sit parked and
+ * unnoticed. It is capacity the fleet has lost, so it is reported as capacity,
+ * with the one vocabulary word that says why.
+ */
+export interface UnavailableCapacity {
+  /** Slot-seconds no slot could be run for. */
+  slotSeconds: number;
+  /** Why, e.g. `container_egress_blocked`. */
+  reason: string;
+}
+
 /** Per-slot and fleet-wide slot-second totals plus the derived rates. */
 export interface SlotUtilisationSnapshot {
   /** Configured slot count — the capacity the denominator is built from. */
   slots: number;
+  /**
+   * The machine these numbers describe (Issue #997). Set only where the line
+   * is produced outside the run it is about — the launcher reporting a parked
+   * host — since a running worker's line already rides that host's own log.
+   */
+  host?: string;
+  /**
+   * Capacity that could not be staffed at all, and why (Issue #997). Absent
+   * on a host that is running: a live pool books every slot-second to one of
+   * the four spans above.
+   */
+  unavailable?: UnavailableCapacity;
   /** Wall seconds observed since the window opened. */
   wallSeconds: number;
   /** `slots × wallSeconds`. */
@@ -264,13 +298,19 @@ function pct(part: number, whole: number): string {
  * numbers the issue asks for lead: occupied slot-seconds against available
  * slot-seconds, so `1 of 2 slots busy` reads as `occupied_pct=50.0` rather
  * than silently as a fully occupied fleet.
+ *
+ * The `host=` and `unavailable*=` fields appear only on a parked host's line
+ * (Issue #997), so a running pool's line is exactly the one Issue #925
+ * defined.
  */
 export function formatSlotUtilisation(
   snapshot: SlotUtilisationSnapshot,
 ): string {
   const available = snapshot.availableSlotSeconds;
+  const unavailable = snapshot.unavailable;
   return [
     "slot-utilisation:",
+    ...(snapshot.host ? [`host=${snapshot.host}`] : []),
     `slots=${snapshot.slots}`,
     `wall=${snapshot.wallSeconds}s`,
     `available=${available}s`,
@@ -284,7 +324,65 @@ export function formatSlotUtilisation(
     `idle_by_slot=${joinCounts(snapshot.idleBySlot, "s")}`,
     `blocked_by_reason=${joinCounts(snapshot.blockedByReason, "s")}`,
     `blocked_stops=${joinCounts(snapshot.blockedStops, "")}`,
+    ...(unavailable
+      ? [
+        `unavailable=${unavailable.slotSeconds}s`,
+        `unavailable_pct=${pct(unavailable.slotSeconds, available)}`,
+        `unavailable_reason=${unavailable.reason}`,
+      ]
+      : []),
   ].join(" ");
+}
+
+/** What {@link parkedHostCapacity} is told about a parked host. */
+export interface ParkedHostCapacityInput {
+  /** The machine, when the caller knows its name. */
+  host?: string;
+  /** The host's configured concurrency — the capacity it can no longer offer. */
+  slots: number;
+  /** How long it is parked before it re-probes. */
+  parkedSeconds: number;
+  /** Why it cannot run, e.g. `container_egress_blocked`. */
+  reason: string;
+}
+
+/**
+ * A host that cannot run containers at all, as slot-utilisation (Issue #997).
+ *
+ * Every slot-second in the window is unavailable: no slot was occupied, none
+ * was idle looking for work, and none was blocked on a quota — the host could
+ * not start one. Reporting it in this shape means "why is that host claiming
+ * nothing?" is answered by the same line an operator already reads for the
+ * hosts that *are* running, rather than by their absence.
+ *
+ * A host whose configured capacity cannot be resolved reports one slot: the
+ * lost capacity is then understated, never invented.
+ */
+export function parkedHostCapacity(
+  input: ParkedHostCapacityInput,
+): SlotUtilisationSnapshot {
+  const slots = Math.max(1, Math.floor(input.slots));
+  const wallSeconds = Math.max(0, Math.floor(input.parkedSeconds));
+  const availableSlotSeconds = slots * wallSeconds;
+  return {
+    slots,
+    ...(input.host ? { host: input.host } : {}),
+    wallSeconds,
+    availableSlotSeconds,
+    occupiedSlotSeconds: 0,
+    idleSlotSeconds: 0,
+    blockedSlotSeconds: 0,
+    blockedByReason: {},
+    blockedStops: {},
+    unstaffedSlotSeconds: 0,
+    occupiedBySlot: {},
+    idleBySlot: {},
+    utilisation: 0,
+    unavailable: {
+      slotSeconds: availableSlotSeconds,
+      reason: input.reason,
+    },
+  };
 }
 
 /**

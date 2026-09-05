@@ -136,6 +136,10 @@ WEDGE_MARKER=""
 # Where the image build's output is captured, so a failed build can be
 # classified by container-build-heal (Issue #4441). Set only when a build runs.
 BUILD_LOG=""
+# Where the pre-build egress probe writes its hop table and routing evidence
+# (Issue #997). Set once the probe runs, and removed by the EXIT trap after the
+# outcome record has quoted it.
+EGRESS_LOG=""
 # Where the container run client's stderr is captured, so a start the runtime
 # refused can be quoted (Issue #711), and the FIFO it streams through. Both are
 # set together, immediately before the container is started.
@@ -159,6 +163,19 @@ BUILD_NOT_HEALABLE_EXIT=3
 # ANOTHER_WORKER_RUNNING_EXIT in worker/deno/commands/container_reap.ts by the
 # launcher tests.
 ANOTHER_WORKER_RUNNING_EXIT=4
+
+# Exit statuses container-egress-probe reports (Issue #997), as opposed to 0
+# (a container reaches the network, or the probe could not run - carry on).
+# Kept in step with EGRESS_BLOCKED_EXIT and NETWORK_DOWN_EXIT in
+# worker/deno/commands/container_egress_probe.ts by the launcher tests.
+EGRESS_BLOCKED_EXIT=3
+EGRESS_NETWORK_DOWN_EXIT=4
+
+# Exit status this launcher reports when it parks a host whose containers
+# cannot reach the network while the host itself can. Kept in step with
+# HOST_EGRESS_BLOCKED_EXIT_STATUS in
+# worker/deno/lib/container_egress_probe.ts by the launcher tests.
+HOST_EGRESS_BLOCKED_EXIT_STATUS=88
 
 # A wedged helper must never wedge this launcher: the helpers below run under
 # a time bound where the host has one (gtimeout on macOS, timeout on Linux).
@@ -274,6 +291,11 @@ on_exit() {
   # reporting a failed build it could say nothing about.
   if [[ -n "${BUILD_LOG}" ]]; then
     rm -f "${BUILD_LOG}"
+  fi
+  # Same ordering, same reason (Issue #997): a parked host's escalation IS the
+  # hop table, so the evidence outlives the record and nothing else.
+  if [[ -n "${EGRESS_LOG}" ]]; then
+    rm -f "${EGRESS_LOG}"
   fi
   # Same ordering, same reason (Issue #711): the refused start's evidence is
   # this capture, so it outlives the record and nothing else. The FIFO beside
@@ -579,6 +601,87 @@ if ((reap_status == ANOTHER_WORKER_RUNNING_EXIT)); then
   exit 1
 elif ((reap_status != 0)); then
   echo "[run.sh] warning: the pre-launch container reaper did not complete" >&2
+fi
+
+# Container egress probe (Issue #997), before the build and before the launch.
+#
+# GRQ-23 spent hours reporting `image_build` for a fault in its own routing:
+# the build was simply the first thing to notice, 135 seconds into a `curl`,
+# and the report sent every reader to an image that was never broken. Runs
+# hours earlier had reached the container and died at `GITHUB-USER-FAILED` -
+# the worker was running and blind.
+#
+# One short container run answers it in seconds, against a literal address
+# (never a name: the host bridge IS a resolver, so DNS succeeds while every
+# packet past the gateway is dropped). The host is probed too, because that is
+# what separates the three conditions:
+#
+#   container reaches it            -> carry on
+#   container blocked, host reaches -> this host cannot route out of a
+#                                      container: park, and tell a person once
+#   both blocked                    -> the link is down: wait, escalate nothing
+#
+# A probe that cannot run (no image in the store yet, a runtime that refuses)
+# never blocks a launch - it says so and the launch continues exactly as
+# before.
+EGRESS_LOG="$(mktemp "${TMPDIR:-/tmp}/vibe-egress.XXXXXX")"
+egress_status=0
+bounded 180 "${DENO_CMD}" run \
+  --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
+  --allow-env --allow-read --allow-run --allow-net \
+  --allow-write="${EGRESS_LOG}" \
+  "${BASE_DIR}/worker/deno/mod.ts" container-egress-probe \
+  --runtime "${RUNTIME}" \
+  --base-dir "${BASE_DIR}" \
+  --image "${IMAGE}" \
+  --name "${CONTAINER_NAME}-egress" \
+  --out "${EGRESS_LOG}" </dev/null >&2 || egress_status=$?
+
+# Print what the probe found, on the launcher's own stderr.
+#
+# The evidence has two readers and only one of them reads the file. On a
+# supervised host loop.sh sets VIBE_SUPERVISOR_RECORDS_OUTCOME, record_outcome
+# below returns immediately, and the supervisor records the outcome from the
+# launch log it tees this launcher's output into - so anything written only to
+# EGRESS_LOG never reaches the escalation, and the network-unavailable marker
+# never reaches the classifier that keeps a link outage off the failure ladder
+# (Issue #949). Printing it here puts it in front of both readers.
+print_egress_evidence() {
+  if [[ -s "${EGRESS_LOG}" ]]; then
+    cat "${EGRESS_LOG}" >&2
+  else
+    echo "[run.sh] warning: the egress probe wrote no evidence to" \
+      "${EGRESS_LOG} - the report will name the fault with no cause attached" >&2
+  fi
+}
+
+if ((egress_status == EGRESS_BLOCKED_EXIT)); then
+  # Parked, not retried: the reject route is host networking state a non-root
+  # process cannot change, so rebuilding an image that is fine would burn
+  # minutes per cycle for ever. The phase marker is what stops the outcome
+  # recorder attributing this to the build.
+  record_phase container_egress
+  print_egress_evidence
+  echo "[run.sh] parking this host: a container cannot reach the network" \
+    "while the host itself can - this is host networking, not the image" \
+    "build (Issue #997); see the hop table above" >&2
+  log_run_core "container-egress-probe: parked - container_egress_blocked; a container cannot reach the network while the host can (Issue #997)"
+  EVIDENCE_LOG="${EGRESS_LOG}"
+  exit "${HOST_EGRESS_BLOCKED_EXIT_STATUS}"
+elif ((egress_status == EGRESS_NETWORK_DOWN_EXIT)); then
+  # The host cannot reach it either, so there is nothing here for a person to
+  # fix. The probe's evidence carries the network-unavailable marker, which is
+  # what keeps this off the failure ladder (Issue #949).
+  print_egress_evidence
+  echo "[run.sh] the network is unreachable from this host as well as from a" \
+    "container - not building; the next cycle retries (Issue #997)" >&2
+  log_run_core "container-egress-probe: the network is unreachable from the host too - waiting at the base cadence, escalating nothing (Issues #949, #997)"
+  EVIDENCE_LOG="${EGRESS_LOG}"
+  exit 1
+elif ((egress_status != 0)); then
+  echo "[run.sh] warning: the container egress probe did not complete" \
+    "(status ${egress_status}) - launching anyway" >&2
+  log_run_core "container-egress-probe: did not complete (status ${egress_status}) - launching anyway"
 fi
 
 # Build the image, streaming the output and capturing it for the heal.
