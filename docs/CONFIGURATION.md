@@ -3089,9 +3089,33 @@ semantics:
 Within a single tier the worker rotates fairly across repos, so a busy tier
 never starves its peers.
 
-**Worked example.** Give a filler repo a high `nice` so it is only worked when
-nothing else is queued, and jump a priority repo ahead of the default tier with
-a negative `nice`:
+> [!IMPORTANT]
+> **The label tier outranks `nice` (Issue #1063).** `nice` is a tie-breaker
+> **within** a priority band, never a band of its own. The label expresses
+> urgency; `nice` shapes throughput between repos that are equally urgent. So
+> the fleet-wide order is:
+>
+> 1. **Label tier first, across the whole fleet** — `top-priority` >
+>    `work-on` > self-scheduled diagnostic > `low-priority` > `idle-task`
+>    (see [README → Supported labels](../README.md#-supported-labels)).
+> 2. **`nice` orders repos within a label tier** — of two `top-priority`
+>    issues, the one in the lower-`nice` repo is worked first.
+> 3. Milestone priority and age break the remaining ties, unchanged.
+>
+> | candidate A | candidate B | winner |
+> | --- | --- | --- |
+> | `top-priority` @ `nice: -15` | `work-on` @ `nice: -20` | **A** — label tier first |
+> | `top-priority` @ `nice: -20` | `top-priority` @ `nice: -15` | **A** — `nice` within the tier |
+> | `work-on` @ `nice: -20` | `work-on` @ `nice: -15` | **A** — `nice` within the tier |
+> | `low-priority` @ `nice: -20` | `work-on` @ `nice: -15` | **B** — label tier first |
+>
+> Setting a repo to a very low `nice` therefore **cannot** starve another
+> repo's `top-priority` work: no amount of routine backlog in a `nice: -20`
+> repo delays a `top-priority` issue in a `nice: 0` one.
+
+**Worked example.** Give a filler repo a high `nice` so its work is only picked
+up when no lower-`nice` repo has work *of the same label tier*, and jump a
+priority repo ahead of the default tier with a negative `nice`:
 
 ```json
 {
@@ -3106,9 +3130,12 @@ a negative `nice`:
 }
 ```
 
-Here `stSoftwareAU/private-repo-18` (`nice: 99`) is picked up only when every
-lower-`nice` repo is idle, while `stSoftwareAU/priority-repo` (`nice: -1`) jumps
-ahead of every default-tier (`nice: 0`) repo.
+Here `stSoftwareAU/private-repo-18` (`nice: 99`) is picked up only when no
+lower-`nice` repo has a candidate in the same label tier, while
+`stSoftwareAU/priority-repo` (`nice: -1`) jumps ahead of every default-tier
+(`nice: 0`) repo of that tier. Neither changes the label ordering: a
+`top-priority` issue in the `nice: 99` repo is still worked before a `work-on`
+issue in the `nice: -1` one.
 
 You can confirm a repo's resolved tier without reading the config — the
 [`check-repo-availability`](workflows/issue-processing.md#-issue-selection-priority)
@@ -3130,7 +3157,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `skip_auto_merge`       | boolean | When `true`, disables auto squash merge for this repository                                                                                                                                                                                                                                                                                                               |
 | `skip_reviewer_request` | boolean | When `true`, skips requesting PR reviewers for this repository                                                                                                                                                                                                                                                                                                            |
 | `verbosity`             | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`), applied to the `issue` phase. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                                                     |
-| `nice`                  | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only. See [Per-repo `nice` rotation tier](#-per-repo-nice-rotation-tier).                                                                                                                                                                         |
+| `nice`                  | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only, and orders repos **within** a label tier — the label tier (`top-priority` > `work-on` > `low-priority` > `idle-task`) is decided first, fleet-wide, so `nice` never lets one repo's routine backlog outrank another's `top-priority` (Issue #1063). See [Per-repo `nice` rotation tier](#-per-repo-nice-rotation-tier).                                                                                                                                                                         |
 | `ciProviders`           | array   | Per-repo CI log providers consulted when a PR's CI fails, before invoking the `ci_fix` prompt. Each entry is `{ "provider": "<id>", "checkNamePattern"?: "<regex>", "jobPath"?: "<path>" }`; only `provider` is required. `jobPath` is passed through untouched — whether a provider needs one, and what shape it takes, is that provider's business. GitHub Actions is the built-in default and needs no entry; any other CI system registers its provider from a [private extension](PRIVATE-EXTENSIONS.md). Malformed entries are rejected with a named-field error at config load. See [Adding a CI log provider](EXTENDING.md#-adding-a-ci-log-provider). |
 | `pre-flight`            | array   | Mandatory pre-flight commands run in the repo working tree immediately before the worker's automated commit, at the `assertSafeToCommit()` chokepoint. The first non-zero exit **blocks both the commit and the push** — there is no override flag. A missing / non-executable / unstartable command or a timeout is a block, never a pass. See [Pre-flight enforcement gate](#-pre-flight-enforcement-gate). |
 | `ci_failure_labels`     | array   | Issue labels that mark a CI-failure report (e.g. `["develop-build-failure"]`). When an issue carries one, the worker parses the build reference from the issue body, fetches the **full** console log through the repo's configured CI log provider, and routes to the CI diagnosis-and-fix framing. Omit or leave empty to disable. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
