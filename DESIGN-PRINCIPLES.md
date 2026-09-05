@@ -1208,38 +1208,48 @@ flowchart TD
     G -->|success| I
 ```
 
-### Security scans (simplified by)
+### Security scans
 
 The worker runs MythOS-style four-phase security scans against the monitored
 repos via the idle-task framework:
 
 1. **Idle trigger** — after a scan cycle ends with no claimable work across
    every monitored repo, `run_core.ts` invokes the `maybe-file-idle-task` Deno
-   command. The command first runs a **cross-repo wrapper check**
-   (`findAnyOpenIdleTaskWrapper`,): if **any** monitored repo
-   already has an open `idle-task`-labelled issue, filing is skipped entirely
-   and the existing wrapper is picked up on the next iteration of the main loop
-   through standard priority dispatch. Only when the entire monitored set is
-   clean does the command shuffle the repo list, pick the first repo that is
-   still clean (the per-repo dedup loop stays as defence-in-depth against TOCTOU
-   races between the cross-repo check and the per-repo file), and file an
-   `idle-task` issue tagged with the `security-scan` template.
+   command. The command takes a **per-repo wrapper census**
+   (`findOpenIdleTaskWrappers`): every monitored repo that already holds an
+   open `idle-task`-labelled issue is **subtracted from the candidate set**
+   rather than short-circuiting the whole run. The concurrency rule is one
+   issue in flight *per work stream*, which for idle work reads "at most one
+   open wrapper **per repository**" — not one across the fleet (Issue #1083).
+   Each exclusion is logged (`action=skipped reason=existing_wrapper_open
+   scope=repo`) naming the repo and the issue that held it: a slot that
+   declines to file must say so, because a silent refusal is how a fleet-wide
+   cap of one went unnoticed for a week.
 
-   > **Known divergence from the intent (Issue #1083).** The cross-repo
-   > wrapper check is a **fleet-wide** cap of one open idle task, which
-   > contradicts **F8** and **F9** in
-   > [Every slot busy, always](#every-slot-busy-always--the-fleet-throughput-invariant):
-   > the cap is meant to be one open idle task **per repository**, and enough
-   > of them are meant to be raised to keep every slot busy. One wrapper
-   > cannot fill eight slots. F8/F9 are the intent; this gate is the defect.
+   Filing is then gated on **capacity rather than existence**. The command
+   counts the monitored repos holding startable
+   `top-priority`/`work-on`/`low-priority` work and suppresses filing only
+   when `startable_repos >= idle_slots`, where `idle_slots` is the fleet's
+   idle capacity read from the `slot_idle_accounting` ledger rather than a
+   constant. A startable issue occupies one slot, not eight. This is **F8**
+   and **F9** in
+   [Every slot busy, always](#every-slot-busy-always--the-fleet-throughput-invariant)
+   made operational.
 
-   The next
-   iteration of the main loop claims that issue through the standard priority
+   From the surviving candidates the command shuffles the list, picks the
+   first repo that is still clean (the per-repo dedup loop stays as
+   defence-in-depth against TOCTOU races between the census and the file), and
+   files **one** `idle-task` issue per invocation, tagged with the
+   `security-scan` template — so the next tick re-decides from fresh state
+   instead of scattering wrappers across the fleet in a single pass.
+
+   The next iteration of the main loop claims that issue through the standard priority
    dispatch and routes it to `securityScanTemplate.runTask()`, which runs the
    scanner and files findings. Any failure inside the run is caught, logged as
    `Idle-task filer failed (continuing): <msg>`, and never aborts the main loop.
-    retired the previous in-process `maybe-run-security-scan` trigger
-   and the three host state files (`security_scan_idle.json`,
+
+   The idle-task framework retired the previous in-process
+   `maybe-run-security-scan` trigger and the three host state files (`security_scan_idle.json`,
    `security-scan-state.json`, `security_scan.lock`) it required — the atomic
    claim on the filed `idle-task` issue serialises the scan across workers.
 
