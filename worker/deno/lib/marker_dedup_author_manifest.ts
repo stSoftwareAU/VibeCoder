@@ -217,6 +217,12 @@ function argumentAfter(args: string[], flag: string): string | null {
 /** Bare identifiers can hold the interesting text; resolve one `const`. */
 function resolveIdentifier(source: string, argument: string): string {
   if (!/^[A-Za-z_$][\w$]*$/.test(argument)) return argument;
+  // `argument` is rejected above unless it is a bare JavaScript identifier,
+  // so only `[A-Za-z_$][\w$]*` reaches the pattern: no metacharacter, no
+  // alternation, and nothing an author of scanned source can inject. The
+  // one quantified group is lazy and anchored by `;`. Same reasoning as
+  // `compileRenameRule` in export_redact.ts.
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
   const declaration = new RegExp(
     `\\b(?:const|let|var)\\s+${argument}\\b[^=]*=\\s*([\\s\\S]*?);`,
   ).exec(source);
