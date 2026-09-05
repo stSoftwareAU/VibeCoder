@@ -314,3 +314,51 @@ Deno.test("orphan collector - refresh runs one probe at a time and settle() awai
   assertEquals(maxInFlight, 1);
   assertEquals([...tracker.snapshot()], [7]);
 });
+
+Deno.test("orphan collector - a descendant the kernel has not re-parented yet is still collected (Issue #4382)", async () => {
+  // The same tree, but caught one instant earlier: the agent is dead and the
+  // kernel has NOT yet moved its children to PID 1, so bash still reports the
+  // dead agent as its parent.
+  //
+  // `collectOrphans` treated "my parent is the child" as "not an orphan" —
+  // a rule that only holds while the child is alive. Against a dead child it
+  // discarded the only root, collected nothing, and returned before logging
+  // ORPHANS_COLLECTED, so the orphan survived silently. That is the #4382
+  // failure itself, and it is why the runner suite flaked under load: whether
+  // the test passed depended on whether the kernel had got round to
+  // re-parenting before the collector looked.
+  const { table, signals, deps } = fakeTable({
+    100: { ppid: 20, alive: true, elapsedSeconds: 900 },
+    101: { ppid: 100, alive: true, elapsedSeconds: 88 },
+    102: { ppid: 101, alive: true, elapsedSeconds: 88 },
+  });
+  const tracker = new DescendantTracker(CHILD, deps, {
+    nowMs: () => 1_000_000,
+  });
+  await tracker.refresh();
+  assertEquals([...tracker.snapshot()].sort(), [101, 102]);
+
+  // The agent dies. 101 is still parented to it — re-parenting has not
+  // happened yet.
+  table.get(100)!.alive = false;
+
+  const { logger, security } = capturingLogger();
+  const result = await tracker.collectOrphans({
+    reason: "AGENT_KILLED",
+    maxWaitSeconds: 2,
+    logger,
+  });
+  assertEquals(
+    result.collected.sort(),
+    [101, 102],
+    "a live descendant of a DEAD agent is an orphan whether or not the " +
+      "kernel has re-parented it yet",
+  );
+  assertEquals(table.get(101)!.alive, false, "101 was terminated");
+  assertEquals(table.get(102)!.alive, false, "102 was terminated");
+  assert(
+    security.some((s) => s.startsWith("[ORPHANS_COLLECTED]")),
+    `the collection is recorded: ${JSON.stringify(security)}`,
+  );
+  assert(signals.length > 0, "signals were sent");
+});
