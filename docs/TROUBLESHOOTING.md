@@ -80,8 +80,8 @@ report is itself the thing to look at.
 A run **you** stopped is not reported at all. `run.sh` exits with the runtime
 client's own status — 255 on macOS when the container is stopped under it —
 which reads as a crash, so a `kill`, a launchd stop or a host shutdown used to
-count towards the streak and escalate a host that was working (Issues #879,
-#1072). The signal trap declares the stop in
+count towards the streak and escalate a host that was working
+(Issues #879, #1072). The signal trap declares the stop in
 `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-termination` and the recorder
 consumes it: `self-heal-summary` shows a `terminated` event, the failure count
 is unchanged, and nothing is filed. If you see a `worker_run` escalation for a
