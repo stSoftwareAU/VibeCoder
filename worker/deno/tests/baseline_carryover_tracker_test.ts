@@ -95,14 +95,24 @@ Deno.test(
       if (args[0] === "issue" && args[1] === "list") {
         return Promise.resolve(
           JSON.stringify([
-            { number: 7, title: buildCarryoverTrackerTitle(REPO) },
+            {
+              number: 7,
+              title: buildCarryoverTrackerTitle(REPO),
+              // The dedup search now counts a title match only when the
+              // fleet authored it — a title is text anybody may write, and
+              // an unverified match would suppress the tracker for good.
+              author: { login: "vibe-bot" },
+            },
           ]),
         );
       }
       return Promise.resolve("");
     };
 
-    await fileBaselineCarryoverTracker(REPO, FINDINGS, { ghCommand });
+    await fileBaselineCarryoverTracker(REPO, FINDINGS, {
+      ghCommand,
+      dedupAuthors: { fleetAuthors: ["vibe-bot"] },
+    });
 
     assertEquals(calls.length, 1, "dedup must short-circuit before create");
     assertEquals(calls[0]![1], "list");

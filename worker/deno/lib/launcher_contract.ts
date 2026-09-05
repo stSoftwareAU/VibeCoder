@@ -38,6 +38,9 @@ export type { LauncherDialect };
 export const LAUNCH_PLAN_KEYS: readonly ContainerLaunchPlanKey[] = [
   "runtime",
   "image",
+  // The launch's image dependency chain (Issue #1059): a launcher that drops
+  // it prunes the base image its own extension layer is built FROM.
+  "keep",
   "name",
   // The outer watchdog's deadline (Issue #4173): a launcher that ignores it
   // would wait on a wedged container for ever, which is a parity fault.
