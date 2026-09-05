@@ -82,8 +82,11 @@ Select one with the `agent_provider` key in `.config.json`:
 `agent_providers` lists every provider enabled for a run: each gets its own
 credential file, its own startup preflight and its own read-only container
 mount, so no vendor's secret reaches another vendor's agent. It must include
-the active provider. For a single run, `VIBE_AGENT_PROVIDER` and
-`VIBE_AGENT_PROVIDERS` (comma-separated) override both keys.
+the active provider. `VIBE_AGENT_PROVIDER` and `VIBE_AGENT_PROVIDERS`
+(comma-separated) still select a provider on a host whose configuration file
+names none, but they no longer override the file — the file wins, as it does
+for every other setting
+([2.0.0](docs/RELEASE-NOTES.md#200--the-config-file-wins-over-the-environment)).
 
 An id that is set but not registered fails loudly at startup with the supported
 ids named — the worker never silently falls back to the default and runs an
@@ -282,15 +285,15 @@ reports progress, escalations and crashes the same way.
 
 **SSH, Remote Desktop, screen sharing, a management UI and terminal access to
 the host are not required for normal operation.** No inbound port is opened.
-Local logs (`~/logs`) remain useful for diagnosis, but a recoverable failure is
+Local logs (the host log directory) remain useful for diagnosis, but a recoverable failure is
 reported through GitHub rather than left to disappear into a host log.
 
 For production, run via cron (macOS/Linux) or Task Scheduler (Windows) every 5
 minutes:
 
 ```bash
-# macOS / Linux (cron)
-*/5 * * * * /path/to/VibeCoder/run.sh >> ~/logs/cron.log 2>&1
+# Linux (cron) — on macOS use ~/Library/Logs/vibe-coder/cron.log
+*/5 * * * * /path/to/VibeCoder/run.sh >> ~/.local/state/vibe-coder/cron.log 2>&1
 ```
 
 See the [Deployment Guide](docs/DEPLOYMENT.md) for systemd, launchd, Task

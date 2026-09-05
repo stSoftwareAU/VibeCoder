@@ -15,29 +15,42 @@
  * platform already rotates).
  *
  * Precedence matches `loop.sh` exactly: `LAUNCH_LOG_DIR`, then `LOG_DIR`,
- * then `$HOME/logs`. The default is not a standard location; moving it is a
- * breaking change tracked separately (Issue #873).
+ * then the default. Issue #873 moved that default off `$HOME/logs` and onto
+ * the platform's own standard location — the defaults themselves are covered
+ * by `log_dir_default_test.ts`; what this suite pins is the precedence.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
 import { assertEquals } from "@std/assert";
 import { resolveLogDir } from "../lib/container_launch.ts";
+import { defaultLogDir } from "../lib/log_dir.ts";
 
 const envFrom =
   (vars: Record<string, string>) => (name: string): string | undefined =>
     vars[name];
 
-Deno.test("log dir - defaults to $HOME/logs when nothing is set (Issue #872)", () => {
+Deno.test("log dir - falls back to the platform default when nothing is set (Issues #872, #873)", () => {
+  // Was `$HOME/logs` until Issue #873 moved the default onto the platform's
+  // own location; the fallback step in the chain is what this asserts.
   assertEquals(
-    resolveLogDir("/home/vibe", envFrom({}), "posix"),
-    "/home/vibe/logs",
+    resolveLogDir("/home/vibe", envFrom({}), "posix", "linux"),
+    defaultLogDir("/home/vibe", envFrom({}), "posix", "linux"),
+  );
+  assertEquals(
+    resolveLogDir("/home/vibe", envFrom({}), "posix", "linux"),
+    "/home/vibe/.local/state/vibe-coder",
   );
 });
 
 Deno.test("log dir - LOG_DIR is honoured (Issue #872)", () => {
   assertEquals(
-    resolveLogDir("/home/vibe", envFrom({ LOG_DIR: "/var/log/vibe" }), "posix"),
+    resolveLogDir(
+      "/home/vibe",
+      envFrom({ LOG_DIR: "/var/log/vibe" }),
+      "posix",
+      "linux",
+    ),
     "/var/log/vibe",
   );
 });
@@ -48,6 +61,7 @@ Deno.test("log dir - LAUNCH_LOG_DIR outranks LOG_DIR, as loop.sh has it (Issue #
       "/home/vibe",
       envFrom({ LAUNCH_LOG_DIR: "/var/log/launch", LOG_DIR: "/var/log/vibe" }),
       "posix",
+      "linux",
     ),
     "/var/log/launch",
   );
@@ -62,7 +76,12 @@ Deno.test("log dir - a blank value is treated as unset (Issue #872)", () => {
     { LAUNCH_LOG_DIR: "", LOG_DIR: "/var/log/vibe" },
   ];
   for (const vars of blankCases) {
-    const resolved = resolveLogDir("/home/vibe", envFrom(vars), "posix");
+    const resolved = resolveLogDir(
+      "/home/vibe",
+      envFrom(vars),
+      "posix",
+      "linux",
+    );
     assertEquals(
       resolved === "" || resolved === "/home/vibe" ? "bad" : "ok",
       "ok",
@@ -72,14 +91,15 @@ Deno.test("log dir - a blank value is treated as unset (Issue #872)", () => {
     );
   }
   assertEquals(
-    resolveLogDir("/home/vibe", envFrom({ LOG_DIR: "" }), "posix"),
-    "/home/vibe/logs",
+    resolveLogDir("/home/vibe", envFrom({ LOG_DIR: "" }), "posix", "linux"),
+    "/home/vibe/.local/state/vibe-coder",
   );
   assertEquals(
     resolveLogDir(
       "/home/vibe",
       envFrom({ LAUNCH_LOG_DIR: "  ", LOG_DIR: "/var/log/vibe" }),
       "posix",
+      "linux",
     ),
     "/var/log/vibe",
     "a blank LAUNCH_LOG_DIR falls through to LOG_DIR",
@@ -87,7 +107,13 @@ Deno.test("log dir - a blank value is treated as unset (Issue #872)", () => {
 });
 
 Deno.test("log dir - a Windows host spells the default its own way (Issue #872)", () => {
-  const resolved = resolveLogDir("C:\\Users\\vibe", envFrom({}), "windows");
+  const resolved = resolveLogDir(
+    "C:\\Users\\vibe",
+    envFrom({}),
+    "windows",
+    "windows",
+  );
   assertEquals(resolved.includes("logs"), true);
   assertEquals(resolved.startsWith("C:"), true);
+  assertEquals(resolved.includes("/"), false, "no POSIX separators leak in");
 });

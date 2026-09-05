@@ -7,13 +7,18 @@
  * Issue #923: Migrate setup scripts to Deno TypeScript.
  */
 
+import { processEnvLookup } from "../lib/env_lookup.ts";
+import { pathStyleFor } from "../lib/host_path_style.ts";
+import { readConfiguredLogDirSync, resolveLogDir } from "../lib/log_dir.ts";
+import { resolveHostConfigPath } from "../lib/host_config_path.ts";
+
 /** Configuration for LaunchAgent setup. */
 export interface LaunchAgentConfig {
   /** Root directory of the VibeCoder project. */
   scriptDir: string;
   /** LaunchAgents directory (default: ~/Library/LaunchAgents). */
   launchAgentDir?: string;
-  /** Logs directory (default: ~/logs). */
+  /** Logs directory (default: this host's log directory, Issue #873). */
   logsDir?: string;
   /** Optional GH_TOKEN for the LaunchAgent environment. */
   ghToken?: string;
@@ -34,11 +39,32 @@ export interface LaunchAgentResult {
 const LAUNCHAGENT_LABEL = "com.vibe.auto-issue-worker";
 
 /**
+ * This host's log directory — the same resolution the launcher uses.
+ *
+ * The agent's stdout and stderr land beside the worker's own logs rather than
+ * in a second directory nobody thinks to read (Issues #872, #873).
+ *
+ * @returns The resolved directory
+ */
+function hostLogsDir(): string {
+  const home = Deno.env.get("HOME") ?? "~";
+  return resolveLogDir(
+    home,
+    processEnvLookup,
+    pathStyleFor(home),
+    undefined,
+    readConfiguredLogDirSync(
+      resolveHostConfigPath({ baseDir: Deno.cwd(), env: processEnvLookup }),
+    ),
+  );
+}
+
+/**
  * Generate the LaunchAgent plist XML content.
  */
 export function generatePlist(config: LaunchAgentConfig): string {
   const runScriptPath = `${config.scriptDir}/run.sh`;
-  const logsDir = config.logsDir ?? `${Deno.env.get("HOME") ?? "~"}/logs`;
+  const logsDir = config.logsDir ?? hostLogsDir();
 
   let plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -141,7 +167,7 @@ export async function setupLaunchAgent(
   const homeDir = Deno.env.get("HOME") ?? "~";
   const launchAgentDir = config.launchAgentDir ??
     `${homeDir}/Library/LaunchAgents`;
-  const logsDir = config.logsDir ?? `${homeDir}/logs`;
+  const logsDir = config.logsDir ?? hostLogsDir();
 
   // Create directories
   try {

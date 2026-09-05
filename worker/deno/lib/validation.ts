@@ -11,6 +11,8 @@ import {
   RUN_MODE_CONFIG_KEY,
   RUN_MODES,
 } from "./run_mode.ts";
+import { isAbsolutePath, pathStyleFor } from "./host_path_style.ts";
+import { LOG_DIR_CONFIG_KEY } from "./log_dir.ts";
 
 /**
  * GitHub org team slug in `org/slug` form (Issue #252).
@@ -171,6 +173,7 @@ export interface ConfigFileJson {
   worker_name?: string;
   ssh_key_path?: string;
   gh_config_dir?: string;
+  log_dir?: string;
   log_max_size_mb?: number;
   log_max_rotations?: number;
   stuck_issue_timeout?: number;
@@ -575,6 +578,7 @@ export function validateConfigFileJson(
     "worker_name",
     "ssh_key_path",
     "gh_config_dir",
+    LOG_DIR_CONFIG_KEY,
     "imgbb_api_key",
     "github_app_id",
     "github_app_installation_id",
@@ -608,6 +612,28 @@ export function validateConfigFileJson(
       RUN_MODE_CONFIG_KEY,
       `Expected one of ${RUN_MODES.join(", ")}, got ${JSON.stringify(raw)}`,
     );
+  }
+
+  // log_dir must be a path a launcher can act on (Issue #873). A relative
+  // value resolves against whichever directory each launcher was started in,
+  // so the logs would split across directories — exactly what this key exists
+  // to prevent. Refused here, where the operator is told which key is wrong.
+  if (data[LOG_DIR_CONFIG_KEY] !== undefined) {
+    const raw = data[LOG_DIR_CONFIG_KEY] as string;
+    const stated = raw.trim();
+    const anchored = stated === "~" || stated.startsWith("~/") ||
+      stated.startsWith("~\\");
+    if (
+      stated !== "" && !anchored &&
+      !isAbsolutePath(stated, pathStyleFor(stated))
+    ) {
+      return fail(
+        LOG_DIR_CONFIG_KEY,
+        `Expected an absolute path or one starting with "~/", got ${
+          JSON.stringify(raw)
+        }`,
+      );
+    }
   }
 
   // exclusion_team must be org/slug when present (Issue #252). A typo that

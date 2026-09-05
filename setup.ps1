@@ -989,7 +989,7 @@ function Invoke-VibeInteractiveCredentials {
     Resolved by the Deno seam (worker/deno/setup/agent_providers.ts) through
     the `agent-providers` subcommand rather than parsed out of .config.json
     here: `agent_provider`, `agent_providers`, the VIBE_AGENT_PROVIDER(S)
-    overrides and the default all live there, and setup.sh reads the selection
+    fallbacks and the default all live there, and setup.sh reads the selection
     the same way, so the two platforms cannot disagree about which host this
     is.
 

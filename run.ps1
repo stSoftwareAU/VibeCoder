@@ -309,6 +309,26 @@ if ($RunMode -ne "container") {
 $HomeDir_ = [Environment]::GetEnvironmentVariable("USERPROFILE")
 if (-not $HomeDir_) { $HomeDir_ = [Environment]::GetEnvironmentVariable("HOME") }
 
+# Where this host's logs go (Issues #872, #873). Asked for rather than spelled
+# here: the worker owns the one resolution - LAUNCH_LOG_DIR, then LOG_DIR, then
+# the platform's own standard location - so this launcher, run.sh, loop.sh and
+# the container mount cannot disagree, and the default moves in one place. The
+# command prints the one-off legacy-location notice on stderr.
+$logDirResult = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
+    "run",
+    "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
+    "--allow-env", "--allow-read",
+    "$BaseDir/worker/deno/mod.ts", "log-dir"
+)
+if ($logDirResult.StdErr) { [Console]::Error.Write($logDirResult.StdErr) }
+# Only the last stdout line: a loaded config may print warnings before it.
+$LogDir_ = ($logDirResult.StdOut -split "`n" | ForEach-Object { $_.Trim() } |
+    Where-Object { $_ } | Select-Object -Last 1)
+if (($logDirResult.ExitCode -ne 0) -or (-not $LogDir_)) {
+    [Console]::Error.WriteLine("Error: cannot resolve the log directory (see above)")
+    Exit-Launcher 1
+}
+
 <#
 .SYNOPSIS
     Append one line to the worker's own host log, best-effort.
@@ -323,12 +343,11 @@ function Write-RunCoreLog {
     try {
         # The log directory is created by the launch plan later in the run, so
         # it may not exist yet at the first line written (Issue #512).
-        New-Item -ItemType Directory -Force -Path (Join-Path $HomeDir_ "logs") |
-            Out-Null
+        New-Item -ItemType Directory -Force -Path $LogDir_ | Out-Null
         # The backslashes escape the literal T and Z for .NET's custom
         # date-format parser, so the stamp matches run.sh's `date -u` exactly.
         $stamp = [DateTime]::UtcNow.ToString("yyyy-MM-dd\THH:mm:ss\Z")
-        Add-Content -LiteralPath (Join-Path $HomeDir_ "logs/run_core.log") `
+        Add-Content -LiteralPath (Join-Path $LogDir_ "run_core.log") `
             -Value "$stamp $Message" -ErrorAction Stop
     } catch {
         # Best-effort by design.
@@ -341,7 +360,12 @@ function Write-RunCoreLog {
 # nothing whatsoever about why. These are the bounded, named copies the log
 # line points at, in their own sub-directory so the size-based rotation of
 # run_core.log and friends leaves them alone.
-$BuildFailureLogDir = Join-Path $HomeDir_ "logs/build-failures"
+# Under the resolved log directory, not $HOME/logs: Issue #873 moved the
+# default onto the platform's own location and this line was left behind, so
+# a host that logged anywhere else preserved its build failures where neither
+# run_core.log's pointer nor the operator would look. run.sh derives it the
+# same way (BUILD_FAILURE_LOG_DIR).
+$BuildFailureLogDir = Join-Path $LogDir_ "build-failures"
 # Diagnostics, not an archive: an unbounded directory on a host already
 # fighting for disk would be a regression, not a fix (Issues #478, #633).
 $BuildFailureLogKeep = 20
@@ -434,7 +458,11 @@ function Write-RunCoreExcerpt {
     Write-RunCoreLog "$Label (last $BuildFailureExcerptLines lines):"
     try {
         $tail = @($lines | Select-Object -Last $BuildFailureExcerptLines)
-        Add-Content -LiteralPath (Join-Path $HomeDir_ "logs/run_core.log") `
+        # $LogDir_, the same file Write-RunCoreLog wrote the header to. This
+        # said $HomeDir_/logs (Issue #873's old default), so the header landed
+        # in one file and the excerpt under it in another - the excerpt read
+        # as empty, which is the one thing Issue #1019 exists to prevent.
+        Add-Content -LiteralPath (Join-Path $LogDir_ "run_core.log") `
             -Value ($tail | ForEach-Object { "  | $_" }) -ErrorAction Stop
     } catch {
         # Best-effort by design, exactly as Write-RunCoreLog is.

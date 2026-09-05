@@ -89,6 +89,40 @@ function spawnLauncher(harness: Harness): Deno.ChildProcess {
   return spawnHarnessLauncher(harness, BASH_LAUNCHER);
 }
 
+Deno.test("run.sh - LOG_DIR moves the writable host mount with it (Issues #872, #873)", async () => {
+  // The log directory is the fleet's only writable host mount, so an operator
+  // who names one must get that directory mounted — not the platform default
+  // resolved beside it.
+  const chosen = await Deno.makeTempDir({ prefix: "vibe_logdir_override_" });
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    LOG_DIR: chosen,
+  });
+  try {
+    assertEquals(harness.logDir, chosen);
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const args = await recorded(harness, "run");
+    assert(args, `no container run was recorded: ${outcome.stderr}`);
+    assert(
+      mountValues(args).includes(`${chosen}:${TARGETS.logs}`),
+      `the chosen log directory is not the mount source: ${
+        mountValues(args).join(", ")
+      }`,
+    );
+    // And the launcher's own run-core log lands there too, rather than in a
+    // second directory nobody is watching.
+    assert(
+      (await runCoreLog(harness)).trim().length > 0,
+      "run.sh wrote no run_core.log in the chosen directory",
+    );
+  } finally {
+    await harness.cleanup();
+    await Deno.remove(chosen, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("run.sh - launches the container with exactly the permitted mounts", async () => {
   const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
   try {
@@ -107,7 +141,7 @@ Deno.test("run.sh - launches the container with exactly the permitted mounts", a
       // (Issue #4186): no host directory holds the worker's repositories.
       `${WORK_VOLUME_NAME}:${TARGETS.work}`,
       `${APPROVAL_STATE_VOLUME_NAME}:${TARGETS.approvalState}`,
-      `${harness.tmpDir}/home/logs:${TARGETS.logs}`,
+      `${harness.logDir}:${TARGETS.logs}`,
       `${harness.tmpDir}/home/.vibe-coder/run-config:${TARGETS.config}:ro`,
       // Issue #4067: only the worker's `gh` material and the active
       // provider's credential sub-directory are exposed.
@@ -119,7 +153,7 @@ Deno.test("run.sh - launches the container with exactly the permitted mounts", a
     // The read/write host mounts are created by the launcher, so the runtime
     // never invents a root-owned empty directory for them.
     assertEquals(
-      (await Deno.stat(`${harness.tmpDir}/home/logs`)).isDirectory,
+      (await Deno.stat(harness.logDir)).isDirectory,
       true,
     );
 
@@ -1444,7 +1478,7 @@ Deno.test("run.sh - a preserve that cannot be made says why, and the launch stil
   try {
     // A regular file where the directory must go: the copy cannot be made,
     // and the launcher must name that cause rather than going quiet.
-    await Deno.mkdir(`${harness.tmpDir}/home/logs`, { recursive: true });
+    await Deno.mkdir(harness.logDir, { recursive: true });
     await Deno.writeTextFile(buildFailureLogDir(harness), "not a directory\n");
 
     const outcome = await runLauncher(harness);

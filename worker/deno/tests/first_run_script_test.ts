@@ -22,6 +22,8 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { pathStyleFor } from "../lib/host_path_style.ts";
+import { resolveLogDir } from "../lib/log_dir.ts";
 
 /** tests/ → worker/deno/ → worker/ → repository root. */
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname.replace(
@@ -38,13 +40,27 @@ interface Sandbox {
   readonly dir: string;
   /** The fake checkout the script verifies. */
   readonly repo: string;
-  /** The fake HOME, holding `logs/` and the transcript. */
+  /** The fake HOME, holding the log directory and the transcript. */
   readonly home: string;
   /** Where the stub executables live. */
   readonly bin: string;
   /** Transcript directory the run writes into. */
   readonly transcript: string;
   cleanup(): Promise<void>;
+}
+
+/**
+ * The log directory `infra/verify/first-run.sh` will resolve for a sandbox
+ * HOME — the platform's own default (Issue #873), computed here rather than
+ * spelled, so the stubs write where the script reads.
+ *
+ * @param home - The sandbox HOME
+ * @returns The resolved host log directory
+ */
+function sandboxLogDir(home: string): string {
+  // The script is run with `clearEnv`, so no override and no XDG_STATE_HOME
+  // reaches it: this is the bare platform default under that HOME.
+  return resolveLogDir(home, () => undefined, pathStyleFor(home));
 }
 
 interface StubOptions {
@@ -56,13 +72,13 @@ interface StubOptions {
   launchOutput?: string;
   /** Exit status of the stub `run.sh` (non-zero exits immediately). */
   launchExit?: number;
-  /** Lines the stub `run.sh` appends to `~/logs/run_core.log`. */
+  /** Lines the stub `run.sh` appends to the log directory's `run_core.log`. */
   runCoreLog?: string;
   /** What the stub image reports for its provider stamp. */
   imageProviders?: string;
   /** CLIs the stub image reports as installed. */
   imageClis?: string[];
-  /** Lines the stub `run.sh` appends to `~/logs/worker.log`. */
+  /** Lines the stub `run.sh` appends to the log directory's `worker.log`. */
   workerLog?: string;
   /** What the launcher's runtime detection answers (default `podman`). */
   runtimeDetect?: string;
@@ -88,13 +104,14 @@ async function sandbox(options: StubOptions = {}): Promise<Sandbox> {
   const home = `${dir}/home`;
   const bin = `${dir}/bin`;
   const transcript = `${dir}/transcript`;
-  for (const path of [repo, home, bin, `${home}/logs`]) {
+  const logDir = sandboxLogDir(home);
+  for (const path of [repo, home, bin, logDir]) {
     await Deno.mkdir(path, { recursive: true });
   }
 
   if (options.staleRunCoreLog) {
     await Deno.writeTextFile(
-      `${home}/logs/run_core.log`,
+      `${logDir}/run_core.log`,
       `${options.staleRunCoreLog}\n`,
     );
   }
@@ -132,14 +149,14 @@ async function sandbox(options: StubOptions = {}): Promise<Sandbox> {
       "#!/bin/bash",
       `printf '%s\\n' ${shellQuote(options.launchOutput ?? "[run.sh] built")}`,
       options.runCoreLog
-        ? `printf '%s\\n' ${
-          shellQuote(options.runCoreLog)
-        } >> "\${HOME}/logs/run_core.log"`
+        ? `printf '%s\\n' ${shellQuote(options.runCoreLog)} >> ${
+          shellQuote(`${logDir}/run_core.log`)
+        }`
         : ":",
       options.workerLog
-        ? `printf '%s\\n' ${
-          shellQuote(options.workerLog)
-        } >> "\${HOME}/logs/worker.log"`
+        ? `printf '%s\\n' ${shellQuote(options.workerLog)} >> ${
+          shellQuote(`${logDir}/worker.log`)
+        }`
         : ":",
       `if [[ ${options.launchExit ?? 0} -ne 0 ]]; then exit ${
         options.launchExit ?? 0

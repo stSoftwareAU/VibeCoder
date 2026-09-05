@@ -1052,13 +1052,15 @@ export interface ConfigFile {
   /**
    * Coding-agent provider id (Issue #4067) — the provider seam resolves the
    * binary, credentials, environment and invocation from it. Defaults to
-   * `claude`; `VIBE_AGENT_PROVIDER` overrides it for one run.
+   * `claude`; `VIBE_AGENT_PROVIDER` selects it when this key is unset (it
+   * no longer overrides the key — Issue #1032).
    */
   agent_provider?: string;
   /**
    * Providers enabled for a run (Issue #4108) — each gets its own credential
    * file, preflight check and read-only mount. Defaults to the active
-   * provider alone; `VIBE_AGENT_PROVIDERS` overrides it for one run.
+   * provider alone; `VIBE_AGENT_PROVIDERS` applies when this key is unset
+   * (it no longer overrides the key — Issue #1032).
    */
   agent_providers?: string[];
   claude_model?: string;
@@ -1140,6 +1142,15 @@ export interface ConfigFile {
   ssh_key_path?: string;
   /** gh config dir for separate gh CLI identity (Issue #583) */
   gh_config_dir?: string;
+  /**
+   * Host log directory (Issue #873). Absolute, or anchored at `~`. Outranks
+   * `LAUNCH_LOG_DIR` and `LOG_DIR`; absent, the platform default applies.
+   *
+   * Read straight from the file by `lib/log_dir.ts` rather than through the
+   * loaded `WorkerConfig`, because the launchers ask for it before any
+   * configuration is guaranteed to exist — see `LOG_DIR_CONFIG_KEY`.
+   */
+  log_dir?: string;
   /** GitHub user status toggle (Issue #409) */
   update_gh_user_status?: boolean;
   /** Log rotation max file size in MB (Issue #469) */

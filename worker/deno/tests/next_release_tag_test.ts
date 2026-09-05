@@ -282,10 +282,16 @@ Deno.test("next-release-tag - a floor file that was named but is absent fails lo
   }
 });
 
-Deno.test("next-release-tag - the repository's own floor mints 1.3.0 over the 1.0.x series", async () => {
+Deno.test("next-release-tag - the repository's own floor is minted over the 1.0.x series", async () => {
   // Issue #808: the acceptance criterion itself. `.release-floor` is the one
   // line that decides the number, so it is asserted through the real script
   // against the series the fleet is actually on.
+  //
+  // The expected tag is read from the floor rather than written here. It was
+  // spelled `1.3.0`, in the name and the assertion, and went red the moment
+  // Issue #873 moved the floor to 1.4.0 — a second copy of the one line this
+  // file exists to describe. What is being asserted is the behaviour (a floor
+  // above the newest tag is minted exactly), not one particular version.
   const dir = await Deno.makeTempDir({ prefix: "next_release_tag_repo_" });
   try {
     const allFile = `${dir}/all-tags.txt`;
@@ -298,9 +304,13 @@ Deno.test("next-release-tag - the repository's own floor mints 1.3.0 over the 1.
       stderr: "piped",
     }).output();
     assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));
+    const floor = (await Deno.readTextFile(FLOOR_PATH))
+      .split("\n")
+      .map((line) => line.trim())
+      .findLast((line) => line !== "" && !line.startsWith("#"));
     assertEquals(
       new TextDecoder().decode(out.stdout),
-      "should_tag=true\ntag=1.3.0\n",
+      `should_tag=true\ntag=${floor}\n`,
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
