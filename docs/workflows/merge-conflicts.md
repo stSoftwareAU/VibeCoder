@@ -17,14 +17,28 @@ PR-feedback queue either. Priority **1.61** closes that gap: it labels every
 base branch into the PR branch **for real** — both sides' changes survive, never
 a side-pick — runs the repository's quality gate on the result, and pushes
 without force. A dependency-version conflict is settled by deterministic rules
-first, and the AI is only asked about what those rules could not decide. Two **concluded** attempts, at least four hours apart; after that
-the worker escalates with `needs-human` and a conflict summary instead of
-retrying forever. Every attempt ends visibly: merged, failed, or escalated. An
-attempt that opened and then went silent was disrupted, not judged — it does not
-spend the budget, it is re-attempted, and three disruptions on one PR escalate.
-A PR that still conflicts and has carried the label for **8 hours with nothing
-concluding** is a stalled queue in its own right: it is filed as work, once,
-whatever caused the silence.
+first, and the AI is only asked about what those rules could not decide.
+
+**The ladder has four rungs and only the last one is a person.** An
+**intent-aware** attempt, which reads the originating issues behind *both*
+sides before calling anything a contradiction; a second one at least four
+hours later; then **abandon-and-restart** — the conflicting PR is closed, never
+force-pushed, and its originating issue re-queued so the fleet redoes the work
+off the current base; and only when that is declined or fails does the worker
+escalate with `needs-human` and a conflict summary. One restart per originating
+issue: if the fresh PR conflicts irreconcilably too, that is a human's call
+rather than another lap. A PR whose originating issue cannot be found never
+reaches the third rung at all — closing what the fleet cannot re-raise would
+lose the work — so it falls straight through to a human.
+
+Every attempt ends visibly: merged, failed, or escalated. An attempt that
+opened and then went silent was disrupted, not judged — it does not spend the
+budget, it is re-attempted, and three disruptions on one PR escalate. Every
+pass records one reason per labelled PR, so "the label went on and then
+silence" is now a thing you can grep for rather than infer. A PR that still
+conflicts and has carried the label for **8 hours with nothing concluding** is
+a stalled queue in its own right: it is filed as work, once, whatever caused
+the silence.
 
 ```mermaid
 flowchart TD
@@ -32,7 +46,7 @@ flowchart TD
     Conflicting -->|No| Sleep["Next priority"]
     Conflicting -->|Yes| Label["Apply merge-conflict label"]
     Label --> Spent{"Concluded budget spent?"}
-    Spent -->|Yes — and no needs-human| Human
+    Spent -->|Yes — and no needs-human| Abandon
     Spent -->|No| Budget{"Attempt due?"}
     Budget -->|No — inside cooldown| Sleep
     Budget -->|Yes| Disrupted{"3+ attempts disrupted<br/>with no conclusion?"}
@@ -46,7 +60,8 @@ flowchart TD
     Clean -->|No| Rules["Deterministic dependency rules<br/>(manifests, then lock files)"]
     Rules --> Left{"Anything left unresolved?"}
     Left -->|No| Verify
-    Left -->|Yes| Agent["Run agent with merge_conflict prompt<br/>(deferred files only)"]
+    Left -->|Yes| Context["Gather both sides' originating issues<br/>(deferred paths only)"]
+    Context --> Agent["Run agent with merge_conflict prompt<br/>(deferred files only,<br/>issues fenced as evidence)"]
     Agent --> Verify{"Tree fully resolved?"}
     Verify -->|No — markers or unmerged paths| Abort["git merge --abort"]
     Verify -->|Yes| Push
@@ -56,7 +71,10 @@ flowchart TD
     Abort --> Failed["Failure conclusion comment"]
     Failed --> Budget2{"Attempts spent?"}
     Budget2 -->|No| Sleep
-    Budget2 -->|Yes| Human["Label needs-human + summary"]
+    Budget2 -->|Yes| Abandon{"Abandon and restart?<br/>(originating issue known,<br/>not already restarted,<br/>no other PR, re-queueable)"}
+    Abandon -->|"No originating issue,<br/>or already restarted once"| Human["Label needs-human + summary<br/>naming the route"]
+    Abandon -->|"A step failed"| Human
+    Abandon -->|Yes| Restart["Close the PR (never force-push),<br/>re-queue its issue"]
     style Scan fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style Conflicting fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Label fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
@@ -70,12 +88,15 @@ flowchart TD
     style Clean fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Rules fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
     style Left fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style Context fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
     style Agent fill:#e0a050,stroke:#8b4500,color:#1a1a1a
     style Verify fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Push fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style Ancestor fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Resolved fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style Abort fill:#707070,stroke:,color:#fff
+    style Abandon fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style Restart fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style Failed fill:#c96868,stroke:#7a2020,color:#fff
     style Human fill:#c96868,stroke:#7a2020,color:#fff
     style Sleep fill:#707070,stroke:,color:#fff
@@ -93,7 +114,8 @@ flowchart TD
   logins, plus a human PR whose author explicitly invited the worker) reported
   by GitHub as `mergeable == CONFLICTING`.
 - **Not in scope:** PRs already carrying `needs-human` (a human owns those), and
-  conflicts whose two sides genuinely contradict each other — those escalate.
+  conflicts whose two sides genuinely contradict each other — those leave the
+  merge ladder for abandon-and-restart, and a human after that.
 
 ## 📏 The contract
 
@@ -103,12 +125,20 @@ progress and stopped on conflicts. Its contract is absolute:
 - **Both sides survive.** Every conflict has a base-branch change and a PR
   change; both were written deliberately. `-X ours`, `-X theirs`,
   `checkout --ours|--theirs`, and dropping one side's lines are all forbidden.
+  Two bounded carve-outs qualify this rule and nothing else does: dependency
+  versions, settled before the agent runs
+  ([below](#-dependency-files-are-decided-before-the-agent-runs)), and an
+  evidenced issue intent, where both sides' issues are known and one
+  explicitly supersedes the other
+  ([below](#-issue-intent-is-the-second-carve-out-and-it-must-be-evidenced)).
+  Both are reported decision-by-decision on the PR.
 - **A duplicate is the one exception.** When both sides added the *same*
   content, keeping it once *is* keeping both — and the agent must say so.
 - **Stop rather than guess.** Two changes that genuinely contradict each other
-  (the same constant set to different values) are a human's decision. The agent
-  aborts the merge and explains; the worker escalates.
-- **Dependency versions are the one bounded carve-out.** The prompt says so
+  (the same constant set to different values), with no evidenced intent to
+  settle them, are not the agent's decision. It aborts the merge and explains;
+  the worker takes the PR to the next rung of the ladder.
+- **Dependency versions are the first bounded carve-out.** The prompt says so
   itself: the worker
   settles dependency-version hunks in known manifests before the agent runs, and
   those files are absent from the agent's conflicted-file list. The carve-out
@@ -155,6 +185,35 @@ deterministically **before** the agent is asked anything:
   version decision** (`@std/fs: ^1.0.0 → ^1.2.0`, taken from the base). This is a
   documented carve-out from the never-side-pick contract, so it states what it
   did and a reviewer can audit the pick without reading the diff.
+
+### 🧭 Issue intent is the second carve-out, and it must be evidenced
+
+The second qualification on "both sides survive" is the work's own intent
+(Issue #1114), and it is built to the same shape as the dependency carve-out
+above: bounded, applied only where an external order exists to appeal to, and
+reported.
+
+- **The evidence bar is both sides' issues, not one.** An override may be
+  considered for a conflicted path only when the originating issue behind the
+  PR side *and* the originating issue behind the base side of that path are
+  both known. One side's issue, a plausible-sounding title, or an inference is
+  not evidence — those paths keep the both-sides-survive contract exactly as
+  it was written, and the prompt tells the agent so per path.
+- **Supersession must be quoted.** Eligibility only permits the question; the
+  answer is still the agent's judgement, and it must show the sentence in the
+  issue that explicitly supersedes, reverts, replaces or retunes the other
+  side. A supersession it cannot quote establishes nothing.
+- **Eligibility is the worker's computation, not the model's**
+  (`assessIntentEligibility`, `worker/deno/lib/conflict_intent_context.ts`), so
+  an override claimed for an ineligible path is caught without trusting the
+  agent's account of it.
+- **Every override is reported on the PR**, file by file, with both issue
+  numbers and one line on what was kept and what it superseded
+  (`worker/deno/lib/conflict_intent_audit.ts`). A reviewer audits the decision
+  from the comment, without reading the diff.
+
+The two subsections below are where that evidence comes from, and what the
+resolver is allowed to do with it.
 
 ### 🧭 What were the two sides trying to do?
 
@@ -245,13 +304,46 @@ settle still reaches no agent and now consults no issue either.
   worker restarts and across fleet hosts.
 - A successful merge posts a resolved marker, which resets both budgets — a PR
   that conflicts again months later starts from a full budget.
-- The final *concluded* failure applies `needs-human` and posts one summary
-  naming the conflicted files and why the merge failed.
+- The final *concluded* failure runs **abandon-and-restart** first, and applies
+  `needs-human` only when that rung declines or fails. The `needs-human`
+  summary names the conflicted files, why the merge failed, and which route
+  through the ladder ended at a person.
 - **Nothing stalls unowned.** If that final escalation never landed — the label
   add failed, or the run ended between the failure comment and the escalation —
   the next scan finds a PR that is out of budget and carries no `needs-human`,
-  and escalates it itself. A spent budget is a quiet skip only once the PR is
-  visibly a human's.
+  runs the same abandon rung, and escalates it itself if that declines. A spent
+  budget is a quiet skip only once the PR is visibly a human's — or visibly
+  restarted.
+
+### ♻️ Abandon and restart, before a human is asked
+
+A branch that has defeated two real merges is usually cheaper to **redo** than
+to reconcile, and redoing it needs nobody (Issue #1115,
+`worker/deno/lib/conflict_abandon_restart.ts`). So the rung between a spent
+budget and `needs-human` closes the conflicting PR and re-queues its
+originating issue, and the pipeline raises a fresh PR off the current base.
+
+- **"Start again" never means force-push.** The PR is *closed*, not merged; the
+  branch is neither deleted nor rewritten, so every commit on it stays readable
+  and linked from the abandon comment. A regenerated branch force-pushed over
+  the same PR would destroy its commits and its review history — the same class
+  of harm as the side-picking the contract forbids.
+- **Four preconditions run before anything is destroyed**, in this order: the
+  PR's originating issue is known; that issue has not already been restarted;
+  it has no *other* open PR of its own; and it can actually be re-queued —
+  it carries the work label already, or the worker is permitted to apply one.
+  A failed lookup is never read as an absence.
+- **No originating issue, no abandon.** Closing a PR the fleet cannot re-raise
+  loses the work outright, so that PR is left open and goes to a human instead
+  — the fall-through the flowchart above shows.
+- **One restart per originating issue.** The marker lives on the *issue*, not
+  the PR: the PR being counted is closed moments later and a replacement takes
+  its place, so a PR-keyed bound would loop. It is posted before the close,
+  which is also what makes two hosts produce one abandon. If the fresh PR
+  spends its budget too, that is `needs-human`, not another lap.
+- **A part-done abandon is never where this stops.** Every step names itself on
+  failure, and the caller escalates quoting that step — "PR closed, issue not
+  re-queued" must be visible, not silent.
 
 ### 💥 When the attempt itself is disrupted
 
@@ -382,13 +474,13 @@ The three candidates considered, and why each is ruled out:
    across the window.
 2. **`claimable=0 reason=pr_blocked` gated the repo out** — no. That gate is
    per-*issue* and belongs to the Priority 2 claim path
-   (`worker/deno/lib/idle_detect_diagnostics.ts:587`, reported at `:1026`), and
-   the audit that emits the line is invoked at `worker/deno/lib/run_core.ts:3849`,
+   (`worker/deno/lib/idle_detect_diagnostics.ts:591`, reported at `:1026`), and
+   the audit that emits the line is invoked at `worker/deno/lib/run_core.ts:4053`,
    inside `runIdleWorkHooks` — which runs *after* the priority dispatch and the
    maintenance lane, at the idle-task filer's gate. The conflict pass takes no
    claimability input at all: `findConflictingPr` filters repos by
    `isRepoAllowed` alone, wired to the monitored-repo allowlist at
-   `worker/deno/lib/run_core_production_deps.ts:1944`. The deadlock this would have been —
+   `worker/deno/lib/run_core_production_deps.ts:2025`. The deadlock this would have been —
    a repo whose PRs are blocked never running the pass that unblocks them —
    does not exist, and `merge_conflict_pr_blocked_reachability_test.ts` now
    pins it.
@@ -408,6 +500,36 @@ including PRs the worker will not touch this pass. Filter on that label to see
 the whole stuck set at a glance. The branch updater's "needs a real merge"
 warning now fires **once per PR per process** rather than on every ~2.5-minute
 pass, because the label is the queue.
+
+The label is no longer the *only* signal, though. It says a PR is stuck; two
+other instruments say whether anything is happening about it, and both exist
+because of the same incident.
+
+### 🛑 When the queue itself stalls
+
+NEAT-AI-Ockham#116 carried `merge-conflict` for over three hours with nothing
+visible after it, and the label alone could not distinguish "the pass ran and
+was right to wait" from "no pass ran at all" (#1076). Two instruments close
+that gap, and reading the queue means reading both:
+
+- **The skip reasons** ([below](#-every-decision-leaves-a-reason-behind)). Every
+  labelled PR the pass decides on emits one structured record naming exactly
+  why it was left where it is — `cooldown`, `repo-leased`, `budget-spent`,
+  `abandoned-restarted` and the rest — plus one summary per pass (Issue #1109).
+  Silence is now itself a finding: every pass closes with a summary line, so no
+  summary means no pass ran, which is a different problem from a pass that ran
+  and waited.
+- **The stall watchdog**
+  ([above](#-a-label-with-nothing-behind-it-escalates-itself)). A PR that is
+  still `CONFLICTING`, has carried the label for **8 hours**, and has had no
+  attempt *conclude* in that window is a stalled queue whatever caused it
+  (Issue #1112). It posts one comment on the PR — label age, the silence, the
+  skip reasons — and files the stall as work through `escalateAsWork`.
+- **The watchdog applies `escalated`, never `needs-human`.** A mechanical stall
+  is work the fleet can claim, and `needs-human` is a cross-subsystem veto that
+  would remove the PR from the very lane that clears it (Issue #569). It
+  escalates and never retries: forcing an attempt from a watchdog would race
+  the ordinary pass and manufacture the disrupted state.
 
 ## 🧾 Every decision leaves a reason behind
 
@@ -437,7 +559,8 @@ each carries the operands that make the decision checkable afterwards:
 | `already-handled` | — | Taken or deferred earlier in this same cycle's drain. |
 | `scan-error` | `stage`, `error` | A per-PR lookup failed (`mergeable-state`, `labels` or `attempt-history`); the PR keeps its place. A state lookup that failed is **never** reported as merging cleanly. |
 | `needs-human` | `label` | A human already owns the conflict. |
-| `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent. |
+| `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed — the PR is now a human's. |
+| `abandoned-restarted` | `issueNumber`, `attemptsSpent` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. |
 | `cooldown` | `msUntilDue`, `lastAttemptAt` | Still inside the 4-hour cooldown. `msUntilDue` is null when the recorded timestamp does not parse. |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
 | `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |
@@ -492,9 +615,9 @@ Three bounds keep the drain from becoming a monopoly:
 | Per-cycle cap | 5 PRs | One repository's backlog cannot take the whole run. |
 | Exclusion set | this cycle's PRs | A PR already taken — or deferred because an issue slot holds its repository — is not re-selected, so the drain cannot spin on it. |
 
-The per-PR budgets are unchanged: the 4-hour cooldown, two concluded attempts
-and `needs-human` are the scan's, and the drain only decides how many of the
-PRs already due get taken now.
+The per-PR budgets are unchanged: the 4-hour cooldown, the two concluded
+attempts, and the abandon rung with `needs-human` behind it are the scan's, and
+the drain only decides how many of the PRs already due get taken now.
 
 ## ⏳ A deferred PR leads the next pass, and says so if it keeps losing
 
@@ -588,6 +711,28 @@ branch at the same time. A host that loses the race returns immediately.
   `worker/deno/lib/pr_merge_conflict_processor.ts` — the implementation.
 - `worker/deno/lib/merge_conflict_drain.ts` — the per-cycle drain loop and its
   three bounds.
+- `worker/deno/lib/conflict_issue_context.ts` — the gather that answers *what
+  were the two sides trying to do?* (`gatherConflictIssueContext`). A reporting
+  module: it names both sides' originating issues, and the absences, and judges
+  nothing.
+- `worker/deno/lib/conflict_intent_context.ts` — the seam where that answer
+  reaches the agent: `assessIntentEligibility` decides per path whether an
+  override may even be considered, and the issue text is sanitised, fenced and
+  nonce-wrapped before it enters the prompt.
+- `worker/deno/lib/conflict_intent_audit.ts` — the audit surface: the
+  "Issues consulted" block on the attempt, the override block on the
+  resolution, and `findUncorroboratedOverrides`, which is what makes an
+  unevidenced claim decidable without trusting the model.
+- `worker/deno/lib/conflict_abandon_restart.ts` — the abandon-and-restart rung:
+  its four preconditions, the one-restart-per-issue marker, the comments it
+  posts on the PR and the issue, and `exhaustedEscalationRoute`, which names
+  the route when the rung declines or fails and a human is asked instead.
+- `worker/deno/lib/merge_conflict_stall_watchdog.ts` — the 8-hour watchdog for
+  a label with no concluded attempt behind it. It files work and applies
+  `escalated`; it never applies `needs-human` and never retries.
+- `worker/deno/lib/merge_conflict_markers.ts` — the marker literals the scan,
+  the processor, the deferral tracker and the abandon rung all read, in one
+  place so they cannot drift apart.
 - `worker/deno/lib/merge_conflict_deferrals.ts` — the persisted fairness cursor
   and the once-per-streak starvation notice, so none of those bounds can starve
   a due PR in silence. `worker/deno/lib/conflict_queue_order.ts` is the pure
