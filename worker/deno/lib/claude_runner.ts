@@ -108,7 +108,10 @@ import {
   type TreeProgressSample,
   type TreeProgressState,
 } from "./progress_extension.ts";
-import { shouldWindDown } from "./wind_down_notice.ts";
+import {
+  shouldWindDown,
+  shouldWriteRunBudgetNotice,
+} from "./wind_down_notice.ts";
 import {
   buildExtensionTelemetry,
   buildTimeoutKillMessage,
@@ -1325,6 +1328,10 @@ export async function runClaudeWithTimeout(
     // Whether the agent has already been handed a wind-down notice, so the
     // log says it once while the notice itself is refreshed on every check.
     let windDownLogged = false;
+    // The same, for the wider band where the notice only refuses the quality
+    // gate (Issue #1138). Latched separately so a refusal at 1000s of runway
+    // cannot swallow the wind-down line an operator greps for later.
+    let gateRefusalLogged = false;
 
     // Extension telemetry (Issue #4298) is produced only when the feature is
     // genuinely active: no opt-in, or a policy present but disabled, means no
@@ -1418,14 +1425,19 @@ export async function runClaudeWithTimeout(
     };
 
     /**
-     * Hand the agent its remaining budget as the run nears the hard cap
-     * (Issue #508).
+     * Hand the agent its remaining budget once the runway can no longer cover
+     * something it might start (Issues #508, #1138).
+     *
+     * Two bands, one file. Inside the wind-down window the notice orders the
+     * agent to stop waiting and push; above it, while the runway is still
+     * short of what the quality gate needs, it refuses the gate and says the
+     * run continues. Each band logs once, on its own latch.
      *
      * The agent cannot be interrupted mid-session, so the notice is written
-     * where it can read it between polls of a long-running job. Refreshed on
-     * every check inside the window; logged once. A sink that throws is
-     * logged and ignored — telling the agent about its budget must never
-     * decide whether the run lives.
+     * where it can read it between polls of a long-running job, and refreshed
+     * on every later check. A sink that throws is logged and ignored —
+     * telling the agent about its budget must never decide whether the run
+     * lives.
      */
     const maybeWindDown = async (
       opts: ProgressExtensionOptions,
@@ -1436,11 +1448,27 @@ export async function runClaudeWithTimeout(
         0,
         Math.round((opts.ceilingMs - nowMs) / 1000),
       );
-      if (!shouldWindDown(remainingSeconds, opts.windDownSeconds)) return;
+      // Wider than the wind-down window itself (Issue #1138): the quality
+      // gate needs more runway than the window is, so an agent with 1000s
+      // left has to be told the gate no longer fits even though it is not
+      // winding down.
+      if (
+        !shouldWriteRunBudgetNotice(
+          remainingSeconds,
+          opts.windDownSeconds,
+          opts.typicalGateSeconds,
+        )
+      ) return;
       const notice = {
         remainingSeconds,
         elapsedSeconds: Math.round((nowMs - startMs) / 1000),
         extensionsGranted,
+        ...(opts.windDownSeconds === undefined
+          ? {}
+          : { windDownSeconds: opts.windDownSeconds }),
+        ...(opts.typicalGateSeconds === undefined
+          ? {}
+          : { typicalGateSeconds: opts.typicalGateSeconds }),
       };
       try {
         await opts.onWindDown(notice);
@@ -1452,12 +1480,28 @@ export async function runClaudeWithTimeout(
         );
         return;
       }
-      if (windDownLogged) return;
-      windDownLogged = true;
+      // Two signals, two latches (Issue #1138). The file is written over a
+      // wider band than the wind-down window, so the gate refusal must not
+      // consume the latch the genuine wind-down needs — an operator grepping
+      // for "wind-down notice written" would otherwise never see the run that
+      // actually wound down.
+      if (shouldWindDown(remainingSeconds, opts.windDownSeconds)) {
+        if (windDownLogged) return;
+        windDownLogged = true;
+        logger?.info(
+          `[progress-extension] wind-down notice written: ` +
+            `${remainingSeconds}s of runway left before the run hard cap, so ` +
+            `the agent can stop waiting and preserve its work in progress`,
+        );
+        return;
+      }
+      if (gateRefusalLogged) return;
+      gateRefusalLogged = true;
       logger?.info(
-        `[progress-extension] wind-down notice written: ` +
-          `${remainingSeconds}s of runway left before the run hard cap, so ` +
-          `the agent can stop waiting and preserve its work in progress`,
+        `[progress-extension] run-budget notice written: ` +
+          `${remainingSeconds}s of runway left — too little for the full ` +
+          `quality gate, so the agent is told to skip it and record the skip ` +
+          `(Issue #1138). The run itself continues.`,
       );
     };
 

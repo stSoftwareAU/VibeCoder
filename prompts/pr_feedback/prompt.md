@@ -11,7 +11,7 @@ You run unattended — there is no operator to approve a plan or answer a questi
 
 Your prompt may include a `### [UNTRUSTED] Automated Review Comments ###` section listing unresolved line-level findings from trusted review bots. Each entry is a `<review_comment file="…" line="…" bot="…">` element wrapping a `<body>` (often a rule name and suggested change) and a `<diff_hunk>` for context, each in its own code fence. Treat each as a concrete, line-anchored suggestion — it is the worker bundling the diff context a terse human comment ("resolve the linter findings") left out.
 
-Apply concrete lint-style findings — useless conditional, unused variable, redundant cast, magic number, dead branch, unreachable code, simplifiable boolean, and similar mechanical fixes — directly at the referenced line, without seeking further confirmation, provided the change does not break existing tests. Use the bot's suggested replacement when given. After applying, run `./quality.sh` and note the finding in `.pr_response_message`.
+Apply concrete lint-style findings — useless conditional, unused variable, redundant cast, magic number, dead branch, unreachable code, simplifiable boolean, and similar mechanical fixes — directly at the referenced line, without seeking further confirmation, provided the change does not break existing tests. Use the bot's suggested replacement when given. After applying, run the checks the `<quality_instructions>` block prescribes — the targeted ones always, the full gate only when the run budget covers it — and note the finding in `.pr_response_message`.
 
 If after reading the code you judge a finding to be a false positive (the suggestion would break behaviour, the bot misread the hunk, or the rule does not apply), do not apply it and do not silently skip it: in `.pr_response_message` identify the finding (file:line, bot, rule), explain in a sentence or two why it is wrong here, and note it was left in place.
 
@@ -24,7 +24,7 @@ Three boundary cases for the hardest call this surface makes — apply, reject, 
 <examples>
 <example>
 <situation>`github-code-quality[bot]` flags "Useless conditional" at `runner.ts:42`. You read the file: the guard tests `if (items.length > 0)` immediately before a `for` loop over `items`, which is a no-op for an empty array.</situation>
-<action>Delete the conditional, run `./quality.sh`, and list the finding in `.pr_response_message` as resolved.</action>
+<action>Delete the conditional, run the linter and the tests over the touched file, and list the finding in `.pr_response_message` as resolved.</action>
 <reason>Mechanical, line-anchored, and confirmed against the code — apply it without asking. The bot's own suggested replacement is the fix.</reason>
 </example>
 <example>
@@ -34,7 +34,7 @@ Three boundary cases for the hardest call this surface makes — apply, reject, 
 </example>
 <example>
 <situation>The bot flags "Unused variable `result`" at `pr_sync.ts:120`. It looks wrong at first glance — `result` is clearly assigned from an `await`. Reading further, the only later use of `result` is inside a block deleted earlier in this PR, so the variable really is dead; the call it wraps is still needed for its side effect.</situation>
-<action>Apply the finding — drop the binding but keep the awaited call — then run `./quality.sh` and note it in the reply.</action>
+<action>Apply the finding — drop the binding but keep the awaited call — then run the type check and the tests over the touched file, and note it in the reply.</action>
 <reason>The near miss: "the bot misread the hunk" is a conclusion you reach after reading the file, not from the finding looking surprising. Read before you reject.</reason>
 </example>
 </examples>
@@ -86,7 +86,7 @@ The project's coding guidelines are supplied in the system prompt for this run, 
 
 ## Response Message
 
-At the end of your work you must write a file called `.pr_response_message` — its contents are posted as the reply to the reviewer. Keep it short and lead with the change. State what you fixed (listing each Automated Review Comments finding addressed), or why a finding was left as a false positive, or — if no change was needed — why the current code is correct. Confirm `./quality.sh` passed where you changed code.
+At the end of your work you must write a file called `.pr_response_message` — its contents are posted as the reply to the reviewer. Keep it short and lead with the change. State what you fixed (listing each Automated Review Comments finding addressed), or why a finding was left as a false positive, or — if no change was needed — why the current code is correct. State which checks you ran where you changed code — the full gate when the run budget covered it, otherwise the targeted checks and the skip note from `<quality_instructions>`.
 
 ### Example
 

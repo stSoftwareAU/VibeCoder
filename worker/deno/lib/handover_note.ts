@@ -39,7 +39,10 @@ import {
   describeWipCause,
   type WipPreservationCause,
 } from "./wip_checkpoint.ts";
-import { WIND_DOWN_NOTICE_FILENAME } from "./wind_down_notice.ts";
+import {
+  noticeOrdersWindDown,
+  WIND_DOWN_NOTICE_FILENAME,
+} from "./wind_down_notice.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { handoverFilePath } from "./preserved_wip_branch.ts";
 
@@ -88,7 +91,10 @@ export interface HandoverFacts {
   /**
    * Whether the run was handed a wind-down notice before it stopped
    * (Issue #508). Left undefined by callers that do not know; the writer
-   * probes the checkout for the notice file instead.
+   * reads the notice in the checkout instead — its *contents*, not merely its
+   * presence, because since Issue #1138 the same file is also written in the
+   * wider band where only the quality gate no longer fits, and such a run was
+   * never warned it was running out of budget.
    */
   windDownNoticeDelivered?: boolean;
   /** Attempt lines carried over from the note this one replaces. */
@@ -358,6 +364,28 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * True when the run really was told to wind down (Issues #508, #1138).
+ *
+ * The notice file is written over a wider band than the wind-down window
+ * itself — a run with plenty of runway still gets one when the quality gate
+ * no longer fits — so its presence alone would have the handover claim a
+ * warning the run never received. The contents are what decide.
+ *
+ * A read fault other than "not found" is raised: guessing here would put a
+ * false claim in the note the next run reads.
+ */
+async function windDownWasOrdered(repoPath: string): Promise<boolean> {
+  try {
+    return noticeOrdersWindDown(
+      await Deno.readTextFile(`${repoPath}/${WIND_DOWN_NOTICE_FILENAME}`),
+    );
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return false;
+    throw err;
+  }
+}
+
 /** Options for {@link writeHandoverNote}. */
 export interface WriteHandoverNoteOptions {
   /** The issue clone the agent was working in. */
@@ -395,7 +423,7 @@ export async function writeHandoverNote(
 
     const existing = await readExistingNote(absolutePath, logger);
     const windDownNoticeDelivered = facts.windDownNoticeDelivered ??
-      await pathExists(`${repoPath}/${WIND_DOWN_NOTICE_FILENAME}`);
+      await windDownWasOrdered(repoPath);
     const note = buildHandoverNote({
       ...facts,
       windDownNoticeDelivered,

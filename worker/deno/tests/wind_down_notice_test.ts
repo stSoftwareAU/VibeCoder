@@ -14,11 +14,14 @@ import {
   buildWindDownNotice,
   clearWindDownNotice,
   DEFAULT_WIND_DOWN_SECONDS,
+  noticeOrdersWindDown,
   shouldWindDown,
+  shouldWriteRunBudgetNotice,
   WIND_DOWN_NOTICE_FILENAME,
   WIND_DOWN_PROMPT_SECTION,
   writeWindDownNotice,
 } from "../lib/wind_down_notice.ts";
+import { GATE_SKIP_MARKER } from "../lib/quality_gate_budget.ts";
 
 Deno.test("shouldWindDown - fires at and under the window, not above it", () => {
   assertEquals(shouldWindDown(601, 600), false);
@@ -51,6 +54,113 @@ Deno.test("buildWindDownNotice - names the remaining budget and what to do with 
     /commit/i.test(notice),
     "the agent must be told to preserve its work in progress",
   );
+});
+
+// Issue #1138 — the notice is the one channel that can stop an agent starting
+// a 15-minute gate with 7 minutes left. It has to reach the agent while there
+// is still more runway than the wind-down window, because that is exactly the
+// band in which a gate is started and never finishes.
+
+Deno.test("shouldWriteRunBudgetNotice - fires while the gate no longer fits, above the wind-down window (Issue #1138)", () => {
+  // 1000s left: too much to be "winding down", far too little for a 900s gate
+  // plus the tail. This is the band the measurements found agents dying in.
+  assertEquals(shouldWindDown(1000, 600), false);
+  assertEquals(shouldWriteRunBudgetNotice(1000, 600), true);
+});
+
+Deno.test("shouldWriteRunBudgetNotice - stays quiet on a run with runway for both (Issue #1138)", () => {
+  assertEquals(shouldWriteRunBudgetNotice(3600, 600), false);
+  // A repo with a fast gate goes quiet much sooner than one with a slow gate.
+  assertEquals(shouldWriteRunBudgetNotice(1000, 600, 60), false);
+  assertEquals(shouldWriteRunBudgetNotice(1000, 600, 2400), true);
+});
+
+Deno.test("buildWindDownNotice - a gate-only notice does not order a wind-down (Issue #1138)", () => {
+  const notice = buildWindDownNotice({
+    remainingSeconds: 1000,
+    elapsedSeconds: 2600,
+    extensionsGranted: 1,
+  });
+  assert(
+    /do not start the full quality gate/i.test(notice),
+    `the gate must be refused: ${notice}`,
+  );
+  assertEquals(
+    /wind down now/i.test(notice),
+    false,
+    `a run with 1000s left is not winding down: ${notice}`,
+  );
+  assert(
+    /1000/.test(notice),
+    "the remaining budget must still be stated",
+  );
+});
+
+Deno.test("buildWindDownNotice - refuses the full gate when the budget cannot cover it (Issue #1138)", () => {
+  const notice = buildWindDownNotice({
+    remainingSeconds: 420,
+    elapsedSeconds: 5_400,
+    extensionsGranted: 3,
+  });
+  assert(
+    /do not start the full quality gate/i.test(notice),
+    `the notice must refuse the gate outright: ${notice}`,
+  );
+  assert(
+    notice.includes(GATE_SKIP_MARKER),
+    `the notice must give the agent the line that records the skip: ${notice}`,
+  );
+});
+
+Deno.test("buildWindDownNotice - stays silent about the gate when the budget still covers it (Issue #1138)", () => {
+  const notice = buildWindDownNotice({
+    remainingSeconds: 3_600,
+    elapsedSeconds: 600,
+    extensionsGranted: 0,
+    typicalGateSeconds: 300,
+  });
+  assertEquals(
+    /quality gate/i.test(notice),
+    false,
+    `a gate that fits must not be discouraged: ${notice}`,
+  );
+});
+
+Deno.test("buildWindDownNotice - a measured gate duration decides the refusal (Issue #1138)", () => {
+  // 900s left is plenty for a 60s gate and nowhere near enough for a 40m one.
+  const short = buildWindDownNotice({
+    remainingSeconds: 900,
+    elapsedSeconds: 3_000,
+    extensionsGranted: 1,
+    typicalGateSeconds: 60,
+  });
+  assertEquals(/do not start the full quality gate/i.test(short), false);
+
+  const long = buildWindDownNotice({
+    remainingSeconds: 900,
+    elapsedSeconds: 3_000,
+    extensionsGranted: 1,
+    typicalGateSeconds: 2_400,
+  });
+  assert(/do not start the full quality gate/i.test(long));
+});
+
+Deno.test("noticeOrdersWindDown - only a wind-down notice counts as a warning (Issue #1138)", () => {
+  // The handover note reads this to say whether the run was warned. A
+  // gate-refusal notice is not a warning, and claiming otherwise would tell
+  // the next run its predecessor stopped knowingly when it did not.
+  const gateOnly = buildWindDownNotice({
+    remainingSeconds: 1000,
+    elapsedSeconds: 2600,
+    extensionsGranted: 1,
+  });
+  const windingDown = buildWindDownNotice({
+    remainingSeconds: 300,
+    elapsedSeconds: 3300,
+    extensionsGranted: 2,
+  });
+  assertEquals(noticeOrdersWindDown(gateOnly), false);
+  assertEquals(noticeOrdersWindDown(windingDown), true);
 });
 
 Deno.test("writeWindDownNotice - writes the notice where the agent can read it", async () => {
