@@ -66,8 +66,8 @@ function hostLogsDir(): string {
  *
  * **Every** interpolated value is escaped, paths included (Issue #1220). The
  * path fields are as much configuration as the environment values are:
- * `logsDir` resolves from `log_dir` in `.config.json`, then `LAUNCH_LOG_DIR` /
- * `LOG_DIR` / `VIBE_LOGS_DIR`, and `scriptDir` is the checkout path. Left raw,
+ * `logsDir` resolves from `log_dir` in `.config.json`, else the platform
+ * default, and `scriptDir` is the checkout path. Left raw,
  * a value carrying `</string>` closed the enclosing element and could add a
  * `ProgramArguments` entry — or a `<key>Program</key>` replacing the executable
  * outright — that launchd then runs on the host at every login. Escaping also

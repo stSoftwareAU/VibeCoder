@@ -110,9 +110,8 @@ function stateDir(): string {
  * This command runs on the **host**, called by the supervisor between launcher
  * runs, so it resolves the host's log directory — the one host mount both
  * sides share, because the work directory rides a named volume the host cannot
- * read. One resolution with the launcher and the shell (Issues #872, #873):
- * the `.config.json` `log_dir` key, then `LAUNCH_LOG_DIR`, then `LOG_DIR`,
- * then the platform's own location.
+ * read. One resolution with the launcher and the shell (Issues #872, #873,
+ * #1388): the `.config.json` `log_dir` key, then the platform's own location.
  */
 function logDir(): string {
   const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? ".";

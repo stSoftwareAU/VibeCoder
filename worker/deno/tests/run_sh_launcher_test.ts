@@ -89,37 +89,46 @@ function spawnLauncher(harness: Harness): Deno.ChildProcess {
   return spawnHarnessLauncher(harness, BASH_LAUNCHER);
 }
 
-Deno.test("run.sh - LOG_DIR moves the writable host mount with it (Issues #872, #873)", async () => {
-  // The log directory is the fleet's only writable host mount, so an operator
-  // who names one must get that directory mounted — not the platform default
-  // resolved beside it.
-  const chosen = await Deno.makeTempDir({ prefix: "vibe_logdir_override_" });
+Deno.test("run.sh - LOG_DIR does not move the writable host mount (Issue #1388)", async () => {
+  // The log directory is the fleet's only writable host mount. On the host,
+  // `.config.json` is the only configuration, so an exported LOG_DIR must
+  // change neither the mount nor where run_core.log lands: both stay on the
+  // resolved directory, and the launcher and the mount still agree.
+  const stale = await Deno.makeTempDir({ prefix: "vibe_logdir_export_" });
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",
-    LOG_DIR: chosen,
+    LOG_DIR: stale,
   });
   try {
-    assertEquals(harness.logDir, chosen);
+    assert(
+      harness.logDir !== stale,
+      "the harness resolves through the real resolveLogDir, which must ignore LOG_DIR",
+    );
     const outcome = await runLauncher(harness);
     assertEquals(outcome.code, 0, outcome.stderr);
 
     const args = await recorded(harness, "run");
     assert(args, `no container run was recorded: ${outcome.stderr}`);
     assert(
-      mountValues(args).includes(`${chosen}:${TARGETS.logs}`),
-      `the chosen log directory is not the mount source: ${
+      mountValues(args).includes(`${harness.logDir}:${TARGETS.logs}`),
+      `the resolved log directory is not the mount source: ${
         mountValues(args).join(", ")
       }`,
     );
-    // And the launcher's own run-core log lands there too, rather than in a
-    // second directory nobody is watching.
+    assert(
+      !mountValues(args).includes(`${stale}:${TARGETS.logs}`),
+      "an exported LOG_DIR became the mount source",
+    );
+    // The launcher's own run-core log lands in the resolved directory too.
+    // (The line naming the ignored export comes from the real `log-dir`
+    // command, covered in log_dir_config_key_test.ts; the harness stubs it.)
     assert(
       (await runCoreLog(harness)).trim().length > 0,
-      "run.sh wrote no run_core.log in the chosen directory",
+      "run.sh wrote no run_core.log in the resolved directory",
     );
   } finally {
     await harness.cleanup();
-    await Deno.remove(chosen, { recursive: true }).catch(() => {});
+    await Deno.remove(stale, { recursive: true }).catch(() => {});
   }
 });
 

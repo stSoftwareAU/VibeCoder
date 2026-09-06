@@ -592,9 +592,9 @@ branch and on the `could not heal the builder` branch alike:
 | The full output                   | `build-failures/<UTC stamp>-<build\|heal>-output-<pid>.log` beside it, named in that line |
 | The heal's own output             | The same, and appended to the evidence the `image_build` escalation quotes  |
 
-Both live in the launcher's own log directory — `~/logs` unless `LOG_DIR` or
-`LAUNCH_LOG_DIR` moves it — so the preserved copies are always beside the
-`run_core.log` line that names them.
+Both live in the launcher's own log directory — the platform default unless
+`log_dir` in `.config.json` moves it — so the preserved copies are always
+beside the `run_core.log` line that names them.
 
 Retention is count-based, like the launch logs `loop.sh` keeps: the newest 20
 files stay and the rest go, so a host that fails several times a day cannot
