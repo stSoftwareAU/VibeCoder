@@ -13,7 +13,8 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assertEquals } from "@std/assert";
+import { createDefaultRegistry } from "../mod.ts";
 import { REPO_ROOT } from "./support/repo_root.ts";
 
 /** Every path the Pages pipeline owned, relative to the repo root. */
@@ -110,14 +111,16 @@ Deno.test("no published doc links at the retired Pages site", async () => {
   );
 });
 
-Deno.test("the worker registers no Pages-only commands", async () => {
-  const mod = await Deno.readTextFile(repoPath("worker/deno/mod.ts"));
-  assert(
-    !mod.includes("check-pages-liquid"),
-    "mod.ts still registers the removed check-pages-liquid command",
-  );
-  assert(
-    !mod.includes("check-mermaid-built-output"),
-    "mod.ts still registers the removed check-mermaid-built-output command",
+Deno.test("the worker registers no Pages-only commands", () => {
+  // Builds the real registry and reads the names it actually holds, rather
+  // than grepping mod.ts for the strings — a registration moved behind a
+  // helper would slip past a source scan but not past this.
+  const commands = createDefaultRegistry().list();
+  assertEquals(
+    commands.filter((name) =>
+      name === "check-pages-liquid" || name === "check-mermaid-built-output"
+    ),
+    [],
+    "the Pages-only commands are back in the registry",
   );
 });
