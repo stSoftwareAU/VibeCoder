@@ -11,6 +11,7 @@ import {
   describeMemoryPressure,
   type MemoryPressureReading,
 } from "./memory_pressure.ts";
+import { redactedHead, type RedactedText } from "./redacted_text.ts";
 
 /** Diagnostic context for enriching failure messages. */
 export interface FailureDiagnosticContext {
@@ -19,7 +20,19 @@ export interface FailureDiagnosticContext {
   timedOut?: boolean;
   outputSize?: number;
   timeoutSeconds?: number;
-  lastOutputSnippet?: string;
+  /**
+   * The tail of the agent's own stdout, which this message embeds verbatim in a
+   * world-readable issue comment (`label_failure.ts`).
+   *
+   * Typed {@link RedactedText} rather than `string` (Issue #1217): the tail is
+   * produced by cutting attacker-influenceable output to a budget, and cutting
+   * before redacting splits a credential so the sink's later pass matches
+   * nothing. Only `redactedTail()` and its siblings can mint the brand, and they
+   * redact the whole text first — so `claudeOutput.slice(-500)` no longer
+   * compiles here, and the ordering is held by `deno check` rather than by every
+   * call site remembering.
+   */
+  lastOutputSnippet?: RedactedText;
   baselineQualityPassed?: boolean;
   /**
    * The child's true exit status (Issue #4202): named in the diagnostics so
@@ -158,7 +171,13 @@ export function formatDetailedFailureMessage(
     parts.push("<summary>Processes at the kill (click to expand)</summary>");
     parts.push("");
     parts.push("```");
-    parts.push(context.killDiagnostics.slice(0, MAX_KILL_DIAGNOSTICS_LENGTH));
+    // The `ps` table carries every process's argv, so a token handed to a child
+    // on its command line lands here. Redact the whole table before the cap
+    // (Issue #1217): capping first would split the token into a fragment that
+    // no signature rule matches at the sink.
+    parts.push(
+      redactedHead(context.killDiagnostics, MAX_KILL_DIAGNOSTICS_LENGTH),
+    );
     parts.push("```");
     parts.push("");
     parts.push("</details>");

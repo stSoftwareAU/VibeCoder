@@ -20,6 +20,7 @@ import type {
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { formatQualityFailureMessage } from "../quality_helpers.ts";
 import { formatDetailedFailureMessage } from "../failure_message.ts";
+import { redactedTail } from "../redacted_text.ts";
 import {
   detectFailureCategory,
   isInfrastructureFailure,
@@ -396,7 +397,7 @@ async function runQualityGateBody(
       const elapsedSeconds = state.executeStartTime > 0
         ? Math.round((Date.now() - state.executeStartTime) / 1000)
         : 0;
-      const snippet = qualityResult.value.output.slice(-500);
+      const snippet = redactedTail(qualityResult.value.output, 500);
       const detailedReason = formatDetailedFailureMessage(
         "Quality gate failed after remediation attempt",
         {

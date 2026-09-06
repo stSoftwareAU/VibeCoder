@@ -20,6 +20,7 @@
 
 import type { Result } from "../types.ts";
 import { TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
+import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 
 /**
  * Default per-command timeout in seconds (Issue #3577).
@@ -163,7 +164,14 @@ async function defaultPreFlightRunner(
     const cmd = new Deno.Command(program, {
       args,
       cwd: options.cwd,
-      env: options.env,
+      // The pre-flight scripts are supplied by the target repository, so this
+      // is code the worker did not write. Its environment is BUILT from the
+      // allowlist rather than inherited (Issues #572, #1214): a repo-committed
+      // `./pre-flight.sh` otherwise ran with every credential the worker
+      // holds, which is the whole exploit. Caller-supplied values are layered
+      // on top, so an explicit need is still met.
+      env: buildUntrustedCommandEnv({ overrides: options.env ?? {} }),
+      clearEnv: true,
       stdout: "piped",
       stderr: "piped",
       signal: controller.signal,

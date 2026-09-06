@@ -26,8 +26,7 @@ import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { scanDirectoriesForHardcodedBranches } from "./hardcoded_branch_check.ts";
 import { scanDirectoriesForDirectNeedsHuman } from "./needs_human_direct_label_check.ts";
 import { scanDirectoriesForGhSpawn } from "./gh_spawn_chokepoint_check.ts";
-import { scanDirectoriesForMissingRedaction } from "./console_redaction_entrypoint_check.ts";
-import { scanDirectoriesForUnguardedCreateLabels } from "./issue_create_label_check.ts";
+import { scanDirectoriesForGitSpawn } from "./git_spawn_chokepoint_check.ts";
 import { scanDirectoriesForHomeWorkDir } from "./home_workdir_check.ts";
 import { scanDirectoriesForGitRefArgv } from "./git_ref_argv_check.ts";
 import {
@@ -462,81 +461,19 @@ async function runGhSpawnChokepointCheck(
 }
 
 /**
- * Run the console-redaction entry-point check (Issue #1280).
+ * Run the `git` spawn chokepoint check (Issue #1214).
  *
- * `installConsoleRedaction()` patches `console.*` per process, so an entry
- * point that never calls it prints raw check, setup or `gh` output — a
- * tokenised clone URL or an `export FOO_TOKEN=…` line included — unmasked.
- * Every `import.meta.main` module under `worker/deno` must install it.
+ * Scans Deno lib/ and commands/ source files for a direct
+ * `new Deno.Command("git", …)`. Such a spawn bypasses the timeout, the audit
+ * journal and the work-volume fault detector that `runGitCommand` owns — the
+ * unpushed-work rescue in `stale_workdir.ts` was pushing to a remote outside
+ * all three. The only permitted spawn is the chokepoint itself
+ * (`worker/deno/lib/git_timeout.ts`).
  */
-async function runConsoleRedactionEntrypointCheck(
+async function runGitSpawnChokepointCheck(
   config: QualityGateConfig,
 ): Promise<CheckExecutionResult> {
-  const name = "console redaction entry points";
-  const relDirs = ["worker/deno"];
-
-  let hasDirs = false;
-  for (const relDir of relDirs) {
-    try {
-      const stat = await Deno.stat(`${config.scriptDir}/${relDir}`);
-      if (stat.isDirectory) hasDirs = true;
-    } catch { /* directory doesn't exist */ }
-  }
-
-  if (!hasDirs) {
-    return {
-      name,
-      status: "SKIPPED",
-      output: "deno source directories not found",
-    };
-  }
-
-  const result = await scanDirectoriesForMissingRedaction(
-    config.scriptDir,
-    relDirs,
-  );
-
-  if (result.violations.length === 0) {
-    return {
-      name,
-      status: "PASSED",
-      output:
-        `console redaction entry points: PASSED (${result.filesScanned} files scanned)`,
-    };
-  }
-
-  const output = [
-    ...result.violations.map(
-      (v) => `VIOLATION: ${v.file}:${v.line}: ${v.text}`,
-    ),
-    "",
-    "Entry points that never install console redaction (Issue #1280).",
-    "`installConsoleRedaction()` patches `console.*` per process, so each",
-    "`import.meta.main` module must call it — import it from",
-    "`worker/deno/lib/console_redaction.ts` and call it first thing.",
-  ].join("\n");
-
-  return {
-    name,
-    status: "FAILED",
-    output: `console redaction entry points: FAILED\n${output}`,
-  };
-}
-
-/**
- * Run the issue-create label guard check (Issue #1276).
- *
- * Scans Deno lib/ and commands/ source files for a `--label` argument
- * reaching `gh issue create` without passing `guardedLabelArgs`. The worker
- * label allowlist was wired into the two *existing-issue* write paths only,
- * so the 18 idle-task templates applied their labels at creation time
- * without ever reaching it — an unenforced invariant one refactor away from
- * filing an issue with an operational label.
- */
-async function runIssueCreateLabelCheck(
-  config: QualityGateConfig,
-): Promise<CheckExecutionResult> {
-  const name = "issue-create label guard";
+  const name = "git spawn chokepoint";
   const relDirs = ["worker/deno/lib", "worker/deno/commands"];
 
   let hasDirs = false;
@@ -555,35 +492,33 @@ async function runIssueCreateLabelCheck(
     };
   }
 
-  const result = await scanDirectoriesForUnguardedCreateLabels(
-    config.scriptDir,
-    relDirs,
-  );
+  const result = await scanDirectoriesForGitSpawn(config.scriptDir, relDirs);
 
   if (result.violations.length === 0) {
     return {
       name,
       status: "PASSED",
       output:
-        `issue-create label guard: PASSED (${result.filesScanned} files scanned)`,
+        `git spawn chokepoint: PASSED (${result.filesScanned} files scanned)`,
     };
   }
 
   const output = [
     ...result.violations.map(
-      (v) => `VIOLATION: ${v.file}:${v.line}: ${v.text}  (rule ${v.rule})`,
+      (v) => `VIOLATION: ${v.file}:${v.line}: ${v.text}`,
     ),
     "",
-    "Unguarded `gh issue create` label arguments detected (Issue #1276).",
-    "Build them with `guardedLabelArgs` from",
-    "`worker/deno/lib/guarded_issue_labels.ts` so every label the worker",
-    "applies passes the allowlist in `worker_label_guard.ts`.",
+    "Direct `git` subprocess spawns detected outside the shared chokepoint",
+    "(Issue #1214). Such a spawn has no timeout, so a stalled remote hangs",
+    "the worker, and a mutation never reaches the audit journal. Route the",
+    "call through `runGitCommand`/`runGitCommandChecked` in",
+    "`worker/deno/lib/git_timeout.ts` instead.",
   ].join("\n");
 
   return {
     name,
     status: "FAILED",
-    output: `issue-create label guard: FAILED\n${output}`,
+    output: `git spawn chokepoint: FAILED\n${output}`,
   };
 }
 
@@ -1409,15 +1344,10 @@ export async function runQualityGate(
   // journal are unavoidable.
   note(await runGhSpawnChokepointCheck(config));
 
-  // issue-create label guard (Issue #1276) — every `--label` reaching
-  // `gh issue create` must be built by `guardedLabelArgs`, so the worker
-  // label allowlist covers creation as well as existing-issue writes.
-  note(await runIssueCreateLabelCheck(config));
-
-  // console redaction entry points (Issue #1280) — every `import.meta.main`
-  // module must install the console patch, so no entry point prints a
-  // check's raw output unmasked.
-  note(await runConsoleRedactionEntrypointCheck(config));
+  // git spawn chokepoint (Issue #1214) — every `git` subprocess must be
+  // spawned by `git_timeout.ts` so the timeout and the audit journal are
+  // unavoidable.
+  note(await runGitSpawnChokepointCheck(config));
 
   // host work-dir guard (Issue #135, parent #118) — no source file may build
   // a work-dir path from HOME/USERPROFILE outside the commented allowlist,

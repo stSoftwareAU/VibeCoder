@@ -93,14 +93,38 @@ for candidate in deno "${HOME:-/tmp}/.deno/bin/deno" /opt/homebrew/bin/deno /usr
     fi
 done
 
-# A wedged recorder must never wedge the supervisor: bound it where the host
-# has a timeout command (gtimeout on macOS, timeout on Linux).
-TIMEOUT_PREFIX=()
-if command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_PREFIX=(timeout 120)
-elif command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_PREFIX=(gtimeout 120)
-fi
+# A wedged helper must never wedge the supervisor: the calls below run under a
+# time bound where the host has one (gtimeout on macOS, timeout on Linux).
+TIMEOUT_CMD=""
+for candidate in timeout gtimeout; do
+    if command -v "${candidate}" >/dev/null 2>&1; then
+        TIMEOUT_CMD="${candidate}"
+        break
+    fi
+done
+
+# Run a command under a time bound, where the host has one — the same helper
+# run.sh carries, for the same reason.
+#
+# Every bound goes through here rather than spelling `timeout` literally,
+# because macOS has neither binary by default (setup.sh treats `timeout` as
+# container-owned and never demands it on the host) while Apple `container` —
+# the runtime the control-plane probe exists for — is macOS-only. A literal
+# `timeout 30 container ls` there is a `command not found` with its stderr
+# discarded, so the probe answers "no container" and the Issue #323 recovery
+# never fires. Unbounded is this script's documented fallback; not running at
+# all is not.
+#
+# Usage: bounded <seconds> <command> [args...]
+bounded() {
+    local seconds="$1"
+    shift
+    if [[ -n "${TIMEOUT_CMD}" ]]; then
+        "${TIMEOUT_CMD}" "${seconds}" "$@"
+    else
+        "$@"
+    fi
+}
 
 # Where this host's logs go (Issues #872, #873). The worker owns the one
 # resolution — `LAUNCH_LOG_DIR`, then `LOG_DIR`, then the platform's own
@@ -113,7 +137,7 @@ fi
 resolve_launch_log_dir() {
     local resolved=""
     if [[ -n "${DENO_CMD}" && -f "${WORKER_MOD}" ]]; then
-        resolved="$(${TIMEOUT_PREFIX[@]+"${TIMEOUT_PREFIX[@]}"} "${DENO_CMD}" run \
+        resolved="$(bounded 120 "${DENO_CMD}" run \
             --frozen --lock="${SCRIPT_DIR}/worker/deno/deno.lock" \
             --allow-env --allow-read \
             "${WORKER_MOD}" log-dir </dev/null)" || resolved=""
@@ -155,7 +179,7 @@ next_sleep_seconds() {
     # #633). Without it `resolveRunHostId()` cannot read the hostname and the
     # report says "unknown-host", which is close to useless in a fleet whose
     # hosts all report into one repository.
-    seconds="$(${TIMEOUT_PREFIX[@]+"${TIMEOUT_PREFIX[@]}"} "${DENO_CMD}" run \
+    seconds="$(bounded 120 "${DENO_CMD}" run \
         --frozen --lock="${SCRIPT_DIR}/worker/deno/deno.lock" \
         --allow-env --allow-read --allow-write --allow-run --allow-net \
         --allow-sys=hostname \
@@ -322,7 +346,7 @@ VIBE_PROBE_FAILURES="${VIBE_PROBE_FAILURES:-3}"
 # Echo the name of the running vibe-coder container, or nothing.
 running_vibe_container() {
     command -v container >/dev/null 2>&1 || return 0
-    timeout 30 container ls 2>/dev/null |
+    bounded 30 container ls 2>/dev/null |
         awk '$1 ~ /^vibe-coder-/ && $0 ~ /running/ { print $1; exit }'
 }
 
@@ -333,11 +357,11 @@ force_stop_container() {
 
     # Try the runtime first — it costs a second and works when the control
     # plane is merely slow rather than gone.
-    timeout 30 container kill "${name}" >/dev/null 2>&1 || true
+    bounded 30 container kill "${name}" >/dev/null 2>&1 || true
     sleep 3
     # Verify, never trust the exit code: `container stop` returned 0 on
     # 2026-08-22 while the container kept running.
-    if ! timeout 30 container ls 2>/dev/null | grep -q "${name}.*running"; then
+    if ! bounded 30 container ls 2>/dev/null | grep -q "${name}.*running"; then
         echo "loop.sh: ${name} stopped by the runtime"
         return 0
     fi
@@ -376,7 +400,7 @@ probe_control_plane() {
             failures=0
             continue
         fi
-        if timeout 30 container exec "${name}" true >/dev/null 2>&1; then
+        if bounded 30 container exec "${name}" true >/dev/null 2>&1; then
             failures=0
             continue
         fi
@@ -395,11 +419,11 @@ probe_control_plane() {
 # Run "$@" under the supervisor deadline, echoing its exit status.
 run_under_deadline() {
     if [[ "${VIBE_RUN_MAX_SECONDS}" == "0" ]] || \
-       [[ ${#TIMEOUT_PREFIX[@]} -eq 0 ]]; then
+       [[ -z "${TIMEOUT_CMD}" ]]; then
         "$@"
         return $?
     fi
-    "${TIMEOUT_PREFIX[0]}" --kill-after="${VIBE_RUN_KILL_GRACE_SECONDS}" \
+    "${TIMEOUT_CMD}" --kill-after="${VIBE_RUN_KILL_GRACE_SECONDS}" \
         "${VIBE_RUN_MAX_SECONDS}" "$@"
 }
 

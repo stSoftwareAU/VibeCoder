@@ -42,6 +42,7 @@ import {
   sanitiseDelimiterPatterns,
 } from "./prompt_delimiter.ts";
 import { computePromptHash } from "./prompt_hash.ts";
+import { runGitCommand } from "./git_timeout.ts";
 
 /** Default maximum size of the rendered map (in characters). */
 export const DEFAULT_MAX_CODEBASE_MAP_CHARS = 8_000;
@@ -143,39 +144,32 @@ export interface CodebaseMapResult {
 export async function listRepoFiles(
   repoDir: string,
 ): Promise<Result<string[]>> {
-  try {
-    const command = new Deno.Command("git", {
-      args: ["ls-files", "-co", "--exclude-standard", "-z"],
-      cwd: repoDir,
-      stdout: "piped",
-      stderr: "piped",
-    });
-    const output = await command.output();
-    if (!output.success) {
-      const stderr = new TextDecoder().decode(output.stderr).trim();
-      return {
-        ok: false,
-        error: new Error(
-          `git ls-files failed in ${repoDir} (exit ${output.code}): ${stderr}`,
-        ),
-      };
-    }
-    const files = new TextDecoder()
-      .decode(output.stdout)
-      .split("\0")
-      .filter((p) => p.length > 0)
-      .sort();
-    return { ok: true, value: files };
-  } catch (err) {
+  const result = await runGitCommand(
+    ["ls-files", "-co", "--exclude-standard", "-z"],
+    { cwd: repoDir },
+  );
+  if (!result.ok) {
     return {
       ok: false,
       error: new Error(
-        `Failed to run git ls-files in ${repoDir}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `Failed to run git ls-files in ${repoDir}: ${result.error.message}`,
       ),
     };
   }
+  const { code, stdout, stderr } = result.value;
+  if (code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `git ls-files failed in ${repoDir} (exit ${code}): ${stderr.trim()}`,
+      ),
+    };
+  }
+  const files = stdout
+    .split("\0")
+    .filter((p) => p.length > 0)
+    .sort();
+  return { ok: true, value: files };
 }
 
 /**

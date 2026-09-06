@@ -33,6 +33,7 @@ import {
   formatAlreadyResolvedEvidence,
 } from "../already_resolved_outcome.ts";
 import { redactSecrets } from "../secret_redaction.ts";
+import { redactedTail } from "../redacted_text.ts";
 import { postIssueRunStatsComment } from "../issue_run_stats_comment.ts";
 
 /**
@@ -246,7 +247,7 @@ export async function workOnIssueHandleNoChanges(
           elapsedSeconds: truncationElapsed,
           clarityStatus: state.clarityStatus,
           outputSize: claudeOutput.length,
-          lastOutputSnippet: claudeOutput.slice(-500) || undefined,
+          lastOutputSnippet: redactedTail(claudeOutput, 500) || undefined,
         },
       ),
     };
@@ -263,7 +264,7 @@ export async function workOnIssueHandleNoChanges(
           elapsedSeconds: truncationElapsed,
           clarityStatus: state.clarityStatus,
           outputSize: claudeOutput.length,
-          lastOutputSnippet: claudeOutput.slice(-500) || undefined,
+          lastOutputSnippet: redactedTail(claudeOutput, 500) || undefined,
         },
       ),
     };
@@ -348,7 +349,7 @@ export async function workOnIssueHandleNoChanges(
   const elapsedSeconds = state.executeStartTime > 0
     ? Math.round((Date.now() - state.executeStartTime) / 1000)
     : 0;
-  const snippet = claudeOutput.slice(-500);
+  const snippet = redactedTail(claudeOutput, 500);
 
   // (The subscription usage-limit and interrupted-run cases — Issue #4315 /
   // Issue #108 — are handled earlier, before the analysis-only branch, so a

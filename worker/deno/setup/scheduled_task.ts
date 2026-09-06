@@ -28,6 +28,8 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
+import { escapeXml } from "../lib/xml_escape.ts";
+
 /** The registered task name — the analogue of the LaunchAgent's label. */
 export const SCHEDULED_TASK_NAME = "VibeCoderAutoIssueWorker";
 
@@ -65,16 +67,6 @@ export interface ScheduledTaskConfig {
 export interface ScheduledTaskResult {
   ok: boolean;
   message: string;
-}
-
-/** Escape the five XML metacharacters. */
-function escapeXml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
 }
 
 /** Strip trailing separators so `<dir>\run.ps1` never doubles up. */

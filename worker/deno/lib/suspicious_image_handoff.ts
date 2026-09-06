@@ -38,6 +38,7 @@
 
 import { expectedNoPrOutcome } from "./run_outcome.ts";
 import type { GitHubClient, Logger, Result } from "../types.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import {
   escalateToHuman as defaultEscalateToHuman,
   type EscalateToHumanOptions,
@@ -240,6 +241,11 @@ export interface HandOffSuspiciousImageDeps {
   ) => Promise<Result<void>>;
   /** Override the clock used by the escalation dedup window. */
   now?: () => number;
+  /**
+   * Fleet identity used to verify who wrote a dedup marker (Issue #1216).
+   * Forwarded to the escalation helper's `deps.dedupAuthors`.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
 }
 
 /** Options accepted by {@link handOffSuspiciousImage}. */
@@ -302,6 +308,7 @@ export async function handOffSuspiciousImage(
           ? { github: { ensureLabelExists: deps.ensureLabelExists } }
           : {}),
         ...(deps?.now ? { now: deps.now } : {}),
+        ...(deps?.dedupAuthors ? { dedupAuthors: deps.dedupAuthors } : {}),
       },
     });
     if (result.ok) {

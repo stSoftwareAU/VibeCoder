@@ -11,6 +11,7 @@ import {
   isLaunchAgentInstalled,
   removeLaunchAgent,
   setupLaunchAgent,
+  tightenPlistPermissions,
   writeSecurePlist,
 } from "../setup/launchagent.ts";
 import type { LaunchAgentConfig } from "../setup/launchagent.ts";
@@ -83,6 +84,68 @@ Deno.test("generatePlist - escapes XML special characters in env values", () => 
   assertEquals(plist.includes("test<>&\"'value"), false);
 });
 
+// ── plist injection (Issue #1220) ────────────────────────────────────────
+//
+// `generatePlist` escaped only the three EnvironmentVariables values; the path
+// fields — `scriptDir` and `logsDir` — were interpolated raw. Both are config
+// values (`log_dir` in `.config.json`, `VIBE_LOGS_DIR`/`LOG_DIR` in the
+// environment, the checkout path), so anything able to set one could close the
+// enclosing `<string>` and add elements launchd then honours: an extra
+// `ProgramArguments` entry, or a `<key>Program</key>` that replaces the
+// executable outright. These tests fail against the unfixed code.
+
+/** The `<string>` values inside the plist's `ProgramArguments` array. */
+function programArguments(plist: string): string[] {
+  const block = plist.match(
+    /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/,
+  );
+  const body = block?.[1];
+  if (body === undefined) return [];
+  return [...body.matchAll(/<string>([\s\S]*?)<\/string>/g)].map((m) =>
+    m[1] ?? ""
+  );
+}
+
+/** Every `<key>` name in the plist, in document order. */
+function plistKeys(plist: string): string[] {
+  return [...plist.matchAll(/<key>([\s\S]*?)<\/key>/g)].map((m) => m[1] ?? "");
+}
+
+Deno.test("generatePlist - a scriptDir carrying plist markup cannot add a program argument", () => {
+  const plist = generatePlist({
+    scriptDir: "/opt/vibe</string><string>--dangerous-flag",
+  });
+
+  assertEquals(plist.includes("<string>--dangerous-flag</string>"), false);
+  assertEquals(programArguments(plist).length, 1);
+  assertStringIncludes(plist, "&lt;/string&gt;&lt;string&gt;--dangerous-flag");
+});
+
+Deno.test("generatePlist - a logsDir carrying plist markup cannot introduce a Program key", () => {
+  const plist = generatePlist({
+    scriptDir: "/opt/vibe",
+    logsDir: "/tmp/x</string><key>Program</key><string>/tmp/evil.sh",
+  });
+
+  assertEquals(plistKeys(plist).includes("Program"), false);
+  assertEquals(plist.includes("<string>/tmp/evil.sh"), false);
+  assertStringIncludes(plist, "&lt;key&gt;Program&lt;/key&gt;");
+});
+
+Deno.test("generatePlist - an ampersand in a path is escaped, not emitted raw", () => {
+  const plist = generatePlist({
+    scriptDir: "/opt/R&D/vibe",
+    logsDir: "/var/log/R&D",
+  });
+
+  assertEquals(/&(?!amp;|lt;|gt;|quot;|apos;)/.test(plist), false);
+  assertStringIncludes(plist, "<string>/opt/R&amp;D/vibe/run.sh</string>");
+  assertStringIncludes(
+    plist,
+    "<string>/var/log/R&amp;D/launchagent-stdout.log</string>",
+  );
+});
+
 // ── writeSecurePlist ─────────────────────────────────────────────────────
 
 // chmod/mode bits are POSIX-only; skip the permission assertions on Windows.
@@ -123,6 +186,76 @@ Deno.test({
       const info = await Deno.stat(plistPath);
       assertEquals((info.mode ?? 0) & 0o777, 0o600);
       assertEquals(await Deno.readTextFile(plistPath), "new");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "writeSecurePlist - a symlink at the plist path is replaced, never followed",
+  ignore: isWindows,
+  fn: async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      const victim = `${dir}/victim.txt`;
+      const plistPath = `${dir}/com.vibe.auto-issue-worker.plist`;
+      await Deno.writeTextFile(victim, "untouched");
+      await Deno.symlink(victim, plistPath);
+
+      await writeSecurePlist(plistPath, "<plist>secret</plist>");
+
+      // The token landed in the plist, not through the link into the victim.
+      assertEquals(await Deno.readTextFile(victim), "untouched");
+      assertEquals(
+        (await Deno.lstat(plistPath)).isSymlink,
+        false,
+      );
+      assertEquals((await Deno.stat(plistPath)).mode! & 0o777, 0o600);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name: "writeSecurePlist - a write that cannot succeed throws, never returns",
+  ignore: isWindows,
+  fn: async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      let thrown: Error | undefined;
+      try {
+        await writeSecurePlist(`${dir}/no-such-dir/agent.plist`, "<plist/>");
+      } catch (error) {
+        thrown = error as Error;
+      }
+      assertEquals(thrown !== undefined, true);
+      assertStringIncludes(
+        thrown?.message ?? "",
+        "Could not write the LaunchAgent plist",
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "tightenPlistPermissions - narrows the mode a matching-content run would otherwise leave at 0o644",
+  ignore: isWindows,
+  fn: async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      const plistPath = `${dir}/com.vibe.auto-issue-worker.plist`;
+      await Deno.writeTextFile(plistPath, "<plist>secret</plist>");
+      await Deno.chmod(plistPath, 0o644);
+
+      await tightenPlistPermissions(plistPath);
+
+      assertEquals((await Deno.stat(plistPath)).mode! & 0o777, 0o600);
     } finally {
       await Deno.remove(dir, { recursive: true });
     }

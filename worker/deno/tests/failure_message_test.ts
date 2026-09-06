@@ -12,6 +12,10 @@ import {
   type FailureDiagnosticContext,
   formatDetailedFailureMessage,
 } from "../lib/failure_message.ts";
+// `lastOutputSnippet` is `RedactedText` (Issue #1217) — the brand can only be
+// minted by the redact-before-truncate constructors, so these fixtures route
+// through `redactedTail` rather than passing a bare string.
+import { redactedTail } from "../lib/redacted_text.ts";
 
 // ============================================================================
 // Basic formatting
@@ -123,7 +127,10 @@ Deno.test("failure message - omits baseline context when baseline passed", () =>
 
 Deno.test("failure message - includes last output snippet", () => {
   const ctx: FailureDiagnosticContext = {
-    lastOutputSnippet: "Error: could not compile\nfatal: build failed",
+    lastOutputSnippet: redactedTail(
+      "Error: could not compile\nfatal: build failed",
+      500,
+    ),
   };
   const result = formatDetailedFailureMessage("Claude failed", ctx);
   assertStringIncludes(result, "Last output");
@@ -133,14 +140,18 @@ Deno.test("failure message - includes last output snippet", () => {
 
 Deno.test("failure message - truncates long output snippet", () => {
   const longOutput = "x".repeat(2000);
-  const ctx: FailureDiagnosticContext = { lastOutputSnippet: longOutput };
+  const ctx: FailureDiagnosticContext = {
+    lastOutputSnippet: redactedTail(longOutput, longOutput.length),
+  };
   const result = formatDetailedFailureMessage("Claude failed", ctx);
   assertEquals(result.length < longOutput.length, true);
   assertStringIncludes(result, "…");
 });
 
 Deno.test("failure message - does not include snippet section when output is empty", () => {
-  const ctx: FailureDiagnosticContext = { lastOutputSnippet: "" };
+  const ctx: FailureDiagnosticContext = {
+    lastOutputSnippet: redactedTail("", 500),
+  };
   const result = formatDetailedFailureMessage("Claude failed", ctx);
   assertEquals(result.includes("Last output"), false);
 });
@@ -156,7 +167,10 @@ Deno.test("failure message - combines all diagnostic fields", () => {
     timedOut: true,
     outputSize: 1234,
     timeoutSeconds: 900,
-    lastOutputSnippet: "Processing issue...\nTimeout reached",
+    lastOutputSnippet: redactedTail(
+      "Processing issue...\nTimeout reached",
+      500,
+    ),
   };
   const result = formatDetailedFailureMessage(
     "Claude timed out without creating changes",

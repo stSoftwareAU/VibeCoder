@@ -14,6 +14,7 @@
 
 import type { Result } from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import { runGitCommand } from "./git_timeout.ts";
 
 /**
  * Known template types and their required placeholders.
@@ -470,40 +471,34 @@ export async function getPromptsCommit(
   repoDir?: string,
 ): Promise<Result<string>> {
   const dir = repoDir ?? getPromptsDir();
-  try {
-    const command = new Deno.Command("git", {
-      args: ["-C", dir, "rev-parse", "--short", "HEAD"],
-      stdout: "piped",
-      stderr: "piped",
-    });
-    const output = await command.output();
-    if (!output.success) {
-      const stderr = new TextDecoder().decode(output.stderr).trim();
-      return {
-        ok: false,
-        error: new Error(
-          `Failed to resolve prompts commit in ${dir}: ${stderr}`,
-        ),
-      };
-    }
-    const commit = new TextDecoder().decode(output.stdout).trim();
-    if (!commit) {
-      return {
-        ok: false,
-        error: new Error(`Empty commit hash resolved in ${dir}`),
-      };
-    }
-    return { ok: true, value: commit };
-  } catch (error: unknown) {
+  const result = await runGitCommand(
+    ["-C", dir, "rev-parse", "--short", "HEAD"],
+  );
+  if (!result.ok) {
     return {
       ok: false,
       error: new Error(
-        `Failed to resolve prompts commit in ${dir}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `Failed to resolve prompts commit in ${dir}: ${result.error.message}`,
       ),
     };
   }
+  const { code, stdout, stderr } = result.value;
+  if (code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to resolve prompts commit in ${dir}: ${stderr.trim()}`,
+      ),
+    };
+  }
+  const commit = stdout.trim();
+  if (!commit) {
+    return {
+      ok: false,
+      error: new Error(`Empty commit hash resolved in ${dir}`),
+    };
+  }
+  return { ok: true, value: commit };
 }
 
 /**

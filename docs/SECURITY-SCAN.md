@@ -101,7 +101,10 @@ rules:
   correctly-configured Renovate/Dependabot or implement its own age gate
   against `VIBE_BUMP_QUARANTINE_HOURS` before upgrading external deps (e.g.
   inspecting npm `time`, JSR publish timestamps, crates.io `created_at`, or
-  Maven Central `lastUpdated`).
+  Maven Central `lastUpdated`). The script is supplied by the target repo, so
+  it runs with a **built** environment rather than the worker's own
+  (Issue #1214): `PATH`, `HOME`, `TMPDIR`, the locale and the toolchain caches,
+  plus the bump-specific variables — and no credential.
 
 ### Beyond dependency manifests — host toolchain upgrades
 

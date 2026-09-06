@@ -31,6 +31,8 @@
 
 import type { Result } from "../types.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import { issueCommentsContainMarker } from "./issue_comment_pages.ts";
 import { isIdleTaskMilestone } from "./idle_task_merge_gate.ts";
 import type {
   DefaultBranchFn,
@@ -73,6 +75,11 @@ export interface MilestoneSelfHealDeps {
    * rather than reported as a failure.
    */
   localCloneExistsFn?: LocalCloneExistsFn;
+  /**
+   * Fleet identity used to verify who wrote the retarget marker (Issue
+   * #1216). Omitted in production, which reads the configured fleet identity.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
   /** Logging function. */
   log: (message: string) => void;
 }
@@ -257,27 +264,36 @@ async function fetchOpenPrs(
 }
 
 /**
- * True when this PR has already been retargeted by the worker.
+ * True when this PR has already been retargeted **by the worker**.
  *
  * A read failure returns `true` (treated as "already handled"): retargeting a
  * PR whose history cannot be read risks overruling a human and re-commenting
  * every cycle, which is worse than skipping it.
+ *
+ * Issue #1216: the marker used to be substring-matched against every comment
+ * body on the PR, from any author. A hit makes `retargetChildPrs` skip the PR
+ * for good, so one planted `<!-- vibe-coder:milestone-retarget -->` comment
+ * exempted a PR from ever being retargeted at its milestone branch and let the
+ * work merge to the default branch outside the milestone.
+ * {@link issueCommentsContainMarker} checks the comment author against the
+ * fleet identity and fails towards retargeting.
  */
 async function alreadyRetargeted(
   repo: string,
   prNumber: number,
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
+  dedupAuthors: AlertDedupAuthorOptions = {},
 ): Promise<boolean> {
   try {
-    const existing = await ghCommandFn([
-      "api",
-      "--paginate",
-      `repos/${repo}/issues/${prNumber}/comments?per_page=100`,
-      "--jq",
-      ".[].body",
-    ]);
-    return existing.includes(MILESTONE_RETARGET_MARKER);
+    return await issueCommentsContainMarker(
+      repo,
+      prNumber,
+      MILESTONE_RETARGET_MARKER,
+      ghCommandFn,
+      dedupAuthors,
+      log,
+    );
   } catch (err) {
     log(
       `WARNING: could not read comments on ${repo}#${prNumber} to check the ` +
@@ -311,6 +327,8 @@ interface RetargetOptions {
   defaultBranch: string;
   candidates: readonly OpenPr[];
   ghCommandFn: GhCommandFn;
+  /** Fleet identity the retarget-marker author check uses (Issue #1216). */
+  dedupAuthors?: AlertDedupAuthorOptions;
   log: (message: string) => void;
 }
 
@@ -330,13 +348,22 @@ async function retargetChildPrs(
     defaultBranch,
     candidates,
     ghCommandFn,
+    dedupAuthors,
     log,
   } = options;
   let retargeted = 0;
   let failures = 0;
 
   for (const pr of candidates) {
-    if (await alreadyRetargeted(repo, pr.number, ghCommandFn, log)) {
+    if (
+      await alreadyRetargeted(
+        repo,
+        pr.number,
+        ghCommandFn,
+        log,
+        dedupAuthors,
+      )
+    ) {
       continue;
     }
 
@@ -510,6 +537,7 @@ export async function selfHealMilestoneBranches(
           defaultBranch,
           candidates,
           ghCommandFn,
+          dedupAuthors: deps.dedupAuthors,
           log,
         });
         prsRetargeted += outcome.retargeted;
