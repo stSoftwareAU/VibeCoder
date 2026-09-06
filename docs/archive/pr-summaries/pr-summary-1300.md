@@ -60,7 +60,7 @@ Against the **unfixed** `setup.sh`:
 ```text
 capture_setup_token - Ctrl-C at the sign-in leaves no transcript holding the token ... FAILED
   [Diff] Actual / Expected
--   [ { contents: "Paste this token: sk-ant-oat01-FAKEtoken_123-abc\n",
+-   [ { contents: "Paste this token: sk-ant-oat01-<the test's fake token>\n",
 -       name: "vibe-setup-token.hGBvSU" } ]
 +   []
 FAILED | 1 passed | 2 failed
