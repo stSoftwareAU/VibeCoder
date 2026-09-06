@@ -27,6 +27,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { runGitCommand } from "./git_timeout.ts";
+
 /** One measured step. */
 export interface BenchmarkStep {
   name: string;
@@ -74,11 +76,28 @@ export interface BenchmarkOptions {
   only?: string[];
 }
 
+/**
+ * Default runner for the benchmark steps.
+ *
+ * Issue #1227: the binary is a variable and the `git-clone-local` step passes
+ * `"git"`, so this was a direct `git` spawn the literal-matching chokepoint
+ * gate could not see. `git` is delegated to `runGitCommand`, which owns the
+ * timeout, the audit journal and the work-volume fault detector; any other
+ * binary is spawned directly.
+ */
 async function defaultRun(
   cmd: string,
   args: string[],
   env?: Record<string, string>,
 ): Promise<{ code: number; stderr: string }> {
+  if (cmd === "git") {
+    // `Deno.Command` merges `env` over the inherited environment unless
+    // `clearEnv` is set, so the step's git identity variables are additive.
+    const result = await runGitCommand(args, { ...(env ? { env } : {}) });
+    return result.ok
+      ? { code: result.value.code, stderr: result.value.stderr }
+      : { code: -1, stderr: result.error.message };
+  }
   try {
     const out = await new Deno.Command(cmd, {
       args,

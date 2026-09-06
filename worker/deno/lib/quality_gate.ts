@@ -408,6 +408,10 @@ async function runNeedsHumanHelperCheck(
  * write-repo allowlist and the audit journal, which is exactly how ~20
  * modules had drifted away from the documented chokepoint. The only
  * permitted spawn is the chokepoint itself (`worker/deno/lib/gh_spawn.ts`).
+ *
+ * A spawn whose binary is a variable counts too (Issue #1227): five modules
+ * wrote `new Deno.Command(cmd[0]!, …)` and were handed `["gh", …]` by their
+ * callers, so they spawned `gh` while this check reported a clean tree.
  */
 async function runGhSpawnChokepointCheck(
   config: QualityGateConfig,
@@ -451,6 +455,10 @@ async function runGhSpawnChokepointCheck(
     "(Issue #3703). Such a spawn skips the per-run write-repo allowlist and",
     "the audit journal. Route the call through `spawnGh`/`runGhOrThrow` in",
     "`worker/deno/lib/gh_spawn.ts` instead.",
+    "",
+    "A spawn whose binary is a variable (`new Deno.Command(cmd[0]!, …)`) in a",
+    "module that names `gh` in an argv literal counts too (Issue #1227) —",
+    "delegate `gh` to the chokepoint and spawn other binaries directly.",
   ].join("\n");
 
   return {
@@ -469,6 +477,9 @@ async function runGhSpawnChokepointCheck(
  * unpushed-work rescue in `stale_workdir.ts` was pushing to a remote outside
  * all three. The only permitted spawn is the chokepoint itself
  * (`worker/deno/lib/git_timeout.ts`).
+ *
+ * A spawn whose binary is a variable counts too (Issue #1227) — three further
+ * modules named `git` only in the argv they passed to their own runner.
  */
 async function runGitSpawnChokepointCheck(
   config: QualityGateConfig,
@@ -513,6 +524,10 @@ async function runGitSpawnChokepointCheck(
     "the worker, and a mutation never reaches the audit journal. Route the",
     "call through `runGitCommand`/`runGitCommandChecked` in",
     "`worker/deno/lib/git_timeout.ts` instead.",
+    "",
+    "A spawn whose binary is a variable (`new Deno.Command(call.bin, …)`) in a",
+    "module that names `git` in an argv literal counts too (Issue #1227) —",
+    "delegate `git` to the chokepoint and spawn other binaries directly.",
   ].join("\n");
 
   return {
