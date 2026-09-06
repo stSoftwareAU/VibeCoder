@@ -44,6 +44,7 @@
  */
 
 import { parseHttpStatus } from "./alert_feeds/code_scanning_alerts.ts";
+import { runGitCommand } from "./git_timeout.ts";
 import { runGhCommand } from "./github.ts";
 import { listAllOpenIssueTitles } from "./idle_task_snapshot.ts";
 import { ensureLabelExists } from "./label_operations.ts";
@@ -1611,8 +1612,28 @@ const SCANNER_ENV_NAMES: readonly string[] = [
   "XDG_RUNTIME_DIR",
 ];
 
-/** Default runner — spawns the tool as a subprocess. */
+/**
+ * Default runner — spawns the tool as a subprocess.
+ *
+ * Issue #1227: the binary comes from `cmd.bin`, and the coverage measurement
+ * passes `"git"` — a direct `git` spawn the literal-matching chokepoint gate
+ * could not see. It is delegated to `runGitCommand`, which owns the timeout,
+ * the audit journal and the work-volume fault detector; the scanners
+ * (gitleaks, trufflehog, semgrep) are spawned directly.
+ */
 const defaultRunner: SweepCommandRunner = async (cmd, cwd) => {
+  if (cmd.bin === "git") {
+    const result = await runGitCommand([...cmd.args], { cwd });
+    // Fail loud, matching the spawn-failure contract below.
+    if (!result.ok) {
+      throw new Error(
+        `failed to run "git": ${result.error.message}. ` +
+          `Install git before running the sweep.`,
+      );
+    }
+    return result.value;
+  }
+
   let output: Deno.CommandOutput;
   try {
     output = await new Deno.Command(cmd.bin, {

@@ -9,6 +9,13 @@
  * `spawnGh`/`runGhOrThrow` fixed the instances; this check keeps the class
  * fixed by failing the build on any new direct spawn.
  *
+ * A literal binary name is not the only way to spawn `gh`. Two modules wrote
+ * `new Deno.Command(cmd[0]!, …)` and were handed `["gh", "api", …]` by their
+ * callers, so they spawned `gh` outside the chokepoint while this check
+ * reported a clean tree (Issue #1227). The check now also flags a variable
+ * binary in any module that names `gh` at the head of an argv literal and does
+ * not import the chokepoint.
+ *
  * Like the `needs-human` chokepoint check (Issue #2689) this is an
  * architectural, whole-codebase invariant — a static property rather than the
  * behaviour of a single function — so it lives in the quality gate, not the
@@ -23,7 +30,9 @@ import {
   type DirectSpawnScanResult,
   type DirectSpawnViolation,
   scanContentForDirectSpawn,
+  scanContentForVariableBinarySpawn,
   scanDirectoriesForDirectSpawn,
+  type VariableBinarySpawnOptions,
 } from "./spawn_chokepoint_scan.ts";
 
 /** A single direct-spawn violation found during scanning. */
@@ -44,7 +53,25 @@ export const GH_SPAWN_PATTERN =
   /new\s+Deno\.Command\s*\(\s*["'`]gh["'`]|Deno\.Command\s*\(\s*["'`]gh["'`]/;
 
 /**
- * Scan a file's content for direct `gh` spawns.
+ * Rules for the variable-binary half of the check (Issue #1227).
+ *
+ * `language_detector.ts` and `workflow_auditor.ts` spawned `new
+ * Deno.Command(cmd[0]!, …)` and were handed `["gh", "api", …]` by their
+ * production callers — direct `gh` spawns the literal pattern above could not
+ * see. A module is flagged when it names `gh` at the head of an argv literal
+ * and does not import the chokepoint.
+ */
+export const GH_VARIABLE_BINARY_RULES: VariableBinarySpawnOptions = {
+  /** `"gh",` as an argv element — the head of a `gh` command array. */
+  argvPattern: /["'`]gh["'`]\s*,/,
+  /** An import of the chokepoint module, i.e. the module delegates `gh`. */
+  delegationPattern: /from\s+["'][^"']*gh_spawn\.ts["']/,
+  allowlist: new Set<string>(),
+};
+
+/**
+ * Scan a file's content for direct `gh` spawns — both the literal binary name
+ * and a variable binary in a module that names `gh` itself (Issue #1227).
  *
  * Block comments and trailing line comments are ignored so prose mentioning
  * the forbidden pattern (including this module's own documentation) does not
@@ -58,7 +85,14 @@ export function scanContentForGhSpawn(
   content: string,
   repoRelPath: string,
 ): GhSpawnViolation[] {
-  return scanContentForDirectSpawn(content, repoRelPath, GH_SPAWN_PATTERN);
+  return [
+    ...scanContentForDirectSpawn(content, repoRelPath, GH_SPAWN_PATTERN),
+    ...scanContentForVariableBinarySpawn(
+      content,
+      repoRelPath,
+      GH_VARIABLE_BINARY_RULES,
+    ),
+  ];
 }
 
 /**
@@ -76,5 +110,6 @@ export function scanDirectoriesForGhSpawn(
   return scanDirectoriesForDirectSpawn(repoRoot, relDirs, {
     pattern: GH_SPAWN_PATTERN,
     allowlist: GH_SPAWN_ALLOWLIST,
+    variableBinary: GH_VARIABLE_BINARY_RULES,
   });
 }

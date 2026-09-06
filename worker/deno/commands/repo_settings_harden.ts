@@ -171,6 +171,27 @@ export const repoSettingsHardenCommand: Command = {
         }`,
       ),
     };
+    // The repo's branch rulesets, each expanded (Issue #3912 follow-up). The
+    // listing gives ids and names only; the planner needs the whole object
+    // because the rulesets API takes a complete ruleset on write. Only
+    // milestone-targeting rulesets are expanded, so an ordinary repo pays one
+    // listing call and nothing more.
+    const rulesetList = await readJson<
+      Array<{ id?: number; target?: string }>
+    >(gh, `repos/${repo}/rulesets`);
+    if (Array.isArray(rulesetList) && rulesetList.length > 0) {
+      const expanded: NonNullable<RepoSettingsSnapshot["rulesets"]> = [];
+      for (const entry of rulesetList) {
+        if (typeof entry.id !== "number") continue;
+        if (entry.target !== undefined && entry.target !== "branch") continue;
+        const full = await readJson<
+          NonNullable<RepoSettingsSnapshot["rulesets"]>[number]
+        >(gh, `repos/${repo}/rulesets/${entry.id}`);
+        if (full) expanded.push(full);
+      }
+      if (expanded.length > 0) snapshot.rulesets = expanded;
+    }
+
     // The allow-list must cover what the workflows run, including the
     // actions their composite steps pull in (Issue #4424).
     if (snapshot.actions?.allowed_actions === "selected") {
