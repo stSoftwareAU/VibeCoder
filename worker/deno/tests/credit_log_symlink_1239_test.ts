@@ -23,11 +23,6 @@ import {
   LOG_FILE_SUFFIX,
   logInvocation,
 } from "../lib/credit_tracker.ts";
-import { appendNoFollow } from "../lib/file_utils.ts";
-import {
-  CREDIT_LOG_DIR_NAME,
-  resolveCreditLogDir,
-} from "../lib/spend_ceiling.ts";
 
 /** Today's log file name, matching the module's own naming. */
 function todayLogName(): string {
@@ -133,74 +128,51 @@ Deno.test("logInvocation - creates the log owner-only and still appends", async 
 });
 
 // ---------------------------------------------------------------------------
-// resolveCreditLogDir — the ceiling's input is no longer in the shared root
+// logInvocation — the directory the spend ceiling reads from
 // ---------------------------------------------------------------------------
 
-Deno.test("resolveCreditLogDir - defaults to a worker-private subdirectory", () => {
-  assertEquals(
-    resolveCreditLogDir("/work", undefined),
-    `/work/${CREDIT_LOG_DIR_NAME}`,
-  );
-  assertEquals(
-    resolveCreditLogDir("/work", "  "),
-    `/work/${CREDIT_LOG_DIR_NAME}`,
-  );
-  // A trailing slash on the work dir must not double up.
-  assertEquals(
-    resolveCreditLogDir("/work/", undefined),
-    `/work/${CREDIT_LOG_DIR_NAME}`,
-  );
-});
-
-Deno.test("resolveCreditLogDir - honours an explicit override", () => {
-  assertEquals(resolveCreditLogDir("/work", "/var/credit"), "/var/credit");
-  assertEquals(resolveCreditLogDir("/work", " /var/credit "), "/var/credit");
-});
-
-// ---------------------------------------------------------------------------
-// appendNoFollow — the shared primitive
-// ---------------------------------------------------------------------------
-
-Deno.test("appendNoFollow - appends to a regular file, creating it 0600", async () => {
-  const dir = await Deno.makeTempDir();
+Deno.test("logInvocation - tightens a log directory another writer left open", async () => {
+  if (Deno.build.os === "windows") return;
+  const root = await Deno.makeTempDir();
   try {
-    const target = `${dir}/log.json`;
-    const first = await appendNoFollow({ targetFile: target, content: "a\n" });
-    assert(first.ok, "first append succeeded");
-    const second = await appendNoFollow({ targetFile: target, content: "b\n" });
-    assert(second.ok, "second append succeeded");
+    // logContextBudget shares this directory and may create it first; a
+    // group-writable directory lets the agent account unlink the day's log.
+    const logDir = `${root}/logs`;
+    await Deno.mkdir(logDir, { mode: 0o775 });
 
-    assertEquals(await Deno.readTextFile(target), "a\nb\n");
-    if (Deno.build.os !== "windows") {
-      assertEquals((await Deno.lstat(target)).mode! & 0o777, 0o600);
-    }
+    await logInvocation(invocation(logDir));
+
+    assertEquals(
+      (await Deno.lstat(logDir)).mode! & 0o022,
+      0,
+      "group/other write is removed before the log is written",
+    );
   } finally {
-    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(root, { recursive: true });
   }
 });
 
-Deno.test("appendNoFollow - refuses a symlink and a non-regular target", async () => {
-  const dir = await Deno.makeTempDir();
+Deno.test("logInvocation - refuses a log directory that is a symlink", async () => {
+  const root = await Deno.makeTempDir();
   try {
-    const victim = `${dir}/victim`;
-    await Deno.writeTextFile(victim, "original");
-    const link = `${dir}/link`;
-    await Deno.symlink(victim, link);
+    const real = `${root}/elsewhere`;
+    await Deno.mkdir(real);
+    const logDir = `${root}/logs`;
+    await Deno.symlink(real, logDir);
 
-    const linked = await appendNoFollow({ targetFile: link, content: "x\n" });
-    assert(!linked.ok, "a symlink target is refused");
-    assertStringIncludes(linked.error.message, "symlink");
-    assertEquals(await Deno.readTextFile(victim), "original");
+    let message = "";
+    try {
+      await logInvocation(invocation(logDir));
+    } catch (err) {
+      message = (err as Error).message;
+    }
 
-    const asDir = `${dir}/subdir`;
-    await Deno.mkdir(asDir);
-    const directory = await appendNoFollow({
-      targetFile: asDir,
-      content: "x\n",
-    });
-    assert(!directory.ok, "a directory target is refused");
-    assertStringIncludes(directory.error.message, "not a regular file");
+    assertStringIncludes(message, "not a directory this worker created");
+    // Nothing was written through the link.
+    const entries: string[] = [];
+    for await (const entry of Deno.readDir(real)) entries.push(entry.name);
+    assertEquals(entries, []);
   } finally {
-    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(root, { recursive: true });
   }
 });

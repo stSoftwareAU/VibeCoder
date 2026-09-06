@@ -2610,10 +2610,15 @@ remove a directory whose contents it cannot unlink.
 Two operator-visible consequences:
 
 - Logs written before this change stay in the work root and are no longer
-  summarised. Move them into `.credit-logs/` to keep the history, or leave
-  them for the seven-day retention sweep.
-- An explicit `VIBE_CREDIT_LOG_DIR` still wins and is used as given — the
-  operator owns that path's permissions.
+  summarised. Move them into `.credit-logs/` to keep the history, or delete
+  them — nothing sweeps the old location automatically (`credit-summary
+  --cleanup` only prunes the `--log-dir` it is given). While today's log is
+  still sitting there, the worker logs a `[SPEND_CEILING]` warning at
+  start-up naming both paths, so the mismatch is never a silent `$0`.
+- An explicit `VIBE_CREDIT_LOG_DIR` still wins and is used as given. The
+  worker refuses a log directory another account owns, and strips group/other
+  **write** access from whichever directory it uses (unlinking an entry needs
+  write on its directory); read access is left as the operator set it.
 
 ```mermaid
 flowchart LR

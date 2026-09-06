@@ -301,13 +301,16 @@ export interface AppendNoFollowOptions {
  * The target is not replaced (that is {@link atomicWrite}'s job); it is
  * appended to, so the symlink must be refused rather than renamed over:
  *
- *  - an `lstat` refuses a path that is a symlink, or anything that is not a
- *    regular file, before the open;
- *  - the descriptor is then re-checked against a second `lstat`, so a link
- *    swapped in between the check and the open is caught before a single byte
- *    is written; and
- *  - a file created here is created at `mode` (0600 by default) rather than
- *    at the process umask.
+ *  - an `lstat` refuses a path that is a symlink, a hard link to someone
+ *    else's file, or anything that is not a regular file, before the open;
+ *  - an absent target is created with `createNew` (`O_EXCL|O_CREAT`), so a
+ *    link planted in the check→open window makes the create fail rather than
+ *    be followed — the link's target is never even created empty;
+ *  - an existing target's descriptor is re-checked against a second `lstat`,
+ *    so a link swapped in over it is caught before a single byte is written;
+ *    and
+ *  - a file created here is created at `mode` (0600 by default) and chmod'ed
+ *    to it, in case the open mode was reduced by the process umask.
  *
  * Failure is returned, never swallowed — the caller decides whether a refused
  * append is fatal, but it is always told.
@@ -324,10 +327,14 @@ export async function appendNoFollow(
   if (!existing.ok) return existing;
   const refusal = refuseNonRegular(targetFile, existing.value);
   if (refusal) return refusal;
+  const created = existing.value === null;
 
   let file: Deno.FsFile;
   try {
-    file = await Deno.open(targetFile, { append: true, create: true, mode });
+    file = created
+      // O_EXCL: a link planted since the lstat loses the race loudly.
+      ? await Deno.open(targetFile, { append: true, createNew: true, mode })
+      : await Deno.open(targetFile, { append: true });
   } catch (err) {
     return {
       ok: false,
@@ -357,6 +364,11 @@ export async function appendNoFollow(
         ),
       };
     }
+
+    // Defence in depth, as in atomicWrite: the open() mode is reduced by the
+    // process umask, so a file created here is chmod'ed to what was asked for.
+    // The inode was just verified, so this cannot follow a planted link.
+    if (created) await Deno.chmod(targetFile, mode);
 
     const encoded = new TextEncoder().encode(content);
     let written = 0;
@@ -400,7 +412,13 @@ async function lstatOrNull(
   }
 }
 
-/** Refuse a symlink or any non-regular file already sitting at the path. */
+/**
+ * Refuse a symlink, a hard link, or any non-regular file already at the path.
+ *
+ * A hard link is the same attack with no link to lstat: the appended bytes
+ * land in someone else's file just as they would through a symlink, and a
+ * log this worker owns never has a second name.
+ */
 function refuseNonRegular(
   path: string,
   info: Deno.FileInfo | null,
@@ -419,6 +437,15 @@ function refuseNonRegular(
       ok: false,
       error: new Error(
         `appendNoFollow — target is not a regular file: ${path}`,
+      ),
+    };
+  }
+  if (info.nlink !== null && info.nlink > 1) {
+    return {
+      ok: false,
+      error: new Error(
+        `appendNoFollow — refusing to append through a hard link ` +
+          `(${info.nlink} names): ${path}`,
       ),
     };
   }

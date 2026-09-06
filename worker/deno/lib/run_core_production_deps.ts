@@ -37,6 +37,7 @@ import { reactivePhaseTimeout } from "./reactive_phase_timeout.ts";
 // Config & logging
 import { loadConfig } from "./config.ts";
 import { createLogger } from "./logger.ts";
+import { LOG_FILE_PREFIX, LOG_FILE_SUFFIX } from "./credit_tracker.ts";
 import { buildDefaultWorkerConfig } from "./config_defaults.ts";
 import {
   setSuppressionAuthorAllowlist,
@@ -445,6 +446,41 @@ function resolveClaimHardCap(
 }
 
 /**
+ * Warn when credit logs are stranded in the old work-root location
+ * (Issue #1239).
+ *
+ * The default log directory moved into `<workDir>/.credit-logs`, which the
+ * untrusted `agent` account cannot write to or unlink from. A deployment that
+ * still points its writer at the work root would leave the ceiling reading an
+ * empty directory and treating the day's spend as `$0` — the very bypass this
+ * move closes — so the mismatch is reported rather than left silent.
+ *
+ * @param workDir - The worker work directory
+ * @param creditLogDir - The directory the ceiling reads
+ * @param logger - Where the warning goes
+ */
+async function warnOnStrandedCreditLogs(
+  workDir: string,
+  creditLogDir: string,
+  logger: Logger,
+): Promise<void> {
+  const legacy = `${workDir.replace(/\/+$/, "")}/${LOG_FILE_PREFIX}${
+    new Date().toISOString().slice(0, 10)
+  }${LOG_FILE_SUFFIX}`;
+  try {
+    await Deno.lstat(legacy);
+  } catch {
+    return; // Nothing stranded — the normal case.
+  }
+  logger.warn(
+    `[SPEND_CEILING] Today's credit log still exists at the pre-#1239 ` +
+      `location ${legacy}, but the ceiling reads ${creditLogDir}. Spend ` +
+      `written there is NOT counted — move the file, or set ` +
+      `${CREDIT_LOG_DIR_ENV} to the directory the writer uses.`,
+  );
+}
+
+/**
  * How many deps factories this process has built (Issue #1098).
  *
  * Scopes each factory's trusted-author cache key, so two factories in one
@@ -543,6 +579,11 @@ export async function createProductionRunCoreDeps(
         spendCeilingUsd.toFixed(2)
       } (credit log: ${creditLogDir})`,
     );
+    // The default moved out of the work root (Issue #1239). A deployment
+    // still writing to the old location would leave the ceiling reading an
+    // empty directory — a silent $0 — so say so rather than let the guard go
+    // quietly inert.
+    await warnOnStrandedCreditLogs(workDir, creditLogDir, logger);
   }
 
   // Create worker deps for issue processing
