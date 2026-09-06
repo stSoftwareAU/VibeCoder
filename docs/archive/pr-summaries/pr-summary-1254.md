@@ -63,8 +63,8 @@ spawnGh - refuses a body file it cannot read rather than publishing it unscanned
 spawnGh - masks an --input file body into a fresh file (Issue #1254) => FAILED
 spawnGh - redacts the stdin body of an --input - call (Issue #1254) => FAILED
   [Diff] Actual / Expected
-  -   {"body":"token ghp_a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5"}
-  +   {"body":"token ***REDACTED***"}
+  -   the stdin body reached the child with its token intact
+  +   the stdin body reached the child masked to the placeholder
 FAILED | 0 passed | 4 failed
 ```
 
