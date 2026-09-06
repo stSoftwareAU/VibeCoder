@@ -307,6 +307,10 @@ docs/audits/security-sweep-1217-env-config-secrets.md:
   title: "Vibe Coder: Environment, Configuration and Secret-Sink Security Sweep"
   page_icon: "🔎"
 
+docs/audits/security-sweep-1221-shell-entry-points.md:
+  title: "Vibe Coder: Shell Entry-Point Security Sweep"
+  page_icon: "🔎"
+
 AGENTS.md:
   title: "Vibe Coder: AGENTS"
   page_icon: "🤖"

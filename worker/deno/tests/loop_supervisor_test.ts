@@ -784,8 +784,8 @@ Deno.test({
 // Issue #1221 — the control-plane probe must not depend on a `timeout` binary
 //
 // The probe and its recovery spelled `timeout 30 container …` literally, while
-// the supervisor had already resolved gtimeout/timeout into TIMEOUT_PREFIX for
-// its other bounded calls. macOS ships neither (setup.sh treats `timeout` as
+// the supervisor had already resolved gtimeout/timeout once for its other
+// bounded calls. macOS ships neither (setup.sh treats `timeout` as
 // container-owned and never demands it on the host) and Apple `container` —
 // the runtime this probe exists for — is macOS-only, so on a stock fleet host
 // every one of those calls was a `command not found` with its stderr sent to
@@ -825,6 +825,7 @@ async function minimalToolPath(tmpDir: string): Promise<string> {
     "/opt/homebrew/bin",
   ];
   for (const tool of tools) {
+    let linked = false;
     for (const searchDir of searchDirs) {
       const candidate = `${searchDir}/${tool}`;
       try {
@@ -833,19 +834,30 @@ async function minimalToolPath(tmpDir: string): Promise<string> {
         continue;
       }
       await Deno.symlink(candidate, join(dir, tool));
+      linked = true;
       break;
     }
+    // A missing tool would cripple loop.sh and the failure would be reported
+    // as "the probe did not recover the container" — a wrong answer, not a
+    // missing one. Fail here instead, naming the tool.
+    assert(
+      linked,
+      `${tool} was not found in ${searchDirs.join(", ")} — the minimal PATH ` +
+        `cannot run loop.sh, so this test would prove nothing`,
+    );
   }
-  // The premise of the test: no bound is reachable on this PATH.
-  for (const bound of ["timeout", "gtimeout"]) {
-    let present = true;
-    try {
-      await Deno.lstat(join(dir, bound));
-    } catch {
-      present = false;
-    }
-    assert(!present, `${bound} must not be on the minimal PATH`);
-  }
+  // The premise of the test, checked the way loop.sh checks it: `command -v`
+  // under the PATH the supervisor will actually be given.
+  const probe = await new Deno.Command("/bin/bash", {
+    args: ["-c", "command -v timeout || command -v gtimeout"],
+    env: { PATH: dir },
+    stdout: "null",
+    stderr: "null",
+  }).output();
+  assert(
+    !probe.success,
+    "the minimal PATH must expose no timeout binary, or the test proves nothing",
+  );
   return dir;
 }
 
@@ -892,9 +904,18 @@ Deno.test({
       stderr: "piped",
     }).spawn();
     try {
-      await delay(9_000);
-      const out = await Deno.readTextFile(join(harness.tmpDir, "container.log"))
-        .catch(() => "");
+      // Wait for the event, under a bound, rather than for a fixed span: the
+      // recovery lands about two probe intervals in, and a loaded host that is
+      // merely slow must not fail for the wrong reason.
+      const readLog = () =>
+        Deno.readTextFile(join(harness.tmpDir, "container.log"))
+          .catch(() => "");
+      let out = "";
+      for (let attempt = 0; attempt < 60; attempt++) {
+        out = await readLog();
+        if (out.includes("kill vibe-coder-999")) break;
+        await delay(250);
+      }
       assert(
         out.includes("ls"),
         `the probe must actually run \`container ls\` on a host with no timeout binary; container calls were:\n${

@@ -30,9 +30,9 @@ Siblings:
 
 ## The line-count correction
 
-#1209 describes these files as "tens of thousands of lines combined". They are
-not, and the correction is recorded on that issue so the next scan does not
-re-defer the chunk on the same estimate:
+The parent issue describes these files as "tens of thousands of lines
+combined". They are not, and the correction is recorded on that issue so the
+next scan does not re-defer the chunk on the same estimate:
 
 | File | Lines (as read) |
 | ---- | --------------- |
@@ -41,8 +41,9 @@ re-defer the chunk on the same estimate:
 | `loop.sh` | 475 |
 | **Total** | **3,523** |
 
-That is a single-session exhaustive read, roughly an order of magnitude smaller
-than the estimate the chunk was deferred on.
+Counted at the commit this sweep read — the base of this change, before the 24
+lines it adds to `loop.sh`. That is a single-session exhaustive read, roughly an
+order of magnitude smaller than the estimate the chunk was deferred on.
 
 ## Scope and method
 
@@ -88,6 +89,17 @@ Turning on every optional check surfaces style noise and nothing else:
 | SC2312 (masked return value in a substitution) | 1 | 3 | 0 | All four feed a value that is then validated or defaulted (`claim_floor_detail`, the credential-table reads). |
 | SC2249 (no default `case` arm) | 0 | 2 | 0 | Both are option parsers where an unmatched argument is legitimately ignored. |
 
+### Cross-reference: the bash-syntax audit (template #12)
+
+The issue asks that this review add semantic coverage rather than repeat a scan
+that already runs. It does not repeat it. `docs/BASH-SYNTAX-AUDIT-SCAN.md` and
+`worker/deno/lib/idle_task_templates/bash_syntax_audit_template.ts` describe a
+weekly idle task that answers a **presence** question — does each monitored
+repository commit its own `bash -n` + `shellcheck` CI gate — and files an issue
+in a repo that lacks one. It never reads a script. For this repository the
+answer is already yes (the `validate` job above), so that audit has nothing to
+say about these three files and never would.
+
 **No finding in this record came from `shellcheck`.** All five came from the
 read. That is the point of the chunk: the defects below are semantic — a bound
 that resolves to a missing binary, a truncation window, a file mode, a quoting
@@ -105,7 +117,7 @@ contract between a writer and a reader — and none of them has a lint signature
 
 ### 1 — the Issue #323 control-plane probe was inert on the platform it was written for (fixed here)
 
-`loop.sh` resolves `gtimeout`/`timeout` once into `TIMEOUT_PREFIX` and uses it
+`loop.sh` resolves `gtimeout`/`timeout` once at startup and uses it
 for the recorder and the supervisor deadline — but the control-plane probe and
 its recovery spelled the bound literally:
 
@@ -143,6 +155,13 @@ nor `gtimeout`, which is what a stock macOS host looks like — runs the real
 `loop.sh` against a `container` stub whose `exec` always fails, and asserts the
 stub recorded `kill vibe-coder-999`. Against the unfixed script the stub records
 nothing at all.
+
+It has to spawn the real `loop.sh`, so it lives in `loop_supervisor_test.ts` —
+listed in `worker/deno/lib/integration_test_manifest.ts:64` and therefore run by
+the `integration tests (not a required check)` job, alongside every other
+launcher test. That is the existing classification for this whole surface, not a
+choice made here; the merge-gating counterpart is `shellcheck` in `validate`,
+which this change keeps clean.
 
 ## Categories the issue named that came back empty
 
@@ -213,7 +232,12 @@ unstated empty category is indistinguishable from one that was skipped.
   read-only (`:26`, Issue #514). `run_sh_launcher_test.ts` asserts the
   constructed invocation carries no runtime socket, no `--privileged`, no host
   networking and no published ports, so a future edit that broadens them fails
-  the required `Validate Scripts` check.
+  that test. It is *not* a required check: the file is listed in
+  `worker/deno/lib/integration_test_manifest.ts:66`, so it runs in the
+  `integration tests (not a required check)` job
+  (`.github/workflows/validate-scripts.yml:504-505`) rather than in `validate`.
+  The containment assertions are covered, but a red result there does not block
+  a merge on its own.
 - **`"$@"` pass-through is not a flag-injection sink.** `run.sh:1547` appends the
   launcher's own argv to the runtime invocation, but it lands *after* the plan's
   image and command, so extra arguments become the container's command
@@ -221,8 +245,8 @@ unstated empty category is indistinguishable from one that was skipped.
   before the EXIT trap is installed and takes no operand.
 - **Exit-code propagation — no swallowed guard.** Every pipeline whose left-hand
   side matters reads `PIPESTATUS[0]`: `run_build` (`:880`), the extension build
-  (`:995`), `heal_builder` (`:902`) and `loop.sh:440`. The comment at
-  `loop.sh:434-438` is the reason a `|| true` is *absent* there — appending one
+  (`:995`), `heal_builder` (`:902`) and `loop.sh:464`. The comment at
+  `loop.sh:458-462` is the reason a `|| true` is *absent* there — appending one
   would replace `PIPESTATUS` with `true`'s own 0 and report every crash as a
   clean run. `bounded_timed_out` (`run.sh:218-221`) distinguishes a command the
   bound killed from one that ran and failed, and only claims the distinction
@@ -231,7 +255,7 @@ unstated empty category is indistinguishable from one that was skipped.
   `loop.sh` sleeps between every iteration; the interval comes from the worker's
   `container-restart-backoff`, which grows across consecutive failures, and falls
   back **loudly** to `LOOP_SLEEP_SECONDS` when the recorder cannot run or does not
-  answer with a plain integer (`:170-201`). A quota pause and an
+  answer with a plain integer (`loop.sh:167-199`). A quota pause and an
   already-running-worker exit are distinguished from a crash so neither climbs
   the escalation ladder. The supervisor's own deadline is a `timeout` with
   `--kill-after`, and disabling it (`VIBE_RUN_MAX_SECONDS=0`) is carried through
@@ -241,12 +265,15 @@ unstated empty category is indistinguishable from one that was skipped.
 
 ## Observations that are not findings
 
-- **`loop.sh:158` resolves the log directory with a bare `${HOME}`** where the
-  rest of the file uses `${HOME:-/tmp}`. Under `set -u` an unset `HOME` aborts
-  the function, and with no `set -e` the supervisor continues with an empty
-  `LAUNCH_LOG_DIR` and no launch log. It says so on stderr first, and `run.sh`
-  would already have exited on the same variable, so the reachable damage is one
-  cycle without a launch log.
+- **`loop.sh:155` resolves the log directory with a bare `${HOME}`** where the
+  rest of the file uses `${HOME:-/tmp}`. Reached only when `LAUNCH_LOG_DIR` and
+  `LOG_DIR` are both unset as well. Under `set -u` the unbound expansion kills
+  the command-substitution subshell *before* the stderr message two lines below
+  it, so that message is not what reports the fault; and because the directory
+  is resolved once at startup, the effect is every cycle rather than one.
+  It is still not silent — each cycle then fails to open its launch log and
+  says so on stderr — and `run.sh` refuses to launch on the same unset variable,
+  so it stays an observation rather than a finding.
 - **`run.sh:1032` builds the container-store path from `${HOME:-}`**, which on an
   unset `HOME` would read `/Library/Application Support/com.apple.container`.
   Unreachable for the same reason.

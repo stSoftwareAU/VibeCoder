@@ -93,8 +93,8 @@ for candidate in deno "${HOME:-/tmp}/.deno/bin/deno" /opt/homebrew/bin/deno /usr
     fi
 done
 
-# A wedged recorder must never wedge the supervisor: bound it where the host
-# has a timeout command (gtimeout on macOS, timeout on Linux).
+# A wedged helper must never wedge the supervisor: the calls below run under a
+# time bound where the host has one (gtimeout on macOS, timeout on Linux).
 TIMEOUT_CMD=""
 for candidate in timeout gtimeout; do
     if command -v "${candidate}" >/dev/null 2>&1; then
@@ -102,23 +102,18 @@ for candidate in timeout gtimeout; do
         break
     fi
 done
-TIMEOUT_PREFIX=()
-if [[ -n "${TIMEOUT_CMD}" ]]; then
-    TIMEOUT_PREFIX=("${TIMEOUT_CMD}" 120)
-fi
 
 # Run a command under a time bound, where the host has one — the same helper
 # run.sh carries, for the same reason.
 #
-# Every bounded call below goes through this rather than spelling `timeout`
-# literally. macOS ships no `timeout` (setup.sh treats it as container-owned
-# and never demands it on the host), and Apple `container` — the runtime the
-# control-plane probe exists for — is macOS-only. A literal `timeout 30
-# container ls` on such a host is not a bounded probe but a `command not
-# found` with its stderr discarded: `running_vibe_container` answers "no
-# container", the failure counter resets, and the Issue #323 recovery never
-# fires on the one platform it was written for. Unbounded is the documented
-# fallback here; silently not running at all is not.
+# Every bound goes through here rather than spelling `timeout` literally,
+# because macOS has neither binary by default (setup.sh treats `timeout` as
+# container-owned and never demands it on the host) while Apple `container` —
+# the runtime the control-plane probe exists for — is macOS-only. A literal
+# `timeout 30 container ls` there is a `command not found` with its stderr
+# discarded, so the probe answers "no container" and the Issue #323 recovery
+# never fires. Unbounded is this script's documented fallback; not running at
+# all is not.
 #
 # Usage: bounded <seconds> <command> [args...]
 bounded() {
@@ -142,7 +137,7 @@ bounded() {
 resolve_launch_log_dir() {
     local resolved=""
     if [[ -n "${DENO_CMD}" && -f "${WORKER_MOD}" ]]; then
-        resolved="$(${TIMEOUT_PREFIX[@]+"${TIMEOUT_PREFIX[@]}"} "${DENO_CMD}" run \
+        resolved="$(bounded 120 "${DENO_CMD}" run \
             --frozen --lock="${SCRIPT_DIR}/worker/deno/deno.lock" \
             --allow-env --allow-read \
             "${WORKER_MOD}" log-dir </dev/null)" || resolved=""
@@ -184,7 +179,7 @@ next_sleep_seconds() {
     # #633). Without it `resolveRunHostId()` cannot read the hostname and the
     # report says "unknown-host", which is close to useless in a fleet whose
     # hosts all report into one repository.
-    seconds="$(${TIMEOUT_PREFIX[@]+"${TIMEOUT_PREFIX[@]}"} "${DENO_CMD}" run \
+    seconds="$(bounded 120 "${DENO_CMD}" run \
         --frozen --lock="${SCRIPT_DIR}/worker/deno/deno.lock" \
         --allow-env --allow-read --allow-write --allow-run --allow-net \
         --allow-sys=hostname \
@@ -424,11 +419,11 @@ probe_control_plane() {
 # Run "$@" under the supervisor deadline, echoing its exit status.
 run_under_deadline() {
     if [[ "${VIBE_RUN_MAX_SECONDS}" == "0" ]] || \
-       [[ ${#TIMEOUT_PREFIX[@]} -eq 0 ]]; then
+       [[ -z "${TIMEOUT_CMD}" ]]; then
         "$@"
         return $?
     fi
-    "${TIMEOUT_PREFIX[0]}" --kill-after="${VIBE_RUN_KILL_GRACE_SECONDS}" \
+    "${TIMEOUT_CMD}" --kill-after="${VIBE_RUN_KILL_GRACE_SECONDS}" \
         "${VIBE_RUN_MAX_SECONDS}" "$@"
 }
 
