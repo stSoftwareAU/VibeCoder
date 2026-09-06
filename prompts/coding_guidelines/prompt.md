@@ -656,9 +656,12 @@ allowlist, and do not hand the PR to a human. Use the sanctioned path instead:
    dependency's default branch, and `summary` is folded into the PR body. Emit
    one marker — the single dependency PR this fix needs.
 
-The worker then validates the target (internal `stSoftwareAU/*` owner,
-reachable, pushable, the branch actually pushed, not the default branch), opens
-the PR through its own boundary, and cross-links it on the issue. If it cannot
+The worker then validates the target (internal `stSoftwareAU/*` owner, **a
+dependency this repo's own manifest declares**, reachable, pushable, the branch
+actually pushed, not the default branch), opens the PR through its own boundary,
+and cross-links it on the issue. Sharing the owner is not enough on its own —
+the target must be a real dependency of the repo you are working, read from that
+repo's default branch, so a sibling repo it does not depend on is refused. If it cannot
 open the PR it escalates to `needs-human` with the branch details, so a declared
 fix is never stranded on an unreferenced branch.
 

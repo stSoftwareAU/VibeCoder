@@ -43,6 +43,16 @@
  * fresh escalation: a duplicate is noise a human closes, a redirected or
  * silenced one is a stuck PR nobody hears about.
  *
+ * **The work label is applied only if the worker is allowed to (Issue
+ * #1381).** This escalation is reached from wall-clock stall thresholds on a
+ * PR, so who causes it to run is not a trusted decision — an ordinary
+ * contributor whose PR goes red, conflicts or sits in review long enough is
+ * enough. Queue-priority labels are the operator's to apply, and the fleet
+ * asks `worker_label_guard.ts` before applying any label to a filed issue,
+ * exactly as `conflict_abandon_restart.ts` asks before re-queuing. When the
+ * answer is no the escalation is still filed — unqueued and saying so —
+ * because the fail direction is towards filing.
+ *
  * Australian English spelling throughout (behaviour, organisation).
  */
 
@@ -54,6 +64,7 @@ import {
   selectFleetAuthoredMatches,
 } from "./alert_dedup_authors.ts";
 import { spawnGh } from "./gh_spawn.ts";
+import { isWorkerAppliableLabel } from "./worker_label_guard.ts";
 
 /** Label marking a PR whose blockage has been filed as work (Issue #569). */
 export const ESCALATED_AS_WORK_LABEL = "escalated";
@@ -123,9 +134,16 @@ export function workEscalationTitle(
   return `PR #${escalation.prNumber} cannot land: ${escalation.summary}`;
 }
 
-/** Body of the escalation issue. */
+/**
+ * Body of the escalation issue.
+ *
+ * `withheldLabel` names the queue label the fleet was not permitted to apply
+ * (Issue #1381), so an unqueued escalation explains itself rather than
+ * looking like a filing that simply forgot its label.
+ */
 export function buildWorkEscalationBody(
   escalation: WorkEscalation,
+  withheldLabel?: string,
 ): string {
   const { repo, prNumber, reason, attempted, nextStep } = escalation;
   return [
@@ -151,6 +169,18 @@ export function buildWorkEscalationBody(
     "that is behind, conflicting, red or unmergeable is a task, not a " +
     "decision. `needs-human` is reserved for what genuinely needs a person — " +
     "a policy call, a credential, or confirming intent.",
+    ...(withheldLabel
+      ? [
+        "",
+        `This issue is **not queued**: the fleet did not apply ` +
+        `\`${withheldLabel}\` to it. Queue-priority labels are yours to ` +
+        "apply, not the worker's to award itself " +
+        "(`worker/deno/lib/worker_label_guard.ts`, Issue #1381) — the " +
+        "escalation would otherwise be a route by which anything that can " +
+        "stall a PR also decides what the fleet works on next. Add the " +
+        "label when you want a slot to pick this up.",
+      ]
+      : []),
   ].join("\n");
 }
 
@@ -169,8 +199,15 @@ export async function escalateAsWork(
   const gh = deps.gh ?? defaultGh;
   const { repo } = escalation;
   const title = workEscalationTitle(escalation);
-  const body = buildWorkEscalationBody(escalation);
   const workLabel = escalation.workLabel ?? DEFAULT_WORK_LABEL;
+  // Issue #1381: ask the one allowlist, never assume. `work-on` is reserved,
+  // so on the production path this is false and the escalation files
+  // unqueued; a caller passing a label the worker owns still gets it.
+  const mayApplyWorkLabel = isWorkerAppliableLabel(workLabel);
+  const body = buildWorkEscalationBody(
+    escalation,
+    mayApplyWorkLabel ? undefined : workLabel,
+  );
   const log = (message: string) => {
     if (deps.logger?.warn) deps.logger.warn(message, { repo });
     else console.warn(message);
@@ -188,10 +225,12 @@ export async function escalateAsWork(
       "--state",
       "open",
       // Belt: only issues carrying the work label, which needs triage
-      // permission to apply and which every escalation this module files
-      // carries.
-      "--label",
-      workLabel,
+      // permission to apply. Dropped when the fleet is not permitted to
+      // apply that label (Issue #1381) — filtering on a label this module
+      // never applies would match nothing and re-file the same escalation
+      // every pass. The author check below is then the whole of the
+      // verification, which is why it is not optional.
+      ...(mayApplyWorkLabel ? ["--label", workLabel] : []),
       "--search",
       `in:title "${title}"`,
       "--json",
@@ -244,15 +283,23 @@ export async function escalateAsWork(
       title,
       "--body",
       body,
-      "--label",
-      workLabel,
+      ...(mayApplyWorkLabel ? ["--label", workLabel] : []),
     ]);
     const issueNumber = Number(created.trim().split("/").pop());
+    if (!mayApplyWorkLabel) {
+      log(
+        `Filed ${repo}#${escalation.prNumber}'s blockage as issue ` +
+          `#${issueNumber} without \`${workLabel}\` — the worker is not ` +
+          "permitted to apply that label (worker_label_guard.ts). Apply it " +
+          "to queue the escalation.",
+      );
+    }
     deps.logger?.info?.("Filed a stuck PR as work rather than parking it", {
       repo,
       prNumber: escalation.prNumber,
       issueNumber,
       workLabel,
+      queued: mayApplyWorkLabel,
     });
     return {
       ok: true,
