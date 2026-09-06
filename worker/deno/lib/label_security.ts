@@ -302,11 +302,33 @@ export async function verifyOperationalLabels(
       const isFleetWorker = fleetWorkerLogins.some(
         (a) => a.toLowerCase() === adderLower,
       );
-      // `needs-human` applied by this worker is always trusted — it is the
-      // worker's designated escalation signal, not a human-to-worker control.
+      // `needs-human` is trusted from ANYONE, and deliberately so.
+      //
+      // Verifying who applied a label is worth its cost only for labels that
+      // make the worker *act* — `best-model` and `quorum` spend tokens,
+      // `planning` and `refine-issue` start work. `needs-human` is the one
+      // operational label whose entire effect is to take an issue OFF the
+      // list: every consumer reads it as a skip reason and nothing anywhere
+      // acts because of it. The worst an adder can achieve is that the worker
+      // does not look at an issue, which is precisely what the label means.
+      //
+      // The check was not free. Applying it cost this fleet real throughput
+      // on 2026-09-06: a host running as one fleet account rejected every
+      // `needs-human` its sibling had applied, and one cycle reported
+      // `untrusted-operational-label=8` — eight issues skipped across four
+      // repositories, silently, on a signal the fleet raises as ordinary
+      // workflow. It had asked only `isSelf`, so a sibling matched neither
+      // that nor the `allowedAuthors` branch below, which fleet workers are
+      // deliberately excluded from (Issue #3225).
+      //
+      // Nor was there much to defend: GitHub gates labelling behind triage
+      // permission, so an account that can apply this label already has
+      // standing in the repository. "Someone with triage said a human should
+      // look at this" is the feature, not an attack.
+      //
       // Issue #3088: case-insensitive so a non-lower-case canonical label
-      // (e.g. `Needs-Human`) still matches the worker-trust special case.
-      const isWorkerSelfEscalation = labelLower === "needs-human" && isSelf;
+      // (e.g. `Needs-Human`) still matches.
+      const isSuppressionOnlyLabel = labelLower === "needs-human";
       // Issue #3648: `failed` / `failed-once` are worker bookkeeping that
       // drives the consecutive-failure circuit breaker (`claim_issue.ts`).
       // Any fleet worker — this host or a sibling — may legitimately have set
@@ -315,7 +337,7 @@ export async function verifyOperationalLabels(
       // failing issue would be re-picked forever.
       const isWorkerFailureMark = WORKER_FAILURE_LABELS.has(labelLower) &&
         (isSelf || isFleetWorker);
-      const isTrusted = isWorkerSelfEscalation || isWorkerFailureMark ||
+      const isTrusted = isSuppressionOnlyLabel || isWorkerFailureMark ||
         (!isFleetWorker &&
           allowedAuthors.some((a) => a.toLowerCase() === adderLower));
 
