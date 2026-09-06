@@ -1241,7 +1241,7 @@ re-run converges on the same state rather than piling up duplicates.
 | `config` | Writes `.config.json` from `VIBE_*` environment variables. Host-only. | Yes, if you hand-wrote the file per [the config section](#manual-setup-writing-configjson). The file itself is not optional. |
 | `launchagent` | Installs the macOS LaunchAgent (background service). `--status` reports `installed`/`not-installed`; `--uninstall` removes it. | Yes — background services are the [Deployment Guide](DEPLOYMENT.md#-running-as-a-background-service)'s job, after the first foreground run. |
 | `screenshot` | Installs Playwright MCP on the host so the worker can capture page screenshots. | Yes — a convenience; nothing else depends on it. |
-| `label-sync` | Repo-side. Creates or updates the worker's canonical labels (`work-on`, `top-priority`, `needs-human`, `question`, `planning`, …) in every monitored repository, with canonical colours and descriptions. | Not in practice — see below for what skipping it breaks. |
+| `label-sync` | Repo-side. Creates or updates the worker's canonical labels (`work-on`, `top-priority`, `needs-human`, `question`, `planning`, …) in every monitored repository, with canonical colours and descriptions, and deletes the worker labels that have since been retired. GitHub's stock `good first issue` and `help wanted` are never deleted. Supports `--dry-run`. | Not in practice — see below for what skipping it breaks. |
 | `workflow-sync` | Repo-side. Audits each monitored repository's GitHub Actions workflows and raises issues for missing protections. Writes nothing but issues. | Yes — idempotent housekeeping; the audit simply runs later. |
 | `best-practices-sync` | Repo-side. Audits workflows for best-practice findings and files (or updates) one follow-up issue per repository. | Yes — same housekeeping category. |
 | `best-practices-relabel` | Repo-side. One-off back-fill of severity and category labels onto best-practice issues filed before those labels existed. Supports `--dry-run`. | Yes — internal maintenance; not part of `setup all`, and a fresh setup has nothing to relabel. |
@@ -1267,6 +1267,22 @@ label-driven: humans steer it by applying labels (`top-priority`,
 `question`, `failed`, …). Skip `label-sync` and none of those labels exist
 in the monitored repositories — issues cannot be labelled for pickup, and
 the worker's own labelling calls fail. Run it.
+
+It is also the one repo-side phase that **deletes**, so it takes a
+`--dry-run` (Issue #1295). Label deletion is irreversible — the label's
+attachment to every issue goes with it — so on a repository you have just
+added, plan first and read the report before letting the real pass run:
+
+```bash
+cd worker/deno && deno task setup label-sync --script-dir ../.. \
+  --config-path ../../.config.json --dry-run < /dev/null
+```
+
+The plan issues no `gh label create`, `edit` or `delete`: it reads each
+repository's labels once and reports what a real pass would create, overwrite
+and delete. The two labels GitHub ships with every repository —
+`good first issue` and `help wanted` — are never deleted, whatever the
+deprecated list says.
 
 An operator who wants the script's entire repo-side effect without any of
 its prompts can run `setup all` — it is the same sequence the script drives,

@@ -16,7 +16,7 @@
  *   launchagent        Setup macOS LaunchAgent
  *   scheduled-task     Register the Windows Task Scheduler entry
  *   screenshot         Setup Playwright MCP for screenshots
- *   label-sync         Synchronise labels across repos
+ *   label-sync         Synchronise labels across repos (--dry-run plans only)
  *   label-colour-reconcile  Repaint drifted fleet label colours
  *   workflow-sync      Audit workflows and raise issues for missing protections
  *   best-practices-sync  Audit workflows for best-practice findings and file follow-ups
@@ -594,8 +594,15 @@ async function runScreenshotSetup(scriptDir: string): Promise<boolean> {
   return result.ok;
 }
 
-async function runLabelSync(configPath: string): Promise<boolean> {
-  printInfo("Synchronising labels across monitored repositories...");
+async function runLabelSync(
+  configPath: string,
+  dryRun = false,
+): Promise<boolean> {
+  printInfo(
+    dryRun
+      ? "Planning label sync across monitored repositories (dry run — nothing is changed)..."
+      : "Synchronising labels across monitored repositories...",
+  );
 
   try {
     const config = await loadExistingConfig(configPath);
@@ -608,15 +615,21 @@ async function runLabelSync(configPath: string): Promise<boolean> {
     const ghConfigDir = config.gh_config_dir
       ? config.gh_config_dir.replace(/^~/, Deno.env.get("HOME") ?? "~")
       : undefined;
-    const results = await syncLabelsForAllRepos(repos, { ghConfigDir });
+    const results = await syncLabelsForAllRepos(repos, { ghConfigDir, dryRun });
     let anyFailure = false;
     for (const r of results) {
       if (r.ok) {
         printInfo(
-          `Labels synced for ${r.repo}: ${r.created} created, ${r.updated} updated, ${r.skipped} skipped`,
+          r.dryRun
+            ? `Label sync plan for ${r.repo}: ${r.created} would be created, ${r.updated} would be updated (colour + description overwritten), ${r.deprecated_removed} deprecated would be deleted, ${r.skipped} skipped`
+            : `Labels synced for ${r.repo}: ${r.created} created, ${r.updated} updated, ${r.skipped} skipped`,
         );
       } else {
-        printWarning(`Label sync for ${r.repo} had ${r.failures} failure(s)`);
+        printWarning(
+          `Label sync for ${r.repo} had ${r.failures} failure(s)${
+            r.error ? `: ${r.error}` : ""
+          }`,
+        );
         anyFailure = true;
       }
     }
@@ -1458,7 +1471,8 @@ Subcommands:
                   (Issue #730 — setup.sh runs each one's credential flow)
   launchagent     Setup macOS LaunchAgent (--status / --uninstall to query or remove it)
   screenshot      Setup Playwright MCP for screenshots
-  label-sync      Synchronise labels across repos
+  label-sync      Synchronise labels across repos (supports --dry-run, which
+                  reports what would change without touching a label)
   label-colour-reconcile  Repaint drifted fleet label colours to the canonical
                   table (supports --dry-run)
   workflow-sync   Audit workflows and raise issues for missing protections
@@ -1562,7 +1576,7 @@ if (import.meta.main) {
       ok = await runScreenshotSetup(scriptDir);
       break;
     case "label-sync":
-      ok = await runLabelSync(configPath);
+      ok = await runLabelSync(configPath, dryRun);
       break;
     case "label-colour-reconcile":
       ok = await runLabelColourReconcile(configPath, dryRun);
