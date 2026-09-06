@@ -69,9 +69,12 @@ const okPrompt = (): Promise<Result<string>> =>
 /** A fleet login, so a stubbed wrapper reads as one the fleet filed. */
 const FLEET_DEDUP_AUTHOR = "vibe-bot";
 
+/** The fleet the finding-id dedup verifies against (Issue #1243). */
+const DEDUP_AUTHORS = { fleetAuthors: [FLEET_DEDUP_AUTHOR] };
+
 /**
  * gh stub. Distinguishes the two snapshot calls (`--json number`) from the
- * known-open lookup (`--json number,body`) and the open-wrapper veto
+ * known-open lookup (`--json number,body,author`) and the open-wrapper veto
  * (`--json number,title`).
  */
 function makeGhStub(scenario: {
@@ -93,8 +96,17 @@ function makeGhStub(scenario: {
         JSON.stringify((result ?? []).map((n) => ({ number: n }))),
       );
     }
-    if (jsonField === "number,body") {
-      return Promise.resolve(JSON.stringify(scenario.knownOpen ?? []));
+    if (jsonField === "number,body,author") {
+      // Author-verified dedup (Issue #1243): only a fleet-authored
+      // finding-id marker counts as an already-filed finding.
+      return Promise.resolve(
+        JSON.stringify(
+          (scenario.knownOpen ?? []).map((i) => ({
+            ...i,
+            author: { login: FLEET_DEDUP_AUTHOR },
+          })),
+        ),
+      );
     }
     // The wrapper-veto search now also asks for `author`, because a
     // title alone is text anybody may write and only the author is
@@ -250,6 +262,7 @@ Deno.test("retro shouldFile - vetoes when an open wrapper already exists", async
     openWrappers: [{ number: 42, title: RETRO_ISSUE_TITLE }],
   });
   const t = createRetroTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     // The wrapper veto now counts a title match only when the fleet
     // authored it, so the test states the fleet rather than writing
     // a config file.
@@ -267,6 +280,7 @@ Deno.test("retro shouldFile - allows when no wrapper is open", async () => {
 
 Deno.test("retro shouldFile - a gh failure does not stall the scan", async () => {
   const t = createRetroTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: () => Promise.reject(new Error("gh exploded")),
   });
   assertEquals(await t.shouldFile!({ repo: "acme/widget" }), true);
@@ -284,6 +298,7 @@ Deno.test("retro runTask - happy path ensures the label and diffs the snapshot",
   const ensureCalls: string[] = [];
   const scanCalls: { knownOpenFindingIds: string[]; workDir: string }[] = [];
   const t = createRetroTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     loadPromptFn: okPrompt,
     ensureLabelFn: (repo) => {
@@ -320,6 +335,7 @@ Deno.test("retro runTask - happy path ensures the label and diffs the snapshot",
 Deno.test("retro runTask - scan failure surfaces ok:false with the failure kind", async () => {
   const { gh } = makeGhStub({ snapshots: [[], []] });
   const t = createRetroTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -345,6 +361,7 @@ Deno.test("retro runTask - scan failure surfaces ok:false with the failure kind"
 Deno.test("retro runTask - an unexpected throw fails loud rather than reporting success", async () => {
   const { gh } = makeGhStub({ snapshots: [[], []] });
   const t = createRetroTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.reject(new Error("network down")),
@@ -365,6 +382,7 @@ Deno.test("retro runTask - an unexpected throw fails loud rather than reporting 
 Deno.test("retro runTask - empty diff reports no candidates", async () => {
   const { gh } = makeGhStub({ snapshots: [[5], [5]] });
   const t = createRetroTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -409,6 +427,7 @@ function makeTitleGhStub(
 Deno.test("retro runTask - repo-wide open issue titles reach the scan runner", async () => {
   const seen: OpenIssueTitle[][] = [];
   const t = createRetroTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: makeTitleGhStub([
       { number: 37, title: "AGENTS.md is too large" },
     ]),
@@ -433,6 +452,7 @@ Deno.test("retro runTask - repo-wide open issue titles reach the scan runner", a
 Deno.test("retro runTask - a gh failure listing titles degrades to an empty list", async () => {
   const seen: OpenIssueTitle[][] = [];
   const t = createRetroTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: makeTitleGhStub([], true),
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -459,6 +479,7 @@ Deno.test("retro runTask - a gh failure listing titles degrades to an empty list
 Deno.test("claim handler - dispatches a retro wrapper to runTask", async () => {
   const { gh } = makeGhStub({ snapshots: [[], [11]] });
   const template = createRetroTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),

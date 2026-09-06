@@ -62,6 +62,15 @@ import { setCachedDefaultBranch } from "../lib/default_branch_cache.ts";
 import { clearDefaultBranchMemoryCache } from "../lib/shell_helpers.ts";
 
 /**
+ * The fleet identity the finding-id dedup verifies against (Issue #1243).
+ *
+ * The stubbed known-open issues are ones the fleet filed, so they are
+ * attributed to a fleet login and the templates are handed the same list.
+ */
+const FLEET_DEDUP_AUTHOR = "vibe-bot";
+const DEDUP_AUTHORS = { fleetAuthors: [FLEET_DEDUP_AUTHOR] };
+
+/**
  * A throwaway persistent default-branch cache for this suite.
  *
  * The trigger pre-filer's default resolver (Issue #2587) reads and writes
@@ -85,6 +94,10 @@ function makeAuditTemplate(
 ): IdleTaskTemplate {
   return createGitHubActionsAuditTemplate({
     defaultBranchCachePath: THROWAWAY_BRANCH_CACHE,
+    // Author-verified finding-id dedup (Issue #1243): the stubbed known-open
+    // issues are fleet-authored, so the fleet is stated here rather than read
+    // from a config file.
+    dedupAuthors: DEDUP_AUTHORS,
     ...deps,
   });
 }
@@ -180,7 +193,10 @@ function makeGhStub(scenario: {
     // Wrapper-title search — `number,title` for the repo-wide open-issue
     // list, and the author-bearing field list for the veto (a title alone is
     // text anybody may write, so the veto verifies the author).
-    if (jsonField === "number,title" || (jsonField ?? "").includes("author")) {
+    if (
+      jsonField !== "number,body,author" &&
+      (jsonField === "number,title" || (jsonField ?? "").includes("author"))
+    ) {
       return Promise.resolve("[]");
     }
     // Repository-settings pre-filer (Issues #4397/#4398/#4401) and the GHSA
@@ -253,11 +269,21 @@ function makeGhStub(scenario: {
         : scenario.afterSnapshot ?? scenario.beforeSnapshot ?? [];
       return Promise.resolve(JSON.stringify(nums.map((n) => ({ number: n }))));
     }
-    // Known-open lookup (number,body).
+    // Known-open lookup (number,body,author). Author-bearing since Issue
+    // #1243: a finding-id marker anybody may write is not evidence the fleet
+    // filed the finding, so the stub answers as a fleet account.
     if (
-      jsonField === "number,body" && args[0] === "issue" && args[1] === "list"
+      jsonField === "number,body,author" && args[0] === "issue" &&
+      args[1] === "list"
     ) {
-      return Promise.resolve(JSON.stringify(scenario.knownOpen ?? []));
+      return Promise.resolve(
+        JSON.stringify(
+          (scenario.knownOpen ?? []).map((i) => ({
+            ...i,
+            author: { login: FLEET_DEDUP_AUTHOR },
+          })),
+        ),
+      );
     }
     // gh issue create — capture and return a fresh URL.
     if (args[0] === "issue" && args[1] === "create") {

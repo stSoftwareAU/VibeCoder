@@ -350,6 +350,28 @@ calling scan in log lines only — it never filters results — and the `idPrefi
 argument (default `BP-`) keeps another scan's ids (`SEC-…`, `SWEEP-…`) out of
 this scan's skip-list.
 
+**Only a fleet-authored marker deduplicates** (Issue #1243). An issue body is
+text anyone with a GitHub account can write, and finding ids are deterministic
+per scanner, so a marker match on its own proves nothing — only the author is
+authenticated. Both look-ups therefore ask for `author`
+(`ALERT_DEDUP_JSON_FIELDS` → `number,body,author`) and filter every match
+through `selectFleetAuthoredMatches`, the same control the escalation modules
+apply to their `in:body` searches. A match written outside the fleet — and every
+match when the fleet author set cannot be resolved — is discarded and the
+discard is logged, so the finding is **filed**: a duplicate finding is noise a
+human closes, while a suppressed one is a finding nobody hears about.
+
+```mermaid
+flowchart LR
+    A["gh issue list<br/>--json number,body,author"] --> B{"marker<br/>&lt;!-- finding-id --&gt;?"}
+    B -- no --> F["file the finding"]
+    B -- yes --> C{"author in<br/>fleet identity?"}
+    C -- no / unresolvable --> F
+    C -- yes --> S["skip: already filed"]
+    style F fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style S fill:#adb5bd,stroke:#6c757d,color:#000
+```
+
 `{{OPEN_ISSUE_TITLES}}` is the **semantic second line** (Issue #537,
 parent #523). It catches the duplicate the marker cannot: the same problem filed
 under a different id, or typed by a human. Every scan template that files

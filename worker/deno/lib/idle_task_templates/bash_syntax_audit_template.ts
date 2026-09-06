@@ -577,6 +577,7 @@ export function createBashSyntaxAuditTemplate(
           logLabel: BASH_SYNTAX_AUDIT_LABEL,
           findingId: finding.findingId,
           ghCommandFn,
+          dedupAuthors,
           fileFn: () =>
             fileGateFinding(opts.repo, finding, footer, ghCommandFn),
         });
