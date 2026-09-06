@@ -53,8 +53,8 @@ evidence is the regression suite, run against the unfixed and the fixed code.
 **Red, against the unfixed `setup.sh`** — all three new tests failed. The first
 one showed the vulnerability exactly as reported: the stubbed `claude` recorded
 `ANTHROPIC_API_KEY` as `<unset>`, because
-`ANTHROPIC_API_KEY=sk-ant-oat01-AAA BBB; touch …` parses as a prefix assignment
-on the command `BBB`, and both injected `touch` payloads ran.
+the stored line parses as a prefix assignment on the command `BBB` rather than as
+an assignment of the whole value, and both injected `touch` payloads ran.
 
 ```text
 claude_credential_is_valid - exports a metacharacter credential verbatim and runs none of it
@@ -122,8 +122,8 @@ tests that source the real `setup.sh` and call its real functions:
 Existing suites re-run unchanged and green:
 `setup_credential_provisioning_test.ts`, `setup_provider_credential_flow_test.ts`
 and `setup_parity_test.ts` (46 tests) — including the assertion that a normal key
-is still stored as the exact line `ANTHROPIC_API_KEY=sk-ant-provisioned\n`, which
-is what keeps the cross-language file format intact. No existing test was
+is still stored as the exact one-line `NAME=value` form those readers expect,
+which is what keeps the cross-language file format intact. No existing test was
 modified or removed.
 
 ## Files changed
