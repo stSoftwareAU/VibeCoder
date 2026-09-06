@@ -72,6 +72,13 @@ import type { Result } from "../types.ts";
  *     flow raises on a parent whose published sub-issues still lack their
  *     `## Failure Detection` criterion, and the Priority 1.81 resume pass
  *     clears once the repairs are finished (Issues #59, #60).
+ *   - `blocked` — the visible fallback `deferBlockedIssue` applies when the
+ *     `Depends on owner/repo#N` line cannot be written to the issue body, so
+ *     a deferral stays legible (Issue #222). Listed here by Issue #1219: the
+ *     worker already applied it, but through a direct `ghClient.addLabel`
+ *     that skipped this guard entirely, so the allowlist did not describe
+ *     what the worker actually did. Same class as `merge-conflict` — a
+ *     worker-owned queue marker, not a pickup-priority label.
  */
 export const WORKER_APPLIABLE_LABEL_LITERALS: ReadonlySet<string> = new Set([
   "failed",
@@ -88,6 +95,7 @@ export const WORKER_APPLIABLE_LABEL_LITERALS: ReadonlySet<string> = new Set([
   "degraded-model",
   "merge-conflict",
   "needs-failure-detection-repair",
+  "blocked",
 ]);
 
 /**

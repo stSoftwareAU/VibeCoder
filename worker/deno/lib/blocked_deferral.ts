@@ -28,6 +28,7 @@ import {
 import { extractDependencyReferencesDetailed } from "./issue_dependencies.ts";
 import { expectedNoPrOutcome, type RunOutcome } from "./run_outcome.ts";
 import { releaseClaim as defaultReleaseClaim } from "./claim_release.ts";
+import { assertWorkerCanApplyLabel } from "./worker_label_guard.ts";
 import type { GitHubClient, Logger, Result } from "../types.ts";
 
 /** Label applied when the dependency line cannot be written to the body. */
@@ -89,6 +90,11 @@ export interface DeferBlockedIssueDeps {
     colour?: string,
     description?: string,
   ) => Promise<Result<void>>;
+  /**
+   * Capture the `[SECURITY] [WORKER_LABEL_REFUSED]` line the label guard
+   * emits, instead of inheriting the real `console.warn` (Issue #1219).
+   */
+  labelGuardLogFn?: (line: string) => void;
 }
 
 /** Options accepted by {@link deferBlockedIssue}. */
@@ -232,21 +238,43 @@ export async function deferBlockedIssue(
 
   if (recorded === "none") {
     // Fallback: the `blocked` label at least keeps the deferral visible.
-    try {
-      await deps?.ensureLabelExists?.(
-        repo,
-        BLOCKED_LABEL,
-        "d93f0b",
-        "Blocked on another issue",
-      );
-      await ghClient.addLabel(repo, issueNumber, BLOCKED_LABEL);
-      recorded = "label";
-    } catch (err) {
-      logger.warn("Failed to apply the blocked label", {
+    //
+    // Issue #1219 (SEC-1219-01): `ghClient.addLabel` posts straight to the
+    // labels API, so without this guard the invariant "every worker-applied
+    // label passes through `assertWorkerCanApplyLabel`" would hold only for
+    // `addLabelToIssue` callers — this was the one label write in `lib/`
+    // that reached GitHub with no allowlist check at all. Refusing here
+    // covers both mutations below (the repo label creation and the issue
+    // label add) and emits a `[SECURITY] [WORKER_LABEL_REFUSED]` audit line
+    // rather than failing quietly. Same shape as `escalateToHuman`.
+    const labelGuard = assertWorkerCanApplyLabel(BLOCKED_LABEL, {
+      caller: `deferBlockedIssue(${repo}#${issueNumber})`,
+      logFn: deps?.labelGuardLogFn,
+    });
+    if (!labelGuard.ok) {
+      logger.warn("Blocked label refused by the worker allowlist", {
         repo,
         issueNumber,
-        error: err instanceof Error ? err.message : String(err),
+        label: BLOCKED_LABEL,
+        error: labelGuard.error.message,
       });
+    } else {
+      try {
+        await deps?.ensureLabelExists?.(
+          repo,
+          BLOCKED_LABEL,
+          "d93f0b",
+          "Blocked on another issue",
+        );
+        await ghClient.addLabel(repo, issueNumber, BLOCKED_LABEL);
+        recorded = "label";
+      } catch (err) {
+        logger.warn("Failed to apply the blocked label", {
+          repo,
+          issueNumber,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 

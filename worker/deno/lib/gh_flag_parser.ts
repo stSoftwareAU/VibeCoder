@@ -12,47 +12,122 @@
  * Normalising once, here, keeps a single place that knows the pflag spelling
  * rules: every consumer then only has to match the separated form.
  *
- * **Scope.** Only the shorthands whose values the guards actually read are
- * expanded. A shorthand group of boolean flags (`-ab`) is left alone, because
- * splitting it would invent values the guards would then have to interpret.
+ * ## Shorthand groups (Issue #1219, SEC-1219-01)
+ *
+ * The first version of this module only looked at `token[1]`, and only for
+ * `R`, `l` and `X`. pflag also accepts a **group** of shorthands in one token,
+ * where the first flag that takes a value swallows the remainder of the group
+ * as that value — so `-iXDELETE` is `-i -X DELETE`. Verified against the
+ * installed `gh`: `gh api -iXGET rate_limit` returns a 200 with response
+ * headers (so `-i` was honoured *and* `X` took `GET`), and `-iXBOGUSMETHOD`
+ * is rejected by the server with a 403 (so the bogus method really was sent).
+ *
+ * Because `-X` sat at index 2 rather than index 1, `normaliseGhArgs` passed
+ * the token through untouched and `classifyGhApi` never saw a method: it fell
+ * back to `GET`, decided the command was not a mutation at all, and
+ * `gh api -iXDELETE repos/o/r/git/refs/heads/main` reached GitHub without
+ * passing the audit journal, the write-repo allowlist or the issue-lifecycle
+ * guard. The same gap covered `f`/`F`, which were absent from the expansion
+ * set entirely: `gh api -XPATCH repos/o/r/issues/9 -fstate=closed` was
+ * classified as a body `edit` — a verb allowed by default — rather than a
+ * `close`, defeating the guard that exists to stop an agent closing its own
+ * issue.
+ *
+ * ## Why the walk stops where it does
+ *
+ * A letter that takes a value **anywhere in `gh`** ends the group: pflag would
+ * hand it the rest of the token, so there is no hidden flag behind it. Only
+ * letters that are boolean everywhere are walked through. That ordering is
+ * what keeps the rewrite honest in both directions — it cannot invent an `-X`
+ * out of the middle of a `-q` jq expression (a false mutation), and it cannot
+ * miss one hiding behind a boolean (a waved-through mutation).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 /**
- * Shorthand flags whose value the guards read.
+ * Shorthand flags whose value the guards read, and which are therefore
+ * rewritten into the separated form.
  *
  * `R` is `--repo` (write-repo allowlist), `l` is `--label`/`--add-label`
- * (reserved-label denylist) and `X` is `--method` (`gh api` mutation
- * detection).
+ * (reserved-label denylist), `X` is `--method` (`gh api` mutation detection)
+ * and `f`/`F` are `--raw-field`/`--field` (the `state=closed` payload the
+ * issue-lifecycle guard reads).
  */
-const GH_VALUE_SHORTHANDS: ReadonlySet<string> = new Set(["R", "l", "X"]);
+const GH_GUARD_SHORTHANDS: ReadonlySet<string> = new Set([
+  "R",
+  "l",
+  "X",
+  "f",
+  "F",
+]);
 
 /**
- * Split one token into its separated form when it is a value-carrying
- * shorthand with an attached value.
+ * Every shorthand letter that takes a value in at least one `gh` subcommand.
+ *
+ * Enumerated from `gh <subcommand> --help` across `api`, `issue`, `pr`,
+ * `label`, `release`, `repo`, `run`, `search` and `workflow`. A letter is
+ * listed when *any* subcommand gives it an argument, because this set is only
+ * used to decide where a shorthand group ends — and treating a value-carrying
+ * letter as boolean is the mistake that invents flags out of flag *values*.
+ * Letters absent here (`i`, `h`, `v`, `x`, …) are boolean everywhere and can
+ * safely be walked past.
+ */
+const GH_VALUE_SHORTHANDS: ReadonlySet<string> = new Set(
+  "ABFHLORSTXabcdefklmnopqrstuw".split(""),
+);
+
+/** A shorthand group split into the tokens pflag would see. */
+type ExpandedGroup = string[];
+
+/**
+ * Expand one shorthand token into the separated spellings the guards match.
+ *
+ * Walks the group left to right. Boolean letters are emitted as their own
+ * tokens; the first value-carrying letter takes the remainder of the token as
+ * its value (pflag strips one leading `=`). When that letter is not one the
+ * guards read, the token is left byte-identical so downstream scanning
+ * behaves exactly as it did before — rewriting `-q.foo` into `-q .foo` would
+ * turn a jq expression into a positional the classifier would read as the
+ * endpoint.
  *
  * @param token - A single argv token.
- * @returns `[flag, value]`, or undefined when the token is not an attached
- *   value-carrying shorthand.
+ * @returns The expanded tokens, or `undefined` when the token must be passed
+ *   through verbatim (not a shorthand group, or nothing the guards read).
  */
-function expandAttachedShorthand(
-  token: string,
-): [string, string] | undefined {
+function expandShorthandGroup(token: string): ExpandedGroup | undefined {
   if (token.length <= 2) return undefined;
   if (!token.startsWith("-") || token.startsWith("--")) return undefined;
-  const letter = token[1]!;
-  if (!GH_VALUE_SHORTHANDS.has(letter)) return undefined;
-  // pflag: `-R=value` strips the `=`, `-Rvalue` takes the remainder verbatim.
-  const value = token[2] === "=" ? token.slice(3) : token.slice(2);
-  return [`-${letter}`, value];
+
+  const booleans: string[] = [];
+  for (let i = 1; i < token.length; i++) {
+    const letter = token[i]!;
+    if (!GH_VALUE_SHORTHANDS.has(letter)) {
+      // Boolean everywhere in `gh`; pflag moves on to the next letter.
+      booleans.push(`-${letter}`);
+      continue;
+    }
+    // This letter takes the rest of the token as its value.
+    if (!GH_GUARD_SHORTHANDS.has(letter)) return undefined;
+    const rest = token.slice(i + 1);
+    // pflag: `-R=value` strips the `=`, `-Rvalue` takes the remainder verbatim.
+    const value = rest.startsWith("=") ? rest.slice(1) : rest;
+    // An empty remainder means the value is the next argv token, which is
+    // already the separated form the guards match.
+    return value === ""
+      ? [...booleans, `-${letter}`]
+      : [...booleans, `-${letter}`, value];
+  }
+  // An all-boolean group carries no value for a guard to read.
+  return undefined;
 }
 
 /**
  * Rewrite a `gh` argument vector into the spellings the guards match.
  *
- * Attached shorthand values are expanded to their separated form; every other
- * token — long flags, `--`, positionals, values — is passed through verbatim.
+ * Attached shorthand values are expanded to their separated form, including
+ * when the flag is buried in a shorthand group; every other token — long
+ * flags, `--`, positionals, values — is passed through verbatim.
  *
  * @param args - Arguments as they would be passed to the `gh` binary.
  * @returns An equivalent vector using only separated shorthand values.
@@ -61,8 +136,8 @@ export function normaliseGhArgs(args: readonly string[]): string[] {
   const out: string[] = [];
   for (const token of args) {
     if (token === undefined) continue;
-    const expanded = expandAttachedShorthand(token);
-    if (expanded) out.push(expanded[0], expanded[1]);
+    const expanded = expandShorthandGroup(token);
+    if (expanded) out.push(...expanded);
     else out.push(token);
   }
   return out;
