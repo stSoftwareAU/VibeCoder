@@ -434,6 +434,7 @@
         "worker/deno/lib/blocked_outcome.ts",
         "worker/deno/lib/bounded_fetch.ts",
         "worker/deno/lib/boy_scout_idle_tasks.ts",
+        "worker/deno/lib/branch_currency.ts",
         "worker/deno/lib/branch_head_tracker.ts",
         "worker/deno/lib/branch_history_rewrite.ts",
         "worker/deno/lib/branch_protection_definitions.ts",

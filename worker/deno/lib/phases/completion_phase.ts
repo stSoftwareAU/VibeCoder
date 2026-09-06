@@ -56,6 +56,8 @@ import {
 } from "../issue_lifecycle.ts";
 import { shouldRetryInfrastructureFailure } from "../infra_retry.ts";
 import { createPullRequestViaRest } from "../pr_create_rest.ts";
+import { ensureBranchCurrent } from "../branch_currency.ts";
+import { rebaseOntoBase } from "../stale_branch_lineage.ts";
 import { isPrimaryRateLimitMessage } from "../primary_quota_latch.ts";
 import { buildBumpRejectionComment } from "../bump_deps.ts";
 import {
@@ -783,6 +785,38 @@ async function completionBody(
         dropped: lineage.dropped.length,
         pushed: lineage.pushed,
       },
+    );
+  }
+
+  // Bring the branch up to date BEFORE the PR exists, so its CI runs once.
+  //
+  // A branch behind its base is tested twice: once on the stale head, then
+  // again after something updates it. Both runs pass, nothing reports the
+  // duplication, and the cycle is simply slower — and with the four
+  // `validate (tests N/4)` shards now required on `milestone/**` as well as
+  // the default branch, that doubling is the most expensive avoidable thing
+  // the fleet does.
+  //
+  // Distinct from the stale-lineage guard above, which repairs a branch whose
+  // commits were already squashed away. This one handles the ordinary case:
+  // the base simply moved on while the agent worked.
+  //
+  // Never fatal. A dirty tree, a real content conflict or an unreadable
+  // comparison all leave the branch exactly as it was and the PR proceeds —
+  // an extra CI run is a cost, a wrongly-rebased branch is a defect, and
+  // diverged content belongs to the conflict ladder.
+  const currency = await ensureBranchCurrent({
+    branch: state.branchName,
+    baseBranch,
+    runGit: deps.git.runGitCommand,
+    cwd: state.repoPath,
+    rebase: rebaseOntoBase,
+    log: (m: string) => logger.info(m),
+  });
+  if (currency.kind === "declined" || currency.kind === "unknown") {
+    logger.warn(
+      `'${state.branchName}' was not brought up to date before its PR — ` +
+        `CI may run twice: ${currency.detail}`,
     );
   }
 
