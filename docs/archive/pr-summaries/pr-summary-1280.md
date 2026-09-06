@@ -146,7 +146,7 @@ real `quality.ts` print path with a capture sink swapped in ahead of the patch:
   output is absent from what the entry point prints, and the placeholder is
   present. Fails against the unfixed code, passes after the fix.
 - `::printGateOutput - masks an exported token in a check's stderr` — the
-  `export ANTHROPIC_API_KEY=sk-ant-…` shape.
+  shape a shell trace leaves behind when a step exports an Anthropic API key.
 - `::printGateOutput - prints the summary and skips an empty transcript` — the
   surrounding transcript is untouched, so redaction stays targeted.
 
