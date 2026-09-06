@@ -18,6 +18,7 @@ import {
   PLAYWRIGHT_MCP_VERSION,
   playwrightQuarantinedPackages,
   resolveBrowserEnvironment,
+  resolveDeniedPaths,
   setupPlaywrightMcp,
   verifyScreenshotNpmQuarantine,
 } from "../setup/screenshot.ts";
@@ -639,7 +640,9 @@ Deno.test("generateMcpConfig - keeps the OS sandbox when no browser is baked in"
     browserEnvironment: hostBrowser(),
   })).mcpServers.playwright;
 
-  assertEquals(server.env, undefined);
+  // Issue #1288: the env block is now always present (it blanks the
+  // secrets), but with no baked browser it must not point at one.
+  assertEquals("PLAYWRIGHT_BROWSERS_PATH" in server.env, false);
   assertEquals((server.args as string[]).includes("--no-sandbox"), false);
 });
 
@@ -777,4 +780,135 @@ Deno.test("generateMcpConfig - selects the chromium browser channel, baked or ho
       true,
     );
   }
+});
+
+// ── #1288: --deny-env does not bound a child process ──────────────────────
+
+Deno.test("generateMcpConfig - blanks every denied secret in the server's own environment (Issue #1288)", () => {
+  // `--deny-env` is a permission check inside the Deno runtime: the value is
+  // still in the process environment, so any child spawned under
+  // `--allow-run` (`printenv GH_TOKEN`) reads it. Blanking the values is what
+  // actually removes them from the child's view.
+  for (const browserEnvironment of [bakedBrowser(), hostBrowser()]) {
+    const server = JSON.parse(generateMcpConfig({
+      scriptDir: "/workspace",
+      browserEnvironment,
+    })).mcpServers.playwright;
+
+    const env = server.env as Record<string, string> | undefined;
+    assertEquals(
+      typeof env,
+      "object",
+      "the server config must carry an env block that blanks the secrets",
+    );
+    for (const name of PLAYWRIGHT_MCP_DENIED_ENV) {
+      assertEquals(
+        env?.[name],
+        "",
+        `${name} must be blanked for the MCP server and its children`,
+      );
+    }
+  }
+});
+
+Deno.test("generateMcpConfig - blanking the secrets keeps the baked browser pointer (Issue #1288)", () => {
+  const baked = JSON.parse(generateMcpConfig({
+    scriptDir: "/workspace",
+    browserEnvironment: bakedBrowser(),
+  })).mcpServers.playwright.env as Record<string, string>;
+  assertEquals(baked.PLAYWRIGHT_BROWSERS_PATH, CONTAINER_BROWSERS_PATH);
+
+  const host = JSON.parse(generateMcpConfig({
+    scriptDir: "/opt/vibe",
+    browserEnvironment: hostBrowser(),
+  })).mcpServers.playwright.env as Record<string, string>;
+  assertEquals("PLAYWRIGHT_BROWSERS_PATH" in host, false);
+});
+
+Deno.test("generateMcpConfig - denies read and write of the credential stores (Issue #1288)", () => {
+  const args: string[] = JSON.parse(generateMcpConfig({
+    scriptDir: "/workspace",
+    browserEnvironment: bakedBrowser(),
+    deniedPaths: ["/home/vibe/.config/gh", "/home/vibe/.ssh"],
+  })).mcpServers.playwright.args;
+
+  for (const flag of ["--deny-read=", "--deny-write="]) {
+    const arg = args.find((a) => a.startsWith(flag));
+    assertEquals(typeof arg, "string", `expected a ${flag}... flag`);
+    assertEquals(
+      (arg as string).slice(flag.length).split(","),
+      ["/home/vibe/.config/gh", "/home/vibe/.ssh"],
+    );
+  }
+});
+
+Deno.test("generateMcpConfig - omits the deny-path flags when there is nothing to deny (Issue #1288)", () => {
+  // `--deny-read=` with an empty list denies every read and would break the
+  // server outright, so the flag must be dropped rather than emitted empty.
+  const args: string[] = JSON.parse(generateMcpConfig({
+    scriptDir: "/workspace",
+    browserEnvironment: bakedBrowser(),
+    deniedPaths: [],
+  })).mcpServers.playwright.args;
+
+  assertEquals(args.some((a) => a.startsWith("--deny-read")), false);
+  assertEquals(args.some((a) => a.startsWith("--deny-write")), false);
+});
+
+Deno.test("resolveDeniedPaths - covers the credential stores under HOME", () => {
+  const paths = resolveDeniedPaths({
+    getEnv: (name) => (name === "HOME" ? "/home/vibe" : undefined),
+  });
+
+  for (
+    const expected of [
+      "/home/vibe/.ssh",
+      "/home/vibe/.config/gh",
+      "/home/vibe/.aws",
+      "/home/vibe/.gnupg",
+      "/home/vibe/.netrc",
+      "/home/vibe/.git-credentials",
+    ]
+  ) {
+    assertEquals(paths.includes(expected), true, `missing ${expected}`);
+  }
+});
+
+Deno.test("resolveDeniedPaths - covers the relocated gh config and the app private key", () => {
+  const paths = resolveDeniedPaths({
+    getEnv: (name) =>
+      ({
+        HOME: "/home/vibe",
+        GH_CONFIG_DIR: "/srv/state/gh",
+        CLAUDE_CONFIG_DIR: "/srv/state/claude",
+        GITHUB_APP_PRIVATE_KEY_PATH: "/srv/secrets/app.pem",
+      })[name],
+  });
+
+  assertEquals(paths.includes("/srv/state/gh"), true);
+  assertEquals(paths.includes("/srv/state/claude"), true);
+  assertEquals(paths.includes("/srv/secrets/app.pem"), true);
+  // No duplicates, and nothing empty — an empty entry in a deny list is a
+  // path that never matches, silently weakening the guard.
+  assertEquals(new Set(paths).size, paths.length);
+  assertEquals(paths.some((p) => p.trim() === ""), false);
+});
+
+Deno.test("resolveDeniedPaths - returns nothing when the environment names no home", () => {
+  assertEquals(resolveDeniedPaths({ getEnv: () => undefined }), []);
+});
+
+Deno.test("generateMcpConfig - refuses a denied path Deno cannot express (Issue #1288)", () => {
+  // Deno splits permission lists on commas, so such a path would deny two
+  // directories that do not exist while looking like a complete guard.
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "/workspace",
+        browserEnvironment: bakedBrowser(),
+        deniedPaths: ["/home/vibe/creds,backup"],
+      }),
+    Error,
+    "breaks Deno's permission list",
+  );
 });

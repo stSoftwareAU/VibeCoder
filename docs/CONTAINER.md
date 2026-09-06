@@ -186,7 +186,9 @@ flowchart TD
   stays on.
 - **The secrets denylist is unchanged.** `--deny-env` still hides the worker's
   tokens and keys from the MCP process, and the npm registry age
-  gate still guards the pinned specifiers.
+  gate still guards the pinned specifiers. Since Issue #1288 the same names are
+  also blanked in the server's `env` block, because a permission flag binds the
+  Deno runtime and not the children it spawns under `--allow-run`.
 - **The server is handed to the agent only on a run that needs a browser**
   (Issue #192). Browser and outbound-network capability is granted on an
   explicit need signal — `RunClaudeOptions.mcpConfig: true` — not by the mere

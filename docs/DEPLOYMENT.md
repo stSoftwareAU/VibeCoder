@@ -994,8 +994,14 @@ claude "Take a screenshot of http://localhost:3000"
 > (no `--allow-all`). The `--deny-env=...` list blocks the worker's
 > high-value secrets — `VIBE_IMGBB_API_KEY`, `GH_TOKEN`,
 > `GITHUB_APP_PRIVATE_KEY_PATH`, `GIT_SSH_COMMAND`, and `ANTHROPIC_API_KEY`
-> — from being read by the MCP process, so a compromised release cannot
-> exfiltrate them via `Deno.env.get()`. The pin is the canonical knob
+> — from being read by the MCP process via `Deno.env.get()`. That flag binds
+> the Deno runtime only, not the children it spawns under `--allow-run`
+> (Issue #1288), so the generated config **also blanks every one of those
+> names in the server's `env` block** — the map the MCP client merges over the
+> inherited environment, and therefore what a child such as `printenv`
+> actually sees. `--deny-read` / `--deny-write` cover the credential stores
+> (`~/.ssh`, `~/.config/gh`, `$GH_CONFIG_DIR`, the GitHub App private key)
+> that the otherwise unscoped `--allow-read` would reach. The pin is the canonical knob
 > kept in `worker/deno/setup/screenshot.ts` (`PLAYWRIGHT_MCP_VERSION`);
 > Renovate's `minimumReleaseAge: 24 hours` quarantine gates upgrades.
 
