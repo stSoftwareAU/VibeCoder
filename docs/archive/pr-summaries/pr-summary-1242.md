@@ -112,11 +112,17 @@ different name are closed by the gate: any new `${TMPDIR}/vibe-…` or
   multi-line interpolation, fixed `/tmp` literal, helper accepted, bare root
   accepted, prose ignored, allowlist, directory walk) plus a
   production-tree-is-clean test that fails if any new site appears.
-- **Updated** (path expectations only, no behaviour removed):
+- **Updated** (path expectations only, no test removed or disabled):
   `agent_mcp_config_test.ts`, `gh_credential_stage_test.ts`,
+  `gh_credential_symlink_1238_test.ts`, `service_account_env_test.ts`,
   `setup_screenshot_test.ts`, `run_core_production_deps_test.ts` — each now
   derives the expected directory from `cacheDirUserSuffix()` instead of the old
   shared literal.
+- **Ledger**: `docs/audits/lib-sweep-coverage.json` claims the new
+  `tmp_state_dir_check.ts` under slice 12e, so the coverage test stays exact.
+- `./quality.sh` passes on the final tree — including the new
+  `tmp state dir chokepoint` check, semgrep, lint, type check and the full
+  Deno test suite.
 - **Docs**: `docs/CONTAINER.md`, `docs/CONTAINMENT.md`, `docs/DEPLOYMENT.md`
   (browser profile path) and `docs/audits/filesystem-path-temp-sweep-1215.md`
   (SEC-1215-06 recorded as fixed, with the gate).
