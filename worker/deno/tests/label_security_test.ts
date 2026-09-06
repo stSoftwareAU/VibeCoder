@@ -620,9 +620,19 @@ Deno.test("label_security - needs-human applied by workerUser is trusted", async
   assertEquals(result.untrustedLabels, []);
 });
 
-Deno.test("label_security - needs-human applied by untrusted non-worker is still stripped", async () => {
-  // A user who is neither in allowedAuthors nor the worker must not be able
-  // to apply needs-human to starve the worker.
+Deno.test("label_security - needs-human from an unlisted adder is HONOURED, not stripped", async () => {
+  // Reversed deliberately. This asserted that an adder who is neither in
+  // allowedAuthors nor the worker "must not be able to apply needs-human to
+  // starve the worker". Two things were wrong with that.
+  //
+  // There is no starvation to prevent: `needs-human` only ever takes an issue
+  // OFF the list, so the worst outcome is that the worker does not look at it
+  // — which is what the label means. And GitHub gates labelling behind triage
+  // permission, so an adder already has standing in the repository.
+  //
+  // Meanwhile the check cost real throughput: on 2026-09-06 one cycle skipped
+  // eight issues across four repositories because a sibling fleet account had
+  // raised the label.
   const mockGh = async (_args: string[]): Promise<string> => {
     return JSON.stringify([
       {
@@ -642,11 +652,8 @@ Deno.test("label_security - needs-human applied by untrusted non-worker is still
     "stsvcbot",
   );
 
-  assertEquals(result.trustedLabels, []);
-  assertEquals(result.untrustedLabels, [{
-    label: "needs-human",
-    addedBy: "mallory",
-  }]);
+  assertEquals(result.trustedLabels, ["needs-human"]);
+  assertEquals(result.untrustedLabels, []);
 });
 
 Deno.test("label_security - needs-human applied by workerUser is trusted case-insensitively", async () => {
@@ -673,9 +680,12 @@ Deno.test("label_security - needs-human applied by workerUser is trusted case-in
   assertEquals(result.untrustedLabels, []);
 });
 
-Deno.test("label_security - without workerUser, worker-applied needs-human is untrusted", async () => {
-  // When workerUser is omitted, the old behaviour applies — needs-human from
-  // an unlisted user is treated as untrusted.
+Deno.test("label_security - without workerUser, needs-human is still honoured", async () => {
+  // Reversed with the case above: the trust of `needs-human` no longer
+  // depends on knowing who this worker is, because it no longer depends on
+  // the adder at all. A host that cannot resolve its own login used to strip
+  // the label; now it honours it, which is the same answer every other host
+  // gives.
   const mockGh = async (_args: string[]): Promise<string> => {
     return JSON.stringify([
       {
@@ -695,11 +705,8 @@ Deno.test("label_security - without workerUser, worker-applied needs-human is un
     // workerUser not provided
   );
 
-  assertEquals(result.trustedLabels, []);
-  assertEquals(result.untrustedLabels, [{
-    label: "needs-human",
-    addedBy: "stsvcbot",
-  }]);
+  assertEquals(result.trustedLabels, ["needs-human"]);
+  assertEquals(result.untrustedLabels, []);
 });
 
 // ---------------------------------------------------------------------------
@@ -970,5 +977,79 @@ Deno.test("label_security - a custom label the worker applied itself is stripped
   assertEquals(result.untrustedLabels, [{
     label: "deploy-review",
     addedBy: "stsvcbot",
+  }]);
+});
+
+Deno.test("label_security - needs-human is trusted from any adder: fleet sibling, stranger, anyone", async () => {
+  // The regression that prompted this, 2026-09-06: a host running as
+  // `VibeCoderST` rejected every `needs-human` its sibling `stservice` had
+  // applied, and one cycle reported `untrusted-operational-label=8` — eight
+  // issues skipped across four repositories, silently, on a signal the fleet
+  // raises as ordinary workflow.
+  //
+  // The fix is not to widen the trusted set but to stop asking. `needs-human`
+  // is the one operational label whose entire effect is to take an issue OFF
+  // the list: every consumer reads it as a skip reason and nothing acts
+  // because of it. The worst any adder achieves is that the worker does not
+  // look at an issue — which is what the label means. GitHub also gates
+  // labelling behind triage permission, so whoever applied it already has
+  // standing in the repository.
+  for (const adder of ["stservice", "VibeCoderST", "alice", "a-stranger"]) {
+    const mockGh = (_args: string[]): Promise<string> =>
+      Promise.resolve(JSON.stringify([
+        {
+          event: "labeled",
+          label: { name: "needs-human" },
+          actor: { login: adder },
+        },
+      ]));
+
+    const result = await verifyOperationalLabels(
+      "owner/repo",
+      42,
+      ["needs-human"],
+      ["alice"],
+      mockGh,
+      "VibeCoderST",
+      ["VibeCoderST", "stservice"],
+    );
+
+    assertEquals(
+      result.trustedLabels,
+      ["needs-human"],
+      `needs-human from ${adder} must be honoured`,
+    );
+    assertEquals(result.untrustedLabels, []);
+  }
+});
+
+Deno.test("label_security - a label that makes the worker ACT is still verified", async () => {
+  // The line this change draws. `needs-human` only suppresses; `best-model`
+  // spends tokens on an expensive path, so an untrusted adder must not be
+  // able to set it. Dropping verification for the suppression-only label must
+  // not weaken the labels that direct work.
+  const mockGh = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([
+      {
+        event: "labeled",
+        label: { name: "best-model" },
+        actor: { login: "mallory" },
+      },
+    ]));
+
+  const result = await verifyOperationalLabels(
+    "owner/repo",
+    42,
+    ["best-model"],
+    ["alice"],
+    mockGh,
+    "VibeCoderST",
+    ["VibeCoderST", "stservice"],
+  );
+
+  assertEquals(result.trustedLabels, []);
+  assertEquals(result.untrustedLabels, [{
+    label: "best-model",
+    addedBy: "mallory",
   }]);
 });
