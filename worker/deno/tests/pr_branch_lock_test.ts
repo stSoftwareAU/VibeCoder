@@ -40,6 +40,14 @@ const FLEET_AUTHOR = "vibe-coder-bot";
 /** Author-verification inputs the fixtures pass instead of a config file. */
 const FLEET_OPTIONS = { fleetAuthors: [FLEET_AUTHOR] } as const;
 
+/**
+ * What `gh issue comment` actually prints — the new comment's URL. Since
+ * Issue #1249 the `#issuecomment-<id>` fragment is how the worker identifies
+ * its own lock, so every stub of that call returns one.
+ */
+const postedCommentUrl = (id: number) =>
+  `https://github.com/org/repo/issues/42#issuecomment-${id}`;
+
 /** Create a mock gh command function that records calls and returns scripted responses. */
 function createMockGh(
   handler?: (args: string[]) => string | Error,
@@ -122,7 +130,9 @@ Deno.test("pr_branch_lock - BRANCH_UPDATE_LOCK_PREFIX has correct value", () => 
 Deno.test("pr_branch_lock - acquireBranchUpdateLock succeeds when no other locks exist", async () => {
   const { ghCommandFn, calls } = createMockGh((args) => {
     // Post lock comment
-    if (args[0] === "issue" && args[1] === "comment") return "";
+    if (args[0] === "issue" && args[1] === "comment") {
+      return postedCommentUrl(100);
+    }
     // Re-read comments — only our lock
     if (args[0] === "api" && String(args[1]).includes("/comments")) {
       return JSON.stringify([
@@ -164,7 +174,9 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock succeeds when no other locks
 
 Deno.test("pr_branch_lock - acquireBranchUpdateLock wins when earliest lock", async () => {
   const { ghCommandFn } = createMockGh((args) => {
-    if (args[0] === "issue" && args[1] === "comment") return "";
+    if (args[0] === "issue" && args[1] === "comment") {
+      return postedCommentUrl(100);
+    }
     if (args[0] === "api" && String(args[1]).includes("/comments")) {
       return JSON.stringify([
         {
@@ -210,7 +222,9 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock loses when not earliest lock
   const deletedComments: number[] = [];
 
   const { ghCommandFn } = createMockGh((args) => {
-    if (args[0] === "issue" && args[1] === "comment") return "";
+    if (args[0] === "issue" && args[1] === "comment") {
+      return postedCommentUrl(200);
+    }
     // Re-read comments — competitor has earlier lock
     if (
       args[0] === "api" &&
@@ -271,7 +285,9 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock cleans stale locks first", a
 
   const { ghCommandFn } = createMockGh((args) => {
     // Post lock comment
-    if (args[0] === "issue" && args[1] === "comment") return "";
+    if (args[0] === "issue" && args[1] === "comment") {
+      return postedCommentUrl(100);
+    }
     // Fetch comments — multiple calls happen
     if (
       args[0] === "api" &&
@@ -358,7 +374,9 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock returns not-acquired on post
 
 Deno.test("pr_branch_lock - acquireBranchUpdateLock returns not-acquired on verify failure", async () => {
   const { ghCommandFn } = createMockGh((args) => {
-    if (args[0] === "issue" && args[1] === "comment") return "";
+    if (args[0] === "issue" && args[1] === "comment") {
+      return postedCommentUrl(100);
+    }
     if (args[0] === "api" && String(args[1]).includes("/comments")) {
       // Stale lock check
       if (!args.includes("-X")) {
@@ -511,7 +529,9 @@ Deno.test("pr_branch_lock - cleanStaleBranchUpdateLocks handles API error gracef
 
 Deno.test("pr_branch_lock - acquireBranchUpdateLock tie-breaks by created_at when timestamps equal", async () => {
   const { ghCommandFn } = createMockGh((args) => {
-    if (args[0] === "issue" && args[1] === "comment") return "";
+    if (args[0] === "issue" && args[1] === "comment") {
+      return postedCommentUrl(100);
+    }
     if (
       args[0] === "api" &&
       String(args[1]).includes("/comments") &&
@@ -560,7 +580,9 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock tie-breaks by created_at whe
 
 Deno.test("pr_branch_lock - acquireBranchUpdateLock returns correct lockCommentId on win", async () => {
   const { ghCommandFn } = createMockGh((args) => {
-    if (args[0] === "issue" && args[1] === "comment") return "";
+    if (args[0] === "issue" && args[1] === "comment") {
+      return postedCommentUrl(777);
+    }
     if (
       args[0] === "api" &&
       String(args[1]).includes("/comments") &&
@@ -623,7 +645,7 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock posts the note with the mark
     if (args[0] === "issue" && args[1] === "comment") {
       const bodyIndex = args.indexOf("--body");
       postedBody = args[bodyIndex + 1] ?? "";
-      return "";
+      return postedCommentUrl(900);
     }
     if (
       args[0] === "api" && String(args[1]).includes("/comments") &&
@@ -768,6 +790,9 @@ Deno.test("pr_branch_lock - a planted lock does not stall the branch", async () 
         },
       ]));
     }
+    if (args[0] === "issue" && args[1] === "comment") {
+      return Promise.resolve(postedCommentUrl(101));
+    }
     return Promise.resolve("");
   };
 
@@ -808,6 +833,9 @@ Deno.test("pr_branch_lock - a sibling fleet host's earlier lock still wins", asy
           author: FLEET_AUTHOR,
         },
       ]));
+    }
+    if (args[0] === "issue" && args[1] === "comment") {
+      return Promise.resolve(postedCommentUrl(101));
     }
     return Promise.resolve("");
   };
@@ -850,6 +878,9 @@ Deno.test("pr_branch_lock - an unresolvable fleet leaves the branch updatable", 
           author: FLEET_AUTHOR,
         },
       ]));
+    }
+    if (args[0] === "issue" && args[1] === "comment") {
+      return Promise.resolve(postedCommentUrl(101));
     }
     return Promise.resolve("");
   };

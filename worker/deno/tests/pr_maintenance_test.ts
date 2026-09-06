@@ -639,12 +639,12 @@ Deno.test("findPrCommentsToFix - untrusted bot review comment is ignored without
   }
 });
 
-Deno.test("findPrCommentsToFix - trusted-bot review comment with eyes reaction is skipped as already-processed (Issue #1857)", async () => {
-  // The fetchPrComments jq filter drops comments with reactions.eyes > 0,
-  // so when GitHub returns a trusted-bot comment that has been seen, the
-  // upstream fetch already excludes it. Mimic that here by returning an
-  // empty list when the eyes filter is present, and assert no actionable
-  // comment is found.
+Deno.test("findPrCommentsToFix - trusted-bot review comment with a fleet eyes reaction is skipped as already-processed (Issue #1857)", async () => {
+  // Since Issue #1249 the eyes reaction is no longer a server-side filter:
+  // every comment comes back carrying its count, and the *reactor* decides
+  // whether it counts as processed. The comment below is a trusted bot's,
+  // already 👀-ed by this worker, so the scan must skip it — a real listing
+  // now, not an empty one standing in for the removed jq filter.
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
     if (key.includes("pr list")) {
@@ -652,7 +652,20 @@ Deno.test("findPrCommentsToFix - trusted-bot review comment with eyes reaction i
         { number: 14, headRefName: "issue-14-fix", headRefOid: "sha14" },
       ]);
     }
-    // Comment had an eyes reaction → fetchPrComments returns []
+    if (key.includes("pulls/comments/1400/reactions")) {
+      return JSON.stringify(["testbot"]);
+    }
+    if (key.includes("pulls/14/comments")) {
+      return JSON.stringify([
+        {
+          login: "github-code-quality[bot]",
+          id: 1400,
+          body: "A finding",
+          thumbs_up: 0,
+          eyes: 1,
+        },
+      ]);
+    }
     return "[]";
   };
 

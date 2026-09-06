@@ -42,8 +42,18 @@ function mergeCall(calls: string[][]): string[] {
 // enableAutoMerge
 // ---------------------------------------------------------------------------
 
+/**
+ * A `gh` stub whose `pr view --json isCrossRepository` answers "same repo".
+ *
+ * Since Issue #1249 the merge-commit deviation needs that evidence, so a test
+ * exercising a genuine fleet sync has to supply it.
+ */
+function sameRepoHead(args: string[]): string {
+  return args.join(" ").includes("isCrossRepository") ? "false" : "";
+}
+
 Deno.test("enableAutoMerge - a milestone sync head arms --merge", async () => {
-  const { calls, gh } = recorder(() => "");
+  const { calls, gh } = recorder(sameRepoHead);
   const result = await enableAutoMerge({
     repo: "owner/repo",
     prNumber: 7,
@@ -98,7 +108,8 @@ Deno.test("enableAutoMerge - a repo that forbids merge commits gets a loud squas
         );
       }
     }
-    return Promise.resolve("");
+    // A genuine fleet sync: the head lives in this repository (Issue #1249).
+    return Promise.resolve(sameRepoHead(args));
   };
   const result = await enableAutoMerge({
     repo: "owner/repo",
@@ -127,12 +138,23 @@ Deno.test("enableAutoMerge - a repo that forbids merge commits gets a loud squas
 // directMergePr
 // ---------------------------------------------------------------------------
 
-/** A gate verdict that lets the merge through, for the given head branch. */
-function allowingGate(headRefName: string) {
+/**
+ * A gate verdict that lets the merge through, for the given head branch.
+ *
+ * `headIsSameRepository` defaults to true — the sync branch the fleet pushed
+ * into this repository. Since Issue #1249 the merge-commit deviation is
+ * refused for a fork head, so a caller testing that path passes `false`.
+ */
+function allowingGate(headRefName: string, headIsSameRepository = true) {
   return () =>
     Promise.resolve({
       ok: true as const,
-      value: { allowed: true, headSha: "deadbeef", headRefName },
+      value: {
+        allowed: true,
+        headSha: "deadbeef",
+        headRefName,
+        headIsSameRepository,
+      },
     });
 }
 

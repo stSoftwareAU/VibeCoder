@@ -38,14 +38,27 @@ interface IssueRow {
   closedAt: string;
 }
 
+/** The fleet login whose CLAIM_LOCK markers these tests trust (Issue #1249). */
+const FLEET_AUTHOR = "vibe-bot";
+
+/** Author-verification inputs and a silent log, as every claim test needs. */
+const fleetOptions = {
+  authorOptions: { fleetAuthors: [FLEET_AUTHOR] },
+  log: () => {},
+};
+
 /**
  * Build a stubbed `gh` runner. `issues` is returned for `issue list`;
  * `comments` maps an issue number to the CLAIM_LOCK comment timestamps
- * returned by the `api .../comments` jq query.
+ * returned by the `api .../comments` jq query. Since Issue #1249 that query
+ * also projects the commenter, so each timestamp is rendered as the
+ * `{ author, created_at }` row the collector now parses; `author` defaults to
+ * the fleet account and a test forging a marker passes its own.
  */
 function makeGh(
   issues: IssueRow[],
   comments: Record<number, string[]> = {},
+  commentAuthor: string = FLEET_AUTHOR,
 ) {
   const calls: string[][] = [];
   const fn = (args: string[]): Promise<string> => {
@@ -57,7 +70,11 @@ function makeGh(
       // args[1] is repos/<repo>/issues/<n>/comments
       const match = args[1]?.match(/issues\/(\d+)\/comments/);
       const num = match ? Number(match[1]) : NaN;
-      return Promise.resolve(JSON.stringify(comments[num] ?? []));
+      const rows = (comments[num] ?? []).map((created_at) => ({
+        author: commentAuthor,
+        created_at,
+      }));
+      return Promise.resolve(JSON.stringify(rows));
     }
     return Promise.resolve("[]");
   };
@@ -93,6 +110,7 @@ Deno.test("latestIdleTaskActivity - open wrapper with CLAIM_LOCK comment yields 
     repo: "o/r",
     ghCommandFn: fn,
     nowFn: now,
+    ...fleetOptions,
   });
 
   assertEquals(result.lastRaisedEpoch, NOW - 900);
@@ -168,6 +186,7 @@ Deno.test("latestIdleTaskActivity - reports the most-recent across several wrapp
     repo: "o/r",
     ghCommandFn: fn,
     nowFn: now,
+    ...fleetOptions,
   });
 
   // Most-recent raise is the open wrapper (#22).

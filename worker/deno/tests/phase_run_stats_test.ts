@@ -262,12 +262,17 @@ for (const { phase, heading } of PROMOTED_PHASES) {
       logger,
       cacheDir: Deno.makeTempDirSync(),
       env: emptyEnv,
-      // The planning path reported an earlier, different run.
+      // The planning path reported an earlier, different run — and since
+      // Issue #1249 the cumulative total counts fleet-authored comments only,
+      // so the listing names its author and the fleet is stated here rather
+      // than read from the host's config.
       listIssueComments: () =>
         Promise.resolve([{
           body:
             "## Planning run model stats\n\n- **Estimated cost (USD, estimate only):** ~$0.50",
+          author: "vibe-bot",
         }]),
+      authorOptions: { fleetAuthors: ["vibe-bot"] },
     });
 
     resetModelResolution();

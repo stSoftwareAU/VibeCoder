@@ -114,8 +114,15 @@ function fakeClient(
       return Promise.resolve();
     },
     // Backs the one-stats-comment-per-issue guard (Issue #3756).
+    // Issue #1249: the cumulative total counts fleet-authored comments only,
+    // so the listing carries the author the fleet options below trust.
     getIssueComments: () =>
-      Promise.resolve((opts.existingComments ?? []).map((body) => ({ body }))),
+      Promise.resolve(
+        (opts.existingComments ?? []).map((body) => ({
+          body,
+          author: "vibe-bot",
+        })),
+      ),
   } as unknown as GitHubClient;
   return { ghClient, comments };
 }
@@ -219,6 +226,7 @@ Deno.test("reportGrillMeDegradation - an earlier round's stats comment does not 
     logger,
     cacheDir: Deno.makeTempDirSync(),
     env: emptyEnv,
+    authorOptions: { fleetAuthors: ["vibe-bot"] },
   });
 
   assertEquals(comments.length, 1);

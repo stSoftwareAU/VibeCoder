@@ -18,6 +18,7 @@ import type {
   PhaseState,
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
+import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
 import { formatDetailedFailureMessage } from "../failure_message.ts";
 import { detectRunInterrupted, detectUsageLimit } from "../claude_executor.ts";
 import { listTemplates } from "../idle_task_template.ts";
@@ -201,6 +202,14 @@ export async function workOnIssueHandleNoChanges(
         getIssueComments: (r, i) => ghClient.getIssueComments(r, i),
         postComment: (r, i, b) => ghClient.postComment(r, i, b),
         logger,
+        // Fleet-authored comments only (Issue #1249, finding 12).
+        authorOptions: {
+          fleetAuthors: resolveFleetMaintenanceAuthorSet({
+            githubUser,
+            fleetPrAuthors: ctx.config.fleetPrAuthors ?? [],
+            serviceAccounts: ctx.config.serviceAccounts ?? [],
+          }),
+        },
       });
       // Unassign
       await ghClient.unassignIssue(repo, issueNumber, [githubUser]);
