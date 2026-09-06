@@ -398,6 +398,17 @@ export function generateMcpConfig(config: ScreenshotConfig): string {
   // Issue #1288: an empty deny list must drop the flag — `--deny-read=` with
   // no value denies every read and breaks the server outright.
   const deniedPaths = [...(config.deniedPaths ?? resolveDeniedPaths())];
+  // Deno splits permission lists on commas, so a path containing one would
+  // silently deny two paths that do not exist. Fail loud rather than emit a
+  // deny list that looks complete and protects nothing.
+  const unexpressible = deniedPaths.find((path) => path.includes(","));
+  if (unexpressible !== undefined) {
+    throw new Error(
+      `Cannot deny "${unexpressible}": a comma in the path breaks Deno's ` +
+        `permission list, which would silently disable the guard. Move the ` +
+        `credential store to a path without a comma.`,
+    );
+  }
 
   const args = [
     "run",

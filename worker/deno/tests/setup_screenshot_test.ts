@@ -897,3 +897,18 @@ Deno.test("resolveDeniedPaths - covers the relocated gh config and the app priva
 Deno.test("resolveDeniedPaths - returns nothing when the environment names no home", () => {
   assertEquals(resolveDeniedPaths({ getEnv: () => undefined }), []);
 });
+
+Deno.test("generateMcpConfig - refuses a denied path Deno cannot express (Issue #1288)", () => {
+  // Deno splits permission lists on commas, so such a path would deny two
+  // directories that do not exist while looking like a complete guard.
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "/workspace",
+        browserEnvironment: bakedBrowser(),
+        deniedPaths: ["/home/vibe/creds,backup"],
+      }),
+    Error,
+    "breaks Deno's permission list",
+  );
+});
