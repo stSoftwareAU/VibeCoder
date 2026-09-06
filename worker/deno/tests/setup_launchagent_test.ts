@@ -11,6 +11,7 @@ import {
   isLaunchAgentInstalled,
   removeLaunchAgent,
   setupLaunchAgent,
+  tightenPlistPermissions,
   writeSecurePlist,
 } from "../setup/launchagent.ts";
 import type { LaunchAgentConfig } from "../setup/launchagent.ts";
@@ -185,6 +186,53 @@ Deno.test({
       const info = await Deno.stat(plistPath);
       assertEquals((info.mode ?? 0) & 0o777, 0o600);
       assertEquals(await Deno.readTextFile(plistPath), "new");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "writeSecurePlist - a symlink at the plist path is replaced, never followed",
+  ignore: isWindows,
+  fn: async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      const victim = `${dir}/victim.txt`;
+      const plistPath = `${dir}/com.vibe.auto-issue-worker.plist`;
+      await Deno.writeTextFile(victim, "untouched");
+      await Deno.symlink(victim, plistPath);
+
+      await writeSecurePlist(plistPath, "<plist>secret</plist>");
+
+      // The token landed in the plist, not through the link into the victim.
+      assertEquals(await Deno.readTextFile(victim), "untouched");
+      assertEquals(
+        (await Deno.lstat(plistPath)).isSymlink,
+        false,
+      );
+      assertEquals((await Deno.stat(plistPath)).mode! & 0o777, 0o600);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "tightenPlistPermissions - narrows the mode a matching-content run would otherwise leave at 0o644",
+  ignore: isWindows,
+  fn: async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      const plistPath = `${dir}/com.vibe.auto-issue-worker.plist`;
+      await Deno.writeTextFile(plistPath, "<plist>secret</plist>");
+      await Deno.chmod(plistPath, 0o644);
+
+      await tightenPlistPermissions(plistPath);
+
+      assertEquals((await Deno.stat(plistPath)).mode! & 0o777, 0o600);
     } finally {
       await Deno.remove(dir, { recursive: true });
     }

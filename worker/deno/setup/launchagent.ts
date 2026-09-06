@@ -12,6 +12,7 @@ import { pathStyleFor } from "../lib/host_path_style.ts";
 import { readConfiguredLogDirSync, resolveLogDir } from "../lib/log_dir.ts";
 import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 import { escapeXml } from "../lib/xml_escape.ts";
+import { atomicWrite } from "../lib/file_utils.ts";
 
 /** Configuration for LaunchAgent setup. */
 export interface LaunchAgentConfig {
@@ -133,21 +134,54 @@ export function generatePlist(config: LaunchAgentConfig): string {
 }
 
 /**
- * Write the plist to disk with owner-only permissions (mode 0o600).
+ * Tighten an existing plist to owner-only permissions (Issue #1220).
  *
  * The plist embeds the worker's GH_TOKEN and ANTHROPIC_API_KEY in plaintext
- * (Issue #2514), so it must never be left world-readable. `Deno.writeTextFile`
- * applies the `mode` option only when *creating* a file; it does not change the
- * mode of a pre-existing file. We therefore chmod explicitly afterwards so an
- * already-existing plist (possibly written 0o644 by an older worker) is also
- * tightened to 0o600.
+ * (Issue #2514), so it must never be left world-readable — and the one case
+ * the tightening was written for, a plist an older worker wrote 0o644, is
+ * exactly the case that re-renders to *identical* content and so took
+ * {@link setupLaunchAgent}'s "already up to date" short circuit without ever
+ * being chmodded. Re-running `./setup.sh` to pick up the fix silently did
+ * nothing. This runs on that path too.
+ *
+ * @param plistPath - The plist to tighten
+ */
+export async function tightenPlistPermissions(
+  plistPath: string,
+): Promise<void> {
+  await Deno.chmod(plistPath, 0o600);
+}
+
+/**
+ * Write the plist to disk with owner-only permissions (mode 0o600).
+ *
+ * Written through {@link atomicWrite} rather than
+ * `Deno.writeTextFile` + a late `chmod` (Issue #1220): that sequence
+ * truncates a pre-existing 0o644 plist and fills it with the two tokens
+ * *before* narrowing the mode, and both calls follow a symlink pre-positioned
+ * at the path. `atomicWrite` creates its temp file `O_EXCL` at 0o600 and
+ * renames it into place, so neither window exists. A failed write is loud —
+ * a plist that was not written must never look like one that was.
+ *
+ * @param plistPath - Where the LaunchAgent plist belongs
+ * @param content - The rendered plist
+ * @throws When the write fails
  */
 export async function writeSecurePlist(
   plistPath: string,
   content: string,
 ): Promise<void> {
-  await Deno.writeTextFile(plistPath, content, { mode: 0o600 });
-  await Deno.chmod(plistPath, 0o600);
+  const result = await atomicWrite({
+    targetFile: plistPath,
+    content,
+    mode: 0o600,
+  });
+  if (!result.ok) {
+    throw new Error(
+      `Could not write the LaunchAgent plist ${plistPath}: ` +
+        result.error.message,
+    );
+  }
 }
 
 /**
@@ -186,6 +220,9 @@ export async function setupLaunchAgent(
   try {
     const existingContent = await Deno.readTextFile(plistPath);
     if (existingContent === newContent) {
+      // Still tighten it: an older worker's 0o644 plist re-renders to
+      // identical content, so this is the very path its tokens are on.
+      await tightenPlistPermissions(plistPath);
       return { ok: true, message: "LaunchAgent plist already up to date" };
     }
 
