@@ -35,6 +35,7 @@
  */
 
 import { makeStableId } from "./workflow_scan_common.ts";
+import { runGitCommand } from "./git_timeout.ts";
 
 /** Discriminator baked into every stable id (collision-proofs the recipe). */
 export const BASH_SCRIPT_REFS_DISCRIMINATOR = "bash-script-refs";
@@ -557,14 +558,11 @@ export async function defaultListTrackedFiles(
     return null;
   }
   try {
-    const cmd = new Deno.Command("git", {
-      args: ["-C", workDir, "ls-files", "-z"],
-      stdout: "piped",
-      stderr: "null",
-    });
-    const { code, stdout } = await cmd.output();
+    // Issue #1214: every git spawn goes through the timeout chokepoint.
+    const result = await runGitCommand(["-C", workDir, "ls-files", "-z"]);
+    if (!result.ok) return null;
+    const { code, stdout: text } = result.value;
     if (code !== 0) return null;
-    const text = new TextDecoder().decode(stdout);
     const set = new Set<string>();
     for (const path of text.split("\0")) {
       if (path) set.add(path);

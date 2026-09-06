@@ -17,6 +17,7 @@
 
 import { parseHttpStatus } from "./alert_feeds/code_scanning_alerts.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
+import { runGitCommand } from "./git_timeout.ts";
 
 /** Matches a valid `owner/repo` slug (no whitespace, exactly one slash). */
 const REPO_SLUG = /^[^/\s]+\/[^/\s]+$/;
@@ -52,24 +53,19 @@ export type SarifUploadResult =
   | { kind: "error"; error: string };
 
 /**
- * Default production git runner — spawns `git -C <cwd> ...`.
+ * Default production git runner — runs `git -C <cwd> ...` through the shared
+ * timeout chokepoint (Issue #1214).
  */
 export async function defaultGitRunner(
   args: string[],
   cwd: string,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const command = new Deno.Command("git", {
-    args: ["-C", cwd, ...args],
-    stdout: "piped",
-    stderr: "piped",
-  });
-  const { code, stdout, stderr } = await command.output();
-  const decoder = new TextDecoder();
-  return {
-    code,
-    stdout: decoder.decode(stdout),
-    stderr: decoder.decode(stderr),
-  };
+  // Issue #1214: every git spawn goes through the timeout chokepoint.
+  const result = await runGitCommand(["-C", cwd, ...args]);
+  if (!result.ok) {
+    return { code: 1, stdout: "", stderr: result.error.message };
+  }
+  return result.value;
 }
 
 /**

@@ -14,6 +14,7 @@
 
 import type { Result } from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import { runGitCommand } from "./git_timeout.ts";
 
 /**
  * Known template types and their required placeholders.
@@ -471,14 +472,21 @@ export async function getPromptsCommit(
 ): Promise<Result<string>> {
   const dir = repoDir ?? getPromptsDir();
   try {
-    const command = new Deno.Command("git", {
-      args: ["-C", dir, "rev-parse", "--short", "HEAD"],
-      stdout: "piped",
-      stderr: "piped",
-    });
-    const output = await command.output();
-    if (!output.success) {
-      const stderr = new TextDecoder().decode(output.stderr).trim();
+    // Issue #1214: every git spawn goes through the timeout chokepoint.
+    const result = await runGitCommand(
+      ["-C", dir, "rev-parse", "--short", "HEAD"],
+    );
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to resolve prompts commit in ${dir}: ${result.error.message}`,
+        ),
+      };
+    }
+    const output = result.value;
+    if (output.code !== 0) {
+      const stderr = output.stderr.trim();
       return {
         ok: false,
         error: new Error(
@@ -486,7 +494,7 @@ export async function getPromptsCommit(
         ),
       };
     }
-    const commit = new TextDecoder().decode(output.stdout).trim();
+    const commit = output.stdout.trim();
     if (!commit) {
       return {
         ok: false,

@@ -42,6 +42,7 @@ import {
   sanitiseDelimiterPatterns,
 } from "./prompt_delimiter.ts";
 import { computePromptHash } from "./prompt_hash.ts";
+import { runGitCommand } from "./git_timeout.ts";
 
 /** Default maximum size of the rendered map (in characters). */
 export const DEFAULT_MAX_CODEBASE_MAP_CHARS = 8_000;
@@ -144,15 +145,17 @@ export async function listRepoFiles(
   repoDir: string,
 ): Promise<Result<string[]>> {
   try {
-    const command = new Deno.Command("git", {
-      args: ["ls-files", "-co", "--exclude-standard", "-z"],
-      cwd: repoDir,
-      stdout: "piped",
-      stderr: "piped",
-    });
-    const output = await command.output();
-    if (!output.success) {
-      const stderr = new TextDecoder().decode(output.stderr).trim();
+    // Issue #1214: every git spawn goes through the timeout chokepoint.
+    const result = await runGitCommand(
+      ["ls-files", "-co", "--exclude-standard", "-z"],
+      { cwd: repoDir },
+    );
+    if (!result.ok) {
+      return result;
+    }
+    const output = result.value;
+    if (output.code !== 0) {
+      const stderr = output.stderr.trim();
       return {
         ok: false,
         error: new Error(
@@ -160,8 +163,7 @@ export async function listRepoFiles(
         ),
       };
     }
-    const files = new TextDecoder()
-      .decode(output.stdout)
+    const files = output.stdout
       .split("\0")
       .filter((p) => p.length > 0)
       .sort();
