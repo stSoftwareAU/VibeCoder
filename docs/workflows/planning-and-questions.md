@@ -516,6 +516,14 @@ bracketed placeholder — and a bare `Out of scope` with no reason fails too. A
 **missing** table, a table with **no rows**, and a parent that cannot be read
 all fail: absence of the artefact is not evidence of coverage.
 
+**The scan is bounded.** Every comment on the parent is re-read on each
+planning close, and a comment body is writable by any account on a public
+repository, so a candidate longer than `MAX_COVERAGE_SCAN_CHARS` (64 KiB) is
+**rejected without being scanned** and the skip is logged — an unscanned
+candidate is not a candidate that carried no table (Issue #1245). A genuine
+coverage table is a few hundred characters, so the next candidate, or the
+parent body, still decides.
+
 **The outcome — no second escalation path.** An uncovered ask needs a decision
 no self-repair can make (create the missing sub-issue, or accept the ask as out
 of scope), so the gate routes through the existing `escalateToHuman()`

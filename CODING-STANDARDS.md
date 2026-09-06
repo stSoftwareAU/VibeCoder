@@ -282,9 +282,14 @@ simply no longer waits out a stopwatch to do it.
   never a reading against a constant.** A ratio assertion is permitted and is
   not a `test-audit` finding; an absolute wall-clock threshold is forbidden and
   is one (Issue #786). Such a test measures deliberately, so it runs in the
-  serial pass — and it is still a unit test. No suite in this repository needs
-  it today: every ReDoS guard has a behavioural form, and PR #1170 moved
-  them all onto it.
+  serial pass — and it is still a unit test. Prefer the behavioural form where
+  it works: PR #1170 moved twelve ReDoS guards onto asserting what the code
+  *produces* for an adversarial input, because a pattern that never returns
+  hangs the case on every host. It only works when the pre-fix cost is large
+  enough to hang — `plan_coverage_gate_bounds_1245_test.ts` guards a pattern
+  costing about twelve seconds on the largest input GitHub accepts, which
+  stalls a planning close but finishes well inside a test timeout, so the
+  ratio is the only detector it has (Issue #1245).
 
 ### Integration tests
 

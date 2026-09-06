@@ -104,11 +104,49 @@ export const COVERAGE_GATE_NEXT_STEP =
   "`## Plan Coverage` table on this issue, or record the ask as " +
   "`Out of scope` with a reason, then remove the label.";
 
+/**
+ * Characters of one candidate scanned for the coverage table (Issue #1245).
+ *
+ * Every comment on the planning parent is attacker-influenceable — a comment
+ * body is writable by any account on a public repository — and the gate
+ * re-reads them on every planning close. A coverage table is a few hundred
+ * characters, so a bounded scan loses nothing real and keeps an oversized
+ * body cheap to reject. The value is the one `ci_failure_issue.ts` uses for
+ * the issue bodies it parses; unlike that module this one **rejects** rather
+ * than truncating, because half a coverage table is not a coverage table.
+ */
+export const MAX_COVERAGE_SCAN_CHARS = 64 * 1024;
+
+/**
+ * Is this candidate too large to scan for a coverage table?
+ *
+ * The single expression of the cap, so the pure extractor and the gate that
+ * reports the skip cannot drift apart (Issue #1245).
+ */
+export function exceedsCoverageScanCap(markdown: string): boolean {
+  return markdown.length > MAX_COVERAGE_SCAN_CHARS;
+}
+
 // A table row line: starts with an optional indent then a pipe.
 const ROW_RE = /^\s{0,3}\|/;
 
-// A separator row, e.g. `| --- | :--- | ---: |`.
-const SEPARATOR_RE = /^\s{0,3}\|[\s:|-]*-[\s:|-]*\|?\s*$/;
+/**
+ * A separator row, e.g. `| --- | :--- | ---: |`.
+ *
+ * Read as: a leading pipe, one cell, then any number of `|`-prefixed cells,
+ * then an optional closing pipe. A cell is a single `-+` run with optional
+ * alignment colons and surrounding whitespace.
+ *
+ * **No two quantifiers here can consume the same character** — every
+ * whitespace run is bounded by a literal `|`, a `-`, a `:` or the anchor, so
+ * a failing match backtracks linearly rather than exploring splits. Two
+ * shapes have been quadratic on this line (Issue #1245): the original
+ * `[\s:|-]*-[\s:|-]*` (adjacent classes both containing `-`, 5.4 s on 40 000
+ * dashes), and a `\s*\|?\s*$` tail (adjacent whitespace runs either side of
+ * an optional pipe, 4.2 s on 64 000 spaces). The closing pipe therefore
+ * carries its own trailing whitespace — `(?:\|\s*)?$`, never `\|?\s*$`.
+ */
+const SEPARATOR_RE = /^\s{0,3}\|\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*(?:\|\s*)?$/;
 
 // Header cell that names the ask column.
 const ASK_HEADER_RE = /^(ask|asks|requirement|requirements)\b/i;
@@ -147,10 +185,16 @@ function splitRow(line: string): string[] {
  * and a column naming the covering sub-issue — rather than by the heading
  * above it, so a reworded heading cannot silently hide the table from the gate.
  *
+ * A blob longer than {@link MAX_COVERAGE_SCAN_CHARS} is **rejected rather
+ * than scanned**: the candidates are attacker-influenceable and a genuine
+ * coverage table is never that large, so an oversized blob is treated as
+ * carrying no table rather than being parsed line by line.
+ *
  * @returns The table's rows (possibly empty for a header-only table), or `null`
- *   when the blob carries no coverage table.
+ *   when the blob carries no coverage table or exceeds the scan cap.
  */
 export function extractCoverageTable(markdown: string): CoverageRow[] | null {
+  if (exceedsCoverageScanCap(markdown)) return null;
   const lines = markdown.split(/\r?\n/);
 
   for (let i = 0; i < lines.length - 1; i++) {
@@ -363,6 +407,21 @@ export async function runPlanCoverageGate(opts: {
 
   for (const candidate of candidates) {
     if (candidate.trim() === "") continue;
+    if (exceedsCoverageScanCap(candidate)) {
+      // `extractCoverageTable` would reject it anyway; checked here so the
+      // skip is reported. Loud, not silent: an unscanned candidate is not a
+      // candidate that carried no table (Issue #1245).
+      logger.warn(
+        "Plan-coverage gate: skipped an oversized candidate without scanning it (Issue #1245)",
+        {
+          repo,
+          issueNumber: parentIssueNumber,
+          chars: candidate.length,
+          capChars: MAX_COVERAGE_SCAN_CHARS,
+        },
+      );
+      continue;
+    }
     const verdict = judgePlanCoverage(candidate);
     if (verdict.tableFound) return verdict;
   }
