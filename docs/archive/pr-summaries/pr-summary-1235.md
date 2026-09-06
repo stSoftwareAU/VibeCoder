@@ -35,14 +35,21 @@ flowchart LR
 Backend/CLI change — no web interface to screenshot. The evidence is the
 regression tests below plus the full local gate.
 
-Observed red against the unfixed code (the exact vulnerability in the issue):
+Observed red against the unfixed code (the two source files reverted to the
+base branch, the new tests unchanged) — this is the exact vulnerability the
+issue describes, the hostile manifest's coordinates being collected verbatim:
 
 ```text
 [Diff] Actual / Expected
--     "*/*@*",
--     "../..@*",
-...
-FAILED | 11 passed | 2 failed
+    [
+-     "*/*",
+      "good/action",
+-     "owner/..",
+-     "owner/repo with space",
+      "vendor/composite",
+    ]
+
+FAILED | 11 passed | 3 failed
 ```
 
 Green after the fix: `deno test tests/repo_settings_harden_test.ts` →
