@@ -10,15 +10,15 @@
  * the composed gate reduced to "filed by the worker account", the signal the
  * module's own docstring calls insufficient.
  *
- * This module supplies the missing signal: evidence the agent cannot mint.
- * When the worker's own filer creates a diagnostic it records a **filing
- * attestation** in the tamper-evident audit journal
- * (`audit_journal.ts`) — the created issue number and a digest of the body
- * it posted, under the distinct {@link SELF_DIAGNOSTIC_FILING_VERB}. The
- * collector then emits a candidate only for an issue that attestation
- * names.
+ * This module supplies the missing signal, one the agent cannot produce
+ * *through GitHub at all*. When the worker's own filer creates a diagnostic
+ * it records a **filing attestation** in the tamper-evident audit journal
+ * (`audit_journal.ts`) — the created issue number and a digest of the title
+ * and body it posted, under the distinct
+ * {@link SELF_DIAGNOSTIC_FILING_VERB}. The collector then emits a candidate
+ * only for an issue that attestation names.
  *
- * Why an agent cannot forge one:
+ * What that buys, precisely:
  *
  *   - The journal lives **outside** every repo working tree, under
  *     `${WORK_DIR}/audit/`, so nothing the agent writes in the clone
@@ -26,24 +26,36 @@
  *   - The agent's own `gh` calls *are* journalled — by `gh_guard_shim.ts`,
  *     under the mutation classifier's verb (`issue create`), never under
  *     this module's verb and never carrying the created issue's number,
- *     which is not in the argv it is classifying.
- *   - Appending a forged line directly is not silent: every append is
- *     hash-chained and anchored, so an interior write, a rewritten entry or
- *     an unanchored tail is reported loud by the chain sweep.
+ *     which is not in the argv it is classifying. No sequence of `gh`
+ *     commands produces an attestation.
+ *   - Only a journal whose hash chain and chain anchor reconcile is read,
+ *     so a hand-appended line, a rewritten entry, or a freshly dropped
+ *     unanchored journal file are all skipped rather than believed.
  *
- * The body digest closes the follow-on move. Without it the agent could
+ * What it does **not** claim: the audit store is tamper-*evident*, not
+ * tamper-proof, against arbitrary local writes. An agent with unrestricted
+ * shell could still forge a journal, its anchor and its roster entry
+ * together. That is a materially higher bar than typing a marker into an
+ * issue body — it leaves a permanent, inspectable record outside the repo,
+ * and it is the same bar every other audit-chain guarantee rests on.
+ *
+ * The content digest closes the follow-on move. Without it the agent could
  * leave the worker's genuinely-filed diagnostic in place and rewrite its
  * body — the fleet login is inside `allowed_authors`, so the sibling
  * content-integrity gate would read that edit as a trusted one — and the
  * worker would schedule attacker-authored content under a real
- * attestation. The digest is taken over the body the filer posted, so an
- * edited body no longer matches and the diagnostic falls back to waiting
- * for a human `work-on`.
+ * attestation. The digest covers the title and body the filer posted, so
+ * edited content no longer matches and the diagnostic falls back to waiting
+ * for a human `work-on`. It is compared against the content the scan read,
+ * so an edit made *after* that read is caught on the next scan rather than
+ * this one.
  *
- * Fail closed, and loud: an unreadable journal, a disabled journal, a
- * missing attestation and a mismatched body all refuse the candidate and
- * say which of those it was. The diagnostic stays open and a human `work-on`
- * still schedules it.
+ * Fail closed, and loud: an unreadable journal, an unverifiable chain, a
+ * disabled journal, a missing attestation and mismatched content all refuse
+ * the candidate and say which of those it was. The diagnostic stays open and
+ * a human `work-on` still schedules it. Attestations are host-local, so a
+ * diagnostic is self-scheduled by the host that filed it; on any other host
+ * it waits for a human, which is the fail-closed direction.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -54,6 +66,7 @@ import {
   recordMutation,
   resolveBaseDir,
   resolveRunId,
+  verifyChain,
 } from "./audit_journal.ts";
 import { isAuditJournalEnabled } from "./audit_hook.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
@@ -71,7 +84,7 @@ export const SELF_DIAGNOSTIC_FILING_VERB = "file-self-diagnostic";
 const JOURNAL_FILE_PATTERN = /^audit-.*\.jsonl$/;
 
 /** Digest field embedded in the attestation entry's `caller`. */
-const BODY_DIGEST_FIELD = "body-sha256";
+const CONTENT_DIGEST_FIELD = "content-sha256";
 
 /** Where attestations are written and read. Overridden by tests only. */
 export interface AttestationOptions {
@@ -95,6 +108,8 @@ export interface SelfDiagnosticFiling {
   issueNumber: number;
   /** Family id from `SELF_DIAGNOSTIC_FAMILIES`, e.g. `run-failure`. */
   familyId: string;
+  /** The exact title the filer posted. */
+  title: string;
   /** The exact body the filer posted. */
   body: string;
   /** Module that filed it, e.g. `worker/deno/lib/run_failure_issue.ts`. */
@@ -106,12 +121,16 @@ export type AttestationVerdict =
   | { attested: true; familyId: string }
   | {
     attested: false;
-    reason: "no-attestation" | "body-mismatch" | "journal-unavailable";
+    reason:
+      | "no-attestation"
+      | "content-mismatch"
+      | "family-mismatch"
+      | "journal-unavailable";
     detail: string;
   };
 
 /**
- * Normalise a body before digesting it.
+ * Normalise text before digesting it.
  *
  * GitHub returns issue bodies with CRLF line endings whatever was posted, so
  * the filer's own text and the text a later scan reads back differ by line
@@ -119,35 +138,57 @@ export type AttestationVerdict =
  * digest compare like with like; it weakens nothing, because a body that
  * differs only in line endings is the same body.
  */
-export function normaliseBodyForDigest(body: string): string {
-  return body.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trimEnd();
+export function normaliseForDigest(text: string): string {
+  return text.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trimEnd();
 }
 
-/** SHA-256 hex digest of the normalised body. */
-export async function computeBodyDigest(body: string): Promise<string> {
-  const bytes = new TextEncoder().encode(normaliseBodyForDigest(body));
-  const hash = await crypto.subtle.digest("SHA-256", bytes);
+/**
+ * SHA-256 hex digest of the title and body the filer posted.
+ *
+ * Both fields are covered, and their byte lengths are part of what is
+ * digested: `${title}\n${body}` would collide for any pair that concatenates
+ * to the same string, letting a body's first line be promoted into the title
+ * without disturbing the digest (the same reasoning as
+ * `content_approval_tracker.ts`).
+ */
+export async function computeContentDigest(
+  title: string,
+  body: string,
+): Promise<string> {
+  const encoder = new TextEncoder();
+  const titleBytes = encoder.encode(normaliseForDigest(title));
+  const bodyBytes = encoder.encode(normaliseForDigest(body));
+  const header = encoder.encode(
+    `vibe-self-diagnostic-v1\n${titleBytes.length}\n${bodyBytes.length}\n`,
+  );
+  const joined = new Uint8Array(
+    header.length + titleBytes.length + bodyBytes.length,
+  );
+  joined.set(header, 0);
+  joined.set(titleBytes, header.length);
+  joined.set(bodyBytes, header.length + titleBytes.length);
+  const hash = await crypto.subtle.digest("SHA-256", joined);
   return Array.from(new Uint8Array(hash))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
 
-/** The `caller` field of an attestation entry — family and body digest. */
+/** The `caller` field of an attestation entry — family and content digest. */
 function formatAttestationCaller(
   filing: Pick<SelfDiagnosticFiling, "familyId" | "filedBy">,
   digest: string,
 ): string {
   return `${filing.filedBy} (family=${filing.familyId} ` +
-    `${BODY_DIGEST_FIELD}=${digest})`;
+    `${CONTENT_DIGEST_FIELD}=${digest})`;
 }
 
-/** The family id and body digest carried by an attestation entry. */
+/** The family id and content digest carried by an attestation entry. */
 function parseAttestationCaller(
   caller: string | undefined,
 ): { familyId: string; digest: string } | null {
   if (!caller) return null;
   const family = /\bfamily=([A-Za-z0-9_-]+)/.exec(caller);
-  const digest = /\bbody-sha256=([0-9a-f]{64})\b/.exec(caller);
+  const digest = /\bcontent-sha256=([0-9a-f]{64})\b/.exec(caller);
   if (!family || !digest) return null;
   return { familyId: family[1]!, digest: digest[1]! };
 }
@@ -188,7 +229,7 @@ export async function recordSelfDiagnosticFiling(
     return false;
   }
 
-  const digest = await computeBodyDigest(filing.body);
+  const digest = await computeContentDigest(filing.title, filing.body);
   const recorded = await recordMutation({
     runId: resolveRunId(env),
     repo: filing.repo,
@@ -249,11 +290,16 @@ function indexEntry(
 /**
  * Read every filing attestation for `repo` out of the local audit journals.
  *
+ * Only a journal whose hash chain **and** chain anchor reconcile is read.
+ * Without that check, dropping a brand-new `audit-<x>-<date>.jsonl` carrying
+ * one hand-written line would attest anything: a new file has no anchored
+ * history to break, so "the chain would catch it" was not true of a file the
+ * chain had never seen. A journal that fails verification — including an
+ * unanchored one — is logged and skipped, so the diagnostics it claims to
+ * attest stay unschedulable.
+ *
  * Throws only when the audit directory itself cannot be listed — a missing
  * directory is an empty index (nothing was ever filed here), not an error.
- * A journal file that cannot be parsed is logged and skipped: its issues
- * then have no attestation and are refused, which is the fail-closed
- * direction.
  */
 async function readAttestations(
   repo: string,
@@ -287,6 +333,25 @@ async function readAttestations(
       );
       continue;
     }
+    // Only journals carrying an attestation are worth verifying — chain
+    // verification hashes every entry, and most journals hold none.
+    if (
+      !entries.value.some((entry) => entry.verb === SELF_DIAGNOSTIC_FILING_VERB)
+    ) {
+      continue;
+    }
+    const verification = await verifyChain(path);
+    if (!verification.ok || !verification.value.valid) {
+      const reason = verification.ok
+        ? verification.value.reason ?? "the chain did not verify"
+        : verification.error.message;
+      log(
+        `[self-diagnostic] audit journal ${path} does not verify against its ` +
+          `chain anchor (${reason}) — its filing attestations are not ` +
+          `trusted, so the diagnostics they name stay unschedulable`,
+      );
+      continue;
+    }
     for (const entry of entries.value) indexEntry(index, entry, repo);
   }
   return index;
@@ -299,12 +364,19 @@ async function readAttestations(
  * the number of candidate diagnostics.
  *
  * @param repo - Repo the issues live in.
- * @param issues - Candidate diagnostics, with the body the scan read.
+ * @param issues - Candidate diagnostics, with the title, body and recognised
+ *   marker family the scan read. `familyId` is optional; when supplied it
+ *   must equal the family the attestation was recorded under.
  * @returns One verdict per issue number, in the order they were supplied.
  */
 export async function verifySelfDiagnosticFilings(
   repo: string,
-  issues: readonly { number: number; body?: string }[],
+  issues: readonly {
+    number: number;
+    title?: string;
+    body?: string;
+    familyId?: string;
+  }[],
   opts: AttestationOptions = {},
 ): Promise<Map<number, AttestationVerdict>> {
   const env = opts.env ?? processEnvLookup;
@@ -350,13 +422,25 @@ export async function verifySelfDiagnosticFilings(
       });
       continue;
     }
-    const digest = await computeBodyDigest(issue.body ?? "");
+    const digest = await computeContentDigest(
+      issue.title ?? "",
+      issue.body ?? "",
+    );
     if (!found.digests.has(digest)) {
       verdicts.set(issue.number, {
         attested: false,
-        reason: "body-mismatch",
-        detail: "the body no longer matches the one the filer posted, so " +
-          "the attestation does not cover the current content",
+        reason: "content-mismatch",
+        detail: "the title or body no longer matches what the filer posted, " +
+          "so the attestation does not cover the current content",
+      });
+      continue;
+    }
+    if (issue.familyId !== undefined && issue.familyId !== found.familyId) {
+      verdicts.set(issue.number, {
+        attested: false,
+        reason: "family-mismatch",
+        detail: `the marker recognises family \`${issue.familyId}\` but the ` +
+          `attestation was recorded under \`${found.familyId}\``,
       });
       continue;
     }

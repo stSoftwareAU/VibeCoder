@@ -119,23 +119,34 @@ is not enough, because an injected agent can file issues too:
    `<!--`/`-->` out of every interpolated field.
 3. **Author** — it was filed by a fleet worker login.
 4. **Filing attestation** — the worker's own filer recorded the created issue
-   number, and a digest of the body it posted, in the tamper-evident audit
-   chain under the `file-self-diagnostic` verb
+   number, and a digest of the title and body it posted, in the tamper-evident
+   audit chain under the `file-self-diagnostic` verb
    (`self_diagnostic_attestation.ts`, Issue #1277).
 
 Signals 1–3 are all things the **agent subprocess** can produce: it holds the
 run's `gh` credential, its writes are allowed in the claimed repo, and it
 writes the very body the marker lives in — so on their own they reduce to
-"filed by the worker account", which is not provenance. Signal 4 is the one it
-cannot mint: the journal lives outside every working tree, the agent's own `gh`
-calls are journalled under the mutation classifier's verb rather than this one,
-and a line appended by hand breaks the hash chain and its anchor. The body
-digest closes the follow-on move too — rewriting a genuinely-filed diagnostic's
-body no longer makes it self-schedulable, because the attestation covers the
-body the filer posted.
+"filed by the worker account", which is not provenance. Signal 4 cannot be
+produced through GitHub at all: the journal lives outside every working tree,
+the agent's own `gh` calls are journalled under the mutation classifier's verb
+rather than this one, and only a journal whose hash chain reconciles with its
+chain anchor is read — so a hand-appended line, a rewritten entry, and a
+freshly dropped unanchored journal file are all skipped rather than believed.
+The audit store is tamper-*evident* rather than tamper-proof, so an agent with
+unrestricted local shell could still forge a journal, its anchor and its roster
+entry together; that is a far higher bar than typing a marker into an issue
+body, and it leaves a permanent record outside the repo.
 
-An unattested marker-bearing issue is not lost: the refusal is logged, the
-issue stays open, and a human `work-on` schedules it as before.
+The content digest closes the follow-on move — rewriting a genuinely-filed
+diagnostic's title or body no longer makes it self-schedulable, because the
+attestation covers what the filer posted.
+
+Two consequences worth knowing: attestations are **host-local**, so a
+diagnostic is self-scheduled by the host that filed it and waits for a human on
+any other; and diagnostics filed before this gate existed carry no attestation,
+so they too wait for a human `work-on`. An unattested marker-bearing issue is
+never lost — the refusal is logged, the issue stays open, and a human `work-on`
+schedules it exactly as before.
 
 **Bounded, visible and reversible:**
 

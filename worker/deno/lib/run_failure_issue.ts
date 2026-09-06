@@ -368,6 +368,7 @@ export async function fileRunFailureIssue(
           "worker/deno/lib/run_failure_issue.ts",
         );
         const body = formatRunFailureBody(opts.report, classification);
+        const title = formatRunFailureTitle(failureClass);
         try {
           const raw = await opts.ghFn([
             "issue",
@@ -375,7 +376,7 @@ export async function fileRunFailureIssue(
             "--repo",
             targetRepo,
             "--title",
-            formatRunFailureTitle(failureClass),
+            title,
             "--body",
             body,
             ...labelArgs,
@@ -386,17 +387,17 @@ export async function fileRunFailureIssue(
           await writeState(statePath, state);
           // Issue #1277: attest the filing out of band, so tier 2b can tell
           // this diagnostic from one an injected agent typed the marker into.
+          // `opts.log` defaults to a silent sink in this module, so the
+          // attestation logs through `recordSelfDiagnosticFiling`'s own
+          // stderr default when the caller supplied none.
           const recordFiling = opts.recordFiling ??
             ((filing: SelfDiagnosticFiling) =>
-              recordSelfDiagnosticFiling(filing, {
-                // A swallowed default log would hide a diagnostic that can no
-                // longer be self-scheduled: stderr, never silence.
-                log: opts.log ?? ((m: string) => console.error(m)),
-              }));
+              recordSelfDiagnosticFiling(filing, { log: opts.log }));
           await recordFiling({
             repo: targetRepo,
             issueNumber,
             familyId: RUN_FAILURE_FAMILY_ID,
+            title,
             body,
             filedBy: "worker/deno/lib/run_failure_issue.ts",
           });

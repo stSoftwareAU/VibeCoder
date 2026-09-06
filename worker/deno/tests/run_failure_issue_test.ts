@@ -473,6 +473,11 @@ Deno.test("run failure issue - filing records an attestation carrying the posted
       create[create.indexOf("--body") + 1],
       "the attestation must cover the body that was actually posted",
     );
+    assertEquals(
+      filing.title,
+      create[create.indexOf("--title") + 1],
+      "and the title, so a rename does not slip past it",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

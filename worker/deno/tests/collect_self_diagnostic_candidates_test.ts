@@ -258,10 +258,12 @@ Deno.test("self-schedule - a marker-bearing issue the agent filed is not schedul
   const env: EnvLookup = (name) => values[name];
   try {
     const filedBody = diagnosticBody();
+    const filed = makeIssue({ number: 39, body: filedBody });
     await recordSelfDiagnosticFiling({
       repo: SELF_DIAGNOSTIC_REPO,
       issueNumber: 39,
       familyId: IDLE_INVERSION_FAMILY_ID,
+      title: filed.title,
       body: filedBody,
       filedBy: "worker/deno/lib/idle_inversion_streak.ts",
     }, { baseDir, env });
@@ -270,7 +272,7 @@ Deno.test("self-schedule - a marker-bearing issue the agent filed is not schedul
     const { result } = await collect({
       config: makeConfig({ selfScheduleDiagnosticsMaxInFlight: 2 }),
       issues: [
-        makeIssue({ number: 39, body: filedBody }),
+        filed,
         makeIssue({
           number: 41,
           body: diagnosticBody("stSoftwareAU/other"),
@@ -315,6 +317,7 @@ Deno.test("self-schedule - a worker-filed diagnostic whose body was rewritten is
       repo: SELF_DIAGNOSTIC_REPO,
       issueNumber: 39,
       familyId: IDLE_INVERSION_FAMILY_ID,
+      title: makeIssue({ number: 39 }).title,
       body: diagnosticBody(),
       filedBy: "worker/deno/lib/idle_inversion_streak.ts",
     }, { baseDir, env });
@@ -335,7 +338,7 @@ Deno.test("self-schedule - a worker-filed diagnostic whose body was rewritten is
 
     assertEquals(result.candidates, []);
     assertEquals(result.refusals[0]!.cause, "unattested");
-    assertStringIncludes(result.refusals[0]!.detail, "body-mismatch");
+    assertStringIncludes(result.refusals[0]!.detail, "content-mismatch");
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }

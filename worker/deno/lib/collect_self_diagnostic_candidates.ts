@@ -9,8 +9,9 @@
  * This collector closes that loop **without weakening any label guard**.
  * Nothing here applies a label; `top-priority` and `work-on` stay human-only
  * unconditionally. Instead an auto-filed diagnostic becomes claimable on its
- * provenance — see `self_diagnostic_provenance.ts` for the three signals
- * (repo, marker, author) that must agree.
+ * provenance — see `self_diagnostic_provenance.ts` for the four signals
+ * (repo, marker, author, and the filing attestation of
+ * `self_diagnostic_attestation.ts`) that must agree.
  *
  * The emitted candidates form tier 2b: below both human-scheduled tiers,
  * above the backlog (`issue_priority.ts`).
@@ -212,50 +213,13 @@ export async function collectSelfDiagnosticCandidates(
     );
   if (marked.length === 0) return empty();
 
-  // Issue #1277: the marker is body text, and an injected agent holding the
-  // run's `gh` credential writes bodies in this very repo. So the marker is
-  // only provenance when the worker's own filer attested the filing out of
-  // band — the issue number and the body digest, in the tamper-evident audit
-  // chain. Everything else is refused loudly and waits for a human.
-  const attestationRefusals: SelfScheduleRefusal[] = [];
-  const verifyFilings = deps.verifyFilings ??
-    ((r: string, issues: readonly { number: number; body?: string }[]) =>
-      verifySelfDiagnosticFilings(r, issues));
-  const verdicts = await verifyFilings(repo, marked.map((e) => e.issue));
-  const recognised = marked.filter((entry) => {
-    const verdict = verdicts.get(entry.issue.number);
-    if (verdict?.attested) return true;
-    const detail = verdict?.attested === false
-      ? `${verdict.reason}: ${verdict.detail}`
-      : "no filing attestation was returned for this issue";
-    attestationRefusals.push({
-      issueNumber: entry.issue.number,
-      cause: "unattested",
-      detail,
-    });
-    log(
-      `[self-schedule] refused ${repo}#${entry.issue.number}: ${detail} — a ` +
-        `body marker is written by whoever writes the body, so it is not ` +
-        `provenance on its own; the diagnostic waits for a human \`work-on\``,
-    );
-    diag?.logIssueSkipped(
-      repo,
-      entry.issue.number,
-      "self-schedule-refused",
-      detail,
-    );
-    return false;
-  });
-  if (recognised.length === 0) {
-    return { candidates: [], refusals: attestationRefusals };
-  }
-
   // An assigned diagnostic is a claimed one — the assignee is the fleet's
-  // claim lock — so that is what "in flight" counts.
-  const inFlight =
-    recognised.filter((e) => e.issue.assignees.length > 0).length;
+  // claim lock — so that is what "in flight" counts. Counted over every
+  // marked diagnostic, attested or not: an unattested one this route will
+  // not schedule may still be claimed, and it still occupies the slot.
+  const inFlight = marked.filter((e) => e.issue.assignees.length > 0).length;
   const familyByNumber = new Map(
-    recognised.map((e) => [e.issue.number, e.family]),
+    marked.map((e) => [e.issue.number, e.family]),
   );
 
   // Issues a human already scheduled belong to their own tier; the
@@ -269,8 +233,8 @@ export async function collectSelfDiagnosticCandidates(
     ].filter((l) => typeof l === "string" && l !== ""),
   );
 
-  const filtered = filterAndSort(
-    recognised.map((e) => e.issue).filter((issue) =>
+  const eligible = filterAndSort(
+    marked.map((e) => e.issue).filter((issue) =>
       !issue.labels.some((l) => humanScheduled.has(l))
     ),
     {
@@ -282,6 +246,45 @@ export async function collectSelfDiagnosticCandidates(
       needsHumanLabel: config.needsHumanLabel,
     },
   );
+  if (eligible.length === 0) return empty();
+
+  // Issue #1277: the marker is body text, and an injected agent holding the
+  // run's `gh` credential writes bodies in this very repo. So the marker is
+  // only provenance when the worker's own filer attested the filing out of
+  // band — the issue number and a digest of the title and body it posted, in
+  // the tamper-evident audit chain. Everything else is refused loudly and
+  // waits for a human. Run after the label filters above so an issue that was
+  // never a tier-2b candidate is not refused on every scan.
+  const attestationRefusals: SelfScheduleRefusal[] = [];
+  const verifyFilings = deps.verifyFilings ?? verifySelfDiagnosticFilings;
+  const verdicts = await verifyFilings(
+    repo,
+    eligible.map((issue) => ({
+      number: issue.number,
+      title: issue.title,
+      body: issue.body,
+      familyId: familyByNumber.get(issue.number)!.id,
+    })),
+  );
+  const filtered = eligible.filter((issue) => {
+    const verdict = verdicts.get(issue.number);
+    if (verdict?.attested) return true;
+    const detail = verdict?.attested === false
+      ? `${verdict.reason}: ${verdict.detail}`
+      : "no filing attestation was returned for this issue";
+    attestationRefusals.push({
+      issueNumber: issue.number,
+      cause: "unattested",
+      detail,
+    });
+    log(
+      `[self-schedule] refused ${repo}#${issue.number}: ${detail} — a body ` +
+        `marker is written by whoever writes the body, so it is not ` +
+        `provenance on its own; the diagnostic waits for a human \`work-on\``,
+    );
+    diag?.logIssueSkipped(repo, issue.number, "self-schedule-refused", detail);
+    return false;
+  });
   if (filtered.length === 0) {
     return { candidates: [], refusals: attestationRefusals };
   }

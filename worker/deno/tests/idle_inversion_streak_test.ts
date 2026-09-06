@@ -484,9 +484,13 @@ Deno.test("#1277 - filing records an attestation carrying the posted body", asyn
   await withState(async (statePath) => {
     const { fn } = gh([NO_EXISTING, CREATE_OK]);
     const filings: SelfDiagnosticFiling[] = [];
-    let created = "";
+    let createdBody = "";
+    let createdTitle = "";
     const recordingGh = (args: string[]): Promise<string> => {
-      if (args[1] === "create") created = args[args.indexOf("--body") + 1]!;
+      if (args[1] === "create") {
+        createdBody = args[args.indexOf("--body") + 1]!;
+        createdTitle = args[args.indexOf("--title") + 1]!;
+      }
       return fn(args);
     };
     for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
@@ -509,8 +513,13 @@ Deno.test("#1277 - filing records an attestation carrying the posted body", asyn
     assertEquals(filing.familyId, IDLE_INVERSION_FAMILY_ID);
     assertEquals(
       filing.body,
-      created,
+      createdBody,
       "the attestation must cover the body that was actually posted",
+    );
+    assertEquals(
+      filing.title,
+      createdTitle,
+      "and the title, so a rename does not slip past it",
     );
   });
 });

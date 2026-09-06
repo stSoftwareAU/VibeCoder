@@ -494,6 +494,7 @@ async function decide(
     ...opts.report,
     consecutiveCycles: entry.count,
   });
+  const title = formatIdleInversionTitle(repo);
   try {
     const created = await opts.ghFn([
       "issue",
@@ -502,7 +503,7 @@ async function decide(
       // Issue #459: the worker's own repo — the subject repo cannot fix it.
       IDLE_INVERSION_TARGET_REPO,
       "--title",
-      formatIdleInversionTitle(repo),
+      title,
       "--body",
       body,
     ]);
@@ -517,6 +518,7 @@ async function decide(
       repo: IDLE_INVERSION_TARGET_REPO,
       issueNumber,
       familyId: IDLE_INVERSION_FAMILY_ID,
+      title,
       body,
       filedBy: "worker/deno/lib/idle_inversion_streak.ts",
     });

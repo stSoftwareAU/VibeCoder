@@ -1322,8 +1322,9 @@ find_oldest_issue(github_user)
    [self_diagnostic_provenance.ts](../worker/deno/lib/self_diagnostic_provenance.ts)).
    **Nothing is self-labelled** — the reserved-label guards are untouched and
    `top-priority`/`work-on` stay human-only. Four signals must agree (repo,
-   marker, fleet author, and the filing attestation the worker's own filer
-   wrote to the audit chain —
+   marker, fleet author, and the filing attestation — issue number plus a
+   digest of the filed title and body — that the worker's own filer wrote to
+   the audit chain, read only from a journal that reconciles with its anchor —
    [self_diagnostic_attestation.ts](../worker/deno/lib/self_diagnostic_attestation.ts),
    Issue #1277); the tier is capped at
    `self_schedule_diagnostics_max_in_flight`, its decisions are written to the

@@ -1063,11 +1063,18 @@ whose eligibility rests on provenance.
   a self-scheduled work item. Eligibility now also requires a
   `file-self-diagnostic` entry in the tamper-evident audit journal
   ([`self_diagnostic_attestation.ts`](worker/deno/lib/self_diagnostic_attestation.ts)),
-  naming the created issue number and carrying a digest of the body the filer
-  posted. The journal lives outside every working tree, the agent's own `gh`
-  calls are journalled under the mutation classifier's verb rather than this
-  one, and a hand-appended line breaks the hash chain and its anchor. Anything
-  unattested is refused loudly and waits for a human `work-on`.
+  naming the created issue number and carrying a digest of the title and body
+  the filer posted. The journal lives outside every working tree, the agent's
+  own `gh` calls are journalled under the mutation classifier's verb rather
+  than this one, and only a journal that reconciles with its chain anchor is
+  read — so a hand-appended line, a rewritten entry and a freshly dropped
+  unanchored journal are all skipped. The store is tamper-*evident*, not
+  tamper-proof: an agent with unrestricted local shell could forge a journal,
+  its anchor and its roster entry together, which is a far higher bar than
+  typing a marker into an issue body and leaves a permanent record outside the
+  repo. Anything unattested is refused loudly and waits for a human `work-on`.
+  Attestations are host-local, so a diagnostic is self-scheduled by the host
+  that filed it; on any other host it waits for a human.
 - **Forged markers.** The filers escape `<!--` / `-->` out of every interpolated
   field before a body is written, so a marker in a filed body can only have come
   from the template.

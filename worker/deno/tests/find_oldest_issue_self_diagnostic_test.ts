@@ -117,6 +117,7 @@ Deno.test("findOldestIssue - selects an auto-filed diagnostic with no human labe
     repo: SELF_DIAGNOSTIC_REPO,
     issueNumber: DIAGNOSTIC.number,
     familyId: IDLE_INVERSION_FAMILY_ID,
+    title: DIAGNOSTIC.title,
     body: DIAGNOSTIC.body,
     filedBy: "worker/deno/lib/idle_inversion_streak.ts",
   }, { baseDir: `${auditDir}/audit`, env });
