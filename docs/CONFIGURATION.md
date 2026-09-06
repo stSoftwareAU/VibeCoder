@@ -3897,6 +3897,15 @@ starts working on an issue or PR feedback. This is particularly useful when:
    `PRE_SETUP_TIMEOUT`)
 4. If the command fails, a warning is logged but Claude continues working
 
+**The environment is built, not inherited (Issue #1285).** The pre-setup command
+runs the repository's own dependency setup — and so its install hooks — which is
+code the worker did not write, so it gets the same allowlisted environment as
+the repo's quality command and its pre-flight scripts: `PATH`, `HOME`, `TMPDIR`,
+the locale and the toolchain caches, plus `REPO_PATH` and `REPO_NAME`, and
+nothing else. No credential the worker holds is in scope for a pre-setup script
+to read. A repository whose setup genuinely needs a further variable declares it
+the same way its checks do, via `untrusted_command_env.ts`'s allowlist.
+
 **Example setup script** (`scripts/link-sibling-repos.sh`):
 
 ```bash
