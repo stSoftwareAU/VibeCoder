@@ -30,6 +30,7 @@
 import type { Result } from "../types.ts";
 import {
   type AlertDedupAuthorOptions,
+  parseAuthoredCommentRows,
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
@@ -488,24 +489,10 @@ async function hasFleetAuthoredMarker(
     "[.[] | {author: .user.login, body: .body}]",
   ]);
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    // An unparseable payload cannot establish that the marker is present.
-    return false;
-  }
-  if (!Array.isArray(parsed)) return false;
-
-  const rows = parsed
-    .filter((row): row is Record<string, unknown> =>
-      row !== null && typeof row === "object"
-    )
-    .map((row) => ({
-      author: typeof row.author === "string" ? row.author : null,
-      body: typeof row.body === "string" ? row.body : "",
-    }))
-    .filter((row) => row.body.includes(marker));
+  // An unparseable payload yields no rows, which cannot establish that the
+  // marker is present — the comment goes out.
+  const rows = parseAuthoredCommentRows(raw, "body")
+    .filter((row) => row.value.includes(marker));
 
   const fleetRows = await selectFleetAuthoredComments(
     rows,

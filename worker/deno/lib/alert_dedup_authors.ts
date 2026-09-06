@@ -265,3 +265,43 @@ export function selectFleetAuthoredComments<T extends AlertDedupCommentRow>(
     unverifiedOutcome,
   );
 }
+
+/**
+ * Parse a `gh api …/comments --jq` payload into author-carrying rows
+ * (Issue #1249).
+ *
+ * Three sites now project `{author, …}` off a comment listing so the match can
+ * be attributed, and each was writing the same defensive parse: JSON, array
+ * check, per-row object check, per-field type check. One helper keeps that
+ * shape in a single place, next to the selector the rows are handed to.
+ *
+ * A payload that is not a JSON array yields `[]` — no rows to attribute, which
+ * every caller already treats as "nothing verified".
+ *
+ * @param raw - The `gh` stdout to parse
+ * @param field - The second field each row carries beside `author`
+ * @returns One row per parsed comment, with a `null` author when absent
+ */
+export function parseAuthoredCommentRows(
+  raw: string,
+  field: string,
+): Array<{ author: string | null; value: string }> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  const rows: Array<{ author: string | null; value: string }> = [];
+  for (const entry of parsed) {
+    if (entry === null || typeof entry !== "object") continue;
+    const row = entry as Record<string, unknown>;
+    rows.push({
+      author: typeof row.author === "string" ? row.author : null,
+      value: typeof row[field] === "string" ? row[field] as string : "",
+    });
+  }
+  return rows;
+}

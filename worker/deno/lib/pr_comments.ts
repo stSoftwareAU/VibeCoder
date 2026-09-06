@@ -164,24 +164,57 @@ export async function fetchCommentReactors(
   commentId: string,
   content: string,
   ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
+  log: (message: string) => void = (message) => console.warn(message),
 ): Promise<string[]> {
   const apiPath = commentType === "review"
     ? `repos/${repo}/pulls/comments/${commentId}/reactions`
     : `repos/${repo}/issues/comments/${commentId}/reactions`;
 
+  let output: string;
   try {
-    const output = await ghCommandFn([
+    output = await ghCommandFn([
       "api",
+      // Paginated: the endpoint returns 30 per page, so without this a
+      // stranger could bury the fleet's own reaction under 30 of their own
+      // and the marker would read as absent for ever.
+      "--paginate",
       apiPath,
       "--jq",
       `[.[] | select(.content == "${content}") | .user.login]`,
     ]);
-    const parsed: unknown = JSON.parse(output);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((x): x is string => typeof x === "string");
-  } catch {
+  } catch (err) {
+    // Never a silent "nobody reacted": the caller cannot tell an empty list
+    // from an unreadable one, so the condition is logged where it happens.
+    log(
+      `[pr-comments] could not read ${content} reactors on ${repo} comment ` +
+        `${commentId}: ${err instanceof Error ? err.message : String(err)} ` +
+        `— treated as no reaction (Issue #1249)`,
+    );
     return [];
   }
+
+  // `--paginate` on a JSON-array endpoint concatenates arrays; gh renders
+  // them as one array or several back to back, so parse each in turn.
+  const logins: string[] = [];
+  for (const chunk of output.split("\n")) {
+    const text = chunk.trim();
+    if (text.length === 0) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      log(
+        `[pr-comments] unparseable ${content} reactions payload on ${repo} ` +
+          `comment ${commentId} — treated as no reaction (Issue #1249)`,
+      );
+      continue;
+    }
+    if (!Array.isArray(parsed)) continue;
+    for (const value of parsed) {
+      if (typeof value === "string") logins.push(value);
+    }
+  }
+  return logins;
 }
 
 /**

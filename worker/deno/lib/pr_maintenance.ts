@@ -32,7 +32,10 @@ import {
   isSpellingCheck,
 } from "./pr_ci_checks.ts";
 import { fetchFailedCheckRunsBatch } from "./check_runs_batch.ts";
-import { resolveFleetMaintenanceAuthorSet } from "./fleet_authors.ts";
+import {
+  isFleetAuthor,
+  resolveFleetMaintenanceAuthorSet,
+} from "./fleet_authors.ts";
 import {
   fetchPrHeadCommit,
   type HeadCommitInfo,
@@ -764,6 +767,7 @@ export async function findPrCommentsToFix(
         ghCommandFn,
         logger,
         trustedReviewBots,
+        scanAuthors,
       );
       if (reviewComment) {
         if (await supersededByFleetPush(reviewComment.commentCreatedAt)) {
@@ -789,6 +793,7 @@ export async function findPrCommentsToFix(
         ghCommandFn,
         logger,
         trustedReviewBots,
+        scanAuthors,
       );
       if (issueComment) {
         if (await supersededByFleetPush(issueComment.commentCreatedAt)) {
@@ -881,6 +886,12 @@ async function findActionableComment(
   ghCommandFn: (args: string[]) => Promise<string>,
   logger: Logger,
   trustedReviewBots: string[] = [],
+  /**
+   * The push-capable fleet set `resolveFleetMaintenanceAuthorSet` produced —
+   * it already contains this host's own login, so no union is built here
+   * (the fleet-author consistency guard forbids one).
+   */
+  fleetAuthors: readonly string[] = [],
 ): Promise<Omit<PrCommentToFix, "branchName"> | null> {
   const comments = await fetchPrComments(
     repo,
@@ -930,8 +941,13 @@ async function findActionableComment(
           "eyes",
           ghCommandFn,
         );
+        // The marker is the *fleet's* own, so the fleet is what it is
+        // checked against — `authorisedCommenters` is the trusted-input list,
+        // a different question, and using it would stop host B honouring
+        // host A's 👀 and break the cross-host de-duplication `prAuthors`
+        // depends on (Issue #1249, finding 5).
         const processedByFleet = eyesReactors.some((login) =>
-          login === githubUser || isAuthorisedCommenter(login)
+          isFleetAuthor(login, [...fleetAuthors])
         );
         if (processedByFleet) {
           logger.debug("Skipping comment already processed by the fleet", {

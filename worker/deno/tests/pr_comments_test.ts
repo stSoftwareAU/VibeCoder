@@ -259,12 +259,13 @@ Deno.test("pr_comments - handlePrCommentFailure calls failedOnce for first failu
   const calls: string[][] = [];
   const fn = async (args: string[]): Promise<string> => {
     calls.push(args);
-    // checkPrCommentHasFailedOnce will call the API to check confused count
+    // Since Issue #1249 the failed-once marker is resolved to its reactor,
+    // so the stub answers the reactions listing rather than a count.
     if (
       args.includes("--jq") &&
-      args.some((a) => a.includes(".reactions.confused"))
+      args.some((a) => a.includes('select(.content == "confused")'))
     ) {
-      return "0"; // Not failed yet
+      return "[]"; // Nobody has marked it failed yet
     }
     return "";
   };
@@ -275,6 +276,9 @@ Deno.test("pr_comments - handlePrCommentFailure calls failedOnce for first failu
     "123",
     "Error occurred",
     fn,
+    // Stated rather than resolved from the host's config, so the test does
+    // not read whatever fleet the machine happens to have configured.
+    ["vibe-bot"],
   );
   // Should have added confused reaction (first failure path)
   const reactionCalls = calls.filter((c) =>

@@ -244,11 +244,6 @@ function defaultNow(): number {
 }
 
 /**
- * Fetch all lock comments on a PR.
- *
- * Uses the GitHub API to retrieve comments matching the lock prefix.
- */
-/**
  * The comment id in the URL `gh issue comment` prints, or null (Issue #1249).
  *
  * `gh` writes the new comment's URL to stdout —
@@ -268,6 +263,11 @@ export function parsePostedCommentId(ghOutput: string): number | null {
   return Number.isSafeInteger(id) ? id : null;
 }
 
+/**
+ * Fetch all lock comments on a PR.
+ *
+ * Uses the GitHub API to retrieve comments matching the lock prefix.
+ */
 async function fetchLockComments(
   repo: string,
   prNumber: number,

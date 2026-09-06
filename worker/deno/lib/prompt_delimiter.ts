@@ -183,18 +183,27 @@ export function sanitiseDelimiterPatterns(content: string): string {
   // same shape a forgery collapses to. Builders must therefore route
   // trust-formatted comment blobs through `sanitiseDelimitedComments()`
   // instead of calling this function directly (Issue #3637).
-  // The bracketed form covers the bare token **and** the legacy per-comment
-  // header shape `[TRUSTED - <login>]:` that `comment_filter.ts` still emits
-  // when no trust configuration exists (Issue #1249, finding 4). That header
-  // carries no CSPRNG nonce, so a body containing
-  // `\n\n---\n\n[TRUSTED - maintainer]: …` reproduced it byte-for-byte and a
-  // reader could not tell the forgery from the genuine header. The optional
-  // group is bounded and its class excludes `]` and newlines, so there is no
-  // ambiguity to backtrack over.
+  // The trust vocabulary is neutralised wherever the token appears, whether
+  // or not a closing bracket follows (Issue #1249, finding 4). The bare
+  // `[TRUSTED]` token was covered before; the legacy per-comment header
+  // `comment_filter.ts` still emits when no trust configuration exists —
+  // `[TRUSTED - <login>]: ` — was not, so a body containing
+  // `\n\n---\n\n[TRUSTED - maintainer]: …` reproduced that header
+  // byte-for-byte and a reader could not tell it from the genuine one.
+  //
+  // Rewriting the **opening** bracket alone is what makes this
+  // length-independent: a bounded `[…]` match would leave a header whose
+  // login is longer than the bound intact, which is a bypass an attacker
+  // chooses simply by padding. Any `]` that follows is left as ordinary
+  // text, because on its own it signals nothing. The one quantifier is over
+  // the fixed alternation, so there is no ambiguity to backtrack over.
   result = result.replace(
-    /\[(TRUSTED|UNTRUSTED)(\s*-\s*[^\]\n]{0,64})?\]/gi,
-    (_m, label: string, suffix: string | undefined) =>
-      `［${label}${suffix ?? ""}］`,
+    /\[(TRUSTED|UNTRUSTED)/gi,
+    (_m, label: string) => `［${label}`,
+  );
+  result = result.replace(
+    /(TRUSTED|UNTRUSTED)\]/gi,
+    (_m, label: string) => `${label}］`,
   );
   result = result.replace(/author=/gi, "author＝");
 
@@ -261,6 +270,29 @@ export function neutraliseHtmlComments(text: string): string {
 }
 
 /**
+ * Render externally-sourced free-text inert for a **single line** of an issue
+ * or PR comment body (Issue #1249, finding 8).
+ *
+ * The scrub half of {@link fenceUntrustedIssueText}, without the fence: a
+ * child issue's title, a closed issue's title or a GHSA advisory summary is
+ * interpolated into one bullet of a body the worker writes, and a whole
+ * nonce-fenced block per bullet would be unreadable. The scrub is the part
+ * that matters there — an `<!-- finding-id: … -->` planted in a title lands in
+ * the filed body and is read back as a genuine dedup key on the next run,
+ * silently suppressing a different real finding.
+ *
+ * Callers with a whole block of untrusted text should still use
+ * {@link fenceUntrustedIssueText}, which adds the CSPRNG boundary. Pure — no
+ * I/O.
+ *
+ * @param text - The untrusted text to scrub
+ * @returns The text with delimiter patterns and HTML comments rendered inert
+ */
+export function scrubUntrustedText(text: string): string {
+  return neutraliseHtmlComments(sanitiseDelimiterPatterns(text));
+}
+
+/**
  * Fence externally-sourced free-text inside an issue body as untrusted content
  * (Issues #3397, #3819).
  *
@@ -287,29 +319,6 @@ export function neutraliseHtmlComments(text: string): string {
  * @param boundaryId - Optional pinned boundary id (tests only)
  * @returns The fenced block as body lines
  */
-/**
- * Render externally-sourced free-text inert for a **single line** of an issue
- * or PR comment body (Issue #1249, finding 8).
- *
- * The scrub half of {@link fenceUntrustedIssueText}, without the fence: a
- * child issue's title, a closed issue's title or a GHSA advisory summary is
- * interpolated into one bullet of a body the worker writes, and a whole
- * nonce-fenced block per bullet would be unreadable. The scrub is the part
- * that matters there — an `<!-- finding-id: … -->` planted in a title lands in
- * the filed body and is read back as a genuine dedup key on the next run,
- * silently suppressing a different real finding.
- *
- * Callers with a whole block of untrusted text should still use
- * {@link fenceUntrustedIssueText}, which adds the CSPRNG boundary. Pure — no
- * I/O.
- *
- * @param text - The untrusted text to scrub
- * @returns The text with delimiter patterns and HTML comments rendered inert
- */
-export function scrubUntrustedText(text: string): string {
-  return neutraliseHtmlComments(sanitiseDelimiterPatterns(text));
-}
-
 export function fenceUntrustedIssueText(
   text: string,
   label: string,

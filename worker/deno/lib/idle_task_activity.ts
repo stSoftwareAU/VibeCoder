@@ -59,6 +59,7 @@
 
 import {
   type AlertDedupAuthorOptions,
+  parseAuthoredCommentRows,
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
 import { CLAIM_MARKER_PREFIX } from "./claim_issue.ts";
@@ -210,22 +211,7 @@ async function latestClaimCommentEpoch(
     return null;
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(parsed)) return null;
-
-  const rows = parsed
-    .filter((row): row is Record<string, unknown> =>
-      row !== null && typeof row === "object"
-    )
-    .map((row) => ({
-      author: typeof row.author === "string" ? row.author : null,
-      createdAt: typeof row.created_at === "string" ? row.created_at : "",
-    }));
+  const rows = parseAuthoredCommentRows(raw, "created_at");
 
   const fleetRows = await selectFleetAuthoredComments(
     rows,
@@ -238,7 +224,7 @@ async function latestClaimCommentEpoch(
 
   let latest: number | null = null;
   for (const row of fleetRows) {
-    const epoch = isoToEpochSeconds(row.createdAt);
+    const epoch = isoToEpochSeconds(row.value);
     if (epoch !== null && (latest === null || epoch > latest)) {
       latest = epoch;
     }

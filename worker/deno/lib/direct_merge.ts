@@ -16,7 +16,11 @@ import {
 } from "./check_runs_batch.ts";
 import { fetchPRBranchStateBatch } from "./pr_branch_state.ts";
 import { decideMilestoneBaseMerge } from "./milestone_children_gate.ts";
-import { mergeMethodFlagForHead } from "./milestone_sync_pr.ts";
+import {
+  forkSyncDowngradeWarning,
+  isMilestoneSyncBranch,
+  mergeMethodFlagForHead,
+} from "./milestone_sync_pr.ts";
 import {
   type ApprovedDefaultBranchPolicy,
   fetchPrReviews,
@@ -957,6 +961,19 @@ export async function directMergePr(
     };
   }
 
+  // A milestone sync lands as a merge commit so the default branch is a
+  // genuine ancestor of the milestone branch (Issue #1048); every other PR
+  // squashes as before. The deviation also needs a same-repository head
+  // (Issue #1249, finding 10) — and when a sync-shaped head fails that check
+  // the downgrade is announced, because a quietly squashed sync is the defect
+  // #1048 exists to prevent.
+  const headIsSameRepository = gate.value.headIsSameRepository ?? false;
+  if (isMilestoneSyncBranch(gate.value.headRefName) && !headIsSameRepository) {
+    console.warn(
+      forkSyncDowngradeWarning(repo, prNumber, gate.value.headRefName ?? ""),
+    );
+  }
+
   try {
     await ghCommandFn([
       "pr",
@@ -964,13 +981,7 @@ export async function directMergePr(
       String(prNumber),
       "--repo",
       repo,
-      // A milestone sync lands as a merge commit so the default branch is a
-      // genuine ancestor of the milestone branch (Issue #1048); every other
-      // PR squashes as before.
-      mergeMethodFlagForHead(
-        gate.value.headRefName,
-        gate.value.headIsSameRepository ?? false,
-      ),
+      mergeMethodFlagForHead(gate.value.headRefName, headIsSameRepository),
       // Pin the merge to the checked commit — GitHub refuses the merge if the
       // head moved after the checks were read (Issue #3946).
       "--match-head-commit",

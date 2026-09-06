@@ -45,6 +45,7 @@ interface TestDeps {
   fetchCloseSummaryFn?: CollectIdleTaskFreshnessOptions["fetchCloseSummaryFn"];
   nowFn?: CollectIdleTaskFreshnessOptions["nowFn"];
   warn?: CollectIdleTaskFreshnessOptions["warn"];
+  authorOptions?: CollectIdleTaskFreshnessOptions["authorOptions"];
 }
 
 /** The freshness report plus the cadence compliance view (Issue #4012). */
@@ -87,6 +88,10 @@ export const idleTaskFreshnessCommand: Command = {
       fetchCloseSummaryFn: deps.fetchCloseSummaryFn,
       nowFn: deps.nowFn,
       warn: deps.warn,
+      // Fleet identity for the closing-comment author check (Issue #1249,
+      // finding 2). Production omits it and the configured fleet is read;
+      // a test states it so no ambient config is consulted.
+      ...(deps.authorOptions ? { authorOptions: deps.authorOptions } : {}),
     });
 
     // The operator's `.config.json` policy (#4011) is what the filer works

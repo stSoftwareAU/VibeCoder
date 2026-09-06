@@ -29,6 +29,7 @@
  */
 
 import type { GitHubClient, Logger } from "../types.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import type { DegradationVerdict } from "./planning_run_stats.ts";
 import type { PlanningInvocationStats } from "./planning_run_stats.ts";
@@ -89,6 +90,11 @@ export async function reportGrillMeDegradation(args: {
    * (Issue #961); defaults to the process environment.
    */
   env?: EnvLookup;
+  /**
+   * Fleet identity inputs for the cumulative-tally author check (Issue #1249,
+   * finding 12). Omitted reads the configured fleet.
+   */
+  authorOptions?: AlertDedupAuthorOptions;
 }): Promise<DegradationVerdict> {
   const { repo, issueNumber, claudeResult, ghClient, runGhCommand, logger } =
     args;
@@ -112,5 +118,6 @@ export async function reportGrillMeDegradation(args: {
     logger,
     ...(args.cacheDir ? { cacheDir: args.cacheDir } : {}),
     ...(args.env ? { env: args.env } : {}),
+    ...(args.authorOptions ? { authorOptions: args.authorOptions } : {}),
   });
 }

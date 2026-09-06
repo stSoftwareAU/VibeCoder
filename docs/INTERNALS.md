@@ -1551,8 +1551,11 @@ feedback:
 | **PR reviews** (CHANGES_REQUESTED) | `repos/{repo}/pulls/{pr}/reviews`   | Authorised commenters and `trusted_review_bots` only (Issue #185) — anyone can review a PR, and the body goes straight into the feedback prompt.                                |
 
 **Processed-comment tracking** — comments are marked as processed by adding an
-"eyes" (👀) reaction. The discovery query filters for `.reactions.eyes == 0` to
-avoid reprocessing. PR reviews use dismissal instead of reactions.
+"eyes" (👀) reaction. The discovery query returns every comment with its `eyes`
+count, and the scan resolves the *reactor* before skipping one: only a 👀 from
+the fleet means "already processed" (Issue #1249, finding 5). A count alone
+would let any account, with no repository permission, retire a comment from the
+scan for good. PR reviews use dismissal instead of reactions.
 
 **Staleness check** — review commit IDs are compared against the PR's current
 HEAD SHA. If the review was left on an older commit, it is skipped (the worker
@@ -2850,9 +2853,15 @@ Three defences, each independent of the others:
 
 - **The sync PR lands as a merge commit.**
   [`mergeMethodFlagForHead`](../worker/deno/lib/milestone_sync_pr.ts) answers
-  `--merge` for a `sync/milestone-*` head and `--squash` for every other PR;
-  `pr_auto_merge.ts`, `direct_merge.ts` and `pr_manager.ts` all route their
-  `gh pr merge` through it, so no arming path can quietly squash a sync.
+  `--merge` for a `sync/milestone-*` head **whose head branch lives in this
+  repository**, and `--squash` for every other PR; `pr_auto_merge.ts`,
+  `direct_merge.ts` and `pr_manager.ts` all route their `gh pr merge` through
+  it, so no arming path can quietly squash a sync. The same-repository
+  condition is Issue #1249, finding 10: a fork chooses its own branch names, so
+  the name alone cannot select a deviation on a path that bypasses branch
+  protection. A sync-shaped head that fails it is squashed with
+  `forkSyncDowngradeWarning` — loudly, by the same rule as the setting-based
+  downgrade below.
   A repository that forbids merge commits (`allow_merge_commit: false`, or a
   ruleset whose `allowed_merge_methods` omits `merge`) cannot take one, and
   there the sync is armed as a squash with a **warning naming the setting** —

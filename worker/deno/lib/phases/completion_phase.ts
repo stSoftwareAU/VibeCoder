@@ -26,6 +26,7 @@ import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
 import { getRepoConfig } from "../repo_config.ts";
+import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
 import {
   findBranchEvidenceImages,
   formatBranchEvidenceSection,
@@ -466,6 +467,21 @@ export async function workOnIssueCompletion(
 }
 
 /**
+ * The fleet logins whose run-stats comments this run counts (Issue #1249).
+ *
+ * `service_accounts` ∪ `fleet_pr_authors` ∪ this host's login — the same
+ * identity every other author check uses, read from the context the phase
+ * already holds rather than from the config file a second time.
+ */
+function fleetAuthorsFor(ctx: IssueContext): string[] {
+  return resolveFleetMaintenanceAuthorSet({
+    githubUser: ctx.githubUser,
+    fleetPrAuthors: ctx.config.fleetPrAuthors ?? [],
+    serviceAccounts: ctx.config.serviceAccounts ?? [],
+  });
+}
+
+/**
  * Post the `work-on` run's cost/model stats comment on the issue (Issue #3756).
  *
  * Reports only the invocations the execute phase recorded on this run — the
@@ -491,6 +507,10 @@ async function postWorkOnRunStats(
     postComment: (repo, issueNumber, body) =>
       client.postComment(repo, issueNumber, body),
     logger: deps.logger,
+    // The cumulative total is summed over fleet-authored comments only
+    // (Issue #1249, finding 12). This phase already holds the run's identity,
+    // so it states the fleet rather than re-reading the config file.
+    authorOptions: { fleetAuthors: fleetAuthorsFor(ctx) },
   });
 }
 

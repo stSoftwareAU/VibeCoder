@@ -52,8 +52,13 @@ import {
   createImgbbUploadFn,
   readImgbbApiKeyFromEnv,
 } from "../lib/imgbb_upload.ts";
+import { resolveAlertDedupAuthors } from "../lib/alert_dedup_authors.ts";
 import { AutoMergeResult, enableAutoMerge } from "../lib/pr_auto_merge.ts";
-import { mergeMethodFlagForHead } from "../lib/milestone_sync_pr.ts";
+import {
+  forkSyncDowngradeWarning,
+  isMilestoneSyncBranch,
+  mergeMethodFlagForHead,
+} from "../lib/milestone_sync_pr.ts";
 import {
   getCiCheckRetryCount,
   postCiFixMaxRetriesComment,
@@ -284,13 +289,22 @@ export const prManagerCommand: Command = {
         // If not allowed, attempt direct merge
         if (result.result === AutoMergeResult.NotAllowed) {
           try {
+            // Same-repository heads only may take the merge-commit deviation
+            // (Issue #1249, finding 10). This fallback holds no evidence about
+            // where the head lives, so it squashes — loudly, because a quietly
+            // squashed sync is the defect Issue #1048 exists to prevent.
+            if (isMilestoneSyncBranch(headRefName)) {
+              console.warn(
+                forkSyncDowngradeWarning(repo, prNumber, headRefName),
+              );
+            }
             await runGhCommand([
               "pr",
               "merge",
               String(prNumber),
               "--repo",
               repo,
-              mergeMethodFlagForHead(headRefName),
+              mergeMethodFlagForHead(headRefName, false),
             ]);
             return {
               success: true,
@@ -432,11 +446,16 @@ export const prManagerCommand: Command = {
             message: "Missing required arguments: --repo, --comment-id",
           };
         }
+        // The `confused` marker counts only from the fleet (Issue #1249,
+        // finding 5), so resolve the fleet identity rather than passing the
+        // empty default, which would make this subcommand always answer
+        // "false" — a guard that is dead is worse than one that is absent.
         const hasFailedOnce = await checkPrCommentHasFailedOnce(
           repo,
           commentType,
           commentId,
           runGhCommand,
+          await resolveAlertDedupAuthors({}, (m) => console.warn(m)),
         );
         return { success: true, message: hasFailedOnce ? "true" : "false" };
       }
