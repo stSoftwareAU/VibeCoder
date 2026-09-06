@@ -18,7 +18,13 @@ import {
   outcomeForThrown,
   type RunOutcome,
 } from "./run_outcome.ts";
-import type { GitHubClient, Logger, Result } from "../types.ts";
+import type {
+  GitHubClient,
+  GitHubComment,
+  Logger,
+  Result,
+  WorkerConfig,
+} from "../types.ts";
 import { maybeCreatePlanningMilestone } from "./planning_milestone.ts";
 import { promptOverrideMappings } from "./custom_label_prompts_config.ts";
 import { refuseFallbackPastOverride } from "./prompt_override_resolver.ts";
@@ -77,6 +83,11 @@ import { summariseCoverageGateFailure } from "./plan_coverage_gate.ts";
 import { ensureLabelExists } from "./label_operations.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import type { EscalateToHumanDeps } from "./needs_human_escalation.ts";
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
+import { resolveFleetMaintenanceAuthorSet } from "./fleet_authors.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -294,6 +305,115 @@ export function extractSubIssueUrlsFromComments(
     extractSubIssueUrls(comments),
     planningIssueNumber,
   );
+}
+
+/**
+ * Fleet identity for the planning close-out author checks (Issue #1352).
+ *
+ * The comparison set is {@link resolveFleetMaintenanceAuthorSet} — this host's
+ * login ∪ `fleet_pr_authors` ∪ `service_accounts` — resolved from the config
+ * the run already loaded. Deliberately **not** `allowedAuthors`: that is a
+ * human permission list answering a different question, and deliberately not
+ * "the current host only", because a sibling host may have posted the planning
+ * summary this run is recovering from.
+ *
+ * @param config - The run's worker configuration
+ * @param githubUser - This host's GitHub login
+ * @returns Author-verification options naming the fleet
+ */
+export function planningFleetAuthorOptions(
+  config: WorkerConfig,
+  githubUser: string,
+): AlertDedupAuthorOptions {
+  return {
+    fleetAuthors: resolveFleetMaintenanceAuthorSet({
+      githubUser,
+      fleetPrAuthors: config.fleetPrAuthors ?? [],
+      serviceAccounts: config.serviceAccounts ?? [],
+    }),
+  };
+}
+
+/**
+ * What an unattributable comment costs, in this site's own words.
+ *
+ * The fail direction is towards *doing the planning work*: a discarded comment
+ * leaves the run looking like nothing was published, so the planner runs rather
+ * than the parent being closed against a URL an unprivileged account posted.
+ */
+const COMMENT_RECOVERY_UNVERIFIED_OUTCOME =
+  "no comment counts as a planning summary and the planner runs instead of " +
+  "the parent being closed. A re-planned parent is recoverable; a parent " +
+  "closed against somebody else's issue loses the work";
+
+/**
+ * Recover sub-issue URLs from the planning issue's **fleet-authored** comments
+ * (Issues #1175, #1352).
+ *
+ * When a previous planning run created sub-issues but crashed before closing
+ * the planning issue, its summary comment still names them, and this recovery
+ * closes the parent from that comment without invoking Claude at all.
+ *
+ * A comment thread is text **any** GitHub account may post to, and the author
+ * is the only authenticated part of it. Matching on the URL alone let one
+ * outsider comment carrying any `…/issues/N` link close the parent citing that
+ * issue as its plan — and a benign cross-reference ("related to #500") did the
+ * same by accident. Each comment is therefore attributed through
+ * {@link selectFleetAuthoredComments} against the fleet identity before its
+ * URLs count, and the URLs are taken per comment so an outsider's link inside
+ * the thread can never ride in on a fleet comment's verification.
+ *
+ * The read is authoritative rather than the flattened `issueComments` blob,
+ * which carries no per-comment author. A thread that cannot be read yields no
+ * URLs — logged loudly — so the planner runs.
+ *
+ * @param repo - Repository in "owner/repo" format
+ * @param issueNumber - The planning issue number (its own URL is excluded)
+ * @param getComments - Reads the issue's comments (`ghClient.getIssueComments`)
+ * @param options - Fleet identity for the author check
+ * @param log - Sink for the discard, unresolved-set and read-failure warnings
+ * @returns Unique sub-issue URLs from fleet-authored comments
+ */
+export async function recoverFleetAuthoredSubIssueUrls(
+  repo: string,
+  issueNumber: number,
+  getComments: (
+    repo: string,
+    issueNumber: number,
+  ) => Promise<GitHubComment[]>,
+  options: AlertDedupAuthorOptions,
+  log: (message: string) => void,
+): Promise<string[]> {
+  let comments: GitHubComment[];
+  try {
+    comments = await getComments(repo, issueNumber);
+  } catch (err) {
+    log(
+      `[planning] comment recovery ${repo}#${issueNumber}: could not read the ` +
+        `comment thread (${
+          err instanceof Error ? err.message : String(err)
+        }), ` +
+        `so ${COMMENT_RECOVERY_UNVERIFIED_OUTCOME}.`,
+    );
+    return [];
+  }
+
+  const candidates = comments
+    .map((comment) => ({
+      author: comment.author,
+      urls: extractSubIssueUrlsFromComments(comment.body ?? "", issueNumber),
+    }))
+    .filter((row) => row.urls.length > 0);
+
+  const verified = await selectFleetAuthoredComments(
+    candidates,
+    `planning comment recovery ${repo}#${issueNumber}`,
+    options,
+    log,
+    COMMENT_RECOVERY_UNVERIFIED_OUTCOME,
+  );
+
+  return [...new Set(verified.flatMap((row) => row.urls))];
 }
 
 /** Patterns indicating sub-issue creation in Claude's output. */
@@ -1038,14 +1158,19 @@ async function _processPlanningWithHeartbeat(
   const { ghClient, logger, deps } = processorDeps;
 
   // Pre-check: recover from a prior run that created sub-issues but crashed
-  // before closing this planning issue (Issue #1175).
-  const existingUrls = extractSubIssueUrlsFromComments(
-    issueComments,
+  // before closing this planning issue (Issue #1175). Only comments a fleet
+  // account authored count — the thread is open to anybody (Issue #1352).
+  const existingUrls = await recoverFleetAuthoredSubIssueUrls(
+    repo,
     issueNumber,
+    (targetRepo, targetIssue) =>
+      ghClient.getIssueComments(targetRepo, targetIssue),
+    planningFleetAuthorOptions(config, githubUser),
+    (message) => logger.warn(message, { repo, issueNumber }),
   );
   if (existingUrls.length > 0) {
     logger.info(
-      "Sub-issues found in existing comments — skipping Claude, proceeding to close",
+      "Sub-issues found in existing fleet-authored comments — skipping Claude, proceeding to close",
       {
         repo,
         issueNumber,

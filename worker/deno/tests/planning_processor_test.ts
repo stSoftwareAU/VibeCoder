@@ -31,6 +31,7 @@ import {
   listNativeSubIssues,
   listSubIssuesViaIssueList,
   processIssuePlanning,
+  recoverFleetAuthoredSubIssueUrls,
 } from "../lib/planning_processor.ts";
 import { planningProcessorCommand } from "../commands/planning_processor.ts";
 import { validateFailureDetectionCriteria } from "../lib/failure_detection_gate.ts";
@@ -39,7 +40,7 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import type { WorkerConfig } from "../types.ts";
+import type { GitHubComment, WorkerConfig } from "../types.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
@@ -2177,8 +2178,9 @@ Deno.test("processIssuePlanning - reopens an inline-closed parent that still has
 // records the repair invocation so stats no longer say "no served model
 // observed".
 Deno.test("processIssuePlanning - recovery path repairs missing Failure Detection sections and completes (Issue #3272)", async () => {
-  const ctx = makeContext({
-    issueComments: `## Planning Complete
+  // Issue #1352: the recovery reads the thread through `getIssueComments`, so
+  // the prior run's summary is served below as a comment this host authored.
+  const priorSummary = `## Planning Complete
 
 Planning complete. **2 sub-issue(s)** created:
 
@@ -2186,8 +2188,8 @@ Planning complete. **2 sub-issue(s)** created:
 - https://github.com/org/repo/issues/302
 
 ---
-🤖 Processed by: testbot`,
-  });
+🤖 Processed by: testbot`;
+  const ctx = makeContext({ issueComments: priorSummary });
 
   let claudeWasCalled = false;
   let repairCalls = 0;
@@ -2273,7 +2275,8 @@ Planning complete. **2 sub-issue(s)** created:
         createdAt: "",
         updatedAt: "",
       }),
-    getIssueComments: () => Promise.resolve([]),
+    getIssueComments: () =>
+      Promise.resolve([makeComment("testbot", priorSummary)]),
     addLabel: () => Promise.resolve(),
     removeLabel: () => Promise.resolve(),
     postComment: (_repo: string, n: number, body: string) => {
@@ -2361,9 +2364,18 @@ Deno.test("extractSubIssueUrlsFromComments - handles empty comments", () => {
 // processIssuePlanning — recovery from prior run (Issue #1175)
 // ============================================================================
 
-Deno.test("processIssuePlanning - recovers when sub-issues exist from prior run", async () => {
-  const ctx = makeContext({
-    issueComments: `## Planning Complete
+/** One comment row in the shape `ghClient.getIssueComments` returns. */
+function makeComment(author: string, body: string): GitHubComment {
+  return {
+    id: 1,
+    body,
+    author,
+    createdAt: "2026-01-01T00:00:00Z",
+    reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
+  };
+}
+
+const PRIOR_RUN_SUMMARY_COMMENT = `## Planning Complete
 
 Planning complete. **2 sub-issue(s)** created:
 
@@ -2371,8 +2383,14 @@ Planning complete. **2 sub-issue(s)** created:
 - https://github.com/org/repo/issues/102
 
 ---
-🤖 Processed by: testbot`,
-  });
+🤖 Processed by: testbot`;
+
+Deno.test("processIssuePlanning - recovers when sub-issues exist from prior run", async () => {
+  // Issue #1352: the recovery now reads the thread through
+  // `getIssueComments` so each comment carries its author — the flattened
+  // `issueComments` blob has none. The summary is served as a comment written
+  // by this host (`testbot`), which is what the crashed prior run posted.
+  const ctx = makeContext({ issueComments: PRIOR_RUN_SUMMARY_COMMENT });
 
   let closedIssue = false;
   let claudeWasCalled = false;
@@ -2411,7 +2429,8 @@ Planning complete. **2 sub-issue(s)** created:
         createdAt: "",
         updatedAt: "",
       }),
-    getIssueComments: () => Promise.resolve([]),
+    getIssueComments: () =>
+      Promise.resolve([makeComment("testbot", PRIOR_RUN_SUMMARY_COMMENT)]),
     addLabel: () => Promise.resolve(),
     removeLabel: () => Promise.resolve(),
     postComment: () => Promise.resolve(undefined),
@@ -2434,6 +2453,154 @@ Planning complete. **2 sub-issue(s)** created:
     assertEquals(closedIssue, true);
     assertEquals(claudeWasCalled, false);
   }
+});
+
+// ============================================================================
+// Comment-recovery author verification (Issue #1352)
+// ============================================================================
+
+Deno.test("processIssuePlanning - an outsider comment carrying an issue URL does not close the parent (Issue #1352)", async () => {
+  // The exploit: any account that can comment posts a single issue URL. The
+  // recovery pre-check used to skip Claude and close the parent against it.
+  const outsiderComment = makeComment(
+    "drive-by",
+    "Related to https://github.com/org/repo/issues/999",
+  );
+  const ctx = makeContext({ issueComments: outsiderComment.body });
+
+  let claudeWasCalled = false;
+  const ghCalls: string[] = [];
+  const postedComments: string[] = [];
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () => {
+        claudeWasCalled = true;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            output: "No sub-issues created.",
+            exitCode: 0,
+            timedOut: false,
+          },
+        });
+      },
+    },
+    github: {
+      runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(coverageReadResponse());
+        }
+        ghCalls.push(args.join(" "));
+        if (args.includes("search")) return Promise.resolve("[]");
+        return Promise.resolve("");
+      },
+    },
+  });
+
+  const ghClient = {
+    getIssue: () =>
+      Promise.resolve({
+        number: 100,
+        title: "Test",
+        body: "",
+        labels: [],
+        author: "user",
+        assignees: [],
+        createdAt: "",
+        updatedAt: "",
+      }),
+    getIssueComments: () => Promise.resolve([outsiderComment]),
+    addLabel: () => Promise.resolve(),
+    removeLabel: () => Promise.resolve(),
+    postComment: (_r: string, _n: number, body: string) => {
+      postedComments.push(body);
+      return Promise.resolve(undefined);
+    },
+    editIssue: () => Promise.resolve(),
+    assignIssue: () => Promise.resolve(),
+    unassignIssue: () => Promise.resolve(),
+    closeIssue: () => Promise.resolve(),
+  };
+
+  const result = await processIssuePlanning(ctx, {
+    promptsDir: PROMPTS_DIR,
+    ghClient,
+    logger: deps.logger,
+    deps,
+  });
+
+  // The planner runs — the pre-check no longer short-circuits it — and the
+  // planted URL counts for nothing: no sub-issue is claimed and nothing the
+  // worker writes to the parent cites it.
+  assertEquals(claudeWasCalled, true);
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.subIssueCount, 0);
+  assertEquals(
+    [...ghCalls, ...postedComments].some((text) => text.includes("issues/999")),
+    false,
+  );
+});
+
+Deno.test("recoverFleetAuthoredSubIssueUrls - keeps only the fleet-authored comment's URLs", async () => {
+  const logged: string[] = [];
+  const urls = await recoverFleetAuthoredSubIssueUrls(
+    "org/repo",
+    100,
+    () =>
+      Promise.resolve([
+        makeComment(
+          "drive-by",
+          "Related to https://github.com/org/repo/issues/999",
+        ),
+        makeComment(
+          "testbot",
+          "Planning complete:\n- https://github.com/org/repo/issues/101\n" +
+            "- https://github.com/org/repo/issues/100",
+        ),
+      ]),
+    { fleetAuthors: ["testbot"] },
+    (message) => logged.push(message),
+  );
+
+  // The outsider's URL is discarded; the planning issue's own URL is excluded.
+  assertEquals(urls, ["https://github.com/org/repo/issues/101"]);
+  assertEquals(logged.length, 1);
+  assertStringIncludes(logged[0]!, "authored outside the fleet");
+});
+
+Deno.test("recoverFleetAuthoredSubIssueUrls - discards every URL when the fleet set is unresolved", async () => {
+  const logged: string[] = [];
+  const urls = await recoverFleetAuthoredSubIssueUrls(
+    "org/repo",
+    100,
+    () =>
+      Promise.resolve([
+        makeComment("testbot", "https://github.com/org/repo/issues/101"),
+      ]),
+    { fleetAuthors: [] },
+    (message) => logged.push(message),
+  );
+
+  assertEquals(urls, []);
+  assertEquals(logged.length, 1);
+  assertStringIncludes(logged[0]!, "fleet author set unresolved");
+});
+
+Deno.test("recoverFleetAuthoredSubIssueUrls - an unreadable thread recovers nothing, loudly", async () => {
+  const logged: string[] = [];
+  const urls = await recoverFleetAuthoredSubIssueUrls(
+    "org/repo",
+    100,
+    () => Promise.reject(new Error("gh: 502 Bad Gateway")),
+    { fleetAuthors: ["testbot"] },
+    (message) => logged.push(message),
+  );
+
+  assertEquals(urls, []);
+  assertEquals(logged.length, 1);
+  assertStringIncludes(logged[0]!, "could not read the comment thread");
+  assertStringIncludes(logged[0]!, "502 Bad Gateway");
 });
 
 Deno.test("processIssuePlanning - recovers via GitHub API pre-check when comments have no URLs", async () => {

@@ -166,7 +166,12 @@ Deno.test("completion - the ahead-of-base guard counts the WORKER branch, not HE
     (args) => args[0] === "rev-list" ? "1\n" : "",
   );
   assertEquals(run.status, "continue");
-  const revList = run.gitCalls.find((a) => a[0] === "rev-list");
+  // NOT simply the first rev-list: the branch-currency check runs one of its
+  // own (`--left-right --count`) before the push. The ahead guard is the
+  // plain `--count`.
+  const revList = run.gitCalls.find(
+    (a) => a[0] === "rev-list" && !a.includes("--left-right"),
+  );
   assert(revList, "expected the ahead guard to run");
   assertEquals(revList[2], "Develop..issue-565-branding-hot-link");
 });
@@ -284,7 +289,12 @@ Deno.test("completion #68 - counts against origin/<base> when the milestone base
     },
   );
   assertEquals(run.status, "continue");
-  const revList = run.gitCalls.find((a) => a[0] === "rev-list");
+  // NOT simply the first rev-list: the branch-currency check runs one of its
+  // own (`--left-right --count`) before the push. The ahead guard is the
+  // plain `--count`.
+  const revList = run.gitCalls.find(
+    (a) => a[0] === "rev-list" && !a.includes("--left-right"),
+  );
   assert(revList, "the ahead guard must run for a milestone PR");
   assertEquals(
     revList[2],
@@ -334,7 +344,10 @@ Deno.test("completion #68 - an unresolvable base logs a louder error and skips t
   );
   // The guard never ran a rev-list against a milestone range.
   assert(
-    !run.gitCalls.some((a) => a[0] === "rev-list" && a[2]?.includes(MILESTONE)),
+    !run.gitCalls.some((a) =>
+      a[0] === "rev-list" && !a.includes("--left-right") &&
+      a[2]?.includes(MILESTONE)
+    ),
     "no ahead-count attempted once the base could not be resolved",
   );
 });
