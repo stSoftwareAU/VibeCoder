@@ -2012,7 +2012,17 @@ export async function runClaudeWithTimeout(
         ...(resolvedEffort ? { effort: resolvedEffort } : {}),
         ...(providerUsage.usageUnknown ? { usageUnknown: true } : {}),
         tokenUsage,
-      }).catch(() => {/* Credit logging must never fail the main flow */});
+      }).catch((err: unknown) => {
+        // Credit logging must never fail the main flow — but it must never be
+        // silent either (Issue #1239). A refused append means the log was
+        // tampered with (a planted symlink) or is unwritable, and the daily
+        // spend ceiling reads that same file.
+        logger?.warn(
+          `Credit logging failed for ${creditLogDir}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
     }
 
     // A killed run reports the snapshot taken at the kill; one that finished

@@ -2492,7 +2492,7 @@ operational purposes:
 | `VIBE_DAILY_SPEND_CEILING_USD` | `0` (disabled) | Daily estimated model-spend ceiling in USD |
 | `VIBE_HOST_DISK_LOW_FLOOR_GB` | `20` | Gigabyte term of the claiming floor. The `.config.json` key `host_disk_low_floor_gb` wins over it — see [The claiming floor](#the-claiming-floor-issue-732) |
 | `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` | `10` | Percentage term of the claiming floor. The `.config.json` key `host_disk_low_floor_percent` wins over it — see [The claiming floor](#the-claiming-floor-issue-732) |
-| `VIBE_CREDIT_LOG_DIR`           | worker workDir | Directory holding the `.credit_log_YYYY-MM-DD.json` files      |
+| `VIBE_CREDIT_LOG_DIR`           | `<workDir>/.credit-logs` | Directory holding the `.credit_log_YYYY-MM-DD.json` files. The default is worker-private (`0700`) so the untrusted `agent` account cannot plant a symlink at the log path or delete the ceiling's only input — see [Where the credit logs live](#where-the-credit-logs-live-issue-1239) |
 | `VIBE_SIDE_REPO_CLONE_ARGS`     | `--filter=blob:none` | `git clone` arguments a gate uses for the sibling data repos it pulls in — see [Side/data repo clones are blobless](CONTAINER.md#sidedata-repo-clones-are-blobless-issue-243) |
 | `WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS` | `3` | Idle days before a side/data clone is aged out of the work volume |
 | `MERGED_PR_SWEEP_ISSUE_LIMIT` | `200` | Open issues examined per repo by the housekeeping merged-PR issue sweep (Issue #504) |
@@ -2589,7 +2589,44 @@ billed invoices — treat it as a guard rail, not an accounting record. A credit
 log that cannot be read is reported as `UNVERIFIED` rather than passed as
 under-budget: a monitoring fault must not halt the fleet, but it is never
 silent. Set `VIBE_CREDIT_LOG_DIR` when the credit logs live somewhere other
-than the worker's work directory.
+than the default directory below.
+
+### Where the credit logs live (Issue #1239)
+
+The logs default to `<workDir>/.credit-logs/`, a directory the worker creates
+`0700`, and each `.credit_log_YYYY-MM-DD.json` is created `0600` through an
+append that refuses to follow a symlink.
+
+They used to sit directly in the work root, which the container shares with
+the untrusted `agent` account (group-writable, setgid, no sticky bit — the
+account the repository's own quality command runs as). That account could
+therefore plant a symlink at the predictable log path and redirect every
+appended JSON line into any file the worker uid can write, or simply delete
+the day's log — and because the ceiling reads only that file, the day's spend
+then read `$0` however much had actually been spent. It can do neither
+inside an owner-only directory: it cannot write the log path, and it cannot
+remove a directory whose contents it cannot unlink.
+
+Two operator-visible consequences:
+
+- Logs written before this change stay in the work root and are no longer
+  summarised. Move them into `.credit-logs/` to keep the history, or delete
+  them — nothing sweeps the old location automatically (`credit-summary
+  --cleanup` only prunes the `--log-dir` it is given). While today's log is
+  still sitting there, the worker logs a `[SPEND_CEILING]` warning at
+  start-up naming both paths, so the mismatch is never a silent `$0`.
+- An explicit `VIBE_CREDIT_LOG_DIR` still wins and is used as given. The
+  worker refuses a log directory another account owns, and strips group/other
+  **write** access from whichever directory it uses (unlinking an entry needs
+  write on its directory); read access is left as the operator set it.
+
+```mermaid
+flowchart LR
+    W["Worker uid 1000"] -- "append 0600, refuses symlinks" --> L["&lt;workDir&gt;/.credit-logs/<br/>.credit_log_YYYY-MM-DD.json"]
+    A["agent uid 1001"] -- "no write, no unlink" --x L
+    L --> C["Daily spend ceiling"]
+    style L fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
 
 An invocation whose model id has no pricing row is charged at a conservative
 **upper bound** rather than counted as `$0` — otherwise a new

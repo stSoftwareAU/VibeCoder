@@ -5,8 +5,12 @@
  * Issue #693: Atomic file write utilities for state and cache files.
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
-import { atomicWrite, safeReadFile } from "../lib/file_utils.ts";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  appendNoFollow,
+  atomicWrite,
+  safeReadFile,
+} from "../lib/file_utils.ts";
 
 // Helper to create a temporary directory for each test
 async function withTempDir(
@@ -301,5 +305,61 @@ Deno.test("file_utils - safeReadFile reads empty file", async () => {
     if (result.ok) {
       assertEquals(result.value, "");
     }
+  });
+});
+
+// =============================================================================
+// appendNoFollow (Issue #1239)
+// =============================================================================
+
+Deno.test("appendNoFollow - appends to a regular file, creating it 0600", async () => {
+  await withTempDir(async (dir) => {
+    const target = `${dir}/log.json`;
+    const first = await appendNoFollow({ targetFile: target, content: "a\n" });
+    assert(first.ok, "first append succeeded");
+    const second = await appendNoFollow({ targetFile: target, content: "b\n" });
+    assert(second.ok, "second append succeeded");
+
+    assertEquals(await Deno.readTextFile(target), "a\nb\n");
+    if (Deno.build.os !== "windows") {
+      assertEquals((await Deno.lstat(target)).mode! & 0o777, 0o600);
+    }
+  });
+});
+
+Deno.test("appendNoFollow - refuses a symlink at the target path", async () => {
+  await withTempDir(async (dir) => {
+    const victim = `${dir}/victim`;
+    await Deno.writeTextFile(victim, "original");
+    const link = `${dir}/link`;
+    await Deno.symlink(victim, link);
+
+    const result = await appendNoFollow({ targetFile: link, content: "x\n" });
+    assert(!result.ok, "a symlink target is refused");
+    assertStringIncludes(result.error.message, "symlink");
+    assertEquals(await Deno.readTextFile(victim), "original");
+  });
+});
+
+Deno.test("appendNoFollow - refuses a hard link and a non-regular target", async () => {
+  await withTempDir(async (dir) => {
+    const original = `${dir}/original`;
+    await Deno.writeTextFile(original, "original\n");
+    const hard = `${dir}/hard`;
+    await Deno.link(original, hard);
+
+    const linked = await appendNoFollow({ targetFile: hard, content: "x\n" });
+    assert(!linked.ok, "a hard-linked target is refused");
+    assertStringIncludes(linked.error.message, "hard link");
+    assertEquals(await Deno.readTextFile(original), "original\n");
+
+    const asDir = `${dir}/subdir`;
+    await Deno.mkdir(asDir);
+    const directory = await appendNoFollow({
+      targetFile: asDir,
+      content: "x\n",
+    });
+    assert(!directory.ok, "a directory target is refused");
+    assertStringIncludes(directory.error.message, "not a regular file");
   });
 });
