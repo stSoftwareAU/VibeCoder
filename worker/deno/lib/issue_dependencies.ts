@@ -174,6 +174,10 @@ export function extractSubIssueReferences(
   // Match task list items with full GitHub URLs
   if (repo) {
     const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // The only interpolated value is the repo slug, escaped on the line above,
+    // so it cannot inject regex syntax; every quantifier around it is anchored
+    // on a literal and none is ambiguous (Issue #1274).
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
     const urlPattern = new RegExp(
       `^-\\s*\\[[ xX]\\]\\s*https://github\\.com/${escapedRepo}/issues/(\\d+)`,
       "gm",
