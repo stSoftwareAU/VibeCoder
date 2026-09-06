@@ -9,8 +9,9 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  ensureGitattributesPatterns,
   ensureGitignorePatterns,
   REQUIRED_GITIGNORE_PATTERNS,
   VIBE_CODER_BLOCK_MARKER,
@@ -442,5 +443,78 @@ Deno.test("ensureGitignorePatterns - .gitattributes is NOT ignored", async () =>
     await Deno.writeTextFile(`${dir}/.gitattributes`, "* text=auto\n");
     const ignored = await gitCheckIgnore(dir, ".gitattributes");
     assertEquals(ignored, false, ".gitattributes must remain trackable");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Symlink and hard-link refusal (Issue #1234)
+// ---------------------------------------------------------------------------
+
+Deno.test("ensureGitignorePatterns - refuses a symlinked .gitignore (Issue #1234)", async () => {
+  await withTempDir(async (dir) => {
+    const victim = `${dir}/victim.txt`;
+    await Deno.writeTextFile(victim, "victim content\n");
+    await Deno.symlink(victim, `${dir}/.gitignore`);
+
+    const result = await ensureGitignorePatterns(dir);
+
+    assert(!result.ok, "a symlinked .gitignore must be refused");
+    assertStringIncludes(result.error.message, "symlink");
+    assertEquals(
+      await Deno.readTextFile(victim),
+      "victim content\n",
+      "the symlink target must not be rewritten",
+    );
+    assert(
+      (await Deno.lstat(`${dir}/.gitignore`)).isSymlink,
+      "the planted link is refused, not silently replaced",
+    );
+  });
+});
+
+Deno.test("ensureGitattributesPatterns - refuses a symlinked .gitattributes (Issue #1234)", async () => {
+  await withTempDir(async (dir) => {
+    const victim = `${dir}/victim.txt`;
+    await Deno.writeTextFile(victim, "victim content\n");
+    await Deno.symlink(victim, `${dir}/.gitattributes`);
+
+    const result = await ensureGitattributesPatterns(dir);
+
+    assert(!result.ok, "a symlinked .gitattributes must be refused");
+    assertStringIncludes(result.error.message, "symlink");
+    assertEquals(
+      await Deno.readTextFile(victim),
+      "victim content\n",
+      "the symlink target must not be rewritten",
+    );
+  });
+});
+
+Deno.test("ensureGitignorePatterns - refuses a hard-linked .gitignore (Issue #1234)", async () => {
+  await withTempDir(async (dir) => {
+    const victim = `${dir}/victim.txt`;
+    await Deno.writeTextFile(victim, "victim content\n");
+    await Deno.link(victim, `${dir}/.gitignore`);
+
+    const result = await ensureGitignorePatterns(dir);
+
+    assert(!result.ok, "a hard-linked .gitignore must be refused");
+    assertStringIncludes(result.error.message, "hard link");
+    assertEquals(
+      await Deno.readTextFile(victim),
+      "victim content\n",
+      "the hard-link partner must not be rewritten",
+    );
+  });
+});
+
+Deno.test("ensureGitignorePatterns - refuses a non-regular .gitignore (Issue #1234)", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.mkdir(`${dir}/.gitignore`);
+
+    const result = await ensureGitignorePatterns(dir);
+
+    assert(!result.ok, "a directory at the .gitignore path must be refused");
+    assertStringIncludes(result.error.message, "not a regular file");
   });
 });
