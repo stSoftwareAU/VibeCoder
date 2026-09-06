@@ -35,12 +35,15 @@
  *
  * ## Why the walk stops where it does
  *
- * A letter that takes a value **anywhere in `gh`** ends the group: pflag would
+ * A letter listed in {@link GH_VALUE_SHORTHANDS} ends the group: pflag would
  * hand it the rest of the token, so there is no hidden flag behind it. Only
- * letters that are boolean everywhere are walked through. That ordering is
- * what keeps the rewrite honest in both directions — it cannot invent an `-X`
- * out of the middle of a `-q` jq expression (a false mutation), and it cannot
- * miss one hiding behind a boolean (a waved-through mutation).
+ * letters treated as boolean are walked through. That ordering is what keeps
+ * the rewrite honest in both directions — it cannot invent an `-X` out of the
+ * middle of a `-q` jq expression (a false mutation), and it cannot miss one
+ * hiding behind a boolean (a waved-through mutation). The set is not a perfect
+ * model of `gh` — one letter is genuinely ambiguous across subcommands — so
+ * see {@link GH_VALUE_SHORTHANDS} for which way that ambiguity is resolved and
+ * why the residue is bounded.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -63,18 +66,32 @@ const GH_GUARD_SHORTHANDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Every shorthand letter that takes a value in at least one `gh` subcommand.
+ * Shorthand letters treated as taking a value, so the group walk stops there.
  *
  * Enumerated from `gh <subcommand> --help` across `api`, `issue`, `pr`,
  * `label`, `release`, `repo`, `run`, `search` and `workflow`. A letter is
  * listed when *any* subcommand gives it an argument, because this set is only
  * used to decide where a shorthand group ends — and treating a value-carrying
  * letter as boolean is the mistake that invents flags out of flag *values*.
- * Letters absent here (`i`, `h`, `v`, `x`, …) are boolean everywhere and can
- * safely be walked past.
+ *
+ * **`i` is the one deliberate omission, and it is not "boolean everywhere".**
+ * `gh api -i` is `--include` (boolean) while `gh run watch -i` is
+ * `--interval int` (a value). The two cannot both be honoured by a
+ * subcommand-agnostic set, and `api` is the subcommand whose method the
+ * mutation classifier reads — listing `i` would end the walk at `-iXDELETE`
+ * and wave the mutation through, which is the bypass this module exists to
+ * close. So `i` is walked past, and the residue is bounded: only a `gh run
+ * watch` interval *value* whose text begins with `R`, `l`, `X`, `f` or `F`
+ * misexpands, and `--interval` takes an int, so no such value parses.
+ *
+ * The failure direction of a wrong guess here is asymmetric, which is why the
+ * omission is safe to make in this direction only: treating a value letter as
+ * boolean can invent flag evidence and *refuse* a legitimate command
+ * (fail-closed), whereas treating a boolean letter as value-carrying ends the
+ * walk early and lets a real mutation past (fail-open).
  */
 const GH_VALUE_SHORTHANDS: ReadonlySet<string> = new Set(
-  "ABFHLORSTXabcdefklmnopqrstuw".split(""),
+  "ABDFHLORSTXabcdefjklmnopqrstuw".split(""),
 );
 
 /** A shorthand group split into the tokens pflag would see. */

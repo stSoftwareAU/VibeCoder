@@ -85,6 +85,7 @@ function makeClient(calls: Calls): GitHubClient {
 async function runDeferral(
   calls: Calls,
   guardLines: string[],
+  assertLabelAllowed?: typeof assertWorkerCanApplyLabel,
 ): Promise<string> {
   const result = await deferBlockedIssue({
     ghClient: makeClient(calls),
@@ -101,6 +102,7 @@ async function runDeferral(
         return Promise.resolve({ ok: true as const, value: undefined });
       },
       labelGuardLogFn: (line) => guardLines.push(line),
+      ...(assertLabelAllowed ? { assertLabelAllowed } : {}),
     },
   });
   return result.recorded;
@@ -130,6 +132,38 @@ Deno.test("deferBlockedIssue - applies the blocked label when the body edit fail
   assertEquals(calls.ensured, [BLOCKED_LABEL]);
   // The guard passed, so it emitted no refusal line.
   assertEquals(guardLines, []);
+});
+
+Deno.test("deferBlockedIssue - a refusing guard stops both label writes", async () => {
+  // The error path of the guarded branch. `blocked` is allowlisted, so the
+  // real guard cannot refuse it — an injected refusal stands in for a future
+  // edit that drops `blocked` from the list. The point of routing through the
+  // guard is that such an edit stops the write rather than being ignored, and
+  // that the refusal is audible.
+  //
+  // Fail direction: against the pre-fix code, which called
+  // `ghClient.addLabel` directly with no guard, the label is applied
+  // regardless of any refusal and both assertions below go red.
+  const calls: Calls = { addLabel: [], ensured: [] };
+  const guardLines: string[] = [];
+  const recorded = await runDeferral(calls, guardLines, (label, opts) => {
+    opts?.logFn?.(
+      `[SECURITY] [WORKER_LABEL_REFUSED] ${label} refused for ${opts.caller}`,
+    );
+    return {
+      ok: false as const,
+      error: new Error(`worker may not apply '${label}'`),
+    };
+  });
+
+  assertEquals(calls.addLabel, [], "a refused label must not be applied");
+  assertEquals(calls.ensured, [], "a refused label must not even be created");
+  assertEquals(recorded, "none", "a refused label records nothing");
+  assertEquals(guardLines.length, 1, "the refusal must be audible");
+  assert(
+    guardLines[0]?.includes("[WORKER_LABEL_REFUSED]"),
+    "the refusal must carry the audit marker",
+  );
 });
 
 Deno.test("deferBlockedIssue - applies no label outside the worker allowlist", async () => {

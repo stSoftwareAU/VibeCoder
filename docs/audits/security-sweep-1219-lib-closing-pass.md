@@ -4,7 +4,7 @@
 12e) · **Parent:** #1209 `security-scan-overflow: 4 chunks not reached`
 
 This is the written record for the closing pass over `worker/deno/lib/` — the
-412 modules the four sink-organised sibling slices deliberately left behind. Six
+415 modules the four sink-organised sibling slices deliberately left behind. Six
 filed finding issues cite this file by name.
 
 Siblings:
@@ -13,8 +13,9 @@ Siblings:
 [`filesystem-path-temp-sweep-1215.md`](filesystem-path-temp-sweep-1215.md)
 (12b),
 [`security-sweep-1216-untrusted-github-ingestion.md`](security-sweep-1216-untrusted-github-ingestion.md)
-(12c) and [#1217](https://github.com/stSoftwareAU/VibeCoder/issues/1217) (12d,
-still open).
+(12c) and
+[`security-sweep-1217-env-config-secrets.md`](security-sweep-1217-env-config-secrets.md)
+(12d). With this record, all five slices have one.
 
 > **This is not an empty result.** The issue asks that a nil return be stated
 > explicitly, because a nil return was the expected outcome for a slice of
@@ -40,26 +41,47 @@ the real tree:
 | no module has two owners          | slices that stopped being disjoint                             |
 | every named record exists         | a dangling `ledger` reference, which makes a slice unauditable |
 
-The union is the whole tree and the remainder is empty — 761 modules, 761 ledger
-entries, no module claimed twice:
+The union is the whole tree and the remainder is empty — 763 modules, 763 ledger
+entries, no module claimed twice, and every slice now `swept`:
 
 ```mermaid
 flowchart LR
-    L["worker/deno/lib/<br/>761 non-test modules"]
+    L["worker/deno/lib/<br/>763 non-test modules"]
     L --> A["12a #1214 · subprocess &amp; argv<br/>50 · swept"]
-    L --> B["12b #1215 · filesystem &amp; temp<br/>77 · swept"]
+    L --> B["12b #1215 · filesystem &amp; temp<br/>76 · swept"]
     L --> C["12c #1216 · untrusted ingestion<br/>177 · swept"]
-    L --> D["12d #1217 · env, config &amp; secrets<br/>45 · claimed"]
-    L --> E["12e #1219 · closing pass<br/>412 · swept"]
+    L --> D["12d #1217 · env, config &amp; secrets<br/>45 · swept"]
+    L --> E["12e #1219 · closing pass<br/>415 · swept"]
     E --> R["remainder: 0"]
     style E fill:#2d6a4f,stroke:#1b4332,color:#fff
     style R fill:#2d6a4f,stroke:#1b4332,color:#fff
-    style D fill:#ffba08,stroke:#e85d04,color:#000
 ```
 
-`12d` is `claimed` rather than `swept`: its 45 paths are owned and excluded from
-this slice by construction, and #1217 records their reading. The partition is
-complete regardless — no path is unowned.
+### Two reconciliations, both made by the gate rather than by hand
+
+The check earned its place during this change rather than after it:
+
+- **The gate caught its own merge drift.** Merging the milestone branch brought
+  #1217's record and, with it, `lib/redacted_text.ts` and `lib/xml_escape.ts` —
+  two modules created _after_ the sweeps. The coverage test went red naming
+  exactly those two. Both were then read for the shapes and are clean:
+  `clampBudget` returns `0` on a non-finite or negative budget, so the
+  degenerate case keeps _less_ text rather than more, and `escapeXml` replaces
+  `&` first so the other four entities cannot be double-escaped. 12e claims
+  them.
+- **One module was owned but unrecorded.** `lib/audit_roster_recovery.ts` sat in
+  12b's path list while appearing nowhere in 12b's written record — the file was
+  added by a parallel branch after that slice was read, so it was marked swept
+  without anyone having read it. Ownership moves to 12e, where this record
+  covers it: it is a crash-recovery module for an append-only roster, and it
+  discards only an **unterminated and unparseable** final line. A complete line
+  the roster cannot read stays broken, which is the fail-closed direction — a
+  missing newline is explicitly not allowed to become a way to launder a forged
+  line.
+
+This is the difference the ledger was supposed to make. Both cases are exactly
+the shape the issue named — a file added since the sweep, indistinguishable from
+one nobody read — and in both the check, not a reviewer, is what noticed.
 
 ## Scope and method
 
@@ -126,6 +148,23 @@ Group semantics were verified against the installed `gh`, not assumed:
 `gh api -iXGET rate_limit` returns 200 with response headers (so `-i` was
 honoured _and_ `X` took `GET`), and `-iXBOGUSMETHOD` is rejected by the server
 (so the bogus method really was sent).
+
+**Residual, stated rather than papered over.** The value-letter set is
+subcommand-agnostic while `gh` is not, and independent review of this change
+found the first docstring overclaimed — it said letters outside the set were
+"boolean everywhere". They are not: `-D` (`gh run download --dir`) and `-j`
+(`gh run view --job`) take values and were missing, so a directory or job name
+beginning `X`, `f` or `R` had a flag invented out of it. Both are now in the
+set. One letter stays genuinely ambiguous — `gh api -i` is boolean (`--include`)
+while `gh run watch -i` takes an int (`--interval`) — and it is resolved in
+favour of `api`, because `api` is the subcommand whose method the mutation
+classifier reads and listing `i` would re-open the `-iXDELETE` bypass this
+finding closed. The residue is bounded to a `gh run watch` interval value
+beginning with a guard letter, which `--interval int` cannot accept. The
+asymmetry is why that choice is safe in one direction only: guessing "boolean"
+for a value letter fabricates evidence and **refuses** a legitimate command,
+whereas guessing "value" for a boolean letter ends the walk early and lets a
+real mutation **past**.
 
 ### SEC-1219-02 — the one label write in `lib/` that skipped the label guard
 

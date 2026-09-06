@@ -77,7 +77,6 @@
         "worker/deno/lib/audit_anchor.ts",
         "worker/deno/lib/audit_append_recovery.ts",
         "worker/deno/lib/audit_journal.ts",
-        "worker/deno/lib/audit_roster_recovery.ts",
         "worker/deno/lib/baseline_quality_cache.ts",
         "worker/deno/lib/bash_ci_gate_scanner.ts",
         "worker/deno/lib/branch_cleanup.ts",
@@ -341,9 +340,9 @@
       "issue": 1217,
       "chunk": "12d",
       "title": "environment, configuration and secret sinks",
-      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/1217",
+      "ledger": "docs/audits/security-sweep-1217-env-config-secrets.md",
       "definition": "grep -rl \"Deno.env\" lib/ --include='*.ts' minus 12a, 12b and 12c",
-      "status": "claimed",
+      "status": "swept",
       "paths": [
         "worker/deno/lib/acting_github_user.ts",
         "worker/deno/lib/agent_provider.ts",
@@ -421,6 +420,7 @@
         "worker/deno/lib/audit_failure_notifier.ts",
         "worker/deno/lib/audit_hook.ts",
         "worker/deno/lib/audit_mutation_classifier.ts",
+        "worker/deno/lib/audit_roster_recovery.ts",
         "worker/deno/lib/auto_fix_attempt_tracker.ts",
         "worker/deno/lib/auto_merge_sweep.ts",
         "worker/deno/lib/backlog_throughput.ts",
@@ -715,6 +715,7 @@
         "worker/deno/lib/rate_limit_wait.ts",
         "worker/deno/lib/reactive_phase_timeout.ts",
         "worker/deno/lib/recovery_telemetry.ts",
+        "worker/deno/lib/redacted_text.ts",
         "worker/deno/lib/references_doc.ts",
         "worker/deno/lib/release_notice.ts",
         "worker/deno/lib/release_tag_ruleset.ts",
@@ -811,7 +812,8 @@
         "worker/deno/lib/workflow_scan_common.ts",
         "worker/deno/lib/workflow_trigger_scanner.ts",
         "worker/deno/lib/worktree_cleanup.ts",
-        "worker/deno/lib/worktree_progress.ts"
+        "worker/deno/lib/worktree_progress.ts",
+        "worker/deno/lib/xml_escape.ts"
       ]
     }
   ]

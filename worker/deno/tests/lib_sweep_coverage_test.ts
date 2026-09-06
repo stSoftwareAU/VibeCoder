@@ -5,7 +5,7 @@
  * The last test is the gate the issue asked for: it walks the real `lib/`
  * tree and fails when any module is claimed by no sweep slice. That is the
  * detection mechanism that keeps chunk 12 closed — before this change the
- * ledger did not exist, so the 411 modules of the closing pass were
+ * ledger did not exist, so the modules of the closing pass were
  * indistinguishable from modules nobody had ever read.
  *
  * Fail direction, stated explicitly: with the #1219 slice removed from the

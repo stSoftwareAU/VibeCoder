@@ -311,6 +311,35 @@ Deno.test("normaliseGhArgs - never invents a flag out of another flag's value", 
   ]);
 });
 
+Deno.test("normaliseGhArgs - a value shorthand outside the guard set ends the walk", () => {
+  // Issue #1219 review: `-D` (`gh run download --dir`) and `-j` (`gh run view
+  // --job`) take values but were missing from the value set, so the walk read
+  // past them into the directory or job name. A path beginning `X`, `f` or `R`
+  // then had a flag invented out of it — `-DXPOST` became `-D -X POST`, which
+  // is fabricated mutation evidence against an ordinary download.
+  //
+  // Fail direction: against the pre-fix set (no `D`/`j`) the first assertion
+  // yields ["-D", "-X", "POST"] and this test goes red.
+  assertEquals(normaliseGhArgs(["run", "download", "-DXPOST"]), [
+    "run",
+    "download",
+    "-DXPOST",
+  ]);
+  assertEquals(normaliseGhArgs(["run", "view", "-jfstate=closed"]), [
+    "run",
+    "view",
+    "-jfstate=closed",
+  ]);
+  // The `api` shapes the fix exists for still expand — `i` stays boolean.
+  assertEquals(normaliseGhArgs(["api", "-iXDELETE", "repos/o/r"]), [
+    "api",
+    "-i",
+    "-X",
+    "DELETE",
+    "repos/o/r",
+  ]);
+});
+
 Deno.test("classifyGhMutation - a method hidden in a shorthand group is still a mutation", () => {
   const info = classifyGhMutation([
     "api",
