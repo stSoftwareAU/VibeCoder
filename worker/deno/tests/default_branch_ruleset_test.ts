@@ -749,6 +749,52 @@ Deno.test("ruleset - the marker-file opt-out skips creation", async () => {
   assertEquals(rulesetWrites(calls).length, 0);
 });
 
+Deno.test("ruleset - the marker file never deletes an existing fleet ruleset", async () => {
+  // Issue #1289: the marker is repository content anybody with write access
+  // can land, so it may suppress *creating* a ruleset but must never remove
+  // protection that already exists.
+  const state: RepoState = {
+    marker: true,
+    rulesets: [{ id: 42, name: VIBE_RULESET_NAME }],
+    branchRules: [
+      {
+        type: "required_status_checks",
+        ruleset_id: 42,
+        parameters: { required_status_checks: [{ context: "gitleaks" }] },
+      },
+    ],
+    checkRuns: { main: ["gitleaks", "markdownlint"] },
+  };
+
+  const planning = makeGh(state);
+  const planned = await planDefaultBranchRuleset(
+    "org/marked",
+    { branch: "main", visibility: "private" },
+    planning.gh,
+  );
+
+  assert(planned.ok);
+  assertEquals(planned.plan.action, "none");
+  assertEquals(planned.plan.skipped, "opted-out");
+  assertEquals(planned.plan.rulesetId, undefined);
+  // The existing required check survives the marker.
+  assertEquals(planned.plan.preserved, ["gitleaks"]);
+
+  const { gh, calls } = makeGh(state);
+  const result = await ensureDefaultBranchRuleset(
+    "org/marked",
+    { branch: "main", visibility: "private" },
+    gh,
+  );
+
+  assert(result.ok);
+  assertEquals(result.skipped, "opted-out");
+  assertFalse(result.deleted);
+  assertFalse(result.changed);
+  assertEquals(rulesetDeletes(calls).length, 0);
+  assertEquals(rulesetWrites(calls).length, 0);
+});
+
 Deno.test("ruleset - an unreadable commit history skips creation and deletes nothing", async () => {
   const { gh, calls } = makeGh({
     commitsError: "gh failed: server error (HTTP 500)",

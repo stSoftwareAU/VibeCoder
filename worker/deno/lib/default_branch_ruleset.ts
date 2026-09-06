@@ -25,9 +25,14 @@
  *     Before creating or updating, the recent history is inspected via
  *     {@link assessBranchPushPolicy}; a branch that takes direct pushes, has
  *     opted out (topic `direct-push` / marker `.vibe/no-default-branch-ruleset`),
- *     or whose history cannot be read gets no ruleset — and if the worker's own
- *     ruleset is already there, it is deleted (only the ruleset named exactly
- *     {@link VIBE_RULESET_NAME}; never a human-managed or organisation one).
+ *     or whose history cannot be read gets no ruleset.
+ *   - **Only removes protection on evidence it trusts** (Issue #1289). The
+ *     worker's own stale ruleset is deleted for observed direct pushes or the
+ *     admin-gated `direct-push` topic — never on the marker file alone, which
+ *     is repository content anyone with write access can land, and never an
+ *     unreadable history. Only the ruleset named exactly
+ *     {@link VIBE_RULESET_NAME} is ever deleted; a human-managed or
+ *     organisation ruleset is untouched.
  *   - **Never requires an unsatisfiable check.** The candidate contexts from
  *     {@link getRequiredChecksForRepo} are intersected with the names the repo
  *     has genuinely reported ({@link getReportedCheckNames}), so a ghost
@@ -234,7 +239,14 @@ export async function planDefaultBranchRuleset(
     const skipped: RulesetSkipReason = policy.kind === "opted-out"
       ? "opted-out"
       : "direct-push-branch";
-    const removeOwn = ours !== undefined && policy.kind !== "unknown";
+    // Removal needs evidence the worker can trust (Issue #1289): observed
+    // direct pushes (commit history the worker read itself) or the
+    // admin-gated `direct-push` topic. The marker file is repository content
+    // anyone with write access can land, so it suppresses creation only —
+    // never the deletion of protection that already exists.
+    const removeOwn = ours !== undefined &&
+      (policy.kind === "direct-push" ||
+        (policy.kind === "opted-out" && policy.source === "topic"));
     return {
       ok: true,
       plan: {
