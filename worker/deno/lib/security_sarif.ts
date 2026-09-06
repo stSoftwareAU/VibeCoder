@@ -16,10 +16,15 @@
  * the builder stays trivially unit-testable.
  *
  * Free-text carried out of an issue (title, message) is treated strictly as
- * data — never interpreted as instructions.
+ * data — never interpreted as instructions, and redacted through
+ * `redactSecrets` as the document is built (Issue #1255). Redaction has to
+ * happen *here*: the uploader gzips and base64s the document before the
+ * request body exists, so no downstream sink can see the text.
  *
  * Australian English throughout (behaviour, normalise, colour).
  */
+
+import { redactSecrets } from "./secret_redaction.ts";
 
 /** The four triaged severities a security-scan finding may carry. */
 export type SecuritySeverity = "critical" | "high" | "medium" | "low";
@@ -236,6 +241,24 @@ export interface BuildSarifOptions {
 }
 
 /**
+ * Mask any secret carried in a finding's free text before it reaches the SARIF
+ * document (Issue #1255).
+ *
+ * `message` is the issue title and `file` is a path parsed out of that same
+ * untrusted text, so both are redacted. `findingId` is not: it is structurally
+ * constrained to `SEC-<alphanumeric>` by {@link FINDING_ID_RE}, and it is the
+ * rule id, the rule index key and the dedupe fingerprint — masking it would
+ * collapse distinct findings onto one placeholder id.
+ */
+function redactFinding(finding: SecuritySarifFinding): SecuritySarifFinding {
+  return {
+    ...finding,
+    message: redactSecrets(finding.message ?? ""),
+    file: finding.file ? redactSecrets(finding.file) : finding.file,
+  };
+}
+
+/**
  * Build a SARIF 2.1.0 document from structured findings.
  *
  * One rule per finding (rule id = the stable `SEC-<hex>`), one result per
@@ -245,12 +268,16 @@ export interface BuildSarifOptions {
  * severity buckets. A result gains a `physicalLocation` only when the finding
  * carried a parseable `<file>:<line>`; findings without one still emit a valid
  * location-less result rather than being silently dropped.
+ *
+ * Every free-text field is redacted here (Issue #1255) — see
+ * {@link redactFinding}.
  */
 export function buildSecuritySarif(
-  findings: readonly SecuritySarifFinding[],
+  rawFindings: readonly SecuritySarifFinding[],
   options: BuildSarifOptions = {},
 ): SarifDocument {
   const toolVersion = options.toolVersion ?? "1.0.0";
+  const findings = rawFindings.map(redactFinding);
 
   const rules = findings.map((f) => {
     const tags = ["security"];
