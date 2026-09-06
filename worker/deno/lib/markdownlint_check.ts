@@ -18,6 +18,8 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
+import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
+
 /** Status of the markdownlint check. */
 export type MarkdownlintStatus = "PASSED" | "SKIPPED" | "FAILED";
 
@@ -147,6 +149,12 @@ function makeBinaryRunner(binaryPath: string): MarkdownlintRunner {
     const command = new Deno.Command(binaryPath, {
       args: [],
       cwd: scriptDir,
+      // Issue #1226: the linter is Node code from this repository's own
+      // `node_modules`, so a compromised dependency runs here. Its
+      // environment is BUILT from the allowlist rather than inherited — no
+      // credential is in scope for it to read.
+      env: buildUntrustedCommandEnv(),
+      clearEnv: true,
       stdout: "piped",
       stderr: "piped",
     });
@@ -182,6 +190,10 @@ export async function canRunBinary(binaryPath: string): Promise<boolean> {
       // `--help` is a no-op for the runners considered here and — unlike
       // `--version` — cannot be mistaken for a glob and lint the tree.
       args: ["--help"],
+      // The probe starts the same untrusted binary as the run, so it gets the
+      // same built environment (Issue #1226).
+      env: buildUntrustedCommandEnv(),
+      clearEnv: true,
       stdout: "null",
       stderr: "null",
     });

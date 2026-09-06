@@ -25,6 +25,8 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
+import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
+
 /** A single Liquid syntax failure. */
 export interface PagesLiquidError {
   /** Repo-relative path to the offending file. */
@@ -210,6 +212,10 @@ async function canRunLiquid(
     const command = new Deno.Command(cmd[0]!, {
       args: [...cmd.slice(1), "-rliquid", "-e", "exit 0"],
       cwd: scriptDir,
+      // The probe loads the same gems the parser will (Issue #1226), so it
+      // gets the same built environment.
+      env: buildUntrustedCommandEnv(),
+      clearEnv: true,
       stdout: "null",
       stderr: "null",
     });
@@ -228,7 +234,10 @@ async function canRunLiquid(
  * directory rather than passing content through argv avoids any
  * argv length / binary-byte limits.
  */
-function makeRubyLiquidParser(cmd: string[], scriptDir: string): LiquidParser {
+export function makeRubyLiquidParser(
+  cmd: string[],
+  scriptDir: string,
+): LiquidParser {
   // Driver expects:
   //   ARGV[0]  = path to a manifest file
   // Manifest format: one record per line, "<temp path>|<repo-relative path>".
@@ -272,6 +281,13 @@ function makeRubyLiquidParser(cmd: string[], scriptDir: string): LiquidParser {
       const command = new Deno.Command(cmd[0]!, {
         args: [...cmd.slice(1), "-e", driver, "--", manifestPath],
         cwd: scriptDir,
+        // Issue #1226: `bundle exec` loads gems this repository's
+        // `Gemfile.lock` pins, so a compromised gem runs here. Its
+        // environment is BUILT from the allowlist rather than inherited —
+        // the Ruby toolchain names it needs are on that allowlist, and no
+        // credential is.
+        env: buildUntrustedCommandEnv(),
+        clearEnv: true,
         stdout: "piped",
         stderr: "piped",
       });

@@ -54,6 +54,7 @@ import {
   stripSeverityEmoji,
 } from "./security_sarif.ts";
 import { runSecurityScan } from "./security_scanner.ts";
+import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -1599,6 +1600,17 @@ async function fileSweepIssue(
 // Default deps
 // ---------------------------------------------------------------------------
 
+/**
+ * Names the scanners need on top of the untrusted-command allowlist.
+ *
+ * `docker`/`podman` reach their daemon through these; without them the
+ * container path fails to start at all. Neither carries a credential.
+ */
+const SCANNER_ENV_NAMES: readonly string[] = [
+  "DOCKER_HOST",
+  "XDG_RUNTIME_DIR",
+];
+
 /** Default runner — spawns the tool as a subprocess. */
 const defaultRunner: SweepCommandRunner = async (cmd, cwd) => {
   let output: Deno.CommandOutput;
@@ -1606,6 +1618,13 @@ const defaultRunner: SweepCommandRunner = async (cmd, cwd) => {
     output = await new Deno.Command(cmd.bin, {
       args: cmd.args,
       cwd,
+      // Issue #1226: this runs a scanner (or a container image of one) over
+      // attacker-authored tree content, so its environment is BUILT from the
+      // allowlist rather than inherited. The container-runtime names are the
+      // only additions — a rootless podman or a remote Docker daemon is
+      // unreachable without them, and neither carries a credential.
+      env: buildUntrustedCommandEnv({ extraNames: SCANNER_ENV_NAMES }),
+      clearEnv: true,
       stdout: "piped",
       stderr: "piped",
     }).output();
