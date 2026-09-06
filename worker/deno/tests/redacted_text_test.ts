@@ -25,6 +25,10 @@ import {
   redactSecrets,
 } from "../lib/secret_redaction.ts";
 import { formatDetailedFailureMessage } from "../lib/failure_message.ts";
+import {
+  formatProcessTable,
+  parseProcessTable,
+} from "../lib/kill_diagnostics.ts";
 
 /** A fake GitHub token of the exact published shape: `ghp_` + 38 base62. */
 const FAKE_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB";
@@ -149,4 +153,35 @@ Deno.test("failure message - kill diagnostics are redacted before the 2000-chara
     "no fragment of the token may survive the diagnostics cap",
   );
   assertStringIncludes(published, "Processes at the kill");
+});
+
+// ============================================================================
+// The `ps` table: an argv secret cut by the per-row command budget
+// ============================================================================
+
+Deno.test("kill diagnostics - a token in a ps argv is masked before the per-row cut", () => {
+  // `issue_worker.sh` passes an API key as a CLI flag value, which is why the
+  // redactor carries a `secret-cli-flag` rule at all — so this is the shape
+  // that really appears in `ps` output on this host. The filler places the
+  // token so `formatProcessTable`'s 90-character command budget cuts it in
+  // half: the surviving head matches no rule, which is the leak.
+  const flag = "--imgbb-api-key ";
+  const filler = "z".repeat(75 - "node ".length - flag.length);
+  const command = `node ${filler}${flag}${FAKE_TOKEN}`;
+  const psOutput = [
+    "  PID  PPID   RSS ELAPSED COMMAND",
+    `  101     1  4096   01:00 ${command}`,
+  ].join("\n");
+
+  const rows = parseProcessTable(psOutput);
+  const table = formatProcessTable(rows, {
+    agentPid: 101,
+    knownDescendants: [],
+  });
+
+  assert(
+    !table.includes(FAKE_TOKEN.slice(0, 14)),
+    "no fragment of the token may survive the 90-character command budget",
+  );
+  assertStringIncludes(table, "pid=101");
 });
