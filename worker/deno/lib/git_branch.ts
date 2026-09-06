@@ -400,12 +400,19 @@ export async function ensureMilestoneBranchExists(
 
   // Refresh the default branch's remote-tracking ref so the branch is created
   // at the remote's own tip. Non-fatal on its own — the local ref is the
-  // fallback below — but it explains a later push failure (Issue #3910).
+  // fallback below — but a milestone branch created from a possibly stale
+  // local base is not something to leave unsaid, and it explains a later push
+  // failure (Issue #3910). Same shape as createFeatureBranchFromBase above.
   const defaultFetchArgs = buildFetchArgs("origin", defaultBranch);
   const defaultFetch = await runGitCommand(defaultFetchArgs, options);
   const defaultFetchOk = defaultFetch.ok && defaultFetch.value.code === 0;
   if (!defaultFetchOk) {
-    diagnostics.push(describeGitFailure(defaultFetchArgs, defaultFetch));
+    const failure = describeGitFailure(defaultFetchArgs, defaultFetch);
+    diagnostics.push(failure);
+    console.warn(
+      `[git_branch] Warning: failed to fetch origin/${defaultBranch} before ` +
+        `creating ${milestoneBranch} (${failure}); falling back to the local ref`,
+    );
   }
 
   // The remote milestone ref is absent, so the remote carries no history to
@@ -439,11 +446,13 @@ export async function ensureMilestoneBranchExists(
     // Nothing local was touched. Say so once, naming the checkout that used
     // to block the creation, so an operator can find it without the run
     // having deleted or reset anyone's work (Issue #1345).
-    const local = await inspectLocalMilestoneBranch(milestoneBranch, options);
-    if (local) {
-      console.warn(
-        `[git_branch] ${describeLocalMilestoneBranch(local, sourceRef)}`,
-      );
+    const note = describeLocalMilestoneBranch(
+      milestoneBranch,
+      await inspectLocalMilestoneBranch(milestoneBranch, options),
+      sourceRef,
+    );
+    if (note !== null) {
+      console.warn(`[git_branch] ${note}`);
     }
 
     return {

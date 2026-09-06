@@ -4,7 +4,7 @@
  *
  * A milestone-assigned issue must be based on its milestone branch. These
  * tests use real git repositories to prove two things: a missing milestone
- * branch is recreated from the default branch, and every failure comes back
+ * branch is created on origin from the default branch, and every failure comes back
  * as a failure carrying the underlying git stderr — never as a quiet success
  * that would let the caller fall back to the default branch.
  *
@@ -15,65 +15,12 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureMilestoneBranchExists } from "../lib/git_branch.ts";
 import { gitOperationsCommand } from "../commands/git_operations.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { gitOk, setupGitRepoFixture } from "./support/git_repo_fixture.ts";
 
 const config = buildDefaultWorkerConfig();
 
-async function git(
-  args: string[],
-  cwd: string,
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  const out = await new Deno.Command("git", {
-    args,
-    cwd,
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
-  return {
-    code: out.code,
-    stdout: new TextDecoder().decode(out.stdout),
-    stderr: new TextDecoder().decode(out.stderr),
-  };
-}
-
-async function gitOk(args: string[], cwd: string): Promise<string> {
-  const r = await git(args, cwd);
-  if (r.code !== 0) {
-    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${r.stderr}`);
-  }
-  return r.stdout;
-}
-
-interface Fixture {
-  root: string;
-  remote: string;
-  clone: string;
-  cleanup: () => Promise<void>;
-}
-
 /** A bare remote seeded with `main`, plus a clone acting as the work tree. */
-async function setupRepo(): Promise<Fixture> {
-  const root = await Deno.makeTempDir({ prefix: "issue-3910-" });
-  const remote = `${root}/remote.git`;
-  const clone = `${root}/clone`;
-
-  await gitOk(["init", "--bare", "-b", "main", remote], root);
-  await gitOk(["clone", remote, clone], root);
-  await gitOk(["config", "user.email", "t@example.com"], clone);
-  await gitOk(["config", "user.name", "Test"], clone);
-  await Deno.writeTextFile(`${clone}/README.md`, "seed\n");
-  await gitOk(["add", "README.md"], clone);
-  await gitOk(["commit", "-m", "seed"], clone);
-  await gitOk(["push", "-u", "origin", "main"], clone);
-
-  return {
-    root,
-    remote,
-    clone,
-    cleanup: async () => {
-      await Deno.remove(root, { recursive: true }).catch(() => {});
-    },
-  };
-}
+const setupRepo = () => setupGitRepoFixture("issue-3910-");
 
 Deno.test(
   "ensureMilestoneBranchExists - recreates a missing milestone branch from the default branch",
@@ -130,12 +77,12 @@ Deno.test(
 );
 
 Deno.test(
-  "ensureMilestoneBranchExists - create failure reports the underlying git error",
+  "ensureMilestoneBranchExists - creation failure reports the underlying git error",
   async () => {
     const fx = await setupRepo();
     try {
-      // The default branch does not exist, so neither the create nor the
-      // fallback checkout can succeed.
+      // The default branch does not exist, so neither source ref can be
+      // pushed to the milestone ref name.
       const result = await ensureMilestoneBranchExists(
         "milestone/unbuildable",
         "no-such-default",

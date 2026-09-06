@@ -6,7 +6,8 @@
  * 1. `ensureMilestoneBranchExists` — when the remote milestone ref is absent
  *    but a stale local branch of the same name exists, the stale branch (which
  *    may carry a merge commit a repository rule forbids) must never be pushed.
- *    The local branch is recreated from the default branch instead.
+ *    The branch is created on origin from the default branch ref instead, and
+ *    the stale local branch is left untouched (Issue #1345).
  * 2. `syncMilestoneBranchWithDefault` — when the local and remote milestone
  *    branches have diverged, the sync must not manufacture a local merge
  *    commit; it resets to the remote ref instead.
@@ -17,76 +18,14 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureMilestoneBranchExists } from "../lib/git_branch.ts";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
-
-async function git(
-  args: string[],
-  cwd: string,
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  const out = await new Deno.Command("git", {
-    args,
-    cwd,
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
-  return {
-    code: out.code,
-    stdout: new TextDecoder().decode(out.stdout),
-    stderr: new TextDecoder().decode(out.stderr),
-  };
-}
-
-async function gitOk(args: string[], cwd: string): Promise<string> {
-  const r = await git(args, cwd);
-  if (r.code !== 0) {
-    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${r.stderr}`);
-  }
-  return r.stdout;
-}
-
-interface Fixture {
-  root: string;
-  remote: string;
-  clone: string;
-  cleanup: () => Promise<void>;
-}
+import {
+  commitFile,
+  gitOk,
+  setupGitRepoFixture,
+} from "./support/git_repo_fixture.ts";
 
 /** A bare remote seeded with `main`, plus a clone acting as the work tree. */
-async function setupRepo(): Promise<Fixture> {
-  const root = await Deno.makeTempDir({ prefix: "issue-4002-" });
-  const remote = `${root}/remote.git`;
-  const clone = `${root}/clone`;
-
-  await gitOk(["init", "--bare", "-b", "main", remote], root);
-  await gitOk(["clone", remote, clone], root);
-  await gitOk(["config", "user.email", "t@example.com"], clone);
-  await gitOk(["config", "user.name", "Test"], clone);
-  await Deno.writeTextFile(`${clone}/README.md`, "seed\n");
-  await gitOk(["add", "README.md"], clone);
-  await gitOk(["commit", "-m", "seed"], clone);
-  await gitOk(["push", "-u", "origin", "main"], clone);
-
-  return {
-    root,
-    remote,
-    clone,
-    cleanup: async () => {
-      await Deno.remove(root, { recursive: true }).catch(() => {});
-    },
-  };
-}
-
-/** Add a file, commit it, and return the resulting SHA. */
-async function commitFile(
-  cwd: string,
-  file: string,
-  contents: string,
-  message: string,
-): Promise<string> {
-  await Deno.writeTextFile(`${cwd}/${file}`, contents);
-  await gitOk(["add", file], cwd);
-  await gitOk(["commit", "-m", message], cwd);
-  return (await gitOk(["rev-parse", "HEAD"], cwd)).trim();
-}
+const setupRepo = () => setupGitRepoFixture("issue-4002-");
 
 /** Number of parents of a commit — 2 or more means a merge commit. */
 async function parentCount(cwd: string, rev: string): Promise<number> {
@@ -95,7 +34,7 @@ async function parentCount(cwd: string, rev: string): Promise<number> {
 }
 
 Deno.test(
-  "ensureMilestoneBranchExists - recreates a stale local milestone branch instead of pushing it",
+  "ensureMilestoneBranchExists - never pushes a stale local milestone branch",
   async () => {
     const fx = await setupRepo();
     try {
@@ -148,7 +87,7 @@ Deno.test(
 );
 
 Deno.test(
-  "ensureMilestoneBranchExists - stale local branch is recreated even when currently checked out",
+  "ensureMilestoneBranchExists - a checked-out stale branch does not reach the remote",
   async () => {
     const fx = await setupRepo();
     try {

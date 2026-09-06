@@ -15,64 +15,13 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureMilestoneBranchExists } from "../lib/git_branch.ts";
-import { findWorktreeHoldingBranch } from "../lib/milestone_local_branch.ts";
-
-async function git(
-  args: string[],
-  cwd: string,
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  const out = await new Deno.Command("git", {
-    args,
-    cwd,
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
-  return {
-    code: out.code,
-    stdout: new TextDecoder().decode(out.stdout),
-    stderr: new TextDecoder().decode(out.stderr),
-  };
-}
-
-async function gitOk(args: string[], cwd: string): Promise<string> {
-  const r = await git(args, cwd);
-  if (r.code !== 0) {
-    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${r.stderr}`);
-  }
-  return r.stdout;
-}
-
-interface Fixture {
-  root: string;
-  remote: string;
-  clone: string;
-  cleanup: () => Promise<void>;
-}
-
-/** A bare remote seeded with `main`, plus a clone acting as the work tree. */
-async function setupRepo(): Promise<Fixture> {
-  const root = await Deno.makeTempDir({ prefix: "issue-1345-" });
-  const remote = `${root}/remote.git`;
-  const clone = `${root}/clone`;
-
-  await gitOk(["init", "--bare", "-b", "main", remote], root);
-  await gitOk(["clone", remote, clone], root);
-  await gitOk(["config", "user.email", "t@example.com"], clone);
-  await gitOk(["config", "user.name", "Test"], clone);
-  await Deno.writeTextFile(`${clone}/README.md`, "seed\n");
-  await gitOk(["add", "README.md"], clone);
-  await gitOk(["commit", "-m", "seed"], clone);
-  await gitOk(["push", "-u", "origin", "main"], clone);
-
-  return {
-    root,
-    remote,
-    clone,
-    cleanup: async () => {
-      await Deno.remove(root, { recursive: true }).catch(() => {});
-    },
-  };
-}
+import {
+  git,
+  gitOk,
+  type GitRepoFixture,
+  setupGitRepoFixture,
+} from "./support/git_repo_fixture.ts";
+import { capturingWarningsAsync } from "./support/warnings.ts";
 
 /**
  * Put the milestone branch in the exact state NEAT-AI-Ockham#133 was in: a
@@ -80,7 +29,7 @@ async function setupRepo(): Promise<Fixture> {
  * `git checkout -B` in the primary clone is refused.
  */
 async function blockBranchWithStaleWorktree(
-  fx: Fixture,
+  fx: GitRepoFixture,
   branch: string,
 ): Promise<{ worktree: string; sha: string }> {
   const worktree = `${fx.root}/stale-worktree`;
@@ -98,16 +47,13 @@ async function blockBranchWithStaleWorktree(
 Deno.test(
   "ensureMilestoneBranchExists - creates the branch on origin when a stale worktree holds the name",
   async () => {
-    const fx = await setupRepo();
+    const fx = await setupGitRepoFixture("issue-1345-");
     const branch = "milestone/133-blocked";
     try {
       const stale = await blockBranchWithStaleWorktree(fx, branch);
 
       // Precondition: the local checkout genuinely blocks `checkout -B`.
-      const blocked = await git(
-        ["checkout", "-B", branch, "main"],
-        fx.clone,
-      );
+      const blocked = await git(["checkout", "-B", branch, "main"], fx.clone);
       assertEquals(
         blocked.code === 0,
         false,
@@ -142,23 +88,20 @@ Deno.test(
 Deno.test(
   "ensureMilestoneBranchExists - leaves the blocking checkout untouched and logs it",
   async () => {
-    const fx = await setupRepo();
+    const fx = await setupGitRepoFixture("issue-1345-");
     const branch = "milestone/133-untouched";
-    const warnings: string[] = [];
-    const originalWarn = console.warn;
-    console.warn = (...args: unknown[]) => {
-      warnings.push(args.map(String).join(" "));
-    };
     try {
       const stale = await blockBranchWithStaleWorktree(fx, branch);
 
-      const result = await ensureMilestoneBranchExists(branch, "main", {
-        cwd: fx.clone,
+      const warnings = await capturingWarningsAsync(async () => {
+        const result = await ensureMilestoneBranchExists(branch, "main", {
+          cwd: fx.clone,
+        });
+        assert(
+          result.ok,
+          `expected ok, got: ${!result.ok && result.error.message}`,
+        );
       });
-      assert(
-        result.ok,
-        `expected ok, got: ${!result.ok && result.error.message}`,
-      );
 
       // Nothing local is deleted or reset — the branch still points at the
       // stale commit and its worktree still exists.
@@ -178,7 +121,6 @@ Deno.test(
       assertStringIncludes(naming[0]!, branch);
       assertStringIncludes(naming[0]!, "left untouched");
     } finally {
-      console.warn = originalWarn;
       await fx.cleanup();
     }
   },
@@ -187,76 +129,65 @@ Deno.test(
 Deno.test(
   "ensureMilestoneBranchExists - no local branch means no blocking-checkout line",
   async () => {
-    const fx = await setupRepo();
-    const warnings: string[] = [];
-    const originalWarn = console.warn;
-    console.warn = (...args: unknown[]) => {
-      warnings.push(args.map(String).join(" "));
-    };
+    const fx = await setupGitRepoFixture("issue-1345-");
     try {
-      const result = await ensureMilestoneBranchExists(
-        "milestone/133-fresh",
-        "main",
-        { cwd: fx.clone },
-      );
-      assert(
-        result.ok,
-        `expected ok, got: ${!result.ok && result.error.message}`,
-      );
+      const warnings = await capturingWarningsAsync(async () => {
+        const result = await ensureMilestoneBranchExists(
+          "milestone/133-fresh",
+          "main",
+          { cwd: fx.clone },
+        );
+        assert(
+          result.ok,
+          `expected ok, got: ${!result.ok && result.error.message}`,
+        );
+      });
+
       assertEquals(
         warnings.filter((w) => w.includes("milestone/133-fresh")),
         [],
         "a branch with no local ref must not report a blocking checkout",
       );
     } finally {
-      console.warn = originalWarn;
       await fx.cleanup();
     }
   },
 );
 
 Deno.test(
-  "ensureMilestoneBranchExists - push failure names the branch that could not be created",
+  "ensureMilestoneBranchExists - a failed default-branch fetch is warned about, not swallowed",
   async () => {
-    const fx = await setupRepo();
-    const missingRemote = `${fx.root}/gone.git`;
+    const fx = await setupGitRepoFixture("issue-1345-");
     try {
-      await gitOk(["remote", "set-url", "origin", missingRemote], fx.clone);
+      // The default branch has no remote counterpart to fetch, so the branch
+      // is created from the local ref — a fallback that must not be silent.
+      await gitOk(["branch", "detached-default", "main"], fx.clone);
 
-      const result = await ensureMilestoneBranchExists(
-        "milestone/133-unpushable",
-        "main",
-        { cwd: fx.clone },
+      const warnings = await capturingWarningsAsync(async () => {
+        const result = await ensureMilestoneBranchExists(
+          "milestone/133-local-base",
+          "detached-default",
+          { cwd: fx.clone },
+        );
+        assert(
+          result.ok,
+          `expected ok, got: ${!result.ok && result.error.message}`,
+        );
+      });
+
+      const fetchWarnings = warnings.filter((w) =>
+        w.includes("failed to fetch origin/detached-default")
       );
-
-      assertEquals(result.ok, false);
-      if (result.ok) return;
-      assertStringIncludes(result.error.message, "milestone/133-unpushable");
-      assertStringIncludes(result.error.message, "git push");
-      assertStringIncludes(result.error.message, missingRemote);
+      assertEquals(
+        fetchWarnings.length,
+        1,
+        `expected the fallback to be named once, got: ${
+          JSON.stringify(warnings)
+        }`,
+      );
+      assertStringIncludes(fetchWarnings[0]!, "milestone/133-local-base");
     } finally {
       await fx.cleanup();
     }
   },
 );
-
-Deno.test("findWorktreeHoldingBranch - matches the branch's own worktree", () => {
-  const output = [
-    "worktree /work/repo",
-    "HEAD 1111111111111111111111111111111111111111",
-    "branch refs/heads/main",
-    "",
-    "worktree /work/repo-lane-2",
-    "HEAD 2222222222222222222222222222222222222222",
-    "branch refs/heads/milestone/69-example",
-    "",
-  ].join("\n");
-
-  assertEquals(
-    findWorktreeHoldingBranch(output, "milestone/69-example"),
-    "/work/repo-lane-2",
-  );
-  assertEquals(findWorktreeHoldingBranch(output, "main"), "/work/repo");
-  assertEquals(findWorktreeHoldingBranch(output, "milestone/other"), null);
-  assertEquals(findWorktreeHoldingBranch("", "main"), null);
-});
