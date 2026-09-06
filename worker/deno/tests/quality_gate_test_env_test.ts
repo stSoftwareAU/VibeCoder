@@ -25,14 +25,44 @@
  * slow one: every red result becomes ambiguous, and the habit it teaches is
  * to re-run rather than read.
  *
+ * Issue #1281 changed what this file asserts. Scrubbing two non-secret names
+ * off the worker's environment left every credential in it — `GH_TOKEN`, the
+ * provider tokens, the GitHub App PEM — readable by repository-supplied test
+ * code the coding agent may have written minutes earlier. The stage now
+ * BUILDS its environment from an allowlist like every other
+ * repository-controlled spawn, so the two tests that asserted pass-through
+ * assert the allowlist instead.
+ *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assertEquals } from "@std/assert";
 // `runCommand` is exercised through the intermediate process below, which
 // imports it dynamically — the test needs a parent that carries the planted
 // variable, and this process must not be it.
 import { testStageEnv } from "../lib/quality_gate.ts";
+import { TEST_STAGE_EXTRA_ENV_NAMES } from "../lib/unit_test_passes.ts";
+import { isCredentialVariableName } from "../lib/untrusted_command_env.ts";
+
+/**
+ * The environment a worker actually carries when it reaches the gate.
+ *
+ * The credentials are the real names: the GitHub installation token, the
+ * provider token `credential_preflight.applyProviderCredentialEnv` exports
+ * into the process, and the two worker-only secrets `agent_env.ts` denies to
+ * every agent child.
+ */
+const WORKER_ENV: Record<string, string> = {
+  PATH: "/usr/local/bin:/usr/bin",
+  HOME: "/home/vibe",
+  DENO_DIR: "/home/vibe/auto-issue-work/.deno-cache",
+  GH_TOKEN: "ghs_live_installation_token",
+  CLAUDE_CODE_OAUTH_TOKEN: "sk-live-provider-token",
+  GITHUB_APP_PRIVATE_KEY: "-----BEGIN RSA PRIVATE KEY-----",
+  GITHUB_APP_PRIVATE_KEY_PATH: "/run/vibe-secrets/app.pem",
+  VIBE_IMGBB_API_KEY: "imgbb-live-key",
+  AWS_SECRET_ACCESS_KEY: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+};
 
 Deno.test("test stage env - CONFIG_PATH is not handed to the suite (Issue #891)", () => {
   const env = testStageEnv({
@@ -105,6 +135,61 @@ Deno.test("test stage env - a scrubbed variable really is absent from the child 
   );
 });
 
+Deno.test("test stage env - a token in the worker's environment cannot be read by the spawned suite (Issue #1281)", async () => {
+  // The finding, end to end: plant a credential-shaped variable in a parent
+  // that then builds the real `deno test` passes and spawns one through the
+  // gate's own `runCommand`. Against the two-name denylist this printed the
+  // planted token, because `GH_TOKEN` was never on it. It is planted in an
+  // intermediate process rather than this one — the test needs a parent that
+  // carries it, and mutating the runner's own environment is what the
+  // parallel-unsafe manifest exists to keep out of this pass.
+  const planted = "ghs_planted_by_the_parent_0123456789";
+  const gate = import.meta.resolve("../lib/quality_gate.ts");
+  const stage = import.meta.resolve("../lib/unit_test_passes.ts");
+  const grandchild =
+    'console.log(Deno.env.get("GH_TOKEN") ?? "ABSENT-IN-GRANDCHILD")';
+  const script = `
+    const { runCommand } = await import(${JSON.stringify(gate)});
+    const { unitTestPasses } = await import(${JSON.stringify(stage)});
+    const own = Deno.env.get("GH_TOKEN") ?? "ABSENT-IN-CHILD";
+    const passes = unitTestPasses({
+      denoCmd: Deno.execPath(),
+      env: Deno.env.toObject(),
+    });
+    const probe = [Deno.execPath(), "eval", ${JSON.stringify(grandchild)}];
+    const seen = [];
+    for (const pass of passes) {
+      const run = await runCommand(probe, { env: pass.env });
+      seen.push({ label: pass.label, output: run.output.trim() });
+    }
+    console.log(JSON.stringify({ own, seen }));
+  `;
+  const intermediate = new Deno.Command(Deno.execPath(), {
+    args: ["eval", "--allow-run", "--allow-env", "--allow-read", script],
+    env: { ...Deno.env.toObject(), GH_TOKEN: planted },
+    stdout: "piped",
+    stderr: "piped",
+  });
+  const result = await intermediate.output();
+  const stdout = new TextDecoder().decode(result.stdout);
+  const stderr = new TextDecoder().decode(result.stderr);
+  assertEquals(result.code, 0, stderr);
+
+  const observed = JSON.parse(stdout.trim().split("\n").at(-1)!) as {
+    own: string;
+    seen: { label: string; output: string }[];
+  };
+  assertEquals(observed.own, planted, "the intermediate must carry the token");
+  assertEquals(observed.seen.length, 2, "both passes must be exercised");
+  for (const pass of observed.seen) {
+    assertEquals(
+      pass.output,
+      "ABSENT-IN-GRANDCHILD",
+      `the ${pass.label} pass handed the suite the worker's GH_TOKEN`,
+    );
+  }
+});
+
 Deno.test("test stage env - WORK_DIR is not handed to the suite (Issue #1098)", () => {
   // The same class as CONFIG_PATH, found on the milestone base branch: the
   // container exports the live worker volume, `runCoreLoop` fell back to it
@@ -122,17 +207,86 @@ Deno.test("test stage env - WORK_DIR is not handed to the suite (Issue #1098)", 
   assertEquals(env.PATH, "/usr/bin");
 });
 
-Deno.test("test stage env - everything else is passed through (Issue #891)", () => {
+Deno.test("test stage env - what the suite genuinely needs is kept (Issue #1281)", () => {
+  // Behaviour change from #891: this used to assert that everything except
+  // the two scrubbed names was passed through. The stage now builds its
+  // environment from an allowlist, so the assertion is about what a build and
+  // this suite genuinely need — running tools at all, the toolchain cache,
+  // the container stamp and the worker-count override.
   const env = testStageEnv({
     CONFIG_PATH: "/home/vibe/.vibe-coder/run-config/.config.json",
     PATH: "/usr/bin:/bin",
     HOME: "/home/vibe",
+    DENO_DIR: "/cache/deno",
+    DENO_JOBS: "2",
     WORK_DIR: "/home/vibe/auto-issue-work",
     VIBE_IMAGE_AGENT_PROVIDERS: "claude",
   });
   assertEquals(env.PATH, "/usr/bin:/bin");
   assertEquals(env.HOME, "/home/vibe");
+  assertEquals(env.DENO_DIR, "/cache/deno");
+  assertEquals(env.DENO_JOBS, "2");
   assertEquals(env.VIBE_IMAGE_AGENT_PROVIDERS, "claude");
+});
+
+Deno.test("test stage env - no worker credential reaches the suite (Issue #1281)", () => {
+  // The finding: `deno test` runs repository-supplied test code — including
+  // the `*_test.ts` files the coding agent added this run — with the worker's
+  // whole environment. A denylist of two non-secret names scrubbed none of
+  // this.
+  const env = testStageEnv(WORKER_ENV);
+
+  for (const name of Object.keys(env)) {
+    assertEquals(
+      isCredentialVariableName(name),
+      false,
+      `${name} reached the repository's own test suite`,
+    );
+  }
+  // By value too, so a credential under an innocuous name cannot slip past.
+  const values = Object.values(env).join("\n");
+  for (
+    const secret of [
+      WORKER_ENV.GH_TOKEN,
+      WORKER_ENV.CLAUDE_CODE_OAUTH_TOKEN,
+      WORKER_ENV.GITHUB_APP_PRIVATE_KEY,
+      WORKER_ENV.GITHUB_APP_PRIVATE_KEY_PATH,
+      WORKER_ENV.VIBE_IMGBB_API_KEY,
+      WORKER_ENV.AWS_SECRET_ACCESS_KEY,
+    ]
+  ) {
+    assertEquals(
+      values.includes(secret!),
+      false,
+      `a credential value reached the test stage: ${secret}`,
+    );
+  }
+  // And the build still works, or the fix would just be a broken gate.
+  assertEquals(env.PATH, WORKER_ENV.PATH);
+  assertEquals(env.HOME, WORKER_ENV.HOME);
+});
+
+Deno.test("test stage env - an unknown variable is absent rather than inherited (Issue #1281)", () => {
+  // The allowlist's point: the credential nobody has added yet is already
+  // covered. A denylist has to predict the name and is wrong the first time.
+  const env = testStageEnv({
+    PATH: "/usr/bin",
+    VIBE_FUTURE_PROVIDER_CREDENTIAL_2: "not-yet-invented",
+    SOME_INTERNAL_ENDPOINT: "https://internal.example",
+  });
+  assertEquals(Object.keys(env), ["PATH"]);
+});
+
+Deno.test("test stage extras - the stage's own allowlist carries no credential name (Issue #1281)", () => {
+  // A guard on the guard: adding a name here is a decision about what
+  // repository-supplied test code may read.
+  for (const name of TEST_STAGE_EXTRA_ENV_NAMES) {
+    assertEquals(
+      isCredentialVariableName(name),
+      false,
+      `${name} must not be allowlisted for the test stage`,
+    );
+  }
 });
 
 Deno.test("test stage env - absent CONFIG_PATH is not invented (Issue #891)", () => {
@@ -149,10 +303,16 @@ Deno.test("test stage env - the caller's object is not mutated (Issue #891)", ()
   assertEquals(base.CONFIG_PATH, "/x", "the input must be left alone");
 });
 
-Deno.test("test stage env - CONFIG_FILE is left alone (Issue #891)", () => {
-  // Only the ambient container variable is scrubbed. A test that sets its own
-  // CONFIG_FILE must keep it — that is the fixture the guard should honour.
-  const env = testStageEnv({ CONFIG_FILE: "/tmp/fixture/.config.json" });
-  assert(Object.hasOwn(env, "CONFIG_FILE"));
-  assertEquals(env.CONFIG_FILE, "/tmp/fixture/.config.json");
+Deno.test("test stage env - an ambient CONFIG_FILE does not reach the suite either (Issue #1281)", () => {
+  // Behaviour change from #891, where this asserted the opposite. `CONFIG_FILE`
+  // names the operator's own config — the file the worker's API tokens live in
+  // — and under the allowlist it is absent for the same reason `CONFIG_PATH`
+  // is. Nothing is lost: a test that wants its own fixture sets `CONFIG_FILE`
+  // in the environment of the process IT spawns, which this does not touch.
+  const env = testStageEnv({
+    CONFIG_FILE: "/home/vibe/.vibe-coder/run-config/.config.json",
+    PATH: "/usr/bin",
+  });
+  assertEquals(Object.hasOwn(env, "CONFIG_FILE"), false);
+  assertEquals(env.PATH, "/usr/bin");
 });
