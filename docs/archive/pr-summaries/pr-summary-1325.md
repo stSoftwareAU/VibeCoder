@@ -89,10 +89,10 @@ Unchanged and still passing: the eleven existing coverage tests, including
 
 ## Note for the reviewer — why this PR targets the milestone branch
 
-Issue #1325 carries no GitHub milestone, so the worker based its branch on
-`main`. Neither module exists on `main`; adding their paths to the ledger there
-would make the gate red the other way (`stale` entries naming modules that are
-not on disk). The fix can only be correct on
-`milestone/fix-scan-issues-20260906`, where both modules live and where their
-sibling issues #1229 and #1254 landed, so the branch is cut from that base and
-the PR targets it.
+Issue #1325 was filed with no GitHub milestone, so the worker based its branch
+on `main` (it has since been assigned to **Fix scan issues 20260906**). Neither
+module exists on `main`; adding their paths to the ledger there would make the
+gate red the other way (`stale` entries naming modules that are not on disk).
+The fix can only be correct on `milestone/fix-scan-issues-20260906`, where both
+modules live and where their sibling issues #1229 and #1254 landed, so the
+branch is cut from that base and the PR targets it.
