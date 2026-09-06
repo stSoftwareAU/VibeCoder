@@ -221,11 +221,120 @@ export function resolveBrowserEnvironment(
   const baked = dirExists(candidate);
 
   const override = getEnv("VIBE_BROWSER_PROFILE_DIR")?.trim();
+  if (override && !isAbsolutePath(override, os)) {
+    // Issue #1293: a relative value resolves against the MCP server's working
+    // directory — the clone — so both the profile and the per-navigation
+    // accessibility snapshots would land in the tree and in the next commit.
+    throw new Error(
+      `VIBE_BROWSER_PROFILE_DIR="${override}" is not an absolute path. A ` +
+        `relative value resolves against the clone, so browser state would ` +
+        `be written into the repository. Point it at a disposable absolute ` +
+        `location such as ${defaultProfileDir(os, getEnv)}.`,
+    );
+  }
   const profileDir = override && override !== ""
     ? override
     : defaultProfileDir(os, getEnv);
 
   return { browsersPath: baked ? candidate : undefined, profileDir, baked };
+}
+
+/**
+ * Path semantics for a platform (Issue #1293).
+ *
+ * The guard below compares two directories, so it has to agree with the
+ * platform on what separates a segment and on whether two spellings name the
+ * same directory. Hand-rolled rather than pulled from `@std/path`: nothing in
+ * `worker/deno` imports it, and `deno_lock_declared_deps_test.ts` keeps it out
+ * of the lockfile (Issue #3661) — the same call `disk_space.ts` and
+ * `stale_workdir.ts` already made for their own path helpers.
+ */
+interface PathRules {
+  /** Matches one or more separators. */
+  separator: RegExp;
+  /** Rewrite alternative spellings the OS accepts into the plain one. */
+  canonicalise: (path: string) => string;
+  /** Root prefix of an absolute path, or `""` when the path is relative. */
+  root: (path: string) => string;
+  /** Canonical form of a segment for comparison. */
+  fold: (segment: string) => string;
+}
+
+const POSIX_PATH_RULES: PathRules = {
+  separator: /\/+/,
+  canonicalise: (path) => path,
+  root: (path) => (path.startsWith("/") ? "/" : ""),
+  fold: (segment) => segment,
+};
+
+const WINDOWS_PATH_RULES: PathRules = {
+  separator: /[\\/]+/,
+  // `\\?\C:\x` and `\\.\C:\x` are the same directory as `C:\x`, and
+  // `\\?\UNC\host\share` the same as `\\host\share`. Left in place the device
+  // prefix parses as a UNC root of its own, so the checkout and the profile
+  // would look like they sit on different volumes and never compare.
+  canonicalise: (path) =>
+    path
+      .replace(/^[\\/]{2}[?.][\\/]+UNC[\\/]+/i, "\\\\")
+      .replace(/^[\\/]{2}[?.][\\/]+/, ""),
+  // A drive-qualified path (`C:\x`, `c:/x`) or a UNC share (`\\host\share`).
+  // A drive-less rooted path such as `\x` is deliberately NOT absolute: which
+  // drive it lands on depends on the process, so it cannot be compared.
+  root: (path) =>
+    path.match(/^[A-Za-z]:[\\/]/)?.[0] ??
+      path.match(/^[\\/]{2}[^\\/]+[\\/]+[^\\/]+/)?.[0] ?? "",
+  // Windows paths are case-insensitive and it strips trailing dots and spaces
+  // from a component, so `C:\Repo`, `c:\repo` and `c:\repo. ` are one
+  // directory and must compare equal.
+  fold: (segment) => segment.replace(/[. ]+$/, "").toLowerCase(),
+};
+
+function pathRules(os: typeof Deno.build.os): PathRules {
+  return os === "windows" ? WINDOWS_PATH_RULES : POSIX_PATH_RULES;
+}
+
+/** True when `path` names a location the platform can resolve on its own. */
+function isAbsolutePath(path: string, os: typeof Deno.build.os): boolean {
+  const rules = pathRules(os);
+  return rules.root(rules.canonicalise(path)) !== "";
+}
+
+/**
+ * Canonical `[root, ...segments]` for an absolute path: alternative spellings
+ * rewritten, `.` dropped, `..` applied, separators collapsed, and each part
+ * folded for comparison.
+ */
+function pathParts(rawPath: string, rules: PathRules): string[] {
+  const path = rules.canonicalise(rawPath);
+  const root = rules.root(path);
+  const segments: string[] = [];
+  for (const segment of path.slice(root.length).split(rules.separator)) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      segments.pop();
+      continue;
+    }
+    segments.push(rules.fold(segment));
+  }
+  return [rules.fold(root.split(rules.separator).join("/")), ...segments];
+}
+
+/**
+ * True when `child` is `root` itself or sits beneath it.
+ *
+ * Compares whole segments, so `/workspace-scratch` is not inside `/workspace`
+ * — the trap a string-prefix test walks straight into.
+ */
+function isPathInside(
+  child: string,
+  root: string,
+  os: typeof Deno.build.os,
+): boolean {
+  const rules = pathRules(os);
+  const childParts = pathParts(child, rules);
+  const rootParts = pathParts(root, rules);
+  return childParts.length >= rootParts.length &&
+    rootParts.every((part, index) => part === childParts[index]);
 }
 
 /**
@@ -305,6 +414,11 @@ export interface ScreenshotConfig {
    * {@link resolveDeniedPaths}.
    */
   deniedPaths?: readonly string[];
+  /**
+   * Host platform (default: `Deno.build.os`). Decides the path semantics the
+   * profile-directory guard compares with (Issue #1293).
+   */
+  os?: typeof Deno.build.os;
 }
 
 /** Result of a screenshot setup operation. */
@@ -430,17 +544,25 @@ export async function checkLinuxBrowserDeps(
  * and the credential stores in {@link resolveDeniedPaths} are denied so the
  * otherwise unscoped `--allow-read` / `--allow-write` cannot reach them.
  *
+ * Issue #1293: the containment check resolves `.`/`..`, honours the platform's
+ * separators and case rules, and refuses a non-absolute path outright — a raw
+ * string prefix against a hard-coded `/` never fired on Windows and a `..`
+ * walk passed straight through it.
+ *
  * @param config - Screenshot setup configuration.
  * @returns The `.mcp.json` document, pretty-printed.
  * @throws Error when the resolved profile directory sits inside the mounted
- *   checkout — browser state must never be written there.
+ *   checkout, or when either directory is not absolute — browser state must
+ *   never be written there.
  */
 export function generateMcpConfig(config: ScreenshotConfig): string {
   const mcpDir = config.mcpConfigDir ?? config.scriptDir;
   const denyEnv = PLAYWRIGHT_MCP_DENIED_ENV.join(",");
-  const browser = config.browserEnvironment ?? resolveBrowserEnvironment();
+  const os = config.os ?? Deno.build.os;
+  const browser = config.browserEnvironment ??
+    resolveBrowserEnvironment({ os });
 
-  assertDisposableProfileDir(browser.profileDir, mcpDir);
+  assertDisposableProfileDir(browser.profileDir, mcpDir, os);
   // The server's output directory is scratch beside the profile, NOT the
   // checkout's docs/evidence (Issue #4355): on every `browser_navigate` the
   // server writes an accessibility snapshot (`page-<ts>.yml`) into
@@ -539,11 +661,35 @@ export function defaultOutputDir(profileDir: string): string {
   return `${parent}${sep}${BROWSER_OUTPUT_DIR_NAME}`;
 }
 
-function assertDisposableProfileDir(profileDir: string, mcpDir: string): void {
-  const normalise = (p: string) => p.replace(/[\\/]+$/, "");
-  const root = normalise(mcpDir);
-  const profile = normalise(profileDir);
-  if (root !== "" && (profile === root || profile.startsWith(`${root}/`))) {
+function assertDisposableProfileDir(
+  profileDir: string,
+  mcpDir: string,
+  os: typeof Deno.build.os,
+): void {
+  // Issue #1293: both paths must be absolute before containment means
+  // anything. A relative one is resolved by whoever consumes it — the MCP
+  // server resolves the profile against the clone — so it cannot be compared
+  // here and must not be waved through.
+  if (!isAbsolutePath(profileDir, os)) {
+    throw new Error(
+      `Browser profile directory "${profileDir}" is not an absolute path, ` +
+        `so it resolves against the clone and browser state would be written ` +
+        `into the repository. Point VIBE_BROWSER_PROFILE_DIR at a disposable ` +
+        `absolute location such as /tmp/${BROWSER_PROFILE_DIR_NAME}.`,
+    );
+  }
+
+  const root = mcpDir.trim();
+  if (root === "") return;
+  if (!isAbsolutePath(root, os)) {
+    throw new Error(
+      `Checkout directory "${mcpDir}" is not an absolute path, so the ` +
+        `browser profile cannot be proven to sit outside it. Pass an ` +
+        `absolute directory.`,
+    );
+  }
+
+  if (isPathInside(profileDir, root, os)) {
     throw new Error(
       `Browser profile directory "${profileDir}" is inside the mounted ` +
         `checkout "${mcpDir}". Point VIBE_BROWSER_PROFILE_DIR at a ` +
@@ -672,7 +818,8 @@ export async function setupPlaywrightMcp(
 
   // Issue #4069: a baked browser brings its own system libraries, so the
   // dpkg probe is a host-only concern.
-  const browser = config.browserEnvironment ?? resolveBrowserEnvironment();
+  const browser = config.browserEnvironment ??
+    resolveBrowserEnvironment({ os: config.os ?? Deno.build.os });
   if (Deno.build.os === "linux" && !browser.baked) {
     const browserDeps = await checkLinuxBrowserDeps(config.runCommand);
     if (!browserDeps.ok) {

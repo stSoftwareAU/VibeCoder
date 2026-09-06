@@ -727,6 +727,183 @@ Deno.test("generateMcpConfig - refuses a profile directory inside the mounted ch
   );
 });
 
+// Issue #1293: the guard compared raw strings against a hard-coded "/", so a
+// Windows checkout, a `..` walk, or a relative value all slipped past it.
+Deno.test("generateMcpConfig - refuses a Windows profile directory inside the checkout", () => {
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "C:\\Users\\me\\VibeCoder",
+        os: "windows",
+        browserEnvironment: {
+          profileDir: "C:\\Users\\me\\VibeCoder\\profile",
+          baked: true,
+          browsersPath: CONTAINER_BROWSERS_PATH,
+        },
+      }),
+    Error,
+    "inside the mounted checkout",
+  );
+});
+
+Deno.test("generateMcpConfig - refuses a Windows profile directory whose case differs", () => {
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "C:\\Users\\me\\VibeCoder",
+        os: "windows",
+        browserEnvironment: {
+          profileDir: "c:/users/ME/vibecoder/state/profile",
+          baked: true,
+          browsersPath: CONTAINER_BROWSERS_PATH,
+        },
+      }),
+    Error,
+    "inside the mounted checkout",
+  );
+});
+
+Deno.test("generateMcpConfig - refuses a Windows device-prefixed profile directory", () => {
+  // `\\?\C:\x` is the same directory as `C:\x`; parsed as a UNC root it would
+  // look like a different volume and slip past the containment check.
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "C:\\Users\\me\\VibeCoder",
+        os: "windows",
+        browserEnvironment: {
+          profileDir: "\\\\?\\C:\\Users\\me\\VibeCoder\\profile",
+          baked: true,
+          browsersPath: CONTAINER_BROWSERS_PATH,
+        },
+      }),
+    Error,
+    "inside the mounted checkout",
+  );
+});
+
+Deno.test("generateMcpConfig - refuses a Windows path padded with trailing dots", () => {
+  // Windows strips trailing dots and spaces from a component, so this
+  // resolves inside the checkout even though the raw strings differ.
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "C:\\Users\\me\\VibeCoder",
+        os: "windows",
+        browserEnvironment: {
+          profileDir: "C:\\Users\\me\\VibeCoder.\\profile",
+          baked: true,
+          browsersPath: CONTAINER_BROWSERS_PATH,
+        },
+      }),
+    Error,
+    "inside the mounted checkout",
+  );
+});
+
+Deno.test("generateMcpConfig - refuses a profile directory reached through ..", () => {
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "/home/vibe/auto-issue-work/repo",
+        os: "linux",
+        browserEnvironment: {
+          profileDir: "/tmp/../home/vibe/auto-issue-work/repo/profile",
+          baked: true,
+          browsersPath: CONTAINER_BROWSERS_PATH,
+        },
+      }),
+    Error,
+    "inside the mounted checkout",
+  );
+});
+
+Deno.test("generateMcpConfig - refuses a relative profile directory", () => {
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "/workspace",
+        os: "linux",
+        browserEnvironment: {
+          profileDir: "profile",
+          baked: true,
+          browsersPath: CONTAINER_BROWSERS_PATH,
+        },
+      }),
+    Error,
+    "is not an absolute path",
+  );
+});
+
+Deno.test("generateMcpConfig - refuses a checkout directory that is not absolute", () => {
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "relative/checkout",
+        os: "linux",
+        browserEnvironment: bakedBrowser(),
+      }),
+    Error,
+    "is not an absolute path",
+  );
+});
+
+Deno.test("generateMcpConfig - allows a sibling directory whose name shares the checkout prefix", () => {
+  const args: string[] = JSON.parse(generateMcpConfig({
+    scriptDir: "/workspace",
+    os: "linux",
+    browserEnvironment: {
+      profileDir: "/workspace-scratch/profile",
+      baked: true,
+      browsersPath: CONTAINER_BROWSERS_PATH,
+    },
+  })).mcpServers.playwright.args;
+
+  assertEquals(
+    args[args.indexOf("--user-data-dir") + 1],
+    "/workspace-scratch/profile",
+  );
+});
+
+Deno.test("resolveBrowserEnvironment - refuses a relative VIBE_BROWSER_PROFILE_DIR", () => {
+  assertThrows(
+    () =>
+      resolveBrowserEnvironment({
+        getEnv: (name) =>
+          name === "VIBE_BROWSER_PROFILE_DIR" ? "profile" : undefined,
+        dirExists: () => false,
+        os: "linux",
+      }),
+    Error,
+    "VIBE_BROWSER_PROFILE_DIR",
+  );
+});
+
+Deno.test("resolveBrowserEnvironment - refuses a drive-less Windows VIBE_BROWSER_PROFILE_DIR", () => {
+  assertThrows(
+    () =>
+      resolveBrowserEnvironment({
+        getEnv: (name) =>
+          name === "VIBE_BROWSER_PROFILE_DIR" ? "Temp\\profile" : undefined,
+        dirExists: () => false,
+        os: "windows",
+      }),
+    Error,
+    "VIBE_BROWSER_PROFILE_DIR",
+  );
+});
+
+Deno.test("resolveBrowserEnvironment - accepts an absolute Windows VIBE_BROWSER_PROFILE_DIR", () => {
+  const env = resolveBrowserEnvironment({
+    getEnv: (name) =>
+      name === "VIBE_BROWSER_PROFILE_DIR" ? "D:\\scratch\\profile" : undefined,
+    dirExists: () => false,
+    os: "windows",
+  });
+
+  assertEquals(env.profileDir, "D:\\scratch\\profile");
+});
+
 Deno.test("generateMcpConfig - still denies every secret when the browser is baked in", () => {
   const args: string[] = JSON.parse(generateMcpConfig({
     scriptDir: "/workspace",
