@@ -37,6 +37,7 @@
  */
 
 import type { Logger } from "../types.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import type { RunStats } from "./run_stats.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
@@ -161,7 +162,12 @@ export async function reportPhaseDegradation(args: {
   listIssueComments?: (
     repo: string,
     issueNumber: number,
-  ) => Promise<readonly { body: string }[]>;
+  ) => Promise<readonly { body: string; author?: string | null }[]>;
+  /**
+   * Fleet identity inputs for the cumulative-tally author check (Issue #1249,
+   * finding 12). Omitted reads the configured fleet.
+   */
+  authorOptions?: AlertDedupAuthorOptions;
   /**
    * Environment lookup the expected-model routing reads through
    * (Issue #961); defaults to the process environment, so a production
@@ -208,6 +214,7 @@ export async function reportPhaseDegradation(args: {
         ghIssueCommentLister(runGhCommand),
       postComment,
       logger,
+      ...(args.authorOptions ? { authorOptions: args.authorOptions } : {}),
     });
     return verdict;
   }

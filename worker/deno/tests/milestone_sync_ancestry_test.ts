@@ -231,15 +231,26 @@ Deno.test(
 // The sync PR lands as a merge commit
 // ---------------------------------------------------------------------------
 
-Deno.test("mergeMethodFlagForHead - only a milestone sync branch merges", () => {
+Deno.test("mergeMethodFlagForHead - only a same-repository milestone sync branch merges", () => {
+  // Since Issue #1249 the deviation also needs the head to live in this
+  // repository — a fork names its own branches — so the second argument is
+  // part of the answer, and its default is the restrictive one.
   assertEquals(
-    mergeMethodFlagForHead(syncBranchFor("milestone/863")),
+    mergeMethodFlagForHead(syncBranchFor("milestone/863"), true),
     "--merge",
   );
-  assertEquals(mergeMethodFlagForHead("issue-1048-fix"), "--squash");
-  assertEquals(mergeMethodFlagForHead("milestone/863"), "--squash");
-  assertEquals(mergeMethodFlagForHead(undefined), "--squash");
-  assertEquals(mergeMethodFlagForHead(""), "--squash");
+  assertEquals(
+    mergeMethodFlagForHead(syncBranchFor("milestone/863"), false),
+    "--squash",
+  );
+  assertEquals(
+    mergeMethodFlagForHead(syncBranchFor("milestone/863")),
+    "--squash",
+  );
+  assertEquals(mergeMethodFlagForHead("issue-1048-fix", true), "--squash");
+  assertEquals(mergeMethodFlagForHead("milestone/863", true), "--squash");
+  assertEquals(mergeMethodFlagForHead(undefined, true), "--squash");
+  assertEquals(mergeMethodFlagForHead("", true), "--squash");
   assert(isMilestoneSyncBranch("sync/milestone-863"));
   assert(!isMilestoneSyncBranch("sync/other"));
 });

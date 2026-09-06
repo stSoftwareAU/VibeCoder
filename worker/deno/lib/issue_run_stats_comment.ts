@@ -37,6 +37,10 @@
  */
 
 import type { Logger } from "../types.ts";
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
 import { buildDegradationReport } from "./planning_run_stats.ts";
 import {
   buildPhaseInvocations,
@@ -258,7 +262,10 @@ export function hasRunStatsCommentForRun(
  */
 export function ghIssueCommentLister(
   runGhCommand: (args: string[]) => Promise<string>,
-): (repo: string, issueNumber: number) => Promise<{ body: string }[]> {
+): (
+  repo: string,
+  issueNumber: number,
+) => Promise<{ body: string; author: string | null }[]> {
   return async (repo, issueNumber) => {
     const raw = await runGhCommand([
       "issue",
@@ -269,14 +276,22 @@ export function ghIssueCommentLister(
       "--json",
       "comments",
     ]);
-    const parsed = JSON.parse(raw) as { comments?: { body?: unknown }[] };
+    const parsed = JSON.parse(raw) as {
+      comments?: { body?: unknown; author?: unknown }[];
+    };
     if (!Array.isArray(parsed?.comments)) {
       throw new Error(
         "gh issue view returned no `comments` array — cannot check for an existing run-stats comment",
       );
     }
+    // The author rides along because the cumulative tally is only counted
+    // over fleet-authored comments (Issue #1249, finding 12).
     return parsed.comments.map((c) => ({
       body: typeof c?.body === "string" ? c.body : "",
+      author: typeof (c?.author as { login?: unknown } | undefined)?.login ===
+          "string"
+        ? (c.author as { login: string }).login
+        : null,
     }));
   };
 }
@@ -325,7 +340,12 @@ export async function postIssueRunStatsComment(args: {
   getIssueComments: (
     repo: string,
     issueNumber: number,
-  ) => Promise<readonly { body: string }[]>;
+  ) => Promise<readonly { body: string; author?: string | null }[]>;
+  /**
+   * Fleet identity inputs for the cumulative-tally author check (Issue #1249,
+   * finding 12). Omitted reads the configured fleet.
+   */
+  authorOptions?: AlertDedupAuthorOptions;
   postComment: (
     repo: string,
     issueNumber: number,
@@ -359,8 +379,23 @@ export async function postIssueRunStatsComment(args: {
 
   try {
     const existing = await args.getIssueComments(repo, issueNumber);
-    const priorComments = existing.map((c) => c.body);
-    if (hasRunStatsCommentForRun(priorComments, runId)) {
+    // The published total is a number the worker vouches for, so it is summed
+    // over fleet-authored comments only: anybody can post a body carrying the
+    // run-stats marker and a cost line, and an unfiltered tally republished
+    // whatever they typed as the issue's spend (Issue #1249, finding 12).
+    // Fail direction: nothing attributable means nothing counted, so the
+    // comment reports this run's own cost rather than a total it cannot stand
+    // behind.
+    const fleetComments = await selectFleetAuthoredComments(
+      existing.filter((c) => hasIssueRunStatsComment([c.body])),
+      `issue run-stats tally ${repo}#${issueNumber}`,
+      args.authorOptions ?? {},
+      (message) => logger.warn(message),
+      "no prior run is counted and the comment reports this run's cost alone " +
+        "— a cost line anyone can post must not inflate a published total",
+    );
+    const priorComments = fleetComments.map((c) => c.body);
+    if (hasRunStatsCommentForRun(existing.map((c) => c.body), runId)) {
       logger.info("This run already posted its stats comment — skipping", {
         repo,
         issueNumber,

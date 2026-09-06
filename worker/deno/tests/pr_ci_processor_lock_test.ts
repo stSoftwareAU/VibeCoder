@@ -114,15 +114,21 @@ class FakePrComments {
       if (args[0] === "issue" && args[1] === "comment") {
         const bodyIndex = args.indexOf("--body");
         const body = bodyIndex >= 0 ? args[bodyIndex + 1] ?? "" : "";
+        const id = this.nextId++;
         this.comments.push({
-          id: this.nextId++,
+          id,
           body,
           created_at: new Date(this.now * 1000).toISOString(),
           author: FLEET_AUTHOR,
         });
         // Each post advances the clock so `created_at` ordering is stable.
         this.now += 1;
-        return Promise.resolve("");
+        // `gh issue comment` prints the new comment's URL, and since
+        // Issue #1249 the lock identifies its own comment by that id rather
+        // than by the worker id printed in the body.
+        return Promise.resolve(
+          `https://github.com/org/repo/issues/1#issuecomment-${id}`,
+        );
       }
 
       if (args.includes("DELETE")) {
