@@ -312,6 +312,7 @@
         "worker/deno/lib/repo_busy_for_idle_task.ts",
         "worker/deno/lib/repo_rulesets.ts",
         "worker/deno/lib/repo_settings_scanner.ts",
+        "worker/deno/lib/repo_slug.ts",
         "worker/deno/lib/reported_check_names.ts",
         "worker/deno/lib/revision_processor.ts",
         "worker/deno/lib/ruleset_payload.ts",

@@ -315,8 +315,13 @@ async function runPrerequisites(
         Deno.env.get("HOME") ?? "~",
       );
     }
-  } catch {
-    // Config may not exist yet on first setup — that's fine
+  } catch (error) {
+    // A missing config is not an error — `loadExistingConfig` returns `{}` for
+    // one. Anything that throws is a rejected config (e.g. an invalid repo
+    // slug, Issue #1291) and must stop setup rather than silently probing with
+    // the wrong `gh` identity.
+    printError((error as Error).message);
+    return false;
   }
 
   const probeOptions: PrerequisiteOptions = {

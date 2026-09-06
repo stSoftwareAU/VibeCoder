@@ -634,6 +634,38 @@ Configuration validation helps prevent:
 3. **Injection attacks**: Malformed repository names or labels could potentially be used for injection attacks
 4. **Debugging difficulty**: Clear error messages on startup are easier to diagnose than subtle runtime failures
 
+### 🧰 The setup CLI applies the same slug guard (Issue #1291)
+
+The worker's loader is not the only reader of `.config.json`: the setup CLI has
+its own (`worker/deno/setup/config_setup.ts`), and it validated nothing. Both
+readers now share `REPO_SLUG_PATTERN` from
+[`worker/deno/lib/repo_slug.ts`](worker/deno/lib/repo_slug.ts) — the setup
+reader applies it to `repos`, and to `VIBE_REPOS` / `VIBE_ADD_REPOS` in the
+non-interactive writer — because a slug read there flows into two sinks:
+
+- **A filesystem path.** `syncGitignoreForAllRepos()` derives
+  `<WORK_DIR>/<repo-name>` from the slug, so `org/..` steered the `.gitignore`
+  and `.gitattributes` enforcers at the work-volume root or its parent, outside
+  every clone.
+- **A command a repo admin is told to paste.** The collaborator precheck
+  interpolates each slug into `gh api -X PUT repos/<slug>/collaborators/…`
+  inside a fenced `bash` block in the issue it files, so a backtick or `$(…)`
+  in a slug crossed a privilege boundary into an admin's shell.
+
+Both sinks keep their own guard as defence in depth: an invalid slug is
+reported (rendered inert, never echoed with its metacharacters) rather than
+dropped silently, and no path or pasteable command is derived from it.
+
+```mermaid
+flowchart LR
+    C[".config.json / VIBE_REPOS"] --> G{"REPO_SLUG_PATTERN"}
+    G -- reject --> E["Loud error, slug rendered inert"]
+    G -- accept --> P["WORK_DIR path (gitignore sync)"]
+    G -- accept --> A["gh api invite command (precheck issue)"]
+    style G fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style E fill:#9d0208,stroke:#6a040f,color:#fff
+```
+
 ## 🛡️ Repository Allowlist Validation (Issue #35)
 
 The worker validates that repositories are explicitly listed in the configuration before performing any operations. This defence-in-depth measure prevents potential attacks where a malicious actor might try to trick the worker into working on an unintended repository.

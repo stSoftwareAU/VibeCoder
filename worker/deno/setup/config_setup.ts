@@ -18,6 +18,7 @@ import {
 } from "../lib/config_defaults.ts";
 import { REMOVED_CONFIG_KEYS } from "../lib/validation.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
+import { assertValidRepoSlugs } from "../lib/repo_slug.ts";
 
 /**
  * Configuration values that can be set during setup.
@@ -470,18 +471,41 @@ export async function writeConfigFile(
 /**
  * Load existing configuration from a JSON file.
  *
+ * Every `repos` entry is checked against `REPO_SLUG_PATTERN` (Issue #1291).
+ * This is the setup CLI's *own* reader of `.config.json` — the worker's
+ * loader (`lib/config.ts`) has always validated here, and this second reader
+ * did not, so a slug such as `org/..` reached `syncGitignoreForAllRepos`
+ * (which derives a filesystem path from it) and a slug carrying a backtick
+ * reached the pasteable `gh api` commands in the collaborator precheck issue.
+ * Bad entries are reported by throwing, never dropped silently.
+ *
  * @param configPath - Path to the .config.json file
  * @returns The existing configuration, or empty object if file doesn't exist
+ * @throws When `repos` is not an array of valid `owner/repo` slugs
  */
 export async function loadExistingConfig(
   configPath: string,
 ): Promise<SetupConfig> {
+  let config: SetupConfig;
   try {
     const content = await Deno.readTextFile(configPath);
-    return JSON.parse(content) as SetupConfig;
+    config = JSON.parse(content) as SetupConfig;
   } catch {
+    // Missing or unparseable file — first setup writes a fresh one.
     return {};
   }
+
+  if (config.repos !== undefined) {
+    if (!Array.isArray(config.repos)) {
+      throw new Error(
+        `Configuration error in ${configPath}: "repos" must be an array of ` +
+          "owner/repo slugs.",
+      );
+    }
+    assertValidRepoSlugs(config.repos, configPath);
+  }
+
+  return config;
 }
 
 /**
@@ -523,14 +547,20 @@ export function mergeNonInteractive(
     result.pr_reviewer = vibePrReviewer;
   }
 
-  // Handle repos
+  // Handle repos. Both variables are operator-supplied and flow into a
+  // filesystem path and a pasteable shell command downstream, so each entry
+  // is checked against `REPO_SLUG_PATTERN` here (Issue #1291) — the same
+  // guard the worker's own loader applies.
   const vibeRepos = env("VIBE_REPOS");
   const vibeAddRepos = env("VIBE_ADD_REPOS");
   if (vibeRepos) {
-    result.repos = parseCsv(vibeRepos);
+    result.repos = assertValidRepoSlugs(parseCsv(vibeRepos), "VIBE_REPOS");
   }
   if (vibeAddRepos) {
-    const addRepos = parseCsv(vibeAddRepos);
+    const addRepos = assertValidRepoSlugs(
+      parseCsv(vibeAddRepos),
+      "VIBE_ADD_REPOS",
+    );
     const existingRepos = result.repos ?? [];
     const merged = [...new Set([...existingRepos, ...addRepos])];
     result.repos = merged;
