@@ -14,10 +14,12 @@ import {
   isRunFailureIssue,
   parseRunFailureFollowUpMarker,
   parseRunFailureMarker,
+  RUN_FAILURE_FAMILY_ID,
   RUN_FAILURE_TARGET_REPO,
   type RunFailureReport,
 } from "../lib/run_failure_issue.ts";
 import { CI_FAILURE_EXCERPT_BYTES } from "../lib/ci_failure_issue.ts";
+import type { SelfDiagnosticFiling } from "../lib/self_diagnostic_attestation.ts";
 import { formatRunFailureExcerpt } from "../lib/run_failure_issue.ts";
 
 /**
@@ -109,6 +111,7 @@ Deno.test("run failure issue - code_fixable + no existing issue → exactly one 
   try {
     const { ghFn, rec } = fakeGh();
     const decision = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
       report: OOM_REPORT,
       ghFn,
       workDir: dir,
@@ -149,6 +152,7 @@ Deno.test("run failure issue - code_fixable + existing open issue for the class 
       }],
     });
     const decision = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
       report: OOM_REPORT,
       ghFn,
       workDir: dir,
@@ -181,6 +185,7 @@ Deno.test("run failure issue - a second occurrence within the follow-up window u
     });
     let now = 1_700_000_000;
     const first = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
       report: OOM_REPORT,
       ghFn: gh.ghFn,
       workDir: dir,
@@ -192,6 +197,7 @@ Deno.test("run failure issue - a second occurrence within the follow-up window u
     // Past the per-host write interval but inside the 24 h window.
     now += 2 * 3600;
     const second = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
       report: { ...OOM_REPORT, sourceIssueNumber: 148 },
       ghFn: gh.ghFn,
       workDir: dir,
@@ -215,6 +221,7 @@ Deno.test("run failure issue - a second occurrence within the follow-up window u
     // Once the window has passed a new follow-up may be posted.
     now += 25 * 3600;
     const third = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
       report: OOM_REPORT,
       ghFn: gh.ghFn,
       workDir: dir,
@@ -234,6 +241,7 @@ Deno.test("run failure issue - not_code_fixable (usage limit) and unknown (timeo
   try {
     const { ghFn, rec } = fakeGh();
     const limit = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
       report: {
         ...OOM_REPORT,
         outcome: {
@@ -255,6 +263,7 @@ Deno.test("run failure issue - not_code_fixable (usage limit) and unknown (timeo
       failureClass: "usage-limit",
     });
     const timeout = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
       report: {
         ...OOM_REPORT,
         outcome: {
@@ -286,6 +295,7 @@ Deno.test("run failure issue - a run on a different monitored repo still files i
   try {
     const { ghFn, rec } = fakeGh();
     await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
       report: {
         ...OOM_REPORT,
         sourceRepo: "stSoftwareAU/private-repo-21",
@@ -324,6 +334,7 @@ Deno.test("run failure issue - every GitHub call failing → resolves suppressed
     let releaseCompleted = false;
     const release = async () => {
       const decision = await fileRunFailureIssue({
+        recordFiling: () => Promise.resolve(true),
         report: OOM_REPORT,
         ghFn,
         workDir: dir,
@@ -351,6 +362,7 @@ Deno.test("run failure issue - per-class write interval is enforced on the injec
     const gh = fakeGh();
     let now = 1_000_000;
     const a = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
       report: OOM_REPORT,
       ghFn: gh.ghFn,
       workDir: dir,
@@ -361,6 +373,7 @@ Deno.test("run failure issue - per-class write interval is enforced on the injec
     assertEquals(a.action, "filed");
     now += 600;
     const b = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
       report: OOM_REPORT,
       ghFn: gh.ghFn,
       workDir: dir,
@@ -376,6 +389,7 @@ Deno.test("run failure issue - per-class write interval is enforced on the injec
     const callsBefore = gh.rec.calls.length;
     // A different class is independent.
     const c = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
       report: {
         ...OOM_REPORT,
         outcome: {
@@ -396,6 +410,7 @@ Deno.test("run failure issue - per-class write interval is enforced on the injec
     assert(gh.rec.calls.length > callsBefore);
     now += 3600;
     const d = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
       report: OOM_REPORT,
       ghFn: gh.ghFn,
       workDir: dir,
@@ -427,4 +442,38 @@ Deno.test("run failure issue - the excerpt is bounded by the ci_failure_issue bu
     formatRunFailureFollowUpMarker("oom", 5),
     "<!-- VIBE_RUN_FAILURE_FOLLOWUP:oom:5 -->",
   );
+});
+
+Deno.test("run failure issue - filing records an attestation carrying the posted body (Issue #1277)", async () => {
+  const dir = await tmp();
+  try {
+    const { ghFn, rec } = fakeGh();
+    const filings: SelfDiagnosticFiling[] = [];
+    const decision = await fileRunFailureIssue({
+      recordFiling: (filing) => {
+        filings.push(filing);
+        return Promise.resolve(true);
+      },
+      report: OOM_REPORT,
+      ghFn,
+      workDir: dir,
+      fleetAuthors: FLEET,
+      nowSeconds: () => 1_700_000_000,
+    });
+
+    assertEquals(decision.action, "filed");
+    assertEquals(filings.length, 1);
+    const filing = filings[0]!;
+    assertEquals(filing.repo, RUN_FAILURE_TARGET_REPO);
+    assertEquals(filing.familyId, RUN_FAILURE_FAMILY_ID);
+    assertEquals(filing.issueNumber, 9001);
+    const create = rec.creates[0]!;
+    assertEquals(
+      filing.body,
+      create[create.indexOf("--body") + 1],
+      "the attestation must cover the body that was actually posted",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

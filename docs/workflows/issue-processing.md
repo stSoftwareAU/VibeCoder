@@ -106,7 +106,7 @@ provenance, collected by
 [`collect_self_diagnostic_candidates.ts`](../../worker/deno/lib/collect_self_diagnostic_candidates.ts).
 `top-priority` and `work-on` remain human-only, unconditionally.
 
-**Three signals must agree** (`self_diagnostic_provenance.ts`) — author alone
+**Four signals must agree** (`self_diagnostic_provenance.ts`) — author alone
 is not enough, because an injected agent can file issues too:
 
 1. **Repo** — the issue is in the worker's own repo (`stSoftwareAU/VibeCoder`),
@@ -118,6 +118,24 @@ is not enough, because an injected agent can file issues too:
    forgery through a filed body is closed at the source: the filers escape
    `<!--`/`-->` out of every interpolated field.
 3. **Author** — it was filed by a fleet worker login.
+4. **Filing attestation** — the worker's own filer recorded the created issue
+   number, and a digest of the body it posted, in the tamper-evident audit
+   chain under the `file-self-diagnostic` verb
+   (`self_diagnostic_attestation.ts`, Issue #1277).
+
+Signals 1–3 are all things the **agent subprocess** can produce: it holds the
+run's `gh` credential, its writes are allowed in the claimed repo, and it
+writes the very body the marker lives in — so on their own they reduce to
+"filed by the worker account", which is not provenance. Signal 4 is the one it
+cannot mint: the journal lives outside every working tree, the agent's own `gh`
+calls are journalled under the mutation classifier's verb rather than this one,
+and a line appended by hand breaks the hash chain and its anchor. The body
+digest closes the follow-on move too — rewriting a genuinely-filed diagnostic's
+body no longer makes it self-schedulable, because the attestation covers the
+body the filer posted.
+
+An unattested marker-bearing issue is not lost: the refusal is logged, the
+issue stays open, and a human `work-on` schedules it as before.
 
 **Bounded, visible and reversible:**
 
@@ -135,7 +153,9 @@ tier 2b, so applying the label schedules a diagnostic *sooner*.
 flowchart LR
     A["Diagnostic auto-filed<br/>(marker in body)"] --> B{Repo + marker<br/>+ author agree?}
     B -- no --> W[Waits for a human `work-on`]
-    B -- yes --> C{Under the<br/>in-flight cap?}
+    B -- yes --> X{Filing attested<br/>in the audit chain?<br/>number + body digest}
+    X -- no --> W
+    X -- yes --> C{Under the<br/>in-flight cap?}
     C -- no --> R[Refused + logged]
     C -- yes --> D{Gates pass?<br/>milestone / PR / deps}
     D -- "merged PR<br/>(permanent)" --> E[needs-human + comment]

@@ -65,6 +65,10 @@ import {
 } from "./alert_dedup_authors.ts";
 import { atomicWrite } from "./file_utils.ts";
 import { withStateLock } from "./state_mutex.ts";
+import {
+  recordSelfDiagnosticFiling,
+  type SelfDiagnosticFiling,
+} from "./self_diagnostic_attestation.ts";
 
 /** Consecutive cycles raising the signal before an issue is filed. */
 export const IDLE_INVERSION_THRESHOLD = 3;
@@ -74,6 +78,9 @@ export const IDLE_INVERSION_STATE_FILE = "idle_inversion_streak.json";
 
 /** Body marker prefix used to dedup the escalation issue. */
 export const IDLE_INVERSION_MARKER_PREFIX = "VIBE_IDLE_INVERSION";
+
+/** Self-diagnostic family id for issues this module files (Issue #1277). */
+export const IDLE_INVERSION_FAMILY_ID = "idle-inversion";
 
 /**
  * Where the escalation lands, whichever repo raised the inversion
@@ -349,6 +356,13 @@ export interface RecordIdleInversionOptions {
    * alert and the escalation is raised.
    */
   fleetAuthors?: readonly string[];
+  /**
+   * Records the filing attestation tier 2b checks (Issue #1277).
+   *
+   * Injected so a test never appends to the host's real audit chain.
+   * Production callers omit it and get {@link recordSelfDiagnosticFiling}.
+   */
+  recordFiling?: (filing: SelfDiagnosticFiling) => Promise<boolean>;
 }
 
 /** Parse the issue number out of `gh issue create` output. */
@@ -476,6 +490,10 @@ async function decide(
     };
   }
 
+  const body = formatIdleInversionBody({
+    ...opts.report,
+    consecutiveCycles: entry.count,
+  });
   try {
     const created = await opts.ghFn([
       "issue",
@@ -486,13 +504,22 @@ async function decide(
       "--title",
       formatIdleInversionTitle(repo),
       "--body",
-      formatIdleInversionBody({
-        ...opts.report,
-        consecutiveCycles: entry.count,
-      }),
+      body,
     ]);
     const issueNumber = parseCreatedIssueNumber(created);
     if (issueNumber > 0) entry.issueNumber = issueNumber;
+    // Issue #1277: attest the filing out of band, so tier 2b can tell this
+    // diagnostic from one an injected agent typed the marker into.
+    const recordFiling = opts.recordFiling ??
+      ((filing: SelfDiagnosticFiling) =>
+        recordSelfDiagnosticFiling(filing, { log }));
+    await recordFiling({
+      repo: IDLE_INVERSION_TARGET_REPO,
+      issueNumber,
+      familyId: IDLE_INVERSION_FAMILY_ID,
+      body,
+      filedBy: "worker/deno/lib/idle_inversion_streak.ts",
+    });
     return { action: "filed", count: entry.count, issueNumber };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);

@@ -15,10 +15,12 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import type { SelfDiagnosticFiling } from "../lib/self_diagnostic_attestation.ts";
 import {
   clearIdleInversion,
   formatIdleInversionBody,
   formatIdleInversionMarker,
+  IDLE_INVERSION_FAMILY_ID,
   IDLE_INVERSION_TARGET_REPO,
   IDLE_INVERSION_THRESHOLD,
   idleInversionStatePath,
@@ -81,6 +83,7 @@ Deno.test("#321 - repeated calls within one cycle count once", async () => {
     const { fn, calls } = gh([NO_EXISTING, CREATE_OK]);
     for (let tick = 0; tick < 5; tick++) {
       const d = await recordIdleInversion({
+        recordFiling: () => Promise.resolve(true),
         statePath,
         cycleId: "run-a",
         report,
@@ -101,6 +104,7 @@ Deno.test("#321 - one issue is filed at the threshold and not again", async () =
     const seen: string[] = [];
     for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD + 3; cycle++) {
       const d = await recordIdleInversion({
+        recordFiling: () => Promise.resolve(true),
         statePath,
         cycleId: `run-${cycle}`,
         report,
@@ -126,12 +130,14 @@ Deno.test("#321 - a streak that clears before the threshold files nothing", asyn
   await withState(async (statePath) => {
     const { fn, calls } = gh([NO_EXISTING, CREATE_OK]);
     await recordIdleInversion({
+      recordFiling: () => Promise.resolve(true),
       statePath,
       cycleId: "run-1",
       report,
       ghFn: fn,
     });
     await recordIdleInversion({
+      recordFiling: () => Promise.resolve(true),
       statePath,
       cycleId: "run-2",
       report,
@@ -142,6 +148,7 @@ Deno.test("#321 - a streak that clears before the threshold files nothing", asyn
 
     // A later inversion starts from one, not from three.
     const d = await recordIdleInversion({
+      recordFiling: () => Promise.resolve(true),
       statePath,
       cycleId: "run-3",
       report,
@@ -181,6 +188,7 @@ Deno.test("#321 - an open escalation issue is reused, not duplicated", async () 
     let last;
     for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
       last = await recordIdleInversion({
+        recordFiling: () => Promise.resolve(true),
         statePath,
         cycleId: `run-${cycle}`,
         report,
@@ -214,6 +222,7 @@ Deno.test("#321 - a failed search files nothing (a duplicate is worse)", async (
     let last;
     for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
       last = await recordIdleInversion({
+        recordFiling: () => Promise.resolve(true),
         statePath,
         cycleId: `run-${cycle}`,
         report,
@@ -235,6 +244,7 @@ Deno.test("#321 - a failed create is reported and retried next cycle", async () 
     ]);
     for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
       await recordIdleInversion({
+        recordFiling: () => Promise.resolve(true),
         statePath,
         cycleId: `run-${cycle}`,
         report,
@@ -254,6 +264,7 @@ Deno.test("#321 - a failed create is reported and retried next cycle", async () 
 Deno.test("#321 - escalation never throws into the idle path", async () => {
   await withState(async (statePath) => {
     const d = await recordIdleInversion({
+      recordFiling: () => Promise.resolve(true),
       statePath: `${statePath}/nonexistent/deep/state.json`,
       cycleId: "run-1",
       report,
@@ -336,6 +347,7 @@ Deno.test("#459 - the issue is filed in VibeCoder, not the subject repo", async 
     const { fn, calls } = gh([NO_EXISTING, CREATE_OK]);
     for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
       await recordIdleInversion({
+        recordFiling: () => Promise.resolve(true),
         statePath,
         cycleId: `run-${cycle}`,
         report: { ...report, repo: SUBJECT },
@@ -359,6 +371,7 @@ Deno.test("#459 - the title and body still name the subject repo", async () => {
     const { fn, calls } = gh([NO_EXISTING, CREATE_OK]);
     for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
       await recordIdleInversion({
+        recordFiling: () => Promise.resolve(true),
         statePath,
         cycleId: `run-${cycle}`,
         report: { ...report, repo: SUBJECT },
@@ -384,6 +397,7 @@ Deno.test("#459 - the dedup search runs against VibeCoder", async () => {
     const { fn, calls } = gh([NO_EXISTING, CREATE_OK]);
     for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
       await recordIdleInversion({
+        recordFiling: () => Promise.resolve(true),
         statePath,
         cycleId: `run-${cycle}`,
         report: { ...report, repo: SUBJECT },
@@ -410,6 +424,7 @@ Deno.test("#459 - two subject repos file two issues, one each", async () => {
     for (const subject of [SUBJECT, "stSoftwareAU/NEAT-AI"]) {
       for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
         await recordIdleInversion({
+          recordFiling: () => Promise.resolve(true),
           statePath,
           cycleId: `run-${subject}-${cycle}`,
           report: { ...report, repo: subject },
@@ -463,4 +478,39 @@ Deno.test("#460 - the body names the per-issue skip reasons when known", () => {
   });
   assertStringIncludes(body, "dependency-blocked");
   assertStringIncludes(body, "milestone-occupied");
+});
+
+Deno.test("#1277 - filing records an attestation carrying the posted body", async () => {
+  await withState(async (statePath) => {
+    const { fn } = gh([NO_EXISTING, CREATE_OK]);
+    const filings: SelfDiagnosticFiling[] = [];
+    let created = "";
+    const recordingGh = (args: string[]): Promise<string> => {
+      if (args[1] === "create") created = args[args.indexOf("--body") + 1]!;
+      return fn(args);
+    };
+    for (let cycle = 1; cycle <= IDLE_INVERSION_THRESHOLD; cycle++) {
+      await recordIdleInversion({
+        recordFiling: (filing) => {
+          filings.push(filing);
+          return Promise.resolve(true);
+        },
+        statePath,
+        cycleId: `run-${cycle}`,
+        report,
+        ghFn: recordingGh,
+      });
+    }
+
+    assertEquals(filings.length, 1);
+    const filing = filings[0]!;
+    assertEquals(filing.repo, IDLE_INVERSION_TARGET_REPO);
+    assertEquals(filing.issueNumber, 999);
+    assertEquals(filing.familyId, IDLE_INVERSION_FAMILY_ID);
+    assertEquals(
+      filing.body,
+      created,
+      "the attestation must cover the body that was actually posted",
+    );
+  });
 });

@@ -46,9 +46,15 @@ import {
   type RunFailureClassification,
 } from "./run_outcome_classifier.ts";
 import { withStateLock } from "./state_mutex.ts";
+import {
+  recordSelfDiagnosticFiling,
+  type SelfDiagnosticFiling,
+} from "./self_diagnostic_attestation.ts";
 
 /** Marker prefix; the body carries `<!-- VIBE_RUN_FAILURE:<class> -->`. */
 export const RUN_FAILURE_MARKER_PREFIX = "VIBE_RUN_FAILURE";
+/** Self-diagnostic family id for issues this module files (Issue #1277). */
+export const RUN_FAILURE_FAMILY_ID = "run-failure";
 /** Follow-up comment marker: `<!-- VIBE_RUN_FAILURE_FOLLOWUP:<class>:<epoch> -->`. */
 export const RUN_FAILURE_FOLLOWUP_PREFIX = "VIBE_RUN_FAILURE_FOLLOWUP";
 /** Where worker-fault issues land, whichever repo the run was on. */
@@ -163,6 +169,13 @@ export interface FileRunFailureIssueOptions {
    * alert and the escalation is raised.
    */
   fleetAuthors?: readonly string[];
+  /**
+   * Records the filing attestation tier 2b checks (Issue #1277).
+   *
+   * Injected so a test never appends to the host's real audit chain.
+   * Production callers omit it and get {@link recordSelfDiagnosticFiling}.
+   */
+  recordFiling?: (filing: SelfDiagnosticFiling) => Promise<boolean>;
 }
 
 interface FilingState {
@@ -354,6 +367,7 @@ export async function fileRunFailureIssue(
           [CRASH_CLASSES.has(failureClass) ? "bug" : "enhancement"],
           "worker/deno/lib/run_failure_issue.ts",
         );
+        const body = formatRunFailureBody(opts.report, classification);
         try {
           const raw = await opts.ghFn([
             "issue",
@@ -363,13 +377,29 @@ export async function fileRunFailureIssue(
             "--title",
             formatRunFailureTitle(failureClass),
             "--body",
-            formatRunFailureBody(opts.report, classification),
+            body,
             ...labelArgs,
           ]);
           const m = /\/issues\/(\d+)\s*$/.exec(raw.trim());
           const issueNumber = m ? parseInt(m[1]!, 10) : 0;
           state.classes[failureClass] = { lastWriteEpoch: t, issueNumber };
           await writeState(statePath, state);
+          // Issue #1277: attest the filing out of band, so tier 2b can tell
+          // this diagnostic from one an injected agent typed the marker into.
+          const recordFiling = opts.recordFiling ??
+            ((filing: SelfDiagnosticFiling) =>
+              recordSelfDiagnosticFiling(filing, {
+                // A swallowed default log would hide a diagnostic that can no
+                // longer be self-scheduled: stderr, never silence.
+                log: opts.log ?? ((m: string) => console.error(m)),
+              }));
+          await recordFiling({
+            repo: targetRepo,
+            issueNumber,
+            familyId: RUN_FAILURE_FAMILY_ID,
+            body,
+            filedBy: "worker/deno/lib/run_failure_issue.ts",
+          });
           return decide({ action: "filed", issueNumber, failureClass });
         } catch (err) {
           recordFaultEvent(
