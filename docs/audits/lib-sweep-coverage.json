@@ -100,7 +100,6 @@
         "worker/deno/lib/export_redact.ts",
         "worker/deno/lib/fault_tolerance_counters.ts",
         "worker/deno/lib/file_utils.ts",
-        "worker/deno/lib/gh_body_file_io.ts",
         "worker/deno/lib/gh_credential_stage.ts",
         "worker/deno/lib/gh_guard_cli.ts",
         "worker/deno/lib/gh_guard_shim.ts",
@@ -545,7 +544,6 @@
         "worker/deno/lib/gh_flag_parser.ts",
         "worker/deno/lib/gh_issue_lifecycle.ts",
         "worker/deno/lib/gh_local_state_guard.ts",
-        "worker/deno/lib/gh_timeout.ts",
         "worker/deno/lib/git_base_ref.ts",
         "worker/deno/lib/git_branch.ts",
         "worker/deno/lib/git_branch_sync.ts",
@@ -821,6 +819,18 @@
         "worker/deno/lib/worktree_cleanup.ts",
         "worker/deno/lib/worktree_progress.ts",
         "worker/deno/lib/xml_escape.ts"
+      ]
+    },
+    {
+      "issue": 1325,
+      "chunk": "12f",
+      "title": "top-up: gh chokepoint modules added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1325-gh-body-file-io-and-timeout.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12e recorded their coverage: gh_body_file_io.ts (#1254, PR #1304) and gh_timeout.ts (#1229, PR #1319)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/gh_body_file_io.ts",
+        "worker/deno/lib/gh_timeout.ts"
       ]
     }
   ]
