@@ -779,3 +779,137 @@ Deno.test({
     }
   },
 });
+
+// ===========================================================================
+// Issue #1221 — the control-plane probe must not depend on a `timeout` binary
+//
+// The probe and its recovery spelled `timeout 30 container …` literally, while
+// the supervisor had already resolved gtimeout/timeout into TIMEOUT_PREFIX for
+// its other bounded calls. macOS ships neither (setup.sh treats `timeout` as
+// container-owned and never demands it on the host) and Apple `container` —
+// the runtime this probe exists for — is macOS-only, so on a stock fleet host
+// every one of those calls was a `command not found` with its stderr sent to
+// /dev/null: `container ls` never ran, the probe saw no container, the failure
+// counter reset, and the Issue #323 recovery could never fire.
+// ===========================================================================
+
+/**
+ * A PATH holding only the tools loop.sh needs — and deliberately neither
+ * `timeout` nor `gtimeout`, which is what a stock macOS host looks like.
+ *
+ * Symlinked from the first standard location that has each tool, so the
+ * directory set is explicit rather than inherited from the test runner's own
+ * PATH (which on Linux carries coreutils, and with it `timeout`).
+ */
+async function minimalToolPath(tmpDir: string): Promise<string> {
+  const dir = join(tmpDir, "nobin");
+  await Deno.mkdir(dir, { recursive: true });
+  const tools = [
+    "sleep",
+    "date",
+    "dirname",
+    "mkdir",
+    "rm",
+    "tee",
+    "ps",
+    "pgrep",
+    "awk",
+    "grep",
+    "tr",
+    "head",
+  ];
+  const searchDirs = [
+    "/bin",
+    "/usr/bin",
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+  ];
+  for (const tool of tools) {
+    for (const searchDir of searchDirs) {
+      const candidate = `${searchDir}/${tool}`;
+      try {
+        await Deno.lstat(candidate);
+      } catch {
+        continue;
+      }
+      await Deno.symlink(candidate, join(dir, tool));
+      break;
+    }
+  }
+  // The premise of the test: no bound is reachable on this PATH.
+  for (const bound of ["timeout", "gtimeout"]) {
+    let present = true;
+    try {
+      await Deno.lstat(join(dir, bound));
+    } catch {
+      present = false;
+    }
+    assert(!present, `${bound} must not be on the minimal PATH`);
+  }
+  return dir;
+}
+
+Deno.test({
+  name:
+    "loop.sh #1221 - the control-plane probe recovers a wedged container on a host with no timeout binary",
+  ignore: Deno.build.os === "windows",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  async fn() {
+    const harness = await setupHarness({
+      runStub: [
+        "#!/bin/bash",
+        'echo "$(date +%s)" >> "$(dirname "$0")/invocations.log"',
+        "sleep 300",
+      ].join("\n"),
+      containerStub: [
+        "#!/bin/bash",
+        'log="$(dirname "$0")/../container.log"',
+        'echo "$*" >> "$log"',
+        'case "$1" in',
+        '  ls) echo "vibe-coder-999  img  linux  arm64  running  ip  6  16384";;',
+        // The 2026-08-22 shape: the control plane is dead, every exec fails.
+        "  exec) exit 1;;",
+        "  kill) exit 0;;",
+        "  *) exit 0;;",
+        "esac",
+      ].join("\n"),
+    });
+    const toolDir = await minimalToolPath(harness.tmpDir);
+    // Spawned through the shebang rather than a `bash` looked up on PATH,
+    // because this PATH deliberately holds almost nothing.
+    const child = new Deno.Command(join(harness.tmpDir, "loop.sh"), {
+      cwd: harness.tmpDir,
+      env: {
+        LOOP_SLEEP_SECONDS: "1",
+        PATH: `${join(harness.tmpDir, "bin")}:${toolDir}`,
+        HOME: harness.tmpDir,
+        VIBE_RUN_MAX_SECONDS: "0",
+        VIBE_PROBE_INTERVAL_SECONDS: "1",
+        VIBE_PROBE_FAILURES: "1",
+      },
+      stdout: "piped",
+      stderr: "piped",
+    }).spawn();
+    try {
+      await delay(9_000);
+      const out = await Deno.readTextFile(join(harness.tmpDir, "container.log"))
+        .catch(() => "");
+      assert(
+        out.includes("ls"),
+        `the probe must actually run \`container ls\` on a host with no timeout binary; container calls were:\n${
+          out || "(none)"
+        }`,
+      );
+      assert(
+        out.includes("kill vibe-coder-999"),
+        `a dead control plane must still be recovered without a timeout binary; container calls were:\n${
+          out || "(none)"
+        }`,
+      );
+    } finally {
+      await killTree(child);
+      await harness.cleanup();
+    }
+  },
+});

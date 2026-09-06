@@ -95,12 +95,41 @@ done
 
 # A wedged recorder must never wedge the supervisor: bound it where the host
 # has a timeout command (gtimeout on macOS, timeout on Linux).
+TIMEOUT_CMD=""
+for candidate in timeout gtimeout; do
+    if command -v "${candidate}" >/dev/null 2>&1; then
+        TIMEOUT_CMD="${candidate}"
+        break
+    fi
+done
 TIMEOUT_PREFIX=()
-if command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_PREFIX=(timeout 120)
-elif command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_PREFIX=(gtimeout 120)
+if [[ -n "${TIMEOUT_CMD}" ]]; then
+    TIMEOUT_PREFIX=("${TIMEOUT_CMD}" 120)
 fi
+
+# Run a command under a time bound, where the host has one — the same helper
+# run.sh carries, for the same reason.
+#
+# Every bounded call below goes through this rather than spelling `timeout`
+# literally. macOS ships no `timeout` (setup.sh treats it as container-owned
+# and never demands it on the host), and Apple `container` — the runtime the
+# control-plane probe exists for — is macOS-only. A literal `timeout 30
+# container ls` on such a host is not a bounded probe but a `command not
+# found` with its stderr discarded: `running_vibe_container` answers "no
+# container", the failure counter resets, and the Issue #323 recovery never
+# fires on the one platform it was written for. Unbounded is the documented
+# fallback here; silently not running at all is not.
+#
+# Usage: bounded <seconds> <command> [args...]
+bounded() {
+    local seconds="$1"
+    shift
+    if [[ -n "${TIMEOUT_CMD}" ]]; then
+        "${TIMEOUT_CMD}" "${seconds}" "$@"
+    else
+        "$@"
+    fi
+}
 
 # Where this host's logs go (Issues #872, #873). The worker owns the one
 # resolution — `LAUNCH_LOG_DIR`, then `LOG_DIR`, then the platform's own
@@ -322,7 +351,7 @@ VIBE_PROBE_FAILURES="${VIBE_PROBE_FAILURES:-3}"
 # Echo the name of the running vibe-coder container, or nothing.
 running_vibe_container() {
     command -v container >/dev/null 2>&1 || return 0
-    timeout 30 container ls 2>/dev/null |
+    bounded 30 container ls 2>/dev/null |
         awk '$1 ~ /^vibe-coder-/ && $0 ~ /running/ { print $1; exit }'
 }
 
@@ -333,11 +362,11 @@ force_stop_container() {
 
     # Try the runtime first — it costs a second and works when the control
     # plane is merely slow rather than gone.
-    timeout 30 container kill "${name}" >/dev/null 2>&1 || true
+    bounded 30 container kill "${name}" >/dev/null 2>&1 || true
     sleep 3
     # Verify, never trust the exit code: `container stop` returned 0 on
     # 2026-08-22 while the container kept running.
-    if ! timeout 30 container ls 2>/dev/null | grep -q "${name}.*running"; then
+    if ! bounded 30 container ls 2>/dev/null | grep -q "${name}.*running"; then
         echo "loop.sh: ${name} stopped by the runtime"
         return 0
     fi
@@ -376,7 +405,7 @@ probe_control_plane() {
             failures=0
             continue
         fi
-        if timeout 30 container exec "${name}" true >/dev/null 2>&1; then
+        if bounded 30 container exec "${name}" true >/dev/null 2>&1; then
             failures=0
             continue
         fi
