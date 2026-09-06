@@ -76,6 +76,7 @@ import {
   CONTEXT_BUDGET_NEXT_STEP,
 } from "../context_budget_guard.ts";
 import { escalateToHuman } from "../needs_human_escalation.ts";
+import { joinRedacted, redactedTail } from "../redacted_text.ts";
 import { reportRunDeadline } from "../slot_context.ts";
 
 /**
@@ -628,7 +629,7 @@ async function executeClaudeBody(
     const elapsedSeconds = Math.round(
       (Date.now() - state.executeStartTime) / 1000,
     );
-    const snippet = state.claudeOutput.slice(-500);
+    const snippet = redactedTail(state.claudeOutput, 500);
     // WIP preservation runs FIRST, unconditionally (Issues #47, #218).
     //
     // Issue #47: "without creating changes" was misleading — a timed-out run
@@ -790,10 +791,14 @@ async function executeClaudeBody(
     // stderr is where a V8 heap abort or a CLI self-termination writes its
     // last words (Issue #4237) — surfaced beside the stdout tail so a killed
     // run carries every stream's evidence.
-    const stderrTail = (claudeResult.value.stderr ?? "").trim().slice(-400);
-    const snippet = [state.claudeOutput.slice(-500), stderrTail]
-      .filter((part) => part.length > 0)
-      .join("\n--- stderr ---\n");
+    const stderrTail = redactedTail(
+      (claudeResult.value.stderr ?? "").trim(),
+      400,
+    );
+    const snippet = joinRedacted(
+      [redactedTail(state.claudeOutput, 500), stderrTail],
+      "\n--- stderr ---\n",
+    );
     const reason = formatDetailedFailureMessage(
       "Claude was killed (exit 137, SIGKILL)" +
         (wip.wipNote ? ` — ${wip.wipNote}` : " without creating changes"),
@@ -867,7 +872,8 @@ async function executeClaudeBody(
         elapsedSeconds,
         outputSize: state.claudeOutput.length,
         clarityStatus: state.clarityStatus,
-        lastOutputSnippet: state.claudeOutput.slice(-500) || undefined,
+        lastOutputSnippet: redactedTail(state.claudeOutput, 500) ||
+          undefined,
         rawExitCode: claudeResult.value.rawExitCode ?? 143,
       },
     );
@@ -915,10 +921,14 @@ async function executeClaudeBody(
     if (disposition.kind === "superseded") {
       return supersededResult("execute", disposition, wip, deps);
     }
-    const stderrTail = (claudeResult.value.stderr ?? "").trim().slice(-400);
-    const snippet = [state.claudeOutput.slice(-500), stderrTail]
-      .filter((part) => part.length > 0)
-      .join("\n--- stderr ---\n");
+    const stderrTail = redactedTail(
+      (claudeResult.value.stderr ?? "").trim(),
+      400,
+    );
+    const snippet = joinRedacted(
+      [redactedTail(state.claudeOutput, 500), stderrTail],
+      "\n--- stderr ---\n",
+    );
     logger.warn(
       "Claude killed by an external SIGTERM (not a worker-requested shutdown)",
       { rawExitCode: claudeResult.value.rawExitCode },
@@ -972,8 +982,11 @@ async function executeClaudeBody(
       // The evidence must survive (Issue #3234): during a live fleet auth
       // outage this branch discarded Claude's own words, leaving
       // "authentication error" indistinguishable from a usage-limit block.
-      const authSnippet = authSurface.slice(-500).trim() ||
-        "(no output captured)";
+      // Trim before the brand is minted: `.trim()` yields a plain string, and
+      // re-wrapping it would run the whole rule set a second time over text
+      // already masked.
+      const authSnippet = redactedTail(authSurface.trim(), 500) ||
+        redactedTail("(no output captured)", 500);
       const reason = formatDetailedFailureMessage(
         "Claude authentication error",
         {
@@ -1001,10 +1014,10 @@ async function executeClaudeBody(
     const elapsedSeconds = Math.round(
       (Date.now() - state.executeStartTime) / 1000,
     );
-    const snippet = [
-      claudeResult.value.output.slice(-300),
-      (claudeResult.value.stderr ?? "").trim().slice(-300),
-    ].filter((part) => part.length > 0).join("\n--- stderr ---\n");
+    const snippet = joinRedacted([
+      redactedTail(claudeResult.value.output, 300),
+      redactedTail((claudeResult.value.stderr ?? "").trim(), 300),
+    ], "\n--- stderr ---\n");
     const reason = formatDetailedFailureMessage(heading, {
       elapsedSeconds,
       clarityStatus: state.clarityStatus,

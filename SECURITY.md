@@ -344,6 +344,22 @@ run `redactSecrets()` *first*: cutting first can split a secret — most
 damagingly a PEM block, whose END marker falls past the cut — leaving a
 fragment that no rule matches on the later pass.
 
+That ordering is held by a **type**, not by every call site remembering
+(Issue #1217). `RedactedText`
+([`worker/deno/lib/redacted_text.ts`](worker/deno/lib/redacted_text.ts)) is a
+branded string only `redactedTail()` / `redactedHead()` / `joinRedacted()` can
+mint, and each redacts the whole input before it trims. A field carrying text
+destined for a size-capped public sink is typed `RedactedText`, so handing it
+`output.slice(-500)` fails `deno check` — a stage of the quality gate — rather
+than publishing a fragment. `FailureDiagnosticContext.lastOutputSnippet`
+([`worker/deno/lib/failure_message.ts`](worker/deno/lib/failure_message.ts)) is
+the first field to carry the brand: ten call sites across the phase modules had
+sliced the agent's stdout raw and relied on the redaction `label_failure.ts`
+runs afterwards, when it builds the world-readable failure comment. Give a new
+size-capped sink the same brand. The sink enumeration behind that change — which
+paths route through `redactSecrets()` and which bypass it — is
+[`docs/audits/security-sweep-1217-env-config-secrets.md`](docs/audits/security-sweep-1217-env-config-secrets.md).
+
 **Redaction bounds its own work, never its input.** Because that ordering hands
 `redactSecrets()` untruncated, attacker-influenceable text, every rule must run
 in time **linear** in the input length: bound each quantifier over

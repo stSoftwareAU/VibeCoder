@@ -299,6 +299,14 @@ docs/audits/security-sweep-1218-commands-cli.md:
   title: "Vibe Coder: CLI Command Entry-Point Security Sweep"
   page_icon: "🔎"
 
+docs/audits/security-sweep-1220-setup-cli.md:
+  title: "Vibe Coder: Setup CLI Security Sweep"
+  page_icon: "🔎"
+
+docs/audits/security-sweep-1217-env-config-secrets.md:
+  title: "Vibe Coder: Environment, Configuration and Secret-Sink Security Sweep"
+  page_icon: "🔎"
+
 AGENTS.md:
   title: "Vibe Coder: AGENTS"
   page_icon: "🤖"

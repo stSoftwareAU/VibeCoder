@@ -17,6 +17,7 @@ import {
   OPERATIONAL_DEFAULTS,
 } from "../lib/config_defaults.ts";
 import { REMOVED_CONFIG_KEYS } from "../lib/validation.ts";
+import { atomicWrite } from "../lib/file_utils.ts";
 
 /**
  * Configuration values that can be set during setup.
@@ -432,13 +433,21 @@ export function applyServiceAccountDefault(
  *
  * `.config.json` is a forbidden-to-commit secrets file (Issue #2805): it holds
  * the imgbb API key, GitHub App identifiers, the private-key path, and the
- * per-repo `repo_config` block. It must never be left world-readable. The
- * `mode` option only applies when *creating* a file, so — mirroring
- * `writeSecurePlist` in launchagent.ts — we chmod explicitly afterwards to
- * tighten any pre-existing copy written 0o644 by an older worker.
+ * per-repo `repo_config` block. It must never be left world-readable.
+ *
+ * Written through {@link atomicWrite}, as `writeSecurePlist` in
+ * launchagent.ts and `writeUpdateModeConfig` in config_writer.ts already are
+ * (Issue #1220). The `Deno.writeTextFile` + late `chmod` pair this replaced
+ * applied `mode` only when *creating* the file, so a pre-existing 0o644 copy
+ * was truncated and filled with the secrets before the mode was narrowed, and
+ * both calls followed a symlink pre-positioned at the path. `atomicWrite`
+ * creates its temp file `O_EXCL` at 0o600 and renames it into place, so
+ * neither window exists.
  *
  * @param configPath - Path to the .config.json file
  * @param config - The configuration values to write
+ * @throws When the write fails — a config that was not written must never
+ *   look like one that was
  */
 export async function writeConfigFile(
   configPath: string,
@@ -446,8 +455,16 @@ export async function writeConfigFile(
 ): Promise<void> {
   const overrides = buildOverridesOnly(config);
   const json = JSON.stringify(overrides, null, 2) + "\n";
-  await Deno.writeTextFile(configPath, json, { mode: 0o600 });
-  await Deno.chmod(configPath, 0o600);
+  const result = await atomicWrite({
+    targetFile: configPath,
+    content: json,
+    mode: 0o600,
+  });
+  if (!result.ok) {
+    throw new Error(
+      `Could not write ${configPath}: ${result.error.message}`,
+    );
+  }
 }
 
 /**
