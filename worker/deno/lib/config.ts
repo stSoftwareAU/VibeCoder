@@ -58,23 +58,17 @@ import {
   OPERATIONAL_DEFAULTS,
 } from "./config_defaults.ts";
 import type { VerbosityLevel } from "../types.ts";
+import { REPO_SLUG_PATTERN } from "./repo_slug.ts";
 
 /**
  * Pattern matching a valid GitHub `owner/repo` slug.
  *
- * Defined once and shared between config validation (`validateConfig`)
- * and the add-repo flow in `add_repo.ts` (Issue #2575) so the literal is
- * never duplicated.
- *
- * Each segment must begin with an alphanumeric, underscore, or hyphen —
- * never a dot. This rejects path-traversal and dot-only segments such as
- * `owner/..`, `owner/.`, or `../x` (Issue #2692): the slug is derived into
- * a filesystem path by `setupRepo()`, so a `..` segment would otherwise
- * steer destructive git commands above `WORK_DIR`. GitHub slugs never
- * legitimately start with a dot, so the constraint costs no valid input.
+ * Defined once in `lib/repo_slug.ts` and re-exported here so the existing
+ * importers (`validateConfig`, the add-repo flow in `add_repo.ts` —
+ * Issue #2575) are unchanged, while the setup CLI can apply the same guard
+ * without pulling in this module's whole graph (Issue #1291).
  */
-export const REPO_SLUG_PATTERN =
-  /^[a-zA-Z0-9_-][a-zA-Z0-9._-]*\/[a-zA-Z0-9_-][a-zA-Z0-9._-]*$/;
+export { REPO_SLUG_PATTERN } from "./repo_slug.ts";
 
 /**
  * Get an environment variable or return a default value.
