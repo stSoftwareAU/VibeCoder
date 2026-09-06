@@ -4,15 +4,21 @@
  *
  * `SEPARATOR_RE` was `/^\s{0,3}\|[\s:|-]*-[\s:|-]*\|?\s*$/` — two adjacent
  * quantified classes that both contain `-`, so a run of dashes had
- * exponentially many ways to split between them and cost grew quadratically:
- * 218 ms at 8 000 dashes, 5.4 s at 40 000. `extractCoverageTable()` runs that
- * pattern over every line of every candidate — each comment on the planning
- * parent plus the issue body — and a comment body is writable by any account
- * on a public repository, so one 64 KB comment stalled the planning close-out
- * path for roughly 14 s, on every planning close.
+ * exponentially many ways to split between them and cost grew quadratically
+ * (measured here: 118 ms at 8 000 dashes, 2.5 s at 32 000, 11.7 s at 64 000).
+ * `extractCoverageTable()` runs that pattern over every line of every
+ * candidate — each comment on the planning parent plus the issue body — and a
+ * comment body is writable by any account on a public repository, so one
+ * 64 KB comment stalled the planning close-out path, on every planning close.
  *
- * Two guards, matching the two halves of the fix:
- *   - the growth check, which times the same work at N and 4N and fails only
+ * **Two shapes, not one.** A first rewrite killed the dash-run split but kept
+ * a `\s*\|?\s*$` tail, which is the same defect in whitespace: `|-` followed
+ * by 64 000 spaces still cost 4.2 s. Both shapes are measured below, because
+ * a guard that only knows the payload from the report cannot catch the one
+ * the fix introduces.
+ *
+ * Three guards, matching the halves of the fix:
+ *   - the growth checks, which time the same work at N and 4N and fail only
  *     when the cost grew faster than the input (`assertLinearGrowth`, the
  *     ratio shape `CODING-STANDARDS.md` requires — an absolute millisecond
  *     budget is flaky across fleet hosts, a same-work ratio is not);
@@ -62,16 +68,33 @@ function dashRun(n: number): string {
   return `|${"-".repeat(n)}x\n| trailing |`;
 }
 
+/** The same payload in whitespace: one dash, then a run of `n` spaces. */
+function spaceTail(n: number): string {
+  return `|-${" ".repeat(n)}x\n| trailing |`;
+}
+
 Deno.test("extractCoverageTable - a hostile dash run scales linearly (Issue #1245)", () => {
   // Pre-fix: 8 000 dashes cost ~118 ms and 32 000 cost ~2.5 s — quadratic, far
   // past the 2x slack a linear rule is allowed.
   const rows = assertLinearGrowth(
-    "plan-coverage separator match",
+    "plan-coverage separator match, dash run",
     (chars) => dashRun(chars),
     (input) => extractCoverageTable(input),
     { baseChars: 8_000 },
   );
   assertEquals(rows, null, "a dash run is not a coverage table");
+});
+
+Deno.test("extractCoverageTable - a hostile whitespace tail scales linearly (Issue #1245)", () => {
+  // The shape the first rewrite missed: adjacent `\s*` runs either side of an
+  // optional closing pipe cost 4.2 s on 64 000 spaces.
+  const rows = assertLinearGrowth(
+    "plan-coverage separator match, whitespace tail",
+    (chars) => spaceTail(chars),
+    (input) => extractCoverageTable(input),
+    { baseChars: 8_000 },
+  );
+  assertEquals(rows, null, "a whitespace run is not a coverage table");
 });
 
 Deno.test("extractCoverageTable - a candidate past the scan cap is rejected, not scanned (Issue #1245)", () => {

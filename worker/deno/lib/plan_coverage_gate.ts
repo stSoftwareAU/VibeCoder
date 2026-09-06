@@ -111,10 +111,21 @@ export const COVERAGE_GATE_NEXT_STEP =
  * body is writable by any account on a public repository — and the gate
  * re-reads them on every planning close. A coverage table is a few hundred
  * characters, so a bounded scan loses nothing real and keeps an oversized
- * body cheap to reject. Matches the cap `ci_failure_issue.ts` applies to the
- * issue bodies it parses.
+ * body cheap to reject. The value is the one `ci_failure_issue.ts` uses for
+ * the issue bodies it parses; unlike that module this one **rejects** rather
+ * than truncating, because half a coverage table is not a coverage table.
  */
 export const MAX_COVERAGE_SCAN_CHARS = 64 * 1024;
+
+/**
+ * Is this candidate too large to scan for a coverage table?
+ *
+ * The single expression of the cap, so the pure extractor and the gate that
+ * reports the skip cannot drift apart (Issue #1245).
+ */
+export function exceedsCoverageScanCap(markdown: string): boolean {
+  return markdown.length > MAX_COVERAGE_SCAN_CHARS;
+}
 
 // A table row line: starts with an optional indent then a pipe.
 const ROW_RE = /^\s{0,3}\|/;
@@ -122,14 +133,20 @@ const ROW_RE = /^\s{0,3}\|/;
 /**
  * A separator row, e.g. `| --- | :--- | ---: |`.
  *
- * Every quantifier here is over a disjoint character set — a cell is a single
- * `-+` run with optional alignment colons and surrounding whitespace, and
- * cells are separated by a literal `|` that no quantifier can consume. The
- * previous shape put two `[\s:|-]*` classes either side of a `-`, so a run of
- * dashes had exponentially many ways to split between them and the match cost
- * grew quadratically (Issue #1245).
+ * Read as: a leading pipe, one cell, then any number of `|`-prefixed cells,
+ * then an optional closing pipe. A cell is a single `-+` run with optional
+ * alignment colons and surrounding whitespace.
+ *
+ * **No two quantifiers here can consume the same character** — every
+ * whitespace run is bounded by a literal `|`, a `-`, a `:` or the anchor, so
+ * a failing match backtracks linearly rather than exploring splits. Two
+ * shapes have been quadratic on this line (Issue #1245): the original
+ * `[\s:|-]*-[\s:|-]*` (adjacent classes both containing `-`, 5.4 s on 40 000
+ * dashes), and a `\s*\|?\s*$` tail (adjacent whitespace runs either side of
+ * an optional pipe, 4.2 s on 64 000 spaces). The closing pipe therefore
+ * carries its own trailing whitespace — `(?:\|\s*)?$`, never `\|?\s*$`.
  */
-const SEPARATOR_RE = /^\s{0,3}\|(?:\s*:?-+:?\s*\|)*\s*:?-+:?\s*\|?\s*$/;
+const SEPARATOR_RE = /^\s{0,3}\|\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*(?:\|\s*)?$/;
 
 // Header cell that names the ask column.
 const ASK_HEADER_RE = /^(ask|asks|requirement|requirements)\b/i;
@@ -177,7 +194,7 @@ function splitRow(line: string): string[] {
  *   when the blob carries no coverage table or exceeds the scan cap.
  */
 export function extractCoverageTable(markdown: string): CoverageRow[] | null {
-  if (markdown.length > MAX_COVERAGE_SCAN_CHARS) return null;
+  if (exceedsCoverageScanCap(markdown)) return null;
   const lines = markdown.split(/\r?\n/);
 
   for (let i = 0; i < lines.length - 1; i++) {
@@ -390,9 +407,10 @@ export async function runPlanCoverageGate(opts: {
 
   for (const candidate of candidates) {
     if (candidate.trim() === "") continue;
-    if (candidate.length > MAX_COVERAGE_SCAN_CHARS) {
-      // Loud, not silent: an unscanned candidate is not a candidate that
-      // carried no table (Issue #1245).
+    if (exceedsCoverageScanCap(candidate)) {
+      // `extractCoverageTable` would reject it anyway; checked here so the
+      // skip is reported. Loud, not silent: an unscanned candidate is not a
+      // candidate that carried no table (Issue #1245).
       logger.warn(
         "Plan-coverage gate: skipped an oversized candidate without scanning it (Issue #1245)",
         {
