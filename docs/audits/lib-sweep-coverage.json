@@ -689,6 +689,7 @@
         "worker/deno/lib/pr_no_changes_response.ts",
         "worker/deno/lib/pr_run_provenance.ts",
         "worker/deno/lib/pr_summary_loader.ts",
+        "worker/deno/lib/pr_title_build.ts",
         "worker/deno/lib/pr_title_issue_ref.ts",
         "worker/deno/lib/pre_commit_safety.ts",
         "worker/deno/lib/preserved_wip_branch.ts",

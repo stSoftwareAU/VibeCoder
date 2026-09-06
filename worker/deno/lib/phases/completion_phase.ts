@@ -25,6 +25,7 @@ import { buildIdempotencyMarker, buildMilestonePrSection } from "../pr_body.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
+import { buildPrTitle } from "../pr_title_build.ts";
 import { getRepoConfig } from "../repo_config.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
 import {
@@ -965,7 +966,12 @@ async function completionBody(
   }
 
   // Build PR body before idempotency checks so recovery can update it (Issue #1189)
-  const prTitle = `${issueTitle} (Issue #${issueNumber})`;
+  // The issue title is attacker-supplied, so issue-reference syntax is
+  // scrubbed out of it before the worker's own authoritative `(Issue #N)`
+  // suffix is appended (Issue #1248) — an unscrubbed `[#999]` made this
+  // fleet-authored title "reference" #999 for every title matcher, and a
+  // merged PR blocks permanently (Issue #3151).
+  const prTitle = buildPrTitle(issueTitle, issueNumber);
   let prBody: string;
 
   // Changed files feed the screenshot gate below and the branch-evidence
