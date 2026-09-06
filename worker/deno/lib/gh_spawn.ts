@@ -44,7 +44,10 @@ import {
   MAX_RESTAGE_ATTEMPTS,
 } from "./gh_credential_stage.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
-import { enforceGhWriteAllowlist } from "./write_repo_allowlist.ts";
+import {
+  enforceGhWriteAllowlist,
+  installationTokenRepoScope,
+} from "./write_repo_allowlist.ts";
 import { auditGhMutation } from "./audit_hook.ts";
 import { redactGhBodyArgs } from "./gh_body_redaction.ts";
 import { noteGhIssueClose } from "./issue_close_notifier.ts";
@@ -105,6 +108,13 @@ export type GhSpawnRunner = (
  * When GitHub App authentication is configured, injects `GH_TOKEN` for this
  * subprocess only (Issue #959); otherwise returns `undefined` so the process
  * inherits ambient OAuth auth.
+ *
+ * The token is minted **scoped to the run's write-repo allowlist**
+ * (Issue #1391) — the credential handed to the subprocess cannot reach a repo
+ * this run may not write to, so a write that gets past
+ * `enforceGhWriteAllowlist` is still refused by GitHub. Before a run seeds an
+ * allowlist the scope is `null` and the token keeps the installation's full
+ * reach, matching the allowlist's own fail-open-until-seeded rule.
  */
 export async function buildGhEnv(): Promise<
   Record<string, string> | undefined
@@ -113,6 +123,8 @@ export async function buildGhEnv(): Promise<
     Deno.env.get("GITHUB_APP_ID"),
     Deno.env.get("GITHUB_APP_INSTALLATION_ID"),
     Deno.env.get("GITHUB_APP_PRIVATE_KEY_PATH"),
+    undefined,
+    installationTokenRepoScope(),
   );
   if (!token) return undefined;
 
