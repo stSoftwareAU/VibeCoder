@@ -449,6 +449,16 @@ Deno.test("allowListCovers - GitHub allow-list globs: owner/repo@*, owner/* and 
     ),
   );
   assert(!allowListCovers([], "aquasecurity/setup-trivy@*"));
+  // Multi-wildcard and exact patterns, after the matcher stopped building a
+  // regular expression from the allow-list (Issue #1235).
+  assert(allowListCovers(["*/setup-*"], "aquasecurity/setup-trivy@*"));
+  assert(!allowListCovers(["*/setup-*x"], "aquasecurity/setup-trivy@*"));
+  assert(
+    !allowListCovers(
+      ["aquasecurity/setup-trivy"],
+      "aquasecurity/setup-trivy@*",
+    ),
+  );
 });
 
 // =============================================================================

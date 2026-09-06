@@ -151,16 +151,30 @@ export function allowListCovers(
 ): boolean {
   const coordinate = required.endsWith("@*") ? required.slice(0, -2) : required;
   const probe = `${coordinate}@0000000000000000000000000000000000000000`;
-  return patternsAllowed.some((pattern) => {
-    const re = new RegExp(
-      "^" + pattern.split("*").map(escapeRegExp).join(".*") + "$",
-    );
-    return re.test(probe);
-  });
+  return patternsAllowed.some((pattern) => globMatches(pattern, probe));
 }
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/**
+ * `*`-glob match, done by scanning rather than by a constructed `RegExp`:
+ * the patterns come from the repository's own allow-list, and a dynamic
+ * regular expression over them is a ReDoS surface the SAST gate rejects.
+ * `*` matches any run of characters, including none.
+ */
+function globMatches(pattern: string, text: string): boolean {
+  const parts = pattern.split("*");
+  if (parts.length === 1) return text === pattern;
+  const head = parts[0] ?? "";
+  const tail = parts[parts.length - 1] ?? "";
+  if (!text.startsWith(head) || !text.endsWith(tail)) return false;
+  if (text.length < head.length + tail.length) return false;
+  let cursor = head.length;
+  const limit = text.length - tail.length;
+  for (const middle of parts.slice(1, -1)) {
+    const found = text.indexOf(middle, cursor);
+    if (found < 0 || found + middle.length > limit) return false;
+    cursor = found + middle.length;
+  }
+  return true;
 }
 
 /** Result of {@link resolveTransitiveActionCoordinates}. */
