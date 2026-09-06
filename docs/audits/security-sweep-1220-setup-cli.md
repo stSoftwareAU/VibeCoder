@@ -20,9 +20,10 @@ Siblings:
 (chunk 13).
 
 > **This is not an empty result.** The issue asks that an empty result be stated
-> explicitly; it was not empty. **Eleven** root causes survived triage — two
-> fixed in this change, nine filed as `security` issues, one deduped onto an
-> issue that already existed.
+> explicitly; it was not empty. **Eleven** root causes survived triage: two are
+> fixed in this change and nine are filed as `security` issues. A twelfth was
+> deduped onto an issue that already existed and is not counted among the
+> eleven.
 
 ## Scope and method
 
@@ -32,7 +33,7 @@ The file list was regenerated with the command the issue specifies:
 cd worker/deno && ls setup/*.ts | grep -v '_test\.ts$'
 ```
 
-22 modules, 11,409 lines. Every one was read in full. Where a `setup/` module
+22 modules, 11,471 lines. Every one was read in full. Where a `setup/` module
 delegates the security-relevant decision to `worker/deno/lib/`, the sweep
 followed the call — a finding is recorded against the file the defect lives in,
 not the file that reaches it, so two findings below cite `lib/` paths reached
@@ -53,7 +54,7 @@ Sinks are `Deno.Command` (spawn), `writeTextFile`/`writeFile`/`mkdir`/`remove`
 | 2 | `setup/screenshot.ts` | spawn, write | **SEC-1220-01, -05, -06 — filed** |
 | 3 | `setup/setup_cli.ts` | spawn | **SEC-1220-09 — filed**; SEC-1220-04 reaches it |
 | 4 | `setup/branch_protection_sync.ts` | spawn | **SEC-1220-02, -03 — filed** (defects in `lib/`) |
-| 5 | `setup/config_setup.ts` | write | **SEC-1220-04, -07 — filed** |
+| 5 | `setup/config_setup.ts` | write | **SEC-1220-11 — fixed here**; SEC-1220-04, -07 — filed |
 | 6 | `setup/gitignore_sync.ts` | — (local FS via helpers) | **SEC-1220-04 — filed** |
 | 7 | `setup/label_sync.ts` | spawn | **SEC-1220-08 — filed** |
 | 8 | `setup/collaborator_precheck.ts` | spawn | **SEC-1220-04 — filed**; fail-closed elsewhere |
@@ -111,16 +112,26 @@ value. The two private `escapeXml` copies had drifted, which is the root cause
 of the class rather than of the instance, so the escape now lives in
 `worker/deno/lib/xml_escape.ts` with one owner and both descriptors import it.
 
-**SEC-1220-11 — the token-bearing plist's permissions.** Two defects on the
-same file. `writeSecurePlist` used `Deno.writeTextFile` + a late `chmod`, which
-truncates a pre-existing 0o644 plist and fills it with both tokens *before*
-narrowing the mode, and follows a symlink pre-positioned at the path; it now
-goes through `lib/file_utils.ts` `atomicWrite`, which creates `O_EXCL` at 0o600
-and renames into place. And `setupLaunchAgent` returned early when the rendered
-plist matched the file on disk, skipping the `chmod` — the one case the
+**SEC-1220-11 — the permissions of the two files that hold tokens.** The
+condemned pattern is `Deno.writeTextFile(path, secret, { mode })` followed by a
+late `Deno.chmod`: `mode` applies only when *creating* a file, so a pre-existing
+0o644 copy is truncated and filled with the secret **before** the mode is
+narrowed, and both calls follow a symlink pre-positioned at the path. It was on
+`writeSecurePlist` (`setup/launchagent.ts`, the plist that embeds `GH_TOKEN` and
+`ANTHROPIC_API_KEY`) and on `writeConfigFile` (`setup/config_setup.ts`,
+`.config.json` — the ImgBB key, the GitHub App identifiers, the private-key
+path), whose docstring named `writeSecurePlist` as the model it was copying.
+Both now go through `lib/file_utils.ts` `atomicWrite`, which creates its temp
+file `O_EXCL` at 0o600 and renames it into place, and both fail loud rather
+than leaving a half-written descriptor looking successful.
+`config_writer.ts:568` was already correct and is the precedent.
+
+A second defect on the plist alone: `setupLaunchAgent` returned early when the
+rendered plist matched the file on disk, skipping the `chmod` — the one case the
 tightening exists for, a plist an older worker wrote 0o644, re-renders to
 *identical* content, so re-running `./setup.sh` to pick up the #2514 fix did
-nothing.
+nothing. It now tightens on that path, and a `chmod` that fails returns
+`ok: false` rather than being absorbed by the read's `catch`.
 
 ### Filed
 
@@ -155,6 +166,7 @@ findings.
 | SEC-1220-02 | **No — recalibrate up.** The trigger is local, but the *input* is remote repo content anyone can land, and the *effect* is a repository-wide protection removal. |
 | SEC-1220-05 | **No — recalibrate up.** Same generator, same unattended agent path, and the navigation target is attacker-influenced through issue and PR text. |
 | SEC-1220-10 | **Partly.** The injected value is configuration, so writing it needs a foothold — but what it buys is a launchd job outside the container, at every login, holding both credentials. Privileged action, bounded trigger: filed at the boundary. |
+| SEC-1220-06 | **Yes.** The value comes from the run's own environment, and what it costs is browser state written into the tree — contained to the host the operator is already on. |
 | SEC-1220-03, -04, -07, -08, -09, -11 | **Yes.** Operator-supplied input, operator-triggered, and the damage is contained to what the operator's own token can already do. SEC-1220-04's part (b) is the exception within its own finding — the pasteable command crosses to an admin — and is called out there. |
 
 ## Reviewed and not filed — with the reason

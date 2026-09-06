@@ -216,23 +216,38 @@ export async function setupLaunchAgent(
   const plistPath = `${launchAgentDir}/${LAUNCHAGENT_LABEL}.plist`;
   const newContent = generatePlist(config);
 
-  // Check if plist already exists with same content (idempotent)
+  // Is a plist already there, and does it already say what we would write?
+  // The read is the only thing this catch is allowed to absorb: a chmod that
+  // fails is a token left readable, and must not pass as "up to date".
+  let existingContent: string | undefined;
   try {
-    const existingContent = await Deno.readTextFile(plistPath);
-    if (existingContent === newContent) {
-      // Still tighten it: an older worker's 0o644 plist re-renders to
-      // identical content, so this is the very path its tokens are on.
-      await tightenPlistPermissions(plistPath);
-      return { ok: true, message: "LaunchAgent plist already up to date" };
-    }
-
-    // Unload existing agent before updating
-    if (!config.skipLaunchctl) {
-      const uid = await getUid();
-      await runLaunchctl(["bootout", `gui/${uid}/${LAUNCHAGENT_LABEL}`]);
-    }
+    existingContent = await Deno.readTextFile(plistPath);
   } catch {
     // File doesn't exist yet — that's fine
+  }
+
+  if (existingContent === newContent) {
+    // Still tighten it: an older worker's 0o644 plist re-renders to
+    // identical content, so this is the very path its tokens are on.
+    try {
+      await tightenPlistPermissions(plistPath);
+    } catch (error) {
+      return {
+        ok: false,
+        message: `LaunchAgent plist ${plistPath} is up to date but could ` +
+          `not be restricted to owner-only (${
+            error instanceof Error ? error.message : String(error)
+          }). It holds GH_TOKEN and ANTHROPIC_API_KEY in plaintext — fix its ` +
+          `ownership, then re-run setup.`,
+      };
+    }
+    return { ok: true, message: "LaunchAgent plist already up to date" };
+  }
+
+  // Unload the existing agent before replacing its definition.
+  if (existingContent !== undefined && !config.skipLaunchctl) {
+    const uid = await getUid();
+    await runLaunchctl(["bootout", `gui/${uid}/${LAUNCHAGENT_LABEL}`]);
   }
 
   // Write the plist with owner-only permissions — it embeds GH_TOKEN and

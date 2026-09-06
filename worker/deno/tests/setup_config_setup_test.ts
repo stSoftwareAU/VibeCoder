@@ -288,6 +288,44 @@ Deno.test("writeConfigFile - tightens permissions on a pre-existing world-readab
   }
 });
 
+Deno.test("writeConfigFile - a symlink at the config path is replaced, never followed (Issue #1220)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  const configPath = `${tempDir}/.config.json`;
+  const victim = `${tempDir}/victim.txt`;
+  try {
+    await Deno.writeTextFile(victim, "untouched");
+    await Deno.symlink(victim, configPath);
+
+    await writeConfigFile(configPath, { imgbb_api_key: "secret-api-key" });
+
+    // The key landed in the config, not through the link into the victim.
+    assertEquals(await Deno.readTextFile(victim), "untouched");
+    assertEquals((await Deno.lstat(configPath)).isSymlink, false);
+    assertEquals(Deno.statSync(configPath).mode! & 0o077, 0);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("writeConfigFile - a write that cannot succeed throws, never returns (Issue #1220)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    let thrown: Error | undefined;
+    try {
+      await writeConfigFile(`${tempDir}/no-such-dir/.config.json`, {});
+    } catch (error) {
+      thrown = error as Error;
+    }
+    assertEquals(thrown !== undefined, true);
+    assertEquals(
+      (thrown?.message ?? "").includes("Could not write"),
+      true,
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
 Deno.test("loadExistingConfig - loads existing config file", async () => {
   const tempDir = await Deno.makeTempDir();
   const configPath = `${tempDir}/.config.json`;

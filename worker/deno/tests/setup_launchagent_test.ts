@@ -220,6 +220,29 @@ Deno.test({
 });
 
 Deno.test({
+  name: "writeSecurePlist - a write that cannot succeed throws, never returns",
+  ignore: isWindows,
+  fn: async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      let thrown: Error | undefined;
+      try {
+        await writeSecurePlist(`${dir}/no-such-dir/agent.plist`, "<plist/>");
+      } catch (error) {
+        thrown = error as Error;
+      }
+      assertEquals(thrown !== undefined, true);
+      assertStringIncludes(
+        thrown?.message ?? "",
+        "Could not write the LaunchAgent plist",
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
   name:
     "tightenPlistPermissions - narrows the mode a matching-content run would otherwise leave at 0o644",
   ignore: isWindows,
