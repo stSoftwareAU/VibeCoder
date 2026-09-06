@@ -188,7 +188,10 @@ Deno.test("redactSecrets - masks the AWS secret beside its access key id", () =>
 });
 
 Deno.test("redactSecrets - a temporary (ASIA) key's secret is masked too", () => {
+  // Synthetic AWS-shaped fixtures: the payload the rule under test must mask.
+  // nosemgrep: generic.secrets.security.detected-generic-secret.detected-generic-secret
   const secret = "abcdEFGH1234ijklMNOP5678qrstUVWX90yzABCD";
+  // nosemgrep: generic.secrets.security.detected-aws-access-key-id-value.detected-aws-access-key-id-value
   const out = redactSecrets(`ASIAY34FZKBOKMUTVV7A ${secret}`);
   assertEquals(out.includes(secret), false);
 });
