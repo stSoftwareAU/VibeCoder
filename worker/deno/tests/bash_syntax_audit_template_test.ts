@@ -455,7 +455,6 @@ Deno.test("bash-syntax-audit shouldFile - vetoes while a wrapper is open", async
   const openStub = makeGhStub({ wrapperOpen: true });
   const cleanStub = makeGhStub({ wrapperOpen: false });
   const openT = createBashSyntaxAuditTemplate({
-    dedupAuthors: DEDUP_AUTHORS,
     // The wrapper veto now counts a title match only when the fleet
     // authored it, so the test states the fleet rather than writing
     // a config file.

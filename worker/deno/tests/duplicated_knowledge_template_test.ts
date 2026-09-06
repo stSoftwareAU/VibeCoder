@@ -253,7 +253,6 @@ Deno.test("shouldFile - vetoes when an open wrapper already exists", async () =>
     openWrappers: [{ number: 42, title: DUPLICATED_KNOWLEDGE_ISSUE_TITLE }],
   });
   const t = createDuplicatedKnowledgeTemplate({
-    dedupAuthors: DEDUP_AUTHORS,
     // The wrapper veto now counts a title match only when the fleet
     // authored it, so the test states the fleet rather than writing
     // a config file.
