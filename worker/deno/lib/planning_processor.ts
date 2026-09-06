@@ -77,6 +77,12 @@ import { summariseCoverageGateFailure } from "./plan_coverage_gate.ts";
 import { ensureLabelExists } from "./label_operations.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import type { EscalateToHumanDeps } from "./needs_human_escalation.ts";
+import {
+  type AlertDedupAuthorOptions,
+  type AlertDedupRow,
+  selectFleetAuthoredMatches,
+} from "./alert_dedup_authors.ts";
+import { resolveFleetMaintenanceAuthorSet } from "./fleet_authors.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -325,6 +331,102 @@ export function detectCreatedSubIssues(claudeOutput: string): boolean {
   return CREATED_ISSUE_RE.test(claudeOutput);
 }
 
+// ---------------------------------------------------------------------------
+// Sub-issue author verification (Issue #1244)
+// ---------------------------------------------------------------------------
+
+/**
+ * `--json` fields the `gh search issues` sub-issue look-up must request.
+ *
+ * `author` is what makes a `Part of #N` match verifiable; without it the
+ * search can only trust body text anybody may write.
+ */
+export const SUB_ISSUE_SEARCH_JSON_FIELDS = "number,url,author";
+
+/** `--json` fields the `gh issue list` sub-issue look-up must request. */
+export const SUB_ISSUE_LIST_JSON_FIELDS = "number,url,body,author";
+
+/**
+ * Fleet identity and log sink for the sub-issue author checks.
+ *
+ * Extends {@link AlertDedupAuthorOptions}, so a caller states the fleet with
+ * `fleetAuthors` — which `closePlanningIssue()` and the pre-checks do, from
+ * the already-loaded config — or omits it and gets the configured fleet
+ * identity read from `CONFIG_PATH` / `GITHUB_USER`.
+ */
+export interface SubIssueAuthorOptions extends AlertDedupAuthorOptions {
+  /** Sink for the author-verification log lines. Defaults to `console.error`. */
+  log?: (message: string) => void;
+}
+
+/**
+ * Build the author-verification options every planning close-out read shares
+ * (Issue #1244).
+ *
+ * The comparison set is the fleet identity —
+ * {@link resolveFleetMaintenanceAuthorSet}: this host's login ∪
+ * `fleet_pr_authors` ∪ `service_accounts` — resolved from the config the run
+ * already loaded rather than re-read from disk. Deliberately **not**
+ * `allowedAuthors`: that is a human permission list answering a different
+ * question, and deliberately not `--author @me`, because sibling hosts
+ * authenticate as different accounts and each must recognise the other's
+ * sub-issues.
+ *
+ * @param config - The run's worker configuration
+ * @param githubUser - This host's GitHub login
+ * @param logger - Sink for the discard / unresolved-set warnings
+ */
+export function planningAuthorOptions(
+  config: IssueContext["config"],
+  githubUser: string,
+  logger: Logger,
+): SubIssueAuthorOptions {
+  return {
+    fleetAuthors: resolveFleetMaintenanceAuthorSet({
+      githubUser,
+      fleetPrAuthors: config.fleetPrAuthors ?? [],
+      serviceAccounts: config.serviceAccounts ?? [],
+    }),
+    log: (message: string) => logger.warn(message),
+  };
+}
+
+/**
+ * What an unattributable sub-issue match costs, in this site's own words.
+ *
+ * The fail direction is towards *doing the planning work*: the discarded match
+ * leaves the run looking like it published nothing, so the planner runs (and
+ * the #1219 retry still fires) rather than the parent being closed on evidence
+ * an unprivileged account manufactured.
+ */
+const SUB_ISSUE_UNVERIFIED_OUTCOME =
+  "no issue counts as a sub-issue and the planner runs instead of the parent " +
+  "being closed. A re-planned parent is recoverable; a parent closed against " +
+  "somebody else's issue loses the work";
+
+/** One `Part of #N` candidate row, in the shape the author filter takes. */
+type SubIssueRow = AlertDedupRow & { url?: string };
+
+/** Project a `gh` issue row onto {@link SubIssueRow}. */
+function toSubIssueRow(record: Record<string, unknown>): SubIssueRow {
+  const number = record["number"];
+  const url = record["url"];
+  const author = record["author"];
+  const login = author !== null && typeof author === "object"
+    ? (author as { login?: unknown }).login
+    : undefined;
+  return {
+    number: typeof number === "number" ? number : -1,
+    ...(typeof url === "string" ? { url } : {}),
+    ...(typeof login === "string" ? { author: { login } } : {}),
+  };
+}
+
+/** The row's URL, or the canonical one built from its number. */
+function subIssueUrl(row: SubIssueRow, repo: string): string {
+  return row.url ?? `https://github.com/${repo}/issues/${row.number}`;
+}
+
 /**
  * Check GitHub for sub-issues referencing a planning issue.
  *
@@ -332,15 +434,22 @@ export function detectCreatedSubIssues(claudeOutput: string): boolean {
  * in Claude's output. Searches for issues in the repo that mention the
  * planning issue number.
  *
+ * `Part of #N` is body text any account may write, so the search asks for
+ * `author` and every match is filtered through
+ * {@link selectFleetAuthoredMatches} before it counts (Issue #1244). Without
+ * that filter one planted issue closed the parent, citing itself as the plan.
+ *
  * @param repo - Repository in "owner/repo" format
  * @param issueNumber - The planning issue number
  * @param ghCommandFn - Function to run gh commands
- * @returns Result with sub-issue URLs (empty array if none found)
+ * @param options - Fleet identity and log sink for the author check
+ * @returns Result with fleet-authored sub-issue URLs (empty array if none)
  */
 export async function checkSubIssuesOnGitHub(
   repo: string,
   issueNumber: number,
   ghCommandFn: (args: string[]) => Promise<string>,
+  options: SubIssueAuthorOptions = {},
 ): Promise<Result<string[]>> {
   try {
     const output = await ghCommandFn([
@@ -352,7 +461,7 @@ export async function checkSubIssuesOnGitHub(
       "body",
       `"Part of #${issueNumber}"`,
       "--json",
-      "number,url",
+      SUB_ISSUE_SEARCH_JSON_FIELDS,
     ]);
 
     const parsed: unknown = JSON.parse(output);
@@ -360,28 +469,28 @@ export async function checkSubIssuesOnGitHub(
       return { ok: true, value: [] };
     }
 
-    // Filter out the planning issue itself and extract URLs
-    const subIssueUrls: string[] = [];
+    // Filter out the planning issue itself, then keep only the matches a
+    // fleet account actually authored (Issue #1244).
+    const matches: SubIssueRow[] = [];
     for (const item of parsed) {
       if (
         typeof item === "object" &&
         item !== null &&
         (item as Record<string, unknown>)["number"] !== issueNumber
       ) {
-        const url = (item as Record<string, unknown>)["url"];
-        if (typeof url === "string") {
-          subIssueUrls.push(url);
-        } else {
-          subIssueUrls.push(
-            `https://github.com/${repo}/issues/${
-              (item as Record<string, unknown>)["number"]
-            }`,
-          );
-        }
+        matches.push(toSubIssueRow(item as Record<string, unknown>));
       }
     }
 
-    return { ok: true, value: subIssueUrls };
+    const verified = await selectFleetAuthoredMatches(
+      matches,
+      `planning sub-issue search ${repo}#${issueNumber}`,
+      options,
+      options.log ?? ((message: string) => console.error(message)),
+      SUB_ISSUE_UNVERIFIED_OUTCOME,
+    );
+
+    return { ok: true, value: verified.map((row) => subIssueUrl(row, repo)) };
   } catch (err) {
     return {
       ok: false,
@@ -482,15 +591,23 @@ export async function listNativeSubIssues(
  * The match is anchored on the issue number with a word boundary so
  * `#100` does not match `#1000`, and is case-insensitive.
  *
+ * The body is attacker-writable and the author is not, so the listing asks for
+ * `author` and every parent-link match is filtered through
+ * {@link selectFleetAuthoredMatches} before it counts (Issue #1244). A match
+ * that cannot be attributed is discarded, which also leaves the #1219
+ * "no sub-issues created" retry free to fire.
+ *
  * @param repo - Repository in "owner/repo" format
  * @param issueNumber - The planning issue number
  * @param ghCommandFn - Function to run gh commands
- * @returns Result with sub-issue URLs (empty array if none found)
+ * @param options - Fleet identity and log sink for the author check
+ * @returns Result with fleet-authored sub-issue URLs (empty array if none)
  */
 export async function listSubIssuesViaIssueList(
   repo: string,
   issueNumber: number,
   ghCommandFn: (args: string[]) => Promise<string>,
+  options: SubIssueAuthorOptions = {},
 ): Promise<Result<string[]>> {
   try {
     const output = await ghCommandFn([
@@ -503,7 +620,7 @@ export async function listSubIssuesViaIssueList(
       "--limit",
       "100",
       "--json",
-      "number,url,body",
+      SUB_ISSUE_LIST_JSON_FIELDS,
     ]);
 
     const parsed: unknown = JSON.parse(output);
@@ -518,29 +635,36 @@ export async function listSubIssuesViaIssueList(
     const parentLinkRe =
       /\b(?:part\s+of|parent\s*:?\s*|child\s+of)\s*#(\d+)\b/i;
 
-    const subIssueUrls: string[] = [];
+    const matches: SubIssueRow[] = [];
     for (const item of parsed) {
       if (typeof item !== "object" || item === null) continue;
       const record = item as Record<string, unknown>;
       const number = record["number"];
       const body = record["body"];
-      const url = record["url"];
 
       if (number === issueNumber) continue;
+      if (typeof number !== "number") continue;
       if (typeof body !== "string") continue;
       const match = parentLinkRe.exec(body);
       if (!match || !match[1] || parseInt(match[1], 10) !== issueNumber) {
         continue;
       }
 
-      if (typeof url === "string") {
-        subIssueUrls.push(url);
-      } else if (typeof number === "number") {
-        subIssueUrls.push(`https://github.com/${repo}/issues/${number}`);
-      }
+      matches.push(toSubIssueRow(record));
     }
 
-    return { ok: true, value: subIssueUrls };
+    // The parent-link prose above is the module's own predicate; the author
+    // check runs over what it accepted so the discard log names genuine
+    // matches from outside the fleet (Issue #1244).
+    const verified = await selectFleetAuthoredMatches(
+      matches,
+      `planning sub-issue listing ${repo}#${issueNumber}`,
+      options,
+      options.log ?? ((message: string) => console.error(message)),
+      SUB_ISSUE_UNVERIFIED_OUTCOME,
+    );
+
+    return { ok: true, value: verified.map((row) => subIssueUrl(row, repo)) };
   } catch (err) {
     return {
       ok: false,
@@ -1069,11 +1193,15 @@ async function _processPlanningWithHeartbeat(
     );
   }
 
-  // Fallback pre-check: search GitHub API for sub-issues referencing this planning issue
+  // Fallback pre-check: search GitHub API for sub-issues referencing this
+  // planning issue. Only fleet-authored matches count (Issue #1244) — this is
+  // the read that skips Claude entirely and closes the parent.
+  const authorOptions = planningAuthorOptions(config, githubUser, logger);
   const preCheck = await checkSubIssuesOnGitHub(
     repo,
     issueNumber,
     deps.github.runGhCommand,
+    authorOptions,
   );
   if (preCheck.ok && preCheck.value.length > 0) {
     logger.info(
@@ -1443,6 +1571,7 @@ async function _processPlanningWithHeartbeat(
       repo,
       issueNumber,
       deps.github.runGhCommand,
+      authorOptions,
     );
     if (listCheck.ok && listCheck.value.length > 0) {
       logger.info("Sub-issues found via gh issue list");
@@ -1458,6 +1587,7 @@ async function _processPlanningWithHeartbeat(
       repo,
       issueNumber,
       deps.github.runGhCommand,
+      authorOptions,
     );
     if (ghCheck.ok && ghCheck.value.length > 0) {
       logger.info("Sub-issues found via GitHub API search");
@@ -1532,6 +1662,7 @@ async function _processPlanningWithHeartbeat(
           repo,
           issueNumber,
           deps.github.runGhCommand,
+          authorOptions,
         );
         if (retryListCheck.ok && retryListCheck.value.length > 0) {
           logger.info("Sub-issues found via gh issue list after retry");
@@ -1544,6 +1675,7 @@ async function _processPlanningWithHeartbeat(
           repo,
           issueNumber,
           deps.github.runGhCommand,
+          authorOptions,
         );
         if (retryGhCheck.ok && retryGhCheck.value.length > 0) {
           logger.info("Sub-issues found via GitHub API after retry");
@@ -1936,6 +2068,9 @@ async function closePlanningIssue(
       parentIssueNumber: issueNumber,
       ghCommandFn: deps.github.runGhCommand,
       logger,
+      // A comment is writable by anyone, and the first candidate carrying a
+      // table wins — so only fleet-authored comments are candidates (#1244).
+      authorOptions: planningAuthorOptions(config, githubUser, logger),
     });
     if (coverageVerdict.passed) {
       logger.info(
@@ -2005,6 +2140,9 @@ async function closePlanningIssue(
     subIssueNumbers,
     ghCommandFn: deps.github.runGhCommand,
     logger,
+    // The nothing-to-do signal disables this safety net, so a comment only
+    // counts when a fleet account wrote it (Issue #1244).
+    authorOptions: planningAuthorOptions(config, githubUser, logger),
   });
   if (carrier.created && carrier.carrierUrl) {
     // Reflect the carrier in the reported sub-issue set so the summary/close

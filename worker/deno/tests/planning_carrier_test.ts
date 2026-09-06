@@ -25,6 +25,7 @@ import {
   buildCarrierBody,
   buildCarrierTitle,
   CARRIER_SUB_ISSUE_LABEL,
+  fetchNothingToDoSignal,
   hasNothingToDoSignal,
   MAX_CARRIER_TITLE_LENGTH,
   maybeCreateCarrierSubIssue,
@@ -46,6 +47,16 @@ const silentLogger: Logger = {
 
 const REPO = "stSoftwareAU/Example";
 const PARENT = 42;
+
+/**
+ * The fleet login and author options the nothing-to-do tests state
+ * (Issue #1244).
+ *
+ * Stated rather than left to the configured fleet identity so no test depends
+ * on a `.config.json` in the working directory.
+ */
+const FLEET_LOGIN = "fleet-bot";
+const FLEET_OPTIONS = { fleetAuthors: [FLEET_LOGIN] };
 
 /**
  * Build a stub gh runner that records calls and returns canned output per
@@ -227,12 +238,20 @@ Deno.test("maybeCreateCarrierSubIssue - nothing-to-do label skips carrier", asyn
   assertEquals(calls.some((c) => c[0] === "issue" && c[1] === "create"), false);
 });
 
+// The marker comment now needs a fleet author: a comment thread is writable
+// by anyone and this signal disables the safety net (Issue #1244).
 Deno.test("maybeCreateCarrierSubIssue - nothing-to-do marker line skips carrier", async () => {
   const calls: string[][] = [];
   const gh = makeGh({
     calls,
-    viewJson:
-      '{"labels":[],"body":"","comments":[{"body":"Nothing to do — already implemented in #1"}]}',
+    viewJson: JSON.stringify({
+      labels: [],
+      body: "",
+      comments: [{
+        body: "Nothing to do — already implemented in #1",
+        author: { login: FLEET_LOGIN },
+      }],
+    }),
   });
 
   const outcome = await maybeCreateCarrierSubIssue({
@@ -242,10 +261,119 @@ Deno.test("maybeCreateCarrierSubIssue - nothing-to-do marker line skips carrier"
     subIssueNumbers: [],
     ghCommandFn: gh,
     logger: silentLogger,
+    authorOptions: FLEET_OPTIONS,
   });
 
   assertEquals(outcome.created, false);
   assertEquals(outcome.skippedReason, "nothing-to-do");
+});
+
+// ---------------------------------------------------------------------------
+// Nothing-to-do author verification (Issue #1244)
+// ---------------------------------------------------------------------------
+
+Deno.test("maybeCreateCarrierSubIssue - an outsider's nothing-to-do comment still creates the carrier", async () => {
+  const calls: string[][] = [];
+  const warnings: string[] = [];
+  const gh = makeGh({
+    calls,
+    viewJson: JSON.stringify({
+      labels: [{ name: "enhancement" }],
+      body: "Real work remains here.",
+      comments: [{
+        body: "Nothing to do — dupe",
+        author: { login: "outsider" },
+      }],
+    }),
+  });
+
+  const outcome = await maybeCreateCarrierSubIssue({
+    repo: REPO,
+    parentIssueNumber: PARENT,
+    parentIssueTitle: "Tidy the thing",
+    subIssueNumbers: [],
+    ghCommandFn: gh,
+    logger: { ...silentLogger, warn: (m: string) => warnings.push(m) },
+    authorOptions: FLEET_OPTIONS,
+  });
+
+  assertEquals(outcome.created, true);
+  assertEquals(outcome.skippedReason, undefined);
+  assertEquals(calls.some((c) => c[0] === "issue" && c[1] === "create"), true);
+  assertEquals(
+    warnings.some((w) => w.includes("authored outside the fleet")),
+    true,
+  );
+});
+
+Deno.test("fetchNothingToDoSignal - an unresolved fleet discards every marker comment", async () => {
+  const warnings: string[] = [];
+  const calls: string[][] = [];
+  const gh = makeGh({
+    calls,
+    viewJson: JSON.stringify({
+      labels: [],
+      body: "",
+      comments: [{
+        body: "Nothing to do — dupe",
+        author: { login: FLEET_LOGIN },
+      }],
+    }),
+  });
+
+  const signalled = await fetchNothingToDoSignal(
+    REPO,
+    PARENT,
+    gh,
+    { fleetAuthors: [] },
+    (m) => warnings.push(m),
+  );
+
+  assertEquals(signalled, false);
+  assertEquals(
+    warnings.some((w) => w.includes("fleet author set unresolved")),
+    true,
+  );
+});
+
+Deno.test("fetchNothingToDoSignal - a fleet comment and the parent body are both honoured", async () => {
+  const calls: string[][] = [];
+  const fleetComment = await fetchNothingToDoSignal(
+    REPO,
+    PARENT,
+    makeGh({
+      calls,
+      viewJson: JSON.stringify({
+        labels: [],
+        body: "",
+        comments: [{
+          body: "Nothing to do — duplicate of #1",
+          author: { login: "FLEET-BOT" },
+        }],
+      }),
+    }),
+    FLEET_OPTIONS,
+    () => {},
+  );
+  assertEquals(fleetComment, true);
+
+  // The body is the artefact being planned, not third-party commentary, so it
+  // is read unfiltered — as is a triage-permission label.
+  const bodyMarker = await fetchNothingToDoSignal(
+    REPO,
+    PARENT,
+    makeGh({
+      calls,
+      viewJson: JSON.stringify({
+        labels: [],
+        body: "Nothing to do — already implemented",
+        comments: [],
+      }),
+    }),
+    FLEET_OPTIONS,
+    () => {},
+  );
+  assertEquals(bodyMarker, true);
 });
 
 Deno.test("maybeCreateCarrierSubIssue - existing sub-issues skip carrier (no duplicate)", async () => {
