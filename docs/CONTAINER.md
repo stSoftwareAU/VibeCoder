@@ -164,7 +164,7 @@ flowchart TD
     R["resolveBrowserEnvironment()"] --> E{"PLAYWRIGHT_BROWSERS_PATH<br/>exists?"}
     E -->|yes, in the image| B["baked: env PLAYWRIGHT_BROWSERS_PATH<br/>+ --no-sandbox"]
     E -->|no, on a host| H["host: install once at setup,<br/>Chromium keeps its sandbox"]
-    B --> P["--user-data-dir /tmp/vibe-playwright-profile"]
+    B --> P["--user-data-dir /tmp/vibe-playwright-profile-&lt;user&gt;"]
     H --> P
     P --> X["❌ throws when the profile<br/>would land in the checkout"]
     style B fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -176,7 +176,9 @@ flowchart TD
   proves it by running the navigate-and-screenshot smoke test with
   `--network none`: a browser fetch there would fail outright.
 - **Profile state is disposable.** `--user-data-dir` points at
-  `/tmp/vibe-playwright-profile` — the launcher mounts `/tmp` as a `tmpfs`, so
+  `/tmp/vibe-playwright-profile-<user>` — per-account since Issue #1242, so no
+  other account on the host can create it first — and the launcher mounts
+  `/tmp` as a `tmpfs`, so
   the profile dies with the container. Generating a config whose profile
   directory sits inside the mounted checkout throws rather than writing browser
   state into the repository. `VIBE_BROWSER_PROFILE_DIR` overrides the location.
@@ -207,7 +209,7 @@ flowchart TD
   the agent never runs from. The server is told `--browser chromium` (its
   default `chrome` channel is Google Chrome, which the image does not ship),
   and its `--output-dir` is scratch beside the browser profile
-  (`/tmp/vibe-playwright-output`) because every `browser_navigate` writes an
+  (`/tmp/vibe-playwright-output-<user>`) because every `browser_navigate` writes an
   accessibility snapshot there; screenshots named explicitly
   (`filename: docs/evidence/<name>.png`) resolve against the clone and land
   where the evidence gate and the PR expect them. `container-build.yml`

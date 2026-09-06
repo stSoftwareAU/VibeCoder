@@ -31,6 +31,7 @@ import {
   restageGhConfigDir,
 } from "../lib/gh_credential_stage.ts";
 import { GH_HOSTS_FILE } from "../lib/credential_preflight.ts";
+import { cacheDirUserSuffix } from "../lib/private_cache_dir.ts";
 
 const TOKEN = "github.com:\n    user: VibeCoderST\n    oauth_token: s3cret\n";
 
@@ -177,7 +178,8 @@ Deno.test("restageGhConfigDir - a refused candidate is reported, not swallowed",
     warn: (message) => warnings.push(message),
   });
 
-  assertEquals(staged, "/tmp/vibe-gh-config");
+  // Issue #1242: the temporary-root candidate carries the per-account suffix.
+  assertEquals(staged, `/tmp/vibe-gh-config-${cacheDirUserSuffix()}`);
   const refusal = warnings.find((w) => w.includes("cannot stage"));
   assert(refusal !== undefined, `the refusal was swallowed: ${warnings}`);
   assertStringIncludes(refusal, hostile);

@@ -137,6 +137,81 @@ export async function ensurePrivateDir(dir: string): Promise<void> {
 }
 
 /**
+ * Create a worker state directory and report whether it may be trusted
+ * (Issue #1242).
+ *
+ * The control follows the directory's **location**, exactly as `IssueCache`
+ * decides: a directory at or below the shared temporary root is created
+ * `0700` and ownership-checked, because any local account could have created
+ * it first; a directory on the work volume — whose permissions the worker
+ * does not own — is created as given and trusted.
+ *
+ * Callers must act on an untrusted verdict (skip the cache, refuse the
+ * write, warn loudly). Returning the verdict rather than throwing lets each
+ * caller choose, but never lets one ignore the answer by accident.
+ *
+ * @param dir - Directory to create.
+ * @param lookup - Environment reader, injectable for tests.
+ * @returns Whether the created directory is safe for this worker to use.
+ */
+export async function ensureStateDir(
+  dir: string,
+  lookup: (key: string) => string | undefined = defaultLookup,
+): Promise<PrivateDirTrust> {
+  if (!isSharedTmpPath(dir, lookup)) {
+    await Deno.mkdir(dir, { recursive: true });
+    return { trusted: true };
+  }
+  try {
+    await ensurePrivateDir(dir);
+  } catch {
+    // Creation failure is reported by the verification below.
+  }
+  const trust = await verifyPrivateDir(dir);
+  if (trust.trusted) return trust;
+  return await tightenOwnDir(dir);
+}
+
+/**
+ * Tighten a directory only this account could have written to, then re-verify.
+ *
+ * A pre-existing directory at the umask default (`0755`) is ours and no other
+ * account can have planted anything in it, so narrowing it to `0700` is safe
+ * — and is what keeps a work directory that happens to sit under the
+ * temporary root usable. A group/other **writable** directory is a different
+ * thing entirely: anyone could already have dropped a file in it, so it is
+ * refused rather than healed, and so is a directory owned by another uid.
+ */
+async function tightenOwnDir(dir: string): Promise<PrivateDirTrust> {
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.stat(dir);
+  } catch (err) {
+    return {
+      trusted: false,
+      reason: `cannot stat directory: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
+  }
+
+  const ownUid = resolveOwnUid();
+  const ownedByUs = ownUid === null || info.uid === null ||
+    info.uid === ownUid;
+  const writableByOthers = info.mode !== null && (info.mode & 0o022) !== 0;
+  if (!info.isDirectory || !ownedByUs || writableByOthers) {
+    return await verifyPrivateDir(dir);
+  }
+
+  try {
+    await Deno.chmod(dir, PRIVATE_DIR_MODE);
+  } catch {
+    // Reported by the verification below.
+  }
+  return await verifyPrivateDir(dir);
+}
+
+/**
  * Verify `dir` is a worker-private directory — a real directory, owned by this
  * account, with no group or other access bits.
  *

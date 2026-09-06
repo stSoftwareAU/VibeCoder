@@ -567,7 +567,7 @@ These only tune the *generated* LaunchAgent (tokens, paths, logs); whether it is
 | `VIBE_SKIP_SCREENSHOT_INSTALL` | Set to `true` to skip browser installation (for testing) |
 | `VIBE_MCP_CONFIG_DIR` | Directory for `.mcp.json` (default: script directory) |
 | `VIBE_SCREENSHOT_DIR` | Directory name for screenshots (default: `docs/evidence`) |
-| `VIBE_BROWSER_PROFILE_DIR` | Disposable directory the browser writes its profile to (default: `/tmp/vibe-playwright-profile`) |
+| `VIBE_BROWSER_PROFILE_DIR` | Disposable directory the browser writes its profile to (default: `/tmp/vibe-playwright-profile-<user>`, per-account since Issue #1242) |
 | `VIBE_IMGBB_API_KEY` | ImgBB API key for automatic screenshot uploads, when `.config.json` states no `imgbb_api_key` (Issue #1032) |
 
 **Testing/CI environment variables:**
@@ -926,8 +926,9 @@ time and the host needs no browser, desktop session or window server. See
 [Container Image](CONTAINER.md#headless-chromium--the-browser-is-in-the-image)
 and [Containment](CONTAINMENT.md).
 
-The browser profile is written to `/tmp/vibe-playwright-profile` on the
-container's `tmpfs`, so it dies with the container.
+The browser profile is written to `/tmp/vibe-playwright-profile-<user>` on the
+container's `tmpfs`, so it dies with the container. The per-account suffix
+(Issue #1242) keeps two accounts on one host off the same profile path.
 
 ### 🔧 Setup
 

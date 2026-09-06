@@ -27,6 +27,7 @@ import { scanDirectoriesForHardcodedBranches } from "./hardcoded_branch_check.ts
 import { scanDirectoriesForDirectNeedsHuman } from "./needs_human_direct_label_check.ts";
 import { scanDirectoriesForGhSpawn } from "./gh_spawn_chokepoint_check.ts";
 import { scanDirectoriesForGitSpawn } from "./git_spawn_chokepoint_check.ts";
+import { scanDirectoriesForSharedTmpPath } from "./tmp_state_dir_check.ts";
 import { scanDirectoriesForHomeWorkDir } from "./home_workdir_check.ts";
 import { scanDirectoriesForGitRefArgv } from "./git_ref_argv_check.ts";
 import {
@@ -612,6 +613,74 @@ async function runHomeWorkDirGuardCheck(
     name,
     status: "FAILED",
     output: `host work-dir guard: FAILED\n${output}`,
+  };
+}
+
+/**
+ * Run the shared-tmp state directory check (Issue #1242, SEC-1215-06).
+ *
+ * Scans the Deno source tree for a worker state directory composed from the
+ * host's shared temporary root by hand — the residual class Issue #1215 left
+ * behind in the label cache, the MCP config, the audit journal, the repo
+ * failure counters and the browser profile. Such a path is the same for every
+ * account on the host, so whoever creates it first owns what the worker later
+ * reads back.
+ */
+async function runTmpStateDirCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const name = "tmp state dir chokepoint";
+  const relDirs = [
+    "worker/deno/lib",
+    "worker/deno/commands",
+    "worker/deno/setup",
+  ];
+
+  let hasDirs = false;
+  for (const relDir of relDirs) {
+    try {
+      const stat = await Deno.stat(`${config.scriptDir}/${relDir}`);
+      if (stat.isDirectory) hasDirs = true;
+    } catch { /* directory doesn't exist */ }
+  }
+  if (!hasDirs) {
+    return {
+      name,
+      status: "SKIPPED",
+      output: "deno source directories not found",
+    };
+  }
+
+  const result = await scanDirectoriesForSharedTmpPath(
+    config.scriptDir,
+    relDirs,
+  );
+  if (result.violations.length === 0) {
+    return {
+      name,
+      status: "PASSED",
+      output:
+        `tmp state dir chokepoint: PASSED (${result.filesScanned} files scanned)`,
+    };
+  }
+
+  const output = [
+    ...result.violations.map((v) =>
+      `VIOLATION: ${v.file}:${v.line}: ${v.text}`
+    ),
+    "",
+    "A worker state directory is built from the shared temporary root by hand",
+    "(Issue #1242, CWE-377). That path is identical for every account on the",
+    "host, so a local user can create it first and own what the worker reads",
+    "back. Compose it with `sharedTmpStateDir(<name>)` from",
+    "`worker/deno/lib/private_cache_dir.ts`, create it with `ensureStateDir`",
+    "and act on the trust verdict it returns.",
+  ].join("\n");
+
+  return {
+    name,
+    status: "FAILED",
+    output: `tmp state dir chokepoint: FAILED\n${output}`,
   };
 }
 
@@ -1373,6 +1442,11 @@ export async function runQualityGate(
   // git ref chokepoint (Issue #12) — a PR head branch name must reach git
   // only through the ref-arg builders, never as an inline positional.
   note(await runGitRefArgvCheck(config));
+
+  // shared-tmp state dir chokepoint (Issue #1242) — a worker state directory
+  // under the host's temporary root must be composed by `sharedTmpStateDir`,
+  // never by raw TMPDIR/`/tmp` interpolation.
+  note(await runTmpStateDirCheck(config));
 
   // Workflow hygiene (Issue #3716) — strict-mode `run:` blocks and
   // consistent SHA/version pin comments across .github/workflows.

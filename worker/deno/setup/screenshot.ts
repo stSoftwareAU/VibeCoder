@@ -20,6 +20,10 @@
  */
 
 import {
+  isSharedTmpPath,
+  sharedTmpStateDir,
+} from "../lib/private_cache_dir.ts";
+import {
   DEFAULT_NPM_QUARANTINE_HOURS,
   defaultNpmAgeDeps,
   type NpmAgeFetchDeps,
@@ -119,7 +123,14 @@ function defaultDirExists(path: string): boolean {
   }
 }
 
-/** Disposable profile location for the host platform. */
+/**
+ * Disposable profile location for the host platform.
+ *
+ * Issue #1242: on POSIX the name carries a per-account suffix. The fixed
+ * `/tmp/vibe-playwright-profile` was the same path for every account on the
+ * host, so any local user could create it first and own the profile the
+ * browser then runs from.
+ */
 function defaultProfileDir(
   os: typeof Deno.build.os,
   getEnv: (name: string) => string | undefined,
@@ -128,7 +139,7 @@ function defaultProfileDir(
     const temp = getEnv("TEMP") ?? getEnv("TMP") ?? "C:\\Windows\\Temp";
     return `${temp.replace(/[\\/]+$/, "")}\\${BROWSER_PROFILE_DIR_NAME}`;
   }
-  return `/tmp/${BROWSER_PROFILE_DIR_NAME}`;
+  return sharedTmpStateDir(BROWSER_PROFILE_DIR_NAME, getEnv);
 }
 
 /**
@@ -371,12 +382,32 @@ export function generateMcpConfig(config: ScreenshotConfig): string {
  * Fail loud when the browser profile would be written to the mounted
  * checkout (Issue #4069) — that is host state, not disposable scratch.
  */
-/** Scratch output directory beside the browser profile (Issue #4355). */
-export function defaultOutputDir(profileDir: string): string {
+/**
+ * Scratch output directory beside the browser profile (Issue #4355).
+ *
+ * Issue #1242: a sibling of a per-account profile directory must be
+ * per-account too. A bare sibling under the shared temporary root would put
+ * the server's snapshot output back on the path every account shares, which
+ * is the fault the profile directory just left.
+ *
+ * @param profileDir - The resolved browser profile directory.
+ * @param getEnv - Environment reader deciding whether the parent is the
+ *   shared temporary root; injectable so a test need not export `TMPDIR`.
+ */
+export function defaultOutputDir(
+  profileDir: string,
+  getEnv: (name: string) => string | undefined = defaultGetEnv,
+): string {
   const sep = profileDir.includes("\\") && !profileDir.includes("/")
     ? "\\"
     : "/";
   const parent = profileDir.replace(/[\\/]+[^\\/]*$/, "");
+  if (sep === "/" && isSharedTmpPath(parent, getEnv)) {
+    return sharedTmpStateDir(
+      BROWSER_OUTPUT_DIR_NAME,
+      (key) => key === "TMPDIR" ? parent : undefined,
+    );
+  }
   return `${parent}${sep}${BROWSER_OUTPUT_DIR_NAME}`;
 }
 

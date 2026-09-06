@@ -24,6 +24,13 @@ import {
   restageGhConfigDir,
   stagingCandidates,
 } from "../lib/gh_credential_stage.ts";
+import { cacheDirUserSuffix } from "../lib/private_cache_dir.ts";
+
+/**
+ * Per-account suffix on the temporary-root candidate (Issue #1242): the
+ * staged credentials no longer land at one path every account shares.
+ */
+const TMP_STAGED = `/tmp/vibe-gh-config-${cacheDirUserSuffix()}`;
 
 /** An in-memory filesystem: paths to contents, plus a read-only path set. */
 function fakeIo(
@@ -90,12 +97,12 @@ Deno.test("stagingCandidates - the durable state root before the agents' scratch
   assertEquals(candidates, [
     "/home/vibe/auto-issue-work/.container-state/gh-config",
     "/tmp/vibe-scratch/gh-config",
-    "/tmp/vibe-gh-config",
+    TMP_STAGED,
   ]);
 });
 
 Deno.test("stagingCandidates - with no roots configured, TMPDIR still serves", () => {
-  assertEquals(stagingCandidates(envFrom({})), ["/tmp/vibe-gh-config"]);
+  assertEquals(stagingCandidates(envFrom({})), [TMP_STAGED]);
 });
 
 Deno.test("restageGhConfigDir - rebuilds from the mount, not from the broken copy", () => {
@@ -127,7 +134,7 @@ Deno.test("restageGhConfigDir - an unwritable candidate falls through to the nex
     warn: () => {},
   });
 
-  assertEquals(staged, "/tmp/vibe-gh-config");
+  assertEquals(staged, TMP_STAGED);
 });
 
 Deno.test("restageGhConfigDir - an empty mount is a credential problem, reported not papered over", () => {

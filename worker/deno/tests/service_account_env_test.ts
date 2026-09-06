@@ -22,6 +22,7 @@ import type { ConfigFile } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { canEnforceUnwritableDir } from "./support/environment_capability.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+import { cacheDirUserSuffix } from "../lib/private_cache_dir.ts";
 
 // Test helper to create a temporary config file
 async function withTempConfig(
@@ -398,7 +399,11 @@ Deno.test({
         home,
         envFrom({ VIBE_IMAGE_AGENT_PROVIDERS: "claude", TMPDIR: tmp }),
       );
-      assertEquals(applied.GH_CONFIG_DIR, `${tmp}/vibe-gh-config`);
+      // Issue #1242: per-account, so two accounts never stage into one dir.
+      assertEquals(
+        applied.GH_CONFIG_DIR,
+        `${tmp}/vibe-gh-config-${cacheDirUserSuffix()}`,
+      );
       assertEquals(
         await Deno.readTextFile(`${applied.GH_CONFIG_DIR}/hosts.yml`),
         "github.com:\n",

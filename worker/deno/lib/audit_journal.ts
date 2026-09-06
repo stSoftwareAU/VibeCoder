@@ -81,6 +81,7 @@ import {
   computeEntryHash,
 } from "./audit_entry.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import { ensureStateDir, sharedTmpStateDir } from "./private_cache_dir.ts";
 import { withFileLock } from "./file_lock.ts";
 
 // Entry shape and chain hashing live in `audit_entry.ts` since Issue #1074
@@ -263,8 +264,10 @@ export function resolveBaseDir(
   if (override) return override;
   const workDir = env("WORK_DIR");
   if (workDir) return `${workDir}/audit`;
-  const tmp = env("TMPDIR") ?? "/tmp";
-  return `${tmp}/vibe-audit`;
+  // Issue #1242: per-account, not the fixed `${TMPDIR}/vibe-audit` every
+  // account on the host shared — the journal is the tamper-evident record of
+  // the worker's own mutations.
+  return sharedTmpStateDir("vibe-audit", env);
 }
 
 /**
@@ -523,7 +526,19 @@ export async function recordMutation(
 ): Promise<Result<AuditEntry>> {
   try {
     const baseDir = resolveBaseDir(opts.baseDir, opts.env ?? processEnvLookup);
-    await Deno.mkdir(baseDir, { recursive: true });
+    // Issue #1242: a journal directory under the shared temporary root is
+    // created 0700 and refused when another account owns it. Appending a
+    // hash-chained entry to a directory a local user controls would make the
+    // audit trail evidence of nothing; failing here is reported through the
+    // Result the caller already handles.
+    const trust = await ensureStateDir(baseDir);
+    if (!trust.trusted) {
+      throw new Error(
+        `Audit directory ${baseDir} is not worker-private: ${
+          trust.reason ?? "unknown"
+        }`,
+      );
+    }
     // Issue #491: journal selection and the append are one critical
     // section, guarded across processes. The in-process queue wraps the
     // file lock so same-process callers wait on a promise instead of
