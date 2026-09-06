@@ -11,6 +11,8 @@ import { processEnvLookup } from "../lib/env_lookup.ts";
 import { pathStyleFor } from "../lib/host_path_style.ts";
 import { readConfiguredLogDirSync, resolveLogDir } from "../lib/log_dir.ts";
 import { resolveHostConfigPath } from "../lib/host_config_path.ts";
+import { escapeXml } from "../lib/xml_escape.ts";
+import { atomicWrite } from "../lib/file_utils.ts";
 
 /** Configuration for LaunchAgent setup. */
 export interface LaunchAgentConfig {
@@ -61,10 +63,20 @@ function hostLogsDir(): string {
 
 /**
  * Generate the LaunchAgent plist XML content.
+ *
+ * **Every** interpolated value is escaped, paths included (Issue #1220). The
+ * path fields are as much configuration as the environment values are:
+ * `logsDir` resolves from `log_dir` in `.config.json`, then `LAUNCH_LOG_DIR` /
+ * `LOG_DIR` / `VIBE_LOGS_DIR`, and `scriptDir` is the checkout path. Left raw,
+ * a value carrying `</string>` closed the enclosing element and could add a
+ * `ProgramArguments` entry — or a `<key>Program</key>` replacing the executable
+ * outright — that launchd then runs on the host at every login. Escaping also
+ * keeps an honest path containing `&` from producing a plist launchd rejects.
  */
 export function generatePlist(config: LaunchAgentConfig): string {
-  const runScriptPath = `${config.scriptDir}/run.sh`;
-  const logsDir = config.logsDir ?? hostLogsDir();
+  const scriptDir = escapeXml(config.scriptDir);
+  const runScriptPath = `${scriptDir}/run.sh`;
+  const logsDir = escapeXml(config.logsDir ?? hostLogsDir());
 
   let plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -77,7 +89,7 @@ export function generatePlist(config: LaunchAgentConfig): string {
         <string>${runScriptPath}</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>${config.scriptDir}</string>
+    <string>${scriptDir}</string>
     <key>StartInterval</key>
     <integer>300</integer>
     <key>StandardOutPath</key>
@@ -122,31 +134,54 @@ export function generatePlist(config: LaunchAgentConfig): string {
 }
 
 /**
- * Write the plist to disk with owner-only permissions (mode 0o600).
+ * Tighten an existing plist to owner-only permissions (Issue #1220).
  *
  * The plist embeds the worker's GH_TOKEN and ANTHROPIC_API_KEY in plaintext
- * (Issue #2514), so it must never be left world-readable. `Deno.writeTextFile`
- * applies the `mode` option only when *creating* a file; it does not change the
- * mode of a pre-existing file. We therefore chmod explicitly afterwards so an
- * already-existing plist (possibly written 0o644 by an older worker) is also
- * tightened to 0o600.
+ * (Issue #2514), so it must never be left world-readable — and the one case
+ * the tightening was written for, a plist an older worker wrote 0o644, is
+ * exactly the case that re-renders to *identical* content and so took
+ * {@link setupLaunchAgent}'s "already up to date" short circuit without ever
+ * being chmodded. Re-running `./setup.sh` to pick up the fix silently did
+ * nothing. This runs on that path too.
+ *
+ * @param plistPath - The plist to tighten
+ */
+export async function tightenPlistPermissions(
+  plistPath: string,
+): Promise<void> {
+  await Deno.chmod(plistPath, 0o600);
+}
+
+/**
+ * Write the plist to disk with owner-only permissions (mode 0o600).
+ *
+ * Written through {@link atomicWrite} rather than
+ * `Deno.writeTextFile` + a late `chmod` (Issue #1220): that sequence
+ * truncates a pre-existing 0o644 plist and fills it with the two tokens
+ * *before* narrowing the mode, and both calls follow a symlink pre-positioned
+ * at the path. `atomicWrite` creates its temp file `O_EXCL` at 0o600 and
+ * renames it into place, so neither window exists. A failed write is loud —
+ * a plist that was not written must never look like one that was.
+ *
+ * @param plistPath - Where the LaunchAgent plist belongs
+ * @param content - The rendered plist
+ * @throws When the write fails
  */
 export async function writeSecurePlist(
   plistPath: string,
   content: string,
 ): Promise<void> {
-  await Deno.writeTextFile(plistPath, content, { mode: 0o600 });
-  await Deno.chmod(plistPath, 0o600);
-}
-
-/** Escape special XML characters to prevent injection. */
-function escapeXml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+  const result = await atomicWrite({
+    targetFile: plistPath,
+    content,
+    mode: 0o600,
+  });
+  if (!result.ok) {
+    throw new Error(
+      `Could not write the LaunchAgent plist ${plistPath}: ` +
+        result.error.message,
+    );
+  }
 }
 
 /**
@@ -181,20 +216,38 @@ export async function setupLaunchAgent(
   const plistPath = `${launchAgentDir}/${LAUNCHAGENT_LABEL}.plist`;
   const newContent = generatePlist(config);
 
-  // Check if plist already exists with same content (idempotent)
+  // Is a plist already there, and does it already say what we would write?
+  // The read is the only thing this catch is allowed to absorb: a chmod that
+  // fails is a token left readable, and must not pass as "up to date".
+  let existingContent: string | undefined;
   try {
-    const existingContent = await Deno.readTextFile(plistPath);
-    if (existingContent === newContent) {
-      return { ok: true, message: "LaunchAgent plist already up to date" };
-    }
-
-    // Unload existing agent before updating
-    if (!config.skipLaunchctl) {
-      const uid = await getUid();
-      await runLaunchctl(["bootout", `gui/${uid}/${LAUNCHAGENT_LABEL}`]);
-    }
+    existingContent = await Deno.readTextFile(plistPath);
   } catch {
     // File doesn't exist yet — that's fine
+  }
+
+  if (existingContent === newContent) {
+    // Still tighten it: an older worker's 0o644 plist re-renders to
+    // identical content, so this is the very path its tokens are on.
+    try {
+      await tightenPlistPermissions(plistPath);
+    } catch (error) {
+      return {
+        ok: false,
+        message: `LaunchAgent plist ${plistPath} is up to date but could ` +
+          `not be restricted to owner-only (${
+            error instanceof Error ? error.message : String(error)
+          }). It holds GH_TOKEN and ANTHROPIC_API_KEY in plaintext — fix its ` +
+          `ownership, then re-run setup.`,
+      };
+    }
+    return { ok: true, message: "LaunchAgent plist already up to date" };
+  }
+
+  // Unload the existing agent before replacing its definition.
+  if (existingContent !== undefined && !config.skipLaunchctl) {
+    const uid = await getUid();
+    await runLaunchctl(["bootout", `gui/${uid}/${LAUNCHAGENT_LABEL}`]);
   }
 
   // Write the plist with owner-only permissions — it embeds GH_TOKEN and
