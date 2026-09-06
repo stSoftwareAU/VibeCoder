@@ -1,7 +1,8 @@
 # Gitleaks configuration for VibeCoder.
 #
-# Extends the upstream default rule set and allowlists ONLY test files
-# that exist to exercise secret redaction against synthetic credentials:
+# Extends the upstream default rule set and allowlists ONLY test files that
+# exist to exercise secret redaction against synthetic credentials, plus the
+# archived PR summaries that quote those same fixtures in prose:
 #
 #  - secret_redaction_test.ts (Issue #3203): fake PEM "private key"
 #    blocks fed to `redactSecrets()`.
@@ -47,7 +48,7 @@ useDefault = true
 # the key format for any issue number rather than one fixture value, so it does
 # not have to be revisited each time a new dedup key is asserted.
 [allowlist]
-description = "Synthetic secret fixtures in redaction and scrub-gate unit tests, plus non-secret dedupKey slugs (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196, #505, #1115)"
+description = "Synthetic secret fixtures in redaction and scrub-gate unit tests, archived PR summaries quoting them, plus non-secret dedupKey slugs (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196, #505, #1115, #1254)"
 regexTarget = "line"
 regexes = [
   '''self-diagnostic-unschedulable-\d+''',
@@ -86,4 +87,11 @@ paths = [
   # Fake AKIA/ghp_ values inside the gitleaks/trufflehog JSON fixtures the
   # full-history scanner tests parse and classify (Issue #4190).
   '''worker/deno/tests/secrets_history_scan_test\.ts''',
+  # Archived PR summaries quote the token-shaped fixtures the PR they describe
+  # introduced. Earlier commits in a PR range can carry the literal in one
+  # piece, so the range scan needs the path even when the file is prose-only
+  # (Issue #1254). A directory pattern, not one file: every summary describing
+  # redaction work quotes the fixture it is about, so this recurs by
+  # construction.
+  '''docs/archive/pr-summaries/.*\.md''',
 ]
