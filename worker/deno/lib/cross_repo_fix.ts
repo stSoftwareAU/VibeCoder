@@ -20,7 +20,11 @@
  *      has `push` permission (the precondition for pushing a branch and opening
  *      a PR). Unreachable or non-`stSoftwareAU` deps are reported as external so
  *      callers fall back to the deferral path.
- *   3. {@link openCrossRepoFixPr} — clone the dep repo, create a feature branch,
+ *   3. {@link authoriseCrossRepoTarget} — decide whether a consuming repo may
+ *      have a PR opened on its behalf in a given target repo. Ownership by
+ *      `stSoftwareAU` is not authority on its own; the target must be a
+ *      dependency the consuming repo's own manifest declares (Issue #1382).
+ *   4. {@link openCrossRepoFixPr} — clone the dep repo, create a feature branch,
  *      apply the caller's fix, commit, push, and `gh pr create --repo
  *      stSoftwareAU/<dep> …`, then surface the dep PR URL back to the consuming
  *      run. Honours the feature-branch-only convention — it refuses to push to
@@ -32,6 +36,12 @@
 
 import type { Result } from "../types.ts";
 import { REPO_SLUG_PATTERN } from "./config.ts";
+import {
+  type ManifestFile,
+  parseDenoManifest,
+  parseNpmManifest,
+} from "./orphan_deps_scanner.ts";
+import { MAX_MANIFEST_SCAN_CHARS } from "./orphan_deps_suppression_scan.ts";
 
 // ---------------------------------------------------------------------------
 // Command runner (mirrors the injected-runner shape used elsewhere)
@@ -273,6 +283,123 @@ export async function resolveCrossRepoTarget(
   }
 
   return { kind: "internal-reachable", package: spec, repo: access.repo };
+}
+
+// ---------------------------------------------------------------------------
+// Dependency-manifest authorisation (Issue #1382)
+// ---------------------------------------------------------------------------
+
+/**
+ * Manifest paths read from the **consuming** repo when authorising a
+ * cross-repo write target.
+ *
+ * Repo-relative paths rather than the bare filenames
+ * `ORPHAN_DEPS_MANIFEST_FILES` carries, because each is fetched with a single
+ * `gh api repos/<owner>/<repo>/contents/<path>` call. `worker/deno/deno.json`
+ * is listed because this repo keeps its own manifest there rather than at the
+ * root; a repo that has none of these simply authorises nothing.
+ */
+export const CONSUMING_MANIFEST_PATHS: readonly string[] = [
+  "deno.json",
+  "deno.jsonc",
+  "package.json",
+  "worker/deno/deno.json",
+];
+
+/** Whether a declared cross-repo write target is authorised, and why not. */
+export type CrossRepoAuthorisation =
+  | {
+    authorised: true;
+    /** `self` — the consuming repo itself; `dependency` — a declared dep. */
+    via: "self" | "dependency";
+    /** Manifest that declared it (absent for `self`). */
+    manifestPath?: string;
+  }
+  | { authorised: false; reason: string };
+
+/**
+ * Decide whether a consuming repo may have a PR opened on its behalf in
+ * `targetRepo`.
+ *
+ * Membership of {@link INTERNAL_OWNER} is *ownership*, not authority: the
+ * fleet works many separate tenant repositories under that one owner, and a
+ * run working one of them has no legitimate reason to write to a sibling it
+ * does not depend on. Authority here is the consuming repo's own dependency
+ * manifest — the target must resolve, through the same
+ * {@link classifyDependencySpec} rule used everywhere else, to a dependency
+ * that repo actually declares.
+ *
+ * The manifests are read from the consuming repo's **default branch on
+ * GitHub**, never from the run's working tree: the working tree is writable
+ * by the agent whose output produced the request being authorised, so it
+ * cannot also be the authority for it. A manifest that cannot be read is not
+ * an authorisation — the decision fails closed.
+ *
+ * Never throws; a failed read is a skipped manifest.
+ *
+ * @param consumingRepo - The repo the run was claimed against (`owner/repo`).
+ * @param targetRepo - The declared write target (untrusted, `owner/repo`).
+ * @param runner - Injected command runner.
+ */
+export async function authoriseCrossRepoTarget(
+  consumingRepo: string,
+  targetRepo: string,
+  runner: RunCommand,
+): Promise<CrossRepoAuthorisation> {
+  if (!REPO_SLUG_PATTERN.test(consumingRepo)) {
+    return {
+      authorised: false,
+      reason: `'${consumingRepo}' is not an owner/repo slug`,
+    };
+  }
+  if (!REPO_SLUG_PATTERN.test(targetRepo)) {
+    return {
+      authorised: false,
+      reason: `'${targetRepo}' is not an owner/repo slug`,
+    };
+  }
+
+  const wanted = targetRepo.toLowerCase();
+  if (wanted === consumingRepo.toLowerCase()) {
+    return { authorised: true, via: "self" };
+  }
+
+  let manifestsRead = 0;
+  for (const path of CONSUMING_MANIFEST_PATHS) {
+    const read = await runner([
+      "gh",
+      "api",
+      `repos/${consumingRepo}/contents/${path}`,
+      "-H",
+      "Accept: application/vnd.github.raw",
+    ]);
+    if (!read.success) continue;
+    // Bounded like every other untrusted manifest read (Issue #3942): the
+    // file's size is not this module's to trust.
+    const rawText = read.stdout.slice(0, MAX_MANIFEST_SCAN_CHARS);
+    if (rawText.trim().length === 0) continue;
+    manifestsRead++;
+
+    const file: ManifestFile = { path, rawText };
+    const declared = path.endsWith("package.json")
+      ? parseNpmManifest(file)
+      : parseDenoManifest(file);
+    for (const dependency of declared) {
+      const classification = classifyDependencySpec(dependency.name);
+      if (classification.kind !== "internal") continue;
+      if (classification.candidateRepo.toLowerCase() === wanted) {
+        return { authorised: true, via: "dependency", manifestPath: path };
+      }
+    }
+  }
+
+  return {
+    authorised: false,
+    reason: manifestsRead === 0
+      ? `no dependency manifest could be read from ${consumingRepo}, so no ` +
+        "cross-repo target can be authorised"
+      : `${targetRepo} is not a dependency ${consumingRepo} declares`,
+  };
 }
 
 // ---------------------------------------------------------------------------

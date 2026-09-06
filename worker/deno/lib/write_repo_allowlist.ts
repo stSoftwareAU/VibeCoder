@@ -52,8 +52,10 @@
  *   4. {@link withScopedWriteRepo} — a **worker-process** grant scoped to a
  *      single validated call and removed in a `finally` (Issue #182). Its one
  *      production caller is the cross-repo dependency-PR bridge
- *      (`cross_repo_pr_handoff.ts`), which validates the target as an
- *      internal, reachable, pushable `stSoftwareAU/*` repo first.
+ *      (`cross_repo_pr_handoff.ts`), which first validates the target as a
+ *      reachable, pushable `stSoftwareAU/*` repo that the consuming repo's
+ *      own manifest declares as a dependency (Issue #1382) — sharing the
+ *      owner is not on its own a reason to write to a sibling tenant.
  *
  * None of them reaches an agent subprocess that is already running.
  * `gh_guard_shim.ts` bakes a snapshot of this allowlist into the child's `gh`

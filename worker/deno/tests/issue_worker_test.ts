@@ -3683,6 +3683,13 @@ Deno.test({
       if (joined.includes("pr create")) return reply(`${prUrl}\n`);
       if (joined.includes("pr list")) return reply("");
       if (joined.includes("/branches/")) return reply('{"name":"branch"}');
+      // The consuming repo's manifest declares the dependency — the
+      // authorisation the bridge now requires (Issue #1382).
+      if (joined.includes("/contents/deno.json")) {
+        return reply(JSON.stringify({
+          imports: { neat: "jsr:@stsoftware/NEAT-AI-Discovery@^1.0.0" },
+        }));
+      }
       return reply(
         JSON.stringify({
           full_name: "stSoftwareAU/NEAT-AI-Discovery",
