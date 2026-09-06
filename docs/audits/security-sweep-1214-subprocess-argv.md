@@ -116,7 +116,10 @@ distinct root cause from the two above and from each other.
   PR-merged repository), `lib/security_tree_sweep.ts:1602` (`semgrep` over the
   swept tree) and `lib/workflow_auditor.ts:94` (`gh api` over the network).
   Reported as a missing bound rather than a proven hang. `severity:medium` ·
-  `confidence:high`
+  `confidence:high` — **closed by #1228**: all three now run under
+  `runWithTimeout` with a module constant (`DENO_DOC_TIMEOUT_MS` 120 s,
+  `SWEEP_SCANNER_TIMEOUT_MS` 900 s, `AUDITOR_COMMAND_TIMEOUT_MS` 60 s), and each
+  timeout surfaces as a fault rather than a clean result.
 - **SEC-1214-06**
   ([#1229](https://github.com/stSoftwareAU/VibeCoder/issues/1229)) —
   `lib/gh_spawn.ts`'s `signal` is opt-in, and the dominant path

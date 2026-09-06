@@ -45,6 +45,7 @@
 
 import { parseHttpStatus } from "./alert_feeds/code_scanning_alerts.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import { runWithTimeout } from "./subprocess_timeout.ts";
 import { runGhCommand } from "./github.ts";
 import { listAllOpenIssueTitles } from "./idle_task_snapshot.ts";
 import { ensureLabelExists } from "./label_operations.ts";
@@ -1613,32 +1614,48 @@ const SCANNER_ENV_NAMES: readonly string[] = [
 ];
 
 /**
- * Default runner — spawns the tool as a subprocess.
+ * Bound on a scanner spawn (Issue #1228).
+ *
+ * A scanner reads the tree being swept — content whose author is the
+ * attacker in this threat model — so an unbounded spawn is a hang that
+ * starves the worker's watchdogs, not a slow scan. Fifteen minutes is
+ * generous for semgrep over a large tree, including the container pull.
+ */
+export const SWEEP_SCANNER_TIMEOUT_MS = 900_000;
+
+/**
+ * Build the default runner — spawns the tool as a subprocess.
  *
  * Issue #1227: the binary comes from `cmd.bin`, and the coverage measurement
  * passes `"git"` — a direct `git` spawn the literal-matching chokepoint gate
  * could not see. It is delegated to `runGitCommand`, which owns the timeout,
  * the audit journal and the work-volume fault detector; the scanners
- * (gitleaks, trufflehog, semgrep) are spawned directly.
+ * (gitleaks, trufflehog, semgrep) are spawned directly, under
+ * {@link SWEEP_SCANNER_TIMEOUT_MS} (Issue #1228). A timed-out scanner returns
+ * exit 124, which every collector already treats as a fault rather than a
+ * clean scan.
+ *
+ * `runFn` is injectable so the bound is unit-tested without a subprocess.
  */
-const defaultRunner: SweepCommandRunner = async (cmd, cwd) => {
-  if (cmd.bin === "git") {
-    const result = await runGitCommand([...cmd.args], { cwd });
-    // Fail loud, matching the spawn-failure contract below.
-    if (!result.ok) {
-      throw new Error(
-        `failed to run "git": ${result.error.message}. ` +
-          `Install git before running the sweep.`,
-      );
+export function createDefaultRunner(
+  runFn: typeof runWithTimeout = runWithTimeout,
+): SweepCommandRunner {
+  return async (cmd, cwd) => {
+    if (cmd.bin === "git") {
+      const result = await runGitCommand([...cmd.args], { cwd });
+      // Fail loud, matching the spawn-failure contract below.
+      if (!result.ok) {
+        throw new Error(
+          `failed to run "git": ${result.error.message}. ` +
+            `Install git before running the sweep.`,
+        );
+      }
+      return result.value;
     }
-    return result.value;
-  }
 
-  let output: Deno.CommandOutput;
-  try {
-    output = await new Deno.Command(cmd.bin, {
-      args: cmd.args,
+    const result = await runFn(cmd.bin, [...cmd.args], {
       cwd,
+      timeoutMs: SWEEP_SCANNER_TIMEOUT_MS,
       // Issue #1226: this runs a scanner (or a container image of one) over
       // attacker-authored tree content, so its environment is BUILT from the
       // allowlist rather than inherited. The container-runtime names are the
@@ -1646,21 +1663,23 @@ const defaultRunner: SweepCommandRunner = async (cmd, cwd) => {
       // unreachable without them, and neither carries a credential.
       env: buildUntrustedCommandEnv({ extraNames: SCANNER_ENV_NAMES }),
       clearEnv: true,
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-  } catch (error) {
-    throw new Error(
-      `failed to run "${cmd.bin}": ${(error as Error).message}. ` +
-        `Install ${cmd.bin} before running the sweep.`,
-    );
-  }
-  return {
-    code: output.code,
-    stdout: new TextDecoder().decode(output.stdout),
-    stderr: new TextDecoder().decode(output.stderr),
+    });
+    if (!result.ok) {
+      throw new Error(
+        `failed to run "${cmd.bin}": ${result.error.message}. ` +
+          `Install ${cmd.bin} before running the sweep.`,
+      );
+    }
+    return {
+      code: result.value.code,
+      stdout: result.value.stdout,
+      stderr: result.value.stderr,
+    };
   };
-};
+}
+
+/** Default runner used in production. */
+const defaultRunner: SweepCommandRunner = createDefaultRunner();
 
 /** Resolve `bin` on PATH without spawning anything. */
 async function defaultWhich(bin: string): Promise<string | null> {
