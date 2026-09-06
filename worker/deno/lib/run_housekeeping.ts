@@ -46,6 +46,11 @@ import {
 } from "./work_volume_tiers.ts";
 import { workerLogCleanupCommand } from "../commands/worker_log_cleanup.ts";
 import {
+  DEFAULT_DISK_CLEANUP_GENTLE_THRESHOLD,
+  DEFAULT_DISK_CLEANUP_THRESHOLD,
+  validateCleanupThreshold,
+} from "./disk_space.ts";
+import {
   DEFAULT_HARD_CAP_COUNT,
   DEFAULT_MAX_AGE_DAYS,
 } from "./worker_log_cleanup.ts";
@@ -211,13 +216,26 @@ export async function sweepVolatileCliState(
  * @param env - Environment lookup for the tunables (Issue #956). Defaults to
  *   the process environment, so the production call is unchanged; a test
  *   passes a fixed map rather than mutating `Deno.env`.
+ * @param warn - Sink for a refused threshold (Issue #1268). Defaults to
+ *   `console.error`, so a bad value is never applied silently.
  */
 export function buildHousekeepingSteps(
   options: HousekeepingOptions,
   env: EnvLookup = processEnvLookup,
+  warn: (message: string) => void = (message) => console.error(message),
 ): HousekeepingStep[] {
   const envInt = (name: string, fallback: number): number =>
     getEnvNumberOrDefault(name, fallback, env);
+  // A cleanup threshold outside 1–100 is refused, not applied: 0 read as
+  // "always aggressive" and nuked the work directory on every start
+  // (Issue #1268). The default stands in, loudly.
+  const thresholdEnvInt = (name: string, fallback: number): number => {
+    const value = envInt(name, fallback);
+    const problem = validateCleanupThreshold(name, value);
+    if (problem === null) return value;
+    warn(`⚠️  ${problem}; using the default ${fallback}%`);
+    return fallback;
+  };
   return [
     {
       id: "audit-chain-verify",
@@ -229,8 +247,14 @@ export function buildHousekeepingSteps(
       command: "disk-space",
       args: {
         "work-dir": options.workDir,
-        "threshold": envInt("DISK_CLEANUP_THRESHOLD", 90),
-        "gentle-threshold": envInt("DISK_CLEANUP_GENTLE_THRESHOLD", 80),
+        "threshold": thresholdEnvInt(
+          "DISK_CLEANUP_THRESHOLD",
+          DEFAULT_DISK_CLEANUP_THRESHOLD,
+        ),
+        "gentle-threshold": thresholdEnvInt(
+          "DISK_CLEANUP_GENTLE_THRESHOLD",
+          DEFAULT_DISK_CLEANUP_GENTLE_THRESHOLD,
+        ),
       },
     },
     {

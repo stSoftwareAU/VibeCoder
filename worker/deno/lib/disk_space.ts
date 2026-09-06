@@ -48,6 +48,47 @@ export const DEFAULT_DISK_CLEANUP_GENTLE_THRESHOLD = 80;
 /** Default minimum free space in MB before large git operations (Issue #1168). */
 export const DEFAULT_MIN_FREE_SPACE_MB = 500;
 
+/** Lowest usable cleanup threshold (Issue #1268). */
+export const DISK_CLEANUP_THRESHOLD_MIN = 1;
+
+/** Highest usable cleanup threshold — disk usage is a percentage. */
+export const DISK_CLEANUP_THRESHOLD_MAX = 100;
+
+/**
+ * Check an operator-supplied cleanup threshold (Issue #1268).
+ *
+ * A threshold of `0` reads as "usage is always at or above the aggressive
+ * threshold", so every start nuked the work directory and every cloned
+ * repository on the volume with it — the opposite of the "disabled" an
+ * operator naturally expects `0` to mean. Negative values and values above
+ * 100 are equally meaningless against a usage percentage, as is a fraction.
+ *
+ * Enforced at the operator-facing boundaries — the `disk-space` CLI args and
+ * the housekeeping environment values — so a bad value is refused before it
+ * can reach {@link checkAndCleanupDiskSpace}. There is no "disabled"
+ * spelling: set the threshold to 100 to make the aggressive tier
+ * unreachable in practice.
+ *
+ * @param name - Flag or variable name to name in the failure message.
+ * @param value - The supplied threshold.
+ * @returns `null` when the value is usable, otherwise the failure message.
+ */
+export function validateCleanupThreshold(
+  name: string,
+  value: number,
+): string | null {
+  if (
+    Number.isInteger(value) &&
+    value >= DISK_CLEANUP_THRESHOLD_MIN &&
+    value <= DISK_CLEANUP_THRESHOLD_MAX
+  ) {
+    return null;
+  }
+  return `${name} must be 1–100 (whole percent), got ${value}: refusing ` +
+    `to run disk cleanup — 0 or a negative threshold would treat every ` +
+    `start as critical and delete the work directory`;
+}
+
 /** Ordered list of reclaim tier names. */
 export type ReclaimTierName =
   | "deno-cache"

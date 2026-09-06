@@ -14,19 +14,47 @@ import {
   DEFAULT_DISK_CLEANUP_GENTLE_THRESHOLD,
   DEFAULT_DISK_CLEANUP_THRESHOLD,
   type DiskCheckResult,
+  validateCleanupThreshold,
 } from "../lib/disk_space.ts";
 
 /**
  * Parse a numeric CLI argument. Returns the fallback when the value is
- * missing or cannot be parsed as a number.
+ * absent, and `NaN` when it is present but not a whole number — `parseInt`
+ * used to read `"0abc"` as `0`, which is exactly the value that made the
+ * cleanup aggressive on every start (Issue #1268).
  */
 function parseNumericArg(value: unknown, fallback: number): number {
+  if (value === undefined || value === null) return fallback;
   if (typeof value === "number") return value;
-  if (typeof value === "string") {
-    const parsed = parseInt(value, 10);
-    if (!isNaN(parsed)) return parsed;
+  if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+    return parseInt(value.trim(), 10);
   }
-  return fallback;
+  return NaN;
+}
+
+/** Outcome of resolving one threshold argument (Issue #1268). */
+type ThresholdArg =
+  | { ok: true; value: number }
+  | { ok: false; message: string };
+
+/**
+ * Resolve a threshold CLI argument, refusing anything outside 1–100.
+ *
+ * The refusal is named and loud rather than clamped: a threshold the
+ * operator did not mean should stop the destructive cleanup, not quietly
+ * become a different one.
+ */
+function resolveThresholdArg(
+  flag: string,
+  value: unknown,
+  fallback: number,
+): ThresholdArg {
+  const parsed = parseNumericArg(value, fallback);
+  const problem = validateCleanupThreshold(flag, parsed);
+  return problem === null ? { ok: true, value: parsed } : {
+    ok: false,
+    message: problem,
+  };
 }
 
 /**
@@ -37,13 +65,18 @@ function parseNumericArg(value: unknown, fallback: number): number {
  *                                with neither, the check reports "no directory
  *                                specified" — deliberately no HOME-derived
  *                                fallback, Issues #118/#135)
- *   --threshold <number>         Aggressive disk usage threshold (default: 90).
- *                                At or above this, the work directory is nuked
- *                                if incremental reclaim is insufficient.
- *   --gentle-threshold <number>  Gentle disk usage threshold (default: 80).
- *                                At or above this but below `--threshold`, only
- *                                the incremental reclaim pass runs — cloned
- *                                repositories are preserved (Issue #1499).
+ *   --threshold <number>         Aggressive disk usage threshold (default: 90,
+ *                                must be 1–100, Issue #1268). At or above this,
+ *                                the work directory is nuked if incremental
+ *                                reclaim is insufficient.
+ *   --gentle-threshold <number>  Gentle disk usage threshold (default: 80,
+ *                                must be 1–100). At or above this but below
+ *                                `--threshold`, only the incremental reclaim
+ *                                pass runs — cloned repositories are preserved
+ *                                (Issue #1499).
+ *
+ * A threshold outside 1–100 fails the command rather than running a cleanup
+ * the operator did not ask for.
  */
 export const diskSpaceCommand: Command = {
   name: "disk-space",
@@ -65,19 +98,29 @@ export const diskSpaceCommand: Command = {
       ? args["work-dir"]
       : (Deno.env.get("WORK_DIR") || "");
 
-    const threshold = parseNumericArg(
+    // Both thresholds are refused unless they are whole percentages in
+    // 1–100 (Issue #1268): 0 meant "always aggressive", so the work
+    // directory — every clone on the volume — was deleted on each start.
+    const threshold = resolveThresholdArg(
+      "--threshold",
       args["threshold"],
       DEFAULT_DISK_CLEANUP_THRESHOLD,
     );
-    const gentleThreshold = parseNumericArg(
+    if (!threshold.ok) return { success: false, message: threshold.message };
+
+    const gentleThreshold = resolveThresholdArg(
+      "--gentle-threshold",
       args["gentle-threshold"],
       DEFAULT_DISK_CLEANUP_GENTLE_THRESHOLD,
     );
+    if (!gentleThreshold.ok) {
+      return { success: false, message: gentleThreshold.message };
+    }
 
     const result = await checkAndCleanupDiskSpace({
       workDir,
-      threshold,
-      gentleThreshold,
+      threshold: threshold.value,
+      gentleThreshold: gentleThreshold.value,
     });
 
     return {

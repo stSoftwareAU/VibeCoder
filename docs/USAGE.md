@@ -493,6 +493,15 @@ subsequent issue processing:
 | `DISK_CLEANUP_GENTLE_THRESHOLD` | `80`    | Gentle threshold — incremental reclaim only; cloned repos preserved   |
 | `DISK_CLEANUP_THRESHOLD`        | `90`    | Aggressive threshold — may nuke `WORK_DIR` if reclaim is insufficient |
 
+Both thresholds are whole percentages and **must be 1–100** (Issue #1268).
+There is no "disabled" spelling: `0` would mean "usage is always at or above
+the threshold", which nuked `WORK_DIR` — and every cloned repository in it —
+on each start. An out-of-range value is refused rather than applied:
+`mod.ts disk-space --threshold 0` fails with a named error and cleans nothing,
+and an out-of-range environment value is logged loud and the default is used
+instead. To make the aggressive tier effectively unreachable, set
+`DISK_CLEANUP_THRESHOLD=100`.
+
 ## 🔄 Claude CLI Auto-Update
 
 At the start of each run, the worker automatically checks for and installs
