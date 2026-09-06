@@ -1050,11 +1050,31 @@ is the claim scan, which gains a tier
 ([`collect_self_diagnostic_candidates.ts`](worker/deno/lib/collect_self_diagnostic_candidates.ts))
 whose eligibility rests on provenance.
 
-- **Three signals must agree** — the issue is in the worker's own repo, its body
-  carries a recognised template marker matched as a whole HTML comment, and it
-  was filed by a fleet worker login. Author alone is insufficient: an injected
-  agent can file issues too. A worker-filed issue in a **product** repo, a
-  human-filed issue, and an unmarked issue are all refused.
+- **Four signals must agree** — the issue is in the worker's own repo, its body
+  carries a recognised template marker matched as a whole HTML comment, it was
+  filed by a fleet worker login, and the worker's own filer attested the filing
+  in the audit chain. Author alone is insufficient: an injected agent can file
+  issues too. A worker-filed issue in a **product** repo, a human-filed issue,
+  and an unmarked issue are all refused.
+- **The marker is not evidence the agent can mint (Issue #1277).** The first
+  three signals are all things the agent subprocess produces — it holds the
+  run's `gh` credential, may write to the claimed repo, and writes the body the
+  marker lives in — so `gh issue create` with a marker in the body used to mint
+  a self-scheduled work item. Eligibility now also requires a
+  `file-self-diagnostic` entry in the tamper-evident audit journal
+  ([`self_diagnostic_attestation.ts`](worker/deno/lib/self_diagnostic_attestation.ts)),
+  naming the created issue number and carrying a digest of the title and body
+  the filer posted. The journal lives outside every working tree, the agent's
+  own `gh` calls are journalled under the mutation classifier's verb rather
+  than this one, and only a journal that reconciles with its chain anchor is
+  read — so a hand-appended line, a rewritten entry and a freshly dropped
+  unanchored journal are all skipped. The store is tamper-*evident*, not
+  tamper-proof: an agent with unrestricted local shell could forge a journal,
+  its anchor and its roster entry together, which is a far higher bar than
+  typing a marker into an issue body and leaves a permanent record outside the
+  repo. Anything unattested is refused loudly and waits for a human `work-on`.
+  Attestations are host-local, so a diagnostic is self-scheduled by the host
+  that filed it; on any other host it waits for a human.
 - **Forged markers.** The filers escape `<!--` / `-->` out of every interpolated
   field before a body is written, so a marker in a filed body can only have come
   from the template.
@@ -1067,9 +1087,11 @@ whose eligibility rests on provenance.
 - **Reversible.** `self_schedule_diagnostics_enabled: false` restores the
   previous behaviour exactly.
 - **Residual risk, stated.** An actor with write access to the worker's repo can
-  edit a worker-filed body. That actor can already apply `work-on` directly, so
-  self-scheduling grants no new capability, and issue content still reaches the
-  agent inside the untrusted-content boundary.
+  edit a worker-filed body. Editing it no longer makes the issue
+  self-schedulable — the attested body digest stops matching — and that actor
+  can already apply `work-on` directly, so self-scheduling grants no new
+  capability. Issue content still reaches the agent inside the
+  untrusted-content boundary.
 
 #### 5b. Self-diagnostic alert dedup — the marker match is author-verified
 
