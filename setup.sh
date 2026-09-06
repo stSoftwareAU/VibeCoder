@@ -801,6 +801,30 @@ claude_credential_is_valid() {
     return 0
 }
 
+# Path prefix of every setup-token transcript this run creates (Issue #1300).
+#
+# `$$` stays the top-level shell's PID even inside the command substitution
+# that calls capture_setup_token, so the sweep below can only ever remove a
+# transcript this run created — never one a concurrent setup.sh is still
+# reading its own token out of.
+setup_token_transcript_prefix() {
+    printf '%s/vibe-setup-token.%s.' "${TMPDIR:-/tmp}" "$$"
+}
+
+# Remove every setup-token transcript this run created (Issue #1300).
+#
+# `script(1)` logs the whole pty session, so a transcript holds the
+# sk-ant-oat01-... token in full — the long-lived credential that bills the
+# operator's subscription. Removing it only on the success path left it at
+# rest in ${TMPDIR:-/tmp} whenever a signal ended the run, outside the 0700
+# credential directory and therefore invisible to the rotation story. Called
+# from the traps installed in main(), so it must stay idempotent and quiet.
+remove_setup_token_transcripts() {
+    local prefix
+    prefix="$(setup_token_transcript_prefix)"
+    rm -f "$prefix"*
+}
+
 # Run `claude setup-token` on the operator's behalf and capture the token it
 # prints (Issue #4161). The CLI renders an interactive terminal UI, so it must
 # keep a real pty: `script(1)` supplies one while logging the session to an
@@ -811,8 +835,18 @@ claude_credential_is_valid() {
 capture_setup_token() {
     local transcript token tty_out
     command -v script &>/dev/null || return 0
-    transcript="$(mktemp "${TMPDIR:-/tmp}/vibe-setup-token.XXXXXX")" || return 0
+    transcript="$(mktemp "$(setup_token_transcript_prefix)XXXXXX")" || return 0
     chmod 600 "$transcript"
+    # Cleanup is registered with the file's creation, so every exit path takes
+    # it (Issue #1300): RETURN covers a normal return, and the signal traps
+    # cover a Ctrl-C at the browser sign-in — the longest interactive pause in
+    # the whole of setup.sh, and precisely where an operator changes their
+    # mind. This function runs inside a command substitution, so these traps
+    # belong to that subshell; main()'s sweep covers the shell that spawned it.
+    trap 'rm -f "$transcript"' RETURN
+    trap 'rm -f "$transcript"; exit 130' INT
+    trap 'rm -f "$transcript"; exit 143' TERM
+    trap 'rm -f "$transcript"; exit 129' HUP
     # The UI still needs the terminal; stdout of this function is captured by
     # the caller, so route the display to the tty when there is one. `-w`
     # is not enough — without a controlling terminal /dev/tty passes the
@@ -828,7 +862,8 @@ capture_setup_token() {
         script -q -c "claude setup-token" "$transcript" > "$tty_out" 2>&1 || true
     fi
     token="$(grep -oE 'sk-ant-oat01-[A-Za-z0-9_-]+' "$transcript" | tail -1 || true)"
-    rm -f "$transcript"
+    # No `rm -f` here: the RETURN trap above removes the transcript on this
+    # path and on every other one.
     printf '%s' "$token"
 }
 
@@ -1286,6 +1321,16 @@ prompt_launchagent_setup() {
 }
 
 main() {
+    # A setup-token transcript must not outlive the run that made it
+    # (Issue #1300). capture_setup_token traps its own subshell; these cover
+    # the shell that spawned it, including the signal that kills the whole run
+    # mid-capture. Installed here rather than at file scope so sourcing
+    # setup.sh (which the tests do) still has no side effects.
+    trap 'remove_setup_token_transcripts' EXIT
+    trap 'remove_setup_token_transcripts; exit 130' INT
+    trap 'remove_setup_token_transcripts; exit 143' TERM
+    trap 'remove_setup_token_transcripts; exit 129' HUP
+
     # --auto-install consents in advance to every offered install (Issue #33),
     # so a scripted `./setup.sh --auto-install` gets the container runtime
     # installed without a terminal to prompt on. It is deliberately a flag the
