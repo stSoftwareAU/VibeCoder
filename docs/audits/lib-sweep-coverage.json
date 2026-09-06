@@ -483,6 +483,7 @@
         "worker/deno/lib/config_unknown_keys.ts",
         "worker/deno/lib/conflict_intent_audit.ts",
         "worker/deno/lib/conflict_intent_context.ts",
+        "worker/deno/lib/conflict_marker_trust.ts",
         "worker/deno/lib/conflict_queue_order.ts",
         "worker/deno/lib/console_redaction.ts",
         "worker/deno/lib/console_style.ts",

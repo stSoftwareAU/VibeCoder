@@ -39,6 +39,7 @@ import {
   isFleetAuthor,
   resolveFleetMaintenanceAuthorSet,
 } from "./fleet_authors.ts";
+import { partitionConflictComments } from "./conflict_marker_trust.ts";
 import { listOpenPrs, type PrEntry } from "./pr_maintenance.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
@@ -520,6 +521,16 @@ export interface FindConflictingPrOptions {
   /** Label applied on escalation. Defaults to `needs-human`. */
   needsHumanLabel?: string;
   /**
+   * Fleet logins whose marker comments count (Issue #1247).
+   *
+   * Defaults to the pass's own push-capable maintenance set, which is already
+   * resolved here — so production is verified without a second definition of
+   * "the fleet". An empty set means nothing can be attributed, and every
+   * marker is discarded: the PR is then never abandoned, which is the
+   * harmless direction for a rung that closes PRs.
+   */
+  trustedAuthors?: readonly string[];
+  /**
    * Abandon-and-restart seam (Issue #1115) — the rung between a spent budget
    * and `needs-human`. Defaults to {@link abandonAndRestart}.
    */
@@ -579,7 +590,16 @@ export function conflictPrKey(repo: string, prNumber: number): string {
  * The history lives on the PR rather than in host-local state, so the bounds
  * hold across worker restarts and across hosts.
  *
- * @param comments - Raw comment objects from the GitHub REST API, oldest first.
+ * **Author-blind by construction, and only safe on a thread that has already
+ * been filtered** (Issue #1247). A PR comment is writable by any GitHub
+ * account, and the tally this returns drives `abandonRestart`, which *closes*
+ * the PR — so two planted `CONFLICT_FAILED_MARKER` comments were enough to
+ * destroy a PR before the caller filtered the thread through
+ * `partitionConflictComments`. Callers pass the trusted comments only.
+ *
+ * @param comments - Raw comment objects from the GitHub REST API, oldest
+ *   first, already reduced to the fleet's own by
+ *   {@link file://./conflict_marker_trust.ts}.
  * @returns Concluded and disrupted counts, whether an attempt is still open,
  *   and the timestamp of the most recent attempt.
  */
@@ -1044,10 +1064,6 @@ export async function findConflictingPr(
     prefer,
   } = options;
 
-  const abandonRestart = options.abandonRestart ??
-    ((request: AbandonRestartRequest) =>
-      abandonAndRestart(request, { gh: ghCommandFn, logger }));
-
   // The pass pushes a merge commit to the PR branch, so it is scoped to
   // the push-capable maintenance set (Issue #4076) — never an uninvited
   // human's PR.
@@ -1056,6 +1072,18 @@ export async function findConflictingPr(
     allowedAuthors,
     fleetPrAuthors,
   });
+
+  // The same set decides whose marker comments count (Issue #1247): the
+  // accounts the fleet actually operates, and nobody else.
+  const trustedAuthors = options.trustedAuthors ?? scanAuthors;
+
+  const abandonRestart = options.abandonRestart ??
+    ((request: AbandonRestartRequest) =>
+      abandonAndRestart(request, {
+        gh: ghCommandFn,
+        logger,
+        trustedAuthors,
+      }));
 
   /**
    * Decide one PR, in the order the gates run.
@@ -1162,7 +1190,29 @@ export async function findConflictingPr(
     // (Issue #1115).
     let prComments: readonly unknown[] = [];
     try {
-      prComments = await fetchIssueCommentPages(repo, pr.number, ghCommandFn);
+      // The author is checked, not just the marker (Issue #1247). This tally
+      // drives `abandonRestart`, which CLOSES the PR, and a PR comment is
+      // text any GitHub account may write — so the thread is reduced to the
+      // fleet's own before anything counts it. Discarding an unattributable
+      // comment lowers the tally, so the failure direction is "not
+      // abandoned"; the same filtered thread is what the abandon quotes.
+      const thread = await fetchIssueCommentPages(repo, pr.number, ghCommandFn);
+      const attribution = partitionConflictComments(thread, trustedAuthors);
+      const discarded = thread.length - attribution.trusted.length;
+      if (discarded > 0) {
+        logger.warn(
+          `PR #${pr.number}: ignored ${discarded} comment(s) the fleet did ` +
+            "not author — a marker anyone can post must not spend the " +
+            "merge-conflict attempt budget",
+          {
+            repo,
+            prNumber: pr.number,
+            discarded,
+            unattributable: attribution.unattributable,
+          },
+        );
+      }
+      prComments = attribution.trusted;
       history = parseConflictAttempts(prComments);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
