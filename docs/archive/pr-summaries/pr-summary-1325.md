@@ -58,6 +58,16 @@ claims` and
 `every sweep record the ledger names exists in the tree` both went red; writing
 the record turned them green.
 
+## Quality gate
+
+`./quality.sh` was run in full. Every stage passes except `deno tests`, which
+fails on `plan_coverage_gate_bounds_1245_test.ts` — a **pre-existing** failure
+on `milestone/fix-scan-issues-20260906`, already filed as #1366. Verified
+independent of this change: with the working tree stashed (`git stash -u`),
+`deno test -A --no-check tests/plan_coverage_gate_bounds_1245_test.ts` still
+reports `FAILED | 4 passed | 1 failed`. Nothing else in the suite fails against
+this branch.
+
 ## Test Plan
 
 Added to `worker/deno/tests/lib_sweep_coverage_test.ts`:
