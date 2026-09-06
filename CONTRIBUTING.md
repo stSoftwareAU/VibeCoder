@@ -25,8 +25,7 @@ guidance below summarises what humans need to know to land a change.
 ## Branching
 
 - **`Develop` is the default branch** — open all pull requests against
-  `Develop` (see `.vibe_default_branch` and
-  `.github/workflows/pages.yml`). `main` is reserved for releases.
+  `Develop` (see `.vibe_default_branch`). `main` is reserved for releases.
 - **Milestone branches** — work tagged with a GitHub milestone lands on
   the milestone branch first; the milestone is merged into `Develop` as
   a unit when the milestone closes. See

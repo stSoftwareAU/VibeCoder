@@ -25,7 +25,6 @@ runs itself and is steered entirely through GitHub. See
   - [Using Task Scheduler (Windows)](#using-task-scheduler-windows)
 - [Changing `container_tools` forces an image rebuild](#-changing-container_tools-forces-an-image-rebuild)
 - [Logs](#logs)
-- [GitHub Pages](#github-pages)
 - [Screenshot Support Setup](#screenshot-support-setup)
   - [Screenshot Upload Configuration](#screenshot-upload-configuration)
 
@@ -894,25 +893,6 @@ per-run logs are also size-rotated while a run is in flight.
 
 > **💡 Tip:** The worker automatically strips terminal escape sequences from Claude Code output, ensuring logs contain only human-readable text.
 
-## 🌐 GitHub Pages
-
-The README and documentation (under `docs/`) can be published to GitHub Pages so the site is available at **https://stsoftwareau.github.io/VibeCoder/**.
-
-**To enable:**
-
-1. In the repository, go to **Settings → Pages**.
-2. Under **Build and deployment**, set **Source** to **GitHub Actions**.
-3. Push a change that touches `README.md`, `docs/`, `SECURITY.md`, `AGENTS.md`, `_config.yml`, or `Gemfile` (or run the workflow manually from the Actions tab: **Deploy docs to GitHub Pages**).
-
-The workflow (`.github/workflows/pages.yml`) builds the site with Jekyll: the README is used as the landing page, and all files under `docs/` plus `SECURITY.md` and `AGENTS.md` are published. **Mermaid diagrams** in the markdown (e.g. in the README and workflow docs) are rendered in the browser via [Mermaid.js](https://mermaid.js.org/) loaded from `_includes/head-custom.html`. The site is rebuilt automatically on pushes to `Develop` that change those paths.
-
-**If the workflow reports success but the site shows 404:**
-
-1. **Set source to GitHub Actions** — In the repo go to **Settings → Pages** (under "Code and automation"). Under **Build and deployment**, set **Source** to **GitHub Actions** (not "Deploy from a branch"). If it is "Deploy from a branch", GitHub serves that branch; the Actions workflow uploads a separate artifact that is only used when Source is "GitHub Actions".
-2. **Re-run the workflow** — After changing the source, run **Actions → Deploy docs to GitHub Pages → Run workflow** (or push a change to `Develop` that touches the workflow paths). Wait for the run to complete.
-3. **Check the run** — In the workflow run, open the **build** job and confirm the step "Verify build output" shows `index.html present`. Then confirm the **deploy** job succeeded.
-4. **Cache / URL** — Try the site in a private window or after a short delay: https://stsoftwareau.github.io/VibeCoder/
-
 ## 📸 Screenshot Support Setup
 
 When working on UI changes, the worker can capture screenshots as evidence.
@@ -1020,13 +1000,12 @@ claude "Take a screenshot of http://localhost:3000"
 
 > **CI-installed CLIs are quarantined by pin, not by manifest.**
 > This repo ships no npm manifest, so Renovate's npm manager had nothing to
-> manage and the CLIs CI installs at build time — `markdownlint-cli2`,
-> `pa11y-ci`, `http-server` — sat outside the quarantine entirely;
-> `gem install bundler-audit` sat outside the `Gemfile` tree for the same
-> reason. Every such install now pins an exact version in the workflow, and
+> manage and the CLIs CI installs at build time — `markdownlint-cli2`, plus
+> `pa11y-ci`/`http-server` until Issue #1344 removed the Pages workflow — sat
+> outside the quarantine entirely; `gem install bundler-audit` sat outside the
+> `Gemfile` tree for the same reason. Every such install pins an exact
+> version in the workflow, and
 > `renovate.json` declares `customManagers` matching those pins in
 > `.github/workflows/*.yml`, so the **24h** `minimumReleaseAge` applies to them
 > like any other ecosystem. Installs pass `--ignore-scripts` where the package
-> permits it, keeping install-time lifecycle scripts off the runner — `pa11y-ci`
-> is the one exemption, because its puppeteer dependency fetches the browser
-> from a postinstall script.
+> permits it, keeping install-time lifecycle scripts off the runner.

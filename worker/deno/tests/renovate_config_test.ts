@@ -2,7 +2,7 @@
  * Tests for the repo-root `renovate.json` supply-chain quarantine config
  * (Issue #2124).
  *
- * The repo has third-party Deno (JSR `@std/*`) and Ruby (Jekyll) deps
+ * The repo has third-party Deno (JSR `@std/*`) and Ruby (`Gemfile.lock`) deps
  * but previously shipped no auto-update tooling or quarantine gate.
  * `renovate.json` closes the gap identified by the security-scan
  * dependency-update quarantine audit (`supply-chain:quarantine-missing`):

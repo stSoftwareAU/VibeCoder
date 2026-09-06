@@ -13,4 +13,3 @@ rules:
       # does not already fix.
       - dependency-audit.yml
       - markdown-lint.yml
-      - pages.yml

@@ -9,20 +9,16 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | Action | Version | Commit SHA | Used in | Verdict |
 | --- | --- | --- | --- | --- |
 | actions/cache | v6.1.0 | 55cc8345863c7cc4c66a329aec7e433d2d1c52a9 | .github/workflows/validate-scripts.yml | pinned to commit SHA |
-| actions/checkout | v7.0.1 | 3d3c42e5aac5ba805825da76410c181273ba90b1 | .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/dependency-review.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/pages.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/semgrep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
-| actions/configure-pages | v6.0.0 | 45bfe0192ca1faeb007ade9deae92b16b8254a0d | .github/workflows/pages.yml | pinned to commit SHA |
+| actions/checkout | v7.0.1 | 3d3c42e5aac5ba805825da76410c181273ba90b1 | .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/dependency-review.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/semgrep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
 | actions/dependency-review-action | v5.0.0 | a1d282b36b6f3519aa1f3fc636f609c47dddb294 | .github/workflows/dependency-review.yml | pinned to commit SHA |
-| actions/deploy-pages | v5.0.0 | cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 | .github/workflows/pages.yml | pinned to commit SHA |
-| actions/download-artifact | v8.0.1 | 3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c | .github/workflows/pages.yml | pinned to commit SHA |
 | actions/setup-node | v7.0.0 | 820762786026740c76f36085b0efc47a31fe5020 | .github/workflows/markdown-lint.yml | pinned to commit SHA |
 | actions/upload-artifact | v7.0.1 | 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a | .github/workflows/dependency-audit.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
-| actions/upload-pages-artifact | v5.0.0 | fc324d3547104276b827a68afc52ff2a11cc49c9 | .github/workflows/pages.yml | pinned to commit SHA |
 | aquasecurity/trivy-action | v0.36.0 | ed142fd0673e97e23eac54620cfb913e5ce36c25 | .github/workflows/dependency-audit.yml | pinned to commit SHA |
-| denoland/setup-deno | v2.0.5 | 22d081ff2d3a40755e97629de92e3bcbfa7cf2ed | .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/pages.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
+| denoland/setup-deno | v2.0.5 | 22d081ff2d3a40755e97629de92e3bcbfa7cf2ed | .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
 | github/codeql-action/analyze | v4.37.9 | cdf488f595d80d6e07e03d4674febd5ab45fa938 | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | github/codeql-action/init | v4.37.9 | cdf488f595d80d6e07e03d4674febd5ab45fa938 | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | gitleaks/gitleaks-action | v3.0.0 | e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e | .github/workflows/gitleaks.yml | pinned to commit SHA |
-| ruby/setup-ruby | v1.321.0 | 95ef2b042f9d7a56d8268cba8559e2842e2ad01b | .github/workflows/dependency-audit.yml, .github/workflows/pages.yml | pinned to commit SHA |
+| ruby/setup-ruby | v1.321.0 | 95ef2b042f9d7a56d8268cba8559e2842e2ad01b | .github/workflows/dependency-audit.yml | pinned to commit SHA |
 
 ## Container base images
 

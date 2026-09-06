@@ -46,9 +46,8 @@ Deno.test("preserved wip #770 - the handover path is one the commit gate will st
       `${path} must not contain a hidden segment (the enforced .gitignore ` +
         `drops those)`,
     );
-    // A handover carries free agent prose, so it must live where the Jekyll
-    // build cannot read it: `_config.yml` excludes `docs/archive`, and a
-    // stray `{%` in a merged handover would otherwise break the Pages build.
+    // A handover carries free agent prose, so it must live where the docs
+    // gates cannot read it: the markdownlint globs exclude `docs/archive`.
     assertStringIncludes(path, "docs/archive/");
   }
 });

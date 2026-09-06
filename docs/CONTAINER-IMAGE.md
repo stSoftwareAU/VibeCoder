@@ -27,10 +27,11 @@ scripts as root.
 ## Base image
 
 The base is the official Ruby image (itself built on `buildpack-deps:trixie`)
-because `./quality.sh` needs both: the Pages scripts under
-`.github/scripts/*.rb` need ruby >= 3.1 for `Psych.safe_load_file`
-, and git >= 2.41 is required for `--end-of-options` to be dropped from
-argv rather than taken as a revision. The image already ships
+for two historical reasons: the Pages scripts under `.github/scripts/*.rb`
+needed ruby >= 3.1 for `Psych.safe_load_file`
+— those scripts went with the publishing pipeline in Issue #1344, and moving
+off the Ruby base is tracked in Issue #1376 — and git >= 2.41 is required for
+`--end-of-options` to be dropped from argv rather than taken as a revision. The image already ships
 bash, GNU coreutils (so `timeout` resolves without the macOS `gtimeout`
 fallback), git, curl and ca-certificates, which is why there is no
 package-manager install step to rot.

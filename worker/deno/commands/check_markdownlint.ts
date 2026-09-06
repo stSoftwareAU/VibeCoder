@@ -3,7 +3,7 @@
  *
  * Validates Markdown structural quality across published docs by
  * driving `markdownlint-cli2`. Used by the quality gate so the broader
- * class of Markdown breakage missed by `pages-liquid` and `mermaid` —
+ * class of Markdown breakage missed by `mermaid` —
  * malformed tables, broken heading hierarchies, missing-space ATX
  * headings, empty links — is caught before merge.
  *
@@ -12,7 +12,7 @@
  *     [--script-dir /repo/root]
  *
  * Skips with a clear reason when `markdownlint-cli2` is not available
- * locally, mirroring the pages-liquid/check-pages-liquid pattern.
+ * locally, mirroring the check-mermaid pattern.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */

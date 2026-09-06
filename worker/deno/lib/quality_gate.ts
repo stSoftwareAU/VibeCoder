@@ -36,9 +36,7 @@ import {
   recordPass,
 } from "./quality_gate_cache.ts";
 import { scanWorkflowsForHygiene } from "./workflow_hygiene_check.ts";
-import { runPagesLiquidCheck } from "./pages_liquid_check.ts";
 import { runMermaidCheck } from "./mermaid_check.ts";
-import { checkBuiltMermaidOutput } from "./mermaid_built_output_check.ts";
 import { runMarkdownlintCheck } from "./markdownlint_check.ts";
 import { runSemgrepCheck } from "./semgrep_check.ts";
 import { checkReleaseTagRuleset } from "./release_tag_ruleset_check.ts";
@@ -877,26 +875,6 @@ async function runSourceTargetCheck(
 }
 
 /**
- * Run the pages-liquid check (Issue #1601).
- *
- * Validates that every published Markdown file (AGENTS.md, README.md,
- * SECURITY.md, docs/**\/*.md) parses as valid Liquid AFTER the same
- * preprocessing step the Pages workflow uses. SKIPPED when Ruby +
- * Liquid is not installed locally (strict mode promotes SKIPPED to
- * FAILED so CI catches missing toolchains).
- */
-async function runPagesLiquidQualityCheck(
-  config: QualityGateConfig,
-): Promise<CheckExecutionResult> {
-  const result = await runPagesLiquidCheck(config.scriptDir);
-  return {
-    name: "pages-liquid",
-    status: result.status,
-    output: result.output,
-  };
-}
-
-/**
  * Run the mermaid quality check (Issue #1683).
  *
  * Validates every Mermaid block in every `.md` file in the repository so
@@ -916,32 +894,12 @@ async function runMermaidQualityCheck(
 }
 
 /**
- * Run the built-output Mermaid check (Issue #272).
- *
- * The `mermaid` check above validates Mermaid *blocks* in Markdown; the
- * security-level and CDN-integrity tests validate the *source* include. This
- * validates the HTML that actually ships. SKIPPED locally, where no Jekyll
- * build exists — strict mode promotes that to FAILED, and `pages.yml` runs it
- * against a real `_site` right after the build.
- */
-async function runMermaidBuiltOutputQualityCheck(
-  config: QualityGateConfig,
-): Promise<CheckExecutionResult> {
-  const result = await checkBuiltMermaidOutput(`${config.scriptDir}/_site`);
-  return {
-    name: "mermaid built output",
-    status: result.status,
-    output: result.output,
-  };
-}
-
-/**
  * Run the markdownlint quality check (Issue #1685).
  *
  * Drives `markdownlint-cli2` against the published Markdown set
  * (AGENTS.md, README.md, SECURITY.md, docs/**\/*.md) using the rule
  * selection in `.markdownlint-cli2.jsonc`. Catches structural defects
- * the pages-liquid (#1601) and mermaid (#1683) checks miss. Returns
+ * the mermaid (#1683) check misses. Returns
  * SKIPPED when no markdownlint-cli2 binary is available; strict mode
  * promotes that to FAILED.
  */
@@ -1396,26 +1354,14 @@ export async function runQualityGate(
   // Source target validation
   mainChecks.push(() => runSourceTargetCheck(config));
 
-  // Pages-liquid (Issue #1601) — validates published Markdown parses as
-  // Liquid after the same preprocessing the Pages workflow uses. Skipped
-  // when Ruby + Liquid is unavailable locally; promoted to FAILED in
-  // strict mode so CI catches missing toolchains.
-  mainChecks.push(() => runPagesLiquidQualityCheck(config));
-
   // Mermaid (Issue #1683) — validates every Mermaid block in every .md
   // file in the repo. No external toolchain required.
   mainChecks.push(() => runMermaidQualityCheck(config));
 
-  // Mermaid built output (Issue #272) — asserts securityLevel and the CDN
-  // SRI hash in the built `_site` HTML, not just the source include. Skipped
-  // when there is no local Jekyll build; `pages.yml` runs the same check
-  // against the real artifact.
-  mainChecks.push(() => runMermaidBuiltOutputQualityCheck(config));
-
   // Markdownlint (Issue #1685) — drives markdownlint-cli2 against the
   // published Markdown set to catch structural defects (broken tables,
-  // heading hierarchy, missing-space ATX headings) that the
-  // pages-liquid and mermaid checks miss. Skipped when the linter
+  // heading hierarchy, missing-space ATX headings) that the mermaid
+  // check misses. Skipped when the linter
   // binary is not available locally.
   mainChecks.push(() => runMarkdownlintQualityCheck(config));
 

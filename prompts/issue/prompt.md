@@ -803,39 +803,6 @@ flowchart LR
 ```
 ````
 
-### Jekyll-safe Markdown (Liquid escaping)
-
-The `docs/` directory is published via GitHub Pages, which runs every Markdown
-file through the Jekyll/Liquid templating engine. **Any literal `{% ... %}` or
-`{{ ... }}` sequence outside a fenced code block will be parsed as a Liquid tag**
-and will break the Pages build (e.g.
-`Liquid Exception: Liquid syntax error`).
-
-When the PR summary describes Jekyll layouts, Liquid templates, GitHub Actions
-expressions, or any prose that contains literal `{% ... %}` or `{{ ... }}`
-outside a fenced code block, you MUST wrap that prose in a
-`{% raw %} ... {% endraw %}` block so the GitHub Pages build does not try to
-parse it as Liquid.
-
-Rules:
-
-- Inside a fenced code block (triple backticks) Liquid is **not** parsed — no
-  wrapping needed.
-- In ordinary prose, inline code spans (single backticks) do **not** protect
-  Liquid syntax — wrap in `{% raw %}` anyway.
-- The placeholders this prompt injects (the issue number, the repository) are
-  replaced before the file is written, so they never reach Pages and do not need
-  wrapping in your output.
-
-Example — Jekyll/Liquid mentioned in prose:
-
-```markdown
-## Summary
-
-Fixed the layout by replacing {% raw %}`{% if page.title %}...{% endif %}`{% endraw %}
-with a safer pattern. Closes #{{ISSUE_NUMBER}}.
-```
-
 This is the shape your own `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md`
 should take — these sections, in this order (the `## Reproduction` block only for
 a `bug`-labelled issue, the `## Acceptance Criteria` and `## Standards Review`

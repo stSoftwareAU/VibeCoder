@@ -42,7 +42,3 @@ id_rsa
 id_rsa.*
 credentials.json
 service-account*.json
-
-# Generated for GitHub Pages (README copy used as site index by .github/workflows/pages.yml)
-/index.md
-
