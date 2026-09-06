@@ -19,6 +19,10 @@ import {
 } from "./gh_credential_stage.ts";
 import { incrementCounter } from "./fault_tolerance_counters.ts";
 import { auditGitMutation } from "./audit_hook.ts";
+import {
+  redactGitMessageArgs,
+  UnredactableMessageError,
+} from "./git_message_redaction.ts";
 
 /** Default timeout in seconds for standard git operations. */
 const DEFAULT_GIT_COMMAND_TIMEOUT = 60;
@@ -148,6 +152,16 @@ async function repairGitAuthEnvironment(): Promise<boolean> {
   return wrote;
 }
 
+/**
+ * Reader the message redaction uses for `-F <path>` bodies (Issue #1284).
+ *
+ * Throws when the file cannot be read, which the caller turns into a loud
+ * refusal rather than an unscanned commit.
+ */
+function readMessageFileSync(path: string): string {
+  return Deno.readTextFileSync(path);
+}
+
 export async function runGitCommand(
   args: string[],
   options: GitCommandOptions = {},
@@ -157,12 +171,38 @@ export async function runGitCommand(
     getTimeoutForOperation(gitSubcommand);
   const timeoutMs = timeoutSeconds * 1000;
 
+  // Issue #1284: mask secrets in the message arguments before the process
+  // starts. A pushed commit message is permanent public history, so this is
+  // the git counterpart of `redactGhBodyArgs` at the `gh` chokepoint. Only
+  // text-carrying arguments are rewritten; routing arguments are untouched.
+  let effectiveArgs: string[];
+  try {
+    effectiveArgs = redactGitMessageArgs(args, readMessageFileSync);
+  } catch (error: unknown) {
+    if (!(error instanceof UnredactableMessageError)) throw error;
+    // Fail loud rather than commit a message no control could scan. The
+    // message names the source, never the unscanned text.
+    return {
+      ok: false,
+      error: new Error(
+        `[SECURITY] [GIT_MESSAGE_UNREDACTABLE] refusing to run git ` +
+          `${gitSubcommand}: ${error.message}`,
+      ),
+    };
+  }
+  if (effectiveArgs.some((arg, i) => arg !== args[i])) {
+    console.error(
+      "[SECURITY] [GIT_MESSAGE_REDACTED] a secret was masked in the message " +
+        `of this git ${gitSubcommand} before it reached history (Issue #1284)`,
+    );
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const command = new Deno.Command("git", {
-      args,
+      args: effectiveArgs,
       cwd: options.cwd,
       env: options.env,
       stdout: "piped",
@@ -180,7 +220,7 @@ export async function runGitCommand(
     // fault, not this call's — record it once so the claim guards stop new
     // work on the broken volume.
     if (process.code !== 0) {
-      noteGitOutputForVolumeFault(args, stderr, stdout);
+      noteGitOutputForVolumeFault(effectiveArgs, stderr, stdout);
     }
 
     // Issue #564: git lost its credential helper and identity mid-run while
@@ -204,7 +244,7 @@ export async function runGitCommand(
 
     // Issue #2380: journal `git push` mutations to the audit log.
     // Best-effort — never lets journalling alter or abort the git call.
-    await auditGitMutation(args, process.code);
+    await auditGitMutation(effectiveArgs, process.code);
 
     return {
       ok: true,
@@ -221,7 +261,7 @@ export async function runGitCommand(
           code: TIMEOUT_EXIT_CODE,
           stdout: "",
           stderr: `TIMEOUT: git ${
-            args.join(" ")
+            effectiveArgs.join(" ")
           } timed out after ${timeoutSeconds}s (Issue #619)`,
         },
       };
@@ -230,7 +270,7 @@ export async function runGitCommand(
     return {
       ok: false,
       error: new Error(
-        `Failed to execute git ${args.join(" ")}: ${
+        `Failed to execute git ${effectiveArgs.join(" ")}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       ),
