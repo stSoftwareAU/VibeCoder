@@ -1,9 +1,8 @@
 // markdownlint-cli2 configuration for the Vibe Coder repo (Issue #1685).
 //
 // Catches the broad class of Markdown syntax errors that the
-// pages-liquid (#1601) and mermaid (#1683) checks miss — broken
-// heading hierarchies, malformed tables, missing-space ATX headings,
-// and empty links.
+// mermaid (#1683) check misses — broken heading hierarchies, malformed
+// tables, missing-space ATX headings, and empty links.
 //
 // Stylistic rules (line length, trailing whitespace, fenced-code-language,
 // blank lines around fences) are intentionally disabled — they generate
@@ -12,9 +11,9 @@
 //
 // Australian English spelling used throughout (behaviour, colour, etc.).
 {
-  // Files scanned by the markdownlint quality gate stage. Mirrors the
-  // pages-liquid file set (AGENTS.md, README.md, SECURITY.md,
-  // docs/**/*.md) so coverage is consistent across structural checks.
+  // Files scanned by the markdownlint quality gate stage: the docs a
+  // reader actually opens on GitHub (AGENTS.md, README.md, SECURITY.md,
+  // docs/**/*.md).
   "globs": [
     "AGENTS.md",
     "README.md",
@@ -28,9 +27,7 @@
   "ignores": [
     "docs/archive/**",
     "node_modules/**",
-    "_site/**",
-    "vendor/**",
-    ".jekyll-cache/**"
+    "vendor/**"
   ],
 
   // Rule selection — start from `default: false` and opt in to the

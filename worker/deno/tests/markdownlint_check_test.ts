@@ -10,7 +10,7 @@
  *     calls out).
  *   - runMarkdownlintCheck SKIPPED when no runner is detected.
  *   - SKIPPED state is promoted to FAILED via the shared formatSummary
- *     helper when strict mode is requested (mirrors the pages-liquid
+ *     helper when strict mode is requested (mirrors the mermaid
  *     pattern).
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
@@ -185,7 +185,7 @@ Deno.test("runMarkdownlintCheck - SKIPPED when no runner is detected", async () 
 
 Deno.test("runMarkdownlintCheck - SKIPPED is promoted to FAILED in strict mode (formatSummary)", () => {
   // Mirrors how the quality gate evaluates strictness for SKIPPED rows
-  // — pages-liquid does the same. Keeping this in the markdownlint
+  // — check-mermaid does the same. Keeping this in the markdownlint
   // suite documents the contract and prevents regressions if the
   // helper changes.
   const checks: Array<

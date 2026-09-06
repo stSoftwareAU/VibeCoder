@@ -19,7 +19,7 @@ sets both a `.config.json` key and its `VIBE_*` variable.**
 
 > **Unreleased.** The change is on
 > `milestone/configuration-one-source-of-truth` and
-> [`.release-floor`](../.release-floor) is still `1.4.0`, so no 2.0.0 tag
+> [`.release-floor`](../.release-floor) is `1.5.0`, so no 2.0.0 tag
 > exists yet. The floor moves to `2.0.0` with the merge that takes this
 > milestone to `main` — that merge is what mints the release these notes
 > describe.
@@ -101,6 +101,43 @@ Pin the host back to `1.x` (`./run.sh upgrade` pins forward; a frozen host
 edits `pinned_ref`). Nothing is rewritten on disk by this change — the
 precedence is decided at load — so a host that rolls back resolves exactly as
 it did before.
+
+## 1.5.0 — the GitHub Pages site is gone
+
+**No migration. Nothing an operator configures changes; the bookmark does.**
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| `.github/workflows/pages.yml`, the Jekyll site files and the Ruby build scripts are deleted | #1344 |
+| The Pages-only quality-gate checks — `pages-liquid` and `mermaid built output` — and the `check-pages-liquid` / `check-mermaid-built-output` commands are gone | #1344 |
+
+The site at `https://stsoftwareau.github.io/VibeCoder/` existed for one reason:
+this repository was private, and publishing the READMEs was the only way to read
+them. The repository is public, so GitHub renders every Markdown file — README,
+`SECURITY.md`, `AGENTS.md` and everything under `docs/` — directly, including
+the Mermaid diagrams the Jekyll layout used to load a CDN script for.
+
+Nothing was written only for the site: the Markdown all stays in the repository
+and is read at its ordinary GitHub URL.
+
+`Gemfile`/`Gemfile.lock` and the `bundle-audit` job that scans them are still
+here. Removing them means editing `.github/workflows/dependency-audit.yml`,
+which the worker token cannot push, so that last step is tracked separately.
+
+```mermaid
+flowchart LR
+    M["Markdown in the repo"] --> G["Read on GitHub"]
+    M -.->|removed #1344| J["Jekyll build → Pages site"]
+    style J fill:#adb5bd,stroke:#6c757d,color:#000
+    style G fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+### Migration
+
+None. Replace any bookmark of `stsoftwareau.github.io/VibeCoder` with the
+repository itself; there is nothing to install, move or delete on a host.
 
 ## 1.4.0 — the log directory follows the platform
 

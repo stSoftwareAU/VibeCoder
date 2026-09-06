@@ -3153,7 +3153,7 @@ links to its issue for the full rationale.
   (numbers unchanged), and GitHub Actions are pinned to commit SHAs. The
   coding-guidelines prompt (`prompts/coding_guidelines/`) documents the bump
   pattern.
-- **Quality gate additions:** `pages-liquid`, `markdownlint-cli2`,
+- **Quality gate additions:** `markdownlint-cli2`,
   `mermaid_validator` integration , and the `tail -f | head` foot-gun detector.
 - **Standard workflow templates:** `workflow_setup` v2/v3 provisions Gitleaks,
   Semgrep SAST, private-repo-14 scorer hardening, Dependency Review and

@@ -3,7 +3,7 @@
  * (Issue #1685).
  *
  * Catches the broader class of Markdown defects that the
- * `pages-liquid` (#1601) and `mermaid` (#1683) checks miss — broken
+ * `mermaid` (#1683) check misses — broken
  * heading hierarchies, malformed tables, missing-space ATX headings,
  * and empty links — by driving `markdownlint-cli2` against the same set
  * of `.md` files the published-Markdown checks cover, plus
@@ -13,7 +13,7 @@
  * The linter is invoked out-of-process; when no `markdownlint-cli2`
  * binary is available locally the check returns SKIPPED so contributors
  * without a Node toolchain are not blocked. `./quality.sh --strict`
- * promotes SKIPPED to FAILED, matching the `pages-liquid` pattern.
+ * promotes SKIPPED to FAILED, matching the `mermaid` pattern.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */

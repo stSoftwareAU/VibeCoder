@@ -2,8 +2,8 @@
  * Tests for the repo-root `renovate.json` supply-chain quarantine config
  * (Issue #2124).
  *
- * The repo has third-party Deno (JSR `@std/*`) and Ruby (Jekyll) deps
- * but previously shipped no auto-update tooling or quarantine gate.
+ * The repo has third-party Deno (JSR `@std/*`) deps but previously shipped
+ * no auto-update tooling or quarantine gate.
  * `renovate.json` closes the gap identified by the security-scan
  * dependency-update quarantine audit (`supply-chain:quarantine-missing`):
  * every external bump must wait at least `VIBE_BUMP_QUARANTINE_HOURS`
