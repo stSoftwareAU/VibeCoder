@@ -147,8 +147,10 @@ Deno.test(
       const message = result.error.message;
       assertStringIncludes(message, "milestone/unbuildable");
       assertStringIncludes(message, "no-such-default");
-      // The git command and its stderr are propagated, not collapsed.
-      assertStringIncludes(message, "git checkout");
+      // The git command and its stderr are propagated, not collapsed. The
+      // branch is created by pushing the default ref straight to the
+      // milestone ref name (Issue #1345), so the failing command is the push.
+      assertStringIncludes(message, "git push");
       assertStringIncludes(message, "exited");
     } finally {
       await fx.cleanup();
@@ -201,7 +203,7 @@ Deno.test(
 
       assertEquals(result.success, false);
       assertStringIncludes(result.message, "milestone/unbuildable");
-      assertStringIncludes(result.message, "git checkout");
+      assertStringIncludes(result.message, "git push");
     } finally {
       await fx.cleanup();
     }

@@ -131,12 +131,16 @@ Deno.test(
         (await gitOk(["rev-parse", "milestone/69-stale"], fx.clone)).trim();
 
       assertEquals(remoteSha, mainSha, "remote milestone must sit at main tip");
-      assertEquals(localSha, mainSha, "local milestone must sit at main tip");
       const merges = (await gitOk(
         ["rev-list", "--merges", "milestone/69-stale"],
-        fx.clone,
+        fx.remote,
       )).trim();
-      assertEquals(merges, "", "the stale merge commit must be discarded");
+      assertEquals(merges, "", "the stale merge commit must never be pushed");
+      // Issue #1345 narrowed the self-heal: the branch is created on origin by
+      // pushing the default ref, so the stale LOCAL branch is left as it was
+      // rather than reset. What #4002 protects — the stale tip never becoming
+      // the milestone branch on the remote — is asserted above.
+      assertEquals(localSha, staleSha, "the local branch is left untouched");
     } finally {
       await fx.cleanup();
     }
@@ -149,7 +153,12 @@ Deno.test(
     const fx = await setupRepo();
     try {
       await gitOk(["checkout", "-b", "milestone/70-current", "main"], fx.clone);
-      await commitFile(fx.clone, "local.txt", "local\n", "local-only work");
+      const localSha = await commitFile(
+        fx.clone,
+        "local.txt",
+        "local\n",
+        "local-only work",
+      );
 
       const result = await ensureMilestoneBranchExists(
         "milestone/70-current",
@@ -165,13 +174,16 @@ Deno.test(
       const mainSha = (await gitOk(["rev-parse", "main"], fx.remote)).trim();
       const remoteSha =
         (await gitOk(["rev-parse", "milestone/70-current"], fx.remote)).trim();
-      assertEquals(remoteSha, mainSha);
+      assertEquals(remoteSha, mainSha, "local-only commits must not be pushed");
 
-      const ahead = (await gitOk(
-        ["rev-list", "--count", "main..milestone/70-current"],
-        fx.clone,
-      )).trim();
-      assertEquals(ahead, "0", "local-only commits must be discarded");
+      // Issue #1345: creating the branch on origin needs no checkout, so the
+      // checked-out local branch keeps its local-only commit — the remote is
+      // what had to be protected from it.
+      assertEquals(
+        (await gitOk(["rev-parse", "milestone/70-current"], fx.clone)).trim(),
+        localSha,
+        "the checked-out local branch is left untouched",
+      );
     } finally {
       await fx.cleanup();
     }
