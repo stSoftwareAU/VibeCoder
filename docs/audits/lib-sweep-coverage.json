@@ -786,6 +786,7 @@
         "worker/deno/lib/terminal_title.ts",
         "worker/deno/lib/timeline_batch_registry.ts",
         "worker/deno/lib/timeout_extension_telemetry.ts",
+        "worker/deno/lib/tmp_state_dir_check.ts",
         "worker/deno/lib/torn_bytes.ts",
         "worker/deno/lib/transient_network_failure.ts",
         "worker/deno/lib/trust_snapshot.ts",
