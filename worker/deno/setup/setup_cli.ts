@@ -63,6 +63,11 @@ import {
 } from "./scheduled_task.ts";
 import { setupPlaywrightMcp } from "./screenshot.ts";
 import {
+  type ConsentReader,
+  isAffirmative,
+  readConsentLine,
+} from "./consent_prompt.ts";
+import {
   addRepoToMonitoredList,
   listMonitoredRepos,
   removeRepoFromMonitoredList,
@@ -155,6 +160,16 @@ function createSetupGhJson(ghConfigDir?: string) {
   };
 }
 
+/** The terminal edges of {@link askCreateMilestoneRuleset}, injectable. */
+export interface ConsentPromptSeams {
+  /** Where the answer is read. Defaults to `Deno.stdin`. */
+  reader?: ConsentReader;
+  /** Whether a terminal is attached. Defaults to `Deno.stdin.isTerminal()`. */
+  isTerminal?: () => boolean;
+  /** Where the question is written. Defaults to `Deno.stdout`. */
+  write?: (chunk: Uint8Array) => Promise<number>;
+}
+
 /**
  * Ask whether to create the missing `milestone/**` ruleset (Issue #586).
  *
@@ -162,11 +177,22 @@ function createSetupGhJson(ghConfigDir?: string) {
  * ask on there is no consent to infer, so the check warns and changes
  * nothing: a scripted run can never hang here, and never writes a ruleset
  * nobody agreed to.
+ *
+ * The answer is read one whole line at a time (Issue #1296). This question is
+ * asked once per repository, so a fixed-size read left the tail of a long
+ * answer in the buffer to approve the NEXT repository's ruleset — consent the
+ * operator never gave to a question they never saw.
  */
-async function askCreateMilestoneRuleset(repo: string): Promise<boolean> {
-  if (!Deno.stdin.isTerminal()) return false;
+export async function askCreateMilestoneRuleset(
+  repo: string,
+  seams: ConsentPromptSeams = {},
+): Promise<boolean> {
+  const isTerminal = seams.isTerminal ?? (() => Deno.stdin.isTerminal());
+  if (!isTerminal()) return false;
 
-  await Deno.stdout.write(
+  const write = seams.write ??
+    ((chunk: Uint8Array) => Deno.stdout.write(chunk));
+  await write(
     new TextEncoder().encode(
       out.question(
         `${repo}: no ruleset covers \`milestone/**\`, so GitHub cannot arm ` +
@@ -175,12 +201,7 @@ async function askCreateMilestoneRuleset(repo: string): Promise<boolean> {
         out.plain("Create one mirroring the default-branch checks? [y/N] "),
     ),
   );
-  const buffer = new Uint8Array(16);
-  const read = await Deno.stdin.read(buffer);
-  if (read === null) return false;
-  const answer = new TextDecoder().decode(buffer.subarray(0, read)).trim()
-    .toLowerCase();
-  return answer === "y" || answer === "yes";
+  return isAffirmative(await readConsentLine(seams.reader ?? Deno.stdin));
 }
 
 function printError(msg: string): void {
