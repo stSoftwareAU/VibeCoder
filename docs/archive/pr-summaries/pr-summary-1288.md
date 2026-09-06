@@ -19,11 +19,11 @@ stays as defence in depth for the in-process read. Closes #1288.
 ```mermaid
 flowchart LR
     subgraph before["Before — flag only"]
-        W1["worker env<br/>GH_TOKEN=ghp_…"] --> D1["deno --deny-env=GH_TOKEN<br/>Deno.env.get → NotCapable"]
-        D1 -->|"--allow-run, env inherited"| C1["printenv GH_TOKEN<br/>💥 ghp_…"]
+        W1["worker env<br/>real GH_TOKEN"] --> D1["deno --deny-env=GH_TOKEN<br/>Deno.env.get → NotCapable"]
+        D1 -->|"--allow-run, env inherited"| C1["printenv GH_TOKEN<br/>💥 the real token"]
     end
     subgraph after["After — value blanked"]
-        W2["worker env<br/>GH_TOKEN=ghp_…"] --> D2["env: { GH_TOKEN: '' }<br/>merged over the inherited env"]
+        W2["worker env<br/>real GH_TOKEN"] --> D2["env: { GH_TOKEN: '' }<br/>merged over the inherited env"]
         D2 -->|"--allow-run, env inherited"| C2["printenv GH_TOKEN<br/>✅ empty"]
     end
     style C1 fill:#c92a2a,stroke:#7d1c1c,color:#fff
@@ -38,16 +38,16 @@ run on this host (deno 2.9.6, Claude Code client, `@playwright/mcp@0.0.75`):
 1. **The client's `env` semantics were verified before landing the fix**, which
    the issue called for explicitly. A probe MCP server (`command` = a Deno
    script that dumps `Deno.env.toObject()`) was launched by the real Claude
-   Code client with `env: {"MARKER_FROM_CONFIG":"present"}`: the child saw the
+   Code client with an `env` block naming one marker variable: the child saw the
    marker **and** the full inherited environment (62 vars, including a
-   `SECRET_CANARY=leaked` exported only by the parent). The client **merges**
+   canary variable exported only by the parent). The client **merges**
    rather than replaces, so blanking overrides the real value and `PATH` is not
-   stripped. A second run with `env: {"SECRET_CANARY":""}` showed the child
-   reading `''` with `PATH` intact.
+   stripped. A second run with an `env` block blanking that canary showed the
+   child reading `''` with `PATH` intact.
 2. **The fix was then verified end to end through the same client.** With
-   `GH_TOKEN=canary-gh GITHUB_TOKEN=canary-gt ANTHROPIC_API_KEY=canary-anthropic
-   VIBE_IMGBB_API_KEY=canary-imgbb` in the parent, a config produced by the
-   patched `generateMcpConfig` gave the child `''` for all seven denied names,
+   distinct canary values exported for `GH_TOKEN`, `GITHUB_TOKEN`,
+   `ANTHROPIC_API_KEY` and `VIBE_IMGBB_API_KEY` in the parent, a config
+   produced by the patched `generateMcpConfig` gave the child `''` for all seven denied names,
    while `PATH`, `HOME` and `PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers`
    survived.
 3. **The real MCP server still works under the new argv.** The server was
