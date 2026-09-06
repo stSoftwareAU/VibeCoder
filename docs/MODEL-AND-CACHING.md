@@ -1886,6 +1886,18 @@ fenced in the run's boundary markers exactly as `CLAUDE.md` is
 delimiter-shaped patterns at extraction time, and wrapped in a code fence it
 cannot close.
 
+The *paths* are untrusted for the same reason: `git ls-files -co` lists
+committed and untracked **symlinks** like any other path, so
+`src/aaa.ts -> ~/.config/gh/hosts.yml` would otherwise have its head read into
+the prompt and the map cache. Every file the map reads — each module docstring
+and each `deno.json`/`package.json` manifest — is therefore resolved with
+`Deno.realPath` and refused unless the result sits at or below the clone's real
+root — the containment check `container_extension_digest.ts` already applies to
+synced extension directories. A refused path is still listed (the file exists),
+and the refusal is logged
+`⚠️  Codebase map refused …`, so the skipped read is never silent. A symlink
+that stays inside the clone is read as normal.
+
 Both caps announce what they dropped (`… 33 more entries`, `[... module index
 bounded — 542 further source files not listed ...]`) — a silently capped index
 reads as "this is everything" when it is not. A generation fault logs
