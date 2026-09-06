@@ -46,6 +46,12 @@ import {
 } from "./work_volume_tiers.ts";
 import { workerLogCleanupCommand } from "../commands/worker_log_cleanup.ts";
 import {
+  DEFAULT_DISK_CLEANUP_GENTLE_THRESHOLD,
+  DEFAULT_DISK_CLEANUP_THRESHOLD,
+  parseCleanupThreshold,
+  validateCleanupThreshold,
+} from "./disk_space.ts";
+import {
   DEFAULT_HARD_CAP_COUNT,
   DEFAULT_MAX_AGE_DAYS,
 } from "./worker_log_cleanup.ts";
@@ -211,13 +217,29 @@ export async function sweepVolatileCliState(
  * @param env - Environment lookup for the tunables (Issue #956). Defaults to
  *   the process environment, so the production call is unchanged; a test
  *   passes a fixed map rather than mutating `Deno.env`.
+ * @param warn - Sink for a refused cleanup threshold (Issue #1268). Defaults
+ *   to `console.error`, so an unusable threshold is announced, never applied
+ *   and never silently swapped for the default.
  */
 export function buildHousekeepingSteps(
   options: HousekeepingOptions,
   env: EnvLookup = processEnvLookup,
+  warn: (message: string) => void = (message) => console.error(message),
 ): HousekeepingStep[] {
   const envInt = (name: string, fallback: number): number =>
     getEnvNumberOrDefault(name, fallback, env);
+  // The environment values get the same bound as the CLI flags
+  // ({@link validateCleanupThreshold}, Issue #1268). Deliberately not
+  // `envInt`: `getEnvNumberOrDefault` reads "9x" as 9, so the raw string is
+  // parsed strictly here and anything unusable is announced, not applied.
+  const thresholdEnvInt = (name: string, fallback: number): number => {
+    const raw = env(name);
+    const value = parseCleanupThreshold(raw, fallback);
+    const problem = validateCleanupThreshold(name, value);
+    if (problem === null) return value;
+    warn(`⚠️  ${name}="${raw}": ${problem}; using the default ${fallback}%`);
+    return fallback;
+  };
   return [
     {
       id: "audit-chain-verify",
@@ -229,8 +251,14 @@ export function buildHousekeepingSteps(
       command: "disk-space",
       args: {
         "work-dir": options.workDir,
-        "threshold": envInt("DISK_CLEANUP_THRESHOLD", 90),
-        "gentle-threshold": envInt("DISK_CLEANUP_GENTLE_THRESHOLD", 80),
+        "threshold": thresholdEnvInt(
+          "DISK_CLEANUP_THRESHOLD",
+          DEFAULT_DISK_CLEANUP_THRESHOLD,
+        ),
+        "gentle-threshold": thresholdEnvInt(
+          "DISK_CLEANUP_GENTLE_THRESHOLD",
+          DEFAULT_DISK_CLEANUP_GENTLE_THRESHOLD,
+        ),
       },
     },
     {

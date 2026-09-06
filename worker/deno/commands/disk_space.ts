@@ -8,25 +8,34 @@
  * Issue #95: Check disk space of WORK_DIR at startup.
  */
 
-import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import type { Command, CommandResult, Result, WorkerConfig } from "../types.ts";
 import {
   checkAndCleanupDiskSpace,
   DEFAULT_DISK_CLEANUP_GENTLE_THRESHOLD,
   DEFAULT_DISK_CLEANUP_THRESHOLD,
   type DiskCheckResult,
+  parseCleanupThreshold,
+  validateCleanupThreshold,
 } from "../lib/disk_space.ts";
 
 /**
- * Parse a numeric CLI argument. Returns the fallback when the value is
- * missing or cannot be parsed as a number.
+ * Resolve a threshold CLI argument against the shared bound
+ * ({@link validateCleanupThreshold}, Issue #1268).
+ *
+ * The refusal is named and loud rather than clamped: a threshold the
+ * operator did not mean should stop the destructive cleanup, not quietly
+ * become a different one.
  */
-function parseNumericArg(value: unknown, fallback: number): number {
-  if (typeof value === "number") return value;
-  if (typeof value === "string") {
-    const parsed = parseInt(value, 10);
-    if (!isNaN(parsed)) return parsed;
-  }
-  return fallback;
+function resolveThresholdArg(
+  flag: string,
+  value: unknown,
+  fallback: number,
+): Result<number, string> {
+  const parsed = parseCleanupThreshold(value, fallback);
+  const problem = validateCleanupThreshold(flag, parsed);
+  return problem === null
+    ? { ok: true, value: parsed }
+    : { ok: false, error: problem };
 }
 
 /**
@@ -37,13 +46,18 @@ function parseNumericArg(value: unknown, fallback: number): number {
  *                                with neither, the check reports "no directory
  *                                specified" — deliberately no HOME-derived
  *                                fallback, Issues #118/#135)
- *   --threshold <number>         Aggressive disk usage threshold (default: 90).
- *                                At or above this, the work directory is nuked
- *                                if incremental reclaim is insufficient.
- *   --gentle-threshold <number>  Gentle disk usage threshold (default: 80).
- *                                At or above this but below `--threshold`, only
- *                                the incremental reclaim pass runs — cloned
- *                                repositories are preserved (Issue #1499).
+ *   --threshold <number>         Aggressive disk usage threshold (default: 90,
+ *                                must be 1–100, Issue #1268). At or above this,
+ *                                the work directory is nuked if incremental
+ *                                reclaim is insufficient.
+ *   --gentle-threshold <number>  Gentle disk usage threshold (default: 80,
+ *                                must be 1–100). At or above this but below
+ *                                `--threshold`, only the incremental reclaim
+ *                                pass runs — cloned repositories are preserved
+ *                                (Issue #1499).
+ *
+ * A threshold outside 1–100 fails the command rather than running a cleanup
+ * the operator did not ask for.
  */
 export const diskSpaceCommand: Command = {
   name: "disk-space",
@@ -65,19 +79,26 @@ export const diskSpaceCommand: Command = {
       ? args["work-dir"]
       : (Deno.env.get("WORK_DIR") || "");
 
-    const threshold = parseNumericArg(
+    const threshold = resolveThresholdArg(
+      "--threshold",
       args["threshold"],
       DEFAULT_DISK_CLEANUP_THRESHOLD,
     );
-    const gentleThreshold = parseNumericArg(
+    if (!threshold.ok) return { success: false, message: threshold.error };
+
+    const gentleThreshold = resolveThresholdArg(
+      "--gentle-threshold",
       args["gentle-threshold"],
       DEFAULT_DISK_CLEANUP_GENTLE_THRESHOLD,
     );
+    if (!gentleThreshold.ok) {
+      return { success: false, message: gentleThreshold.error };
+    }
 
     const result = await checkAndCleanupDiskSpace({
       workDir,
-      threshold,
-      gentleThreshold,
+      threshold: threshold.value,
+      gentleThreshold: gentleThreshold.value,
     });
 
     return {
