@@ -30,6 +30,7 @@ import {
   applyRepoSettingsPlan,
   buildAllowedActionPatterns,
   type HardenResult,
+  isValidActionCoordinate,
   planRepoSettingsHardening,
   type RepoSettingsSnapshot,
   resolveTransitiveActionCoordinates,
@@ -105,7 +106,13 @@ export function parseAllowActionArg(value: unknown): string[] {
     for (const part of String(item).split(",")) {
       const trimmed = part.trim();
       if (trimmed === "") continue;
-      if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(trimmed)) {
+      const [owner, repo, ...rest] = trimmed.split("/");
+      // Rejected loudly here so an operator coordinate the pattern builder
+      // would drop (a `.`/`..` segment) can never pass silently (Issue #1235).
+      if (
+        rest.length > 0 || !owner || !repo ||
+        !isValidActionCoordinate(owner, repo)
+      ) {
         throw new Error(
           `--allow-action expects owner/repo, got ${JSON.stringify(trimmed)}`,
         );

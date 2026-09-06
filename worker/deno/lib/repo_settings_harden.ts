@@ -97,6 +97,30 @@ export interface PlanOptions {
 
 const GITHUB_OWNED = new Set(["actions", "github"]);
 
+/** GitHub owner and repository names: letters, digits, `-`, `_` and `.`. */
+const COORDINATE_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Whether `owner`/`repo` is a real GitHub coordinate (Issue #1235).
+ *
+ * Coordinates are parsed out of third-party `action.yml` manifests fetched
+ * over the network, so they are untrusted. A step whose `uses:` names a
+ * wildcard owner and repo would make {@link buildAllowedActionPatterns} emit
+ * an everything-pattern that the apply step writes into the allow-list,
+ * disabling the very control this module enforces; a `uses: ../../victim@x`
+ * step would normalise the `repos/{owner}/{repo}/contents/…` endpoint into an
+ * arbitrary API GET with the fleet's token. Only owner/repo name characters
+ * pass, and the `.` and `..` path segments are rejected outright.
+ */
+export function isValidActionCoordinate(
+  owner: string,
+  repo: string,
+): boolean {
+  return [owner, repo].every((segment) =>
+    COORDINATE_SEGMENT.test(segment) && segment !== "." && segment !== ".."
+  );
+}
+
 /** Third-party `<owner>/<repo>@*` patterns from a list of `uses:` coordinates. */
 export function buildAllowedActionPatterns(
   coordinates: readonly string[],
@@ -105,6 +129,9 @@ export function buildAllowedActionPatterns(
   for (const c of coordinates) {
     const [owner, repo] = c.split("/");
     if (!owner || !repo) continue;
+    // Defence in depth: an invalid coordinate is dropped, never widened
+    // into a pattern (Issue #1235). The resolver reports the rejection.
+    if (!isValidActionCoordinate(owner, repo)) continue;
     if (GITHUB_OWNED.has(owner.toLowerCase())) continue;
     out.add(`${owner}/${repo}@*`);
   }
@@ -182,6 +209,13 @@ export async function resolveTransitiveActionCoordinates(
     const ref = at >= 0 ? reference.slice(at + 1) : "";
     const [owner, repo] = path.split("/");
     if (!owner || !repo) return;
+    // A manifest is third-party data: a wildcard or traversal coordinate
+    // neither widens the allow-list nor becomes an API path, and the
+    // rejection is reported rather than dropped (Issue #1235).
+    if (!isValidActionCoordinate(owner, repo)) {
+      unreadable.push(`${reference}: not a valid owner/repo coordinate`);
+      return;
+    }
     coordinates.add(`${owner}/${repo}`);
     if (visited.has(reference) || depth >= MAX_TRANSITIVE_DEPTH) return;
     visited.add(reference);
@@ -221,6 +255,11 @@ async function readActionManifest(
   repo: string,
   ref: string,
 ): Promise<ManifestRead> {
+  // The endpoint is built from untrusted coordinates: refuse loudly rather
+  // than let `..` or a wildcard steer the API path (Issue #1235).
+  if (!isValidActionCoordinate(owner, repo)) {
+    return { kind: "error", reason: "not a valid owner/repo coordinate" };
+  }
   let lastReason = "";
   for (const file of ["action.yml", "action.yaml"]) {
     const endpoint = `repos/${owner}/${repo}/contents/${file}` +
