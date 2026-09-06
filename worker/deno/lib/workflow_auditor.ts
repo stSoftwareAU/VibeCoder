@@ -12,6 +12,7 @@ import type { Result } from "../types.ts";
 import { spawnGh } from "./gh_spawn.ts";
 import type { RepoLanguages } from "./language_detector.ts";
 import { getRepoVisibility, type RepoVisibility } from "./repo_visibility.ts";
+import { runWithTimeout } from "./subprocess_timeout.ts";
 import {
   getWorkflowsForLanguagesAndVisibility,
   type WorkflowSpec,
@@ -93,16 +94,26 @@ export interface WorkflowAuditResult {
 // ---------------------------------------------------------------------------
 
 /**
+ * Bound on a non-`gh` audit spawn (Issue #1228).
+ *
+ * Sixty seconds matches the extended subprocess budget used elsewhere for
+ * network-facing calls; the audit reads workflow listings, never clones.
+ */
+export const AUDITOR_COMMAND_TIMEOUT_MS = 60_000;
+
+/**
  * Default command runner using Deno.Command with optional gh config.
  *
  * Issue #1227: the binary is named by `cmd[0]`, and every production caller
  * passes `["gh", "api", …]` — a direct `gh` spawn the literal-matching
  * chokepoint gate could not see. A `gh` command is delegated to the shared
  * chokepoint so it is allowlist-checked, timed out and journalled; any other
- * binary is spawned directly.
+ * binary is spawned directly — under {@link AUDITOR_COMMAND_TIMEOUT_MS}, so
+ * no spawn here is unbounded (Issue #1228).
  */
-function createDefaultRunCommand(
+export function createDefaultRunCommand(
   ghConfigDir?: string,
+  runFn: typeof runWithTimeout = runWithTimeout,
 ): (cmd: string[]) => Promise<CommandOutput> {
   const extraEnv = ghConfigDir ? { GH_CONFIG_DIR: ghConfigDir } : undefined;
   return async (cmd: string[]): Promise<CommandOutput> => {
@@ -117,21 +128,24 @@ function createDefaultRunCommand(
         stderr: result.stderr.trim(),
       };
     }
-    const env = ghConfigDir
-      ? { ...Deno.env.toObject(), GH_CONFIG_DIR: ghConfigDir }
-      : undefined;
-    const command = new Deno.Command(cmd[0]!, {
-      args: cmd.slice(1),
-      stdout: "piped",
-      stderr: "piped",
-      env,
+    // Issue #1228: the non-`gh` branch spawns whatever binary the caller
+    // names, over the network or a working tree. It is bounded here —
+    // `spawnGh` owns the bound on the branch above. `env` entries are merged
+    // into the inherited environment by Deno.Command, so naming
+    // GH_CONFIG_DIR alone is enough.
+    const result = await runFn(cmd[0]!, cmd.slice(1), {
+      timeoutMs: AUDITOR_COMMAND_TIMEOUT_MS,
+      ...(extraEnv ? { env: extraEnv } : {}),
     });
-    const output = await command.output();
-    const decoder = new TextDecoder();
+    if (!result.ok) {
+      throw new Error(
+        `failed to run "${cmd[0]}": ${result.error.message}`,
+      );
+    }
     return {
-      success: output.success,
-      stdout: decoder.decode(output.stdout).trim(),
-      stderr: decoder.decode(output.stderr).trim(),
+      success: result.value.success,
+      stdout: result.value.stdout.trim(),
+      stderr: result.value.stderr.trim(),
     };
   };
 }
