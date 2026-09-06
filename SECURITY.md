@@ -320,7 +320,15 @@ writers are too numerous to wire one at a time:
   call site would have left the next `console.error` uncovered, so
   `installConsoleRedaction()`
   ([`worker/deno/lib/console_redaction.ts`](worker/deno/lib/console_redaction.ts),
-  ) patches the console once in `mod.ts`'s `main`.
+  ) patches the console once per process. The patch is **per process**, so
+  `mod.ts` alone was not enough (Issue #1280): `quality.ts`, `setup_cli.ts`,
+  `gh_guard_cli.ts`, `test_shard_files.ts` and `unit_test_runner.ts` are each
+  spawned directly and printed unmasked — most sharply `quality.ts`, which
+  streams every check's raw `stdout + stderr`. Every `import.meta.main` module
+  now installs the patch, and the `console redaction entry points` quality
+  check
+  ([`worker/deno/lib/console_redaction_entrypoint_check.ts`](worker/deno/lib/console_redaction_entrypoint_check.ts))
+  fails the build on any new entry point that does not.
 - **`gh` comment and PR bodies** are published by many call sites, and two of
   them (the PR-comment failure replies and the question-failure comment) were
   publishing unredacted text. `redactGhBodyArgs()`
@@ -399,7 +407,7 @@ only a decoded *credential shape* is masked.
 | Sink | Location | Issue |
 |------|----------|-------|
 | Structured logger | `worker/deno/lib/logger.ts` | (audit: docs/audits/verbosity-secret-leak-audit-2417.md) |
-| Direct `console.*` writes (patched once in `mod.ts`) | `worker/deno/lib/console_redaction.ts` | |
+| Direct `console.*` writes (patched once per entry-point process) | `worker/deno/lib/console_redaction.ts`, enforced by `worker/deno/lib/console_redaction_entrypoint_check.ts` | [#1280](https://github.com/stSoftwareAU/VibeCoder/issues/1280) |
 | Answer sanitiser (question answers) | `worker/deno/lib/answer_sanitiser.ts` | |
 | Automated-failure comment path | `worker/deno/lib/label_failure.ts` | |
 | Crash notifications | `worker/deno/lib/crash_notification.ts` | — |

@@ -35,6 +35,7 @@ import {
   redactGhBodyArgs,
   UnredactableBodyError,
 } from "./gh_body_redaction.ts";
+import { installConsoleRedaction } from "./console_redaction.ts";
 import { evaluateGhCommand } from "./gh_guard_decision.ts";
 import type { ClaimedIssue } from "./claimed_issue_guard.ts";
 
@@ -257,6 +258,12 @@ function allowWithRedactedBody(
 }
 
 if (import.meta.main) {
+  // Issue #1280 (SEC-1217-12): the guard child is its own process. Its
+  // stdout is the NUL-encoded verdict written through `Deno.stdout` and is
+  // untouched by the patch; the refusal reason on stderr quotes the agent's
+  // own argv, which is where a credential can ride in.
+  installConsoleRedaction();
+
   const result = runGhGuardCli(Deno.args);
   await Deno.stdout.write(new TextEncoder().encode(encodeGuardStdout(result)));
   if (result.stderr) console.error(result.stderr);
