@@ -81,6 +81,7 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   "tests/setup_launchagent_prompt_test.ts",
   "tests/setup_lockfile_test.ts",
   "tests/setup_provider_credential_flow_test.ts",
+  "tests/setup_provider_env_parse_test.ts",
   "tests/setup_ps1_test.ts",
   "tests/setup_workdir_reminder_test.ts",
   "tests/volume_init_script_test.ts",
