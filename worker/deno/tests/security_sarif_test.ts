@@ -10,7 +10,9 @@
  *   - the built document is valid SARIF 2.1.0 (version, one rule + result per
  *     finding, rule id = the stable SEC-<hex>, CWE tag present, location only
  *     when a file:line was parsed),
- *   - findings without a finding-id marker are dropped; duplicates deduped.
+ *   - findings without a finding-id marker are dropped; duplicates deduped,
+ *   - free text (message, artifact URI) is redacted as the document is built,
+ *     because the uploader gzips it before any sink can scan it (Issue #1255).
  *
  * Australian English spelling used throughout (behaviour, colour).
  */
@@ -30,6 +32,7 @@ import {
   severityToScore,
   stripSeverityEmoji,
 } from "../lib/security_sarif.ts";
+import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 
 function issue(
   title: string,
@@ -238,4 +241,62 @@ Deno.test("buildSecuritySarif - empty findings yield an empty run (valid SARIF)"
   const sarif = json(buildSecuritySarif([]));
   assertEquals(sarif.version, "2.1.0");
   assertEquals(sarif.runs[0].results, []);
+});
+
+// ---------------------------------------------------------------------------
+// Redaction (Issue #1255) — the uploader gzips the document, so a secret has
+// to be masked here or it reaches code scanning unmasked and unscannable.
+// ---------------------------------------------------------------------------
+
+/** Shape-valid but fake — never a live credential. */
+const FAKE_TOKEN = "ghp_" + "a".repeat(36);
+
+Deno.test("buildSecuritySarif - redacts a secret in the finding message", () => {
+  const findings = parseSecurityFindings([
+    issue(
+      `🔴 Token ${FAKE_TOKEN} echoed in src/api/orders.ts:47`,
+      "<!-- finding-id: SEC-ccc333 -->",
+    ),
+  ]);
+  const sarif = json(buildSecuritySarif(findings));
+  const serialised = JSON.stringify(sarif);
+  assert(
+    !serialised.includes(FAKE_TOKEN),
+    `secret leaked into the SARIF document: ${serialised}`,
+  );
+  assert(serialised.includes(REDACTION_PLACEHOLDER));
+
+  const rule = sarif.runs[0].tool.driver.rules[0];
+  assert(rule.shortDescription.text.includes(REDACTION_PLACEHOLDER));
+  assert(rule.fullDescription.text.includes(REDACTION_PLACEHOLDER));
+  assert(sarif.runs[0].results[0].message.text.includes(REDACTION_PLACEHOLDER));
+  // The rule id stays intact — it is the dedupe fingerprint, not free text.
+  assertEquals(rule.id, "SEC-ccc333");
+});
+
+Deno.test("buildSecuritySarif - redacts a secret in the artifact location URI", () => {
+  const sarif = json(buildSecuritySarif([{
+    findingId: "SEC-ddd444",
+    cwe: null,
+    severity: "medium",
+    message: "Secret in a path",
+    file: `tmp/${FAKE_TOKEN}/config.ts`,
+    startLine: 12,
+  }]));
+  const uri = sarif.runs[0].results[0].locations[0].physicalLocation
+    .artifactLocation.uri;
+  assert(!uri.includes(FAKE_TOKEN), `secret leaked into the URI: ${uri}`);
+  assert(uri.includes(REDACTION_PLACEHOLDER));
+});
+
+Deno.test("buildSecuritySarif - leaves ordinary finding text unchanged", () => {
+  const sarif = json(buildSecuritySarif(FINDINGS));
+  assertEquals(
+    sarif.runs[0].results[0].message.text,
+    "SQL injection in src/api/orders.ts:47",
+  );
+  assertEquals(
+    sarif.runs[0].results[0].locations[0].physicalLocation.artifactLocation.uri,
+    "src/api/orders.ts",
+  );
 });

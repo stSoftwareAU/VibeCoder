@@ -401,6 +401,16 @@ The severity comes from the issue's `severity:<level>` label, falling back to
 the title's severity emoji. Issue text (title, prose) is carried into the SARIF
 strictly as **data** — never interpreted as instructions.
 
+**Redaction happens in the builder, not at the sink** (Issue #1255). Every
+free-text field the builder copies out of an issue — the `message` on each rule
+and result, and the `artifactLocation.uri` parsed from the title — goes through
+`redactSecrets()` before serialisation, so a secret that reached a finding's
+title is masked before it can be published to code scanning. It cannot be fixed
+further downstream: the uploader gzips and base64-encodes the document before a
+request body exists, leaving no text for any sink-level redactor to scan. The
+`SEC-<hex>` finding id is not redacted — it is structurally constrained to
+`SEC-<alphanumeric>` and is the rule id and dedupe fingerprint.
+
 **CWE tagging.** The builder emits the GitHub-recognised
 `external/cwe/cwe-<n>` tag whenever a filed issue body carries a
 `<!-- cwe: CWE-<n> -->` marker directly after the `<!-- finding-id: SEC-… -->`
