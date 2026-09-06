@@ -36,6 +36,15 @@ import {
   readLaunchPhaseMarker,
   recordContainerRestartOutcome,
 } from "../lib/container_restart_backoff.ts";
+import { poolHasAnotherTokenWithBudget } from "../lib/claude_pool_budget.ts";
+import {
+  discoverProviderTokenFiles,
+  resolveCredentialDir,
+} from "../lib/credential_preflight.ts";
+import {
+  CLAUDE_PROVIDER_ID,
+  resolveAgentProvider,
+} from "../lib/agent_provider.ts";
 import {
   CRASH_NOTIFICATION_DEFAULTS,
   type CrashNotificationConfig,
@@ -221,6 +230,27 @@ export const containerRestartBackoffCommand: Command = {
       phaseMarker: await readLaunchPhaseMarker(phaseFile),
       quotaPause,
       terminated,
+      // Issue #919 follow-up: asked ONLY when the outcome is a quota pause,
+      // and only ever answers "is another subscription worth restarting for".
+      // It chooses nothing — selection stays at worker start, so the run's
+      // environment still carries exactly one subscription's credential.
+      poolHasAnotherTokenWithBudget: async () => {
+        try {
+          // Claude is the only provider with a token pool (Issue #919), so
+          // the question is asked of it by name rather than of whichever
+          // provider this run happened to use.
+          const provider = resolveAgentProvider(CLAUDE_PROVIDER_ID);
+          const dir = resolveCredentialDir();
+          const tokens = await discoverProviderTokenFiles(dir, provider);
+          return await poolHasAnotherTokenWithBudget(tokens, undefined, {
+            log: (message) => console.error(message),
+          });
+        } catch {
+          // Never let this question fail a launcher outcome: an unshortened
+          // pause is the behaviour this host has always had.
+          return false;
+        }
+      },
       config: {
         baseSleepSeconds: optionalNumber(args["base-sleep-seconds"]) ??
           CONTAINER_RESTART_DEFAULTS.baseSleepSeconds,
