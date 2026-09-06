@@ -3602,6 +3602,14 @@ Commands run directly (not through a shell), so each entry is a program plus
 arguments; shell features (pipes, redirects, globs) are not interpreted. Wrap
 them in a script (as in the example) if you need shell behaviour.
 
+**The environment is built, not inherited (Issue #1214).** Because the scripts
+are supplied by the target repo, they are code the worker did not write, so
+they run with the same allowlisted environment as the repo's quality command —
+`PATH`, `HOME`, `TMPDIR`, the locale and the toolchain caches, and nothing
+else. No credential the worker holds is in scope for a pre-flight script to
+read. A repository whose pre-flight genuinely needs a further variable declares
+it the same way its checks do, via `untrusted_command_env.ts`'s allowlist.
+
 ```mermaid
 flowchart TD
     A["Worker automated commit"] --> B["git add -A"]

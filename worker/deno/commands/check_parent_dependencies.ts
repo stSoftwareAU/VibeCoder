@@ -23,6 +23,7 @@ import {
   normaliseIssueState,
 } from "../lib/issue_dependencies.ts";
 import { validateCheckParentDepsArgs } from "../lib/command_args.ts";
+import { fetchNativeSubIssueNumbers } from "../lib/native_sub_issues.ts";
 
 /**
  * Data returned by the check-parent-deps command.
@@ -68,24 +69,30 @@ export function createGhIssueFetcher(
     },
 
     async getSubIssues(_repo: string, issueNumber: number): Promise<number[]> {
-      // GitHub's sub-issues are available via the GraphQL API or REST timeline
-      // We use the REST API to list sub-issues via the timeline events
-      try {
-        const output = await runGhFn([
-          "api",
-          `repos/${_repo}/issues/${issueNumber}/timeline`,
-          "--paginate",
-          "--jq",
-          '[.[] | select(.event == "cross-referenced") | .source.issue.number // empty] | unique',
-        ]);
-        const parsed = JSON.parse(output || "[]");
-        if (Array.isArray(parsed)) {
-          return parsed.filter((n): n is number => typeof n === "number");
-        }
-      } catch {
-        // Timeline API may not be available; fall back to body parsing
-      }
-      return [];
+      // Issue #1218: query the native sub-issues endpoint, never the timeline.
+      //
+      // A `cross-referenced` timeline event is created by *anyone* who mentions
+      // the issue — one `#123` in a comment body on a public repo is enough.
+      // Treating those numbers as sub-issues handed an unauthenticated
+      // commenter the child set, and `checkParentBlocked` deliberately skips
+      // the `hasBackReference` confirmation for API-derived children
+      // (lib/issue_dependencies.ts:355-361) because it trusts the endpoint to
+      // be authoritative. A cross-reference sourced from another repository
+      // also yields a number that does not resolve here, and an unresolvable
+      // child is counted as open — so a single comment produced a durable
+      // "blocked by open sub-issue(s)" verdict on an arbitrary issue.
+      //
+      // The pickup path already made this move (`lib/issue_finder_common.ts`,
+      // Issue #2470); this is the unrepaired copy. The native endpoint returns
+      // only genuine sub-issues, which only a user with write access can
+      // create, and `[]` when there are none — so the body path keeps running
+      // with its back-reference check.
+      //
+      // Delegated to the shared helper rather than re-spelt here: it already
+      // validates the slug, asks for `per_page=100` (the REST default of 30
+      // would silently truncate a large parent's child set, and a missing
+      // child reads as "not blocked"), and de-duplicates.
+      return await fetchNativeSubIssueNumbers(_repo, issueNumber, runGhFn);
     },
 
     async getIssueBody(_repo: string, issueNumber: number): Promise<string> {

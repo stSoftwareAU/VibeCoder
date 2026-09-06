@@ -240,9 +240,16 @@ Deno.test("threshold resolves per-repo override then global default", () => {
  * shapes `createGhEscalationClient` and `issueCommentsContainMarker` use.
  * Every write (label add, comment POST) is recorded in `writes`.
  */
+/** The fleet login the escalation stub writes its own comments as. */
+const FLEET_LOGIN = "vibe-coder-bot";
+
+/** Fleet identity the marker-author check is given instead of a config. */
+const FLEET_DEDUP = { fleetAuthors: [FLEET_LOGIN] };
+
 function buildEscalationGh(
   comments: string[],
   writes: string[][],
+  commentAuthor: string = FLEET_LOGIN,
 ): (args: string[]) => Promise<string> {
   const listing = () =>
     JSON.stringify(
@@ -250,7 +257,7 @@ function buildEscalationGh(
         id: i + 1,
         body,
         created_at: "2026-08-11T18:00:00Z",
-        user: { login: "someone" },
+        user: { login: commentAuthor },
       })),
     );
 
@@ -303,6 +310,7 @@ Deno.test("escalation comment posted at most once per PR per stall reason", asyn
     needsHumanLabel: "needs-human",
     ensureLabelExists: () =>
       Promise.resolve({ ok: true as const, value: undefined }),
+    dedupAuthors: FLEET_DEDUP,
     logger,
   };
 
@@ -321,6 +329,33 @@ Deno.test("escalation comment posted at most once per PR per stall reason", asyn
   assertStringIncludes(posted[0]!, "#93, #94");
 });
 
+Deno.test("an auto-fix-cap marker planted by an outsider does not suppress the escalation (Issue #1216)", async () => {
+  // A PR comment is text any GitHub account may write, and this marker
+  // suppresses the whole stall escalation for the PR. Trusting the body alone
+  // let one planted comment silence the watchdog on that PR for good.
+  const writes: string[][] = [];
+  const comments: string[] = [];
+  const gh = buildEscalationGh(comments, writes, "drive-by-attacker");
+  comments.push(
+    `## Automatic fix attempts exhausted\n\n${
+      buildDedupMarker("auto-fix-cap:deadbeefdeadbeef")
+    }`,
+  );
+
+  const result = await escalateBlockingPrStall(redCiStall(), {
+    ghCommandFn: gh,
+    needsHumanLabel: "needs-human",
+    ensureLabelExists: () =>
+      Promise.resolve({ ok: true as const, value: undefined }),
+    dedupAuthors: FLEET_DEDUP,
+    logger,
+  });
+
+  assert(result.ok);
+  assertEquals(result.value.suppressedByAutoFixCap, false);
+  assertEquals(result.value.postedReasons, ["red-ci"]);
+});
+
 Deno.test("escalation is suppressed when the auto-fix cap has already escalated", async () => {
   const comments = [
     `## Automatic fix attempts exhausted\n\n${
@@ -335,6 +370,7 @@ Deno.test("escalation is suppressed when the auto-fix cap has already escalated"
     needsHumanLabel: "needs-human",
     ensureLabelExists: () =>
       Promise.resolve({ ok: true as const, value: undefined }),
+    dedupAuthors: FLEET_DEDUP,
     logger,
   });
 
@@ -498,6 +534,7 @@ Deno.test("scan escalates a stalled blocking PR once and reports it", async () =
     githubUser: "vibe-coder",
     ensureLabelExists: () =>
       Promise.resolve({ ok: true as const, value: undefined }),
+    dedupAuthors: FLEET_DEDUP,
     logger,
     nowSeconds: () => NOW,
   };
@@ -538,6 +575,7 @@ Deno.test("scan ignores an open PR that blocks no work-on issue", async () => {
     needsHumanLabel: "needs-human",
     ensureLabelExists: () =>
       Promise.resolve({ ok: true as const, value: undefined }),
+    dedupAuthors: FLEET_DEDUP,
     logger,
     nowSeconds: () => NOW,
   });
@@ -741,6 +779,7 @@ Deno.test("a green-but-unmerged stall escalates exactly once", async () => {
         ok: true as const,
         value: { issueNumber: 900, filed: true },
       }),
+    dedupAuthors: FLEET_DEDUP,
     logger,
   };
 

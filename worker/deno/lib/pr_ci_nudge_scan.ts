@@ -19,6 +19,7 @@
  */
 
 import type { Result } from "../types.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import { issueCommentsContainMarker } from "./issue_comment_pages.ts";
 import { getCiStartStatus } from "./pr_ci_started.ts";
 import { nudgeCi, type NudgeOutcome } from "./pr_ci_nudge.ts";
@@ -246,6 +247,11 @@ export interface ProcessCiNudgeCandidateDeps {
   ghCommandFn: (args: string[]) => Promise<string>;
   /** Injected `git` CLI runner (only needed for the `none` empty-commit path). */
   gitCommandFn: (args: string[]) => Promise<string>;
+  /**
+   * Fleet identity used to verify who wrote the nudge marker (Issue #1216).
+   * Omitted in production, which reads the configured fleet identity.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
   /** Optional logger. */
   log?: (message: string) => void;
 }
@@ -280,6 +286,8 @@ export async function processCiNudgeCandidate(
       candidate.repo,
       candidate.prNumber,
       ghCommandFn,
+      deps.dedupAuthors,
+      log,
     );
   } catch (err) {
     log?.(
@@ -498,12 +506,16 @@ async function prHasNudgeMarker(
   repo: string,
   prNumber: number,
   ghCommandFn: (args: string[]) => Promise<string>,
+  dedupAuthors: AlertDedupAuthorOptions = {},
+  log?: (message: string) => void,
 ): Promise<boolean> {
   return await issueCommentsContainMarker(
     repo,
     prNumber,
     NUDGE_COMMENT_MARKER,
     ghCommandFn,
+    dedupAuthors,
+    log,
   );
 }
 

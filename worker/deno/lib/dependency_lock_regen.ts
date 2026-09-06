@@ -43,6 +43,7 @@
 import type { RuleOutcome } from "./dependency_conflict_rules.ts";
 import { truncateLogTail } from "./log_tail.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -314,13 +315,20 @@ function describe(command: RegenCommand): string {
  * caller turns it into `unresolved`, so a missing or broken toolchain can
  * never look like a successful regeneration.
  */
-const defaultRunner: LockCommandRunner = async (call) => {
+export const defaultRunner: LockCommandRunner = async (call) => {
   const output = await new Deno.Command(call.bin, {
     args: [...call.args],
     cwd: call.cwd,
     stdin: "null",
     stdout: "piped",
     stderr: "piped",
+    // `npm install`, `deno install`, `cargo update` and `go mod tidy` run
+    // install hooks declared by a manifest the repository controls, so this
+    // is code the worker did not write. Its environment is BUILT from the
+    // allowlist rather than inherited (Issues #572, #1214) — a postinstall
+    // script has no credential in scope to echo.
+    env: buildUntrustedCommandEnv(),
+    clearEnv: true,
     signal: AbortSignal.timeout(call.timeoutMs),
   }).output();
 

@@ -72,6 +72,65 @@ export function cacheDirUserSuffix(): string {
   return safe || "unknown-user";
 }
 
+/**
+ * The single place a shared-tmp state directory name is built (Issue #1215).
+ *
+ * `${TMPDIR}/<name>` is the same path for every account on the host, so any
+ * local user can create it first and own what the worker later reads back.
+ * Composing the name here — never by interpolating `TMPDIR` at the call site
+ * — binds the directory to this account, and the quality gate's
+ * `tmp_state_dir_check.ts` fails the build on a raw interpolation that
+ * bypasses it.
+ *
+ * @param name - Stable base name for the directory, e.g. `vibe-issue-cache`.
+ * @param lookup - Environment reader, injectable for tests.
+ * @returns Absolute path of the per-account directory (not created).
+ */
+export function sharedTmpStateDir(
+  name: string,
+  lookup: (key: string) => string | undefined = defaultLookup,
+): string {
+  return `${sharedTmpRoot(lookup)}/${name}-${cacheDirUserSuffix()}`;
+}
+
+/** Environment reader used when a caller supplies none. */
+function defaultLookup(key: string): string | undefined {
+  return envOrNull(key) ?? undefined;
+}
+
+/** The host's shared temporary root, with trailing separators stripped. */
+function sharedTmpRoot(
+  lookup: (key: string) => string | undefined = defaultLookup,
+): string {
+  const configured = lookup("TMPDIR") ?? lookup("TEMP") ?? lookup("TMP");
+  return (configured ?? "/tmp").replace(/\/+$/, "") || "/tmp";
+}
+
+/**
+ * Whether `dir` sits inside the host's shared temporary root (Issue #1215).
+ *
+ * A cache told to use an explicit directory cannot assume that directory is
+ * private: `codebase_map_cache.ts` passed a fixed `/tmp` literal, which is
+ * every bit as world-writable as the default was. Callers use this to decide
+ * whether the ownership check applies, so the control follows the *location*
+ * rather than the argument.
+ *
+ * @param dir - Directory to classify.
+ * @param lookup - Environment reader, injectable for tests.
+ * @returns True when `dir` is at or below `TMPDIR`/`TEMP`/`TMP`/`/tmp`.
+ */
+export function isSharedTmpPath(
+  dir: string,
+  lookup: (key: string) => string | undefined = defaultLookup,
+): boolean {
+  const normalised = dir.replace(/\/+$/, "") || "/";
+  const roots = new Set([sharedTmpRoot(lookup), "/tmp"]);
+  for (const root of roots) {
+    if (normalised === root || normalised.startsWith(`${root}/`)) return true;
+  }
+  return false;
+}
+
 /** Create `dir` (and any parents) with owner-only permissions. */
 export async function ensurePrivateDir(dir: string): Promise<void> {
   await Deno.mkdir(dir, { recursive: true, mode: PRIVATE_DIR_MODE });

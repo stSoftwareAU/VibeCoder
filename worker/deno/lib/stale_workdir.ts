@@ -25,6 +25,7 @@
 
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { isProtectedBranch } from "./git_branch.ts";
+import { runGitCommand } from "./git_timeout.ts";
 import { LANE_WORKTREE_ROOT } from "./lane_worktree.ts";
 
 /** Default age threshold in days before a repo clone with no heartbeat is stale. */
@@ -387,25 +388,15 @@ export interface UnpushedRescueResult {
 export async function pushUnpushedBranches(
   repoDir: string,
 ): Promise<UnpushedRescueResult> {
+  // Routed through the shared chokepoint (Issue #1214): the rescue pushes to
+  // a remote, so an untimed spawn here hangs the worker outright, and the
+  // push must reach the audit journal like every other git mutation.
   const run = async (args: string[]) => {
-    try {
-      const out = await new Deno.Command("git", {
-        args: ["-C", repoDir, ...args],
-        stdout: "piped",
-        stderr: "piped",
-      }).output();
-      return {
-        code: out.code,
-        stdout: new TextDecoder().decode(out.stdout),
-        stderr: new TextDecoder().decode(out.stderr),
-      };
-    } catch (err) {
-      return {
-        code: -1,
-        stdout: "",
-        stderr: err instanceof Error ? err.message : String(err),
-      };
+    const result = await runGitCommand(["-C", repoDir, ...args]);
+    if (!result.ok) {
+      return { code: -1, stdout: "", stderr: result.error.message };
     }
+    return result.value;
   };
 
   // Fast path: nothing anywhere is ahead of any remote — safe to delete.

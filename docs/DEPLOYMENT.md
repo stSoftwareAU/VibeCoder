@@ -663,6 +663,14 @@ sudo systemctl start auto-issue-worker
 </plist>
 ```
 
+Then restrict it to your own account:
+
+```bash
+chmod 600 ~/Library/LaunchAgents/com.vibe.auto-issue-worker.plist
+```
+
+> **🔒 Security:** `./setup.sh` writes this file 0600 because a plist carrying `VIBE_LAUNCHAGENT_GH_TOKEN` or `VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY` in its `EnvironmentVariables` block holds those credentials in plaintext. A hand-written plist gets your umask instead, so set the mode yourself. Every path you paste into the file is XML — a directory name containing `&`, `<` or `>` must be written as `&amp;`, `&lt;` or `&gt;` or launchd will reject the document (Issue #1220).
+
 > **📝 Note:** Worker configuration (e.g., `allowed_authors`, `repos`) is managed via `.config.json`, not environment variables. Run `./setup.sh` before starting the LaunchAgent to create the config file. See the [Configuration Reference](CONFIGURATION.md) for details.
 
 #### 🔧 LaunchAgent Commands

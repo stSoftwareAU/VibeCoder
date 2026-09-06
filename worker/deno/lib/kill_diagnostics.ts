@@ -13,8 +13,20 @@
  * done here, not by `ps`); `dmesg` is best-effort and usually unreadable
  * for an unprivileged user — its absence is reported, never fatal.
  *
+ * **The argv is a secret sink (Issue #1217, SEC-1217-05).** `ps` reports the
+ * full command line of every process on the host, and a credential handed to a
+ * child on its command line is visible there to anyone who can run `ps`. This
+ * table then reaches a public GitHub comment through `failure_message.ts`, so
+ * each row is redacted **before** it is cut to the per-row budget: cutting first
+ * splits a token, and every signature rule in `secret_redaction.ts` is anchored
+ * on the credential's leading bytes, so the downstream pass would match nothing.
+ * The `dmesg` capture is masked at its own source for the same reason, even
+ * though its own cut is line-granular.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
+
+import { redactSecrets } from "./secret_redaction.ts";
 
 /** One `ps` row. */
 export interface ProcessRow {
@@ -25,10 +37,22 @@ export interface ProcessRow {
   command: string;
 }
 
-/** Parse `ps -eo pid,ppid,rss,etime,args` output (header tolerated). */
+/**
+ * Parse `ps -eo pid,ppid,rss,etime,args` output (header tolerated).
+ *
+ * Redaction happens **here**, at the single point both consumers pass through
+ * (the kill-time capture and the pre-kill memory-pressure warning), and before
+ * {@link formatProcessTable} cuts each command to its per-row budget. A cut
+ * lands mid-token, and every rule in `secret_redaction.ts` is anchored on the
+ * credential's leading bytes, so redacting after the cut would match nothing
+ * (Issue #1217, SEC-1217-05).
+ *
+ * @param text - Raw `ps` output, untruncated.
+ * @returns One row per parseable line, with secret shapes already masked.
+ */
 export function parseProcessTable(text: string): ProcessRow[] {
   const rows: ProcessRow[] = [];
-  for (const raw of text.split("\n")) {
+  for (const raw of redactSecrets(text).split("\n")) {
     const line = raw.trim();
     if (!line) continue;
     const match = line.match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
@@ -218,7 +242,11 @@ async function defaultReadKernelLog(): Promise<string> {
     stderr: "null",
   }).output();
   if (!out.success) throw new Error("dmesg failed");
-  const text = new TextDecoder().decode(out.stdout);
+  // Masked at its own source (Issue #1217). This cut is line-granular so it
+  // cannot split a token by itself, but the kernel ring buffer carries whatever
+  // userspace logged into it, and redacting here keeps the captured text safe
+  // whatever a later caller does with it.
+  const text = redactSecrets(new TextDecoder().decode(out.stdout));
   // Keep the tail only — the OOM lines are the most recent.
   return text.split("\n").slice(-400).join("\n");
 }

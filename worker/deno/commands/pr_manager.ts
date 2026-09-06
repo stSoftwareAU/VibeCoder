@@ -54,11 +54,7 @@ import {
 } from "../lib/imgbb_upload.ts";
 import { resolveAlertDedupAuthors } from "../lib/alert_dedup_authors.ts";
 import { AutoMergeResult, enableAutoMerge } from "../lib/pr_auto_merge.ts";
-import {
-  forkSyncDowngradeWarning,
-  isMilestoneSyncBranch,
-  mergeMethodFlagForHead,
-} from "../lib/milestone_sync_pr.ts";
+import { directMergePr } from "../lib/direct_merge.ts";
 import {
   getCiCheckRetryCount,
   postCiFixMaxRetriesComment,
@@ -84,6 +80,7 @@ import {
 } from "../lib/pr_issue_linking.ts";
 import { retargetPrToMilestone } from "../lib/pr_retarget.ts";
 import { runGhCommand } from "../lib/github.ts";
+import { runGitCommand } from "../lib/git_timeout.ts";
 
 /**
  * The PR's head branch, which decides its merge method (Issue #1048).
@@ -206,14 +203,14 @@ export const prManagerCommand: Command = {
           githubRepo: githubRepo || undefined,
           imgbbApiKey: imgbbApiKey || undefined,
           uploadFn: imgbbApiKey ? createImgbbUploadFn(imgbbApiKey) : undefined,
+          // Through the shared chokepoint (Issue #1214) so the call is
+          // timeout-bounded and journalled. A spawn failure throws, exactly as
+          // the raw `Deno.Command` it replaced did — an empty string here
+          // would read as "git found nothing", not "git could not run".
           gitCommandFn: async (gitArgs: string[]) => {
-            const cmd = new Deno.Command("git", {
-              args: gitArgs,
-              stdout: "piped",
-              stderr: "piped",
-            });
-            const { stdout } = await cmd.output();
-            return new TextDecoder().decode(stdout);
+            const result = await runGitCommand(gitArgs);
+            if (!result.ok) throw result.error;
+            return result.value.stdout;
           },
         });
         return {
@@ -286,36 +283,43 @@ export const prManagerCommand: Command = {
           headRefName,
           ghCommandFn: runGhCommand,
         });
-        // If not allowed, attempt direct merge
+        // If not allowed, fall back to the *gated* direct merge.
+        //
+        // Issue #1218: this branch used to issue a raw
+        // `gh pr merge <n> --repo <r> --squash`, which is the one direct-merge
+        // call site in the tree that skipped `directMergePr()`. docs/MERGE.md
+        // states the gate runs "from inside `directMergePr()` so every
+        // direct-merge call site is protected"; this one was not, so a PR
+        // number handed to the command merged without the default-branch
+        // human-approval guard (Issue #2416/#1082), without the CI-green and
+        // branch-current backstop (Issue #2582), and without the head-SHA pin
+        // (Issue #3946). Routing it through the chokepoint restores all three
+        // and keeps the invariant a single function rather than a convention.
         if (result.result === AutoMergeResult.NotAllowed) {
-          try {
-            // Same-repository heads only may take the merge-commit deviation
-            // (Issue #1249, finding 10). This fallback holds no evidence about
-            // where the head lives, so it squashes — loudly, because a quietly
-            // squashed sync is the defect Issue #1048 exists to prevent.
-            if (isMilestoneSyncBranch(headRefName)) {
-              console.warn(
-                forkSyncDowngradeWarning(repo, prNumber, headRefName),
-              );
-            }
-            await runGhCommand([
-              "pr",
-              "merge",
-              String(prNumber),
-              "--repo",
-              repo,
-              mergeMethodFlagForHead(headRefName, false),
-            ]);
+          const merge = await directMergePr(repo, prNumber, runGhCommand);
+          if (!merge.ok) {
+            // A refused or unconfirmable gate is a loud failure, never a
+            // silent "attempted" success.
             return {
-              success: true,
-              message: `Direct merge attempted for PR #${prNumber}`,
-            };
-          } catch {
-            return {
-              success: true,
-              message: `Auto-merge not available, direct merge deferred`,
+              success: false,
+              message:
+                `Direct merge of PR #${prNumber} refused: ${merge.error.message}`,
             };
           }
+          if (merge.value.merged) {
+            return {
+              success: true,
+              message:
+                `PR #${prNumber} merged directly after the pre-merge gate`,
+            };
+          }
+          return {
+            success: true,
+            message:
+              `Auto-merge not available and the pre-merge gate deferred PR #${prNumber}: ${
+                merge.value.blocked ?? "gate deferred"
+              }`,
+          };
         }
         return { success: true, message: result.message };
       }

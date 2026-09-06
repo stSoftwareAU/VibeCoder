@@ -49,6 +49,7 @@ import type { Result } from "../../types.ts";
 import { detectTool } from "../quality_helpers.ts";
 import { prependExecutableDir } from "../path_bootstrap.ts";
 import { type EnvLookup, processEnvLookup } from "../env_lookup.ts";
+import { buildUntrustedCommandEnv } from "../untrusted_command_env.ts";
 
 /**
  * Build the subprocess environment for `bump-deps.sh`, guaranteeing the
@@ -115,10 +116,14 @@ export function createBumpDepsRuntimeDeps(
           stdout: "piped",
           stderr: "piped",
           stdin: "null",
-          // Inherit the parent env then layer on the bump-specific values
-          // (so the script still has PATH/HOME/etc.) and guarantee the
-          // resolved deno's directory is on PATH.
-          env: buildBumpScriptEnv(Deno.env.toObject(), env, denoPath),
+          // `bump-deps.sh` is supplied by the target repository, so it is
+          // code the worker did not write. Its environment is BUILT from the
+          // allowlist rather than inherited (Issues #572, #1214) — the
+          // bump-specific values and the resolved deno's directory are then
+          // layered on, so the script still has PATH/HOME/DENO_DIR but no
+          // credential is in scope for it to echo.
+          env: buildBumpScriptEnv(buildUntrustedCommandEnv(), env, denoPath),
+          clearEnv: true,
         });
         const result = await proc.output();
         const stdout = new TextDecoder().decode(result.stdout);
