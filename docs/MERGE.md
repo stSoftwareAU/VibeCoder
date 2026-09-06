@@ -114,12 +114,18 @@ how the branch is fed:
   read failure in `detail`). The worker never locks on uncertainty, the same
   stance as the check-name discovery below.
 
-On a branch that has opted out or demonstrably takes direct pushes, a stale
-ruleset the worker created earlier is **deleted** — only the ruleset named
-exactly `Vibe Coder default branch` and owned by the repository; a human-
-managed or organisation ruleset is never touched, and a human-managed ruleset
-covering the branch still wins (`existing-ruleset`) before any of this runs. On
-an unreadable history nothing is written _and_ nothing is deleted.
+**Removing protection needs stronger evidence than suppressing it**
+(Issue #1289). A stale ruleset the worker created earlier is **deleted** only
+on evidence the worker trusts: demonstrable direct pushes (commit history it
+read itself) or the `direct-push` topic, which is repository *settings* and
+takes admin permission to write. The marker file is repository *content* —
+anybody with write access, or a merged PR, can land it — so it suppresses
+creating a ruleset but never removes one that already exists. Only the ruleset
+named exactly `Vibe Coder default branch` and owned by the repository is ever
+deleted; a human-managed or organisation ruleset is never touched, and a
+human-managed ruleset covering the branch still wins (`existing-ruleset`)
+before any of this runs. On an unreadable history nothing is written _and_
+nothing is deleted.
 
 The read-only sweep `audit-default-branch-rulesets` (see
 [Extending → Maintenance Commands](EXTENDING.md#-maintenance-commands)) lists,
@@ -161,7 +167,8 @@ flowchart TD
     A[ensureDefaultBranchRuleset] --> B{Foreign ruleset<br/>covers the branch?}
     B -- yes --> C["No-op<br/>(skipped: existing-ruleset)"]
     B -- no --> P{Branch takes<br/>direct pushes?}
-    P -- "opted out / direct" --> Q["No ruleset; delete our own<br/>stale one if present<br/>(skipped: opted-out /<br/>direct-push-branch)"]
+    P -- "direct pushes seen /<br/>direct-push topic" --> Q["No ruleset; delete our own<br/>stale one if present<br/>(skipped: opted-out /<br/>direct-push-branch)"]
+    P -- "marker file only" --> S["No ruleset written,<br/>nothing deleted<br/>(skipped: opted-out)"]
     P -- "history unreadable" --> R["No ruleset written,<br/>nothing deleted<br/>(skipped: direct-push-branch)"]
     P -- "PR-only" --> D[Catalogue candidates<br/>visibility + language filtered]
     D --> E{Intersect with<br/>reported check names}
