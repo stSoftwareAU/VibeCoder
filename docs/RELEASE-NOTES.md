@@ -31,6 +31,7 @@ sets both a `.config.json` key and its `VIBE_*` variable.**
 | `imgbb_api_key`, `agent_provider` and `agent_providers` now take the `.config.json` value when the matching `VIBE_*` variable is also set | #1032 |
 | `update_gh_user_status` moves with them — the same module resolves it, and one module cannot hold two precedence orders | #1032 |
 | A run that still takes any of them from the environment logs one line per setting, naming the config key that replaces the variable | #1032 |
+| `LAUNCH_LOG_DIR` and `LOG_DIR` no longer move the host log directory; `log_dir` in `.config.json` is the only way, and a host still exporting either is told so by name at every launch | #1388 |
 
 Issue #289 settled the rule years ago — **the `.config.json` key wins over the
 environment variable, and the default applies only when neither states a usable
@@ -54,6 +55,22 @@ flowchart LR
     D["built-in default"] -->|"only when neither does"| V
     style C fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
+
+### Breaking: the log directory comes from the file alone
+
+A host that pinned its log directory with `LOG_DIR` or `LAUNCH_LOG_DIR` — the
+1.4.0 notes offered `LOG_DIR=$HOME/logs` as the way to keep the old location —
+falls back to the **platform default** on its first launch after the upgrade,
+and prints the variable, its value and the `log_dir` line to write instead.
+Move the value into `.config.json` before upgrading:
+
+```json
+{ "log_dir": "/var/log/vibe-coder" }
+```
+
+Then unset the variable wherever it was exported (shell profile, crontab, unit
+file, plist). Rollback is the reverse: restore the export and pin the previous
+release. Nothing is moved or deleted either way.
 
 ### Breaking: which value an operator who set both already gets
 
