@@ -35,6 +35,8 @@ import {
   redactGhBodyArgs,
   UnredactableBodyError,
 } from "./gh_body_redaction.ts";
+// Shared with `spawnGh` (Issue #1254) so the two chokepoints cannot drift.
+import { denoBodyFileReader, denoBodyFileWriter } from "./gh_body_file_io.ts";
 import { evaluateGhCommand } from "./gh_guard_decision.ts";
 import type { ClaimedIssue } from "./claimed_issue_guard.ts";
 
@@ -75,20 +77,6 @@ export function encodeGuardStdout(result: GhGuardCliResult): string {
     .map((field) => `${field}\0`)
     .join("");
 }
-
-/** Production body-file reader — used when the caller supplies none. */
-const denoBodyFileReader: BodyFileReader = (path) =>
-  Deno.readTextFileSync(path);
-
-/**
- * Production writer for a masked `--input` body (Issue #92): a fresh temp file
- * the redacted JSON lands in, so the agent's own file is never rewritten.
- */
-const denoBodyFileWriter: BodyFileWriter = (content) => {
-  const path = Deno.makeTempFileSync({ prefix: "gh-input-", suffix: ".json" });
-  Deno.writeTextFileSync(path, content);
-  return path;
-};
 
 /** The guard's own argv, split from the `gh` arguments that follow `--`. */
 interface ParsedArgv {

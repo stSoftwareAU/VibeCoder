@@ -527,3 +527,50 @@ Deno.test("redactSecrets - primary PEM rule still masks a block with no END mark
   assertEquals(out.includes("BEGIN RSA PRIVATE KEY"), false);
   assertStringIncludes(out, REDACTION_PLACEHOLDER);
 });
+
+// ---------------------------------------------------------------------------
+// Issue #1254 — a JSON object value is structure, not a credential
+//
+// `spawnGh` now scans the `--input` and stdin bodies it publishes, and refuses
+// a body it cannot mask safely. The repo-hardening request body enables secret
+// scanning, so its keys read `"secret_scanning": {…}` — matched by the
+// assignment rule, whose `\S+` branch swallowed the opening brace and left
+// truncated, invalid JSON behind. A credential never opens with `{` or `[`.
+// ---------------------------------------------------------------------------
+
+Deno.test("redactSecrets - leaves a JSON object value under a secret-ish key alone (Issue #1254)", () => {
+  const body = JSON.stringify({
+    security_and_analysis: {
+      secret_scanning: { status: "enabled" },
+      secret_scanning_push_protection: { status: "enabled" },
+    },
+  });
+  assertEquals(redactSecrets(body), body);
+});
+
+Deno.test("redactSecrets - leaves a JSON array value under a secret-ish key alone (Issue #1254)", () => {
+  const body = JSON.stringify({ secret_scanning_alerts: ["one", "two"] });
+  assertEquals(redactSecrets(body), body);
+});
+
+Deno.test("redactSecrets - still masks a scalar value under a secret-ish key (Issue #1254)", () => {
+  assertEquals(
+    redactSecrets('{"api_key":"abc123def456"}'),
+    `{"api_key":${REDACTION_PLACEHOLDER}}`,
+  );
+  assertEquals(
+    redactSecrets("secret_scanning: enabled").includes(
+      REDACTION_PLACEHOLDER,
+    ),
+    true,
+  );
+});
+
+Deno.test("redactSecrets - still masks a secret nested inside a JSON object value (Issue #1254)", () => {
+  const nested = `{"secret_config":{"token":"${`ghp_${
+    "a1B2c3D4e5".repeat(4)
+  }`}"}}`;
+  const out = redactSecrets(nested);
+  assertEquals(out.includes("ghp_"), false);
+  assertStringIncludes(out, REDACTION_PLACEHOLDER);
+});

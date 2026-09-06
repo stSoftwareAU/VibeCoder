@@ -330,9 +330,22 @@ writers are too numerous to wire one at a time:
   redaction. Routing arguments — repo slug, API path, labels, reaction fields
   — are left byte-for-byte alone. The **agent** subprocess has a second
   chokepoint, the PATH shim, and it never reaches `spawnGh`: it calls the same
-  `redactGhBodyArgs` inside the guard child (§6a), extended
-  there to the contents of `--body-file`. Both chokepoints are wired; a third
-  `gh` caller would owe its own wiring.
+  `redactGhBodyArgs` inside the guard child (§6a). Both chokepoints
+  are wired; a third `gh` caller would owe its own wiring.
+
+  **Both chokepoints scan the same body classes (Issue #1254).** `spawnGh` used
+  to pass argv alone — no file reader — so its whole `--body-file` / `-F <path>`
+  / `-F body=@path` / `--input <file>` branch was dead code: a file body was
+  neither scanned *nor* refused, and any worker module that switched from
+  `--body` to `--body-file` would have published unscanned while looking like a
+  refactor. It now supplies the same reader and writer the guard child does
+  ([`worker/deno/lib/gh_body_file_io.ts`](worker/deno/lib/gh_body_file_io.ts)),
+  and `UnredactableBodyError` propagates out of the call rather than being
+  swallowed. The **stdin** body (`gh api … --input -`, used by the SARIF upload
+  and the ruleset writes) never appears in argv at all, so `spawnGh` puts the
+  bytes it pipes to the child through `redactSecrets()` before the write — and
+  tells the argument redactor that stdin is scanned, so a genuinely scanned
+  body is not refused.
 
 Each covers its own sink structurally and covers **nothing else**. Every other
 sink still owes its own explicit `redactSecrets()` call, and a body-producing
@@ -408,6 +421,7 @@ only a decoded *credential shape* is masked.
 | HTTP `Basic` auth redaction rule | `worker/deno/lib/secret_redaction.ts` | |
 | Bare OpenAI (`sk-`) and Google/Gemini (`AIzaSy`) key rules | `worker/deno/lib/secret_redaction.ts` | [#36](https://github.com/stSoftwareAU/VibeCoder/issues/36) |
 | `gh` comment / PR body arguments (worker chokepoint) | `worker/deno/lib/gh_body_redaction.ts` | |
+| Worker `gh` bodies from `--body-file` / `--input` files and stdin | `worker/deno/lib/gh_spawn.ts` | [#1254](https://github.com/stSoftwareAU/VibeCoder/issues/1254) |
 | Agent-authored `gh` bodies, incl. `--body-file` (shim chokepoint) | `worker/deno/lib/gh_guard_cli.ts` | |
 | PR-comment failure replies | `worker/deno/lib/pr_comments.ts` | |
 | Question-failure comment | `worker/deno/lib/label_question_failure.ts` | |

@@ -95,8 +95,9 @@ Deno.test("redactGhBodyArgs - leaves a non-body @file field alone", () => {
 });
 
 Deno.test("redactGhBodyArgs - without a reader, body-file arguments pass through", () => {
-  // The worker chokepoint (`spawnGh`) supplies no reader, so its behaviour is
-  // unchanged: only argv-carried bodies are rewritten.
+  // A caller that supplies no reader opts out of file scanning: only
+  // argv-carried bodies are rewritten. Both production chokepoints do supply
+  // one (Issue #1254).
   const args = ["issue", "comment", "1", "--body-file", "/tmp/body.md"];
   assertEquals(redactGhBodyArgs(args), args);
 });
@@ -328,4 +329,39 @@ Deno.test("redactGhBodyArgs #92 - a non-object JSON body with no secret is left 
   const { writer, written } = capturingWriter();
   assertEquals(redactGhBodyArgs(original, read, writer), original);
   assertEquals(written.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// A stdin body the caller scans itself (Issue #1254)
+// ---------------------------------------------------------------------------
+
+Deno.test("redactGhBodyArgs #1254 - --input - passes through when the caller scans stdin", () => {
+  const { writer, written } = capturingWriter();
+  const args = ["api", "repos/o/r/code-scanning/sarifs", "--input", "-"];
+  // `spawnGh` owns the bytes it pipes to the child and redacts them there, so
+  // the stdin body IS scanned — refusing the call would block a scanned body.
+  assertEquals(redactGhBodyArgs(args, readerFor({}), writer, true), args);
+  assertEquals(written.length, 0);
+});
+
+Deno.test("redactGhBodyArgs #1254 - --body-file - passes through when the caller scans stdin", () => {
+  const args = ["issue", "comment", "1", "--body-file", "-"];
+  assertEquals(
+    redactGhBodyArgs(args, readerFor({}), undefined, true),
+    args,
+  );
+});
+
+Deno.test("redactGhBodyArgs #1254 - an unreadable path still refuses when the caller scans stdin", () => {
+  // Scanning stdin says nothing about a file the redactor cannot read.
+  assertThrows(
+    () =>
+      redactGhBodyArgs(
+        ["issue", "comment", "1", "--body-file", "/tmp/gone.md"],
+        readerFor({}),
+        undefined,
+        true,
+      ),
+    UnredactableBodyError,
+  );
 });

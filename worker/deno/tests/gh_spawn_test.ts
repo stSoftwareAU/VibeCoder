@@ -29,6 +29,8 @@ import {
   WriteRepoBlockedError,
   WriteTargetUndeterminableError,
 } from "../lib/write_repo_allowlist.ts";
+import { UnredactableBodyError } from "../lib/gh_body_redaction.ts";
+import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 import { envFrom } from "./support/env_lookup.ts";
 
 /** Record the arguments each spawn attempt would have used. */
@@ -370,6 +372,189 @@ Deno.test("spawnGh - the injected roots are the only ones the re-stage reads", a
     _resetGhSpawnRunner();
     resetGhRestageAttempts();
     await Deno.remove(home, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// File and stdin bodies at the worker chokepoint (Issue #1254)
+// ---------------------------------------------------------------------------
+
+/** A realistic GitHub token shape — the payload each body below carries. */
+const GH_TOKEN_SAMPLE = `ghp_${"a1B2c3D4e5".repeat(4)}`;
+
+Deno.test("spawnGh - masks a secret read from a --body-file body (Issue #1254)", async () => {
+  const { calls } = recordingRunner();
+  silenceAllowlist();
+  seedWriteRepoAllowlist("me/target");
+  const path = await Deno.makeTempFile({ prefix: "vibe-body-", suffix: ".md" });
+  try {
+    await Deno.writeTextFile(path, `token ${GH_TOKEN_SAMPLE}\n`);
+
+    await spawnGh([
+      "issue",
+      "comment",
+      "1",
+      "-R",
+      "me/target",
+      "--body-file",
+      path,
+    ]);
+
+    assertEquals(calls, [[
+      "issue",
+      "comment",
+      "1",
+      "-R",
+      "me/target",
+      "--body",
+      `token ${REDACTION_PLACEHOLDER}\n`,
+    ]]);
+    // The agent's own file is never rewritten.
+    assertEquals(await Deno.readTextFile(path), `token ${GH_TOKEN_SAMPLE}\n`);
+  } finally {
+    await Deno.remove(path).catch(() => {});
+    restore();
+  }
+});
+
+Deno.test("spawnGh - refuses a body file it cannot read rather than publishing it unscanned (Issue #1254)", async () => {
+  const { calls } = recordingRunner();
+  silenceAllowlist();
+  seedWriteRepoAllowlist("me/target");
+  try {
+    await assertRejects(
+      () =>
+        spawnGh([
+          "issue",
+          "comment",
+          "1",
+          "-R",
+          "me/target",
+          "--body-file",
+          "/nonexistent/vibe-1254-body.md",
+        ]),
+      UnredactableBodyError,
+    );
+    assertEquals(calls, []);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("spawnGh - masks an --input file body into a fresh file (Issue #1254)", async () => {
+  const { calls } = recordingRunner();
+  silenceAllowlist();
+  seedWriteRepoAllowlist("me/target");
+  const original = `{"body":"token ${GH_TOKEN_SAMPLE}"}`;
+  const path = await Deno.makeTempFile({
+    prefix: "vibe-input-",
+    suffix: ".json",
+  });
+  let masked: string | undefined;
+  try {
+    await Deno.writeTextFile(path, original);
+
+    await spawnGh([
+      "api",
+      "-X",
+      "PATCH",
+      "repos/me/target/issues/1",
+      "--input",
+      path,
+    ]);
+
+    masked = calls[0]?.[5];
+    assertEquals(typeof masked, "string");
+    assertEquals(masked === path, false);
+    assertEquals(
+      await Deno.readTextFile(masked as string),
+      `{"body":"token ${REDACTION_PLACEHOLDER}"}`,
+    );
+    // The caller's own file is left exactly as it was.
+    assertEquals(await Deno.readTextFile(path), original);
+  } finally {
+    await Deno.remove(path).catch(() => {});
+    if (masked) await Deno.remove(masked).catch(() => {});
+    restore();
+  }
+});
+
+Deno.test("spawnGh - leaves the secret-scanning hardening body untouched (Issue #1254)", async () => {
+  const { calls } = recordingRunner();
+  silenceAllowlist();
+  seedWriteRepoAllowlist("me/target");
+  // The body `repo_settings_harden` PATCHes to enable secret scanning: no
+  // secret, but keys a signature rule reads as one. Scanning it must neither
+  // refuse the call nor rewrite the request.
+  const body = JSON.stringify({
+    security_and_analysis: {
+      secret_scanning: { status: "enabled" },
+      secret_scanning_push_protection: { status: "enabled" },
+    },
+  });
+  const path = await Deno.makeTempFile({
+    prefix: "vibe-settings-",
+    suffix: ".json",
+  });
+  try {
+    await Deno.writeTextFile(path, body);
+
+    await spawnGh([
+      "api",
+      "--method",
+      "PATCH",
+      "repos/me/target",
+      "--input",
+      path,
+    ]);
+
+    assertEquals(calls, [[
+      "api",
+      "--method",
+      "PATCH",
+      "repos/me/target",
+      "--input",
+      path,
+    ]]);
+    assertEquals(await Deno.readTextFile(path), body);
+  } finally {
+    await Deno.remove(path).catch(() => {});
+    restore();
+  }
+});
+
+Deno.test("spawnGh - redacts the stdin body of an --input - call (Issue #1254)", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  _setGhSpawnRunner((_args, options) => {
+    seen.push({ ...options });
+    return Promise.resolve({
+      code: 0,
+      success: true,
+      stdout: "",
+      stderr: "",
+    });
+  });
+  silenceAllowlist();
+  seedWriteRepoAllowlist("me/target");
+  try {
+    // `--input -` is the live spelling used by the SARIF upload and the
+    // ruleset writes: the body never appears in argv, so only a stdin scan
+    // can reach it — and the call must still be allowed to proceed.
+    await spawnGh([
+      "api",
+      "-X",
+      "POST",
+      "repos/me/target/code-scanning/sarifs",
+      "--input",
+      "-",
+    ], { stdin: `{"body":"token ${GH_TOKEN_SAMPLE}"}` });
+
+    assertEquals(
+      seen[0]?.stdin,
+      `{"body":"token ${REDACTION_PLACEHOLDER}"}`,
+    );
+  } finally {
+    restore();
   }
 });
 

@@ -37,13 +37,22 @@
  * field, raises {@link UnredactableBodyError} rather than being published
  * unscanned — unparseable never means unscanned.
  *
+ * **Bodies piped on stdin (Issue #1254).** A `-` body source is invisible here:
+ * the bytes never appear in argv. It therefore fails closed — unless the caller
+ * declares it scans stdin itself (`stdinScanned`), which is what `spawnGh` now
+ * does: it owns the bytes it writes to the child and puts them through
+ * `redactSecrets` before the write, so `gh api --input -` is scanned rather
+ * than refused.
+ *
  * ```mermaid
  * flowchart LR
  *     C["comment / PR-body call sites"] --> S["spawnGh()"]
  *     A["agent gh calls"] --> G["gh guard shim"]
- *     S --> R["redactGhBodyArgs<br/>(--body, -b, -f body=…)"]
- *     G --> R2["redactGhBodyArgs + reader<br/>(also --body-file contents)"]
+ *     S --> R["redactGhBodyArgs + reader/writer<br/>(argv, --body-file, --input)"]
+ *     S --> ST["redactSecrets(stdin)<br/>(--input - bodies)"]
+ *     G --> R2["redactGhBodyArgs + reader/writer<br/>(argv, --body-file, --input)"]
  *     R --> GH["gh subprocess → GitHub"]
+ *     ST --> GH
  *     R2 --> GH
  * ```
  *
@@ -116,6 +125,11 @@ export class UnredactableBodyError extends Error {
  * @param writeBodyFile - Optional writer; needed only to materialise a masked
  *   copy of an `--input` body. When an `--input` body needs masking and no
  *   writer is supplied, the call fails closed rather than publish it.
+ * @param stdinScanned - Set by a caller that owns the bytes it pipes to the
+ *   child and redacts them itself (`spawnGh`, Issue #1254). A `-` body source
+ *   is then genuinely scanned, so it passes through instead of failing closed.
+ *   Leave it unset whenever stdin is out of the caller's hands — the refusal
+ *   is what stops an unscanned body being published.
  * @returns A new array with body arguments redacted; all other arguments are
  *   returned unchanged. Every argument except a rewritten `--input` path is
  *   left byte-for-byte alone.
@@ -125,6 +139,7 @@ export function redactGhBodyArgs(
   args: readonly string[],
   readBodyFile?: BodyFileReader,
   writeBodyFile?: BodyFileWriter,
+  stdinScanned = false,
 ): string[] {
   const out = [...args];
   for (let i = 0; i < out.length; i++) {
@@ -150,7 +165,7 @@ export function redactGhBodyArgs(
       if (
         BODY_FILE_FLAGS.has(arg) && next !== undefined && !next.includes("=")
       ) {
-        const masked = maskedBodyFile(next, readBodyFile);
+        const masked = maskedBodyFile(next, readBodyFile, stdinScanned);
         if (masked !== undefined) {
           out[i] = "--body";
           out[i + 1] = masked;
@@ -162,14 +177,14 @@ export function redactGhBodyArgs(
       // `--body-file=<path>`
       if (arg.startsWith("--body-file=")) {
         const path = arg.substring("--body-file=".length);
-        const masked = maskedBodyFile(path, readBodyFile);
+        const masked = maskedBodyFile(path, readBodyFile, stdinScanned);
         if (masked !== undefined) out[i] = `--body=${masked}`;
         continue;
       }
 
       // `--input <path>` — `gh api` POSTs the file's JSON as the request body.
       if (INPUT_FLAGS.has(arg) && next !== undefined) {
-        const masked = maskedInputFile(next, readBodyFile);
+        const masked = maskedInputFile(next, readBodyFile, stdinScanned);
         if (masked !== undefined) {
           out[i + 1] = materialiseMaskedBody(masked, writeBodyFile);
         }
@@ -180,7 +195,7 @@ export function redactGhBodyArgs(
       // `--input=<path>`
       if (arg.startsWith("--input=")) {
         const path = arg.substring("--input=".length);
-        const masked = maskedInputFile(path, readBodyFile);
+        const masked = maskedInputFile(path, readBodyFile, stdinScanned);
         if (masked !== undefined) {
           out[i] = `--input=${materialiseMaskedBody(masked, writeBodyFile)}`;
         }
@@ -193,6 +208,7 @@ export function redactGhBodyArgs(
       out[i + 1] = redactFieldAssignment(
         next,
         FIELD_FILE_FLAGS.has(arg) ? readBodyFile : undefined,
+        stdinScanned,
       );
       i++;
     }
@@ -204,6 +220,7 @@ export function redactGhBodyArgs(
 function redactFieldAssignment(
   field: string,
   readBodyFile?: BodyFileReader,
+  stdinScanned = false,
 ): string {
   const eq = field.indexOf("=");
   if (eq <= 0) return field;
@@ -213,7 +230,11 @@ function redactFieldAssignment(
 
   // `-F body=@path` — gh reads the value from the file, so scan the file.
   if (readBodyFile && value.startsWith("@")) {
-    const masked = maskedBodyFile(value.substring(1), readBodyFile);
+    const masked = maskedBodyFile(
+      value.substring(1),
+      readBodyFile,
+      stdinScanned,
+    );
     return masked === undefined ? field : `${key}=${masked}`;
   }
 
@@ -229,8 +250,12 @@ function redactFieldAssignment(
 function maskedBodyFile(
   path: string,
   readBodyFile: BodyFileReader,
+  stdinScanned: boolean,
 ): string | undefined {
   if (path === "-") {
+    // The caller pipes — and redacts — those bytes itself (Issue #1254), so
+    // the body is scanned; only an unscanned stdin body fails closed.
+    if (stdinScanned) return undefined;
     throw new UnredactableBodyError(
       path,
       "a body read from stdin cannot be scanned for secrets — write it to a " +
@@ -261,8 +286,11 @@ function maskedBodyFile(
 function maskedInputFile(
   path: string,
   readBodyFile: BodyFileReader,
+  stdinScanned: boolean,
 ): string | undefined {
   if (path === "-") {
+    // See `maskedBodyFile`: scanned by the caller, so nothing to refuse.
+    if (stdinScanned) return undefined;
     throw new UnredactableBodyError(
       path,
       "a request body read from stdin cannot be scanned for secrets — write " +
