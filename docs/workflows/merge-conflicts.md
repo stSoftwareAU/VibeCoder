@@ -524,6 +524,13 @@ that gap, and reading the queue means reading both:
 - **The watchdog applies `escalated`, never `needs-human`.** A mechanical stall
   is work the fleet can claim, and `needs-human` is a cross-subsystem veto that
   would remove the PR from the very lane that clears it (Issue #569).
+- **The blocking-PR stall watchdog defers to this lane.** A `CONFLICTING` PR —
+  or one carrying `merge-conflict` — is never reported as "green but unmerged",
+  its escalation says the ladder owns the PR rather than offering "or close it",
+  and a live escalation is withdrawn when the PR enters the lane (Issue #1213).
+  NEAT-AI-Ockham#119 was closed by hand thirteen minutes after that comment
+  appeared, inside the cooldown and before rung 1 ran; see
+  [Blocking-PR stall watchdog](../CONFIGURATION.md#-blocking-pr-stall-watchdog).
 
 ## 🧾 Every decision leaves a reason behind
 

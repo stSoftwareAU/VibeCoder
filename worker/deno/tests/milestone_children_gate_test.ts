@@ -191,12 +191,18 @@ Deno.test("renderOpenChildrenBlockComment - names the milestone and every child"
 });
 
 Deno.test("postOpenChildrenBlockComment - posts once, then never again", async () => {
-  const comments: string[] = [];
+  // Since Issue #1249 the dedup read projects the commenter, and only a
+  // fleet-authored marker suppresses the comment — so the stub records who
+  // posted and the options name the fleet.
+  const comments: { author: string; body: string }[] = [];
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
-    if (key.includes("/comments?per_page=")) return comments.join("\n");
+    if (key.includes("/comments?per_page=")) return JSON.stringify(comments);
     if (key.includes("pr comment")) {
-      comments.push(args[args.indexOf("--body") + 1]!);
+      comments.push({
+        author: "vibe-bot",
+        body: args[args.indexOf("--body") + 1]!,
+      });
       return "";
     }
     return "";
@@ -209,6 +215,7 @@ Deno.test("postOpenChildrenBlockComment - posts once, then never again", async (
     children: [{ number: 3866, title: "Open child", kind: "issue" as const }],
     ghCommandFn: ghFn,
     log: () => {},
+    authorOptions: { fleetAuthors: ["vibe-bot"] },
   };
 
   assertEquals(await postOpenChildrenBlockComment(options), true);

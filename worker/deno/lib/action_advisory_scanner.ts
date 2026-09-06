@@ -19,6 +19,7 @@
  */
 
 import { extractUsesValue } from "./action_pin_scanner.ts";
+import { scrubUntrustedText } from "./prompt_delimiter.ts";
 import type {
   GhCommandFn,
   WorkflowFile,
@@ -114,6 +115,23 @@ function slug(coordinate: string): string {
 }
 
 /**
+ * Render one advisory-supplied string inert for the filed issue body
+ * (Issue #1249, finding 8).
+ *
+ * Every field read off a GHSA record — the summary above all — is third-party
+ * text this scanner interpolates into an issue body the worker files. An
+ * unscrubbed summary containing `<!-- finding-id: … -->` lands in that body and
+ * is read back as a genuine dedup key on the next scan, silently suppressing a
+ * *different* real finding. `scrubUntrustedText` neutralises the HTML-comment
+ * and delimiter shapes while leaving the prose readable; the line-break
+ * collapse keeps a multi-line summary inside its own bullet.
+ */
+function advisoryText(value: string | null | undefined): string | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  return scrubUntrustedText(value).replace(/[\r\n]+/g, " ").trim();
+}
+
+/**
  * Enumerate third-party action coordinates with their first call site,
  * query GHSA once per coordinate, and return one finding per advisory.
  */
@@ -161,14 +179,26 @@ export async function scanActionAdvisories(
     }
     for (const advisory of advisories) {
       if (!advisory || typeof advisory.ghsa_id !== "string") continue;
-      const findingId = `BP-GHSA-${slug(coordinate)}-${advisory.ghsa_id}`;
+      // `slug` leaves a well-formed `GHSA-xxxx-xxxx-xxxx` id byte-identical
+      // and strips anything else back to alphanumerics and hyphens, so no
+      // advisory can plant marker syntax in the dedup key itself.
+      const findingId = `BP-GHSA-${slug(coordinate)}-${slug(advisory.ghsa_id)}`;
+      const ghsaId = slug(advisory.ghsa_id);
       if (known.has(findingId)) continue;
       const severity = mapAdvisorySeverity(advisory.severity);
       const vuln = (advisory.vulnerabilities ?? []).find((v) =>
         (v.package?.name ?? "").toLowerCase() === coordinate.toLowerCase()
       ) ?? advisory.vulnerabilities?.[0];
-      const patched = vuln?.first_patched_version ?? null;
-      const range = vuln?.vulnerable_version_range ?? "unspecified";
+      // Every advisory-sourced string reaches a filed issue body, so each is
+      // scrubbed once here and only the scrubbed form is interpolated below.
+      const patched = advisoryText(vuln?.first_patched_version);
+      const range = advisoryText(vuln?.vulnerable_version_range) ??
+        "unspecified";
+      const summary = advisoryText(advisory.summary) ?? "no summary";
+      const advisorySeverity = advisoryText(advisory.severity) ?? "unrated";
+      const cveId = advisoryText(advisory.cve_id);
+      const htmlUrl = advisoryText(advisory.html_url) ?? "no URL";
+      const publishedAt = advisoryText(advisory.published_at);
       const emoji = severity === "high"
         ? "🔴"
         : severity === "medium"
@@ -177,18 +207,16 @@ export async function scanActionAdvisories(
       findings.push({
         findingId,
         coordinate,
-        ghsaId: advisory.ghsa_id,
+        ghsaId,
         severity,
         title:
-          `${emoji} Pinned action \`${coordinate}\` has a disclosed advisory ${advisory.ghsa_id}` +
-          (advisory.cve_id ? ` (${advisory.cve_id})` : ""),
+          `${emoji} Pinned action \`${coordinate}\` has a disclosed advisory ${ghsaId}` +
+          (cveId ? ` (${cveId})` : ""),
         file: site.file,
         lines: site.line,
-        whyItMatters:
-          `GHSA lists ${advisory.ghsa_id}${
-            advisory.cve_id ? ` / ${advisory.cve_id}` : ""
-          } against \`${coordinate}\` (${advisory.severity ?? "unrated"}): ` +
-          `${advisory.summary ?? "no summary"}. Vulnerable range: ${range}; ` +
+        whyItMatters: `GHSA lists ${ghsaId}${cveId ? ` / ${cveId}` : ""} ` +
+          `against \`${coordinate}\` (${advisorySeverity}): ` +
+          `${summary}. Vulnerable range: ${range}; ` +
           (patched
             ? `first patched version: ${patched}. `
             : "no patched version is published — consider removing the action. ") +
@@ -199,12 +227,8 @@ export async function scanActionAdvisories(
             `keep the trailing version comment accurate, and honour the 24h quarantine.`
           : `Replace \`${coordinate}\` or drop it until GHSA records a patched version.`,
         evidence: [
-          `Advisory: ${advisory.ghsa_id}${
-            advisory.cve_id ? ` / ${advisory.cve_id}` : ""
-          } — ${advisory.html_url ?? "no URL"}` +
-          (advisory.published_at
-            ? ` (published ${advisory.published_at})`
-            : ""),
+          `Advisory: ${ghsaId}${cveId ? ` / ${cveId}` : ""} — ${htmlUrl}` +
+          (publishedAt ? ` (published ${publishedAt})` : ""),
           `Vulnerable range: ${range}`,
           `First patched: ${patched ?? "none"}`,
           `Call sites: ${(allSites.get(coordinate) ?? []).join(", ")}`,

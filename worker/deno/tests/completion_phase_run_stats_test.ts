@@ -42,7 +42,9 @@ function makeStubClient(
         existing.map((body, id) => ({
           id,
           body,
-          author: "someone",
+          // Issue #1249: the cumulative total counts fleet-authored comments
+          // only, so the prior comment is attributed to this worker.
+          author: "testbot",
           createdAt: "2026-01-01T00:00:00Z",
           reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
         })) as GitHubComment[],

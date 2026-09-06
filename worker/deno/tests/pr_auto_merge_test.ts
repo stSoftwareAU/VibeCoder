@@ -205,7 +205,11 @@ function createGateStub(state: GateStubState) {
       return "[]";
     }
     if (key.includes("/comments?per_page=")) {
-      return state.comments.join("\n");
+      // Issue #1249: the dedup read projects the commenter, and only a
+      // fleet-authored marker suppresses a repeat comment.
+      return JSON.stringify(
+        state.comments.map((body) => ({ author: "vibe-bot", body })),
+      );
     }
     if (key.includes("pr comment")) {
       const bodyIdx = args.indexOf("--body");
@@ -292,6 +296,7 @@ Deno.test("pr_auto_merge - repeat scan cycle with children still open posts no d
       headRefName: GATE_BRANCH,
       ghCommandFn: ghFn,
       log: () => {},
+      authorOptions: { fleetAuthors: ["vibe-bot"] },
     });
     assertEquals(result.result, AutoMergeResult.BlockedOpenChildren);
   }
@@ -498,6 +503,7 @@ Deno.test("pr_auto_merge - a base whose rollup already merged: comment once, ret
       if (args[0] === "api" && args.join(" ").includes("/comments")) return "";
       return "";
     },
+    authorOptions: { fleetAuthors: ["vibe-bot"] },
   });
   assertEquals(result.result, AutoMergeResult.RetargetedToDefault);
   assert(result.message.includes("#3125"), result.message);
@@ -529,10 +535,18 @@ Deno.test("pr_auto_merge - the retarget comment is posted once (marker de-dup) (
     ghCommandFn: async (args) => {
       calls.push(args);
       if (args[0] === "api" && args.join(" ").includes("/comments")) {
-        return "earlier\n<!-- milestone-rollup-merged-retarget -->\nalready said";
+        // Issue #1249: fleet-authored, so the marker genuinely de-duplicates.
+        return JSON.stringify([
+          { author: "vibe-bot", body: "earlier" },
+          {
+            author: "vibe-bot",
+            body: "<!-- milestone-rollup-merged-retarget -->\nalready said",
+          },
+        ]);
       }
       return "";
     },
+    authorOptions: { fleetAuthors: ["vibe-bot"] },
   });
   assertEquals(result.result, AutoMergeResult.RetargetedToDefault);
   assert(
