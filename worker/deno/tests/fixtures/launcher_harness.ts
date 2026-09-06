@@ -195,6 +195,17 @@ case "\${sub}" in
     exit "\${STUB_INIT_EXIT:-0}"
     ;;
   run)
+    # The mode of the container-stderr capture FIFO (Issue #1299), recorded
+    # from inside the run: the launcher removes the FIFO on the way out, so
+    # this is the only moment it exists to be inspected. GNU stat first, BSD
+    # (macOS) stat second — the losing spelling prints its usage to stderr,
+    # which is this stub's own capture pipe, so both are silenced.
+    for fifo in "\${TMPDIR:-/tmp}"/vibe-run.*.err; do
+      [[ -p "\${fifo}" ]] || continue
+      mode="\$(stat -c '%a' "\${fifo}" 2>/dev/null ||
+        stat -f '%Lp' "\${fifo}" 2>/dev/null || true)"
+      printf '%s\\n' "\${mode}" >> "\${record_dir}/run-err-fifo.mode"
+    done
     # What the runtime client says when it refuses to start the container
     # (Issue #711) — the "no such image", "invalid reference format" or
     # "permission denied" line that a container_start escalation exists to
@@ -708,6 +719,35 @@ export async function removedImages(harness: Harness): Promise<string[]> {
   try {
     const text = await Deno.readTextFile(
       `${harness.recordDir}/image-removed.lines`,
+    );
+    return text.split("\n").map((line) => line.trim()).filter((line) =>
+      line !== ""
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Permission bits of the container-stderr capture FIFO (Issue #1299).
+ *
+ * The FIFO carries every byte the runtime client writes to stderr, and a
+ * second reader on it both discloses that stream and consumes bytes the
+ * capture never sees — so its mode is behaviour, not housekeeping. Recorded
+ * by the runtime stub while the run is in flight, because the launcher
+ * removes the FIFO on the way out.
+ *
+ * Point the launcher at a private `TMPDIR` before calling this: the stub
+ * globs that directory, so a shared `/tmp` would also report FIFOs belonging
+ * to other runs.
+ *
+ * @param harness - The harness the launcher ran under
+ * @returns One octal mode per capture FIFO seen, e.g. `["600"]`
+ */
+export async function runErrFifoModes(harness: Harness): Promise<string[]> {
+  try {
+    const text = await Deno.readTextFile(
+      `${harness.recordDir}/run-err-fifo.mode`,
     );
     return text.split("\n").map((line) => line.trim()).filter((line) =>
       line !== ""
