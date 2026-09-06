@@ -26,6 +26,10 @@
  */
 
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
+import {
+  isHeartbeatEpochLive,
+  parseHeartbeatEpoch,
+} from "./heartbeat_freshness.ts";
 
 /** Default maximum age in days before an idle session is removed. */
 export const DEFAULT_MAX_SESSION_AGE_DAYS = 7;
@@ -383,12 +387,15 @@ async function collectActiveRepos(
 
       try {
         const raw = await Deno.readTextFile(`${workDir}/${entry.name}`);
-        const epoch = parseInt(raw.trim(), 10);
-        if (isNaN(epoch)) continue;
+        const epoch = parseHeartbeatEpoch(raw);
+        if (epoch === null) continue;
         // Treat recent heartbeats as "active". Use the session-age window
         // so a worker that has been alive within the sweep horizon still
-        // has its session preserved.
-        if (now - epoch <= Math.max(maxAgeSeconds, 3600)) {
+        // has its session preserved. The window is bounded ahead of now as
+        // well (Issue #1232): a future-dated epoch in the agent-writable
+        // work root would otherwise pin a repo "active" for ever and stop
+        // its sessions being swept.
+        if (isHeartbeatEpochLive(epoch, now, Math.max(maxAgeSeconds, 3600))) {
           active.add(repoName);
         }
       } catch {

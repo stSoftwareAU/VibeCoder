@@ -280,6 +280,36 @@ Deno.test("sweepAllSessions - preserves sessions with an active heartbeat even w
   }
 });
 
+Deno.test("sweepAllSessions - a forged future-dated heartbeat does not preserve a stale session", async () => {
+  const workDir = await makeTempWorkDir();
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const sessionPath = await makeSession(
+      workDir,
+      "acme",
+      "myrepo",
+      "default",
+      10,
+      now - 30 * 86400,
+    );
+    // Anything running in the container can write this; before Issue #1232 it
+    // pinned the repo "active" for ever and the session was never swept.
+    await writeHeartbeat(workDir, "acme", "myrepo", 42, 9_999_999_999);
+
+    const result = await sweepAllSessions({
+      workDir,
+      maxAgeDays: 7,
+      nowFn: () => now,
+    });
+
+    assertEquals(await pathExists(sessionPath), false);
+    assertEquals(result.active.length, 0);
+    assertEquals(result.removed.length, 1);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
 Deno.test("sweepAllSessions - preserves active sessions even under cumulative cap pressure", async () => {
   const workDir = await makeTempWorkDir();
   try {
