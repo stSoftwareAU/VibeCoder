@@ -24,6 +24,7 @@ import {
   LIB_SWEEP_LEDGER_PATH,
   LIB_SWEEP_ROOT,
   listSweptModules,
+  localLedgerRecords,
   parseCoverageLedger,
   type SweepCoverageLedger,
   SweepLedgerError,
@@ -192,6 +193,69 @@ Deno.test(
     );
   },
 );
+
+Deno.test("localLedgerRecords - keeps repo paths and drops issue URLs", () => {
+  const records = localLedgerRecords({
+    root: LIB_SWEEP_ROOT,
+    parent: 1209,
+    description: "fixture",
+    slices: [
+      {
+        issue: 1,
+        chunk: "12a",
+        title: "swept",
+        ledger: "docs/audits/b.md",
+        definition: "fixture",
+        status: "swept",
+        paths: [],
+      },
+      {
+        issue: 2,
+        chunk: "12b",
+        title: "still open",
+        ledger: "https://github.com/stSoftwareAU/VibeCoder/issues/2",
+        definition: "fixture",
+        status: "claimed",
+        paths: [],
+      },
+      {
+        issue: 3,
+        chunk: "12c",
+        title: "shares a record",
+        ledger: "docs/audits/b.md",
+        definition: "fixture",
+        status: "swept",
+        paths: [],
+      },
+    ],
+  });
+  assertEquals(records, ["docs/audits/b.md"]);
+});
+
+Deno.test("every sweep record the ledger names exists in the tree", async () => {
+  // A slice's `ledger` is how a reader gets from "this path was swept" to
+  // *what the sweep found*, and six filed finding issues cite the #1219
+  // record by name. A dangling reference makes the sweep unauditable while
+  // still reading as closed, so it fails here rather than at a reader.
+  //
+  // Fail direction: run against the tree before this change — the coverage
+  // JSON named `docs/audits/security-sweep-1219-lib-closing-pass.md` and the
+  // file did not exist — and this test goes red.
+  const ledger = readRealLedger();
+  const records = localLedgerRecords(ledger);
+  assert(records.length > 0, "expected the ledger to name written records");
+  const missing: string[] = [];
+  for (const record of records) {
+    const stat = await Deno.stat(`${REPO_ROOT}${record}`).catch(() => null);
+    if (!stat?.isFile) missing.push(record);
+  }
+  assertEquals(
+    missing,
+    [],
+    `${LIB_SWEEP_LEDGER_PATH} names sweep record(s) that do not exist:\n` +
+      missing.map((r) => `  - ${r}`).join("\n"),
+  );
+});
 
 Deno.test("every worker/deno/lib module is claimed by exactly one sweep slice", async () => {
   const ledger = readRealLedger();

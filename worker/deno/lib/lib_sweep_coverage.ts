@@ -206,6 +206,24 @@ export async function listSweptModules(
 }
 
 /**
+ * Repo-relative written records named by the ledger's slices.
+ *
+ * A slice may point at a file in this repository (`docs/audits/….md`) or, for
+ * a slice still in progress, at its GitHub issue. Only the former can be
+ * checked against the tree, so the URLs are filtered out rather than reported
+ * as missing.
+ *
+ * @param ledger - The parsed ledger.
+ * @returns Sorted, de-duplicated repo-relative record paths.
+ */
+export function localLedgerRecords(ledger: SweepCoverageLedger): string[] {
+  const records = ledger.slices
+    .map((slice) => slice.ledger)
+    .filter((ledgerPath) => !/^https?:\/\//.test(ledgerPath));
+  return [...new Set(records)].sort();
+}
+
+/**
  * Compare the ledger against the modules actually on disk.
  *
  * @param ledger - The parsed ledger.
