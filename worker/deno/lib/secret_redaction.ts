@@ -362,10 +362,18 @@ const RULES: readonly RedactionRule[] = [
   // (the Issue #3942 linearity rule): a credential always carries an
   // alphanumeric well inside its first 64 characters, so the bounded scan costs
   // constant time per candidate match.
+  //
+  // A value that opens a JSON object or array is structure, not a credential
+  // (Issue #1254). `{"secret_scanning":{"status":"enabled"}}` — the body the
+  // repo-hardening path PUTs to enable secret scanning — matched the `\S+`
+  // branch, which swallowed the brace and everything after it and left
+  // truncated, invalid JSON. Excluding `{` and `[` costs no coverage: a
+  // credential never starts with either, and a secret nested inside the object
+  // is still masked by this rule's own pass over the inner `"key": "value"`.
   {
     name: "secret-assignment",
     pattern:
-      /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!\*\*\*REDACTED)(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|\S+)/gi,
+      /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!\*\*\*REDACTED)(?![{[])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|\S+)/gi,
     replace: (_m, key: string, sep: string) =>
       `${key}${sep}${REDACTION_PLACEHOLDER}`,
   },

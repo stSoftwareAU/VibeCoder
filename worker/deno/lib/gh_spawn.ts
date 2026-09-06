@@ -10,8 +10,9 @@
  *
  *   1. enforces the per-run write-repo allowlist (`enforceGhWriteAllowlist`)
  *      *before* the process starts,
- *   2. redacts secrets from the published body arguments
- *      (`redactGhBodyArgs`, Issue #3707), then
+ *   2. redacts secrets from every published body — the arguments
+ *      (`redactGhBodyArgs`, Issue #3707), the `--body-file` / `--input` files
+ *      they name, and the body piped on stdin (Issue #1254) — then
  *   3. journals the mutation to the tamper-evident audit log
  *      (`auditGhMutation`) once the exit code is known, and
  *   4. notes an issue close/reopen (`noteGhIssueClose`, Issue #181) so the
@@ -26,7 +27,7 @@
  * flowchart LR
  *     C["~20 caller modules"] --> S["spawnGh()"]
  *     S --> A["enforceGhWriteAllowlist<br/>(allowlist, fail closed)"]
- *     A -->|allowed| R["redactGhBodyArgs<br/>(public body args)"]
+ *     A -->|allowed| R["redactGhBodyArgs + redactSecrets<br/>(argv, body files, stdin)"]
  *     R --> P["gh subprocess"]
  *     A -->|refused| E["throw — no subprocess"]
  *     P --> J["auditGhMutation<br/>(audit journal)"]
@@ -47,6 +48,8 @@ import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import { enforceGhWriteAllowlist } from "./write_repo_allowlist.ts";
 import { auditGhMutation } from "./audit_hook.ts";
 import { redactGhBodyArgs } from "./gh_body_redaction.ts";
+import { denoBodyFileReader, denoBodyFileWriter } from "./gh_body_file_io.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 import { noteGhIssueClose } from "./issue_close_notifier.ts";
 
 /** Options for a single `gh` invocation. */
@@ -223,8 +226,24 @@ export async function spawnGh(
   await enforceGhWriteAllowlist(args);
   // Mask secrets in the published body arguments (Issue #3707) — the last
   // point before a comment or PR body leaves the worker for GitHub.
-  const redacted = redactGhBodyArgs(args);
-  let result = await runner(redacted, options);
+  //
+  // The reader and writer are the same pair the agent's guard child supplies
+  // (Issue #1254), so a `--body-file` / `-F <path>` / `--input <file>` body is
+  // scanned here too instead of published unread. An unscannable body raises
+  // UnredactableBodyError, which propagates: a failed control fails the call.
+  const stdinScanned = options.stdin !== undefined;
+  const redacted = redactGhBodyArgs(
+    args,
+    denoBodyFileReader,
+    denoBodyFileWriter,
+    stdinScanned,
+  );
+  // A stdin body (`gh api … --input -`) never appears in argv, so the argument
+  // redactor cannot see it — mask it here, at the same chokepoint.
+  const spawnOptions = stdinScanned
+    ? { ...options, stdin: redactSecrets(options.stdin as string) }
+    : options;
+  let result = await runner(redacted, spawnOptions);
   // Issue #564: a call that failed for want of authentication did nothing,
   // so retrying it is safe — and the credential is very likely recoverable.
   // The writable copy of `hosts.yml` went missing mid-run once already and
@@ -241,7 +260,10 @@ export async function spawnGh(
       ...(options.setHostEnv ? { setEnv: options.setHostEnv } : {}),
     };
     if (ensureUsableGhConfigDir(staging)) {
-      result = await runner(redacted, withStagedGhConfigDir(options, hostEnv));
+      result = await runner(
+        redacted,
+        withStagedGhConfigDir(spawnOptions, hostEnv),
+      );
     }
   }
   // Best-effort — never lets journalling alter or abort the gh call.
