@@ -344,6 +344,17 @@ provision_provider_credential() {
 
     [[ -n "$value" ]] || return 1
 
+    # One `NAME=value` line is the whole file format, and all three readers —
+    # this script, setup.ps1 and worker/deno/lib/credential_preflight.ts —
+    # split on the first `=` and take the rest of the line. A value carrying a
+    # line break cannot be represented that way, so writing it would store a
+    # truncated credential behind a ✓ and leave the worker to discover the
+    # broken token unattended (Issue #1301). Refuse it loudly instead.
+    if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+        print_error "The ${subdir} credential contains a newline — provider.env holds one ${name}=value line, so nothing was written (re-copy the credential without the line break)"
+        return 1
+    fi
+
     mkdir -p "$provider_dir"
     chmod 700 "$dir" "$provider_dir"
     (
@@ -756,8 +767,46 @@ provider_credential_flow() {
     fi
 }
 
+# Export the credentials a provider.env holds, without evaluating the file
+# (Issue #1301).
+#
+# `source` is a full bash parse, so a stored credential holding a space set
+# the variable to its first word and RAN the rest, and `$(...)` or a backtick
+# was substituted at read time. The file is data: this is the same parse
+# setup.ps1 and worker/deno/lib/credential_preflight.ts already perform —
+# split each line on the first `=`, take the remainder verbatim, export it.
+#
+# Blank lines, `#` comments and an `export ` prefix are tolerated; a line
+# whose name is not a shell identifier is skipped. Returns 1 when the file
+# cannot be read or holds no `NAME=value` line at all, so an unusable file is
+# reported rather than silently treated as an empty environment.
+export_provider_env() {
+    local file="$1"
+    local line name value exported=0
+
+    [[ -r "$file" ]] || return 1
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        # Trim surrounding whitespace without a subshell.
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "$line" || "$line" == '#'* ]] && continue
+        line="${line#export }"
+        [[ "$line" == *=* ]] || continue
+        name="${line%%=*}"
+        value="${line#*=}"
+        [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+        # A single argument, so the value is never re-parsed by the shell.
+        export "${name}=${value}"
+        exported=1
+    done < "$file"
+
+    [[ "$exported" -eq 1 ]]
+}
+
 # Prove a provisioned claude credential works by asking the CLI for a trivial
-# completion (Issue #4161). The provider.env is sourced in a clean subshell —
+# completion (Issue #4161). The provider.env is parsed into a clean subshell —
 # any ANTHROPIC_*/CLAUDE_* material in the operator's own environment is
 # unset first, so only the stored credential is exercised.
 #
@@ -776,13 +825,20 @@ claude_credential_is_valid() {
     elif command -v gtimeout &>/dev/null; then
         timeout_cmd=(gtimeout 120)
     fi
+    # A file the parser finds nothing in cannot authenticate anything, and the
+    # CLI would fall back to whatever else it can find — condemn it here
+    # rather than reading a pass off an empty environment (Issue #1301). The
+    # check runs in its own subshell so the outer setup keeps a clean
+    # environment.
+    if ! ( export_provider_env "$file" ) 2>/dev/null; then
+        print_error "No NAME=value credential line in ${file} — the file holds no credential this vendor can use"
+        return 1
+    fi
+
     local out="" status=0
     out="$(
         unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN
-        set -a
-        # shellcheck disable=SC1090
-        source "$file"
-        set +a
+        export_provider_env "$file"
         ${timeout_cmd[@]+"${timeout_cmd[@]}"} claude -p 'Say hello' 2>&1 </dev/null
     )" || status=$?
 
