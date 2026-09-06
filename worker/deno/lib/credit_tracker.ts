@@ -30,6 +30,7 @@ import {
   computeCacheHitRate,
   formatCacheHitRate,
 } from "./prompt_cache_telemetry.ts";
+import { appendNoFollow } from "./file_utils.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -43,6 +44,12 @@ export const LOG_FILE_SUFFIX = ".json";
 
 /** Default number of days to retain credit logs. */
 export const DEFAULT_RETENTION_DAYS = 7;
+
+/** Mode for a credit log directory this worker creates: owner-only. */
+export const CREDIT_LOG_DIR_MODE = 0o700;
+
+/** Mode for a credit log file this worker creates: owner read/write only. */
+export const CREDIT_LOG_FILE_MODE = 0o600;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -258,9 +265,18 @@ function parseDateFromFilename(filename: string): string | null {
  * Log a Claude invocation to the daily credit log.
  *
  * Appends a single JSON line to the day's log file. Creates the log
- * directory and file if they do not exist.
+ * directory (owner-only) and file if they do not exist.
+ *
+ * The append refuses to follow a symlink and the log is created 0600
+ * (Issue #1239): the log path is predictable and, by default, sits on the
+ * work volume the untrusted `agent` account also reaches, so a bare
+ * append-mode `writeTextFile` let a planted link redirect every JSON line
+ * into any file the worker uid can write. A refused append throws — the
+ * spend ceiling reads this file, so a tampered-with log must be loud rather
+ * than a silent undercount.
  *
  * @param options - Invocation details to log
+ * @throws When the log directory or the append cannot be written
  */
 export async function logInvocation(
   options: LogInvocationOptions,
@@ -278,8 +294,11 @@ export async function logInvocation(
     usageUnknown,
   } = options;
 
-  // Ensure directory exists
-  await Deno.mkdir(logDir, { recursive: true });
+  // Ensure the directory exists, owner-only when this call creates it
+  // (Issue #1239) — an account that cannot write the directory can neither
+  // plant a symlink at the log path nor delete the day's log to zero the
+  // spend ceiling's only input.
+  await Deno.mkdir(logDir, { recursive: true, mode: CREDIT_LOG_DIR_MODE });
 
   const entry: InvocationEntry = {
     workerName,
@@ -306,8 +325,13 @@ export async function logInvocation(
   const logPath = buildLogPath(logDir, todayString());
   const line = JSON.stringify(entry) + "\n";
 
-  // Append-only write — negligible overhead
-  await Deno.writeTextFile(logPath, line, { append: true });
+  // Append-only write — negligible overhead, and never through a symlink.
+  const appended = await appendNoFollow({
+    targetFile: logPath,
+    content: line,
+    mode: CREDIT_LOG_FILE_MODE,
+  });
+  if (!appended.ok) throw appended.error;
 }
 
 /**

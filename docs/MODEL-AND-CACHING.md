@@ -2220,7 +2220,9 @@ delimited JSON):
 | `cacheReadTokens` | Tokens read from prompt cache |
 
 **Log location:** `creditLogDir` (configurable) — files named
-`.credit_log_YYYY-MM-DD.json`
+`.credit_log_YYYY-MM-DD.json`, defaulting to the worker-private
+`<workDir>/.credit-logs/` (Issue #1239 — see
+[Where the credit logs live](CONFIGURATION.md#where-the-credit-logs-live-issue-1239))
 
 **Daily summary** aggregates:
 - Total invocations by worker, phase, and model
