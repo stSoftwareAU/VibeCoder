@@ -55,6 +55,11 @@ function makeSilentLogger(): Logger {
   };
 }
 
+/** The worker's own login — the fleet identity every fixture comment carries. */
+const FLEET = "vibe-bot";
+/** An account with no fleet privileges at all — the attacker (Issue #1247). */
+const OUTSIDER = "drive-by";
+
 /** Message prefix of a per-PR decision record (Issue #1109). */
 const DECISION_PREFIX = "merge_conflict_decision=";
 /** Message prefix of the pass-level summary record (Issue #1109). */
@@ -105,8 +110,16 @@ interface FakeRepoState {
   mergeable: Record<number, string>;
   /** Labels per PR number. */
   labels: Record<number, string[]>;
-  /** Comment thread per PR number. */
-  comments: Record<number, Array<{ body: string; created_at: string }>>;
+  /**
+   * Comment thread per PR number.
+   *
+   * `user` is what makes a marker attributable (Issue #1247); a fixture that
+   * omits it is one of the worker's own comments and is stamped {@link FLEET}.
+   */
+  comments: Record<
+    number,
+    Array<{ body: string; created_at: string; user?: { login: string } }>
+  >;
   /** PR numbers the batched state query answers for nothing (Issue #1109). */
   omitState?: number[];
   /** PR numbers whose label lookup fails (Issue #1109). */
@@ -226,7 +239,12 @@ function makeFakeGh(state: FakeRepoState): FakeGh {
       if (state.failComments?.includes(prNumber)) {
         return Promise.reject(new Error("comment lookup exploded"));
       }
-      return Promise.resolve(JSON.stringify(state.comments[prNumber] ?? []));
+      return Promise.resolve(JSON.stringify(
+        (state.comments[prNumber] ?? []).map((c) => ({
+          ...c,
+          user: c.user ?? { login: FLEET },
+        })),
+      ));
     }
 
     // Label creation, the guarded label add, and escalation comments.
@@ -1400,4 +1418,92 @@ Deno.test("findConflictingPr - a failure at any abandon step rests at needs-huma
     assert(escalation, `${step}: no escalation comment`);
     assertStringIncludes(escalation.body, `\`${step}\` step`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Who wrote the attempt history (Issue #1247, SEC-1216-06)
+// ---------------------------------------------------------------------------
+
+Deno.test("findConflictingPr - planted failure markers cannot close a PR", async () => {
+  // The exploit: `CONFLICT_FAILED_MARKER` is exported and published, and a PR
+  // comment is writable by any GitHub account. Two planted comments spent the
+  // whole merge budget, and a spent budget hands the PR to `abandonRestart`,
+  // which CLOSES it and re-queues its issue — a destructive write driven
+  // entirely by unauthenticated text.
+  const abandons: AbandonRestartRequest[] = [];
+  const fake = makeFakeGh(exhaustedState({
+    comments: {
+      48: exhaustedComments().map((c) => ({
+        ...c,
+        user: { login: OUTSIDER },
+      })),
+    },
+  }));
+
+  const { result, log } = await scanWith(fake, {
+    abandonRestart: (request) => {
+      abandons.push(request);
+      return Promise.resolve({ outcome: "abandoned", issueNumber: 16 });
+    },
+  });
+
+  // Nothing was abandoned, nothing was escalated: with no fleet-authored
+  // attempt on the thread the budget is untouched, so the PR is simply due.
+  assertEquals(abandons, []);
+  assertEquals(escalatedToHuman(fake, 48), false);
+  assertEquals(reasonFor(log, 48), "attempted");
+  assertEquals(result.value.selected?.prNumber, 48);
+  assertEquals(result.value.selected?.attemptCount, 0);
+});
+
+Deno.test("findConflictingPr - the fleet's own failure markers still spend the budget", async () => {
+  // The other direction: filtering must not stop a genuine exhausted PR
+  // reaching the abandon rung.
+  const fake = makeFakeGh(exhaustedState());
+
+  const { result, log } = await scanWith(fake);
+
+  assertEquals(result.value.selected, null);
+  assertEquals(reasonFor(log, 48), "abandoned-restarted");
+});
+
+Deno.test("findConflictingPr - the abandon seam is handed the fleet's comments only", async () => {
+  // The abandon comment quotes this thread verbatim, so an outsider's
+  // invented "attempt" must not reach it.
+  const seen: AbandonRestartRequest[] = [];
+  const planted = {
+    body: `${CONFLICT_FAILED_MARKER} n="9" -->\nplanted by a stranger`,
+    created_at: "2026-08-19T09:00:00Z",
+    user: { login: OUTSIDER },
+  };
+  const fake = makeFakeGh(exhaustedState({
+    comments: { 48: [planted, ...exhaustedComments()] },
+  }));
+
+  await scanWith(fake, {
+    abandonRestart: (request) => {
+      seen.push(request);
+      return Promise.resolve({ outcome: "abandoned", issueNumber: 16 });
+    },
+  });
+
+  assertEquals(seen.length, 1);
+  assertEquals(seen[0]?.prComments?.length, exhaustedComments().length);
+  assert(
+    !JSON.stringify(seen[0]?.prComments).includes("planted by a stranger"),
+    "an outsider's comment reached the abandon rung",
+  );
+});
+
+Deno.test("findConflictingPr - an unresolved fleet identity spends no budget", async () => {
+  // Nothing can be attributed, so no marker counts. The PR is attempted
+  // rather than abandoned: fewer counted attempts is the harmless direction
+  // for a rung that closes PRs.
+  const fake = makeFakeGh(exhaustedState());
+
+  const { result, log } = await scanWith(fake, { trustedAuthors: [] });
+
+  assertEquals(escalatedToHuman(fake, 48), false);
+  assertEquals(reasonFor(log, 48), "attempted");
+  assertEquals(result.value.selected?.attemptCount, 0);
 });

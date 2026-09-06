@@ -1271,12 +1271,12 @@ because a suppressed wrapper produces no error and no log line.
   page JSON), `needs_human_escalation.ts`, `run_failure_issue.ts` (projects
   without a `select(.body`) and `milestone_branch_self_heal.ts`. All four now
   route through `alert_dedup_authors.ts` and fail towards acting.
-  `conflict_abandon_restart.ts` and `pr_merge_conflict_scan.ts` are recorded
-  in `MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS` rather than fixed, because
-  their restart marker suppresses a *destructive* action and its fail
-  direction is a design decision, not a filter
-  ([#1247](https://github.com/stSoftwareAU/VibeCoder/issues/1247)). The full
-  record is
+  `conflict_abandon_restart.ts` and `pr_merge_conflict_scan.ts` were recorded
+  in `MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS` rather than fixed with the
+  rest, because their restart marker suppresses a *destructive* action and
+  its fail direction is a design decision, not a filter. Both were paid down
+  by [#1247](https://github.com/stSoftwareAU/VibeCoder/issues/1247) and the
+  consumer list is empty again — see §5f. The full record is
   [`docs/audits/security-sweep-1216-untrusted-github-ingestion.md`](docs/audits/security-sweep-1216-untrusted-github-ingestion.md).
 
 #### 5e. Presence, reactions and identity — the last twelve ingestion sites (Issue #1249)
@@ -1324,6 +1324,43 @@ cross-repo `Depends on` only when it names a monitored repository.
 Directions are pinned by
 `worker/deno/tests/security_untrusted_ingestion_1249_test.ts`, one test per
 finding.
+
+#### 5f. Merge-conflict attempt history — the two fail directions (Issue #1247)
+
+The pair §5d deferred. The merge-conflict ladder keeps its whole attempt
+history in marker comments on the PR and its originating issue, and read them
+back off the raw REST array `fetchIssueCommentPages` returns — every author's.
+Both directions were exploitable from an ordinary GitHub account:
+
+- **Two planted `CONFLICT_FAILED_MARKER` comments closed the PR.**
+  `parseConflictAttempts` counted them, `hasExhaustedConflictAttempts` called
+  the budget spent, and `abandonAndRestart` closed the PR and re-queued its
+  issue — a destructive write driven entirely by unauthenticated text.
+- **One planted restart marker stalled the work for ever.** The same rung
+  declines `already-restarted` on a `<!-- vibe-merge-conflict-restart -->`
+  comment on the originating issue, so a PR could be parked unowned.
+
+Both now attribute the thread through
+[`conflict_marker_trust.ts`](worker/deno/lib/conflict_marker_trust.ts) against
+the push-capable fleet maintenance set the scan already resolves — no second
+definition of "the fleet", and no extra GitHub call.
+
+**The fail directions are opposite, which is why this was a design decision
+rather than a filter.** A marker that *drives* the destructive step is
+discarded when it cannot be attributed: fewer counted attempts means the PR is
+**not** abandoned. A marker that *suppresses* it is the only bound on how often
+the fleet closes and re-raises one issue's work, so discarding it would relax
+that bound — an unattributable restart claim therefore **declines** the abandon
+(`restart-claim-unverifiable`, escalated to a human naming the route) instead.
+An outsider's claim is still simply dropped, which is the fix; only a claim
+with no readable author, or none comparable because no fleet identity is
+configured, refuses. `trustedAuthors` is a **required** dependency of the rung,
+so no call site can read a claim off a comment anybody could have written.
+
+`MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS` is empty again. Directions are
+pinned by `worker/deno/tests/conflict_marker_trust_test.ts` and the
+outsider-authored cases in `conflict_abandon_restart_test.ts` and
+`pr_merge_conflict_scan_test.ts`.
 
 ### 6. Egress Containment — Per-Run Write-Repo Allowlist
 

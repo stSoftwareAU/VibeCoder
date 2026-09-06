@@ -182,27 +182,26 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES: readonly string[] = [];
  *   - `lib/failure_detection_resume.ts` — `readRecordedAttempts` already
  *     verified its attempt markers through `selectFleetAuthoredComments`
  *     (failing towards retrying); the entry outlived the fix.
+ *
+ * Cleared again by Issue #1247 (SEC-1216-06), which fixed the merge-conflict
+ * pair #1216 recorded here:
+ *
+ *   - `lib/pr_merge_conflict_scan.ts` — `parseConflictAttempts` counted
+ *     `CONFLICT_FAILED_MARKER` comments straight off the raw REST array and
+ *     handed the tally to `hasExhaustedConflictAttempts` → `abandonRestart`,
+ *     so two planted comments made the worker **close** the PR. The thread is
+ *     now reduced to the fleet's own by `conflict_marker_trust.ts` before
+ *     anything counts it, failing towards *not* abandoning.
+ *   - `lib/conflict_abandon_restart.ts` — `restartMarkerPrNumbers` and
+ *     `summariseFailedAttempts` read the restart and attempt markers off the
+ *     originating issue and the PR thread. Both are attributed now. The fail
+ *     direction the entry called out is what made this a design decision
+ *     rather than a filter: the restart marker suppresses a *destructive*
+ *     action, so an unattributable claim **declines** the abandon
+ *     (`restart-claim-unverifiable`) instead of being discarded, and only a
+ *     claim positively attributed to an outsider is dropped.
  */
-export const MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS: readonly string[] = [
-  // Issue #1216, SEC-1216-06 (#1247). Both read marker text out of the raw
-  // comment array `issue_comment_pages.fetchIssueCommentPages` returns, which
-  // carries every author. `parseConflictAttempts` counts
-  // `CONFLICT_FAILED_MARKER` comments and hands the tally to
-  // `hasExhaustedConflictAttempts` → `abandonRestart`, so two planted comments
-  // make the worker CLOSE the PR; `restartMarkerPrNumbers` and
-  // `summariseFailedAttempts` read the restart and attempt markers off the
-  // originating issue and the PR thread.
-  //
-  // Recorded rather than fixed with the rest of the class because the fail
-  // direction is not the usual one: the restart marker suppresses a
-  // *destructive* action, so discarding an unverifiable match relaxes the
-  // "one restart per originating issue" bound instead of tightening it. That
-  // bound has to be re-expressed against something authenticated before the
-  // author check can land, which is a design decision, not a filter.
-  "lib/conflict_abandon_restart.ts",
-  // Issue #1216, SEC-1216-06 (#1247).
-  "lib/pr_merge_conflict_scan.ts",
-];
+export const MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS: readonly string[] = [];
 
 // ---------------------------------------------------------------------------
 // The classifier

@@ -2025,14 +2025,13 @@ export async function createProductionRunCoreDeps(
       // A marker only dedups when the fleet wrote it: a comment body is text
       // anyone can post, and a dedup that trusts it goes quiet
       // (`marker_dedup_author_manifest.ts`).
+      const trustedAuthors = resolveFleetMaintenanceAuthorSet({
+        githubUser,
+        allowedAuthors: fleetPrAuthorInput.allowedAuthors,
+        fleetPrAuthors: fleetPrAuthorInput.fleetPrAuthors,
+      });
       const isTrustedAuthor = (login: string) =>
-        isFleetAuthor(login, [
-          ...resolveFleetMaintenanceAuthorSet({
-            githubUser,
-            allowedAuthors: fleetPrAuthorInput.allowedAuthors,
-            fleetPrAuthors: fleetPrAuthorInput.fleetPrAuthors,
-          }),
-        ]);
+        isFleetAuthor(login, [...trustedAuthors]);
       // Issue #1112: every decision this cycle's scans reached, so the stall
       // watchdog can name the skip reasons recorded for a stalled PR (#1109).
       const scanDecisions: ConflictPrDecision[] = [];
@@ -2127,6 +2126,10 @@ export async function createProductionRunCoreDeps(
             workerId: getWorkerUniqueId(config.workerName),
             needsHumanLabel: config.needsHumanLabel,
             repoConfigs: config.repoConfig,
+            // Issue #1247: the abandon rung reads its one-restart-per-issue
+            // bound off comment markers, so it needs to know whose markers
+            // count.
+            trustedAuthors,
           });
 
           if (!result.ok) {
