@@ -1679,7 +1679,7 @@ hash.
 
 | Property | Value |
 |----------|-------|
-| **Location** | `/tmp/vibe-prompt-cache-deno/` (configurable via `promptCacheDir`) |
+| **Location** | `${TMPDIR}/vibe-prompt-cache-deno-<user>/` (configurable via `promptCacheDir`), created `0700` and ownership-checked — a shared-tmp directory another account could write to disables the cache (Issue #1215) |
 | **File format** | `{repo_name}_{sha}.cache.txt` — JSON metadata header + content |
 | **TTL** | 24 hours (configurable) |
 | **Invalidation** | SHA change or TTL expiry |

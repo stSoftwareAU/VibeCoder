@@ -24,6 +24,7 @@
  */
 
 import type { GitHubClient, Logger, Result } from "../types.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import { defaultLogger } from "./logger.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "./label_operations.ts";
@@ -50,6 +51,12 @@ export interface EscalateUnworkableDeps {
   logger?: Logger;
   /** Override the clock used by the dedup window. Defaults to `Date.now`. */
   now?: () => number;
+  /**
+   * Fleet identity used to verify who wrote a dedup marker (Issue #1216).
+   * Omitted in production, which reads the configured fleet identity; a test
+   * states the fleet rather than reading the host's config.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
 }
 
 /** A pre-built escalation message (reason + next step + stable dedup key). */
@@ -169,6 +176,9 @@ export async function escalateUnworkableWorkOn(opts: {
       deps: {
         github: { ensureLabelExists },
         ...(opts.deps?.now ? { now: opts.deps.now } : {}),
+        ...(opts.deps?.dedupAuthors
+          ? { dedupAuthors: opts.deps.dedupAuthors }
+          : {}),
       },
     });
     if (!result.ok) {

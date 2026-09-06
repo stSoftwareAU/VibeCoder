@@ -27,9 +27,23 @@ import {
   renderCodebaseMap,
 } from "./codebase_map.ts";
 import { PromptCache } from "./prompt_cache.ts";
+import { sharedTmpStateDir } from "./private_cache_dir.ts";
 
-/** Default cache directory for generated codebase maps. */
-export const DEFAULT_CODEBASE_MAP_CACHE_DIR = "/tmp/vibe-codebase-map-deno";
+/**
+ * Default cache directory for generated codebase maps (Issue #1215).
+ *
+ * Was the fixed literal `/tmp/vibe-codebase-map-deno` — one path for every
+ * account on the host, holding text that is injected verbatim into the
+ * agent's prompt. It now carries a per-account suffix, and `PromptCache`
+ * ownership-checks any directory under the shared temporary root.
+ */
+export function defaultCodebaseMapCacheDir(
+  lookup?: (key: string) => string | undefined,
+): string {
+  return lookup === undefined
+    ? sharedTmpStateDir("vibe-codebase-map-deno")
+    : sharedTmpStateDir("vibe-codebase-map-deno", lookup);
+}
 
 /**
  * Default cadence refresh in seconds (6 hours).
@@ -81,7 +95,7 @@ export async function getOrGenerateCodebaseMap(
   const treeHash = await computeTreeHash(files);
 
   const store = cache ?? new PromptCache({
-    cacheDir: cacheDir ?? DEFAULT_CODEBASE_MAP_CACHE_DIR,
+    cacheDir: cacheDir ?? defaultCodebaseMapCacheDir(),
     ttlSeconds: ttlSeconds ?? DEFAULT_CODEBASE_MAP_TTL_SECONDS,
   });
 

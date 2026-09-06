@@ -75,11 +75,49 @@ function shellEscape(value: string): string {
 }
 
 /**
+ * A syntactically valid POSIX shell variable name.
+ *
+ * Issue #1218: `exportScalar` escapes the *value* it emits but never the
+ * *name*, and one name is built from data — `CLAUDE_MODEL_${phase.toUpperCase()}`,
+ * where `phase` is a key of `.config.json`'s `phase_model_overrides` map and is
+ * copied verbatim by `lib/config.ts` with no key filter. The emitted script is
+ * `eval`'d (`lib/quality_gate.ts`), so a key such as
+ * `PLAN; PATH=/tmp/evil; #` produced
+ * `export CLAUDE_MODEL_PLAN; PATH=/tmp/evil; #="…"` — a second statement that
+ * ran, with the trailing `#` commenting the remainder of the line so the
+ * injection was silent.
+ */
+const SHELL_IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Whether a name is safe to emit unquoted as a shell variable name.
+ *
+ * Exported so the refusal is testable against literal names.
+ *
+ * @param name - The candidate variable name.
+ * @returns True when the name is a plain POSIX shell identifier.
+ */
+export function isSafeShellIdentifier(name: string): boolean {
+  return SHELL_IDENTIFIER_PATTERN.test(name);
+}
+
+/**
  * Format a scalar value as a shell conditional export statement.
  * Uses :- syntax to preserve existing environment variable values,
  * matching the behaviour of the original config_defaults.sh.
+ *
+ * @throws When `name` is not a plain shell identifier — an unescapable name
+ *   in text that will be `eval`'d must fail loudly, never be emitted.
  */
 function exportScalar(name: string, value: string | number | boolean): string {
+  if (!isSafeShellIdentifier(name)) {
+    throw new Error(
+      `Refusing to emit shell variable ${
+        JSON.stringify(name)
+      }: a name in eval'd output must match ${SHELL_IDENTIFIER_PATTERN.source} ` +
+        `(Issue #1218). Check the keys of "phase_model_overrides" in .config.json.`,
+    );
+  }
   return `export ${name}="\${${name}:-${shellEscape(String(value))}}"`;
 }
 

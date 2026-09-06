@@ -19,10 +19,13 @@
  * enforced as what it actually is — a property of the source text — by
  * {@link findMarkerDedupCallSites} plus `tests/marker_dedup_author_cap_test.ts`.
  *
- * Issue #1124 cleared the last six scanned sites and the four consumers, so
- * both lists below are now empty. The scanner and the cap test are what keep
- * them empty; the lists are where a deliberately-deferred site would be
- * recorded.
+ * Issue #1124 cleared the last six scanned sites and the four consumers. Issue
+ * #1216 then found six live instances of the class that the scanner's two
+ * recognised shapes cannot see, fixed four of them, and recorded the two whose
+ * fail direction is a design decision in
+ * {@link MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS} below. The scanner and the
+ * cap test keep the *scanned* set clean; the consumer list is where a site the
+ * scanner cannot classify is recorded so the count stays visible.
  *
  * {@link MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES} is the shrink-only manifest of
  * what has not been fixed yet, in the shape of
@@ -131,8 +134,27 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES: readonly string[] = [];
  * it. They are recorded so a reader of the manifest is not left believing the
  * scanned set is the whole of the class.
  *
- * **The list is empty (Issue #1124).** What each entry needed, and where the
- * control now lives:
+ * **This list has no staleness gate, and cannot have one.** The cap test fails
+ * in both directions for {@link MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES} because
+ * the scanner can re-classify those sites; it cannot classify these, which is
+ * why they are here. The cap test therefore checks only that each entry names
+ * a real file and that the list is sorted and duplicate-free — a fixed entry
+ * has to be deleted by whoever fixes it. Stated here rather than left to be
+ * discovered (Issue #1216).
+ *
+ * Issue #1216 re-populated it: see the two entries below, and #1249 for the
+ * wider blind spot they belong to. The scanner recognises a `--search`
+ * expression matching `in:title` / `in:body`, and a `gh api …/comments --jq`
+ * that both selects on `.body` and projects it back. A module that pages raw
+ * REST comments with no `--jq` at all (`issue_comment_pages.ts`), projects
+ * without a `select(.body` (`run_failure_issue.ts`), reads `--jq .[].body`
+ * across all authors (`milestone_children_gate.ts`, #1249) or matches
+ * client-side over a plain `gh issue list` (`idle_task_snapshot.ts`, #1243) is
+ * invisible to it. Both lists were empty while six live instances of the class
+ * sat in the tree, which is what #1216 found and fixed.
+ *
+ * Cleared by Issue #1124 — what each of the original entries needed, and where
+ * the control now lives:
  *
  *   - `lib/pr_issue_linking.ts` and `lib/pr_linkage.ts` — both decide from
  *     the rows `issue_query.ts`'s `fetchPRsForIssueByTitle` returns. That
@@ -155,7 +177,33 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES: readonly string[] = [];
  *     verified its attempt markers through `selectFleetAuthoredComments`
  *     (failing towards retrying); the entry outlived the fix.
  */
-export const MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS: readonly string[] = [];
+export const MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS: readonly string[] = [
+  // Issue #1216, SEC-1216-06 (#1247). Both read marker text out of the raw
+  // comment array `issue_comment_pages.fetchIssueCommentPages` returns, which
+  // carries every author. `parseConflictAttempts` counts
+  // `CONFLICT_FAILED_MARKER` comments and hands the tally to
+  // `hasExhaustedConflictAttempts` → `abandonRestart`, so two planted comments
+  // make the worker CLOSE the PR; `restartMarkerPrNumbers` and
+  // `summariseFailedAttempts` read the restart and attempt markers off the
+  // originating issue and the PR thread.
+  //
+  // Recorded rather than fixed with the rest of the class because the fail
+  // direction is not the usual one: the restart marker suppresses a
+  // *destructive* action, so discarding an unverifiable match relaxes the
+  // "one restart per originating issue" bound instead of tightening it. That
+  // bound has to be re-expressed against something authenticated before the
+  // author check can land, which is a design decision, not a filter.
+  "lib/conflict_abandon_restart.ts",
+  // Issue #1216, SEC-1216-02 (#1243). `listOpenIssueBodies` asks for
+  // `number,body` and matches `<!-- finding-id: … -->` client-side, so the
+  // scanner's `--search … in:body` shape never sees it. A hit makes
+  // `fileFindingOnce` skip `gh issue create`, and the same read feeds
+  // `{{KNOWN_OPEN_FINDING_IDS}}` to the scanning agent as a skip-list, so one
+  // issue anybody opens suppresses a real finding across ~12 scanners.
+  "lib/idle_task_snapshot.ts",
+  // Issue #1216, SEC-1216-06 (#1247).
+  "lib/pr_merge_conflict_scan.ts",
+];
 
 // ---------------------------------------------------------------------------
 // The classifier

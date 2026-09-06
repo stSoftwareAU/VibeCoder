@@ -29,6 +29,7 @@
  */
 
 import { SEMGREP_IMAGE, SEMGREP_IMAGE_TAG } from "./pinned_actions.ts";
+import { runGitCommand } from "./git_timeout.ts";
 
 /** Status of the semgrep check. */
 export type SemgrepStatus = "PASSED" | "SKIPPED" | "FAILED";
@@ -195,19 +196,16 @@ export function selectScannableFiles(paths: readonly string[]): string[] {
   return [...selected].sort();
 }
 
-/** Default git runner: spawn `git -C <scriptDir> …`. */
+/**
+ * Default git runner: `git -C <scriptDir> …` through the shared chokepoint
+ * (Issue #1214), so the call is timeout-bounded rather than able to hang the
+ * gate.
+ */
 export function makeGitRunner(scriptDir: string): GitRunner {
   return async (args: string[]) => {
-    const command = new Deno.Command("git", {
-      args: ["-C", scriptDir, ...args],
-      stdout: "piped",
-      stderr: "null",
-    });
-    const result = await command.output();
-    return {
-      exitCode: result.code,
-      stdout: new TextDecoder().decode(result.stdout),
-    };
+    const result = await runGitCommand(["-C", scriptDir, ...args]);
+    if (!result.ok) return { exitCode: 1, stdout: "" };
+    return { exitCode: result.value.code, stdout: result.value.stdout };
   };
 }
 

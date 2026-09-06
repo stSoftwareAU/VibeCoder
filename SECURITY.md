@@ -357,6 +357,22 @@ run `redactSecrets()` *first*: cutting first can split a secret — most
 damagingly a PEM block, whose END marker falls past the cut — leaving a
 fragment that no rule matches on the later pass.
 
+That ordering is held by a **type**, not by every call site remembering
+(Issue #1217). `RedactedText`
+([`worker/deno/lib/redacted_text.ts`](worker/deno/lib/redacted_text.ts)) is a
+branded string only `redactedTail()` / `redactedHead()` / `joinRedacted()` can
+mint, and each redacts the whole input before it trims. A field carrying text
+destined for a size-capped public sink is typed `RedactedText`, so handing it
+`output.slice(-500)` fails `deno check` — a stage of the quality gate — rather
+than publishing a fragment. `FailureDiagnosticContext.lastOutputSnippet`
+([`worker/deno/lib/failure_message.ts`](worker/deno/lib/failure_message.ts)) is
+the first field to carry the brand: ten call sites across the phase modules had
+sliced the agent's stdout raw and relied on the redaction `label_failure.ts`
+runs afterwards, when it builds the world-readable failure comment. Give a new
+size-capped sink the same brand. The sink enumeration behind that change — which
+paths route through `redactSecrets()` and which bypass it — is
+[`docs/audits/security-sweep-1217-env-config-secrets.md`](docs/audits/security-sweep-1217-env-config-secrets.md).
+
 **Redaction bounds its own work, never its input.** Because that ordering hands
 `redactSecrets()` untruncated, attacker-influenceable text, every rule must run
 in time **linear** in the input length: bound each quantifier over
@@ -1216,7 +1232,8 @@ because a suppressed wrapper produces no error and no log line.
   fix has to delete its own entry. The test reads source text deliberately —
   the invariant is a property of the source, and the file says so at the top so
   the next reader does not remove it as implementation-coupled.
-- **The manifest is now empty (Issue #1124).** The last six scanned sites —
+- **The manifest was cleared by Issue #1124, and re-populated by #1216.** The
+  last six scanned sites —
   `issue_query.ts`'s `fetchPRsForIssueByTitle`, `claim_pr_comment.ts`,
   `idle_task_backfill.ts`, `pr_branch_lock.ts`, `shared_cooldown.ts`'s expired-
   comment cleanup and `setup/best_practices_sync.ts` — and the four consumers
@@ -1239,12 +1256,28 @@ because a suppressed wrapper produces no error and no log line.
   also the *right* boundary for them — a human maintainer's PR for an issue
   legitimately means "already in hand", so a fleet-only filter would have the
   worker duplicate it.
-- **Residual risk, stated.** An empty manifest means no *scanned* lookup trusts
-  an unverified marker; it does not mean the class cannot return. The scanner
-  sees `gh` call sites, not data flow, so a module that matches markers
-  client-side over rows another module fetched is invisible to it — the
-  reason the consumer list exists alongside the scanned one. The cap keeps the
-  scanned set clean; a new consumer still has to be reasoned about by hand.
+- **Residual risk, stated — and it landed (Issue #1216).** An empty manifest
+  means no *scanned* lookup trusts an unverified marker; it does not mean the
+  class cannot return. The scanner sees `gh` call sites, not data flow, so a
+  module that matches markers client-side over rows another module fetched is
+  invisible to it — the reason the consumer list exists alongside the scanned
+  one. The cap keeps the scanned set clean; a new consumer still has to be
+  reasoned about by hand.
+
+  The chunk-12c sweep found six live instances of the class sitting outside
+  the scanner's two recognised shapes while **both** lists read zero:
+  `issue_comment_pages.ts`'s shared `issueCommentsContainMarker` (pages raw
+  REST comments with no `--jq` at all, and was substring-matching the whole
+  page JSON), `needs_human_escalation.ts`, `run_failure_issue.ts` (projects
+  without a `select(.body`) and `milestone_branch_self_heal.ts`. All four now
+  route through `alert_dedup_authors.ts` and fail towards acting.
+  `conflict_abandon_restart.ts` and `pr_merge_conflict_scan.ts` are recorded
+  in `MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS` rather than fixed, because
+  their restart marker suppresses a *destructive* action and its fail
+  direction is a design decision, not a filter
+  ([#1247](https://github.com/stSoftwareAU/VibeCoder/issues/1247)). The full
+  record is
+  [`docs/audits/security-sweep-1216-untrusted-github-ingestion.md`](docs/audits/security-sweep-1216-untrusted-github-ingestion.md).
 
 #### 5e. Presence, reactions and identity — the last twelve ingestion sites (Issue #1249)
 
@@ -1366,6 +1399,15 @@ flowchart TD
     D --> J["[GH_GUARD_SHIM_UNAVAILABLE] + audit journal"]
     B --> J
 ```
+
+### 6b. Subprocess Chokepoints — `git` Timeouts, and a Built Environment for Repository-Supplied Code
+
+The subprocess/argv sweep of every `worker/deno/lib` module that spawns a process (Issue #1214, parent #1209) surfaced two classes, both fixed. The swept paths are recorded in [`docs/audits/security-sweep-1214-subprocess-argv.md`](docs/audits/security-sweep-1214-subprocess-argv.md).
+
+- **`git` has a chokepoint too, and it is now enforced.** `runGitCommand` (`worker/deno/lib/git_timeout.ts`) owns three controls no caller may skip: the `AbortController` timeout, the audit journal for git mutations, and the work-volume fault detector. Seven modules had grown their own `new Deno.Command("git", …)` and skipped all three — including the stale-work-dir rescue, which ran `git push origin <branch>` untimed and unjournalled, so an unresponsive remote hung the worker outright rather than timing out. All seven now route through `runGitCommand`, and the `git spawn chokepoint` quality check (`git_spawn_chokepoint_check.ts`) fails the build on any new direct spawn outside `git_timeout.ts` — the same architectural invariant `gh_spawn_chokepoint_check.ts` enforces for `gh`, sharing its scanner via `spawn_chokepoint_scan.ts`.
+- **Repository-supplied code runs with a BUILT environment, never an inherited one.** `untrusted_command_env.ts` exists because the worker executes code it did not write, and an inherited environment hands that code every credential the run holds. The control was wired into the quality-gate spawn only; three sibling spawns of repository-supplied code inherited the worker's whole environment — the pre-flight gate (whose scripts are, by documented design, supplied by the target repo), the per-repo `bump-deps.sh`, and the lock-file regeneration tools that run `npm install` / `deno install` / `cargo update` / `go mod tidy` over a manifest the repository controls. `echo $CLAUDE_CODE_OAUTH_TOKEN` in any of those was the whole exploit. All three now build the child environment from `buildUntrustedCommandEnv()` with `clearEnv: true`, so only allowlisted names — `PATH`, `HOME`, the toolchain caches — are in scope.
+
+Regression coverage: `worker/deno/tests/git_spawn_chokepoint_check_test.ts` and `worker/deno/tests/untrusted_spawn_env_test.ts`, the latter spawning for real and reading the child's own view of its environment.
 
 ### 7. Issue Body + Title Trust Filtering
 

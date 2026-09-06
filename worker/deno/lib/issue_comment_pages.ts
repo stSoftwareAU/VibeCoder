@@ -17,6 +17,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  type AlertDedupAuthorOptions,
+  type AlertDedupCommentRow,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
+
 /** Page size requested per call — the GitHub REST maximum. */
 export const COMMENTS_PER_PAGE = 100;
 
@@ -86,13 +92,57 @@ export async function fetchIssueCommentPages(
 }
 
 /**
- * Whether any comment on the issue/PR contains `marker`.
+ * The marker-carrying comments of one page, reduced to their authors.
  *
- * Stops at the first page containing the marker, so the common case (a marker
- * posted early in the thread) reads a single page instead of the whole thread.
- * A thread longer than the page cap without a match returns false — the marker
- * is genuinely absent from everything readable.
+ * `repos/…/issues/…/comments` renders the commenter as `user.login`, not the
+ * `author` object `gh issue list --json author` returns, so the rows are
+ * reshaped here into the {@link AlertDedupCommentRow} shape the shared
+ * author filter takes.
+ */
+function markerCommentAuthors(
+  comments: readonly unknown[],
+  marker: string,
+): AlertDedupCommentRow[] {
+  const rows: AlertDedupCommentRow[] = [];
+  for (const raw of comments) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const comment = raw as { body?: unknown; user?: unknown };
+    if (typeof comment.body !== "string") continue;
+    if (!comment.body.includes(marker)) continue;
+    const user = comment.user;
+    const login = typeof user === "object" && user !== null
+      ? (user as { login?: unknown }).login
+      : undefined;
+    rows.push({ author: typeof login === "string" ? login : null });
+  }
+  return rows;
+}
+
+/**
+ * Whether a **fleet-authored** comment on the issue/PR contains `marker`.
  *
+ * Stops at the first page carrying a verified match, so the common case (a
+ * marker posted early in the thread) reads a single page instead of the whole
+ * thread. A thread longer than the page cap without a verified match returns
+ * false — the marker is genuinely absent from everything readable.
+ *
+ * **The author is checked, not just the marker** (Issue #1216). Every caller
+ * uses the result to *suppress* an action — the blocking-PR stall escalation,
+ * a stall-reason comment, a self-schedule announcement, a CI nudge — and a
+ * comment body is text any GitHub account may write. Matching on the body
+ * alone let one planted `<!-- vibe-… -->` comment silence those diagnostics on
+ * that thread for good, and silence is the direction nobody notices. This is
+ * the {@link file://./alert_dedup_authors.ts} control applied to the raw REST
+ * comment pages, which carry no `--jq` projection for
+ * `marker_dedup_author_manifest.ts`'s scanner to classify.
+ *
+ * **The fail direction is towards acting.** An unresolvable fleet identity
+ * means no marker can be attributed, so none counts and the suppressed action
+ * goes ahead. A duplicate nudge is noise a human scrolls past; a suppressed
+ * escalation is a stalled PR nobody hears about.
+ *
+ * @param authorOptions - Fleet identity inputs (tests state the fleet).
+ * @param log - Sink for the author-verification diagnostics.
  * @throws when a page cannot be fetched or parsed.
  */
 export async function issueCommentsContainMarker(
@@ -100,13 +150,25 @@ export async function issueCommentsContainMarker(
   issueNumber: number,
   marker: string,
   ghFn: GhFn,
+  authorOptions: AlertDedupAuthorOptions = {},
+  log: (message: string) => void = (message) => console.warn(message),
 ): Promise<boolean> {
   for (let page = 1; page <= MAX_COMMENT_PAGES; page++) {
     const raw = await ghFn(buildIssueCommentsPageArgs(repo, issueNumber, page));
-    if (raw.includes(marker)) return true;
-    if (parsePage(raw, repo, issueNumber).length < COMMENTS_PER_PAGE) {
-      return false;
+    const comments = parsePage(raw, repo, issueNumber);
+    const candidates = markerCommentAuthors(comments, marker);
+    if (candidates.length > 0) {
+      const verified = await selectFleetAuthoredComments(
+        candidates,
+        `comment marker ${marker} on ${repo}#${issueNumber}`,
+        authorOptions,
+        log,
+        "the marker does not count and the suppressed action goes ahead — " +
+          "a comment anyone can post must not silence the worker",
+      );
+      if (verified.length > 0) return true;
     }
+    if (comments.length < COMMENTS_PER_PAGE) return false;
   }
   return false;
 }
