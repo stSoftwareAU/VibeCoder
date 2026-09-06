@@ -16,6 +16,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { spawnGh } from "./gh_spawn.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -43,11 +44,31 @@ export interface RepoVisibilityOptions {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/** Create a default command runner using Deno.Command with optional gh config. */
+/**
+ * Default command runner using Deno.Command with optional gh config.
+ *
+ * Issue #1227: the binary is named by `cmd[0]`, and every production caller
+ * passes `["gh", "api", …]` — a direct `gh` spawn the literal-matching
+ * chokepoint gate could not see. A `gh` command is delegated to the shared
+ * chokepoint so it is allowlist-checked, timed out and journalled; any other
+ * binary is spawned directly.
+ */
 function createDefaultRunCommand(
   ghConfigDir?: string,
 ): (cmd: string[]) => Promise<CommandOutput> {
+  const extraEnv = ghConfigDir ? { GH_CONFIG_DIR: ghConfigDir } : undefined;
   return async (cmd: string[]): Promise<CommandOutput> => {
+    if (cmd[0] === "gh") {
+      const result = await spawnGh(
+        cmd.slice(1),
+        extraEnv ? { env: extraEnv } : {},
+      );
+      return {
+        success: result.success,
+        stdout: result.stdout.trim(),
+        stderr: result.stderr.trim(),
+      };
+    }
     const env = ghConfigDir
       ? { ...Deno.env.toObject(), GH_CONFIG_DIR: ghConfigDir }
       : undefined;

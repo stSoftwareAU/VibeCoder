@@ -38,6 +38,7 @@ import type {
   Result,
   UpdateMode,
 } from "../types.ts";
+import { spawnGh } from "./gh_spawn.ts";
 import {
   CLAUDE_CLI_NPM_PACKAGE,
   createReleaseAgeGate,
@@ -346,6 +347,39 @@ export function classifyUpdateError(
 }
 
 /**
+ * Run a `gh` command through the shared chokepoint (Issue #1227).
+ *
+ * The chokepoint owns the write-repo allowlist, the audit journal and the
+ * timeout, so the update paths' `gh` calls no longer skip all three. The
+ * result is mapped to {@link runWithTimeout}'s shape — combined output, and
+ * exit 124 on a timeout, which {@link classifyUpdateError} already treats as
+ * transient.
+ *
+ * @param args - Arguments after the `gh` binary name.
+ * @param timeoutSeconds - The caller's timeout budget.
+ */
+async function runGhWithTimeout(
+  args: string[],
+  timeoutSeconds: number,
+): Promise<Result<{ exitCode: number; output: string }>> {
+  try {
+    const result = await spawnGh(args, { timeoutSeconds });
+    return {
+      ok: true,
+      value: {
+        exitCode: result.code,
+        output: `${result.stdout}\n${result.stderr}`.trim(),
+      },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
+}
+
+/**
  * Run a command with a timeout and return the result.
  *
  * Uses the repo's canonical `AbortController` + `clearTimeout` timeout pattern
@@ -360,6 +394,15 @@ export async function runWithTimeout(
   cmd: string[],
   timeoutSeconds: number,
 ): Promise<Result<{ exitCode: number; output: string }>> {
+  // Issue #1227: the binary comes from `cmd[0]`, and the update paths pass
+  // `["gh", …]` (`--version`, `extension list`, `extension install`) — direct
+  // `gh` spawns the literal-matching chokepoint gate could not see. Delegate
+  // them, handing the chokepoint this caller's timeout budget so the observed
+  // behaviour (exit 124 on timeout) is unchanged.
+  if (cmd[0] === "gh") {
+    return await runGhWithTimeout(cmd.slice(1), timeoutSeconds);
+  }
+
   const timeoutMs = timeoutSeconds * 1000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

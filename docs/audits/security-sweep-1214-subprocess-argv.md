@@ -156,6 +156,20 @@ inherits the limitation SEC-1214-04
 supplied by the caller is invisible to it. That is stated here rather than left
 implicit — the gate closes the class as written today, not every spelling of it.
 
+**Closed by #1227.** Both checks now also flag a **variable** binary in any
+module that names the guarded binary at the head of an argv literal and does
+not import the chokepoint. Running the extended scan over `worker/deno/lib` and
+`worker/deno/commands` surfaced five `gh` evasions (`language_detector.ts`,
+`workflow_auditor.ts`, `repo_visibility.ts`, `recent_activity.ts`,
+`software_updates.ts`) and three `git` ones (`benchmark.ts`,
+`dependency_lock_regen.ts`, `security_tree_sweep.ts`) — more than the two this
+sweep named — and all eight now delegate to their chokepoint. The remaining
+residual risk is stated in `git_spawn_chokepoint_check.ts`: the variable-binary
+half is module-level, so a module that imports the chokepoint for one path is
+exempt on every other, and the two documented false positives
+(`secrets_history_scan.ts`, `claude_runner.ts`, which name `git` as tool data
+rather than as a binary) are allowlisted outright.
+
 ## Refuted / no finding
 
 Named here so a later sweep does not re-litigate them.

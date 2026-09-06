@@ -16,6 +16,12 @@
  * warning the gate's own semgrep stage raises, and hardcoding two short
  * regexes is both cheaper and clearer than defending a builder.
  *
+ * A literal pattern alone cannot see `new Deno.Command(cmd[0]!, …)` in a
+ * module whose callers hand it `["gh", "api", …]` — the evasion Issue #1227
+ * records. {@link scanContentForVariableBinarySpawn} closes that gap: a
+ * variable binary is a violation when the module itself names the guarded
+ * binary in an argv literal and does not route it through the chokepoint.
+ *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
@@ -35,6 +41,47 @@ export interface DirectSpawnScanResult {
   filesScanned: number;
 }
 
+/**
+ * Matches a `Deno.Command` whose binary is an expression rather than a string
+ * literal — `new Deno.Command(cmd[0]!, …)` (Issue #1227).
+ *
+ * A literal-matching pattern cannot see such a spawn, so a module handed
+ * `["gh", "api", …]` by its callers spawns the guarded binary in full view of
+ * a gate that reports a clean tree.
+ */
+export const VARIABLE_BINARY_SPAWN_PATTERN =
+  /new\s+Deno\.Command\s*\(\s*[^"'`\s)]/;
+
+/**
+ * Narrowing rules for the variable-binary scan (Issue #1227).
+ *
+ * A variable binary is only a violation when the module itself supplies the
+ * guarded binary name — a generic subprocess helper that never mentions it is
+ * not spawning it. A module that routes the binary through the chokepoint is
+ * exempt: it has the control, and its remaining variable spawn is for other
+ * binaries.
+ */
+export interface VariableBinarySpawnOptions {
+  /**
+   * Matches an argv literal naming the guarded binary — e.g. `"gh",` as the
+   * head of a command array. Without one in the module, a variable binary is
+   * some other program.
+   */
+  argvPattern: RegExp;
+  /**
+   * Matches an import of the module that owns the chokepoint. A module that
+   * imports it delegates the guarded binary there, so its remaining direct
+   * spawn is for other binaries.
+   */
+  delegationPattern: RegExp;
+  /**
+   * Repo-relative paths whose match is a documented false positive — the
+   * argv literal names a sub-command of a *different* tool, or a tool list
+   * rather than a spawn.
+   */
+  allowlist: ReadonlySet<string>;
+}
+
 /** Options for {@link scanDirectoriesForDirectSpawn}. */
 export interface DirectSpawnScanOptions {
   /** Matches a direct construction of the guarded binary. */
@@ -46,6 +93,11 @@ export interface DirectSpawnScanOptions {
    * git repositories, for instance) and is not a production surface.
    */
   excludeTests?: boolean;
+  /**
+   * Also flag a spawn whose binary is a variable (Issue #1227). Omitted, only
+   * the literal {@link DirectSpawnScanOptions.pattern} is applied.
+   */
+  variableBinary?: VariableBinarySpawnOptions;
 }
 
 /**
@@ -91,6 +143,54 @@ export function scanContentForDirectSpawn(
     }
   }
 
+  return violations;
+}
+
+/**
+ * Scan a file's content for a spawn whose binary is a variable, in a module
+ * that names the guarded binary itself (Issue #1227).
+ *
+ * Returns nothing when the module never mentions the binary in an argv
+ * literal, when it delegates the binary to the chokepoint, or when it is a
+ * documented false positive. Comments are stripped first, so prose describing
+ * the forbidden shape is not a violation.
+ *
+ * Only single-line spawns are matched — the binary and `new Deno.Command(`
+ * must share a line, which is how every spawn in this tree is written.
+ *
+ * @param content - The raw file text.
+ * @param repoRelPath - Repo-relative path, recorded on each violation.
+ * @param options - Argv, delegation and false-positive rules.
+ * @returns One violation per offending line.
+ */
+export function scanContentForVariableBinarySpawn(
+  content: string,
+  repoRelPath: string,
+  options: VariableBinarySpawnOptions,
+): DirectSpawnViolation[] {
+  if (options.allowlist.has(repoRelPath)) return [];
+
+  const rawLines = content.split("\n");
+  const codeLines = stripBlockComments(content).split("\n").map((line) =>
+    line.replace(/\/\/.*$/, "")
+  );
+  const code = codeLines.join("\n");
+
+  // Not this binary's problem: no argv literal names it, or the module hands
+  // it to the chokepoint.
+  if (!options.argvPattern.test(code)) return [];
+  if (options.delegationPattern.test(code)) return [];
+
+  const violations: DirectSpawnViolation[] = [];
+  for (let i = 0; i < codeLines.length; i++) {
+    if (VARIABLE_BINARY_SPAWN_PATTERN.test(codeLines[i] ?? "")) {
+      violations.push({
+        file: repoRelPath,
+        line: i + 1,
+        text: (rawLines[i] ?? "").trim(),
+      });
+    }
+  }
   return violations;
 }
 
@@ -149,6 +249,15 @@ export async function scanDirectoriesForDirectSpawn(
       violations.push(
         ...scanContentForDirectSpawn(content, repoRel, options.pattern),
       );
+      if (options.variableBinary) {
+        violations.push(
+          ...scanContentForVariableBinarySpawn(
+            content,
+            repoRel,
+            options.variableBinary,
+          ),
+        );
+      }
     }
   }
 

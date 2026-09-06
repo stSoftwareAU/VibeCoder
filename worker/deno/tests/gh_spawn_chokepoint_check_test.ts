@@ -55,6 +55,57 @@ Deno.test("scanContentForGhSpawn - ignores comments mentioning the pattern", () 
   assertEquals(violations, []);
 });
 
+Deno.test("scanContentForGhSpawn - flags a variable binary handed a gh argv literal", () => {
+  // The shape Issue #1227 records: `language_detector.ts` spawned `cmd[0]`
+  // and its callers passed `["gh", "api", …]`.
+  const violations = scanContentForGhSpawn(
+    [
+      "function createDefaultRunCommand() {",
+      "  return async (cmd: string[]) => {",
+      "    const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
+      "    return await command.output();",
+      "  };",
+      "}",
+      "const runner = createDefaultRunCommand();",
+      'await runner(["gh", "api", `repos/${repo}/languages`]);',
+    ].join("\n"),
+    "worker/deno/lib/example.ts",
+  );
+  assertEquals(violations.length, 1);
+  assertEquals(violations[0]?.line, 3);
+});
+
+Deno.test("scanContentForGhSpawn - a variable binary that delegates gh to the chokepoint is clean", () => {
+  const violations = scanContentForGhSpawn(
+    [
+      'import { spawnGh } from "./gh_spawn.ts";',
+      "function createDefaultRunCommand() {",
+      "  return async (cmd: string[]) => {",
+      '    if (cmd[0] === "gh") return await spawnGh(cmd.slice(1));',
+      "    const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
+      "    return await command.output();",
+      "  };",
+      "}",
+      'await createDefaultRunCommand()(["gh", "api", "repos/o/r/languages"]);',
+    ].join("\n"),
+    "worker/deno/lib/example.ts",
+  );
+  assertEquals(violations, []);
+});
+
+Deno.test("scanContentForGhSpawn - a generic runner that never names gh is clean", () => {
+  const violations = scanContentForGhSpawn(
+    [
+      "export async function runCommand(cmd: string[]) {",
+      "  const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
+      "  return await command.output();",
+      "}",
+    ].join("\n"),
+    "worker/deno/lib/example.ts",
+  );
+  assertEquals(violations, []);
+});
+
 Deno.test("scanDirectoriesForGhSpawn - walks directories and honours the allowlist", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
@@ -98,7 +149,8 @@ Deno.test("scanDirectoriesForGhSpawn - missing directories yield no violations",
   assertEquals(result.violations, []);
 });
 
-// The production tree must satisfy the invariant this check enforces.
+// The production tree must satisfy the invariant this check enforces —
+// literal `gh` spawns and variable-binary ones alike (Issue #1227).
 Deno.test("scanDirectoriesForGhSpawn - the worker tree has no direct gh spawns", async () => {
   const repoRoot = new URL("../../../", import.meta.url).pathname.replace(
     /\/$/,
