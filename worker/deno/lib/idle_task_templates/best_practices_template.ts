@@ -44,6 +44,7 @@ import {
   type IdleTaskTemplate,
   registerTemplate,
 } from "../idle_task_template.ts";
+import { guardedLabelArgs } from "../guarded_issue_labels.ts";
 import {
   type BucketPick,
   pickBucket as defaultPickBucket,
@@ -491,6 +492,12 @@ async function fileMissingCIGateIssue(
     buildSuggestedFix(bucket, lintMissing, compileMissing),
   ].join("\n");
 
+  // Built before the try: a refused label is a programming error and must
+  // fail loud rather than look like a `gh` failure.
+  const labelArgs = guardedLabelArgs(
+    [BEST_PRACTICES_LABEL, `lang:${bucket}`, "severity:high"],
+    "worker/deno/lib/idle_task_templates/best_practices_template.ts",
+  );
   let raw: string;
   try {
     raw = await ghCommandFn([
@@ -502,12 +509,7 @@ async function fileMissingCIGateIssue(
       title,
       "--body",
       body,
-      "--label",
-      BEST_PRACTICES_LABEL,
-      "--label",
-      `lang:${bucket}`,
-      "--label",
-      "severity:high",
+      ...labelArgs,
     ]);
   } catch {
     return null;

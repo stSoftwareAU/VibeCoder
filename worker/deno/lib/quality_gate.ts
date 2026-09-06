@@ -26,6 +26,7 @@ import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { scanDirectoriesForHardcodedBranches } from "./hardcoded_branch_check.ts";
 import { scanDirectoriesForDirectNeedsHuman } from "./needs_human_direct_label_check.ts";
 import { scanDirectoriesForGhSpawn } from "./gh_spawn_chokepoint_check.ts";
+import { scanDirectoriesForUnguardedCreateLabels } from "./issue_create_label_check.ts";
 import { scanDirectoriesForHomeWorkDir } from "./home_workdir_check.ts";
 import { scanDirectoriesForGitRefArgv } from "./git_ref_argv_check.ts";
 import {
@@ -456,6 +457,70 @@ async function runGhSpawnChokepointCheck(
     name,
     status: "FAILED",
     output: `gh spawn chokepoint: FAILED\n${output}`,
+  };
+}
+
+/**
+ * Run the issue-create label guard check (Issue #1276).
+ *
+ * Scans Deno lib/ and commands/ source files for a `--label` argument
+ * reaching `gh issue create` without passing `guardedLabelArgs`. The worker
+ * label allowlist was wired into the two *existing-issue* write paths only,
+ * so the 18 idle-task templates applied their labels at creation time
+ * without ever reaching it — an unenforced invariant one refactor away from
+ * filing an issue with an operational label.
+ */
+async function runIssueCreateLabelCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const name = "issue-create label guard";
+  const relDirs = ["worker/deno/lib", "worker/deno/commands"];
+
+  let hasDirs = false;
+  for (const relDir of relDirs) {
+    try {
+      const stat = await Deno.stat(`${config.scriptDir}/${relDir}`);
+      if (stat.isDirectory) hasDirs = true;
+    } catch { /* directory doesn't exist */ }
+  }
+
+  if (!hasDirs) {
+    return {
+      name,
+      status: "SKIPPED",
+      output: "deno source directories not found",
+    };
+  }
+
+  const result = await scanDirectoriesForUnguardedCreateLabels(
+    config.scriptDir,
+    relDirs,
+  );
+
+  if (result.violations.length === 0) {
+    return {
+      name,
+      status: "PASSED",
+      output:
+        `issue-create label guard: PASSED (${result.filesScanned} files scanned)`,
+    };
+  }
+
+  const output = [
+    ...result.violations.map(
+      (v) => `VIOLATION: ${v.file}:${v.line}: ${v.text}  (rule ${v.rule})`,
+    ),
+    "",
+    "Unguarded `gh issue create` label arguments detected (Issue #1276).",
+    "Build them with `guardedLabelArgs` from",
+    "`worker/deno/lib/guarded_issue_labels.ts` so every label the worker",
+    "applies passes the allowlist in `worker_label_guard.ts`.",
+  ].join("\n");
+
+  return {
+    name,
+    status: "FAILED",
+    output: `issue-create label guard: FAILED\n${output}`,
   };
 }
 
@@ -1280,6 +1345,11 @@ export async function runQualityGate(
   // spawned by `gh_spawn.ts` so the write-repo allowlist and the audit
   // journal are unavoidable.
   note(await runGhSpawnChokepointCheck(config));
+
+  // issue-create label guard (Issue #1276) — every `--label` reaching
+  // `gh issue create` must be built by `guardedLabelArgs`, so the worker
+  // label allowlist covers creation as well as existing-issue writes.
+  note(await runIssueCreateLabelCheck(config));
 
   // host work-dir guard (Issue #135, parent #118) — no source file may build
   // a work-dir path from HOME/USERPROFILE outside the commented allowlist,

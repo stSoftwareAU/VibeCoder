@@ -41,6 +41,7 @@ import {
   registerTemplate,
 } from "../idle_task_template.ts";
 import { runGhCommand as defaultGhCommand } from "../github.ts";
+import { guardedLabelArgs } from "../guarded_issue_labels.ts";
 import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
 import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
 import { loadPrompt as defaultLoadPrompt } from "../prompt_manager.ts";
@@ -233,10 +234,10 @@ async function fileMissingScriptFinding(
     renderMissingScriptTitle(finding),
     "--body",
     body,
-    "--label",
-    BASH_MISSING_SCRIPT_LABEL,
-    "--label",
-    "severity:high",
+    ...guardedLabelArgs(
+      [BASH_MISSING_SCRIPT_LABEL, "severity:high"],
+      "worker/deno/lib/idle_task_templates/bash_script_refs_template.ts",
+    ),
   ];
   let raw: string;
   try {

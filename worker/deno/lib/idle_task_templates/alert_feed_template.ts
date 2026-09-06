@@ -57,6 +57,7 @@ import {
   registerTemplate,
 } from "../idle_task_template.ts";
 import { runGhCommand as defaultGhCommand } from "../github.ts";
+import { guardedLabelArgs } from "../guarded_issue_labels.ts";
 import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
 import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
 import { loadPrompt as defaultLoadPrompt } from "../prompt_manager.ts";
@@ -461,10 +462,10 @@ async function fileAlertFinding(
     finding.title,
     "--body",
     body,
-    "--label",
-    ALERT_FEED_LABEL,
-    "--label",
-    `severity:${finding.severity}`,
+    ...guardedLabelArgs(
+      [ALERT_FEED_LABEL, `severity:${finding.severity}`],
+      "worker/deno/lib/idle_task_templates/alert_feed_template.ts",
+    ),
   ];
   let raw: string;
   try {
