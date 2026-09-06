@@ -1249,9 +1249,17 @@ prompt_launchagent_setup() {
     if [[ -f "${plist_dir}/com.vibe.auto-issue-worker.plist" ]]; then
         print_warning "The LaunchAgent is currently installed: launchd starts the worker every 5 minutes on this machine."
         print_info "Starting the worker by hand (./loop.sh) as well would run two workers on this host - one worker per host."
-        echo -n "  Remove the installed LaunchAgent now? [Y/n] "
+        # Defaults to NO, exactly as the install prompt above does. Removing
+        # uninstalls the worker on a host that was running fine, and a bare
+        # Enter must never do that: on GRQ-25 an operator re-running setup for
+        # a credential walked both prompts with Enter, launchd booted the
+        # agent out, and the host sat dead until someone noticed the next day.
+        # Both LaunchAgent prompts obey one rule - the safe answer is the one
+        # that changes nothing, so it is the one Enter gives you (Issue #1369).
+        echo -n "  Remove the installed LaunchAgent now? [y/N] "
         read -r remove_launchagent
-        if [[ "$remove_launchagent" != "n" && "$remove_launchagent" != "N" ]]; then
+        if [[ "$remove_launchagent" == "y" || "$remove_launchagent" == "Y" ||
+              "$remove_launchagent" == "yes" || "$remove_launchagent" == "YES" ]]; then
             run_setup_cli launchagent --uninstall
         else
             print_info "Keeping the LaunchAgent - do not also start the worker by hand on this machine."

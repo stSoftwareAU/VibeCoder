@@ -37,6 +37,7 @@ const SETUP_PS1 = new URL("../../../setup.ps1", import.meta.url).pathname;
  */
 async function runPrompt(
   answer: string,
+  options: { plistDir?: string; removalAnswer?: string } = {},
 ): Promise<{ code: number; stdout: string }> {
   const script = `
     set -uo pipefail
@@ -57,10 +58,14 @@ async function runPrompt(
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",
+    env: options.plistDir ? { VIBE_LAUNCHAGENT_DIR: options.plistDir } : {},
   });
   const child = cmd.spawn();
   const writer = child.stdin.getWriter();
-  await writer.write(new TextEncoder().encode(`${answer}\n`));
+  const answers = options.removalAnswer === undefined
+    ? `${answer}\n`
+    : `${answer}\n${options.removalAnswer}\n`;
+  await writer.write(new TextEncoder().encode(answers));
   await writer.close();
   const out = await child.output();
   return { code: out.code, stdout: new TextDecoder().decode(out.stdout) };
@@ -94,6 +99,92 @@ Deno.test("setup.sh - only an explicit yes installs the LaunchAgent (Issue #26)"
       `'${answer}' must not install; got: ${stdout}`,
     );
   }
+});
+
+// ── The removal prompt (Issue #1369) ─────────────────────────────────────
+//
+// Declining the install on a host that already has the agent offers to remove
+// it — and that offer used to read `[Y/n]`, so the operator who walked the
+// wizard with Enter to change a credential uninstalled the worker instead.
+// That happened twice on GRQ-25; launchd's log recorded the removal and the
+// host sat dead until someone noticed the next day. Enter must change nothing
+// on both LaunchAgent prompts, not just the install one.
+
+/** A temp LaunchAgents directory holding an installed-looking plist. */
+async function withInstalledPlist(
+  fn: (dir: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(
+      `${dir}/com.vibe.auto-issue-worker.plist`,
+      "<plist/>",
+    );
+    await fn(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+/**
+ * Did the removal branch actually run the uninstall?
+ *
+ * The prompt is written with `echo -n`, so the marker shares its line.
+ */
+function uninstalled(stdout: string): boolean {
+  return stdout.includes("CALLED:launchagent --uninstall");
+}
+
+Deno.test("setup.sh - a bare Enter does NOT remove the installed LaunchAgent (Issue #1369)", async () => {
+  await withInstalledPlist(async (dir) => {
+    const { stdout } = await runPrompt("", {
+      plistDir: dir,
+      removalAnswer: "",
+    });
+    assertEquals(
+      uninstalled(stdout),
+      false,
+      `Enter must leave the LaunchAgent as it is; got: ${stdout}`,
+    );
+  });
+});
+
+Deno.test("setup.sh - only an explicit yes removes the LaunchAgent (Issue #1369)", async () => {
+  await withInstalledPlist(async (dir) => {
+    for (const answer of ["y", "Y", "yes", "YES"]) {
+      const { stdout } = await runPrompt("n", {
+        plistDir: dir,
+        removalAnswer: answer,
+      });
+      assertEquals(
+        uninstalled(stdout),
+        true,
+        `'${answer}' should remove the agent; got: ${stdout}`,
+      );
+    }
+    // Everything else keeps it — Enter, an explicit no, "-" for leave-as-is,
+    // and a typo, which must fail safe.
+    for (const answer of ["", "n", "N", "no", "NO", "-", "  ", "yep"]) {
+      const { stdout } = await runPrompt("n", {
+        plistDir: dir,
+        removalAnswer: answer,
+      });
+      assertEquals(
+        uninstalled(stdout),
+        false,
+        `'${answer}' must not remove the agent; got: ${stdout}`,
+      );
+    }
+  });
+});
+
+Deno.test("setup.sh / setup.ps1 - both removal prompts are marked [y/N] (Issue #1369)", async () => {
+  // Parity with the install prompts below: the marker shown to the operator
+  // IS the contract, and it must match the branch behaviour tested above.
+  const sh = await Deno.readTextFile(SETUP_SH);
+  assertStringIncludes(sh, "Remove the installed LaunchAgent now? [y/N]");
+  const ps1 = await Deno.readTextFile(SETUP_PS1);
+  assertStringIncludes(ps1, "Unregister the scheduled task now? [y/N]");
 });
 
 Deno.test("setup.sh / setup.ps1 - both install prompts are marked [y/N] (Issue #26)", async () => {

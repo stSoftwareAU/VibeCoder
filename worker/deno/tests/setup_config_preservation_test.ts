@@ -184,6 +184,33 @@ Deno.test("runConfigSetup - preserves fleet_pr_authors and service_accounts", as
   await Deno.remove(tmpDir, { recursive: true });
 });
 
+Deno.test("runConfigSetup - preserves agent_transcript_enabled and log_dir (Issue #1369)", async () => {
+  // The GRQ-25 report suspected setup of rewriting .config.json without the
+  // two keys another tool had added. Setup does rewrite the file from its own
+  // model, so the passthrough is what has to hold — these are the keys that
+  // were named, and neither is one setup itself knows about.
+  const tmpDir = await Deno.makeTempDir();
+  const configPath = `${tmpDir}/.config.json`;
+  await Deno.writeTextFile(
+    configPath,
+    JSON.stringify({
+      allowed_authors: ["operator"],
+      repos: ["stSoftwareAU/VibeCoder"],
+      agent_transcript_enabled: true,
+      log_dir: "/Users/operator/vibe-logs",
+    }),
+  );
+
+  const result = await runConfigSetup(configPath, () => undefined);
+  assertEquals(result.ok, true);
+
+  const written = JSON.parse(await Deno.readTextFile(configPath));
+  assertEquals(written.agent_transcript_enabled, true);
+  assertEquals(written.log_dir, "/Users/operator/vibe-logs");
+
+  await Deno.remove(tmpDir, { recursive: true });
+});
+
 Deno.test("runConfigSetup - reports pruned orphan repo_config entries", async () => {
   const tmpDir = await Deno.makeTempDir();
   const configPath = `${tmpDir}/.config.json`;
