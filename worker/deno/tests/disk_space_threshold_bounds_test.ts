@@ -20,6 +20,8 @@ import {
 import {
   DEFAULT_DISK_CLEANUP_GENTLE_THRESHOLD,
   DEFAULT_DISK_CLEANUP_THRESHOLD,
+  type DiskCheckResult,
+  parseCleanupThreshold,
   validateCleanupThreshold,
 } from "../lib/disk_space.ts";
 import { envFrom } from "./support/env_lookup.ts";
@@ -34,6 +36,14 @@ async function makeWorkDirWithClone(): Promise<
   const marker = `${clone}/README.md`;
   await Deno.writeTextFile(marker, "fixture clone");
   return { workDir, marker };
+}
+
+/** The thresholds the check actually ran with, as reported by the command. */
+function appliedThresholds(
+  data: unknown,
+): { t: number | undefined; gentle: number | undefined } {
+  const result = data as Partial<DiskCheckResult> | undefined;
+  return { t: result?.threshold, gentle: result?.gentleThreshold };
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -118,21 +128,26 @@ Deno.test("disk-space command - refuses out-of-range and unparseable thresholds"
   }
 });
 
-Deno.test("disk-space command - accepts in-range thresholds, including string form", async () => {
+Deno.test("disk-space command - applies in-range thresholds, including string form", async () => {
   const workDir = await Deno.makeTempDir();
   try {
-    // 100 is in range and above any real usage, so no cleanup is triggered.
+    // 100 is in range and at or above any healthy usage, so the accepted
+    // path asserts the applied values without triggering a real cleanup.
     const numeric = await diskSpaceCommand.execute(
       { "work-dir": workDir, threshold: 100, "gentle-threshold": 100 },
       buildDefaultWorkerConfig(),
     );
     assertEquals(numeric.success, true);
+    assertEquals(appliedThresholds(numeric.data), { t: 100, gentle: 100 });
 
+    // The string form must reach the check as the number written, not as a
+    // silent fallback to the 90/80 defaults.
     const stringForm = await diskSpaceCommand.execute(
-      { "work-dir": workDir, threshold: "100", "gentle-threshold": "99" },
+      { "work-dir": workDir, threshold: "100", "gentle-threshold": "100" },
       buildDefaultWorkerConfig(),
     );
     assertEquals(stringForm.success, true);
+    assertEquals(appliedThresholds(stringForm.data), { t: 100, gentle: 100 });
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
@@ -169,6 +184,20 @@ Deno.test("buildHousekeepingSteps - refuses an out-of-range DISK_CLEANUP_GENTLE_
   assertStringIncludes(warnings[0] ?? "", "DISK_CLEANUP_GENTLE_THRESHOLD");
 });
 
+Deno.test("buildHousekeepingSteps - refuses a prefix-numeric environment threshold", () => {
+  const warnings: string[] = [];
+  // `parseInt` reads "9x" as 9 — a threshold the operator never wrote.
+  const value = diskSpaceArg(
+    { DISK_CLEANUP_THRESHOLD: "9x" },
+    "threshold",
+    (m) => warnings.push(m),
+  );
+
+  assertEquals(value, DEFAULT_DISK_CLEANUP_THRESHOLD);
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0] ?? "", "9x");
+});
+
 Deno.test("buildHousekeepingSteps - passes in-range environment thresholds through", () => {
   const warnings: string[] = [];
   const env = {
@@ -189,6 +218,18 @@ Deno.test("buildHousekeepingSteps - passes in-range environment thresholds throu
 // ---------------------------------------------------------------------------
 // The shared bound itself
 // ---------------------------------------------------------------------------
+
+Deno.test("parseCleanupThreshold - falls back only when the value is absent", () => {
+  assertEquals(parseCleanupThreshold(undefined, 90), 90);
+  assertEquals(parseCleanupThreshold("", 90), 90);
+  assertEquals(parseCleanupThreshold("85", 90), 85);
+  assertEquals(parseCleanupThreshold(" 85 ", 90), 85);
+  assertEquals(parseCleanupThreshold(85, 90), 85);
+  // Present but unreadable: NaN, never the fallback and never a truncation.
+  assertEquals(Number.isNaN(parseCleanupThreshold("0abc", 90)), true);
+  assertEquals(Number.isNaN(parseCleanupThreshold("9x", 90)), true);
+  assertEquals(Number.isNaN(parseCleanupThreshold({}, 90)), true);
+});
 
 Deno.test("validateCleanupThreshold - accepts 1..100 and refuses everything else", () => {
   assertEquals(validateCleanupThreshold("--threshold", 1), null);

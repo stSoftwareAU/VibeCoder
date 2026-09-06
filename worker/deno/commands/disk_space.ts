@@ -8,37 +8,19 @@
  * Issue #95: Check disk space of WORK_DIR at startup.
  */
 
-import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import type { Command, CommandResult, Result, WorkerConfig } from "../types.ts";
 import {
   checkAndCleanupDiskSpace,
   DEFAULT_DISK_CLEANUP_GENTLE_THRESHOLD,
   DEFAULT_DISK_CLEANUP_THRESHOLD,
   type DiskCheckResult,
+  parseCleanupThreshold,
   validateCleanupThreshold,
 } from "../lib/disk_space.ts";
 
 /**
- * Parse a numeric CLI argument. Returns the fallback when the value is
- * absent, and `NaN` when it is present but not a whole number — `parseInt`
- * used to read `"0abc"` as `0`, which is exactly the value that made the
- * cleanup aggressive on every start (Issue #1268).
- */
-function parseNumericArg(value: unknown, fallback: number): number {
-  if (value === undefined || value === null) return fallback;
-  if (typeof value === "number") return value;
-  if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
-    return parseInt(value.trim(), 10);
-  }
-  return NaN;
-}
-
-/** Outcome of resolving one threshold argument (Issue #1268). */
-type ThresholdArg =
-  | { ok: true; value: number }
-  | { ok: false; message: string };
-
-/**
- * Resolve a threshold CLI argument, refusing anything outside 1–100.
+ * Resolve a threshold CLI argument against the shared bound
+ * ({@link validateCleanupThreshold}, Issue #1268).
  *
  * The refusal is named and loud rather than clamped: a threshold the
  * operator did not mean should stop the destructive cleanup, not quietly
@@ -48,13 +30,12 @@ function resolveThresholdArg(
   flag: string,
   value: unknown,
   fallback: number,
-): ThresholdArg {
-  const parsed = parseNumericArg(value, fallback);
+): Result<number, string> {
+  const parsed = parseCleanupThreshold(value, fallback);
   const problem = validateCleanupThreshold(flag, parsed);
-  return problem === null ? { ok: true, value: parsed } : {
-    ok: false,
-    message: problem,
-  };
+  return problem === null
+    ? { ok: true, value: parsed }
+    : { ok: false, error: problem };
 }
 
 /**
@@ -98,15 +79,12 @@ export const diskSpaceCommand: Command = {
       ? args["work-dir"]
       : (Deno.env.get("WORK_DIR") || "");
 
-    // Both thresholds are refused unless they are whole percentages in
-    // 1–100 (Issue #1268): 0 meant "always aggressive", so the work
-    // directory — every clone on the volume — was deleted on each start.
     const threshold = resolveThresholdArg(
       "--threshold",
       args["threshold"],
       DEFAULT_DISK_CLEANUP_THRESHOLD,
     );
-    if (!threshold.ok) return { success: false, message: threshold.message };
+    if (!threshold.ok) return { success: false, message: threshold.error };
 
     const gentleThreshold = resolveThresholdArg(
       "--gentle-threshold",
@@ -114,7 +92,7 @@ export const diskSpaceCommand: Command = {
       DEFAULT_DISK_CLEANUP_GENTLE_THRESHOLD,
     );
     if (!gentleThreshold.ok) {
-      return { success: false, message: gentleThreshold.message };
+      return { success: false, message: gentleThreshold.error };
     }
 
     const result = await checkAndCleanupDiskSpace({

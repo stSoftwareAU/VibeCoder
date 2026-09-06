@@ -48,6 +48,7 @@ import { workerLogCleanupCommand } from "../commands/worker_log_cleanup.ts";
 import {
   DEFAULT_DISK_CLEANUP_GENTLE_THRESHOLD,
   DEFAULT_DISK_CLEANUP_THRESHOLD,
+  parseCleanupThreshold,
   validateCleanupThreshold,
 } from "./disk_space.ts";
 import {
@@ -216,8 +217,9 @@ export async function sweepVolatileCliState(
  * @param env - Environment lookup for the tunables (Issue #956). Defaults to
  *   the process environment, so the production call is unchanged; a test
  *   passes a fixed map rather than mutating `Deno.env`.
- * @param warn - Sink for a refused threshold (Issue #1268). Defaults to
- *   `console.error`, so a bad value is never applied silently.
+ * @param warn - Sink for a refused cleanup threshold (Issue #1268). Defaults
+ *   to `console.error`, so an unusable threshold is announced, never applied
+ *   and never silently swapped for the default.
  */
 export function buildHousekeepingSteps(
   options: HousekeepingOptions,
@@ -226,14 +228,16 @@ export function buildHousekeepingSteps(
 ): HousekeepingStep[] {
   const envInt = (name: string, fallback: number): number =>
     getEnvNumberOrDefault(name, fallback, env);
-  // A cleanup threshold outside 1–100 is refused, not applied: 0 read as
-  // "always aggressive" and nuked the work directory on every start
-  // (Issue #1268). The default stands in, loudly.
+  // The environment values get the same bound as the CLI flags
+  // ({@link validateCleanupThreshold}, Issue #1268). Deliberately not
+  // `envInt`: `getEnvNumberOrDefault` reads "9x" as 9, so the raw string is
+  // parsed strictly here and anything unusable is announced, not applied.
   const thresholdEnvInt = (name: string, fallback: number): number => {
-    const value = envInt(name, fallback);
+    const raw = env(name);
+    const value = parseCleanupThreshold(raw, fallback);
     const problem = validateCleanupThreshold(name, value);
     if (problem === null) return value;
-    warn(`⚠️  ${problem}; using the default ${fallback}%`);
+    warn(`⚠️  ${name}="${raw}": ${problem}; using the default ${fallback}%`);
     return fallback;
   };
   return [

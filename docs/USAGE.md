@@ -498,9 +498,9 @@ There is no "disabled" spelling: `0` would mean "usage is always at or above
 the threshold", which nuked `WORK_DIR` — and every cloned repository in it —
 on each start. An out-of-range value is refused rather than applied:
 `mod.ts disk-space --threshold 0` fails with a named error and cleans nothing,
-and an out-of-range environment value is logged loud and the default is used
-instead. To make the aggressive tier effectively unreachable, set
-`DISK_CLEANUP_THRESHOLD=100`.
+and an unusable environment value is logged loud and the default is used
+instead. To hold the aggressive tier back until the volume is completely
+full, set `DISK_CLEANUP_THRESHOLD=100`.
 
 ## 🔄 Claude CLI Auto-Update
 

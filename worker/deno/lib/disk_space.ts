@@ -84,9 +84,35 @@ export function validateCleanupThreshold(
   ) {
     return null;
   }
-  return `${name} must be 1–100 (whole percent), got ${value}: refusing ` +
-    `to run disk cleanup — 0 or a negative threshold would treat every ` +
-    `start as critical and delete the work directory`;
+  return `${name} must be ${DISK_CLEANUP_THRESHOLD_MIN}–` +
+    `${DISK_CLEANUP_THRESHOLD_MAX} (whole percent), got ${value}: ` +
+    `refusing to run disk cleanup`;
+}
+
+/**
+ * Parse an operator-supplied threshold, from a CLI argument or an
+ * environment string (Issue #1268).
+ *
+ * `parseInt` read `"0abc"` as `0` — the very value that made every start
+ * aggressive — and `"9x"` as `9`, so a present-but-unreadable value returns
+ * `NaN` here and is refused by {@link validateCleanupThreshold} rather than
+ * standing in for a number the operator never wrote. Only an absent value
+ * falls back.
+ *
+ * @param value - The supplied threshold (CLI argument or environment string).
+ * @param fallback - Used when the value is absent.
+ * @returns The parsed threshold, `fallback` when absent, `NaN` when unreadable.
+ */
+export function parseCleanupThreshold(
+  value: unknown,
+  fallback: number,
+): number {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+    return parseInt(value.trim(), 10);
+  }
+  return NaN;
 }
 
 /** Ordered list of reclaim tier names. */
