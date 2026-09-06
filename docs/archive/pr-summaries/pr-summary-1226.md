@@ -12,7 +12,16 @@ any cloud credential the run held. Each of those sites now spawns with
 | --- | --- | --- |
 | `worker/deno/lib/markdownlint_check.ts` | `markdownlint-cli2` (runner and `--help` probe) | built environment, allowlist only |
 | `worker/deno/lib/pages_liquid_check.ts` | `bundle`/`ruby` (driver and probe) | built environment, plus the Ruby toolchain names |
-| `worker/deno/lib/security_tree_sweep.ts` | `semgrep`, `git ls-files`, container runtime | built environment, plus two declared container-runtime names |
+| `worker/deno/lib/security_tree_sweep.ts` | `semgrep`, container runtime | built environment, plus two declared container-runtime names |
+
+The sweep's `git ls-files` half of that row is no longer a direct spawn: PR
+#1327 (Issue #1227) routed `cmd.bin === "git"` through `runGitCommand`, the
+shared git chokepoint that owns the timeout and the audit journal. That path is
+left alone deliberately — `git` is the worker's own binary reading a tree, not
+attacker-supplied code being executed, and narrowing the shared chokepoint's
+environment would change every `git` call in the worker (`push` included, which
+needs its credential helper). The scanner spawn beside it — the one that runs
+attacker-reachable scanner code — is the one this change closes.
 
 Two allowlist decisions came with it, both non-credential by name and by the
 existing `ALLOWED_ENV_NAMES` guard test:
@@ -45,9 +54,20 @@ capture. The evidence is the tests below plus the full gate.
   all three FAILED before (`… these names were inherited rather than built from
   the allowlist`) and PASS after. The red run was produced by stripping only
   the `env:`/`clearEnv:` lines from the three modules.
-- `./quality.sh` → `Result: PASSED (with skipped checks)`. The `markdownlint`
-  stage still reports PASSED while running under the built environment, which
-  is the live proof the allowlist carries what that tool needs.
+- `./quality.sh` → `Result: PASSED (with skipped checks)`, re-run after the
+  milestone branch was merged in. The `markdownlint` stage still reports PASSED
+  while running under the built environment, which is the live proof the
+  allowlist carries what that tool needs. `pages-liquid` reports SKIPPED for a
+  reason that predates this change and is not caused by it: the container has
+  no `liquid` gem, so `bundle exec ruby -rliquid` fails identically with the
+  worker's inherited environment and with the built one.
+
+The `Security Tree Sweep` check on this PR reports 11 unbaselined findings, all
+in files this branch does not touch (`repo_settings_harden.ts`,
+`work_volume_prune.ts`, `container_extension_config.ts`, `run_core.ts` and
+others) plus six stale baseline entries. It is pre-existing baseline drift on
+the milestone branch — the same check fails on the other issue branches cut
+from it, including #1227's, which merged — and not a required check.
 
 Unrelated pre-existing breakage on the milestone branch, fixed here so the gate
 is green: `lib_sweep_coverage_test.ts` failed because
