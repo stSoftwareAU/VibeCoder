@@ -112,6 +112,24 @@ function stripBlockComments(source: string): string {
 }
 
 /**
+ * Strip block comments and trailing line comments, preserving newlines so
+ * line numbers (and therefore reported violations) stay aligned with the
+ * original source.
+ *
+ * Shared with the shared-tmp state-directory check (Issue #1242), which scans
+ * across lines and so needs the whole file rather than one line at a time.
+ *
+ * @param source - The raw file text.
+ * @returns The same text with comment content blanked out.
+ */
+export function stripLineAndBlockComments(source: string): string {
+  return stripBlockComments(source)
+    .split("\n")
+    .map((line) => line.replace(/\/\/.*$/, ""))
+    .join("\n");
+}
+
+/**
  * Scan a file's content for direct spawns of the guarded binary.
  *
  * Block comments and trailing line comments are ignored so prose mentioning
@@ -194,8 +212,16 @@ export function scanContentForVariableBinarySpawn(
   return violations;
 }
 
-/** Recursively walk a directory yielding `.ts` file paths (absolute). */
-async function* walkTsFiles(
+/**
+ * Recursively walk a directory yielding `.ts` file paths (absolute).
+ *
+ * Exported for the sibling static checks that scan the same tree
+ * (Issue #1242) — the walk is identical, so it lives here once.
+ *
+ * @param dir - Absolute directory to walk; a missing directory yields nothing.
+ * @param excludeTests - Skip `*_test.ts` files.
+ */
+export async function* walkTsFiles(
   dir: string,
   excludeTests: boolean,
 ): AsyncGenerator<string> {

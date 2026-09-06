@@ -42,6 +42,7 @@ import {
 } from "./credential_preflight.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { atomicWriteSync } from "./file_utils.ts";
+import { sharedTmpStateDir } from "./private_cache_dir.ts";
 
 /** Environment variable naming the container's durable state root. */
 export const STATE_DIR_ENV = "VIBE_STATE_DIR";
@@ -179,17 +180,21 @@ export function isGhConfigDirUsable(
  * The durable state root first — it is the worker's own, and not the `/tmp`
  * the agents churn. Scratch and `TMPDIR` follow so a host without a state
  * root still authenticates.
+ *
+ * Issue #1242: the temporary-root candidate is composed by
+ * {@link sharedTmpStateDir}, so the staged `gh` credentials land in a
+ * per-account directory rather than at one path every account on the host
+ * could create first.
  */
 export function stagingCandidates(
   env: EnvLookup = defaultEnv,
 ): string[] {
   const state = env(STATE_DIR_ENV);
   const scratch = env(SCRATCH_DIR_ENV);
-  const tmp = env("TMPDIR")?.replace(/\/+$/, "");
   return [
     state ? `${state}/${STAGED_GH_DIR_NAME}` : undefined,
     scratch ? `${scratch}/${STAGED_GH_DIR_NAME}` : undefined,
-    `${tmp && tmp.length > 0 ? tmp : "/tmp"}/vibe-${STAGED_GH_DIR_NAME}`,
+    sharedTmpStateDir(`vibe-${STAGED_GH_DIR_NAME}`, env),
   ].filter((dir): dir is string => dir !== undefined);
 }
 

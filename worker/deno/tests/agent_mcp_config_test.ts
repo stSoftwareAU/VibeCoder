@@ -20,6 +20,7 @@ import { PLAYWRIGHT_MCP_VERSION } from "../setup/screenshot.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 import { envFrom } from "./support/env_lookup.ts";
 import { fakeClock } from "./support/fake_clock.ts";
+import { cacheDirUserSuffix } from "../lib/private_cache_dir.ts";
 
 Deno.test("agent mcp config - writes the Playwright server config to the worker cache (never the clone) with the clone's docs/evidence as output dir and the chromium channel (Issue #4355)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "mcp-cfg-" });
@@ -41,10 +42,13 @@ Deno.test("agent mcp config - writes the Playwright server config to the worker 
       args[args.indexOf("--output-dir") + 1]!.startsWith(clone),
       false,
     );
+    // Issue #1242: the scratch output dir is per-account under the shared
+    // temporary root, so the name carries a suffix.
     assert(
-      args[args.indexOf("--output-dir") + 1]!.endsWith(
-        "/vibe-playwright-output",
+      args[args.indexOf("--output-dir") + 1]!.startsWith(
+        "/tmp/vibe-playwright-output",
       ),
+      args[args.indexOf("--output-dir") + 1],
     );
     assert(args.includes("--headless"));
   } finally {
@@ -233,9 +237,14 @@ Deno.test("agent mcp config - with no WORK_DIR the config lands under the OS tem
   try {
     const path = await ensureAgentMcpConfig({ cwd: "/w/some-clone", env });
     assert(path, "config path");
-    assert(path.startsWith(`${tmp}/vibe-playwright-mcp/`), path);
+    // Issue #1242: per-account, so the directory is not the same path for
+    // every account on the host.
+    assert(path.startsWith(`${tmp}/vibe-playwright-mcp-`), path);
     assert(!path.startsWith("/home/vibe/auto-issue-work"), path);
-    assertEquals(defaultMcpConfigDir({ env }), `${tmp}/vibe-playwright-mcp`);
+    assertEquals(
+      defaultMcpConfigDir({ env }),
+      `${tmp}/vibe-playwright-mcp-${cacheDirUserSuffix()}`,
+    );
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }

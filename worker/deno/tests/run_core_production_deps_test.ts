@@ -27,6 +27,12 @@ import {
 } from "../lib/rate_limit_signal.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { envFrom } from "./support/env_lookup.ts";
+import { cacheDirUserSuffix } from "../lib/private_cache_dir.ts";
+
+/** Where the repo failure counters land under a given temporary root. */
+function repoFailureFilePath(tmpDir: string): string {
+  return `${tmpDir}/vibe-repo-failures-${cacheDirUserSuffix()}/failures-${Deno.pid}`;
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -567,9 +573,11 @@ Deno.test("createProductionRunCoreDeps - default logger writes to worker log fil
 // The repo failure-tracker deps perform real read-modify-write file I/O. They
 // must return a promise the loop can await, so overlapping writes cannot
 // clobber each other (lost-update race) and a write failure is not silently
-// swallowed by a floating promise. The failure file lives at
-// `${TMPDIR}/vibe-repo-failures-${Deno.pid}`, so handing the factory a TMPDIR
-// of our own lets us observe the persisted state directly.
+// swallowed by a floating promise. The failure file lives inside a
+// per-account directory under TMPDIR (Issue #1242 — the fixed
+// `${TMPDIR}/vibe-repo-failures-<pid>` was one path for every account on the
+// host), so handing the factory a TMPDIR of our own lets us observe the
+// persisted state directly.
 //
 // Issue #967: that root is a parameter, not an export. Each case names a
 // throwaway directory that appears in no real environment, so a factory that
@@ -578,7 +586,7 @@ Deno.test("createProductionRunCoreDeps - default logger writes to worker log fil
 
 Deno.test("repo failure deps - recordRepoFailure returns an awaitable that persists the write", async () => {
   const tmpDir = await Deno.makeTempDir();
-  const failureFile = `${tmpDir}/vibe-repo-failures-${Deno.pid}`;
+  const failureFile = repoFailureFilePath(tmpDir);
   try {
     const { deps } = await createProductionRunCoreDeps(
       createTestOptions({ env: envFrom({ TMPDIR: tmpDir }) }),
@@ -599,7 +607,7 @@ Deno.test("repo failure deps - recordRepoFailure returns an awaitable that persi
 
 Deno.test("repo failure deps - sequential awaited writes do not clobber (no lost update)", async () => {
   const tmpDir = await Deno.makeTempDir();
-  const failureFile = `${tmpDir}/vibe-repo-failures-${Deno.pid}`;
+  const failureFile = repoFailureFilePath(tmpDir);
   try {
     const { deps } = await createProductionRunCoreDeps(
       createTestOptions({ env: envFrom({ TMPDIR: tmpDir }) }),
@@ -627,7 +635,7 @@ Deno.test("repo failure deps - sequential awaited writes do not clobber (no lost
 
 Deno.test("repo failure deps - recordRepoSuccess and resetRepoFailures clear persisted state", async () => {
   const tmpDir = await Deno.makeTempDir();
-  const failureFile = `${tmpDir}/vibe-repo-failures-${Deno.pid}`;
+  const failureFile = repoFailureFilePath(tmpDir);
   try {
     const { deps } = await createProductionRunCoreDeps(
       createTestOptions({ env: envFrom({ TMPDIR: tmpDir }) }),

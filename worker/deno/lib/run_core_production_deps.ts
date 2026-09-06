@@ -77,6 +77,7 @@ import {
 // Issue finding
 import { findIssuesByLabel, findOldestIssue } from "./issue_finder.ts";
 import { IssueCache } from "./issue_cache.ts";
+import { ensureStateDir, sharedTmpStateDir } from "./private_cache_dir.ts";
 import type {
   BlockedCandidateInfo,
   DiagnosticSummary,
@@ -664,9 +665,21 @@ export async function createProductionRunCoreDeps(
     stateExpirySeconds: 3600,
   };
 
-  const repoFailureFile = `${
-    env("TMPDIR") ?? "/tmp"
-  }/vibe-repo-failures-${Deno.pid}`;
+  // Issue #1242: the counters live in a per-account directory created 0700,
+  // not at the fixed `${TMPDIR}/vibe-repo-failures-<pid>` — the pid made that
+  // path guessable, not unpredictable, so any local account could plant the
+  // failure counts that decide whether a repo is skipped. A directory another
+  // account owns is reported rather than written to silently.
+  const repoFailureDir = sharedTmpStateDir("vibe-repo-failures", env);
+  const repoFailureTrust = await ensureStateDir(repoFailureDir, env);
+  if (!repoFailureTrust.trusted) {
+    logger.warn(
+      `Repo failure directory ${repoFailureDir} is not worker-private: ${
+        repoFailureTrust.reason ?? "unknown"
+      } (Issue #1242)`,
+    );
+  }
+  const repoFailureFile = `${repoFailureDir}/failures-${Deno.pid}`;
   const repoFailureConfig: RepoFailureTrackerConfig = {
     failureFile: repoFailureFile,
     threshold: 3,

@@ -26,6 +26,14 @@ import type {
   ScreenshotConfig,
 } from "../setup/screenshot.ts";
 import type { NpmAgeFetchDeps } from "../lib/npm_package_age.ts";
+import { cacheDirUserSuffix } from "../lib/private_cache_dir.ts";
+
+/**
+ * The disposable profile directory (Issue #1242): per-account, so two users
+ * on one host never share the browser profile the server runs from.
+ */
+const PER_ACCOUNT_PROFILE_DIR =
+  `/tmp/${BROWSER_PROFILE_DIR_NAME}-${cacheDirUserSuffix()}`;
 
 const FIXED_NOW = new Date("2026-06-15T12:00:00Z");
 
@@ -217,7 +225,13 @@ Deno.test("generateMcpConfig - output dir is scratch beside the browser profile,
     const out = args[args.indexOf("--output-dir") + 1]!;
     assertEquals(out.startsWith("/opt/vibe"), false, out);
     assertEquals(out.startsWith("/custom/dir"), false, out);
-    assertEquals(out.endsWith(`/${BROWSER_OUTPUT_DIR_NAME}`), true, out);
+    // Issue #1242: the scratch output dir carries the per-account suffix
+    // when it sits under the shared temporary root.
+    assertEquals(
+      out.startsWith(`/tmp/${BROWSER_OUTPUT_DIR_NAME}`),
+      true,
+      out,
+    );
     const profile = args[args.indexOf("--user-data-dir") + 1]!;
     assertEquals(
       out.slice(0, out.lastIndexOf("/")),
@@ -537,14 +551,14 @@ Deno.test("verifyScreenshotNpmQuarantine - refuses an unverifiable age", async (
 function bakedBrowser(): BrowserEnvironment {
   return {
     browsersPath: CONTAINER_BROWSERS_PATH,
-    profileDir: `/tmp/${BROWSER_PROFILE_DIR_NAME}`,
+    profileDir: PER_ACCOUNT_PROFILE_DIR,
     baked: true,
   };
 }
 
 /** Browser environment on a host with no baked browser. */
 function hostBrowser(): BrowserEnvironment {
-  return { profileDir: `/tmp/${BROWSER_PROFILE_DIR_NAME}`, baked: false };
+  return { profileDir: PER_ACCOUNT_PROFILE_DIR, baked: false };
 }
 
 Deno.test("resolveBrowserEnvironment - reports a baked browser when the image path exists", () => {
@@ -557,7 +571,7 @@ Deno.test("resolveBrowserEnvironment - reports a baked browser when the image pa
 
   assertEquals(env.baked, true);
   assertEquals(env.browsersPath, CONTAINER_BROWSERS_PATH);
-  assertEquals(env.profileDir, `/tmp/${BROWSER_PROFILE_DIR_NAME}`);
+  assertEquals(env.profileDir, PER_ACCOUNT_PROFILE_DIR);
 });
 
 Deno.test("resolveBrowserEnvironment - falls back to the image path when the variable is unset", () => {
@@ -580,7 +594,7 @@ Deno.test("resolveBrowserEnvironment - no baked browser on a host without one", 
 
   assertEquals(env.baked, false);
   assertEquals(env.browsersPath, undefined);
-  assertEquals(env.profileDir, `/tmp/${BROWSER_PROFILE_DIR_NAME}`);
+  assertEquals(env.profileDir, PER_ACCOUNT_PROFILE_DIR);
 });
 
 Deno.test("resolveBrowserEnvironment - honours an explicit browsers path", () => {
@@ -651,7 +665,7 @@ Deno.test("generateMcpConfig - writes the browser profile to a disposable direct
 
   const index = args.indexOf("--user-data-dir");
   assertEquals(index >= 0, true, "expected a --user-data-dir flag");
-  assertEquals(args[index + 1], `/tmp/${BROWSER_PROFILE_DIR_NAME}`);
+  assertEquals(args[index + 1], PER_ACCOUNT_PROFILE_DIR);
   // Never the mounted checkout: that is host state, not scratch.
   assertEquals(args[index + 1]!.startsWith("/workspace"), false);
 });

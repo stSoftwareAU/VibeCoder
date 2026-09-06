@@ -27,6 +27,7 @@ import { generateMcpConfig } from "../setup/screenshot.ts";
 import { workerCacheDir } from "./worker_cache_dir.ts";
 import { EVIDENCE_DIR } from "./screenshot_validation.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import { ensureStateDir, sharedTmpStateDir } from "./private_cache_dir.ts";
 
 export interface AgentMcpConfigOptions {
   /** The agent's working directory — the target-repo clone. */
@@ -103,9 +104,11 @@ export function defaultMcpConfigDir(
     env: lookup,
   });
   if (cacheDir) return `${cacheDir}/mcp`;
-  const tmp = env("TMPDIR", lookup) ?? env("TEMP", lookup) ??
-    env("TMP", lookup) ?? "/tmp";
-  return `${tmp.replace(/[\\/]+$/, "")}/vibe-playwright-mcp`;
+  // Issue #1242: the temp fallback is per-account. The fixed
+  // `${TMPDIR}/vibe-playwright-mcp` was the same path for every account on
+  // the host, so a local user could plant the MCP server configuration the
+  // coding agent is then handed.
+  return sharedTmpStateDir("vibe-playwright-mcp", (key) => env(key, lookup));
 }
 
 /**
@@ -131,7 +134,18 @@ export async function ensureAgentMcpConfig(
   const writeFile = options.writeFile ??
     (async (path: string, content: string) => {
       const dir = path.slice(0, path.lastIndexOf("/"));
-      await Deno.mkdir(dir, { recursive: true });
+      // Issue #1242: under the shared temporary root the directory is
+      // created 0700 and refused when another account owns it — the config
+      // written here is handed to the coding agent, so it must not be
+      // written into (or read back from) a directory a local user controls.
+      const trust = await ensureStateDir(dir);
+      if (!trust.trusted) {
+        throw new Error(
+          `MCP config directory ${dir} is not worker-private: ${
+            trust.reason ?? "unknown"
+          }`,
+        );
+      }
       await Deno.writeTextFile(path, content);
     });
   try {
