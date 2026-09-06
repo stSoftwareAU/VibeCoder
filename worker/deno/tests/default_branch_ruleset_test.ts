@@ -47,6 +47,15 @@ interface RepoState {
   rulesets?: Array<{ id: number; name: string; source_type?: string }>;
   /** Rules applying to the default branch. */
   branchRules?: Array<Record<string, unknown>>;
+  /**
+   * Rules the ruleset **detail** read reports, keyed by ruleset id. Defaults
+   * to the `branchRules` carrying that ruleset's id.
+   */
+  rulesetRules?: Record<number, Array<Record<string, unknown>>>;
+  /** Bypass actors the ruleset detail read reports, keyed by ruleset id. */
+  rulesetBypassActors?: Record<number, Array<Record<string, unknown>>>;
+  /** When set, the ruleset **detail** read fails with this message. */
+  rulesetDetailError?: string;
   /** True when a legacy classic protection rule still exists. */
   classic?: boolean;
   /** Check-run names keyed by ref (branch name or SHA). */
@@ -114,6 +123,31 @@ function makeGh(state: RepoState): { gh: GhExec; calls: GhCall[] } {
     }
     if (/\/rulesets$/.test(endpoint)) {
       return Promise.resolve(JSON.stringify(state.rulesets ?? []));
+    }
+    const detailMatch = endpoint.match(/\/rulesets\/(\d+)$/);
+    if (detailMatch) {
+      if (state.rulesetDetailError) {
+        return Promise.reject(new Error(state.rulesetDetailError));
+      }
+      const id = Number(detailMatch[1]);
+      const summary = (state.rulesets ?? []).find((r) => r.id === id);
+      if (!summary) {
+        return Promise.reject(new Error("gh failed: Not Found (HTTP 404)"));
+      }
+      const rules = state.rulesetRules?.[id] ??
+        (state.branchRules ?? []).filter((r) => r.ruleset_id === id);
+      return Promise.resolve(
+        JSON.stringify({
+          id,
+          name: summary.name,
+          target: "branch",
+          enforcement: "active",
+          rules,
+          ...(state.rulesetBypassActors?.[id]
+            ? { bypass_actors: state.rulesetBypassActors[id] }
+            : {}),
+        }),
+      );
     }
     if (/\/branches\/[^/]+\/protection$/.test(endpoint)) {
       return state.classic ? Promise.resolve("{}") : Promise.reject(
@@ -891,4 +925,184 @@ Deno.test("plan - reports the decision without writing or deleting anything", as
   assertEquals(create.plan.added, ["gitleaks"]);
   assertEquals(create.plan.body?.name, VIBE_RULESET_NAME);
   assertEquals(fresh.calls.filter((c) => c.method !== "GET").length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// The update PUT never weakens the ruleset it rewrites (Issue #1290)
+// ---------------------------------------------------------------------------
+
+/** The rules of an admin-hardened "Vibe Coder default branch" ruleset. */
+const HARDENED_RULES: Array<Record<string, unknown>> = [
+  {
+    type: "required_status_checks",
+    ruleset_id: 42,
+    parameters: { required_status_checks: [{ context: "gitleaks" }] },
+  },
+  {
+    type: "pull_request",
+    ruleset_id: 42,
+    parameters: {
+      required_approving_review_count: 2,
+      dismiss_stale_reviews_on_push: true,
+    },
+  },
+  { type: "non_fast_forward", ruleset_id: 42 },
+  { type: "deletion", ruleset_id: 42 },
+  { type: "required_signatures", ruleset_id: 42 },
+];
+
+/** Rule types of the single ruleset write in `calls`. */
+function writtenRuleTypes(calls: GhCall[]): string[] {
+  const body = JSON.parse(rulesetWrites(calls)[0]?.body ?? "{}");
+  return (body.rules ?? []).map((r: { type: string }) => r.type);
+}
+
+Deno.test("ruleset - an admin's other rules survive the update PUT", async () => {
+  const { gh, calls } = makeGh({
+    rulesets: [{ id: 42, name: VIBE_RULESET_NAME }],
+    branchRules: HARDENED_RULES,
+    checkRuns: { main: ["gitleaks", "markdownlint"] },
+  });
+
+  const result = await ensureDefaultBranchRuleset(
+    "org/code",
+    { branch: "main", visibility: "private" },
+    gh,
+  );
+
+  assert(result.ok);
+  assert(result.changed);
+  assertEquals(result.added, ["markdownlint"]);
+  const write = rulesetWrites(calls)[0];
+  assertEquals(write?.method, "PUT");
+
+  // Every rule the admin added is still in the body...
+  const body = JSON.parse(write?.body ?? "{}");
+  assertEquals(writtenRuleTypes(calls).sort(), [
+    "deletion",
+    "non_fast_forward",
+    "pull_request",
+    "required_signatures",
+    "required_status_checks",
+  ]);
+  const pullRequest = body.rules.find((r: { type: string }) =>
+    r.type === "pull_request"
+  );
+  assertEquals(pullRequest.parameters.required_approving_review_count, 2);
+  assertEquals(pullRequest.parameters.dismiss_stale_reviews_on_push, true);
+
+  // ...and the status-check rule is the only one rewritten.
+  const checks = body.rules.filter((r: { type: string }) =>
+    r.type === "required_status_checks"
+  );
+  assertEquals(checks.length, 1);
+  assertEquals(
+    checks[0].parameters.required_status_checks.map((
+      c: { context: string },
+    ) => c.context),
+    ["gitleaks", "markdownlint"],
+  );
+  assertEquals(checks[0].parameters.strict_required_status_checks_policy, true);
+
+  // The kept rules are reported, so the run's output reveals what survived.
+  assertEquals(result.preservedRules.sort(), [
+    "deletion",
+    "non_fast_forward",
+    "pull_request",
+    "required_signatures",
+  ]);
+});
+
+Deno.test("ruleset - bypass actors survive the update PUT", async () => {
+  const { gh, calls } = makeGh({
+    rulesets: [{ id: 42, name: VIBE_RULESET_NAME }],
+    branchRules: [{
+      type: "required_status_checks",
+      ruleset_id: 42,
+      parameters: { required_status_checks: [{ context: "gitleaks" }] },
+    }],
+    rulesetBypassActors: {
+      42: [{ actor_type: "Team", actor_id: 7, bypass_mode: "always" }],
+    },
+    checkRuns: { main: ["gitleaks", "markdownlint"] },
+  });
+
+  const result = await ensureDefaultBranchRuleset(
+    "org/code",
+    { branch: "main", visibility: "private" },
+    gh,
+  );
+
+  assert(result.ok);
+  const body = JSON.parse(rulesetWrites(calls)[0]?.body ?? "{}");
+  assertEquals(body.bypass_actors, [
+    { actor_type: "Team", actor_id: 7, bypass_mode: "always" },
+  ]);
+});
+
+Deno.test("ruleset - refuses the update when the live rules cannot be read", async () => {
+  const { gh, calls } = makeGh({
+    rulesets: [{ id: 42, name: VIBE_RULESET_NAME }],
+    branchRules: HARDENED_RULES,
+    checkRuns: { main: ["gitleaks", "markdownlint"] },
+    rulesetDetailError: "gh failed: HTTP 403",
+  });
+
+  const result = await ensureDefaultBranchRuleset(
+    "org/code",
+    { branch: "main", visibility: "private" },
+    gh,
+  );
+
+  // Fail loud: no PUT is attempted, so nothing an admin added is discarded.
+  assertFalse(result.ok);
+  assertEquals(rulesetWrites(calls).length, 0);
+  assert(
+    !result.ok && /could not be read/.test(result.error.message),
+    `unexpected error: ${!result.ok && result.error.message}`,
+  );
+});
+
+Deno.test("plan - the update body is built from the live ruleset, without writing", async () => {
+  const { gh, calls } = makeGh({
+    rulesets: [{ id: 42, name: VIBE_RULESET_NAME }],
+    branchRules: HARDENED_RULES,
+    checkRuns: { main: ["gitleaks", "markdownlint"] },
+  });
+
+  const planned = await planDefaultBranchRuleset(
+    "org/code",
+    { branch: "main", visibility: "private" },
+    gh,
+  );
+
+  assert(planned.ok);
+  assertEquals(planned.plan.action, "update");
+  assertEquals(planned.plan.rulesetId, 42);
+  assertEquals(
+    planned.plan.body?.rules.map((r) => r.type).sort(),
+    [
+      "deletion",
+      "non_fast_forward",
+      "pull_request",
+      "required_signatures",
+      "required_status_checks",
+    ],
+  );
+  assertEquals(calls.filter((c) => c.method !== "GET").length, 0);
+});
+
+Deno.test("ruleset - a created ruleset carries no rules from anywhere else", async () => {
+  const { gh, calls } = makeGh({ checkRuns: { main: ["gitleaks"] } });
+
+  const result = await ensureDefaultBranchRuleset(
+    "org/fresh",
+    { branch: "main", visibility: "private" },
+    gh,
+  );
+
+  assert(result.ok);
+  assertEquals(rulesetWrites(calls)[0]?.method, "POST");
+  assertEquals(writtenRuleTypes(calls), ["required_status_checks"]);
+  assertEquals(result.preservedRules, []);
 });

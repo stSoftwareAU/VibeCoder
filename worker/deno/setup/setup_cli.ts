@@ -1183,8 +1183,13 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
         continue;
       }
       if (r.changed) {
+        // Name the other rules carried through, so a run that touches an
+        // admin-hardened ruleset shows what survived the PUT (Issue #1290).
+        const keptRules = r.preservedRules?.length
+          ? `, rules kept: ${r.preservedRules.join(", ")}`
+          : "";
         printSuccess(
-          `${r.repo} (${r.visibility}, ${r.branch}): ruleset updated (+${r.added.length} contexts, ${r.preserved.length} pre-existing kept)`,
+          `${r.repo} (${r.visibility}, ${r.branch}): ruleset updated (+${r.added.length} contexts, ${r.preserved.length} pre-existing kept${keptRules})`,
         );
       } else if (r.skipped === "no-reported-checks") {
         printInfo(
