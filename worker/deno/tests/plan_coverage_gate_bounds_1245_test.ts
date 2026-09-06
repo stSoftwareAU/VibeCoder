@@ -46,6 +46,9 @@ const COMPLIANT_TABLE = `## Plan Coverage
 | Cap the candidate | #101 | |
 `;
 
+/** The fleet login the comment-author gate trusts (Issue #1244). */
+const FLEET_LOGIN = "vibe-bot";
+
 /** Records warnings so the loud-skip path can be asserted. */
 function makeRecordingLogger(): Pick<Logger, "info" | "warn"> & {
   warnings: string[];
@@ -150,9 +153,15 @@ Deno.test("runPlanCoverageGate - an oversized comment is skipped loudly and a re
       Promise.resolve(JSON.stringify({
         body: "",
         // Newest first once reversed: the hostile comment, then the real one.
-        comments: [{ body: COMPLIANT_TABLE }, { body: oversized }],
+        // Both carry the fleet author the #1244 gate requires, so this test
+        // exercises the scan cap rather than the author check (Issue #1358).
+        comments: [
+          { body: COMPLIANT_TABLE, author: { login: FLEET_LOGIN } },
+          { body: oversized, author: { login: FLEET_LOGIN } },
+        ],
       })),
     logger,
+    authorOptions: { fleetAuthors: [FLEET_LOGIN] },
   });
 
   assertEquals(verdict.passed, true, "the genuine table still decides");

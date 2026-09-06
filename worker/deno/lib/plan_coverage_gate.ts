@@ -388,10 +388,15 @@ export async function runPlanCoverageGate(opts: {
   }
 
   // Only comments carrying a table are put to the author check, so the discard
-  // log names genuine candidates from outside the fleet, not chatter.
+  // log names genuine candidates from outside the fleet, not chatter. An
+  // oversized comment is never scanned, so it cannot be excluded for carrying
+  // no table: it stays a candidate and the loop below reports the skip out
+  // loud rather than dropping it silently here (Issue #1358).
   const tableComments = (payload.comments ?? [])
     .map((c) => ({ author: c.author?.login ?? null, body: c.body ?? "" }))
-    .filter((c) => extractCoverageTable(c.body) !== null);
+    .filter((c) =>
+      exceedsCoverageScanCap(c.body) || extractCoverageTable(c.body) !== null
+    );
   const fleetComments = await selectFleetAuthoredComments(
     tableComments,
     `plan coverage table ${repo}#${parentIssueNumber}`,
