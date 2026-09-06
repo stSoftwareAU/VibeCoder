@@ -572,6 +572,7 @@
         "worker/deno/lib/handover_prompt_note.ts",
         "worker/deno/lib/hardcoded_branch_check.ts",
         "worker/deno/lib/heartbeat.ts",
+        "worker/deno/lib/heartbeat_freshness.ts",
         "worker/deno/lib/heartbeat_recovery_audit.ts",
         "worker/deno/lib/heartbeat_recovery_classifier.ts",
         "worker/deno/lib/heartbeat_storage.ts",
