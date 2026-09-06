@@ -24,8 +24,14 @@ import { isIdleTaskMilestone } from "./idle_task_merge_gate.ts";
 import {
   fetchAuthoritativeOpenChildren,
   formatChildNumbers,
-  isMilestoneTrackingTitle,
 } from "./milestone_open_children.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import {
+  isMilestoneTrackingTitle,
+  MILESTONE_TRACKING_MARKER,
+  type MilestoneTrackerVerification,
+  partitionMilestoneTrackers,
+} from "./milestone_tracker_identity.ts";
 import {
   fetchAllStateIssuesByMilestone,
   fetchAllStatePRsByBranch,
@@ -84,6 +90,12 @@ export interface MilestoneCompletionDeps {
   resolveActualLogin?: () => Promise<string | null>;
   /** Resolve the hostname for identity-guard messages. Injected in tests. */
   hostname?: () => string;
+  /**
+   * Fleet-identity inputs for the tracking-issue author check (Issue #1246).
+   * Omitted means "read the configured fleet identity", which is what the
+   * production wiring does; a test states the fleet instead.
+   */
+  authorOptions?: AlertDedupAuthorOptions;
   /** Logging function. */
   log: (message: string) => void;
 }
@@ -182,6 +194,7 @@ export async function checkMilestoneComplete(
   milestoneTitle: string,
   ghCommandFn: GhCommandFn,
   cache?: IssueCache,
+  verification: MilestoneTrackerVerification = {},
 ): Promise<Result<boolean>> {
   // Issue #1786: route through `fetchOpenIssuesByMilestone` so the
   // shared `issues_all` cache is reused. The local milestone-title
@@ -194,8 +207,14 @@ export async function checkMilestoneComplete(
       ghCommandFn,
     );
     // Issue #3214: ignore the milestone's own tracking issue(s).
-    const openRealIssues = openIssues.filter(
-      (issue) => !isMilestoneTrackingTitle(issue.title),
+    // Issue #1246: "the milestone's own" is proved from the tracking-issue
+    // body marker and a fleet author, not from the title — anybody may retitle
+    // an issue they opened, and this count is one of the two inputs that
+    // finalise the milestone and delete its branch.
+    const { others: openRealIssues } = await partitionMilestoneTrackers(
+      openIssues,
+      `completeness check for milestone '${milestoneTitle}' in ${repo}`,
+      verification,
     );
     return { ok: true, value: openRealIssues.length === 0 };
   } catch (err) {
@@ -270,9 +289,10 @@ export async function hasExistingMilestoneSummaryPr(
 // ---------------------------------------------------------------------------
 
 /**
- * Re-exported from `milestone_open_children.ts` (Issue #3908), which owns the
- * tracking-title shape now that both the cached and the authoritative
- * open-children lookups need it. Import path preserved for existing callers.
+ * Re-exported from `milestone_tracker_identity.ts` (Issue #3908, #1246), which
+ * owns tracker identity now that every lookup needs it. The title shape is a
+ * pre-filter only — see {@link partitionMilestoneTrackers} for the decision.
+ * Import path preserved for existing callers.
  */
 export { isMilestoneTrackingTitle };
 
@@ -282,7 +302,7 @@ export { isMilestoneTrackingTitle };
  * Checks all states (open, closed) to prevent duplicates (Issue #568).
  *
  * Issue #1798: Routes through `fetchAllStateIssuesByMilestone` so the
- * `issues_all_milestone_${milestoneNumber}` cache is shared with sibling
+ * `issues_all_milestone_v2_${milestoneNumber}` cache is shared with sibling
  * milestone helpers within a single iteration. The tracking issue is
  * created with `--milestone <number>` (see `createMilestoneTrackingIssue`)
  * so it is always assigned to its milestone, allowing the milestone-keyed
@@ -310,6 +330,7 @@ export async function hasExistingMilestoneTrackingIssue(
   _defaultBranch: string,
   ghCommandFn: GhCommandFn,
   cache?: IssueCache,
+  verification: MilestoneTrackerVerification = {},
 ): Promise<Result<number | null>> {
   try {
     const issues = await fetchAllStateIssuesByMilestone(
@@ -318,8 +339,21 @@ export async function hasExistingMilestoneTrackingIssue(
       cache,
       ghCommandFn,
     );
-    const matching = issues
-      .filter((issue) => isMilestoneTrackingTitle(issue.title))
+    // Issue #1246: the number this returns is written into the summary PR as
+    // `Closes #N` and is later passed to `gh issue close`, so adopting a
+    // look-alike would act on somebody else's issue. Only a tracker carrying
+    // the marker and opened by a fleet account is adopted; anything else means
+    // "no existing tracker", and the worker files its own.
+    const { trackers } = await partitionMilestoneTrackers(
+      issues,
+      `existing tracker lookup for milestone #${milestoneNumber} in ${repo}`,
+      {
+        ...verification,
+        unverifiedOutcome:
+          "no existing tracker is adopted and the worker files its own",
+      },
+    );
+    const matching = trackers
       .map((issue) => issue.number)
       .sort((a, b) => a - b);
     return { ok: true, value: matching.length > 0 ? matching[0]! : null };
@@ -394,6 +428,7 @@ export async function getOpenMilestoneTrackers(
   milestoneTitle: string,
   ghCommandFn: GhCommandFn,
   cache?: IssueCache,
+  verification: MilestoneTrackerVerification = {},
 ): Promise<number[]> {
   try {
     const openIssues = await fetchOpenIssuesByMilestone(
@@ -402,10 +437,20 @@ export async function getOpenMilestoneTrackers(
       cache,
       ghCommandFn,
     );
-    return openIssues
-      .filter((issue) => isMilestoneTrackingTitle(issue.title))
-      .map((issue) => issue.number)
-      .sort((a, b) => a - b);
+    // Issue #1246: every number returned here is handed to
+    // `closeMilestoneTrackingIssue`, so it must be a tracker the fleet filed —
+    // proved by the body marker and the author — and not merely an issue whose
+    // title says so. An unverifiable candidate is left alone.
+    const { trackers } = await partitionMilestoneTrackers(
+      openIssues,
+      `open trackers for milestone '${milestoneTitle}' in ${repo}`,
+      {
+        ...verification,
+        unverifiedOutcome:
+          "the candidate is not closed and keeps the milestone open",
+      },
+    );
+    return trackers.map((issue) => issue.number).sort((a, b) => a - b);
   } catch {
     return [];
   }
@@ -426,6 +471,7 @@ async function getCachedOpenNonTrackingIssues(
   milestoneTitle: string,
   ghCommandFn: GhCommandFn,
   cache?: IssueCache,
+  verification: MilestoneTrackerVerification = {},
 ): Promise<number[]> {
   try {
     const openIssues = await fetchOpenIssuesByMilestone(
@@ -434,10 +480,12 @@ async function getCachedOpenNonTrackingIssues(
       cache,
       ghCommandFn,
     );
-    return openIssues
-      .filter((issue) => !isMilestoneTrackingTitle(issue.title))
-      .map((issue) => issue.number)
-      .sort((a, b) => a - b);
+    const { others } = await partitionMilestoneTrackers(
+      openIssues,
+      `cached open children of milestone '${milestoneTitle}' in ${repo}`,
+      verification,
+    );
+    return others.map((issue) => issue.number).sort((a, b) => a - b);
   } catch {
     return [];
   }
@@ -572,6 +620,7 @@ async function createMilestoneTrackingIssue(
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
   cache?: IssueCache,
+  verification: MilestoneTrackerVerification = {},
 ): Promise<number | null> {
   // Idempotent check
   const existingResult = await hasExistingMilestoneTrackingIssue(
@@ -581,6 +630,7 @@ async function createMilestoneTrackingIssue(
     defaultBranch,
     ghCommandFn,
     cache,
+    verification,
   );
   if (existingResult.ok && existingResult.value !== null) {
     log(
@@ -596,8 +646,7 @@ async function createMilestoneTrackingIssue(
     .map((issue) => `- #${issue.number}: ${scrubUntrustedText(issue.title)}`)
     .join("\n");
 
-  const issueBody =
-    `<!-- milestone-tracking-issue — do not process as regular work -->
+  const issueBody = `${MILESTONE_TRACKING_MARKER}
 ## Milestone completion: ${milestoneTitle}
 
 All issues in milestone '${milestoneTitle}' are now complete.
@@ -983,6 +1032,7 @@ export async function checkAndHandleMilestoneCompletions(
           summaryPrsCreated += count;
         },
         deps.cache,
+        deps.authorOptions,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1009,7 +1059,14 @@ async function processRepoMilestones(
   log: (message: string) => void,
   onPrCreated: (count: number) => void,
   cache?: IssueCache,
+  authorOptions?: AlertDedupAuthorOptions,
 ): Promise<void> {
+  // Issue #1246: one verification context for every tracker decision in this
+  // repo's scan, so no call site can be left reading titles on their own.
+  const verification: MilestoneTrackerVerification = {
+    ...(authorOptions !== undefined ? { authorOptions } : {}),
+    log,
+  };
   // Resolve default branch via injected function (Issue #1509 — uses the
   // persistent 7-day cache in production so we don't burn a GitHub REST
   // quota slot every run_core cycle).
@@ -1076,6 +1133,7 @@ async function processRepoMilestones(
       milestone.title,
       ghCommandFn,
       cache,
+      verification,
     );
 
     // Check if milestone is complete (all non-tracking issues closed —
@@ -1085,6 +1143,7 @@ async function processRepoMilestones(
       milestone.title,
       ghCommandFn,
       cache,
+      verification,
     );
     if (!completeResult.ok || !completeResult.value) {
       // Issue #3214 (scope item 4): the milestone is NOT complete but carries
@@ -1116,6 +1175,7 @@ async function processRepoMilestones(
       repo,
       milestone.number,
       ghCommandFn,
+      verification,
     );
     if (!authoritative.ok) {
       log(
@@ -1139,6 +1199,7 @@ async function processRepoMilestones(
       milestone.title,
       ghCommandFn,
       cache,
+      verification,
     );
     if (authority.openCount !== cachedOpen.length) {
       log(
@@ -1237,6 +1298,7 @@ async function processRepoMilestones(
       ghCommandFn,
       log,
       cache,
+      verification,
     );
 
     // Create summary PR (idempotent)

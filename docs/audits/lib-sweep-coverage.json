@@ -265,6 +265,7 @@
         "worker/deno/lib/milestone_ruleset_check.ts",
         "worker/deno/lib/milestone_sync_pr.ts",
         "worker/deno/lib/milestone_sync_streak.ts",
+        "worker/deno/lib/milestone_tracker_identity.ts",
         "worker/deno/lib/native_sub_issues.ts",
         "worker/deno/lib/npm_package_age.ts",
         "worker/deno/lib/optional_feature_env.ts",
