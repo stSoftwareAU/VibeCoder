@@ -57,7 +57,33 @@ export interface RepoSettingsSnapshot {
   selectedActions?: SelectedActionsSnapshot;
   security?: Record<string, { status?: string } | undefined>;
   rules?: Array<{ type?: string; parameters?: Record<string, unknown> }>;
+  /**
+   * The repo's branch rulesets, each already expanded to its full object
+   * (Issue #3912 follow-up). The full object is needed because the rulesets
+   * API takes a whole ruleset on write, so a planned change has to hand back
+   * everything it did not touch.
+   */
+  rulesets?: RulesetSnapshot[];
 }
+
+/** One branch ruleset, as the rulesets API returns it. */
+export interface RulesetSnapshot {
+  id: number;
+  name?: string;
+  target?: string;
+  enforcement?: string;
+  // deno-lint-ignore no-explicit-any
+  conditions?: any;
+  // deno-lint-ignore no-explicit-any
+  bypass_actors?: any;
+  rules?: Array<{ type?: string; parameters?: Record<string, unknown> }>;
+}
+
+/**
+ * Ref pattern the fleet's milestone branches live under. A ruleset that
+ * matches it governs branches the worker must be able to CREATE.
+ */
+export const MILESTONE_REF_PATTERN = "refs/heads/milestone/**";
 
 /** One planned write. */
 export interface HardenStep {
@@ -66,7 +92,8 @@ export interface HardenStep {
     | "sha-pinning-required"
     | "actions-allow-list"
     | "secret-scanning"
-    | "ruleset-reviews";
+    | "ruleset-reviews"
+    | "milestone-branch-create";
   /** What the step closes. */
   title: string;
   method: "PUT" | "PATCH";
@@ -454,6 +481,63 @@ export function planRepoSettingsHardening(
       });
     }
   }
+  // A milestone ruleset that enforces its status checks on branch CREATION
+  // makes the fleet's milestone branches impossible to open (Issue #3912).
+  //
+  // `required_status_checks` is evaluated against the pushed commit, and a
+  // branch that does not exist yet has no check runs, so the push is declined
+  // — observed on 2026-09-06 as "5 of 6 required status checks are expected
+  // … push declined due to repository rule violations". The self-heal that
+  // recreates a missing milestone branch cannot succeed at all, and only an
+  // account with an admin bypass gets through, which is why this hides on
+  // hosts that happen to run as one.
+  //
+  // The fix is one flag, not removing the rule. `do_not_enforce_on_create`
+  // lets the branch be created while still requiring every check to MERGE,
+  // and — the part that matters for throughput — keeps `required_status_checks`
+  // present, which is exactly what `isBaseProtected` looks for when deciding
+  // whether to arm auto-merge at PR creation. Dropping the rule instead would
+  // make the base unprotected and silently disable auto-merge arming.
+  for (const ruleset of snapshot.rulesets ?? []) {
+    if (ruleset.target !== undefined && ruleset.target !== "branch") continue;
+    const includes: string[] = ruleset.conditions?.ref_name?.include ?? [];
+    if (!includes.includes(MILESTONE_REF_PATTERN)) continue;
+    const checks = ruleset.rules?.find((r) =>
+      r.type === "required_status_checks"
+    );
+    if (!checks) continue;
+    if (checks.parameters?.do_not_enforce_on_create === true) continue;
+
+    steps.push({
+      kind: "milestone-branch-create",
+      title:
+        `Ruleset '${
+          ruleset.name ?? ruleset.id
+        }': allow milestone branches to be created ` +
+        `(required checks still gate the merge)`,
+      method: "PUT",
+      endpoint: `rulesets/${ruleset.id}`,
+      body: JSON.stringify({
+        name: ruleset.name,
+        target: ruleset.target ?? "branch",
+        enforcement: ruleset.enforcement ?? "active",
+        bypass_actors: ruleset.bypass_actors ?? [],
+        conditions: ruleset.conditions,
+        rules: (ruleset.rules ?? []).map((rule) =>
+          rule.type === "required_status_checks"
+            ? {
+              ...rule,
+              parameters: {
+                ...(rule.parameters ?? {}),
+                do_not_enforce_on_create: true,
+              },
+            }
+            : rule
+        ),
+      }),
+    });
+  }
+
   return steps;
 }
 

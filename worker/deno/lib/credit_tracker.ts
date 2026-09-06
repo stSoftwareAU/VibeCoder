@@ -30,6 +30,8 @@ import {
   computeCacheHitRate,
   formatCacheHitRate,
 } from "./prompt_cache_telemetry.ts";
+import { appendNoFollow } from "./file_utils.ts";
+import { PRIVATE_DIR_MODE, resolveOwnUid } from "./private_cache_dir.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -43,6 +45,12 @@ export const LOG_FILE_SUFFIX = ".json";
 
 /** Default number of days to retain credit logs. */
 export const DEFAULT_RETENTION_DAYS = 7;
+
+/** Mode for a credit log file this worker creates: owner read/write only. */
+export const CREDIT_LOG_FILE_MODE = 0o600;
+
+/** Group and other write bits — what lets another account unlink the log. */
+const SHARED_WRITE_BITS = 0o022;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -219,6 +227,52 @@ export interface CleanupOptions {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Create the credit log directory owner-only, and keep it that way
+ * (Issue #1239).
+ *
+ * `Deno.mkdir`'s `mode` applies only to a directory this call creates, and
+ * the credit log directory is created by whichever writer gets there first —
+ * `logContextBudget` shares it. So an existing directory is inspected rather
+ * than trusted:
+ *
+ *  - a symlink, or anything that is not a directory, is refused: it is not a
+ *    directory this worker created;
+ *  - a directory owned by another account is refused — the untrusted `agent`
+ *    account pre-creating the path is exactly the bypass being closed; and
+ *  - group and other **write** access is removed, because unlinking an entry
+ *    needs write on its directory, and deleting the day's log is what zeroes
+ *    the spend ceiling's only input. Read access is left as the operator set
+ *    it: a directory they pointed `VIBE_CREDIT_LOG_DIR` at may be read by
+ *    their own tooling, and readability is not what enables the bypass.
+ *
+ * @param logDir - Directory that holds the daily credit logs
+ * @throws When the directory cannot be created or is not this worker's
+ */
+async function ensureCreditLogDir(logDir: string): Promise<void> {
+  await Deno.mkdir(logDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+
+  const info = await Deno.lstat(logDir);
+  if (info.isSymlink || !info.isDirectory) {
+    throw new Error(
+      `credit log directory is not a directory this worker created: ${logDir}`,
+    );
+  }
+
+  const ownUid = resolveOwnUid();
+  if (ownUid !== null && info.uid !== null && info.uid !== ownUid) {
+    throw new Error(
+      `credit log directory ${logDir} is owned by uid ${info.uid}, not by ` +
+        `this worker (uid ${ownUid}) — refusing to write the spend record ` +
+        `into a directory another account controls`,
+    );
+  }
+
+  if (info.mode !== null && (info.mode & SHARED_WRITE_BITS) !== 0) {
+    await Deno.chmod(logDir, info.mode & ~SHARED_WRITE_BITS & 0o7777);
+  }
+}
+
 /** Build the log file path for a given date. */
 function buildLogPath(logDir: string, date: string): string {
   return `${logDir}/${LOG_FILE_PREFIX}${date}${LOG_FILE_SUFFIX}`;
@@ -258,9 +312,18 @@ function parseDateFromFilename(filename: string): string | null {
  * Log a Claude invocation to the daily credit log.
  *
  * Appends a single JSON line to the day's log file. Creates the log
- * directory and file if they do not exist.
+ * directory (owner-only) and file if they do not exist.
+ *
+ * The append refuses to follow a symlink and the log is created 0600
+ * (Issue #1239): the log path is predictable and, by default, sits on the
+ * work volume the untrusted `agent` account also reaches, so a bare
+ * append-mode `writeTextFile` let a planted link redirect every JSON line
+ * into any file the worker uid can write. A refused append throws — the
+ * spend ceiling reads this file, so a tampered-with log must be loud rather
+ * than a silent undercount.
  *
  * @param options - Invocation details to log
+ * @throws When the log directory or the append cannot be written
  */
 export async function logInvocation(
   options: LogInvocationOptions,
@@ -278,8 +341,7 @@ export async function logInvocation(
     usageUnknown,
   } = options;
 
-  // Ensure directory exists
-  await Deno.mkdir(logDir, { recursive: true });
+  await ensureCreditLogDir(logDir);
 
   const entry: InvocationEntry = {
     workerName,
@@ -306,8 +368,13 @@ export async function logInvocation(
   const logPath = buildLogPath(logDir, todayString());
   const line = JSON.stringify(entry) + "\n";
 
-  // Append-only write — negligible overhead
-  await Deno.writeTextFile(logPath, line, { append: true });
+  // Append-only write — negligible overhead, and never through a symlink.
+  const appended = await appendNoFollow({
+    targetFile: logPath,
+    content: line,
+    mode: CREDIT_LOG_FILE_MODE,
+  });
+  if (!appended.ok) throw appended.error;
 }
 
 /**

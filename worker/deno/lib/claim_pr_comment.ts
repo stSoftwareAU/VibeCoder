@@ -66,7 +66,20 @@ export interface ClaimPrCommentOptions {
   authorOptions?: AlertDedupAuthorOptions;
   /** Sink for the author-verification diagnostics. */
   log?: (message: string) => void;
+  /**
+   * Injected clock in epoch milliseconds, backing the stale-claim minimum age
+   * (Issue #1249). Defaults to the wall clock.
+   */
+  nowMsFn?: () => number;
 }
+
+/**
+ * Minimum age a claim comment must reach before the stale-claim cleanup may
+ * delete it (Issue #1249, finding 7). Mirrors `claim_issue.ts`'s
+ * `STALE_CLAIM_MIN_AGE_MS`: anything younger is a live claim — possibly a
+ * fleet sibling's in-flight one — not the leftover of a crashed run.
+ */
+export const STALE_CLAIM_MIN_AGE_MS = 60_000;
 
 /** Result data from a successful claim operation. */
 export interface ClaimPrCommentResult {
@@ -132,16 +145,33 @@ function parseClaimComments(json: string): ClaimComment[] {
 }
 
 /**
- * Clean up stale claim comments from previous runs.
+ * Clean up **stale, fleet-authored** claim comments from previous runs.
  *
- * Stale claim comments can accumulate if a worker crashes after posting
- * a claim but before completing work. We clean them all up before
- * attempting a new claim.
+ * Stale claim comments accumulate when a worker crashes after posting a claim
+ * but before completing work, so they have to be cleared — but deletion is
+ * destructive and this read is driven by a marker anyone can type
+ * (Issue #1249, finding 7). Unfiltered it deleted **every** comment quoting
+ * `<!-- PR_COMMENT_CLAIM:`, including a human's message about the marker and
+ * a sibling host's in-flight claim posted seconds earlier. The sibling in
+ * `claim_issue.ts` has carried both guards since Issue #3664; this is the
+ * same pair:
+ *
+ *   1. the comment must be **fleet-authored** — the author is the only
+ *      authenticated part of it; and
+ *   2. it must be at least {@link STALE_CLAIM_MIN_AGE_MS} old — anything
+ *      younger is a live claim, not the leftover of a crashed run.
+ *
+ * Fail direction: nothing attributable, or an unresolvable fleet identity,
+ * deletes nothing. A leftover claim comment is cleared by the next run once
+ * it can be attributed; a deleted human comment cannot be undone.
  */
 async function cleanupStaleClaimComments(
   repo: string,
   prNumber: number,
   ghCommandFn: (args: string[]) => Promise<string>,
+  authorOptions: AlertDedupAuthorOptions,
+  log: (message: string) => void,
+  nowMs: number,
 ): Promise<void> {
   let commentsJson: string;
   try {
@@ -149,24 +179,31 @@ async function cleanupStaleClaimComments(
       "api",
       `repos/${repo}/issues/${prNumber}/comments`,
       "--jq",
-      `[.[] | select(.body | test("${PR_COMMENT_CLAIM_PREFIX}")) | .id]`,
+      `[.[] | select(.body | test("${PR_COMMENT_CLAIM_PREFIX}")) | ` +
+      `{id: .id, body: .body, created_at: .created_at, author: .user.login}]`,
     ]);
   } catch {
     return; // Best-effort
   }
 
-  let ids: number[];
-  try {
-    const parsed: unknown = JSON.parse(commentsJson);
-    if (!Array.isArray(parsed)) return;
-    ids = (parsed as unknown[]).filter((v) =>
-      typeof v === "number"
-    ) as number[];
-  } catch {
-    return;
-  }
+  const claims = parseClaimComments(commentsJson);
+  const aged = claims.filter((c) => {
+    const createdMs = Date.parse(c.createdAt);
+    // An unparseable timestamp cannot be shown to be stale, so it is left.
+    if (Number.isNaN(createdMs)) return false;
+    return nowMs - createdMs >= STALE_CLAIM_MIN_AGE_MS;
+  });
 
-  for (const id of ids) {
+  const deletable = await selectFleetAuthoredComments(
+    aged,
+    `stale PR comment claim ${repo}#${prNumber}`,
+    authorOptions,
+    log,
+    "no claim comment is deleted — a marker anyone can quote must not drive " +
+      "a destructive write",
+  );
+
+  for (const { id } of deletable) {
     try {
       await ghCommandFn([
         "api",
@@ -243,7 +280,14 @@ export async function claimPrComment(
   } = options;
 
   // Step 1: Remove stale claim comments from previous runs
-  await cleanupStaleClaimComments(repo, prNumber, ghCommandFn);
+  await cleanupStaleClaimComments(
+    repo,
+    prNumber,
+    ghCommandFn,
+    authorOptions,
+    log,
+    (options.nowMsFn ?? (() => Date.now()))(),
+  );
 
   // Step 2: Post a claim comment with unique worker identity + target comment ID.
   //

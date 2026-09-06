@@ -29,6 +29,10 @@
  * exactly as `formatRepoContextSection` fences `CLAUDE.md` (Issue #3706), and
  * docstring text is scrubbed of delimiter-shaped patterns at extraction time.
  *
+ * The same applies to the *paths* git lists: a listed path can be a symlink
+ * pointing anywhere on the host, so every file the map reads is resolved and
+ * refused unless it lands inside the clone (Issue #1240).
+ *
  * The output is byte-stable for a given file list, which is what lets it ride
  * in the cacheable prompt prefix (Issue #4282) and be cached on a tree hash.
  *
@@ -36,6 +40,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { isAtOrAbove, normalisePath, pathStyleFor } from "./host_path_style.ts";
 import {
   codeFenceFor,
   createPromptDelimiters,
@@ -151,7 +156,12 @@ export async function listRepoFiles(
       { cwd: repoDir },
     );
     if (!result.ok) {
-      return result;
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to run git ls-files in ${repoDir}: ${result.error.message}`,
+        ),
+      };
     }
     const output = result.value;
     if (output.code !== 0) {
@@ -233,19 +243,37 @@ export async function renderCodebaseMap(
   const maxChars = options.maxChars ?? DEFAULT_MAX_CODEBASE_MAP_CHARS;
   const treeHash = await computeTreeHash(files);
 
+  // Every read below joins onto the clone's *resolved* root so containment can
+  // be decided by a string comparison (Issue #1240). A root that cannot be
+  // resolved is an error, not an empty map — the same rule as a non-git
+  // directory (Issue #3234).
+  let realRoot: string;
+  try {
+    realRoot = await Deno.realPath(repoDir);
+  } catch (err) {
+    return {
+      ok: false,
+      error: new Error(
+        `Cannot resolve repository directory ${repoDir}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      ),
+    };
+  }
+
   // Layout and commands are small and are what a cold session needs first, so
   // they lead and the module index — the only unbounded section — spends
   // whatever budget is left. Ordering it last means the size guard trims
   // module lines instead of swallowing the canonical commands whole.
   const head = [
     renderLayout(files, options.maxLayoutEntries ?? DEFAULT_MAX_LAYOUT_ENTRIES),
-    await renderCommands(repoDir, files),
+    await renderCommands(realRoot, files),
   ].filter((s) => s.length > 0).join("\n\n");
 
   // Reserve room for the section separator and the "index bounded" notice so
   // the module budget cannot overrun into the hard guard below.
   const modules = await renderModules(
-    repoDir,
+    realRoot,
     files,
     options,
     maxChars - head.length - MODULE_BUDGET_RESERVE,
@@ -314,10 +342,11 @@ function renderLayout(files: string[], maxEntries: number): string {
  * what they dropped. A silently capped index reads as "this is everything"
  * when it is not (Issue #3234).
  *
+ * @param realRoot - The clone's resolved real root
  * @param charBudget - Characters the section may occupy
  */
 async function renderModules(
-  repoDir: string,
+  realRoot: string,
   files: string[],
   options: CodebaseMapOptions,
   charBudget: number,
@@ -352,7 +381,7 @@ async function renderModules(
     dropped += dirFiles.length - listed.length;
     const lines = await Promise.all(
       listed.map(async (path) => {
-        const purpose = await extractPurpose(`${repoDir}/${path}`);
+        const purpose = await extractPurpose(realRoot, path);
         return purpose ? `- ${path} — ${purpose}` : `- ${path}`;
       }),
     );
@@ -388,9 +417,11 @@ async function renderModules(
  * Node project one level down (this repo's own lives in `worker/deno/`). Each
  * command names the directory it runs in, so a nested manifest is usable
  * rather than misleading.
+ *
+ * @param realRoot - The clone's resolved real root
  */
 async function renderCommands(
-  repoDir: string,
+  realRoot: string,
   files: string[],
 ): Promise<string> {
   const lines: string[] = [];
@@ -398,7 +429,8 @@ async function renderCommands(
   const denoManifest = findManifest(files, ["deno.json", "deno.jsonc"]);
   if (denoManifest) {
     const tasks = await readManifestRecord(
-      `${repoDir}/${denoManifest.path}`,
+      realRoot,
+      denoManifest.path,
       "tasks",
     );
     for (const [name, value] of tasks) {
@@ -411,7 +443,8 @@ async function renderCommands(
   const nodeManifest = findManifest(files, ["package.json"]);
   if (nodeManifest) {
     const scripts = await readManifestRecord(
-      `${repoDir}/${nodeManifest.path}`,
+      realRoot,
+      nodeManifest.path,
       "scripts",
     );
     for (const [name, value] of scripts) {
@@ -490,12 +523,22 @@ function isNonPrimary(path: string): boolean {
  *
  * Values are flattened to a single bounded line. A malformed or unreadable
  * manifest yields no commands rather than failing the whole map — the map is
- * an aid, and the caller already logs a generation failure loudly.
+ * an aid, and the caller already logs a generation failure loudly. A manifest
+ * that resolves outside the clone yields none either (Issue #1240): every
+ * string under `tasks`/`scripts` would otherwise be emitted from whatever JSON
+ * the symlink happens to point at.
+ *
+ * @param realRoot - The clone's resolved real root
+ * @param relativePath - The manifest path, relative to the clone
  */
 async function readManifestRecord(
-  path: string,
+  realRoot: string,
+  relativePath: string,
   key: string,
 ): Promise<Array<[string, string]>> {
+  const path = await resolveInsideRepo(realRoot, relativePath);
+  if (!path) return [];
+
   let raw: string;
   try {
     raw = await Deno.readTextFile(path);
@@ -532,9 +575,19 @@ function stripJsonComments(raw: string): string {
  * comments (shell, Python, Ruby). Only the head of the file is read, so a
  * large source file costs a bounded read.
  *
- * Returns "" when the file has no leading comment or cannot be read.
+ * Returns "" when the file has no leading comment, cannot be read, or resolves
+ * outside the clone (Issue #1240).
+ *
+ * @param realRoot - The clone's resolved real root
+ * @param relativePath - The file's path, relative to the clone
  */
-async function extractPurpose(path: string): Promise<string> {
+async function extractPurpose(
+  realRoot: string,
+  relativePath: string,
+): Promise<string> {
+  const path = await resolveInsideRepo(realRoot, relativePath);
+  if (!path) return "";
+
   const head = await readHead(path, DOCSTRING_HEAD_BYTES);
   if (!head) return "";
 
@@ -560,6 +613,53 @@ async function extractPurpose(path: string): Promise<string> {
   if (first.startsWith("//")) return cleanPurpose(first.replace(/^\/+\s?/, ""));
   if (first.startsWith("#")) return cleanPurpose(first.replace(/^#+\s?/, ""));
   return "";
+}
+
+/**
+ * Resolve a repo-relative path, refusing anything that leaves the clone.
+ *
+ * `git ls-files -co` lists committed **and untracked** symlinks like any other
+ * path, so a branch author — or the agent itself — can leave
+ * `src/aaa.ts -> ~/.config/gh/hosts.yml` in the clone and have the map read
+ * the host file into the prompt and the map cache. Resolving the whole path
+ * catches a symlinked parent directory too, not just a symlinked leaf, and the
+ * result is refused unless it sits at or below the clone's real root — the
+ * containment check `container_extension_digest.ts` already applies to synced
+ * extension directories.
+ *
+ * A refusal is logged rather than swallowed: the caller still lists the path,
+ * so without the warning the skipped read would be invisible.
+ *
+ * @param realRoot - The clone's resolved real root
+ * @param relativePath - The path to read, relative to the clone
+ * @returns The resolved absolute path, or `undefined` when it escapes the
+ *   clone or cannot be resolved (a dangling symlink, a vanished file)
+ */
+async function resolveInsideRepo(
+  realRoot: string,
+  relativePath: string,
+): Promise<string | undefined> {
+  const candidate = `${realRoot}/${relativePath}`;
+  let real: string;
+  try {
+    real = await Deno.realPath(candidate);
+  } catch {
+    return undefined;
+  }
+
+  const style = pathStyleFor(realRoot);
+  const inside = isAtOrAbove(
+    normalisePath(realRoot, style),
+    normalisePath(real, style),
+    style,
+  );
+  if (inside) return real;
+
+  console.warn(
+    `⚠️  Codebase map refused ${relativePath}: it resolves to ${real}, ` +
+      `outside the clone ${realRoot}.`,
+  );
+  return undefined;
 }
 
 /** Read at most `bytes` bytes from the start of a file. */

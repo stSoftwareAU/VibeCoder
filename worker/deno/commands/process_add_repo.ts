@@ -78,6 +78,7 @@ import {
   type CreateAllIdleTaskWrappersResult,
 } from "../lib/create_all_idle_task_wrappers.ts";
 import { runGhCommand as defaultGhCommand } from "../lib/github.ts";
+import { spawnGh } from "../lib/gh_spawn.ts";
 import {
   type LabelSyncResult,
   syncLabelsForRepo,
@@ -598,8 +599,27 @@ export const processAddRepoCommand: Command = {
 /**
  * Default `CommandOutput` runner backed by `Deno.Command`, mirroring the
  * collaborator-precheck runner. Used by {@link validateAddRepoTarget}.
+ *
+ * Issue #1218: a `gh` command is delegated to the shared chokepoint. The
+ * add-repo route takes `owner/repo` from an issue **title**, so the `gh`
+ * calls made on its behalf act against a requester-named repository; spawning
+ * `gh` here directly put them outside `enforceGhWriteAllowlist`, outside
+ * `redactGhBodyArgs` and — the loss that matters most — outside
+ * `auditGhMutation`, so the mutation left no entry in the tamper-evident
+ * journal `audit-chain-verify` reads. The build check could not see it
+ * either: `GH_SPAWN_PATTERN` matches only a literal `Deno.Command("gh", …)`,
+ * and this spawn names its binary through `cmd[0]`. Same treatment as the
+ * sanctioned runner in `lib/purge_stale_workflow_issues.ts`.
  */
-const defaultRunCommand: RunCommand = async (cmd: string[]) => {
+export const defaultRunCommand: RunCommand = async (cmd: string[]) => {
+  if (cmd[0] === "gh") {
+    const result = await spawnGh(cmd.slice(1));
+    return {
+      success: result.success,
+      stdout: result.stdout.trim(),
+      stderr: result.stderr.trim(),
+    };
+  }
   const command = new Deno.Command(cmd[0]!, {
     args: cmd.slice(1),
     stdout: "piped",

@@ -41,8 +41,10 @@
  */
 
 import type { RuleOutcome } from "./dependency_conflict_rules.ts";
+import { runGitCommand } from "./git_timeout.ts";
 import { truncateLogTail } from "./log_tail.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -313,14 +315,38 @@ function describe(command: RegenCommand): string {
  * A spawn failure throws rather than being reported as a clean exit: the
  * caller turns it into `unresolved`, so a missing or broken toolchain can
  * never look like a successful regeneration.
+ *
+ * Issue #1227: the binary comes from `call.bin`, and the lock checkout/stage
+ * steps pass `"git"` — direct `git` spawns the literal-matching chokepoint
+ * gate could not see. They are delegated to `runGitCommand`, which owns the
+ * timeout, the audit journal and the work-volume fault detector. The
+ * untrusted-environment build below stays with the ecosystem tools it was
+ * written for: `git` is the worker's own binary, not repository-supplied code.
  */
-const defaultRunner: LockCommandRunner = async (call) => {
+export const defaultRunner: LockCommandRunner = async (call) => {
+  if (call.bin === "git") {
+    const result = await runGitCommand([...call.args], {
+      cwd: call.cwd,
+      timeoutSeconds: Math.max(1, Math.ceil(call.timeoutMs / 1000)),
+    });
+    // Fail loud, matching the spawn-failure contract above.
+    if (!result.ok) throw result.error;
+    return result.value;
+  }
+
   const output = await new Deno.Command(call.bin, {
     args: [...call.args],
     cwd: call.cwd,
     stdin: "null",
     stdout: "piped",
     stderr: "piped",
+    // `npm install`, `deno install`, `cargo update` and `go mod tidy` run
+    // install hooks declared by a manifest the repository controls, so this
+    // is code the worker did not write. Its environment is BUILT from the
+    // allowlist rather than inherited (Issues #572, #1214) — a postinstall
+    // script has no credential in scope to echo.
+    env: buildUntrustedCommandEnv(),
+    clearEnv: true,
     signal: AbortSignal.timeout(call.timeoutMs),
   }).output();
 

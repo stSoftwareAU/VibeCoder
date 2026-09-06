@@ -197,8 +197,9 @@ export function selectScannableFiles(paths: readonly string[]): string[] {
 }
 
 /**
- * Default git runner: run `git -C <scriptDir> …` through the shared timeout
- * chokepoint (Issue #1214).
+ * Default git runner: `git -C <scriptDir> …` through the shared chokepoint
+ * (Issue #1214), so the call is timeout-bounded rather than able to hang the
+ * gate.
  */
 export function makeGitRunner(scriptDir: string): GitRunner {
   return async (args: string[]) => {

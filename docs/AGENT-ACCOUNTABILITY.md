@@ -174,7 +174,9 @@ subprocess chokepoints, so a new call site needs no extra wiring:
    made this a real chokepoint: ~20 modules used to spawn `gh`
   themselves and were journalled nowhere, and the `gh spawn chokepoint`
   quality check now fails the build on any direct
-  `new Deno.Command("gh", …)` outside `gh_spawn.ts`.
+  `new Deno.Command("gh", …)` outside `gh_spawn.ts` — including a spawn whose
+  binary is a **variable** in a module that names `gh` itself, which is how
+  five more modules stayed outside the journal until Issue #1227.
 - `runGitCommand()` in
   [`worker/deno/lib/git_timeout.ts`](../worker/deno/lib/git_timeout.ts)
   — `git push` (commits pushed). Every other (local) git sub-command is

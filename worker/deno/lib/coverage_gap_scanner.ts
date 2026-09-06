@@ -23,6 +23,8 @@
  * authorised).
  */
 
+import { runWithTimeout } from "./subprocess_timeout.ts";
+
 /** A public function with no referencing test. */
 export interface CoverageGap {
   /** The exported function's symbol name. */
@@ -206,17 +208,48 @@ export function symbolHasTest(symbol: string, testSources: string): boolean {
   return false;
 }
 
-/** Default `deno doc --json <workDir>` runner. */
-async function defaultDenoDoc(workDir: string): Promise<string> {
-  const cmd = new Deno.Command("deno", {
-    args: ["doc", "--json", workDir],
-    stdout: "piped",
-    stderr: "null",
-  });
-  const { code, stdout } = await cmd.output();
-  if (code !== 0) return "";
-  return new TextDecoder().decode(stdout);
+/**
+ * Bound on the `deno doc` spawn (Issue #1228).
+ *
+ * `deno doc --json` parses the TypeScript of a cloned, PR-merged repository —
+ * content the author of that PR controls. An unbounded spawn over such
+ * content is a hang, not a slowdown: it starves the worker's own watchdogs
+ * and a human has to kill the host. Two minutes covers the largest workspace
+ * the scanner has measured with room to spare.
+ */
+export const DENO_DOC_TIMEOUT_MS = 120_000;
+
+/**
+ * Build the default `deno doc --json <workDir>` runner, bounded by
+ * {@link DENO_DOC_TIMEOUT_MS}.
+ *
+ * `runFn` is injectable so the bound is unit-tested without a subprocess.
+ */
+export function createDenoDocRunner(
+  runFn: typeof runWithTimeout = runWithTimeout,
+): (workDir: string) => Promise<string> {
+  return async (workDir: string): Promise<string> => {
+    const result = await runFn("deno", ["doc", "--json", workDir], {
+      timeoutMs: DENO_DOC_TIMEOUT_MS,
+    });
+    if (!result.ok) {
+      throw new Error(`deno doc failed: ${result.error.message}`);
+    }
+    if (result.value.timedOut) {
+      // Loud: the caller degrades to an empty gap list, so the timeout would
+      // otherwise be indistinguishable from a repo with full coverage.
+      const message =
+        `deno doc timed out after ${DENO_DOC_TIMEOUT_MS}ms over ${workDir}`;
+      console.warn(`⚠️  ${message}`);
+      throw new Error(message);
+    }
+    if (!result.value.success) return "";
+    return result.value.stdout;
+  };
 }
+
+/** Default `deno doc --json <workDir>` runner. */
+const defaultDenoDoc = createDenoDocRunner();
 
 /** Default test-source collector: walk `workDir` for test files. */
 async function defaultCollectTestSources(workDir: string): Promise<string> {

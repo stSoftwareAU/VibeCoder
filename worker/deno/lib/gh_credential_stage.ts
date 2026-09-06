@@ -24,7 +24,12 @@
  *   first, then scratch, then `TMPDIR`, so the copy follows the entrypoint's
  *   own policy;
  * - re-staging is bounded (see {@link MAX_RESTAGE_ATTEMPTS}) so a genuinely
- *   revoked token fails loudly instead of spinning.
+ *   revoked token fails loudly instead of spinning; and
+ * - the copy is made symlink-free and worker-private from the first byte
+ *   (Issue #1238): the directory is tightened to 0700 *before* the token is
+ *   written, and the write itself is an exclusive create at 0600 renamed over
+ *   the target, so a link pre-positioned in the agents' scratch space is
+ *   replaced rather than followed.
  *
  * Australian English spelling throughout (behaviour, authorised).
  */
@@ -36,12 +41,19 @@ import {
   SCRATCH_DIR_ENV,
 } from "./credential_preflight.ts";
 import type { EnvLookup } from "./env_lookup.ts";
+import { atomicWriteSync } from "./file_utils.ts";
 
 /** Environment variable naming the container's durable state root. */
 export const STATE_DIR_ENV = "VIBE_STATE_DIR";
 
 /** Leaf directory the worker stages its own copy into. */
 export const STAGED_GH_DIR_NAME = "gh-config";
+
+/** Mode the staged `hosts.yml` is created with — never the umask's (#1238). */
+export const CREDENTIAL_FILE_MODE = 0o600;
+
+/** Mode the staging directory is tightened to, before the token lands (#1238). */
+export const CREDENTIAL_DIR_MODE = 0o700;
 
 /**
  * Re-stagings one process will perform.
@@ -55,6 +67,11 @@ export const MAX_RESTAGE_ATTEMPTS = 3;
 /** Filesystem seams, injected so the tests never touch a real credential. */
 export interface GhCredentialStageIo {
   readFile: (path: string) => Uint8Array | null;
+  /**
+   * Write a credential file, never through a symlink already at the path and
+   * never at the process umask's mode (Issue #1238). Throws on failure — a
+   * credential that did not land is not a staged credential.
+   */
   writeFile: (path: string, data: Uint8Array) => void;
   mkdir: (path: string) => void;
   chmod: (path: string, mode: number) => void;
@@ -81,18 +98,38 @@ const productionIo: GhCredentialStageIo = {
     }
   },
   writeFile(path, data) {
-    Deno.writeFileSync(path, data);
+    // Issue #1238: a bare Deno.writeFileSync is O_CREAT|O_TRUNC at the umask's
+    // mode and follows a symlink, so a token could be written straight through
+    // a link a co-located account had pre-positioned at hosts.yml — and sat at
+    // 0644 until the chmod that followed. atomicWriteSync creates a
+    // kernel-random sibling with createNew (O_EXCL) at 0600 and renames it over
+    // the target: rename replaces a planted link rather than following it, and
+    // the credential is never readable at any other mode.
+    const result = atomicWriteSync({
+      targetFile: path,
+      content: data,
+      mode: CREDENTIAL_FILE_MODE,
+    });
+    if (!result.ok) throw result.error;
   },
   mkdir(path) {
-    Deno.mkdirSync(path, { recursive: true, mode: 0o700 });
+    Deno.mkdirSync(path, { recursive: true, mode: CREDENTIAL_DIR_MODE });
   },
   chmod(path, mode) {
     Deno.chmodSync(path, mode);
   },
   isWritableDir(path) {
-    const probe = `${path}/.vibe-write-probe`;
+    // A fixed probe name is an arbitrary-truncation primitive on every path
+    // this probes (Issue #1238): a link planted at it was followed and its
+    // target truncated. A kernel-random name cannot be pre-positioned, and
+    // createNew refuses anything already at the name rather than opening it.
+    const probe = `${path}/.vibe-write-probe.${crypto.randomUUID()}`;
     try {
-      Deno.writeTextFileSync(probe, "");
+      Deno.openSync(probe, {
+        write: true,
+        createNew: true,
+        mode: CREDENTIAL_FILE_MODE,
+      }).close();
       Deno.removeSync(probe);
       return true;
     } catch {
@@ -186,17 +223,30 @@ export function restageGhConfigDir(
   for (const candidate of stagingCandidates(env)) {
     try {
       io.mkdir(candidate);
+      // Tighten the directory BEFORE the token lands in it (Issue #1238).
+      // mkdir accepts an already-existing directory of any mode or ownership
+      // silently, so a chmod afterwards left the credential readable to a
+      // co-located account for the width of the write. Doing it first also
+      // rejects a candidate another uid owns — chmod is the owner's alone, so
+      // a directory (or a symlinked one) planted by the `agent` account fails
+      // here, loudly, with nothing written.
+      io.chmod(candidate, CREDENTIAL_DIR_MODE);
       io.writeFile(`${candidate}/${GH_HOSTS_FILE}`, source);
-      io.chmod(candidate, 0o700);
-      io.chmod(`${candidate}/${GH_HOSTS_FILE}`, 0o600);
+      io.chmod(`${candidate}/${GH_HOSTS_FILE}`, CREDENTIAL_FILE_MODE);
       if (!isGhConfigDirUsable(candidate, io)) continue;
       warn(
         `[SECURITY] re-staged the gh credential from the read-only mount to ` +
           `${candidate} (Issue #564)`,
       );
       return candidate;
-    } catch {
-      // Try the next candidate; the caller's own failure stays the loud one.
+    } catch (err) {
+      // Try the next candidate — but never silently: a refused symlink or a
+      // directory owned by another account is exactly what an operator has to
+      // hear about (Issue #1238).
+      warn(
+        `[SECURITY] cannot stage the gh credential into ${candidate}: ` +
+          `${(err as Error).message}`,
+      );
     }
   }
 

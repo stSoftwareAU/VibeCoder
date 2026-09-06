@@ -30,6 +30,14 @@
  * `pr_feedback_processor.ts` (reachable again since Issue #4023). Detection
  * and escalation only.
  *
+ * It also stays out of the merge-conflict ladder's way (Issue #1213). A
+ * `CONFLICTING` PR — or one carrying `merge-conflict` — is never reported as
+ * green-but-unmerged, any escalation it does carry names the ladder instead of
+ * offering "or close it", and a live escalation is withdrawn once the ladder
+ * takes the PR. NEAT-AI-Ockham#119 was closed by hand thirteen minutes after
+ * this watchdog listed that option, inside the ladder's cooldown and before
+ * its first attempt ever ran.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
@@ -37,13 +45,18 @@ import type { Logger, Result, WorkerConfig } from "../types.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import type { IssueCache } from "./issue_cache.ts";
-import { issueCommentsContainMarker } from "./issue_comment_pages.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import {
+  fetchIssueCommentPages,
+  issueCommentsContainMarker,
+} from "./issue_comment_pages.ts";
 import {
   fetchIssuesByLabel,
   fetchOpenPRsForFleet,
   getBlockingPRForIssue,
 } from "./issue_query.ts";
 import { buildDedupMarker, escalateToHuman } from "./needs_human_escalation.ts";
+import { MERGE_CONFLICT_LABEL } from "./pr_merge_conflict_scan.ts";
 import {
   escalateAsWork,
   ESCALATED_AS_WORK_LABEL,
@@ -124,6 +137,17 @@ export interface BlockingPrObservation {
    * repo refuses to call passed (`docs/MERGE.md`, Issue #3705).
    */
   checkCounts?: { total: number; pending: number };
+  /**
+   * GitHub's mergeable state (Issue #1213) — `MERGEABLE`, `CONFLICTING`,
+   * `UNKNOWN`. A `CONFLICTING` PR belongs to the merge-conflict ladder, not
+   * to this watchdog's green lane.
+   */
+  mergeable?: string;
+  /**
+   * Labels on the PR (Issue #1213). `merge-conflict` is the ladder's visible
+   * queue marker, so it names the lane that owns the PR.
+   */
+  labels?: readonly string[];
 }
 
 /** One tripped staleness signal. */
@@ -146,6 +170,34 @@ export interface BlockingPrStall {
   blockedIssues: number[];
   /** Every signal that tripped, in detection order. */
   signals: BlockingPrStallSignal[];
+  /**
+   * True when the merge-conflict ladder owns this PR (Issue #1213). The
+   * escalation then names the ladder instead of offering a menu that ends in
+   * "close it" — closing is the ladder's own rung 3, not a human's minute-zero
+   * option.
+   */
+  mergeConflictLaneOwned?: boolean;
+}
+
+/**
+ * Whether the merge-conflict ladder owns this PR (Issue #1213).
+ *
+ * Either signal is enough: GitHub reporting `CONFLICTING`, or the ladder's own
+ * `merge-conflict` queue label. The two are applied minutes apart — the label
+ * follows the scan that observed the conflict — so reading only one leaves a
+ * window in which the watchdog still treats a laddered PR as its own.
+ */
+export function isMergeConflictLaneOwned(
+  observation: Pick<BlockingPrObservation, "mergeable" | "labels">,
+): boolean {
+  if ((observation.mergeable ?? "").trim().toUpperCase() === "CONFLICTING") {
+    return true;
+  }
+  return (observation.labels ?? []).some(
+    (label) =>
+      typeof label === "string" &&
+      label.trim().toLowerCase() === MERGE_CONFLICT_LABEL,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -261,8 +313,15 @@ export function detectBlockingPrStall(
   // -- Green but not landing (Issue #1082) --------------------------------
   // Only when nothing else has tripped: a red or unanswered PR is already
   // being reported, and a second reason for the same PR would be noise.
+  //
+  // A PR the merge-conflict ladder owns is never green-but-unmerged (Issue
+  // #1213): it is not landing because it conflicts, which is a lane with its
+  // own attempts, cooldown and abandon rung. NEAT-AI-Ockham#119 was reported
+  // here as "green and unmerged … or close it" and a human closed it before
+  // the ladder's first attempt ever ran.
+  const laneOwned = isMergeConflictLaneOwned(observation);
   if (
-    signals.length === 0 && isGreen(observation) &&
+    signals.length === 0 && !laneOwned && isGreen(observation) &&
     observation.autoMergeEnabled !== true && observation.isDraft !== true
   ) {
     const since = maxDefined(pushAt, epochSeconds(observation.createdAt));
@@ -284,6 +343,7 @@ export function detectBlockingPrStall(
     prNumber: observation.prNumber,
     blockedIssues: [...observation.blockedIssues],
     signals,
+    mergeConflictLaneOwned: laneOwned,
   };
 }
 
@@ -347,6 +407,38 @@ export const BLOCKING_PR_STALL_NEXT_STEP =
   "close it — whichever unblocks it — so the deferred `work-on` issues can be " +
   "picked up again.";
 
+/**
+ * Next step for a PR the merge-conflict ladder owns (Issue #1213).
+ *
+ * The ladder resolves, then rebases, then abandons and restarts — closing is
+ * its rung 3, taken after its own attempts fail, not an option to put in front
+ * of a human at minute zero. A hand close inside the cooldown skips every rung
+ * and the work is redone from scratch, which is what happened to
+ * NEAT-AI-Ockham#119.
+ *
+ * The actionable verbs stay: the ladder rebases a conflict, it does not fix red
+ * CI or answer a comment. Only the close comes off the menu, and the wording
+ * names the conflict rather than the `merge-conflict` label, which is applied a
+ * scan later than GitHub reports `CONFLICTING`.
+ */
+export const MERGE_CONFLICT_LANE_NEXT_STEP =
+  "Push a fix or reply to the outstanding comment if you can, but leave this " +
+  "PR open: it is in the merge-conflict lane, so the merge-conflict ladder " +
+  "owns whether it is resolved, rebased or retired. Retiring it by hand skips " +
+  "the ladder's attempts and the work has to be redone from scratch.";
+
+/**
+ * Choose the next step for a stall: the merge-conflict lane's when the ladder
+ * owns the PR, otherwise the general one.
+ */
+export function buildBlockingPrStallNextStep(
+  stall: Pick<BlockingPrStall, "mergeConflictLaneOwned">,
+): string {
+  return stall.mergeConflictLaneOwned === true
+    ? MERGE_CONFLICT_LANE_NEXT_STEP
+    : BLOCKING_PR_STALL_NEXT_STEP;
+}
+
 // ---------------------------------------------------------------------------
 // Escalation
 // ---------------------------------------------------------------------------
@@ -375,6 +467,11 @@ export interface EscalateBlockingPrStallDeps {
     colour?: string,
     description?: string,
   ) => Promise<Result<void>>;
+  /**
+   * Fleet identity used to verify who wrote a suppressing marker (Issue
+   * #1216). Omitted in production, which reads the configured fleet identity.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
   /** Logger. */
   logger: Logger;
 }
@@ -423,6 +520,8 @@ export async function escalateBlockingPrStall(
       stall.prNumber,
       AUTO_FIX_CAP_MARKER_PREFIX,
       ghCommandFn,
+      deps.dedupAuthors,
+      (message) => logger.warn(message),
     );
   } catch (err) {
     return {
@@ -458,6 +557,8 @@ export async function escalateBlockingPrStall(
         stall.prNumber,
         marker,
         ghCommandFn,
+        deps.dedupAuthors,
+        (message) => logger.warn(message),
       );
     } catch (err) {
       return {
@@ -483,7 +584,7 @@ export async function escalateBlockingPrStall(
       prNumber: stall.prNumber,
       summary: describeStallSummary(signal.reason),
       reason: buildBlockingPrStallReason(stall, signal),
-      nextStep: BLOCKING_PR_STALL_NEXT_STEP,
+      nextStep: buildBlockingPrStallNextStep(stall),
     });
     if (!filed.ok) {
       logger.warn?.("Could not file the blocking-PR stall as work", {
@@ -500,7 +601,7 @@ export async function escalateBlockingPrStall(
       needsHumanLabel: escalatedLabel,
       heading: "Blocking PR has stalled",
       reason: buildBlockingPrStallReason(stall, signal),
-      nextStep: BLOCKING_PR_STALL_NEXT_STEP,
+      nextStep: buildBlockingPrStallNextStep(stall),
       dedupKey: blockingPrStallDedupKey(signal.reason),
       ensureLabelColour: "d4c5f9",
       ensureLabelDescription:
@@ -521,6 +622,155 @@ export async function escalateBlockingPrStall(
     ok: true,
     value: { postedReasons, suppressedByAutoFixCap: false },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Withdrawal (Issue #1213)
+// ---------------------------------------------------------------------------
+
+/** Marker that dedups the retraction comment for one PR. */
+export const BLOCKING_PR_STALL_WITHDRAWAL_MARKER =
+  "<!-- blocking-pr-stall-withdrawn -->";
+
+/** Dependencies for {@link withdrawBlockingPrStallEscalation}. */
+export interface WithdrawBlockingPrStallDeps {
+  /** Injected `gh` CLI runner. */
+  ghCommandFn: (args: string[]) => Promise<string>;
+  /** Logger. */
+  logger: Logger;
+}
+
+/** Outcome of {@link withdrawBlockingPrStallEscalation}. */
+export interface WithdrawBlockingPrStallOutcome {
+  /** Stall reasons whose live escalation this call retracted. */
+  withdrawnReasons: BlockingPrStallReason[];
+}
+
+/** Body of the retraction comment. */
+export function buildBlockingPrStallWithdrawalBody(params: {
+  repo: string;
+  prNumber: number;
+  reasons: readonly BlockingPrStallReason[];
+}): string {
+  const withdrawn = params.reasons
+    .map((reason) => `\`${reason}\``)
+    .join(", ");
+  // Only the parts the lane invalidates are withdrawn: the close, always, and
+  // the green claim when `unmerged-green` was the reason. Red CI and an
+  // unanswered comment are still true of a conflicting PR.
+  const greenWithdrawn = params.reasons.includes("unmerged-green")
+    ? " It also called the PR green and unmerged, which a conflicting PR is not."
+    : "";
+  return [
+    "## Blocking-PR stall escalation withdrawn",
+    "",
+    `**Why:** ${params.repo}#${params.prNumber} is in the merge-conflict ` +
+    `lane, so the merge-conflict ladder owns it. The earlier blocking-PR ` +
+    `stall escalation on this thread (${withdrawn}) offered closing the PR as ` +
+    "a next step; that is the ladder's own decision, taken after its attempts " +
+    `fail, not one to take by hand.${greenWithdrawn}`,
+    "",
+    `**Next step:** ${MERGE_CONFLICT_LANE_NEXT_STEP}`,
+    "",
+    BLOCKING_PR_STALL_WITHDRAWAL_MARKER,
+  ].join("\n");
+}
+
+/**
+ * Retract a live stall escalation once the merge-conflict ladder takes the PR.
+ *
+ * The escalation is posted once and deduped for ever after, so without this an
+ * instruction outlives the condition that produced it: NEAT-AI-Ockham#119 was
+ * told "green and unmerged … or close it" three minutes before it entered the
+ * lane, and was closed by hand ten minutes after that. One retraction comment
+ * per PR, itself deduped by {@link BLOCKING_PR_STALL_WITHDRAWAL_MARKER}, so a
+ * PR that sits in the lane for days is not commented on every iteration.
+ *
+ * Silent no-op when the ladder does not own the PR or no escalation is live.
+ */
+export async function withdrawBlockingPrStallEscalation(
+  observation: BlockingPrObservation,
+  deps: WithdrawBlockingPrStallDeps,
+): Promise<Result<WithdrawBlockingPrStallOutcome>> {
+  const none: WithdrawBlockingPrStallOutcome = { withdrawnReasons: [] };
+  if (!isMergeConflictLaneOwned(observation)) return { ok: true, value: none };
+
+  let bodies: string[];
+  try {
+    bodies = await fetchCommentBodies(
+      observation.repo,
+      observation.prNumber,
+      deps.ghCommandFn,
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      error: new Error(
+        `blocking-PR stall watchdog: could not read comments on ${observation.repo}#${observation.prNumber} to withdraw its escalation: ${
+          errorMessage(err)
+        }`,
+      ),
+    };
+  }
+
+  const contains = (needle: string) =>
+    bodies.some((body) => body.includes(needle));
+  if (contains(BLOCKING_PR_STALL_WITHDRAWAL_MARKER)) {
+    return { ok: true, value: none };
+  }
+
+  const reasons: BlockingPrStallReason[] = (
+    ["red-ci", "unanswered-comment", "unmerged-green"] as const
+  ).filter((reason) => contains(blockingPrStallMarker(reason)));
+  if (reasons.length === 0) return { ok: true, value: none };
+
+  const ghClient = createGhEscalationClient(deps.ghCommandFn);
+  try {
+    await ghClient.postComment(
+      observation.repo,
+      observation.prNumber,
+      buildBlockingPrStallWithdrawalBody({
+        repo: observation.repo,
+        prNumber: observation.prNumber,
+        reasons,
+      }),
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      error: new Error(
+        `blocking-PR stall watchdog: could not withdraw the escalation on ${observation.repo}#${observation.prNumber}: ${
+          errorMessage(err)
+        }`,
+      ),
+    };
+  }
+
+  deps.logger.info(
+    "Blocking-PR stall escalation withdrawn — the merge-conflict ladder owns this PR",
+    {
+      repo: observation.repo,
+      pr: observation.prNumber,
+      reasons: reasons.join(", "),
+    },
+  );
+  return { ok: true, value: { withdrawnReasons: reasons } };
+}
+
+/** Read every comment body on a PR thread, bounded by the page cap. */
+async function fetchCommentBodies(
+  repo: string,
+  prNumber: number,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<string[]> {
+  const comments = await fetchIssueCommentPages(repo, prNumber, ghCommandFn);
+  const bodies: string[] = [];
+  for (const comment of comments) {
+    if (typeof comment !== "object" || comment === null) continue;
+    const body = (comment as Record<string, unknown>).body;
+    if (typeof body === "string") bodies.push(body);
+  }
+  return bodies;
 }
 
 // ---------------------------------------------------------------------------
@@ -692,7 +942,9 @@ async function observeBlockingPr(params: {
     "--repo",
     repo,
     "--json",
-    "comments,commits,statusCheckRollup,createdAt,autoMergeRequest,isDraft",
+    // Issue #1213: `mergeable` and `labels` say whether the merge-conflict
+    // ladder owns this PR.
+    "comments,commits,statusCheckRollup,createdAt,autoMergeRequest,isDraft,mergeable,labels",
   ]);
 
   const view = parseObject(raw);
@@ -712,6 +964,11 @@ async function observeBlockingPr(params: {
   if (typeof view.createdAt === "string" && view.createdAt) {
     observation.createdAt = view.createdAt;
   }
+
+  if (typeof view.mergeable === "string" && view.mergeable) {
+    observation.mergeable = view.mergeable;
+  }
+  observation.labels = parseLabelNames(view.labels);
 
   const lastFleetPushAt = newestCommitDate(view.commits);
   if (lastFleetPushAt) observation.lastFleetPushAt = lastFleetPushAt;
@@ -762,6 +1019,8 @@ export interface ScanBlockingPrStallsOptions
   logger: Logger;
   /** Optional `ensureLabelExists` override (tests). */
   ensureLabelExists?: EscalateBlockingPrStallDeps["ensureLabelExists"];
+  /** Fleet identity the marker-author check uses (Issue #1216). */
+  dedupAuthors?: EscalateBlockingPrStallDeps["dedupAuthors"];
   /** Optional clock override (epoch seconds). */
   nowSeconds?: () => number;
 }
@@ -788,6 +1047,22 @@ export async function scanBlockingPrStalls(
   const stalls: BlockingPrStall[] = [];
 
   for (const observation of observations) {
+    // Issue #1213: a PR that has since entered the merge-conflict lane may
+    // still carry a live escalation whose next step invites a close. Retract
+    // it before anything else, so the instruction cannot outlive its
+    // condition.
+    const withdrawal = await withdrawBlockingPrStallEscalation(observation, {
+      ghCommandFn: opts.ghCommandFn,
+      logger,
+    });
+    if (!withdrawal.ok) {
+      logger.warn("Blocking-PR stall withdrawal failed", {
+        repo: observation.repo,
+        pr: observation.prNumber,
+        error: withdrawal.error.message,
+      });
+    }
+
     const stall = detectBlockingPrStall(observation, {
       thresholdSeconds: resolveBlockingPrStallThresholdSeconds(
         config,
@@ -811,6 +1086,9 @@ export async function scanBlockingPrStalls(
       ...(githubUser !== undefined ? { githubUser } : {}),
       ...(opts.ensureLabelExists !== undefined
         ? { ensureLabelExists: opts.ensureLabelExists }
+        : {}),
+      ...(opts.dedupAuthors !== undefined
+        ? { dedupAuthors: opts.dedupAuthors }
         : {}),
       logger,
     });
@@ -848,6 +1126,21 @@ function readLogin(value: unknown): string {
   if (typeof value !== "object" || value === null) return "";
   const login = (value as Record<string, unknown>).login;
   return typeof login === "string" ? login : "";
+}
+
+/** Parse `gh pr view --json labels` into plain label names (Issue #1213). */
+function parseLabelNames(value: unknown): string[] {
+  const names: string[] = [];
+  for (const entry of asArray(value)) {
+    if (typeof entry === "string") {
+      if (entry) names.push(entry);
+      continue;
+    }
+    if (typeof entry !== "object" || entry === null) continue;
+    const name = (entry as Record<string, unknown>).name;
+    if (typeof name === "string" && name) names.push(name);
+  }
+  return names;
 }
 
 /** Parse `statusCheckRollup` entries into the failing checks. */

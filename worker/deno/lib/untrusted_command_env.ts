@@ -66,6 +66,12 @@ export const ALLOWED_ENV_NAMES: readonly string[] = [
   "GOMODCACHE",
   "PNPM_HOME",
   "npm_config_cache",
+  // Ruby: without these `bundle exec` cannot resolve the gems the repository
+  // pinned, and the check that needs them reports SKIPPED (Issue #1226).
+  "GEM_HOME",
+  "GEM_PATH",
+  "BUNDLE_PATH",
+  "BUNDLE_APP_CONFIG",
   "XDG_CACHE_HOME",
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",

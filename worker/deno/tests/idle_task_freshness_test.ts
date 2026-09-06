@@ -41,6 +41,9 @@ import type { WorkerConfig } from "../types.ts";
 // ---------------------------------------------------------------------------
 
 const NOW = new Date("2026-08-07T00:00:00Z");
+/** The fleet whose close comments these tests trust (Issue #1249). */
+const FLEET_OPTIONS = { fleetAuthors: ["vibe-bot"] };
+
 const nowFn = () => NOW;
 
 /** Registered template names, resolved through the production registry. */
@@ -507,13 +510,17 @@ Deno.test("idle-task-freshness - performs zero mutating gh calls", async () => {
       }]));
     }
     return Promise.resolve(JSON.stringify({
-      comments: [{ body: "no findings", createdAt: "2026-08-01T00:00:00Z" }],
+      comments: [{
+        body: "no findings",
+        author: { login: "vibe-bot" },
+        createdAt: "2026-08-01T00:00:00Z",
+      }],
     }));
   };
 
   const result = await idleTaskFreshnessCommand.execute({
     json: true,
-    __testDeps: { nowFn, ghCommandFn: gh },
+    __testDeps: { nowFn, ghCommandFn: gh, authorOptions: FLEET_OPTIONS },
   }, configWith(["owner/repo"]));
 
   assertEquals(result.success, true);

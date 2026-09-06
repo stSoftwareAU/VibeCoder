@@ -388,8 +388,9 @@ export interface UnpushedRescueResult {
 export async function pushUnpushedBranches(
   repoDir: string,
 ): Promise<UnpushedRescueResult> {
-  // Issue #1214: every git spawn goes through the timeout chokepoint, so a
-  // stalled remote fails the rescue instead of hanging the sweep.
+  // Routed through the shared chokepoint (Issue #1214): the rescue pushes to
+  // a remote, so an untimed spawn here hangs the worker outright, and the
+  // push must reach the audit journal like every other git mutation.
   const run = async (args: string[]) => {
     const result = await runGitCommand(["-C", repoDir, ...args]);
     if (!result.ok) {

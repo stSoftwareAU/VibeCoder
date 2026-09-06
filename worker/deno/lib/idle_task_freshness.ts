@@ -29,6 +29,10 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
 import { runGhCommand as defaultGhCommand } from "./github.ts";
 import { parseAttributionFooter } from "./idle_task_attribution.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
@@ -163,6 +167,12 @@ export interface CollectIdleTaskFreshnessOptions {
   nowFn?: () => Date;
   /** Warning sink. Defaults to `console.warn`. */
   warn?: (message: string) => void;
+  /**
+   * Fleet identity inputs for the closing-comment author check (Issue #1249,
+   * finding 2). Omitted reads the configured fleet, which is what every
+   * production caller does.
+   */
+  authorOptions?: AlertDedupAuthorOptions;
 }
 
 // ---------------------------------------------------------------------------
@@ -315,13 +325,26 @@ async function fetchHistoryViaGh(
 }
 
 /**
- * Read a wrapper's closing comment — the template's run summary, posted by
- * `gh issue close --comment` in the idle-task route. Read-only.
+ * Read a wrapper's **fleet-authored** closing comment — the template's run
+ * summary, posted by `gh issue close --comment` in the idle-task route.
+ * Read-only.
+ *
+ * The last comment on a closed wrapper is not necessarily the worker's: a
+ * closed issue stays commentable, so anybody could post after the close
+ * comment and have their text classified by
+ * {@link classifyCloseComment}'s `filed N issues` / `no findings` regexes —
+ * fabricating a scan outcome in the freshness report (Issue #1249, finding 2).
+ * Only the comment author is authenticated, so the read is filtered through
+ * {@link selectFleetAuthoredComments} and the newest surviving comment is the
+ * summary. Fail direction: nothing attributable means no summary, which the
+ * caller reports as `unknown` — never as a clean run.
  */
 async function fetchCloseSummaryViaGh(
   repo: string,
   issueNumber: number,
   gh: (args: string[]) => Promise<string>,
+  authorOptions: AlertDedupAuthorOptions,
+  log: (message: string) => void,
 ): Promise<string | null> {
   const raw = await gh([
     "issue",
@@ -336,10 +359,36 @@ async function fetchCloseSummaryViaGh(
   if (typeof parsed !== "object" || parsed === null) return null;
   const comments = (parsed as Record<string, unknown>)["comments"];
   if (!Array.isArray(comments) || comments.length === 0) return null;
-  const last = comments[comments.length - 1];
-  if (typeof last !== "object" || last === null) return null;
-  const body = (last as Record<string, unknown>)["body"];
-  return typeof body === "string" ? body : null;
+
+  const rows = comments
+    .filter((c): c is Record<string, unknown> =>
+      typeof c === "object" && c !== null
+    )
+    .map((c) => {
+      const author = c["author"];
+      const login = typeof author === "object" && author !== null &&
+          typeof (author as Record<string, unknown>).login === "string"
+        ? (author as Record<string, unknown>).login as string
+        : typeof author === "string"
+        ? author
+        : null;
+      return {
+        author: login,
+        body: typeof c["body"] === "string" ? c["body"] as string : "",
+      };
+    });
+
+  const fleetRows = await selectFleetAuthoredComments(
+    rows,
+    `idle-task close summary ${repo}#${issueNumber}`,
+    authorOptions,
+    log,
+    "no close summary is read and the run's outcome reports `unknown` — a " +
+      "comment anyone can post must not fabricate a scan outcome",
+  );
+  if (fleetRows.length === 0) return null;
+  const last = fleetRows[fleetRows.length - 1]!;
+  return last.body.length > 0 ? last.body : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -359,10 +408,11 @@ export async function collectIdleTaskFreshness(
   const gh = opts.ghCommandFn ?? defaultGhCommand;
   const fetchHistory = opts.fetchHistoryFn ??
     ((repo: string) => fetchHistoryViaGh(repo, gh));
-  const fetchCloseSummary = opts.fetchCloseSummaryFn ??
-    ((repo: string, n: number) => fetchCloseSummaryViaGh(repo, n, gh));
   const now = (opts.nowFn ?? (() => new Date()))();
   const warn = opts.warn ?? ((m: string) => console.warn(m));
+  const fetchCloseSummary = opts.fetchCloseSummaryFn ??
+    ((repo: string, n: number) =>
+      fetchCloseSummaryViaGh(repo, n, gh, opts.authorOptions ?? {}, warn));
   const staleAfterDays = opts.staleAfterDays ?? DEFAULT_STALE_AFTER_DAYS;
 
   const templates = listTemplates();

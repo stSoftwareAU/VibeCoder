@@ -14,6 +14,7 @@ import {
   formatCodebaseMapSection,
   generateCodebaseMap,
   listRepoFiles,
+  renderCodebaseMap,
 } from "../lib/codebase_map.ts";
 
 // ---------------------------------------------------------------------------
@@ -286,6 +287,120 @@ Deno.test("generateCodebaseMap - fails loud outside a git repository", async () 
     assertEquals(result.ok, false);
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Symlink containment (Issue #1240)
+// ---------------------------------------------------------------------------
+
+/** Run `fn` with a secret file outside any clone, cleaned up afterwards. */
+async function withSecretOutsideRepo(
+  name: string,
+  content: string,
+  fn: (secretPath: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "codebase_map_outside_" });
+  const secretPath = `${dir}/${name}`;
+  await Deno.writeTextFile(secretPath, content);
+  try {
+    await fn(secretPath);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("generateCodebaseMap - refuses to read a source symlink that leaves the clone", async () => {
+  await withSecretOutsideRepo(
+    "hosts.yml",
+    "# oauth_token: ghp_LEAKEDSECRETVALUE\ngithub.com:\n",
+    async (secretPath) => {
+      await withRepo({
+        "deno.json": "{}",
+        "src/real.ts": "/** Real module. */\n",
+      }, async (dir) => {
+        await Deno.symlink(secretPath, `${dir}/src/leaked.ts`);
+
+        const result = await generateCodebaseMap(dir);
+        assert(result.ok, "expected the map to render, not fail");
+        const content = result.value.content;
+
+        // The path is still listed — only the read through it is refused.
+        assertStringIncludes(content, "src/leaked.ts");
+        assertEquals(
+          content.includes("ghp_LEAKEDSECRETVALUE"),
+          false,
+          "symlink target contents leaked into the codebase map",
+        );
+        assertEquals(
+          content.includes("oauth_token"),
+          false,
+          "symlink target contents leaked into the codebase map",
+        );
+        // Files inside the clone are unaffected.
+        assertStringIncludes(content, "src/real.ts — Real module.");
+      });
+    },
+  );
+});
+
+Deno.test("generateCodebaseMap - refuses to read a manifest symlinked outside the clone", async () => {
+  await withSecretOutsideRepo(
+    "outside.json",
+    JSON.stringify({
+      tasks: { leak: "cat /home/vibe/.config/gh/hosts.yml" },
+      scripts: { leak: "cat /home/vibe/.config/gh/hosts.yml" },
+    }),
+    async (secretPath) => {
+      await withRepo({ "src/real.ts": "// Real.\n" }, async (dir) => {
+        await Deno.symlink(secretPath, `${dir}/deno.json`);
+        await Deno.symlink(secretPath, `${dir}/package.json`);
+
+        const result = await generateCodebaseMap(dir);
+        assert(result.ok, "expected the map to render, not fail");
+        const content = result.value.content;
+
+        assertEquals(
+          content.includes("deno task leak"),
+          false,
+          "escaping deno.json symlink contributed commands",
+        );
+        assertEquals(
+          content.includes("npm run leak"),
+          false,
+          "escaping package.json symlink contributed commands",
+        );
+        assertEquals(
+          content.includes("hosts.yml"),
+          false,
+          "escaping manifest contents leaked into the codebase map",
+        );
+      });
+    },
+  );
+});
+
+Deno.test("generateCodebaseMap - still reads a symlink that stays inside the clone", async () => {
+  await withRepo({
+    "deno.json": "{}",
+    "src/real.ts": "/** Real module. */\n",
+  }, async (dir) => {
+    await Deno.symlink(`${dir}/src/real.ts`, `${dir}/src/alias.ts`);
+
+    const result = await generateCodebaseMap(dir);
+    assert(result.ok);
+    assertStringIncludes(result.value.content, "src/alias.ts — Real module.");
+  });
+});
+
+Deno.test("renderCodebaseMap - fails loud when the repository directory cannot be resolved", async () => {
+  const result = await renderCodebaseMap(
+    "/nonexistent/codebase_map_missing_dir",
+    ["src/a.ts"],
+  );
+  assertEquals(result.ok, false, "an unresolvable repo dir must fail loud");
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "codebase_map_missing_dir");
   }
 });
 

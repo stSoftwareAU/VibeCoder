@@ -26,6 +26,7 @@ import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { scanDirectoriesForHardcodedBranches } from "./hardcoded_branch_check.ts";
 import { scanDirectoriesForDirectNeedsHuman } from "./needs_human_direct_label_check.ts";
 import { scanDirectoriesForGhSpawn } from "./gh_spawn_chokepoint_check.ts";
+import { scanDirectoriesForGitSpawn } from "./git_spawn_chokepoint_check.ts";
 import { scanDirectoriesForHomeWorkDir } from "./home_workdir_check.ts";
 import { scanDirectoriesForGitRefArgv } from "./git_ref_argv_check.ts";
 import {
@@ -407,6 +408,10 @@ async function runNeedsHumanHelperCheck(
  * write-repo allowlist and the audit journal, which is exactly how ~20
  * modules had drifted away from the documented chokepoint. The only
  * permitted spawn is the chokepoint itself (`worker/deno/lib/gh_spawn.ts`).
+ *
+ * A spawn whose binary is a variable counts too (Issue #1227): five modules
+ * wrote `new Deno.Command(cmd[0]!, …)` and were handed `["gh", …]` by their
+ * callers, so they spawned `gh` while this check reported a clean tree.
  */
 async function runGhSpawnChokepointCheck(
   config: QualityGateConfig,
@@ -450,12 +455,85 @@ async function runGhSpawnChokepointCheck(
     "(Issue #3703). Such a spawn skips the per-run write-repo allowlist and",
     "the audit journal. Route the call through `spawnGh`/`runGhOrThrow` in",
     "`worker/deno/lib/gh_spawn.ts` instead.",
+    "",
+    "A spawn whose binary is a variable (`new Deno.Command(cmd[0]!, …)`) in a",
+    "module that names `gh` in an argv literal counts too (Issue #1227) —",
+    "delegate `gh` to the chokepoint and spawn other binaries directly.",
   ].join("\n");
 
   return {
     name,
     status: "FAILED",
     output: `gh spawn chokepoint: FAILED\n${output}`,
+  };
+}
+
+/**
+ * Run the `git` spawn chokepoint check (Issue #1214).
+ *
+ * Scans Deno lib/ and commands/ source files for a direct
+ * `new Deno.Command("git", …)`. Such a spawn bypasses the timeout, the audit
+ * journal and the work-volume fault detector that `runGitCommand` owns — the
+ * unpushed-work rescue in `stale_workdir.ts` was pushing to a remote outside
+ * all three. The only permitted spawn is the chokepoint itself
+ * (`worker/deno/lib/git_timeout.ts`).
+ *
+ * A spawn whose binary is a variable counts too (Issue #1227) — three further
+ * modules named `git` only in the argv they passed to their own runner.
+ */
+async function runGitSpawnChokepointCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const name = "git spawn chokepoint";
+  const relDirs = ["worker/deno/lib", "worker/deno/commands"];
+
+  let hasDirs = false;
+  for (const relDir of relDirs) {
+    try {
+      const stat = await Deno.stat(`${config.scriptDir}/${relDir}`);
+      if (stat.isDirectory) hasDirs = true;
+    } catch { /* directory doesn't exist */ }
+  }
+
+  if (!hasDirs) {
+    return {
+      name,
+      status: "SKIPPED",
+      output: "deno source directories not found",
+    };
+  }
+
+  const result = await scanDirectoriesForGitSpawn(config.scriptDir, relDirs);
+
+  if (result.violations.length === 0) {
+    return {
+      name,
+      status: "PASSED",
+      output:
+        `git spawn chokepoint: PASSED (${result.filesScanned} files scanned)`,
+    };
+  }
+
+  const output = [
+    ...result.violations.map(
+      (v) => `VIOLATION: ${v.file}:${v.line}: ${v.text}`,
+    ),
+    "",
+    "Direct `git` subprocess spawns detected outside the shared chokepoint",
+    "(Issue #1214). Such a spawn has no timeout, so a stalled remote hangs",
+    "the worker, and a mutation never reaches the audit journal. Route the",
+    "call through `runGitCommand`/`runGitCommandChecked` in",
+    "`worker/deno/lib/git_timeout.ts` instead.",
+    "",
+    "A spawn whose binary is a variable (`new Deno.Command(call.bin, …)`) in a",
+    "module that names `git` in an argv literal counts too (Issue #1227) —",
+    "delegate `git` to the chokepoint and spawn other binaries directly.",
+  ].join("\n");
+
+  return {
+    name,
+    status: "FAILED",
+    output: `git spawn chokepoint: FAILED\n${output}`,
   };
 }
 
@@ -1280,6 +1358,11 @@ export async function runQualityGate(
   // spawned by `gh_spawn.ts` so the write-repo allowlist and the audit
   // journal are unavoidable.
   note(await runGhSpawnChokepointCheck(config));
+
+  // git spawn chokepoint (Issue #1214) — every `git` subprocess must be
+  // spawned by `git_timeout.ts` so the timeout and the audit journal are
+  // unavoidable.
+  note(await runGitSpawnChokepointCheck(config));
 
   // host work-dir guard (Issue #135, parent #118) — no source file may build
   // a work-dir path from HOME/USERPROFILE outside the commented allowlist,

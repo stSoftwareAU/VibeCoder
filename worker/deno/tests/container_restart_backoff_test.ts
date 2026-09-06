@@ -1542,3 +1542,112 @@ Deno.test("buildContainerEscalationParams - the abort status is named, not blame
   // is the framework's own, exited deliberately.
   assertEquals(params.logTail.includes("NOT one the worker produces"), false);
 });
+
+Deno.test("computeQuotaPauseSleepSeconds - another subscription with budget takes the base cadence, not the hour", () => {
+  // Issue #919 follow-up. The pause belongs to the *token* that ran out, not
+  // to the host: worker start ranks the pool and takes the most-remaining
+  // token, so when a second subscription still has quota the only thing
+  // keeping this host idle is this sleep. On 2026-09-06 a host slept 59
+  // minutes for the spent token's window while its other subscription sat at
+  // 99% of its five-hour budget.
+  const config = resolveContainerRestartConfig({
+    baseSleepSeconds: 60,
+    quotaPauseSleepSeconds: 3600,
+  });
+  const nowMs = 1_700_000_000_000;
+
+  // No pool, or no other token with budget: unchanged, the full cadence.
+  assertEquals(computeQuotaPauseSleepSeconds(null, config, nowMs), 3600);
+  assertEquals(computeQuotaPauseSleepSeconds(null, config, nowMs, false), 3600);
+
+  // Another subscription has budget: come round now and let worker start
+  // re-rank. The spent token measures zero and ranks last.
+  assertEquals(computeQuotaPauseSleepSeconds(null, config, nowMs, true), 60);
+
+  // It outranks a far reset...
+  assertEquals(
+    computeQuotaPauseSleepSeconds(
+      quotaMarker({ resetEpochMs: nowMs + 2 * 24 * 3600_000 }),
+      config,
+      nowMs,
+      true,
+    ),
+    60,
+  );
+  // ...and a near one, which would otherwise have been slept in full.
+  assertEquals(
+    computeQuotaPauseSleepSeconds(
+      quotaMarker({ resetEpochMs: nowMs + 900_000 }),
+      config,
+      nowMs,
+      true,
+    ),
+    60,
+  );
+});
+
+Deno.test("recordContainerRestartOutcome - the pool is asked only on a quota pause, and a failing probe never shortens the wait", async () => {
+  const harness = await setupHarness();
+  try {
+    const base = {
+      workDir: harness.workDir,
+      phaseMarker: null,
+      config: FAST_CONFIG,
+      crashConfig: harness.crashConfig,
+    };
+
+    // A healthy run never pays for the question.
+    const asked: string[] = [];
+    const ok = await recordContainerRestartOutcome({
+      ...base,
+      exitStatus: 0,
+      poolHasAnotherTokenWithBudget: () => {
+        asked.push("success");
+        return Promise.resolve(true);
+      },
+    });
+    assertEquals(ok.kind, "success");
+    assertEquals(asked, [], "a healthy run asks nothing of the token pool");
+
+    // A quota pause with another subscription available: the base cadence, so
+    // the loop comes round and worker start re-ranks the pool.
+    const shortened = await recordContainerRestartOutcome({
+      ...base,
+      exitStatus: QUOTA_PAUSE_EXIT_STATUS,
+      poolHasAnotherTokenWithBudget: () => Promise.resolve(true),
+    });
+    assertEquals(shortened.kind, "quota_pause");
+    assertEquals(shortened.backoffSeconds, FAST_CONFIG.baseSleepSeconds);
+
+    // The same pause with nothing else to go to: the full cadence, unchanged.
+    const full = await recordContainerRestartOutcome({
+      ...base,
+      exitStatus: QUOTA_PAUSE_EXIT_STATUS,
+      poolHasAnotherTokenWithBudget: () => Promise.resolve(false),
+    });
+    assertEquals(full.kind, "quota_pause");
+    assertEquals(full.backoffSeconds, FAST_CONFIG.quotaPauseSleepSeconds);
+
+    // A probe that throws answers false: an unshortened pause is what this
+    // host has always done, and is never worse than spinning.
+    const threw = await recordContainerRestartOutcome({
+      ...base,
+      exitStatus: QUOTA_PAUSE_EXIT_STATUS,
+      poolHasAnotherTokenWithBudget: () => {
+        throw new Error("probe failed");
+      },
+    });
+    assertEquals(threw.kind, "quota_pause");
+    assertEquals(threw.backoffSeconds, FAST_CONFIG.quotaPauseSleepSeconds);
+
+    // A host that supplies no probe at all — every single-token host —
+    // behaves byte-for-byte as before.
+    const absent = await recordContainerRestartOutcome({
+      ...base,
+      exitStatus: QUOTA_PAUSE_EXIT_STATUS,
+    });
+    assertEquals(absent.backoffSeconds, FAST_CONFIG.quotaPauseSleepSeconds);
+  } finally {
+    await harness.cleanup();
+  }
+});

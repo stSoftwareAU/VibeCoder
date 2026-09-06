@@ -151,15 +151,19 @@ function makeEnsureLabelStub(
   return { fn, calls };
 }
 
+/** The fleet identity the dedup tests state instead of writing a config. */
+const FLEET = { fleetAuthors: ["vibe-coder[bot]"] };
+
 function makeComment(
   body: string,
   createdAt: string,
   id = 1,
+  author = "vibe-coder[bot]",
 ): GitHubComment {
   return {
     id,
     body,
-    author: "vibe-coder[bot]",
+    author,
     createdAt,
     reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
   };
@@ -384,6 +388,7 @@ Deno.test("escalateToHuman - dedup: same key within 24h skips comment, still ens
     deps: {
       github: { ensureLabelExists: ensureLabel.fn },
       now: () => fixedNow,
+      dedupAuthors: FLEET,
     },
     logger,
   });
@@ -493,6 +498,84 @@ Deno.test("escalateToHuman - dedup lookup failure falls back to posting comment"
 });
 
 // ---------------------------------------------------------------------------
+// Dedup author verification (Issue #1216)
+//
+// The dedup marker lives in a comment body anyone with a GitHub account may
+// write, and every production dedup key is derivable from public numbers
+// (`context-budget-<issue>`, `merge-blocked:<repo>#<pr>`, …). Matching on the
+// body alone let one planted, invisible HTML comment suppress the hand-off's
+// "why / next step" explanation for 24 hours.
+// ---------------------------------------------------------------------------
+
+Deno.test("escalateToHuman - a dedup marker planted by an outsider does not suppress the comment", async () => {
+  const fixedNow = Date.parse("2026-05-24T12:00:00Z");
+  const planted = makeComment(
+    `nice repo ${buildDedupMarker("ci-secret")}`,
+    new Date(fixedNow - 60 * 60 * 1000).toISOString(),
+    1,
+    "drive-by-attacker",
+  );
+  const { client, comments } = makeStubClient({ existingComments: [planted] });
+  const ensureLabel = makeEnsureLabelStub();
+  const { logger } = makeSilentLogger();
+
+  const result = await escalateToHuman({
+    ghClient: client,
+    repo: "org/repo",
+    target: { kind: "issue", number: 9 },
+    needsHumanLabel: "needs-human",
+    reason: "still broken",
+    nextStep: "take over",
+    dedupKey: "ci-secret",
+    deps: {
+      github: { ensureLabelExists: ensureLabel.fn },
+      now: () => fixedNow,
+      dedupAuthors: FLEET,
+    },
+    logger,
+  });
+
+  assert(result.ok);
+  assertEquals(result.value.dedupSkipped, false);
+  assertEquals(comments.length, 1, "the hand-off explanation is still posted");
+});
+
+Deno.test("escalateToHuman - an unresolvable fleet identity posts rather than dedups", async () => {
+  const fixedNow = Date.parse("2026-05-24T12:00:00Z");
+  const existing = makeComment(
+    buildDedupMarker("ci-secret"),
+    new Date(fixedNow - 60 * 60 * 1000).toISOString(),
+  );
+  const { client, comments } = makeStubClient({ existingComments: [existing] });
+  const ensureLabel = makeEnsureLabelStub();
+  const { logger, warnings } = makeSilentLogger();
+
+  const result = await escalateToHuman({
+    ghClient: client,
+    repo: "org/repo",
+    target: { kind: "issue", number: 9 },
+    needsHumanLabel: "needs-human",
+    reason: "still broken",
+    nextStep: "take over",
+    dedupKey: "ci-secret",
+    deps: {
+      github: { ensureLabelExists: ensureLabel.fn },
+      now: () => fixedNow,
+      dedupAuthors: { fleetAuthors: [] },
+    },
+    logger,
+  });
+
+  assert(result.ok);
+  assertEquals(result.value.dedupSkipped, false);
+  assertEquals(comments.length, 1);
+  assert(
+    warnings.some((w) => w.message.includes("fleet author set unresolved")),
+    "the unverifiable condition must be logged loudly, never inferred",
+  );
+});
+
+// ---------------------------------------------------------------------------
 // PR vs issue target
 // ---------------------------------------------------------------------------
 
@@ -596,7 +679,11 @@ Deno.test("suspicious-image - re-run within 24h dedups the escalation comment", 
     githubUser: "vibe-coder[bot]",
     detection: { flagged: true, source: "committed image" },
     logger,
-    deps: { ensureLabelExists: ensureLabel.fn, now: () => fixedNow },
+    deps: {
+      ensureLabelExists: ensureLabel.fn,
+      now: () => fixedNow,
+      dedupAuthors: FLEET,
+    },
   });
 
   assert(handedOff, "dedup still counts as a successful hand-off");

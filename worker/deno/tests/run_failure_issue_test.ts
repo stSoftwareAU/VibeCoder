@@ -39,13 +39,18 @@ interface Recorded {
 function fakeGh(
   seed: {
     issues?: { number: number; body: string }[];
-    comments?: { id: number; body: string }[];
+    comments?: { id: number; body: string; author?: string }[];
   } = {},
   behaviour: { failAll?: boolean } = {},
 ) {
   const rec: Recorded = { calls: [], creates: [], comments: [], patches: [] };
   const issues = [...(seed.issues ?? [])];
-  const comments = [...(seed.comments ?? [])];
+  // The production `--jq` projection asks for the commenter (Issue #1216),
+  // so the fake renders it too; an unstated author is the fleet's own.
+  const comments = [...(seed.comments ?? [])].map((c) => ({
+    author: FLEET_LOGIN,
+    ...c,
+  }));
   const ghFn = (args: string[]): Promise<string> => {
     rec.calls.push(args);
     if (behaviour.failAll) return Promise.reject(new Error("gh: HTTP 500"));
@@ -69,6 +74,7 @@ function fakeGh(
       comments.push({
         id: 500 + rec.comments.length,
         body: args[args.indexOf("--body") + 1]!,
+        author: FLEET_LOGIN,
       });
       return Promise.resolve("");
     }
@@ -224,6 +230,50 @@ Deno.test("run failure issue - a second occurrence within the follow-up window u
     });
     assertEquals(third.action, "commented");
     assertEquals(gh.rec.comments.length, 2);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("run failure issue - a follow-up marker planted by an outsider is not updated in place (Issue #1216)", async () => {
+  const dir = await tmp();
+  try {
+    // The follow-up marker's epoch is attacker-chosen: a far-future value
+    // keeps `t - epoch < window` true for ever, and the descending sort puts
+    // the forged comment ahead of any genuine one. Before the author check,
+    // every later occurrence of the class was appended to this comment
+    // instead of the fleet's own — or, if the edit was refused, suppressed.
+    const gh = fakeGh({
+      issues: [{ number: 4200, body: formatRunFailureMarker("oom") }],
+      comments: [{
+        id: 77,
+        body: "<!-- VIBE_RUN_FAILURE_FOLLOWUP:oom:99999999999 -->",
+        author: "drive-by-attacker",
+      }],
+    });
+    const decision = await fileRunFailureIssue({
+      report: OOM_REPORT,
+      ghFn: gh.ghFn,
+      workDir: dir,
+      fleetAuthors: FLEET,
+      nowSeconds: () => 1_700_000_000,
+    });
+    assertEquals(decision, {
+      action: "commented",
+      issueNumber: 4200,
+      failureClass: "oom",
+      updated: false,
+    });
+    assertEquals(
+      gh.rec.patches.length,
+      0,
+      "an outsider's comment must never be edited by the worker",
+    );
+    assertEquals(
+      gh.rec.comments.length,
+      1,
+      "the genuine follow-up is posted instead of being absorbed",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

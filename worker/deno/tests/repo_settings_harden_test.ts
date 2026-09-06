@@ -14,7 +14,9 @@ import {
   allowListCovers,
   applyRepoSettingsPlan,
   buildAllowedActionPatterns,
+  MILESTONE_REF_PATTERN,
   planRepoSettingsHardening,
+  type RepoSettingsSnapshot,
   resolveTransitiveActionCoordinates,
 } from "../lib/repo_settings_harden.ts";
 
@@ -511,4 +513,119 @@ Deno.test("planRepoSettingsHardening - requireCodeOwnerReview plans nothing when
   const rule = both.find((s) => s.kind === "ruleset-reviews")!;
   const body = JSON.parse(rule.body ?? "{}") as Record<string, unknown>;
   assertEquals(body.required_approving_review_count, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Milestone branches must be creatable (Issue #3912 follow-up)
+// ---------------------------------------------------------------------------
+
+/** A milestone ruleset that enforces its checks on branch creation. */
+function milestoneRuleset(
+  doNotEnforceOnCreate: boolean,
+): NonNullable<RepoSettingsSnapshot["rulesets"]>[number] {
+  return {
+    id: 22357806,
+    name: "Vibe Coder milestone branches",
+    target: "branch",
+    enforcement: "active",
+    bypass_actors: [{ actor_id: 5, actor_type: "RepositoryRole" }],
+    conditions: { ref_name: { include: [MILESTONE_REF_PATTERN], exclude: [] } },
+    rules: [
+      { type: "deletion" },
+      { type: "non_fast_forward" },
+      {
+        type: "required_status_checks",
+        parameters: {
+          do_not_enforce_on_create: doNotEnforceOnCreate,
+          strict_required_status_checks_policy: true,
+          required_status_checks: [{ context: "Quality Checks" }],
+        },
+      },
+    ],
+  };
+}
+
+const PLAN_OPTS = {
+  thirdPartyPatterns: [],
+  requireReviews: false,
+  defaultBranch: "main",
+};
+
+Deno.test("planRepoSettingsHardening - a milestone ruleset enforced on create is planned open (Issue #3912)", () => {
+  // Observed 2026-09-06 on NEAT-AI-Ockham: the self-heal that recreates a
+  // missing milestone branch could not push it —
+  //   "5 of 6 required status checks are expected … push declined"
+  // A branch that does not exist yet has no check runs, so the checks can
+  // never be satisfied and only an admin bypass gets through.
+  const plan = planRepoSettingsHardening(
+    { rulesets: [milestoneRuleset(false)] },
+    PLAN_OPTS,
+  );
+  const step = plan.find((s) => s.kind === "milestone-branch-create");
+  assert(
+    step,
+    `a create-blocking milestone ruleset is planned: ${
+      JSON.stringify(plan.map((s) => s.kind))
+    }`,
+  );
+  assertEquals(step.method, "PUT");
+  assertEquals(step.endpoint, "rulesets/22357806");
+
+  const body = JSON.parse(step.body ?? "{}");
+  const checks = body.rules.find((r: { type: string }) =>
+    r.type === "required_status_checks"
+  );
+  // The flag is flipped...
+  assertEquals(checks.parameters.do_not_enforce_on_create, true);
+  // ...and nothing else about the rule is disturbed. The contexts still gate
+  // the MERGE, and `required_status_checks` stays present — which is what
+  // `isBaseProtected` reads when deciding whether to arm auto-merge at PR
+  // creation. Dropping the rule would silently disable that.
+  assertEquals(checks.parameters.strict_required_status_checks_policy, true);
+  assertEquals(checks.parameters.required_status_checks.length, 1);
+  assertEquals(body.rules.map((r: { type: string }) => r.type), [
+    "deletion",
+    "non_fast_forward",
+    "required_status_checks",
+  ]);
+  // The rulesets API takes a whole ruleset, so everything untouched is echoed.
+  assertEquals(body.name, "Vibe Coder milestone branches");
+  assertEquals(body.enforcement, "active");
+  assertEquals(body.bypass_actors.length, 1);
+});
+
+Deno.test("planRepoSettingsHardening - a milestone ruleset already open plans nothing (Issue #3912)", () => {
+  const plan = planRepoSettingsHardening(
+    { rulesets: [milestoneRuleset(true)] },
+    PLAN_OPTS,
+  );
+  assertEquals(plan.filter((s) => s.kind === "milestone-branch-create"), []);
+});
+
+Deno.test("planRepoSettingsHardening - rulesets that do not govern milestone branches are left alone (Issue #3912)", () => {
+  // The default-branch ruleset SHOULD enforce on create: nobody recreates the
+  // default branch, and relaxing it there would weaken the real gate.
+  const defaultBranchRuleset = {
+    ...milestoneRuleset(false),
+    id: 21019403,
+    name: "main",
+    conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+  };
+  const plan = planRepoSettingsHardening(
+    { rulesets: [defaultBranchRuleset] },
+    PLAN_OPTS,
+  );
+  assertEquals(plan.filter((s) => s.kind === "milestone-branch-create"), []);
+});
+
+Deno.test("planRepoSettingsHardening - a milestone ruleset with no status checks plans nothing (Issue #3912)", () => {
+  // Nothing to relax: without `required_status_checks` there is no
+  // create-time enforcement to lift — and no protected base either, which is
+  // a separate problem this step does not pretend to solve.
+  const noChecks = {
+    ...milestoneRuleset(false),
+    rules: [{ type: "deletion" }, { type: "non_fast_forward" }],
+  };
+  const plan = planRepoSettingsHardening({ rulesets: [noChecks] }, PLAN_OPTS);
+  assertEquals(plan.filter((s) => s.kind === "milestone-branch-create"), []);
 });

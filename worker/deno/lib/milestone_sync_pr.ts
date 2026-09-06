@@ -86,8 +86,49 @@ export function isMilestoneSyncBranch(headRefName?: string | null): boolean {
  */
 export function mergeMethodFlagForHead(
   headRefName?: string | null,
+  headIsSameRepository: boolean = false,
 ): "--merge" | "--squash" {
-  return isMilestoneSyncBranch(headRefName) ? "--merge" : "--squash";
+  // A head branch *name* is chosen by whoever pushed the branch, and a fork
+  // PR's head lives in a repository the fleet does not control — so on a fork
+  // the name is a claim, not evidence (Issue #1249, finding 10). Only a
+  // same-repository head, which needed write access to create, can select the
+  // merge-commit deviation; everything else squashes, which is the default
+  // this repository's policy expects.
+  //
+  // The default is the **restrictive** one: a caller that has not established
+  // where the head lives has not established that the deviation is safe. Every
+  // caller that downgrades a sync-shaped head this way must say so out loud —
+  // {@link forkSyncDowngradeWarning} is that sentence — because a silently
+  // squashed sync is the exact defect Issue #1048 exists to prevent.
+  return isMilestoneSyncBranch(headRefName) && headIsSameRepository
+    ? "--merge"
+    : "--squash";
+}
+
+/**
+ * The warning a sync-shaped head earns when it is squashed because the head
+ * could not be shown to live in this repository (Issue #1249, finding 10).
+ *
+ * The sibling of {@link squashedSyncWarning}, which covers the other reason a
+ * sync squashes (the repository forbids merge commits). Both exist so the
+ * downgrade is never quiet.
+ *
+ * @param repo - Repository in `owner/repo` form
+ * @param prNumber - The PR being merged
+ * @param headRefName - The sync-shaped head branch
+ * @returns A single-line warning naming the PR and why it squashed
+ */
+export function forkSyncDowngradeWarning(
+  repo: string,
+  prNumber: number,
+  headRefName: string,
+): string {
+  return `WARNING: ${repo}#${prNumber} has a milestone-sync-shaped head ` +
+    `'${headRefName}' whose repository could not be confirmed as ${repo}, so ` +
+    `it is armed as a SQUASH rather than a merge commit. A fork may name its ` +
+    `branch anything, so the name alone cannot select the merge-commit ` +
+    `deviation (Issue #1249). If this is a genuine sync, check the PR's ` +
+    `isCrossRepository field.`;
 }
 
 /**
@@ -162,7 +203,9 @@ async function armSyncPrAutoMerge(
   const arm = (method: "--merge" | "--squash") =>
     deps.gh(["pr", "merge", prNumber, "--repo", repo, "--auto", method]);
   try {
-    await arm(mergeMethodFlagForHead(branch));
+    // The worker pushed this branch into `repo` itself moments ago, so the
+    // head is same-repository by construction (Issue #1249).
+    await arm(mergeMethodFlagForHead(branch, true));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!isMergeCommitNotAllowed(message)) return;

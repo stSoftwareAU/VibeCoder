@@ -2312,6 +2312,7 @@ can be overridden via environment variables for testing or special deployments.
 | Git merge timeout                                   | `GIT_MERGE_TIMEOUT`                      | `120`           | Timeout for merge/rebase/pull operations in seconds                                               |
 | GitHub CLI (Command-Line Interface) command timeout | `GH_COMMAND_TIMEOUT`                     | `60`            | Timeout for individual `gh` CLI commands in seconds                                               |
 | GitHub clone timeout                                | `GH_CLONE_TIMEOUT`                       | `600`           | Timeout for `gh repo clone` operations in seconds (large repos on shared networks need more time) |
+| GitHub paginated read timeout | `GH_PAGINATED_TIMEOUT` | `300` | Timeout for a `gh api --paginate` read in seconds — one call walks every page, so it outlives a single request |
 | GitHub rate-limit cooldown | `GH_RATE_LIMIT_COOLDOWN` | `300` | Rate-limit circuit breaker cooldown in seconds |
 | Assigned no-heartbeat timeout                       | `ASSIGNED_NO_HEARTBEAT_TIMEOUT`          | `1800`          | Grace period for assigned issues with no heartbeat before recovery (30 minutes)                   |
 | Stale assignment timeout                            | `STALE_ASSIGNMENT_TIMEOUT`               | `14400`         | Timeout for GitHub-based stale assignment recovery (4 hours)                                      |
@@ -2337,6 +2338,21 @@ can be overridden via environment variables for testing or special deployments.
 | Answer truncate length                              | `ANSWER_TRUNCATE_LENGTH`                 | `500`           | Maximum characters to keep from a bot answer before truncating                                    |
 | Pre-setup command timeout                           | `PRE_SETUP_TIMEOUT`                      | `300`           | Timeout for repository pre-setup commands (5 minutes)                                             |
 | GitHub issue list limit                             | `GH_ISSUE_LIST_LIMIT`                    | `50`            | Default limit for `gh issue list` queries                                                         |
+
+### ⏱️ Every `gh` invocation is bounded
+
+The three `gh` timeouts are applied at the `gh` chokepoint itself
+([`worker/deno/lib/gh_spawn.ts`](../worker/deno/lib/gh_spawn.ts) via
+[`gh_timeout.ts`](../worker/deno/lib/gh_timeout.ts)), not by each caller
+(Issue #1229): `GH_CLONE_TIMEOUT` for `gh repo clone`, `GH_PAGINATED_TIMEOUT`
+for a `gh api --paginate` read, and `GH_COMMAND_TIMEOUT` for everything else. A
+call that exceeds its budget is aborted and reported loudly — exit code `124`
+with `TIMEOUT: gh <args> timed out after <n>s` on stderr — so a stalled GitHub
+call can no longer hang the run. A caller that supplies its own `AbortSignal`
+(the rate-limit wrapper in `gh_wrapper.ts`) keeps its own deadline.
+
+An override that is missing, unparseable or non-positive falls back to the
+default: a `GH_COMMAND_TIMEOUT=0` cannot restore unbounded behaviour.
 
 ### 🥇 The config file wins over the environment
 
@@ -2492,7 +2508,7 @@ operational purposes:
 | `VIBE_DAILY_SPEND_CEILING_USD` | `0` (disabled) | Daily estimated model-spend ceiling in USD |
 | `VIBE_HOST_DISK_LOW_FLOOR_GB` | `20` | Gigabyte term of the claiming floor. The `.config.json` key `host_disk_low_floor_gb` wins over it — see [The claiming floor](#the-claiming-floor-issue-732) |
 | `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` | `10` | Percentage term of the claiming floor. The `.config.json` key `host_disk_low_floor_percent` wins over it — see [The claiming floor](#the-claiming-floor-issue-732) |
-| `VIBE_CREDIT_LOG_DIR`           | worker workDir | Directory holding the `.credit_log_YYYY-MM-DD.json` files      |
+| `VIBE_CREDIT_LOG_DIR`           | `<workDir>/.credit-logs` | Directory holding the `.credit_log_YYYY-MM-DD.json` files. The default is worker-private (`0700`) so the untrusted `agent` account cannot plant a symlink at the log path or delete the ceiling's only input — see [Where the credit logs live](#where-the-credit-logs-live-issue-1239) |
 | `VIBE_SIDE_REPO_CLONE_ARGS`     | `--filter=blob:none` | `git clone` arguments a gate uses for the sibling data repos it pulls in — see [Side/data repo clones are blobless](CONTAINER.md#sidedata-repo-clones-are-blobless-issue-243) |
 | `WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS` | `3` | Idle days before a side/data clone is aged out of the work volume |
 | `MERGED_PR_SWEEP_ISSUE_LIMIT` | `200` | Open issues examined per repo by the housekeeping merged-PR issue sweep (Issue #504) |
@@ -2589,7 +2605,44 @@ billed invoices — treat it as a guard rail, not an accounting record. A credit
 log that cannot be read is reported as `UNVERIFIED` rather than passed as
 under-budget: a monitoring fault must not halt the fleet, but it is never
 silent. Set `VIBE_CREDIT_LOG_DIR` when the credit logs live somewhere other
-than the worker's work directory.
+than the default directory below.
+
+### Where the credit logs live (Issue #1239)
+
+The logs default to `<workDir>/.credit-logs/`, a directory the worker creates
+`0700`, and each `.credit_log_YYYY-MM-DD.json` is created `0600` through an
+append that refuses to follow a symlink.
+
+They used to sit directly in the work root, which the container shares with
+the untrusted `agent` account (group-writable, setgid, no sticky bit — the
+account the repository's own quality command runs as). That account could
+therefore plant a symlink at the predictable log path and redirect every
+appended JSON line into any file the worker uid can write, or simply delete
+the day's log — and because the ceiling reads only that file, the day's spend
+then read `$0` however much had actually been spent. It can do neither
+inside an owner-only directory: it cannot write the log path, and it cannot
+remove a directory whose contents it cannot unlink.
+
+Two operator-visible consequences:
+
+- Logs written before this change stay in the work root and are no longer
+  summarised. Move them into `.credit-logs/` to keep the history, or delete
+  them — nothing sweeps the old location automatically (`credit-summary
+  --cleanup` only prunes the `--log-dir` it is given). While today's log is
+  still sitting there, the worker logs a `[SPEND_CEILING]` warning at
+  start-up naming both paths, so the mismatch is never a silent `$0`.
+- An explicit `VIBE_CREDIT_LOG_DIR` still wins and is used as given. The
+  worker refuses a log directory another account owns, and strips group/other
+  **write** access from whichever directory it uses (unlinking an entry needs
+  write on its directory); read access is left as the operator set it.
+
+```mermaid
+flowchart LR
+    W["Worker uid 1000"] -- "append 0600, refuses symlinks" --> L["&lt;workDir&gt;/.credit-logs/<br/>.credit_log_YYYY-MM-DD.json"]
+    A["agent uid 1001"] -- "no write, no unlink" --x L
+    L --> C["Daily spend ceiling"]
+    style L fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
 
 An invocation whose model id has no pricing row is charged at a conservative
 **upper bound** rather than counted as `$0` — otherwise a new
@@ -3602,6 +3655,14 @@ Commands run directly (not through a shell), so each entry is a program plus
 arguments; shell features (pipes, redirects, globs) are not interpreted. Wrap
 them in a script (as in the example) if you need shell behaviour.
 
+**The environment is built, not inherited (Issue #1214).** Because the scripts
+are supplied by the target repo, they are code the worker did not write, so
+they run with the same allowlisted environment as the repo's quality command —
+`PATH`, `HOME`, `TMPDIR`, the locale and the toolchain caches, and nothing
+else. No credential the worker holds is in scope for a pre-flight script to
+read. A repository whose pre-flight genuinely needs a further variable declares
+it the same way its checks do, via `untrusted_command_env.ts`'s allowlist.
+
 ```mermaid
 flowchart TD
     A["Worker automated commit"] --> B["git add -A"]
@@ -3724,7 +3785,28 @@ which cannot block — and trips on either signal:
   simply is not landing, and its repository's whole work stream is stopped
   behind it. `GRQ-GTC#305` sat exactly like that for five days and neither of
   the two signals above saw it. Only reported when the other two are silent —
-  a red PR is a red PR, not a green one.
+  a red PR is a red PR, not a green one — and never for a PR the
+  [merge-conflict ladder](workflows/merge-conflicts.md) owns.
+
+#### The merge-conflict ladder owns its own PRs
+
+A PR GitHub reports `CONFLICTING`, or one carrying `merge-conflict`, belongs to
+the ladder, which resolves, rebases, then abandons and restarts on its own
+schedule. Three rules keep this watchdog out of its way (Issue #1213):
+
+- **It is never "green but unmerged".** A conflicting PR is not landing because
+  it conflicts, so that signal stays silent for it.
+- **The next step names the lane, not a menu.** Any escalation the PR does
+  carry — red CI, an unanswered comment — ends in "the merge-conflict ladder
+  owns it, leave the PR open", never "or close it".
+- **A live escalation is withdrawn when the PR enters the lane.** One retraction
+  comment per PR, deduped by `<!-- blocking-pr-stall-withdrawn -->`.
+
+`NEAT-AI-Ockham#119` is why. It was escalated at 09:57 as "green and unmerged …
+or close it", was labelled `merge-conflict` at 10:00, and a human — acting on
+the fleet's own thirteen-minute-old comment — closed it at 10:10, inside the
+ladder's cooldown and before its first attempt ever ran. The work was redone by
+hand two hours later.
 
 On a trip it posts **one** escalation comment per PR per stall reason (deduped
 by the `needs-human-escalation` HTML marker, so a long stall never accrues a
@@ -3747,7 +3829,9 @@ flowchart TD
     C -->|yes| E["Observe PR:<br/>checks · commits · comments"]
     E --> F{"red CI, no newer push,<br/>past threshold?"}
     E --> G{"authorised comment newer<br/>than fleet reply/push,<br/>past threshold?"}
-    E --> M{"green, no auto-merge armed,<br/>no movement past threshold?"}
+    E --> L{"CONFLICTING or<br/>merge-conflict label?"}
+    L -->|yes| N["Ladder owns it:<br/>no green signal, lane-aware<br/>next step, live escalation<br/>withdrawn"]
+    L -->|no| M{"green, no auto-merge armed,<br/>no movement past threshold?"}
     F -->|yes| K
     M -->|yes| K
     G -->|yes| K{"auto-fix cap<br/>already escalated?"}
@@ -3755,6 +3839,7 @@ flowchart TD
     K -->|no| H["needs-human +<br/>ONE marker-deduped comment<br/>per stall reason"]
     style H fill:#7f1d1d,stroke:#450a0a,color:#fff
     style D fill:#14532d,stroke:#052e16,color:#fff
+    style N fill:#14532d,stroke:#052e16,color:#fff
 ```
 
 ## 📦 In-Repo Configuration removed (`.vibecoder.json`,)

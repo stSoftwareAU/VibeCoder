@@ -23,7 +23,7 @@ different freshness requirements.
 
 | Layer | Location | TTL (default) | Storage | Purpose |
 | --- | --- | --- | --- | --- |
-| `IssueCache` | `worker/deno/lib/issue_cache.ts` | 600s (10 min) | File-backed JSON under `${TMPDIR}/vibe-issue-cache-deno/` | Issue and PR list responses (`gh issue list`, `gh pr list`). Shared across worker invocations on the same host. |
+| `IssueCache` | `worker/deno/lib/issue_cache.ts` | 600s (10 min) | File-backed JSON under `${TMPDIR}/vibe-issue-cache-deno-<user>/`, created `0700` and ownership-checked (Issue #1215) | Issue and PR list responses (`gh issue list`, `gh pr list`). Shared across worker invocations on the same host. |
 | Rate-limit pre-flight cache | `worker/deno/lib/rate_limit_preflight_cache.ts` | 90s | File-backed JSON in `workDir` | Skips `gh api rate_limit` round-trips between back-to-back respawns when remaining quota is comfortably above the threshold. |
 | `TimelineCache` | `worker/deno/lib/timeline_cache.ts` | 300s (5 min) | File-backed JSON under `${TMPDIR}/vibe-timeline-cache-deno-<user>/`, created `0700` and ownership-checked | Caches `gh api repos/{repo}/issues/{N}/timeline` results to remove the per-candidate N+1 calls. A hit may **deny** the reserved-label trust gate but never **grant** it — a trust-granting entry is re-confirmed against a freshly paginated timeline. |
 

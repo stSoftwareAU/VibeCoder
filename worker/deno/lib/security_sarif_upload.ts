@@ -53,14 +53,16 @@ export type SarifUploadResult =
   | { kind: "error"; error: string };
 
 /**
- * Default production git runner — runs `git -C <cwd> ...` through the shared
- * timeout chokepoint (Issue #1214).
+ * Default production git runner — routed through the shared chokepoint
+ * (Issue #1214) so the call is timeout-bounded and journalled.
+ *
+ * A spawn failure is reported as a non-zero exit rather than thrown: callers
+ * already branch on `code`, and swallowing the message would hide the fault.
  */
 export async function defaultGitRunner(
   args: string[],
   cwd: string,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  // Issue #1214: every git spawn goes through the timeout chokepoint.
   const result = await runGitCommand(["-C", cwd, ...args]);
   if (!result.ok) {
     return { code: 1, stdout: "", stderr: result.error.message };

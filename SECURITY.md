@@ -330,9 +330,22 @@ writers are too numerous to wire one at a time:
   redaction. Routing arguments — repo slug, API path, labels, reaction fields
   — are left byte-for-byte alone. The **agent** subprocess has a second
   chokepoint, the PATH shim, and it never reaches `spawnGh`: it calls the same
-  `redactGhBodyArgs` inside the guard child (§6a), extended
-  there to the contents of `--body-file`. Both chokepoints are wired; a third
-  `gh` caller would owe its own wiring.
+  `redactGhBodyArgs` inside the guard child (§6a). Both chokepoints
+  are wired; a third `gh` caller would owe its own wiring.
+
+  **Both chokepoints scan the same body classes (Issue #1254).** `spawnGh` used
+  to pass argv alone — no file reader — so its whole `--body-file` / `-F <path>`
+  / `-F body=@path` / `--input <file>` branch was dead code: a file body was
+  neither scanned *nor* refused, and any worker module that switched from
+  `--body` to `--body-file` would have published unscanned while looking like a
+  refactor. It now supplies the same reader and writer the guard child does
+  ([`worker/deno/lib/gh_body_file_io.ts`](worker/deno/lib/gh_body_file_io.ts)),
+  and `UnredactableBodyError` propagates out of the call rather than being
+  swallowed. The **stdin** body (`gh api … --input -`, used by the SARIF upload
+  and the ruleset writes) never appears in argv at all, so `spawnGh` puts the
+  bytes it pipes to the child through `redactSecrets()` before the write — and
+  tells the argument redactor that stdin is scanned, so a genuinely scanned
+  body is not refused.
 
 Each covers its own sink structurally and covers **nothing else**. Every other
 sink still owes its own explicit `redactSecrets()` call, and a body-producing
@@ -343,6 +356,22 @@ where the text is assembled.
 run `redactSecrets()` *first*: cutting first can split a secret — most
 damagingly a PEM block, whose END marker falls past the cut — leaving a
 fragment that no rule matches on the later pass.
+
+That ordering is held by a **type**, not by every call site remembering
+(Issue #1217). `RedactedText`
+([`worker/deno/lib/redacted_text.ts`](worker/deno/lib/redacted_text.ts)) is a
+branded string only `redactedTail()` / `redactedHead()` / `joinRedacted()` can
+mint, and each redacts the whole input before it trims. A field carrying text
+destined for a size-capped public sink is typed `RedactedText`, so handing it
+`output.slice(-500)` fails `deno check` — a stage of the quality gate — rather
+than publishing a fragment. `FailureDiagnosticContext.lastOutputSnippet`
+([`worker/deno/lib/failure_message.ts`](worker/deno/lib/failure_message.ts)) is
+the first field to carry the brand: ten call sites across the phase modules had
+sliced the agent's stdout raw and relied on the redaction `label_failure.ts`
+runs afterwards, when it builds the world-readable failure comment. Give a new
+size-capped sink the same brand. The sink enumeration behind that change — which
+paths route through `redactSecrets()` and which bypass it — is
+[`docs/audits/security-sweep-1217-env-config-secrets.md`](docs/audits/security-sweep-1217-env-config-secrets.md).
 
 **Redaction bounds its own work, never its input.** Because that ordering hands
 `redactSecrets()` untruncated, attacker-influenceable text, every rule must run
@@ -408,6 +437,7 @@ only a decoded *credential shape* is masked.
 | HTTP `Basic` auth redaction rule | `worker/deno/lib/secret_redaction.ts` | |
 | Bare OpenAI (`sk-`) and Google/Gemini (`AIzaSy`) key rules | `worker/deno/lib/secret_redaction.ts` | [#36](https://github.com/stSoftwareAU/VibeCoder/issues/36) |
 | `gh` comment / PR body arguments (worker chokepoint) | `worker/deno/lib/gh_body_redaction.ts` | |
+| Worker `gh` bodies from `--body-file` / `--input` files and stdin | `worker/deno/lib/gh_spawn.ts` | [#1254](https://github.com/stSoftwareAU/VibeCoder/issues/1254) |
 | Agent-authored `gh` bodies, incl. `--body-file` (shim chokepoint) | `worker/deno/lib/gh_guard_cli.ts` | |
 | PR-comment failure replies | `worker/deno/lib/pr_comments.ts` | |
 | Question-failure comment | `worker/deno/lib/label_question_failure.ts` | |
@@ -1202,7 +1232,8 @@ because a suppressed wrapper produces no error and no log line.
   fix has to delete its own entry. The test reads source text deliberately —
   the invariant is a property of the source, and the file says so at the top so
   the next reader does not remove it as implementation-coupled.
-- **The manifest is now empty (Issue #1124).** The last six scanned sites —
+- **The manifest was cleared by Issue #1124, and re-populated by #1216.** The
+  last six scanned sites —
   `issue_query.ts`'s `fetchPRsForIssueByTitle`, `claim_pr_comment.ts`,
   `idle_task_backfill.ts`, `pr_branch_lock.ts`, `shared_cooldown.ts`'s expired-
   comment cleanup and `setup/best_practices_sync.ts` — and the four consumers
@@ -1225,12 +1256,74 @@ because a suppressed wrapper produces no error and no log line.
   also the *right* boundary for them — a human maintainer's PR for an issue
   legitimately means "already in hand", so a fleet-only filter would have the
   worker duplicate it.
-- **Residual risk, stated.** An empty manifest means no *scanned* lookup trusts
-  an unverified marker; it does not mean the class cannot return. The scanner
-  sees `gh` call sites, not data flow, so a module that matches markers
-  client-side over rows another module fetched is invisible to it — the
-  reason the consumer list exists alongside the scanned one. The cap keeps the
-  scanned set clean; a new consumer still has to be reasoned about by hand.
+- **Residual risk, stated — and it landed (Issue #1216).** An empty manifest
+  means no *scanned* lookup trusts an unverified marker; it does not mean the
+  class cannot return. The scanner sees `gh` call sites, not data flow, so a
+  module that matches markers client-side over rows another module fetched is
+  invisible to it — the reason the consumer list exists alongside the scanned
+  one. The cap keeps the scanned set clean; a new consumer still has to be
+  reasoned about by hand.
+
+  The chunk-12c sweep found six live instances of the class sitting outside
+  the scanner's two recognised shapes while **both** lists read zero:
+  `issue_comment_pages.ts`'s shared `issueCommentsContainMarker` (pages raw
+  REST comments with no `--jq` at all, and was substring-matching the whole
+  page JSON), `needs_human_escalation.ts`, `run_failure_issue.ts` (projects
+  without a `select(.body`) and `milestone_branch_self_heal.ts`. All four now
+  route through `alert_dedup_authors.ts` and fail towards acting.
+  `conflict_abandon_restart.ts` and `pr_merge_conflict_scan.ts` are recorded
+  in `MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS` rather than fixed, because
+  their restart marker suppresses a *destructive* action and its fail
+  direction is a design decision, not a filter
+  ([#1247](https://github.com/stSoftwareAU/VibeCoder/issues/1247)). The full
+  record is
+  [`docs/audits/security-sweep-1216-untrusted-github-ingestion.md`](docs/audits/security-sweep-1216-untrusted-github-ingestion.md).
+
+#### 5e. Presence, reactions and identity — the last twelve ingestion sites (Issue #1249)
+
+The chunk-12c sweep (#1216) found twelve further reads whose decision rested on
+attacker-writable GitHub data. They are recorded here because three of them are
+shapes §5b–§5d did not cover, and a reader looking for "which signals does the
+worker treat as evidence?" needs all three named:
+
+- **Presence is a signal too.** `idle_task_activity.ts` projected only
+  GitHub's own `created_at` off a `CLAIM_LOCK` comment — no attacker payload —
+  and was excluded from the marker-dedup manifest for exactly that reason. But
+  the *presence* of the marker was itself the fleet's alive-signal, so any
+  account posting `<!-- CLAIM_LOCK: x -->` on an open `idle-task` wrapper told
+  `liveness_guard.ts` the fleet was working and suppressed the escalation
+  indefinitely. A projection is safe only when neither the payload **nor the
+  match** drives a decision. The read now carries `.user.login` and fails
+  towards escalating.
+- **A reaction is unauthenticated input.** Any account can add 👀 or 😕 to any
+  comment with no repository permission at all, yet `select(.reactions.eyes
+  == 0)` dropped a comment from the actionable scan for good, and
+  `.reactions.confused > 0` promoted the next failure straight to *permanent*.
+  Both now resolve the reactor through the per-comment reactions endpoint —
+  the treatment `+1` already had (Issue #2484) — and fail towards *processing
+  the comment*, because a comment nobody answers is the silent direction.
+- **Self-identification is not identity.** `pr_branch_lock.ts` kept any lock
+  comment whose embedded `workerId` matched this worker's, "without an author
+  lookup". The worker id is `name@hostname` and is printed verbatim into every
+  public lock comment, so replaying it with an earlier timestamp made two
+  workers both report `acquired: true`. Ours is now the comment whose **id**
+  `gh issue comment` returned; nothing else is ours by construction.
+
+The rest close along lines §5b–§5d already established: the close-summary read
+(`idle_task_freshness.ts`), the two milestone-gate marker dedups
+(`milestone_children_gate.ts`), the stale claim-comment deletion
+(`claim_pr_comment.ts`, which lacked both guards its `claim_issue.ts` sibling
+has) and the published cost tally (`issue_run_stats_comment.ts`) are all
+author-verified now; untrusted titles and GHSA advisory text are scrubbed with
+`scrubUntrustedText` before they are interpolated into a body the worker signs;
+`renderTitle` neutralises single angle brackets so a title cannot close the
+prompts' `<open_issue_titles>` block; the direct-merge method deviation
+requires a same-repository head; and the audit's dependency gate honours a
+cross-repo `Depends on` only when it names a monitored repository.
+
+Directions are pinned by
+`worker/deno/tests/security_untrusted_ingestion_1249_test.ts`, one test per
+finding.
 
 ### 6. Egress Containment — Per-Run Write-Repo Allowlist
 
@@ -1240,6 +1333,7 @@ The worker maintains a **per-run allowlist of repos it may write to** and valida
 
 - **Chokepoint (worker process).** Enforcement runs at the single lowest-level `gh` **spawn** (`spawnGh` in `worker/deno/lib/gh_spawn.ts`) — the shared path every comment / label / PR / `gh api` write **the worker itself** performs flows through, including `runGhCommandRaw` in `worker/deno/lib/github.ts`. The target `owner/repo` is derived by the existing mutation classifier (`audit_mutation_classifier.ts`). This chokepoint does *not* see the agent subprocess's own `gh` calls; those are covered by the shim in §6a.
 - **The chokepoint is enforced by the quality gate.** Until the contract was aspirational: ~20 modules spawned `gh` with their own `new Deno.Command("gh", …)`, so remote branch deletion, PR merge, issue close and branch-protection rewrites skipped both this allowlist and the audit journal. All of them now route through `spawnGh`/`runGhOrThrow`, and the `gh spawn chokepoint` quality check (`gh_spawn_chokepoint_check.ts`) fails the build on any new direct spawn outside `gh_spawn.ts`.
+- **A variable binary name no longer evades that check.** The check matched a **literal** `new Deno.Command("gh", …)`, so five modules that spawned `new Deno.Command(cmd[0]!, …)` and were handed `["gh", "api", …]` by their callers were direct `gh` spawns the gate reported as a clean tree (Issue #1227): `language_detector.ts`, `workflow_auditor.ts`, `repo_visibility.ts`, `recent_activity.ts` and the `gh --version` / `gh extension` calls in `software_updates.ts`. All five now delegate `gh` to the chokepoint, and both checks also flag a **variable** binary in any module that names the guarded binary at the head of an argv literal and does not import the chokepoint.
 - **Undeterminable targets fail closed.** The allowlist used to return early whenever no repo could be derived from the argv, so `gh api graphql` mutations, absolute `https://api.github.com/…` endpoints, and unlisted root verbs (`gist`, `ruleset`, `workflow`) passed unchecked and unjournalled. A mutation whose target repo cannot be determined is now refused with a `WriteTargetUndeterminableError`, a `[SECURITY] [WRITE_TARGET_UNDETERMINABLE]` line and a `blocked-*` journal entry. Absolute endpoints resolve their repo, GraphQL *reads* remain reads, and the worker's own non-repo mutation (`changeUserStatus`, the profile status) is a named exception.
 - **A request body implies POST, and an unreadable body fails closed.** The classifier inferred POST only from a field flag, so `gh api <endpoint> --input -` — which `gh` really sends as a **POST** — computed as a GET and returned `null`. Every control above short-circuits on `null`, so that one shape bypassed the journal, the allowlist and the reserved-label denylist at once. `--input`/`--input=` now imply POST exactly as `-f`/`-F` do. The same shape hid GraphQL documents: `gh` reads a field value beginning with `@` from that file (`@-` from stdin), so `-F query=@q.graphql` showed the classifier a filename with no `mutation` keyword in it. A GraphQL call whose document is not in the argv — an `@file`/`@-` value or an `--input` body — is now `api-graphql-unknown` with `scope: "unknown"`, which the fail-closed branch refuses, and an unreadable body also sinks the `changeUserStatus` exception rather than sanctioning the half of the request the argv happens to show.
 - **Seeded per run.** A standard issue run seeds the allowlist with the issue's own target repo (`issue_worker.ts`); an idle-scan run seeds the scanned repo (`idle_task_claim_handler.ts`, cwd = target clone).
@@ -1306,6 +1400,15 @@ flowchart TD
     D --> J["[GH_GUARD_SHIM_UNAVAILABLE] + audit journal"]
     B --> J
 ```
+
+### 6b. Subprocess Chokepoints — `git` Timeouts, and a Built Environment for Repository-Supplied Code
+
+The subprocess/argv sweep of every `worker/deno/lib` module that spawns a process (Issue #1214, parent #1209) surfaced two classes, both fixed. The swept paths are recorded in [`docs/audits/security-sweep-1214-subprocess-argv.md`](docs/audits/security-sweep-1214-subprocess-argv.md).
+
+- **`git` has a chokepoint too, and it is now enforced.** `runGitCommand` (`worker/deno/lib/git_timeout.ts`) owns three controls no caller may skip: the `AbortController` timeout, the audit journal for git mutations, and the work-volume fault detector. Seven modules had grown their own `new Deno.Command("git", …)` and skipped all three — including the stale-work-dir rescue, which ran `git push origin <branch>` untimed and unjournalled, so an unresponsive remote hung the worker outright rather than timing out. All seven now route through `runGitCommand`, and the `git spawn chokepoint` quality check (`git_spawn_chokepoint_check.ts`) fails the build on any new direct spawn outside `git_timeout.ts` — the same architectural invariant `gh_spawn_chokepoint_check.ts` enforces for `gh`, sharing its scanner via `spawn_chokepoint_scan.ts`. Three further modules spawned `git` through a **variable** binary the literal pattern could not see — `benchmark.ts`, `dependency_lock_regen.ts` and `security_tree_sweep.ts` — and now route through `runGitCommand` as well (Issue #1227).
+- **Repository-supplied code runs with a BUILT environment, never an inherited one.** `untrusted_command_env.ts` exists because the worker executes code it did not write, and an inherited environment hands that code every credential the run holds. The control was wired into the quality-gate spawn only; three sibling spawns of repository-supplied code inherited the worker's whole environment — the pre-flight gate (whose scripts are, by documented design, supplied by the target repo), the per-repo `bump-deps.sh`, and the lock-file regeneration tools that run `npm install` / `deno install` / `cargo update` / `go mod tidy` over a manifest the repository controls. `echo $CLAUDE_CODE_OAUTH_TOKEN` in any of those was the whole exploit. All three now build the child environment from `buildUntrustedCommandEnv()` with `clearEnv: true`, so only allowlisted names — `PATH`, `HOME`, the toolchain caches — are in scope.
+
+Regression coverage: `worker/deno/tests/git_spawn_chokepoint_check_test.ts` and `worker/deno/tests/untrusted_spawn_env_test.ts`, the latter spawning for real and reading the child's own view of its environment.
 
 ### 7. Issue Body + Title Trust Filtering
 

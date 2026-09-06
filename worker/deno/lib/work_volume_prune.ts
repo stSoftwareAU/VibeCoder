@@ -36,6 +36,10 @@
 import { runWithTimeout } from "./subprocess_timeout.ts";
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { isReservedWorkRootEntry } from "./stale_workdir.ts";
+import {
+  DEFAULT_HEARTBEAT_LIVE_WINDOW_SECONDS,
+  isHeartbeatFileLive,
+} from "./heartbeat_freshness.ts";
 
 const GIB = 1_073_741_824;
 const DU_TIMEOUT_MS = 120_000;
@@ -135,10 +139,22 @@ export async function duBytes(path: string): Promise<number | null> {
   return parseDuBytes(result.value.stdout);
 }
 
-/** Default liveness check: any `.heartbeat_*_<repo>_<n>` file in the root. */
+/**
+ * Default liveness check: a `.heartbeat_*_<repo>_<n>` file in the root whose
+ * recorded beat is live.
+ *
+ * The filename alone is not evidence (Issue #1232). The work root is
+ * agent-writable, so matching on the name meant any file called
+ * `.heartbeat_a_<repo>_1` exempted that repo's artefacts from the prune for
+ * ever — nothing here removes it, so the exemption never expired. The beat
+ * inside the file is what counts, and it counts only inside a bounded
+ * window (see {@link isHeartbeatFileLive}).
+ */
 export async function repoHasHeartbeat(
   workDir: string,
   repoName: string,
+  now: number = Math.floor(Date.now() / 1000),
+  windowSeconds: number = DEFAULT_HEARTBEAT_LIVE_WINDOW_SECONDS,
 ): Promise<boolean> {
   try {
     for await (const entry of Deno.readDir(workDir)) {
@@ -147,7 +163,16 @@ export async function repoHasHeartbeat(
       // trailing issue number.
       const stem = entry.name.slice(".heartbeat_".length);
       const withoutIssue = stem.replace(/_\d+$/, "");
-      if (withoutIssue.endsWith(`_${repoName}`) || withoutIssue === repoName) {
+      if (!withoutIssue.endsWith(`_${repoName}`) && withoutIssue !== repoName) {
+        continue;
+      }
+      if (
+        await isHeartbeatFileLive(
+          `${workDir}/${entry.name}`,
+          now,
+          windowSeconds,
+        )
+      ) {
         return true;
       }
     }
@@ -272,7 +297,10 @@ export async function pruneWorkVolume(
   const workDir = options.workDir;
   const now = (options.nowFn ?? (() => Math.floor(Date.now() / 1000)))();
   const sizeOf = options.sizeOf ?? duBytes;
-  const isRepoActive = options.isRepoActive ?? repoHasHeartbeat;
+  // The injected clock reaches the liveness check too, so a test's `now` and
+  // the heartbeat's epoch are read on the same timeline.
+  const isRepoActive = options.isRepoActive ??
+    ((dir: string, repo: string) => repoHasHeartbeat(dir, repo, now));
   const artefactMaxAgeDays = options.artefactMaxAgeDays ??
     DEFAULT_ARTEFACT_MAX_AGE_DAYS;
   const artefactMaxTotalBytes = options.artefactMaxTotalBytes ??

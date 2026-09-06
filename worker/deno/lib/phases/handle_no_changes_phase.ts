@@ -18,6 +18,7 @@ import type {
   PhaseState,
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
+import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
 import { formatDetailedFailureMessage } from "../failure_message.ts";
 import { detectRunInterrupted, detectUsageLimit } from "../claude_executor.ts";
 import { listTemplates } from "../idle_task_template.ts";
@@ -32,6 +33,7 @@ import {
   formatAlreadyResolvedEvidence,
 } from "../already_resolved_outcome.ts";
 import { redactSecrets } from "../secret_redaction.ts";
+import { redactedTail } from "../redacted_text.ts";
 import { postIssueRunStatsComment } from "../issue_run_stats_comment.ts";
 
 /**
@@ -201,6 +203,14 @@ export async function workOnIssueHandleNoChanges(
         getIssueComments: (r, i) => ghClient.getIssueComments(r, i),
         postComment: (r, i, b) => ghClient.postComment(r, i, b),
         logger,
+        // Fleet-authored comments only (Issue #1249, finding 12).
+        authorOptions: {
+          fleetAuthors: resolveFleetMaintenanceAuthorSet({
+            githubUser,
+            fleetPrAuthors: ctx.config.fleetPrAuthors ?? [],
+            serviceAccounts: ctx.config.serviceAccounts ?? [],
+          }),
+        },
       });
       // Unassign
       await ghClient.unassignIssue(repo, issueNumber, [githubUser]);
@@ -237,7 +247,7 @@ export async function workOnIssueHandleNoChanges(
           elapsedSeconds: truncationElapsed,
           clarityStatus: state.clarityStatus,
           outputSize: claudeOutput.length,
-          lastOutputSnippet: claudeOutput.slice(-500) || undefined,
+          lastOutputSnippet: redactedTail(claudeOutput, 500) || undefined,
         },
       ),
     };
@@ -254,7 +264,7 @@ export async function workOnIssueHandleNoChanges(
           elapsedSeconds: truncationElapsed,
           clarityStatus: state.clarityStatus,
           outputSize: claudeOutput.length,
-          lastOutputSnippet: claudeOutput.slice(-500) || undefined,
+          lastOutputSnippet: redactedTail(claudeOutput, 500) || undefined,
         },
       ),
     };
@@ -339,7 +349,7 @@ export async function workOnIssueHandleNoChanges(
   const elapsedSeconds = state.executeStartTime > 0
     ? Math.round((Date.now() - state.executeStartTime) / 1000)
     : 0;
-  const snippet = claudeOutput.slice(-500);
+  const snippet = redactedTail(claudeOutput, 500);
 
   // (The subscription usage-limit and interrupted-run cases — Issue #4315 /
   // Issue #108 — are handled earlier, before the analysis-only branch, so a

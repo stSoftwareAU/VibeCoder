@@ -87,6 +87,46 @@ const WORKER_LOG_PATTERN = /^worker-\d+(?:-\d+)*\.log(\.gz)?$/;
 const AGENT_TRANSCRIPT_PATTERN =
   /^agent-vibe-[A-Za-z0-9-]+\.jsonl(\.\d+)?(\.gz)?$/;
 
+/**
+ * The debris the foreign-file pass is allowed to remove (Issue #1218).
+ *
+ * Issue #4306 introduced that pass as "delete every unrecognised plain file
+ * older than 14 days", which is far wider than the debris it was written for.
+ * `log_dir` is operator-set and `normaliseConfiguredLogDir` explicitly accepts
+ * the bare value `"~"` (`lib/log_dir.ts`), resolving the log directory to the
+ * operator's `$HOME` — which `container_launch.ts` then bind-mounts read-write
+ * at the container's `~/logs`. Under that configuration the pass unlinked
+ * every plain file in `$HOME` untouched for a fortnight (`.bash_history`,
+ * `.gitconfig`, `.netrc`, loose documents) on every worker start, unattended,
+ * with no `--dry-run` and no way to disable it.
+ *
+ * The named debris — 748 `node-*.log` and 747 `stage-*.state` orphans from a
+ * long-gone native run — is matched exactly as well by an allowlist, so the
+ * pass now names what it deletes instead of naming what it spares. A file the
+ * worker's own ecosystem did not create is no longer its business.
+ */
+const FOREIGN_DEBRIS_PATTERNS: readonly RegExp[] = [
+  // Native-run node logs and stage markers — the Issue #4306 motivating case.
+  /^node-[A-Za-z0-9._-]*\.log(\.\d+)?(\.gz)?$/,
+  /^stage-[A-Za-z0-9._-]*\.state$/,
+  // Launcher logs and rotation backups of the worker's own files.
+  /^launch-[A-Za-z0-9._-]*\.log(\.\d+)?(\.gz)?$/,
+  /^worker-[A-Za-z0-9._-]*\.log(\.\d+)?(\.gz)?$/,
+  /^agent-[A-Za-z0-9._-]*\.jsonl(\.\d+)?(\.gz)?$/,
+];
+
+/**
+ * Whether an unrecognised plain file is worker debris the sweep may remove.
+ *
+ * Exported so the refusal is testable against literal filenames.
+ *
+ * @param name - The bare file name (no directory part).
+ * @returns True only when the name matches a known debris shape.
+ */
+export function isForeignDebrisName(name: string): boolean {
+  return FOREIGN_DEBRIS_PATTERNS.some((pattern) => pattern.test(name));
+}
+
 interface LogEntry {
   path: string;
   size: number;
@@ -127,10 +167,13 @@ export async function cleanupWorkerLogs(
         !WORKER_LOG_PATTERN.test(dirEntry.name) &&
         !AGENT_TRANSCRIPT_PATTERN.test(dirEntry.name)
       ) {
-        // Foreign-file pass (Issue #4306): unrecognised plain files age
-        // out too, so debris from other subsystems cannot pile up in the
-        // shared log directory forever. Symlinks and directories never
-        // reach here (`isFile` is false for both).
+        // Foreign-file pass (Issue #4306): worker debris ages out too, so
+        // orphans from other subsystems cannot pile up in the shared log
+        // directory forever. Symlinks and directories never reach here
+        // (`isFile` is false for both), and since Issue #1218 the name must
+        // match a known debris shape — a file this ecosystem did not create
+        // is left alone however old it is.
+        if (!isForeignDebrisName(dirEntry.name)) continue;
         const foreignPath = `${logDir}/${dirEntry.name}`;
         try {
           const stat = await Deno.stat(foreignPath);

@@ -122,8 +122,14 @@ function captureDeps(
       return Promise.resolve(recordOk);
     },
     log: (message) => logs.push(message),
+    dedupAuthors: FLEET_DEDUP,
   };
 }
+
+/** The fleet login the stubs write their own announcement comments as. */
+const FLEET_LOGIN = "vibe-coder-bot";
+/** Fleet identity the marker-author check is given instead of a config. */
+const FLEET_DEDUP = { fleetAuthors: [FLEET_LOGIN] };
 
 async function collect(opts: {
   repo?: string;
@@ -198,7 +204,11 @@ Deno.test("self-schedule - the announcement is posted once, not once per scan", 
   const audited: string[] = [];
   const gh = makeGh(calls, {
     comments: JSON.stringify([
-      { body: formatSelfScheduleMarker("idle-inversion") },
+      {
+        id: 1,
+        body: formatSelfScheduleMarker("idle-inversion"),
+        user: { login: FLEET_LOGIN },
+      },
     ]),
   });
   const { result } = await collect({
@@ -212,6 +222,35 @@ Deno.test("self-schedule - the announcement is posted once, not once per scan", 
   assertEquals(
     calls.filter((c) => c.args.join(" ").includes("issue comment")).length,
     0,
+  );
+});
+
+Deno.test("self-schedule - an announcement marker planted by an outsider does not suppress the announcement (Issue #1216)", async () => {
+  // The announcement is what makes a self-scheduled diagnostic traceable
+  // before it is actionable. Matching the marker on the body alone let any
+  // account erase that record by posting the marker itself.
+  const calls: GhCall[] = [];
+  const audited: string[] = [];
+  const gh = makeGh(calls, {
+    comments: JSON.stringify([
+      {
+        id: 1,
+        body: formatSelfScheduleMarker("idle-inversion"),
+        user: { login: "drive-by-attacker" },
+      },
+    ]),
+  });
+  const { result } = await collect({
+    issues: [makeIssue()],
+    gh,
+    deps: captureDeps(audited, []),
+  });
+
+  assertEquals(result.candidates.length, 1);
+  assertEquals(
+    calls.filter((c) => c.args.join(" ").includes("issue comment")).length,
+    1,
+    "the worker posts its own announcement instead of trusting the planted one",
   );
 });
 
