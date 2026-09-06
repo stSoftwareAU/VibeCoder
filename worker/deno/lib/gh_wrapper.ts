@@ -10,12 +10,19 @@
  */
 
 import type { Result } from "../types.ts";
+import { atomicWrite, readTextFileNoFollow } from "./file_utils.ts";
 import { spawnGh } from "./gh_spawn.ts";
 import {
   DEFAULT_GH_CLONE_TIMEOUT,
   DEFAULT_GH_COMMAND_TIMEOUT,
   GH_TIMEOUT_EXIT_CODE,
 } from "./gh_timeout.ts";
+import { defaultLogger } from "./logger.ts";
+import {
+  ensurePrivateDir,
+  isSharedTmpPath,
+  sharedTmpStateDir,
+} from "./private_cache_dir.ts";
 
 /** Default cooldown for rate limit circuit breaker (seconds). */
 const DEFAULT_RATE_LIMIT_COOLDOWN = 300;
@@ -58,15 +65,48 @@ export interface GhCommandResult {
   circuitBroken: boolean;
 }
 
+/** Name of the circuit breaker flag file inside its directory. */
+const RATE_LIMIT_FLAG_NAME = ".gh_rate_limit_active";
+
+/** Owner-only permissions for the flag file. */
+const RATE_LIMIT_FLAG_MODE = 0o600;
+
+/** Read an environment variable, tolerating a missing `--allow-env` grant. */
+function envOrUndefined(key: string): string | undefined {
+  try {
+    return Deno.env.get(key) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Default directory for the circuit breaker flag file.
+ *
+ * `WORK_DIR` is the worker's own volume and is used as given. Without it the
+ * flag lands under the host's shared temporary root, where
+ * `${TMPDIR}/.gh_rate_limit_active` was the same path for every account on
+ * the host — so {@link sharedTmpStateDir} composes a per-account directory
+ * instead (Issue #1233, following Issue #1215).
+ *
+ * @param lookup - Environment reader, injectable for tests.
+ */
+export function defaultRateLimitFlagDir(
+  lookup: (key: string) => string | undefined = envOrUndefined,
+): string {
+  return lookup("WORK_DIR") ?? sharedTmpStateDir("vibe-gh-rate-limit", lookup);
+}
+
+/** Directory holding the circuit breaker flag file. */
+function getRateLimitFlagDir(config: GhWrapperConfig): string {
+  return config.rateLimitFlagDir ?? defaultRateLimitFlagDir();
+}
+
 /**
  * Get the path to the rate limit circuit breaker flag file.
  */
 function getRateLimitFlagPath(config: GhWrapperConfig): string {
-  const dir = config.rateLimitFlagDir ??
-    Deno.env.get("WORK_DIR") ??
-    Deno.env.get("TMPDIR") ??
-    "/tmp";
-  return `${dir}/.gh_rate_limit_active`;
+  return `${getRateLimitFlagDir(config)}/${RATE_LIMIT_FLAG_NAME}`;
 }
 
 /**
@@ -74,6 +114,14 @@ function getRateLimitFlagPath(config: GhWrapperConfig): string {
  *
  * The breaker is active when a flag file exists containing a timestamp
  * that is within the cooldown window.
+ *
+ * Issue #1233: the timestamp is state on disk, so it is bounded on both
+ * sides. A timestamp in the **future** — a clock jump, or a value planted by
+ * anything that can write in the flag directory — gives a negative `elapsed`
+ * that is always below the cooldown, which would wedge every `gh` call behind
+ * exit 223 indefinitely. It is treated as expired, exactly as an old
+ * timestamp is. The read refuses to follow a link at the flag path, so a
+ * symlink planted there cannot supply the timestamp either.
  *
  * @param config - Wrapper configuration
  * @returns true if the circuit breaker is active (should short-circuit)
@@ -84,30 +132,37 @@ export async function isRateLimitActive(
   const flagPath = getRateLimitFlagPath(config);
   const cooldown = config.rateLimitCooldown ?? DEFAULT_RATE_LIMIT_COOLDOWN;
 
-  try {
-    const content = await Deno.readTextFile(flagPath);
-    const trippedAt = parseInt(content.trim(), 10);
-
-    if (isNaN(trippedAt)) return false;
-
-    const now = Math.floor(Date.now() / 1000);
-    const elapsed = now - trippedAt;
-
-    if (elapsed >= cooldown) {
-      // Cooldown expired — auto-reset
-      try {
-        await Deno.remove(flagPath);
-      } catch {
-        // Ignore removal errors
-      }
-      return false;
-    }
-
-    return true;
-  } catch {
-    // File does not exist or cannot be read — breaker is not active
+  const read = await readTextFileNoFollow(flagPath);
+  if (!read.ok) {
+    // A link or other non-regular file sits at the flag path: never a live
+    // activation this worker wrote. Surface it rather than swallowing it,
+    // and leave the breaker open.
+    defaultLogger.warn(
+      "Rate limit flag file is not a regular file — breaker treated as " +
+        "inactive (Issue #1233)",
+      { flagPath, reason: read.error.message },
+    );
     return false;
   }
+  if (read.value === null) return false;
+
+  const trippedAt = parseInt(read.value.trim(), 10);
+  if (isNaN(trippedAt)) return false;
+
+  const now = Math.floor(Date.now() / 1000);
+  const elapsed = now - trippedAt;
+
+  if (elapsed < 0 || elapsed >= cooldown) {
+    // Cooldown expired, or the timestamp is in the future — auto-reset.
+    try {
+      await Deno.remove(flagPath);
+    } catch {
+      // Ignore removal errors
+    }
+    return false;
+  }
+
+  return true;
 }
 
 /**
@@ -115,24 +170,50 @@ export async function isRateLimitActive(
  *
  * Records the current timestamp in the flag file.
  *
+ * Issue #1233: the write goes through {@link atomicWrite} — an `O_EXCL` temp
+ * file created `0600` and renamed over the target — so a symlink planted at
+ * the flag path is replaced rather than followed and truncated. The
+ * `lstat`-then-write remains a TOCTOU, but its only consequence is the
+ * `freshActivation` boolean.
+ *
  * @param config - Wrapper configuration
  * @returns true if this was a fresh activation (not already active)
+ * @throws Error if the flag file cannot be written — an unrecorded trip
+ *   leaves the breaker open, so it must never pass silently.
  */
 export async function tripRateLimitBreaker(
   config: GhWrapperConfig,
 ): Promise<boolean> {
-  const flagPath = getRateLimitFlagPath(config);
+  const dir = getRateLimitFlagDir(config);
+  const flagPath = `${dir}/${RATE_LIMIT_FLAG_NAME}`;
   let freshActivation = true;
 
   try {
-    await Deno.stat(flagPath);
+    // lstat, not stat: a dangling symlink at the path still counts as an
+    // existing entry rather than a fresh activation.
+    await Deno.lstat(flagPath);
     freshActivation = false;
   } catch {
     // File does not exist — this is a fresh activation
   }
 
+  // A directory under the shared temporary root is created owner-only so no
+  // other account on the host can plant the flag (Issue #1215).
+  if (isSharedTmpPath(dir)) {
+    await ensurePrivateDir(dir);
+  }
+
   const now = Math.floor(Date.now() / 1000);
-  await Deno.writeTextFile(flagPath, String(now));
+  const written = await atomicWrite({
+    targetFile: flagPath,
+    content: String(now),
+    mode: RATE_LIMIT_FLAG_MODE,
+  });
+  if (!written.ok) {
+    throw new Error(
+      `Failed to record the gh rate limit circuit breaker at ${flagPath}: ${written.error.message}`,
+    );
+  }
 
   return freshActivation;
 }
@@ -218,9 +299,22 @@ export async function safeGhCommand(
     const timedOut = code === TIMEOUT_EXIT_CODE;
     const rateLimited = code === RATE_LIMIT_EXIT_CODE;
 
-    // Trip the circuit breaker on rate limit detection
+    // Trip the circuit breaker on rate limit detection. A flag file that
+    // cannot be written is reported, never swallowed: the next call would
+    // otherwise sail past a breaker that silently never tripped.
     if (rateLimited) {
-      await tripRateLimitBreaker(config);
+      try {
+        await tripRateLimitBreaker(config);
+      } catch (err) {
+        return {
+          ok: false,
+          error: new Error(
+            `gh reported a rate limit but the circuit breaker could not be recorded: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          ),
+        };
+      }
     }
 
     return {

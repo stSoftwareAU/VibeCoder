@@ -8,8 +8,9 @@
  * Australian English spelling throughout (behaviour, colour, organisation, etc.)
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
+  defaultRateLimitFlagDir,
   type GhWrapperConfig,
   isGhTimeout,
   isRateLimitActive,
@@ -298,6 +299,104 @@ Deno.test("gh_wrapper - circuit breaker remains active before cooldown expires",
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
+});
+
+// =============================================================================
+// Flag file hardening (Issue #1233)
+// =============================================================================
+
+Deno.test("gh_wrapper - a future timestamp in the flag file expires the breaker", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const config: GhWrapperConfig = {
+    rateLimitFlagDir: tmpDir,
+    rateLimitCooldown: 300,
+  };
+  const flagPath = `${tmpDir}/.gh_rate_limit_active`;
+
+  try {
+    // A planted timestamp an hour in the future yields a negative elapsed,
+    // which is always < cooldown — the breaker would never auto-reset.
+    const future = Math.floor(Date.now() / 1000) + 3600;
+    await Deno.writeTextFile(flagPath, String(future));
+
+    assertEquals(await isRateLimitActive(config), false);
+    // The poisoned flag is cleared, not left to wedge the next call.
+    await assertRejects(() => Deno.stat(flagPath), Deno.errors.NotFound);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("gh_wrapper - tripping the breaker does not write through a planted symlink", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const config: GhWrapperConfig = { rateLimitFlagDir: tmpDir };
+  const flagPath = `${tmpDir}/.gh_rate_limit_active`;
+  const victim = `${tmpDir}/victim.txt`;
+
+  try {
+    await Deno.writeTextFile(victim, "important state");
+    await Deno.symlink(victim, flagPath);
+
+    await tripRateLimitBreaker(config);
+
+    // The symlink target is untouched and the flag is now a regular file.
+    assertEquals(await Deno.readTextFile(victim), "important state");
+    assertEquals((await Deno.lstat(flagPath)).isSymlink, false);
+    const written = parseInt(await Deno.readTextFile(flagPath), 10);
+    assertEquals(Number.isNaN(written), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("gh_wrapper - the flag file is owner-only (0600)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const config: GhWrapperConfig = { rateLimitFlagDir: tmpDir };
+
+  try {
+    await tripRateLimitBreaker(config);
+    const info = await Deno.lstat(`${tmpDir}/.gh_rate_limit_active`);
+    assertEquals(info.mode === null ? 0o600 : info.mode & 0o777, 0o600);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("gh_wrapper - a symlink at the flag path is not read as an active breaker", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const config: GhWrapperConfig = {
+    rateLimitFlagDir: tmpDir,
+    rateLimitCooldown: 300,
+  };
+  const flagPath = `${tmpDir}/.gh_rate_limit_active`;
+  const planted = `${tmpDir}/planted.txt`;
+
+  try {
+    await Deno.writeTextFile(planted, String(Math.floor(Date.now() / 1000)));
+    await Deno.symlink(planted, flagPath);
+
+    assertEquals(await isRateLimitActive(config), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("gh_wrapper - defaultRateLimitFlagDir falls back to a per-account shared-tmp directory", () => {
+  const lookup = (key: string): string | undefined =>
+    key === "TMPDIR" ? "/tmp" : undefined;
+
+  const dir = defaultRateLimitFlagDir(lookup);
+
+  // Never the bare shared root — the name carries a per-account suffix.
+  assertEquals(dir === "/tmp", false);
+  assertEquals(dir.startsWith("/tmp/vibe-gh-rate-limit-"), true);
+});
+
+Deno.test("gh_wrapper - defaultRateLimitFlagDir prefers WORK_DIR", () => {
+  const lookup = (key: string): string | undefined =>
+    key === "WORK_DIR" ? "/work/vibe" : undefined;
+
+  assertEquals(defaultRateLimitFlagDir(lookup), "/work/vibe");
 });
 
 // =============================================================================
