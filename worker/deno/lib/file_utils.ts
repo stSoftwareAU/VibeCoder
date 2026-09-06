@@ -26,10 +26,17 @@ const DEFAULT_FILE_MODE = 0o600;
 export interface AtomicWriteOptions {
   /** Path to the target file. */
   targetFile: string;
-  /** Content to write. */
-  content: string;
+  /** Content to write; bytes are written verbatim, text as UTF-8. */
+  content: string | Uint8Array;
   /** File permissions (default: 0o600). */
   mode?: number;
+}
+
+/** Bytes for a write, without a lossy round-trip through the decoder. */
+function encodeContent(content: string | Uint8Array): Uint8Array {
+  return typeof content === "string"
+    ? new TextEncoder().encode(content)
+    : content;
 }
 
 /**
@@ -105,7 +112,7 @@ export async function atomicWrite(
 
   // Write content to temp file
   try {
-    const encoded = new TextEncoder().encode(content);
+    const encoded = encodeContent(content);
     let written = 0;
     while (written < encoded.length) {
       written += await file.write(encoded.subarray(written));
@@ -220,7 +227,7 @@ export function atomicWriteSync(
   }
 
   try {
-    const encoded = new TextEncoder().encode(content);
+    const encoded = encodeContent(content);
     let written = 0;
     while (written < encoded.length) {
       written += file.writeSync(encoded.subarray(written));
