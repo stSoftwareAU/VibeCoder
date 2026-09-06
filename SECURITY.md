@@ -333,10 +333,13 @@ writers are too numerous to wire one at a time:
   them (the PR-comment failure replies and the question-failure comment) were
   publishing unredacted text. `redactGhBodyArgs()`
   ([`worker/deno/lib/gh_body_redaction.ts`](worker/deno/lib/gh_body_redaction.ts),
-  ) masks the body-carrying arguments inside `spawnGh`, the
+  ) masks the published-text arguments inside `spawnGh`, the
   worker's `gh` chokepoint, so every present and future worker body inherits
-  redaction. Routing arguments — repo slug, API path, labels, reaction fields
-  — are left byte-for-byte alone. The **agent** subprocess has a second
+  redaction. A **title** is a public sink too, so `--title`, `-f title=`,
+  `-f description=` and `-f name=` are masked alongside the body-shaped keys
+  ([#1283](https://github.com/stSoftwareAU/VibeCoder/issues/1283)). Routing
+  arguments — repo slug, API path, labels, `--head`, reaction fields — are
+  left byte-for-byte alone. The **agent** subprocess has a second
   chokepoint, the PATH shim, and it never reaches `spawnGh`: it calls the same
   `redactGhBodyArgs` inside the guard child (§6a), extended
   there to the contents of `--body-file`. Both chokepoints are wired; a third
@@ -432,6 +435,7 @@ only a decoded *credential shape* is masked.
 | HTTP `Basic` auth redaction rule | `worker/deno/lib/secret_redaction.ts` | |
 | Bare OpenAI (`sk-`) and Google/Gemini (`AIzaSy`) key rules | `worker/deno/lib/secret_redaction.ts` | [#36](https://github.com/stSoftwareAU/VibeCoder/issues/36) |
 | `gh` comment / PR body arguments (worker chokepoint) | `worker/deno/lib/gh_body_redaction.ts` | |
+| `gh` title, label and milestone published fields (`--title`, `-f title=`, `-f description=`, `-f name=`) | `worker/deno/lib/gh_body_redaction.ts` | [#1283](https://github.com/stSoftwareAU/VibeCoder/issues/1283) |
 | Agent-authored `gh` bodies, incl. `--body-file` (shim chokepoint) | `worker/deno/lib/gh_guard_cli.ts` | |
 | PR-comment failure replies | `worker/deno/lib/pr_comments.ts` | |
 | Question-failure comment | `worker/deno/lib/label_question_failure.ts` | |
@@ -445,7 +449,7 @@ flowchart LR
     F["label_failure.ts"] --> R
     C["crash_notification.ts"] --> R
     P["handle_no_changes_phase.ts"] --> R
-    G["gh_body_redaction.ts<br/>(--body / -f body= via spawnGh)"] --> R
+    G["gh_body_redaction.ts<br/>(--body / --title / -f body=,title= via spawnGh)"] --> R
     GA["gh_guard_cli.ts<br/>(agent bodies via the PATH shim)"] --> R
     HN["handover_note.ts<br/>(note committed to the issue branch)"] --> R
     N["your new sink"] -.must call.-> R
