@@ -26,6 +26,7 @@ import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { scanDirectoriesForHardcodedBranches } from "./hardcoded_branch_check.ts";
 import { scanDirectoriesForDirectNeedsHuman } from "./needs_human_direct_label_check.ts";
 import { scanDirectoriesForGhSpawn } from "./gh_spawn_chokepoint_check.ts";
+import { scanDirectoriesForMissingRedaction } from "./console_redaction_entrypoint_check.ts";
 import { scanDirectoriesForUnguardedCreateLabels } from "./issue_create_label_check.ts";
 import { scanDirectoriesForHomeWorkDir } from "./home_workdir_check.ts";
 import { scanDirectoriesForGitRefArgv } from "./git_ref_argv_check.ts";
@@ -457,6 +458,68 @@ async function runGhSpawnChokepointCheck(
     name,
     status: "FAILED",
     output: `gh spawn chokepoint: FAILED\n${output}`,
+  };
+}
+
+/**
+ * Run the console-redaction entry-point check (Issue #1280).
+ *
+ * `installConsoleRedaction()` patches `console.*` per process, so an entry
+ * point that never calls it prints raw check, setup or `gh` output — a
+ * tokenised clone URL or an `export FOO_TOKEN=…` line included — unmasked.
+ * Every `import.meta.main` module under `worker/deno` must install it.
+ */
+async function runConsoleRedactionEntrypointCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const name = "console redaction entry points";
+  const relDirs = ["worker/deno"];
+
+  let hasDirs = false;
+  for (const relDir of relDirs) {
+    try {
+      const stat = await Deno.stat(`${config.scriptDir}/${relDir}`);
+      if (stat.isDirectory) hasDirs = true;
+    } catch { /* directory doesn't exist */ }
+  }
+
+  if (!hasDirs) {
+    return {
+      name,
+      status: "SKIPPED",
+      output: "deno source directories not found",
+    };
+  }
+
+  const result = await scanDirectoriesForMissingRedaction(
+    config.scriptDir,
+    relDirs,
+  );
+
+  if (result.violations.length === 0) {
+    return {
+      name,
+      status: "PASSED",
+      output:
+        `console redaction entry points: PASSED (${result.filesScanned} files scanned)`,
+    };
+  }
+
+  const output = [
+    ...result.violations.map(
+      (v) => `VIOLATION: ${v.file}:${v.line}: ${v.text}`,
+    ),
+    "",
+    "Entry points that never install console redaction (Issue #1280).",
+    "`installConsoleRedaction()` patches `console.*` per process, so each",
+    "`import.meta.main` module must call it — import it from",
+    "`worker/deno/lib/console_redaction.ts` and call it first thing.",
+  ].join("\n");
+
+  return {
+    name,
+    status: "FAILED",
+    output: `console redaction entry points: FAILED\n${output}`,
   };
 }
 
@@ -1350,6 +1413,11 @@ export async function runQualityGate(
   // `gh issue create` must be built by `guardedLabelArgs`, so the worker
   // label allowlist covers creation as well as existing-issue writes.
   note(await runIssueCreateLabelCheck(config));
+
+  // console redaction entry points (Issue #1280) — every `import.meta.main`
+  // module must install the console patch, so no entry point prints a
+  // check's raw output unmasked.
+  note(await runConsoleRedactionEntrypointCheck(config));
 
   // host work-dir guard (Issue #135, parent #118) — no source file may build
   // a work-dir path from HOME/USERPROFILE outside the commented allowlist,

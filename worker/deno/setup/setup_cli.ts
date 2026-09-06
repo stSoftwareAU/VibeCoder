@@ -32,6 +32,7 @@
  * Issue #923: Migrate setup scripts to Deno TypeScript.
  */
 
+import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { terminalStyler } from "../lib/console_style.ts";
 import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 import {
@@ -1467,6 +1468,11 @@ Subcommands:
 }
 
 if (import.meta.main) {
+  // Issue #1280 (SEC-1217-12): setup runs as its own process, so it installs
+  // its own console patch — setup prints config paths, prerequisite install
+  // output and `gh` error text straight to the terminal.
+  installConsoleRedaction();
+
   const args = Deno.args;
   const subcommand = args[0] ?? "all";
 
