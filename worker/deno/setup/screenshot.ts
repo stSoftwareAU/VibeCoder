@@ -48,6 +48,15 @@ export const PLAYWRIGHT_MCP_VERSION = "0.0.75";
  * (ImgBB API key, GitHub App credentials, SSH command, Anthropic API key).
  * Deno's `--deny-env=<list>` takes precedence over `--allow-env`, so even a
  * compromised release cannot read these via `Deno.env.get()`.
+ *
+ * Issue #1288: that qualifier — "via `Deno.env.get()`" — was the whole hole.
+ * `--deny-env` is a permission check *inside* the Deno runtime; it does not
+ * remove the value from the process environment, and `--allow-run` on the
+ * next line lets the server spawn a child that inherits it verbatim
+ * (`printenv GH_TOKEN` walks straight past the deny list). So every name here
+ * is also **blanked in the server's own environment** by
+ * {@link generateMcpConfig}, which is what a child actually inherits. The
+ * flag stays as defence in depth for the in-process read.
  */
 export const PLAYWRIGHT_MCP_DENIED_ENV: readonly string[] = [
   "ANTHROPIC_API_KEY",
@@ -163,6 +172,49 @@ export function resolveBrowserEnvironment(
   return { browsersPath: baked ? candidate : undefined, profileDir, baked };
 }
 
+/**
+ * Credential stores the Playwright MCP server has no business touching.
+ *
+ * Issue #1288: `--allow-read` / `--allow-write` are granted unscoped, so a
+ * hijacked publish can read `~/.config/gh/hosts.yml` or `~/.ssh/id_*` without
+ * going near the environment at all. Deny-listing the credential stores is
+ * the targeted counterpart to {@link PLAYWRIGHT_MCP_DENIED_ENV}: an allowlist
+ * of every path the server legitimately reads varies with the host layout
+ * (Deno cache, npm cache, fontconfig, the clone) and a near miss breaks every
+ * screenshot, whereas these paths are never legitimate reads.
+ *
+ * Residual risk, stated plainly: like every Deno permission this binds the
+ * server process only. Launching Chromium requires `--allow-run`, and
+ * Chromium can read a `file://` URL itself, so the container boundary — not
+ * this list — is what bounds a spawned child.
+ *
+ * @param deps - Injectable environment seam (testing).
+ * @returns Absolute paths to deny, in a stable order and without duplicates.
+ */
+export function resolveDeniedPaths(
+  deps: Pick<BrowserEnvironmentDeps, "getEnv"> = {},
+): string[] {
+  const getEnv = deps.getEnv ?? defaultGetEnv;
+  const home = getEnv("HOME")?.trim().replace(/[\\/]+$/, "");
+  const paths = [
+    ...(home
+      ? [
+        `${home}/.ssh`,
+        `${home}/.config/gh`,
+        `${home}/.aws`,
+        `${home}/.gnupg`,
+        `${home}/.netrc`,
+        `${home}/.git-credentials`,
+      ]
+      : []),
+    // Relocated stores: the container points these away from HOME.
+    ...["GH_CONFIG_DIR", "CLAUDE_CONFIG_DIR", "GITHUB_APP_PRIVATE_KEY_PATH"]
+      .map((name) => getEnv(name)?.trim())
+      .filter((value): value is string => !!value && value !== ""),
+  ];
+  return [...new Set(paths)];
+}
+
 /** Configuration for screenshot setup. */
 export interface ScreenshotConfig {
   /** Root directory of the VibeCoder project. */
@@ -191,6 +243,12 @@ export interface ScreenshotConfig {
    * {@link resolveBrowserEnvironment}.
    */
   browserEnvironment?: BrowserEnvironment;
+  /**
+   * Paths the MCP server may neither read nor write (Issue #1288). When
+   * omitted they are resolved from the process environment by
+   * {@link resolveDeniedPaths}.
+   */
+  deniedPaths?: readonly string[];
 }
 
 /** Result of a screenshot setup operation. */
@@ -310,6 +368,12 @@ export async function checkLinuxBrowserDeps(
  * browser profile is written to a disposable directory rather than into the
  * mounted checkout.
  *
+ * Issue #1288: permission flags bind the server process, not the children it
+ * spawns under `--allow-run`, so the secrets are additionally blanked in the
+ * `env` block the client hands the server — that is what a child inherits —
+ * and the credential stores in {@link resolveDeniedPaths} are denied so the
+ * otherwise unscoped `--allow-read` / `--allow-write` cannot reach them.
+ *
  * @param config - Screenshot setup configuration.
  * @returns The `.mcp.json` document, pretty-printed.
  * @throws Error when the resolved profile directory sits inside the mounted
@@ -331,10 +395,20 @@ export function generateMcpConfig(config: ScreenshotConfig): string {
   // gate and the PR expect it.
   const outputDir = defaultOutputDir(browser.profileDir);
 
+  // Issue #1288: an empty deny list must drop the flag — `--deny-read=` with
+  // no value denies every read and breaks the server outright.
+  const deniedPaths = [...(config.deniedPaths ?? resolveDeniedPaths())];
+
   const args = [
     "run",
     "--allow-read",
     "--allow-write",
+    ...(deniedPaths.length > 0
+      ? [
+        `--deny-read=${deniedPaths.join(",")}`,
+        `--deny-write=${deniedPaths.join(",")}`,
+      ]
+      : []),
     "--allow-net",
     "--allow-env",
     `--deny-env=${denyEnv}`,
@@ -359,10 +433,23 @@ export function generateMcpConfig(config: ScreenshotConfig): string {
   args.push("--user-data-dir", browser.profileDir);
   args.push("--output-dir", outputDir);
 
-  const playwright: Record<string, unknown> = { command: "deno", args };
-  if (browser.browsersPath) {
-    playwright.env = { PLAYWRIGHT_BROWSERS_PATH: browser.browsersPath };
-  }
+  // Issue #1288: the child inherits the environment, not the permission
+  // flags, so blank the secrets here — this map is what the MCP client hands
+  // the server, and it is what `printenv` in a grandchild sees. Verified
+  // against the Claude Code client: it MERGES this map over the inherited
+  // environment (a value set here overrides the real one, and PATH/HOME
+  // still reach the server), so blanking removes the secret without
+  // stripping the environment the browser needs to launch.
+  const playwright: Record<string, unknown> = {
+    command: "deno",
+    args,
+    env: {
+      ...Object.fromEntries(PLAYWRIGHT_MCP_DENIED_ENV.map((n) => [n, ""])),
+      ...(browser.browsersPath
+        ? { PLAYWRIGHT_BROWSERS_PATH: browser.browsersPath }
+        : {}),
+    },
+  };
 
   return JSON.stringify({ mcpServers: { playwright } }, null, 2);
 }
