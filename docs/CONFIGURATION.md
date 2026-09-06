@@ -3732,7 +3732,28 @@ which cannot block — and trips on either signal:
   simply is not landing, and its repository's whole work stream is stopped
   behind it. `GRQ-GTC#305` sat exactly like that for five days and neither of
   the two signals above saw it. Only reported when the other two are silent —
-  a red PR is a red PR, not a green one.
+  a red PR is a red PR, not a green one — and never for a PR the
+  [merge-conflict ladder](workflows/merge-conflicts.md) owns.
+
+#### The merge-conflict ladder owns its own PRs
+
+A PR GitHub reports `CONFLICTING`, or one carrying `merge-conflict`, belongs to
+the ladder, which resolves, rebases, then abandons and restarts on its own
+schedule. Three rules keep this watchdog out of its way (Issue #1213):
+
+- **It is never "green but unmerged".** A conflicting PR is not landing because
+  it conflicts, so that signal stays silent for it.
+- **The next step names the lane, not a menu.** Any escalation the PR does
+  carry — red CI, an unanswered comment — ends in "the merge-conflict ladder
+  owns it, leave the PR open", never "or close it".
+- **A live escalation is withdrawn when the PR enters the lane.** One retraction
+  comment per PR, deduped by `<!-- blocking-pr-stall-withdrawn -->`.
+
+`NEAT-AI-Ockham#119` is why. It was escalated at 09:57 as "green and unmerged …
+or close it", was labelled `merge-conflict` at 10:00, and a human — acting on
+the fleet's own thirteen-minute-old comment — closed it at 10:10, inside the
+ladder's cooldown and before its first attempt ever ran. The work was redone by
+hand two hours later.
 
 On a trip it posts **one** escalation comment per PR per stall reason (deduped
 by the `needs-human-escalation` HTML marker, so a long stall never accrues a
@@ -3755,7 +3776,9 @@ flowchart TD
     C -->|yes| E["Observe PR:<br/>checks · commits · comments"]
     E --> F{"red CI, no newer push,<br/>past threshold?"}
     E --> G{"authorised comment newer<br/>than fleet reply/push,<br/>past threshold?"}
-    E --> M{"green, no auto-merge armed,<br/>no movement past threshold?"}
+    E --> L{"CONFLICTING or<br/>merge-conflict label?"}
+    L -->|yes| N["Ladder owns it:<br/>no green signal, lane-aware<br/>next step, live escalation<br/>withdrawn"]
+    L -->|no| M{"green, no auto-merge armed,<br/>no movement past threshold?"}
     F -->|yes| K
     M -->|yes| K
     G -->|yes| K{"auto-fix cap<br/>already escalated?"}
@@ -3763,6 +3786,7 @@ flowchart TD
     K -->|no| H["needs-human +<br/>ONE marker-deduped comment<br/>per stall reason"]
     style H fill:#7f1d1d,stroke:#450a0a,color:#fff
     style D fill:#14532d,stroke:#052e16,color:#fff
+    style N fill:#14532d,stroke:#052e16,color:#fff
 ```
 
 ## 📦 In-Repo Configuration removed (`.vibecoder.json`,)

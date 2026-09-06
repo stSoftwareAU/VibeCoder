@@ -458,6 +458,7 @@
         "worker/deno/lib/clarity_phase.ts",
         "worker/deno/lib/claude_auth.ts",
         "worker/deno/lib/claude_health_message.ts",
+        "worker/deno/lib/claude_pool_budget.ts",
         "worker/deno/lib/claude_token_budget.ts",
         "worker/deno/lib/claude_token_selection.ts",
         "worker/deno/lib/clock.ts",

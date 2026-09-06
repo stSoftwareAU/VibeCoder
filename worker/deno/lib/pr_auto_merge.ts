@@ -19,9 +19,12 @@ import {
   retargetOrphanBoundPr,
   type SummaryPrMergeDecision,
 } from "./milestone_children_gate.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import {
+  forkSyncDowngradeWarning,
   isMergeCommitNotAllowed,
+  isMilestoneSyncBranch,
   mergeMethodFlagForHead,
   squashedSyncWarning,
 } from "./milestone_sync_pr.ts";
@@ -109,6 +112,12 @@ export function logAutoMergeOutcome(
 
 /** Options for enabling auto-merge. */
 export interface EnableAutoMergeOptions {
+  /**
+   * Fleet identity inputs for the milestone-gate marker author checks
+   * (Issue #1249, finding 3). Omitted reads the configured fleet, which is
+   * what every production caller does.
+   */
+  authorOptions?: AlertDedupAuthorOptions;
   /** Repository in "owner/repo" format */
   repo: string;
   /** PR number */
@@ -242,6 +251,38 @@ async function fetchBaseRefName(
 }
 
 /**
+ * Whether the PR's head branch lives in **this** repository (Issue #1249,
+ * finding 10).
+ *
+ * Only a same-repository head is evidence about who created the branch —
+ * pushing it needed write access here — so only it may select the
+ * merge-commit deviation. An unreadable answer is `false`: the deviation is
+ * refused rather than granted on a field that could not be read.
+ */
+async function fetchHeadIsSameRepository(
+  repo: string,
+  prNumber: number,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<boolean> {
+  try {
+    const raw = (await ghCommandFn([
+      "pr",
+      "view",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--json",
+      "isCrossRepository",
+      "--jq",
+      ".isCrossRepository",
+    ])).trim();
+    return raw === "false";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Whether a branch enforces required status checks (Issue #4375), via the
  * effective-rules endpoint (covers rulesets and legacy protection). `null`
  * when the lookup fails — callers treat unknown as unprotected.
@@ -335,6 +376,7 @@ export async function enableAutoMerge(
       gate,
       ghCommandFn,
       log,
+      options.authorOptions,
     );
   }
 
@@ -371,6 +413,9 @@ export async function enableAutoMerge(
         defaultBranch: target,
         ghCommandFn,
         log,
+        ...(options.authorOptions
+          ? { authorOptions: options.authorOptions }
+          : {}),
       });
     const message = retargeted
       ? `PR #${prNumber} retargeted from ${routeGate.milestoneBranch} to ${target}: ${routeGate.detail} (Issue #4396)`
@@ -453,7 +498,25 @@ export async function enableAutoMerge(
   // A milestone sync must land as a merge commit, not a squash (Issue #1048):
   // squashed, the default branch never becomes an ancestor of the milestone
   // branch and its deletions return as conflicts. Everything else squashes.
-  let mergeMethod = mergeMethodFlagForHead(options.headRefName);
+  //
+  // The deviation also needs the head to live in this repository, which is
+  // only asked when the name looks like a sync — one extra read on the rare
+  // path, none on the ordinary one (Issue #1249, finding 10). A sync-shaped
+  // head that fails that check is downgraded *loudly*: a quietly squashed
+  // sync is the defect #1048 exists to prevent.
+  const syncShaped = isMilestoneSyncBranch(options.headRefName);
+  const headIsSameRepository = syncShaped
+    ? await fetchHeadIsSameRepository(repo, prNumber, ghCommandFn)
+    : false;
+  if (syncShaped && !headIsSameRepository) {
+    log(
+      forkSyncDowngradeWarning(repo, prNumber, options.headRefName ?? ""),
+    );
+  }
+  let mergeMethod = mergeMethodFlagForHead(
+    options.headRefName,
+    headIsSameRepository,
+  );
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -551,6 +614,7 @@ async function refuseMilestoneMerge(
   gate: Extract<SummaryPrMergeDecision, { decision: "block" }>,
   ghCommandFn: (args: string[]) => Promise<string>,
   log: (message: string) => void,
+  authorOptions?: AlertDedupAuthorOptions,
 ): Promise<EnableAutoMergeResult> {
   if (gate.reason === "lookup-failed") {
     const message =
@@ -576,6 +640,7 @@ async function refuseMilestoneMerge(
     children: gate.children,
     ghCommandFn,
     log,
+    ...(authorOptions ? { authorOptions } : {}),
   });
   return { result: AutoMergeResult.BlockedOpenChildren, message: warning };
 }

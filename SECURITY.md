@@ -1265,6 +1265,52 @@ because a suppressed wrapper produces no error and no log line.
   record is
   [`docs/audits/security-sweep-1216-untrusted-github-ingestion.md`](docs/audits/security-sweep-1216-untrusted-github-ingestion.md).
 
+#### 5e. Presence, reactions and identity — the last twelve ingestion sites (Issue #1249)
+
+The chunk-12c sweep (#1216) found twelve further reads whose decision rested on
+attacker-writable GitHub data. They are recorded here because three of them are
+shapes §5b–§5d did not cover, and a reader looking for "which signals does the
+worker treat as evidence?" needs all three named:
+
+- **Presence is a signal too.** `idle_task_activity.ts` projected only
+  GitHub's own `created_at` off a `CLAIM_LOCK` comment — no attacker payload —
+  and was excluded from the marker-dedup manifest for exactly that reason. But
+  the *presence* of the marker was itself the fleet's alive-signal, so any
+  account posting `<!-- CLAIM_LOCK: x -->` on an open `idle-task` wrapper told
+  `liveness_guard.ts` the fleet was working and suppressed the escalation
+  indefinitely. A projection is safe only when neither the payload **nor the
+  match** drives a decision. The read now carries `.user.login` and fails
+  towards escalating.
+- **A reaction is unauthenticated input.** Any account can add 👀 or 😕 to any
+  comment with no repository permission at all, yet `select(.reactions.eyes
+  == 0)` dropped a comment from the actionable scan for good, and
+  `.reactions.confused > 0` promoted the next failure straight to *permanent*.
+  Both now resolve the reactor through the per-comment reactions endpoint —
+  the treatment `+1` already had (Issue #2484) — and fail towards *processing
+  the comment*, because a comment nobody answers is the silent direction.
+- **Self-identification is not identity.** `pr_branch_lock.ts` kept any lock
+  comment whose embedded `workerId` matched this worker's, "without an author
+  lookup". The worker id is `name@hostname` and is printed verbatim into every
+  public lock comment, so replaying it with an earlier timestamp made two
+  workers both report `acquired: true`. Ours is now the comment whose **id**
+  `gh issue comment` returned; nothing else is ours by construction.
+
+The rest close along lines §5b–§5d already established: the close-summary read
+(`idle_task_freshness.ts`), the two milestone-gate marker dedups
+(`milestone_children_gate.ts`), the stale claim-comment deletion
+(`claim_pr_comment.ts`, which lacked both guards its `claim_issue.ts` sibling
+has) and the published cost tally (`issue_run_stats_comment.ts`) are all
+author-verified now; untrusted titles and GHSA advisory text are scrubbed with
+`scrubUntrustedText` before they are interpolated into a body the worker signs;
+`renderTitle` neutralises single angle brackets so a title cannot close the
+prompts' `<open_issue_titles>` block; the direct-merge method deviation
+requires a same-repository head; and the audit's dependency gate honours a
+cross-repo `Depends on` only when it names a monitored repository.
+
+Directions are pinned by
+`worker/deno/tests/security_untrusted_ingestion_1249_test.ts`, one test per
+finding.
+
 ### 6. Egress Containment — Per-Run Write-Repo Allowlist
 
 The mitigations above narrow what untrusted content can *say* to the worker; egress containment narrows what a successful injection can *do*. Without it, an injection that reads a private repo can post the contents as a public comment in a different repo (four of the monitored repos are public, so the exfiltration sink is real).

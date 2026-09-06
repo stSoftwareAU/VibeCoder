@@ -99,9 +99,15 @@ export interface MarkerDedupCallSite {
  *   - `lib/security_tree_sweep.ts` — its open-issue lookup is `--label`
  *     scoped, and applying a label needs triage permission on the repository,
  *     so the candidate set is not attacker-supplied to begin with.
- *   - (`lib/idle_task_activity.ts` was listed here on the same grounds until
- *     Issue #1216 showed the reasoning was wrong — the marker's *presence* is
- *     itself the trusted signal. It is now a consumer entry below.)
+ *   - `lib/idle_task_activity.ts` — label scoping covers the wrapper listing,
+ *     and its `CLAIM_LOCK` comment read now carries `.user.login` and filters
+ *     every match through `selectFleetAuthoredComments` (Issue #1249,
+ *     finding 1). The earlier justification — that the read "takes only
+ *     GitHub's own `created_at`, never the marker's payload" — was the wrong
+ *     test: the marker's *presence* was itself the liveness signal, so a
+ *     forged comment suppressed the escalation without its payload ever being
+ *     read. A projection is safe only when neither the payload nor the match
+ *     drives a decision.
  *   - `lib/milestone_ruleset_check.ts` (`fetchMilestonePrCheckNames`) — reads
  *     GitHub-generated check names off a `base:milestone` PR search; no marker
  *     is matched, and the result is reported, never used to suppress work.
@@ -188,18 +194,6 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS: readonly string[] = [
   // bound has to be re-expressed against something authenticated before the
   // author check can land, which is a design decision, not a filter.
   "lib/conflict_abandon_restart.ts",
-  // Issue #1216. `latestIdleTaskActivity` reads
-  // `--jq '[.[] | select(.body | test("<!-- CLAIM_LOCK:")) | .created_at]'`,
-  // and the newest match becomes `lastClaimedEpoch` — the fleet's alive-signal
-  // for `liveness_guard.ts`. This file used to be listed above as
-  // deliberately absent, on the grounds that it takes only GitHub's own
-  // `created_at` and never the marker's payload. That reasoning does not hold:
-  // the *presence* of the marker is itself the trusted signal, so any account
-  // commenting `<!-- CLAIM_LOCK: x -->` on an open `idle-task` wrapper forges a
-  // claim no worker made and suppresses the liveness escalation on demand.
-  // `heartbeat_sweep.ts` gates the sibling marker on `isFleetAuthor`; this does
-  // not. Filed as part of #1249.
-  "lib/idle_task_activity.ts",
   // Issue #1216, SEC-1216-02 (#1243). `listOpenIssueBodies` asks for
   // `number,body` and matches `<!-- finding-id: … -->` client-side, so the
   // scanner's `--search … in:body` shape never sees it. A hit makes
@@ -207,11 +201,6 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS: readonly string[] = [
   // `{{KNOWN_OPEN_FINDING_IDS}}` to the scanning agent as a skip-list, so one
   // issue anybody opens suppresses a real finding across ~12 scanners.
   "lib/idle_task_snapshot.ts",
-  // Issue #1216, in #1249. Two `--jq ".[].body"` reads across all authors
-  // (`OPEN_CHILDREN_BLOCK_MARKER`, `ROLLUP_MERGED_RETARGET_MARKER`). The gate
-  // itself still runs; what a planted marker suppresses is the public
-  // explanation of why a merge was refused or a base rewritten.
-  "lib/milestone_children_gate.ts",
   // Issue #1216, SEC-1216-06 (#1247).
   "lib/pr_merge_conflict_scan.ts",
 ];

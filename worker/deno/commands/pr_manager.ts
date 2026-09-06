@@ -52,6 +52,7 @@ import {
   createImgbbUploadFn,
   readImgbbApiKeyFromEnv,
 } from "../lib/imgbb_upload.ts";
+import { resolveAlertDedupAuthors } from "../lib/alert_dedup_authors.ts";
 import { AutoMergeResult, enableAutoMerge } from "../lib/pr_auto_merge.ts";
 import { directMergePr } from "../lib/direct_merge.ts";
 import {
@@ -449,11 +450,16 @@ export const prManagerCommand: Command = {
             message: "Missing required arguments: --repo, --comment-id",
           };
         }
+        // The `confused` marker counts only from the fleet (Issue #1249,
+        // finding 5), so resolve the fleet identity rather than passing the
+        // empty default, which would make this subcommand always answer
+        // "false" — a guard that is dead is worse than one that is absent.
         const hasFailedOnce = await checkPrCommentHasFailedOnce(
           repo,
           commentType,
           commentId,
           runGhCommand,
+          await resolveAlertDedupAuthors({}, (m) => console.warn(m)),
         );
         return { success: true, message: hasFailedOnce ? "true" : "false" };
       }
