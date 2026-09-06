@@ -20,6 +20,7 @@ import {
   extractLabelValues,
 } from "../lib/gh_guard_decision.ts";
 import { normaliseGhArgs } from "../lib/gh_flag_parser.ts";
+import { classifyIssueLifecycle } from "../lib/gh_issue_lifecycle.ts";
 
 /** Context with the write-repo allowlist active for a single repo. */
 const ACTIVE = {
@@ -260,4 +261,136 @@ Deno.test("gh-guard - refuses an off-allowlist api write with an attached -X", (
   );
   assertEquals(decision.allowed, false);
   assertEquals(decision.marker, "WRITE_REPO_BLOCKED");
+});
+
+// ---------------------------------------------------------------------------
+// Shorthand groups (Issue #1219, SEC-1219-01)
+//
+// pflag lets the first value-carrying flag in a shorthand *group* swallow the
+// remainder of the token, so `-iXDELETE` is `-i -X DELETE`. Verified against
+// the installed `gh`: `gh api -iXGET rate_limit` returns 200 with response
+// headers, and `-iXBOGUSMETHOD` is refused by the server with a 403 — the
+// method really is parsed out of the group and sent.
+//
+// Fail direction: every assertion below fails against the pre-fix parser,
+// which only inspected `token[1]` and knew nothing of `f`/`F`.
+// ---------------------------------------------------------------------------
+
+Deno.test("normaliseGhArgs - expands a value flag buried in a shorthand group", () => {
+  assertEquals(normaliseGhArgs(["api", "-iXDELETE"]), [
+    "api",
+    "-i",
+    "-X",
+    "DELETE",
+  ]);
+  assertEquals(normaliseGhArgs(["-ivXPOST"]), ["-i", "-v", "-X", "POST"]);
+  assertEquals(normaliseGhArgs(["-iX=PATCH"]), ["-i", "-X", "PATCH"]);
+  // An empty remainder is already the separated form: the value is next.
+  assertEquals(normaliseGhArgs(["-iX", "DELETE"]), ["-i", "-X", "DELETE"]);
+});
+
+Deno.test("normaliseGhArgs - expands attached -f and -F field values", () => {
+  assertEquals(normaliseGhArgs(["-fstate=closed"]), ["-f", "state=closed"]);
+  assertEquals(normaliseGhArgs(["-Fstate=closed"]), ["-F", "state=closed"]);
+  assertEquals(normaliseGhArgs(["-f=state=closed"]), ["-f", "state=closed"]);
+});
+
+Deno.test("normaliseGhArgs - never invents a flag out of another flag's value", () => {
+  // `-q` is `--jq` and takes the rest of the token, so the `f` inside a jq
+  // expression must not be read as `--raw-field`. Passed through byte-identical.
+  assertEquals(normaliseGhArgs(["api", "-q.fields", "rate_limit"]), [
+    "api",
+    "-q.fields",
+    "rate_limit",
+  ]);
+  assertEquals(normaliseGhArgs(["-bXDELETE"]), ["-bXDELETE"]);
+  // All-boolean groups and long flags are untouched.
+  assertEquals(normaliseGhArgs(["-iv", "--method=POST"]), [
+    "-iv",
+    "--method=POST",
+  ]);
+});
+
+Deno.test("normaliseGhArgs - a value shorthand outside the guard set ends the walk", () => {
+  // Issue #1219 review: `-D` (`gh run download --dir`) and `-j` (`gh run view
+  // --job`) take values but were missing from the value set, so the walk read
+  // past them into the directory or job name. A path beginning `X`, `f` or `R`
+  // then had a flag invented out of it — `-DXPOST` became `-D -X POST`, which
+  // is fabricated mutation evidence against an ordinary download.
+  //
+  // Fail direction: against the pre-fix set (no `D`/`j`) the first assertion
+  // yields ["-D", "-X", "POST"] and this test goes red.
+  assertEquals(normaliseGhArgs(["run", "download", "-DXPOST"]), [
+    "run",
+    "download",
+    "-DXPOST",
+  ]);
+  assertEquals(normaliseGhArgs(["run", "view", "-jfstate=closed"]), [
+    "run",
+    "view",
+    "-jfstate=closed",
+  ]);
+  // The `api` shapes the fix exists for still expand — `i` stays boolean.
+  assertEquals(normaliseGhArgs(["api", "-iXDELETE", "repos/o/r"]), [
+    "api",
+    "-i",
+    "-X",
+    "DELETE",
+    "repos/o/r",
+  ]);
+});
+
+Deno.test("classifyGhMutation - a method hidden in a shorthand group is still a mutation", () => {
+  const info = classifyGhMutation([
+    "api",
+    "-iXDELETE",
+    "repos/attacker/evil/git/refs/heads/main",
+  ]);
+  assertEquals(info?.verb, "api-delete");
+  assertEquals(info?.repo, "attacker/evil");
+});
+
+Deno.test("gh-guard - refuses an off-allowlist api write hidden in a shorthand group", () => {
+  const decision = evaluateGhCommand(
+    ["api", "-iXDELETE", "repos/attacker/evil/git/refs/heads/main"],
+    ACTIVE,
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "WRITE_REPO_BLOCKED");
+});
+
+Deno.test("classifyIssueLifecycle - an attached -fstate=closed is a close, not an edit", () => {
+  for (const token of ["-fstate=closed", "-Fstate=closed"]) {
+    const args = [
+      "api",
+      "-XPATCH",
+      "repos/stSoftwareAU/VibeCoder/issues/1219",
+      token,
+    ];
+    const info = classifyGhMutation(args);
+    const attempt = classifyIssueLifecycle(args, info!);
+    assertEquals(attempt?.verb, "close", `spelling ${token}`);
+    assertEquals(attempt?.issueNumber, 1219, `spelling ${token}`);
+  }
+});
+
+Deno.test("gh-guard - refuses closing the claimed issue via an attached -fstate=closed", () => {
+  const decision = evaluateGhCommand(
+    [
+      "api",
+      "-XPATCH",
+      "repos/stSoftwareAU/VibeCoder/issues/1219",
+      "-fstate=closed",
+    ],
+    {
+      ...ACTIVE,
+      claimedIssue: {
+        repo: "stSoftwareAU/VibeCoder",
+        issueNumber: 1219,
+        allowedVerbs: ["edit"],
+      },
+    },
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "ISSUE_LIFECYCLE_REFUSED");
 });
