@@ -109,7 +109,7 @@ by this PR.
 Added to `worker/deno/tests/quality_gate_test_env_test.ts`:
 
 - `worker/deno/tests/quality_gate_test_env_test.ts::test stage env - a token in the worker's environment cannot be read by the spawned suite (Issue #1281)` —
-  the regression test. Plants `GH_TOKEN=ghs_planted_by_the_parent_…` in an
+  the regression test. Plants a fake installation-token-shaped `GH_TOKEN` in an
   intermediate process, has that process build the real passes with
   `unitTestPasses` and spawn a probe through the gate's own `runCommand`, and
   asserts both passes' children print `ABSENT-IN-GRANDCHILD`. It **fails against
