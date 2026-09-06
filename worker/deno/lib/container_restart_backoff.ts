@@ -453,7 +453,19 @@ export function computeQuotaPauseSleepSeconds(
   quotaPause: QuotaPauseMarker | null | undefined,
   config: ContainerRestartConfig,
   nowMs: number = Date.now(),
+  anotherTokenHasBudget: boolean = false,
 ): number {
+  // Issue #919 follow-up: the pause is per *token*, not per host. Worker start
+  // already ranks the pool and takes the one with the most budget left, so
+  // when a second subscription still has quota the only thing standing between
+  // this host and more work is this sleep. Waiting an hour for the spent
+  // token's window while a fresh one sits unused is the failure the pool was
+  // bought to prevent.
+  //
+  // The base cadence, so the loop comes round, worker start re-ranks, and the
+  // spent token — now measured at zero — ranks last. Nothing here chooses a
+  // token: it only declines to wait for one that is not needed.
+  if (anotherTokenHasBudget) return config.baseSleepSeconds;
   const reset = quotaPause?.resetEpochMs;
   if (typeof reset === "number" && Number.isFinite(reset)) {
     const remaining = Math.ceil((reset - nowMs) / 1000);
@@ -590,6 +602,7 @@ export function nextContainerRestartDecision(
   quotaPause?: QuotaPauseMarker | null,
   networkUnavailable?: boolean,
   terminated?: LaunchTerminationMarker | null,
+  anotherTokenHasBudget?: boolean,
 ): ContainerRestartDecision {
   const kind = classifyLauncherOutcome(
     exitStatus,
@@ -691,6 +704,7 @@ export function nextContainerRestartDecision(
         quotaPause,
         config,
         now() * 1000,
+        anotherTokenHasBudget ?? false,
       ),
       escalate: false,
       recovered: false,
@@ -1270,6 +1284,21 @@ export interface RecordContainerOutcomeOptions {
   repoDir?: string;
   /** Sink for warnings (defaults to `console.error` via the state reporter). */
   warn?: (message: string) => void;
+  /**
+   * Whether some OTHER Claude subscription in this host's token pool still has
+   * budget (Issue #919 follow-up).
+   *
+   * Consulted only when the outcome is a quota pause, so a host with one token
+   * — every single-subscription host — makes no probe and behaves exactly as
+   * before. When it answers true the pause takes the base cadence instead of
+   * the hour-long quota cadence: worker start already ranks the pool and takes
+   * the most-remaining token, so the only thing keeping this host idle is the
+   * sleep, and the spent token will rank last on the next pass.
+   *
+   * A probe that fails must answer false — never leave a host spinning on a
+   * cadence it cannot justify.
+   */
+  poolHasAnotherTokenWithBudget?: () => Promise<boolean>;
 }
 
 /**
@@ -1351,6 +1380,27 @@ export async function recordContainerRestartOutcome(
     options.workDir,
     options.warn,
   );
+  // Only a quota pause can be shortened by another token, so nothing else
+  // pays for the question (Issue #919 follow-up). A probe that throws or is
+  // absent answers false: an unshortened pause is the behaviour this host has
+  // always had, and is never worse than spinning on a cadence we cannot
+  // justify.
+  let anotherTokenHasBudget = false;
+  if (
+    classifyLauncherOutcome(
+        options.exitStatus,
+        options.quotaPause,
+        isNetworkUnavailableLaunch(options.logTail),
+        options.terminated,
+      ) === "quota_pause" && options.poolHasAnotherTokenWithBudget
+  ) {
+    try {
+      anotherTokenHasBudget = await options.poolHasAnotherTokenWithBudget();
+    } catch {
+      anotherTokenHasBudget = false;
+    }
+  }
+
   const decision = nextContainerRestartDecision(
     previous,
     options.exitStatus,
@@ -1360,6 +1410,7 @@ export async function recordContainerRestartOutcome(
     options.quotaPause,
     isNetworkUnavailableLaunch(options.logTail),
     options.terminated,
+    anotherTokenHasBudget,
   );
 
   const persisted = await persistContainerRestartState(
