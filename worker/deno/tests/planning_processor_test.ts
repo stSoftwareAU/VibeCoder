@@ -1823,8 +1823,7 @@ Deno.test("processIssuePlanning - the Failure-Detection gate counts reach the pa
         createdAt: "",
         updatedAt: "",
       }),
-    getIssueComments: () =>
-      Promise.resolve([makeComment("testbot", priorSummary)]),
+    getIssueComments: () => Promise.resolve([]),
     addLabel: () => Promise.resolve(),
     removeLabel: () => Promise.resolve(),
     postComment: (_repo: string, n: number, body: string) => {
