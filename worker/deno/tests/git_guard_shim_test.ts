@@ -1,20 +1,14 @@
 /**
- * Tests for the agent-side `git` guard shim and its guard CLI (Issue #1284).
+ * Tests for the agent-side `git` guard shim (Issue #1284).
  *
- * The shim tests run the generated wrapper for real against a stub `git` that
+ * Every test runs the generated wrapper for real against a stub `git` that
  * logs the argv it was handed, so the assertion is on the argv the chokepoint
- * finally spawns — not on the guard's return value.
+ * finally spawns — not on a return value and never on the script's source text.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import {
-  encodeGitGuardStdout,
-  GIT_GUARD_ALLOW_MARKER,
-  GIT_GUARD_REFUSE_MARKER,
-  runGitGuardCli,
-} from "../lib/git_guard_cli.ts";
 import {
   defaultGitGuardModulePath,
   renderGitShimScript,
@@ -30,77 +24,6 @@ const FAKE_TOKEN = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
 
 /** The placeholder `redactSecrets` substitutes. */
 const MASK = "***REDACTED***";
-
-// ---------------------------------------------------------------------------
-// runGitGuardCli
-// ---------------------------------------------------------------------------
-
-Deno.test("git guard cli - returns the redacted argv for a commit message", () => {
-  const result = runGitGuardCli([
-    "--",
-    "commit",
-    "-m",
-    `chore: ${FAKE_TOKEN}`,
-  ]);
-  assertEquals(result.exitCode, 0);
-  assertEquals(result.stdout, GIT_GUARD_ALLOW_MARKER);
-  assertEquals(result.gitArgs, ["commit", "-m", `chore: ${MASK}`]);
-  assertStringIncludes(result.stderr, "GIT_MESSAGE_REDACTED");
-});
-
-Deno.test("git guard cli - passes an ordinary command through unchanged", () => {
-  const result = runGitGuardCli(["--", "status", "--short"]);
-  assertEquals(result.exitCode, 0);
-  assertEquals(result.gitArgs, ["status", "--short"]);
-  assertEquals(result.stderr, "");
-});
-
-Deno.test("git guard cli - refuses a message it cannot scan", () => {
-  const result = runGitGuardCli(["--", "commit", "-F", "-"]);
-  assertEquals(result.exitCode, 1);
-  assertEquals(result.stdout, GIT_GUARD_REFUSE_MARKER);
-  assertStringIncludes(result.stderr, "GIT_MESSAGE_UNREDACTABLE");
-  assertEquals(result.gitArgs, undefined);
-});
-
-Deno.test("git guard cli - a malformed invocation refuses", () => {
-  const result = runGitGuardCli(["commit", "-m", "no separator"]);
-  assertEquals(result.exitCode, 2);
-  assertEquals(result.stdout, GIT_GUARD_REFUSE_MARKER);
-});
-
-Deno.test("git guard cli - frames the verdict as NUL-terminated fields", () => {
-  assertEquals(
-    encodeGitGuardStdout({
-      exitCode: 0,
-      stdout: GIT_GUARD_ALLOW_MARKER,
-      stderr: "",
-      gitArgs: ["commit", "-m", "line one\nline two"],
-    }),
-    `${GIT_GUARD_ALLOW_MARKER}\0commit\0-m\0line one\nline two\0`,
-  );
-});
-
-// ---------------------------------------------------------------------------
-// renderGitShimScript
-// ---------------------------------------------------------------------------
-
-Deno.test("git guard shim - the script refuses on a missing allow marker", () => {
-  const script = renderGitShimScript({
-    denoPath: "/usr/bin/deno",
-    guardModulePath: "/repo/git_guard_cli.ts",
-    realGitPath: "/usr/bin/git",
-    verdictDir: "/tmp/shim",
-  });
-  // Fail closed: the wrapper only execs on the positive marker.
-  assertStringIncludes(script, `= "${GIT_GUARD_ALLOW_MARKER}"`);
-  assertStringIncludes(script, "GIT_GUARD_ERROR");
-  assertStringIncludes(script, "#!/bin/bash");
-});
-
-// ---------------------------------------------------------------------------
-// The installed wrapper, run for real against a stub git
-// ---------------------------------------------------------------------------
 
 /** A stub `git` on PATH plus the log file it appends its arguments to. */
 interface StubGit {
@@ -134,6 +57,15 @@ function expectInstalled(outcome: GhGuardShimOutcome): GhGuardShim {
   return outcome.shim;
 }
 
+/** Install a shim over `stub`, with the run's allowlist active. */
+function installOver(stub: StubGit): Promise<GhGuardShimOutcome> {
+  return installGhGuardShim({
+    baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
+    active: true,
+    allowedRepos: ["owner/repo"],
+  });
+}
+
 /** Run an installed wrapper with `args` and capture its outcome. */
 async function runShim(
   shimPath: string,
@@ -155,38 +87,88 @@ async function runShim(
   };
 }
 
+/** Read the stub's call log (empty string when it never ran). */
+function readLog(log: string): Promise<string> {
+  return Deno.readTextFile(log).catch(() => "");
+}
+
+/** The message spellings `git` accepts, each carrying the same fake token. */
+const MESSAGE_SPELLINGS: ReadonlyArray<{ name: string; args: string[] }> = [
+  { name: "-m <text>", args: ["commit", "-m", `chore: ${FAKE_TOKEN}`] },
+  { name: "-m<text>", args: ["commit", `-m${FAKE_TOKEN}`] },
+  // The cluster is the case an anchored `-m*` fast path would have skipped.
+  { name: "-am <text> (cluster)", args: ["commit", "-am", FAKE_TOKEN] },
+  { name: "-am<text> (cluster)", args: ["commit", `-am${FAKE_TOKEN}`] },
+  { name: "--message <text>", args: ["commit", "--message", FAKE_TOKEN] },
+  { name: "--message=<text>", args: ["commit", `--message=${FAKE_TOKEN}`] },
+  // `git` expands any unambiguous long-option prefix.
+  {
+    name: "--mess <text> (abbreviated)",
+    args: ["commit", "--mess", FAKE_TOKEN],
+  },
+  { name: "tag -m <text>", args: ["tag", "-a", "v1", "-m", FAKE_TOKEN] },
+];
+
+for (const spelling of MESSAGE_SPELLINGS) {
+  Deno.test({
+    name:
+      `git-guard-shim - a token spelled ${spelling.name} never reaches git (Issue #1284)`,
+    permissions: { run: true, read: true, write: true, env: true },
+    ignore: Deno.build.os === "windows",
+    fn: async () => {
+      const stub = await makeStubGit();
+      try {
+        const shim = expectInstalled(await installOver(stub));
+        assertEquals(shim.gitShimPath, `${shim.dir}/git`);
+
+        const result = await runShim(
+          shim.gitShimPath!,
+          shim.env,
+          spelling.args,
+        );
+        assertEquals(result.code, 0, result.stderr);
+
+        const logged = await readLog(stub.log);
+        assertEquals(
+          logged.includes(FAKE_TOKEN),
+          false,
+          `the token must never reach the git binary (${spelling.name})`,
+        );
+        assertStringIncludes(logged, MASK);
+        assertStringIncludes(result.stderr, "GIT_MESSAGE_REDACTED");
+
+        await shim.cleanup();
+      } finally {
+        await Deno.remove(stub.dir, { recursive: true });
+      }
+    },
+  });
+}
+
 Deno.test({
-  name:
-    "git-guard-shim - a token in the agent's commit message never reaches git (Issue #1284)",
+  name: "git-guard-shim - a token in a -F message file never reaches git",
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   fn: async () => {
     const stub = await makeStubGit();
     try {
-      const shim = expectInstalled(
-        await installGhGuardShim({
-          baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
-          active: true,
-          allowedRepos: ["owner/repo"],
-        }),
-      );
-      assertEquals(shim.gitShimPath, `${shim.dir}/git`);
+      const shim = expectInstalled(await installOver(stub));
+      const messageFile = `${stub.dir}/message.txt`;
+      const original = `chore: from a file\n\n${FAKE_TOKEN}\n`;
+      await Deno.writeTextFile(messageFile, original);
 
       const result = await runShim(shim.gitShimPath!, shim.env, [
         "commit",
-        "-m",
-        `chore: ${FAKE_TOKEN}`,
+        "-F",
+        messageFile,
       ]);
       assertEquals(result.code, 0, result.stderr);
 
-      const logged = await Deno.readTextFile(stub.log);
-      assertEquals(
-        logged.includes(FAKE_TOKEN),
-        false,
-        "the token must never reach the git binary",
-      );
+      const logged = await readLog(stub.log);
+      assertEquals(logged.includes(FAKE_TOKEN), false);
       assertStringIncludes(logged, MASK);
-      assertStringIncludes(result.stderr, "GIT_MESSAGE_REDACTED");
+      // The agent's own file is never rewritten.
+      assertEquals(await Deno.readTextFile(messageFile), original);
 
       await shim.cleanup();
     } finally {
@@ -202,13 +184,7 @@ Deno.test({
   fn: async () => {
     const stub = await makeStubGit();
     try {
-      const shim = expectInstalled(
-        await installGhGuardShim({
-          baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
-          active: true,
-          allowedRepos: ["owner/repo"],
-        }),
-      );
+      const shim = expectInstalled(await installOver(stub));
 
       const result = await runShim(shim.gitShimPath!, shim.env, [
         "push",
@@ -216,7 +192,34 @@ Deno.test({
         "HEAD",
       ]);
       assertEquals(result.code, 0, result.stderr);
-      assertEquals(await Deno.readTextFile(stub.log), "push\norigin\nHEAD\n");
+      assertEquals(await readLog(stub.log), "push\norigin\nHEAD\n");
+
+      await shim.cleanup();
+    } finally {
+      await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "git-guard-shim - a routing argument the guard sees is still byte-for-byte",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const stub = await makeStubGit();
+    try {
+      const shim = expectInstalled(await installOver(stub));
+
+      // `--format` reaches the guard (it contains an "m") and must come back
+      // exactly as it went in.
+      const result = await runShim(shim.gitShimPath!, shim.env, [
+        "log",
+        "-1",
+        "--format=%H",
+      ]);
+      assertEquals(result.code, 0, result.stderr);
+      assertEquals(await readLog(stub.log), "log\n-1\n--format=%H\n");
 
       await shim.cleanup();
     } finally {
@@ -232,23 +235,19 @@ Deno.test({
   fn: async () => {
     const stub = await makeStubGit();
     try {
-      const shim = expectInstalled(
-        await installGhGuardShim({
-          baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
-          active: true,
-          allowedRepos: ["owner/repo"],
-        }),
-      );
+      const shim = expectInstalled(await installOver(stub));
       // Re-render the wrapper against a guard module that does not exist:
       // `deno run` then exits non-zero and writes no marker, which must
       // refuse rather than pass the command through.
-      const script = renderGitShimScript({
-        denoPath: Deno.execPath(),
-        guardModulePath: `${stub.dir}/absent_guard.ts`,
-        realGitPath: `${stub.dir}/git`,
-        verdictDir: shim.dir,
-      });
-      await Deno.writeTextFile(shim.gitShimPath!, script);
+      await Deno.writeTextFile(
+        shim.gitShimPath!,
+        renderGitShimScript({
+          denoPath: Deno.execPath(),
+          guardModulePath: `${stub.dir}/absent_guard.ts`,
+          realGitPath: `${stub.dir}/git`,
+          verdictDir: shim.dir,
+        }),
+      );
       await Deno.chmod(shim.gitShimPath!, 0o755);
 
       const result = await runShim(shim.gitShimPath!, shim.env, [
@@ -259,7 +258,7 @@ Deno.test({
       assert(result.code !== 0, "a broken guard must refuse the git call");
       assertStringIncludes(result.stderr, "GIT_GUARD_ERROR");
       assertEquals(
-        await Deno.readTextFile(stub.log).catch(() => ""),
+        await readLog(stub.log),
         "",
         "the real git must never run when the guard could not be evaluated",
       );
@@ -267,6 +266,35 @@ Deno.test({
       await shim.cleanup();
     } finally {
       await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "git-guard-shim - no git on PATH means no git wrapper (there is nothing to guard)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const dir = await Deno.makeTempDir({ prefix: "git_guard_ghonly_" });
+    try {
+      await Deno.writeTextFile(`${dir}/gh`, "#!/bin/bash\nexit 0\n");
+      await Deno.chmod(`${dir}/gh`, 0o755);
+
+      const shim = expectInstalled(
+        await installGhGuardShim({
+          baseEnv: { ...Deno.env.toObject(), PATH: dir },
+          active: true,
+          allowedRepos: ["owner/repo"],
+        }),
+      );
+      assertEquals(shim.gitShimPath, undefined);
+      // The child searches the same directories, so it has no git either.
+      assertEquals(shim.env["PATH"], `${shim.dir}:${dir}`);
+
+      await shim.cleanup();
+    } finally {
+      await Deno.remove(dir, { recursive: true });
     }
   },
 });

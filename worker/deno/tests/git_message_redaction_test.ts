@@ -80,6 +80,45 @@ Deno.test("git message redaction - masks tag, merge, notes and stash messages", 
   );
 });
 
+Deno.test("git message redaction - masks an abbreviated long option", () => {
+  // `git` expands any unambiguous prefix, so `--mess` commits exactly as
+  // `--message` does and must not be a one-character bypass.
+  for (const flag of ["--m", "--mes", "--mess", "--messag"]) {
+    assertEquals(
+      redactGitMessageArgs(["commit", flag, FAKE_TOKEN]),
+      ["commit", flag, MASK],
+      `${flag} must carry the same redaction as --message`,
+    );
+  }
+  assertEquals(
+    redactGitMessageArgs(["commit", `--mess=${FAKE_TOKEN}`]),
+    ["commit", `--message=${MASK}`],
+  );
+  assertEquals(
+    redactGitMessageArgs(["commit", "--fil", "/tmp/msg.txt"], () => FAKE_TOKEN),
+    ["commit", "--message", MASK],
+  );
+});
+
+Deno.test("git message redaction - a --file prefix git itself rejects is inert", () => {
+  // `--fi` is ambiguous with `--fixup`, so git rejects it; treating it as a
+  // message file would turn `git commit --fixup <ref>` into a refusal.
+  const args = ["commit", "--fi", "/tmp/msg.txt"];
+  assertEquals(redactGitMessageArgs(args, () => FAKE_TOKEN), args);
+  const fixup = ["commit", "--fixup", "deadbeef"];
+  assertEquals(redactGitMessageArgs(fixup, () => FAKE_TOKEN), fixup);
+});
+
+Deno.test("git message redaction - masks a commit-tree plumbing message", () => {
+  assertEquals(
+    redactGitMessageArgs(["commit-tree", "abc123", "-m", FAKE_TOKEN]),
+    ["commit-tree", "abc123", "-m", MASK],
+  );
+  // `-p <parent>` is routing.
+  const routing = ["commit-tree", "abc123", "-p", "deadbeef"];
+  assertEquals(redactGitMessageArgs(routing), routing);
+});
+
 Deno.test("git message redaction - scopes past git's own global options", () => {
   assertEquals(
     redactGitMessageArgs(["-C", "/repo", "commit", "-m", FAKE_TOKEN]),

@@ -20,6 +20,7 @@ import {
 import { incrementCounter } from "./fault_tolerance_counters.ts";
 import { auditGitMutation } from "./audit_hook.ts";
 import {
+  gitSubcommandIndex,
   redactGitMessageArgs,
   UnredactableMessageError,
 } from "./git_message_redaction.ts";
@@ -175,6 +176,8 @@ export async function runGitCommand(
   // starts. A pushed commit message is permanent public history, so this is
   // the git counterpart of `redactGhBodyArgs` at the `gh` chokepoint. Only
   // text-carrying arguments are rewritten; routing arguments are untouched.
+  // Named for the log lines below: `args[0]` is `-C` for `git -C /repo commit`.
+  const subcommandName = args[gitSubcommandIndex(args)] ?? gitSubcommand;
   let effectiveArgs: string[];
   try {
     effectiveArgs = redactGitMessageArgs(args, readMessageFileSync);
@@ -186,14 +189,14 @@ export async function runGitCommand(
       ok: false,
       error: new Error(
         `[SECURITY] [GIT_MESSAGE_UNREDACTABLE] refusing to run git ` +
-          `${gitSubcommand}: ${error.message}`,
+          `${subcommandName}: ${error.message}`,
       ),
     };
   }
   if (effectiveArgs.some((arg, i) => arg !== args[i])) {
     console.error(
       "[SECURITY] [GIT_MESSAGE_REDACTED] a secret was masked in the message " +
-        `of this git ${gitSubcommand} before it reached history (Issue #1284)`,
+        `of this git ${subcommandName} before it reached history (Issue #1284)`,
     );
   }
 

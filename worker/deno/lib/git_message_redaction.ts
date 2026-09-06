@@ -99,6 +99,12 @@ const MESSAGE_SUBCOMMANDS: ReadonlyMap<string, MessageSubcommand> = new Map([
     file: true,
     valueShorts: new Set(["C", "c", "t", "S", "u"]),
   }],
+  // The plumbing spelling, reachable from the agent's own shell: -p <parent>
+  ["commit-tree", {
+    message: true,
+    file: true,
+    valueShorts: new Set(["p", "S"]),
+  }],
   // -u <keyid>, -n <num> (list mode)
   ["tag", {
     message: true,
@@ -189,7 +195,47 @@ export function redactGitMessageArgs(
 }
 
 /**
- * Redact a `--message`/`--file` option in place.
+ * Whether `name` is an abbreviation `git` would expand to `full`.
+ *
+ * `git` accepts any unambiguous prefix of a long option, so `git commit --mess
+ * "$TOKEN"` commits exactly as `--message` does. Matching the full spelling
+ * alone would leave that as a one-character bypass of the whole control.
+ *
+ * `minLength` is the point at which the prefix stops colliding with another
+ * option of these subcommands: `--fil` is the shortest unambiguous form of
+ * `--file` (`--fi` collides with `--fixup`), and anything shorter `git` itself
+ * rejects, so it can carry no message. `--message` needs no floor — the worst
+ * a false match can do there is redact the value of some other `--m…` option,
+ * and a routing value never matches a secret shape.
+ */
+function isLongOptionPrefix(
+  name: string,
+  full: string,
+  minLength: number,
+): boolean {
+  return name.length >= minLength && name.length <= full.length &&
+    full.startsWith(name);
+}
+
+/** Shortest prefix of `--file` that no other option of these subcommands shares. */
+const FILE_PREFIX_MIN = 3;
+
+/**
+ * Split `--name` or `--name=value` into its parts, or undefined when `arg` is
+ * not a long option.
+ */
+function splitLongOption(
+  arg: string,
+): { name: string; inlineValue?: string } | undefined {
+  if (!arg.startsWith("--") || arg === "--") return undefined;
+  const body = arg.substring(2);
+  const eq = body.indexOf("=");
+  if (eq < 0) return { name: body };
+  return { name: body.substring(0, eq), inlineValue: body.substring(eq + 1) };
+}
+
+/**
+ * Redact a `--message`/`--file` option — or any abbreviation of one — in place.
  *
  * @returns The index the caller's loop should continue from (advanced by one
  *   when the option's value was a separate argument).
@@ -200,19 +246,28 @@ function redactLongOption(
   spec: MessageSubcommand,
   readMessageFile?: MessageFileReader,
 ): number {
-  const arg = out[i] ?? "";
+  const parsed = splitLongOption(out[i] ?? "");
+  if (!parsed) return i;
+  const { name, inlineValue } = parsed;
   const next = out[i + 1];
 
-  if (spec.message && arg === "--message" && next !== undefined) {
+  if (spec.message && isLongOptionPrefix(name, "message", 1)) {
+    if (inlineValue !== undefined) {
+      out[i] = `--message=${redactSecrets(inlineValue)}`;
+      return i;
+    }
+    if (next === undefined) return i;
     out[i + 1] = redactSecrets(next);
     return i + 1;
   }
-  if (spec.message && arg.startsWith("--message=")) {
-    const text = arg.substring("--message=".length);
-    out[i] = `--message=${redactSecrets(text)}`;
-    return i;
-  }
-  if (spec.file && arg === "--file" && next !== undefined) {
+
+  if (spec.file && isLongOptionPrefix(name, "file", FILE_PREFIX_MIN)) {
+    if (inlineValue !== undefined) {
+      const masked = maskedMessageFile(inlineValue, readMessageFile);
+      if (masked !== undefined) out[i] = `--message=${masked}`;
+      return i;
+    }
+    if (next === undefined) return i;
     const masked = maskedMessageFile(next, readMessageFile);
     if (masked !== undefined) {
       out[i] = "--message";
@@ -220,12 +275,7 @@ function redactLongOption(
     }
     return i + 1;
   }
-  if (spec.file && arg.startsWith("--file=")) {
-    const path = arg.substring("--file=".length);
-    const masked = maskedMessageFile(path, readMessageFile);
-    if (masked !== undefined) out[i] = `--message=${masked}`;
-    return i;
-  }
+
   return i;
 }
 

@@ -24,11 +24,23 @@
  * ```
  *
  * **The fast path is a superset, not a decision.** A `git` invocation with no
- * argument beginning `-m`, `--message`, `-F` or `--file` carries no message
- * for the guard to redact, so it delegates straight to the real binary rather
- * than paying a Deno start-up for every `git status` the agent runs. That
- * prefix set is deliberately wider than the flags the guard itself acts on, so
- * the shell test can never skip a command the guard would have rewritten.
+ * option containing an `m` or an `F`, and no long `--f…` option, carries no
+ * message for the guard to redact, so it delegates straight to the real binary
+ * rather than paying a Deno start-up for every `git status` the agent runs.
+ * The test is on the whole option, not its first letter, precisely because
+ * `git` clusters short options: `git commit -am "$GH_TOKEN"` is the same
+ * exploit as `-m` and an anchored `-m*` test would have waved it through.
+ * The patterns over-match by design (`--format`, `--amend` and `--force` all
+ * reach the guard and come back untouched); under-matching would be a silent
+ * bypass.
+ *
+ * **Not covered: the shim rides on the `gh` install.** The wrapper is written
+ * by `installGhGuardShim`, so a run that resolves no `gh` binary — or an
+ * operator who opts into an unguarded agent with
+ * `VIBE_ALLOW_UNGUARDED_AGENT_GH=1` — gets no `git` wrapper either. Stated
+ * rather than closed: the two shims share one directory, one PATH prefix and
+ * one cleanup, and splitting the install would trade a real simplification for
+ * a case in which the run is already knowingly unguarded.
  *
  * **Fails closed.** If the guard cannot be evaluated (missing Deno, missing
  * module, any non-refusal error) the wrapper refuses the call rather than
@@ -83,12 +95,15 @@ export function renderGitShimScript(opts: {
 set -uo pipefail
 
 # Fast path: nothing that could carry a message, so there is nothing to
-# redact. The prefixes tested here are a strict superset of the flags the
-# guard acts on, so this can never skip a command it would have rewritten.
+# redact. The patterns are a strict superset of what the guard rewrites —
+# ANY option containing an "m" or an "F" (so a short cluster such as -am or
+# -aF is caught, not just a leading -m), plus every long --f… form. They
+# deliberately over-match (--format, --amend, --force all reach the guard and
+# come back untouched); under-matching would be a silent bypass.
 needs_guard=0
 for arg in "$@"; do
   case "$arg" in
-    -m*|--message*|-F*|--file*) needs_guard=1; break ;;
+    -*m*|-*F*|--f*) needs_guard=1; break ;;
   esac
 done
 if [ "$needs_guard" -eq 0 ]; then
