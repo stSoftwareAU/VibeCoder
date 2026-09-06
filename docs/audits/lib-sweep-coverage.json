@@ -540,6 +540,7 @@
         "worker/deno/lib/gemini_auth.ts",
         "worker/deno/lib/gemini_executor.ts",
         "worker/deno/lib/gh_call_metrics.ts",
+        "worker/deno/lib/gh_credential_disclosure_guard.ts",
         "worker/deno/lib/gh_flag_parser.ts",
         "worker/deno/lib/gh_issue_lifecycle.ts",
         "worker/deno/lib/gh_local_state_guard.ts",
