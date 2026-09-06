@@ -68,7 +68,10 @@ background service is offered, where files land — is covered in
    flow per configured coding-agent provider**, in the order
    `.config.json` enables them (Issue #730). Claude's flow is the one it
    always was — setup offers to run `claude setup-token` for you and proves
-   the token with a live call before storing it; every other provider gets a
+   the token with a live call before storing it. The owner-only pty transcript
+   that capture reads the token out of is removed on **every** exit path,
+   including a Ctrl-C at the browser sign-in, so the token never rests in the
+   temp directory (Issue #1300). Every other provider gets a
    hidden paste of its own credential variable, written to
    `<provider>/provider.env` with the same owner-only permissions. A
    Codex-only host is asked for `OPENAI_API_KEY` and never sees a Claude
