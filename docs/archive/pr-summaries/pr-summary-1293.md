@@ -178,5 +178,11 @@ No existing test was modified, commented out, or removed.
 
 Commands run: `deno fmt`, `deno lint`, `deno check --frozen --lock=deno.lock`,
 `deno test tests/setup_screenshot_test.ts tests/agent_mcp_config_test.ts`
-(69 passed), `tests/deno_lock_declared_deps_test.ts` (unchanged, still green),
-and `./quality.sh` — see the gate note below.
+(69 passed), `tests/deno_lock_declared_deps_test.ts` (unchanged, still green).
+
+Full gate: `./quality.sh < /dev/null` run in the foreground after the final
+edit — `Result: PASSED (with skipped checks)` in 2m22s, every check green
+(semgrep, markdownlint, mermaid, deno tests/lint/check/fmt and the chokepoint
+guards); the three `SKIPPED` entries (`config integration`, `pages-liquid`,
+`mermaid built output`) are the gate's own environment-gated checks, unrelated
+to this diff.
