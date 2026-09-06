@@ -37,6 +37,10 @@ import {
   escalateToHuman,
   type EscalateToHumanDeps,
 } from "./needs_human_escalation.ts";
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
 
 /** One row of the published coverage table. */
 export interface CoverageRow {
@@ -269,8 +273,16 @@ export function judgePlanCoverage(markdown: string): PlanCoverageVerdict {
 /** Parent issue payload the gate reads. */
 interface ParentPayload {
   body?: string;
-  comments?: Array<{ body?: string }>;
+  comments?: Array<{ body?: string; author?: { login?: string | null } }>;
 }
+
+/**
+ * What an unattributable coverage comment costs, in this site's own words.
+ */
+const COVERAGE_UNVERIFIED_OUTCOME =
+  "no comment counts as a published coverage table and the gate escalates to " +
+  "a human. A needless escalation costs a human a moment; a plan passed on a " +
+  "table a stranger posted drops the ask this gate exists to surface";
 
 /**
  * Fetch the planning parent and judge the coverage table it carries.
@@ -280,12 +292,24 @@ interface ParentPayload {
  * the parent body is the final fallback. A read failure fails the gate with
  * `readFailed` set — coverage that cannot be verified is not coverage that
  * passed.
+ *
+ * **Comments are author-verified (Issue #1244).** The first candidate carrying
+ * a table wins, so one comment from any account — a two-column table whose
+ * rows all name `#1` — used to pass the gate and return before the parent's own
+ * failing table was ever examined. Only fleet-authored comments are candidates
+ * now; the rest are discarded and the parent body is examined as before, so an
+ * unverifiable table fails towards escalation rather than towards a pass.
  */
 export async function runPlanCoverageGate(opts: {
   repo: string;
   parentIssueNumber: number;
   ghCommandFn: (args: string[]) => Promise<string>;
   logger: Pick<Logger, "info" | "warn">;
+  /**
+   * Fleet identity for the comment author check (Issue #1244). Omitted means
+   * "read the configured fleet identity" from `CONFIG_PATH` / `GITHUB_USER`.
+   */
+  authorOptions?: AlertDedupAuthorOptions;
 }): Promise<PlanCoverageVerdict> {
   const { repo, parentIssueNumber, ghCommandFn, logger } = opts;
 
@@ -319,8 +343,21 @@ export async function runPlanCoverageGate(opts: {
     };
   }
 
+  // Only comments carrying a table are put to the author check, so the discard
+  // log names genuine candidates from outside the fleet, not chatter.
+  const tableComments = (payload.comments ?? [])
+    .map((c) => ({ author: c.author?.login ?? null, body: c.body ?? "" }))
+    .filter((c) => extractCoverageTable(c.body) !== null);
+  const fleetComments = await selectFleetAuthoredComments(
+    tableComments,
+    `plan coverage table ${repo}#${parentIssueNumber}`,
+    opts.authorOptions ?? {},
+    (message) => logger.warn(message),
+    COVERAGE_UNVERIFIED_OUTCOME,
+  );
+
   const candidates = [
-    ...(payload.comments ?? []).map((c) => c.body ?? "").reverse(),
+    ...fleetComments.map((c) => c.body).reverse(),
     payload.body ?? "",
   ];
 

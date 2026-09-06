@@ -151,7 +151,11 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES: readonly string[] = [];
  * across all authors (`milestone_children_gate.ts`, #1249) or matches
  * client-side over a plain `gh issue list` (`idle_task_snapshot.ts`, #1243 —
  * fixed there, and still invisible to the scanner, which is why its entry had
- * to be deleted by hand) is invisible to it. Both lists were empty while six
+ * to be deleted by hand) is invisible to it. So is the whole planning
+ * close-out path (#1244): a `gh search issues --match body` with no `--search`
+ * expression, a plain `gh issue list` matched client-side, and two
+ * `gh issue view --json …,comments` reads — four sites the scanner cannot
+ * classify, each now filtered through this module's author check. Both lists were empty while six
  * live instances of the class sat in the tree, which is what #1216 found and
  * fixed.
  *

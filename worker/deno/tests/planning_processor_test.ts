@@ -59,10 +59,22 @@ const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
  * path serve a compliant table from that read — exactly what the publish turn
  * posts in production. Tests asserting other paths are unaffected.
  */
+/**
+ * The host login `makeContext` runs as — the fleet identity every planning
+ * close-out author check compares against (Issue #1244).
+ */
+const FLEET_LOGIN = "testbot";
+
+/** Author options a unit test states instead of reading a `.config.json`. */
+const FLEET_OPTIONS = { fleetAuthors: [FLEET_LOGIN] };
+
 function coverageReadResponse(): string {
   return JSON.stringify({
     body: "Parent",
     comments: [{
+      // Fleet-authored: the gate only considers comments the fleet wrote
+      // (Issue #1244), and `makeContext` runs as `testbot`.
+      author: { login: FLEET_LOGIN },
       body: [
         "## Plan published",
         "",
@@ -266,11 +278,29 @@ Deno.test("detectCreatedSubIssues - case insensitive matching", () => {
 Deno.test("checkSubIssuesOnGitHub - returns URLs when sub-issues found", async () => {
   const mockGh = () =>
     Promise.resolve(JSON.stringify([
-      { number: 101, url: "https://github.com/org/repo/issues/101" },
-      { number: 102, url: "https://github.com/org/repo/issues/102" },
-      { number: 100, url: "https://github.com/org/repo/issues/100" }, // planning issue itself
+      {
+        number: 101,
+        url: "https://github.com/org/repo/issues/101",
+        author: { login: FLEET_LOGIN },
+      },
+      {
+        number: 102,
+        url: "https://github.com/org/repo/issues/102",
+        author: { login: FLEET_LOGIN },
+      },
+      // planning issue itself
+      {
+        number: 100,
+        url: "https://github.com/org/repo/issues/100",
+        author: { login: FLEET_LOGIN },
+      },
     ]));
-  const result = await checkSubIssuesOnGitHub("org/repo", 100, mockGh);
+  const result = await checkSubIssuesOnGitHub(
+    "org/repo",
+    100,
+    mockGh,
+    FLEET_OPTIONS,
+  );
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.length, 2);
@@ -288,10 +318,15 @@ Deno.test("checkSubIssuesOnGitHub - returns URLs when sub-issues found", async (
 Deno.test("checkSubIssuesOnGitHub - constructs URLs when url field missing", async () => {
   const mockGh = () =>
     Promise.resolve(JSON.stringify([
-      { number: 101 },
-      { number: 100 }, // planning issue itself
+      { number: 101, author: { login: FLEET_LOGIN } },
+      { number: 100, author: { login: FLEET_LOGIN } }, // planning issue itself
     ]));
-  const result = await checkSubIssuesOnGitHub("org/repo", 100, mockGh);
+  const result = await checkSubIssuesOnGitHub(
+    "org/repo",
+    100,
+    mockGh,
+    FLEET_OPTIONS,
+  );
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.length, 1);
@@ -329,6 +364,60 @@ Deno.test("checkSubIssuesOnGitHub - returns error on API failure", async () => {
   assertEquals(result.ok, false);
 });
 
+// ---------------------------------------------------------------------------
+// checkSubIssuesOnGitHub — author verification (Issue #1244)
+// ---------------------------------------------------------------------------
+
+Deno.test("checkSubIssuesOnGitHub - asks GitHub who wrote each match", async () => {
+  const calls: string[][] = [];
+  const mockGh = (args: string[]) => {
+    calls.push(args);
+    return Promise.resolve("[]");
+  };
+  await checkSubIssuesOnGitHub("org/repo", 100, mockGh, FLEET_OPTIONS);
+  const jsonIdx = calls[0]?.indexOf("--json") ?? -1;
+  assert(jsonIdx >= 0, "the search requests JSON fields");
+  assertStringIncludes(calls[0]?.[jsonIdx + 1] ?? "", "author");
+});
+
+Deno.test("checkSubIssuesOnGitHub - an outsider's 'Part of #N' issue is not a sub-issue", async () => {
+  const logs: string[] = [];
+  const mockGh = () =>
+    Promise.resolve(JSON.stringify([
+      {
+        number: 101,
+        url: "https://github.com/org/repo/issues/101",
+        author: { login: "outsider" },
+      },
+    ]));
+  const result = await checkSubIssuesOnGitHub("org/repo", 100, mockGh, {
+    ...FLEET_OPTIONS,
+    log: (message: string) => logs.push(message),
+  });
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value, []);
+  assert(logs.some((l) => l.includes("authored outside the fleet")));
+});
+
+Deno.test("checkSubIssuesOnGitHub - an unresolved fleet discards every match", async () => {
+  const logs: string[] = [];
+  const mockGh = () =>
+    Promise.resolve(JSON.stringify([
+      {
+        number: 101,
+        url: "https://github.com/org/repo/issues/101",
+        author: { login: FLEET_LOGIN },
+      },
+    ]));
+  const result = await checkSubIssuesOnGitHub("org/repo", 100, mockGh, {
+    fleetAuthors: [],
+    log: (message: string) => logs.push(message),
+  });
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value, []);
+  assert(logs.some((l) => l.includes("fleet author set unresolved")));
+});
+
 // ============================================================================
 // listSubIssuesViaIssueList — REST-API fallback (Issue #1872)
 // ============================================================================
@@ -352,27 +441,36 @@ Deno.test("listSubIssuesViaIssueList - finds sub-issues via REST list with 'Part
           number: 130,
           url: "https://github.com/org/repo/issues/130",
           body: "Parent issue",
+          author: { login: FLEET_LOGIN },
         },
         {
           number: 131,
           url: "https://github.com/org/repo/issues/131",
           body: "Child A\n\nPart of #130",
+          author: { login: FLEET_LOGIN },
         },
         {
           number: 132,
           url: "https://github.com/org/repo/issues/132",
           body: "## Context\nPart of #130",
+          author: { login: FLEET_LOGIN },
         },
         {
           number: 99,
           url: "https://github.com/org/repo/issues/99",
           body: "Unrelated",
+          author: { login: FLEET_LOGIN },
         },
       ]));
     }
     return Promise.resolve("");
   };
-  const result = await listSubIssuesViaIssueList("org/repo", 130, mockGh);
+  const result = await listSubIssuesViaIssueList(
+    "org/repo",
+    130,
+    mockGh,
+    FLEET_OPTIONS,
+  );
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.length, 2);
@@ -394,14 +492,21 @@ Deno.test("listSubIssuesViaIssueList - excludes the planning issue itself", asyn
         number: 130,
         url: "https://github.com/org/repo/issues/130",
         body: "Self-reference Part of #130",
+        author: { login: FLEET_LOGIN },
       },
       {
         number: 131,
         url: "https://github.com/org/repo/issues/131",
         body: "Child\n\nPart of #130",
+        author: { login: FLEET_LOGIN },
       },
     ]));
-  const result = await listSubIssuesViaIssueList("org/repo", 130, mockGh);
+  const result = await listSubIssuesViaIssueList(
+    "org/repo",
+    130,
+    mockGh,
+    FLEET_OPTIONS,
+  );
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.length, 1);
@@ -416,19 +521,27 @@ Deno.test("listSubIssuesViaIssueList - matches 'Parent: #N' and 'Child of #N' pa
         number: 200,
         url: "https://github.com/org/repo/issues/200",
         body: "Parent: #100",
+        author: { login: FLEET_LOGIN },
       },
       {
         number: 201,
         url: "https://github.com/org/repo/issues/201",
         body: "Child of #100",
+        author: { login: FLEET_LOGIN },
       },
       {
         number: 202,
         url: "https://github.com/org/repo/issues/202",
         body: "PART OF #100",
+        author: { login: FLEET_LOGIN },
       },
     ]));
-  const result = await listSubIssuesViaIssueList("org/repo", 100, mockGh);
+  const result = await listSubIssuesViaIssueList(
+    "org/repo",
+    100,
+    mockGh,
+    FLEET_OPTIONS,
+  );
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.length, 3);
@@ -480,6 +593,50 @@ Deno.test("listSubIssuesViaIssueList - does not match longer issue numbers", asy
   if (result.ok) {
     assertEquals(result.value.length, 0);
   }
+});
+
+// ---------------------------------------------------------------------------
+// listSubIssuesViaIssueList — author verification (Issue #1244)
+// ---------------------------------------------------------------------------
+
+Deno.test("listSubIssuesViaIssueList - asks GitHub who wrote each match", async () => {
+  const calls: string[][] = [];
+  const mockGh = (args: string[]) => {
+    calls.push(args);
+    return Promise.resolve("[]");
+  };
+  await listSubIssuesViaIssueList("org/repo", 100, mockGh, FLEET_OPTIONS);
+  const jsonIdx = calls[0]?.indexOf("--json") ?? -1;
+  assert(jsonIdx >= 0, "the listing requests JSON fields");
+  assertStringIncludes(calls[0]?.[jsonIdx + 1] ?? "", "author");
+});
+
+Deno.test("listSubIssuesViaIssueList - an outsider's parent-link body is not a sub-issue", async () => {
+  const logs: string[] = [];
+  const mockGh = () =>
+    Promise.resolve(JSON.stringify([
+      {
+        number: 131,
+        url: "https://github.com/org/repo/issues/131",
+        body: "Planted\n\nPart of #100",
+        author: { login: "outsider" },
+      },
+      {
+        number: 132,
+        url: "https://github.com/org/repo/issues/132",
+        body: "Genuine child\n\nPart of #100",
+        author: { login: FLEET_LOGIN },
+      },
+    ]));
+  const result = await listSubIssuesViaIssueList("org/repo", 100, mockGh, {
+    ...FLEET_OPTIONS,
+    log: (message: string) => logs.push(message),
+  });
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value, ["https://github.com/org/repo/issues/132"]);
+  }
+  assert(logs.some((l) => l.includes("ignored 1 marker match")));
 });
 
 Deno.test("listSubIssuesViaIssueList - returns error on gh failure", async () => {
@@ -650,16 +807,19 @@ Deno.test("processIssuePlanning - closes successfully when search lags but REST 
               number: 100,
               url: "https://github.com/org/repo/issues/100",
               body: "Parent",
+              author: { login: FLEET_LOGIN },
             },
             {
               number: 131,
               url: "https://github.com/org/repo/issues/131",
               body: "First sub-issue\n\nPart of #100",
+              author: { login: FLEET_LOGIN },
             },
             {
               number: 132,
               url: "https://github.com/org/repo/issues/132",
               body: "Second sub-issue\n\nPart of #100",
+              author: { login: FLEET_LOGIN },
             },
           ]));
         }
@@ -1059,8 +1219,16 @@ Deno.test("processIssuePlanning - succeeds when sub-issues found via GitHub API 
       runGhCommand: (args: string[]) => {
         if (args.includes("search")) {
           return Promise.resolve(JSON.stringify([
-            { number: 101, url: "https://github.com/org/repo/issues/101" },
-            { number: 102, url: "https://github.com/org/repo/issues/102" },
+            {
+              number: 101,
+              url: "https://github.com/org/repo/issues/101",
+              author: { login: FLEET_LOGIN },
+            },
+            {
+              number: 102,
+              url: "https://github.com/org/repo/issues/102",
+              author: { login: FLEET_LOGIN },
+            },
           ]));
         }
         return Promise.resolve("");
@@ -2460,9 +2628,21 @@ Deno.test("processIssuePlanning - recovers via GitHub API pre-check when comment
         if (args.includes("close")) closedIssue = true;
         if (args.includes("search")) {
           return Promise.resolve(JSON.stringify([
-            { number: 101, url: "https://github.com/org/repo/issues/101" },
-            { number: 102, url: "https://github.com/org/repo/issues/102" },
-            { number: 100, url: "https://github.com/org/repo/issues/100" },
+            {
+              number: 101,
+              url: "https://github.com/org/repo/issues/101",
+              author: { login: FLEET_LOGIN },
+            },
+            {
+              number: 102,
+              url: "https://github.com/org/repo/issues/102",
+              author: { login: FLEET_LOGIN },
+            },
+            {
+              number: 100,
+              url: "https://github.com/org/repo/issues/100",
+              author: { login: FLEET_LOGIN },
+            },
           ]));
         }
         return Promise.resolve("");
@@ -2504,6 +2684,85 @@ Deno.test("processIssuePlanning - recovers via GitHub API pre-check when comment
     assertEquals(result.value.subIssueCount, 2);
     assertEquals(closedIssue, true);
     assertEquals(claudeWasCalled, false);
+  }
+});
+
+// The same pre-check, with the planted row #1244 describes: one issue whose
+// body says "Part of #100", authored by anybody at all. It must not skip the
+// planner or close the parent as its own plan.
+Deno.test("processIssuePlanning - an outsider's 'Part of #N' issue does not skip the planner", async () => {
+  const ctx = makeContext();
+
+  let claudeWasCalled = false;
+
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () => {
+        claudeWasCalled = true;
+        return Promise.resolve({
+          ok: true,
+          value: { output: "No new sub-issues.", exitCode: 0, timedOut: false },
+        });
+      },
+    },
+    github: {
+      runGhCommand: (args: string[]) => {
+        if (isCoverageRead(args)) {
+          return Promise.resolve(coverageReadResponse());
+        }
+        if (args.includes("search")) {
+          return Promise.resolve(JSON.stringify([
+            {
+              number: 101,
+              url: "https://github.com/org/repo/issues/101",
+              author: { login: "outsider" },
+            },
+          ]));
+        }
+        return Promise.resolve("");
+      },
+    },
+  });
+
+  const ghClient = {
+    getIssue: () =>
+      Promise.resolve({
+        number: 100,
+        title: "Test",
+        body: "",
+        labels: [],
+        author: "user",
+        assignees: [],
+        createdAt: "",
+        updatedAt: "",
+      }),
+    getIssueComments: () => Promise.resolve([]),
+    addLabel: () => Promise.resolve(),
+    removeLabel: () => Promise.resolve(),
+    postComment: () => Promise.resolve(undefined),
+    editIssue: () => Promise.resolve(),
+    assignIssue: () => Promise.resolve(),
+    unassignIssue: () => Promise.resolve(),
+    closeIssue: () => Promise.resolve(),
+  };
+
+  const result = await processIssuePlanning(ctx, {
+    promptsDir: PROMPTS_DIR,
+    ghClient,
+    logger: deps.logger,
+    deps,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    // The planner ran instead of the parent being closed on the planted row.
+    assertEquals(claudeWasCalled, true);
+    assertEquals(
+      result.value.subIssueUrls.includes(
+        "https://github.com/org/repo/issues/101",
+      ),
+      false,
+    );
   }
 });
 
@@ -4593,6 +4852,7 @@ function coverageReadWith(table: string[]): string {
   return JSON.stringify({
     body: "Parent",
     comments: [{
+      author: { login: FLEET_LOGIN },
       body: [
         "## Plan published",
         "",
@@ -4793,6 +5053,7 @@ function planReadWith(list: string[]): string {
   return JSON.stringify({
     body: "Parent",
     comments: [{
+      author: { login: FLEET_LOGIN },
       body: [
         "## Plan published",
         "",

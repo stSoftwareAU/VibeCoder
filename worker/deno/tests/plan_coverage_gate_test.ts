@@ -71,6 +71,26 @@ function makeSilentLogger(): Logger {
   };
 }
 
+/** A logger that captures its warnings, for the author-check assertions. */
+function makeCapturingLogger(warnings: string[]): Logger {
+  return {
+    ...makeSilentLogger(),
+    warn: (message: string) => {
+      warnings.push(message);
+    },
+  };
+}
+
+/**
+ * The fleet login and author options every `runPlanCoverageGate` test states
+ * (Issue #1244).
+ *
+ * Stated rather than left to the configured fleet identity so the tests never
+ * depend on a `.config.json` in the working directory.
+ */
+const FLEET_LOGIN = "fleet-bot";
+const FLEET_OPTIONS = { fleetAuthors: [FLEET_LOGIN] };
+
 // ---------------------------------------------------------------------------
 // extractCoverageTable
 // ---------------------------------------------------------------------------
@@ -279,12 +299,13 @@ Deno.test("runPlanCoverageGate - finds the table in a parent comment", async () 
       return Promise.resolve(JSON.stringify({
         body: "Parent issue body",
         comments: [
-          { body: "unrelated chatter" },
-          { body: COMPLIANT_COMMENT },
+          { body: "unrelated chatter", author: { login: FLEET_LOGIN } },
+          { body: COMPLIANT_COMMENT, author: { login: FLEET_LOGIN } },
         ],
       }));
     },
     logger: makeSilentLogger(),
+    authorOptions: FLEET_OPTIONS,
   });
   assertEquals(verdict.passed, true);
   assertEquals(verdict.rowCount, 3);
@@ -299,9 +320,13 @@ Deno.test("runPlanCoverageGate - the newest table wins", async () => {
     ghCommandFn: () =>
       Promise.resolve(JSON.stringify({
         body: "",
-        comments: [{ body: UNCOVERED_COMMENT }, { body: COMPLIANT_COMMENT }],
+        comments: [
+          { body: UNCOVERED_COMMENT, author: { login: FLEET_LOGIN } },
+          { body: COMPLIANT_COMMENT, author: { login: FLEET_LOGIN } },
+        ],
       })),
     logger: makeSilentLogger(),
+    authorOptions: FLEET_OPTIONS,
   });
   assertEquals(verdict.passed, true);
 });
@@ -341,6 +366,67 @@ Deno.test("runPlanCoverageGate - an unreadable parent is reported, not passed", 
   });
   assertEquals(verdict.passed, false);
   assertEquals(verdict.readFailed, true);
+});
+
+// ---------------------------------------------------------------------------
+// runPlanCoverageGate — comment author verification (Issue #1244)
+// ---------------------------------------------------------------------------
+
+Deno.test("runPlanCoverageGate - an outsider's passing table does not pass the gate", async () => {
+  const warnings: string[] = [];
+  const verdict = await runPlanCoverageGate({
+    repo: "owner/repo",
+    parentIssueNumber: 42,
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify({
+        // The parent's own table leaves an ask uncovered — the gate must
+        // reach it rather than returning on the planted comment above.
+        body: UNCOVERED_COMMENT,
+        comments: [{ body: COMPLIANT_COMMENT, author: { login: "outsider" } }],
+      })),
+    logger: makeCapturingLogger(warnings),
+    authorOptions: FLEET_OPTIONS,
+  });
+  assertEquals(verdict.passed, false);
+  assert(verdict.offenders.length > 0);
+  assert(
+    warnings.some((w) => w.includes("authored outside the fleet")),
+    "the discarded outsider table is logged",
+  );
+});
+
+Deno.test("runPlanCoverageGate - an unresolved fleet discards every comment table", async () => {
+  const warnings: string[] = [];
+  const verdict = await runPlanCoverageGate({
+    repo: "owner/repo",
+    parentIssueNumber: 42,
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify({
+        body: "",
+        comments: [{ body: COMPLIANT_COMMENT, author: { login: FLEET_LOGIN } }],
+      })),
+    logger: makeCapturingLogger(warnings),
+    // An explicitly empty fleet is an *unresolved* fleet.
+    authorOptions: { fleetAuthors: [] },
+  });
+  assertEquals(verdict.tableFound, false);
+  assertEquals(verdict.passed, false);
+  assert(warnings.some((w) => w.includes("fleet author set unresolved")));
+});
+
+Deno.test("runPlanCoverageGate - a fleet-authored table still passes", async () => {
+  const verdict = await runPlanCoverageGate({
+    repo: "owner/repo",
+    parentIssueNumber: 42,
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify({
+        body: UNCOVERED_COMMENT,
+        comments: [{ body: COMPLIANT_COMMENT, author: { login: "FLEET-BOT" } }],
+      })),
+    logger: makeSilentLogger(),
+    authorOptions: FLEET_OPTIONS,
+  });
+  assertEquals(verdict.passed, true);
 });
 
 // ---------------------------------------------------------------------------

@@ -31,6 +31,10 @@
  */
 
 import { runGhCommand } from "./github.ts";
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
 import type { Logger } from "../types.ts";
 
 /**
@@ -77,6 +81,12 @@ export interface MaybeCreateCarrierOptions {
   subIssueNumbers: number[];
   /** Injectable gh runner — defaults to the production retry wrapper. */
   ghCommandFn?: (args: string[]) => Promise<string>;
+  /**
+   * Fleet identity for the nothing-to-do comment author check (Issue #1244).
+   * Omitted means "read the configured fleet identity" from `CONFIG_PATH` /
+   * `GITHUB_USER`.
+   */
+  authorOptions?: AlertDedupAuthorOptions;
   /** Logger for non-fatal warnings. */
   logger: Logger;
 }
@@ -128,16 +138,72 @@ export function hasNothingToDoSignal(
 }
 
 /**
+ * Project the comment array of `gh issue view --json comments` onto
+ * `{ author, body }` rows (Issue #1244).
+ *
+ * `gh issue view` renders the author as a `{ login }` object; the worker's own
+ * `GitHubComment` renders it as a bare login. Both are accepted so the shape a
+ * caller's runner returns cannot silently drop every author and, with it, every
+ * comment.
+ */
+function commentRows(
+  value: unknown,
+): Array<{ author: string | null; body: string }> {
+  if (!Array.isArray(value)) return [];
+  const rows: Array<{ author: string | null; body: string }> = [];
+  for (const entry of value) {
+    if (entry === null || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.body !== "string") continue;
+    const author = record.author;
+    const login = typeof author === "string"
+      ? author
+      : author !== null && typeof author === "object" &&
+          typeof (author as Record<string, unknown>).login === "string"
+      ? (author as Record<string, unknown>).login as string
+      : null;
+    rows.push({ author: login, body: record.body });
+  }
+  return rows;
+}
+
+/**
+ * What an unattributable nothing-to-do comment costs, in this site's own words.
+ */
+const NOTHING_TO_DO_UNVERIFIED_OUTCOME =
+  "no comment counts as a nothing-to-do signal and the carrier sub-issue is " +
+  "created. A carrier a human closes in a moment is recoverable; work " +
+  "dropped because a stranger wrote “Nothing to do” is not";
+
+/**
  * Fetch the parent issue's labels, body, and comments and decide whether it
  * carries a nothing-to-do signal. Best-effort: on any error the result is
  * `false` (no signal) so the default — create a carrier — applies, consistent
  * with "never close a zero-sub-issue parent with no carrier when real work
  * remains".
+ *
+ * **Comments are author-verified (Issue #1244).** A comment thread is writable
+ * by any account, and this signal *disables* the safety net, so only comments
+ * a fleet account wrote are scanned for the marker; the rest — and every
+ * comment when the fleet identity cannot be resolved — are discarded and the
+ * carrier is created. The parent **body** is still scanned unfiltered: it is
+ * the artefact the planning run is planning, and its author is the person
+ * asking for the work, not a third party commenting on it. The
+ * `invalid` / `duplicate` / `wontfix` labels need triage permission, so they
+ * are already authenticated evidence.
+ *
+ * @param repo - Target repository in `owner/repo` form
+ * @param parentIssueNumber - Parent planning issue number
+ * @param gh - Injectable gh runner
+ * @param authorOptions - Fleet identity for the comment author check
+ * @param log - Sink for the discard / unresolved-set warnings
  */
 export async function fetchNothingToDoSignal(
   repo: string,
   parentIssueNumber: number,
   gh: (args: string[]) => Promise<string>,
+  authorOptions: AlertDedupAuthorOptions = {},
+  log: (message: string) => void = (message) => console.error(message),
 ): Promise<boolean> {
   let raw: string;
   try {
@@ -176,16 +242,21 @@ export async function fetchNothingToDoSignal(
 
   const texts: string[] = [];
   if (typeof r.body === "string") texts.push(r.body);
-  if (Array.isArray(r.comments)) {
-    for (const c of r.comments) {
-      if (
-        c && typeof c === "object" &&
-        typeof (c as Record<string, unknown>).body === "string"
-      ) {
-        texts.push((c as Record<string, unknown>).body as string);
-      }
-    }
-  }
+
+  // Only the marker-carrying comments are put to the author check, so the
+  // discard log names genuine signals from outside the fleet rather than
+  // every comment on the thread.
+  const markerComments = commentRows(r.comments).filter((row) =>
+    hasNothingToDoSignal([], [row.body])
+  );
+  const fleetComments = await selectFleetAuthoredComments(
+    markerComments,
+    `planning nothing-to-do signal ${repo}#${parentIssueNumber}`,
+    authorOptions,
+    log,
+    NOTHING_TO_DO_UNVERIFIED_OUTCOME,
+  );
+  texts.push(...fleetComments.map((row) => row.body));
 
   return hasNothingToDoSignal(labels, texts);
 }
@@ -249,8 +320,16 @@ export async function maybeCreateCarrierSubIssue(
     return { created: false, skippedReason: "has-sub-issues" };
   }
 
-  // Gate 2: genuine nothing-to-do close — no carrier.
-  if (await fetchNothingToDoSignal(repo, parentIssueNumber, gh)) {
+  // Gate 2: genuine nothing-to-do close — no carrier. Only a fleet-authored
+  // comment (or a triage-permission label) is evidence of that (Issue #1244).
+  const signalled = await fetchNothingToDoSignal(
+    repo,
+    parentIssueNumber,
+    gh,
+    opts.authorOptions ?? {},
+    (message) => logger.warn(message),
+  );
+  if (signalled) {
     return { created: false, skippedReason: "nothing-to-do" };
   }
 
