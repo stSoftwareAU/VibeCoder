@@ -56,7 +56,7 @@ mode constants added back so the file type-checked:
 
 ```text
 restageGhConfigDir - a symlink planted at hosts.yml is replaced, never followed
-  AssertionError: -  oauth_token: s3cret   +  untouched      <- the token went down the link
+  AssertionError: - <the test token bytes>   + untouched      <- the token went down the link
 restageGhConfigDir - the directory is tightened before the token is written
   AssertionError: the credential was written before the directory was tightened:
   mkdir …, write …/hosts.yml, chmod …/gh-config 700, chmod …/hosts.yml 600
