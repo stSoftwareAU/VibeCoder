@@ -18,10 +18,10 @@
  * worker spawns most, sharing its scanning machinery via
  * `spawn_chokepoint_scan.ts`.
  *
- * Residual risk, stated: the pattern matches a **literal** binary name, so a
+ * Issue #1378 closed the indirection blind spot this check used to carry: a
  * spawn written as `new Deno.Command(cmd[0], …)` with `"git"` supplied by the
- * caller is invisible to it — the same limitation Issue #1227 records for the
- * `gh` gate.
+ * caller, or `runWithTimeout("git", …)`, is now flagged by
+ * {@link GIT_INDIRECT_SPAWN_RULES} as well.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
@@ -29,6 +29,7 @@
 import {
   type DirectSpawnScanResult,
   type DirectSpawnViolation,
+  type IndirectSpawnRules,
   scanContentForDirectSpawn,
   scanDirectoriesForDirectSpawn,
 } from "./spawn_chokepoint_scan.ts";
@@ -50,7 +51,29 @@ export const GIT_SPAWN_PATTERN =
   /new\s+Deno\.Command\s*\(\s*["'`]git["'`]|Deno\.Command\s*\(\s*["'`]git["'`]/;
 
 /**
- * Scan a file's content for direct `git` spawns.
+ * The indirection signals for `git` (Issue #1378) — the shapes that reached
+ * the binary through a variable and so stayed invisible to
+ * {@link GIT_SPAWN_PATTERN}.
+ */
+export const GIT_INDIRECT_SPAWN_RULES: IndirectSpawnRules = {
+  wrapperPattern: /\brunWithTimeout\s*\(\s*["'`]git["'`]/,
+  argvHeadPattern: /\(\s*\[?\s*["'`]git["'`]\s*,/,
+  chokepointImportPattern: /from\s+["'`][^"'`]*git_timeout\.ts["'`]/,
+};
+
+/**
+ * Modules whose indirect `git` routing predates the indirection rule
+ * (Issue #1378 follow-up, #1396). `benchmark.ts` builds throwaway fixture
+ * repositories — the same fixture case `excludeTests` already forgives for
+ * `*_test.ts`. Their **literal** spawns are still forbidden, and the set must
+ * shrink, never grow.
+ */
+export const GIT_INDIRECT_KNOWN_GAPS: ReadonlySet<string> = new Set<string>([
+  "worker/deno/lib/benchmark.ts",
+]);
+
+/**
+ * Scan a file's content for direct or indirect `git` spawns.
  *
  * @param content - The raw file text.
  * @param repoRelPath - Repo-relative path, recorded on each violation.
@@ -60,7 +83,12 @@ export function scanContentForGitSpawn(
   content: string,
   repoRelPath: string,
 ): DirectSpawnViolation[] {
-  return scanContentForDirectSpawn(content, repoRelPath, GIT_SPAWN_PATTERN);
+  return scanContentForDirectSpawn(
+    content,
+    repoRelPath,
+    GIT_SPAWN_PATTERN,
+    GIT_INDIRECT_SPAWN_RULES,
+  );
 }
 
 /**
@@ -82,5 +110,7 @@ export function scanDirectoriesForGitSpawn(
     pattern: GIT_SPAWN_PATTERN,
     allowlist: GIT_SPAWN_ALLOWLIST,
     excludeTests: true,
+    rules: GIT_INDIRECT_SPAWN_RULES,
+    indirectExempt: GIT_INDIRECT_KNOWN_GAPS,
   });
 }

@@ -15,6 +15,8 @@
  */
 
 import type { Result } from "../types.ts";
+import { spawnGh } from "./gh_spawn.ts";
+import { runGitCommand } from "./git_timeout.ts";
 import { IssueCache } from "./issue_cache.ts";
 import { fetchOpenPRsByUser, fetchRecentMergedPRs } from "./issue_query.ts";
 import { sanitiseDelimiterPatterns } from "./prompt_delimiter.ts";
@@ -85,24 +87,42 @@ export interface RecentActivityOptions {
 
 /**
  * Default command runner that executes real git/gh commands.
+ *
+ * Issue #1378: both binaries go through their shared chokepoints rather than
+ * a `Deno.Command` built from the `command` parameter — the indirection that
+ * skipped the write-repo allowlist, the audit journal and the git timeout,
+ * and that the quality gate's literal-string scan could not see. Only these
+ * two binaries are collected here, so any other is refused loudly.
  */
 async function defaultRunner(
   command: string,
   args: string[],
 ): Promise<Result<string>> {
   try {
-    const cmd = new Deno.Command(command, {
-      args,
-      stdout: "piped",
-      stderr: "piped",
-    });
-    const output = await cmd.output();
-    const stdout = new TextDecoder().decode(output.stdout).trim();
-    if (!output.success) {
-      const stderr = new TextDecoder().decode(output.stderr).trim();
-      return { ok: false, error: new Error(stderr || "Command failed") };
+    if (command === "gh") {
+      const result = await spawnGh(args);
+      return result.success ? { ok: true, value: result.stdout.trim() } : {
+        ok: false,
+        error: new Error(result.stderr.trim() || "Command failed"),
+      };
     }
-    return { ok: true, value: stdout };
+    if (command === "git") {
+      const result = await runGitCommand(args);
+      if (!result.ok) return result;
+      return result.value.code === 0
+        ? { ok: true, value: result.value.stdout.trim() }
+        : {
+          ok: false,
+          error: new Error(result.value.stderr.trim() || "Command failed"),
+        };
+    }
+    return {
+      ok: false,
+      error: new Error(
+        `recent_activity only runs gh and git through their chokepoints; ` +
+          `refusing to run "${command}"`,
+      ),
+    };
   } catch (err: unknown) {
     return {
       ok: false,

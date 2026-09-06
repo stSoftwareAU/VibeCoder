@@ -173,6 +173,25 @@ export async function runGitCommand(
     const process = await command.output();
     clearTimeout(timer);
 
+    // Issue #1378: aborting the signal terminates the child rather than
+    // throwing, so a timed-out call resolves here with git's signal exit code
+    // (143) — reported as a plain failure before this check, which hid every
+    // timeout from `isGitTimeout`. Inspect the controller to tell the two
+    // apart; the `catch` below still covers runtimes that do throw.
+    if (controller.signal.aborted) {
+      incrementCounter("timeouts");
+      return {
+        ok: true,
+        value: {
+          code: TIMEOUT_EXIT_CODE,
+          stdout: "",
+          stderr: `TIMEOUT: git ${
+            args.join(" ")
+          } timed out after ${timeoutSeconds}s (Issue #619)`,
+        },
+      };
+    }
+
     const stdout = new TextDecoder().decode(process.stdout);
     const stderr = new TextDecoder().decode(process.stderr);
 

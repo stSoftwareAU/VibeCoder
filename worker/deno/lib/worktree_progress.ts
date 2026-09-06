@@ -58,7 +58,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { runWithTimeout } from "./subprocess_timeout.ts";
+import { isGitTimeout, runGitCommand } from "./git_timeout.ts";
 
 /** Default per-git-command timeout for a probe: 5 seconds. */
 export const DEFAULT_PROBE_TIMEOUT_MS = 5_000;
@@ -131,11 +131,14 @@ async function readGit(
   args: string[],
   timeoutMs: number,
 ): Promise<GitRead> {
-  const result = await runWithTimeout(
-    "git",
-    [...READ_ONLY_PREFIX, ...args],
-    { cwd: repoDir, timeoutMs },
-  );
+  // Issue #1378: through `runGitCommand`, the chokepoint that owns the git
+  // timeout, the audit journal and the work-volume fault detector. The
+  // generic `runWithTimeout("git", …)` this replaced owned none of them, and
+  // the quality gate's literal-string scan could not see it either.
+  const result = await runGitCommand([...READ_ONLY_PREFIX, ...args], {
+    cwd: repoDir,
+    timeoutSeconds: Math.ceil(timeoutMs / 1000),
+  });
 
   if (!result.ok) {
     return {
@@ -143,20 +146,20 @@ async function readGit(
       reason: `git ${args[0]} failed: ${result.error.message}`,
     };
   }
-  if (result.value.timedOut) {
+  if (isGitTimeout(result.value.code)) {
     return {
       ok: false,
       reason: `git ${args[0]} timed out after ${timeoutMs}ms`,
     };
   }
-  if (!result.value.success) {
+  if (result.value.code !== 0) {
     const detail = result.value.stderr.split("\n")[0] ?? "";
     return {
       ok: false,
       reason: `git ${args[0]} exited ${result.value.code}: ${detail}`,
     };
   }
-  return { ok: true, stdout: result.value.stdout };
+  return { ok: true, stdout: result.value.stdout.trim() };
 }
 
 /** SHA-256 the given content and keep the leading {@link DIGEST_LENGTH} hex chars. */
