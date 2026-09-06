@@ -122,9 +122,11 @@ the Mermaid diagrams the Jekyll layout used to load a CDN script for.
 Nothing was written only for the site: the Markdown all stays in the repository
 and is read at its ordinary GitHub URL.
 
-`Gemfile`/`Gemfile.lock` and the `bundle-audit` job that scans them are still
-here. Removing them means editing `.github/workflows/dependency-audit.yml`,
-which the worker token cannot push, so that last step is tracked separately.
+`Gemfile`/`Gemfile.lock`, the `bundle-audit` job that scans them and the Ruby
+container base are still here. Removing them means *modifying* a file under
+`.github/workflows/`, which the worker token has no scope to push — deleting
+one, as this release does to `pages.yml`, is allowed. Issue #1376 tracks the
+rest.
 
 ```mermaid
 flowchart LR

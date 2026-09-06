@@ -42,5 +42,3 @@ id_rsa
 id_rsa.*
 credentials.json
 service-account*.json
-
-

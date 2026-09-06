@@ -24,10 +24,11 @@ const REMOVED_PATHS = [
   ".github/scripts/normalise_heading_ids.rb",
   ".github/scripts/strip_unpublished_links.rb",
   ".github/scripts/wrap_pr_summary_raw.rb",
-  // Jekyll site. `Gemfile`/`Gemfile.lock` are deliberately absent from this
-  // list: dropping them means deleting the `bundler-audit` job from
-  // `.github/workflows/dependency-audit.yml`, and the worker token carries no
-  // `workflow` OAuth scope, so that edit cannot be pushed from a run.
+  // Jekyll site. `Gemfile`/`Gemfile.lock` are deliberately absent: dropping
+  // them means *modifying* `.github/workflows/dependency-audit.yml` to delete
+  // the `bundler-audit` job, and without the `workflow` OAuth scope GitHub
+  // refuses a push that creates or updates a workflow file. Deleting one is
+  // allowed, which is why `pages.yml` above could go. Tracked in #1376.
   "_config.yml",
   "_data/page_titles.yml",
   "_includes/head-custom.html",
@@ -82,11 +83,18 @@ const SITE_URL_EXEMPT = new Set(["docs/RELEASE-NOTES.md"]);
 
 Deno.test("no published doc links at the retired Pages site", async () => {
   const offenders: string[] = [];
+  // `docs/` is walked recursively: the earlier flat read missed
+  // `docs/workflows/` and `docs/audits/` entirely, so a reintroduced URL in
+  // either would have passed. `docs/archive/` is frozen history and is skipped.
   const scan = async (relativeDir: string) => {
     const prefix = relativeDir === "" ? "" : `${relativeDir}/`;
     for await (const entry of Deno.readDir(repoPath(relativeDir))) {
-      if (!entry.isFile || !entry.name.endsWith(".md")) continue;
       const path = `${prefix}${entry.name}`;
+      if (entry.isDirectory) {
+        if (relativeDir !== "" && path !== "docs/archive") await scan(path);
+        continue;
+      }
+      if (!entry.isFile || !entry.name.endsWith(".md")) continue;
       if (SITE_URL_EXEMPT.has(path)) continue;
       const body = await Deno.readTextFile(repoPath(path));
       if (body.includes("stsoftwareau.github.io")) offenders.push(path);
