@@ -34,7 +34,10 @@ import {
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
-import { isMilestoneTrackingTitle } from "./milestone_completion.ts";
+import {
+  type MilestoneTrackerVerification,
+  partitionMilestoneTrackers,
+} from "./milestone_tracker_identity.ts";
 import { scrubUntrustedText } from "./prompt_delimiter.ts";
 
 // ---------------------------------------------------------------------------
@@ -90,6 +93,12 @@ export interface OpenChildrenOptions {
   milestoneBranch?: string;
   /** PR numbers to exclude (e.g. the summary PR being merged). */
   excludePrNumbers?: readonly number[];
+  /**
+   * Fleet-identity inputs for the tracking-issue check (Issue #1246). The
+   * tracker exclusion below is what lets a merge through, so it is decided
+   * from authenticated evidence rather than the child's title.
+   */
+  verification?: MilestoneTrackerVerification;
   ghCommandFn: GhCommandFn;
 }
 
@@ -97,6 +106,10 @@ interface RawIssue {
   number: number;
   title: string;
   pull_request?: unknown;
+  /** Issue body — carries the tracking-issue marker (Issue #1246). */
+  body?: string;
+  /** REST names the issue's opener `user`, not `author` (Issue #1246). */
+  user?: { login?: string };
 }
 
 /**
@@ -139,9 +152,28 @@ export async function fetchOpenMilestoneChildren(
       "--paginate",
       `repos/${repo}/issues?milestone=${milestoneNumber}&state=open&per_page=100`,
     ]);
-    for (const item of parseIssueArray(raw)) {
+    // Issue #1246: excluding a child here is what allows the merge that
+    // deletes the milestone branch, so only a tracker carrying the
+    // tracking-issue body marker and opened by a fleet account is excluded.
+    // A tracking-shaped child that cannot be verified keeps blocking.
+    const { others } = await partitionMilestoneTrackers(
+      parseIssueArray(raw).map((item) => ({
+        number: item.number,
+        title: item.title,
+        body: item.body ?? "",
+        author: (item as { author?: string }).author ?? "",
+        pull_request: item.pull_request,
+      })),
+      `merge gate for milestone #${milestoneNumber} in ${repo}`,
+      {
+        ...options.verification,
+        unverifiedOutcome:
+          "the candidate keeps blocking the summary-PR merge, so the " +
+          "milestone branch is not deleted",
+      },
+    );
+    for (const item of others) {
       if (excluded.has(item.number)) continue;
-      if (isMilestoneTrackingTitle(item.title)) continue;
       children.set(item.number, {
         number: item.number,
         title: item.title,
@@ -221,11 +253,15 @@ function parseIssueArray(raw: string): RawIssue[] {
     const parsed = JSON.parse(json) as RawIssue[];
     for (const item of parsed) {
       if (typeof item?.number === "number") {
-        out.push({
-          number: item.number,
-          title: typeof item.title === "string" ? item.title : "",
-          pull_request: item.pull_request,
-        });
+        out.push(
+          {
+            number: item.number,
+            title: typeof item.title === "string" ? item.title : "",
+            pull_request: item.pull_request,
+            body: typeof item.body === "string" ? item.body : "",
+            author: typeof item.user?.login === "string" ? item.user.login : "",
+          } as RawIssue & { body: string; author: string },
+        );
       }
     }
   }
@@ -271,6 +307,8 @@ export interface SummaryPrMergeGateOptions {
   prNumber: number;
   /** Head branch, when the caller already knows it (saves a lookup). */
   headRefName?: string;
+  /** Fleet-identity inputs for the tracking-issue check (Issue #1246). */
+  verification?: MilestoneTrackerVerification;
   ghCommandFn: GhCommandFn;
 }
 
@@ -320,6 +358,9 @@ export async function decideSummaryPrMerge(
     milestoneNumber: milestone.number,
     milestoneBranch: headRefName,
     excludePrNumbers: [prNumber],
+    ...(options.verification !== undefined
+      ? { verification: options.verification }
+      : {}),
     ghCommandFn,
   });
   if (!childrenResult.ok) {
