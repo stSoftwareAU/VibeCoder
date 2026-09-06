@@ -76,6 +76,7 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   "tests/multi_provider_credentials_test.ts",
   "tests/next_release_tag_test.ts",
   "tests/secrets_mount_test.ts",
+  "tests/setup_config_atomic_write_test.ts",
   "tests/setup_credential_provisioning_test.ts",
   "tests/setup_launchagent_prompt_test.ts",
   "tests/setup_lockfile_test.ts",
