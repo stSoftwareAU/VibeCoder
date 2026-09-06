@@ -128,10 +128,23 @@ the agent's boundary**:
    instruction lives in `prompts/coding_guidelines/` and `prompts/issue/`.
 2. The worker parses the declaration, treats every field as untrusted model
    output (shape-validated before it becomes a `gh` argument), and validates the
-   target: internal `stSoftwareAU/*` owner, reachable, pushable
-   (`probeCrossRepoAccess`), the head branch actually present on the dependency
-   remote, and not that repo's default branch. An already-open PR for the same
-   head is reused, never duplicated.
+   target: internal `stSoftwareAU/*` owner, **a dependency the consuming repo's
+   own manifest declares** (`authoriseCrossRepoTarget`, Issue #1382), reachable,
+   pushable (`probeCrossRepoAccess`), the head branch actually present on the
+   dependency remote, and not that repo's default branch. An already-open PR for
+   the same head is reused, never duplicated.
+
+   Sharing the `stSoftwareAU` owner is *ownership*, not authority. The fleet
+   works many separate tenant repositories under that one owner, and the whole
+   declaration is parsed out of the run's own generated text, so the owner check
+   alone establishes only that the target is in-house — not that this run has
+   any business writing to it. The dependency manifests
+   (`deno.json`, `deno.jsonc`, `package.json`, `worker/deno/deno.json`) are read
+   from the consuming repo's **default branch on GitHub**, never from the run's
+   working tree: that tree is writable by the very agent whose output produced
+   the request, so it cannot also be the authority for it. A target that
+   resolves to no declared dependency — and a consuming repo with no readable
+   manifest — is refused and escalated, never opened.
 3. The single `gh pr create` runs through the worker's own `spawnGh` chokepoint
    inside `withScopedWriteRepo()` — the allowlist opens for that one call and
    closes again in a `finally`, announced with
