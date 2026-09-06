@@ -199,6 +199,40 @@ response even while the worker has an unmerged PR in the same repository.
    [Degraded-model observability](#-degraded-model-observability)).
 4. **Cleanup** — Remove `planning` label; close parent issue.
 
+#### 🔐 Comment recovery trusts only fleet-authored comments (Issue #1352)
+
+Before it runs the planner, a planning run first checks whether a **previous**
+run already published the sub-issues and crashed before closing the parent —
+its summary comment still names them, so the parent can be closed without
+invoking Claude at all.
+
+A comment thread is open to **any** GitHub account, and the author is the only
+authenticated part of a comment. Matching on the URL alone let one outsider
+comment carrying any `…/issues/N` link close the parent citing that issue as
+its plan, with the planner never running — and a benign cross-reference
+("related to #500") did the same by accident. The recovery therefore re-reads
+the thread with `getIssueComments` (the flattened prompt blob carries no
+per-comment author), attributes **each comment** through
+`selectFleetAuthoredComments()` against the fleet identity
+(`resolveFleetMaintenanceAuthorSet` — this host's login ∪ `fleet_pr_authors` ∪
+`service_accounts`), and takes URLs **per comment**, so an outsider's link
+elsewhere in the thread cannot ride in on a fleet comment's verification.
+
+The fail direction matches the sibling close-out checks: an unattributable
+comment — an outsider author, an unresolvable fleet set, an unreadable thread —
+is discarded and logged, so the planner runs. A re-planned parent is
+recoverable; a parent closed against somebody else's issue loses the work.
+
+```mermaid
+flowchart TD
+    A[Planning run starts] --> B[Read the parent's comments]
+    B --> C{Comment carries a sub-issue URL?}
+    C -->|no| E[Planner runs]
+    C -->|yes| D{Comment authored by a fleet account?}
+    D -->|no — outsider, unresolved fleet,<br/>or unreadable thread| E
+    D -->|yes| F[Close the parent citing those URLs]
+```
+
 #### 🏷️ Sub-issues carry **no** reserved labels
 
 Sub-issues the worker files during planning are created **without** any reserved
@@ -326,7 +360,8 @@ flowchart TD
 Before the gate hard-fails a run, the worker tries to **repair** each offending
 sub-issue rather than dead-fail. This closes a **retry deadlock**: the gate runs
 *after* sub-issues are published, and on a retry the recovery pre-check paths
-(sub-issues found in existing comments, or via the GitHub API pre-check) skip
+(sub-issues found in fleet-authored comments, or via the GitHub API pre-check)
+skip
 Claude entirely and go straight to `closePlanningIssue()`. Without repair the
 gate fast-fails again in seconds with **no model invocation** — the run stats
 then report "no served model observed" — and every subsequent retry repeats the
