@@ -4,9 +4,10 @@
  * Issue #923: Migrate setup scripts to Deno TypeScript.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   detectRepoUi,
+  fetchRemoteLabelNames,
   removeDeprecatedLabels,
   syncLabelsForAllRepos,
   syncLabelsForRepo,
@@ -22,6 +23,8 @@ interface MockState {
   created: string[];
   edited: string[];
   deleted: string[];
+  /** Every argv the code under test issued, for dry-run assertions. */
+  commands: string[][];
 }
 
 /** Create a mock runner that tracks gh label operations. */
@@ -29,13 +32,27 @@ function mockGhRunner(existingLabels: string[] = []): {
   runner: LabelSyncOptions["runCommand"];
   state: MockState;
 } {
-  const state: MockState = { created: [], edited: [], deleted: [] };
+  const state: MockState = {
+    created: [],
+    edited: [],
+    deleted: [],
+    commands: [],
+  };
 
   const runner = async (
     cmd: string[],
   ): Promise<{ success: boolean; stdout: string; stderr: string }> => {
+    state.commands.push([...cmd]);
     if (cmd[0] !== "gh") {
       return { success: false, stdout: "", stderr: "unexpected" };
+    }
+
+    if (cmd[1] === "label" && cmd[2] === "list") {
+      return {
+        success: true,
+        stdout: JSON.stringify(existingLabels.map((name) => ({ name }))),
+        stderr: "",
+      };
     }
 
     if (cmd[1] === "label" && cmd[2] === "create") {
@@ -94,6 +111,23 @@ Deno.test("syncSingleLabel - creates label when it does not exist", async () => 
   assertEquals(state.created, ["test-label"]);
 });
 
+Deno.test("syncSingleLabel - dry run plans without creating or editing (Issue #1295)", async () => {
+  const { runner, state } = mockGhRunner(["test-label"]);
+  const label: LabelDefinition = {
+    name: "test-label",
+    colour: "ff0000",
+    description: "Test label",
+    category: "workflow",
+  };
+  const result = await syncSingleLabel("org/repo", label, {
+    runCommand: runner,
+    dryRun: true,
+  });
+  assertEquals(result, "updated");
+  assertEquals(state.edited, []);
+  assertEquals(state.created, []);
+});
+
 Deno.test("syncSingleLabel - updates label when it already exists", async () => {
   const { runner, state } = mockGhRunner(["test-label"]);
   const label: LabelDefinition = {
@@ -112,13 +146,40 @@ Deno.test("syncSingleLabel - updates label when it already exists", async () => 
 // ── removeDeprecatedLabels ──────────────────────────────────────────────
 
 Deno.test("removeDeprecatedLabels - removes deprecated labels that exist", async () => {
-  const { runner, state } = mockGhRunner(["best-model", "good first issue"]);
+  // Issue #1295: `good first issue` is no longer deprecated — `answered`
+  // stands in as the second retired worker label.
+  const { runner, state } = mockGhRunner(["best-model", "answered"]);
   const removed = await removeDeprecatedLabels("org/repo", {
     runCommand: runner,
   });
   assertEquals(removed, 2);
   assertEquals(state.deleted.includes("best-model"), true);
-  assertEquals(state.deleted.includes("good first issue"), true);
+  assertEquals(state.deleted.includes("answered"), true);
+});
+
+Deno.test("removeDeprecatedLabels - never deletes GitHub's stock labels (Issue #1295)", async () => {
+  // Stock labels a human maintainer uses for their own triage. Deleting a
+  // label is irreversible and takes its issue associations with it.
+  const { runner, state } = mockGhRunner(["good first issue", "help wanted"]);
+  const removed = await removeDeprecatedLabels("org/repo", {
+    runCommand: runner,
+  });
+  assertEquals(removed, 0);
+  assertEquals(state.deleted, []);
+});
+
+Deno.test("removeDeprecatedLabels - dry run issues no gh label delete (Issue #1295)", async () => {
+  const { runner, state } = mockGhRunner(["best-model", "answered"]);
+  const wouldRemove = await removeDeprecatedLabels("org/repo", {
+    runCommand: runner,
+    dryRun: true,
+  });
+  assertEquals(wouldRemove, 2);
+  assertEquals(state.deleted, []);
+  assertEquals(
+    state.commands.some((c) => c[1] === "label" && c[2] === "delete"),
+    false,
+  );
 });
 
 Deno.test("removeDeprecatedLabels - handles non-existent deprecated labels", async () => {
@@ -226,6 +287,65 @@ Deno.test("syncLabelsForRepo - auto-detects UI via detectRepoUi when hasUi omitt
   assertEquals(result.ok, true);
   assertEquals(result.skipped, 0); // UI repo → no UI labels skipped
   assertEquals(state.created.length, LABEL_DEFINITIONS.length);
+});
+
+Deno.test("syncLabelsForRepo - dry run issues no mutating gh call (Issue #1295)", async () => {
+  const existing = [LABEL_DEFINITIONS[0]!.name, "best-model", "help wanted"];
+  const { runner, state } = mockGhRunner(existing);
+  const result = await syncLabelsForRepo("org/repo", true, {
+    runCommand: runner,
+    dryRun: true,
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(result.dryRun, true);
+  // Nothing was created, edited or deleted — only the read-only listing ran.
+  assertEquals(state.created, []);
+  assertEquals(state.edited, []);
+  assertEquals(state.deleted, []);
+  const mutating = state.commands.filter((c) =>
+    c[1] === "label" && (c[2] === "create" || c[2] === "edit" ||
+      c[2] === "delete")
+  );
+  assertEquals(mutating, []);
+
+  // The plan still reports what a real run would do.
+  assertEquals(result.updated, 1);
+  assertEquals(result.created, LABEL_DEFINITIONS.length - 1);
+  // `best-model` is deprecated; `help wanted` is a protected stock label.
+  assertEquals(result.deprecated_removed, 1);
+});
+
+Deno.test("syncLabelsForRepo - dry run fails loud when the label listing fails", async () => {
+  const runner = () =>
+    Promise.resolve({ success: false, stdout: "", stderr: "gh: not found" });
+  const result = await syncLabelsForRepo("org/repo", true, {
+    runCommand: runner,
+    dryRun: true,
+  });
+  assertEquals(result.ok, false);
+  assertEquals(result.failures, 1);
+  assertEquals(result.error?.includes("gh: not found"), true);
+});
+
+// ── fetchRemoteLabelNames ───────────────────────────────────────────────
+
+Deno.test("fetchRemoteLabelNames - returns lower-cased existing label names", async () => {
+  const { runner } = mockGhRunner(["Best-Model", "help wanted"]);
+  const names = await fetchRemoteLabelNames("org/repo", { runCommand: runner });
+  assertEquals(names.has("best-model"), true);
+  assertEquals(names.has("help wanted"), true);
+  assertEquals(names.has("absent"), false);
+});
+
+Deno.test("fetchRemoteLabelNames - throws rather than reporting an empty repo", async () => {
+  const runner = () =>
+    Promise.resolve({ success: false, stdout: "", stderr: "HTTP 404" });
+  await assertRejects(
+    () => fetchRemoteLabelNames("org/repo", { runCommand: runner }),
+    Error,
+    "HTTP 404",
+  );
 });
 
 // ── syncLabelsForAllRepos ───────────────────────────────────────────────
