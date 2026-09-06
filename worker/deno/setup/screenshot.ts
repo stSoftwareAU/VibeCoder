@@ -69,6 +69,62 @@ export const PLAYWRIGHT_MCP_DENIED_ENV: readonly string[] = [
 ];
 
 /**
+ * Hosts serving cloud instance-metadata (IMDS) endpoints.
+ *
+ * Issue #1292: the generated config carries neither `--allowed-origins` nor
+ * `--blocked-origins`, and `@playwright/mcp` defaults to allowing every
+ * origin. The navigation target is attacker-influenced — issue and PR text
+ * drives the agent — so a prompt injection could `browser_navigate` to
+ * `http://169.254.169.254/latest/meta-data/`, screenshot the instance
+ * credentials into `docs/evidence/`, and have the worker publish that image
+ * on a public PR. Blocking these hosts closes the carrier.
+ *
+ * A blocklist, not an allowlist: loopback is navigable by design (the prompts
+ * tell the agent to serve local pages on `127.0.0.1`) and so is any
+ * documentation host a UI task legitimately needs.
+ */
+export const PLAYWRIGHT_MCP_BLOCKED_HOSTS: readonly string[] = [
+  "169.254.169.254", // AWS / Azure / GCP / OpenStack / DigitalOcean IMDS
+  "169.254.170.2", // AWS ECS task metadata
+  "[fd00:ec2::254]", // AWS IMDS over IPv6
+  "metadata.google.internal", // GCP
+  "metadata.goog", // GCP alias
+  "100.100.100.100", // Alibaba Cloud
+];
+
+/**
+ * Build the `--blocked-origins` value: a semicolon-separated origin list.
+ *
+ * `@playwright/mcp` matches each entry as a glob — a bare host becomes
+ * `*://host/**` (any scheme, default port only), and `http://host:*` becomes
+ * `http://host:*` + path (any port). Neither form covers the other, so every
+ * host is emitted in all three.
+ *
+ * Note the package's own caveat: origin filtering is defence in depth, not a
+ * security boundary, and it does not follow redirects.
+ *
+ * @param hosts - Hosts to block (default: {@link PLAYWRIGHT_MCP_BLOCKED_HOSTS}).
+ * @returns The semicolon-separated origin list.
+ * @throws Error when a host contains the `;` separator — that would split one
+ *   entry into two origins that match nothing, leaving a list that looks
+ *   complete and blocks nothing.
+ */
+export function blockedOriginsValue(
+  hosts: readonly string[] = PLAYWRIGHT_MCP_BLOCKED_HOSTS,
+): string {
+  const unexpressible = hosts.find((host) => host.includes(";"));
+  if (unexpressible !== undefined) {
+    throw new Error(
+      `Cannot block "${unexpressible}": a semicolon in the host splits the ` +
+        `origin list, which would silently disable the guard.`,
+    );
+  }
+  return hosts
+    .flatMap((host) => [host, `http://${host}:*`, `https://${host}:*`])
+    .join(";");
+}
+
+/**
  * Where the container image bakes Playwright's browsers (Issue #4069).
  *
  * `container/Containerfile` installs Chromium here at build time and sets
@@ -443,6 +499,11 @@ export function generateMcpConfig(config: ScreenshotConfig): string {
 
   args.push("--user-data-dir", browser.profileDir);
   args.push("--output-dir", outputDir);
+  // Issue #1292: the navigation target comes from attacker-writable issue and
+  // PR text, so the cloud metadata endpoints are blocked before the agent can
+  // point the browser at them and screenshot instance credentials into a
+  // public PR.
+  args.push("--blocked-origins", blockedOriginsValue());
 
   // Issue #1288: the child inherits the environment, not the permission
   // flags, so blank the secrets here — this map is what the MCP client hands
