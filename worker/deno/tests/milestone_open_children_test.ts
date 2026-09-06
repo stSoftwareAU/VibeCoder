@@ -8,6 +8,24 @@ import {
   formatChildNumbers,
   isMilestoneTrackingTitle,
 } from "../lib/milestone_open_children.ts";
+import { MILESTONE_TRACKING_MARKER } from "../lib/milestone_tracker_identity.ts";
+
+/**
+ * Issue #1246: a tracking-shaped title is only a candidate — the exclusion
+ * needs the tracking-issue body marker and a fleet author too. These fixtures
+ * state the fleet rather than writing a config file.
+ */
+const VERIFICATION = { authorOptions: { fleetAuthors: ["bot"] } };
+
+/** A genuine tracker row as the REST child listing returns it. */
+function tracker(number: number, title: string): Record<string, unknown> {
+  return {
+    number,
+    title,
+    body: MILESTONE_TRACKING_MARKER,
+    user: { login: "bot" },
+  };
+}
 
 /** Build a gh stub serving a milestone object and its open-child list. */
 function makeGh(
@@ -47,8 +65,9 @@ Deno.test("fetchAuthoritativeOpenChildren - counts open non-tracking children (I
     makeGh({ number: 53, open_issues: 3 }, [
       { number: 3876, title: "Fix the parser" },
       { number: 3875, title: "Add the guard" },
-      { number: 3877, title: "Merge milestone 'scan' to main" },
+      tracker(3877, "Merge milestone 'scan' to main"),
     ]),
+    VERIFICATION,
   );
   assertEquals(result.ok, true);
   if (!result.ok) return;
@@ -63,8 +82,9 @@ Deno.test("fetchAuthoritativeOpenChildren - a lone open tracker is not an open c
     "owner/repo",
     53,
     makeGh({ number: 53, open_issues: 1 }, [
-      { number: 3895, title: "Merge milestone 'scan' to main" },
+      tracker(3895, "Merge milestone 'scan' to main"),
     ]),
+    VERIFICATION,
   );
   assertEquals(result.ok, true);
   if (!result.ok) return;
