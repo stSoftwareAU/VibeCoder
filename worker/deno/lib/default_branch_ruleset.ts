@@ -41,6 +41,12 @@
  *   - **Converges additively** (Issue #3656). Updating the worker's own
  *     ruleset sends the union of its current and desired contexts, so a check
  *     someone else added to it survives.
+ *   - **Never weakens the ruleset it updates** (Issue #1290). The update is a
+ *     full-document PUT, so the live ruleset is read first and every rule the
+ *     worker does not model — `pull_request`, `non_fast_forward`, `deletion`,
+ *     `required_signatures`, bypass actors — is carried through unchanged. A
+ *     ruleset whose current rules cannot be read fails the sync loudly rather
+ *     than being overwritten with a body built from status checks alone.
  *
  * The decision is separated from the write: {@link planDefaultBranchRuleset}
  * is read-only and returns what *would* happen, and
@@ -58,15 +64,18 @@ import { assessBranchPushPolicy } from "./branch_push_policy.ts";
 import { getReportedCheckNames } from "./reported_check_names.ts";
 import {
   buildDefaultBranchRulesetBody,
+  buildDefaultBranchRulesetUpdateBody,
   createRuleset,
   defaultGhExec,
   deleteRuleset,
   getBranchRules,
+  getRuleset,
   type GhExec,
   hasClassicBranchProtection,
   isValidBranchName,
   isValidRepoSlug,
   listRepoRulesets,
+  preservedRulesFromDetail,
   requiredContextsFromRules,
   type RulesetBody,
   updateRuleset,
@@ -124,6 +133,12 @@ export interface RulesetPlan {
   /** Contexts already required by rulesets, kept as-is. */
   preserved: string[];
   /**
+   * Types of the live ruleset's other rules (`pull_request`,
+   * `non_fast_forward`, …) an update carries through unchanged (Issue #1290).
+   * Empty for every action but `update`.
+   */
+  preservedRules: string[];
+  /**
    * True when the branch still carries a legacy classic protection rule.
    * The worker never writes or deletes it — deleting it is a deliberate
    * human action — but it is reported so an operator can clear it.
@@ -152,6 +167,8 @@ export type EnsureRulesetResult =
     added: string[];
     /** Contexts already required by rulesets, kept as-is. */
     preserved: string[];
+    /** See {@link RulesetPlan.preservedRules}. */
+    preservedRules: string[];
     /** Set when no ruleset was created or updated; absent when `changed`. */
     skipped?: RulesetSkipReason;
     /** Human-readable detail for a skip (offending sha/subject, opt-out). */
@@ -222,6 +239,7 @@ export async function planDefaultBranchRuleset(
         skipped: "existing-ruleset",
         added: [],
         preserved: requiredContextsFromRules(branchRules.value),
+        preservedRules: [],
         legacyClassicProtection,
       },
     };
@@ -255,6 +273,7 @@ export async function planDefaultBranchRuleset(
         detail: policy.detail,
         added: [],
         preserved: ours ? requiredContextsFromRules(branchRules.value) : [],
+        preservedRules: [],
         legacyClassicProtection,
         rulesetId: removeOwn ? ours.id : undefined,
       },
@@ -289,6 +308,7 @@ export async function planDefaultBranchRuleset(
         skipped: "no-reported-checks",
         added: [],
         preserved: [],
+        preservedRules: [],
         legacyClassicProtection,
       },
     };
@@ -303,6 +323,7 @@ export async function planDefaultBranchRuleset(
         skipped: "existing-ruleset",
         added: [],
         preserved: currentContexts,
+        preservedRules: [],
         legacyClassicProtection,
         rulesetId: ours?.id,
       },
@@ -310,18 +331,51 @@ export async function planDefaultBranchRuleset(
   }
 
   // --- Converge additively (union of current and desired) ---
+  const contexts = [...currentContexts, ...added];
+
+  if (ours === undefined) {
+    return {
+      ok: true,
+      plan: {
+        action: "create",
+        added,
+        preserved: currentContexts,
+        preservedRules: [],
+        legacyClassicProtection,
+        body: buildDefaultBranchRulesetBody(VIBE_RULESET_NAME, contexts),
+      },
+    };
+  }
+
+  // The update is a full-document PUT, so the live ruleset must be read before
+  // it is rewritten: a body built from status checks alone silently discards
+  // every other rule an admin added (Issue #1290). An unreadable ruleset fails
+  // the run loudly rather than overwriting rules the worker never saw.
+  const live = await getRuleset(repo, ours.id, ghFn);
+  if (!live.ok) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to update ruleset ${ours.id} in ${repo}: its current rules ` +
+          `could not be read (${live.error.message})`,
+      ),
+    };
+  }
+
   return {
     ok: true,
     plan: {
-      action: ours ? "update" : "create",
+      action: "update",
       added,
       preserved: currentContexts,
+      preservedRules: preservedRulesFromDetail(live.value).map((r) => r.type),
       legacyClassicProtection,
-      body: buildDefaultBranchRulesetBody(VIBE_RULESET_NAME, [
-        ...currentContexts,
-        ...added,
-      ]),
-      rulesetId: ours?.id,
+      body: buildDefaultBranchRulesetUpdateBody(
+        VIBE_RULESET_NAME,
+        contexts,
+        live.value,
+      ),
+      rulesetId: ours.id,
     },
   };
 }
@@ -351,6 +405,7 @@ export async function ensureDefaultBranchRuleset(
   const common = {
     added: plan.added,
     preserved: plan.preserved,
+    preservedRules: plan.preservedRules,
     skipped: plan.skipped,
     detail: plan.detail,
     legacyClassicProtection: plan.legacyClassicProtection,

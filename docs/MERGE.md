@@ -190,6 +190,35 @@ genuine no-op.
 Pruning a stale required check is therefore a deliberate human action, not a
 side effect of onboarding or a setup run.
 
+### The update never weakens the rules it rewrites
+
+The ruleset update is a **full-document PUT**, so the same additive stance has
+to cover the rules the worker does not model, not just the contexts it does
+(Issue #1290). An admin who hardens `Vibe Coder default branch` with
+`pull_request` (required approvals), `non_fast_forward`, `deletion`,
+`required_signatures`, or bypass actors would otherwise lose all of it the next
+time a new check appeared and the sync rebuilt the body from status checks
+alone — reported as a success, because the count of preserved *contexts* says
+nothing about the rules that went.
+
+So before it rewrites the document the configurator **reads the live ruleset**
+(`GET /repos/{repo}/rulesets/{id}`), replaces only the `required_status_checks`
+rule, and carries every other rule and the `bypass_actors` list through
+unchanged. The types it kept are reported as `preservedRules` and named in the
+setup output, so a run over a hardened ruleset shows what survived.
+
+A ruleset whose current rules **cannot be read** — a 403, a 404, an unparseable
+body — fails the sync loudly and writes nothing. "Could not see it" is never
+read as "there was nothing there".
+
+```mermaid
+flowchart TD
+    A[Update planned:<br/>new context reported] --> B[GET the live ruleset]
+    B -->|read fails| C[Refuse the update<br/>— sync fails loud]
+    B -->|read succeeds| D[Replace required_status_checks<br/>keep every other rule + bypass_actors]
+    D --> E[PUT the merged document]
+```
+
 ### Setup-time sync across all monitored repos
 
 The walk over every monitored repo is performed by
