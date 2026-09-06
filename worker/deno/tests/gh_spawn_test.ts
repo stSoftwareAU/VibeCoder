@@ -606,22 +606,6 @@ function stallingRunner(): void {
   });
 }
 
-/** Run `body` with one environment variable set, restoring it afterwards. */
-async function withEnv(
-  name: string,
-  value: string,
-  body: () => Promise<void>,
-): Promise<void> {
-  const previous = Deno.env.get(name);
-  Deno.env.set(name, value);
-  try {
-    await body();
-  } finally {
-    if (previous === undefined) Deno.env.delete(name);
-    else Deno.env.set(name, previous);
-  }
-}
-
 Deno.test("spawnGh - arms a default timeout when the caller supplies no signal (Issue #1229)", async () => {
   const seen: Array<AbortSignal | undefined> = [];
   _setGhSpawnRunner((_args, options) => {
@@ -646,13 +630,13 @@ Deno.test("spawnGh - arms a default timeout when the caller supplies no signal (
 Deno.test("spawnGh - a stalled gh call is aborted and reported as a timeout (Issue #1229)", async () => {
   stallingRunner();
   try {
-    await withEnv("GH_COMMAND_TIMEOUT", "0.05", async () => {
-      const result = await spawnGh(["issue", "view", "1"]);
-      assertEquals(result.code, 124);
-      assertEquals(result.success, false);
-      assertStringIncludes(result.stderr, "TIMEOUT: gh issue view 1");
-      assertStringIncludes(result.stderr, "0.05s");
+    const result = await spawnGh(["issue", "view", "1"], {
+      timeoutSeconds: 0.05,
     });
+    assertEquals(result.code, 124);
+    assertEquals(result.success, false);
+    assertStringIncludes(result.stderr, "TIMEOUT: gh issue view 1");
+    assertStringIncludes(result.stderr, "0.05s");
   } finally {
     restore();
   }
@@ -661,31 +645,12 @@ Deno.test("spawnGh - a stalled gh call is aborted and reported as a timeout (Iss
 Deno.test("runGhOrThrow - a timed-out call throws rather than returning empty stdout (Issue #1229)", async () => {
   stallingRunner();
   try {
-    await withEnv("GH_COMMAND_TIMEOUT", "0.05", async () => {
-      const error = await assertRejects(
-        () => runGhOrThrow(["api", "repos/me/target"]),
-        Error,
-      );
-      assertStringIncludes(error.message, "gh command failed (exit 124)");
-      assertStringIncludes(error.message, "TIMEOUT: gh api repos/me/target");
-    });
-  } finally {
-    restore();
-  }
-});
-
-Deno.test("spawnGh - a caller's timeoutSeconds overrides the default (Issue #1229)", async () => {
-  stallingRunner();
-  try {
-    // The environment default is deliberately different, so the message's
-    // budget names which of the two the chokepoint actually applied.
-    await withEnv("GH_COMMAND_TIMEOUT", "1", async () => {
-      const result = await spawnGh(["issue", "view", "1"], {
-        timeoutSeconds: 0.05,
-      });
-      assertEquals(result.code, 124);
-      assertStringIncludes(result.stderr, "0.05s");
-    });
+    const error = await assertRejects(
+      () => runGhOrThrow(["api", "repos/me/target"], { timeoutSeconds: 0.05 }),
+      Error,
+    );
+    assertStringIncludes(error.message, "gh command failed (exit 124)");
+    assertStringIncludes(error.message, "TIMEOUT: gh api repos/me/target");
   } finally {
     restore();
   }
@@ -727,19 +692,6 @@ Deno.test("spawnGh - a caller signal's abort still surfaces as an error (Issue #
       DOMException,
     );
     assertEquals(error.name, "AbortError");
-  } finally {
-    restore();
-  }
-});
-
-Deno.test("spawnGh - a paginated read gets the longer pagination budget (Issue #1229)", async () => {
-  stallingRunner();
-  try {
-    await withEnv("GH_PAGINATED_TIMEOUT", "0.05", async () => {
-      const result = await spawnGh(["api", "--paginate", "/orgs/me/members"]);
-      assertEquals(result.code, 124);
-      assertStringIncludes(result.stderr, "0.05s");
-    });
   } finally {
     restore();
   }

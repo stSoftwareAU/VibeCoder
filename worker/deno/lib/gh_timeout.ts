@@ -15,6 +15,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+
 /** Default timeout in seconds for a standard `gh` invocation. */
 export const DEFAULT_GH_COMMAND_TIMEOUT = 60;
 
@@ -40,8 +42,12 @@ export const GH_TIMEOUT_EXIT_CODE = 124;
  * disabling the control — a `GH_COMMAND_TIMEOUT=0` must not restore the
  * unbounded behaviour this module exists to remove.
  */
-function timeoutFromEnv(name: string, fallback: number): number {
-  const raw = Deno.env.get(name);
+function timeoutFromEnv(
+  env: EnvLookup,
+  name: string,
+  fallback: number,
+): number {
+  const raw = env(name);
   if (raw === undefined) return fallback;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -54,19 +60,26 @@ function timeoutFromEnv(name: string, fallback: number): number {
  * budgets; everything else takes the standard command timeout.
  *
  * @param args - Arguments passed to the `gh` binary (e.g. `["pr", "view"]`).
+ * @param env - Environment lookup; defaults to the process environment, so
+ *   production callers pass nothing and a test hands in a fixed map rather
+ *   than mutating the environment every parallel test shares (Issue #880).
  * @returns Timeout duration in seconds.
  */
-export function getGhTimeoutForOperation(args: readonly string[]): number {
+export function getGhTimeoutForOperation(
+  args: readonly string[],
+  env: EnvLookup = processEnvLookup,
+): number {
   if (args[0] === "repo" && args[1] === "clone") {
-    return timeoutFromEnv("GH_CLONE_TIMEOUT", DEFAULT_GH_CLONE_TIMEOUT);
+    return timeoutFromEnv(env, "GH_CLONE_TIMEOUT", DEFAULT_GH_CLONE_TIMEOUT);
   }
   if (args.includes("--paginate")) {
     return timeoutFromEnv(
+      env,
       "GH_PAGINATED_TIMEOUT",
       DEFAULT_GH_PAGINATED_TIMEOUT,
     );
   }
-  return timeoutFromEnv("GH_COMMAND_TIMEOUT", DEFAULT_GH_COMMAND_TIMEOUT);
+  return timeoutFromEnv(env, "GH_COMMAND_TIMEOUT", DEFAULT_GH_COMMAND_TIMEOUT);
 }
 
 /**
