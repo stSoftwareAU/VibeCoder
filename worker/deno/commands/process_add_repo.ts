@@ -69,6 +69,7 @@ import type {
 import {
   type AddRepoTargetStatus,
   addRepoToMonitoredList,
+  defaultAddRepoFsDeps,
   parseAddRepoTitle,
   validateAddRepoTarget,
 } from "../lib/add_repo.ts";
@@ -382,9 +383,11 @@ export const processAddRepoCommand: Command = {
     const addRepoFn = deps.addRepoFn ??
       ((r: string, cp: string) =>
         addRepoToMonitoredList(r, cp, {
-          readTextFile: deps.readTextFile ?? ((p) => Deno.readTextFile(p)),
+          readTextFile: deps.readTextFile ?? defaultAddRepoFsDeps.readTextFile,
+          // Owner-only write (Issue #1241): `.config.json` carries the imgbb
+          // key and the per-repo config, so it must never be world-readable.
           writeTextFile: deps.writeTextFile ??
-            ((p, d) => Deno.writeTextFile(p, d)),
+            defaultAddRepoFsDeps.writeTextFile,
         }));
     const createWrappersFn = deps.createWrappersFn ??
       ((r: string) =>

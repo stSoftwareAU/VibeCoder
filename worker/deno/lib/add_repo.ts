@@ -26,6 +26,7 @@ import {
 } from "../setup/collaborator_precheck.ts";
 import { getRepoVisibility, type RepoVisibility } from "./repo_visibility.ts";
 import { REPO_SLUG_PATTERN } from "./config.ts";
+import { atomicWrite } from "./file_utils.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -143,9 +144,60 @@ export interface AddRepoFsDeps {
   writeTextFile: (path: string, data: string) => Promise<void>;
 }
 
-const defaultFsDeps: AddRepoFsDeps = {
+/** Owner-only permissions for the credential-bearing `.config.json`. */
+const CONFIG_FILE_MODE = 0o600;
+
+/**
+ * The path {@link atomicWrite} should be handed for a config file.
+ *
+ * `atomicWrite` derives the target directory from the last `/`, so a bare
+ * relative filename — the production default `.config.json` — would yield an
+ * empty directory and fail. Prefixing `./` names the current directory
+ * explicitly; a path that already has a `/` is passed through untouched.
+ *
+ * @param path - The config path as the caller supplied it.
+ */
+export function configWriteTarget(path: string): string {
+  return path.includes("/") ? path : `./${path}`;
+}
+
+/**
+ * Write `.config.json` with owner-only permissions (Issue #1241).
+ *
+ * `.config.json` is credential-bearing — `imgbb_api_key`, the GitHub App
+ * identifiers, and the per-repo `repo_config` block — so it must never be
+ * left world-readable. The plain `Deno.writeTextFile` this replaced created
+ * the file at the process umask default (0o644) and left a pre-existing
+ * 0o644 copy untightened. Writing through {@link atomicWrite} at mode 0o600
+ * matches the canonical writer in `setup/config_setup.ts` and tightens an
+ * already-loose file, because the 0o600 temp file is renamed over it.
+ *
+ * @param path - Path to the config file.
+ * @param data - The serialised config to write.
+ * @throws When the write fails — callers convert this into a `Result` error
+ *   rather than letting a config that was not written look like one that was.
+ */
+async function writeConfigSecurely(path: string, data: string): Promise<void> {
+  const result = await atomicWrite({
+    targetFile: configWriteTarget(path),
+    content: data,
+    mode: CONFIG_FILE_MODE,
+  });
+  if (!result.ok) {
+    throw result.error;
+  }
+}
+
+/**
+ * Production filesystem deps: reads directly, writes owner-only.
+ *
+ * Exported so every caller that wires its own deps (e.g.
+ * `commands/process_add_repo.ts`) inherits the hardened write rather than
+ * re-rolling a bare `Deno.writeTextFile`.
+ */
+export const defaultAddRepoFsDeps: AddRepoFsDeps = {
   readTextFile: (path) => Deno.readTextFile(path),
-  writeTextFile: (path, data) => Deno.writeTextFile(path, data),
+  writeTextFile: (path, data) => writeConfigSecurely(path, data),
 };
 
 /**
@@ -168,7 +220,7 @@ const defaultFsDeps: AddRepoFsDeps = {
 export async function addRepoToMonitoredList(
   repo: string,
   configPath: string,
-  deps: AddRepoFsDeps = defaultFsDeps,
+  deps: AddRepoFsDeps = defaultAddRepoFsDeps,
 ): Promise<Result<{ added: boolean }>> {
   const slug = repo.trim();
 
@@ -265,7 +317,7 @@ export async function addRepoToMonitoredList(
 export async function removeRepoFromMonitoredList(
   repo: string,
   configPath: string,
-  deps: AddRepoFsDeps = defaultFsDeps,
+  deps: AddRepoFsDeps = defaultAddRepoFsDeps,
 ): Promise<Result<{ removed: boolean; repoConfigRemoved: boolean }>> {
   const slug = repo.trim();
 
@@ -356,7 +408,7 @@ export async function removeRepoFromMonitoredList(
  */
 export async function listMonitoredRepos(
   configPath: string,
-  deps: AddRepoFsDeps = defaultFsDeps,
+  deps: AddRepoFsDeps = defaultAddRepoFsDeps,
 ): Promise<Result<string[]>> {
   let raw = "";
   try {

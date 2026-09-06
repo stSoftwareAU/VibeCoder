@@ -12,6 +12,8 @@ import {
   type AddRepoFsDeps,
   type AddRepoTargetStatus,
   addRepoToMonitoredList,
+  configWriteTarget,
+  defaultAddRepoFsDeps,
   listMonitoredRepos,
   parseAddRepoTitle,
   removeRepoFromMonitoredList,
@@ -427,4 +429,133 @@ Deno.test("listMonitoredRepos - a config with no repos key lists nothing", async
   const result = await listMonitoredRepos("/cfg.json", fs.deps);
   assert(result.ok);
   assertEquals(result.value, []);
+});
+
+// ---------------------------------------------------------------------------
+// Config file permissions (Issue #1241)
+// ---------------------------------------------------------------------------
+
+/** Run `fn` against a fresh temp directory, removing it afterwards. */
+async function withTempDir(
+  fn: (dir: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "add_repo_perms_" });
+  try {
+    await fn(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+/** Permission bits of `path`, or `null` on a platform without them. */
+async function modeOf(path: string): Promise<number | null> {
+  if (Deno.build.os === "windows") return null;
+  const stat = await Deno.stat(path);
+  return (stat.mode ?? 0) & 0o777;
+}
+
+Deno.test("addRepoToMonitoredList - creates .config.json owner-only", async () => {
+  await withTempDir(async (dir) => {
+    const configPath = `${dir}/.config.json`;
+
+    // Real filesystem, production deps — the path the add-repo issue takes.
+    const result = await addRepoToMonitoredList("owner/new", configPath);
+    assert(result.ok);
+    assertEquals(result.value, { added: true });
+
+    const written = JSON.parse(await Deno.readTextFile(configPath)) as {
+      repos: string[];
+    };
+    assertEquals(written.repos, ["owner/new"]);
+
+    // `.config.json` carries the imgbb key and the per-repo config block, so
+    // a file created at the umask default (0o644) exposes them to every local
+    // account.
+    const mode = await modeOf(configPath);
+    if (mode !== null) assertEquals(mode, 0o600);
+  });
+});
+
+Deno.test("addRepoToMonitoredList - tightens a world-readable config", async () => {
+  await withTempDir(async (dir) => {
+    const configPath = `${dir}/.config.json`;
+    await Deno.writeTextFile(
+      configPath,
+      JSON.stringify({ repos: ["owner/existing"], imgbb_api_key: "secret" }),
+    );
+    if (Deno.build.os !== "windows") await Deno.chmod(configPath, 0o644);
+
+    const result = await addRepoToMonitoredList("owner/new", configPath);
+    assert(result.ok);
+
+    const written = JSON.parse(await Deno.readTextFile(configPath)) as {
+      repos: string[];
+      imgbb_api_key: string;
+    };
+    assertEquals(written.repos, ["owner/existing", "owner/new"]);
+    // Unknown keys survive the rewrite.
+    assertEquals(written.imgbb_api_key, "secret");
+
+    const mode = await modeOf(configPath);
+    if (mode !== null) assertEquals(mode, 0o600);
+  });
+});
+
+Deno.test("removeRepoFromMonitoredList - rewrites the config owner-only", async () => {
+  await withTempDir(async (dir) => {
+    const configPath = `${dir}/.config.json`;
+    await Deno.writeTextFile(
+      configPath,
+      JSON.stringify({ repos: ["owner/a", "owner/b"] }),
+    );
+    if (Deno.build.os !== "windows") await Deno.chmod(configPath, 0o644);
+
+    const result = await removeRepoFromMonitoredList("owner/a", configPath);
+    assert(result.ok);
+    assertEquals(result.value.removed, true);
+
+    const written = JSON.parse(await Deno.readTextFile(configPath)) as {
+      repos: string[];
+    };
+    assertEquals(written.repos, ["owner/b"]);
+
+    const mode = await modeOf(configPath);
+    if (mode !== null) assertEquals(mode, 0o600);
+  });
+});
+
+Deno.test("addRepoToMonitoredList - an unwritable path fails loud", async () => {
+  await withTempDir(async (dir) => {
+    // A directory that does not exist: the write must surface as an error,
+    // never as a silently successful add.
+    const result = await addRepoToMonitoredList(
+      "owner/new",
+      `${dir}/missing/.config.json`,
+    );
+    assertEquals(result.ok, false);
+    if (result.ok) return;
+    assertStringIncludes(result.error.message, "Failed to write");
+  });
+});
+
+Deno.test("configWriteTarget - a bare filename names the current directory", () => {
+  // The production default config path has no directory component; without
+  // the "./" the atomic write derives an empty target directory and fails.
+  assertEquals(configWriteTarget(".config.json"), "./.config.json");
+  assertEquals(configWriteTarget("./.config.json"), "./.config.json");
+  assertEquals(
+    configWriteTarget("/etc/vibe/.config.json"),
+    "/etc/vibe/.config.json",
+  );
+  assertEquals(configWriteTarget("sub/.config.json"), "sub/.config.json");
+});
+
+Deno.test("defaultAddRepoFsDeps - the production write is owner-only", async () => {
+  await withTempDir(async (dir) => {
+    const path = `${dir}/.config.json`;
+    await defaultAddRepoFsDeps.writeTextFile(path, "{}\n");
+    assertEquals(await defaultAddRepoFsDeps.readTextFile(path), "{}\n");
+    const mode = await modeOf(path);
+    if (mode !== null) assertEquals(mode, 0o600);
+  });
 });
