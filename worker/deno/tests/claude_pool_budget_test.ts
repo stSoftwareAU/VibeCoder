@@ -84,8 +84,9 @@ Deno.test("poolHasAnotherTokenWithBudget - a second subscription with budget is 
   assertEquals(probe.calls(), 1);
   assertEquals(lines.length, 1);
   // The label is named; the value never is.
-  assertEquals(lines[0].includes("provider-2"), true);
-  assertEquals(lines[0].includes("token-provider-2"), false);
+  const line = lines[0] ?? "";
+  assertEquals(line.includes("provider-2"), true);
+  assertEquals(line.includes("token-provider-2"), false);
 });
 
 Deno.test("poolHasAnotherTokenWithBudget - a pool that is also spent is not worth restarting for", async () => {
