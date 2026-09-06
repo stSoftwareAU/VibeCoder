@@ -673,6 +673,14 @@ around the value are stripped, but one plain line is the canonical form:
 ANTHROPIC_API_KEY=sk-ant-your_key
 ```
 
+The file is **data, never a shell script**. Every reader — `setup.sh`,
+`setup.ps1` and the worker's credential preflight — splits each line on the
+first `=` and takes the remainder verbatim, so a value holding a space, a `;`,
+a `#` or `$(...)` is stored and read as those characters rather than executed
+(Issue #1301). One consequence: the whole value must fit on one line, so
+`setup.sh` refuses to write a credential containing a line break instead of
+storing a truncated token behind a success message.
+
 | Vendor | File | Accepted variable names |
 |--------|------|-------------------------|
 | Claude Code | `claude/provider.env` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` |
