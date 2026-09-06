@@ -12,11 +12,12 @@
  * launchctl is driven through an injected driver here, so these tests assert
  * real behaviour on any platform without touching the host's agents.
  *
- * Australian English spelling used throughout (behaviour, recognised).
+ * Australian English spelling used throughout (behaviour, honoured).
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  bootstrapAgent,
   getLaunchAgentStatus,
   type LaunchctlDriver,
   reloadIfUnloaded,
@@ -122,6 +123,28 @@ Deno.test("reloadIfUnloaded - falls back to legacy load when bootstrap fails (Is
   assertEquals(result.ok, true);
   assertEquals(result.reloaded, true);
   assertEquals(launchctl.calls[2], ["load", "/tmp/x.plist"]);
+});
+
+Deno.test("reloadIfUnloaded - a job launchd refuses to enable fails loud (Issue #1369)", async () => {
+  // Bootstrapped but disabled is a host with no worker, and that must never
+  // be reported as a reload that worked.
+  const launchctl = fakeLaunchctl({ loaded: false, failing: ["enable"] });
+  const result = await reloadIfUnloaded("/tmp/x.plist", launchctl);
+
+  assertEquals(result.ok, false);
+  assertEquals(result.reloaded, false);
+  assertStringIncludes(result.message, "launchctl enable");
+});
+
+Deno.test("bootstrapAgent - reports the enabled job it loaded (Issue #1369)", async () => {
+  const launchctl = fakeLaunchctl({ loaded: false });
+  const result = await bootstrapAgent("/tmp/x.plist", launchctl);
+
+  assertEquals(result.ok, true);
+  assertEquals(launchctl.calls, [
+    ["bootstrap", "gui/501", "/tmp/x.plist"],
+    ["enable", "gui/501/com.vibe.auto-issue-worker"],
+  ]);
 });
 
 Deno.test("reloadIfUnloaded - a plist that cannot be loaded fails loud (Issue #1369)", async () => {

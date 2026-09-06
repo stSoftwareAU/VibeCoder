@@ -289,29 +289,12 @@ export async function setupLaunchAgent(
   // ANTHROPIC_API_KEY in plaintext (Issue #2514).
   await writeSecurePlist(plistPath, newContent);
 
-  // Load the agent
+  // Load the agent through the one loading path (Issue #1369), so a plist
+  // that never reached launchd is reported the same way here as on the
+  // up-to-date path above — as a failure, not as a completed setup.
   if (!config.skipLaunchctl) {
-    const uid = await getUid();
-
-    const bootstrapResult = await runLaunchctl([
-      "bootstrap",
-      `gui/${uid}`,
-      plistPath,
-    ]);
-    if (!bootstrapResult.success) {
-      // Try legacy load command for older macOS
-      const loadResult = await runLaunchctl(["load", plistPath]);
-      if (!loadResult.success) {
-        return {
-          ok: true,
-          message:
-            `Created plist at ${plistPath} but could not load automatically. Load manually with: launchctl bootstrap "gui/$(id -u)" "${plistPath}"`,
-        };
-      }
-    }
-
-    // Enable the agent
-    await runLaunchctl(["enable", `gui/${uid}/${LAUNCHAGENT_LABEL}`]);
+    const loaded = await bootstrapAgent(plistPath);
+    if (!loaded.ok) return loaded;
   }
 
   return { ok: true, message: `LaunchAgent setup complete: ${plistPath}` };
@@ -459,6 +442,32 @@ export async function reloadIfUnloaded(
     return { ok: true, reloaded: false, message: "LaunchAgent is loaded" };
   }
 
+  const loaded = await bootstrapAgent(plistPath, launchctl);
+  if (!loaded.ok) return { ...loaded, reloaded: false };
+  return {
+    ok: true,
+    reloaded: true,
+    message:
+      `LaunchAgent plist was up to date but launchd had no such service — ` +
+      `reloaded it: ${plistPath}`,
+  };
+}
+
+/**
+ * Hand a plist to launchd and enable it — the one loading path (Issue #1369).
+ *
+ * Every step is checked, `enable` included: a job that bootstraps but stays
+ * disabled never runs, and reporting that as a successful setup is the silent
+ * failure this whole change exists to remove.
+ *
+ * @param plistPath - The plist launchd should load
+ * @param launchctl - How to reach launchctl (injected in tests)
+ * @returns Whether launchd now holds an enabled job, and what to do if not
+ */
+export async function bootstrapAgent(
+  plistPath: string,
+  launchctl: LaunchctlDriver = systemLaunchctl,
+): Promise<LaunchAgentResult> {
   const uid = await launchctl.uid();
   const bootstrapped = await launchctl.run([
     "bootstrap",
@@ -471,30 +480,48 @@ export async function reloadIfUnloaded(
     if (!loaded.success) {
       return {
         ok: false,
-        reloaded: false,
-        message:
-          `The LaunchAgent plist ${plistPath} is present but launchd has no ` +
-          `such service, and it could not be loaded. Nothing is running the ` +
-          `worker on this host. Load it by hand with: ` +
-          `launchctl bootstrap "gui/$(id -u)" "${plistPath}"`,
+        message: `The LaunchAgent plist ${plistPath} could not be loaded, so ` +
+          `nothing is running the worker on this host. Load it by hand with: ` +
+          `launchctl bootstrap "gui/$(id -u)" "${plistPath}" — and if you are ` +
+          `running setup over SSH, run it again from a Terminal on the ` +
+          `logged-in desktop, because launchd's GUI domain is not reachable ` +
+          `from a session with nobody logged in at the console.`,
       };
     }
   }
 
-  await launchctl.run(["enable", `gui/${uid}/${LAUNCHAGENT_LABEL}`]);
-  return {
-    ok: true,
-    reloaded: true,
-    message:
-      `LaunchAgent plist was up to date but launchd had no such service — ` +
-      `reloaded it: ${plistPath}`,
-  };
+  const enabled = await launchctl.run([
+    "enable",
+    `gui/${uid}/${LAUNCHAGENT_LABEL}`,
+  ]);
+  if (!enabled.success) {
+    return {
+      ok: false,
+      message: `The LaunchAgent was loaded from ${plistPath} but launchd ` +
+        `refused to enable it, so it will not run. Enable it by hand with: ` +
+        `launchctl enable "gui/$(id -u)/${LAUNCHAGENT_LABEL}"`,
+    };
+  }
+
+  return { ok: true, message: `LaunchAgent loaded: ${plistPath}` };
 }
 
+/**
+ * This user's numeric uid.
+ *
+ * `launchagent --status` is now reachable from any platform (Issue #1369),
+ * and a host with no `id` has no launchd either: the empty uid it returns
+ * makes every launchctl call fail, which is reported as "not loaded" — never
+ * as a healthy agent.
+ */
 async function getUid(): Promise<string> {
-  const cmd = new Deno.Command("id", { args: ["-u"], stdout: "piped" });
-  const output = await cmd.output();
-  return new TextDecoder().decode(output.stdout).trim();
+  try {
+    const cmd = new Deno.Command("id", { args: ["-u"], stdout: "piped" });
+    const output = await cmd.output();
+    return new TextDecoder().decode(output.stdout).trim();
+  } catch {
+    return "";
+  }
 }
 
 async function runLaunchctl(args: string[]): Promise<{ success: boolean }> {
