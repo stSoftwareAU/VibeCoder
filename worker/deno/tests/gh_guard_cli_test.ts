@@ -297,6 +297,10 @@ Deno.test("gh-guard-cli #92 - masks a secret in a real --input body, pointing --
   }
 });
 
+// Issue #1283 changed this case's field: `title` is published text now and is
+// masked structurally, so the unreachable-field example moved to `head`, which
+// routes a pull request and is deliberately not redactable. The fail-closed
+// invariant the test asserts is unchanged.
 Deno.test("gh-guard-cli #92 - refuses a JSON body that passes the label scan but hides a secret outside its body field", async () => {
   // The label guard (#91) allows this — no reserved label — so redaction is
   // reached, and it fails closed on the secret it cannot place structurally.
@@ -304,7 +308,7 @@ Deno.test("gh-guard-cli #92 - refuses a JSON body that passes the label scan but
   try {
     await Deno.writeTextFile(
       path,
-      JSON.stringify({ body: "clean", title: `t ${GH_TOKEN_SAMPLE}` }),
+      JSON.stringify({ body: "clean", head: `t ${GH_TOKEN_SAMPLE}` }),
     );
     const result = runGhGuardCli([
       "--active",

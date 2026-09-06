@@ -9,12 +9,20 @@
  * reached one of the unredacted sinks was published.
  *
  * Redacting per call site cannot hold: each new sink has to remember. This
- * module masks the body-carrying arguments once, inside `spawnGh`, so every
+ * module masks the published-text arguments once, inside `spawnGh`, so every
  * present and future public sink inherits redaction by construction.
  *
- * Only body-carrying arguments are rewritten. Routing arguments — the repo
- * slug, the API path, `--label`, reaction fields — are left byte-for-byte
- * alone so a mutation is never redirected by redaction.
+ * **Titles and label fields (Issue #1283).** A body was not the only public
+ * sink reaching the chokepoint: `--title`, `-f title=`, `-f description=` and
+ * `-f name=` are published just as widely — ~30 issue-create sites,
+ * `editIssue`, `gh pr create`, the milestone and label REST calls — and they
+ * passed through byte-for-byte, which is why `refinement_processor.ts` and
+ * `revision_processor.ts` hand-wrapped `redactSecrets` around a new title. They
+ * are now covered here, so a title inherits redaction like a body.
+ *
+ * Only published-text arguments are rewritten. Routing arguments — the repo
+ * slug, the API path, `--label`, `--head`, reaction fields — are left
+ * byte-for-byte alone so a mutation is never redirected by redaction.
  *
  * **Bodies read from a file (Issue #3938).** The worker process is not the only
  * caller of `gh`: the agent subprocess reaches the binary through the PATH
@@ -29,8 +37,8 @@
  * **`gh api --input <file>` bodies (Issue #92).** `gh api …/comments --input
  * body.json` POSTs the file's JSON as the request body — the same public sink
  * as a comment, invisible to the argv. Supply a reader (to scan) and a
- * {@link BodyFileWriter} (to materialise a masked copy) and the published-text
- * keys of the JSON body (`body`, `message`, `note`, `comment`) are redacted;
+ * {@link BodyFileWriter} (to materialise a masked copy) and the
+ * {@link PUBLISHED_FIELD_KEYS} of the JSON body are redacted;
  * when something is masked the redacted JSON is written to a *fresh* temp file
  * and `--input` is pointed at that, so the agent's own file is never rewritten.
  * A body that is not a JSON object, or that hides a secret outside a redactable
@@ -41,7 +49,7 @@
  * flowchart LR
  *     C["comment / PR-body call sites"] --> S["spawnGh()"]
  *     A["agent gh calls"] --> G["gh guard shim"]
- *     S --> R["redactGhBodyArgs<br/>(--body, -b, -f body=…)"]
+ *     S --> R["redactGhBodyArgs<br/>(--body, -b, --title, -f body=/title=…)"]
  *     G --> R2["redactGhBodyArgs + reader<br/>(also --body-file contents)"]
  *     R --> GH["gh subprocess → GitHub"]
  *     R2 --> GH
@@ -52,8 +60,29 @@
 
 import { redactSecrets } from "./secret_redaction.ts";
 
-/** Flags whose following argument is published text. */
-const BODY_FLAGS = new Set(["--body", "-b"]);
+/**
+ * Flags whose following argument is published text.
+ *
+ * A title and a label/repo description are public sinks exactly like a body
+ * (Issue #1283), so `--title` and `--description` join them — the latter
+ * because `label_operations.ts` publishes the same text through the CLI
+ * spelling as well as through `-f description=`.
+ */
+const TEXT_FLAGS = new Set(["--body", "-b", "--title", "--description"]);
+
+/**
+ * `-t` is `--title` on `issue create` / `pr create` / `release create`, but
+ * `--template` on `gh api`. Covered everywhere except `gh api`, so the shim's
+ * everyday `gh issue create -t "<title>"` is masked while a `gh api` output
+ * template is never rewritten.
+ */
+const TITLE_SHORTHAND = "-t";
+
+/** Subcommand for which {@link TITLE_SHORTHAND} means `--template` instead. */
+const TEMPLATE_SUBCOMMAND = "api";
+
+/** `--flag=<text>` spellings whose value is published text. */
+const TEXT_FLAG_PREFIXES = ["--body=", "--title=", "--description="];
 
 /** Flags whose following argument names a file holding published text. */
 const BODY_FILE_FLAGS = new Set(["--body-file", "-F"]);
@@ -67,8 +96,30 @@ const FIELD_FLAGS = new Set(["-f", "-F", "--field", "--raw-field"]);
 /** Field flags whose `key=@path` value is read from a file by `gh`. */
 const FIELD_FILE_FLAGS = new Set(["-F", "--field"]);
 
-/** `key=value` keys that end up as published text. */
-const BODY_FIELD_KEYS = new Set(["body", "message", "note", "comment"]);
+/**
+ * `key=value` keys that end up as published text.
+ *
+ * `title`, `description` and `name` joined the body-shaped keys in Issue
+ * #1283: `-f title=` creates issues, PRs and milestones, and `-f name=` /
+ * `-f description=` create labels — every one of them a public sink. Keys that
+ * route a mutation (`owner`, `head`, `assignee`, a reaction's `content`) stay
+ * off this list so redaction can never redirect a call.
+ *
+ * `name` is the one key that is published text in some calls (a label's name)
+ * and a routing variable in others (`gh api graphql -F name=<repo>`). Masking
+ * is shape-specific, so a repository name — which cannot match a secret rule —
+ * survives byte-for-byte; only a `name` that genuinely looks like a credential
+ * is rewritten, and that is a value no call should be sending.
+ */
+const PUBLISHED_FIELD_KEYS = new Set([
+  "body",
+  "message",
+  "note",
+  "comment",
+  "title",
+  "description",
+  "name",
+]);
 
 /**
  * Reads the contents of a `--body-file` path. Throws when it cannot.
@@ -107,7 +158,8 @@ export class UnredactableBodyError extends Error {
 }
 
 /**
- * Redact secrets from the body-carrying arguments of a `gh` invocation.
+ * Redact secrets from the published-text arguments of a `gh` invocation —
+ * bodies, titles, and the label/milestone fields GitHub renders publicly.
  *
  * @param args - Arguments about to be passed to the `gh` binary.
  * @param readBodyFile - Optional reader; supplying it extends redaction to the
@@ -116,9 +168,9 @@ export class UnredactableBodyError extends Error {
  * @param writeBodyFile - Optional writer; needed only to materialise a masked
  *   copy of an `--input` body. When an `--input` body needs masking and no
  *   writer is supplied, the call fails closed rather than publish it.
- * @returns A new array with body arguments redacted; all other arguments are
- *   returned unchanged. Every argument except a rewritten `--input` path is
- *   left byte-for-byte alone.
+ * @returns A new array with published-text arguments redacted; all other
+ *   arguments are returned unchanged. Every argument except a rewritten
+ *   `--input` path is left byte-for-byte alone.
  * @throws UnredactableBodyError when a body source cannot be scanned.
  */
 export function redactGhBodyArgs(
@@ -127,20 +179,24 @@ export function redactGhBodyArgs(
   writeBodyFile?: BodyFileWriter,
 ): string[] {
   const out = [...args];
+  const titleShorthandIsText = out[0] !== TEMPLATE_SUBCOMMAND;
   for (let i = 0; i < out.length; i++) {
     const arg = out[i] ?? "";
     const next = out[i + 1];
 
-    // `--body <text>` / `-b <text>`
-    if (BODY_FLAGS.has(arg) && next !== undefined) {
+    // `--body <text>` / `-b <text>` / `--title <text>` / `-t <text>`
+    const isTextFlag = TEXT_FLAGS.has(arg) ||
+      (titleShorthandIsText && arg === TITLE_SHORTHAND);
+    if (isTextFlag && next !== undefined) {
       out[i + 1] = redactSecrets(next);
       i++;
       continue;
     }
 
-    // `--body=<text>`
-    if (arg.startsWith("--body=")) {
-      out[i] = `--body=${redactSecrets(arg.substring("--body=".length))}`;
+    // `--body=<text>` / `--title=<text>`
+    const prefix = TEXT_FLAG_PREFIXES.find((p) => arg.startsWith(p));
+    if (prefix !== undefined) {
+      out[i] = `${prefix}${redactSecrets(arg.substring(prefix.length))}`;
       continue;
     }
 
@@ -208,7 +264,7 @@ function redactFieldAssignment(
   const eq = field.indexOf("=");
   if (eq <= 0) return field;
   const key = field.substring(0, eq);
-  if (!BODY_FIELD_KEYS.has(key.toLowerCase())) return field;
+  if (!PUBLISHED_FIELD_KEYS.has(key.toLowerCase())) return field;
   const value = field.substring(eq + 1);
 
   // `-F body=@path` — gh reads the value from the file, so scan the file.
@@ -286,7 +342,7 @@ function maskedInputFile(
 /**
  * Mask the published-text keys of a JSON request body.
  *
- * Redacts the string values of {@link BODY_FIELD_KEYS} on the top-level
+ * Redacts the string values of {@link PUBLISHED_FIELD_KEYS} on the top-level
  * object, mirroring the `-f body=…` field rules. Returns the re-serialised
  * JSON when a value changed, or undefined when nothing needed masking. Fails
  * closed on a secret it cannot place structurally: a non-object body, or a
@@ -309,7 +365,9 @@ function maskedJsonBody(text: string): string | undefined {
   let changed = false;
   for (const key of Object.keys(obj)) {
     const value = obj[key];
-    if (BODY_FIELD_KEYS.has(key.toLowerCase()) && typeof value === "string") {
+    if (
+      PUBLISHED_FIELD_KEYS.has(key.toLowerCase()) && typeof value === "string"
+    ) {
       const redacted = redactSecrets(value);
       if (redacted !== value) {
         obj[key] = redacted;
