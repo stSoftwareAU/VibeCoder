@@ -7,7 +7,7 @@
 #    blocks fed to `redactSecrets()`.
 #  - handle_no_changes_phase_test.ts (Issue #3636): fake ghp_/ghs_/
 #    sk-ant- tokens asserting the publish paths redact leaked
-#    credentials.
+#    credentials
 #  - security_scan_overflow_3648_test.ts (Issue #3648): a fake hex API
 #    key asserting space-separated CLI secret flags are redacted.
 #  - security_scan_overflow_3707_test.ts (Issue #3707): fake extension
