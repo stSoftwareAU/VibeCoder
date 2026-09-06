@@ -11,6 +11,7 @@ import { processEnvLookup } from "../lib/env_lookup.ts";
 import { pathStyleFor } from "../lib/host_path_style.ts";
 import { readConfiguredLogDirSync, resolveLogDir } from "../lib/log_dir.ts";
 import { resolveHostConfigPath } from "../lib/host_config_path.ts";
+import { escapeXml } from "../lib/xml_escape.ts";
 
 /** Configuration for LaunchAgent setup. */
 export interface LaunchAgentConfig {
@@ -61,10 +62,20 @@ function hostLogsDir(): string {
 
 /**
  * Generate the LaunchAgent plist XML content.
+ *
+ * **Every** interpolated value is escaped, paths included (Issue #1220). The
+ * path fields are as much configuration as the environment values are:
+ * `logsDir` resolves from `log_dir` in `.config.json`, then `LAUNCH_LOG_DIR` /
+ * `LOG_DIR` / `VIBE_LOGS_DIR`, and `scriptDir` is the checkout path. Left raw,
+ * a value carrying `</string>` closed the enclosing element and could add a
+ * `ProgramArguments` entry — or a `<key>Program</key>` replacing the executable
+ * outright — that launchd then runs on the host at every login. Escaping also
+ * keeps an honest path containing `&` from producing a plist launchd rejects.
  */
 export function generatePlist(config: LaunchAgentConfig): string {
-  const runScriptPath = `${config.scriptDir}/run.sh`;
-  const logsDir = config.logsDir ?? hostLogsDir();
+  const scriptDir = escapeXml(config.scriptDir);
+  const runScriptPath = `${scriptDir}/run.sh`;
+  const logsDir = escapeXml(config.logsDir ?? hostLogsDir());
 
   let plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -77,7 +88,7 @@ export function generatePlist(config: LaunchAgentConfig): string {
         <string>${runScriptPath}</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>${config.scriptDir}</string>
+    <string>${scriptDir}</string>
     <key>StartInterval</key>
     <integer>300</integer>
     <key>StandardOutPath</key>
@@ -137,16 +148,6 @@ export async function writeSecurePlist(
 ): Promise<void> {
   await Deno.writeTextFile(plistPath, content, { mode: 0o600 });
   await Deno.chmod(plistPath, 0o600);
-}
-
-/** Escape special XML characters to prevent injection. */
-function escapeXml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
 }
 
 /**

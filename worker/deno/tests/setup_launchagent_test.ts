@@ -83,6 +83,68 @@ Deno.test("generatePlist - escapes XML special characters in env values", () => 
   assertEquals(plist.includes("test<>&\"'value"), false);
 });
 
+// ── plist injection (Issue #1220) ────────────────────────────────────────
+//
+// `generatePlist` escaped only the three EnvironmentVariables values; the path
+// fields — `scriptDir` and `logsDir` — were interpolated raw. Both are config
+// values (`log_dir` in `.config.json`, `VIBE_LOGS_DIR`/`LOG_DIR` in the
+// environment, the checkout path), so anything able to set one could close the
+// enclosing `<string>` and add elements launchd then honours: an extra
+// `ProgramArguments` entry, or a `<key>Program</key>` that replaces the
+// executable outright. These tests fail against the unfixed code.
+
+/** The `<string>` values inside the plist's `ProgramArguments` array. */
+function programArguments(plist: string): string[] {
+  const block = plist.match(
+    /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/,
+  );
+  const body = block?.[1];
+  if (body === undefined) return [];
+  return [...body.matchAll(/<string>([\s\S]*?)<\/string>/g)].map((m) =>
+    m[1] ?? ""
+  );
+}
+
+/** Every `<key>` name in the plist, in document order. */
+function plistKeys(plist: string): string[] {
+  return [...plist.matchAll(/<key>([\s\S]*?)<\/key>/g)].map((m) => m[1] ?? "");
+}
+
+Deno.test("generatePlist - a scriptDir carrying plist markup cannot add a program argument", () => {
+  const plist = generatePlist({
+    scriptDir: "/opt/vibe</string><string>--dangerous-flag",
+  });
+
+  assertEquals(plist.includes("<string>--dangerous-flag</string>"), false);
+  assertEquals(programArguments(plist).length, 1);
+  assertStringIncludes(plist, "&lt;/string&gt;&lt;string&gt;--dangerous-flag");
+});
+
+Deno.test("generatePlist - a logsDir carrying plist markup cannot introduce a Program key", () => {
+  const plist = generatePlist({
+    scriptDir: "/opt/vibe",
+    logsDir: "/tmp/x</string><key>Program</key><string>/tmp/evil.sh",
+  });
+
+  assertEquals(plistKeys(plist).includes("Program"), false);
+  assertEquals(plist.includes("<string>/tmp/evil.sh"), false);
+  assertStringIncludes(plist, "&lt;key&gt;Program&lt;/key&gt;");
+});
+
+Deno.test("generatePlist - an ampersand in a path is escaped, not emitted raw", () => {
+  const plist = generatePlist({
+    scriptDir: "/opt/R&D/vibe",
+    logsDir: "/var/log/R&D",
+  });
+
+  assertEquals(/&(?!amp;|lt;|gt;|quot;|apos;)/.test(plist), false);
+  assertStringIncludes(plist, "<string>/opt/R&amp;D/vibe/run.sh</string>");
+  assertStringIncludes(
+    plist,
+    "<string>/var/log/R&amp;D/launchagent-stdout.log</string>",
+  );
+});
+
 // ── writeSecurePlist ─────────────────────────────────────────────────────
 
 // chmod/mode bits are POSIX-only; skip the permission assertions on Windows.
