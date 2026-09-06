@@ -474,6 +474,7 @@ export async function selfHealMilestoneBranches(
           repo,
           milestone.number,
           ghCommandFn,
+          { log },
         );
         if (!childrenResult.ok) {
           log(`WARNING: ${childrenResult.error.message} (Issue #3912)`);

@@ -13,6 +13,14 @@ import {
   postOpenChildrenBlockComment,
   renderOpenChildrenBlockComment,
 } from "../lib/milestone_children_gate.ts";
+import { MILESTONE_TRACKING_MARKER } from "../lib/milestone_tracker_identity.ts";
+
+/**
+ * Issue #1246: excluding a child from the blocking set is what lets the merge
+ * (and the branch deletion) through, so it takes the tracking-issue body
+ * marker and a fleet author on top of the title shape.
+ */
+const VERIFICATION = { authorOptions: { fleetAuthors: ["bot"] } };
 
 // ---------------------------------------------------------------------------
 // isMilestoneBranch
@@ -35,7 +43,12 @@ Deno.test("fetchOpenMilestoneChildren - counts open issues and PRs, skipping the
     if (key.includes("/issues?milestone=")) {
       return JSON.stringify([
         { number: 10, title: "Open child issue" },
-        { number: 11, title: "Merge milestone 'M1' to Develop" },
+        {
+          number: 11,
+          title: "Merge milestone 'M1' to Develop",
+          body: MILESTONE_TRACKING_MARKER,
+          user: { login: "bot" },
+        },
         { number: 12, title: "Milestone-assigned PR", pull_request: {} },
       ]);
     }
@@ -50,6 +63,7 @@ Deno.test("fetchOpenMilestoneChildren - counts open issues and PRs, skipping the
     milestoneNumber: 53,
     milestoneBranch: "milestone/m1",
     ghCommandFn: ghFn,
+    verification: VERIFICATION,
   });
 
   assertEquals(result.ok, true);
