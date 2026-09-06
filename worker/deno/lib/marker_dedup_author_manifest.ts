@@ -149,9 +149,11 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES: readonly string[] = [];
  * REST comments with no `--jq` at all (`issue_comment_pages.ts`), projects
  * without a `select(.body` (`run_failure_issue.ts`), reads `--jq .[].body`
  * across all authors (`milestone_children_gate.ts`, #1249) or matches
- * client-side over a plain `gh issue list` (`idle_task_snapshot.ts`, #1243) is
- * invisible to it. Both lists were empty while six live instances of the class
- * sat in the tree, which is what #1216 found and fixed.
+ * client-side over a plain `gh issue list` (`idle_task_snapshot.ts`, #1243 —
+ * fixed there, and still invisible to the scanner, which is why its entry had
+ * to be deleted by hand) is invisible to it. Both lists were empty while six
+ * live instances of the class sat in the tree, which is what #1216 found and
+ * fixed.
  *
  * Cleared by Issue #1124 — what each of the original entries needed, and where
  * the control now lives:
@@ -194,13 +196,6 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS: readonly string[] = [
   // bound has to be re-expressed against something authenticated before the
   // author check can land, which is a design decision, not a filter.
   "lib/conflict_abandon_restart.ts",
-  // Issue #1216, SEC-1216-02 (#1243). `listOpenIssueBodies` asks for
-  // `number,body` and matches `<!-- finding-id: … -->` client-side, so the
-  // scanner's `--search … in:body` shape never sees it. A hit makes
-  // `fileFindingOnce` skip `gh issue create`, and the same read feeds
-  // `{{KNOWN_OPEN_FINDING_IDS}}` to the scanning agent as a skip-list, so one
-  // issue anybody opens suppresses a real finding across ~12 scanners.
-  "lib/idle_task_snapshot.ts",
   // Issue #1216, SEC-1216-06 (#1247).
   "lib/pr_merge_conflict_scan.ts",
 ];

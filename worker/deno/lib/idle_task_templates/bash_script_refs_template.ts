@@ -355,6 +355,7 @@ export function createBashScriptRefsTemplate(
           logLabel: BASH_MISSING_SCRIPT_LABEL,
           findingId: finding.findingId,
           ghCommandFn,
+          dedupAuthors,
           fileFn: () =>
             fileMissingScriptFinding(opts.repo, finding, footer, ghCommandFn),
         });

@@ -39,7 +39,10 @@
  * Australian English throughout (behaviour, authorise, organisation).
  */
 
-import { fileFindingOnce } from "../idle_task_snapshot.ts";
+import {
+  fileFindingOnce,
+  type FindingIdDedupOptions,
+} from "../idle_task_snapshot.ts";
 
 /** The two alert feeds the idle task reads (Issues #3392 / #3393). */
 export type AlertFeedName = "dependabot" | "code-scanning";
@@ -236,6 +239,11 @@ export interface MaybeFileEnableFeedIssueParams {
   footer?: string;
   /** Optional log sink for the fail-loud per-run signal (defaults to console). */
   logFn?: (message: string) => void;
+  /**
+   * Author-verification inputs for the dedup look-up (Issue #1243). Omitted —
+   * every production caller — reads the configured fleet identity.
+   */
+  dedupAuthors?: FindingIdDedupOptions;
 }
 
 /**
@@ -266,6 +274,7 @@ export async function maybeFileEnableFeedIssue(
     ghCommandFn,
     footer = "",
     logFn = (m: string) => console.warn(m),
+    dedupAuthors,
   } = params;
   const findingId = enableFeedFindingId(feed);
 
@@ -287,6 +296,7 @@ export async function maybeFileEnableFeedIssue(
     logLabel: ENABLE_FEED_LABEL,
     findingId,
     ghCommandFn,
+    dedupAuthors,
     fileFn: () =>
       createEnableFeedIssue(repo, feed, unavailable, footer, ghCommandFn),
   });

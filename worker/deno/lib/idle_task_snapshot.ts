@@ -38,9 +38,28 @@
  * `logLabel` parameter names the calling scan in log lines only; it filters
  * nothing.
  *
+ * Author verification (Issue #1243): the `<!-- finding-id: … -->` marker both
+ * look-ups read lives in an issue **body**, which anyone with a GitHub account
+ * can write on a public repository, and finding ids are deterministic per
+ * scanner. A marker match therefore proves nothing on its own — only the issue
+ * author is authenticated — so one planted issue used to suppress a real
+ * finding across every scanner sharing these helpers, silently and for as long
+ * as it stayed open. Both look-ups now route their matches through
+ * {@link selectFleetAuthoredMatches}, the same control `host_escalation.ts`
+ * and friends already apply to their body-marker searches. The fail direction
+ * is towards filing: an unverifiable match is discarded, so a duplicate
+ * finding is the worst case. A duplicate is noise a human closes; a suppressed
+ * finding is one nobody hears about.
+ *
  * Australian English used throughout (behaviour, organisation, authorised).
  */
 
+import {
+  ALERT_DEDUP_JSON_FIELDS,
+  type AlertDedupAuthorOptions,
+  type AlertDedupRow,
+  selectFleetAuthoredMatches,
+} from "./alert_dedup_authors.ts";
 import {
   neutraliseHtmlComments,
   sanitiseDelimiterPatterns,
@@ -340,20 +359,59 @@ const OPEN_ISSUE_BODY_LIMIT = 200;
  */
 const FINDING_ID_RE = /<!--\s*finding-id:\s*([A-Za-z0-9-]+)\s*-->/gi;
 
-/** An open issue reduced to the two fields the finding-id look-ups need. */
-interface OpenIssueBody {
+/** An open issue reduced to the fields the finding-id look-ups need. */
+interface OpenIssueBody extends AlertDedupRow {
   number: number;
   body: string;
 }
 
 /**
- * Fetch every open issue in `repo` as `{ number, body }`, regardless of label
- * (Issue #539).
+ * Author-verification inputs for the two finding-id look-ups (Issue #1243).
+ *
+ * Extends {@link AlertDedupAuthorOptions}, so a caller states the fleet with
+ * `fleetAuthors` (tests) or omits it and gets the configured fleet identity —
+ * `service_accounts` ∪ `fleet_pr_authors` ∪ this host's `GITHUB_USER` — which
+ * is what every production caller does.
+ */
+export interface FindingIdDedupOptions extends AlertDedupAuthorOptions {
+  /** Sink for the author-verification log lines. Defaults to `console.error`. */
+  log?: (message: string) => void;
+}
+
+/**
+ * What an unverifiable finding-id match costs, in this site's own words.
+ *
+ * `selectFleetAuthoredMatches` completes "so …" with this sentence when the
+ * fleet author set cannot be resolved, so the log states the consequence
+ * rather than leaving it to be inferred.
+ */
+const FINDING_ID_UNVERIFIED_OUTCOME =
+  "no match counts as an already-filed finding and the finding is filed. A " +
+  "duplicate finding is noise a human closes; a suppressed one is a finding " +
+  "nobody hears about";
+
+/** Project the `author` object `gh issue list --json author` returns. */
+function rowAuthor(value: unknown): { login?: string | null } | null {
+  if (value === null || typeof value !== "object") return null;
+  const login = (value as { login?: unknown }).login;
+  return typeof login === "string" ? { login } : null;
+}
+
+/**
+ * Fetch every open **fleet-authored** issue in `repo` as `{ number, body }`,
+ * regardless of label (Issue #539, Issue #1243).
  *
  * Both finding-id look-ups below used to add `--label`, so a finding whose
  * issue had been relabelled — triaged into `needs-human`, say — was invisible
  * to the dedup guard and got re-filed (NEAT-AI-Rebase #37). The marker is the
  * key; the label is not part of it, so no `--label` argument is issued.
+ *
+ * The query asks for `author` ({@link ALERT_DEDUP_JSON_FIELDS}) and every row
+ * is filtered through {@link selectFleetAuthoredMatches} before a caller sees
+ * it, because the body is attacker-writable and the author is not (Issue
+ * #1243). Rows outside the fleet — and every row when the fleet author set
+ * cannot be resolved — are discarded and the discard is logged, so the finding
+ * is filed rather than silently suppressed.
  *
  * A gh failure or malformed payload yields `[]`, which each caller turns into
  * its own safe empty result. Hitting {@link OPEN_ISSUE_BODY_LIMIT} is logged
@@ -364,6 +422,7 @@ async function listOpenIssueBodies(
   repo: string,
   logLabel: string,
   ghCommandFn: (args: string[]) => Promise<string>,
+  opts: FindingIdDedupOptions,
 ): Promise<OpenIssueBody[]> {
   let raw: string;
   try {
@@ -375,7 +434,7 @@ async function listOpenIssueBodies(
       "--state",
       "open",
       "--json",
-      "number,body",
+      ALERT_DEDUP_JSON_FIELDS,
       "--limit",
       String(OPEN_ISSUE_BODY_LIMIT),
     ]);
@@ -391,7 +450,11 @@ async function listOpenIssueBodies(
     const body = (item as { body?: unknown }).body;
     if (typeof n !== "number" || !Number.isFinite(n)) continue;
     if (typeof body !== "string") continue;
-    issues.push({ number: n, body });
+    issues.push({
+      number: n,
+      body,
+      author: rowAuthor((item as { author?: unknown }).author),
+    });
   }
 
   if (entries.length >= OPEN_ISSUE_BODY_LIMIT) {
@@ -402,7 +465,14 @@ async function listOpenIssueBodies(
         `limit for this repo.`,
     );
   }
-  return issues;
+
+  return await selectFleetAuthoredMatches(
+    issues,
+    logLabel,
+    opts,
+    opts.log ?? ((message: string) => console.error(message)),
+    FINDING_ID_UNVERIFIED_OUTCOME,
+  );
 }
 
 /**
@@ -421,6 +491,11 @@ async function listOpenIssueBodies(
  * other scans' ids (`SEC-…`, `SWEEP-…`), and only ids matching `idPrefix`
  * belong in this scan's skip-list.
  *
+ * Only ids a **fleet account** wrote count (Issue #1243): the skip-list is fed
+ * to the scanning agent as `{{KNOWN_OPEN_FINDING_IDS}}`, so an id read out of
+ * an outsider's issue body would stand a real finding down. `opts` states the
+ * fleet in tests; production callers omit it and get the configured identity.
+ *
  * A gh failure or malformed payload returns an empty array — the worst case is
  * Claude re-files a finding, which the snapshot diff still catches.
  */
@@ -429,11 +504,13 @@ export async function listKnownOpenFindingIds(
   logLabel: string,
   ghCommandFn: (args: string[]) => Promise<string>,
   idPrefix = "BP-",
+  opts: FindingIdDedupOptions = {},
 ): Promise<string[]> {
   const issues = await listOpenIssueBodies(
     repo,
     `list ${logLabel} finding ids`,
     ghCommandFn,
+    opts,
   );
   const ids: string[] = [];
   for (const issue of issues) {
@@ -465,17 +542,25 @@ export async function listKnownOpenFindingIds(
  * (treated as "no existing issue") so a transient lookup hiccup never aborts a
  * scan — the worst case is the pre-existing duplicate this guard normally
  * prevents.
+ *
+ * Only a **fleet-authored** issue can suppress a filing (Issue #1243). The
+ * marker sits in a body anyone may write and the ids are deterministic, so an
+ * unverified match let one planted issue silence a real finding for as long as
+ * it stayed open; an unverifiable match is now discarded and the finding is
+ * filed. `opts` states the fleet in tests; production callers omit it.
  */
 export async function findOpenIssueByFindingId(
   repo: string,
   logLabel: string,
   findingId: string,
   ghCommandFn: (args: string[]) => Promise<string>,
+  opts: FindingIdDedupOptions = {},
 ): Promise<number | null> {
   const issues = await listOpenIssueBodies(
     repo,
     `find ${logLabel} ${findingId}`,
     ghCommandFn,
+    opts,
   );
   for (const issue of issues) {
     for (const m of issue.body.matchAll(FINDING_ID_RE)) {
@@ -510,6 +595,10 @@ export interface FileFindingOnceResult {
  * only and filters nothing, so a duplicate wearing a different label is still
  * found.
  *
+ * Only a **fleet-authored** open issue skips the filing (Issue #1243) — see
+ * {@link findOpenIssueByFindingId}. An outsider's issue carrying the marker no
+ * longer suppresses the finding.
+ *
  * Returns `null` only when no open duplicate existed **and** `fileFn` returned
  * `null` (a gh create failure) — the caller logs and continues, matching the
  * existing pre-filer contract. This is a best-effort look-up-then-file: it
@@ -522,6 +611,8 @@ export async function fileFindingOnce(
     logLabel: string;
     findingId: string;
     ghCommandFn: (args: string[]) => Promise<string>;
+    /** Author-verification inputs for the dedup look-up (Issue #1243). */
+    dedupAuthors?: FindingIdDedupOptions;
     fileFn: () => Promise<{ number: number; findingId: string } | null>;
   },
 ): Promise<FileFindingOnceResult | null> {
@@ -530,6 +621,7 @@ export async function fileFindingOnce(
     params.logLabel,
     params.findingId,
     params.ghCommandFn,
+    params.dedupAuthors ?? {},
   );
   if (existing !== null) {
     return { number: existing, findingId: params.findingId, skipped: true };

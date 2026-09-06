@@ -40,6 +40,16 @@ import type { Logger } from "../types.ts";
 import type { Result } from "../types.ts";
 import type { OpenIssueTitle } from "../lib/idle_task_snapshot.ts";
 
+/**
+ * The fleet identity the finding-id dedup verifies against (Issue #1243).
+ *
+ * The stubbed known-open issues are ones the fleet filed, so they carry a
+ * fleet login and the template is handed the same fleet inline rather than
+ * reading a config file.
+ */
+const FLEET_DEDUP_AUTHOR = "vibe-bot";
+const DEDUP_AUTHORS = { fleetAuthors: [FLEET_DEDUP_AUTHOR] };
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -63,7 +73,7 @@ const okPrompt = (): Promise<Result<string>> =>
 
 /**
  * gh stub. Distinguishes the two snapshot calls (`--json number`) from
- * the known-open lookup (`--json number,body`). The before/after
+ * the known-open lookup (`--json number,body,author`). The before/after
  * snapshots return the first/second entry of `snapshots`.
  */
 function makeGhStub(scenario: {
@@ -84,8 +94,17 @@ function makeGhStub(scenario: {
         JSON.stringify(result.map((n) => ({ number: n }))),
       );
     }
-    if (jsonField === "number,body") {
-      return Promise.resolve(JSON.stringify(scenario.knownOpen ?? []));
+    if (jsonField === "number,body,author") {
+      // Author-verified dedup (Issue #1243): only a fleet-authored
+      // finding-id marker counts as an already-filed finding.
+      return Promise.resolve(
+        JSON.stringify(
+          (scenario.knownOpen ?? []).map((i) => ({
+            ...i,
+            author: { login: FLEET_DEDUP_AUTHOR },
+          })),
+        ),
+      );
     }
     return Promise.resolve("[]");
   };
@@ -233,6 +252,7 @@ Deno.test("runTask - happy path ensures label and diffs snapshot", async () => {
   const ensureCalls: string[] = [];
   const scanCalls: { knownOpenFindingIds: string[] }[] = [];
   const t = createTestAuditTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     loadPromptFn: okPrompt,
     ensureLabelFn: (repo) => {
@@ -273,6 +293,7 @@ Deno.test("runTask - happy path ensures label and diffs snapshot", async () => {
 Deno.test("runTask - scan failure surfaces ok:false", async () => {
   const { gh } = makeGhStub({ snapshots: [[], []] });
   const t = createTestAuditTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -298,6 +319,7 @@ Deno.test("runTask - scan failure surfaces ok:false", async () => {
 Deno.test("runTask - empty diff reports no findings", async () => {
   const { gh } = makeGhStub({ snapshots: [[5], [5]] });
   const t = createTestAuditTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -321,6 +343,7 @@ Deno.test("runTask - empty diff reports no findings", async () => {
 Deno.test("claim handler - dispatches a test-audit wrapper to runTask", async () => {
   const { gh } = makeGhStub({ snapshots: [[], [11]] });
   const template = createTestAuditTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -392,6 +415,7 @@ Deno.test("runTask - runs even though the wrapper is an open idle-task issue (Is
 
   let scanRan = false;
   const t = createTestAuditTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
@@ -480,6 +504,7 @@ Deno.test("assembleTestAuditPrompt - an empty open-issue list renders (none)", (
 Deno.test("runTask - repo-wide open issue titles reach the scan runner", async () => {
   const seen: OpenIssueTitle[][] = [];
   const t = createTestAuditTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: makeTitleGhStub([
       { number: 37, title: "Add a CODEOWNERS file" },
     ]),
@@ -504,6 +529,7 @@ Deno.test("runTask - repo-wide open issue titles reach the scan runner", async (
 Deno.test("runTask - a gh failure listing titles degrades to an empty list", async () => {
   const seen: OpenIssueTitle[][] = [];
   const t = createTestAuditTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: makeTitleGhStub([], true),
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),

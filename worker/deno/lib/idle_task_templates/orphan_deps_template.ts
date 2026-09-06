@@ -414,6 +414,10 @@ export function createOrphanDepsTemplate(
         opts.repo,
         ORPHAN_DEPS_LABEL,
         ghCommandFn,
+        "BP-",
+        // Author-verified dedup (Issue #1243): a finding-id marker in an
+        // issue body anybody can write is not evidence the fleet filed it.
+        dedupAuthors,
       );
 
       // 4. Collect the in-source suppressed ids so a finding silenced with

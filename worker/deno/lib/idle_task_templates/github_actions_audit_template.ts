@@ -939,6 +939,7 @@ export function createGitHubActionsAuditTemplate(
             logLabel: GITHUB_ACTIONS_AUDIT_LABEL,
             findingId: "BP-LINTER-github-actions",
             ghCommandFn,
+            dedupAuthors,
             fileFn: () =>
               fileActionlintMissingIssue(opts.repo, check, ghCommandFn),
           });
@@ -956,6 +957,10 @@ export function createGitHubActionsAuditTemplate(
         opts.repo,
         GITHUB_ACTIONS_AUDIT_LABEL,
         ghCommandFn,
+        "BP-",
+        // Author-verified dedup (Issue #1243): a finding-id marker in an
+        // issue body anybody can write is not evidence the fleet filed it.
+        dedupAuthors,
       );
 
       // 5. Runner-deprecation pre-filer — file each surviving finding

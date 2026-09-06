@@ -779,6 +779,7 @@ export function createBestPracticesTemplate(
             logLabel: BEST_PRACTICES_LABEL,
             findingId: `BP-LINTER-${bucket}`,
             ghCommandFn,
+            dedupAuthors,
             fileFn: () =>
               fileMissingCIGateIssue(opts.repo, bucket, check, ghCommandFn),
           });
@@ -795,6 +796,10 @@ export function createBestPracticesTemplate(
         opts.repo,
         BEST_PRACTICES_LABEL,
         ghCommandFn,
+        "BP-",
+        // Author-verified dedup (Issue #1243): a finding-id marker in an
+        // issue body anybody can write is not evidence the fleet filed it.
+        dedupAuthors,
       );
 
       // 4. Build the known-open list (existing open findings + the

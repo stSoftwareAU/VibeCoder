@@ -52,7 +52,13 @@ function createGhFake(repo: string) {
         : issues.filter((i) => i.labels.includes(label));
       return Promise.resolve(
         JSON.stringify(
-          matching.map((i) => ({ number: i.number, body: i.body })),
+          matching.map((i) => ({
+            number: i.number,
+            body: i.body,
+            // Fleet-authored: these are the issues the worker itself filed.
+            // The finding-id dedup verifies the author (Issue #1243).
+            author: { login: FLEET_LOGIN },
+          })),
         ),
       );
     }
@@ -84,6 +90,15 @@ const UNAVAILABLE_404: FeedUnavailable = {
 };
 
 const ALLOWLIST = ["stSoftwareAU/VibeCoder", "stSoftwareAU/private-repo-14"];
+
+/**
+ * The fleet identity the dedup look-up verifies against (Issue #1243).
+ *
+ * Stated inline rather than read from a config file, so the finding-id match
+ * the fake returns is attributable to the fleet.
+ */
+const FLEET_LOGIN = "vibe-coder-bot";
+const DEDUP_AUTHORS = { fleetAuthors: [FLEET_LOGIN] };
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -151,6 +166,7 @@ Deno.test("acceptance - 403 not-enabled files exactly one enable-feed issue", as
     allowlist: ALLOWLIST,
     ghCommandFn: gh,
     logFn: () => {},
+    dedupAuthors: DEDUP_AUTHORS,
   });
 
   assertEquals(outcome.action, "filed");
@@ -173,6 +189,7 @@ Deno.test("acceptance - 404 no-access (Dependabot) also files one enable-feed is
     allowlist: ALLOWLIST,
     ghCommandFn: gh,
     logFn: () => {},
+    dedupAuthors: DEDUP_AUTHORS,
   });
 
   assertEquals(outcome.action, "filed");
@@ -194,6 +211,7 @@ Deno.test("acceptance - second run with an open enable-feed issue files nothing"
     allowlist: ALLOWLIST,
     ghCommandFn: gh,
     logFn: () => {},
+    dedupAuthors: DEDUP_AUTHORS,
   });
   assertEquals(first.action, "filed");
   assertEquals(createCalls.length, 1);
@@ -206,6 +224,7 @@ Deno.test("acceptance - second run with an open enable-feed issue files nothing"
     allowlist: ALLOWLIST,
     ghCommandFn: gh,
     logFn: () => {},
+    dedupAuthors: DEDUP_AUTHORS,
   });
   assertEquals(second.action, "already-open");
   assertEquals(createCalls.length, 1); // no second create
@@ -225,6 +244,7 @@ Deno.test("dedup is per-feed - both feeds unavailable file two distinct issues",
     allowlist: ALLOWLIST,
     ghCommandFn: gh,
     logFn: () => {},
+    dedupAuthors: DEDUP_AUTHORS,
   });
   const code = await maybeFileEnableFeedIssue({
     repo,
@@ -233,6 +253,7 @@ Deno.test("dedup is per-feed - both feeds unavailable file two distinct issues",
     allowlist: ALLOWLIST,
     ghCommandFn: gh,
     logFn: () => {},
+    dedupAuthors: DEDUP_AUTHORS,
   });
 
   assertEquals(dep.action, "filed");
@@ -255,6 +276,7 @@ Deno.test("acceptance - repo outside the allowlist files nothing", async () => {
     allowlist: ALLOWLIST,
     ghCommandFn: gh,
     logFn: () => {},
+    dedupAuthors: DEDUP_AUTHORS,
   });
 
   assertEquals(outcome.action, "not-allowlisted");
@@ -281,6 +303,7 @@ Deno.test("gh create failure surfaces action file-failed (never masked)", async 
     allowlist: ALLOWLIST,
     ghCommandFn: gh,
     logFn: () => {},
+    dedupAuthors: DEDUP_AUTHORS,
   });
 
   assertEquals(outcome.action, "file-failed");
