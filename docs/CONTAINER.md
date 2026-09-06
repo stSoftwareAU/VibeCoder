@@ -179,7 +179,11 @@ flowchart TD
   `/tmp/vibe-playwright-profile` — the launcher mounts `/tmp` as a `tmpfs`, so
   the profile dies with the container. Generating a config whose profile
   directory sits inside the mounted checkout throws rather than writing browser
-  state into the repository. `VIBE_BROWSER_PROFILE_DIR` overrides the location.
+  state into the repository. `VIBE_BROWSER_PROFILE_DIR` overrides the location;
+  it must be an absolute path, and containment is decided on whole path
+  segments after `.`/`..` are resolved, using the platform's own separators and
+  case rules — so a `..` walk back into the checkout, or a Windows path the old
+  hard-coded `/` never matched, is refused too (Issue #1293).
 - **`--no-sandbox` only inside the image.** Chromium's own sandbox needs user
   namespaces the container runtime may not grant, and the container boundary is
   the isolation that matters there. On a host with no baked browser the sandbox
