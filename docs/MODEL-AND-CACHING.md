@@ -1893,8 +1893,8 @@ the prompt and the map cache. Every file the map reads — each module docstring
 and each `deno.json`/`package.json` manifest — is therefore resolved with
 `Deno.realPath` and refused unless the result sits at or below the clone's real
 root — the containment check `container_extension_digest.ts` already applies to
-synced extension directories. A refused
-path is still listed (the file exists) and the refusal is logged
+synced extension directories. A refused path is still listed (the file exists),
+and the refusal is logged
 `⚠️  Codebase map refused …`, so the skipped read is never silent. A symlink
 that stays inside the clone is read as normal.
 
