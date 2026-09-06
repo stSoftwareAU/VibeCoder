@@ -17,6 +17,7 @@ import {
   buildFetchArgs,
   buildPullArgs,
   buildPushArgs,
+  buildPushCreateBranchArgs,
   buildRebaseArgs,
 } from "../lib/git_ref_args.ts";
 
@@ -216,4 +217,47 @@ Deno.test("buildPushArgs - rejects a dash-leading branch name", () => {
 Deno.test("buildPushArgs - rejects a dash-leading remote and an empty branch", () => {
   assertThrows(() => buildPushArgs("-o", "main"), Error, "must not begin");
   assertThrows(() => buildPushArgs("origin", ""), Error, "must not be empty");
+});
+
+// ---------------------------------------------------------------------------
+// buildPushCreateBranchArgs (Issue #1345) — creating a milestone branch on the
+// remote without any local checkout to block it.
+// ---------------------------------------------------------------------------
+
+Deno.test("buildPushCreateBranchArgs - pushes the source ref to the target head", () => {
+  assertEquals(
+    buildPushCreateBranchArgs("origin", "origin/main", "milestone/133-x"),
+    [
+      "push",
+      "--end-of-options",
+      "origin",
+      "origin/main:refs/heads/milestone/133-x",
+    ],
+  );
+});
+
+Deno.test("buildPushCreateBranchArgs - rejects a colon in either half of the refspec", () => {
+  assertThrows(
+    () => buildPushCreateBranchArgs("origin", "main:refs/heads/evil", "m/x"),
+    Error,
+    "not a valid ref component",
+  );
+  assertThrows(
+    () => buildPushCreateBranchArgs("origin", "main", "x:refs/heads/evil"),
+    Error,
+    "not a valid ref component",
+  );
+});
+
+Deno.test("buildPushCreateBranchArgs - rejects dash-leading and empty refs", () => {
+  assertThrows(
+    () => buildPushCreateBranchArgs("origin", "--receive-pack=evil", "m/x"),
+    Error,
+    "must not begin with '-'",
+  );
+  assertThrows(
+    () => buildPushCreateBranchArgs("origin", "main", ""),
+    Error,
+    "must not be empty",
+  );
 });

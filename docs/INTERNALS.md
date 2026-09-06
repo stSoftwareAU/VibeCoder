@@ -1993,7 +1993,7 @@ reaction fails towards *processing the comment again*.
 | Function                               | Purpose                                                                                                                                                                                                                                                                                |
 | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `create_milestone_branch_name`         | Convert title to branch name: lowercase, replace special chars with hyphens, cap the slug at 50 chars (stripping any trailing hyphen), prepend `milestone/`. Single source of truth in `git_branch.ts`; `issue_query.ts` re-exports it so PR-blocking and branch creation always agree |
-| `ensure_milestone_branch_exists()`     | Create milestone branch from default branch if not present (idempotent)                                                                                                                                                                                                                |
+| `ensure_milestone_branch_exists()`     | Create milestone branch on origin from the default branch ref if not present (idempotent; no local checkout, so a stale local branch cannot block it)                                                                                                                                                                                                                |
 | `sync_milestone_branch_with_default()` | Keep milestone branch current with default branch using **merge** (not rebase) to preserve commit history                                                                                                                                                                              |
 | `create_feature_branch_from_base()`    | Create feature branch from the milestone branch (not default) for milestone issues                                                                                                                                                                                                     |
 
@@ -2017,11 +2017,19 @@ stderr (branch protection, non-fast-forward, auth) so the handoff says _why_.
 need a human, not for local state the worker can repair. Two rules keep the
 milestone branch pushable on unattended hosts:
 
-- `ensure_milestone_branch_exists()` recreates the local branch from the default
-  branch (`git checkout -B`) whenever the **remote** milestone ref is absent.
-  The remote holds no history to preserve in that state, so a stale local branch
-  of the same name — for example one carrying a merge commit the repository's
-  rules forbid — is discarded rather than pushed.
+- `ensure_milestone_branch_exists()` creates the branch **on origin** whenever
+  the **remote** milestone ref is absent, by pushing the default branch ref
+  straight to the milestone ref name
+  (`git push origin main:refs/heads/milestone/x`). No local checkout takes part,
+  so a stale local branch of the same name can neither reach the remote — the
+  remote holds no history to preserve in that state, and a local tip carrying a
+  merge commit the repository's rules forbid must never be pushed — nor block
+  the creation. `git checkout -B` used to do this job and is refused outright
+  when another worktree holds the branch name
+  (`fatal: 'milestone/x' is already used by worktree at …`), which escalated
+  NEAT-AI-Ockham#133 to a human on three consecutive runs. The blocking local
+  checkout is left exactly as it is and named in one log line; nothing is
+  deleted or reset.
 - `sync_milestone_branch_with_default()` takes the remote milestone branch with
   `git merge --ff-only origin/<branch>` instead of a plain `git pull`, and
   resets to `origin/<branch>` when the two have diverged. A plain pull
@@ -2032,7 +2040,7 @@ milestone branch pushable on unattended hosts:
 flowchart TD
     A[Milestone issue picked up] --> B[ensureMilestoneBranchExists]
     B -->|branch exists| C[Base = milestone branch]
-    B -->|branch missing| D[Recreate from default, push]
+    B -->|branch missing| D["Push default ref to the milestone ref<br/>(no local checkout)"]
     D -->|pushed| C
     D -->|git error| E[Fail run + needs-human comment<br/>with git stderr]
     E -.->|never| F[Base = default branch]
@@ -3149,7 +3157,7 @@ links to its issue for the full rationale.
   (numbers unchanged), and GitHub Actions are pinned to commit SHAs. The
   coding-guidelines prompt (`prompts/coding_guidelines/`) documents the bump
   pattern.
-- **Quality gate additions:** `pages-liquid`, `markdownlint-cli2`,
+- **Quality gate additions:** `markdownlint-cli2`,
   `mermaid_validator` integration , and the `tail -f | head` foot-gun detector.
 - **Standard workflow templates:** `workflow_setup` v2/v3 provisions Gitleaks,
   Semgrep SAST, private-repo-14 scorer hardening, Dependency Review and

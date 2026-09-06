@@ -6,6 +6,8 @@
 # and once that release exists the floor is below the series again and patch
 # increments continue from it (1.3.0 -> 1.3.1).
 #
-# 1.4.0 moves the default log directory off $HOME/logs and onto the platform's
-# own standard location (Issue #873) -- see docs/RELEASE-NOTES.md.
-1.4.0
+# 1.5.0 removes the GitHub Pages publishing pipeline (Issue #1344). The Jekyll
+# site existed to expose the READMEs while this repository was private; the
+# repository is public, so the docs are read directly on GitHub and the
+# workflow, site files and Pages-only quality checks are gone.
+1.5.0

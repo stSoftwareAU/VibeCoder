@@ -45,8 +45,8 @@ because the digest-pinned base already ships the system tools.
 
 The base is the official Ruby image, which is itself built on
 `buildpack-deps:trixie`, so one digest supplies the system tools *and* the
-`ruby` the gate needs — the Pages scripts under `.github/scripts/*.rb` are
-spawned by the test suite. Two floors are load-bearing and are
+`ruby` the manifest still lists — a leftover of the GitHub Pages pipeline
+Issue #1344 removed, tracked for removal in Issue #1376. Two floors are load-bearing and are
 recorded as `minVersions` in `container/tools.json`: `git` ≥ 2.41, below which
 a literal `--end-of-options` survives into `argv` and is taken as a revision
 , and `ruby` ≥ 3.1 for `Psych.safe_load_file`.

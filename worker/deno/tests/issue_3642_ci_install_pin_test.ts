@@ -4,9 +4,10 @@
  * dependency quarantine.
  *
  * `.github/workflows/markdown-lint.yml` installed `markdownlint-cli2`,
- * `dependency-audit.yml` installed `bundler-audit`, and `pages.yml` installed
- * `pa11y-ci`/`http-server` and ran `npx --yes wait-on` — every one of them
- * resolving to whatever the registry served at run time. Renovate's
+ * `dependency-audit.yml` installed `bundler-audit`, and the since-removed
+ * `pages.yml` installed `pa11y-ci`/`http-server` and ran `npx --yes wait-on` —
+ * every one of them resolving to whatever the registry served at run time.
+ * Renovate's
  * `minimumReleaseAge` only covers manifests it can manage, and this repo has
  * no npm manifest at all, so a hijacked release would have executed on the
  * runner with zero embargo.
@@ -191,6 +192,10 @@ interface RenovateConfig {
 function capturedDeps(manager: CustomManager, text: string): string[] {
   const deps: string[] = [];
   for (const pattern of manager.matchStrings ?? []) {
+    // The pattern comes from this repository's own committed renovate.json,
+    // which is exactly what the test exists to exercise — running Renovate's
+    // real regexes rather than a copy of them. There is no external input.
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
     for (const m of text.matchAll(new RegExp(pattern, "g"))) {
       const { depName, currentValue } = m.groups ?? {};
       if (depName && currentValue) deps.push(`${depName}@${currentValue}`);
@@ -235,14 +240,9 @@ Deno.test("renovate custom managers capture every pinned CI install", async () =
     }
   }
 
-  for (
-    const expected of [
-      "markdownlint-cli2@0.23.2",
-      "http-server@14.1.1",
-      "pa11y-ci@3.1.0",
-      "bundler-audit@0.9.3",
-    ]
-  ) {
+  // Issue #1344 removed `pages.yml`, and `http-server`/`pa11y-ci` went with
+  // it. `bundler-audit` stays until the Ruby tree does.
+  for (const expected of ["markdownlint-cli2@0.23.2", "bundler-audit@0.9.3"]) {
     assert(
       captured.has(expected),
       `no renovate customManager captures ${expected}; captured: ` +

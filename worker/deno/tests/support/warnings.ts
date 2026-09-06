@@ -32,3 +32,28 @@ export function capturingWarnings(fn: () => void): string[] {
   }
   return lines;
 }
+
+/**
+ * Run an async `fn` with `console.warn` captured (Issue #1345).
+ *
+ * The same swap, awaited — a git-driving call warns from inside a promise, and
+ * copying the swap into each such suite is what this helper exists to prevent.
+ *
+ * @param fn - The call under test.
+ * @returns One entry per `console.warn` call, arguments joined by a space.
+ */
+export async function capturingWarningsAsync(
+  fn: () => Promise<void>,
+): Promise<string[]> {
+  const lines: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  };
+  try {
+    await fn();
+  } finally {
+    console.warn = original;
+  }
+  return lines;
+}

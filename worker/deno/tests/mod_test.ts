@@ -186,7 +186,6 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issue #228 added `work-volume-prune` (count 137 → 138).
   // Issue #4 removed `seatbelt-profile` — containment is mandatory (137 → 136).
   // Issue #242 added `work-volume-tiers` (count 138 → 139).
-  // Issue #272 added `check-mermaid-built-output` (count 139 → 140).
   // Issue #504 added `merged-pr-issue-sweep` (count 140 → 141).
   // Issue #512 added `worker-checkout-update` (count 141 → 142).
   // Issue #688 added `release-manifest` (count 142 → 143).
@@ -223,7 +222,11 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // log directory is resolved, which the launchers ask rather than each
   // spelling their own default) is this branch's own. Each bumped
   // 148 -> 149 alone; together they are 150.
-  assertEquals(commands.length, 150);
+  // Issue #1344 removed `check-pages-liquid` and `check-mermaid-built-output`
+  // with the rest of the GitHub Pages publishing pipeline — the repository is
+  // public, so nothing publishes the READMEs to a Jekyll site any more
+  // (count 150 -> 148).
+  assertEquals(commands.length, 148);
   assertEquals(commands.includes("check-resurrected-files"), true);
   assertEquals(commands.includes("check-release-tag-ruleset"), true);
   assertEquals(commands.includes("container-egress-probe"), true);
@@ -239,7 +242,6 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   assertEquals(commands.includes("release-notice"), true);
   assertEquals(commands.includes("worker-checkout-update"), true);
   assertEquals(commands.includes("merged-pr-issue-sweep"), true);
-  assertEquals(commands.includes("check-mermaid-built-output"), true);
   assertEquals(commands.includes("work-volume-tiers"), true);
   assertEquals(commands.includes("security-tree-sweep"), true);
   assertEquals(commands.includes("green-gate-report"), true);
@@ -292,7 +294,6 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   assertEquals(commands.includes("check-repo-availability"), true);
   assertEquals(commands.includes("maybe-file-idle-task"), true);
   assertEquals(commands.includes("backfill-idle-task-labels"), true);
-  assertEquals(commands.includes("check-pages-liquid"), true);
   assertEquals(commands.includes("check-mermaid"), true);
   assertEquals(commands.includes("merge-if-checks-passed"), true);
   assertEquals(commands.includes("worker-identity"), true);

@@ -560,12 +560,12 @@ Deno.test("setupBranch - uses the recreated milestone branch when it was missing
               error: new Error(`missing default branch ${defaultBranch}`),
             });
           }
-          // Recreate from the default branch, as production does.
+          // Create it on origin from the default branch, as production does.
           remoteBranches.add(milestoneBranch);
           return Promise.resolve({
             ok: true,
-            value:
-              `Milestone branch ${milestoneBranch} created and pushed to origin`,
+            value: `Milestone branch ${milestoneBranch} created on origin ` +
+              `from ${defaultBranch} (no local checkout)`,
           });
         }) as unknown as typeof deps.git.ensureMilestoneBranchExists,
     },

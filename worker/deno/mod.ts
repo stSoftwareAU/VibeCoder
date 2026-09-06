@@ -163,10 +163,8 @@ import { batchApiCommand } from "./commands/batch_api.ts";
 import { selfHealSummaryCommand } from "./commands/self_heal_summary.ts";
 import { analyseFailedOnceCommand } from "./commands/analyse_failed_once.ts";
 import { auditHeartbeatRecoveriesCommand } from "./commands/audit_heartbeat_recoveries.ts";
-import { checkPagesLiquidCommand } from "./commands/check_pages_liquid.ts";
 import { callbackConformanceCommand } from "./commands/callback_conformance.ts";
 import { checkMermaidCommand } from "./commands/check_mermaid.ts";
-import { checkMermaidBuiltOutputCommand } from "./commands/check_mermaid_built_output.ts";
 import { checkMarkdownlintCommand } from "./commands/check_markdownlint.ts";
 import { checkResurrectedFilesCommand } from "./commands/check_resurrected_files.ts";
 import { notifyAuditFailureCommand } from "./commands/notify_audit_failure.ts";
@@ -362,10 +360,8 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(selfHealSummaryCommand);
   registry.register(analyseFailedOnceCommand);
   registry.register(auditHeartbeatRecoveriesCommand);
-  registry.register(checkPagesLiquidCommand);
   registry.register(callbackConformanceCommand);
   registry.register(checkMermaidCommand);
-  registry.register(checkMermaidBuiltOutputCommand);
   registry.register(notifyAuditFailureCommand);
   registry.register(checkMarkdownlintCommand);
   registry.register(checkResurrectedFilesCommand);
@@ -597,12 +593,10 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "milestone-health",
       "sync-milestone-branches",
       "analyse-failed-once",
-      "check-pages-liquid",
       // An extension author proves the callback contract in a checkout that
       // may carry no config at all (Issue #807).
       "callback-conformance",
       "check-mermaid",
-      "check-mermaid-built-output",
       "check-markdownlint",
       "notify-audit-failure",
       "diagnose",
@@ -725,12 +719,10 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "milestone-health",
       "sync-milestone-branches",
       "analyse-failed-once",
-      "check-pages-liquid",
       // An extension author proves the callback contract in a checkout that
       // may carry no config at all (Issue #807).
       "callback-conformance",
       "check-mermaid",
-      "check-mermaid-built-output",
       "check-markdownlint",
       "notify-audit-failure",
       "diagnose",
