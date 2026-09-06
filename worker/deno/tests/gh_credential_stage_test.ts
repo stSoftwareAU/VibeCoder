@@ -281,7 +281,7 @@ Deno.test("restageGhConfigDir - refuses a pre-created world-writable candidate a
     });
     await Deno.writeTextFile(
       mount,
-      "github.com:\n    oauth_token: gho_supersecret\n",
+      "github.com:\n    oauth_token: not-a-real-token\n",
     );
 
     const env = envFrom({ TMPDIR: tmp });

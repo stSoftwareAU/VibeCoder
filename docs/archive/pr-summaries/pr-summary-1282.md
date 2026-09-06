@@ -57,7 +57,7 @@ world-writable and `hosts.yml` a symlink to a file the "attacker" controls:
 
 ```text
 # unfixed code path
-planted file now holds: "github.com:\n    oauth_token: gho_supersecret\n"
+planted file now holds: "github.com:\n    oauth_token: <the staged token>\n"
 
 # after the fix
 planted file now holds: ""
