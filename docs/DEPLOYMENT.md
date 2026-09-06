@@ -1005,6 +1005,21 @@ claude "Take a screenshot of http://localhost:3000"
 > kept in `worker/deno/setup/screenshot.ts` (`PLAYWRIGHT_MCP_VERSION`);
 > Renovate's `minimumReleaseAge: 24 hours` quarantine gates upgrades.
 
+> **Cloud metadata is blocked (Issue #1292).** The server defaults to
+> allowing every origin, and the navigation target comes from issue and PR
+> text anyone can write, so the generated config passes
+> `--blocked-origins` covering the instance-metadata endpoints —
+> `169.254.169.254`, the ECS task-metadata address, the IPv6 IMDS address,
+> `metadata.google.internal` / `metadata.goog` and `100.100.100.100` — each
+> in bare-host and wildcard-port form. Without it a prompt-injected agent
+> could screenshot instance credentials into `docs/evidence/` and have the
+> worker publish that image on a public PR. The hosts are the canonical knob
+> `PLAYWRIGHT_MCP_BLOCKED_HOSTS` in `worker/deno/setup/screenshot.ts`. It is
+> a blocklist, not an allowlist, because loopback (`127.0.0.1`) and arbitrary
+> documentation hosts are legitimate targets; per the package's own caveat it
+> is defence in depth rather than a network boundary, and it does not follow
+> redirects.
+
 > **Dependency quarantine is split by ecosystem.** Deno
 > dependencies (JSR / `deno.land/x`) are quarantined by Deno's **native**
 > `deno.json` `minimumDependencyAge` and the `deno update` /

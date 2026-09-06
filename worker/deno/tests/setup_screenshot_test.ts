@@ -6,6 +6,7 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
+  blockedOriginsValue,
   BROWSER_OUTPUT_DIR_NAME,
   BROWSER_PROFILE_DIR_NAME,
   checkDenoVersion,
@@ -14,6 +15,7 @@ import {
   generateMcpConfig,
   installPlaywrightBrowsers,
   PLAYWRIGHT_INSTALLER_VERSION,
+  PLAYWRIGHT_MCP_BLOCKED_HOSTS,
   PLAYWRIGHT_MCP_DENIED_ENV,
   PLAYWRIGHT_MCP_VERSION,
   playwrightQuarantinedPackages,
@@ -307,6 +309,56 @@ Deno.test("generateMcpConfig - denies env vars that hold worker secrets", () => 
   assertEquals(
     denied.sort().join(","),
     [...PLAYWRIGHT_MCP_DENIED_ENV].sort().join(","),
+  );
+});
+
+// ── Issue #1292: cloud-metadata SSRF ───────────────────────────────────
+
+Deno.test("generateMcpConfig - blocks cloud metadata origins so a prompt-injected navigate cannot screenshot instance credentials (Issue #1292)", () => {
+  const args: string[] =
+    JSON.parse(generateMcpConfig({ scriptDir: "/opt/vibe" }))
+      .mcpServers.playwright.args;
+
+  const index = args.indexOf("--blocked-origins");
+  assertEquals(index >= 0, true, "expected a --blocked-origins flag");
+  const blocked = (args[index + 1] ?? "").split(";");
+
+  // Every metadata host, in the forms @playwright/mcp matches on: the bare
+  // host (any scheme, default port) and an explicit wildcard port per scheme.
+  for (const host of PLAYWRIGHT_MCP_BLOCKED_HOSTS) {
+    for (const origin of [host, `http://${host}:*`, `https://${host}:*`]) {
+      assertEquals(
+        blocked.includes(origin),
+        true,
+        `${origin} must be blocked (Issue #1292 exfiltration vector)`,
+      );
+    }
+  }
+  // The endpoint named in the issue's trigger.
+  assertEquals(blocked.includes("169.254.169.254"), true);
+});
+
+Deno.test("blockedOriginsValue - keeps loopback navigable so local pages can still be screenshotted (Issue #1292)", () => {
+  // prompt_builder.ts and screenshot_validation.ts tell the agent to serve
+  // local pages on 127.0.0.1 — a blocklist that caught them would break
+  // every UI evidence capture.
+  const blocked = blockedOriginsValue().split(";");
+  for (const host of ["127.0.0.1", "localhost", "[::1]"]) {
+    assertEquals(
+      blocked.some((origin: string) => origin.includes(host)),
+      false,
+      `${host} must stay navigable`,
+    );
+  }
+});
+
+Deno.test("blockedOriginsValue - fails loud when a host contains the list separator (Issue #1292)", () => {
+  // A semicolon would split one entry into two origins that block nothing,
+  // leaving a list that looks complete and protects nothing.
+  assertThrows(
+    () => blockedOriginsValue(["169.254.169.254;evil.example"]),
+    Error,
+    "semicolon",
   );
 });
 
