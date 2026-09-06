@@ -1117,7 +1117,31 @@ write_interactive_config() {
         config=$(echo "$config" | jq --arg v "$INTERACTIVE_IMGBB_API_KEY" '. + {imgbb_api_key: $v}')
     fi
 
-    echo "$config" | jq '.' > "$CONFIG_FILE"
+    # Replace the config atomically (Issue #1298). A plain redirection into
+    # "$CONFIG_FILE" truncates the host's only credential-bearing config when
+    # the pipeline is set up — before jq has produced a byte — so a jq that
+    # fails, is OOM-killed, or catches a SIGINT leaves the operator with an
+    # empty file and nothing to restore from. Write beside the target instead
+    # (mktemp is O_EXCL and owner-only, so no pre-positioned symlink is
+    # followed and the API key is never world-readable) and rename over it: a
+    # rename within one directory is atomic, so the original survives until
+    # the replacement is complete. This is what worker/deno/lib/file_utils.ts
+    # atomicWrite already does on the Deno side.
+    local tmp
+    if ! tmp=$(mktemp "${CONFIG_FILE}.XXXXXX"); then
+        print_error "Could not create a temporary file beside ${CONFIG_FILE} — it is unchanged"
+        exit 1
+    fi
+    if ! printf '%s\n' "$config" | jq '.' > "$tmp"; then
+        rm -f "$tmp"
+        print_error "Could not rewrite ${CONFIG_FILE} — it is unchanged"
+        exit 1
+    fi
+    if ! mv "$tmp" "$CONFIG_FILE"; then
+        rm -f "$tmp"
+        print_error "Could not replace ${CONFIG_FILE} — it is unchanged"
+        exit 1
+    fi
 }
 
 # Offer to install the macOS LaunchAgent interactively.
