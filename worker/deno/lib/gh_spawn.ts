@@ -19,6 +19,11 @@
  *      stale scan-cache entries are dropped and the run never re-claims an
  *      issue it just closed.
  *
+ * Every call also runs under a **default** timeout (`gh_timeout.ts`,
+ * Issue #1229) unless the caller installs its own signal — a control at the
+ * chokepoint is one no new caller can forget, and a stalled GitHub call no
+ * longer hangs the run until the host is killed.
+ *
  * A quality-gate check (`gh_spawn_chokepoint_check.ts`) fails the build on any
  * direct `new Deno.Command("gh", …)` outside this file, so the invariant
  * cannot silently rot again.
@@ -51,6 +56,11 @@ import { redactGhBodyArgs } from "./gh_body_redaction.ts";
 import { denoBodyFileReader, denoBodyFileWriter } from "./gh_body_file_io.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { noteGhIssueClose } from "./issue_close_notifier.ts";
+import {
+  getGhTimeoutForOperation,
+  GH_TIMEOUT_EXIT_CODE,
+} from "./gh_timeout.ts";
+import { incrementCounter } from "./fault_tolerance_counters.ts";
 
 /** Options for a single `gh` invocation. */
 export interface GhSpawnOptions {
@@ -64,8 +74,23 @@ export interface GhSpawnOptions {
   cwd?: string;
   /** Extra environment variables, merged over the resolved `gh` environment. */
   env?: Record<string, string>;
-  /** Abort signal — used by the timeout wrapper in `gh_wrapper.ts`. */
+  /**
+   * Abort signal — used by the timeout wrapper in `gh_wrapper.ts`.
+   *
+   * Supplying one replaces the chokepoint's own default timeout, and its
+   * abort propagates to the caller as an `AbortError` rather than being
+   * converted to {@link GH_TIMEOUT_EXIT_CODE}: the caller owns the deadline
+   * it installed.
+   */
   signal?: AbortSignal;
+  /**
+   * Override the default timeout in seconds (Issue #1229).
+   *
+   * Ignored when {@link GhSpawnOptions.signal} is supplied. Without either,
+   * `getGhTimeoutForOperation` picks the budget from the arguments, so no
+   * `gh` call runs unbounded.
+   */
+  timeoutSeconds?: number;
   /**
    * Host roots the credential re-stage reads (Issue #967) — `GH_CONFIG_DIR`,
    * `HOME`, `VIBE_STATE_DIR`, `VIBE_SCRATCH_DIR` and `TMPDIR`. Defaults to the
@@ -192,6 +217,47 @@ export function resetGhRestageAttempts(): void {
 }
 
 /**
+ * Run the low-level runner under a default timeout (Issue #1229).
+ *
+ * Every attempt gets a freshly armed signal, so the re-stage retry is not
+ * handed the remains of the first attempt's budget. A caller that supplied
+ * its own `signal` keeps it, and its abort still surfaces as an `AbortError`
+ * — `gh_wrapper.ts` converts that into its own timeout result.
+ *
+ * A timeout fails loud rather than silently: exit
+ * {@link GH_TIMEOUT_EXIT_CODE} with a `TIMEOUT:` stderr naming the command
+ * and its budget, which `runGhOrThrow` turns into a thrown error.
+ *
+ * @param args - Redacted arguments passed to the `gh` binary.
+ * @param options - Subprocess options, minus the per-attempt signal.
+ * @returns The runner's outcome, or the timeout result.
+ */
+async function runWithTimeout(
+  args: readonly string[],
+  options: GhSpawnOptions,
+): Promise<GhSpawnResult> {
+  if (options.signal) return await runner(args, options);
+
+  const timeoutSeconds = options.timeoutSeconds ??
+    getGhTimeoutForOperation(args);
+  const signal = AbortSignal.timeout(timeoutSeconds * 1000);
+  try {
+    return await runner(args, { ...options, signal });
+  } catch (error: unknown) {
+    if (!signal.aborted) throw error;
+    incrementCounter("gh_timeouts");
+    return {
+      code: GH_TIMEOUT_EXIT_CODE,
+      success: false,
+      stdout: "",
+      stderr: `TIMEOUT: gh ${
+        args.join(" ")
+      } timed out after ${timeoutSeconds}s (Issue #1229)`,
+    };
+  }
+}
+
+/**
  * The retry's options, with any explicit `GH_CONFIG_DIR` refreshed.
  *
  * Callers that pin the directory per call (`setup/*`, the escalation paths)
@@ -211,8 +277,10 @@ function withStagedGhConfigDir(
  * Run `gh` through the worker's chokepoint.
  *
  * Enforces the write-repo allowlist before the process starts (so a refused
- * write never reaches GitHub) and journals the mutation afterwards. Never
- * throws on a non-zero exit — inspect {@link GhSpawnResult.success}.
+ * write never reaches GitHub), applies the default timeout for the operation
+ * (Issue #1229) and journals the mutation afterwards. Never throws on a
+ * non-zero exit — inspect {@link GhSpawnResult.success}; a timed-out call
+ * comes back as {@link GH_TIMEOUT_EXIT_CODE} with a `TIMEOUT:` stderr.
  *
  * @param args - Arguments passed to the `gh` binary.
  * @param options - Subprocess options.
@@ -243,7 +311,7 @@ export async function spawnGh(
   const spawnOptions = stdinScanned
     ? { ...options, stdin: redactSecrets(options.stdin as string) }
     : options;
-  let result = await runner(redacted, spawnOptions);
+  let result = await runWithTimeout(redacted, spawnOptions);
   // Issue #564: a call that failed for want of authentication did nothing,
   // so retrying it is safe — and the credential is very likely recoverable.
   // The writable copy of `hosts.yml` went missing mid-run once already and
@@ -260,7 +328,7 @@ export async function spawnGh(
       ...(options.setHostEnv ? { setEnv: options.setHostEnv } : {}),
     };
     if (ensureUsableGhConfigDir(staging)) {
-      result = await runner(
+      result = await runWithTimeout(
         redacted,
         withStagedGhConfigDir(spawnOptions, hostEnv),
       );

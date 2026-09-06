@@ -9,7 +9,7 @@
  * Uses Australian English throughout.
  */
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   _resetGhSpawnRunner,
   _setGhSpawnRunner,
@@ -579,5 +579,120 @@ Deno.test("spawnGh - a non-auth failure is returned as-is, never retried", async
   } finally {
     _resetGhSpawnRunner();
     resetGhRestageAttempts();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Default timeout at the chokepoint (Issue #1229)
+// ---------------------------------------------------------------------------
+
+/**
+ * A runner that never completes, so only the timeout can end the call.
+ *
+ * A missing signal rejects immediately and loudly rather than hanging the
+ * suite — that is exactly the unfixed behaviour these tests reproduce.
+ */
+function stallingRunner(): void {
+  _setGhSpawnRunner((_args, options) => {
+    const signal = options.signal;
+    if (!signal) {
+      return Promise.reject(
+        new Error("the chokepoint supplied no timeout signal"),
+      );
+    }
+    return new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason));
+    });
+  });
+}
+
+Deno.test("spawnGh - arms a default timeout when the caller supplies no signal (Issue #1229)", async () => {
+  const seen: Array<AbortSignal | undefined> = [];
+  _setGhSpawnRunner((_args, options) => {
+    seen.push(options.signal);
+    return Promise.resolve({
+      code: 0,
+      success: true,
+      stdout: "",
+      stderr: "",
+    });
+  });
+  try {
+    await spawnGh(["issue", "view", "1"]);
+    const signal = seen[0];
+    assertEquals(signal instanceof AbortSignal, true);
+    assertEquals(signal?.aborted, false);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("spawnGh - a stalled gh call is aborted and reported as a timeout (Issue #1229)", async () => {
+  stallingRunner();
+  try {
+    const result = await spawnGh(["issue", "view", "1"], {
+      timeoutSeconds: 0.05,
+    });
+    assertEquals(result.code, 124);
+    assertEquals(result.success, false);
+    assertStringIncludes(result.stderr, "TIMEOUT: gh issue view 1");
+    assertStringIncludes(result.stderr, "0.05s");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("runGhOrThrow - a timed-out call throws rather than returning empty stdout (Issue #1229)", async () => {
+  stallingRunner();
+  try {
+    const error = await assertRejects(
+      () => runGhOrThrow(["api", "repos/me/target"], { timeoutSeconds: 0.05 }),
+      Error,
+    );
+    assertStringIncludes(error.message, "gh command failed (exit 124)");
+    assertStringIncludes(error.message, "TIMEOUT: gh api repos/me/target");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("spawnGh - a caller's own signal is passed through untouched (Issue #1229)", async () => {
+  const controller = new AbortController();
+  const seen: Array<AbortSignal | undefined> = [];
+  _setGhSpawnRunner((_args, options) => {
+    seen.push(options.signal);
+    return Promise.resolve({
+      code: 0,
+      success: true,
+      stdout: "",
+      stderr: "",
+    });
+  });
+  try {
+    await spawnGh(["issue", "view", "1"], { signal: controller.signal });
+    assertEquals(seen[0], controller.signal);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("spawnGh - a caller signal's abort still surfaces as an error (Issue #1229)", async () => {
+  const controller = new AbortController();
+  _setGhSpawnRunner((_args, options) =>
+    new Promise((_resolve, reject) => {
+      options.signal?.addEventListener("abort", () => {
+        reject(new DOMException("aborted", "AbortError"));
+      });
+      controller.abort();
+    })
+  );
+  try {
+    const error = await assertRejects(
+      () => spawnGh(["issue", "view", "1"], { signal: controller.signal }),
+      DOMException,
+    );
+    assertEquals(error.name, "AbortError");
+  } finally {
+    restore();
   }
 });
