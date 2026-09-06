@@ -104,6 +104,9 @@ the unfixed generator except where noted, and pass after the fix — observed:
 - `…::resolveDeniedPaths - covers the credential stores under HOME`
 - `…::resolveDeniedPaths - covers the relocated gh config and the app private key`
 - `…::resolveDeniedPaths - returns nothing when the environment names no home`
+- `…::generateMcpConfig - refuses a denied path Deno cannot express (Issue #1288)`
+  — a comma in a path splits the permission list, so the generator throws
+  rather than emit a deny list that looks complete and protects nothing.
 
 **Existing test modified (documented as required):**
 `…::generateMcpConfig - keeps the OS sandbox when no browser is baked in`
