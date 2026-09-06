@@ -330,10 +330,15 @@ export async function appendNoFollow(
 ): Promise<Result<void>> {
   const { targetFile, content, mode = DEFAULT_FILE_MODE } = options;
 
-  const existing = await lstatOrNull(targetFile);
+  const existing = await lstatOrNull(targetFile, "appendNoFollow");
   if (!existing.ok) return existing;
-  const refusal = refuseNonRegular(targetFile, existing.value);
-  if (refusal) return refusal;
+  const refusal = refuseNonRegular(
+    targetFile,
+    existing.value,
+    "appendNoFollow",
+    "append",
+  );
+  if (refusal) return { ok: false, error: refusal };
   const created = existing.value === null;
 
   let file: Deno.FsFile;
@@ -358,7 +363,7 @@ export async function appendNoFollow(
     // own inode. A link swapped in after the check opens its target, whose
     // inode differs from what a fresh lstat of the path now reports.
     const opened = await file.stat();
-    const current = await lstatOrNull(targetFile);
+    const current = await lstatOrNull(targetFile, "appendNoFollow");
     if (!current.ok) return current;
     const swapped = current.value === null || current.value.isSymlink ||
       (opened.ino !== null && current.value.ino !== null &&
@@ -400,9 +405,92 @@ export async function appendNoFollow(
   return { ok: true, value: undefined };
 }
 
+/**
+ * Read a file's text, refusing to follow a link at the path (Issue #1234).
+ *
+ * `Deno.readTextFile` follows a symlink, so a repo-supplied `.gitignore` link
+ * makes the reader slurp whatever the link points at — and a
+ * read-modify-write caller then copies that content into the file it writes
+ * back. The same guards as {@link appendNoFollow} apply: an `lstat` refuses a
+ * symlink, a hard link or any non-regular target before the open, and the
+ * descriptor's inode is re-checked against a fresh `lstat` afterwards so a
+ * link swapped into the check→open window is caught before the bytes are used.
+ *
+ * An absent file is reported as a `null` value, not an error — callers that
+ * treat "missing" as "empty" ask for that case explicitly.
+ *
+ * @param targetFile - Path to read
+ * @returns Result with the file's text, or `null` when the file is absent
+ */
+export async function readTextFileNoFollow(
+  targetFile: string,
+): Promise<Result<string | null>> {
+  const fn = "readTextFileNoFollow";
+  const existing = await lstatOrNull(targetFile, fn);
+  if (!existing.ok) return existing;
+  if (existing.value === null) return { ok: true, value: null };
+  const refusal = refuseNonRegular(targetFile, existing.value, fn, "read");
+  if (refusal) return { ok: false, error: refusal };
+
+  let file: Deno.FsFile;
+  try {
+    file = await Deno.open(targetFile, { read: true });
+  } catch (err) {
+    return {
+      ok: false,
+      error: new Error(
+        `${fn} — failed to open file: ${targetFile}: ${(err as Error).message}`,
+      ),
+    };
+  }
+
+  try {
+    // Close the lstat→open window, exactly as appendNoFollow does: the
+    // descriptor must still be the path's own inode.
+    const opened = await file.stat();
+    const current = await lstatOrNull(targetFile, fn);
+    if (!current.ok) return current;
+    const swapped = current.value === null || current.value.isSymlink ||
+      (opened.ino !== null && current.value.ino !== null &&
+        opened.ino !== current.value.ino);
+    if (swapped) {
+      return {
+        ok: false,
+        error: new Error(
+          `${fn} — refusing to read through a symlink: ${targetFile}`,
+        ),
+      };
+    }
+
+    const buffer = new Uint8Array(opened.size);
+    let read = 0;
+    while (read < buffer.length) {
+      const n = await file.read(buffer.subarray(read));
+      if (n === null) break;
+      read += n;
+    }
+    return {
+      ok: true,
+      value: new TextDecoder().decode(buffer.subarray(0, read)),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: new Error(
+        `${fn} — failed to read file: ${targetFile}: ${(err as Error).message}`,
+      ),
+    };
+  } finally {
+    try {
+      file.close();
+    } catch { /* already closed */ }
+  }
+}
+
 /** `lstat` the path, reporting "absent" as a null value rather than a throw. */
 async function lstatOrNull(
   path: string,
+  fn: string,
 ): Promise<Result<Deno.FileInfo | null>> {
   try {
     return { ok: true, value: await Deno.lstat(path) };
@@ -411,9 +499,7 @@ async function lstatOrNull(
     return {
       ok: false,
       error: new Error(
-        `appendNoFollow — failed to inspect path: ${path}: ${
-          (err as Error).message
-        }`,
+        `${fn} — failed to inspect path: ${path}: ${(err as Error).message}`,
       ),
     };
   }
@@ -422,39 +508,32 @@ async function lstatOrNull(
 /**
  * Refuse a symlink, a hard link, or any non-regular file already at the path.
  *
- * A hard link is the same attack with no link to lstat: the appended bytes
- * land in someone else's file just as they would through a symlink, and a
- * log this worker owns never has a second name.
+ * A hard link is the same attack with no link to lstat: the bytes land in — or
+ * come from — someone else's file just as they would through a symlink, and a
+ * file this worker owns never has a second name.
+ *
+ * `fn` names the calling primitive and `verb` what it was about to do, so the
+ * refusal reads as the caller's own ("refusing to append/read through …").
+ * Returns the refusal as an Error, or null when the path is safe to use.
  */
 function refuseNonRegular(
   path: string,
   info: Deno.FileInfo | null,
-): Result<void> | null {
+  fn: string,
+  verb: string,
+): Error | null {
   if (info === null) return null;
   if (info.isSymlink) {
-    return {
-      ok: false,
-      error: new Error(
-        `appendNoFollow — refusing to append through a symlink: ${path}`,
-      ),
-    };
+    return new Error(`${fn} — refusing to ${verb} through a symlink: ${path}`);
   }
   if (!info.isFile) {
-    return {
-      ok: false,
-      error: new Error(
-        `appendNoFollow — target is not a regular file: ${path}`,
-      ),
-    };
+    return new Error(`${fn} — target is not a regular file: ${path}`);
   }
   if (info.nlink !== null && info.nlink > 1) {
-    return {
-      ok: false,
-      error: new Error(
-        `appendNoFollow — refusing to append through a hard link ` +
-          `(${info.nlink} names): ${path}`,
-      ),
-    };
+    return new Error(
+      `${fn} — refusing to ${verb} through a hard link ` +
+        `(${info.nlink} names): ${path}`,
+    );
   }
   return null;
 }

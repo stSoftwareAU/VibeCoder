@@ -25,10 +25,24 @@
  * Idempotent: re-running on a repo that already contains the marked
  * block is a no-op (no duplicate lines, byte-identical output).
  *
+ * Link-free (Issue #1234): the clone is agent-writable and persists between
+ * runs, so both files are read through `readTextFileNoFollow()` — a symlink,
+ * hard link or non-regular target is refused with an error rather than read
+ * and rewritten — and written through `atomicWrite()`, whose rename never
+ * follows a link swapped in after the read.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
 import type { Result } from "../types.ts";
+import { atomicWrite, readTextFileNoFollow } from "./file_utils.ts";
+
+/**
+ * Mode for the repo files this module writes. Both are ordinary tracked repo
+ * files, so they stay world-readable — unlike the 0600 state files
+ * {@link atomicWrite} defaults to.
+ */
+const REPO_FILE_MODE = 0o644;
 
 /** Marker comment that opens the Vibe Coder safety block. */
 export const VIBE_CODER_BLOCK_MARKER =
@@ -158,18 +172,14 @@ export async function ensureGitignorePatterns(
 ): Promise<Result<EnsureGitignoreResult, Error>> {
   const gitignorePath = `${repoPath}/.gitignore`;
 
-  let existing = "";
-  try {
-    existing = await Deno.readTextFile(gitignorePath);
-  } catch (err) {
-    if (!(err instanceof Deno.errors.NotFound)) {
-      return {
-        ok: false,
-        error: err instanceof Error ? err : new Error(String(err)),
-      };
-    }
-    // Missing file is fine — we'll create it below.
-  }
+  // Read link-free: `repoPath` is an agent-writable clone, so a planted
+  // `.gitignore` symlink would otherwise be read through — and the
+  // read-modify-write below would copy the link target's content into the
+  // file it writes back (Issue #1234).
+  const read = await readTextFileNoFollow(gitignorePath);
+  if (!read.ok) return { ok: false, error: read.error };
+  // Missing file is fine — we'll create it below.
+  const existing = read.value ?? "";
 
   const presentLines = new Set(
     existing
@@ -205,14 +215,15 @@ export async function ensureGitignorePatterns(
   ];
   const block = (needsLeadingNewline ? "\n" : "") + blockLines.join("\n");
 
-  try {
-    await Deno.writeTextFile(gitignorePath, existing + block);
-  } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err : new Error(String(err)),
-    };
-  }
+  // Replace by atomic rename rather than writing in place: rename never
+  // follows a link, so a link swapped in after the read is displaced, not
+  // written through.
+  const written = await atomicWrite({
+    targetFile: gitignorePath,
+    content: existing + block,
+    mode: REPO_FILE_MODE,
+  });
+  if (!written.ok) return { ok: false, error: written.error };
 
   return { ok: true, value: { added, existed } };
 }
@@ -243,18 +254,11 @@ export async function ensureGitattributesPatterns(
 ): Promise<Result<EnsureGitattributesResult, Error>> {
   const gitattributesPath = `${repoPath}/.gitattributes`;
 
-  let existing = "";
-  try {
-    existing = await Deno.readTextFile(gitattributesPath);
-  } catch (err) {
-    if (!(err instanceof Deno.errors.NotFound)) {
-      return {
-        ok: false,
-        error: err instanceof Error ? err : new Error(String(err)),
-      };
-    }
-    // Missing file is fine — we'll create it below.
-  }
+  // Same link-free read as `ensureGitignorePatterns()` (Issue #1234).
+  const read = await readTextFileNoFollow(gitattributesPath);
+  if (!read.ok) return { ok: false, error: read.error };
+  // Missing file is fine — we'll create it below.
+  const existing = read.value ?? "";
 
   // Classify by full trimmed-line equality. Trimming removes the trailing
   // `\r` from a CRLF-terminated line, so CRLF-saved attribute files are
@@ -293,14 +297,15 @@ export async function ensureGitattributesPatterns(
   ];
   const block = (needsLeadingNewline ? "\n" : "") + blockLines.join("\n");
 
-  try {
-    await Deno.writeTextFile(gitattributesPath, existing + block);
-  } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err : new Error(String(err)),
-    };
-  }
+  // Replace by atomic rename rather than writing in place: rename never
+  // follows a link, so a link swapped in after the read is displaced, not
+  // written through.
+  const written = await atomicWrite({
+    targetFile: gitattributesPath,
+    content: existing + block,
+    mode: REPO_FILE_MODE,
+  });
+  if (!written.ok) return { ok: false, error: written.error };
 
   return { ok: true, value: { added, existed } };
 }

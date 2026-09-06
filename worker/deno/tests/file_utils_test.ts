@@ -9,6 +9,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   appendNoFollow,
   atomicWrite,
+  readTextFileNoFollow,
   safeReadFile,
 } from "../lib/file_utils.ts";
 
@@ -359,6 +360,54 @@ Deno.test("appendNoFollow - refuses a hard link and a non-regular target", async
       targetFile: asDir,
       content: "x\n",
     });
+    assert(!directory.ok, "a directory target is refused");
+    assertStringIncludes(directory.error.message, "not a regular file");
+  });
+});
+
+// =============================================================================
+// readTextFileNoFollow (Issue #1234)
+// =============================================================================
+
+Deno.test("readTextFileNoFollow - reads a regular file", async () => {
+  await withTempDir(async (dir) => {
+    const target = `${dir}/.gitignore`;
+    await Deno.writeTextFile(target, "node_modules/\n");
+
+    const result = await readTextFileNoFollow(target);
+    assert(result.ok, "a regular file is read");
+    assertEquals(result.value, "node_modules/\n");
+  });
+});
+
+Deno.test("readTextFileNoFollow - reports an absent file as null", async () => {
+  await withTempDir(async (dir) => {
+    const result = await readTextFileNoFollow(`${dir}/absent`);
+    assert(result.ok, "an absent file is not an error");
+    assertEquals(result.value, null);
+  });
+});
+
+Deno.test("readTextFileNoFollow - refuses a symlink, a hard link and a directory", async () => {
+  await withTempDir(async (dir) => {
+    const victim = `${dir}/victim`;
+    await Deno.writeTextFile(victim, "secret\n");
+
+    const link = `${dir}/link`;
+    await Deno.symlink(victim, link);
+    const symlinked = await readTextFileNoFollow(link);
+    assert(!symlinked.ok, "a symlink target is refused");
+    assertStringIncludes(symlinked.error.message, "symlink");
+
+    const hard = `${dir}/hard`;
+    await Deno.link(victim, hard);
+    const hardLinked = await readTextFileNoFollow(hard);
+    assert(!hardLinked.ok, "a hard-linked target is refused");
+    assertStringIncludes(hardLinked.error.message, "hard link");
+
+    const asDir = `${dir}/subdir`;
+    await Deno.mkdir(asDir);
+    const directory = await readTextFileNoFollow(asDir);
     assert(!directory.ok, "a directory target is refused");
     assertStringIncludes(directory.error.message, "not a regular file");
   });
