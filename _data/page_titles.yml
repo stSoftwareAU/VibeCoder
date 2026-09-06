@@ -311,6 +311,10 @@ docs/audits/security-sweep-1219-lib-closing-pass.md:
   title: "Vibe Coder: worker/deno/lib Closing-Pass Security Sweep"
   page_icon: "🔎"
 
+docs/audits/security-sweep-1325-gh-body-file-io-and-timeout.md:
+  title: "Vibe Coder: gh Chokepoint Top-Up Security Sweep"
+  page_icon: "🔎"
+
 docs/audits/security-sweep-1221-shell-entry-points.md:
   title: "Vibe Coder: Shell Entry-Point Security Sweep"
   page_icon: "🔎"
