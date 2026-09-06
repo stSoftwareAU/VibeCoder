@@ -2312,6 +2312,7 @@ can be overridden via environment variables for testing or special deployments.
 | Git merge timeout                                   | `GIT_MERGE_TIMEOUT`                      | `120`           | Timeout for merge/rebase/pull operations in seconds                                               |
 | GitHub CLI (Command-Line Interface) command timeout | `GH_COMMAND_TIMEOUT`                     | `60`            | Timeout for individual `gh` CLI commands in seconds                                               |
 | GitHub clone timeout                                | `GH_CLONE_TIMEOUT`                       | `600`           | Timeout for `gh repo clone` operations in seconds (large repos on shared networks need more time) |
+| GitHub paginated read timeout | `GH_PAGINATED_TIMEOUT` | `300` | Timeout for a `gh api --paginate` read in seconds — one call walks every page, so it outlives a single request |
 | GitHub rate-limit cooldown | `GH_RATE_LIMIT_COOLDOWN` | `300` | Rate-limit circuit breaker cooldown in seconds |
 | Assigned no-heartbeat timeout                       | `ASSIGNED_NO_HEARTBEAT_TIMEOUT`          | `1800`          | Grace period for assigned issues with no heartbeat before recovery (30 minutes)                   |
 | Stale assignment timeout                            | `STALE_ASSIGNMENT_TIMEOUT`               | `14400`         | Timeout for GitHub-based stale assignment recovery (4 hours)                                      |
@@ -2337,6 +2338,21 @@ can be overridden via environment variables for testing or special deployments.
 | Answer truncate length                              | `ANSWER_TRUNCATE_LENGTH`                 | `500`           | Maximum characters to keep from a bot answer before truncating                                    |
 | Pre-setup command timeout                           | `PRE_SETUP_TIMEOUT`                      | `300`           | Timeout for repository pre-setup commands (5 minutes)                                             |
 | GitHub issue list limit                             | `GH_ISSUE_LIST_LIMIT`                    | `50`            | Default limit for `gh issue list` queries                                                         |
+
+### ⏱️ Every `gh` invocation is bounded
+
+The three `gh` timeouts are applied at the `gh` chokepoint itself
+([`worker/deno/lib/gh_spawn.ts`](../worker/deno/lib/gh_spawn.ts) via
+[`gh_timeout.ts`](../worker/deno/lib/gh_timeout.ts)), not by each caller
+(Issue #1229): `GH_CLONE_TIMEOUT` for `gh repo clone`, `GH_PAGINATED_TIMEOUT`
+for a `gh api --paginate` read, and `GH_COMMAND_TIMEOUT` for everything else. A
+call that exceeds its budget is aborted and reported loudly — exit code `124`
+with `TIMEOUT: gh <args> timed out after <n>s` on stderr — so a stalled GitHub
+call can no longer hang the run. A caller that supplies its own `AbortSignal`
+(the rate-limit wrapper in `gh_wrapper.ts`) keeps its own deadline.
+
+An override that is missing, unparseable or non-positive falls back to the
+default: a `GH_COMMAND_TIMEOUT=0` cannot restore unbounded behaviour.
 
 ### 🥇 The config file wins over the environment
 

@@ -11,12 +11,11 @@
 
 import type { Result } from "../types.ts";
 import { spawnGh } from "./gh_spawn.ts";
-
-/** Default timeout for gh commands (seconds). */
-const DEFAULT_GH_COMMAND_TIMEOUT = 60;
-
-/** Default timeout for clone operations (seconds). */
-const DEFAULT_GH_CLONE_TIMEOUT = 600;
+import {
+  DEFAULT_GH_CLONE_TIMEOUT,
+  DEFAULT_GH_COMMAND_TIMEOUT,
+  GH_TIMEOUT_EXIT_CODE,
+} from "./gh_timeout.ts";
 
 /** Default cooldown for rate limit circuit breaker (seconds). */
 const DEFAULT_RATE_LIMIT_COOLDOWN = 300;
@@ -24,8 +23,8 @@ const DEFAULT_RATE_LIMIT_COOLDOWN = 300;
 /** Exit code for rate limiting (matches retry.sh RATE_LIMIT_EXIT_CODE). */
 export const RATE_LIMIT_EXIT_CODE = 223;
 
-/** Exit code indicating a timeout. */
-export const TIMEOUT_EXIT_CODE = 124;
+/** Exit code indicating a timeout. Shared with the `gh` chokepoint. */
+export const TIMEOUT_EXIT_CODE = GH_TIMEOUT_EXIT_CODE;
 
 /**
  * Configuration for the GH wrapper.
