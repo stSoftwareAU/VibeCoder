@@ -19,34 +19,15 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import {
-  type BodyFileReader,
-  type BodyFileWriter,
   redactGhBodyArgs,
   UnredactableBodyError,
 } from "../lib/gh_body_redaction.ts";
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
-
-/** A realistic GitHub token shape — the payload each published field carries. */
-const GH_TOKEN_SAMPLE = `ghp_${"a1B2c3D4e5".repeat(4)}`;
-
-/** A reader serving a fixed set of paths; anything else fails to read. */
-function readerFor(files: Record<string, string>): BodyFileReader {
-  return (path: string) => {
-    const content = files[path];
-    if (content === undefined) throw new Error(`no such file: ${path}`);
-    return content;
-  };
-}
-
-/** A writer that records every content it materialises and hands back a path. */
-function capturingWriter(): { writer: BodyFileWriter; written: string[] } {
-  const written: string[] = [];
-  const writer: BodyFileWriter = (content) => {
-    written.push(content);
-    return `/tmp/gh-input-${written.length}.json`;
-  };
-  return { writer, written };
-}
+import {
+  capturingWriter,
+  GH_TOKEN_SAMPLE,
+  readerFor,
+} from "./support/gh_body_fixtures.ts";
 
 Deno.test("redactGhBodyArgs - masks a secret in a --title argument", () => {
   assertEquals(
@@ -128,6 +109,79 @@ Deno.test("redactGhBodyArgs - masks a secret in a -f name= label field", () => {
       "color=ededed",
     ],
   );
+});
+
+Deno.test("redactGhBodyArgs - masks a secret behind the -t title shorthand", () => {
+  assertEquals(
+    redactGhBodyArgs([
+      "issue",
+      "create",
+      "-t",
+      `run failed: ${GH_TOKEN_SAMPLE}`,
+    ]),
+    ["issue", "create", "-t", `run failed: ${REDACTION_PLACEHOLDER}`],
+  );
+});
+
+Deno.test("redactGhBodyArgs - leaves a gh api -t output template alone", () => {
+  // On `gh api`, `-t` is `--template`: a formatting argument, not a sink. Its
+  // value must survive, and the argument after it must still be scanned.
+  assertEquals(
+    redactGhBodyArgs([
+      "api",
+      "repos/org/repo/issues",
+      "-t",
+      "{{range .}}{{.number}}{{end}}",
+      "-f",
+      `title=${GH_TOKEN_SAMPLE}`,
+    ]),
+    [
+      "api",
+      "repos/org/repo/issues",
+      "-t",
+      "{{range .}}{{.number}}{{end}}",
+      "-f",
+      `title=${REDACTION_PLACEHOLDER}`,
+    ],
+  );
+});
+
+Deno.test("redactGhBodyArgs - masks a secret in a --description argument", () => {
+  // The CLI spelling of the label description `label_operations.ts` also
+  // publishes through `-f description=`.
+  assertEquals(
+    redactGhBodyArgs([
+      "label",
+      "create",
+      "security",
+      "--description",
+      `notes ${GH_TOKEN_SAMPLE}`,
+    ]),
+    [
+      "label",
+      "create",
+      "security",
+      "--description",
+      `notes ${REDACTION_PLACEHOLDER}`,
+    ],
+  );
+});
+
+Deno.test("redactGhBodyArgs - leaves a GraphQL name variable byte-for-byte alone", () => {
+  // `-F name=<repo>` routes a GraphQL query. It shares a key with a label's
+  // published name, so the guarantee that holds is shape-specific: an ordinary
+  // repository name is never rewritten.
+  const args = [
+    "api",
+    "graphql",
+    "-f",
+    "query=query($owner:String!,$name:String!){ x }",
+    "-F",
+    "owner=stSoftwareAU",
+    "-F",
+    "name=VibeCoder",
+  ];
+  assertEquals(redactGhBodyArgs(args), args);
 });
 
 Deno.test("redactGhBodyArgs - leaves routing arguments byte-for-byte alone", () => {

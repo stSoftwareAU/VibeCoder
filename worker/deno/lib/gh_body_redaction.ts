@@ -63,15 +63,26 @@ import { redactSecrets } from "./secret_redaction.ts";
 /**
  * Flags whose following argument is published text.
  *
- * A title is a public sink exactly like a body (Issue #1283), so `--title`
- * joins them. The `-t` shorthand deliberately does not: `gh api -t` is
- * `--template`, a formatting argument, and masking it would rewrite something
- * that is never published.
+ * A title and a label/repo description are public sinks exactly like a body
+ * (Issue #1283), so `--title` and `--description` join them — the latter
+ * because `label_operations.ts` publishes the same text through the CLI
+ * spelling as well as through `-f description=`.
  */
-const TEXT_FLAGS = new Set(["--body", "-b", "--title"]);
+const TEXT_FLAGS = new Set(["--body", "-b", "--title", "--description"]);
+
+/**
+ * `-t` is `--title` on `issue create` / `pr create` / `release create`, but
+ * `--template` on `gh api`. Covered everywhere except `gh api`, so the shim's
+ * everyday `gh issue create -t "<title>"` is masked while a `gh api` output
+ * template is never rewritten.
+ */
+const TITLE_SHORTHAND = "-t";
+
+/** Subcommand for which {@link TITLE_SHORTHAND} means `--template` instead. */
+const TEMPLATE_SUBCOMMAND = "api";
 
 /** `--flag=<text>` spellings whose value is published text. */
-const TEXT_FLAG_PREFIXES = ["--body=", "--title="];
+const TEXT_FLAG_PREFIXES = ["--body=", "--title=", "--description="];
 
 /** Flags whose following argument names a file holding published text. */
 const BODY_FILE_FLAGS = new Set(["--body-file", "-F"]);
@@ -93,6 +104,12 @@ const FIELD_FILE_FLAGS = new Set(["-F", "--field"]);
  * `-f description=` create labels — every one of them a public sink. Keys that
  * route a mutation (`owner`, `head`, `assignee`, a reaction's `content`) stay
  * off this list so redaction can never redirect a call.
+ *
+ * `name` is the one key that is published text in some calls (a label's name)
+ * and a routing variable in others (`gh api graphql -F name=<repo>`). Masking
+ * is shape-specific, so a repository name — which cannot match a secret rule —
+ * survives byte-for-byte; only a `name` that genuinely looks like a credential
+ * is rewritten, and that is a value no call should be sending.
  */
 const PUBLISHED_FIELD_KEYS = new Set([
   "body",
@@ -162,12 +179,15 @@ export function redactGhBodyArgs(
   writeBodyFile?: BodyFileWriter,
 ): string[] {
   const out = [...args];
+  const titleShorthandIsText = out[0] !== TEMPLATE_SUBCOMMAND;
   for (let i = 0; i < out.length; i++) {
     const arg = out[i] ?? "";
     const next = out[i + 1];
 
-    // `--body <text>` / `-b <text>` / `--title <text>`
-    if (TEXT_FLAGS.has(arg) && next !== undefined) {
+    // `--body <text>` / `-b <text>` / `--title <text>` / `-t <text>`
+    const isTextFlag = TEXT_FLAGS.has(arg) ||
+      (titleShorthandIsText && arg === TITLE_SHORTHAND);
+    if (isTextFlag && next !== undefined) {
       out[i + 1] = redactSecrets(next);
       i++;
       continue;
