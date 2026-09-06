@@ -69,6 +69,20 @@ the key set removed no refusal. The one remaining `-t` spelling deliberately
 left alone is `gh api -t`, which is `--template`: a local output format that is
 never sent to GitHub, so it is not a bypass of the sink.
 
+**Quality gate.** `./quality.sh` was run in full. Every check this change can
+affect passes; three checks fail, and all three fail **identically at the
+branch's base commit** (`96381a5~1`), verified by re-running them in a clean
+worktree at that commit:
+
+| Check | Failure | Base commit |
+| --- | --- | --- |
+| semgrep | `detect-non-literal-regexp` at `worker/deno/lib/repo_settings_harden.ts:155` (from Issue #3912's merge, untouched here) | fails the same |
+| deno lint | 4 × `no-unused-vars` in `worker/deno/tests/collect_self_diagnostic_candidates_test.ts` (untouched here) | fails the same |
+| deno tests | `lib_sweep_coverage_test.ts` — 4 `lib/` modules claimed by no sweep slice, none of them added here | fails the same |
+
+The suites this change touches are green: `18558 passed | 1 failed`, the single
+failure being the pre-existing `lib_sweep_coverage_test.ts` above.
+
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
