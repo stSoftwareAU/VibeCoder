@@ -104,11 +104,32 @@ export const COVERAGE_GATE_NEXT_STEP =
   "`## Plan Coverage` table on this issue, or record the ask as " +
   "`Out of scope` with a reason, then remove the label.";
 
+/**
+ * Characters of one candidate scanned for the coverage table (Issue #1245).
+ *
+ * Every comment on the planning parent is attacker-influenceable — a comment
+ * body is writable by any account on a public repository — and the gate
+ * re-reads them on every planning close. A coverage table is a few hundred
+ * characters, so a bounded scan loses nothing real and keeps an oversized
+ * body cheap to reject. Matches the cap `ci_failure_issue.ts` applies to the
+ * issue bodies it parses.
+ */
+export const MAX_COVERAGE_SCAN_CHARS = 64 * 1024;
+
 // A table row line: starts with an optional indent then a pipe.
 const ROW_RE = /^\s{0,3}\|/;
 
-// A separator row, e.g. `| --- | :--- | ---: |`.
-const SEPARATOR_RE = /^\s{0,3}\|[\s:|-]*-[\s:|-]*\|?\s*$/;
+/**
+ * A separator row, e.g. `| --- | :--- | ---: |`.
+ *
+ * Every quantifier here is over a disjoint character set — a cell is a single
+ * `-+` run with optional alignment colons and surrounding whitespace, and
+ * cells are separated by a literal `|` that no quantifier can consume. The
+ * previous shape put two `[\s:|-]*` classes either side of a `-`, so a run of
+ * dashes had exponentially many ways to split between them and the match cost
+ * grew quadratically (Issue #1245).
+ */
+const SEPARATOR_RE = /^\s{0,3}\|(?:\s*:?-+:?\s*\|)*\s*:?-+:?\s*\|?\s*$/;
 
 // Header cell that names the ask column.
 const ASK_HEADER_RE = /^(ask|asks|requirement|requirements)\b/i;
@@ -147,10 +168,16 @@ function splitRow(line: string): string[] {
  * and a column naming the covering sub-issue — rather than by the heading
  * above it, so a reworded heading cannot silently hide the table from the gate.
  *
+ * A blob longer than {@link MAX_COVERAGE_SCAN_CHARS} is **rejected rather
+ * than scanned**: the candidates are attacker-influenceable and a genuine
+ * coverage table is never that large, so an oversized blob is treated as
+ * carrying no table rather than being parsed line by line.
+ *
  * @returns The table's rows (possibly empty for a header-only table), or `null`
- *   when the blob carries no coverage table.
+ *   when the blob carries no coverage table or exceeds the scan cap.
  */
 export function extractCoverageTable(markdown: string): CoverageRow[] | null {
+  if (markdown.length > MAX_COVERAGE_SCAN_CHARS) return null;
   const lines = markdown.split(/\r?\n/);
 
   for (let i = 0; i < lines.length - 1; i++) {
@@ -363,6 +390,20 @@ export async function runPlanCoverageGate(opts: {
 
   for (const candidate of candidates) {
     if (candidate.trim() === "") continue;
+    if (candidate.length > MAX_COVERAGE_SCAN_CHARS) {
+      // Loud, not silent: an unscanned candidate is not a candidate that
+      // carried no table (Issue #1245).
+      logger.warn(
+        "Plan-coverage gate: skipped an oversized candidate without scanning it (Issue #1245)",
+        {
+          repo,
+          issueNumber: parentIssueNumber,
+          chars: candidate.length,
+          capChars: MAX_COVERAGE_SCAN_CHARS,
+        },
+      );
+      continue;
+    }
     const verdict = judgePlanCoverage(candidate);
     if (verdict.tableFound) return verdict;
   }
