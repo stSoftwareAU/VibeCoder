@@ -557,13 +557,20 @@ export async function defaultListTrackedFiles(
   } catch {
     return null;
   }
-  const result = await runGitCommand(["-C", workDir, "ls-files", "-z"]);
-  if (!result.ok || result.value.code !== 0) return null;
-  const set = new Set<string>();
-  for (const path of result.value.stdout.split("\0")) {
-    if (path) set.add(path);
+  try {
+    // Issue #1214: every git spawn goes through the timeout chokepoint.
+    const result = await runGitCommand(["-C", workDir, "ls-files", "-z"]);
+    if (!result.ok) return null;
+    const { code, stdout: text } = result.value;
+    if (code !== 0) return null;
+    const set = new Set<string>();
+    for (const path of text.split("\0")) {
+      if (path) set.add(path);
+    }
+    return set;
+  } catch {
+    return null;
   }
-  return set;
 }
 
 /**

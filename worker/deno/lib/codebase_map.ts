@@ -149,32 +149,45 @@ export interface CodebaseMapResult {
 export async function listRepoFiles(
   repoDir: string,
 ): Promise<Result<string[]>> {
-  const result = await runGitCommand(
-    ["ls-files", "-co", "--exclude-standard", "-z"],
-    { cwd: repoDir },
-  );
-  if (!result.ok) {
+  try {
+    // Issue #1214: every git spawn goes through the timeout chokepoint.
+    const result = await runGitCommand(
+      ["ls-files", "-co", "--exclude-standard", "-z"],
+      { cwd: repoDir },
+    );
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to run git ls-files in ${repoDir}: ${result.error.message}`,
+        ),
+      };
+    }
+    const output = result.value;
+    if (output.code !== 0) {
+      const stderr = output.stderr.trim();
+      return {
+        ok: false,
+        error: new Error(
+          `git ls-files failed in ${repoDir} (exit ${output.code}): ${stderr}`,
+        ),
+      };
+    }
+    const files = output.stdout
+      .split("\0")
+      .filter((p) => p.length > 0)
+      .sort();
+    return { ok: true, value: files };
+  } catch (err) {
     return {
       ok: false,
       error: new Error(
-        `Failed to run git ls-files in ${repoDir}: ${result.error.message}`,
+        `Failed to run git ls-files in ${repoDir}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       ),
     };
   }
-  const { code, stdout, stderr } = result.value;
-  if (code !== 0) {
-    return {
-      ok: false,
-      error: new Error(
-        `git ls-files failed in ${repoDir} (exit ${code}): ${stderr.trim()}`,
-      ),
-    };
-  }
-  const files = stdout
-    .split("\0")
-    .filter((p) => p.length > 0)
-    .sort();
-  return { ok: true, value: files };
 }
 
 /**

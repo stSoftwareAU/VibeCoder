@@ -204,8 +204,13 @@ export function selectScannableFiles(paths: readonly string[]): string[] {
 export function makeGitRunner(scriptDir: string): GitRunner {
   return async (args: string[]) => {
     const result = await runGitCommand(["-C", scriptDir, ...args]);
-    if (!result.ok) return { exitCode: 1, stdout: "" };
-    return { exitCode: result.value.code, stdout: result.value.stdout };
+    if (!result.ok) {
+      return { exitCode: 1, stdout: "" };
+    }
+    return {
+      exitCode: result.value.code,
+      stdout: result.value.stdout,
+    };
   };
 }
 
