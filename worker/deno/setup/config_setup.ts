@@ -479,21 +479,53 @@ export async function writeConfigFile(
  * reached the pasteable `gh api` commands in the collaborator precheck issue.
  * Bad entries are reported by throwing, never dropped silently.
  *
+ * Only a missing file is `{}` (Issue #1294). A permission error, a truncated
+ * write or a hand-edit that broke the JSON used to be caught here and read as
+ * "no config yet", and because setup rewrites `.config.json` from scratch the
+ * operator's `service_accounts` (the #3528 identity guard's allowlist),
+ * `repos`, `repo_config` and any narrowed `authorized_commenters` were
+ * dropped — `mergeNonInteractive` then repopulated the trusted-bot list from
+ * `DEFAULT_TRUSTED_INPUT_BOTS`, re-granting input trust the operator had
+ * removed. Those failures now throw, matching `readConfigRecord` in
+ * config_writer.ts, which already refuses invalid JSON in the same file.
+ *
  * @param configPath - Path to the .config.json file
- * @returns The existing configuration, or empty object if file doesn't exist
- * @throws When `repos` is not an array of valid `owner/repo` slugs
+ * @returns The existing configuration, or empty object if the file is absent
+ * @throws When the file cannot be read, is not a JSON object, or `repos` is
+ *   not an array of valid `owner/repo` slugs
  */
 export async function loadExistingConfig(
   configPath: string,
 ): Promise<SetupConfig> {
-  let config: SetupConfig;
+  let content: string;
   try {
-    const content = await Deno.readTextFile(configPath);
-    config = JSON.parse(content) as SetupConfig;
-  } catch {
-    // Missing or unparseable file — first setup writes a fresh one.
-    return {};
+    content = await Deno.readTextFile(configPath);
+  } catch (error) {
+    // Absent is the one legitimate `{}` — first setup writes a fresh file.
+    if (error instanceof Deno.errors.NotFound) return {};
+    throw new Error(
+      `Cannot read ${configPath}: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
   }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    throw new Error(
+      `${configPath} contains invalid JSON — fix it by hand before setup ` +
+        `can run, or setup would replace your settings with defaults: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(
+      `${configPath} is not a JSON object — fix it by hand before setup ` +
+        `can run, or setup would replace your settings with defaults.`,
+    );
+  }
+  const config = parsed as SetupConfig;
 
   if (config.repos !== undefined) {
     if (!Array.isArray(config.repos)) {

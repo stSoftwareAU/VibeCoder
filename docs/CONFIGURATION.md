@@ -66,6 +66,15 @@ for, such as `fleet_pr_authors` and `worker_name`. The only keys removed are:
   reads. Each removal is printed as a warning, and a running worker raises the
   same non-blocking warning at startup config validation.
 
+A `.config.json` setup **cannot read** stops the run instead (Issue #1294).
+Only an absent file means "no config yet"; a truncated write, a permission
+error, or a hand edit that broke the JSON is reported with the path and the
+parse error, and nothing is written. Because the rewrite is from scratch,
+treating a broken file as absent would have silently replaced your
+`service_accounts`, `repos`, `repo_config` and narrowed
+`authorized_commenters` with the built-in defaults. Fix the file by hand and
+re-run `./setup.sh`.
+
 ### `quality_credentials` — what a repository's own checks may see
 
 Since Issue #572 the environment for a repository's quality command is
