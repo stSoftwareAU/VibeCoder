@@ -6,7 +6,8 @@
  * 1. `ensureMilestoneBranchExists` — when the remote milestone ref is absent
  *    but a stale local branch of the same name exists, the stale branch (which
  *    may carry a merge commit a repository rule forbids) must never be pushed.
- *    The local branch is recreated from the default branch instead.
+ *    The branch is created on origin from the default branch ref instead, and
+ *    the stale local branch is left untouched (Issue #1345).
  * 2. `syncMilestoneBranchWithDefault` — when the local and remote milestone
  *    branches have diverged, the sync must not manufacture a local merge
  *    commit; it resets to the remote ref instead.
@@ -17,76 +18,14 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureMilestoneBranchExists } from "../lib/git_branch.ts";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
-
-async function git(
-  args: string[],
-  cwd: string,
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  const out = await new Deno.Command("git", {
-    args,
-    cwd,
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
-  return {
-    code: out.code,
-    stdout: new TextDecoder().decode(out.stdout),
-    stderr: new TextDecoder().decode(out.stderr),
-  };
-}
-
-async function gitOk(args: string[], cwd: string): Promise<string> {
-  const r = await git(args, cwd);
-  if (r.code !== 0) {
-    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${r.stderr}`);
-  }
-  return r.stdout;
-}
-
-interface Fixture {
-  root: string;
-  remote: string;
-  clone: string;
-  cleanup: () => Promise<void>;
-}
+import {
+  commitFile,
+  gitOk,
+  setupGitRepoFixture,
+} from "./support/git_repo_fixture.ts";
 
 /** A bare remote seeded with `main`, plus a clone acting as the work tree. */
-async function setupRepo(): Promise<Fixture> {
-  const root = await Deno.makeTempDir({ prefix: "issue-4002-" });
-  const remote = `${root}/remote.git`;
-  const clone = `${root}/clone`;
-
-  await gitOk(["init", "--bare", "-b", "main", remote], root);
-  await gitOk(["clone", remote, clone], root);
-  await gitOk(["config", "user.email", "t@example.com"], clone);
-  await gitOk(["config", "user.name", "Test"], clone);
-  await Deno.writeTextFile(`${clone}/README.md`, "seed\n");
-  await gitOk(["add", "README.md"], clone);
-  await gitOk(["commit", "-m", "seed"], clone);
-  await gitOk(["push", "-u", "origin", "main"], clone);
-
-  return {
-    root,
-    remote,
-    clone,
-    cleanup: async () => {
-      await Deno.remove(root, { recursive: true }).catch(() => {});
-    },
-  };
-}
-
-/** Add a file, commit it, and return the resulting SHA. */
-async function commitFile(
-  cwd: string,
-  file: string,
-  contents: string,
-  message: string,
-): Promise<string> {
-  await Deno.writeTextFile(`${cwd}/${file}`, contents);
-  await gitOk(["add", file], cwd);
-  await gitOk(["commit", "-m", message], cwd);
-  return (await gitOk(["rev-parse", "HEAD"], cwd)).trim();
-}
+const setupRepo = () => setupGitRepoFixture("issue-4002-");
 
 /** Number of parents of a commit — 2 or more means a merge commit. */
 async function parentCount(cwd: string, rev: string): Promise<number> {
@@ -95,7 +34,7 @@ async function parentCount(cwd: string, rev: string): Promise<number> {
 }
 
 Deno.test(
-  "ensureMilestoneBranchExists - recreates a stale local milestone branch instead of pushing it",
+  "ensureMilestoneBranchExists - never pushes a stale local milestone branch",
   async () => {
     const fx = await setupRepo();
     try {
@@ -131,12 +70,16 @@ Deno.test(
         (await gitOk(["rev-parse", "milestone/69-stale"], fx.clone)).trim();
 
       assertEquals(remoteSha, mainSha, "remote milestone must sit at main tip");
-      assertEquals(localSha, mainSha, "local milestone must sit at main tip");
       const merges = (await gitOk(
         ["rev-list", "--merges", "milestone/69-stale"],
-        fx.clone,
+        fx.remote,
       )).trim();
-      assertEquals(merges, "", "the stale merge commit must be discarded");
+      assertEquals(merges, "", "the stale merge commit must never be pushed");
+      // Issue #1345 narrowed the self-heal: the branch is created on origin by
+      // pushing the default ref, so the stale LOCAL branch is left as it was
+      // rather than reset. What #4002 protects — the stale tip never becoming
+      // the milestone branch on the remote — is asserted above.
+      assertEquals(localSha, staleSha, "the local branch is left untouched");
     } finally {
       await fx.cleanup();
     }
@@ -144,12 +87,17 @@ Deno.test(
 );
 
 Deno.test(
-  "ensureMilestoneBranchExists - stale local branch is recreated even when currently checked out",
+  "ensureMilestoneBranchExists - a checked-out stale branch does not reach the remote",
   async () => {
     const fx = await setupRepo();
     try {
       await gitOk(["checkout", "-b", "milestone/70-current", "main"], fx.clone);
-      await commitFile(fx.clone, "local.txt", "local\n", "local-only work");
+      const localSha = await commitFile(
+        fx.clone,
+        "local.txt",
+        "local\n",
+        "local-only work",
+      );
 
       const result = await ensureMilestoneBranchExists(
         "milestone/70-current",
@@ -165,13 +113,16 @@ Deno.test(
       const mainSha = (await gitOk(["rev-parse", "main"], fx.remote)).trim();
       const remoteSha =
         (await gitOk(["rev-parse", "milestone/70-current"], fx.remote)).trim();
-      assertEquals(remoteSha, mainSha);
+      assertEquals(remoteSha, mainSha, "local-only commits must not be pushed");
 
-      const ahead = (await gitOk(
-        ["rev-list", "--count", "main..milestone/70-current"],
-        fx.clone,
-      )).trim();
-      assertEquals(ahead, "0", "local-only commits must be discarded");
+      // Issue #1345: creating the branch on origin needs no checkout, so the
+      // checked-out local branch keeps its local-only commit — the remote is
+      // what had to be protected from it.
+      assertEquals(
+        (await gitOk(["rev-parse", "milestone/70-current"], fx.clone)).trim(),
+        localSha,
+        "the checked-out local branch is left untouched",
+      );
     } finally {
       await fx.cleanup();
     }

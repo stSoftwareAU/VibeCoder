@@ -642,6 +642,7 @@
         "worker/deno/lib/mermaid_validator.ts",
         "worker/deno/lib/milestone_branch_filter_scanner.ts",
         "worker/deno/lib/milestone_branch_rejection.ts",
+        "worker/deno/lib/milestone_local_branch.ts",
         "worker/deno/lib/milestone_priority.ts",
         "worker/deno/lib/milestone_progress.ts",
         "worker/deno/lib/model_fallback.ts",
