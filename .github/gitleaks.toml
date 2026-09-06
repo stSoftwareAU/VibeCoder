@@ -21,6 +21,9 @@
 #  - conflict_abandon_restart_test.ts (Issue #1115): a fake ghp_ token
 #    quoted out of a failure comment, asserting the abandon-and-restart
 #    rung redacts it before it reaches a PR body.
+#  - redacted_text_test.ts (Issue #1217): a fake ghp_ token straddling the
+#    500-character tail cut, asserting `redactedTail()` redacts before it
+#    truncates.
 #  - secret_redaction_redos_test.ts (Issue #3942): fake ghp_ tokens, a
 #    fake hex API key and a fake JSON `api_key` value asserting the
 #    bounded `redactSecrets()` regexes still mask credentials.
@@ -47,7 +50,7 @@ useDefault = true
 # the key format for any issue number rather than one fixture value, so it does
 # not have to be revisited each time a new dedup key is asserted.
 [allowlist]
-description = "Synthetic secret fixtures in redaction and scrub-gate unit tests, plus non-secret dedupKey slugs (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196, #505, #1115)"
+description = "Synthetic secret fixtures in redaction and scrub-gate unit tests, plus non-secret dedupKey slugs (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196, #505, #1115, #1217)"
 regexTarget = "line"
 regexes = [
   '''self-diagnostic-unschedulable-\d+''',
@@ -86,4 +89,9 @@ paths = [
   # Fake AKIA/ghp_ values inside the gitleaks/trufflehog JSON fixtures the
   # full-history scanner tests parse and classify (Issue #4190).
   '''worker/deno/tests/secrets_history_scan_test\.ts''',
+  # Fake ghp_ token (now assembled from parts at runtime) fed to
+  # `redactedTail()` to prove a token straddling the tail cut is still masked
+  # (Issue #1217). Earlier commits in the PR range carry the literal in one
+  # piece, so only a path allowlist clears the range scan.
+  '''worker/deno/tests/redacted_text_test\.ts''',
 ]
