@@ -39,6 +39,7 @@ import {
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { atomicWrite } from "./file_utils.ts";
 import { getFailureCategoryDisplay } from "./failure_diagnosis.ts";
+import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import type { RunOutcome } from "./run_outcome.ts";
 import {
   classifyRunFailure,
@@ -347,6 +348,12 @@ export async function fileRunFailureIssue(
 
       // 2. None → file one.
       if (!existing) {
+        // Built before the try: a refused label is a programming error and
+        // must fail loud, not be reported as a `gh_failed` suppression.
+        const labelArgs = guardedLabelArgs(
+          [CRASH_CLASSES.has(failureClass) ? "bug" : "enhancement"],
+          "worker/deno/lib/run_failure_issue.ts",
+        );
         try {
           const raw = await opts.ghFn([
             "issue",
@@ -357,8 +364,7 @@ export async function fileRunFailureIssue(
             formatRunFailureTitle(failureClass),
             "--body",
             formatRunFailureBody(opts.report, classification),
-            "--label",
-            CRASH_CLASSES.has(failureClass) ? "bug" : "enhancement",
+            ...labelArgs,
           ]);
           const m = /\/issues\/(\d+)\s*$/.exec(raw.trim());
           const issueNumber = m ? parseInt(m[1]!, 10) : 0;

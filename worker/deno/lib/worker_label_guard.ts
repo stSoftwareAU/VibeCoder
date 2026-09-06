@@ -16,6 +16,14 @@
  * worker-applied label rather than only for callers who opted in
  * (Issue #13).
  *
+ * Issue #1276 closed the other half of that invariant. Those two call sites
+ * only cover labels applied to an **existing** issue; the scan and idle-task
+ * templates apply theirs at *creation* time via `gh issue create --label`,
+ * which never reached this guard. Those creation paths now build their label
+ * arguments with `guardedLabelArgs` (`guarded_issue_labels.ts`), which
+ * asserts through this module, and the `issue-create label guard` quality
+ * check fails the build on any new `--label` argument that skips it.
+ *
  * Scope: this guard runs **in the worker's own process**. The agent
  * subprocess has its own `gh` and its own credentials, so it is covered
  * separately by the PATH shim in `gh_guard_shim.ts` (Issue #3643), which
@@ -91,10 +99,47 @@ export const WORKER_APPLIABLE_LABEL_LITERALS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Content labels the worker may apply — the descriptive tag each scan or
+ * idle-task template attaches to the finding issue it files (Issue #1276).
+ *
+ * These are applied at `gh issue create --label` time rather than to an
+ * existing issue, so before #1276 none of them passed this guard at all.
+ * They are deliberately kept in their own set: they classify *what the
+ * finding is about*, whereas {@link WORKER_APPLIABLE_LABEL_LITERALS}
+ * carries the worker's operational signals. Both are accepted by
+ * {@link isWorkerAppliableLabel}.
+ *
+ * One entry per template `outputLabel` (`lib/idle_task_templates/`), plus
+ * the two non-template filers (`alert_feeds/alert_feed_enable_issue.ts`,
+ * `security_tree_sweep.ts`) and the two generic issue-type tags the run
+ * failure filer and the planning carrier apply.
+ */
+export const WORKER_APPLIABLE_CONTENT_LABELS: ReadonlySet<string> = new Set([
+  "alert-feed",
+  "bash-missing-script",
+  "bash-syntax-audit",
+  "bug",
+  "dead-code",
+  "deprecated-api",
+  "doc-coverage",
+  "documentation-audit",
+  "duplicated-knowledge",
+  "enable-feed",
+  "enhancement",
+  "format-drift",
+  "orphan-deps",
+  "private-repo-reference",
+  "retro",
+  "security-tree-sweep",
+  "supply-chain-readiness",
+  "workflow-annotation-scan",
+]);
+
+/**
  * Label name prefixes the worker may apply.
  *
- * Used by the four scan templates to attach derived classification
- * labels to filed finding issues:
+ * Used by the scan templates to attach derived classification labels to
+ * filed finding issues:
  *   - `severity:` — `severity:high`/`medium`/`low` from every scan
  *     template (`best_practices_sync.ts`, security scan).
  *   - `lang:` — `lang:<bucket>` from the best-practices template
@@ -102,11 +147,14 @@ export const WORKER_APPLIABLE_LABEL_LITERALS: ReadonlySet<string> = new Set([
  *   - `supply-chain:` — `supply-chain:quarantine-missing` /
  *     `supply-chain:quarantine-misconfigured` from the security scan's
  *     Phase 2 dependency-update audit (Issue #1933 family).
+ *   - `confidence:` — `confidence:high`/`medium`/`low` from the security
+ *     tree sweep's filed clusters (Issue #1276).
  */
 export const WORKER_APPLIABLE_LABEL_PREFIXES: readonly string[] = [
   "severity:",
   "lang:",
   "supply-chain:",
+  "confidence:",
 ];
 
 /**
@@ -142,9 +190,9 @@ export const WORKER_FORBIDDEN_LABEL_LITERALS: readonly string[] = [
 ];
 
 /**
- * Return true if the worker is allowed to apply `label` to an existing
- * issue. Pure — no side effects, no async — so callers can compose it
- * freely.
+ * Return true if the worker is allowed to apply `label` — whether to an
+ * existing issue or at `gh issue create` time (Issue #1276). Pure — no side
+ * effects, no async — so callers can compose it freely.
  */
 export function isWorkerAppliableLabel(label: string): boolean {
   // Issue #3088: GitHub treats label names case-insensitively, so the guard
@@ -154,6 +202,7 @@ export function isWorkerAppliableLabel(label: string): boolean {
   // dispatch gate while skipping the strip guards.
   const lower = label.toLowerCase();
   if (WORKER_APPLIABLE_LABEL_LITERALS.has(lower)) return true;
+  if (WORKER_APPLIABLE_CONTENT_LABELS.has(lower)) return true;
   for (const prefix of WORKER_APPLIABLE_LABEL_PREFIXES) {
     if (lower.startsWith(prefix) && lower.length > prefix.length) {
       return true;
