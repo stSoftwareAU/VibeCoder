@@ -21,16 +21,8 @@ import {
   SELF_DIAGNOSTIC_REPO,
   SELF_SCHEDULE_AUDIT_VERB,
 } from "../lib/self_diagnostic_provenance.ts";
-import {
-  type AttestationVerdict,
-  recordSelfDiagnosticFiling,
-  verifySelfDiagnosticFilings,
-} from "../lib/self_diagnostic_attestation.ts";
-import {
-  formatIdleInversionBody,
-  IDLE_INVERSION_FAMILY_ID,
-} from "../lib/idle_inversion_streak.ts";
-import type { EnvLookup } from "../lib/env_lookup.ts";
+import type { AttestationVerdict } from "../lib/self_diagnostic_attestation.ts";
+import { formatIdleInversionBody } from "../lib/idle_inversion_streak.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { createIssueFetcher } from "../lib/issue_finder_common.ts";
 import type { FindIssuesOptions } from "../lib/issue_finder_common.ts";

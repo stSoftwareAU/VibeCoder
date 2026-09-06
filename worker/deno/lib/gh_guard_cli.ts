@@ -36,6 +36,7 @@ import {
   UnredactableBodyError,
 } from "./gh_body_redaction.ts";
 import { installConsoleRedaction } from "./console_redaction.ts";
+import { encodeNulFields } from "./guard_field_encoding.ts";
 import { evaluateGhCommand } from "./gh_guard_decision.ts";
 import type { ClaimedIssue } from "./claimed_issue_guard.ts";
 
@@ -72,9 +73,7 @@ export interface GhGuardCliResult {
  * @returns The exact bytes to write to stdout.
  */
 export function encodeGuardStdout(result: GhGuardCliResult): string {
-  return [result.stdout, ...(result.ghArgs ?? [])]
-    .map((field) => `${field}\0`)
-    .join("");
+  return encodeNulFields([result.stdout, ...(result.ghArgs ?? [])]);
 }
 
 /** Production body-file reader — used when the caller supplies none. */

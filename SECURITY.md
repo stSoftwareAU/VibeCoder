@@ -344,6 +344,15 @@ writers are too numerous to wire one at a time:
   `redactGhBodyArgs` inside the guard child (§6a), extended
   there to the contents of `--body-file`. Both chokepoints are wired; a third
   `gh` caller would owe its own wiring.
+- **`git` commit, tag and merge messages** are the other public sink, and a
+  pushed one is permanent history rather than an editable comment.
+  `redactGitMessageArgs()`
+  ([`worker/deno/lib/git_message_redaction.ts`](worker/deno/lib/git_message_redaction.ts),
+  Issue #1284) masks the message-carrying arguments inside `runGitCommand`,
+  the worker's `git` chokepoint, and the **agent** subprocess reaches the same
+  function through its own `git` PATH shim (§6b). Routing arguments — a
+  `-C <sha>` to reuse, a `-m <mainline>` for `revert`, a pathspec after `--` —
+  are left byte-for-byte alone.
 
 Each covers its own sink structurally and covers **nothing else**. Every other
 sink still owes its own explicit `redactSecrets()` call, and a body-producing
@@ -451,6 +460,7 @@ flowchart LR
     P["handle_no_changes_phase.ts"] --> R
     G["gh_body_redaction.ts<br/>(--body / --title / -f body=,title= via spawnGh)"] --> R
     GA["gh_guard_cli.ts<br/>(agent bodies via the PATH shim)"] --> R
+    GM["git_message_redaction.ts<br/>(commit messages: runGitCommand + git PATH shim)"] --> R
     HN["handover_note.ts<br/>(note committed to the issue branch)"] --> R
     N["your new sink"] -.must call.-> R
     R --> RULES["RULES\n(add a rule for each\nnew credential shape)"]
@@ -1429,7 +1439,25 @@ The subprocess/argv sweep of every `worker/deno/lib` module that spawns a proces
 - **`git` has a chokepoint too, and it is now enforced.** `runGitCommand` (`worker/deno/lib/git_timeout.ts`) owns three controls no caller may skip: the `AbortController` timeout, the audit journal for git mutations, and the work-volume fault detector. Seven modules had grown their own `new Deno.Command("git", …)` and skipped all three — including the stale-work-dir rescue, which ran `git push origin <branch>` untimed and unjournalled, so an unresponsive remote hung the worker outright rather than timing out. All seven now route through `runGitCommand`, and the `git spawn chokepoint` quality check (`git_spawn_chokepoint_check.ts`) fails the build on any new direct spawn outside `git_timeout.ts` — the same architectural invariant `gh_spawn_chokepoint_check.ts` enforces for `gh`, sharing its scanner via `spawn_chokepoint_scan.ts`.
 - **Repository-supplied code runs with a BUILT environment, never an inherited one.** `untrusted_command_env.ts` exists because the worker executes code it did not write, and an inherited environment hands that code every credential the run holds. The control was wired into the quality-gate spawn only; three sibling spawns of repository-supplied code inherited the worker's whole environment — the pre-flight gate (whose scripts are, by documented design, supplied by the target repo), the per-repo `bump-deps.sh`, and the lock-file regeneration tools that run `npm install` / `deno install` / `cargo update` / `go mod tidy` over a manifest the repository controls. `echo $CLAUDE_CODE_OAUTH_TOKEN` in any of those was the whole exploit. All three now build the child environment from `buildUntrustedCommandEnv()` with `clearEnv: true`, so only allowlisted names — `PATH`, `HOME`, the toolchain caches — are in scope.
 
-Regression coverage: `worker/deno/tests/git_spawn_chokepoint_check_test.ts` and `worker/deno/tests/untrusted_spawn_env_test.ts`, the latter spawning for real and reading the child's own view of its environment.
+The chokepoint sweep of Issue #1217 then found the same asymmetry one level up: the `git` chokepoint existed but redacted nothing, and the agent had no `git` wrapper at all. Both halves are now closed (Issue #1284).
+
+- **Commit messages are redacted at the `git` chokepoint.** `runGitCommand` published `git commit -m <message>` unscanned, so `git_push.ts`, `pr_ci_processor.ts`, `branch_history_rewrite.ts` and `bump_deps_phase.ts` each had an unguarded route into permanent history. `redactGitMessageArgs()` ([`worker/deno/lib/git_message_redaction.ts`](worker/deno/lib/git_message_redaction.ts)) now masks `-m`/`--message`/`-m<text>`/`-am <text>` and the contents of `-F`/`--file` inside `runGitCommand`, following the same rule as `redactGhBodyArgs`: only text-carrying arguments are rewritten and the argument count never changes, so routing arguments — `git commit -C <sha>`, `git revert -m <mainline>`, a pathspec after `--` — stay byte-for-byte. Scoping is per subcommand precisely because `-m` is a message only in `commit`/`tag`/`merge`/`notes`/`stash`. A message that cannot be scanned (`-F -`, an unreadable path) fails the call with `[SECURITY] [GIT_MESSAGE_UNREDACTABLE]` rather than being committed unscanned; a masked one says so with `[SECURITY] [GIT_MESSAGE_REDACTED]`.
+- **The agent gets a `git` PATH shim beside its `gh` one.** The sharper leg was the agent's own shell: with unrestricted bash and no wrapper, `git commit -m "$GH_TOKEN" && git push` reached a public branch with no control anywhere in the path — and unlike a comment, pushed history is permanent and mirrored by every clone. `installGhGuardShim` now writes a second wrapper named `git` into the same per-spawn directory ([`worker/deno/lib/git_guard_shim.ts`](worker/deno/lib/git_guard_shim.ts)), so one `PATH` prefix covers both binaries and one cleanup removes both. A message-carrying `git` re-enters [`worker/deno/lib/git_guard_cli.ts`](worker/deno/lib/git_guard_cli.ts), which returns the redacted argv as NUL-terminated fields, and the wrapper `exec`s that argv — fail-closed on a missing `VIBE_GIT_GUARD_ALLOW` marker, exactly as the `gh` wrapper is. A command with no option *containing* an `m` or an `F`, and no long `--f…` option, skips the guard child entirely. The test is on the whole option rather than its first letter precisely because `git` clusters short options — `git commit -am "$GH_TOKEN"` is the same exploit as `-m`, and an anchored `-m*` test would have waved it through — and it deliberately over-matches (`--format`, `--amend`, `--force` all reach the guard and come back untouched), because under-matching is a silent bypass. Long-option **abbreviations** are covered on both legs for the same reason: `git` expands any unambiguous prefix, so `git commit --mess "$TOKEN"` commits exactly as `--message` does and is redacted identically; `--file` is matched from `--fil` onwards, the shortest prefix `git` itself does not reject as ambiguous with `--fixup`. Two residual risks, stated: an agent that calls the real binary by absolute path or edits `PATH` bypasses the shim (the `gh` shim's limitation), and the wrapper rides on the `gh` install — a run with no `gh` on `PATH`, or an operator opt-in to `VIBE_ALLOW_UNGUARDED_AGENT_GH=1`, has no `git` wrapper either.
+
+```mermaid
+flowchart LR
+    W["worker call sites"] --> RG["runGitCommand"]
+    A["Agent Bash: git commit -m …"] --> S["PATH shim: git"]
+    S -->|"no message flag"| B["real git binary"]
+    S -->|"message flag"| G["git_guard_cli.ts"]
+    RG --> X["redactGitMessageArgs"]
+    G --> X
+    X -->|"masked argv"| B
+    X -->|"unscannable"| F["refused<br/>[GIT_MESSAGE_UNREDACTABLE]"]
+    B --> H["branch history (permanent, public)"]
+```
+
+Regression coverage: `worker/deno/tests/git_spawn_chokepoint_check_test.ts` and `worker/deno/tests/untrusted_spawn_env_test.ts`, the latter spawning for real and reading the child's own view of its environment; `worker/deno/tests/git_message_redaction_test.ts` and `worker/deno/tests/git_guard_shim_test.ts` for the two halves above, both asserting on the argv the chokepoint finally spawned rather than on a return value.
 
 ### 7. Issue Body + Title Trust Filtering
 

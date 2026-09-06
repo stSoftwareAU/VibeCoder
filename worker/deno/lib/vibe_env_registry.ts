@@ -689,6 +689,14 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "marker",
     note: "audit-line marker written by the gh guard shim",
   },
+  VIBE_GIT_GUARD_ALLOW: {
+    role: "marker",
+    note: "verdict marker written by the git guard shim (Issue #1284)",
+  },
+  VIBE_GIT_GUARD_REFUSE: {
+    role: "marker",
+    note: "verdict marker written by the git guard shim (Issue #1284)",
+  },
   VIBE_HOOK_MARKER: {
     role: "marker",
     note:
