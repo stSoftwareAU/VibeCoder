@@ -52,8 +52,9 @@ flowchart LR
 Backend/CLI change with no web interface, so no screenshot applies. The evidence
 is the test run below, executed against both the unfixed and the fixed code.
 
-Against the **unfixed** code (the three library files stashed, the new test
-kept), the test fails — the bounds do not exist:
+Against the **unfixed** code (`git checkout 37b3c87 -- worker/deno/lib/…` for the
+three library files, the new test kept), the suite fails — the bounded runners
+do not exist at all:
 
 ```
 error: TS2305 [ERROR]: Module '.../lib/coverage_gap_scanner.ts' has no exported
@@ -62,6 +63,21 @@ member 'createDenoDocRunner'.
 Found 6 errors.
 error: Type checking failed.
 ```
+
+Because that first red is a compile failure, the bound was also isolated
+behaviourally: with the fix in place but `timeoutMs` deleted from the `deno doc`
+call site (the exact defect the issue reports — a seam that spawns without a
+bound), the assertion goes red on its own:
+
+```
+deno doc spawn is bounded and returns the document on success ... FAILED (1ms)
+error: AssertionError: the spawn must carry a timeout — an unbounded spawn is a hang
+FAILED | 5 passed | 1 failed (9ms)
+```
+
+Restoring the bound turns it green. So `assertBounded` — not the import list —
+is what catches a missing timeout, and it will catch one re-introduced at any of
+the three sites.
 
 Against the **fixed** code:
 
