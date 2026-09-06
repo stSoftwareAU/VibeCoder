@@ -20,6 +20,14 @@
  * `RedactedText` therefore cannot be fed `output.slice(-500)`: the build fails
  * at `deno check`, which is a stage of the quality gate.
  *
+ * What the brand does and does not buy, stated plainly: it removes the
+ * *silent* inversion — the raw slice a call site reaches for by habit — by
+ * making it a compile error at the field. It cannot stop someone deliberately
+ * handing a constructor already-truncated text (`redactedTail(raw.slice(-500),
+ * 500)` type-checks); the constructors' contract is that they are given the
+ * **whole** text, and that contract is prose. The `separator` hole is closed,
+ * though — see {@link joinRedacted}.
+ *
  * ```mermaid
  * flowchart LR
  *     O["agent stdout / ps table<br/>(may carry a token)"] --> R["redactSecrets<br/>(whole text)"]
@@ -39,8 +47,8 @@ declare const redactedTextBrand: unique symbol;
  * Text that has been through {@link redactSecrets} over its **whole** length
  * before any trimming.
  *
- * The brand is nominal and unforgeable outside this module, so a field typed
- * `RedactedText` cannot be handed raw, pre-truncated text by mistake.
+ * The brand is nominal and cannot be minted outside this module, so a field
+ * typed `RedactedText` cannot be handed raw, pre-truncated text by mistake.
  */
 export type RedactedText = string & { readonly [redactedTextBrand]: true };
 
@@ -84,8 +92,13 @@ export function redactedHead(text: string, maxChars: number): RedactedText {
  *
  * Concatenating two `RedactedText` values yields a plain `string` in
  * TypeScript, so a call site that stitches a stdout tail to a stderr tail needs
- * this to keep the brand. Both inputs are already masked, so no rescan is
- * needed and none is performed.
+ * this to keep the brand.
+ *
+ * The `separator` is an unbranded `string` — call sites pass a literal — so it
+ * is redacted like any other input rather than trusted. Without that, the
+ * separator would be a hole straight through the brand: arbitrary text goes in
+ * and `RedactedText` comes out. The parts themselves are already masked and
+ * redaction is idempotent, so the rescan changes nothing else.
  *
  * @param parts - Redacted fragments, in order.
  * @param separator - Text placed between the non-empty parts.
@@ -95,7 +108,6 @@ export function joinRedacted(
   parts: readonly RedactedText[],
   separator: string,
 ): RedactedText {
-  return parts.filter((part) => part.length > 0).join(
-    separator,
-  ) as RedactedText;
+  const joined = parts.filter((part) => part.length > 0).join(separator);
+  return redactSecrets(joined) as RedactedText;
 }

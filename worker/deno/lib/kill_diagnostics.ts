@@ -20,7 +20,8 @@
  * each row is redacted **before** it is cut to the per-row budget: cutting first
  * splits a token, and every signature rule in `secret_redaction.ts` is anchored
  * on the credential's leading bytes, so the downstream pass would match nothing.
- * The same applies to the `dmesg` tail.
+ * The `dmesg` capture is masked at its own source for the same reason, even
+ * though its own cut is line-granular.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -241,7 +242,11 @@ async function defaultReadKernelLog(): Promise<string> {
     stderr: "null",
   }).output();
   if (!out.success) throw new Error("dmesg failed");
-  const text = new TextDecoder().decode(out.stdout);
+  // Masked at its own source (Issue #1217). This cut is line-granular so it
+  // cannot split a token by itself, but the kernel ring buffer carries whatever
+  // userspace logged into it, and redacting here keeps the captured text safe
+  // whatever a later caller does with it.
+  const text = redactSecrets(new TextDecoder().decode(out.stdout));
   // Keep the tail only — the OOM lines are the most recent.
   return text.split("\n").slice(-400).join("\n");
 }

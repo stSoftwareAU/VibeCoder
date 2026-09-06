@@ -15,8 +15,13 @@ reads every remaining `Deno.env` reader in `lib/` at its environment and
 config-load sites.
 
 > **This is not an empty result.** The issue asks that an empty result be stated
-> explicitly; it was not empty. Sixteen root causes survived triage — two fixed
-> in this change, fourteen filed.
+> explicitly; it was not empty. Fifteen root causes survived triage: SEC-1217-05
+> and the failure-message half of SEC-1217-06 are fixed in this change, and all
+> fifteen are filed as issues so nothing rests on this document alone.
+>
+> **Numbering.** `SEC-1217-01` and `SEC-1217-02` were assigned during triage to
+> two candidates that did not survive it; they were never filed and are not
+> reused. The filed range is `-03` … `-17`.
 
 ## Scope and method
 
@@ -214,12 +219,12 @@ loading generally is the same, with the two exceptions named above: `run_hard_ca
 
 ## Fixed in this change
 
-### SEC-1217-05 / SEC-1217-06 — redact-before-truncate, held by a type
+### SEC-1217-05 (#1256) in full, and the failure-message half of SEC-1217-06 (#1257) — redact-before-truncate, held by a type
 
 `severity:high` · `confidence:high` · **fixed**
 
-`SECURITY.md` has required redact-before-truncate since Issue #207, and Issue
-#3636 applied it to the no-changes comment:
+`SECURITY.md` has required redact-before-truncate since Issue #207, and
+Issue #3636 applied it to the no-changes comment:
 
 ```ts
 // worker/deno/lib/phases/handle_no_changes_phase.ts — the correct ordering
@@ -273,7 +278,23 @@ carries the same intent as `lib/gh_spawn_chokepoint_check.ts` (Issue #3703) — 
 whole-codebase invariant enforced by the quality gate — realised as a type rather
 than a regex scan, so it has no false positives and cannot be defeated by a
 spelling the pattern did not anticipate. The enforcing stage is `deno check`,
-which `./quality.sh` runs.
+which `./quality.sh` runs, and the rule is written into `SECURITY.md` beside the
+redact-before-truncate paragraph it enforces — a code change owes a docs change,
+and a chokepoint nobody can find is a chokepoint the next author routes around.
+
+**What the brand does not buy.** It removes the *silent* inversion — the raw
+slice a call site reaches for by habit — by making it a compile error at the
+field. It cannot stop someone deliberately handing a constructor already-cut
+text: `redactedTail(raw.slice(-500), 500)` type-checks. The constructors'
+contract is that they receive the whole text, and that half is prose. The
+`separator` argument of `joinRedacted` **is** closed — it is redacted rather
+than trusted, or it would launder arbitrary text into the brand.
+
+**Cost.** `redactedTail` runs the rule set over the agent's whole stdout where
+the old code did an `O(1)` slice. Every rule is linear in the input length by
+the standard `SECURITY.md` sets, and the same module already scanned the whole
+output for the no-changes comment (Issue #3636), so this is a bounded and
+precedented cost on a failure path, not a new class of work.
 
 **Fail direction stated.** Every regression test asserts the known-shaped fake
 token is **absent** from the emitted output, so a broken ordering fails the test
@@ -286,7 +307,7 @@ unfixed code and passing after the fix.
 | --- | --- | --- |
 | SEC-1217-03 — `spawnGh` redacts argv only; `--body-file`, `--input` and stdin bodies are published unscanned | [#1254](https://github.com/stSoftwareAU/VibeCoder/issues/1254) | high |
 | SEC-1217-04 — the SARIF payload is gzipped before any redactor can see it | [#1255](https://github.com/stSoftwareAU/VibeCoder/issues/1255) | high |
-| SEC-1217-06 — the remaining truncate-before-redact inversions | [#1257](https://github.com/stSoftwareAU/VibeCoder/issues/1257) | medium |
+| SEC-1217-06 — the truncate-before-redact inversions **outside** the failure-message path (the `ci_failure_issue` / `pr_failure_actions` / `quality_helpers` / `bump_deps` sites), which this change does not touch | [#1257](https://github.com/stSoftwareAU/VibeCoder/issues/1257) | medium |
 | SEC-1217-07 — `pull.log` and `run_core.log` are written outside the logger | [#1258](https://github.com/stSoftwareAU/VibeCoder/issues/1258) | medium |
 | SEC-1217-08 — `setup/` spawns `gh` directly and the chokepoint gate does not scan `setup/` | [#1259](https://github.com/stSoftwareAU/VibeCoder/issues/1259) | medium |
 | SEC-1217-09 — `console_redaction` passes non-string arguments through | [#1260](https://github.com/stSoftwareAU/VibeCoder/issues/1260) | low |

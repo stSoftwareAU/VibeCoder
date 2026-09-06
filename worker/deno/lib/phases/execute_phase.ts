@@ -982,14 +982,17 @@ async function executeClaudeBody(
       // The evidence must survive (Issue #3234): during a live fleet auth
       // outage this branch discarded Claude's own words, leaving
       // "authentication error" indistinguishable from a usage-limit block.
-      const authSnippet = redactedTail(authSurface, 500).trim() ||
-        "(no output captured)";
+      // Trim before the brand is minted: `.trim()` yields a plain string, and
+      // re-wrapping it would run the whole rule set a second time over text
+      // already masked.
+      const authSnippet = redactedTail(authSurface.trim(), 500) ||
+        redactedTail("(no output captured)", 500);
       const reason = formatDetailedFailureMessage(
         "Claude authentication error",
         {
           elapsedSeconds,
           clarityStatus: state.clarityStatus,
-          lastOutputSnippet: redactedTail(authSnippet, 500),
+          lastOutputSnippet: authSnippet,
         },
       );
       return { status: "failure", reason };

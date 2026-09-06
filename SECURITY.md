@@ -356,7 +356,9 @@ than publishing a fragment. `FailureDiagnosticContext.lastOutputSnippet`
 the first field to carry the brand: ten call sites across the phase modules had
 sliced the agent's stdout raw and relied on the redaction `label_failure.ts`
 runs afterwards, when it builds the world-readable failure comment. Give a new
-size-capped sink the same brand.
+size-capped sink the same brand. The sink enumeration behind that change — which
+paths route through `redactSecrets()` and which bypass it — is
+[`docs/audits/security-sweep-1217-env-config-secrets.md`](docs/audits/security-sweep-1217-env-config-secrets.md).
 
 **Redaction bounds its own work, never its input.** Because that ordering hands
 `redactSecrets()` untruncated, attacker-influenceable text, every rule must run

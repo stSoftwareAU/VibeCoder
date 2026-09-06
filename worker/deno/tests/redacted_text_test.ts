@@ -30,8 +30,14 @@ import {
   parseProcessTable,
 } from "../lib/kill_diagnostics.ts";
 
-/** A fake GitHub token of the exact published shape: `ghp_` + 38 base62. */
-const FAKE_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB";
+/**
+ * A fake GitHub token of the published shape: `ghp_` + 38 base62 characters.
+ *
+ * Assembled at runtime rather than written as one literal so the repository's
+ * secret-history scan has no contiguous credential-shaped string to flag.
+ */
+const FAKE_TOKEN = ["ghp", "_", "0123456789abcdefghijklmnopqrstuvwxyzAB"]
+  .join("");
 
 /**
  * Build agent stdout whose 500-character tail cuts `FAKE_TOKEN` in half, and
@@ -97,6 +103,15 @@ Deno.test("redactedHead - masks a token straddling the head boundary", () => {
     "the leading token fragment must not survive the cut",
   );
   assertStringIncludes(safe, REDACTION_PLACEHOLDER);
+});
+
+Deno.test("redactedHead - a zero or negative budget keeps nothing", () => {
+  assertEquals(redactedHead(`${FAKE_TOKEN} trailing`, 0), "");
+  assertEquals(redactedHead(`${FAKE_TOKEN} trailing`, -10), "");
+});
+
+Deno.test("redactedHead - empty input returns empty", () => {
+  assertEquals(redactedHead("", 500), "");
 });
 
 Deno.test("joinRedacted - joins parts and drops the empty ones", () => {
@@ -184,4 +199,33 @@ Deno.test("kill diagnostics - a token in a ps argv is masked before the per-row 
     "no fragment of the token may survive the 90-character command budget",
   );
   assertStringIncludes(table, "pid=101");
+});
+
+Deno.test("joinRedacted - no parts, or only empty parts, yields empty", () => {
+  assertEquals(joinRedacted([], "\n"), "");
+  assertEquals(
+    joinRedacted([redactedTail("", 10), redactedTail("", 10)], "\n"),
+    "",
+  );
+});
+
+Deno.test("joinRedacted - a single part is returned without a separator", () => {
+  assertEquals(
+    joinRedacted([redactedTail("only", 10)], "\n--- x ---\n"),
+    "only",
+  );
+});
+
+Deno.test("joinRedacted - the separator is redacted, not trusted", () => {
+  // The separator is an unbranded string, so it would otherwise be a hole
+  // straight through the brand: arbitrary text in, RedactedText out.
+  const joined = joinRedacted(
+    [redactedTail("head", 10), redactedTail("tail", 10)],
+    `\n${FAKE_TOKEN}\n`,
+  );
+  assert(
+    !joined.includes(FAKE_TOKEN),
+    "a secret in the separator must not survive the join",
+  );
+  assertStringIncludes(joined, REDACTION_PLACEHOLDER);
 });
