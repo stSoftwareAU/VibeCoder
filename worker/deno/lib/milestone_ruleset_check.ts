@@ -54,6 +54,12 @@ export interface RulesetRule {
     required_approving_review_count?: number;
     required_status_checks?: Array<{ context?: string }>;
     strict_required_status_checks_policy?: boolean;
+    /**
+     * When true, the required checks gate merges but NOT branch creation.
+     * A branch that does not exist yet has no check runs, so without this the
+     * push that would create it is declined (Issue #3912 follow-up).
+     */
+    do_not_enforce_on_create?: boolean;
   };
 }
 
@@ -93,6 +99,7 @@ export interface MilestoneRulesetFinding {
     | "direct-push-blocked"
     | "review-required"
     | "ruleset-disabled"
+    | "create-blocked"
     | "unreportable-checks"
     | "no-automerge-gate"
     | "ruleset-read-failed"
@@ -259,6 +266,48 @@ export function assessMilestoneRuleset(
           `ruleset '${name}' covers \`milestone/**\` but requires no status ` +
           `checks, so auto-merge still cannot be armed on a milestone PR.`,
       });
+    }
+
+    // Required checks enforced on branch CREATION cannot ever be satisfied.
+    //
+    // GitHub evaluates `required_status_checks` against the pushed commit, and
+    // a branch that does not exist yet has no check runs — so the push that
+    // would create it is declined, with "N of M required status checks are
+    // expected". The milestone-branch self-heal therefore cannot open a
+    // milestone branch at all, and every child issue escalates to
+    // `needs-human` instead of starting work.
+    //
+    // Observed 2026-09-06 on a repository whose ruleset had six PR-only
+    // checks: six issues on one milestone were stranded for twelve hours,
+    // re-escalating each time the label was cleared, because the cause was on
+    // the ruleset rather than the issues.
+    //
+    // It hides on any host whose account holds an admin bypass, which is why
+    // this is worth checking at setup rather than waiting to be discovered:
+    // the same fleet works on one host and stalls on another.
+    //
+    // The remedy is `do_not_enforce_on_create`, NOT removing the rule — the
+    // checks still gate every merge, and `required_status_checks` must stay
+    // present because that is what makes the base "protected" and lets
+    // auto-merge be armed at PR creation (`pr_auto_merge.ts`).
+    if (checks !== undefined && contexts.length > 0) {
+      const exemptOnCreate =
+        checks.parameters?.do_not_enforce_on_create === true;
+      if (!exemptOnCreate) {
+        findings.push({
+          severity: "error",
+          code: "create-blocked",
+          message:
+            `ruleset '${name}' enforces its required status checks on branch ` +
+            `CREATION, so the milestone-branch self-heal cannot open a ` +
+            `\`milestone/**\` branch: a branch that does not exist yet has no ` +
+            `check runs to satisfy, and the push is declined. Every child ` +
+            `issue on such a milestone escalates to \`needs-human\` instead of ` +
+            `starting work. Set \`do_not_enforce_on_create\` on that rule — do ` +
+            `NOT remove the rule, which would leave the base unprotected and ` +
+            `silently stop auto-merge being armed.`,
+        });
+      }
     }
 
     // The one that breaks the fleet rather than merely limiting it.
