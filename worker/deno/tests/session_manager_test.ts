@@ -46,14 +46,17 @@ async function pathExists(path: string): Promise<boolean> {
 
 Deno.test("session_manager - getSessionStorePath returns correct path for owner/repo format", () => {
   const result = getSessionStorePath("/work", "stSoftwareAU/VibeCoder");
-  assertEquals(result, "/work/.claude-sessions/stSoftwareAU/VibeCoder");
+  assertEquals(
+    result,
+    "/work-agent-state/.claude-sessions/stSoftwareAU/VibeCoder",
+  );
 });
 
 Deno.test("session_manager - getSessionStorePath handles different repos separately", () => {
   const path1 = getSessionStorePath("/work", "owner/repo1");
   const path2 = getSessionStorePath("/work", "owner/repo2");
-  assertEquals(path1, "/work/.claude-sessions/owner/repo1");
-  assertEquals(path2, "/work/.claude-sessions/owner/repo2");
+  assertEquals(path1, "/work-agent-state/.claude-sessions/owner/repo1");
+  assertEquals(path2, "/work-agent-state/.claude-sessions/owner/repo2");
   // Verify they're different
   assertEquals(path1 !== path2, true);
 });

@@ -352,6 +352,7 @@
       "paths": [
         "worker/deno/lib/acting_github_user.ts",
         "worker/deno/lib/agent_provider.ts",
+        "worker/deno/lib/agent_state_dir.ts",
         "worker/deno/lib/ci_check_state_dir.ts",
         "worker/deno/lib/codex_env.ts",
         "worker/deno/lib/command_work_dir.ts",
