@@ -32,6 +32,7 @@ import {
   detectAlreadyResolved,
   formatAlreadyResolvedEvidence,
 } from "../already_resolved_outcome.ts";
+import { gateAlreadyResolvedClose } from "../image_conclusion_gate.ts";
 import { redactSecrets } from "../secret_redaction.ts";
 import { redactedTail } from "../redacted_text.ts";
 import { postIssueRunStatsComment } from "../issue_run_stats_comment.ts";
@@ -159,9 +160,33 @@ export async function workOnIssueHandleNoChanges(
   // Issue #222: blocked-shaped output never reads as "already resolved", even
   // on the repeat-deferral path above — "no changes needed until #560 lands"
   // is a block, and closing the issue is what that change exists to prevent.
-  const alreadyResolved = blocked
+  //
+  // Issue #1385: the close is also withheld when an untrusted author's body
+  // put an image in front of the agent. Every part of the evidence — the
+  // claim, the commit, the PR, the verification note — is text the agent
+  // emitted, and an image can tell it to report the issue as already fixed
+  // *and* to stay quiet about where that came from, which the agent's own
+  // suspicious-image self-check cannot be relied on to catch. The image
+  // reference cannot be suppressed the same way: the worker parsed it before
+  // the agent saw anything. So the run falls through to the analysis-only
+  // hand-off — the issue stays open, a human decides, and the analysis is
+  // still posted.
+  const imageGate = gateAlreadyResolvedClose(ctx.untrustedImages);
+  const alreadyResolvedRaw = blocked
     ? ({ status: "none" } as const)
     : detectAlreadyResolved(claudeOutput, { repo, issueNumber });
+  const closeWithheld = imageGate.withheld &&
+    alreadyResolvedRaw.status === "resolved";
+  if (closeWithheld) {
+    logger.warn(imageGate.auditMessage ?? "", {
+      repo,
+      issueNumber,
+      untrustedImages: imageGate.imageCount,
+    });
+  }
+  const alreadyResolved = closeWithheld
+    ? ({ status: "none" } as const)
+    : alreadyResolvedRaw;
 
   if (alreadyResolved.status === "unverified") {
     logger.info(

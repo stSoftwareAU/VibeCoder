@@ -67,6 +67,33 @@ export interface IssueContentTrustResult {
 }
 
 /**
+ * Observe the image references an **untrusted** author put in the issue body
+ * (Issue #1385).
+ *
+ * The single place that decides "an untrusted party showed the agent a
+ * picture". Both routes into `workOnIssue` — the `work-on-issue` command and
+ * the main loop's `processIssue` — call it, because the gate that consumes it
+ * (`image_conclusion_gate.ts`) is only a control on the routes that observe.
+ *
+ * A trusted author's images are not the signal, so they are not returned: the
+ * trusted fast path stays exactly as it was.
+ *
+ * @param author - The issue author's GitHub login
+ * @param body - The issue body, as fetched, before it reaches the agent
+ * @param options - Trust configuration (allowed authors + authorised commenters)
+ * @returns One entry per distinct image URL; empty for a trusted author or a
+ *   body with no images
+ */
+export function observeUntrustedIssueImages(
+  author: string,
+  body: string,
+  options: IssueAuthorTrustOptions,
+): ImageReference[] {
+  if (classifyCommentAuthor(author, options) === "TRUSTED") return [];
+  return findImageReferences(body);
+}
+
+/**
  * Trust-filter the issue body + title, mirroring the untrusted-comment path.
  *
  * Only an **untrusted** issue author's suspicious content is a genuine
@@ -120,7 +147,7 @@ export function annotateIssueContentWithTrust(
   // Refs #1385: an independent observation, not a self-report. The agent may
   // be persuaded to stay quiet about an image; the reference is already in the
   // text the worker parsed before the agent saw any of it.
-  const untrustedImages = findImageReferences(body);
+  const untrustedImages = observeUntrustedIssueImages(author, body, options);
   const imageMessage = describeUntrustedImages(
     untrustedImages,
     authorLabel,

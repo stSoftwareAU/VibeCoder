@@ -349,6 +349,11 @@ export async function runWorkOnIssueCommand(
     // Issue #1263: the same comments with their authors, so the clarity
     // gate's round limit counts evidence rather than the prompt blob's text.
     issueCommentRows: issueData.comments,
+    // Issue #1385: what an untrusted author put in front of the agent,
+    // observed here in TypeScript. The no-changes phase withholds the
+    // already-resolved close on it, because an image can tell the model to
+    // draw a conclusion and to stay quiet about where it came from.
+    untrustedImages: contentTrust.untrustedImages,
     githubUser,
     milestoneTitle,
     milestoneNumber: issueData.milestoneNumber, // Issue #1322: session branching
