@@ -147,7 +147,13 @@ export function dedupeRepoSlugs(
 export function duplicateRepoSlugWarning(
   duplicate: DuplicateRepoSlug,
 ): string {
-  return `repos: "${renderInertRepoSlug(duplicate.dropped)}" duplicates ` +
-    `"${renderInertRepoSlug(duplicate.kept)}" (GitHub repository names are ` +
-    "case-insensitive) — ignoring the second";
+  const dropped = renderInertRepoSlug(duplicate.dropped);
+  const kept = renderInertRepoSlug(duplicate.kept);
+  // An identical entry is the same defect with a different cause, and
+  // "duplicates itself" would misdescribe it.
+  if (dropped === kept) {
+    return `repos: "${kept}" is listed twice — ignoring the second`;
+  }
+  return `repos: "${dropped}" duplicates "${kept}" (GitHub repository names ` +
+    "are case-insensitive) — ignoring the second";
 }

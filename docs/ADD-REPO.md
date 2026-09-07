@@ -38,10 +38,13 @@ On Windows, the same three through `setup.ps1`, as named parameters:
 Each short-circuits before any prompt, install or sync, and exits non-zero on
 failure so it can be scripted. Both writes are idempotent: adding a repository
 already present, or removing one that is not listed, changes nothing and says
-so. "Already present" is judged case-insensitively, because GitHub repository
-names are (Issue #1546): `--add-repo owner/My-Repo` beside a monitored
-`owner/my-repo` is a no-op that names the spelling already in the list, rather
-than a second entry whose every scan runs twice.
+so.
+
+For `--add-repo`, "already present" is judged **case-insensitively**, because
+GitHub repository names are (Issue #1546): `--add-repo owner/My-Repo` beside a
+monitored `owner/my-repo` is a no-op that names the spelling already in the
+list, rather than a second entry whose every scan runs twice. `--remove-repo`
+still matches the slug exactly — pass the spelling `--list-repos` shows.
 
 `--remove-repo` also drops the repository's `repo_config` entry, so settings do
 not accumulate for repositories nobody monitors. It does **not** touch open PRs,

@@ -1,5 +1,6 @@
 /**
- * Tests for case-insensitive `repos` de-duplication (Issue #1546).
+ * Tests for `lib/repo_slug.ts` — case-insensitive `repos` de-duplication
+ * (Issue #1546).
  *
  * GitHub repository names are case-insensitive, so `owner/Repo` and
  * `owner/repo` name one repository. Listing both made every per-repository
@@ -70,6 +71,17 @@ Deno.test("duplicateRepoSlugWarning - names both spellings and why one was dropp
     warning,
     'repos: "stSoftwareAU/GRQ-actual" duplicates "stSoftwareAU/GRQ-Actual" ' +
       "(GitHub repository names are case-insensitive) — ignoring the second",
+  );
+});
+
+Deno.test("duplicateRepoSlugWarning - an identical entry is reported as listed twice", () => {
+  const warning = duplicateRepoSlugWarning({
+    kept: "org/one",
+    dropped: "org/one",
+  });
+  assertEquals(
+    warning,
+    'repos: "org/one" is listed twice — ignoring the second',
   );
 });
 

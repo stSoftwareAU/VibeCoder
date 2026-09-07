@@ -4292,3 +4292,8 @@ twice until it is. `./setup.sh` writes the collapsed list back, and
 `--add-repo` for a case-variant of a monitored repository is a no-op naming
 the spelling already in the list. Repositories that genuinely differ — a
 different owner or a different name — are untouched.
+
+One consequence worth knowing: a `repo_config` block keyed to the **dropped**
+spelling survives the rewrite (the orphan prune matches case-insensitively)
+but is no longer read, because per-repo settings are looked up by the exact
+configured slug. Re-key it to the spelling the warning says was kept.

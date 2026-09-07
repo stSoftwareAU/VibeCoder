@@ -72,6 +72,7 @@ import {
   listMonitoredRepos,
   removeRepoFromMonitoredList,
 } from "../lib/add_repo.ts";
+import { renderInertRepoSlug } from "../lib/repo_slug.ts";
 import { syncLabelsForAllRepos } from "./label_sync.ts";
 import { reconcileLabelColoursForAllRepos } from "./label_colour_reconcile.ts";
 import { syncWorkflowsForAllRepos } from "./workflow_sync.ts";
@@ -1442,8 +1443,9 @@ async function runRepos(
       // would run its every scan twice and let the worker's two slots race
       // each other for its issues.
       printInfo(
-        `${addRepo} is already monitored as ${result.value.existingSpelling} ` +
-          "— GitHub repository names are case-insensitive, so nothing changed.",
+        `${addRepo} is already monitored as ${
+          renderInertRepoSlug(result.value.existingSpelling)
+        } — GitHub repository names are case-insensitive, so nothing changed.`,
       );
     } else {
       printInfo(`${addRepo} is already monitored — nothing changed.`);
