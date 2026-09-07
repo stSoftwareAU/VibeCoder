@@ -61,16 +61,13 @@ export const GH_INDIRECT_SPAWN_RULES: IndirectSpawnRules = {
 };
 
 /**
- * Modules whose indirect `gh` routing predates the indirection rule and is
- * not mechanical to re-route (Issue #1378 follow-up, #1396): `gh extension
- * install/list` is not a repo mutation the write allowlist classifies, so
- * routing it through `spawnGh` needs its own review. Their **literal** spawns
- * are still forbidden — this exempts the indirection signal only, and the set
- * must shrink, never grow.
+ * Modules exempt from the indirection signal (Issue #1378). Empty since
+ * Issue #1429: the one entry, `software_updates.ts`, routes `gh extension
+ * install/list` through `spawnGh` (Issue #1396) and satisfies the rule on
+ * its own merits. Their **literal** spawns were never exempt. The set stays
+ * as the documented shape for a future gap — and must shrink, never grow.
  */
-export const GH_INDIRECT_KNOWN_GAPS: ReadonlySet<string> = new Set<string>([
-  "worker/deno/lib/software_updates.ts",
-]);
+export const GH_INDIRECT_KNOWN_GAPS: ReadonlySet<string> = new Set<string>();
 
 /**
  * Scan a file's content for direct or indirect `gh` spawns.
