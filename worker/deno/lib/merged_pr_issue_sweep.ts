@@ -28,6 +28,16 @@
  * recorded in {@link MergedPrIssueSweepResult.failures} and surfaces as a
  * failed housekeeping step rather than an empty, green sweep.
  *
+ * Quota is the one exception, and it is a skip, not a failure (Issue #1477).
+ * The sweep used to loop every monitored repo against an exhausted GraphQL
+ * quota — nineteen doomed calls in seven seconds, reported as nineteen repo
+ * failures for one condition. Now it pre-flights once per sweep, stops at
+ * the first rate-limit response, and reports one skipped sweep that resumes
+ * next cycle. It also reads through the shared issue and timeline caches the
+ * discovery passes already fill, and keeps a per-repo watermark like its
+ * sibling merged-PR sweeps, so a quiet repo costs the cached lists and
+ * nothing more.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -42,8 +52,19 @@ import {
   wasLabelReappliedAfterClosedPR,
 } from "./issue_query.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
+import type { IssueCache } from "./issue_cache.ts";
+import type { TimelineCache } from "./timeline_cache.ts";
 import type { MergeLanding } from "./merge_landing.ts";
 import { classifyMergeCloseOrdering } from "./pr_issue_linking.ts";
+import type { PreflightOutcome } from "./github_rate_limit_preflight.ts";
+import {
+  isPrimaryQuotaLatched,
+  isPrimaryRateLimitMessage,
+} from "./primary_quota_latch.ts";
+import {
+  loadSweepWatermarks,
+  saveSweepWatermarks,
+} from "./merged_sweep_watermark.ts";
 
 /** Default cooldown for the closed-unmerged half of the fleet PR fetch. */
 const DEFAULT_CLOSED_PR_COOLDOWN_SECONDS = 3600;
@@ -74,6 +95,16 @@ export interface MergedPrIssueSweepOptions {
   closedPrCooldownSeconds?: number;
   /** Maximum open issues examined per repo. */
   issueLimit?: number;
+  /**
+   * Path of the per-repo sweep watermark file (Issue #1477). When set, a
+   * candidate whose merged PR is at or below the persisted watermark was
+   * handled on an earlier cycle and is skipped without any network traffic.
+   * The watermark advances only past PRs the sweep closed or ruled out for
+   * good; anything it left open — `needs-human`, a change that has not
+   * landed, a failed close — holds it back so that PR is reconsidered next
+   * cycle. Unset (tests, ad hoc runs) means no persistence.
+   */
+  watermarkPath?: string;
 }
 
 /** Injectable dependency seam. */
@@ -82,6 +113,27 @@ export interface MergedPrIssueSweepDeps {
   ghCommandFn: (args: string[]) => Promise<string>;
   /** Logger for diagnostic output. */
   logger: Logger;
+  /**
+   * The shared scan cache (Issue #1477). The open-issue and closed-PR lists
+   * this sweep needs are the same ones the discovery passes fetch for the
+   * same repos in the same cycle; reading through the cache removes the
+   * whole per-repo × per-author fan-out on a warm cycle.
+   */
+  cache?: IssueCache;
+  /** The shared timeline cache for the trusted-re-label check. */
+  timelineCache?: TimelineCache;
+  /**
+   * Once-per-sweep rate-limit pre-flight (Issue #1477). A rate-limited
+   * outcome skips the whole sweep before it spends a single call. Omitted
+   * in tests and ad hoc runs.
+   */
+  preflightFn?: () => Promise<PreflightOutcome>;
+  /**
+   * Whether the process-wide primary-quota latch is set (defaults to
+   * {@link isPrimaryQuotaLatched}). Checked before every repo, so a latch
+   * fired elsewhere in the process stops the sweep without a call.
+   */
+  isQuotaLatchedFn?: () => boolean;
   /** Open-issue fetch (defaults to {@link fetchAllIssues}). */
   fetchOpenIssuesFn?: (repo: string) => Promise<FilterableIssue[]>;
   /** Closed/merged fleet PR fetch (defaults to the claim scan's fetcher). */
@@ -121,6 +173,15 @@ export interface MergedPrIssueSweepResult {
   records: MergedPrIssueSweepRecord[];
   /** Loud failures: a repo that could not be scanned, or a close that failed. */
   failures: string[];
+  /**
+   * Set when the sweep stopped for want of GraphQL quota (Issue #1477): the
+   * one-line condition. Not a failure — the sweep resumes next cycle.
+   */
+  quotaExhausted?: string;
+  /** Repos left unswept by the quota stop, including the one that hit it. */
+  reposSkipped: number;
+  /** Candidates skipped without a call because their PR is below the watermark. */
+  belowWatermark: number;
   /** Human-readable summary for the housekeeping log. */
   message: string;
 }
@@ -173,10 +234,36 @@ async function wasReopenedByTrustedRelabel(
       allowedAuthors,
       mergedPR,
       deps.ghCommandFn,
+      deps.timelineCache,
     );
     if (reapplied) return true;
   }
   return false;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Record the quota stop (Issue #1477): one warning line naming the
+ * condition and how much of the sweep it left for the next cycle. Never a
+ * failure — nothing is wrong with any repository.
+ */
+function stopForQuota(
+  result: MergedPrIssueSweepResult,
+  logger: Logger,
+  reposTotal: number,
+  reposDone: number,
+  condition: string,
+): void {
+  result.quotaExhausted = condition;
+  result.reposSkipped = reposTotal - reposDone;
+  logger.warn(
+    `[merged-pr-issue-sweep] GraphQL quota exhausted — sweep skipped, ` +
+      `${result.reposSkipped} of ${reposTotal} repo(s) left for the next ` +
+      `cycle: ${condition}`,
+  );
 }
 
 /**
@@ -202,17 +289,18 @@ export async function sweepMergedPrIssues(
 
   const fetchOpenIssues = deps.fetchOpenIssuesFn ??
     ((repo: string) =>
-      fetchAllIssues(repo, undefined, issueLimit, deps.ghCommandFn));
+      fetchAllIssues(repo, deps.cache, issueLimit, deps.ghCommandFn));
   const fetchClosedPRs = deps.fetchClosedPRsFn ??
     ((repo: string) =>
       fetchRecentlyClosedPRsForFleet(
         repo,
         options.fleetAuthors,
         cooldown,
-        undefined,
+        deps.cache,
         deps.ghCommandFn,
       ));
   const closeIssue = deps.ensureIssueClosedFn ?? ensureIssueClosedIfPrMerged;
+  const isQuotaLatched = deps.isQuotaLatchedFn ?? isPrimaryQuotaLatched;
 
   const result: MergedPrIssueSweepResult = {
     scanned: 0,
@@ -220,25 +308,75 @@ export async function sweepMergedPrIssues(
     closed: 0,
     records: [],
     failures: [],
+    reposSkipped: 0,
+    belowWatermark: 0,
     message: "",
   };
+  const reposTotal = options.repos.length;
 
-  for (const repo of options.repos) {
+  // Issue #1477: ask once, before spending anything. The pre-flight reads
+  // the shared signal and the cached quota reading, so on a healthy cycle
+  // it is free, and on an exhausted one it is the only call made.
+  if (reposTotal > 0 && deps.preflightFn) {
+    const preflight = await deps.preflightFn();
+    if (preflight.rateLimited) {
+      stopForQuota(result, logger, reposTotal, 0, preflight.message);
+      result.message = summarise(result, options);
+      return result;
+    }
+  }
+
+  // Sweep watermarks (Issue #1477): a candidate whose merged PR is at or
+  // below the repo's watermark was handled on an earlier cycle and costs
+  // nothing now. The watermark only advances past PRs the sweep closed or
+  // ruled out for good; everything it left open holds it back.
+  const watermarkPath = options.watermarkPath;
+  const watermarks = watermarkPath
+    ? await loadSweepWatermarks(watermarkPath)
+    : {};
+  let watermarksDirty = false;
+
+  let reposDone = 0;
+  repos: for (const repo of options.repos) {
+    // A latch fired anywhere in this process — by an earlier step, or by
+    // this sweep's own previous call — means every further GraphQL call is
+    // known to fail. Stop here, without a call.
+    if (isQuotaLatched()) {
+      stopForQuota(
+        result,
+        logger,
+        reposTotal,
+        reposDone,
+        "primary GraphQL quota latched for this process",
+      );
+      break;
+    }
+
     let issues: FilterableIssue[];
     let closedPRs: ClosedPR[];
     try {
       issues = await fetchOpenIssues(repo);
       closedPRs = await fetchClosedPRs(repo);
     } catch (err) {
-      recordFailure(
-        result,
-        logger,
-        `could not scan ${repo}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      const message = errorMessage(err);
+      if (isPrimaryRateLimitMessage(message)) {
+        // The first call told us the quota is gone. Every repo after this
+        // one would fail the same way — one condition, reported once.
+        stopForQuota(result, logger, reposTotal, reposDone, message);
+        break;
+      }
+      recordFailure(result, logger, `could not scan ${repo}: ${message}`);
+      reposDone++;
       continue;
     }
+
+    const mark = watermarks[repo] ?? 0;
+    let windowMax = 0;
+    for (const pr of closedPRs) {
+      if (pr.merged && pr.number > windowMax) windowMax = pr.number;
+    }
+    // Lowest merged PR this cycle left undone; the watermark stops below it.
+    let holdBack = Number.POSITIVE_INFINITY;
 
     for (const issue of issues) {
       result.scanned++;
@@ -248,11 +386,16 @@ export async function sweepMergedPrIssues(
       // is a cooldown that expires by itself.
       const blocking = isBlockedByRecentlyClosedPR(closedPRs, issue.number);
       if (!blocking || !blocking.merged) continue;
+      if (blocking.number <= mark) {
+        result.belowWatermark++;
+        continue;
+      }
       result.candidates++;
 
       const note = (
         outcome: MergedPrIssueSweepOutcome,
         reason: string,
+        settled = false,
       ): void => {
         result.records.push({
           repo,
@@ -261,6 +404,11 @@ export async function sweepMergedPrIssues(
           outcome,
           reason,
         });
+        // Only a close, or a verdict that can never change, lets the
+        // watermark pass this PR.
+        if (outcome !== "closed" && !settled) {
+          holdBack = Math.min(holdBack, blocking.number);
+        }
       };
 
       if (issue.labels.includes(needsHumanLabel)) {
@@ -289,6 +437,7 @@ export async function sweepMergedPrIssues(
           "skipped",
           `PR #${blocking.number} merged before the issue was filed ` +
             `(${ordering}) — it cannot be its fix (Issue #482)`,
+          true,
         );
         continue;
       }
@@ -304,14 +453,14 @@ export async function sweepMergedPrIssues(
           deps,
         );
       } catch (err) {
+        const message = errorMessage(err);
+        if (isPrimaryRateLimitMessage(message)) {
+          stopForQuota(result, logger, reposTotal, reposDone, message);
+          break repos;
+        }
         // An unreadable timeline cannot prove the issue was NOT reopened, so
         // fail closed: leave it open and say why.
-        note(
-          "skipped",
-          `could not read the label timeline: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
+        note("skipped", `could not read the label timeline: ${message}`);
         continue;
       }
       if (reopened) {
@@ -339,6 +488,16 @@ export async function sweepMergedPrIssues(
       );
 
       if (!closeResult.ok) {
+        if (isPrimaryRateLimitMessage(closeResult.error.message)) {
+          stopForQuota(
+            result,
+            logger,
+            reposTotal,
+            reposDone,
+            closeResult.error.message,
+          );
+          break repos;
+        }
         note("failed", closeResult.error.message);
         recordFailure(
           result,
@@ -359,16 +518,48 @@ export async function sweepMergedPrIssues(
         note("skipped", closeResult.value.reason);
       }
     }
+
+    reposDone++;
+    if (watermarkPath && windowMax > 0) {
+      const advanced = Math.max(mark, Math.min(windowMax, holdBack - 1));
+      if (advanced !== mark) {
+        watermarks[repo] = advanced;
+        watermarksDirty = true;
+      }
+    }
   }
 
+  if (watermarkPath && watermarksDirty) {
+    try {
+      await saveSweepWatermarks(watermarkPath, watermarks);
+    } catch {
+      // Persistence is an optimisation — never fail the sweep over it.
+    }
+  }
+
+  result.message = summarise(result, options);
+  return result;
+}
+
+/** The one-line housekeeping summary. */
+function summarise(
+  result: MergedPrIssueSweepResult,
+  options: MergedPrIssueSweepOptions,
+): string {
   const failureNote = result.failures.length > 0
     ? `, ${result.failures.length} repo failure${
       result.failures.length === 1 ? "" : "s"
     }`
     : "";
-  result.message = `closed ${result.closed} of ${result.candidates} ` +
+  const watermarkNote = result.belowWatermark > 0
+    ? `, ${result.belowWatermark} below watermark`
+    : "";
+  const quotaNote = result.quotaExhausted !== undefined
+    ? ` — quota exhausted, sweep skipped (${result.reposSkipped} repo(s) ` +
+      `left), resumes next cycle`
+    : "";
+  return `closed ${result.closed} of ${result.candidates} ` +
     `merged-PR issue(s) across ${options.repos.length} repo(s) ` +
-    `(${result.scanned} open issues scanned)${failureNote}`;
-
-  return result;
+    `(${result.scanned} open issues scanned)${watermarkNote}${failureNote}` +
+    quotaNote;
 }

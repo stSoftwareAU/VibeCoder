@@ -337,6 +337,15 @@ bash `worker/run_core.sh` conductor. It sequences:
    trusted-re-label escape hatch all still apply. An issue carrying
    `needs-human` is never closed by it.
 
+   It spends quota the way the rest of the worker does (Issue #1477): one
+   rate-limit pre-flight per sweep, a stop at the first primary-quota
+   refusal — reported as one skipped sweep that resumes next cycle, never as
+   one failure per repository — the shared `.gh-scan-cache` and
+   `.gh-timeline-cache` on the work volume, and its own watermark
+   (`merged_issue_sweep_watermarks.json`) that advances only past PRs it
+   closed or ruled out for good, so what it left open is reconsidered next
+   cycle.
+
 ```mermaid
 flowchart TD
     A["Open issue"] --> B{"Named by a merged<br/>fleet PR?"}

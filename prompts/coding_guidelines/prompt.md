@@ -290,7 +290,10 @@ The `gh` CLI is installed and authenticated. Use it for all GitHub operations:
 
 - **Issues**: `gh issue view`, `gh issue list`, `gh issue comment`,
   `gh issue create`
-- **Pull requests**: `gh pr view`, `gh pr list`, `gh pr create`, `gh pr merge`
+- **Pull requests**: `gh pr view`, `gh pr list`, `gh pr create`,
+  `gh pr comment` — but **not** `gh pr merge`, `close`, `reopen`, `ready` or
+  `review --approve`: the guard refuses those (see **Issue Lifecycle Is Not
+  Yours To Change**)
 - **API access**: `gh api repos/OWNER/REPO/...` for any GitHub API endpoint
 - **Repository info**: `gh repo view`
 
@@ -530,6 +533,20 @@ What you may still do is everything that *records* an outcome: comment on the
 issue, add or remove content labels, edit the issue body, and file follow-up
 issues. `gh issue edit … --add-label needs-human` therefore keeps working, so
 the escalation flow below is unaffected.
+
+### Nor is your own pull request
+
+Raising the PR is your job; deciding it lands is not. `gh pr merge`,
+`gh pr close`, `gh pr reopen`, `gh pr ready` and `gh pr review --approve` on the
+repo you are working are refused with a `[SECURITY] [PR_LIFECYCLE_REFUSED]`
+line, and so are the REST spellings (`gh api -X PUT …/pulls/N/merge`,
+`gh api -X PATCH …/pulls/N -f state=closed`, an approving
+`gh api -X POST …/pulls/N/reviews`). The worker merges through its own path,
+which re-checks CI status, branch freshness and the default-branch approval
+gate; a merge you issue directly has none of them. `gh pr create`, `gh pr view`,
+`gh pr list`, `gh pr comment` and `gh pr edit` are unaffected — finish by
+creating the PR and leave it open. If it should not land, say so in a comment
+rather than closing it.
 
 ### Blocked on another issue → say so; the worker defers
 
