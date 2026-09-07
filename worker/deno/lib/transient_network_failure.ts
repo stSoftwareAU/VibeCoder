@@ -50,7 +50,6 @@ const TRANSIENT_NETWORK_PATTERNS: ReadonlyArray<string> = [
   "tls handshake timeout",
   "client connection force closed",
   "server closed idle connection",
-  "eof", // bare EOF from a truncated response body
   // DNS.
   "no such host",
   "could not resolve host",
@@ -72,6 +71,20 @@ const TRANSIENT_NETWORK_PATTERNS: ReadonlyArray<string> = [
 ];
 
 /**
+ * Fragments too short to match as a substring, so they match as whole words.
+ *
+ * `eof` — a bare EOF from a truncated response body — is three characters, and
+ * an unanchored `includes("eof")` also fires inside `typeof`, `codeof`, or any
+ * other `e o f` run (Issue #1278). A genuine crash reclassified as a blip skips
+ * both the crash notification and the host backoff, so the worker crash-loops
+ * silently: the fail-open direction this module must not take. Every other
+ * pattern above is a multi-word phrase that cannot collide this way.
+ */
+const TRANSIENT_NETWORK_WORD_PATTERNS: ReadonlyArray<RegExp> = [
+  /\beof\b/,
+];
+
+/**
  * Is this error message a transient network failure?
  *
  * @param message - The error message, as reported by `gh` or a git command.
@@ -80,6 +93,8 @@ export function isTransientNetworkFailure(message: string): boolean {
   const haystack = message.toLowerCase();
   return TRANSIENT_NETWORK_PATTERNS.some((pattern) =>
     haystack.includes(pattern)
+  ) || TRANSIENT_NETWORK_WORD_PATTERNS.some((pattern) =>
+    pattern.test(haystack)
   );
 }
 

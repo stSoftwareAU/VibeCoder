@@ -13,6 +13,7 @@ import type { CiProviderConfig, RepoConfig, Result } from "../types.ts";
 import { DEFAULT_REPO_NICE } from "./config_defaults.ts";
 import { compileCheckNamePattern } from "./ci_log_provider.ts";
 import { buildQualityGateBudgetLines } from "./quality_gate_budget.ts";
+import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 
 // =============================================================================
 // Per-repo config queries
@@ -228,11 +229,16 @@ export async function runPreSetupCommand(
         cwd: repoPath,
         stdout: "piped",
         stderr: "piped",
-        env: {
-          ...Deno.env.toObject(),
-          REPO_PATH: repoPath,
-          REPO_NAME: repo,
-        },
+        // The pre-setup command is the repository's own dependency setup, so
+        // it runs that repository's install hooks — code the worker did not
+        // write. Its environment is BUILT from the allowlist rather than
+        // inherited (Issues #572, #1214, #1285): a postinstall script has no
+        // credential in scope to echo. `REPO_PATH`/`REPO_NAME` are layered on
+        // top, so the contract this command relies on is unchanged.
+        env: buildUntrustedCommandEnv({
+          overrides: { REPO_PATH: repoPath, REPO_NAME: repo },
+        }),
+        clearEnv: true,
         signal: controller.signal,
       });
 
