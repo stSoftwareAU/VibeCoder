@@ -28,7 +28,6 @@ import {
   loadMilestoneActivity,
   milestoneActivityKey,
   type MilestoneActivityState,
-  pruneMilestoneActivity,
   recordMilestoneActivity,
   saveMilestoneActivity,
 } from "./milestone_activity_gate.ts";
@@ -311,10 +310,6 @@ export async function findActiveMilestoneBranches(
       });
     }
 
-    // Milestones the repo no longer lists (closed, deleted) must not sit
-    // in the observation file forever (Issue #1488).
-    pruneMilestoneActivity(activity, repo, milestones.map((m) => m.number));
-
     return { ok: true, value: activeMilestones };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -415,7 +410,10 @@ export async function syncMilestoneBranches(
   // without the expensive half.
   const activityPath = deps.activityPath;
   const activity: MilestoneActivityState | undefined = activityPath
-    ? { observations: await loadMilestoneActivity(activityPath), dirty: false }
+    ? {
+      observations: await loadMilestoneActivity(activityPath, log),
+      dirty: false,
+    }
     : undefined;
 
   for (const repo of repos) {
@@ -592,8 +590,13 @@ export async function syncMilestoneBranches(
   if (activityPath && activity?.dirty) {
     try {
       await saveMilestoneActivity(activityPath, activity.observations);
-    } catch {
-      // Losing the observations only costs the next cycle a query.
+    } catch (err) {
+      // Losing the observations only costs the next cycle a query — but it
+      // is a fault, so it is said out loud rather than swallowed.
+      const message = err instanceof Error ? err.message : String(err);
+      log(
+        `WARNING: Could not persist milestone activity to ${activityPath}: ${message}`,
+      );
     }
   }
 

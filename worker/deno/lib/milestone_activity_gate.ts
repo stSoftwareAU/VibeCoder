@@ -17,13 +17,15 @@
  *
  * State lives beside the other milestone sync state in the work dir, keyed
  * by milestone **number** rather than title (a rename keeps the number).
- * Same shape as `milestone_sync_streak.ts`: a small JSON file, atomic
- * write, and a missing or corrupt file reads as empty.
+ * Same shape as `milestone_sync_streak.ts`: a small JSON file and an atomic
+ * write. A missing file is the ordinary first-run case; a corrupt one falls
+ * back to empty but says so loudly first (#3649).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { atomicWrite } from "./file_utils.ts";
+import { reportStateLoadFailure } from "./state_load_failure.ts";
 
 /** What was last observed for one milestone. */
 export interface MilestoneActivityObservation {
@@ -126,50 +128,45 @@ export function recordMilestoneActivity(
 }
 
 /**
- * Drop observations for milestones the repo no longer lists, so a closed
- * milestone does not sit in the file forever.
+ * Load observations. A missing file is the ordinary first-run case and
+ * reads as empty quietly; anything else is reported loudly before the
+ * fallback, because a discarded file costs a full round of queries and
+ * must not look like a clean start (#3649).
  */
-export function pruneMilestoneActivity(
-  state: MilestoneActivityState | undefined,
-  repo: string,
-  seenNumbers: number[],
-): void {
-  if (!state) return;
-  const kept = new Set(seenNumbers.map((n) => milestoneActivityKey(repo, n)));
-  const prefix = `${repo}|`;
-  for (const key of Object.keys(state.observations)) {
-    if (key.startsWith(prefix) && !kept.has(key)) {
-      delete state.observations[key];
-      state.dirty = true;
-    }
-  }
-}
-
-/** Load observations; a missing or corrupt file reads as empty. */
 export async function loadMilestoneActivity(
   path: string,
+  warn?: (message: string) => void,
 ): Promise<MilestoneActivityObservations> {
   try {
     const parsed = JSON.parse(await Deno.readTextFile(path));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const observations: MilestoneActivityObservations = {};
-      for (const [key, value] of Object.entries(parsed)) {
-        const entry = value as MilestoneActivityObservation | null;
-        if (
-          entry && typeof entry === "object" &&
-          typeof entry.closedIssues === "number" &&
-          Number.isFinite(entry.closedIssues)
-        ) {
-          observations[key] = {
-            closedIssues: Math.max(0, Math.floor(entry.closedIssues)),
-            active: entry.active === true,
-          };
-        }
-      }
-      return observations;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("expected a JSON object of observations");
     }
-  } catch {
-    // Missing or corrupt — the next cycle simply re-queries.
+    const observations: MilestoneActivityObservations = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      const entry = value as MilestoneActivityObservation | null;
+      // A malformed entry is dropped, not repaired: an observation that
+      // cannot be trusted must re-query rather than gate on a guess.
+      if (
+        entry && typeof entry === "object" &&
+        typeof entry.closedIssues === "number" &&
+        Number.isInteger(entry.closedIssues) && entry.closedIssues >= 0 &&
+        typeof entry.active === "boolean"
+      ) {
+        observations[key] = {
+          closedIssues: entry.closedIssues,
+          active: entry.active,
+        };
+      }
+    }
+    return observations;
+  } catch (err) {
+    reportStateLoadFailure(
+      "milestone activity state",
+      path,
+      err,
+      ...(warn ? [warn] : []),
+    );
   }
   return {};
 }

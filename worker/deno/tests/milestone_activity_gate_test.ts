@@ -8,14 +8,13 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   decideMilestoneQuery,
   loadMilestoneActivity,
   milestoneActivityKey,
   milestoneActivityPath,
   type MilestoneActivityState,
-  pruneMilestoneActivity,
   recordMilestoneActivity,
   saveMilestoneActivity,
 } from "../lib/milestone_activity_gate.ts";
@@ -70,7 +69,7 @@ Deno.test("decideMilestoneQuery - an absent count cannot gate anything", () => {
 });
 
 // ---------------------------------------------------------------------------
-// recordMilestoneActivity / pruneMilestoneActivity
+// recordMilestoneActivity
 // ---------------------------------------------------------------------------
 
 Deno.test("recordMilestoneActivity - stores the verdict and marks state dirty", () => {
@@ -98,36 +97,6 @@ Deno.test("recordMilestoneActivity - an absent count records nothing", () => {
   assertEquals(state.observations, {});
   assertEquals(state.dirty, false);
 });
-
-Deno.test("pruneMilestoneActivity - drops milestones the repo no longer lists", () => {
-  const state: MilestoneActivityState = {
-    observations: {
-      "owner/repo|1": { closedIssues: 1, active: true },
-      "owner/repo|2": { closedIssues: 5, active: false },
-      "other/repo|1": { closedIssues: 9, active: true },
-    },
-    dirty: false,
-  };
-  pruneMilestoneActivity(state, "owner/repo", [1]);
-  assertEquals(Object.keys(state.observations).sort(), [
-    "other/repo|1",
-    "owner/repo|1",
-  ]);
-  assertEquals(state.dirty, true);
-});
-
-Deno.test("pruneMilestoneActivity - nothing to drop leaves state clean", () => {
-  const state: MilestoneActivityState = {
-    observations: { "owner/repo|1": { closedIssues: 1, active: true } },
-    dirty: false,
-  };
-  pruneMilestoneActivity(state, "owner/repo", [1]);
-  assertEquals(state.dirty, false);
-});
-
-// ---------------------------------------------------------------------------
-// Persistence
-// ---------------------------------------------------------------------------
 
 Deno.test("milestoneActivityPath - sits beside the other sync state", () => {
   assertEquals(
@@ -159,7 +128,7 @@ Deno.test("loadMilestoneActivity - a missing file reads as empty", async () => {
   }
 });
 
-Deno.test("loadMilestoneActivity - corrupt entries are discarded, not trusted", async () => {
+Deno.test("loadMilestoneActivity - corrupt entries are discarded, not repaired", async () => {
   const dir = await Deno.makeTempDir();
   try {
     const path = milestoneActivityPath(dir);
@@ -168,7 +137,9 @@ Deno.test("loadMilestoneActivity - corrupt entries are discarded, not trusted", 
       JSON.stringify({
         "owner/repo|1": { closedIssues: 4, active: true },
         "owner/repo|2": { closedIssues: "many", active: true },
-        "owner/repo|3": null,
+        "owner/repo|3": { closedIssues: -1, active: true },
+        "owner/repo|4": { closedIssues: 2, active: "yes" },
+        "owner/repo|5": null,
       }),
     );
     const loaded = await loadMilestoneActivity(path);
@@ -178,12 +149,36 @@ Deno.test("loadMilestoneActivity - corrupt entries are discarded, not trusted", 
   }
 });
 
-Deno.test("loadMilestoneActivity - unparseable JSON reads as empty", async () => {
+Deno.test("loadMilestoneActivity - a corrupt file is reported loudly, not silently emptied", async () => {
   const dir = await Deno.makeTempDir();
   try {
     const path = milestoneActivityPath(dir);
     await Deno.writeTextFile(path, "{not json");
-    assertEquals(await loadMilestoneActivity(path), {});
+    const warnings: string[] = [];
+    assertEquals(
+      await loadMilestoneActivity(path, (m) => warnings.push(m)),
+      {},
+    );
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0]!, "[STATE_LOAD_FAILURE]");
+    assertStringIncludes(warnings[0]!, path);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("loadMilestoneActivity - a missing file is not reported as a fault", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const warnings: string[] = [];
+    assertEquals(
+      await loadMilestoneActivity(
+        `${dir}/absent.json`,
+        (m) => warnings.push(m),
+      ),
+      {},
+    );
+    assertEquals(warnings, []);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
