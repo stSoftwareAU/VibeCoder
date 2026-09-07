@@ -39,13 +39,25 @@
  * agent-versus-worker boundary on a host to begin with. The in-image signal
  * is `VIBE_IMAGE_AGENT_PROVIDERS`, the same one `claude_env.ts` already uses
  * to decide it is running inside the image, rather than a second signal that
- * could disagree with it.
+ * could disagree with it — read through `container_stamp.ts`, so a blank
+ * stamp reads as the host run it is (Issue #1493).
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
-/** The in-image signal, shared with `claude_env.ts` so the two cannot drift. */
-export const IN_IMAGE_ENV = "VIBE_IMAGE_AGENT_PROVIDERS";
+import {
+  CONTAINER_IMAGE_STAMP_ENV,
+  runningInContainerImage,
+} from "./container_stamp.ts";
+
+/**
+ * The in-image signal, shared with `claude_env.ts` so the two cannot drift.
+ *
+ * An alias for {@linkcode CONTAINER_IMAGE_STAMP_ENV} rather than a second
+ * spelling of the name (Issue #1493) — this module's callers already import
+ * `IN_IMAGE_ENV`, so the name stays and the definition moves.
+ */
+export const IN_IMAGE_ENV = CONTAINER_IMAGE_STAMP_ENV;
 
 /** Prefix of the throwaway file the probe writes. Dot-prefixed and unique. */
 export const PROMPT_PROBE_PREFIX = ".vibe-prompt-immutability-probe-";
@@ -149,7 +161,7 @@ export async function checkPromptsImmutable(
   const writable = await probePromptsWritable(promptsDir, deps);
   return classifyPromptsWritability({
     writable,
-    inImage: env(IN_IMAGE_ENV) !== undefined,
+    inImage: runningInContainerImage(env),
     promptsDir,
   });
 }

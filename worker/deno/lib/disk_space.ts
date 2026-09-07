@@ -19,6 +19,7 @@ import { isReservedWorkRootEntry } from "./stale_workdir.ts";
 import { runWithTimeout, type SubprocessResult } from "./subprocess_timeout.ts";
 import { cleanDenoCache as realCleanDenoCache } from "./deno_cache.ts";
 import { emitSelfHealEventAuto } from "./self_heal_events.ts";
+import { runningInContainerImage } from "./container_stamp.ts";
 
 /** Timeout for df commands: 10 seconds (handles NFS stalls). */
 const DF_TIMEOUT_MS = 10_000;
@@ -643,7 +644,7 @@ export async function checkAndCleanupDiskSpace(
   // seen through the mount, not the work directory's contribution to it.
   let containerPreserveMessage: string | null = null;
   const envLookup = options.env ?? ((name: string) => Deno.env.get(name));
-  if (isAggressive && envLookup("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined) {
+  if (isAggressive && runningInContainerImage(envLookup)) {
     const probe = options.freeBytesProbe ?? getDiskFreeBytes;
     const freeBytes = await probe(workDir);
     if (freeBytes === null || freeBytes >= CONTAINER_NUKE_FREE_BYTES_FLOOR) {

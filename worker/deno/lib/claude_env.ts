@@ -48,6 +48,7 @@ import {
   isDeniedAgentEnvVar,
   WORKER_ONLY_SECRET_ENV_VARS,
 } from "./agent_env.ts";
+import { runningInContainerImage } from "./container_stamp.ts";
 
 /**
  * Environment variables the `claude` child must never inherit.
@@ -166,10 +167,11 @@ export function buildClaudeChildEnv(
   // The work dir is the host-mounted durable surface, so the child's
   // transcripts land there. Container only: on the host ~/.claude is
   // already durable and carries the operator's own login state. An explicit
-  // CLAUDE_CONFIG_DIR always wins.
+  // CLAUDE_CONFIG_DIR always wins. The stamp is read by value, not
+  // presence: a blank one is a host run (Issue #1493).
   if (
     env["CLAUDE_CONFIG_DIR"] === undefined &&
-    env["VIBE_IMAGE_AGENT_PROVIDERS"] !== undefined
+    runningInContainerImage((name) => env[name])
   ) {
     const workDir = env["WORK_DIR"] ??
       (env["HOME"] ? `${env["HOME"]}/auto-issue-work` : undefined);

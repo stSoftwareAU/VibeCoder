@@ -1611,7 +1611,10 @@ Two invariants keep the set honest:
   running image did not install — rather than a "command not found" mid-run.
   With no stamp — absent, or blank, which is the same thing (Issue #1262):
   an uncontained worker on a host — there is no image set to check against,
-  and the check stands aside.
+  and the check stands aside. Every reader of the stamp asks
+  `runningInContainerImage()` in `worker/deno/lib/container_stamp.ts` rather
+  than spelling the test itself, so "blank is a host" holds at all of them and
+  not only at the three #1262 converted (Issue #1493).
 
 ```mermaid
 flowchart LR

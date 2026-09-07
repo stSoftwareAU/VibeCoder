@@ -11,6 +11,30 @@ import {
   formatBenchmarkTable,
   runBenchmark,
 } from "../lib/benchmark.ts";
+import { runningInContainerImage } from "../lib/container_stamp.ts";
+import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
+
+/**
+ * The run environment label recorded in the report (Issue #1493).
+ *
+ * An explicit `--mode` wins, then `VIBE_RUN_MODE`. Only then does the
+ * container image stamp decide, and it decides by *value*: a blank
+ * `VIBE_IMAGE_AGENT_PROVIDERS` is a host run, so the label is `"unknown"`
+ * rather than a fleet telemetry row that claims a container that was never
+ * there. Reporting only — nothing branches on it.
+ *
+ * @param modeArg - The `--mode` argument, if the operator passed one.
+ * @param env - Environment lookup (defaults to the process environment).
+ * @returns The mode label.
+ */
+export function resolveBenchmarkMode(
+  modeArg: unknown,
+  env: EnvLookup = processEnvLookup,
+): string {
+  if (typeof modeArg === "string" && modeArg) return modeArg;
+  return env("VIBE_RUN_MODE") ??
+    (runningInContainerImage(env) ? "container" : "unknown");
+}
 
 /**
  * Args:
@@ -40,10 +64,7 @@ export const benchmarkCommand: Command = {
           "benchmark: --work-dir is required (no config.workDir or WORK_DIR env var)",
       };
     }
-    const mode = typeof args["mode"] === "string" && args["mode"]
-      ? args["mode"]
-      : (Deno.env.get("VIBE_RUN_MODE") ??
-        (Deno.env.get("VIBE_IMAGE_AGENT_PROVIDERS") ? "container" : "unknown"));
+    const mode = resolveBenchmarkMode(args["mode"]);
     const entryPath = typeof args["entry"] === "string" && args["entry"]
       ? args["entry"]
       : new URL("../mod.ts", import.meta.url).pathname;

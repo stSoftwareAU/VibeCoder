@@ -45,6 +45,7 @@ import {
   DEFAULT_SIDE_REPO_MAX_GIT_BYTES,
 } from "./work_volume_tiers.ts";
 import { workerLogCleanupCommand } from "../commands/worker_log_cleanup.ts";
+import { runningInContainerImage } from "./container_stamp.ts";
 import {
   DEFAULT_DISK_CLEANUP_GENTLE_THRESHOLD,
   DEFAULT_DISK_CLEANUP_THRESHOLD,
@@ -188,7 +189,7 @@ export async function sweepVolatileCliState(
   workDir: string,
   env: (name: string) => string | undefined,
 ): Promise<string> {
-  if (env("VIBE_IMAGE_AGENT_PROVIDERS") === undefined) {
+  if (!runningInContainerImage(env)) {
     // Not inside the worker image (a host-side invocation of the housekeeping
     // command): the volatile CLI state is not this process's to sweep.
     return "skipped (not inside the worker container)";

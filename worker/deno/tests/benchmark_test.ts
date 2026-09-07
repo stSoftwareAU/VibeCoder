@@ -6,7 +6,11 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { formatBenchmarkTable, runBenchmark } from "../lib/benchmark.ts";
-import { benchmarkCommand } from "../commands/benchmark.ts";
+import {
+  benchmarkCommand,
+  resolveBenchmarkMode,
+} from "../commands/benchmark.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 import type { WorkerConfig } from "../types.ts";
 
 Deno.test("perf workload report - runs every step with an injected runner and reports each (Issue #4299)", async () => {
@@ -101,4 +105,56 @@ Deno.test("perf workload command - runs the real fs and cpu steps and emits a JS
   } finally {
     await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
   }
+});
+
+// ---------------------------------------------------------------------------
+// A blank container stamp is a HOST run (Issue #1493, follow-up to #1262)
+// ---------------------------------------------------------------------------
+
+Deno.test("resolveBenchmarkMode - a blank container stamp reports a host run, not a container (Issue #1493)", () => {
+  // The label was keyed on the PRESENCE of the image stamp, so
+  // `VIBE_IMAGE_AGENT_PROVIDERS=` filed a HOST run's wall times into the
+  // fleet's container series. Reporting only, but a benchmark comparing
+  // container against native is exactly the thing a mislabelled row ruins.
+  for (const blank of ["", "   "]) {
+    assertEquals(
+      resolveBenchmarkMode(
+        undefined,
+        envFrom({ VIBE_IMAGE_AGENT_PROVIDERS: blank }),
+      ),
+      "unknown",
+      `a stamp of ${JSON.stringify(blank)} must not report "container"`,
+    );
+  }
+  assertEquals(resolveBenchmarkMode(undefined, emptyEnv), "unknown");
+});
+
+Deno.test("resolveBenchmarkMode - a real container stamp still reports a container run (Issue #1493)", () => {
+  assertEquals(
+    resolveBenchmarkMode(
+      undefined,
+      envFrom({ VIBE_IMAGE_AGENT_PROVIDERS: " claude " }),
+    ),
+    "container",
+  );
+});
+
+Deno.test("resolveBenchmarkMode - --mode and VIBE_RUN_MODE still win over the stamp (Issue #1493)", () => {
+  assertEquals(
+    resolveBenchmarkMode(
+      "native",
+      envFrom({ VIBE_IMAGE_AGENT_PROVIDERS: "claude" }),
+    ),
+    "native",
+  );
+  assertEquals(
+    resolveBenchmarkMode(
+      undefined,
+      envFrom({
+        VIBE_RUN_MODE: "native",
+        VIBE_IMAGE_AGENT_PROVIDERS: "claude",
+      }),
+    ),
+    "native",
+  );
 });
