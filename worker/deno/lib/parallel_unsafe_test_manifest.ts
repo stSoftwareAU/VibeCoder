@@ -166,6 +166,9 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
 export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   "tests/growth_bound_test.ts",
   "tests/plan_coverage_gate_bounds_1245_test.ts",
+  // The prompt-leak matcher scans one unbroken block per phrase, and only a
+  // growth measurement can tell a linear scan from a quadratic one (#1463).
+  "tests/prompt_leak_redaction_test.ts",
   "tests/run_ps1_launcher_test.ts",
 ];
 
