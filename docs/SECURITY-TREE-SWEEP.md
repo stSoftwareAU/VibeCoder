@@ -127,6 +127,31 @@ with per-source rule ids and references, stale baseline entries, and the
 verdict. Scanner messages are quoted as data — never interpreted as
 instructions.
 
+## Findings that mirror an open issue: `tracked`
+
+The worker source harvests **open** `security` issues, so a cluster only that
+source reported exists precisely because a tracking issue is open. It is
+already triaged, already owned, and it leaves the sweep the moment that issue
+closes. Since Issue #1518 such a cluster is classified **`tracked`**, listed
+under *Tracked by an open issue* with its issue number, and it does **not**
+fail the run.
+
+That is not leniency; it is what makes the gate readable. Counting an open
+issue as an unbaselined finding kept the sweep red for the whole life of the
+security backlog — which is never empty — so every run failed on every branch
+and nobody could tell a new finding from the standing list. A gate that fires
+on ordinary work is one nobody reads, and the cases it was built for are lost
+with it.
+
+Two boundaries keep the class honest:
+
+- **A scanner that saw the same site keeps the finding `new`.** If semgrep or
+  CodeQL independently flagged it, it is a code finding and is triaged as one
+  — being mirrored by an issue never softens it.
+- **A tracked finding is never baseline material.** It is real and it has an
+  owner; it disappears when the issue closes, not when a baseline line is
+  added.
+
 ## The baseline
 
 `.github/security-tree-sweep-baseline.json` is the committed triage
@@ -205,6 +230,23 @@ Dependabot cooldown and the first-party Renovate exemption, baselined as
 accepted with the issues that chose them). CodeQL was excluded because Code
 Security is not enabled on the private repository, and the committed report
 says so in its Sources table.
+
+## The 2026-09 triage, and whether `sweep` should be required
+
+The gate was red on every run from 2026-09-06 (Issue #1518). The thirteen
+unbaselined findings of the 2026-09-07 run separated into three classes,
+which is how any future backlog should be read.
+
+| Class | What it was | What it took |
+| ----- | ----------- | ------------ |
+| Located CodeQL results | Ten results in real files | Two fixed in code (`references_source_probe.ts` missed `</script >`, js/bad-tag-filter; a no-op `.replace(":", ":")` in `security_scan_defensive_labels_test.ts`, js/identity-replacement); seven baselined as false positives and one as accepted, each with its own reason |
+| Worker-scan findings | Three open `security` issues | Neither fixed nor baselined — classified `tracked` (above). They clear when their issues close, and the backlog refills, which is why the class needed a status rather than a triage pass |
+| Stale baseline entries | Ten `unsafe-regex` entries matching nothing | Removed. `p/default` no longer emits `detect-non-literal-regexp`; the reasoning stays in this file's history if it ever returns |
+
+**Is `sweep` a required status check?** Not yet, and deliberately. It blocks
+nothing today, which is what let it stay red for a fortnight. Making it
+required is a maintainer decision that follows a green gate rather than
+preceding it — the cleanup above is the precondition, not the argument for it.
 
 ## The scheduled workflow
 

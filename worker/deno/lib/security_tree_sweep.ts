@@ -29,6 +29,9 @@
  * by fingerprint (rule family + path + line window), classified against the
  * committed baseline (`.github/security-tree-sweep-baseline.json`, one
  * justification per entry) and rendered to a deterministic Markdown report.
+ * A cluster only the worker source reported is `tracked` rather than new: it
+ * mirrors an open `security` issue, so it is already owned and it clears when
+ * that issue closes (Issue #1518).
  * `fileIssues` files one GitHub issue per NEW cluster with a stable
  * `SWEEP-<hex>` id, most important first, deduplicated against the issues
  * already open, capped per run so the fleet is not flooded.
@@ -97,7 +100,11 @@ export interface SweepFinding {
 }
 
 /** Baseline classification of a deduplicated cluster. */
-export type ClusterStatus = "new" | "false-positive" | "accepted";
+export type ClusterStatus =
+  | "new"
+  | "false-positive"
+  | "accepted"
+  | "tracked";
 
 /** Findings from every source that share one fingerprint. */
 export interface SweepCluster {
@@ -123,7 +130,10 @@ export interface SweepRow extends SweepCluster {
   status: ClusterStatus;
   /** Baseline reason, when baselined. */
   reason?: string;
-  /** Tracking issue number, when the baseline names one. */
+  /**
+   * Tracking issue number — the one the baseline names, or the open
+   * `security` issue a `tracked` cluster mirrors (Issue #1518).
+   */
   issue?: number;
 }
 
@@ -262,6 +272,11 @@ export interface SweepRunResult {
   sourceStatus: SourceStatus[];
   rows: SweepRow[];
   newRows: SweepRow[];
+  /**
+   * Clusters the worker scan alone reported, each mirroring an open
+   * `security` issue — already tracked, so not unbaselined (Issue #1518).
+   */
+  trackedRows: SweepRow[];
   /** New clusters whose id already has an open issue. */
   alreadyOpen: SweepRow[];
   filed: FiledIssue[];
@@ -1215,14 +1230,47 @@ function entryMatches(
 }
 
 /**
- * Classify each cluster against the baseline: `false-positive`, `accepted`
- * or `new`. Also reports baseline entries that matched nothing (stale — not
- * fatal, but a stale entry suppresses nothing and should be removed).
+ * The open `security` issue a worker-scan-only cluster mirrors, or `null`
+ * when the cluster is not one (Issue #1518).
+ *
+ * The worker source harvests **open** `security` issues, so such a cluster
+ * exists precisely because a tracking issue is open: it is already triaged,
+ * already owned, and it leaves the sweep the moment that issue closes.
+ * Counting it as unbaselined made the gate red for the whole life of the
+ * security backlog — every run failed, so nobody could tell a new finding
+ * from the standing list, and the sweep reported nothing anybody read.
+ *
+ * A cluster a scanner also reported is deliberately **not** this: semgrep or
+ * CodeQL seeing the same site makes it a code finding, and it is triaged as
+ * one. Baselining is never the answer either — the finding is real, and it
+ * disappears by being fixed, not by being silenced.
+ */
+function trackingIssue(cluster: SweepCluster): number | null {
+  if (cluster.sources.length !== 1 || cluster.sources[0] !== "worker-scan") {
+    return null;
+  }
+  for (const finding of cluster.findings) {
+    const match = /^#(\d+)$/.exec(finding.ref ?? "");
+    if (match !== null) return Number(match[1]);
+  }
+  return null;
+}
+
+/**
+ * Classify each cluster against the baseline: `false-positive`, `accepted`,
+ * `tracked` (mirrors an open `security` issue — Issue #1518) or `new`. Also
+ * reports baseline entries that matched nothing (stale — not fatal, but a
+ * stale entry suppresses nothing and should be removed).
  */
 export function classifyClusters(
   clusters: readonly SweepCluster[],
   baseline: SweepBaseline,
-): { rows: SweepRow[]; newRows: SweepRow[]; staleEntries: string[] } {
+): {
+  rows: SweepRow[];
+  newRows: SweepRow[];
+  trackedRows: SweepRow[];
+  staleEntries: string[];
+} {
   const usedFp = new Set<number>();
   const usedAccepted = new Set<number>();
   const rows: SweepRow[] = clusters.map((cluster) => {
@@ -1250,6 +1298,10 @@ export function classifyClusters(
         ...(entry.issue !== undefined ? { issue: entry.issue } : {}),
       };
     }
+    const tracked = trackingIssue(cluster);
+    if (tracked !== null) {
+      return { ...cluster, status: "tracked", issue: tracked };
+    }
     return { ...cluster, status: "new" };
   });
   const staleEntries = [
@@ -1259,6 +1311,7 @@ export function classifyClusters(
   return {
     rows,
     newRows: rows.filter((r) => r.status === "new"),
+    trackedRows: rows.filter((r) => r.status === "tracked"),
     staleEntries,
   };
 }
@@ -1365,6 +1418,8 @@ export interface RenderSweepReportOptions {
   sourceStatus: readonly SourceStatus[];
   rows: readonly SweepRow[];
   newRows: readonly SweepRow[];
+  /** Clusters that mirror an open `security` issue (Issue #1518). */
+  trackedRows: readonly SweepRow[];
   alreadyOpen: readonly SweepRow[];
   filed: readonly FiledIssue[];
   deferred: readonly SweepRow[];
@@ -1397,6 +1452,7 @@ export function renderSweepReport(options: RenderSweepReportOptions): string {
     sourceStatus,
     rows,
     newRows,
+    trackedRows,
     alreadyOpen,
     filed,
     deferred,
@@ -1440,22 +1496,23 @@ export function renderSweepReport(options: RenderSweepReportOptions): string {
   }
   lines.push("", "## Summary", "");
   lines.push(
-    "| Severity | Deduplicated | New | Baselined |",
-    "| -------- | -----------: | --: | --------: |",
+    "| Severity | Deduplicated | New | Tracked | Baselined |",
+    "| -------- | -----------: | --: | ------: | --------: |",
   );
   const severities: SweepSeverity[] = ["critical", "high", "medium", "low"];
   for (const severity of severities) {
     const all = rows.filter((r) => r.severity === severity);
     const fresh = all.filter((r) => r.status === "new");
+    const tracked = all.filter((r) => r.status === "tracked");
     lines.push(
-      `| ${severity} | ${all.length} | ${fresh.length} | ${
-        all.length - fresh.length
+      `| ${severity} | ${all.length} | ${fresh.length} | ${tracked.length} | ${
+        all.length - fresh.length - tracked.length
       } |`,
     );
   }
   lines.push(
-    `| **total** | **${rows.length}** | **${newRows.length}** | **${
-      rows.length - newRows.length
+    `| **total** | **${rows.length}** | **${newRows.length}** | **${trackedRows.length}** | **${
+      rows.length - newRows.length - trackedRows.length
     }** |`,
     "",
     "## Triage table",
@@ -1513,6 +1570,26 @@ export function renderSweepReport(options: RenderSweepReportOptions): string {
     lines.push("");
   }
 
+  if (trackedRows.length > 0) {
+    lines.push(
+      "## Tracked by an open issue",
+      "",
+      "Reported by the worker scan alone, so each of these *is* an open",
+      "`security` issue in this repository — already triaged and already",
+      "owned. They leave the sweep when their issue closes, so they are not",
+      "baseline material and they do not fail the run (Issue #1518).",
+      "",
+    );
+    for (const row of trackedRows) {
+      const detail = row.findings.map((f) => `\`${f.ruleId}\``).join("; ");
+      lines.push(
+        `- \`${row.id}\` ${SEVERITY_EMOJI[row.severity]} ${row.family} — ` +
+          `${detail}${row.issue !== undefined ? ` (#${row.issue})` : ""}`,
+      );
+    }
+    lines.push("");
+  }
+
   if (staleEntries.length > 0) {
     lines.push(
       "## Stale baseline entries",
@@ -1527,7 +1604,13 @@ export function renderSweepReport(options: RenderSweepReportOptions): string {
 
   lines.push("## Verdict", "");
   if (baselineErrors.length === 0 && newRows.length === 0) {
-    lines.push("✅ No unbaselined findings.", "");
+    lines.push(
+      "✅ No unbaselined findings." +
+        (trackedRows.length > 0
+          ? ` ${trackedRows.length} finding(s) tracked by an open issue.`
+          : ""),
+      "",
+    );
   } else {
     if (newRows.length > 0) {
       lines.push(
@@ -1564,6 +1647,10 @@ function statusCell(
       return row.issue !== undefined
         ? `accepted (#${row.issue})`
         : "accepted (baselined)";
+    case "tracked":
+      return row.issue !== undefined
+        ? `tracked (#${row.issue})`
+        : "tracked (open issue)";
     default: {
       const filedIssue = filedById.get(row.id);
       if (filedIssue !== undefined) {
@@ -2117,7 +2204,10 @@ export async function runSecurityTreeSweep(
     // back to the line anchor rather than failing the sweep.
     (path, line) => readTreeLine(options.repoDir, path, line),
   );
-  const { rows, newRows, staleEntries } = classifyClusters(clusters, baseline);
+  const { rows, newRows, trackedRows, staleEntries } = classifyClusters(
+    clusters,
+    baseline,
+  );
 
   // Dedup against the issues already open, whichever mode we are in — the
   // report says "already open" either way, and filing skips them.
@@ -2166,6 +2256,7 @@ export async function runSecurityTreeSweep(
     sourceStatus,
     rows,
     newRows,
+    trackedRows,
     alreadyOpen,
     filed,
     deferred,
@@ -2183,6 +2274,7 @@ export async function runSecurityTreeSweep(
     ok,
     rows: rows.length,
     newRows: newRows.length,
+    trackedRows: trackedRows.length,
     alreadyOpen: alreadyOpen.length,
     filed: filed.length,
     deferred: deferred.length,
@@ -2196,6 +2288,7 @@ export async function runSecurityTreeSweep(
     sourceStatus,
     rows,
     newRows,
+    trackedRows,
     alreadyOpen,
     filed,
     deferred,
@@ -2212,6 +2305,7 @@ function buildSummary(counts: {
   ok: boolean;
   rows: number;
   newRows: number;
+  trackedRows: number;
   alreadyOpen: number;
   filed: number;
   deferred: number;
@@ -2221,7 +2315,11 @@ function buildSummary(counts: {
   const scope = `${counts.rows} deduplicated finding(s) across ` +
     `${counts.trackedFiles} tracked file(s)`;
   if (counts.ok) {
-    return `✅ Whole-tree security sweep clean: ${scope}, all baselined.`;
+    const tracked = counts.trackedRows > 0
+      ? `, ${counts.trackedRows} tracked by an open issue`
+      : "";
+    return `✅ Whole-tree security sweep clean: ${scope}, all baselined` +
+      `${tracked}.`;
   }
   const problems: string[] = [];
   if (counts.baselineErrors > 0) {

@@ -130,9 +130,14 @@ export function groupChangedPaths(
  */
 export function normalisePageText(html: string): string {
   return html
-    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
-    .replace(/<!--[\s\S]*?-->/g, " ")
+    // `\s*` before the `>`: HTML allows whitespace inside an end tag, so
+    // `</script >` closes the element and a pattern demanding `</script>`
+    // exactly leaves the whole script body in the "visible" text
+    // (Issue #1518, CodeQL js/bad-tag-filter). `--!>` closes a comment for
+    // the same reason.
+    .replace(/<script\b[\s\S]*?<\/script\s*>/gi, " ")
+    .replace(/<style\b[\s\S]*?<\/style\s*>/gi, " ")
+    .replace(/<!--[\s\S]*?--!?>/g, " ")
     .replace(/<[^>]*>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
