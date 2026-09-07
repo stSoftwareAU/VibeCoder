@@ -2106,7 +2106,7 @@ the alias-follows-the-latest rule intends.
 **A previous-generation Fable is now degraded.** `modelsMatch()` matches at
 tier-family level, so a run served `claude-fable-5` while `claude-fable-5-1` is
 current passed as healthy and the downgrade was invisible outside the bill.
-`worker/deno/lib/model_generation.ts` carries `CURRENT_TIER_MODELS` — the
+`worker/deno/lib/current_models.ts` carries `CURRENT_TIER_MODELS` — the
 worker-maintained "latest model of this tier", updated alongside the pricing
 rows above — and `assessDegradation()` reports a run whose served models all
 belong to an older generation of the expected tier as degraded, naming both:

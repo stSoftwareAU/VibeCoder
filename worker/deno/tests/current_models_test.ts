@@ -1,5 +1,5 @@
 /**
- * Tests for model_generation.ts — the worker's current-generation model
+ * Tests for current_models.ts — the worker's current-generation model
  * reference and the previous-generation comparison (Issue #1362).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
@@ -9,7 +9,7 @@ import { assertEquals } from "@std/assert";
 import {
   CURRENT_TIER_MODELS,
   previousGenerationOf,
-} from "../lib/model_generation.ts";
+} from "../lib/current_models.ts";
 import { lookupModelPricing } from "../lib/token_usage.ts";
 
 // ---------------------------------------------------------------------------

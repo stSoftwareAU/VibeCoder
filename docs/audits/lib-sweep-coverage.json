@@ -644,6 +644,7 @@
         "worker/deno/lib/milestone_priority.ts",
         "worker/deno/lib/milestone_progress.ts",
         "worker/deno/lib/model_fallback.ts",
+        "worker/deno/lib/current_models.ts",
         "worker/deno/lib/model_generation_name_check.ts",
         "worker/deno/lib/monitored_repo_access.ts",
         "worker/deno/lib/needs_human_direct_label_check.ts",

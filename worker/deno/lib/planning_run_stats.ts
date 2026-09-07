@@ -30,7 +30,7 @@ import {
   formatCacheHitRate,
   isCacheHitRateRegressed,
 } from "./prompt_cache_telemetry.ts";
-import { previousGenerationOf } from "./model_generation.ts";
+import { previousGenerationOf } from "./current_models.ts";
 
 // ---------------------------------------------------------------------------
 // Types
