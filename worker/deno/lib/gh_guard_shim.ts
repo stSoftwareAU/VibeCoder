@@ -75,6 +75,7 @@ import {
   DENO_SEED_DIR_ENV,
   expectsReadOnlyGuardCache,
   type GuardDenoDir,
+  type GuardDenoDirProbe,
   resolveGuardDenoDir,
 } from "./guard_deno_dir.ts";
 import {
@@ -177,6 +178,14 @@ export interface GhGuardShimOptions {
   record?: ShimAuditRecorder;
   /** Override temp-directory creation (test seam). */
   makeTempDir?: () => Promise<string>;
+  /**
+   * Override the guard-cache directory probe (test seam, Issue #1531). The
+   * resolver falls back to the image's default seed path when the
+   * environment names none, so a test that means "no seed available" must
+   * say so through the probe rather than rely on that path being absent on
+   * the host — inside the worker container it is present and read-only.
+   */
+  guardDenoDirProbe?: GuardDenoDirProbe;
 }
 
 /**
@@ -517,7 +526,11 @@ export async function installGhGuardShim(
   // own. Only the container is expected to have the seed; there, its absence
   // (or a writable one) means the guard's compiled modules are agent-writable
   // between calls, which is said out loud rather than assumed away.
-  const denoDir = resolveGuardDenoDir(`${dir}/deno-cache`, env);
+  const denoDir = resolveGuardDenoDir(
+    `${dir}/deno-cache`,
+    env,
+    opts.guardDenoDirProbe,
+  );
   if (!denoDir.readOnly && expectsReadOnlyGuardCache(env)) {
     warn(
       `[SECURITY] [GH_GUARD_CACHE_WRITABLE] the guard child's Deno cache ` +

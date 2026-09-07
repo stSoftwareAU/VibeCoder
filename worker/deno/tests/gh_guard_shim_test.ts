@@ -23,6 +23,7 @@ import {
 } from "../lib/gh_guard_shim.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 import {
+  DEFAULT_DENO_SEED_DIR,
   DENO_SEED_DIR_ENV,
   realGuardDenoDirProbe,
 } from "../lib/guard_deno_dir.ts";
@@ -1423,7 +1424,6 @@ Deno.test({
     const agentCache = await Deno.makeTempDir({
       prefix: "gh_guard_agent_cache_",
     });
-    const missingSeed = `${agentCache}/no-such-seed`;
     const warnings: string[] = [];
     try {
       const shim = expectInstalled(
@@ -1436,10 +1436,11 @@ Deno.test({
           active: true,
           allowedRepos: ["stSoftwareAU/VibeCoder"],
           warn: (m) => warnings.push(m),
-          env: envFrom({
-            [DENO_SEED_DIR_ENV]: missingSeed,
-            [BASE_DIR_ENV]: "/checkout",
-          }),
+          env: envFrom({ [BASE_DIR_ENV]: "/checkout" }),
+          // "No seed available" is the probe's answer, not the host's
+          // filesystem: inside the worker container the default seed path
+          // really exists and is read-only (Issue #1531).
+          guardDenoDirProbe: () => "absent",
         }),
       );
       try {
@@ -1490,11 +1491,54 @@ Deno.test({
         active: true,
         allowedRepos: ["stSoftwareAU/VibeCoder"],
         warn: (m) => warnings.push(m),
-        env: envFrom({ [DENO_SEED_DIR_ENV]: `${stub.dir}/absent` }),
+        env: emptyEnv,
+        guardDenoDirProbe: () => "absent",
       }),
     );
     try {
       assertEquals(shim.denoDir.source, "per-run");
+      assertEquals(
+        warnings.filter((w) => w.includes("GH_GUARD_CACHE_WRITABLE")),
+        [],
+      );
+    } finally {
+      await shim.cleanup();
+      await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "gh-guard-shim - the default image seed is used when it is there and read-only, wherever the suite runs (Issue #1531)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const stub = await makeStubGh();
+    const warnings: string[] = [];
+    // The probe stands in for the container: the default seed path exists
+    // and refuses writes, whatever this host's filesystem says.
+    const shim = expectInstalled(
+      await installGhGuardShim({
+        baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
+        active: true,
+        allowedRepos: ["stSoftwareAU/VibeCoder"],
+        warn: (m) => warnings.push(m),
+        env: envFrom({ [BASE_DIR_ENV]: "/checkout" }),
+        guardDenoDirProbe: (path) =>
+          path === DEFAULT_DENO_SEED_DIR ? "read-only" : "absent",
+      }),
+    );
+    try {
+      assertEquals(shim.denoDir, {
+        path: DEFAULT_DENO_SEED_DIR,
+        readOnly: true,
+        source: "seed-default",
+      });
+      assertStringIncludes(
+        await Deno.readTextFile(shim.shimPath),
+        `export DENO_DIR='${DEFAULT_DENO_SEED_DIR}'`,
+      );
       assertEquals(
         warnings.filter((w) => w.includes("GH_GUARD_CACHE_WRITABLE")),
         [],
