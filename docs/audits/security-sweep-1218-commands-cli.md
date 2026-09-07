@@ -226,6 +226,11 @@ script is never printed.
 | SEC-1218-08 | [#1270](https://github.com/stSoftwareAU/VibeCoder/issues/1270) | `commands/software_updates.ts:47`                                                            | low / high            |
 | SEC-1218-09 | [#1271](https://github.com/stSoftwareAU/VibeCoder/issues/1271) | `commands/security_tree_sweep.ts:98`                                                         | low / medium          |
 
+SEC-1218-05 has since been fixed on #1267: `rotateAllLogs` now names what it
+rotates (`isRotatableLogName` in `lib/log_rotation.ts`) instead of accepting any
+`.log` / `.jsonl` name, so a third-party file in the operator-set log directory
+is neither renamed nor stripped of its oldest generation.
+
 SEC-1218-01 has since been fixed on #1263: the clarification round limit is
 counted from the issue's authored comments, filtered through the fleet identity
 in `alert_dedup_authors.ts`, rather than by matching a heading in the comment

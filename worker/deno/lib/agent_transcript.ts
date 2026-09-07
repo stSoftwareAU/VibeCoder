@@ -30,7 +30,8 @@
  * session's transcript is inspectable while it is still wedged.
  *
  * Retention: the housekeeping pass every run makes (`run_housekeeping.ts`)
- * runs `log-rotation` — which size-rotates `*.jsonl` — and then
+ * runs `log-rotation` — which size-rotates the worker's own logs, transcripts
+ * among them (Issue #1267) — and then
  * `worker-log-cleanup`, whose `AGENT_TRANSCRIPT_PATTERN` ages transcripts out
  * with the worker logs: three days, and a 200-file hard cap. Local retention
  * is therefore bounded without an operator doing anything; exporting a
