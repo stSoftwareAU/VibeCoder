@@ -578,10 +578,13 @@ module's own design notes so they stay visible.
 **False positives cost real output.** `redactPromptLeakage` runs on every
 published `gh` body and title, so a mask on legitimate prose is a live cost,
 not a theoretical one. Thresholds were tuned against this repository's own
-documentation and 8,874 archived PR-summary paragraphs; the two phrases whose
-vocabulary is the repository's everyday vocabulary — the
-reserved-workflow-labels sentence and the technical-requirements sentence — are
-listed in `VERBATIM_ONLY_PHRASES` and matched verbatim only.
+documentation and its 8,892 archived PR-summary paragraphs; the three phrases
+whose vocabulary is the repository's everyday vocabulary — the
+reserved-workflow-labels sentence, the technical-requirements sentence and the
+GitHub-issue-provenance sentence — are listed in `VERBATIM_ONLY_PHRASES` and
+matched verbatim only. A paraphrase match also needs at least four distinct
+content tokens, whatever the ratio computes, so three shared words never mask a
+paragraph.
 
 Add a phrase to `RAW_LEAK_PHRASES` when a new distinctive instruction sentence
 enters the prompt scaffolding — and to `VERBATIM_ONLY_PHRASES` as well when its
