@@ -32,8 +32,10 @@
  * `gh` wrapper first on the child's `PATH`; the wrapper re-enters the same
  * allowlist decision (`gh_guard_decision.ts`) before the real binary runs.
  * That wrapper is a containment boundary, not a sandbox — an agent that
- * calls the real binary by absolute path still bypasses it. The durable fix
- * remains the per-run scoped token noted below.
+ * calls the real binary by absolute path still bypasses it. Behind it sits the
+ * credential layer noted below (Issue #1391): the token itself only reaches
+ * the repos the run may write to, so a bypass of the wrapper is not a bypass
+ * of the boundary.
  *
  * Fail-open until seeded. The allowlist is inert until a run seeds it with
  * {@link seedWriteRepoAllowlist}, so unrelated flows and tests are
@@ -66,9 +68,18 @@
  * snapshot says so with a `[SECURITY] [WRITE_REPO_GRANT_AFTER_SPAWN]` line
  * rather than silently appearing to widen it. See SECURITY.md §6.
  *
- * No credential/token changes (Issue #3311 scope): this is code-level
- * containment only. Per-run scoped GitHub App tokens are a deferred
- * follow-up.
+ * Credential layer (Issue #1391). #3311 was code-level containment only, and
+ * the deferred half was the credential itself: an unscoped installation token
+ * carries the App's permissions on *every* repo of the installation, so any
+ * write that slips past the two code chokepoints — a new direct spawn, a
+ * classifier gap, the agent calling the real `gh` binary by absolute path —
+ * still succeeds. {@link installationTokenRepoScope} closes that: while
+ * enforcement is active, `gh_spawn.ts` mints the installation token scoped to
+ * exactly the repos this run may write to, so GitHub refuses the rest.
+ * {@link withTokenScopedRepo} is the one way to widen the *credential's* reach
+ * without widening the write allowlist — the cross-repo dependency-PR bridge
+ * needs to READ a dependency repo before the `withScopedWriteRepo` grant lets
+ * it write one PR.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -183,6 +194,27 @@ export interface WriteRepoAllowlistContext {
    */
   readonly pinned: Map<string, number>;
   /**
+   * Repos the minted installation token may **reach**, beyond the repos this
+   * run may write to (Issue #1391), with a refcount per repo.
+   *
+   * A GitHub App token is scoped per repository, not per verb, so a repo the
+   * worker only needs to READ must still be named in the token's scope. This
+   * set exists so naming it there does not also put it on the write
+   * allowlist: the credential reaches it, the `spawnGh` chokepoint still
+   * refuses every write to it. Granted only by {@link withTokenScopedRepo} and
+   * released when that call settles.
+   */
+  readonly tokenScoped: Map<string, number>;
+  /**
+   * The casing each normalised slug was first seen in (Issue #1391).
+   *
+   * Every set above is keyed by the lower-cased slug so comparisons are
+   * case-insensitive, but {@link installationTokenRepoScope} feeds repository
+   * names to GitHub, and a name is worth sending exactly as the operator wrote
+   * it rather than as this module happened to fold it.
+   */
+  readonly slugCasing: Map<string, string>;
+  /**
    * Whether an agent subprocess has already baked a snapshot of this run's
    * allowlist into its `gh` guard shim (Issue #3861).
    *
@@ -199,6 +231,8 @@ export function createWriteRepoAllowlistContext(): WriteRepoAllowlistContext {
     active: false,
     allowed: new Set<string>(),
     pinned: new Map<string, number>(),
+    tokenScoped: new Map<string, number>(),
+    slugCasing: new Map<string, string>(),
     agentSnapshotTaken: false,
   };
 }
@@ -242,6 +276,19 @@ let securityLogger: SecurityLogger = (m) => console.error(m);
 /** Normalise a repo slug for case-insensitive comparison. */
 function normalise(repo: string): string {
   return repo.trim().toLowerCase();
+}
+
+/**
+ * Normalise `repo` and remember the casing it arrived in (Issue #1391), so the
+ * repository names sent to GitHub read as the operator wrote them.
+ */
+function normaliseKeepingCase(repo: string): string {
+  const trimmed = repo.trim();
+  const n = trimmed.toLowerCase();
+  if (n.length > 0 && !ctx().slugCasing.has(n)) {
+    ctx().slugCasing.set(n, trimmed);
+  }
+  return n;
 }
 
 /**
@@ -308,7 +355,7 @@ export function seedWriteRepoAllowlist(targetRepo: string): void {
  * @param repo - Additional `owner/repo` to allow.
  */
 export function registerWriteRepo(repo: string): void {
-  const n = normalise(repo);
+  const n = normaliseKeepingCase(repo);
   if (n.length === 0) return;
   const c = ctx();
   if (c.agentSnapshotTaken && !c.allowed.has(n)) {
@@ -352,7 +399,7 @@ export async function withScopedWriteRepo<T>(
   repo: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const n = normalise(repo);
+  const n = normaliseKeepingCase(repo);
   const c = ctx();
   // Nothing to grant: no slug, enforcement inactive, or already writable.
   if (n.length === 0 || !c.active || c.allowed.has(n) || c.pinned.has(n)) {
@@ -372,6 +419,81 @@ export async function withScopedWriteRepo<T>(
 }
 
 /**
+ * Run `fn` with `repo` reachable by the run's **installation token**, without
+ * putting it on the write allowlist (Issue #1391).
+ *
+ * A GitHub App token is scoped per repository, not per verb: a repo the worker
+ * must READ has to be named in the token's scope or every call to it 404s. The
+ * one production caller is the cross-repo dependency-PR bridge
+ * (`cross_repo_pr_handoff.ts`), which probes an authorised internal dependency
+ * — its default branch, the pushed head, an already-open PR — before opening
+ * the single PR that {@link withScopedWriteRepo} covers.
+ *
+ * The grant is deliberately weaker than {@link withScopedWriteRepo}:
+ *
+ * - **Reach, not authority** — the repo is *not* added to `allowed`, so the
+ *   `spawnGh` chokepoint refuses every write to it exactly as before.
+ * - **Scoped in time** — refcounted and released when `fn` settles, including
+ *   when it throws.
+ * - **Worker-only** — the agent subprocess holds its own credential and its
+ *   own baked allowlist snapshot; neither is touched here.
+ *
+ * Callers MUST validate the target first; this helper enforces scope, not
+ * policy. A no-op on a blank slug, and inert while enforcement is inactive
+ * (an unscoped token already reaches everything).
+ *
+ * @param repo - `owner/repo` the token may reach for the duration of `fn`.
+ * @param fn - The validated cross-repo operation.
+ */
+export async function withTokenScopedRepo<T>(
+  repo: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const n = normaliseKeepingCase(repo);
+  const c = ctx();
+  if (n.length === 0 || !c.active) return await fn();
+  securityLogger(
+    `[SECURITY] [TOKEN_SCOPE_GRANT] Installation token scoped to include ${repo.trim()} ` +
+      "for the duration of one validated cross-repo call — read reach only; " +
+      "writes to it are still refused by the write-repo allowlist.",
+  );
+  c.tokenScoped.set(n, (c.tokenScoped.get(n) ?? 0) + 1);
+  try {
+    return await fn();
+  } finally {
+    const count = c.tokenScoped.get(n) ?? 0;
+    if (count <= 1) c.tokenScoped.delete(n);
+    else c.tokenScoped.set(n, count - 1);
+  }
+}
+
+/**
+ * The repositories the run's GitHub App installation token may reach
+ * (Issue #1391).
+ *
+ * `null` while enforcement is inactive — the run has not seeded an allowlist,
+ * so there is nothing to scope to and the token keeps the installation's full
+ * reach (the same fail-open-until-seeded rule the write checks follow). Once
+ * seeded it is the repos this run may write to (`allowed` ∪ `pinned`) plus any
+ * repo a live {@link withTokenScopedRepo} grant needs to read.
+ *
+ * Slugs are returned in the casing they were registered in — GitHub is fed
+ * repository names, not this module's comparison keys.
+ *
+ * @returns Sorted `owner/repo` slugs, or `null` for an unscoped token.
+ */
+export function installationTokenRepoScope(): string[] | null {
+  const c = ctx();
+  if (!c.active) return null;
+  const keys = new Set([
+    ...c.allowed,
+    ...c.pinned.keys(),
+    ...c.tokenScoped.keys(),
+  ]);
+  return [...keys].map((n) => c.slugCasing.get(n) ?? n).sort();
+}
+
+/**
  * Pin a repo so it stays writable across allowlist reseeds (Issue #3760).
  *
  * Called by `startHeartbeat` with the claim's repo before the initial
@@ -382,7 +504,7 @@ export async function withScopedWriteRepo<T>(
  * @param repo - `owner/repo` to pin.
  */
 export function pinWriteRepo(repo: string): void {
-  const n = normalise(repo);
+  const n = normaliseKeepingCase(repo);
   if (n.length === 0) return;
   const { pinned } = ctx();
   pinned.set(n, (pinned.get(n) ?? 0) + 1);

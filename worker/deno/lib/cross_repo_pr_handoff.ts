@@ -46,7 +46,10 @@ import {
   type RunCommand,
 } from "./cross_repo_fix.ts";
 import { spawnGh } from "./gh_spawn.ts";
-import { withScopedWriteRepo } from "./write_repo_allowlist.ts";
+import {
+  withScopedWriteRepo,
+  withTokenScopedRepo,
+} from "./write_repo_allowlist.ts";
 import {
   escalateToHuman as defaultEscalateToHuman,
   type EscalateToHumanOptions,
@@ -326,7 +329,11 @@ function buildPrBody(
  * business writing to it.
  *
  * The single `gh pr create` runs inside {@link withScopedWriteRepo}, so the
- * worker's write-repo allowlist opens for that one call and closes again.
+ * worker's write-repo allowlist opens for that one call and closes again. The
+ * probes that precede it run inside {@link withTokenScopedRepo} instead
+ * (Issue #1391) — the run's installation token is scoped to the repos it may
+ * write to, so reaching the dependency repo at all needs the credential
+ * widened for reads without widening what may be written.
  */
 export async function openDeclaredCrossRepoPr(
   options: OpenDeclaredCrossRepoPrOptions,
@@ -384,6 +391,30 @@ export async function openDeclaredCrossRepoPr(
       ),
     };
   }
+
+  // The remaining steps all talk to the dependency repo, and a scoped
+  // installation token (Issue #1391) cannot reach a repo it was not minted
+  // for — the probes below would 404 and the bridge would report the target
+  // as unreachable. The grant is read reach only: the write allowlist still
+  // refuses every write to it bar the one `withScopedWriteRepo` opens.
+  return await withTokenScopedRepo(
+    repo,
+    () => probeAndOpenAuthorisedPr(options, runner),
+  );
+}
+
+/**
+ * Steps 2–6 of {@link openDeclaredCrossRepoPr}, once the target is authorised.
+ *
+ * Split out so the whole dependency-repo conversation runs inside one
+ * {@link withTokenScopedRepo} grant.
+ */
+async function probeAndOpenAuthorisedPr(
+  options: OpenDeclaredCrossRepoPrOptions,
+  runner: RunCommand,
+): Promise<Result<CrossRepoPrOutcome>> {
+  const { declaration } = options;
+  const { repo, branch } = declaration;
 
   // 2. Internal + reachable + pushable.
   const access = await probeCrossRepoAccess(repo, runner);
