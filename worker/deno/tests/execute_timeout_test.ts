@@ -11,7 +11,10 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { buildFailureMessage } from "../lib/execute_claude_phase.ts";
+import {
+  buildFailureMessage,
+  buildFailureOutputTail,
+} from "../lib/execute_claude_phase.ts";
 import {
   buildExtensionTelemetry,
   buildTimeoutFailureReason,
@@ -97,7 +100,7 @@ Deno.test("execute timeout - the issue-facing failure message names the extensio
   const message = buildFailureMessage({
     failureType: "timeout",
     failureReason: buildTimeoutFailureReason(3600, EXTENDED_RUN),
-    failureOutput: "partial work",
+    failureOutput: buildFailureOutputTail("partial work"),
     timeoutFailureSummary: "",
     diagnosticContent: "",
   });
@@ -115,14 +118,14 @@ Deno.test("execute timeout - with the feature disabled the failure message is by
   const legacy = buildFailureMessage({
     failureType: "timeout",
     failureReason: "timed out after 3600 seconds (60 minutes)",
-    failureOutput: "partial work",
+    failureOutput: buildFailureOutputTail("partial work"),
     timeoutFailureSummary: "",
     diagnosticContent: "",
   });
   const built = buildFailureMessage({
     failureType: "timeout",
     failureReason: buildTimeoutFailureReason(3600),
-    failureOutput: "partial work",
+    failureOutput: buildFailureOutputTail("partial work"),
     timeoutFailureSummary: "",
     diagnosticContent: "",
   });

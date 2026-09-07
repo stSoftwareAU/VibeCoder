@@ -27,6 +27,7 @@ import { scanDirectoriesForHardcodedBranches } from "./hardcoded_branch_check.ts
 import { scanDirectoriesForDirectNeedsHuman } from "./needs_human_direct_label_check.ts";
 import { scanDirectoriesForGhSpawn } from "./gh_spawn_chokepoint_check.ts";
 import { scanDirectoriesForGitSpawn } from "./git_spawn_chokepoint_check.ts";
+import { scanDirectoriesForRedactInversion } from "./redact_truncate_order_check.ts";
 import { scanDirectoriesForSharedTmpPath } from "./tmp_state_dir_check.ts";
 import { scanDirectoriesForHomeWorkDir } from "./home_workdir_check.ts";
 import { scanDirectoriesForGitRefArgv } from "./git_ref_argv_check.ts";
@@ -466,6 +467,74 @@ async function runGhSpawnChokepointCheck(
     name,
     status: "FAILED",
     output: `gh spawn chokepoint: FAILED\n${output}`,
+  };
+}
+
+/**
+ * Run the redact-before-truncate order check (Issue #1257).
+ *
+ * Scans Deno lib/ and commands/ source files for a truncation nested inside a
+ * redaction call — `redactSecrets(truncateLogTail(log, maxBytes))` and the
+ * `.slice()` variants. `SECURITY.md` requires the opposite order: cutting
+ * first splits a credential, and the fragment left in the kept text matches no
+ * signature rule on the later pass. Fourteen sinks had drifted into the
+ * inversion, two of them documenting it as deliberate.
+ */
+async function runRedactTruncateOrderCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const name = "redact before truncate";
+  const relDirs = ["worker/deno/lib", "worker/deno/commands"];
+
+  let hasDirs = false;
+  for (const relDir of relDirs) {
+    try {
+      const stat = await Deno.stat(`${config.scriptDir}/${relDir}`);
+      if (stat.isDirectory) hasDirs = true;
+    } catch { /* directory doesn't exist */ }
+  }
+
+  if (!hasDirs) {
+    return {
+      name,
+      status: "SKIPPED",
+      output: "deno source directories not found",
+    };
+  }
+
+  const result = await scanDirectoriesForRedactInversion(
+    config.scriptDir,
+    relDirs,
+  );
+
+  if (result.violations.length === 0) {
+    return {
+      name,
+      status: "PASSED",
+      output:
+        `redact before truncate: PASSED (${result.filesScanned} files scanned)`,
+    };
+  }
+
+  const output = [
+    ...result.violations.map(
+      (v) => `VIOLATION: ${v.file}:${v.line}: ${v.text}`,
+    ),
+    "",
+    "A truncation runs inside a redaction call (Issue #1257). Cutting first",
+    "splits a credential — most damagingly a PEM block, whose END marker",
+    "falls past the cut — and the fragment matches no rule on the later pass.",
+    "",
+    "Redact the whole text first: use `redactedTail`/`redactedHead`/",
+    "`redactedLineTail`/`redactedLogTail` from",
+    "`worker/deno/lib/redacted_text.ts`, or call `redactSecrets()` on the",
+    "untruncated text and cut its result.",
+  ].join("\n");
+
+  return {
+    name,
+    status: "FAILED",
+    output: `redact before truncate: FAILED\n${output}`,
   };
 }
 
@@ -1432,6 +1501,10 @@ export async function runQualityGate(
   // spawned by `git_timeout.ts` so the timeout and the audit journal are
   // unavoidable.
   note(await runGitSpawnChokepointCheck(config));
+
+  // redact before truncate (Issue #1257) — a size cap may not run inside a
+  // redaction call, or the cut splits the credential the rules key on.
+  note(await runRedactTruncateOrderCheck(config));
 
   // host work-dir guard (Issue #135, parent #118) — no source file may build
   // a work-dir path from HOME/USERPROFILE outside the commented allowlist,

@@ -16,6 +16,7 @@ import {
   attemptPrSelfHealing,
   buildDiagnosticContext,
   buildFailureMessage,
+  buildFailureOutputTail,
   buildOutOfMemoryMessage,
   createDefaultDeps,
   detectScreenshotRequired,
@@ -105,7 +106,9 @@ Deno.test("buildFailureMessage - timeout with output includes partial output sec
   const message = buildFailureMessage({
     failureType: "timeout",
     failureReason: "timed out after 14400 seconds (240 minutes)",
-    failureOutput: "Working on implementation...\nInstalling dependencies...",
+    failureOutput: buildFailureOutputTail(
+      "Working on implementation...\nInstalling dependencies...",
+    ),
     timeoutFailureSummary: "",
     diagnosticContent: "",
   });
@@ -118,7 +121,7 @@ Deno.test("buildFailureMessage - timeout with zero output includes zero-output d
   const message = buildFailureMessage({
     failureType: "timeout",
     failureReason: "timed out after 14400 seconds (240 minutes)",
-    failureOutput: "",
+    failureOutput: buildFailureOutputTail(""),
     timeoutFailureSummary: "",
     diagnosticContent: "some diagnostics here",
   });
@@ -131,7 +134,7 @@ Deno.test("buildFailureMessage - includes failure summary when provided", () => 
   const message = buildFailureMessage({
     failureType: "timeout",
     failureReason: "timed out",
-    failureOutput: "partial output",
+    failureOutput: buildFailureOutputTail("partial output"),
     timeoutFailureSummary: "Claude was running tests when it timed out",
     diagnosticContent: "",
   });
@@ -143,7 +146,7 @@ Deno.test("buildFailureMessage - rate limit includes rate limit reason", () => {
   const message = buildFailureMessage({
     failureType: "rate_limit",
     failureReason: "hit rate limit after 2 retries (max wait: 600s)",
-    failureOutput: "Rate limit error...",
+    failureOutput: buildFailureOutputTail("Rate limit error..."),
     timeoutFailureSummary: "",
     diagnosticContent: "",
   });
@@ -152,7 +155,9 @@ Deno.test("buildFailureMessage - rate limit includes rate limit reason", () => {
 
 Deno.test("buildOutOfMemoryMessage - names OOM as terminal and includes output tail", () => {
   const message = buildOutOfMemoryMessage({
-    failureOutput: "FATAL ERROR: JavaScript heap out of memory",
+    failureOutput: buildFailureOutputTail(
+      "FATAL ERROR: JavaScript heap out of memory",
+    ),
   });
   assertStringIncludes(message, "ran out of memory (OOM)");
   assertStringIncludes(message, "failing fast");
@@ -161,7 +166,9 @@ Deno.test("buildOutOfMemoryMessage - names OOM as terminal and includes output t
 });
 
 Deno.test("buildOutOfMemoryMessage - handles empty output", () => {
-  const message = buildOutOfMemoryMessage({ failureOutput: "" });
+  const message = buildOutOfMemoryMessage({
+    failureOutput: buildFailureOutputTail(""),
+  });
   assertStringIncludes(message, "ran out of memory (OOM)");
   assertStringIncludes(message, "No output captured");
 });
