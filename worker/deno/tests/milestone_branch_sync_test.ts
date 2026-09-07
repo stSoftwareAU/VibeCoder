@@ -10,10 +10,15 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   findActiveMilestoneBranches,
+  type GhCommandFn,
   type MilestoneBranchSyncDeps,
   shouldSyncMilestone,
   syncMilestoneBranches,
 } from "../lib/milestone_branch_sync.ts";
+import {
+  milestoneActivityPath,
+  type MilestoneActivityState,
+} from "../lib/milestone_activity_gate.ts";
 
 // ============================================================================
 // findActiveMilestoneBranches
@@ -142,6 +147,316 @@ Deno.test("findActiveMilestoneBranches - handles API failure gracefully", async 
 
   const result = await findActiveMilestoneBranches("owner/repo", ghFn);
   assertEquals(result.ok, false);
+});
+
+// ============================================================================
+// findActiveMilestoneBranches — REST closed_issues gate (Issue #1488)
+// ============================================================================
+
+/**
+ * Build a gh stub whose milestone payload carries REST counts, and which
+ * records every closed-issue (GraphQL) query it is asked for.
+ */
+function makeGatedGhFn(
+  milestones: Array<{ title: string; number: number; closed_issues?: number }>,
+  closedIssues: Array<{ number: number; title: string; milestone: string }>,
+): { ghFn: GhCommandFn; closedQueries: string[][] } {
+  const closedQueries: string[][] = [];
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("repos/owner/repo/milestones")) {
+      return JSON.stringify(milestones);
+    }
+    if (key.includes("repos/owner/repo") && key.includes("default_branch")) {
+      return "main";
+    }
+    if (key.includes("issue list") && key.includes("--state closed")) {
+      closedQueries.push([...args]);
+      return JSON.stringify(
+        closedIssues.map((i) => ({
+          number: i.number,
+          title: i.title,
+          milestone: { title: i.milestone },
+        })),
+      );
+    }
+    return "[]";
+  };
+  return { ghFn, closedQueries };
+}
+
+Deno.test("findActiveMilestoneBranches - zero REST closed_issues skips the query (Issue #1488)", async () => {
+  const { ghFn, closedQueries } = makeGatedGhFn(
+    [{ title: "v1.0", number: 1, closed_issues: 0 }],
+    [],
+  );
+  const state: MilestoneActivityState = { observations: {}, dirty: false };
+
+  const result = await findActiveMilestoneBranches(
+    "owner/repo",
+    ghFn,
+    undefined,
+    undefined,
+    state,
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.length, 0);
+  // The expensive half was never reached.
+  assertEquals(closedQueries.length, 0);
+});
+
+Deno.test("findActiveMilestoneBranches - unchanged closed_issues reuses the verdict (Issue #1488)", async () => {
+  const { ghFn, closedQueries } = makeGatedGhFn(
+    [{ title: "v1.0", number: 1, closed_issues: 2 }],
+    [{ number: 10, title: "ten", milestone: "v1.0" }],
+  );
+  const state: MilestoneActivityState = {
+    observations: { "owner/repo|1": { closedIssues: 2, active: true } },
+    dirty: false,
+  };
+
+  const result = await findActiveMilestoneBranches(
+    "owner/repo",
+    ghFn,
+    undefined,
+    undefined,
+    state,
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.length, 1);
+    assertEquals(result.value[0]!.milestoneTitle, "v1.0");
+  }
+  assertEquals(closedQueries.length, 0);
+});
+
+Deno.test("findActiveMilestoneBranches - a gained closed issue re-queries (Issue #1488)", async () => {
+  const { ghFn, closedQueries } = makeGatedGhFn(
+    [{ title: "v1.0", number: 1, closed_issues: 3 }],
+    [{ number: 10, title: "ten", milestone: "v1.0" }],
+  );
+  const state: MilestoneActivityState = {
+    observations: { "owner/repo|1": { closedIssues: 2, active: true } },
+    dirty: false,
+  };
+
+  const result = await findActiveMilestoneBranches(
+    "owner/repo",
+    ghFn,
+    undefined,
+    undefined,
+    state,
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.length, 1);
+  assertEquals(closedQueries.length, 1);
+  assertEquals(state.observations["owner/repo|1"], {
+    closedIssues: 3,
+    active: true,
+  });
+  assertEquals(state.dirty, true);
+});
+
+Deno.test("findActiveMilestoneBranches - a lost closed issue re-queries (Issue #1488)", async () => {
+  // The milestone's only closed issue was reopened: the REST count fell,
+  // and the cached "active" verdict must not stand.
+  const { ghFn, closedQueries } = makeGatedGhFn(
+    [{ title: "v1.0", number: 1, closed_issues: 1 }],
+    [], // no closed issues left
+  );
+  const state: MilestoneActivityState = {
+    observations: { "owner/repo|1": { closedIssues: 2, active: true } },
+    dirty: false,
+  };
+
+  const result = await findActiveMilestoneBranches(
+    "owner/repo",
+    ghFn,
+    undefined,
+    undefined,
+    state,
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.length, 0);
+  assertEquals(closedQueries.length, 1);
+  assertEquals(state.observations["owner/repo|1"], {
+    closedIssues: 1,
+    active: false,
+  });
+});
+
+Deno.test("findActiveMilestoneBranches - first observation queries and records (Issue #1488)", async () => {
+  const { ghFn, closedQueries } = makeGatedGhFn(
+    [{ title: "v1.0", number: 1, closed_issues: 2 }],
+    [{ number: 10, title: "ten", milestone: "v1.0" }],
+  );
+  const state: MilestoneActivityState = { observations: {}, dirty: false };
+
+  const result = await findActiveMilestoneBranches(
+    "owner/repo",
+    ghFn,
+    undefined,
+    undefined,
+    state,
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.length, 1);
+  assertEquals(closedQueries.length, 1);
+  assertEquals(state.observations["owner/repo|1"], {
+    closedIssues: 2,
+    active: true,
+  });
+});
+
+Deno.test("findActiveMilestoneBranches - a REST payload without counts still queries (Issue #1488)", async () => {
+  // Older/partial payloads carry no `closed_issues`; the gate must fail
+  // open rather than skip a milestone it cannot judge.
+  const { ghFn, closedQueries } = makeGatedGhFn(
+    [{ title: "v1.0", number: 1 }],
+    [{ number: 10, title: "ten", milestone: "v1.0" }],
+  );
+  const state: MilestoneActivityState = { observations: {}, dirty: false };
+
+  const result = await findActiveMilestoneBranches(
+    "owner/repo",
+    ghFn,
+    undefined,
+    undefined,
+    state,
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.length, 1);
+  assertEquals(closedQueries.length, 1);
+  assertEquals(state.observations, {});
+});
+
+Deno.test("findActiveMilestoneBranches - closed milestones are pruned from the state (Issue #1488)", async () => {
+  const { ghFn } = makeGatedGhFn(
+    [{ title: "v1.0", number: 1, closed_issues: 0 }],
+    [],
+  );
+  const state: MilestoneActivityState = {
+    observations: {
+      "owner/repo|1": { closedIssues: 0, active: false },
+      "owner/repo|99": { closedIssues: 4, active: true },
+    },
+    dirty: false,
+  };
+
+  await findActiveMilestoneBranches(
+    "owner/repo",
+    ghFn,
+    undefined,
+    undefined,
+    state,
+  );
+
+  assertEquals(Object.keys(state.observations), ["owner/repo|1"]);
+});
+
+Deno.test("syncMilestoneBranches - a second cycle with unchanged milestones issues no closed-issue query (Issue #1488)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const { ghFn, closedQueries } = makeGatedGhFn(
+      [{ title: "v1.0", number: 1, closed_issues: 2 }],
+      [{ number: 10, title: "ten", milestone: "v1.0" }],
+    );
+    const makeDeps = (): MilestoneBranchSyncDeps => ({
+      repos: ["owner/repo"],
+      ghCommandFn: async (args: string[]) => {
+        if (args.join(" ").includes("repos/owner/repo/branches/")) {
+          return "milestone/v1-0";
+        }
+        return await ghFn(args);
+      },
+      syncBranchFn: () =>
+        Promise.resolve({ ok: true as const, value: "up to date" }),
+      log: () => {},
+      cooldownSeconds: 0,
+      lastSyncTimes: new Map(),
+      activityPath: milestoneActivityPath(dir),
+    });
+
+    const first = await syncMilestoneBranches(makeDeps());
+    assertEquals(first.ok, true);
+    if (first.ok) assertEquals(first.value.synced, 1);
+    assertEquals(closedQueries.length, 1);
+
+    // Second cycle: nothing changed, so the expensive half is skipped —
+    // and the branch still syncs.
+    const second = await syncMilestoneBranches(makeDeps());
+    assertEquals(second.ok, true);
+    if (second.ok) assertEquals(second.value.synced, 1);
+    assertEquals(closedQueries.length, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a milestone that gains a closed issue syncs on the next cycle (Issue #1488)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    let closedCount = 0;
+    let closed: Array<{ number: number; title: string; milestone: string }> =
+      [];
+    const closedQueries: string[][] = [];
+    const ghCommandFn = async (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      if (key.includes("repos/owner/repo/milestones")) {
+        return JSON.stringify([
+          { title: "v1.0", number: 1, closed_issues: closedCount },
+        ]);
+      }
+      if (key.includes("repos/owner/repo/branches/")) return "milestone/v1-0";
+      if (key.includes("repos/owner/repo") && key.includes("default_branch")) {
+        return "main";
+      }
+      if (key.includes("issue list") && key.includes("--state closed")) {
+        closedQueries.push([...args]);
+        return JSON.stringify(
+          closed.map((i) => ({
+            number: i.number,
+            title: i.title,
+            milestone: { title: i.milestone },
+          })),
+        );
+      }
+      return "[]";
+    };
+    const makeDeps = (): MilestoneBranchSyncDeps => ({
+      repos: ["owner/repo"],
+      ghCommandFn,
+      syncBranchFn: () =>
+        Promise.resolve({ ok: true as const, value: "merged" }),
+      log: () => {},
+      cooldownSeconds: 0,
+      lastSyncTimes: new Map(),
+      activityPath: milestoneActivityPath(dir),
+    });
+
+    // Cycle 1: nothing completed yet — no query, nothing to sync.
+    const first = await syncMilestoneBranches(makeDeps());
+    assertEquals(first.ok, true);
+    if (first.ok) assertEquals(first.value.synced, 0);
+    assertEquals(closedQueries.length, 0);
+
+    // Cycle 2: an issue was completed — the count moved, so the pass
+    // re-queries and the branch syncs.
+    closedCount = 1;
+    closed = [{ number: 10, title: "ten", milestone: "v1.0" }];
+    const second = await syncMilestoneBranches(makeDeps());
+    assertEquals(second.ok, true);
+    if (second.ok) assertEquals(second.value.synced, 1);
+    assertEquals(closedQueries.length, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 // ============================================================================

@@ -862,6 +862,12 @@ export function validateConfigFileJson(
 export interface GitHubMilestoneJson {
   title: string;
   number: number;
+  /**
+   * Closed issue + PR count carried by the REST milestone payload
+   * (Issue #1488). Optional — a payload built with `--jq` may omit it,
+   * and callers that gate on it must fail open when it is absent.
+   */
+  closed_issues?: number;
 }
 
 /**
@@ -891,6 +897,16 @@ export function validateGitHubMilestonesJson(
       return fail(
         `milestones[${i}].number`,
         `Expected number, got ${typeof item.number}`,
+      );
+    }
+    // Issue #1488: optional, but never silently wrong-typed — a gate that
+    // reads a non-number as a count would skip real work.
+    if (
+      item.closed_issues !== undefined && typeof item.closed_issues !== "number"
+    ) {
+      return fail(
+        `milestones[${i}].closed_issues`,
+        `Expected number, got ${typeof item.closed_issues}`,
       );
     }
   }

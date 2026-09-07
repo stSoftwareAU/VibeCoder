@@ -4367,6 +4367,9 @@ async function syncMilestoneBranchesFn(
   const { milestoneSyncStreakPath } = await import(
     "./milestone_sync_streak.ts"
   );
+  const { milestoneActivityPath } = await import(
+    "./milestone_activity_gate.ts"
+  );
   const { selfHealMilestoneBranches } = await import(
     "./milestone_branch_self_heal.ts"
   );
@@ -4428,6 +4431,10 @@ async function syncMilestoneBranchesFn(
     // tracking issue (proposal 2).
     emitSelfHealEvent: (event) => emitSelfHealEventAuto(event),
     streakPath: milestoneSyncStreakPath(workDir),
+    // Issue #1488: gate the closed-issue query on the REST milestone
+    // counts, so a repo whose milestones have not changed spends nothing
+    // on the expensive half.
+    activityPath: milestoneActivityPath(workDir),
   });
 }
 

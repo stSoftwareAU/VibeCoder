@@ -24,6 +24,15 @@ import {
   isMergeGateFailure,
 } from "./milestone_merge_gate.ts";
 import {
+  decideMilestoneQuery,
+  loadMilestoneActivity,
+  milestoneActivityKey,
+  type MilestoneActivityState,
+  pruneMilestoneActivity,
+  recordMilestoneActivity,
+  saveMilestoneActivity,
+} from "./milestone_activity_gate.ts";
+import {
   loadSyncStreaks,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
   saveSyncStreaks,
@@ -125,6 +134,13 @@ export interface MilestoneBranchSyncDeps {
    * the streak. Unset (tests, ad hoc callers): no streak tracking.
    */
   streakPath?: string;
+  /**
+   * Path of the milestone activity file (Issue #1488). When set, the
+   * REST `closed_issues` count observed for each milestone is persisted
+   * across cycles so an unchanged milestone costs no closed-issue query.
+   * Unset (tests, ad hoc callers): every milestone is queried.
+   */
+  activityPath?: string;
 }
 
 /**
@@ -168,6 +184,8 @@ export interface MilestoneSyncResult {
 interface GitHubMilestone {
   title: string;
   number: number;
+  /** REST closed issue + PR count, when the payload carries it (#1488). */
+  closed_issues?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,8 +199,17 @@ interface GitHubMilestone {
  * indicating that work has started. Milestones with no closed issues are
  * skipped — there is nothing to drift from yet.
  *
+ * The closed-issue lookup is the expensive half, and it is gated on the
+ * REST `closed_issues` count the milestone listing already returns
+ * (Issue #1488): a milestone that has closed nothing, or whose count has
+ * not moved since the previous cycle, is answered from the cheap call.
+ *
  * @param repo - Repository in "owner/repo" format
  * @param ghCommandFn - Function to execute gh CLI commands
+ * @param defaultBranchFn - Optional cached default-branch resolver
+ * @param cache - Optional per-iteration issue cache
+ * @param activity - Optional cross-cycle observation state for the gate.
+ *   Omitted (tests, one-shot callers) means every milestone is queried.
  * @returns Result with list of active milestones
  */
 export async function findActiveMilestoneBranches(
@@ -190,6 +217,7 @@ export async function findActiveMilestoneBranches(
   ghCommandFn: GhCommandFn,
   defaultBranchFn?: DefaultBranchFn,
   cache?: IssueCache,
+  activity?: MilestoneActivityState,
 ): Promise<Result<ActiveMilestone[]>> {
   try {
     // Resolve default branch via injected function (Issue #1509). When the
@@ -239,21 +267,41 @@ export async function findActiveMilestoneBranches(
         continue;
       }
 
-      // Check if milestone has at least one closed issue (Issue #1786:
-      // routes through `fetchClosedIssuesByMilestone` so concurrent
-      // milestones share a cached payload per iteration).
-      try {
-        const closedIssues = await fetchClosedIssuesByMilestone(
+      // Issue #1488: decide from the cheap REST count whether the
+      // expensive closed-issue query is worth making at all.
+      const decision = decideMilestoneQuery(
+        activity?.observations[milestoneActivityKey(repo, milestone.number)],
+        milestone.closed_issues,
+      );
+
+      if (decision.query) {
+        // Check if milestone has at least one closed issue (Issue #1786:
+        // routes through `fetchClosedIssuesByMilestone` so concurrent
+        // milestones share a cached payload per iteration).
+        let active: boolean;
+        try {
+          const closedIssues = await fetchClosedIssuesByMilestone(
+            repo,
+            milestone.title,
+            cache,
+            ghCommandFn,
+          );
+          active = closedIssues.length > 0;
+        } catch {
+          continue; // Cannot check — skip this milestone, record nothing
+        }
+        recordMilestoneActivity(
+          activity,
           repo,
-          milestone.title,
-          cache,
-          ghCommandFn,
+          milestone.number,
+          milestone.closed_issues,
+          active,
         );
-        if (closedIssues.length === 0) {
+        if (!active) {
           continue; // No work started yet — skip
         }
-      } catch {
-        continue; // Cannot check — skip this milestone
+      } else if (!decision.active) {
+        continue; // Known inactive from the cheap call — no query spent
       }
 
       activeMilestones.push({
@@ -262,6 +310,10 @@ export async function findActiveMilestoneBranches(
         defaultBranch,
       });
     }
+
+    // Milestones the repo no longer lists (closed, deleted) must not sit
+    // in the observation file forever (Issue #1488).
+    pruneMilestoneActivity(activity, repo, milestones.map((m) => m.number));
 
     return { ok: true, value: activeMilestones };
   } catch (err) {
@@ -358,6 +410,14 @@ export async function syncMilestoneBranches(
   const streaks = streakPath ? await loadSyncStreaks(streakPath) : {};
   let streaksDirty = false;
 
+  // Closed-issue query gate (Issue #1488): observations of the cheap REST
+  // count, carried across cycles so an unchanged milestone is answered
+  // without the expensive half.
+  const activityPath = deps.activityPath;
+  const activity: MilestoneActivityState | undefined = activityPath
+    ? { observations: await loadMilestoneActivity(activityPath), dirty: false }
+    : undefined;
+
   for (const repo of repos) {
     try {
       // Issue #1519: sync is a local-git operation. Skip repos that have
@@ -373,6 +433,7 @@ export async function syncMilestoneBranches(
         ghCommandFn,
         defaultBranchFn,
         deps.cache,
+        activity,
       );
       if (!milestonesResult.ok) {
         log(
@@ -525,6 +586,14 @@ export async function syncMilestoneBranches(
       await saveSyncStreaks(streakPath, streaks);
     } catch {
       // Persistence is an optimisation — never fail the sweep over it.
+    }
+  }
+
+  if (activityPath && activity?.dirty) {
+    try {
+      await saveMilestoneActivity(activityPath, activity.observations);
+    } catch {
+      // Losing the observations only costs the next cycle a query.
     }
   }
 
