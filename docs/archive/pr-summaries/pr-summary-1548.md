@@ -38,6 +38,12 @@ FAILED | 0 passed | 3 failed | 30 filtered out (9ms)
 ok | 3 passed | 0 failed | 30 filtered out (3ms)
 ```
 
+Added `worker/deno/tests/cross_repo_fix_test.ts::openCrossRepoFixPr - rejects a
+dash-leading branch before any command (Issue #1548)`, which reproduces the
+flaw with the issue's own attack input: it fails against the unfixed code (the
+branch reached `git push -u origin <branch>`) and passes after the fix (the
+call returns an error `Result` and no command is spawned).
+
 Full gate: `./quality.sh` → `Result: PASSED (with skipped checks)` (the skip is
 `config integration`, which needs a live config and is unrelated to this
 change).
