@@ -3,10 +3,10 @@
 `pull.log` and `run_core.log` are appended outside `createLogger`, so neither
 structural redactor covered them — the console patch masks `console.*` calls
 only, not a file write. Both files carry raw `git` stdout and stderr, which is
-the canonical carrier of a tokenised remote URL
-(`https://x-access-token:<token>@github.com/owner/repo`), so a credential in
-git's error text was written verbatim to a durable log under the mounted log
-directory.
+the canonical carrier of a tokenised remote URL — the `x-access-token`
+credential embedded in the `https://` origin URL git echoes back in its own
+error text — so a credential could be written verbatim to a durable log under
+the mounted log directory.
 
 Each module's private `appendLine` helper now routes its text through
 `redactSecrets` before the write:
