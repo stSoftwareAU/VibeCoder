@@ -17,6 +17,7 @@ import {
 } from "../lib/gh_spawn.ts";
 import {
   _resetDerivedAuthorsCache,
+  type DerivedAuthorsDeps,
   type DerivedAuthorsResult,
   resolveDerivedAuthors,
 } from "../lib/derived_authors.ts";
@@ -211,6 +212,7 @@ function resolve(
     cycleId?: unknown;
     log?: (message: string) => void;
   } = {},
+  deps: Partial<DerivedAuthorsDeps> = {},
 ): Promise<DerivedAuthorsResult> {
   return resolveDerivedAuthors(
     {
@@ -222,8 +224,9 @@ function resolve(
       exclusionTeamSlug: overrides.exclusionTeamSlug,
     },
     {
-      cycleId: overrides.cycleId ?? 1,
-      log: overrides.log,
+      cycleId: deps.cycleId ?? overrides.cycleId ?? 1,
+      log: deps.log ?? overrides.log,
+      ...deps,
     },
   );
 }
@@ -318,15 +321,13 @@ Deno.test("resolveDerivedAuthors - a team member with admin access is excluded",
   }
 });
 
-Deno.test("resolveDerivedAuthors - one repo failing fails the whole resolve", async () => {
+Deno.test("resolveDerivedAuthors - one repo failing transiently fails the whole resolve", async () => {
   installRouter({
     collaborators: {
       [REPO_A]: ok(JSON.stringify([
         rawCollaborator("Alice", { push: true }),
       ])),
-      [REPO_B]: fail(
-        "HTTP 403: Must have push access to view repository collaborators.",
-      ),
+      [REPO_B]: fail("gh: connect: network is unreachable", 1),
     },
   });
   try {
@@ -334,10 +335,351 @@ Deno.test("resolveDerivedAuthors - one repo failing fails the whole resolve", as
       await resolve({ repos: [REPO_A, REPO_B] }),
     );
     assertEquals(result.failedSource, REPO_B);
+    assertEquals(result.transient, true, "a network fault may clear");
     assert(
       result.reason.length > 0,
       "failure must name a reason",
     );
+  } finally {
+    restore();
+  }
+});
+
+// ── Issue #1453: a repo this login cannot list is skipped, not fatal ──────
+
+Deno.test("resolveDerivedAuthors - a repo the login cannot list (403 push access) is skipped and named once (Issue #1453)", async () => {
+  installRouter({
+    collaborators: {
+      [REPO_A]: ok(JSON.stringify([
+        rawCollaborator("Alice", { push: true }),
+      ])),
+      [REPO_B]: fail(
+        "gh: Must have push access to view repository collaborators. (HTTP 403)",
+      ),
+    },
+  });
+  const warnings: string[] = [];
+  try {
+    const result = assertSuccess(
+      await resolve({ repos: [REPO_A, REPO_B] }, {
+        cycleId: "c1",
+        warn: (m) => warnings.push(m),
+      }),
+    );
+    assertEquals(
+      [...result.byRepo.keys()],
+      [REPO_A],
+      "beta is left out of the fold",
+    );
+    assertEquals((result.skippedRepos ?? []).map((s) => s.repo), [REPO_B]);
+    assert(
+      (result.skippedRepos ?? [])[0]!.detail.includes("push access"),
+      "GitHub's own words are kept",
+    );
+    assertEquals(warnings.length, 1, "the skip is said once");
+    assert(warnings[0]!.includes(REPO_B), warnings[0]);
+    assert(warnings[0]!.includes("not a trust source"), warnings[0]);
+    assert(warnings[0]!.includes(HOST), "the login is named");
+
+    // A second cycle with the same skipped set says nothing new.
+    assertSuccess(
+      await resolve({ repos: [REPO_A, REPO_B] }, {
+        cycleId: "c2",
+        warn: (m) => warnings.push(m),
+      }),
+    );
+    assertEquals(warnings.length, 1, "an unchanged condition is not repeated");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("resolveDerivedAuthors - a 404 (repo not visible to the login) is skipped the same way (Issue #1453)", async () => {
+  installRouter({
+    collaborators: {
+      [REPO_A]: ok(JSON.stringify([
+        rawCollaborator("Alice", { push: true }),
+      ])),
+      [REPO_B]: fail("gh: Not Found (HTTP 404)"),
+    },
+  });
+  try {
+    const result = assertSuccess(await resolve({ repos: [REPO_A, REPO_B] }));
+    assertEquals((result.skippedRepos ?? []).map((s) => s.repo), [REPO_B]);
+    assertSameSet(result.byRepo.get(REPO_A)!, ["alice"]);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("resolveDerivedAuthors - a 403 that names a rate limit is transient, never a skip (Issue #1453)", async () => {
+  // Skipping narrows the fold, so a busy hour must not read as "this login
+  // cannot push here" — that would drop repos from the intersection and
+  // could widen the fleet-wide set.
+  installRouter({
+    collaborators: {
+      [REPO_A]: ok(JSON.stringify([
+        rawCollaborator("Alice", { push: true }),
+      ])),
+      [REPO_B]: fail(
+        "HTTP 403: API rate limit exceeded for user ID 283951956.",
+      ),
+    },
+  });
+  try {
+    const result = assertFailure(await resolve({ repos: [REPO_A, REPO_B] }));
+    assertEquals(result.failedSource, REPO_B);
+    assertEquals(result.transient, true);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("resolveDerivedAuthors - every repo unlistable fails closed, permanently (Issue #1453)", async () => {
+  installRouter({
+    collaborators: {
+      [REPO_A]: fail("gh: Not Found (HTTP 404)"),
+      [REPO_B]: fail(
+        "gh: Must have push access to view repository collaborators. (HTTP 403)",
+      ),
+    },
+  });
+  try {
+    const result = assertFailure(await resolve({ repos: [REPO_A, REPO_B] }));
+    assertEquals(result.transient, false, "no retry will grant push");
+    assert(
+      result.reason.includes("no monitored repository is a trust source"),
+      result.reason,
+    );
+    assert(result.reason.includes(REPO_A) && result.reason.includes(REPO_B));
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("resolveDerivedAuthors - the fold summary counts what was skipped (Issue #1453)", async () => {
+  installRouter({
+    collaborators: {
+      [REPO_A]: ok(JSON.stringify([
+        rawCollaborator("Alice", { push: true }),
+      ])),
+      [REPO_B]: fail("gh: Not Found (HTTP 404)"),
+    },
+  });
+  const lines: string[] = [];
+  try {
+    assertSuccess(
+      await resolve({ repos: [REPO_A, REPO_B] }, {
+        cycleId: "c1",
+        log: (m) => lines.push(m),
+        warn: () => {},
+      }),
+    );
+    const summary = lines.find((l) => l.includes("collaborators="));
+    assert(summary?.includes("skipped=1"), summary);
+    assert(summary?.includes(`repos=${REPO_A}`), summary);
+  } finally {
+    restore();
+  }
+});
+
+// ── Issue #1453: the snapshot is reused across cycles ──────────────────
+
+/** A stub clock the tests advance by hand. */
+function clock(
+  startMs = 1_000_000,
+): { now: () => number; advance: (s: number) => void } {
+  let t = startMs;
+  return { now: () => t, advance: (s) => (t += s * 1000) };
+}
+
+Deno.test("resolveDerivedAuthors - within the TTL a new cycle is served from the snapshot with no gh call (Issue #1453)", async () => {
+  const { calls } = installRouter({
+    collaborators: {
+      [REPO_A]: ok(JSON.stringify([
+        rawCollaborator("Alice", { push: true }),
+      ])),
+    },
+  });
+  const c = clock();
+  try {
+    const first = assertSuccess(
+      await resolve({ repos: [REPO_A] }, {
+        cycleId: "c1",
+        snapshotTtlSeconds: 3600,
+        now: c.now,
+      }),
+    );
+    assertEquals(first.servedFrom, undefined, "the first answer is a fetch");
+    const fetched = calls.length;
+    assert(fetched > 0);
+
+    c.advance(1800);
+    const second = assertSuccess(
+      await resolve({ repos: [REPO_A] }, {
+        cycleId: "c2",
+        snapshotTtlSeconds: 3600,
+        now: c.now,
+      }),
+    );
+    assertEquals(calls.length, fetched, "no gh call inside the window");
+    assertEquals(second.servedFrom?.snapshot, "within-ttl");
+    assertEquals(second.servedFrom?.ageSeconds, 1800);
+    assertSameSet(second.byRepo.get(REPO_A)!, ["alice"]);
+
+    c.advance(1801);
+    assertSuccess(
+      await resolve({ repos: [REPO_A] }, {
+        cycleId: "c3",
+        snapshotTtlSeconds: 3600,
+        now: c.now,
+      }),
+    );
+    assert(calls.length > fetched, "past the TTL the set is fetched again");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("resolveDerivedAuthors - a TTL of 0 keeps the per-cycle refresh (Issue #1453)", async () => {
+  const { calls } = installRouter({
+    collaborators: {
+      [REPO_A]: ok(JSON.stringify([
+        rawCollaborator("Alice", { push: true }),
+      ])),
+    },
+  });
+  try {
+    await resolve({ repos: [REPO_A] }, {
+      cycleId: "c1",
+      snapshotTtlSeconds: 0,
+    });
+    const fetched = calls.length;
+    await resolve({ repos: [REPO_A] }, {
+      cycleId: "c2",
+      snapshotTtlSeconds: 0,
+    });
+    assert(calls.length > fetched, "every cycle fetches when the TTL is 0");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("resolveDerivedAuthors - a changed input never reuses the snapshot (Issue #1453)", async () => {
+  const { calls } = installRouter({
+    collaborators: {
+      [REPO_A]: ok(JSON.stringify([
+        rawCollaborator("Alice", { push: true }),
+      ])),
+      [REPO_B]: ok(JSON.stringify([
+        rawCollaborator("Bob", { push: true }),
+      ])),
+    },
+  });
+  const c = clock();
+  try {
+    await resolve({ repos: [REPO_A] }, {
+      cycleId: "c1",
+      snapshotTtlSeconds: 3600,
+      now: c.now,
+    });
+    const fetched = calls.length;
+    const result = assertSuccess(
+      await resolve({ repos: [REPO_A, REPO_B] }, {
+        cycleId: "c2",
+        snapshotTtlSeconds: 3600,
+        now: c.now,
+      }),
+    );
+    assert(calls.length > fetched, "a new repo list is a new set");
+    assertEquals(result.servedFrom, undefined);
+    assertEquals([...result.byRepo.keys()], [REPO_A, REPO_B]);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("resolveDerivedAuthors - a transient failure after the TTL serves the snapshot, with its age, until the ceiling (Issue #1453)", async () => {
+  let healthy = true;
+  installRouter({
+    collaborators: {
+      [REPO_A]: () =>
+        healthy
+          ? ok(JSON.stringify([rawCollaborator("Alice", { push: true })]))
+          : fail("HTTP 403: API rate limit exceeded for user ID 1."),
+    },
+  });
+  const c = clock();
+  const warnings: string[] = [];
+  const deps = (cycleId: string) => ({
+    cycleId,
+    snapshotTtlSeconds: 3600,
+    snapshotMaxAgeSeconds: 6 * 3600,
+    now: c.now,
+    warn: (m: string) => warnings.push(m),
+    log: () => {},
+  });
+  try {
+    assertSuccess(await resolve({ repos: [REPO_A] }, deps("c1")));
+
+    healthy = false;
+    c.advance(4000);
+    const served = assertSuccess(
+      await resolve({ repos: [REPO_A] }, deps("c2")),
+    );
+    assertEquals(served.servedFrom?.snapshot, "after-transient-failure");
+    assertEquals(served.servedFrom?.ageSeconds, 4000);
+    assert(
+      served.servedFrom?.reason?.includes("rate limit"),
+      served.servedFrom?.reason,
+    );
+    assertSameSet(served.byRepo.get(REPO_A)!, ["alice"]);
+    assertEquals(warnings.length, 1);
+    assert(warnings[0]!.includes("4000s ago"), warnings[0]);
+
+    c.advance(6 * 3600);
+    const stood = assertFailure(await resolve({ repos: [REPO_A] }, deps("c3")));
+    assertEquals(stood.transient, true);
+    assertEquals(
+      stood.failedSource,
+      REPO_A,
+      "past the ceiling the failure stands",
+    );
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("resolveDerivedAuthors - a permanent failure is never covered by the snapshot (Issue #1453)", async () => {
+  let empty = false;
+  installRouter({
+    collaborators: {
+      [REPO_A]: () =>
+        empty
+          ? ok(JSON.stringify([rawCollaborator("Alice", { pull: true })]))
+          : ok(JSON.stringify([rawCollaborator("Alice", { push: true })])),
+    },
+  });
+  const c = clock();
+  try {
+    assertSuccess(
+      await resolve({ repos: [REPO_A] }, {
+        cycleId: "c1",
+        snapshotTtlSeconds: 60,
+        now: c.now,
+      }),
+    );
+    // Every write collaborator removed: a data condition, not an outage.
+    empty = true;
+    c.advance(120);
+    const result = assertFailure(
+      await resolve({ repos: [REPO_A] }, {
+        cycleId: "c2",
+        snapshotTtlSeconds: 60,
+        now: c.now,
+      }),
+    );
+    assertEquals(result.transient, false);
   } finally {
     restore();
   }

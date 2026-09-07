@@ -52,10 +52,12 @@ import {
 } from "./audit_mutation_classifier.ts";
 import { normaliseGhArgs } from "./gh_flag_parser.ts";
 import { WORKER_FORBIDDEN_LABEL_LITERALS } from "./worker_label_guard.ts";
+import { RESERVED_LABELS } from "./config_defaults.ts";
 import {
   classifyIssueLifecycle,
   ISSUE_LIFECYCLE_VERBS,
 } from "./gh_issue_lifecycle.ts";
+import { classifyPrLifecycle, PR_LIFECYCLE_VERBS } from "./gh_pr_lifecycle.ts";
 import { classifyGhCredentialDisclosure } from "./gh_credential_disclosure_guard.ts";
 import { classifyGhLocalStateChange } from "./gh_local_state_guard.ts";
 import type { ClaimedIssue } from "./claimed_issue_guard.ts";
@@ -94,7 +96,8 @@ export type GhGuardMarker =
   | "GH_UNKNOWN_COMMAND"
   | "GH_LOCAL_STATE_REFUSED"
   | "GH_CREDENTIAL_DISCLOSURE_REFUSED"
-  | "ISSUE_LIFECYCLE_REFUSED";
+  | "ISSUE_LIFECYCLE_REFUSED"
+  | "PR_LIFECYCLE_REFUSED";
 
 /** The guard's verdict for one `gh` argument vector. */
 export interface GhGuardDecision {
@@ -233,9 +236,39 @@ function normaliseLabelName(name: string): string {
   return name.replaceAll("\u200B", "").trim().toLowerCase();
 }
 
-/** Reserved workflow labels, normalised for case-insensitive matching. */
+/**
+ * Reserved workflow labels the agent subprocess may not apply, normalised for
+ * case-insensitive matching.
+ *
+ * The UNION of two lists, deliberately, because each holds something the other
+ * does not (Issue #1422):
+ *
+ * - `RESERVED_LABELS` (`config_defaults.ts`) is the canonical set the worker
+ *   may never self-apply. It is mostly computed from `LABEL_DEFAULTS`, so a
+ *   label renamed there stays covered here with no second edit.
+ * - `WORKER_FORBIDDEN_LABEL_LITERALS` (`worker_label_guard.ts`) carries
+ *   `best-model`, which is NOT in `RESERVED_LABELS`. Deriving from the
+ *   canonical set alone — the obvious reading of this defect — would have
+ *   silently DROPPED that label from the agent denylist while appearing to
+ *   strengthen it.
+ *
+ * The defect was not one stale list. It was two hand-maintained lists that had
+ * drifted in both directions, with only the shorter one reaching the agent
+ * guard: `claude`, `help wanted`, `failed`, `failed-once`,
+ * `needs-clarification`, `needs-human`, `grill-me` and
+ * `needs-failure-detection-repair` were all reserved and none were enforced
+ * here. `failed` and `needs-human` gate the fleet's own escalation, so an
+ * agent able to apply them could park an unrelated issue out of discovery,
+ * and `label_security.ts` could not strip them — it trusts the identity the
+ * agent subprocess authenticates as.
+ *
+ * `label_denylist_union_test.ts` asserts containment in BOTH directions, so
+ * neither list can gain an entry this guard misses.
+ */
 const FORBIDDEN_LABELS: ReadonlySet<string> = new Set(
-  WORKER_FORBIDDEN_LABEL_LITERALS.map((l) => normaliseLabelName(l)),
+  [...RESERVED_LABELS, ...WORKER_FORBIDDEN_LABEL_LITERALS].map((l) =>
+    normaliseLabelName(l)
+  ),
 );
 
 /**
@@ -423,6 +456,58 @@ function unreadableBodyRefusal(verb: string): GhGuardDecision {
   };
 }
 
+/**
+ * Labels the agent legitimately applies to an EXISTING issue (Issue #1422).
+ *
+ * `needs-human` is the hand-off the prompts prescribe verbatim —
+ * `prompts/issue/prompt.md:179` gives the exact `gh issue edit … --add-label
+ * needs-human` call, and `prompts/coding_guidelines/prompt.md:531` states that
+ * call "keeps working". It is also suppression-only: applying it removes the
+ * issue from the work pool, so it can only ever cost the applier throughput
+ * and never gain them anything (`isSuppressionOnlyLabel`, PR #1321). It is
+ * therefore not a privilege escalation and must not be denied outright — doing
+ * so removes the agent's only way to say "a human is needed", which has been
+ * reported as a regression before.
+ *
+ * What #1422 actually describes is narrower: the agent applying such a label
+ * to an UNRELATED sibling issue in the claimed repo, parking it out of
+ * discovery with nothing downstream able to strip it. So the control is
+ * scope, not prohibition.
+ */
+const AGENT_ESCALATION_LABELS: ReadonlySet<string> = new Set(["needs-human"]);
+
+/**
+ * Whether this forbidden label is the run's own escalation on its own issue.
+ *
+ * @returns True when the label may proceed despite being on the denylist.
+ */
+function isPermittedEscalation(
+  label: string,
+  args: readonly string[],
+  info: MutationInfo,
+  ctx: GhGuardContext,
+): boolean {
+  if (!AGENT_ESCALATION_LABELS.has(normaliseLabelName(label))) return false;
+
+  const claim = ctx.claimedIssue;
+  // No claim seeded: the run has no "own issue" to scope to, and this is the
+  // behaviour that has always applied. Unchanged.
+  if (!claim) return true;
+
+  const attempt = classifyIssueLifecycle(args, info);
+  if (!attempt) return true;
+
+  // A different repo is the write-repo allowlist's decision, not this one.
+  const targetRepo = attempt.repo ?? claim.repo;
+  if (!sameRepo(targetRepo, claim.repo)) return true;
+
+  // No issue number is `gh`'s cwd form; during a coding run the clone is the
+  // claimed repo, so it is treated as naming the claim — as the lifecycle
+  // guard above already does.
+  if (attempt.issueNumber === undefined) return true;
+  return attempt.issueNumber === claim.issueNumber;
+}
+
 /** Case-insensitive `owner/repo` comparison. */
 function sameRepo(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
@@ -483,6 +568,62 @@ function refuseClaimedIssueLifecycle(
 }
 
 /**
+ * Refuse a PR-lifecycle decision in the claimed repo (Issue #1462).
+ *
+ * The sibling of {@link refuseClaimedIssueLifecycle}, and the same principle:
+ * the agent decides what the *code* should be, not that the pull request
+ * carrying it is merged, closed, reopened, marked ready or approved. Those are
+ * the worker's calls, and the worker makes them through `direct_merge.ts` —
+ * inside its own Deno process, which never traverses this guard — where CI
+ * freshness and the default-branch human-approval gate are applied. A
+ * prompt-injected agent running `gh pr merge` skips all of it.
+ *
+ * Scoped exactly as the issue-lifecycle refusal is, and for the same reasons:
+ * a command naming a *different* repo is left to the write-repo allowlist,
+ * which refuses it already, and a command naming no repo is `gh`'s cwd form,
+ * which during a coding run is the claimed repo — so it is treated as naming
+ * the claim, the fail-closed direction.
+ *
+ * `ClaimedIssue.allowedVerbs` is deliberately NOT consulted. It is an
+ * *issue*-verb allowance — the shim spells it `--allow-issue-verb`, and it
+ * defaults to `edit` so the `needs-human` escalation keeps working. Reading it
+ * here would mean a future route that permitted `close` on its planning issue
+ * silently permitted `gh pr close` too. No route grants a PR verb, so there is
+ * nothing to read.
+ */
+function refuseClaimedPrLifecycle(
+  args: readonly string[],
+  info: MutationInfo,
+  ctx: GhGuardContext,
+): GhGuardDecision | undefined {
+  const claim = ctx.claimedIssue;
+  if (!claim) return undefined;
+
+  const attempt = classifyPrLifecycle(args, info);
+  if (!attempt) return undefined;
+
+  const targetRepo = attempt.repo ?? claim.repo;
+  if (!sameRepo(targetRepo, claim.repo)) return undefined;
+
+  const target = attempt.prNumber === undefined
+    ? targetRepo
+    : `${targetRepo}#${attempt.prNumber}`;
+  return {
+    allowed: false,
+    marker: "PR_LIFECYCLE_REFUSED",
+    reason: `Refused 'gh ${info.verb}' on ${target} from the agent ` +
+      `subprocess — pull request lifecycle decisions (` +
+      `${PR_LIFECYCLE_VERBS.join(", ")}) on ${claim.repo} are the worker's ` +
+      `or a human's, not the implementing agent's. The worker merges through ` +
+      `its own path, which re-checks CI status, branch freshness and the ` +
+      `default-branch approval gate; a merge issued here has none of them. ` +
+      `Raise the PR with 'gh pr create' and stop there — 'gh pr view', ` +
+      `'gh pr list', 'gh pr comment' and 'gh pr edit' are unaffected. If the ` +
+      `PR should not land, say so in a comment rather than closing it.`,
+  };
+}
+
+/**
  * Decide whether one agent `gh` invocation may proceed.
  *
  * @param args - Arguments about to be passed to the `gh` binary.
@@ -496,9 +637,12 @@ export function evaluateGhCommand(
   const info = classifyGhMutation(args);
 
   if (info) {
-    const forbidden = extractLabelValues(args).find((l) =>
-      FORBIDDEN_LABELS.has(normaliseLabelName(l))
-    );
+    // Every forbidden label is checked, not just the first: a command adding
+    // `needs-human,failed` must still be refused for `failed` even though the
+    // escalation label beside it is permitted (Issue #1422).
+    const forbidden = extractLabelValues(args)
+      .filter((l) => FORBIDDEN_LABELS.has(normaliseLabelName(l)))
+      .find((l) => !isPermittedEscalation(l, args, info, ctx));
     if (forbidden !== undefined) {
       return {
         allowed: false,
@@ -510,6 +654,15 @@ export function evaluateGhCommand(
 
     const lifecycleRefusal = refuseClaimedIssueLifecycle(args, info, ctx);
     if (lifecycleRefusal) return lifecycleRefusal;
+
+    // Issue #1462: the same reasoning one step further along the workflow.
+    // `classifyIssueLifecycle` returns `undefined` for a PR operation by
+    // design, so `gh pr merge` on the claimed repo reached the write-repo
+    // allowlist — which allows it, the claimed repo being on the allowlist by
+    // construction — and merged the agent's own PR with none of the checks
+    // `direct_merge.ts` applies.
+    const prRefusal = refuseClaimedPrLifecycle(args, info, ctx);
+    if (prRefusal) return prRefusal;
 
     // Issue #11/#90/#91: a REST mutation whose body is supplied by `--input`
     // (or an `@file`-sourced query) is argv-invisible, so `extractLabelValues`
@@ -554,7 +707,9 @@ export function evaluateGhCommand(
 
   // Issue #187: a command that rewrites the local `gh` installation —
   // credentials, config, aliases, extensions — changes nothing on GitHub, so
-  // `classifyGhMutation` reports no mutation and it reached here as a "read".
+  // `classifyGhMutation` reports no repo write and it reached here as a
+  // "read" (or, since Issue #1396, as a `non-repo` extension mutation the
+  // write-repo allowlist has nothing to compare).
   // It is not one: the wrapper pins `GH_CONFIG_DIR` to the worker's own
   // persistent identity directory, so a credential written there re-points
   // every later `gh` call, the worker's included. Refused unconditionally,

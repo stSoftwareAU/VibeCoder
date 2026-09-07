@@ -305,6 +305,16 @@ export function classifyRunFailure(
         rationale:
           "The agent did not deliver (quality gate, no changes, missing evidence) — not a worker defect.",
       };
+    case "token_scope":
+      // Issue #1475: the host's credential lacks the `workflow` scope. An
+      // operator grants it; no code changes. Never auto-filed as a worker
+      // defect — the run itself already says exactly what to do.
+      return {
+        fixability: "not_code_fixable",
+        failureClass: "token-scope",
+        rationale:
+          "The worker's token lacks the workflow scope the change needs — a host credential gap, not a worker defect.",
+      };
     case "push_failure":
       // A rejected push is usually permissions/protection or a race — not
       // proven either way.

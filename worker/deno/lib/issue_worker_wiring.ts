@@ -10,6 +10,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { tokenHasWorkflowScope } from "./workflow_scope.ts";
 import type { GitHubClient, Logger, Result, WorkerConfig } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -330,6 +331,12 @@ export interface InfrastructureDeps {
   loadPrompt: typeof loadPrompt;
   shuffleArray: typeof shuffleArray;
   evaluateRunGuard: typeof evaluateRunGuard;
+  /**
+   * Whether the worker's token can push `.github/workflows/` (Issue #1475).
+   * Production reads the launcher's preflight verdict; tests inject it, so
+   * no test has to mutate the process environment.
+   */
+  tokenHasWorkflowScope: () => boolean;
 }
 
 /** Quality — quality gate, helpers. */
@@ -579,6 +586,7 @@ export function createDefaultDeps(
       loadPrompt,
       shuffleArray,
       evaluateRunGuard,
+      tokenHasWorkflowScope: () => tokenHasWorkflowScope(),
     },
 
     quality: {
@@ -1126,6 +1134,8 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     shuffleArray: mockFn<InfrastructureDeps["shuffleArray"]>(<T>(
       items: readonly T[],
     ) => [...items]),
+    // Issue #1475: a mocked host can push workflows unless a test says otherwise.
+    tokenHasWorkflowScope: () => true,
     evaluateRunGuard: mockFn<InfrastructureDeps["evaluateRunGuard"]>(() =>
       Promise.resolve({ action: "proceed", reason: "mock proceed" })
     ),

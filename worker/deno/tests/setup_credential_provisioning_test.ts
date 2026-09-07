@@ -23,6 +23,7 @@ import {
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
 import { listTree, removeTempTree, withTempDir } from "./support/temp_tree.ts";
+import { exposed, under, withMkdirObserver } from "./support/mkdir_observer.ts";
 
 const setupPath = new URL("../../../setup.sh", import.meta.url).pathname;
 
@@ -962,82 +963,6 @@ Deno.test("write_gh_hosts_file - output that is not a login is refused even on e
 // these cases observe the mode each directory has at the instant it is
 // created, by resolving `mkdir` to a shim that records it.
 // ---------------------------------------------------------------------------
-
-/**
- * A `mkdir` that runs the real one and records the mode of every directory it
- * created, one `<octal> <path>` line per directory, into `mkdir.log` beside
- * itself.
- */
-const MKDIR_OBSERVER = `#!/usr/bin/env bash
-real=""
-for candidate in /bin/mkdir /usr/bin/mkdir; do
-    if [[ -x "$candidate" ]]; then
-        real="$candidate"
-        break
-    fi
-done
-if [[ -z "$real" ]]; then
-    echo "mkdir observer: no real mkdir found" >&2
-    exit 127
-fi
-"$real" "$@" || exit $?
-log="\${0%/*}/mkdir.log"
-for arg in "$@"; do
-    [[ -d "$arg" ]] || continue
-    mode="$(stat -c '%a' "$arg" 2>/dev/null || stat -f '%Lp' "$arg" 2>/dev/null || echo '?')"
-    printf '%s %s\\n' "$mode" "$arg" >> "$log"
-done
-`;
-
-/** One directory as it existed the instant `mkdir` created it. */
-interface CreatedDir {
-  mode: number;
-  path: string;
-}
-
-/**
- * Run `fn` with a PATH whose `mkdir` is the observer above (and whose `gh`
- * reaches nothing), returning what `fn` returned alongside every directory
- * created during the run.
- */
-async function withMkdirObserver<T>(
-  fn: (path: string) => Promise<T>,
-): Promise<{ result: T; created: CreatedDir[] }> {
-  const bin = await Deno.makeTempDir({ prefix: "vibe_mkdir_observer_" });
-  try {
-    await Deno.writeTextFile(`${bin}/gh`, "#!/usr/bin/env bash\nexit 1\n");
-    await Deno.chmod(`${bin}/gh`, 0o755);
-    await Deno.writeTextFile(`${bin}/mkdir`, MKDIR_OBSERVER);
-    await Deno.chmod(`${bin}/mkdir`, 0o755);
-
-    const result = await fn(`${bin}:/usr/bin:/bin`);
-
-    const log = await Deno.readTextFile(`${bin}/mkdir.log`).catch(() => "");
-    const created = log.split("\n").filter((line) => line.length > 0).map(
-      (line) => {
-        const [mode, ...rest] = line.split(" ");
-        return { mode: parseInt(mode ?? "", 8), path: rest.join(" ") };
-      },
-    );
-    return { result, created };
-  } finally {
-    await removeTempTree(bin);
-  }
-}
-
-/** The observed directories that live under `root`, `root` itself included. */
-function under(created: CreatedDir[], root: string): CreatedDir[] {
-  return created.filter((dir) =>
-    dir.path === root || dir.path.startsWith(`${root}/`)
-  );
-}
-
-/** Directories an observed run created with any group or world bit set. */
-function exposed(created: CreatedDir[]): string[] {
-  return created
-    .filter((dir) => (dir.mode & 0o077) !== 0)
-    .map((dir) => `${dir.path} (${dir.mode.toString(8)})`);
-}
 
 Deno.test({
   name:

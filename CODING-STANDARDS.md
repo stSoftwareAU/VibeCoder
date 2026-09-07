@@ -361,8 +361,16 @@ which of the three you chose, and why, in the PR summary.
 ## Quality Gates
 
 Iterate with the fast checks — `deno fmt`, `deno lint`, `deno check`, and only
-the test files your change touches. Run `./quality.sh < /dev/null` **once, in
-the foreground**, before raising the PR — provided the run budget covers it,
+the test files your change touches. Then run `deno task check:manifests`
+(Issue #1483): the tree-scanning completeness tests — every new `lib/` module
+claimed by a sweep slice, every `VIBE_*` name registered, every prompt and
+integration suite in its manifest — in a few seconds, under read and env
+permissions only. Its membership is derived from the tree, so it cannot
+drift. A new file or variable that is missing one registration line is the
+commonest way a correct change goes red in CI, and this is where it is found
+for free rather than after a full matrix. Run `./quality.sh < /dev/null`
+**once, in the foreground**, before raising the PR — provided the run budget
+covers it,
 see below — and fix what it reports; re-run it after a fix, never on a timer.
 Never background it behind a `sleep`/`pgrep` poll loop
 — that spends the whole budget waiting (Issue #399). It streams one line per

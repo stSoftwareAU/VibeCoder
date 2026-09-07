@@ -14,6 +14,76 @@ the major and are minted from
 automatic increment; one landed on the automatic patch because the floor was
 not moved ahead of it, and it is recorded under the version it actually took.
 
+## Unreleased — derived trust skips unlistable repos and reuses its snapshot
+
+**Behaviour change to the fail-closed trust rule. Nothing to migrate; read it
+if your worker login is read-only on any monitored repository.**
+
+> Not yet tagged. Recorded here so the version that carries it can be named
+> when it is cut.
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| A monitored repo the worker's login cannot list (404, or 403 "Must have push access") is skipped and named once instead of failing every cycle | #1453 |
+| A successful trusted-author resolve is reused for `trusted_authors_cache_hours` (new key, default `1`; `0` restores the per-cycle refresh), and a transient failure serves the snapshot, with its age logged, for up to six hours | #1453 |
+| The `graphql-calls:` line counts every GraphQL-backed `gh` call (`issue list`, `pr view`, `search`, … as well as `api graphql`), and both the counter and the primary-quota latch are enforced at the `gh` spawn chokepoint, so the thirty-odd modules that spawn `gh` directly are counted and short-circuited too | #1485 |
+| The housekeeping merged-PR issue sweep pre-flights the quota once, stops at the first rate-limit refusal and reports one skipped sweep instead of one failure per repository; it reads through the shared scan and timeline caches and keeps its own watermark (`merged_issue_sweep_watermarks.json` in the work directory) | #1477 |
+| A GitHub mutation that runs while the write-repo allowlist is inactive is still allowed, but the first of each kind per context now logs `[SECURITY] [WRITE_REPO_UNSEEDED]` and journals an `unseeded-<verb>` audit event, so an unseeded write path is visible instead of indistinguishable from a protected one | #1425 |
+
+### In detail
+
+Two behaviour changes to the per-cycle trusted-author refresh (Issue #1453):
+
+- A monitored repo the worker's login **cannot list** (404, or 403 "Must have
+  push access") no longer fails the whole resolve. It is skipped, named once
+  in the log, and left out of the fold; the cycle proceeds on the repos that
+  did resolve. A least-privilege service account with read-only access to
+  data repositories keeps working — before this it stood the host down on
+  every cycle. Only when every repo is unlistable does the resolve fail.
+- A successful resolve is reused for `trusted_authors_cache_hours` (default
+  `1`; `0` restores the per-cycle refresh) before the collaborator lists are
+  fetched again, and on a *transient* failure the snapshot is served, with its
+  age logged, for up to six hours. A collaborator added or revoked mid-window
+  is seen at the next refresh.
+
+Nothing to migrate. To keep the previous cadence, state
+`"trusted_authors_cache_hours": 0`.
+
+The `graphql-calls:` telemetry line (Issue #1485) now counts every
+GraphQL-backed `gh` invocation — every `gh` sub-command plus `gh api
+graphql`; only a plain REST `gh api <path>` is excluded — using the same
+predicate as the primary-quota latch. Expect the number to rise sharply
+against earlier logs: the old line counted only `gh api graphql`, and a
+cycle's `issue list` / `pr list` traffic was invisible to it. The counter
+and the latch both moved to the `gh` spawn chokepoint, so a module that
+spawns `gh` directly is counted, and once the hourly quota is exhausted it
+is skipped without a process, exactly like one that goes through
+`runGhCommandRaw()`. Nothing to configure.
+
+The housekeeping `merged-pr-issue-sweep` step (Issue #1477) no longer loops
+every monitored repository against an exhausted GraphQL quota. It pre-flights
+once per sweep, stops at the first primary-quota refusal, and logs one warning
+naming the condition and how many repositories it left for the next cycle —
+a quota stop is a skip, not a housekeeping failure. It now reads the open-issue
+and closed-PR lists through the same `.gh-scan-cache` and `.gh-timeline-cache`
+the discovery passes fill, and keeps a per-repository watermark in
+`merged_issue_sweep_watermarks.json` under the work directory, advancing only
+past merged PRs it closed or ruled out for good. Delete that file to make the
+sweep re-examine everything once. Nothing to configure.
+
+The write-repo allowlist stays fail-open until a run seeds it (Issue #1425),
+but that state is no longer silent. The first GitHub mutation of each kind —
+verb and target repository — that runs while the allowlist is inactive logs a
+`[SECURITY] [WRITE_REPO_UNSEEDED]` line and records an `unseeded-<verb>`
+event in the audit journal; later writes of the same kind are counted, not
+logged. Expect a handful of these lines per worker process from the main
+loop's ordinary cross-repo maintenance, which runs unseeded by design. A line
+naming a verb you did not expect to see outside a claim is the signal the
+issue asked for: a write path that never seeded the allowlist. Nothing to
+configure.
+
 ## 1.5.5 — the log directory comes from the file alone
 
 **Behaviour change, not a fix. Read the migration before upgrading a host that

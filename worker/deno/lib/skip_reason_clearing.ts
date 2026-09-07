@@ -114,6 +114,8 @@ export const SKIP_REASON_CLEARING: Record<SkipReason, GateClearing> = {
   "dead-label-tracker-escalated": "human",
   "human-pr-blocked-escalated": "human",
   "self-schedule-escalated": "human",
+  // Issue #1475: only an operator granting the `workflow` scope lifts it.
+  "workflow-scope-missing": "permanent",
 };
 
 /**

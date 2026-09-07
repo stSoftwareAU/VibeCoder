@@ -52,7 +52,7 @@ flowchart TD
     caller --> cache --> valid
     valid -- yes --> hit --> caller
     valid -- no --> miss --> gh --> api --> gh --> write --> caller
-    gh -. recordGhCall(args).-> metrics
+    gh -. "spawnGh → recordGhCall(args)" .-> metrics
     hit -. counters.-> metrics
     miss -. counters.-> metrics
 ```
@@ -214,6 +214,10 @@ the next run, and a `gh issue reopen` clears the entry immediately.
 `worker/deno/lib/gh_call_metrics.ts` exposes in-memory counters that
 record every `gh` invocation, every cache hit/miss/expiry, and the
 sub-command bucket of each call (`issue list`, `pr view`, `api`, …).
+The invocation counter is fed from the `gh` spawn chokepoint (`spawnGh`
+in `worker/deno/lib/gh_spawn.ts`, Issue #1485), so a module that spawns
+`gh` directly is counted exactly like one that goes through
+`runGhCommandRaw()`; nothing can issue a `gh` process uncounted.
 The counters are reset at the start of each main-loop iteration and
 logged as a one-line summary at the end:
 
@@ -237,6 +241,23 @@ Reading the line:
 The same metrics object is exported through `getGhCallMetrics()` for
 programmatic inspection, and `find_oldest_issue.ts` reuses the
 underlying counters so its `cache: N hits, M misses` log matches.
+
+A companion line, `graphql-calls: N total, <source>=n, …`, counts the
+subset of those invocations that are GraphQL-backed and attributes them
+to the scan that issued them. Every `gh` sub-command (`issue list`,
+`pr view`, `search`, …) is GraphQL-backed, as is an explicit
+`gh api graphql`; only a plain REST `gh api <path>` is not. The line
+uses the same predicate as the primary-quota latch
+(`isQuotaExemptGhCall`), so the two can never disagree about what
+counts. Before Issue #1485 only `gh api graphql` was counted, and the
+line showed a fraction of the real burn — a whole cycle's `issue list`
+and `pr list` traffic was invisible to it.
+
+The primary-quota latch (Issue #42) is enforced at the same chokepoint:
+once the hourly GraphQL quota is exhausted, every GraphQL-backed spawn
+from any module returns a `gh command skipped: … API rate limit already
+exceeded` failure without starting a process, while REST `gh api <path>`
+calls and the quota probe that learns the reset still run.
 
 ### The `graphql-quota:` line — points, as GitHub counts them
 

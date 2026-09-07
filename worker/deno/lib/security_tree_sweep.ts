@@ -315,6 +315,16 @@ export const DEFAULT_MAX_ISSUES = 20;
  */
 export const LINE_WINDOW = 10;
 
+/**
+ * Path a finding carries when its source gave no location. Findings on this
+ * sentinel are fingerprinted with an extra discriminator (Issue #1473) —
+ * see {@link computeSweepId}.
+ */
+export const UNLOCATED_PATH = "unknown";
+
+/** Rule id a finding carries when its source named no rule. */
+const UNKNOWN_RULE_ID = "unknown";
+
 /** Tool name the worker's own SARIF upload uses in code scanning. */
 const WORKER_UPLOAD_TOOL = "VibeCoder-security-scan";
 
@@ -393,18 +403,105 @@ const FAMILY_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
 // ---------------------------------------------------------------------------
 
 /**
+ * Bare file-extension tokens. A filename suffix names a language, never a
+ * vulnerability class, so it must never survive the last-segment fallback
+ * (Issue #1473: a title ending `(audit_mutation_classifier.ts)` became the
+ * family `ts`, and every such finding then shared one sweep id).
+ */
+const FILE_EXTENSION_TOKENS: ReadonlySet<string> = new Set([
+  "bash",
+  "c",
+  "cc",
+  "cfg",
+  "cjs",
+  "conf",
+  "cpp",
+  "cs",
+  "css",
+  "csv",
+  "env",
+  "go",
+  "gradle",
+  "h",
+  "hpp",
+  "htm",
+  "html",
+  "ini",
+  "java",
+  "js",
+  "json",
+  "jsonc",
+  "jsx",
+  "kt",
+  "lock",
+  "lua",
+  "md",
+  "mjs",
+  "mod",
+  "php",
+  "pl",
+  "properties",
+  "ps1",
+  "py",
+  "rb",
+  "rs",
+  "scss",
+  "sh",
+  "sum",
+  "svg",
+  "tf",
+  "toml",
+  "ts",
+  "tsv",
+  "tsx",
+  "txt",
+  "xml",
+  "yaml",
+  "yml",
+  "zsh",
+]);
+
+/** True when a split segment is nothing but a file extension (`ts`, `ts)`). */
+function isFileExtensionToken(segment: string): boolean {
+  return FILE_EXTENSION_TOKENS.has(segment.replace(/[^a-z0-9]+/g, ""));
+}
+
+/**
  * Map a tool-native rule id (or worker vulnerability class) onto a shared
  * family so semgrep, CodeQL and the worker can agree that
  * `javascript.lang.security.detect-child-process`,
  * `js/command-line-injection` and `command injection` are one finding.
- * Unknown rules fall back to their normalised last segment.
+ *
+ * Unknown rules fall back to their normalised last segment, with two guards
+ * (Issue #1473) against the fallback inventing a family out of a filename:
+ *
+ *   - trailing bare file-extension segments are dropped — `ts` is a
+ *     language, not a class of vulnerability;
+ *   - a leftover segment that is a *fragment of prose* (it carries
+ *     whitespace, and the input really was split) is a piece of an issue
+ *     title, not a rule id, so it names nothing and the family is
+ *     `unclassified`.
+ *
+ * A prose class that was never split — the worker's own
+ * `command injection`, `insecure temp file` — still slugs as before: it is
+ * the whole classification, not a fragment of one.
  */
 export function ruleFamily(_source: SweepSource, ruleId: string): string {
   const lower = ruleId.trim().toLowerCase();
   for (const [pattern, family] of FAMILY_PATTERNS) {
     if (pattern.test(lower)) return family;
   }
-  const last = lower.split(/[./:]/).filter((s) => s !== "").pop() ?? lower;
+  const segments = lower.split(/[./:]/).filter((s) => s !== "");
+  const split = segments.length > 1;
+  while (
+    segments.length > 0 && isFileExtensionToken(segments[segments.length - 1]!)
+  ) {
+    segments.pop();
+  }
+  // Nothing but extensions (or nothing at all) names nothing.
+  if (segments.length === 0) return "unclassified";
+  const last = segments[segments.length - 1]!;
+  if (split && /\s/.test(last)) return "unclassified";
   const normalised = last.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   return normalised === "" ? "unclassified" : normalised;
 }
@@ -418,13 +515,30 @@ function lineBucket(line: number | null): string {
  * Stable sweep id: `SWEEP-` plus the first 12 hex characters of SHA-256 over
  * `family|path|lineBucket`. Independent of which source reported the finding
  * and of the order sources ran in.
+ *
+ * Issue #1473: that fingerprint was designed for file-anchored tool output
+ * and degenerates when there is no file. Every `worker-scan` finding carries
+ * `path = "unknown"` and `line = null`, so the id collapsed to a hash of the
+ * family alone — three unrelated command-injection issues shared one id, and
+ * baselining it would have silenced the family and every future member of
+ * it. When, and *only* when, the path is the {@link UNLOCATED_PATH}
+ * sentinel, a caller-supplied `discriminator` (the finding's own stable rule
+ * id, e.g. `SEC-8d02435d8683`) is mixed in as a fourth component.
+ *
+ * A finding with a real path is hashed byte-for-byte as before: the ids
+ * stamped into already-filed sweep issues, and the tree of baseline entries
+ * anchored on them, must not move under a change to the unlocated case.
  */
 export async function computeSweepId(
   family: string,
   path: string,
   line: number | null,
+  discriminator?: string,
 ): Promise<string> {
-  const canonical = `${family}|${path}|${lineBucket(line)}`;
+  const extra = path === UNLOCATED_PATH ? (discriminator ?? "").trim() : "";
+  const canonical = extra === ""
+    ? `${family}|${path}|${lineBucket(line)}`
+    : `${family}|${path}|${lineBucket(line)}|${extra}`;
   const digest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(canonical),
@@ -545,8 +659,8 @@ export function parseSemgrepJson(json: string): SweepFinding[] {
     const start = asRecord(entry["start"]) ?? {};
     findings.push({
       source: "semgrep",
-      ruleId: asText(entry["check_id"]) || "unknown",
-      path: normalisePath(asText(entry["path"]) || "unknown"),
+      ruleId: asText(entry["check_id"]) || UNKNOWN_RULE_ID,
+      path: normalisePath(asText(entry["path"]) || UNLOCATED_PATH),
       line: asLine(start["line"]),
       severity: semgrepSeverity(asText(extra["severity"])),
       confidence: normaliseConfidence(asText(metadata["confidence"])),
@@ -607,8 +721,8 @@ export function parseCodeqlAlerts(json: string): SweepFinding[] {
     const precision = tags.find((t) => t.startsWith("precision:")) ?? "";
     findings.push({
       source,
-      ruleId: asText(rule["id"]) || "unknown",
-      path: normalisePath(asText(location["path"]) || "unknown"),
+      ruleId: asText(rule["id"]) || UNKNOWN_RULE_ID,
+      path: normalisePath(asText(location["path"]) || UNLOCATED_PATH),
       line: asLine(location["start_line"]),
       severity,
       confidence: precision === ""
@@ -659,7 +773,7 @@ export function parseSarif(json: string, source: SweepSource): SweepFinding[] {
     for (const rawResult of results) {
       const result = asRecord(rawResult);
       if (result === null) continue;
-      const ruleId = asText(result["ruleId"]) || "unknown";
+      const ruleId = asText(result["ruleId"]) || UNKNOWN_RULE_ID;
       const locations = Array.isArray(result["locations"])
         ? result["locations"]
         : [];
@@ -670,7 +784,7 @@ export function parseSarif(json: string, source: SweepSource): SweepFinding[] {
       findings.push({
         source,
         ruleId,
-        path: normalisePath(asText(artifact["uri"]) || "unknown"),
+        path: normalisePath(asText(artifact["uri"]) || UNLOCATED_PATH),
         line: asLine(region["startLine"]),
         severity: scoreById.get(ruleId) ??
           levelSeverity(asText(result["level"]) || "warning"),
@@ -721,7 +835,7 @@ export function parseWorkerScanIssues(json: string): SweepFinding[] {
     findings.push({
       source: "worker-scan",
       ruleId: findingId,
-      path: normalisePath(file ?? "unknown"),
+      path: normalisePath(file ?? UNLOCATED_PATH),
       line: startLine,
       severity: extractSeverity({ title, body, labels }),
       confidence: normaliseConfidence(
@@ -749,6 +863,27 @@ function familyOf(finding: SweepFinding): string {
   return finding.source === "worker-scan"
     ? ruleFamily("worker-scan", workerClass(finding))
     : ruleFamily(finding.source, finding.ruleId);
+}
+
+/**
+ * What distinguishes an unlocated finding from the rest of its family
+ * (Issue #1473). Empty for a located finding, whose fingerprint is its
+ * family, path and line window exactly as before.
+ *
+ * The worker's own scan gives every finding a stable `SEC-…` id, harvested
+ * from the `<!-- finding-id: -->` marker; `parseWorkerScanIssues` skips any
+ * issue without one, so `ruleId` is always that id for this source. It is
+ * preferred over the issue number because it survives a re-file: the same
+ * vulnerability re-reported under a new issue keeps its identity, and a
+ * baseline entry made against it keeps meaning exactly one finding. The
+ * reference (`#<issue>`, or an alert URL) is the fallback for a source that
+ * reported neither a location nor a usable rule id.
+ */
+function findingDiscriminator(finding: SweepFinding): string {
+  if (finding.path !== UNLOCATED_PATH) return "";
+  const ruleId = finding.ruleId.trim();
+  if (ruleId !== "" && ruleId !== UNKNOWN_RULE_ID) return ruleId;
+  return finding.ref?.trim() ?? "";
 }
 
 // ---------------------------------------------------------------------------
@@ -799,7 +934,12 @@ export async function dedupeFindings(
     seen.add(exactKey);
 
     const family = familyOf(finding);
-    const id = await computeSweepId(family, finding.path, finding.line);
+    const id = await computeSweepId(
+      family,
+      finding.path,
+      finding.line,
+      findingDiscriminator(finding),
+    );
     const existing = clusters.get(id);
     if (existing === undefined) {
       clusters.set(id, {
@@ -1509,7 +1649,7 @@ export function buildSweepIssueBody(
     ...JSON.stringify(
       {
         path: row.path,
-        rule: row.family,
+        rule: suggestedBaselineRule(row),
         ...(row.lineStart !== null ? { line: row.lineStart } : {}),
         reason: "<why this is benign>",
       },
@@ -1525,6 +1665,24 @@ export function buildSweepIssueBody(
     "baseline rules.",
   );
   return lines.join("\n");
+}
+
+/**
+ * The `rule` a triage entry should carry for this cluster.
+ *
+ * A located cluster is keyed on its family: the path narrows the entry to
+ * one place in the tree. An unlocated cluster has no such narrowing, so a
+ * family-keyed entry would suppress every finding of that family, present
+ * and future (Issue #1473). Key it on the finding's own stable rule id
+ * instead — `entryMatches` accepts a tool-native rule id as well as a
+ * family, and that id names exactly one finding.
+ */
+function suggestedBaselineRule(row: SweepCluster): string {
+  if (row.path !== UNLOCATED_PATH) return row.family;
+  const ruleId = row.findings
+    .map((f) => f.ruleId.trim())
+    .find((r) => r !== "" && r !== UNKNOWN_RULE_ID);
+  return ruleId ?? row.family;
 }
 
 /** Labels for a sweep issue. */

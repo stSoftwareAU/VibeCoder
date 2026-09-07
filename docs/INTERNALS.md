@@ -169,6 +169,44 @@ The worker runs on **macOS**, **Linux**, and **Windows**:
 - `run.ps1` / `loop.ps1` — PowerShell launchers (Windows)
 - `worker/deno/` — Cross-platform TypeScript (all platforms)
 
+Each pair is held to **one contract by a parity test**, so a Windows host never
+ends up with a quieter, thinner worker than a macOS one. Each test reads both
+scripts' sources, extracts the contract each keeps, and fails on a divergence
+that no named exception covers:
+
+| Pair | Contract module | Parity test |
+| --- | --- | --- |
+| `setup.sh` / `setup.ps1` | `worker/deno/lib/setup_contract.ts` | `tests/setup_parity_test.ts` |
+| `run.sh` / `run.ps1` | `worker/deno/lib/launcher_contract.ts` | `tests/launcher_parity_test.ts` |
+| `loop.sh` / `loop.ps1` | `worker/deno/lib/loop_contract.ts` | `tests/loop_parity_test.ts` |
+
+The setup contract covers **credential handling** as well as the subcommands
+each script runs (Issue #1430): a `provider.env` value carrying a line break
+must be refused on both sides (Issue #1301), and credential directories must be
+owner-only from the instant they exist rather than created wide and narrowed
+afterwards (Issue #1374) — on Windows too, where the guarantee is an ACL
+carried by the creation call rather than a umask.
+
+The supervisor gate is the newest (Issue #1403) and the reason the other two
+exist: `loop` had no parity test, and the two supervisors drifted to 501 and
+148 lines before anyone noticed that `loop.ps1` never pulled its checkout
+(Issue #1401) or resolved its log directory (Issue #1402). It compares the
+never-exit loop, the delegated backoff, the resolved log directory, the
+per-cycle launch log and its pruning, the checkout refresh, the frozen
+lockfile, and the launcher exit statuses each supervisor tells apart — and it
+reports faults in one supervisor whatever the other does, because two
+supervisors that both stop pulling their checkout agree with each other and are
+both wrong.
+
+Three asymmetries are intended, and each is **named with the condition that
+would end it** rather than tolerated silently:
+
+| Exception | Why | Lapses when |
+| --- | --- | --- |
+| `host-side-run-bound` | `loop.ps1` invokes `run.ps1` in-process and can bound nothing host-side (Issue #423) | a supervisor caps a run without reaping the container the kill orphans (Issue #322) |
+| `macos-container-control-plane` | the probe exists for the macOS-only Apple `container` runtime and recovers through the Unix process tree (Issue #323) | a supervisor probes without being able to recover |
+| `process-group-signals` | SIGTERM/SIGHUP reach a bash supervisor through the Unix process group (Issue #1836) | the bash supervisor drops its traps |
+
 ---
 
 ## 🔄 1. Worker run loop and process lifecycle
@@ -298,6 +336,15 @@ bash `worker/run_core.sh` conductor. It sequences:
    Issue #482 ordering guard, the Issue #4396 merge-landing check and the
    trusted-re-label escape hatch all still apply. An issue carrying
    `needs-human` is never closed by it.
+
+   It spends quota the way the rest of the worker does (Issue #1477): one
+   rate-limit pre-flight per sweep, a stop at the first primary-quota
+   refusal — reported as one skipped sweep that resumes next cycle, never as
+   one failure per repository — the shared `.gh-scan-cache` and
+   `.gh-timeline-cache` on the work volume, and its own watermark
+   (`merged_issue_sweep_watermarks.json`) that advances only past PRs it
+   closed or ruled out for good, so what it left open is reconsidered next
+   cycle.
 
 ```mermaid
 flowchart TD

@@ -10,19 +10,13 @@
  *
  *   1. enforces the per-run write-repo allowlist (`enforceGhWriteAllowlist`)
  *      *before* the process starts,
- *   2. redacts secrets from every published body — the arguments
- *      (`redactGhBodyArgs`, Issue #3707), the `--body-file` / `--input` files
- *      they name, and the body piped on stdin (Issue #1254) — then
+ *   2. redacts secrets from the published body arguments
+ *      (`redactGhBodyArgs`, Issue #3707), then
  *   3. journals the mutation to the tamper-evident audit log
  *      (`auditGhMutation`) once the exit code is known, and
  *   4. notes an issue close/reopen (`noteGhIssueClose`, Issue #181) so the
  *      stale scan-cache entries are dropped and the run never re-claims an
  *      issue it just closed.
- *
- * Every call also runs under a **default** timeout (`gh_timeout.ts`,
- * Issue #1229) unless the caller installs its own signal — a control at the
- * chokepoint is one no new caller can forget, and a stalled GitHub call no
- * longer hangs the run until the host is killed.
  *
  * A quality-gate check (`gh_spawn_chokepoint_check.ts`) fails the build on any
  * direct `new Deno.Command("gh", …)` outside this file, so the invariant
@@ -32,7 +26,7 @@
  * flowchart LR
  *     C["~20 caller modules"] --> S["spawnGh()"]
  *     S --> A["enforceGhWriteAllowlist<br/>(allowlist, fail closed)"]
- *     A -->|allowed| R["redactGhBodyArgs + redactSecrets<br/>(argv, body files, stdin)"]
+ *     A -->|allowed| R["redactGhBodyArgs<br/>(public body args)"]
  *     R --> P["gh subprocess"]
  *     A -->|refused| E["throw — no subprocess"]
  *     P --> J["auditGhMutation<br/>(audit journal)"]
@@ -55,15 +49,21 @@ import {
   installationTokenRepoScope,
 } from "./write_repo_allowlist.ts";
 import { auditGhMutation } from "./audit_hook.ts";
-import { type BodyFileWriter, redactGhBodyArgs } from "./gh_body_redaction.ts";
-import { bodyFileWriterIn, denoBodyFileReader } from "./gh_body_file_io.ts";
-import { redactSecrets } from "./secret_redaction.ts";
-import { noteGhIssueClose } from "./issue_close_notifier.ts";
 import {
-  getGhTimeoutForOperation,
-  GH_TIMEOUT_EXIT_CODE,
-} from "./gh_timeout.ts";
-import { incrementCounter } from "./fault_tolerance_counters.ts";
+  type BodyFileWriter,
+  redactGhBodyArgs,
+  redactGhBodyText,
+} from "./gh_body_redaction.ts";
+// The same reader/writer pair the agent's guard child supplies (Issue #1254),
+// so the two chokepoints cannot drift on which body classes get scanned.
+import { bodyFileWriterIn, denoBodyFileReader } from "./gh_body_file_io.ts";
+import { noteGhIssueClose } from "./issue_close_notifier.ts";
+import { recordGhCall } from "./gh_call_metrics.ts";
+import {
+  isPrimaryQuotaLatched,
+  isQuotaExemptGhCall,
+  primaryQuotaSkipMessage,
+} from "./primary_quota_latch.ts";
 
 /** Options for a single `gh` invocation. */
 export interface GhSpawnOptions {
@@ -77,23 +77,8 @@ export interface GhSpawnOptions {
   cwd?: string;
   /** Extra environment variables, merged over the resolved `gh` environment. */
   env?: Record<string, string>;
-  /**
-   * Abort signal — used by the timeout wrapper in `gh_wrapper.ts`.
-   *
-   * Supplying one replaces the chokepoint's own default timeout, and its
-   * abort propagates to the caller as an `AbortError` rather than being
-   * converted to {@link GH_TIMEOUT_EXIT_CODE}: the caller owns the deadline
-   * it installed.
-   */
+  /** Abort signal — used by the timeout wrapper in `gh_wrapper.ts`. */
   signal?: AbortSignal;
-  /**
-   * Override the default timeout in seconds (Issue #1229).
-   *
-   * Ignored when {@link GhSpawnOptions.signal} is supplied. Without either,
-   * `getGhTimeoutForOperation` picks the budget from the arguments, so no
-   * `gh` call runs unbounded.
-   */
-  timeoutSeconds?: number;
   /**
    * Host roots the credential re-stage reads (Issue #967) — `GH_CONFIG_DIR`,
    * `HOME`, `VIBE_STATE_DIR`, `VIBE_SCRATCH_DIR` and `TMPDIR`. Defaults to the
@@ -110,6 +95,12 @@ export interface GhSpawnOptions {
    * child inherits.
    */
   setHostEnv?: (name: string, value: string) => void;
+  /**
+   * Run even while the primary GraphQL quota is latched (Issue #1485).
+   * Only the quota probe that learns the reset may set this — it is the
+   * one GraphQL call that lifts the latch rather than burning against it.
+   */
+  bypassQuotaLatch?: boolean;
 }
 
 /** Outcome of a `gh` invocation. */
@@ -303,47 +294,6 @@ export function resetGhRestageAttempts(): void {
 }
 
 /**
- * Run the low-level runner under a default timeout (Issue #1229).
- *
- * Every attempt gets a freshly armed signal, so the re-stage retry is not
- * handed the remains of the first attempt's budget. A caller that supplied
- * its own `signal` keeps it, and its abort still surfaces as an `AbortError`
- * — `gh_wrapper.ts` converts that into its own timeout result.
- *
- * A timeout fails loud rather than silently: exit
- * {@link GH_TIMEOUT_EXIT_CODE} with a `TIMEOUT:` stderr naming the command
- * and its budget, which `runGhOrThrow` turns into a thrown error.
- *
- * @param args - Redacted arguments passed to the `gh` binary.
- * @param options - Subprocess options, minus the per-attempt signal.
- * @returns The runner's outcome, or the timeout result.
- */
-async function runWithTimeout(
-  args: readonly string[],
-  options: GhSpawnOptions,
-): Promise<GhSpawnResult> {
-  if (options.signal) return await runner(args, options);
-
-  const timeoutSeconds = options.timeoutSeconds ??
-    getGhTimeoutForOperation(args);
-  const signal = AbortSignal.timeout(timeoutSeconds * 1000);
-  try {
-    return await runner(args, { ...options, signal });
-  } catch (error: unknown) {
-    if (!signal.aborted) throw error;
-    incrementCounter("gh_timeouts");
-    return {
-      code: GH_TIMEOUT_EXIT_CODE,
-      success: false,
-      stdout: "",
-      stderr: `TIMEOUT: gh ${
-        args.join(" ")
-      } timed out after ${timeoutSeconds}s (Issue #1229)`,
-    };
-  }
-}
-
-/**
  * The retry's options, with any explicit `GH_CONFIG_DIR` refreshed.
  *
  * Callers that pin the directory per call (`setup/*`, the escalation paths)
@@ -363,10 +313,8 @@ function withStagedGhConfigDir(
  * Run `gh` through the worker's chokepoint.
  *
  * Enforces the write-repo allowlist before the process starts (so a refused
- * write never reaches GitHub), applies the default timeout for the operation
- * (Issue #1229) and journals the mutation afterwards. Never throws on a
- * non-zero exit — inspect {@link GhSpawnResult.success}; a timed-out call
- * comes back as {@link GH_TIMEOUT_EXIT_CODE} with a `TIMEOUT:` stderr.
+ * write never reaches GitHub) and journals the mutation afterwards. Never
+ * throws on a non-zero exit — inspect {@link GhSpawnResult.success}.
  *
  * @param args - Arguments passed to the `gh` binary.
  * @param options - Subprocess options.
@@ -378,41 +326,100 @@ export async function spawnGh(
   options: GhSpawnOptions = {},
 ): Promise<GhSpawnResult> {
   await enforceGhWriteAllowlist(args);
+  // Issue #42 / #1485: once the primary GraphQL quota is exhausted, every
+  // further GraphQL-backed call in the window is guaranteed to fail. The
+  // short-circuit used to live in `runGhCommandRaw` alone, so the thirty-odd
+  // modules that call this chokepoint directly kept spawning doomed `gh`
+  // processes after the latch had fired. It lives here now, at the one
+  // place every `gh` spawn passes — before the spawn and before the
+  // telemetry — and a REST `gh api <path>` still rides the core quota.
+  if (
+    !options.bypassQuotaLatch && !isQuotaExemptGhCall(args) &&
+    isPrimaryQuotaLatched()
+  ) {
+    return {
+      code: 1,
+      success: false,
+      stdout: "",
+      stderr: primaryQuotaSkipMessage(),
+    };
+  }
+  // Issue #1671 / #1485: per-iteration `gh` call telemetry, recorded at the
+  // chokepoint so every invocation — from any module — is counted exactly
+  // once per attempt.
+  recordGhCall(args);
   // Mask secrets in the published body arguments (Issue #3707) — the last
   // point before a comment or PR body leaves the worker for GitHub.
   //
   // The reader and writer are the same pair the agent's guard child supplies
-  // (Issue #1254), so a `--body-file` / `-F <path>` / `--input <file>` body is
-  // scanned here too instead of published unread. An unscannable body raises
-  // UnredactableBodyError, which propagates: a failed control fails the call.
-  const stdinScanned = options.stdin !== undefined;
+  // (Issue #1254): without them this call passed argv alone, so a
+  // `--body-file` / `-F <path>` / `--input <file>` body was neither scanned
+  // nor refused, and a module switching from `--body` to `--body-file` would
+  // have published unscanned while looking like a refactor.
+  //
   // Issue #1364: a masked `--input` copy needs a directory that owns it. The
   // guard child cannot clean up — it exits before its `gh` child reads the
   // file — but this chokepoint awaits the child, so it can, and does, in the
   // `finally` below. The directory is created only when a body is actually
-  // masked, so the ordinary call spawns no filesystem work.
+  // masked, so an ordinary call does no filesystem work.
   let maskedBodyDir: string | undefined;
   const writeMaskedBody: BodyFileWriter = (content) => {
     maskedBodyDir ??= Deno.makeTempDirSync({ prefix: "gh-spawn-body-" });
     return bodyFileWriterIn(maskedBodyDir)(content);
   };
+  const stdinScanned = options.stdin !== undefined;
   const redacted = redactGhBodyArgs(
     args,
     denoBodyFileReader,
     writeMaskedBody,
     stdinScanned,
   );
-  // A stdin body (`gh api … --input -`) never appears in argv, so the argument
-  // redactor cannot see it — mask it here, at the same chokepoint.
-  const spawnOptions = stdinScanned
-    ? { ...options, stdin: redactSecrets(options.stdin as string) }
-    : options;
+  // Issue #1421: `gh api --input -` carries its body on STDIN, where there is
+  // no argument to rewrite — so it never passed through the mask above. The
+  // module doc promises every public sink inherits redaction by construction;
+  // that was true of the argv route only. Latent rather than live today (no
+  // production caller supplies stdin), which is exactly why it should be
+  // closed now rather than when one appears.
+  const spawnOptions = options.stdin === undefined
+    ? options
+    : { ...options, stdin: redactGhBodyText(options.stdin) };
   try {
-    return await runGhAndRecover(args, redacted, spawnOptions, options);
+    let result = await runner(redacted, spawnOptions);
+    // Issue #564: a call that failed for want of authentication did nothing,
+    // so retrying it is safe — and the credential is very likely recoverable.
+    // The writable copy of `hosts.yml` went missing mid-run once already and
+    // every later call failed with the intact original still on its mount.
+    // Rebuild from the mount and try once more, here at the chokepoint, so
+    // every gh caller in the worker inherits the recovery.
+    if (
+      isGhAuthMissingFailure(result) && restageAttempts < MAX_RESTAGE_ATTEMPTS
+    ) {
+      restageAttempts++;
+      const hostEnv = options.hostEnv ?? processEnvLookup;
+      const staging: EnsureGhConfigDirOptions = {
+        env: hostEnv,
+        ...(options.setHostEnv ? { setEnv: options.setHostEnv } : {}),
+      };
+      if (ensureUsableGhConfigDir(staging)) {
+        // The retry is a second real `gh` process against the same quota.
+        recordGhCall(args);
+        result = await runner(
+          redacted,
+          withStagedGhConfigDir(spawnOptions, hostEnv),
+        );
+      }
+    }
+    // Best-effort — never lets journalling alter or abort the gh call.
+    await auditGhMutation(args, result.code);
+    // Issue #181: a close the worker just performed invalidates the scan-cache
+    // entries that still describe the issue as open, and marks it finished for
+    // the rest of the run so no slot re-claims it. Also best-effort.
+    await noteGhIssueClose(args, result.code);
+    return result;
   } finally {
     // The `gh` child has exited by the time the call above resolves, so the
-    // masked copy it read is safe to remove. Best-effort: a cleanup failure
-    // must never turn a completed `gh` call into a thrown one.
+    // masked copy it read is safe to remove (Issue #1364). Best-effort: a
+    // cleanup failure must never turn a completed `gh` call into a thrown one.
     if (maskedBodyDir !== undefined) {
       try {
         Deno.removeSync(maskedBodyDir, { recursive: true });
@@ -421,52 +428,6 @@ export async function spawnGh(
       }
     }
   }
-}
-
-/**
- * Run the redacted command, recovering once from a missing credential.
- *
- * Split out of {@link spawnGh} so the masked-body directory's `finally` wraps
- * the whole call — including the retry, which reads the same masked copy.
- */
-async function runGhAndRecover(
-  args: readonly string[],
-  redacted: string[],
-  spawnOptions: GhSpawnOptions,
-  options: GhSpawnOptions,
-): Promise<GhSpawnResult> {
-  // `restageAttempts` stays the module-level budget it has always been — it
-  // caps re-staging across the whole process, not per call.
-  let result = await runWithTimeout(redacted, spawnOptions);
-  // Issue #564: a call that failed for want of authentication did nothing,
-  // so retrying it is safe — and the credential is very likely recoverable.
-  // The writable copy of `hosts.yml` went missing mid-run once already and
-  // every later call failed with the intact original still on its mount.
-  // Rebuild from the mount and try once more, here at the chokepoint, so
-  // every gh caller in the worker inherits the recovery.
-  if (
-    isGhAuthMissingFailure(result) && restageAttempts < MAX_RESTAGE_ATTEMPTS
-  ) {
-    restageAttempts++;
-    const hostEnv = options.hostEnv ?? processEnvLookup;
-    const staging: EnsureGhConfigDirOptions = {
-      env: hostEnv,
-      ...(options.setHostEnv ? { setEnv: options.setHostEnv } : {}),
-    };
-    if (ensureUsableGhConfigDir(staging)) {
-      result = await runWithTimeout(
-        redacted,
-        withStagedGhConfigDir(spawnOptions, hostEnv),
-      );
-    }
-  }
-  // Best-effort — never lets journalling alter or abort the gh call.
-  await auditGhMutation(args, result.code);
-  // Issue #181: a close the worker just performed invalidates the scan-cache
-  // entries that still describe the issue as open, and marks it finished for
-  // the rest of the run so no slot re-claims it. Also best-effort.
-  await noteGhIssueClose(args, result.code);
-  return result;
 }
 
 /**

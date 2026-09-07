@@ -74,6 +74,11 @@ import {
 } from "../security_fix_gate.ts";
 import { collectSecurityFixDiff } from "../security_fix_diff.ts";
 import { preserveRunWip } from "./run_wip_preservation.ts";
+import {
+  tokenHasWorkflowScope,
+  WORKFLOW_SCOPE_REMEDIATION,
+  workflowPathsIn,
+} from "../workflow_scope.ts";
 import { buildUncommittedWorkWipCommitMessage } from "../wip_checkpoint.ts";
 import {
   classifyExistingPrForIssue,
@@ -824,6 +829,35 @@ async function completionBody(
       `'${state.branchName}' was not brought up to date before its PR — ` +
         `CI may run twice: ${currency.detail}`,
     );
+  }
+
+  // Issue #1475: a token without the `workflow` OAuth scope cannot create
+  // or update anything under .github/workflows/ — GitHub rejects the push,
+  // and only says so at the push, after five recovery attempts. Ask git
+  // what this branch changes and stop here, with the fix, when the answer
+  // needs a scope the token does not have. A `git diff` that cannot answer
+  // is left to the push: a wrong guess here would block a legitimate PR.
+  const hasWorkflowScope = deps.infrastructure.tokenHasWorkflowScope
+    ? deps.infrastructure.tokenHasWorkflowScope()
+    : tokenHasWorkflowScope();
+  if (!hasWorkflowScope) {
+    const changed = await deps.git.runGitCommand(
+      ["diff", "--name-only", `origin/${baseBranch}...HEAD`],
+      { cwd: state.repoPath },
+    );
+    const changedPaths = changed.ok && changed.value.code === 0
+      ? changed.value.stdout.split("\n").map((l) => l.trim()).filter(Boolean)
+      : [];
+    const workflowPaths = workflowPathsIn(changedPaths);
+    if (workflowPaths.length > 0) {
+      return {
+        status: "failure",
+        reason: `Cannot push: the token lacks the 'workflow' scope and the ` +
+          `branch changes ${workflowPaths.join(", ")} — GitHub rejects such ` +
+          `a push from any OAuth token without it. No push was attempted. ` +
+          `Fix: ${WORKFLOW_SCOPE_REMEDIATION}`,
+      };
+    }
   }
 
   // Push branch

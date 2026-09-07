@@ -171,6 +171,10 @@ subprocess chokepoints, so a new call site needs no extra wiring:
   opened/merged/closed/edited, issue opened/closed/edited/labelled, label
   created/deleted, milestone created via `gh api -X POST`, etc.); read-only
   commands (`view`, `list`, a GET `gh api`, a GraphQL query) are skipped.
+  `gh extension install|upgrade|remove|create` is journalled as
+  `extension-<verb>`: it changes the local `gh` installation rather than any
+  repository, so it carries no target repo for the write-repo allowlist to
+  check (Issue #1396).
    made this a real chokepoint: ~20 modules used to spawn `gh`
   themselves and were journalled nowhere, and the `gh spawn chokepoint`
   quality check now fails the build on any direct

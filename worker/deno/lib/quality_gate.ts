@@ -12,6 +12,10 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
+import {
+  completenessTestArgs,
+  deriveCompletenessTestFiles,
+} from "./completeness_checks.ts";
 import type { Result } from "../types.ts";
 import {
   type CheckResult,
@@ -350,6 +354,77 @@ async function runHardcodedBranchCheck(
  * (Issue #2202). The only permitted direct application is the helper
  * itself (see {@link NEEDS_HUMAN_ALLOWLIST}).
  */
+/**
+ * Completeness checks (Issue #1483) — the tree-scanning tests that assert
+ * every new module, `VIBE_*` name, prompt and suite is registered. They
+ * need only read and env access and run in seconds, so they report here,
+ * first, rather than at the end of the full `deno tests` stage; a one-line
+ * registration omission then costs seconds locally instead of a CI matrix.
+ * The membership is derived from the tree by `completeness_checks.ts`.
+ */
+async function runCompletenessChecks(
+  config: QualityGateConfig,
+  denoCmd: string,
+): Promise<CheckExecutionResult> {
+  const name = "completeness checks";
+  const denoDir = config.denoDir;
+  if (!denoDir) {
+    return {
+      name,
+      status: "SKIPPED",
+      output: "deno source directory not found",
+    };
+  }
+
+  const started = Date.now();
+  let files: string[];
+  try {
+    files = await deriveCompletenessTestFiles(denoDir);
+  } catch (error) {
+    return {
+      name,
+      status: "FAILED",
+      output: `completeness checks: could not derive the family: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+  if (files.length === 0) {
+    // An empty family is a broken derivation, never a pass.
+    return {
+      name,
+      status: "FAILED",
+      output: "completeness checks: no test file was derived from the tree",
+    };
+  }
+
+  const result = await runCommand(
+    [denoCmd, ...completenessTestArgs(files)],
+    { cwd: denoDir },
+  );
+  const durationMs = Date.now() - started;
+  const lines = result.output.split("\n");
+  const tail = lines.slice(-40).join("\n");
+  if (result.exitCode === 0) {
+    return {
+      name,
+      status: "PASSED",
+      output: `completeness checks: PASSED (${files.length} files, ${
+        (durationMs / 1000).toFixed(1)
+      }s)`,
+      durationMs,
+    };
+  }
+  return {
+    name,
+    status: "FAILED",
+    output: `completeness checks: FAILED (${files.length} files) — a new ` +
+      `module, VIBE_ name, prompt or suite is not registered; run ` +
+      `\`deno task check:manifests\` for the full report\n${tail}`,
+    durationMs,
+  };
+}
+
 async function runNeedsHumanHelperCheck(
   config: QualityGateConfig,
 ): Promise<CheckExecutionResult> {
@@ -1488,6 +1563,8 @@ export async function runQualityGate(
   // Workflow hygiene (Issue #3716) — strict-mode `run:` blocks and
   // consistent SHA/version pin comments across .github/workflows.
   note(await runWorkflowHygieneCheck(config));
+  // Completeness checks (Issue #1483) — seconds, before anything slow.
+  note(await runCompletenessChecks(config, denoCmd));
 
   // Config integration smoke test
   const configResult = await runConfigSmokeTest(config, denoCmd);

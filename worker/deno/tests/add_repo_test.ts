@@ -48,8 +48,13 @@ function deps(
   };
 }
 
-const TRIAGE_OK = JSON.stringify({ permissions: { triage: true } });
+// Push is the bar (Issue #1455): a monitored repo is listed for collaborators
+// on every trusted-author refresh, which GitHub serves only with push.
+const TRIAGE_OK = JSON.stringify({ permissions: { triage: true, push: true } });
 const TRIAGE_FALSE = JSON.stringify({ permissions: { triage: false } });
+const TRIAGE_ONLY = JSON.stringify({
+  permissions: { triage: true, push: false },
+});
 
 Deno.test("validateAddRepoTarget - ok + public", async () => {
   const result = await validateAddRepoTarget(
@@ -87,6 +92,16 @@ Deno.test("validateAddRepoTarget - no_access when visible but no triage", async 
   const result = await validateAddRepoTarget(
     "owner/repo",
     deps(ok(TRIAGE_FALSE), ok("public")),
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value, { kind: "no_access" });
+});
+
+Deno.test("validateAddRepoTarget - no_access when triage but no push (Issue #1455)", async () => {
+  const result = await validateAddRepoTarget(
+    "owner/repo",
+    deps(ok(TRIAGE_ONLY), ok("public")),
   );
   assertEquals(result.ok, true);
   if (!result.ok) return;

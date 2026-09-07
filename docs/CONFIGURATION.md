@@ -125,7 +125,8 @@ still carrying it is refused at load, naming the edit.
 
 ### Axis 1 — who may direct work
 
-Derived from repository permissions, every cycle, from every monitored repo:
+Derived from repository permissions, from every monitored repo the worker's
+login can list (refreshed on the `trusted_authors_cache_hours` cadence):
 
 ```text
 mayDirectWork(repo, login) =
@@ -206,9 +207,21 @@ Anyone who can grant **write** access on a monitored repo can authorise an
 instructor of the worker. That is the intended design, and it is a wider set
 than a hand-edited allowlist.
 
-A missing collaborator-read or `read:org` scope is a **403**, and the cycle is
+A missing `read:org` scope is a **403** on the team fetch, and the cycle is
 skipped — never silently permissive. See
 [Setup — Token scopes for derived trust](SETUP.md#token-scopes-for-derived-trust).
+
+A monitored repo the worker's login **cannot list** — 404, or 403 "Must have
+push access to view repository collaborators" — is a different thing
+(Issue #1453). It is a property of the deployment, not an outage, and the worker
+could never write to that repo either. Such a repo is **skipped**: named once
+in a `[derived-authors] … skipped` warning with GitHub's own words, and left
+out of the fold. The fold still intersects across every repo that resolved,
+so write access on one repo still confers nothing on another. Only when
+*every* monitored repo is skipped is there nothing to trust, and the resolve
+fails closed. A least-privilege service account with `read` on the fleet's
+data repositories therefore keeps working; before #1453 it stood the whole
+fleet down on every cycle.
 
 ### Who is excluded from axis 1
 
@@ -226,28 +239,40 @@ monitored repo would authorise itself — file an issue, label it `work-on`, and
 work it with no human in the loop. That is why `service_accounts` and
 `fleet_pr_authors` are exclusion inputs, not merely identity keys.
 
-### Per-cycle refresh and `gh` cost
+### Snapshot, refresh and `gh` cost
 
-The trusted-author snapshot is refreshed at the **start of every scan cycle** — not cached across ticks,
-and not a last-known-good leftover from a previous success. One paginated
-`gh api` call lists collaborators per monitored repo
-(`repos/<owner>/<repo>/collaborators`); a configured `exclusion_team`
-adds one paginated team-members call
-(`orgs/<org>/teams/<slug>/members`).
+The trusted-author snapshot is resolved at the start of a scan cycle and
+then **reused for `trusted_authors_cache_hours`** (default one hour;
+Issue #1453). One paginated `gh api` call lists collaborators per monitored repo
+(`repos/<owner>/<repo>/collaborators`); a configured `exclusion_team` adds
+one paginated team-members call (`orgs/<org>/teams/<slug>/members`).
+Before #1453 that ran on **every** cycle — about 33 calls every 40 seconds on a
+32-repo fleet, for a set that changes a few times a year, on a budget every
+host shares — and was a real part of why hosts spent most of each hour
+parked on the rate limit.
 
-That per-tick collaborator fetch is an intentional exception to the
-standing rate-limit warning in
-[`worker/deno/setup/collaborator_precheck.ts`](../worker/deno/setup/collaborator_precheck.ts)
-(lines 11–19), which exists to stop the **setup-time** collaborator
-precheck from being wired into the main loop. Derived trust pays that
-cost because a stale allowlist would keep a revoked collaborator trusted,
-or miss a newly granted one, for the rest of the run.
+Within the window no call is made. After it, a fresh resolve replaces the
+snapshot. The trade-off is stated and accepted: a collaborator granted or
+revoked mid-window is seen at the next refresh, at most
+`trusted_authors_cache_hours` later; `0` restores the per-cycle refresh for
+a deployment that wants it, and a restart always starts from a fresh fetch.
 
-Any fetch failure — collaborators **or** the exclusion team — is
-**fail-closed**: the cycle logs `[TRUST_REFRESH]`, marks the host
-unhealthy, and skips every trust-dependent pass. It does not fall back to
-the local arrays and it does not keep the previous snapshot. See
-[Issue processing — Per-cycle trusted-author refresh](workflows/issue-processing.md#per-cycle-trusted-author-refresh).
+The snapshot lives in the worker's **memory only**, never on disk: the work
+volume is writable by the agent subprocess, and a trust set the agent could
+edit would be exactly the widening the derived design exists to prevent.
+
+**Failure is still fail-closed**, with one narrowing (Issue #1453). When a
+fresh resolve fails *transiently* — a network fault, a 5xx, a rate limit —
+and a snapshot no older than six hours exists, the snapshot is served and
+the log says so with its age:
+`[derived-authors] refresh failed transiently on … serving the trusted-author
+snapshot fetched 4021s ago`. That is a timestamped result of a real fetch,
+not the local `allowed_authors` array the rule forbids. Past six hours, or
+with no snapshot at all, or on a *permanent* failure — an empty Vibe Coder
+login set, a team that does not exist, no listable repo at all — the cycle
+logs `[TRUST_REFRESH]`, marks the host unhealthy, and skips every
+trust-dependent pass. It never falls back to the local arrays. See
+[Issue processing — Trusted-author refresh](workflows/issue-processing.md#per-cycle-trusted-author-refresh).
 
 ## 👥 Multiple Allowed Authors
 
@@ -1629,6 +1654,7 @@ unless explicitly overridden.
 | Quorum planners | `quorum_planners` | `["claude", "claude"]` | The **two** drafting providers of a Quorum run. Exactly two ids; a different count is rejected at startup. |
 | Quorum judge | `quorum_judge` | `"claude"` | The adjudicating provider of a Quorum run |
 | Max rate-limit retries         | `max_rate_limit_retries`         | `2`        | Maximum retries when rate limited                                                                                                                                                                    |
+| Trusted-author cache           | `trusted_authors_cache_hours`    | `1`        | Hours a successful trusted-author resolve is reused before the collaborator lists are fetched again (Issue #1453). `0` refreshes every cycle; `24` is the ceiling. A newly granted collaborator waits at most this long — see [Snapshot, refresh and `gh` cost](#snapshot-refresh-and-gh-cost) |
 | Max rate-limit wait            | `max_rate_limit_wait`            | `600`      | Maximum total wait time for rate limit retries                                                                                                                                                       |
 | Retry max delay                | `retry_max_delay`                | `60`       | Maximum delay between retries                                                                                                                                                                        |
 | Max issue body tokens          | `max_issue_body_tokens`          | `50000`    | Maximum tokens in issue body before summarisation                                                                                                                                                    |
@@ -2494,8 +2520,8 @@ verbatim:
 ```
 
 A blank config value means unset, exactly as an absent key does. One
-resolution serves the launcher, `run.sh`, `loop.sh`, `run.ps1` and the
-container mount (Issues #872, #873, #1388) — ask for it rather than assuming
+resolution serves the launcher, `run.sh`, `loop.sh`, `run.ps1`, `loop.ps1`
+and the container mount (Issues #872, #873, #1388, #1402) — ask for it rather than assuming
 it:
 
 ```bash

@@ -77,31 +77,50 @@ export interface BenchmarkOptions {
 }
 
 /**
- * Default runner for the benchmark steps.
+ * The benchmark's production command runner — `git` through the worker's
+ * chokepoint, everything else spawned here (Issue #1396).
  *
- * Issue #1227: the binary is a variable and the `git-clone-local` step passes
- * `"git"`, so this was a direct `git` spawn the literal-matching chokepoint
- * gate could not see. `git` is delegated to `runGitCommand`, which owns the
- * timeout, the audit journal and the work-volume fault detector; any other
- * binary is spawned directly.
+ * The `git-clone-local` step builds a throwaway fixture repository, but it
+ * ran through `new Deno.Command(cmd, …)` with the binary supplied by the
+ * caller, so it was a production `git` spawn outside `runGitCommand` — no
+ * timeout, no audit journal, and no work-volume fault detection. A fixture is
+ * exactly where an I/O-faulted work volume shows itself first (Issue #229),
+ * so the step now inherits all three: a `git` step that fails with
+ * "Input/output error" records the fault the claim guards read, instead of
+ * being reported as a slow benchmark.
+ *
+ * Each fixture call is bounded by `runGitCommand`'s own timeout (60s by
+ * default, `GIT_COMMAND_TIMEOUT`), which is the point: a benchmark step that
+ * outruns it is a hang to report, not a measurement to wait for.
+ *
+ * Exported so the routing is testable against a real repository; production
+ * callers get it as the default {@link BenchmarkOptions.run}.
+ *
+ * @param cmd - Binary to run.
+ * @param args - Arguments for it.
+ * @param env - Extra environment variables, merged over the process's own.
+ * @returns The exit code and stderr; code `-1` when the spawn itself failed.
  */
-async function defaultRun(
+export async function runBenchmarkCommand(
   cmd: string,
   args: string[],
   env?: Record<string, string>,
 ): Promise<{ code: number; stderr: string }> {
+  const mergedEnv = env ? { ...Deno.env.toObject(), ...env } : undefined;
+
   if (cmd === "git") {
-    // `Deno.Command` merges `env` over the inherited environment unless
-    // `clearEnv` is set, so the step's git identity variables are additive.
-    const result = await runGitCommand(args, { ...(env ? { env } : {}) });
+    const result = await runGitCommand(args, {
+      ...(mergedEnv ? { env: mergedEnv } : {}),
+    });
     return result.ok
       ? { code: result.value.code, stderr: result.value.stderr }
       : { code: -1, stderr: result.error.message };
   }
+
   try {
     const out = await new Deno.Command(cmd, {
       args,
-      env: env ? { ...Deno.env.toObject(), ...env } : undefined,
+      env: mergedEnv,
       stdout: "null",
       stderr: "piped",
     }).output();
@@ -118,7 +137,7 @@ async function defaultRun(
 export async function runBenchmark(
   options: BenchmarkOptions,
 ): Promise<BenchmarkReport> {
-  const run = options.run ?? defaultRun;
+  const run = options.run ?? runBenchmarkCommand;
   const now = options.now ?? Date.now;
   const fsFiles = options.fsFiles ?? 200;
   const cpuIterations = options.cpuIterations ?? 2000;

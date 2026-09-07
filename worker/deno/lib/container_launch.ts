@@ -16,6 +16,7 @@
  * | the worker checkout        | `/workspace`                       | ro   |
  * | volume `vibe-work`         | `/home/vibe/auto-issue-work`       | rw   |
  * | volume `vibe-approval-state`| `…/auto-issue-work-approval-state`| rw   |
+ * | volume `vibe-agent-state`  | `…/auto-issue-work-agent-state`    | rw   |
  * | the worker log directory   | `/home/vibe/logs`                  | rw   |
  * | staged `.config.json` dir  | `/home/vibe/.vibe-coder/run-config`| ro   |
  * | the `gh` credential dir    | `…/credentials/gh`                 | ro   |
@@ -104,6 +105,7 @@ import { extensionBuildArguments } from "./container_extension_build.ts";
 import { EXTENSION_START_ENV } from "./container_extension_start.ts";
 import type { ContainerExtensionSpec } from "../types.ts";
 import { resolveContentApprovalStateDir } from "./content_approval_state_dir.ts";
+import { resolveAgentStateDir } from "./agent_state_dir.ts";
 import {
   CUSTOM_PROMPT_PATH_MAP_ENV,
   CUSTOM_PROMPTS_TARGET_SUBDIR,
@@ -129,6 +131,16 @@ export const WORK_VOLUME_NAME = "vibe-work";
  * Issue #4186).
  */
 export const APPROVAL_STATE_VOLUME_NAME = "vibe-approval-state";
+
+/**
+ * Named volume holding the coding agent's own state (Issue #1407): its
+ * configuration, the transcripts `--resume` replays, and the per-repository
+ * session stores. Separate from `vibe-work` so the work volume can be
+ * tightened without ever locking the agent out of its own state — the agent
+ * writing its state is required behaviour, not something traded for
+ * containment.
+ */
+export const AGENT_STATE_VOLUME_NAME = "vibe-agent-state";
 
 /** Volume names every supported runtime accepts, and no shell can misread. */
 const VOLUME_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
@@ -248,7 +260,18 @@ export interface ContainerLaunchInputs {
    * is what makes the content durable. Names are validated the same way as
    * the defaults, so the override cannot smuggle in a host path.
    */
-  volumes?: { work: string; approvalState: string };
+  /**
+   * Per-run throwaway volume names, used by the containment integration
+   * tests so they never touch a production host's state (Issue #4186).
+   *
+   * Every field is REQUIRED. `agentState` was optional when it was added
+   * (Issue #1407), which meant a caller isolating the other two silently
+   * fell back to the PRODUCTION `vibe-agent-state` name — mounting the live
+   * agent session store into a throwaway container, which is exactly what
+   * this override exists to prevent. An optional isolation knob isolates
+   * nothing; a missing name must be a compile error, not a fallback.
+   */
+  volumes?: { work: string; approvalState: string; agentState: string };
   /**
    * Absolute host paths of the operator's `custom_label_prompts` templates
    * (Issue #850, part of #843), in configuration order.
@@ -379,6 +402,8 @@ export interface ContainerTargetPaths {
   work: string;
   /** The content-approval store, always the work dir's sibling (#3717). */
   approvalState: string;
+  /** The agent's own state store, also a work-dir sibling (Issue #1407). */
+  agentState: string;
   logs: string;
   config: string;
   credentials: string;
@@ -816,6 +841,10 @@ export function containerTargetPaths(
     // Derived through the worker's own resolver so the volume mount and the
     // store the worker reads can never drift apart (Issues #3717, #4186).
     approvalState: resolveContentApprovalStateDir(work),
+    // Issue #1407: a sibling of the work dir, on its own volume, so the
+    // agent keeps unrestricted access to its own state while the work
+    // volume is free to be tightened.
+    agentState: resolveAgentStateDir(work),
     logs: `${home}/logs`,
     // A directory outside the checkout mount: overlaying the config file at
     // `${workdir}/.config.json` breaks Apple container (see
@@ -985,6 +1014,11 @@ export function buildContainerLaunchPlan(
     {
       source: inputs.volumes?.approvalState ?? APPROVAL_STATE_VOLUME_NAME,
       target: targets.approvalState,
+      volume: true,
+    },
+    {
+      source: inputs.volumes?.agentState ?? AGENT_STATE_VOLUME_NAME,
+      target: targets.agentState,
       volume: true,
     },
     { source: normalise(hostPaths.logDir, style), target: targets.logs },

@@ -9,7 +9,7 @@
  * Uses Australian English throughout.
  */
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   _resetGhSpawnRunner,
   _setGhSpawnRunner,
@@ -29,9 +29,11 @@ import {
   WriteRepoBlockedError,
   WriteTargetUndeterminableError,
 } from "../lib/write_repo_allowlist.ts";
+import { envFrom } from "./support/env_lookup.ts";
 import { UnredactableBodyError } from "../lib/gh_body_redaction.ts";
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
-import { envFrom } from "./support/env_lookup.ts";
+
+const GH_TOKEN_SAMPLE = `ghp_${"a1B2c3D4e5".repeat(4)}`;
 
 /** True when the path exists; used to assert a masked copy was removed. */
 async function exists(path: string): Promise<boolean> {
@@ -43,6 +45,16 @@ async function exists(path: string): Promise<boolean> {
     throw error;
   }
 }
+
+import {
+  getGhCallMetrics,
+  resetGhCallMetrics,
+} from "../lib/gh_call_metrics.ts";
+import {
+  clearPrimaryQuotaLatch,
+  latchPrimaryQuota,
+} from "../lib/primary_quota_latch.ts";
+import { probeGraphqlQuota } from "../lib/graphql_quota_probe.ts";
 
 /** Record the arguments each spawn attempt would have used. */
 function recordingRunner(
@@ -386,13 +398,6 @@ Deno.test("spawnGh - the injected roots are the only ones the re-stage reads", a
   }
 });
 
-// ---------------------------------------------------------------------------
-// File and stdin bodies at the worker chokepoint (Issue #1254)
-// ---------------------------------------------------------------------------
-
-/** A realistic GitHub token shape — the payload each body below carries. */
-const GH_TOKEN_SAMPLE = `ghp_${"a1B2c3D4e5".repeat(4)}`;
-
 Deno.test("spawnGh - masks a secret read from a --body-file body (Issue #1254)", async () => {
   const { calls } = recordingRunner();
   silenceAllowlist();
@@ -605,116 +610,111 @@ Deno.test("spawnGh - a non-auth failure is returned as-is, never retried", async
 });
 
 // ---------------------------------------------------------------------------
-// Default timeout at the chokepoint (Issue #1229)
+// Issue #1485: telemetry and the primary-quota latch live at the chokepoint,
+// so a module that spawns `gh` directly is counted and short-circuited
+// exactly like one that goes through `runGhCommandRaw`.
 // ---------------------------------------------------------------------------
 
-/**
- * A runner that never completes, so only the timeout can end the call.
- *
- * A missing signal rejects immediately and loudly rather than hanging the
- * suite — that is exactly the unfixed behaviour these tests reproduce.
- */
-function stallingRunner(): void {
-  _setGhSpawnRunner((_args, options) => {
-    const signal = options.signal;
-    if (!signal) {
-      return Promise.reject(
-        new Error("the chokepoint supplied no timeout signal"),
-      );
-    }
-    return new Promise((_resolve, reject) => {
-      signal.addEventListener("abort", () => reject(signal.reason));
-    });
-  });
-}
-
-Deno.test("spawnGh - arms a default timeout when the caller supplies no signal (Issue #1229)", async () => {
-  const seen: Array<AbortSignal | undefined> = [];
-  _setGhSpawnRunner((_args, options) => {
-    seen.push(options.signal);
-    return Promise.resolve({
-      code: 0,
-      success: true,
-      stdout: "",
-      stderr: "",
-    });
-  });
+Deno.test("spawnGh - records every spawn in the gh call metrics (Issue #1485)", async () => {
+  resetGhCallMetrics();
+  clearPrimaryQuotaLatch();
+  const { calls } = recordingRunner({ code: 0, stdout: "[]" });
   try {
-    await spawnGh(["issue", "view", "1"]);
-    const signal = seen[0];
-    assertEquals(signal instanceof AbortSignal, true);
-    assertEquals(signal?.aborted, false);
+    await spawnGh(["issue", "list", "--repo", "o/r"]);
+    await spawnGh(["pr", "view", "7", "--json", "state"]);
+    await spawnGh(["api", "rate_limit"]);
+    await runGhOrThrow(["api", "graphql", "-f", "query=Q"]);
+    assertEquals(calls.length, 4);
+    const snap = getGhCallMetrics();
+    assertEquals(snap.total, 4, "one record per spawned gh process");
+    assertEquals(snap.graphqlTotal, 3, "only the REST api call is not GraphQL");
+    assertEquals(snap.bySubCommand["issue list"], 1);
+    assertEquals(snap.bySubCommand["pr view"], 1);
+    assertEquals(snap.bySubCommand["api"], 1);
+    assertEquals(snap.bySubCommand["api graphql"], 1);
   } finally {
     restore();
+    resetGhCallMetrics();
   }
 });
 
-Deno.test("spawnGh - a stalled gh call is aborted and reported as a timeout (Issue #1229)", async () => {
-  stallingRunner();
+Deno.test("spawnGh - a latched GraphQL-backed call fails without spawning or counting (Issue #1485)", async () => {
+  resetGhCallMetrics();
+  clearPrimaryQuotaLatch();
+  const { calls } = recordingRunner({ code: 0, stdout: "[]" });
   try {
-    const result = await spawnGh(["issue", "view", "1"], {
-      timeoutSeconds: 0.05,
-    });
-    assertEquals(result.code, 124);
+    latchPrimaryQuota(Math.floor(Date.now() / 1000) + 3600);
+    const result = await spawnGh(["issue", "list", "--repo", "o/r"]);
     assertEquals(result.success, false);
-    assertStringIncludes(result.stderr, "TIMEOUT: gh issue view 1");
-    assertStringIncludes(result.stderr, "0.05s");
-  } finally {
-    restore();
-  }
-});
+    assertEquals(result.code, 1);
+    // The skip message carries the primary-quota phrase so the scans' log
+    // lines and the Issue #1780 pause still classify it correctly.
+    assertEquals(
+      /api rate limit already exceeded/i.test(result.stderr),
+      true,
+      `skip message should name the primary quota: ${result.stderr}`,
+    );
+    assertEquals(calls, [], "a latched call must not spawn gh");
+    assertEquals(getGhCallMetrics().total, 0, "a skipped call is not a call");
 
-Deno.test("runGhOrThrow - a timed-out call throws rather than returning empty stdout (Issue #1229)", async () => {
-  stallingRunner();
-  try {
+    // runGhOrThrow surfaces the same skip as its usual failure shape.
     const error = await assertRejects(
-      () => runGhOrThrow(["api", "repos/me/target"], { timeoutSeconds: 0.05 }),
+      () => runGhOrThrow(["pr", "list", "--repo", "o/r"]),
       Error,
     );
-    assertStringIncludes(error.message, "gh command failed (exit 124)");
-    assertStringIncludes(error.message, "TIMEOUT: gh api repos/me/target");
+    assertEquals(/api rate limit already exceeded/i.test(error.message), true);
+    assertEquals(calls, []);
   } finally {
     restore();
+    clearPrimaryQuotaLatch();
+    resetGhCallMetrics();
   }
 });
 
-Deno.test("spawnGh - a caller's own signal is passed through untouched (Issue #1229)", async () => {
-  const controller = new AbortController();
-  const seen: Array<AbortSignal | undefined> = [];
-  _setGhSpawnRunner((_args, options) => {
-    seen.push(options.signal);
-    return Promise.resolve({
-      code: 0,
-      success: true,
-      stdout: "",
-      stderr: "",
-    });
+Deno.test("spawnGh - a REST `gh api <path>` still runs while latched (Issue #1485)", async () => {
+  resetGhCallMetrics();
+  clearPrimaryQuotaLatch();
+  const { calls } = recordingRunner({ code: 0, stdout: "{}" });
+  try {
+    latchPrimaryQuota(Math.floor(Date.now() / 1000) + 3600);
+    const result = await spawnGh(["api", "rate_limit"]);
+    assertEquals(result.success, true);
+    await spawnGh(["api", "-X", "DELETE", "repos/o/r/issues/1/assignees"]);
+    assertEquals(calls.length, 2, "REST rides the core quota, not GraphQL");
+    assertEquals(getGhCallMetrics().total, 2);
+    assertEquals(getGhCallMetrics().graphqlTotal, 0);
+  } finally {
+    restore();
+    clearPrimaryQuotaLatch();
+    resetGhCallMetrics();
+  }
+});
+
+Deno.test("spawnGh - bypassQuotaLatch lets the quota probe run while latched (Issue #1485)", async () => {
+  clearPrimaryQuotaLatch();
+  const resetAt = new Date(Date.now() + 1800_000).toISOString();
+  const { calls } = recordingRunner({
+    code: 0,
+    stdout: JSON.stringify({
+      data: { rateLimit: { limit: 5000, remaining: 0, used: 5000, resetAt } },
+    }),
   });
   try {
-    await spawnGh(["issue", "view", "1"], { signal: controller.signal });
-    assertEquals(seen[0], controller.signal);
+    latchPrimaryQuota(Math.floor(Date.now() / 1000) + 3600);
+    // The explicit escape hatch.
+    const direct = await spawnGh(["api", "graphql", "-f", "query=Q"], {
+      bypassQuotaLatch: true,
+    });
+    assertEquals(direct.success, true);
+    assertEquals(calls.length, 1);
+    // And the probe's default spawn uses it — the probe is what learns the
+    // reset that lifts the latch, so it can never be latched out.
+    const reading = await probeGraphqlQuota();
+    assertEquals(reading.ok, true);
+    assertEquals(calls.length, 2, "the probe must reach the runner");
   } finally {
     restore();
-  }
-});
-
-Deno.test("spawnGh - a caller signal's abort still surfaces as an error (Issue #1229)", async () => {
-  const controller = new AbortController();
-  _setGhSpawnRunner((_args, options) =>
-    new Promise((_resolve, reject) => {
-      options.signal?.addEventListener("abort", () => {
-        reject(new DOMException("aborted", "AbortError"));
-      });
-      controller.abort();
-    })
-  );
-  try {
-    const error = await assertRejects(
-      () => spawnGh(["issue", "view", "1"], { signal: controller.signal }),
-      DOMException,
-    );
-    assertEquals(error.name, "AbortError");
-  } finally {
-    restore();
+    clearPrimaryQuotaLatch();
+    resetGhCallMetrics();
   }
 });

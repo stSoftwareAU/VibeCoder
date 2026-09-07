@@ -1168,6 +1168,7 @@ prompt_interactive_config() {
         # Check if already authenticated in this config dir
         if GH_CONFIG_DIR="$expanded_gh_dir" gh auth status &>/dev/null; then
             print_success "Already authenticated in ${INTERACTIVE_GH_CONFIG_DIR}"
+            warn_if_token_lacks_workflow_scope "$expanded_gh_dir"
         elif [[ -n "$VIBE_PROVISIONED_GH_CONFIG_DIR" && "$expanded_gh_dir" == "$VIBE_PROVISIONED_GH_CONFIG_DIR" ]]; then
             # Provisioned non-interactively above — never offer a login prompt
             # for the directory the worker consumes at runtime (Issue #4064).
@@ -1344,6 +1345,24 @@ remind_obsolete_host_work_dirs() {
     if [[ "${found}" == "true" ]]; then
         print_info "Reclaim the space once you are happy with the containerised worker: rm -rf '${work_dir}' '${work_dir}-approval-state'"
         print_info "(Content-approval snapshots re-baseline on the new volume; repositories re-clone on first use.)"
+    fi
+}
+
+# Issue #1475: a token without the `workflow` OAuth scope cannot create or
+# update .github/workflows/ — every monitored repo in this fleet carries
+# workflows, and the worker claimed two workflow issues and lost both at the
+# push before anyone read the git rejection. Say it here, at setup, with the
+# fix, rather than leaving it to a log line at runtime.
+warn_if_token_lacks_workflow_scope() {
+    local gh_dir="$1"
+    local scopes
+    scopes="$(GH_CONFIG_DIR="$gh_dir" gh auth status 2>&1 | grep -i 'token scopes' | head -1 || true)"
+    # No scope line at all (a GitHub App token, or an older gh) — nothing to say.
+    [[ -n "$scopes" ]] || return 0
+    if ! grep -q -E "(^|[^a-z_])'?workflow'?([^a-z_]|$)" <<<"$scopes"; then
+        print_warning "The token in ${gh_dir} lacks the 'workflow' scope (${scopes#*:})."
+        print_warning "Pushes that create or update .github/workflows/ will be rejected, and the worker will skip workflow issues."
+        print_info "Fix: GH_CONFIG_DIR=\"${gh_dir}\" gh auth refresh -s workflow   (then re-run setup so gh/hosts.yml is re-provisioned)"
     fi
 }
 

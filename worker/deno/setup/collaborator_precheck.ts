@@ -8,6 +8,16 @@
  * every iteration. This precheck catches that misconfiguration once, at
  * setup time, the moment a new repo is added.
  *
+ * The bar is **push**, not triage (Issue #1455). Triage lets the worker be
+ * assigned an issue, but the per-cycle trusted-author refresh lists each
+ * monitored repo's collaborators — an endpoint GitHub answers only for a
+ * login with push — and the worker cannot push a branch without it either.
+ * A triage-only login passed the old precheck clean and then did nothing:
+ * on GRQ-25 a read-only service account produced 31 `[TRUST_REFRESH]`
+ * failures in one run and zero claims. The precheck now says what the login
+ * can actually do on each repo, and its remediation grants what the worker
+ * actually needs.
+ *
  * RATE-LIMIT BUDGET — READ BEFORE WIRING THIS ANYWHERE NEW.
  * This precheck must run ONLY at setup time (once per `setup.sh` invocation,
  * plus on `VIBE_ADD_REPOS` events). It must NEVER be called from the
@@ -41,8 +51,20 @@ export interface CommandOutput {
 /** Injectable command runner (overridable for testing). */
 export type RunCommand = (cmd: string[]) => Promise<CommandOutput>;
 
-/** Classification of the worker token's access to a monitored repo. */
-export type RepoAccessStatus = "ok" | "not_visible" | "not_assignable";
+/**
+ * Classification of the worker token's access to a monitored repo.
+ *
+ * - `ok` — push (write) or better: assignable, pushable, and a trust source.
+ * - `not_pushable` — triage only: assignable, but cannot push a branch and
+ *   cannot list collaborators, so the repo is not a trust source (#1455).
+ * - `not_assignable` — visible, but neither triage nor push.
+ * - `not_visible` — 404 / 403: the token cannot see the repo at all.
+ */
+export type RepoAccessStatus =
+  | "ok"
+  | "not_visible"
+  | "not_assignable"
+  | "not_pushable";
 
 /** A repo the worker cannot work, with the reason. */
 export interface CollaboratorMiss {
@@ -131,8 +153,14 @@ async function resolveWorkerUser(
  * `GET /repos/<owner>/<repo>`.
  *
  * - command failure (404/403) → `not_visible`
- * - 200 with `permissions.triage !== true` → `not_assignable`
- * - 200 with `permissions.triage === true` → `ok`
+ * - 200 with `permissions.push === true` → `ok`
+ * - 200 with `permissions.triage === true` but no push → `not_pushable`
+ * - 200 with neither → `not_assignable`
+ *
+ * `push` is what the worker needs: the trusted-author refresh lists each
+ * repo's collaborators, which GitHub serves only to a login with push, and a
+ * branch cannot be pushed without it (Issue #1455). `admin` and `maintain`
+ * imply `push` in GitHub's `permissions` object, so one flag is enough.
  */
 export async function classifyRepoAccess(
   repo: string,
@@ -146,9 +174,11 @@ export async function classifyRepoAccess(
   }
   try {
     const body = JSON.parse(result.stdout) as {
-      permissions?: { triage?: boolean };
+      permissions?: { triage?: boolean; push?: boolean };
     };
-    return body.permissions?.triage === true ? "ok" : "not_assignable";
+    if (body.permissions?.push === true) return "ok";
+    if (body.permissions?.triage === true) return "not_pushable";
+    return "not_assignable";
   } catch {
     // Unparseable body — treat conservatively as not assignable so the
     // misconfiguration surfaces rather than being silently ignored.
@@ -157,10 +187,19 @@ export async function classifyRepoAccess(
 }
 
 /** Human-readable explanation of each miss status. */
-function statusExplanation(status: CollaboratorMiss["status"]): string {
-  return status === "not_visible"
-    ? "worker token cannot see this repo (404/403)"
-    : "worker has read access but cannot be assigned issues (`triage` is false)";
+export function statusExplanation(status: CollaboratorMiss["status"]): string {
+  switch (status) {
+    case "not_visible":
+      return "worker token cannot see this repo (404/403)";
+    case "not_pushable":
+      return "worker can be assigned issues but cannot push (`push` is false): " +
+        "it cannot list this repo's collaborators, so the repo is not a " +
+        "trust source and the trusted-author refresh skips it, and it " +
+        "cannot push a branch here (Issue #1455)";
+    default:
+      return "worker has read access but cannot be assigned issues " +
+        "(`triage` is false) and cannot push";
+  }
 }
 
 /** Build the consolidated issue title for the findings in hand. */
@@ -236,7 +275,7 @@ export function buildIssueBody(
   const inviteCommands = validMisses.length > 0
     ? validMisses
       .map((m) =>
-        `gh api -X PUT repos/${m.repo}/collaborators/${workerUser} -f permission=triage`
+        `gh api -X PUT repos/${m.repo}/collaborators/${workerUser} -f permission=push`
       )
       .join("\n")
     : "# No invite commands: every affected entry is an invalid repo slug — fix `.config.json` first.";
@@ -258,9 +297,12 @@ ${PRECHECK_DEDUP_TAG}`;
 
   return `## Collaborator precheck failed
 
-The worker user \`${workerUser}\` cannot be assigned issues on the following
-monitored repositories. Until this is fixed the worker will repeatedly fail to
-claim their open issues and waste API budget every loop.
+The worker user \`${workerUser}\` lacks push (write) access on the following
+monitored repositories. Push is the bar, not triage (Issue #1455): the
+trusted-author refresh lists each monitored repo's collaborators, which GitHub
+serves only to a login with push, and the worker cannot push a branch without
+it. Until this is fixed the affected repos are not trust sources, their issues
+cannot be worked, and the worker wastes API budget every loop.
 
 ### Affected repositories
 
@@ -269,7 +311,7 @@ ${rows}
 ### How to fix — run as a repo admin
 
 \`\`\`bash
-# Grant the worker triage (assignable) access on each repo:
+# Grant the worker push (write) access on each repo — triage is not enough:
 ${inviteCommands}
 \`\`\`
 

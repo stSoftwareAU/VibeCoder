@@ -1,7 +1,7 @@
 {
   "root": "worker/deno/lib",
   "parent": 1209,
-  "description": "Coverage ledger for the chunk-12 security sweep of worker/deno/lib/. Every non-test module under root belongs to exactly one slice. Enforced by worker/deno/tests/lib_sweep_coverage_test.ts — a module absent from every slice is an unswept file and fails the test.",
+  "description": "Coverage ledger for the chunk-12 security sweep of worker/deno/lib/. Every non-test module under root belongs to exactly one slice. Enforced by worker/deno/tests/lib_sweep_coverage_test.ts \u2014 a module absent from every slice is an unswept file and fails the test.",
   "slices": [
     {
       "issue": 1214,
@@ -354,6 +354,7 @@
       "paths": [
         "worker/deno/lib/acting_github_user.ts",
         "worker/deno/lib/agent_provider.ts",
+        "worker/deno/lib/agent_state_dir.ts",
         "worker/deno/lib/ci_check_state_dir.ts",
         "worker/deno/lib/codex_env.ts",
         "worker/deno/lib/command_work_dir.ts",
@@ -397,7 +398,8 @@
         "worker/deno/lib/shell_helpers.ts",
         "worker/deno/lib/stuck_issue_detector.ts",
         "worker/deno/lib/timeline_cache.ts",
-        "worker/deno/lib/unit_test_passes.ts"
+        "worker/deno/lib/unit_test_passes.ts",
+        "worker/deno/lib/workflow_scope.ts"
       ]
     },
     {
@@ -486,6 +488,7 @@
         "worker/deno/lib/commands.ts",
         "worker/deno/lib/comment_cache.ts",
         "worker/deno/lib/comment_rate_limiter.ts",
+        "worker/deno/lib/completeness_checks.ts",
         "worker/deno/lib/config_defaults.ts",
         "worker/deno/lib/config_mapping.ts",
         "worker/deno/lib/config_precedence.ts",
@@ -557,6 +560,7 @@
         "worker/deno/lib/gh_flag_parser.ts",
         "worker/deno/lib/gh_issue_lifecycle.ts",
         "worker/deno/lib/gh_local_state_guard.ts",
+        "worker/deno/lib/gh_pr_lifecycle.ts",
         "worker/deno/lib/git_base_ref.ts",
         "worker/deno/lib/git_branch.ts",
         "worker/deno/lib/git_branch_sync.ts",
@@ -642,6 +646,7 @@
         "worker/deno/lib/live_slot_holds.ts",
         "worker/deno/lib/liveness_guard.ts",
         "worker/deno/lib/log_tail.ts",
+        "worker/deno/lib/loop_contract.ts",
         "worker/deno/lib/main_branch_ruleset.ts",
         "worker/deno/lib/main_branch_ruleset_check.ts",
         "worker/deno/lib/maintenance_lane.ts",
@@ -719,6 +724,7 @@
         "worker/deno/lib/prompt_override_resolver.ts",
         "worker/deno/lib/prompt_prefix.ts",
         "worker/deno/lib/provider_token_usage.ts",
+        "worker/deno/lib/public_url_guard.ts",
         "worker/deno/lib/publish_decision_check.ts",
         "worker/deno/lib/push_claim_verification.ts",
         "worker/deno/lib/push_recovery_retry.ts",

@@ -288,6 +288,8 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     // Issue #505: the self-scheduling cap and its audit/announce steps are
     // this worker's state and this worker's writes — nothing the census reads.
     "self-schedule-refused": "run-local",
+    // Issue #1475: a property of this host's token, not of the issue.
+    "workflow-scope-missing": "run-local",
     // The scan already puts these in front of a human on the issue itself.
     "dependency-cycle-escalated": "escalated-elsewhere",
     "dead-label-tracker-escalated": "escalated-elsewhere",

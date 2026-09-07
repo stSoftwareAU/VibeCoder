@@ -58,13 +58,14 @@ export type { CommandOutput };
 /**
  * Validate a candidate add-repo target.
  *
- * Confirms the repo exists and the worker has triage access, then determines
+ * Confirms the repo exists and the worker has push access, then determines
  * its visibility. Returns:
- * - `{ kind: "ok", visibility }` when readable with triage access.
+ * - `{ kind: "ok", visibility }` when readable with push access.
  * - `{ kind: "not_found" }` when `gh api repos/{owner}/{repo}` reports the repo
  *   is missing/unreadable (404/403).
  * - `{ kind: "no_access" }` when the repo is visible but the worker lacks
- *   triage permission.
+ *   push permission — triage alone is not enough (Issue #1455): a monitored
+ *   repo is listed for collaborators every refresh, which needs push.
  *
  * Returns `Result.err` only when access is confirmed but the follow-up
  * visibility lookup itself fails (e.g. a transient gh/network error) — that is
@@ -82,11 +83,11 @@ export async function validateAddRepoTarget(
   if (access === "not_visible") {
     return { ok: true, value: { kind: "not_found" } };
   }
-  if (access === "not_assignable") {
+  if (access === "not_assignable" || access === "not_pushable") {
     return { ok: true, value: { kind: "no_access" } };
   }
 
-  // access === "ok": repo is readable with triage access. Determine visibility.
+  // access === "ok": repo is readable with push access. Determine visibility.
   const visibility = await getRepoVisibility(repo, {
     runCommand: deps.runCommand,
   });

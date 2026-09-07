@@ -53,6 +53,7 @@ import {
   startBranchUpdateLockRenewal,
 } from "./pr_branch_lock.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
+import { ensureHistoryDepth } from "./git_history.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
@@ -746,6 +747,26 @@ async function resolveConflict(
     };
   }
 
+  // Issue #1458: monitored repos are `--depth=1` clones, and a merge on a
+  // shallow clone whose tips have diverged fails with "refusing to merge
+  // unrelated histories" — GitHub can see the ancestor; the clone cannot.
+  // Deepen until the merge base is present (a no-op on a full clone) BEFORE
+  // the attempt is opened, so a clone problem never spends an attempt. A
+  // branch with no common ancestor even in full history is a human's
+  // problem — a re-initialised or rewritten branch — not a conflict the
+  // agent failed to resolve.
+  const depth = await ensureHistoryDepth([`origin/${baseBranch}`, "HEAD"], {
+    cwd: workDir,
+    gitRunner: run,
+  });
+  if (!depth.ok) {
+    return await escalateNoCommonAncestor(
+      input,
+      processorDeps,
+      depth.error.message,
+    );
+  }
+
   // Record the attempt before merging anything (Issue #84): the marker is
   // what a later scan reads to tell "this attempt was disrupted" from "no
   // attempt has run". It opens the attempt; only a conclusion posted below
@@ -809,6 +830,17 @@ async function resolveConflict(
       // The merge failed for a reason that is not a content conflict (a
       // dirty tree, a missing ref). Leave the branch untouched.
       await abortMerge(run, workDir);
+      // Belt and braces for Issue #1458: should git still refuse after the
+      // deepen step, name the refusal for what it is rather than spend an
+      // attempt on a generic "did not conflict but failed".
+      if (/refusing to merge unrelated histories/i.test(merge.stderr)) {
+        await deleteAttemptMarker(deps, repo, attemptCommentId, logger);
+        return await escalateNoCommonAncestor(
+          input,
+          processorDeps,
+          merge.stderr.trim(),
+        );
+      }
       return await failAttempt(
         input,
         processorDeps,
@@ -1195,6 +1227,104 @@ async function runResolutionAgent(
   }
 
   return { ok: true, value: undefined };
+}
+
+/**
+ * Withdraw an attempt marker that was opened before a clone fault surfaced
+ * (Issue #1458), so the fault is not later read as a disrupted attempt. A
+ * marker that cannot be deleted is left; the escalation comment below says
+ * what happened, and the disruption bound still holds.
+ */
+async function deleteAttemptMarker(
+  deps: WorkerDeps,
+  repo: string,
+  commentId: number | null,
+  logger: Logger,
+): Promise<void> {
+  if (commentId === null) return;
+  try {
+    await deps.github.runGhCommand([
+      "api",
+      "-X",
+      "DELETE",
+      `repos/${repo}/issues/comments/${commentId}`,
+    ]);
+  } catch (err) {
+    logger.warn("Could not withdraw the attempt marker after a clone fault", {
+      repo,
+      commentId,
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
+ * The branch and its base share no common ancestor even in full history
+ * (Issue #1458). That is not a conflict the agent failed to resolve, so no
+ * attempt is spent: the PR is handed to a human with the ancestry named.
+ */
+async function escalateNoCommonAncestor(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+  detail: string,
+): Promise<Result<MergeConflictResult>> {
+  const { logger, deps } = processorDeps;
+  const { repo, prNumber, branchName, baseBranch } = input;
+
+  logger.warn(
+    "Merge-conflict resolution needs a common ancestor the clone cannot produce",
+    { repo, prNumber, branchName, baseBranch, detail },
+  );
+
+  const escalation = await escalateToHuman({
+    ghClient: createGhEscalationClient(deps.github.runGhCommand),
+    repo,
+    target: { kind: "pr", number: prNumber },
+    needsHumanLabel: processorDeps.needsHumanLabel ?? "needs-human",
+    heading: "Merge conflict needs human attention",
+    reason: [
+      `\`${branchName}\` and \`origin/${baseBranch}\` share **no common ` +
+      `ancestor**, even after the worker fetched full history ` +
+      `(\`git fetch --unshallow\`). The branch does not descend from the ` +
+      `base — a re-initialised branch, a force-pushed rewrite, or a clone ` +
+      `the worker cannot repair — so there is no merge for the resolver to ` +
+      `attempt (Issue #1458).`,
+      "",
+      `git said: \`${detail.split("\n")[0]?.trim() ?? detail}\``,
+      "",
+      "No resolution attempt was spent on this.",
+    ].join("\n"),
+    nextStep: `Check the ancestry (\`git merge-base origin/${baseBranch} ` +
+      `${branchName}\`). Rebase or recreate the branch from ` +
+      `\`origin/${baseBranch}\`, then remove \`needs-human\` and ` +
+      `\`merge-conflict\` so the resolver can try again.`,
+    dedupKey: `merge-conflict-no-common-ancestor-${prNumber}`,
+    ensureLabelColour: "d4c5f9",
+    ensureLabelDescription:
+      "Worker could not produce a fix; human review required",
+    deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
+    logger,
+  });
+  if (!escalation.ok) {
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to escalate the missing common ancestor on PR #${prNumber}: ${escalation.error.message}`,
+      ),
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      processed: true,
+      merged: false,
+      escalated: true,
+      summary: `PR #${prNumber}: no common ancestor between '${branchName}' ` +
+        `and 'origin/${baseBranch}' even in full history — escalated to a ` +
+        `human, no attempt spent (Issue #1458)`,
+    },
+  };
 }
 
 /**

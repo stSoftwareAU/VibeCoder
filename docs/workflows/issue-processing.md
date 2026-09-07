@@ -389,26 +389,28 @@ no human action: it expires with the cooldown window and the retry path
 
 ## Per-cycle trusted-author refresh
 
-Every scan cycle begins by refreshing the trusted-author snapshot
+Every scan cycle begins by asking for the trusted-author snapshot
 (`refreshTrustedAuthors` in
-[`run_core.ts`](../../worker/deno/lib/run_core.ts)): one paginated `gh api`
-collaborator list per monitored repo, plus one team-members call when
-`exclusion_team` is set. There is no local-array mode to short-circuit it.
+[`run_core.ts`](../../worker/deno/lib/run_core.ts)). A resolve is one
+paginated `gh api` collaborator list per monitored repo, plus one
+team-members call when `exclusion_team` is set, and its result is reused
+for `trusted_authors_cache_hours` (default one hour, Issue #1453) before it
+is fetched again — inside that window a cycle makes no trust call at all.
+There is no local-array mode to short-circuit it. See
+[CONFIGURATION.md — Snapshot, refresh and `gh` cost](../CONFIGURATION.md#snapshot-refresh-and-gh-cost).
 
-That per-tick collaborator fetch is an intentional exception to the
-standing rate-limit warning in
-[`collaborator_precheck.ts`](../../worker/deno/setup/collaborator_precheck.ts)
-(lines 11–19). The setup-time precheck must never run inside the main
-loop (~400 `gh` calls per tick already); derived trust *does* run there,
-because a stale allowlist would keep a revoked collaborator trusted for
-the rest of the run. The added cost is one paginated call per monitored
-repo per cycle (and one team call when `exclusion_team` is set). See
-[CONFIGURATION.md — Per-cycle refresh and `gh` cost](../CONFIGURATION.md#per-cycle-refresh-and-gh-cost).
+A monitored repo the worker's login cannot list (404, or 403 "Must have push
+access") is **skipped**, named once, and left out of the fold: it is a
+property of the deployment, and the worker could not write there anyway.
+Only when every repo is skipped is there nothing to trust.
 
-A failed refresh is **fail-closed**: the cycle logs `[TRUST_REFRESH]`,
-marks the host unhealthy, and skips claiming and every other
-trust-dependent pass. A 403 (missing collaborator-read or `read:org`)
-is the searchable symptom — the worker does not become silently
+A failed refresh is otherwise **fail-closed**: the cycle logs
+`[TRUST_REFRESH]`, marks the host unhealthy, and skips claiming and every
+other trust-dependent pass. The one thing it may serve instead is the
+worker's own in-memory snapshot of a real fetch, when the failure was
+transient and the snapshot is under six hours old — said in the log with
+its age. A 403 on the team fetch (missing `read:org`) is the searchable
+symptom of a misconfigured token — the worker does not become silently
 permissive. See
 [Setup — Token scopes for derived trust](../SETUP.md#token-scopes-for-derived-trust).
 
