@@ -184,23 +184,97 @@ export async function ensureLaneWorktree(
     };
   }
 
-  const added = await runGitCommand(
+  let added = await runGitCommand(
     ["worktree", "add", "--detach", "--force", path, "HEAD"],
     { cwd: repoPath },
   );
+
+  // Issue #1561: `git worktree add` refuses a path that already exists as a
+  // directory, and `--force` does not override that — it overrides an
+  // already-checked-out branch and an already-registered path, not a stray
+  // directory. `worktree prune` above does not help either: it drops
+  // administration for worktrees whose directory has *gone*, and this
+  // directory has not gone.
+  //
+  // Two things leave one: a container killed mid-run, and a shared clone
+  // recreated underneath its linked worktrees (the `.git` file then points at
+  // administration that no longer exists, so `isLinkedWorktree` says no and
+  // we arrive here). Either way the lane was wedged permanently — every cycle
+  // died in phase `setup` inside a minute and released the claim with no PR,
+  // and the next cycle failed identically. Nothing about that self-heals with
+  // time, so clear the orphan and try once more.
+  if (isPathAlreadyExists(added)) {
+    try {
+      await Deno.remove(path, { recursive: true });
+    } catch (err) {
+      return {
+        ok: false,
+        error: new Error(
+          `Could not create a ${laneId} worktree for ${repo} at ${path}: the ` +
+            `path already exists and is not a worktree of ${repoPath}, and ` +
+            `it could not be cleared: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+        ),
+      };
+    }
+    await runGitCommand(["worktree", "prune"], { cwd: repoPath });
+    added = await runGitCommand(
+      ["worktree", "add", "--detach", "--force", path, "HEAD"],
+      { cwd: repoPath },
+    );
+  }
+
   if (!added.ok || added.value.code !== 0) {
-    const detail = added.ok
-      ? (added.value.stderr.trim() || `exit ${added.value.code}`)
-      : added.error.message;
     return {
       ok: false,
       error: new Error(
-        `Could not create a ${laneId} worktree for ${repo} at ${path}: ${detail}`,
+        `Could not create a ${laneId} worktree for ${repo} at ${path}: ${
+          worktreeAddFailureDetail(added)
+        }`,
       ),
     };
   }
 
   return { ok: true, value: path };
+}
+
+/** Outcome of the `git worktree add` run, as {@link runGitCommand} reports it. */
+type WorktreeAddOutcome = Awaited<ReturnType<typeof runGitCommand>>;
+
+/**
+ * True when `git worktree add` refused because the target path is already
+ * there — the one failure this module can clear and retry (Issue #1561).
+ *
+ * Matched on git's own wording rather than the exit code, which is a generic
+ * 128 for every fatal. A wording change upstream costs the retry, not
+ * correctness: the call still fails loudly with the detail below.
+ */
+function isPathAlreadyExists(added: WorktreeAddOutcome): boolean {
+  if (!added.ok || added.value.code === 0) return false;
+  return /fatal:.*already exists/i.test(added.value.stderr);
+}
+
+/**
+ * The reportable cause of a failed `git worktree add` (Issue #1561).
+ *
+ * `git worktree add` writes `Preparing worktree (detached HEAD abc1234)` to
+ * **stderr** before it does any work, so a plain `stderr.trim()` leads with a
+ * line that says nothing and buries the `fatal:` that follows. On Issue #1561
+ * the useful half was then truncated out of the issue comment altogether, and
+ * the report a human had to act on read `Preparing worktree (detached HEA…`.
+ *
+ * The preamble is dropped so the actual cause leads. Every other line is
+ * kept — including any git writes that this module does not recognise.
+ */
+export function worktreeAddFailureDetail(added: WorktreeAddOutcome): string {
+  if (!added.ok) return added.error.message;
+  const meaningful = added.value.stderr
+    .split("\n")
+    .filter((line) => !/^\s*Preparing worktree\b/.test(line))
+    .join("\n")
+    .trim();
+  return meaningful || `exit ${added.value.code}`;
 }
 
 /**
