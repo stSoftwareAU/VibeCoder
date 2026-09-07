@@ -1129,7 +1129,7 @@ Prompt boundary markers are hardened against spoofing:
 
 ### 5. Label Manipulation Detection
 
-Operational labels that affect worker behaviour (`planning`, `question`, `needs-revision`, `needs-revision`, `best-model`) are verified via the GitHub timeline API. Labels added by untrusted users are:
+Operational labels that affect worker behaviour (`planning`, `question`, `needs-revision`, `best-model`, `needs-human`, `refine-issue`, `failed`, `failed-once`, `quorum`, `grill-me` — the `OPERATIONAL_LABEL_NAMES` list in [`label_security.ts`](worker/deno/lib/label_security.ts)) are verified via the GitHub timeline API. Labels added by untrusted users are:
 - Ignored in processing decisions
 - Logged with a `[SECURITY] [UNTRUSTED_LABEL_CHANGE]` audit event
 
@@ -1137,6 +1137,8 @@ Operational labels that affect worker behaviour (`planning`, `question`, `needs-
 
 - **Worker-owned failure marks.** `failed` / `failed-once` applied by a fleet worker stay trusted — they drive the consecutive-failure circuit breaker, and stripping them would re-pick a persistently failing issue forever.
 - **Unverifiable authorship keeps the label.** For blocking-only labels, *stripping* is the fail-open direction (it hands a known-failing issue back for another billed run). A missing `labeled` event, a null actor, or an unreadable timeline therefore leaves the label in place; only a named untrusted adder strips it. The permissive labels keep their original fail-closed behaviour.
+
+[#1521](https://github.com/stSoftwareAU/VibeCoder/issues/1521) closed a drift between this list and `operationalDispatchLabels()` in [`operational_dispatch_labels.ts`](worker/deno/lib/operational_dispatch_labels.ts), which resolves the privileged dispatch set the phase gate uses. `grill-me` sat in that set but not in `OPERATIONAL_LABEL_NAMES`, so the discovery collectors never authorship-checked it: the phase gate still refused an untrusted dispatch, but the label survived on the in-memory issue record and no `[SECURITY]` audit event recorded the attempt. `grill-me` is now verified like `planning` — permissive, so an unverifiable adder fails closed — and a drift test asserts every label `operationalDispatchLabels()` returns under the default config is trust-verified here, so a future dispatch label cannot be added to one list alone.
 
 #### 5a. Self-scheduled worker diagnostics — provenance, not a label (Issue #505)
 
