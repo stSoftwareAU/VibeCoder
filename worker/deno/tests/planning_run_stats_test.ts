@@ -152,8 +152,8 @@ Deno.test("modelsMatch - Opus 5 never matches a different tier (Issue #3564)", (
 Deno.test("assessDegradation - not degraded when all served match expected", () => {
   const verdict = assessDegradation(
     [
-      planningInvocation(["claude-fable-5-20250101"]),
-      planningInvocation(["claude-fable-5-20250101"]),
+      planningInvocation(["claude-fable-5-1-20260901"]),
+      planningInvocation(["claude-fable-5-1-20260901"]),
     ],
     "fable",
   );
@@ -182,12 +182,12 @@ Deno.test("assessDegradation - degraded when every served model is a different t
 // ---------------------------------------------------------------------------
 
 Deno.test("assessDegradation - mixed run where the expected model also served is not degraded (Issue #3593)", () => {
-  // private-repo-14#3505: `fable` requested, served by both `claude-fable-5` and
-  // `claude-opus-5` across the run's invocations.
+  // private-repo-14#3505: `fable` requested, served by both `claude-fable-5-1`
+  // and `claude-opus-5` across the run's invocations.
   const verdict = assessDegradation(
     [
       planningInvocation(["claude-opus-5"]),
-      planningInvocation(["claude-fable-5"]),
+      planningInvocation(["claude-fable-5-1"]),
     ],
     "fable",
   );
@@ -197,7 +197,7 @@ Deno.test("assessDegradation - mixed run where the expected model also served is
 
 Deno.test("assessDegradation - mixed serving within a single invocation is not degraded (Issue #3593)", () => {
   const verdict = assessDegradation(
-    [planningInvocation(["claude-opus-5", "claude-fable-5"])],
+    [planningInvocation(["claude-opus-5", "claude-fable-5-1"])],
     "fable",
   );
   assertEquals(verdict.degraded, false);
@@ -244,8 +244,100 @@ Deno.test("assessDegradation - a matching served model on an invocation with no 
   // The expected model served one invocation; another invocation never ran
   // Claude at all. The run is still not degraded.
   const verdict = assessDegradation(
-    [{ phase: "planning" }, planningInvocation(["claude-fable-5"])],
+    [{ phase: "planning" }, planningInvocation(["claude-fable-5-1"])],
     "fable",
+  );
+  assertEquals(verdict.degraded, false);
+});
+
+// ---------------------------------------------------------------------------
+// Previous-generation top tier (Issue #1362)
+// ---------------------------------------------------------------------------
+
+Deno.test("assessDegradation - a Fable-preferring run served Fable 5 is degraded (Issue #1362)", () => {
+  // The CLI resolves the `fable` alias locally; a container whose CLI predates
+  // the 5.1 alias table keeps being served the previous generation, which
+  // matched at tier-family level and went unreported.
+  const verdict = assessDegradation(
+    [planningInvocation(["claude-fable-5"])],
+    "fable",
+  );
+  assertEquals(verdict.degraded, true);
+  assertStringIncludes(verdict.reason ?? "", "claude-fable-5");
+  assertStringIncludes(verdict.reason ?? "", "claude-fable-5-1");
+});
+
+Deno.test("assessDegradation - a dated Fable 5 served id is degraded too (Issue #1362)", () => {
+  const verdict = assessDegradation(
+    [planningInvocation(["claude-fable-5-20260101"])],
+    "fable",
+  );
+  assertEquals(verdict.degraded, true);
+  assertStringIncludes(verdict.reason ?? "", "claude-fable-5-1");
+});
+
+Deno.test("assessDegradation - a run served the current Fable is healthy (Issue #1362)", () => {
+  const verdict = assessDegradation(
+    [
+      planningInvocation(["claude-fable-5-1"]),
+      planningInvocation(["claude-fable-5-1-20260901"]),
+    ],
+    "fable",
+  );
+  assertEquals(verdict.degraded, false);
+  assertEquals(verdict.indeterminate ?? false, false);
+});
+
+Deno.test("assessDegradation - a run the current Fable partly served is not degraded (Issue #1362)", () => {
+  // Same leniency as the tier-level rule (Issue #3593): the current model was
+  // in play for part of the run, so the run is not reported degraded.
+  const verdict = assessDegradation(
+    [
+      planningInvocation(["claude-fable-5"]),
+      planningInvocation(["claude-fable-5-1"]),
+    ],
+    "fable",
+  );
+  assertEquals(verdict.degraded, false);
+});
+
+Deno.test("assessDegradation - every served model previous-generation names them all (Issue #1362)", () => {
+  const verdict = assessDegradation(
+    [
+      planningInvocation(["claude-fable-5"]),
+      planningInvocation(["claude-fable-5-20260101"]),
+    ],
+    "fable",
+  );
+  assertEquals(verdict.degraded, true);
+  assertStringIncludes(verdict.reason ?? "", "claude-fable-5-20260101");
+  assertStringIncludes(verdict.reason ?? "", "claude-fable-5-1");
+});
+
+Deno.test("assessDegradation - an operator who pinned Fable 5 gets what they asked for (Issue #1362)", () => {
+  // `best_planning_model: claude-fable-5` is a deliberate pin to that
+  // generation, so serving it is exactly right — not a silent downgrade.
+  const verdict = assessDegradation(
+    [planningInvocation(["claude-fable-5"])],
+    "claude-fable-5",
+  );
+  assertEquals(verdict.degraded, false);
+});
+
+Deno.test("assessDegradation - a tier with no current-model reference is never flagged stale (Issue #1362)", () => {
+  // Implementation phases route to `opus`; the worker tracks no current Opus
+  // model, so an older Opus served id stays healthy.
+  const verdict = assessDegradation(
+    [{
+      phase: "issue",
+      runStats: {
+        servedModels: ["claude-opus-4-8"],
+        requestedModel: "opus",
+        wallClockMs: 1000,
+      },
+    }],
+    "opus",
+    "issue",
   );
   assertEquals(verdict.degraded, false);
 });
@@ -256,7 +348,7 @@ Deno.test("assessDegradation - degraded on explicit fallbackModel", () => {
       {
         phase: "planning",
         runStats: {
-          servedModels: ["claude-fable-5-20250101"],
+          servedModels: ["claude-fable-5-1-20260901"],
           requestedModel: "fable",
           wallClockMs: 1000,
         },
@@ -275,7 +367,7 @@ Deno.test("assessDegradation - degraded on explicit pre-flight flag even when se
       {
         phase: "planning",
         runStats: {
-          servedModels: ["claude-fable-5-20250101"],
+          servedModels: ["claude-fable-5-1-20260901"],
           requestedModel: "fable",
           wallClockMs: 1000,
         },
@@ -310,7 +402,7 @@ Deno.test("assessDegradation - pre-flight flag flags even when the expected mode
 Deno.test("assessDegradation - non-planning invocations never affect the verdict", () => {
   const verdict = assessDegradation(
     [
-      planningInvocation(["claude-fable-5-20250101"]),
+      planningInvocation(["claude-fable-5-1-20260901"]),
       // A haiku helper served by a different tier must not flag degradation.
       {
         phase: "summarise",
@@ -344,7 +436,7 @@ Deno.test("assessDegradation - empty servedModels with output present is indeter
 
 Deno.test("assessDegradation - populated matching served model is healthy, not indeterminate (Issue #2745)", () => {
   const verdict = assessDegradation(
-    [planningInvocation(["claude-fable-5-20250101"])],
+    [planningInvocation(["claude-fable-5-1-20260901"])],
     "fable",
   );
   assertEquals(verdict.degraded, false);
@@ -378,7 +470,7 @@ Deno.test("assessDegradation - judged invocation with no runStats is not indeter
 
 Deno.test("assessDegradation - one observed served model suppresses indeterminate even when another invocation observed none (Issue #2745)", () => {
   const verdict = assessDegradation(
-    [planningInvocation([]), planningInvocation(["claude-fable-5-20250101"])],
+    [planningInvocation([]), planningInvocation(["claude-fable-5-1-20260901"])],
     "fable",
   );
   assertEquals(verdict.degraded, false);
@@ -486,7 +578,7 @@ Deno.test("assessDegradation - unresolved expected model does not flag every inv
   // Any real served model must NOT be flagged degraded when the expected model
   // could not be resolved — the regression the unmatchable "default" caused.
   for (
-    const served of ["claude-fable-5-20250101", "claude-opus-4-7", "haiku"]
+    const served of ["claude-fable-5-1-20260901", "claude-opus-4-7", "haiku"]
   ) {
     const verdict = assessDegradation(
       [planningInvocation([served])],
@@ -545,7 +637,7 @@ Deno.test("assessDegradation - pinned bestPlanningModel drives the verdict (Issu
     assertEquals(served.degraded, true);
 
     const ok = assessDegradation(
-      [planningInvocation(["claude-fable-5-20250101"])],
+      [planningInvocation(["claude-fable-5-1-20260901"])],
       expected,
     );
     assertEquals(ok.degraded, false);
@@ -577,7 +669,7 @@ Deno.test("assessDegradation - expected opus accepts an Opus 5 served id (Issue 
 
 Deno.test("buildPlanningStatsSection - renders model, tokens, turns, invocations", () => {
   const invocations: PlanningInvocationStats[] = [
-    planningInvocation(["claude-fable-5-20250101"], {
+    planningInvocation(["claude-fable-5-1-20260901"], {
       effort: "max",
       numTurns: 7,
       durationMs: 45_600,
@@ -588,7 +680,7 @@ Deno.test("buildPlanningStatsSection - renders model, tokens, turns, invocations
         cacheReadTokens: 2000,
       },
     }),
-    planningInvocation(["claude-fable-5-20250101"], {
+    planningInvocation(["claude-fable-5-1-20260901"], {
       numTurns: 5,
       durationMs: 10_000,
       tokenUsage: {
@@ -608,7 +700,7 @@ Deno.test("buildPlanningStatsSection - renders model, tokens, turns, invocations
 
   assertStringIncludes(section, "## Planning run model stats");
   assertStringIncludes(section, "Requested model:** `fable`");
-  assertStringIncludes(section, "claude-fable-5-20250101");
+  assertStringIncludes(section, "claude-fable-5-1-20260901");
   assertStringIncludes(section, "Effort:** `max`");
   assertStringIncludes(section, "Planning invocations:** 2");
   // Aggregated tokens: 1234+1000 input, 5678+2000 output.
@@ -710,7 +802,7 @@ Deno.test("buildPlanningStatsSection - empty when no planning stats available", 
 });
 
 Deno.test("buildPlanningStatsSection - omits token/turn lines when absent", () => {
-  const invocations = [planningInvocation(["claude-fable-5-20250101"])];
+  const invocations = [planningInvocation(["claude-fable-5-1-20260901"])];
   const section = buildPlanningStatsSection({
     invocations,
     expectedModel: "fable",
@@ -775,7 +867,7 @@ Deno.test("buildPlanningStatsSection - grill_me phase emits a Grill-me heading",
 });
 
 Deno.test("buildPlanningStatsSection - default phase keeps the Planning heading", () => {
-  const invocations = [planningInvocation(["claude-fable-5-20250101"])];
+  const invocations = [planningInvocation(["claude-fable-5-1-20260901"])];
   const section = buildPlanningStatsSection({
     invocations,
     expectedModel: "fable",
@@ -805,7 +897,7 @@ Deno.test("buildDegradationReport - healthy planning run: not degraded, Planning
 
   const report = buildDegradationReport({
     env: emptyEnv,
-    invocations: [planningInvocation(["claude-fable-5-20250101"])],
+    invocations: [planningInvocation(["claude-fable-5-1-20260901"])],
   });
 
   assertEquals(report.expectedModel, "fable");
@@ -851,7 +943,7 @@ Deno.test("buildDegradationReport - pinned best model drives the verdict", () =>
   // Served fable but the operator pinned opus as the expected best → degraded.
   const report = buildDegradationReport({
     env: emptyEnv,
-    invocations: [planningInvocation(["claude-fable-5-20250101"])],
+    invocations: [planningInvocation(["claude-fable-5-1-20260901"])],
     configuredBestModel: "opus",
   });
 
@@ -908,7 +1000,7 @@ function gateStats(
 }
 
 Deno.test("buildPlanningStatsSection - records the gate counts for a partially repaired run (Issue #63)", () => {
-  const invocations = [planningInvocation(["claude-fable-5-20250101"])];
+  const invocations = [planningInvocation(["claude-fable-5-1-20260901"])];
   const section = buildPlanningStatsSection({
     invocations,
     expectedModel: "fable",
@@ -934,7 +1026,7 @@ Deno.test("buildPlanningStatsSection - records the gate counts for a partially r
 Deno.test("buildPlanningStatsSection - records explicit zeros when the gate found no offenders (Issue #63)", () => {
   // The failure mode this issue exists to fix: a metric only emitted on the
   // unhappy path cannot distinguish "healthy" from "not reporting".
-  const invocations = [planningInvocation(["claude-fable-5-20250101"])];
+  const invocations = [planningInvocation(["claude-fable-5-1-20260901"])];
   const section = buildPlanningStatsSection({
     invocations,
     expectedModel: "fable",
@@ -953,7 +1045,7 @@ Deno.test("buildPlanningStatsSection - records explicit zeros when the gate foun
 Deno.test("buildPlanningStatsSection - omits the gate lines entirely when no gate stats are supplied (Issue #63)", () => {
   // Additive: the grill-me / phase / quorum callers pass no gate stats and
   // their output is unchanged.
-  const invocations = [planningInvocation(["claude-fable-5-20250101"])];
+  const invocations = [planningInvocation(["claude-fable-5-1-20260901"])];
   const section = buildPlanningStatsSection({
     invocations,
     expectedModel: "fable",
@@ -989,7 +1081,7 @@ Deno.test("buildDegradationReport - threads the gate counts into the rendered se
 
   const report = buildDegradationReport({
     env: emptyEnv,
-    invocations: [planningInvocation(["claude-fable-5-20250101"])],
+    invocations: [planningInvocation(["claude-fable-5-1-20260901"])],
     gate: gateStats({ published: 5, offenders: 2, repaired: 2 }),
   });
 

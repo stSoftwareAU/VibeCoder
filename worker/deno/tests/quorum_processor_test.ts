@@ -702,7 +702,7 @@ Deno.test("quorum model stats - a healthy plan-off adds no label and no stats co
     deps: mockDepsWithAgents({
       drafts: ["Plan from the first drafter.", "Plan from the second drafter."],
       judge: verdictBlock("B", "Plan B is the smaller change."),
-      model: () => ({ runStats: servedStats("claude-fable-5-20250101") }),
+      model: () => ({ runStats: servedStats("claude-fable-5-1-20260901") }),
     }, { github: { runGhCommand: gh.runGhCommand } }),
   });
 

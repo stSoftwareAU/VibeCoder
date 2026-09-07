@@ -346,6 +346,9 @@ export async function runWorkOnIssueCommand(
     issueLabels: issueData.labels,
     issueComments,
     commentBoundaryId,
+    // Issue #1263: the same comments with their authors, so the clarity
+    // gate's round limit counts evidence rather than the prompt blob's text.
+    issueCommentRows: issueData.comments,
     githubUser,
     milestoneTitle,
     milestoneNumber: issueData.milestoneNumber, // Issue #1322: session branching

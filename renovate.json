@@ -18,17 +18,6 @@
     },
     {
       "customType": "regex",
-      "description": "`gem install bundler-audit` runs outside the Gemfile tree, so Renovate's bundler manager never saw it (Issue #3642). Match the exact `-v 1.2.3` pin in .github/workflows/*.yml so it is quarantined and kept current.",
-      "managerFilePatterns": [
-        "/^\\.github/workflows/.+\\.ya?ml$/"
-      ],
-      "matchStrings": [
-        "gem install[^\\n]*?\\s(?<depName>[a-z0-9-][a-z0-9-._]*)\\s+-v\\s+(?<currentValue>\\d+\\.\\d+\\.\\d+)"
-      ],
-      "datasourceTemplate": "rubygems"
-    },
-    {
-      "customType": "regex",
       "description": "The Deno the workflows install comes from `.deno-version` \u2014 one source of truth tied to the container image's Deno by test (Issue #4403). Track denoland/deno releases so the pin is bumped under minimumReleaseAge instead of going stale.",
       "managerFilePatterns": [
         "/^\\.deno-version$/"

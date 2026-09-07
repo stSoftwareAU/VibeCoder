@@ -409,7 +409,7 @@ exponential backoff on transient failures.
 
 adds a **minimum-version floor**: a tool also updates when its installed version
 is below a configured floor (`software_min_versions`, default
-`{ claude: "2.1.170" }`), bypassing the timestamp gate. The rule is **run when
+`{ claude: "2.1.260" }`), bypassing the timestamp gate. The rule is **run when
 interval elapsed OR installed version < floor**:
 
 1. `readVersion(tool)` reads the installed version (`claude --version` →
@@ -1321,8 +1321,12 @@ find_oldest_issue(github_user)
    ([collect_self_diagnostic_candidates.ts](../worker/deno/lib/collect_self_diagnostic_candidates.ts),
    [self_diagnostic_provenance.ts](../worker/deno/lib/self_diagnostic_provenance.ts)).
    **Nothing is self-labelled** — the reserved-label guards are untouched and
-   `top-priority`/`work-on` stay human-only. Three signals must agree (repo,
-   marker, fleet author); the tier is capped at
+   `top-priority`/`work-on` stay human-only. Four signals must agree (repo,
+   marker, fleet author, and the filing attestation — issue number plus a
+   digest of the filed title and body — that the worker's own filer wrote to
+   the audit chain, read only from a journal that reconciles with its anchor —
+   [self_diagnostic_attestation.ts](../worker/deno/lib/self_diagnostic_attestation.ts),
+   Issue #1277); the tier is capped at
    `self_schedule_diagnostics_max_in_flight`, its decisions are written to the
    audit chain under the `self-schedule-diagnostic` verb and announced on the
    issue, a permanently-blocked diagnostic is escalated with `needs-human`, and

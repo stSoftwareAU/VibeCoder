@@ -137,22 +137,51 @@ export function sanitiseDelimiterPatterns(content: string): string {
   // the stray-`<<`-pairing hazard the cap exists to prevent. The class is
   // also disjoint from `<` and `>`, so there is no ambiguity to backtrack
   // over (ReDoS).
+  //
+  // Each pass starts with `(?<!<)` so the opening run is only ever entered at
+  // its first character (Issue #1274). The earlier reasoning covered the inner
+  // class but not the *outer* `<{2,}` quantifier, which is where the cost was:
+  // on an unbroken run of `<` with no closing `>` every one of the O(n) start
+  // offsets inside the run re-backtracked the run's O(n) lengths, so a body of
+  // `"<".repeat(65536)` — GitHub's own body limit — cost 23 s of the worker's
+  // single thread. The lookbehind rejects every offset inside a run in constant
+  // time and removes no match: the inner classes all exclude `<`, so a match
+  // that succeeds from a later offset succeeds from the run's first character
+  // too, with the same inner and closing text. No length cap is applied here —
+  // capping the sanitiser would hand the tail of an issue body through
+  // *unsanitised*, trading a stall for the injection this module exists to stop.
   const inert = (_m: string, open: string, inner: string, close: string) =>
     "＜".repeat(open.length) + inner + "＞".repeat(close.length);
-  result = result.replace(/(<{2,})([^<>\n]*)(>{2,})/g, inert);
-  result = result.replace(/(<{2,})([^<>]{0,512}?)(>{2,})/g, inert);
+  result = result.replace(/(?<!<)(<{2,})([^<>\n]*)(>{2,})/g, inert);
+  result = result.replace(/(?<!<)(<{2,})([^<>]{0,512}?)(>{2,})/g, inert);
   result = result.replace(
-    /(<{2,})([A-Za-z0-9_\-.\r\n][A-Za-z0-9_\-. \t\r\n]*)(>{2,})/g,
+    /(?<!<)(<{2,})([A-Za-z0-9_\-.\r\n][A-Za-z0-9_\-. \t\r\n]*)(>{2,})/g,
     inert,
   );
 
   // Replace triple-dash boundary patterns. The CONTENT rules use [\s\S] rather
   // than `.` so a marker split across a newline (---BEGIN FAKE\nCONTENT---) is
   // still neutralised (Issue #3201).
+  //
+  // The CONTENT rules match a single leading whitespace character and then a
+  // bounded lazy gap (Issue #1274). The earlier `\s+` followed by `[\s\S]*?`
+  // put two unbounded quantifiers side by side over the same characters, so the
+  // split between them was ambiguous and a padded `---BEGIN` + 65 000 spaces
+  // cost hundreds of milliseconds. One fixed-width `\s` leaves nothing to
+  // backtrack over, and 512 characters is an order of magnitude more than any
+  // genuine marker's gap. A gap padded past the cap escapes *this* rule only:
+  // the real boundary shape is still neutralised by the `---BEGIN\s+UNTRUSTED`
+  // rule above and the `BOUNDARY_…` rule below, neither of which is bounded.
   result = result.replace(/---BEGIN\s+UNTRUSTED/gi, "—BEGIN UNTRUSTED");
   result = result.replace(/---END\s+UNTRUSTED/gi, "—END UNTRUSTED");
-  result = result.replace(/---BEGIN\s+([\s\S]*?)CONTENT/gi, "—BEGIN $1CONTENT");
-  result = result.replace(/---END\s+([\s\S]*?)CONTENT/gi, "—END $1CONTENT");
+  result = result.replace(
+    /---BEGIN\s([\s\S]{0,512}?)CONTENT/gi,
+    "—BEGIN $1CONTENT",
+  );
+  result = result.replace(
+    /---END\s([\s\S]{0,512}?)CONTENT/gi,
+    "—END $1CONTENT",
+  );
 
   // Replace boundary ID patterns. The class is alphanumeric with no length
   // floor so a short or non-hex forged id (BOUNDARY_abc) is neutralised as
