@@ -90,6 +90,61 @@ unreachable. When a lookup fails or is ambiguous the candidate is
 **dropped** rather than asserted — the same discipline the static scans
 apply to a missing file citation.
 
+### Fetched metadata is fenced in code, not by wording alone
+
+Registry text is authored by the package's publisher — the very party a
+hostile or compromised dependency puts in control — so it gets the same
+**structural** boundary every other untrusted-text path in this codebase
+gets from
+[`prompt_delimiter.ts`](../worker/deno/lib/prompt_delimiter.ts)
+(Issue #1549), not prompt wording alone:
+
+- [`orphan_deps_untrusted.ts`](../worker/deno/lib/orphan_deps_untrusted.ts)
+  scrubs delimiter and HTML-comment patterns out of fetched text and wraps
+  a fetched document in a **per-fetch CSPRNG boundary** an attacker cannot
+  guess, so a forged `---END UNTRUSTED …` or a planted
+  `<!-- finding-id: … -->` inside a `deprecated` message can neither close
+  the fence nor poison the next run's dedup.
+- Single fetched fields (a source-repo URL, a publish date) are scrubbed
+  and collapsed onto one line, so a multi-line value cannot break out of
+  the body line it is quoted on.
+- Both are capped, and a cap is always rendered visibly
+  (`… [truncated after N characters]`) — never a silent truncation.
+
+```mermaid
+flowchart LR
+    R["📦 Registry / source-host<br/>metadata (publisher-authored)"]
+    G["🚪 orphan_deps_metadata.ts<br/>host allow-list, GET only"]
+    F["🧱 orphan_deps_untrusted.ts<br/>scrub + CSPRNG fence"]
+    E["📝 Filed issue evidence"]
+    V["⚖️ orphan_deps_severity_gate.ts<br/>severity vs structured signal"]
+    R --> G --> F --> E --> V
+    V -->|"not corroborated"| H["🙋 needs-human + comment"]
+    style F fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style V fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+### The severity a run files is re-checked deterministically
+
+Fenced text stops an injection *forging structure*; it does not stop one
+*arguing*. So every finding a run files is re-checked by
+[`orphan_deps_severity_gate.ts`](../worker/deno/lib/orphan_deps_severity_gate.ts)
+before the wrapper closes:
+
+- `severity:high` is corroborated only when the body cites a structured
+  signal the worker can check — a registry `deprecated` / `yanked` flag or
+  an archived source repository. A high citing none is **overstated**.
+- A body that cites one of those signals yet claims a weaker band is
+  **understated** — the downgrade an injected "actively maintained
+  downstream" note is aiming for.
+- Citations **inside** the untrusted fence do not count, so an attacker
+  cannot corroborate a severity with their own quoted text.
+
+Nothing is relabelled automatically: the filed severity stands, the issue
+gets `needs-human` plus a comment explaining the disagreement, and the
+close summary names it. A lookup or escalation that fails is reported in
+that summary too — an unchecked finding never reads as a pass.
+
 ## Orphan-signal catalogue
 
 Phase 2 of the prompt walks each candidate dependency against the signal
@@ -245,8 +300,12 @@ There is **no `lang:<bucket>` label** — the scan is single-scope and
 language-agnostic, so a single `orphan-deps` label scopes all findings.
 
 Operational labels (`planning`, `work-on`, `top-priority`,
-`low-priority`, `failed`, `failed-once`, `needs-human`, `best-model`,
-`question`, `refine-issue`) are **never** applied by the scanner. The
+`low-priority`, `failed`, `failed-once`, `best-model`, `question`,
+`refine-issue`) are **never** applied by the scanner. The one exception is
+`needs-human`, which the deterministic severity gate applies — with an
+explanatory comment — to a finding whose severity it could not corroborate
+(Issue #1549); it is the worker's own escalation signal, trusted by
+`label_security.ts` when the worker applies it. The
 canonical pickup-priority order is `top-priority` > `work-on` >
 `low-priority` > `idle-task`; `idle-task` is the only label the Vibe
 Coder may self-apply.
