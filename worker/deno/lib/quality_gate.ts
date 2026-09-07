@@ -445,9 +445,10 @@ async function runGhSpawnChokepointCheck(
       (v) => `VIOLATION: ${v.file}:${v.line}: ${v.text}`,
     ),
     "",
-    "Direct `gh` subprocess spawns detected outside the shared chokepoint",
-    "(Issue #3703). Such a spawn skips the per-run write-repo allowlist and",
-    "the audit journal. Route the call through `spawnGh`/`runGhOrThrow` in",
+    "`gh` subprocess spawns detected outside the shared chokepoint",
+    "(Issue #3703), directly or through a variable (Issue #1378). Such a",
+    "spawn skips the per-run write-repo allowlist and the audit journal.",
+    "Route the call through `spawnGh`/`runGhOrThrow` in",
     "`worker/deno/lib/gh_spawn.ts` instead.",
   ].join("\n");
 
@@ -506,10 +507,11 @@ async function runGitSpawnChokepointCheck(
       (v) => `VIOLATION: ${v.file}:${v.line}: ${v.text}`,
     ),
     "",
-    "Direct `git` subprocess spawns detected outside the shared chokepoint",
-    "(Issue #1214). Such a spawn has no timeout, so a stalled remote hangs",
-    "the worker, and a mutation never reaches the audit journal. Route the",
-    "call through `runGitCommand`/`runGitCommandChecked` in",
+    "`git` subprocess spawns detected outside the shared chokepoint",
+    "(Issue #1214), directly or through a variable (Issue #1378). Such a",
+    "spawn has no timeout, so a stalled remote hangs the worker, and a",
+    "mutation never reaches the audit journal. Route the call through",
+    "`runGitCommand`/`runGitCommandChecked` in",
     "`worker/deno/lib/git_timeout.ts` instead.",
   ].join("\n");
 

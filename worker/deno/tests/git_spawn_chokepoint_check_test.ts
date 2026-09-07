@@ -69,6 +69,52 @@ Deno.test("scanContentForGitSpawn - ignores comments mentioning the pattern", ()
   assertEquals(violations, []);
 });
 
+Deno.test("scanContentForGitSpawn - flags the generic wrapper called with git (Issue #1378)", () => {
+  const violations = scanContentForGitSpawn(
+    [
+      "const origin = await runWithTimeout(",
+      '  "git",',
+      '  ["remote", "get-url", "origin"],',
+      "  { cwd: repoDir, timeoutMs },",
+      ");",
+    ].join("\n"),
+    "worker/deno/lib/release_check.ts",
+  );
+  assertEquals(violations.length, 1);
+  assertEquals(violations[0]?.line, 1);
+});
+
+Deno.test("scanContentForGitSpawn - flags a git spawn routed through a variable (Issue #1378)", () => {
+  const violations = scanContentForGitSpawn(
+    [
+      "async function runner(cmd: string[]) {",
+      "  const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
+      "  return await command.output();",
+      "}",
+      'export const head = () => runner(["git", "rev-parse", "HEAD"]);',
+    ].join("\n"),
+    "worker/deno/lib/example.ts",
+  );
+  assertEquals(violations.length, 1);
+  assertEquals(violations[0]?.line, 2);
+});
+
+Deno.test("scanContentForGitSpawn - a runner that delegates to the chokepoint is compliant", () => {
+  const violations = scanContentForGitSpawn(
+    [
+      'import { runGitCommand } from "./git_timeout.ts";',
+      "async function runner(cmd: string[]) {",
+      '  if (cmd[0] === "git") return await runGitCommand(cmd.slice(1));',
+      "  const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
+      "  return await command.output();",
+      "}",
+      'export const head = () => runner(["git", "rev-parse", "HEAD"]);',
+    ].join("\n"),
+    "worker/deno/lib/example.ts",
+  );
+  assertEquals(violations, []);
+});
+
 Deno.test("scanDirectoriesForGitSpawn - walks directories and honours the allowlist", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
