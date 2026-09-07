@@ -28,6 +28,12 @@
  */
 
 import { parse as parseYaml } from "@std/yaml/parse";
+// The ref pattern the fleet's milestone branches live under. Defined once,
+// in repo_rulesets.ts: this module and the ruleset writer must agree on it
+// byte-for-byte, and two literals that must agree are a drift waiting to
+// happen. Re-exported because this module's name for it predates the move.
+export { MILESTONE_REF_PATTERN } from "./repo_rulesets.ts";
+import { MILESTONE_REF_PATTERN } from "./repo_rulesets.ts";
 
 type GhCommandFn = (args: string[]) => Promise<string>;
 
@@ -78,12 +84,6 @@ export interface RulesetSnapshot {
   bypass_actors?: any;
   rules?: Array<{ type?: string; parameters?: Record<string, unknown> }>;
 }
-
-/**
- * Ref pattern the fleet's milestone branches live under. A ruleset that
- * matches it governs branches the worker must be able to CREATE.
- */
-export const MILESTONE_REF_PATTERN = "refs/heads/milestone/**";
 
 /** One planned write. */
 export interface HardenStep {

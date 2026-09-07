@@ -30,12 +30,13 @@
 
 import {
   buildMilestoneRulesetBody,
+  MILESTONE_REF_PATTERN,
   type RulesetBypassActorBody,
 } from "./repo_rulesets.ts";
 
 /** Ref patterns that count as covering the milestone branches. */
 const MILESTONE_REF_PATTERNS: readonly string[] = [
-  "refs/heads/milestone/**",
+  MILESTONE_REF_PATTERN,
   "refs/heads/milestone/*",
   "~ALL",
 ];
