@@ -66,6 +66,15 @@ for, such as `fleet_pr_authors` and `worker_name`. The only keys removed are:
   reads. Each removal is printed as a warning, and a running worker raises the
   same non-blocking warning at startup config validation.
 
+A `.config.json` setup **cannot read** stops the run instead (Issue #1294).
+Only an absent file means "no config yet"; a truncated write, a permission
+error, or a hand edit that broke the JSON is reported with the path and the
+parse error, and nothing is written. Because the rewrite is from scratch,
+treating a broken file as absent would have silently replaced your
+`service_accounts`, `repos`, `repo_config` and narrowed
+`authorized_commenters` with the built-in defaults. Fix the file by hand and
+re-run `./setup.sh`.
+
 ### `quality_credentials` — what a repository's own checks may see
 
 Since Issue #572 the environment for a repository's quality command is
@@ -345,8 +354,8 @@ explicitly overridden.
 | `update_mode` | `dynamic` | How this host tracks Vibe Coder releases. `dynamic` (the load-time default — leaving the key unset is fine) follows the latest, exactly as every host did before the key existed. `frozen` holds the host at `pinned_ref` with the exact versions in `pinned_tool_versions`; both are then required, and a missing or malformed one fails loudly at config load naming the offending field. Any other value fails loudly naming the accepted values. `./setup.sh` offers `frozen` as its default answer to a host being configured, and `./run.sh upgrade` moves a frozen host's pins onto the newest release — see [The upgrade loop](#the-upgrade-loop). |
 | `pinned_ref` | _(unset)_ | Commit SHA or tag the worker checkout is held at under `update_mode: "frozen"`. Ignored in `dynamic` mode, so a host can flip back without deleting its pins. Hand-editable: the value is passed to `git`, so it must start with a letter or digit and contain only letters, digits and `. _ + - / @` — whitespace and shell metacharacters are refused. |
 | `pinned_tool_versions` | _(unset)_ | Exact `claude`, `gh` and `deno` versions a frozen host installs, e.g. `{"claude": "2.0.76", "gh": "2.62.0", "deno": "2.5.4"}`. All three are required under `update_mode: "frozen"` — a partially pinned host would silently drift on whichever tool was left out. Same character rules as `pinned_ref`; ignored in `dynamic` mode. |
-| `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` selects the provider on a host whose file states none; since 2.0.0 it no longer overrides the file (Issue #1032 — see [Release notes](RELEASE-NOTES.md#200--the-config-file-wins-over-the-environment)). An unsupported id fails loudly at startup, naming the supported providers. |
-| `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) applies when the file states no set; since 2.0.0 it no longer overrides the file (Issue #1032). The set is also what the launcher builds the image with — it is passed as `--build-arg AGENT_PROVIDERS=<ids>` and mixed into the image tag (Issue #729), so a Codex-only deployment builds a Codex image instead of reusing the default Claude one. |
+| `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` selects the provider on a host whose file states none; since 1.4.0 it no longer overrides the file (Issue #1032 — see [Release notes](RELEASE-NOTES.md#140--the-config-file-wins-over-the-environment)). An unsupported id fails loudly at startup, naming the supported providers. |
+| `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) applies when the file states no set; since 1.4.0 it no longer overrides the file (Issue #1032). The set is also what the launcher builds the image with — it is passed as `--build-arg AGENT_PROVIDERS=<ids>` and mixed into the image tag (Issue #729), so a Codex-only deployment builds a Codex image instead of reusing the default Claude one. |
 | `container_tools` | `[]` | Extra build-time tools this deployment's image bakes in. Each entry is a declarative archive install: `id`, `version`, per-architecture `url` and **mandatory** `sha256` (`amd64` / `arm64` / `noarch`), `stripComponents`, `bin` and `env`. The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin`/`env` value is relative to it, so no selection can point PATH or an environment variable at an arbitrary host path. A malformed spec, or a `url` without a matching `sha256`, fails loudly at config load. The default empty selection installs nothing — the fleet image is unchanged. Changing it needs an image rebuild; see [the worked example](CONTAINER.md#deployer-supplied-build-time-tools) and [Private Extensions](PRIVATE-EXTENSIONS.md). |
 | `container_extension` | _(none)_ | A private image layer this deployment builds on top of the standard one — for services and toolchains a declarative archive install cannot express. An object of `path` (absolute host directory holding the extension, never the home directory or an ancestor of it), optional `containerfile` (default `Containerfile`) and optional `start`, the last two **relative to `path`**. The operator syncs their own private repository into `path`; the Vibe Coder clones nothing. The Containerfile must derive `FROM ${VIBE_BASE_IMAGE}`, the extension is copied to the fixed in-image prefix `/opt/vibe-extension/`, and the image tag is a content hash of the whole directory, so changing any file rebuilds. A declared `start` runs before the worker and aborts the sandbox start with exit 76 if it fails. A malformed block fails loudly at config load, naming the field. See [Container Extension](CONTAINER-EXTENSION.md). |
 | `claude_model`               | `opus`                    | Claude model ID (Identifier) to use                                                                                                                                                                                                                                                              |
@@ -359,8 +368,8 @@ explicitly overridden.
 | `deepseek_phase_model_overrides` | `{}` | Per-phase **DeepSeek** model overrides, applied when `agent_provider` is `deepseek`. Same shape as `phase_model_overrides`, with DeepSeek model ids (`deepseek-reasoner` for the planning-shaped phases, `deepseek-chat` elsewhere). There is no DeepSeek effort key — DeepSeek's Anthropic-compatible endpoint has no effort control, and an effort requested for a DeepSeek phase is warned about instead. See [DeepSeek per-phase routing](MODEL-AND-CACHING.md#-deepseek-per-phase-routing). |
 | `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#-idle-task-template-weights))                                                                                                                                                                      |
 | `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence)) |
-| `software_min_versions`      | `{ "claude": "2.1.170" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
-| `log_dir` | platform default | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. Outranks `LAUNCH_LOG_DIR` and `LOG_DIR`; absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go). |
+| `software_min_versions`      | `{ "claude": "2.1.260" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
+| `log_dir` | platform default | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. The only way to move it — no environment variable does (Issue #1388); absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go). |
 | `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                           |
 | `exclusion_team`             | unset                     | Optional GitHub org team in `org/slug` form, excluded from the derived directing set **on top of** the Vibe Coder logins. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. See [Two axes of trust](#two-axes-of-trust). |
 
@@ -489,7 +498,7 @@ floors for `gh`/`deno` can be added later:
 ```json
 {
   "software_min_versions": {
-    "claude": "2.1.170"
+    "claude": "2.1.260"
   }
 }
 ```
@@ -512,9 +521,19 @@ Semantics:
 - **Skip flag still wins.** `SKIP_CLAUDE_UPDATE=true` (and the `gh`/`deno`
   equivalents) still suppresses the update, but logs that a version floor is
   unmet when it does so.
-- **Default.** `{ "claude": "2.1.170" }` — the oldest Claude CLI release
-  verified to support `--model fable`. Setting the key replaces the default map;
-  provide an empty map to remove the floor.
+- **Default.** `{ "claude": "2.1.260" }` — the oldest Claude CLI release
+  that resolves the `fable` alias to **Fable 5.1** (added as the default Fable
+  model in 2.1.257) *and* carries the 5.1 prompt-cache fixes that landed in
+  2.1.260 (Issue #1362). Setting the key replaces the default map; provide an
+  empty map to remove the floor.
+- **Hosts only, and the update channel bounds it.** Inside the worker container
+  the software-update step is suppressed altogether — the image is the update
+  mechanism, so `container/tools.json` is what decides the CLI version there
+  (pinned to 2.1.261 for the same issue). On a host in the default `dynamic`
+  mode the updater runs bare `claude update`, which follows the CLI's `stable`
+  channel; `stable` was 2.1.236 when this floor was raised, so such a host logs
+  "below required floor" once per interval until `stable` catches up or the host
+  moves to `update_mode: frozen` with a pinned version.
 
 **Gate role for new models.** Because the worker passes tier *aliases* (`opus`,
 `fable`, `haiku`) and the CLI resolves each to the latest model of that tier, the
@@ -1584,7 +1603,7 @@ unless explicitly overridden.
 | Progress extension grant | `progress_extension_grant_seconds` | `900` | Seconds each grant adds to the deadline, measured from the moment of the check. |
 | Progress extension stall window | `progress_extension_stall_seconds` | `300` | The agent is judged stalled only when **both** its last tool call and its last stdout chunk are older than this (Issue #767). Must be at least `progress_extension_check_seconds`. |
 | Progress extension check interval | `progress_extension_check_seconds` | `300` | Seconds between progress samples (working tree and descendant CPU) while a run is inside its budget, so a stall is noticed within a check interval rather than a whole grant. Must be positive. |
-| Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
+| Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker **and a filing attestation the worker's own filer wrote to the audit chain** (Issue #1277) qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
 | Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
 | Claude kill-after              | `claude_kill_after`              | `30`       | Grace period after timeout before force-kill                                                                                                                                                         |
@@ -1628,7 +1647,7 @@ unless explicitly overridden.
 | Label cache TTL (Time-To-Live) | `label_cache_ttl`                | `3600`     | Time-to-live in seconds for cached label data (1 hour)                                                                                                                                               |
 | Shuffle repos | `shuffle_repos` | `true` | Randomise repository scan order to prevent starvation. Scan order controls which repos are queried first; issue selection is always by globally oldest eligible issue across all repos. |
 | Update GitHub user status | `update_gh_user_status` | `true` | Update GitHub profile status with current activity |
-| ImgBB API key | `imgbb_api_key` | _(empty)_ | API key for automatic screenshot uploads to ImgBB. Get a free key from https://api.imgbb.com/. `VIBE_IMGBB_API_KEY` applies when this key is unset; since 2.0.0 this key wins when both are set (Issue #1032). |
+| ImgBB API key | `imgbb_api_key` | _(empty)_ | API key for automatic screenshot uploads to ImgBB. Get a free key from https://api.imgbb.com/. `VIBE_IMGBB_API_KEY` applies when this key is unset; since 1.4.0 this key wins when both are set (Issue #1032). |
 | Worker name | `worker_name` | _(empty)_ | Human-readable worker name for multi-worker visibility |
 | Issue retry cooldown | `issue_retry_cooldown` | `600` | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. See `min_claim_runway_seconds` below for the claim-runway floor that stops a late claim being taken at all. |
 | Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway **to the supervisor hard cap** (`VIBE_RUN_MAX_SECONDS`) a new implementation claim must have; `0` disables the floor. A claim taken below it would be killed by the supervisor before it could finish setup. Measured against the hard cap, not the cycle deadline: since Issue #420 a claim keeps its full `claude_timeout` budget however late in the cycle it is taken, so cycle runway no longer says anything about whether a claim can fit — see [The cycle-deadline model](#-the-cycle-deadline-model). On a run with no hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
@@ -2370,12 +2389,12 @@ wherever it was written and falls through to the next source, so a typo in one
 variable cannot stop a host claiming work.
 
 The environment fallbacks are **deprecated**, and a later major stops reading
-them (Issue #874). The three settings 2.0.0 reordered — `imgbb_api_key`,
+them (Issue #874). The three settings 1.4.0 reordered — `imgbb_api_key`,
 `agent_provider` and `agent_providers`, with `update_gh_user_status` moving
 alongside them — each log a single line naming the config key that replaces the
 variable, once per run, on a host that still takes them from the environment;
 see
-[Release notes](RELEASE-NOTES.md#200--the-config-file-wins-over-the-environment).
+[Release notes](RELEASE-NOTES.md#140--the-config-file-wins-over-the-environment).
 The remaining settings report the source they resolved from without a
 deprecation line yet.
 
@@ -2455,22 +2474,28 @@ path-valued keys (`ssh_key_path`, `gh_config_dir`).
 Setting `log_dir` also silences the legacy-location notice below: the directory
 is the operator's own choice, not a default that moved.
 
-Two variables still override the default, and `log_dir` outranks both — the
-precedence is **`log_dir`, then `LAUNCH_LOG_DIR`, then `LOG_DIR`, then the
-platform default**:
+The precedence is **`log_dir`, then the platform default** — nothing else.
+Before Issue #1388 two environment variables sat between the two,
+`LAUNCH_LOG_DIR` (the supervisor's own spelling from `loop.sh`) and `LOG_DIR`.
+Both are now **ignored**: on the host, `.config.json` is the only
+configuration. A value exported in a shell profile, a crontab line, a launchd
+plist or a systemd unit is invisible to the next reader and differs per
+launcher, which is exactly how one host on a fleet comes to behave unlike the
+rest. A system service that wants `/var/log/vibe-coder` states it as `log_dir`
+in the config file the unit already points the launcher at.
 
-| Variable          | Description                                                          |
-| ----------------- | -------------------------------------------------------------------- |
-| `LAUNCH_LOG_DIR`  | The supervisor's own spelling, kept from `loop.sh`                    |
-| `LOG_DIR`         | A system service names `/var/log/vibe-coder` here — a launchd or systemd unit sets an environment, not a config file |
+A host that still exports either variable is told once per launch, on stderr,
+by name and with the value quoted back so it can be moved into the file
+verbatim:
 
-Neither is deprecated: a unit file is the one place a directory genuinely has
-to come from the environment. For everything else, state `log_dir`.
+```text
+[log-dir] LOG_DIR="/var/log/vibe-coder" is set but ignored (Issue #1388): on the host only .config.json configures the worker. To keep that directory, state "log_dir": "/var/log/vibe-coder" in .config.json and unset the variable.
+```
 
-A blank value means unset, exactly as `${LOG_DIR:-…}` does in shell — in the
-config key as well as in the variables. One resolution serves the launcher,
-`run.sh`, `loop.sh`, `run.ps1` and the container mount (Issues #872, #873) —
-ask for it rather than assuming it:
+A blank config value means unset, exactly as an absent key does. One
+resolution serves the launcher, `run.sh`, `loop.sh`, `run.ps1` and the
+container mount (Issues #872, #873, #1388) — ask for it rather than assuming
+it:
 
 ```bash
 LOG_DIR="$(deno run --allow-env --allow-read worker/deno/mod.ts log-dir)"
@@ -3949,6 +3974,15 @@ starts working on an issue or PR feedback. This is particularly useful when:
 3. The command has a timeout (default: 5 minutes, configurable via
    `PRE_SETUP_TIMEOUT`)
 4. If the command fails, a warning is logged but Claude continues working
+
+**The environment is built, not inherited (Issue #1285).** The pre-setup command
+runs the repository's own dependency setup — and so its install hooks — which is
+code the worker did not write, so it gets the same allowlisted environment as
+the repo's quality command and its pre-flight scripts: `PATH`, `HOME`, `TMPDIR`,
+the locale and the toolchain caches, plus `REPO_PATH` and `REPO_NAME`, and
+nothing else. No credential the worker holds is in scope for a pre-setup script
+to read. A repository whose setup genuinely needs a further variable declares it
+the same way its checks do, via `untrusted_command_env.ts`'s allowlist.
 
 **Example setup script** (`scripts/link-sibling-repos.sh`):
 

@@ -807,3 +807,51 @@ Deno.test("gh-guard #187 - ordinary GitHub writes are unaffected", () => {
   );
   assertEquals(decision.allowed, true);
 });
+
+// ---------------------------------------------------------------------------
+// Credential disclosure — the guard must not hand out its own bypass (#1371)
+// ---------------------------------------------------------------------------
+
+Deno.test("gh-guard #1371 - refuses `gh auth token`, allowlist inert or not", () => {
+  // The guard reads argv, so everything it enforces rests on the agent not
+  // holding the raw credential. `gh auth token` printed it on request.
+  for (const ctx of [ACTIVE, INACTIVE]) {
+    const decision = evaluateGhCommand(["auth", "token"], ctx);
+    assertEquals(decision.allowed, false);
+    assertEquals(decision.marker, "GH_CREDENTIAL_DISCLOSURE_REFUSED");
+    assert(decision.reason?.includes("gh auth token"));
+  }
+});
+
+Deno.test("gh-guard #1371 - refuses every spelling that prints the token", () => {
+  for (
+    const args of [
+      ["auth", "token"],
+      ["auth", "token", "--hostname", "github.com"],
+      ["auth", "status", "--show-token"],
+      ["auth", "status", "-t"],
+      ["auth", "status", "-at"],
+      // A global flag before the root must not smuggle the verb past.
+      ["--repo", "o/r", "auth", "token"],
+    ]
+  ) {
+    const decision = evaluateGhCommand(args, INACTIVE);
+    assertEquals(decision.allowed, false, `expected refusal: ${args}`);
+    assertEquals(decision.marker, "GH_CREDENTIAL_DISCLOSURE_REFUSED");
+  }
+});
+
+Deno.test("gh-guard #1371 - the health-check reads the worker depends on stay allowed", () => {
+  for (
+    const args of [
+      ["auth", "status"],
+      ["auth", "status", "--hostname", "github.com"],
+      ["auth", "status", "--active"],
+      ["api", "user"],
+      ["issue", "list", "--label", "work-on"],
+    ]
+  ) {
+    const decision = evaluateGhCommand(args, ACTIVE);
+    assertEquals(decision.allowed, true, `expected read allowed: ${args}`);
+  }
+});

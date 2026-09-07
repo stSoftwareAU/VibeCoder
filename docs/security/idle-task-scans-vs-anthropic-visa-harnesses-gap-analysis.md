@@ -173,10 +173,14 @@ outcome by regex over a summary the same agent authored is
 worse, the required phrases are published in the gate's own source, and the
 finding body that steers the summary is untrusted input. The gate therefore also
 requires that the diff **adds or modifies a test file** and that a **test
-identifier named in the summary actually appears** in the added lines of that
-test diff (`security_fix_diff.ts` runs `git diff` only — still no execution).
-The prose requirements are retained as a human-review aid, not as the gate. If
-the diff cannot be computed at all, the PR is blocked rather than assumed good.
+identifier named in the summary actually names a test declared** in the added
+lines of that test diff (`security_fix_diff.ts` runs `git diff` only — still no
+execution). That identifier match is on whole tokens of a test-*declaration*
+line, and generic tokens (`test`, `spec`, `case`, …) are rejected outright, so
+citing `foo_test.ts::test` against any added test line no longer satisfies it
+(Issue #1279). The prose requirements are retained as a human-review aid, not as
+the gate. If the diff cannot be computed at all, the PR is blocked rather than
+assumed good.
 
 ```mermaid
 flowchart TD
@@ -184,7 +188,7 @@ flowchart TD
     B -- no --> X["❌ blocked: diff-unavailable"]
     B -- yes --> C{"Diff changes a test file?"}
     C -- no --> X2["❌ blocked: test-file-changed"]
-    C -- yes --> D{"Cited test identifier<br/>in added test lines?"}
+    C -- yes --> D{"Cited identifier declares<br/>an added test?"}
     D -- no --> X3["❌ blocked: test-identifier-in-diff"]
     D -- yes --> E{"Prose: regression linkage<br/>+ trigger closed?"}
     E -- no --> X4["❌ blocked: prose evidence"]

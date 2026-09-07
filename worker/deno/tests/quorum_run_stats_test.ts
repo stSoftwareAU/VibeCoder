@@ -206,9 +206,9 @@ Deno.test("reportQuorumDegradation - a fable-served plan-off is not degraded and
     repo: "owner/repo",
     issueNumber: 4434,
     observations: [
-      draft("A", { runStats: runStats(["claude-fable-5-20250101"]) }),
-      draft("B", { runStats: runStats(["claude-fable-5-20250101"]) }),
-      judge({ runStats: runStats(["claude-fable-5-20250101"]) }),
+      draft("A", { runStats: runStats(["claude-fable-5-1-20260901"]) }),
+      draft("B", { runStats: runStats(["claude-fable-5-1-20260901"]) }),
+      judge({ runStats: runStats(["claude-fable-5-1-20260901"]) }),
     ],
     ghClient,
     runGhCommand: ghCommandFn,
@@ -301,10 +301,10 @@ Deno.test("reportQuorumDegradation - a rerouted judgement is degraded too", asyn
     repo: "owner/repo",
     issueNumber: 78,
     observations: [
-      draft("A", { runStats: runStats(["claude-fable-5-20250101"]) }),
-      draft("B", { runStats: runStats(["claude-fable-5-20250101"]) }),
+      draft("A", { runStats: runStats(["claude-fable-5-1-20260901"]) }),
+      draft("B", { runStats: runStats(["claude-fable-5-1-20260901"]) }),
       judge({
-        runStats: runStats(["claude-fable-5-20250101"]),
+        runStats: runStats(["claude-fable-5-1-20260901"]),
         preflightDegraded: true,
         preflightDegradedReason: FABLE_PREFLIGHT_DEGRADED_REASON,
       }),

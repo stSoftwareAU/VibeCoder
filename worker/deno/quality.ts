@@ -16,7 +16,11 @@
 
 import { applyEnvOverrides, parseQualityArgs } from "./lib/quality_helpers.ts";
 import { runQualityGate } from "./lib/quality_gate.ts";
-import type { QualityGateConfig } from "./lib/quality_gate.ts";
+import type {
+  QualityGateConfig,
+  QualityGateResult,
+} from "./lib/quality_gate.ts";
+import { installConsoleRedaction } from "./lib/console_redaction.ts";
 
 /**
  * Build environment record from Deno.env for quality options.
@@ -30,9 +34,40 @@ function getEnvRecord(): Record<string, string | undefined> {
 }
 
 /**
+ * Print the gate's assembled transcript and summary table (Issue #1280).
+ *
+ * `output` is built from the raw `stdout + stderr` of every check, so a test
+ * or lint step that echoed a tokenised clone URL puts that URL on this
+ * process's stdout — and `quality.ts` is a separate process from `mod.ts`,
+ * where the console patch used to be installed. Installing it here as well as
+ * at the top of {@link main} is deliberate defence in depth: the installer is
+ * idempotent, and binding it to the function that actually prints the
+ * captured transcript means no reordering of `main` can leave this path
+ * unpatched.
+ *
+ * @param result - The settled gate result whose output is being printed.
+ */
+export function printGateOutput(
+  result: Pick<QualityGateResult, "summary" | "output">,
+): void {
+  installConsoleRedaction();
+  // Print detailed check output first, then summary table
+  if (result.output) {
+    console.log(result.output);
+  }
+  console.log(result.summary.text);
+}
+
+/**
  * Main entry point for the quality gate.
  */
 async function main(): Promise<void> {
+  // Issue #1280 (SEC-1217-12): `quality.ts` is its own process, so it needs
+  // its own console patch — the `mod.ts` install never runs here. Every line
+  // below (streamed progress, the gate error, the transcript) carries raw
+  // check output.
+  installConsoleRedaction();
+
   const rawOptions = parseQualityArgs(Deno.args);
   const options = applyEnvOverrides(rawOptions, getEnvRecord());
 
@@ -76,11 +111,7 @@ async function main(): Promise<void> {
   }
 
   const { summary, passed, output } = result.value;
-  // Print detailed check output first, then summary table
-  if (output) {
-    console.log(output);
-  }
-  console.log(summary.text);
+  printGateOutput({ summary, output });
   Deno.exit(passed ? 0 : 1);
 }
 

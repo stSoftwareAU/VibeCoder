@@ -4,8 +4,10 @@
  * The shim runs this module once per `gh` invocation the agent makes, passing
  * the run's allowlist state and the `gh` arguments on argv — never through the
  * environment, which the agent could trivially alter. Everything it decides on
- * arrives as arguments, so its only Deno permission is `--allow-read`, and
- * only to scan the body files named in that argv (Issue #3938).
+ * arrives as arguments, so its Deno permissions are `--allow-read`, to scan the
+ * body files named in that argv (Issue #3938), and write access to the one
+ * directory `--body-dir` names, where a masked `--input` copy lands (Issue
+ * #1364).
  *
  * The contract with the shim is a **positive verdict marker on stdout**, not
  * an exit code: `deno` itself exits 1 on a module-resolution or runtime error,
@@ -36,7 +38,9 @@ import {
   UnredactableBodyError,
 } from "./gh_body_redaction.ts";
 // Shared with `spawnGh` (Issue #1254) so the two chokepoints cannot drift.
-import { denoBodyFileReader, denoBodyFileWriter } from "./gh_body_file_io.ts";
+import { bodyFileWriterIn, denoBodyFileReader } from "./gh_body_file_io.ts";
+import { installConsoleRedaction } from "./console_redaction.ts";
+import { encodeNulFields } from "./guard_field_encoding.ts";
 import { evaluateGhCommand } from "./gh_guard_decision.ts";
 import type { ClaimedIssue } from "./claimed_issue_guard.ts";
 
@@ -73,9 +77,7 @@ export interface GhGuardCliResult {
  * @returns The exact bytes to write to stdout.
  */
 export function encodeGuardStdout(result: GhGuardCliResult): string {
-  return [result.stdout, ...(result.ghArgs ?? [])]
-    .map((field) => `${field}\0`)
-    .join("");
+  return encodeNulFields([result.stdout, ...(result.ghArgs ?? [])]);
 }
 
 /** The guard's own argv, split from the `gh` arguments that follow `--`. */
@@ -84,6 +86,12 @@ interface ParsedArgv {
   allowedRepos: string[];
   /** The run's claimed issue, when `--claimed-issue` named one (Issue #222). */
   claimedIssue?: ClaimedIssue;
+  /**
+   * Directory a masked `--input` body is written to (Issue #1364). Absent
+   * means no writer: a body needing masking is refused rather than left
+   * loose in TMPDIR with nothing to remove it.
+   */
+  bodyDir?: string;
   ghArgs: string[];
   /** Set when the invocation is malformed. */
   error?: string;
@@ -105,12 +113,14 @@ function parseClaimedIssue(value: string): ClaimedIssue | undefined {
  *
  * `--active` / `--allow-repo <slug>` carry the write-repo allowlist;
  * `--claimed-issue <owner/repo#N>` and `--allow-issue-verb <verb>` carry the
- * claimed-issue lifecycle guard (Issue #222).
+ * claimed-issue lifecycle guard (Issue #222); `--body-dir <dir>` names the
+ * caller-owned directory a masked `--input` body is written to (Issue #1364).
  */
 function parseArgv(argv: readonly string[]): ParsedArgv {
   const allowedRepos: string[] = [];
   const allowedVerbs: string[] = [];
   let claimedIssue: ClaimedIssue | undefined;
+  let bodyDir: string | undefined;
   let active = false;
   let i = 0;
   const fail = (error: string): ParsedArgv => ({
@@ -125,6 +135,7 @@ function parseArgv(argv: readonly string[]): ParsedArgv {
     ...(claimedIssue
       ? { claimedIssue: { ...claimedIssue, allowedVerbs } }
       : {}),
+    ...(bodyDir ? { bodyDir } : {}),
     ghArgs,
   });
   for (; i < argv.length; i++) {
@@ -152,6 +163,15 @@ function parseArgv(argv: readonly string[]): ParsedArgv {
       i++;
       continue;
     }
+    if (token === "--body-dir") {
+      const value = argv[i + 1];
+      if (value === undefined || value === "") {
+        return fail("--body-dir requires a value");
+      }
+      bodyDir = value;
+      i++;
+      continue;
+    }
     if (token === "--allow-issue-verb") {
       const value = argv[i + 1];
       if (value === undefined) {
@@ -171,13 +191,17 @@ function parseArgv(argv: readonly string[]): ParsedArgv {
  *
  * @param argv - The guard's own argv (guard flags, `--`, then `gh` arguments).
  * @param readBodyFile - Reader for `--body-file` contents (test seam).
+ * @param writeBodyFile - Writer for a masked `--input` body (test seam).
+ *   Defaults to one scoped to `--body-dir`; with neither, an `--input` body
+ *   that needs masking is refused rather than written somewhere unowned
+ *   (Issue #1364).
  * @returns The exit code, the stderr line to emit, and — when allowed — the
  *   arguments the shim must run.
  */
 export function runGhGuardCli(
   argv: readonly string[],
   readBodyFile: BodyFileReader = denoBodyFileReader,
-  writeBodyFile: BodyFileWriter = denoBodyFileWriter,
+  writeBodyFile?: BodyFileWriter,
 ): GhGuardCliResult {
   const parsed = parseArgv(argv);
   if (parsed.error) {
@@ -199,7 +223,12 @@ export function runGhGuardCli(
     readBodyFile,
   });
   if (decision.allowed) {
-    return allowWithRedactedBody(parsed, readBodyFile, writeBodyFile);
+    return allowWithRedactedBody(
+      parsed,
+      readBodyFile,
+      writeBodyFile ??
+        (parsed.bodyDir ? bodyFileWriterIn(parsed.bodyDir) : undefined),
+    );
   }
 
   return {
@@ -213,12 +242,14 @@ export function runGhGuardCli(
  * Mask the published bodies of an allowed command (Issue #3938).
  *
  * A body that cannot be scanned at all refuses the call: publishing it anyway
- * would report a failed control as a success.
+ * would report a failed control as a success. So does a body that needs
+ * masking when no writer exists (Issue #1364) — the redacted copy has nowhere
+ * owned to live, and an unowned temp file is not the answer.
  */
 function allowWithRedactedBody(
   parsed: ParsedArgv,
   readBodyFile: BodyFileReader,
-  writeBodyFile: BodyFileWriter,
+  writeBodyFile: BodyFileWriter | undefined,
 ): GhGuardCliResult {
   let ghArgs: string[];
   try {
@@ -245,6 +276,12 @@ function allowWithRedactedBody(
 }
 
 if (import.meta.main) {
+  // Issue #1280 (SEC-1217-12): the guard child is its own process. Its
+  // stdout is the NUL-encoded verdict written through `Deno.stdout` and is
+  // untouched by the patch; the refusal reason on stderr quotes the agent's
+  // own argv, which is where a credential can ride in.
+  installConsoleRedaction();
+
   const result = runGhGuardCli(Deno.args);
   await Deno.stdout.write(new TextEncoder().encode(encodeGuardStdout(result)));
   if (result.stderr) console.error(result.stderr);

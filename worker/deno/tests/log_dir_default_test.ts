@@ -14,9 +14,9 @@
  * | macOS    | `~/Library/Logs/vibe-coder`                                   |
  * | Windows  | `%LOCALAPPDATA%\vibe-coder\logs`                              |
  *
- * The overrides Issue #872 unified — `LAUNCH_LOG_DIR`, then `LOG_DIR` — still
- * outrank the default, so a system service keeps its logs in
- * `/var/log/vibe-coder` by naming it.
+ * Only the `.config.json` `log_dir` key outranks the default (Issue #1388): a
+ * system service keeps its logs in `/var/log/vibe-coder` by stating it there.
+ * The environment overrides Issue #872 unified are ignored.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -114,7 +114,7 @@ Deno.test("log dir - Windows defaults under LOCALAPPDATA (Issue #873)", () => {
   );
 });
 
-Deno.test("log dir - the overrides still outrank the platform default (Issue #873)", () => {
+Deno.test("log dir - the environment no longer outranks the platform default (Issue #1388)", () => {
   assertEquals(
     resolveLogDir(
       "/home/vibe",
@@ -122,8 +122,8 @@ Deno.test("log dir - the overrides still outrank the platform default (Issue #87
       "posix",
       "linux",
     ),
-    "/var/log/vibe-coder",
-    "a system service names its own directory",
+    "/home/vibe/.local/state/vibe-coder",
+    "a system service states its directory as log_dir, not in the unit's environment",
   );
   assertEquals(
     resolveLogDir(
@@ -132,12 +132,18 @@ Deno.test("log dir - the overrides still outrank the platform default (Issue #87
       "posix",
       "linux",
     ),
-    "/var/log/launch",
+    "/home/vibe/.local/state/vibe-coder",
   );
   assertEquals(
-    resolveLogDir("/home/vibe", envFrom({ LOG_DIR: "  " }), "posix", "linux"),
-    "/home/vibe/.local/state/vibe-coder",
-    "a blank override falls through to the default",
+    resolveLogDir(
+      "/home/vibe",
+      envFrom({ LOG_DIR: "/var/log/vibe" }),
+      "posix",
+      "linux",
+      "/var/log/vibe-coder",
+    ),
+    "/var/log/vibe-coder",
+    "the config key is what a system service uses",
   );
 });
 
@@ -201,36 +207,59 @@ Deno.test("log dir - no notice without a legacy directory (Issue #873)", () => {
   );
 });
 
-Deno.test("log dir - no notice when the operator set the location (Issue #873)", () => {
-  const overrides: Record<string, string>[] = [
+Deno.test("log dir - no notice when the operator pinned the location in the file (Issue #873)", () => {
+  assertEquals(
+    legacyLogDirNotice({
+      home: "/home/vibe",
+      env: envFrom({}),
+      style: "posix",
+      platform: "linux",
+      exists: (path) => path === "/home/vibe/logs",
+      configured: "/var/log/vibe-coder",
+    }),
+    undefined,
+    "a stated log_dir is the operator's choice, not a default move",
+  );
+});
+
+Deno.test("log dir - an exported variable no longer silences the notice (Issue #1388)", () => {
+  // The variable is ignored, so the default really does apply on this host;
+  // the notice is how the operator learns that log_dir is now the way to keep
+  // the old location.
+  const stale: Record<string, string>[] = [
     { LOG_DIR: "/var/log/vibe-coder" },
     { LAUNCH_LOG_DIR: "/var/log/vibe-coder" },
+    { LOG_DIR: "/home/vibe/logs" },
   ];
-  for (const vars of overrides) {
-    assertEquals(
-      legacyLogDirNotice({
-        home: "/home/vibe",
-        env: envFrom(vars),
-        style: "posix",
-        platform: "linux",
-        exists: (path) => path === "/home/vibe/logs",
-      }),
-      undefined,
-      `${JSON.stringify(vars)} is the operator's choice, not a default move`,
+  for (const vars of stale) {
+    const notice = legacyLogDirNotice({
+      home: "/home/vibe",
+      env: envFrom(vars),
+      style: "posix",
+      platform: "linux",
+      exists: (path) => path === "/home/vibe/logs",
+    });
+    assertStringIncludes(
+      notice ?? "",
+      '"log_dir": "/home/vibe/logs"',
+      `${
+        JSON.stringify(vars)
+      } is ignored, so the host is told how to keep ~/logs`,
     );
   }
 });
 
-Deno.test("log dir - an operator who keeps $HOME/logs is not nagged (Issue #873)", () => {
-  // LOG_DIR=$HOME/logs is the documented way to stay on the old location:
+Deno.test("log dir - an operator who keeps $HOME/logs in the file is not nagged (Issue #873)", () => {
+  // "log_dir": "~/logs" is the documented way to stay on the old location:
   // the resolved directory IS the legacy one, so there is nothing to move.
   assertEquals(
     legacyLogDirNotice({
       home: "/home/vibe",
-      env: envFrom({ LOG_DIR: "/home/vibe/logs" }),
+      env: envFrom({}),
       style: "posix",
       platform: "linux",
       exists: (path) => path === "/home/vibe/logs",
+      configured: "~/logs",
     }),
     undefined,
   );

@@ -120,8 +120,11 @@ export interface ContainerManifest {
  * Commands `./quality.sh` shells out to inside the image (Issue #4090).
  *
  * Each must be pinned as a downloaded tool or listed in an image's
- * `provides`; `ruby` is here because the Pages scripts under
- * `.github/scripts/*.rb` are spawned by the test suite.
+ * `provides`. `ruby` is a leftover: the Pages scripts under
+ * `.github/scripts/*.rb` that spawned it went with the publishing pipeline in
+ * Issue #1344, and nothing in the gate calls it now. Dropping it means
+ * re-pointing the container base off the official Ruby image, which is a
+ * `.github/workflows/container-build.yml` change — Issue #1376.
  */
 export const REQUIRED_RUNTIME_TOOLS: readonly string[] = [
   "bash",

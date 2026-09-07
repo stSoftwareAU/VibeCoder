@@ -7,22 +7,86 @@ says what it was cut against, and a frozen host upgrades onto it with
 `./run.sh upgrade`.
 
 This page is for the other kind of release — one that **changes a contract an
-operator's configuration depends on**. Those releases move the minor or the
-major, are minted from [the release floor](RELEASE-TAGGING.md#the-release-floor)
-rather than from the automatic increment, and are recorded here newest first,
-with the exact migration and the exact rollback.
+operator's configuration depends on**. Those releases are recorded here newest
+first, with the exact migration and the exact rollback. Most move the minor or
+the major and are minted from
+[the release floor](RELEASE-TAGGING.md#the-release-floor) rather than from the
+automatic increment; one landed on the automatic patch because the floor was
+not moved ahead of it, and it is recorded under the version it actually took.
 
-## 2.0.0 — the config file wins over the environment
+## 1.5.5 — the log directory comes from the file alone
+
+**Behaviour change, not a fix. Read the migration before upgrading a host that
+pins its log directory with `LOG_DIR` or `LAUNCH_LOG_DIR`.**
+
+> The floor was not moved ahead of this one, so it took the automatic patch
+> increment: `1.5.5` is the version a host pins to for it.
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| `LAUNCH_LOG_DIR` and `LOG_DIR` no longer move the host log directory; `log_dir` in `.config.json` is the only way, and a host still exporting either is told so by name at every launch | #1388 |
+
+### Migration
+
+A host that pinned its log directory with `LOG_DIR` or `LAUNCH_LOG_DIR` — the
+1.4.0 notes offered `LOG_DIR=$HOME/logs` as the way to keep the old location —
+falls back to the **platform default** on its first launch after the upgrade,
+and prints the variable, its value and the `log_dir` line to write instead.
+Move the value into `.config.json` before upgrading:
+
+```json
+{ "log_dir": "/var/log/vibe-coder" }
+```
+
+Then unset the variable wherever it was exported (shell profile, crontab, unit
+file, plist). Rollback is the reverse: restore the export and pin the previous
+release. Nothing is moved or deleted either way.
+
+## 1.5.0 — the GitHub Pages site is gone
+
+**No migration. Nothing an operator configures changes; the bookmark does.**
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| `.github/workflows/pages.yml`, the Jekyll site files and the Ruby build scripts are deleted | #1344 |
+| The Pages-only quality-gate checks — `pages-liquid` and `mermaid built output` — and the `check-pages-liquid` / `check-mermaid-built-output` commands are gone | #1344 |
+
+The site at `https://stsoftwareau.github.io/VibeCoder/` existed for one reason:
+this repository was private, and publishing the READMEs was the only way to read
+them. The repository is public, so GitHub renders every Markdown file — README,
+`SECURITY.md`, `AGENTS.md` and everything under `docs/` — directly, including
+the Mermaid diagrams the Jekyll layout used to load a CDN script for.
+
+Nothing was written only for the site: the Markdown all stays in the repository
+and is read at its ordinary GitHub URL.
+
+`Gemfile`/`Gemfile.lock`, the `bundle-audit` job that scans them and the Ruby
+container base are still here. Removing them means *modifying* a file under
+`.github/workflows/`, which the worker token has no scope to push — deleting
+one, as this release does to `pages.yml`, is allowed. Issue #1376 tracks the
+rest.
+
+```mermaid
+flowchart LR
+    M["Markdown in the repo"] --> G["Read on GitHub"]
+    M -.->|removed #1344| J["Jekyll build → Pages site"]
+    style J fill:#adb5bd,stroke:#6c757d,color:#000
+    style G fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+### Migration
+
+None. Replace any bookmark of `stsoftwareau.github.io/VibeCoder` with the
+repository itself; there is nothing to install, move or delete on a host.
+
+## 1.4.0 — the config file wins over the environment
 
 **Behaviour change, not a fix. Read the migration before upgrading a host that
 sets both a `.config.json` key and its `VIBE_*` variable.**
-
-> **Unreleased.** The change is on
-> `milestone/configuration-one-source-of-truth` and
-> [`.release-floor`](../.release-floor) is still `1.4.0`, so no 2.0.0 tag
-> exists yet. The floor moves to `2.0.0` with the merge that takes this
-> milestone to `main` — that merge is what mints the release these notes
-> describe.
 
 ### What changed
 
@@ -71,7 +135,7 @@ different coding agent, in the `agent_provider` case — so check the file befor
 upgrading.
 
 The warning naming the config key was introduced with the flip rather than in a
-1.x release ahead of it, so on a host that had set both, the first run after the
+release ahead of it, so on a host that had set both, the first run after the
 upgrade is where the line appears. Issue #874's own deprecation pass — the one
 that stops these variables being read at all — is what carries the notice
 forward from here.
@@ -97,7 +161,7 @@ forward from here.
 
 ### Rollback
 
-Pin the host back to `1.x` (`./run.sh upgrade` pins forward; a frozen host
+Pin the host back to `1.3.x` (`./run.sh upgrade` pins forward; a frozen host
 edits `pinned_ref`). Nothing is rewritten on disk by this change — the
 precedence is decided at load — so a host that rolls back resolves exactly as
 it did before.

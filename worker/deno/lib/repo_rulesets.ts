@@ -66,7 +66,13 @@ export interface RulesetBypassActorBody {
   bypass_mode: "always" | "pull_request";
 }
 
-/** One rule in a ruleset body. */
+/**
+ * One rule this module models and writes.
+ *
+ * A rule the module does *not* model — anything an admin added to the live
+ * ruleset — is carried through as an opaque {@link OpaqueRulesetRule} rather
+ * than being dropped (Issue #1290).
+ */
 export type RulesetRuleBody =
   | {
     type: "required_status_checks";
@@ -77,13 +83,32 @@ export type RulesetRuleBody =
   }
   | { type: "deletion" | "non_fast_forward" };
 
+/**
+ * A rule read back from a live ruleset whose shape this module does not model
+ * (`pull_request`, `required_signatures`, …). Preserved verbatim on update.
+ */
+export interface OpaqueRulesetRule {
+  type: string;
+  parameters?: Record<string, unknown>;
+}
+
+/** Full detail of one ruleset (`GET /repos/{repo}/rulesets/{id}`). */
+export interface RulesetDetail {
+  id: number;
+  name: string;
+  target?: string;
+  enforcement?: string;
+  rules?: OpaqueRulesetRule[];
+  bypass_actors?: RulesetBypassActorBody[];
+}
+
 /** Body accepted by the ruleset create (`POST`) and update (`PUT`) calls. */
 export interface RulesetBody {
   name: string;
   target: "branch";
   enforcement: "active";
   conditions: { ref_name: { include: string[]; exclude: string[] } };
-  rules: RulesetRuleBody[];
+  rules: Array<RulesetRuleBody | OpaqueRulesetRule>;
   /** Actors exempt from the rules. Omitted when nothing is exempt. */
   bypass_actors?: RulesetBypassActorBody[];
 }
@@ -199,6 +224,41 @@ export async function listRepoRulesets(
 }
 
 /**
+ * Read one ruleset in full (`GET /repos/{repo}/rulesets/{id}`).
+ *
+ * The list endpoint returns a summary with no `rules` and no `bypass_actors`,
+ * so this is the only way to see what a ruleset actually enforces before a
+ * full-document PUT replaces it (Issue #1290). Every failure — a 404 included
+ * — is reported as an error: a caller about to overwrite the document must
+ * never read "could not see it" as "there was nothing there".
+ */
+export async function getRuleset(
+  repo: string,
+  rulesetId: number,
+  ghFn: GhExec = defaultGhExec,
+): Promise<RulesetResult<RulesetDetail>> {
+  if (!isValidRepoSlug(repo)) {
+    return { ok: false, error: new Error(`Invalid repo slug: ${repo}`) };
+  }
+  if (!Number.isInteger(rulesetId) || rulesetId <= 0) {
+    return { ok: false, error: new Error(`Invalid ruleset id: ${rulesetId}`) };
+  }
+  try {
+    const raw = await ghFn(["api", `repos/${repo}/rulesets/${rulesetId}`]);
+    const parsed = raw ? JSON.parse(raw) : undefined;
+    if (parsed === null || typeof parsed !== "object") {
+      return {
+        ok: false,
+        error: new Error(`Unreadable ruleset ${rulesetId} in ${repo}`),
+      };
+    }
+    return { ok: true, value: parsed as RulesetDetail };
+  } catch (error) {
+    return { ok: false, error: toError(error) };
+  }
+}
+
+/**
  * True when the branch still carries a **classic** protection rule.
  *
  * Read-only. The worker no longer writes classic protection (Issue #4163);
@@ -270,6 +330,62 @@ export function buildDefaultBranchRulesetBody(
         },
       },
     ],
+  };
+}
+
+/**
+ * Type guard selecting the modelled required-status-checks rule of a body.
+ *
+ * `rules` also carries opaque rules preserved from a live ruleset, so the
+ * shape is checked as well as the type — an entry that merely claims the type
+ * without carrying parameters is not the rule this module writes.
+ */
+export function isRequiredStatusChecksRule(
+  rule: RulesetRuleBody | OpaqueRulesetRule,
+): rule is Extract<RulesetRuleBody, { type: "required_status_checks" }> {
+  return rule.type === "required_status_checks" && "parameters" in rule &&
+    rule.parameters !== undefined;
+}
+
+/**
+ * Rules of the live ruleset that {@link buildDefaultBranchRulesetBody} does
+ * not model — everything except the required-status-checks rule it rewrites.
+ *
+ * Entries that are not rule-shaped objects are dropped: the input is an API
+ * response, so it is validated before it is written back.
+ */
+export function preservedRulesFromDetail(
+  existing: RulesetDetail,
+): OpaqueRulesetRule[] {
+  const rules = Array.isArray(existing.rules) ? existing.rules : [];
+  return rules.filter((rule): rule is OpaqueRulesetRule =>
+    rule !== null && typeof rule === "object" &&
+    typeof rule.type === "string" && rule.type !== "required_status_checks"
+  );
+}
+
+/**
+ * Build the **update** body for the worker's default-branch ruleset.
+ *
+ * The update is a full-document PUT, so a body rebuilt from status checks
+ * alone silently discards every other rule an admin added — required reviews,
+ * force-push protection, deletion protection, bypass actors (Issue #1290).
+ * This replaces only the `required_status_checks` rule and carries every other
+ * rule and the bypass actors of the live ruleset through unchanged.
+ */
+export function buildDefaultBranchRulesetUpdateBody(
+  name: string,
+  contexts: string[],
+  existing: RulesetDetail,
+): RulesetBody {
+  const base = buildDefaultBranchRulesetBody(name, contexts);
+  const bypassActors = Array.isArray(existing.bypass_actors)
+    ? existing.bypass_actors
+    : [];
+  return {
+    ...base,
+    rules: [...preservedRulesFromDetail(existing), ...base.rules],
+    ...(bypassActors.length > 0 ? { bypass_actors: bypassActors } : {}),
   };
 }
 

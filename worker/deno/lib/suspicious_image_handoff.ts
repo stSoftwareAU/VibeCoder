@@ -66,14 +66,27 @@ export const SUSPICIOUS_IMAGE_MARKER_NAME = "vibe-suspicious-image-detected";
 const MAX_FIELD_LENGTH = 300;
 
 /**
- * Matches the flag marker anywhere in the agent output. `[^]*?` matches
- * any character (including newlines) non-greedily up to the closing
- * `-->`. Case-insensitive so `SUSPICIOUS-IMAGE-DETECTED` also matches.
+ * Matches the marker's opening tag anywhere in the agent output.
+ * Case-insensitive so `SUSPICIOUS-IMAGE-DETECTED` also matches.
+ *
+ * Only the *opening* tag is a regex (Issue #1274). The single pattern this
+ * replaced ended `\\b([^]*?)-->`: an uncapped dot-all lazy gap, so for every
+ * position where the opening tag matched, the engine scanned to end-of-string
+ * looking for `-->` — O(k × n) for k copies of the tag. The input is
+ * `state.claudeOutput`, the agent's full turn output, which quotes the issue
+ * body it was given and which a prompt-injected agent (the exact adversary this
+ * module exists for) can emit verbatim; `sanitiseFlagField`'s length cap runs
+ * downstream of that cost. {@link detectSuspiciousImageFlag} finds the closing
+ * `-->` with `indexOf` instead, which is linear and matches the lazy gap's
+ * semantics exactly — the first `-->` after the tag.
  */
-const MARKER_RE = new RegExp(
-  `<!--\\s*${SUSPICIOUS_IMAGE_MARKER_NAME}\\b([^]*?)-->`,
+const MARKER_OPEN_RE = new RegExp(
+  `<!--\\s*${SUSPICIOUS_IMAGE_MARKER_NAME}\\b`,
   "i",
 );
+
+/** The closing sequence of an HTML comment. */
+const MARKER_CLOSE = "-->";
 
 /** Extract the `source="..."` / `source='...'` attribute value. */
 const SOURCE_RE = /\bsource\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
@@ -137,10 +150,17 @@ export function detectSuspiciousImageFlag(
   output: string | undefined | null,
 ): SuspiciousImageDetection {
   if (!output) return NEGATIVE;
-  const markerMatch = MARKER_RE.exec(output);
-  if (!markerMatch) return NEGATIVE;
+  const openMatch = MARKER_OPEN_RE.exec(output);
+  if (!openMatch) return NEGATIVE;
 
-  const inner = markerMatch[1] ?? "";
+  // The attributes end at the first `-->` after the opening tag; an opening tag
+  // that is never closed is not a marker. A later opening tag cannot rescue it
+  // — any `-->` that closes a later tag also follows this one.
+  const innerStart = openMatch.index + openMatch[0].length;
+  const innerEnd = output.indexOf(MARKER_CLOSE, innerStart);
+  if (innerEnd < 0) return NEGATIVE;
+
+  const inner = output.slice(innerStart, innerEnd);
   const sourceMatch = SOURCE_RE.exec(inner);
   const reasonMatch = REASON_RE.exec(inner);
 

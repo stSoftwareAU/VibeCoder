@@ -133,7 +133,10 @@ Deno.test("config - loadConfig defaults software_min_versions to claude floor (I
 
   await withTempConfig(testConfig, async (configPath) => {
     const config = await loadConfig(configPath);
-    assertEquals(config.softwareMinVersions, { claude: "2.1.170" });
+    // Raised from 2.1.170 by Issue #1362: the floor now pins the oldest CLI
+    // that resolves the `fable` alias to Fable 5.1 and carries its
+    // prompt-cache fixes.
+    assertEquals(config.softwareMinVersions, { claude: "2.1.260" });
   });
 });
 

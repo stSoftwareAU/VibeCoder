@@ -2,20 +2,23 @@
  * Where the fleet's logs live (Issues #872, #873).
  *
  * One resolution, shared by the launcher, `run.sh`, `loop.sh`, `run.ps1` and
- * the container mount. Issue #872 unified the *overrides* — `LAUNCH_LOG_DIR`,
- * then `LOG_DIR` — after setting one moved `launch-*.log` and left
- * `run_core.log` and every `worker-*.log` behind. This module is where the
- * **default** those overrides fall back to is decided, so there is one place
- * to change and nothing left to drift.
+ * the container mount. Issue #872 unified what used to be two environment
+ * overrides after setting one moved `launch-*.log` and left `run_core.log`
+ * and every `worker-*.log` behind. This module is where the **default** is
+ * decided, so there is one place to change and nothing left to drift.
  *
- * ## The operator pins it in `.config.json`, not in the environment
+ * ## The operator pins it in `.config.json`, and nowhere else
  *
- * Host-side operator configuration lives in `.config.json`, so the directory
- * is pinned there with {@link LOG_DIR_CONFIG_KEY} — `log_dir` — and the
- * precedence the whole fleet shares is **`log_dir`, then `LAUNCH_LOG_DIR`,
- * then `LOG_DIR`, then the platform default**. The two variables stay: a
- * launchd or systemd unit naming `/var/log/vibe-coder` sets an environment,
- * not a config file. They are simply no longer the only way to say it.
+ * On the host, `.config.json` is the only configuration (Issue #1388). The
+ * directory is pinned there with {@link LOG_DIR_CONFIG_KEY} — `log_dir` — and
+ * the precedence the whole fleet shares is **`log_dir`, then the platform
+ * default**. The environment variables that used to sit between the two,
+ * `LAUNCH_LOG_DIR` and `LOG_DIR`, are **ignored**: a value exported in a
+ * shell profile, a crontab line or a unit file is invisible to the next
+ * reader and differs per launcher, which is exactly how one host on a fleet
+ * comes to behave unlike the rest. A host that still exports one is told so,
+ * once per launch and by name, through {@link ignoredLogDirEnvNotice}; a
+ * system service that wants `/var/log/vibe-coder` states it in the file.
  *
  * The value takes the same shape as every other path-valued key
  * (`ssh_key_path`, `gh_config_dir`): an absolute path, or one anchored at
@@ -35,9 +38,9 @@
  * Specification names state as the home for "logs [and] history", which is why
  * the Linux default is the state directory rather than `$XDG_DATA_HOME`. macOS
  * nominates `~/Library/Logs` for a user-scoped agent and Console.app reads it.
- * A host running the worker as a system service names `/var/log/vibe-coder`
- * through `LOG_DIR` — a daemon's directory is a deployment decision, not
- * something to infer from the process.
+ * A host running the worker as a system service states `/var/log/vibe-coder`
+ * as `log_dir` — a daemon's directory is a deployment decision, not something
+ * to infer from the process.
  *
  * The old default, `$HOME/logs`, followed no convention and put fleet state in
  * the operator's home directory beside their own files. Nothing migrates it:
@@ -59,17 +62,15 @@ import {
 export type LogDirPlatform = "linux" | "darwin" | "windows";
 
 /**
- * The overrides, in the precedence `loop.sh:56` has always used.
- *
- * Each is checked for a non-blank value independently, matching bash's
- * `${LAUNCH_LOG_DIR:-${LOG_DIR:-…}}`: `:-` treats an empty value as unset, so
- * a blank `LAUNCH_LOG_DIR` falls through to `LOG_DIR` rather than skipping
- * straight to the default. A `??` chain would not.
+ * The environment variables that used to move the directory (Issues #872,
+ * #873) and no longer do (Issue #1388). Kept as names only, so the launcher
+ * can tell an operator who still exports one that it is being ignored and
+ * which key replaces it — silence is how a fleet drifts.
  */
-export const LOG_DIR_ENV_NAMES = ["LAUNCH_LOG_DIR", "LOG_DIR"] as const;
+export const IGNORED_LOG_DIR_ENV_NAMES = ["LAUNCH_LOG_DIR", "LOG_DIR"] as const;
 
 /**
- * The `.config.json` key that pins the directory, outranking both variables.
+ * The `.config.json` key that pins the directory — the only way to move it.
  *
  * Read from the file rather than from a loaded `WorkerConfig`: `mod.ts` falls
  * back to the default configuration for a config-optional command, which would
@@ -155,14 +156,15 @@ export function defaultLogDir(
 /**
  * The host directory logs are written to.
  *
- * `log_dir`, then `LAUNCH_LOG_DIR`, then `LOG_DIR`, then the platform default
- * — the precedence `loop.sh`, `run.sh` and the container mount all share
- * (Issues #872, #873). A blank value is treated as unset at every level: an
- * exported-but-empty variable meant the empty string here, which would have
- * mounted the wrong host path, and a blank config key means the same nothing.
+ * `log_dir`, then the platform default — the precedence `loop.sh`, `run.sh`
+ * and the container mount all share (Issues #872, #873, #1388). A blank config
+ * value is treated as unset, exactly as an absent key is. The environment is
+ * consulted only for the platform's own base directories (`XDG_STATE_HOME`,
+ * `LOCALAPPDATA`); `LAUNCH_LOG_DIR` and `LOG_DIR` are ignored.
  *
  * @param home - The host's home directory
- * @param env - Environment reader (injectable for tests)
+ * @param env - Environment reader (injectable for tests); platform base
+ *   directories only, never an operator override
  * @param style - How this host spells its paths
  * @param platform - Whose convention the default follows; defaults to this host's
  * @param configured - The `.config.json` `log_dir` value, when the deployment
@@ -180,8 +182,7 @@ export function resolveLogDir(
 ): string {
   const pinned = normaliseConfiguredLogDir(configured, home, style);
   if (pinned !== undefined) return pinned;
-  const override = resolveLogDirOverride(env, style);
-  return override ?? defaultLogDir(home, env, style, platform);
+  return defaultLogDir(home, env, style, platform);
 }
 
 /**
@@ -226,21 +227,32 @@ export function normaliseConfiguredLogDir(
 }
 
 /**
- * The operator's explicit choice, if they made one.
+ * Tell an operator who still exports `LAUNCH_LOG_DIR` or `LOG_DIR` that the
+ * variable no longer does anything, and what to write instead (Issue #1388).
+ *
+ * One line naming every set variable, or nothing when none is set. The value
+ * is quoted back so the operator can move it into `.config.json` verbatim; a
+ * blank export is not worth a line, because it never moved anything either.
  *
  * @param env - Environment reader
- * @param style - How this host spells its paths
- * @returns The override, or undefined when neither variable names one
+ * @returns The line to print on stderr, or undefined when there is nothing to say
  */
-export function resolveLogDirOverride(
-  env: EnvLookup,
-  style: LauncherPathStyle,
-): string | undefined {
-  for (const name of LOG_DIR_ENV_NAMES) {
-    const value = readEnvPath(env, name, style, { requireAbsolute: false });
-    if (value !== undefined) return value;
+export function ignoredLogDirEnvNotice(env: EnvLookup): string | undefined {
+  const set: string[] = [];
+  let example: string | undefined;
+  for (const name of IGNORED_LOG_DIR_ENV_NAMES) {
+    const value = (env(name) ?? "").trim();
+    if (value === "") continue;
+    set.push(`${name}=${JSON.stringify(value)}`);
+    example ??= value;
   }
-  return undefined;
+  if (set.length === 0 || example === undefined) return undefined;
+  return `[log-dir] ${set.join(" and ")} ${
+    set.length === 1 ? "is" : "are"
+  } set but ignored (Issue #1388): on the host only .config.json configures ` +
+    `the worker. To keep that directory, state "${LOG_DIR_CONFIG_KEY}": ${
+      JSON.stringify(example)
+    } in .config.json and unset the variable.`;
 }
 
 /** What {@link legacyLogDirNotice} needs to decide whether to speak. */
@@ -262,11 +274,13 @@ export interface LegacyLogDirNoticeInput {
 /**
  * Tell the operator once that the default moved — and move nothing.
  *
- * Silent on every host that has nothing to say: one that states `log_dir`, set
- * `LOG_DIR` or set `LAUNCH_LOG_DIR` (the location is theirs, not a default),
- * one that never had `$HOME/logs`, and one whose new directory already exists
- * — which is every host from its second launch onwards, because the launcher
- * creates it.
+ * Silent on every host that has nothing to say: one that states `log_dir`
+ * (the location is theirs, not a default), one that never had `$HOME/logs`,
+ * and one whose new directory already exists — which is every host from its
+ * second launch onwards, because the launcher creates it. An exported
+ * `LOG_DIR` no longer silences it (Issue #1388): the variable is ignored, so
+ * the default really does apply, and the notice is how the operator learns
+ * that `log_dir` is now the way to keep the old location.
  *
  * @param input - Home, environment, path style, the pinned directory and a
  *   presence probe
@@ -280,8 +294,6 @@ export function legacyLogDirNotice(
   if (normaliseConfiguredLogDir(input.configured, home, style) !== undefined) {
     return undefined;
   }
-  if (resolveLogDirOverride(env, style) !== undefined) return undefined;
-
   const legacy = legacyLogDir(home, style);
   const resolved = defaultLogDir(home, env, style, platform);
   if (resolved === legacy) return undefined;

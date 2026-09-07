@@ -413,14 +413,16 @@ wait_for_child() {
 # that keeps failing a step is visible without reading stderr. Best-effort: an
 # unwritable log must never fail a launch.
 #
-# Issue #872: `LOG_DIR` was honoured by loop.sh and ignored here, so setting it
-# split the logs across two directories with no warning.
+# Issue #872: a log-directory variable was honoured by loop.sh and ignored
+# here, so setting it split the logs across two directories with no warning.
 # Issue #873: the default moved off `$HOME/logs` and onto the platform's own
 # location, so the resolution is asked for rather than spelled here — one
 # default, in worker/deno/lib/log_dir.ts, shared with loop.sh, run.ps1 and the
-# container mount. The command also prints the one-off legacy-location notice
-# on stderr. Only the last stdout line is taken: warnings a loaded config emits
-# go to stderr, and this stays correct if one ever does not.
+# container mount. Issue #1388: the `.config.json` `log_dir` key is the only
+# way to move it; LAUNCH_LOG_DIR and LOG_DIR are ignored, and the command says
+# so on stderr beside the one-off legacy-location notice. Only the last stdout
+# line is taken: warnings a loaded config emits go to stderr, and this stays
+# correct if one ever does not.
 if ! RUN_CORE_LOG_DIR="$("${DENO_CMD}" run \
   --frozen --lock="${BASE_DIR}/worker/deno/deno.lock" \
   --allow-env --allow-read \
@@ -1533,7 +1535,14 @@ RUN_DRAIN_SECONDS=10
 if command -v tee >/dev/null 2>&1 && command -v mkfifo >/dev/null 2>&1; then
   RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/vibe-run.XXXXXX")"
   RUN_ERR_FIFO="${RUN_LOG}.err"
-  mkfifo "${RUN_ERR_FIFO}"
+  # Owner-only, and at creation (Issue #1299). mktemp gives the log 0600; a
+  # FIFO takes the umask instead, so without -m it lands 0644 on the usual 022
+  # in a world-readable temporary directory. A second reader on this pipe is
+  # destructive as well as passive: bytes another process consumes are bytes
+  # tee never sees, so it would silently truncate the very evidence a refused
+  # start is reported with. -m is POSIX, and closes the window a follow-up
+  # chmod would only narrow.
+  mkfifo -m 600 "${RUN_ERR_FIFO}"
   tee -a "${RUN_LOG}" >&2 <"${RUN_ERR_FIFO}" &
   RUN_TEE_PID=$!
 else

@@ -4,7 +4,7 @@
  * Verifies that the refactored helpers in `milestone_completion.ts`
  * resolve through `IssueCache` (cache hit/miss), and that mutation
  * paths (creating tracking issue, creating summary PR, closing tracking
- * issue) invalidate the matching `issues_all_milestone_${n}` /
+ * issue) invalidate the matching `issues_all_milestone_v2_${n}` /
  * `prs_all_branch_${branch}` keys so a follow-up scan in the same
  * iteration sees fresh state.
  *
@@ -19,6 +19,13 @@ import {
   hasExistingMilestoneTrackingIssue,
   type MilestoneCompletionDeps,
 } from "../lib/milestone_completion.ts";
+import { MILESTONE_TRACKING_MARKER } from "../lib/milestone_tracker_identity.ts";
+
+/**
+ * Issue #1246: the fleet these fixtures state, so the tracking issues they
+ * serve are verifiable as the worker's own rather than merely titled that way.
+ */
+const VERIFICATION = { authorOptions: { fleetAuthors: ["bot"] } };
 
 async function makeTempDir(prefix = "milestone-cache-"): Promise<string> {
   return await Deno.makeTempDir({ prefix });
@@ -124,7 +131,12 @@ Deno.test("milestone_completion cache - hasExistingMilestoneTrackingIssue serves
       ) {
         issueListCalls++;
         return JSON.stringify([
-          { number: 200, title: "Merge milestone 'v1.0' to main" },
+          {
+            number: 200,
+            title: "Merge milestone 'v1.0' to main",
+            body: MILESTONE_TRACKING_MARKER,
+            author: { login: "bot" },
+          },
         ]);
       }
       return "[]";
@@ -137,6 +149,7 @@ Deno.test("milestone_completion cache - hasExistingMilestoneTrackingIssue serves
       "main",
       ghFn,
       cache,
+      VERIFICATION,
     );
     const second = await hasExistingMilestoneTrackingIssue(
       "owner/repo",
@@ -145,6 +158,7 @@ Deno.test("milestone_completion cache - hasExistingMilestoneTrackingIssue serves
       "main",
       ghFn,
       cache,
+      VERIFICATION,
     );
 
     assertEquals(first.ok, true);
@@ -154,10 +168,10 @@ Deno.test("milestone_completion cache - hasExistingMilestoneTrackingIssue serves
     assertEquals(
       issueListCalls,
       1,
-      "second call must hit issues_all_milestone_1 cache",
+      "second call must hit issues_all_milestone_v2_1 cache",
     );
 
-    const cached = await cache.read("owner/repo", "issues_all_milestone_1");
+    const cached = await cache.read("owner/repo", "issues_all_milestone_v2_1");
     assertEquals(Array.isArray(cached), true);
   } finally {
     await Deno.remove(cacheDir, { recursive: true });
@@ -174,13 +188,23 @@ Deno.test("milestone_completion cache - hasExistingMilestoneTrackingIssue partit
       if (key.includes("issue list") && key.includes("--milestone 1")) {
         issueListCalls++;
         return JSON.stringify([
-          { number: 200, title: "Merge milestone 'v1.0' to main" },
+          {
+            number: 200,
+            title: "Merge milestone 'v1.0' to main",
+            body: MILESTONE_TRACKING_MARKER,
+            author: { login: "bot" },
+          },
         ]);
       }
       if (key.includes("issue list") && key.includes("--milestone 2")) {
         issueListCalls++;
         return JSON.stringify([
-          { number: 201, title: "Merge milestone 'v2.0' to main" },
+          {
+            number: 201,
+            title: "Merge milestone 'v2.0' to main",
+            body: MILESTONE_TRACKING_MARKER,
+            author: { login: "bot" },
+          },
         ]);
       }
       return "[]";
@@ -193,6 +217,7 @@ Deno.test("milestone_completion cache - hasExistingMilestoneTrackingIssue partit
       "main",
       ghFn,
       cache,
+      VERIFICATION,
     );
     await hasExistingMilestoneTrackingIssue(
       "owner/repo",
@@ -201,6 +226,7 @@ Deno.test("milestone_completion cache - hasExistingMilestoneTrackingIssue partit
       "main",
       ghFn,
       cache,
+      VERIFICATION,
     );
     // Each (repo, milestoneNumber) pair gets its own cache slot.
     assertEquals(
@@ -217,6 +243,7 @@ Deno.test("milestone_completion cache - hasExistingMilestoneTrackingIssue partit
       "main",
       ghFn,
       cache,
+      VERIFICATION,
     );
     await hasExistingMilestoneTrackingIssue(
       "owner/repo",
@@ -225,6 +252,7 @@ Deno.test("milestone_completion cache - hasExistingMilestoneTrackingIssue partit
       "main",
       ghFn,
       cache,
+      VERIFICATION,
     );
     assertEquals(
       issueListCalls,
@@ -318,7 +346,7 @@ Deno.test("milestone_completion cache - tracking issue creation invalidates issu
     const cache = new IssueCache(cacheDir);
 
     // Pre-populate the milestone-keyed cache so we can verify it gets dropped.
-    await cache.write("owner/repo", "issues_all_milestone_1", []);
+    await cache.write("owner/repo", "issues_all_milestone_v2_1", []);
 
     const ghFn = buildOrchestrationGhStub({});
 
@@ -327,13 +355,14 @@ Deno.test("milestone_completion cache - tracking issue creation invalidates issu
       ghCommandFn: ghFn,
       log: () => {},
       cache,
+      authorOptions: { fleetAuthors: ["bot"] },
     };
 
     const result = await checkAndHandleMilestoneCompletions(deps);
     assertEquals(result.ok, true);
 
     // After tracking issue create + close, the cache must be invalidated.
-    const cached = await cache.read("owner/repo", "issues_all_milestone_1");
+    const cached = await cache.read("owner/repo", "issues_all_milestone_v2_1");
     assertEquals(
       cached,
       null,
@@ -362,6 +391,7 @@ Deno.test("milestone_completion cache - summary PR creation invalidates prs_all_
       ghCommandFn: ghFn,
       log: () => {},
       cache,
+      authorOptions: { fleetAuthors: ["bot"] },
     };
 
     const result = await checkAndHandleMilestoneCompletions(deps);
@@ -389,8 +419,13 @@ Deno.test("milestone_completion cache - existing tracking issue served via cache
     const cache = new IssueCache(cacheDir);
 
     // Pre-populate the cache with the existing tracking issue.
-    await cache.write("owner/repo", "issues_all_milestone_1", [
-      { number: 200, title: "Merge milestone 'v1.0' to main" },
+    await cache.write("owner/repo", "issues_all_milestone_v2_1", [
+      {
+        number: 200,
+        title: "Merge milestone 'v1.0' to main",
+        body: MILESTONE_TRACKING_MARKER,
+        author: "bot",
+      },
     ]);
 
     let issueListCalls = 0;
@@ -412,6 +447,7 @@ Deno.test("milestone_completion cache - existing tracking issue served via cache
       ghCommandFn: ghFn,
       log: () => {},
       cache,
+      authorOptions: { fleetAuthors: ["bot"] },
     };
 
     const result = await checkAndHandleMilestoneCompletions(deps);

@@ -34,7 +34,14 @@ const MILESTONE: RulesetDetail = {
   conditions: { ref_name: { include: ["refs/heads/milestone/**"] } },
   rules: [{
     type: "required_status_checks",
-    parameters: { required_status_checks: [{ context: "semgrep" }] },
+    parameters: {
+      required_status_checks: [{ context: "semgrep" }],
+      // A correct milestone ruleset is exempt on create (Issue #3912
+      // follow-up): the checks gate the merge, but a branch that does not
+      // exist yet has no check runs, so enforcing them on creation makes the
+      // milestone branch impossible to open.
+      do_not_enforce_on_create: true,
+    },
   }],
   bypass_actors: [
     { actor_type: "RepositoryRole", actor_id: 3, bypass_mode: "always" },

@@ -20,16 +20,31 @@
  *   that is absent, empty or unwritable is rebuilt from it — never from the
  *   broken copy, which is what the Issue #554 fallback tried and could not
  *   do;
- * - the staging targets are private-ish and ordered: the durable state root
- *   first, then scratch, then `TMPDIR`, so the copy follows the entrypoint's
- *   own policy;
+ * - the staging targets are private and ordered: the durable state root
+ *   first, then scratch, then a per-account directory under `TMPDIR`, so the
+ *   copy follows the entrypoint's own policy;
  * - re-staging is bounded (see {@link MAX_RESTAGE_ATTEMPTS}) so a genuinely
- *   revoked token fails loudly instead of spinning; and
- * - the copy is made symlink-free and worker-private from the first byte
- *   (Issue #1238): the directory is tightened to 0700 *before* the token is
- *   written, and the write itself is an exclusive create at 0600 renamed over
- *   the target, so a link pre-positioned in the agents' scratch space is
- *   replaced rather than followed.
+ *   revoked token fails loudly instead of spinning.
+ *
+ * On a **host** run neither `VIBE_STATE_DIR` nor `VIBE_SCRATCH_DIR` is set —
+ * the container entrypoint exports them, `loop.sh` does not — so `TMPDIR` is
+ * the only candidate, and `/tmp` is shared with every other local account
+ * (Issue #1282). The staging therefore binds the copy to this account before
+ * the token touches the disk:
+ *
+ * - the directory is per-account ({@link sharedTmpStateDir}) and created
+ *   non-recursively at {@link PRIVATE_DIR_MODE}, so a pre-existing path is
+ *   inspected rather than adopted;
+ * - a directory that is not ours — a symlink, a file, another uid's, or one
+ *   with group/other bits — is **refused loudly** for that candidate instead
+ *   of being written into and chmod'd afterwards;
+ * - `hosts.yml` is unlinked and then created exclusively at
+ *   {@link STAGED_HOSTS_MODE}, so a planted symlink is dropped rather than
+ *   followed and there is no world-readable window between the write and a
+ *   later `chmod`;
+ * - a directory this process created is removed when the run ends
+ *   ({@link removeStagedGhConfigDirs}), so the credential does not outlive
+ *   the worker.
  *
  * Australian English spelling throughout (behaviour, authorised).
  */
@@ -41,8 +56,11 @@ import {
   SCRATCH_DIR_ENV,
 } from "./credential_preflight.ts";
 import type { EnvLookup } from "./env_lookup.ts";
-import { atomicWriteSync } from "./file_utils.ts";
-import { sharedTmpStateDir } from "./private_cache_dir.ts";
+import {
+  PRIVATE_DIR_MODE,
+  resolveOwnUid,
+  sharedTmpStateDir,
+} from "./private_cache_dir.ts";
 
 /** Environment variable naming the container's durable state root. */
 export const STATE_DIR_ENV = "VIBE_STATE_DIR";
@@ -50,11 +68,8 @@ export const STATE_DIR_ENV = "VIBE_STATE_DIR";
 /** Leaf directory the worker stages its own copy into. */
 export const STAGED_GH_DIR_NAME = "gh-config";
 
-/** Mode the staged `hosts.yml` is created with — never the umask's (#1238). */
-export const CREDENTIAL_FILE_MODE = 0o600;
-
-/** Mode the staging directory is tightened to, before the token lands (#1238). */
-export const CREDENTIAL_DIR_MODE = 0o700;
+/** Mode the staged `hosts.yml` is created with: owner read/write only. */
+export const STAGED_HOSTS_MODE = 0o600;
 
 /**
  * Re-stagings one process will perform.
@@ -65,17 +80,33 @@ export const CREDENTIAL_DIR_MODE = 0o700;
  */
 export const MAX_RESTAGE_ATTEMPTS = 3;
 
+/** What an `lstat` of a staging path shows; a symlink is never followed. */
+export interface StagedPathStat {
+  /** True only for a real directory — a symlink to one is not a directory. */
+  directory: boolean;
+  /** Owning uid, or null when the platform does not report one. */
+  uid: number | null;
+  /** Permission bits (`mode & 0o7777`), or null when unavailable. */
+  mode: number | null;
+}
+
 /** Filesystem seams, injected so the tests never touch a real credential. */
 export interface GhCredentialStageIo {
   readFile: (path: string) => Uint8Array | null;
   /**
-   * Write a credential file, never through a symlink already at the path and
-   * never at the process umask's mode (Issue #1238). Throws on failure — a
-   * credential that did not land is not a staged credential.
+   * Create `path` exclusively with `mode` applied at creation. Throws when
+   * anything already occupies the path — never truncates, never follows a
+   * symlink into somewhere else.
    */
-  writeFile: (path: string, data: Uint8Array) => void;
-  mkdir: (path: string) => void;
-  chmod: (path: string, mode: number) => void;
+  writePrivateFile: (path: string, data: Uint8Array, mode: number) => void;
+  /** Create `path` non-recursively with `mode`; throws when it exists. */
+  makePrivateDir: (path: string, mode: number) => void;
+  /** `lstat` the path: null when absent, symlinks reported as themselves. */
+  lstat: (path: string) => StagedPathStat | null;
+  /** Remove a path, tolerating an absent one; never follows a symlink. */
+  remove: (path: string, recursive?: boolean) => void;
+  /** uid of the account running the worker, or null when unknown. */
+  ownerUid: () => number | null;
   isWritableDir: (path: string) => boolean;
 }
 
@@ -98,38 +129,63 @@ const productionIo: GhCredentialStageIo = {
       return null;
     }
   },
-  writeFile(path, data) {
-    // Issue #1238: a bare Deno.writeFileSync is O_CREAT|O_TRUNC at the umask's
-    // mode and follows a symlink, so a token could be written straight through
-    // a link a co-located account had pre-positioned at hosts.yml — and sat at
-    // 0644 until the chmod that followed. atomicWriteSync creates a
-    // kernel-random sibling with createNew (O_EXCL) at 0600 and renames it over
-    // the target: rename replaces a planted link rather than following it, and
-    // the credential is never readable at any other mode.
-    const result = atomicWriteSync({
-      targetFile: path,
-      content: data,
-      mode: CREDENTIAL_FILE_MODE,
-    });
-    if (!result.ok) throw result.error;
+  writePrivateFile(path, data, mode) {
+    // `createNew` plus `mode`: the credential is never on disk at the umask
+    // default, and an exclusive create cannot be redirected by a symlink
+    // planted between the unlink and this call (Issue #1282).
+    Deno.writeFileSync(path, data, { mode, createNew: true });
   },
-  mkdir(path) {
-    Deno.mkdirSync(path, { recursive: true, mode: CREDENTIAL_DIR_MODE });
+  makePrivateDir(path, mode) {
+    // The leaf is created non-recursively with `mode` applied at creation, so
+    // a directory that already exists is reported (EEXIST) rather than
+    // silently adopted — including one that appeared since the `lstat`.
+    // Missing parents are still created: a staging root the entrypoint chose
+    // always exists, but the leaf is the only directory the credential lands
+    // in and the only one whose mode matters.
+    const parent = path.slice(0, path.lastIndexOf("/"));
+    if (parent.length > 0) Deno.mkdirSync(parent, { recursive: true });
+    Deno.mkdirSync(path, { recursive: false, mode });
   },
-  chmod(path, mode) {
-    Deno.chmodSync(path, mode);
+  lstat(path) {
+    try {
+      const info = Deno.lstatSync(path);
+      return {
+        directory: info.isDirectory,
+        uid: info.uid,
+        mode: info.mode === null ? null : info.mode & 0o7777,
+      };
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return null;
+      throw error;
+    }
+  },
+  remove(path, recursive = false) {
+    try {
+      Deno.removeSync(path, { recursive });
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return;
+      throw error;
+    }
+  },
+  ownerUid() {
+    // Stats `$HOME` rather than calling `Deno.uid()`, which needs an
+    // `--allow-sys=uid` grant the worker does not hold.
+    return resolveOwnUid();
   },
   isWritableDir(path) {
     // A fixed probe name is an arbitrary-truncation primitive on every path
-    // this probes (Issue #1238): a link planted at it was followed and its
-    // target truncated. A kernel-random name cannot be pre-positioned, and
-    // createNew refuses anything already at the name rather than opening it.
+    // this probes (Issue #1238): `writeTextFileSync` is O_CREAT|O_TRUNC and
+    // follows symlinks, so a link planted at the predictable name was
+    // followed and its target truncated — and the probe then removed the
+    // link, leaving the damage with nothing to show for it. A kernel-random
+    // name cannot be pre-positioned, and `createNew` refuses anything already
+    // at the name rather than opening it.
     const probe = `${path}/.vibe-write-probe.${crypto.randomUUID()}`;
     try {
       Deno.openSync(probe, {
         write: true,
         createNew: true,
-        mode: CREDENTIAL_FILE_MODE,
+        mode: STAGED_HOSTS_MODE,
       }).close();
       Deno.removeSync(probe);
       return true;
@@ -181,10 +237,10 @@ export function isGhConfigDirUsable(
  * the agents churn. Scratch and `TMPDIR` follow so a host without a state
  * root still authenticates.
  *
- * Issue #1242: the temporary-root candidate is composed by
- * {@link sharedTmpStateDir}, so the staged `gh` credentials land in a
- * per-account directory rather than at one path every account on the host
- * could create first.
+ * The `TMPDIR` candidate is per-account ({@link sharedTmpStateDir}, Issue
+ * #1215): `/tmp/vibe-gh-config` was the same path for every local account on
+ * a shared host, so whoever created it first owned what the worker staged
+ * into it (Issue #1282).
  */
 export function stagingCandidates(
   env: EnvLookup = defaultEnv,
@@ -196,6 +252,131 @@ export function stagingCandidates(
     scratch ? `${scratch}/${STAGED_GH_DIR_NAME}` : undefined,
     sharedTmpStateDir(`vibe-${STAGED_GH_DIR_NAME}`, env),
   ].filter((dir): dir is string => dir !== undefined);
+}
+
+/**
+ * Why a pre-existing staging path is not the worker's own, or null when it
+ * is (Issue #1282).
+ *
+ * Exported so the refusal is testable against literal stats: a symlink or a
+ * file where the directory should be, another account's directory, or one
+ * any local account can write into are all paths the credential must not be
+ * copied to.
+ *
+ * @param stat - What `lstat` reported for the candidate.
+ * @param ownUid - This account's uid, or null when it cannot be determined.
+ * @returns The refusal reason, or null when the path may be staged into.
+ */
+export function stagingDirRefusal(
+  stat: StagedPathStat,
+  ownUid: number | null,
+): string | null {
+  if (!stat.directory) {
+    return "the path is not a directory (a symlink or file occupies it)";
+  }
+  if (ownUid !== null && stat.uid !== null && stat.uid !== ownUid) {
+    return `the directory is owned by uid ${stat.uid}, not this account ` +
+      `(uid ${ownUid})`;
+  }
+  if (stat.mode !== null && (stat.mode & 0o077) !== 0) {
+    const octal = stat.mode.toString(8).padStart(4, "0");
+    return `the directory is group/other accessible (mode ${octal}, ` +
+      "expected 0700)";
+  }
+  return null;
+}
+
+/**
+ * Directories this process created, removed when the run ends.
+ *
+ * Only what this process created: a directory the entrypoint or a sibling
+ * worker staged is still in use and is not ours to delete.
+ */
+const createdStagingDirs = new Set<string>();
+
+let runEndCleanupRegistered = false;
+
+/** Options for {@link removeStagedGhConfigDirs}. */
+export interface RemoveStagedOptions {
+  io?: GhCredentialStageIo;
+  warn?: (message: string) => void;
+}
+
+/**
+ * Remove the staging directories this process created (Issue #1282).
+ *
+ * Registered on `unload` by the first successful staging, so the credential
+ * does not outlive the run on a shared host; exported so a caller — or a
+ * test — can trigger the removal itself.
+ *
+ * @returns The directories actually removed.
+ */
+export function removeStagedGhConfigDirs(
+  options: RemoveStagedOptions = {},
+): string[] {
+  const io = options.io ?? productionIo;
+  const warn = options.warn ?? ((message: string) => console.error(message));
+  const removed: string[] = [];
+  for (const dir of createdStagingDirs) {
+    try {
+      io.remove(dir, true);
+      removed.push(dir);
+    } catch (error) {
+      warn(
+        `[SECURITY] could not remove the staged gh credential at ${dir}: ` +
+          describeError(error),
+      );
+    }
+  }
+  createdStagingDirs.clear();
+  return removed;
+}
+
+/** Note a directory this process created, and arm the run-end removal. */
+function rememberCreatedStagingDir(dir: string): void {
+  createdStagingDirs.add(dir);
+  if (runEndCleanupRegistered) return;
+  runEndCleanupRegistered = true;
+  globalThis.addEventListener("unload", () => {
+    removeStagedGhConfigDirs();
+  });
+}
+
+/** The message of a thrown value, whatever it turned out to be. */
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Make `candidate` a directory this account owns, or throw saying why not.
+ *
+ * @returns True when this call created it — and so owns removing it.
+ */
+function prepareStagingDir(
+  candidate: string,
+  io: GhCredentialStageIo,
+): boolean {
+  const existing = io.lstat(candidate);
+  if (existing === null) {
+    io.makePrivateDir(candidate, PRIVATE_DIR_MODE);
+    return true;
+  }
+  const refusal = stagingDirRefusal(existing, io.ownerUid());
+  if (refusal !== null) throw new Error(refusal);
+  return false;
+}
+
+/** Write `hosts.yml` into a prepared staging directory, 0600 from birth. */
+function writeStagedCredential(
+  candidate: string,
+  source: Uint8Array,
+  io: GhCredentialStageIo,
+): void {
+  const hosts = `${candidate}/${GH_HOSTS_FILE}`;
+  // Unlink first so a planted symlink is dropped rather than followed; the
+  // exclusive create then fails loudly if anything reappears in between.
+  io.remove(hosts);
+  io.writePrivateFile(hosts, source, STAGED_HOSTS_MODE);
 }
 
 /**
@@ -226,33 +407,28 @@ export function restageGhConfigDir(
   }
 
   for (const candidate of stagingCandidates(env)) {
+    let created = false;
     try {
-      io.mkdir(candidate);
-      // Tighten the directory BEFORE the token lands in it (Issue #1238).
-      // mkdir accepts an already-existing directory of any mode or ownership
-      // silently, so a chmod afterwards left the credential readable to a
-      // co-located account for the width of the write. Doing it first also
-      // rejects a candidate another uid owns — chmod is the owner's alone, so
-      // a directory (or a symlinked one) planted by the `agent` account fails
-      // here, loudly, with nothing written.
-      io.chmod(candidate, CREDENTIAL_DIR_MODE);
-      io.writeFile(`${candidate}/${GH_HOSTS_FILE}`, source);
-      io.chmod(`${candidate}/${GH_HOSTS_FILE}`, CREDENTIAL_FILE_MODE);
-      if (!isGhConfigDirUsable(candidate, io)) continue;
+      created = prepareStagingDir(candidate, io);
+      writeStagedCredential(candidate, source, io);
+    } catch (error) {
+      // Loud, and per candidate (Issue #1282): a refusal here is either a
+      // directory that is not this account's or a genuinely unusable
+      // candidate, and the old silent catch hid both — after the token had
+      // already been written.
       warn(
-        `[SECURITY] re-staged the gh credential from the read-only mount to ` +
-          `${candidate} (Issue #564)`,
+        `[SECURITY] refusing to stage the gh credential at ${candidate}: ` +
+          describeError(error),
       );
-      return candidate;
-    } catch (err) {
-      // Try the next candidate — but never silently: a refused symlink or a
-      // directory owned by another account is exactly what an operator has to
-      // hear about (Issue #1238).
-      warn(
-        `[SECURITY] cannot stage the gh credential into ${candidate}: ` +
-          `${(err as Error).message}`,
-      );
+      continue;
     }
+    if (created) rememberCreatedStagingDir(candidate);
+    if (!isGhConfigDirUsable(candidate, io)) continue;
+    warn(
+      `[SECURITY] re-staged the gh credential from the read-only mount to ` +
+        `${candidate} (Issue #564)`,
+    );
+    return candidate;
   }
 
   warn(

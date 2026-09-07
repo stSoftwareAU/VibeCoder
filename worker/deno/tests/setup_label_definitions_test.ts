@@ -12,7 +12,9 @@ import {
   getLabelByName,
   getLabelCount,
   getLabelsByCategory,
+  isProtectedStockLabel,
   LABEL_DEFINITIONS,
+  PROTECTED_STOCK_LABELS,
   repoHasUi,
 } from "../setup/label_definitions.ts";
 
@@ -179,7 +181,6 @@ Deno.test("LABEL_DEFINITIONS - contains needs-screenshot UI label", () => {
 
 Deno.test("DEPRECATED_LABELS - contains expected deprecated labels", () => {
   assertEquals(DEPRECATED_LABELS.includes("best-model"), true);
-  assertEquals(DEPRECATED_LABELS.includes("good first issue"), true);
   assertEquals(DEPRECATED_LABELS.includes("skip-clarification"), true);
   // Issue #2031: needs-clarification consolidated onto needs-human.
   assertEquals(DEPRECATED_LABELS.includes("needs-clarification"), true);
@@ -187,11 +188,32 @@ Deno.test("DEPRECATED_LABELS - contains expected deprecated labels", () => {
   assertEquals(DEPRECATED_LABELS.includes("answered"), true);
   // Issue #2022 retired the discovery/watch labels.
   assertEquals(DEPRECATED_LABELS.includes("claude"), true);
-  assertEquals(DEPRECATED_LABELS.includes("help wanted"), true);
   // Issue #2029: refined retired — refinement signals completion via needs-human.
   assertEquals(DEPRECATED_LABELS.includes("refined"), true);
   // Issue #2077: idle-task-pending retired — approval gate added no value.
   assertEquals(DEPRECATED_LABELS.includes("idle-task-pending"), true);
+});
+
+Deno.test(
+  "DEPRECATED_LABELS - excludes GitHub's stock labels (Issue #1295)",
+  () => {
+    // `good first issue` and `help wanted` ship with every GitHub repo and
+    // are used by human maintainers for their own triage. The fleet never
+    // created them, so the sync must never delete them — deletion is
+    // irreversible and takes the label's issue associations with it.
+    for (const stock of PROTECTED_STOCK_LABELS) {
+      assertEquals(DEPRECATED_LABELS.includes(stock), false);
+    }
+    assertEquals(PROTECTED_STOCK_LABELS.includes("good first issue"), true);
+    assertEquals(PROTECTED_STOCK_LABELS.includes("help wanted"), true);
+  },
+);
+
+Deno.test("isProtectedStockLabel - matches stock labels case-insensitively", () => {
+  assertEquals(isProtectedStockLabel("Good First Issue"), true);
+  assertEquals(isProtectedStockLabel("  help wanted "), true);
+  assertEquals(isProtectedStockLabel("best-model"), false);
+  assertEquals(isProtectedStockLabel(""), false);
 });
 
 Deno.test(

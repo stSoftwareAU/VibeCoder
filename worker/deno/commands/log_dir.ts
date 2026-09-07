@@ -11,16 +11,21 @@
  * Usage:
  *   deno run --allow-env --allow-read mod.ts log-dir [--config .config.json]
  *
- * The `.config.json` `log_dir` key outranks `LAUNCH_LOG_DIR` and `LOG_DIR`
- * (Issue #873), and it is read from the file here rather than through the
- * loaded `WorkerConfig`: `mod.ts` falls back to the default configuration for
- * a config-optional command, which would turn a broken config file into a
- * silent platform default — the same reason `run-mode` re-reads the file.
+ * The `.config.json` `log_dir` key is the only way to move the directory
+ * (Issues #873, #1388): on the host, `.config.json` is the only configuration,
+ * and the `LAUNCH_LOG_DIR` / `LOG_DIR` variables that used to sit between the
+ * key and the default are ignored — loudly, by name, on stderr, so a host that
+ * still exports one learns which key replaces it. The key is read from the
+ * file here rather than through the loaded `WorkerConfig`: `mod.ts` falls back
+ * to the default configuration for a config-optional command, which would turn
+ * a broken config file into a silent platform default — the same reason
+ * `run-mode` re-reads the file.
  *
  * Stdout carries exactly the directory and nothing else, so a launcher can
- * capture it with `LOG_DIR=$(… mod.ts log-dir)`. The legacy-location notice
- * goes to **stderr**, where it reaches the operator without being captured as
- * part of the path — and the command returns **no** `data`, because `mod.ts`
+ * capture it with `dir=$(… mod.ts log-dir)`. The legacy-location notice and
+ * the ignored-variable notice go to **stderr**, where they reach the operator
+ * without being captured as part of the path — and the command returns **no**
+ * `data`, because `mod.ts`
  * appends a result's `data` to stdout as JSON under `OUTPUT_JSON=true`
  * (mod.ts `outputResult`). A launcher capturing this path would then read `}`
  * on a host that exports that variable, which is precisely the silently-wrong
@@ -35,6 +40,7 @@ import { pathStyleFor } from "../lib/host_path_style.ts";
 import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 import {
   hostLogDirPlatform,
+  ignoredLogDirEnvNotice,
   legacyLogDirNotice,
   type LogDirPlatform,
   readConfiguredLogDir,
@@ -47,6 +53,11 @@ export interface LogDirResult {
   logDir: string;
   /** The legacy-default notice, when this host has one to hear. */
   notice?: string;
+  /**
+   * The line naming a `LAUNCH_LOG_DIR` / `LOG_DIR` still exported on this
+   * host, which is ignored (Issue #1388); absent when neither is set.
+   */
+  ignoredEnvironment?: string;
   /** The configuration file consulted, whether or not it existed. */
   configFile: string;
 }
@@ -112,16 +123,21 @@ export async function resolveLogDirForCommand(
     exists,
     configured,
   });
-  return notice === undefined
-    ? { logDir, configFile }
-    : { logDir, notice, configFile };
+  const ignoredEnvironment = ignoredLogDirEnvNotice(env);
+  const result: LogDirResult = { logDir, configFile };
+  if (notice !== undefined) result.notice = notice;
+  if (ignoredEnvironment !== undefined) {
+    result.ignoredEnvironment = ignoredEnvironment;
+  }
+  return result;
 }
 
 export const logDirCommand: Command = {
   name: "log-dir",
   description:
     'Print the host log directory — the .config.json "log_dir" key, else ' +
-    "LAUNCH_LOG_DIR or LOG_DIR, else the platform default (Issues #872, #873)",
+    "the platform default; LAUNCH_LOG_DIR and LOG_DIR are ignored " +
+    "(Issues #872, #873, #1388)",
   /**
    * @param args - `--config` names the configuration file to read `log_dir`
    *   from; omitted, the host's own is used.
@@ -139,7 +155,8 @@ export const logDirCommand: Command = {
         ? { configFile: args["config"] as string }
         : {},
     );
-    // The notice belongs on stderr: stdout is the captured path.
+    // Both notices belong on stderr: stdout is the captured path.
+    if (resolved.ignoredEnvironment) console.error(resolved.ignoredEnvironment);
     if (resolved.notice) console.error(resolved.notice);
     // No `data`: see the module comment — it would be appended to stdout as
     // JSON under OUTPUT_JSON=true and captured as part of the path.

@@ -580,6 +580,36 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
       "no launcher sets it — a host whose network blocks the default literal " +
       "points the probe elsewhere",
   },
+  VIBE_CONTAINMENT_IMAGE: {
+    role: "switch",
+    note:
+      "the image container_containment_test.ts probes; allowlisted for the " +
+      "gate's test stage (Issue #1281)",
+  },
+  VIBE_CONTAINMENT_REQUIRED: {
+    role: "switch",
+    note:
+      "turns the containment suite's skip into a failure; allowlisted for " +
+      "the gate's test stage (Issue #1281)",
+  },
+  VIBE_GHOSTCOMMIT_LIVE_VISION: {
+    role: "switch",
+    note:
+      "opts the GhostCommit image-injection suite into a live vision run; " +
+      "allowlisted for the gate's test stage (Issue #1281)",
+  },
+  VIBE_GHOSTCOMMIT_VISION_DRIVER: {
+    role: "switch",
+    note:
+      "selects that suite's vision driver; allowlisted for the gate's test " +
+      "stage (Issue #1281)",
+  },
+  VIBE_PWSH: {
+    role: "switch",
+    note:
+      "names the pwsh binary the PowerShell suites resolve; allowlisted for " +
+      "the gate's test stage (Issue #1281)",
+  },
   VIBE_TABLETOP_CANARY: {
     role: "switch",
     note: "tabletop security exercise fixture",
@@ -658,6 +688,14 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
   VIBE_GH_GUARD_REFUSE: {
     role: "marker",
     note: "audit-line marker written by the gh guard shim",
+  },
+  VIBE_GIT_GUARD_ALLOW: {
+    role: "marker",
+    note: "verdict marker written by the git guard shim (Issue #1284)",
+  },
+  VIBE_GIT_GUARD_REFUSE: {
+    role: "marker",
+    note: "verdict marker written by the git guard shim (Issue #1284)",
   },
   VIBE_HOOK_MARKER: {
     role: "marker",

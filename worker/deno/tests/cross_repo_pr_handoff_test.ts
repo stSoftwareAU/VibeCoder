@@ -57,6 +57,15 @@ function repoMeta(
   });
 }
 
+/** A Deno manifest whose import map declares `specs` (raw `contents` read). */
+function manifestJson(specs: string[]): string {
+  const imports: Record<string, string> = {};
+  for (const spec of specs) {
+    imports[spec.replace(/^(?:jsr|npm):/, "").replace(/@[^@/]*$/, "")] = spec;
+  }
+  return JSON.stringify({ imports });
+}
+
 /**
  * A scripted `gh` runner. Each entry is matched against the joined argv by
  * substring, first match wins; unmatched commands fail loudly so a missing
@@ -77,11 +86,23 @@ function scriptedRunner(
   return { runner, calls };
 }
 
+/**
+ * The consuming repo's manifest, declaring the dependency repo — the
+ * authorisation every legitimate declaration rests on (Issue #1382).
+ */
+function depManifestScript(): Array<[string, CommandOutput]> {
+  return [[
+    `gh api repos/${CONSUMING_REPO}/contents/deno.json`,
+    ok(manifestJson([`jsr:@stsoftware/${DEP_REPO.split("/")[1]}`])),
+  ]];
+}
+
 /** The default happy-path script: reachable repo, branch pushed, no PR yet. */
 function happyScript(
   prUrl = "https://github.com/stSoftwareAU/NEAT-AI-Discovery/pull/7",
 ): Array<[string, CommandOutput]> {
   return [
+    ...depManifestScript(),
     [`gh api repos/${DEP_REPO}/branches/${BRANCH}`, ok('{"name":"branch"}')],
     [`gh api repos/${DEP_REPO}`, ok(repoMeta())],
     ["gh pr list", ok("")],
@@ -246,8 +267,33 @@ Deno.test("openDeclaredCrossRepoPr - refuses a repo outside the internal owner w
   assertEquals(calls.length, 0);
 });
 
+Deno.test("openDeclaredCrossRepoPr - refuses an internal repo the consuming repo does not depend on", async () => {
+  // The declaration is parsed out of the agent's own generated text, so the
+  // target repo is untrusted input. Internal ownership alone is not authority:
+  // a sibling tenant repo under the same owner is still off-limits unless the
+  // consuming repo actually declares it as a dependency.
+  const { runner, calls } = scriptedRunner([
+    [
+      `gh api repos/${CONSUMING_REPO}/contents/deno.json`,
+      ok(manifestJson(["jsr:@stsoftware/private-repo-14"])),
+    ],
+    ...happyScript(),
+  ]);
+  const result = await openDeclaredCrossRepoPr({
+    declaration: { repo: DEP_REPO, branch: BRANCH, title: "Fix" },
+    consumingRepo: CONSUMING_REPO,
+    issueNumber: 4206,
+    runner,
+  });
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  assertStringIncludes(result.error.message, "dependency");
+  assertEquals(calls.some((c) => c.includes("create")), false);
+});
+
 Deno.test("openDeclaredCrossRepoPr - refuses an unreachable dependency repo", async () => {
   const { runner, calls } = scriptedRunner([
+    ...depManifestScript(),
     [`gh api repos/${DEP_REPO}`, fail("gh: Not Found (HTTP 404)")],
   ]);
   const result = await openDeclaredCrossRepoPr({
@@ -262,6 +308,7 @@ Deno.test("openDeclaredCrossRepoPr - refuses an unreachable dependency repo", as
 
 Deno.test("openDeclaredCrossRepoPr - refuses when the worker cannot push to the dependency repo", async () => {
   const { runner, calls } = scriptedRunner([
+    ...depManifestScript(),
     [`gh api repos/${DEP_REPO}`, ok(repoMeta({ push: false }))],
   ]);
   const result = await openDeclaredCrossRepoPr({
@@ -276,6 +323,7 @@ Deno.test("openDeclaredCrossRepoPr - refuses when the worker cannot push to the 
 
 Deno.test("openDeclaredCrossRepoPr - refuses a branch that was never pushed", async () => {
   const { runner, calls } = scriptedRunner([
+    ...depManifestScript(),
     [
       `gh api repos/${DEP_REPO}/branches/${BRANCH}`,
       fail("gh: Branch not found (HTTP 404)"),
@@ -296,6 +344,7 @@ Deno.test("openDeclaredCrossRepoPr - refuses a branch that was never pushed", as
 
 Deno.test("openDeclaredCrossRepoPr - refuses when the head branch is the default branch", async () => {
   const { runner, calls } = scriptedRunner([
+    ...depManifestScript(),
     [`gh api repos/${DEP_REPO}/branches/Develop`, ok('{"name":"Develop"}')],
     [`gh api repos/${DEP_REPO}`, ok(repoMeta())],
   ]);
@@ -366,6 +415,7 @@ Deno.test("openDeclaredCrossRepoPr - defaults the base to the dependency's defau
 Deno.test("openDeclaredCrossRepoPr - an existing open PR is reused, never duplicated", async () => {
   const existing = "https://github.com/stSoftwareAU/NEAT-AI-Discovery/pull/3";
   const { runner, calls } = scriptedRunner([
+    ...depManifestScript(),
     [`gh api repos/${DEP_REPO}/branches/${BRANCH}`, ok('{"name":"b"}')],
     [`gh api repos/${DEP_REPO}`, ok(repoMeta())],
     ["gh pr list", ok(`${existing}\n`)],
@@ -385,6 +435,7 @@ Deno.test("openDeclaredCrossRepoPr - an existing open PR is reused, never duplic
 
 Deno.test("openDeclaredCrossRepoPr - a failed gh pr create fails loud with the stderr", async () => {
   const { runner } = scriptedRunner([
+    ...depManifestScript(),
     [`gh api repos/${DEP_REPO}/branches/${BRANCH}`, ok('{"name":"b"}')],
     [`gh api repos/${DEP_REPO}`, ok(repoMeta())],
     ["gh pr list", ok("")],
@@ -434,6 +485,16 @@ Deno.test({
           code: 0,
           success: true,
           stdout: "",
+          stderr: "",
+        });
+      }
+      if (joined.includes("/contents/deno.json")) {
+        return Promise.resolve({
+          code: 0,
+          success: true,
+          stdout: manifestJson([
+            `jsr:@stsoftware/${DEP_REPO.split("/")[1]}`,
+          ]),
           stderr: "",
         });
       }

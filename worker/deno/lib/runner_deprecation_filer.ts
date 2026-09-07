@@ -20,6 +20,7 @@ import type {
   GhCommandFn,
 } from "./runner_deprecation_scanner.ts";
 import { EOL_RUNTIMES } from "./github_actions_catalogue.ts";
+import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 
 // ---------------------------------------------------------------------------
 // Severity classifier
@@ -217,13 +218,11 @@ export async function fileRunnerDeprecationIssue(
     title,
     "--body",
     body,
-    "--label",
-    scanLabel,
+    ...guardedLabelArgs(
+      [scanLabel, ...extraLabels, `severity:${severity}`],
+      "worker/deno/lib/runner_deprecation_filer.ts",
+    ),
   ];
-  for (const extra of extraLabels) {
-    args.push("--label", extra);
-  }
-  args.push("--label", `severity:${severity}`);
 
   let raw: string;
   try {

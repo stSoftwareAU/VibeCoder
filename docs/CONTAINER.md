@@ -45,8 +45,8 @@ because the digest-pinned base already ships the system tools.
 
 The base is the official Ruby image, which is itself built on
 `buildpack-deps:trixie`, so one digest supplies the system tools *and* the
-`ruby` the gate needs — the Pages scripts under `.github/scripts/*.rb` are
-spawned by the test suite. Two floors are load-bearing and are
+`ruby` the manifest still lists — a leftover of the GitHub Pages pipeline
+Issue #1344 removed, tracked for removal in Issue #1376. Two floors are load-bearing and are
 recorded as `minVersions` in `container/tools.json`: `git` ≥ 2.41, below which
 a literal `--end-of-options` survives into `argv` and is taken as a revision
 , and `ruby` ≥ 3.1 for `Psych.safe_load_file`.
@@ -181,14 +181,20 @@ flowchart TD
   `/tmp` as a `tmpfs`, so
   the profile dies with the container. Generating a config whose profile
   directory sits inside the mounted checkout throws rather than writing browser
-  state into the repository. `VIBE_BROWSER_PROFILE_DIR` overrides the location.
+  state into the repository. `VIBE_BROWSER_PROFILE_DIR` overrides the location;
+  it must be an absolute path, and containment is decided on whole path
+  segments after `.`/`..` are resolved, using the platform's own separators and
+  case rules — so a `..` walk back into the checkout, or a Windows path the old
+  hard-coded `/` never matched, is refused too (Issue #1293).
 - **`--no-sandbox` only inside the image.** Chromium's own sandbox needs user
   namespaces the container runtime may not grant, and the container boundary is
   the isolation that matters there. On a host with no baked browser the sandbox
   stays on.
 - **The secrets denylist is unchanged.** `--deny-env` still hides the worker's
   tokens and keys from the MCP process, and the npm registry age
-  gate still guards the pinned specifiers.
+  gate still guards the pinned specifiers. Since Issue #1288 the same names are
+  also blanked in the server's `env` block, because a permission flag binds the
+  Deno runtime and not the children it spawns under `--allow-run`.
 - **The server is handed to the agent only on a run that needs a browser**
   (Issue #192). Browser and outbound-network capability is granted on an
   explicit need signal — `RunClaudeOptions.mcpConfig: true` — not by the mere
@@ -594,9 +600,9 @@ branch and on the `could not heal the builder` branch alike:
 | The full output                   | `build-failures/<UTC stamp>-<build\|heal>-output-<pid>.log` beside it, named in that line |
 | The heal's own output             | The same, and appended to the evidence the `image_build` escalation quotes  |
 
-Both live in the launcher's own log directory — `~/logs` unless `LOG_DIR` or
-`LAUNCH_LOG_DIR` moves it — so the preserved copies are always beside the
-`run_core.log` line that names them.
+Both live in the launcher's own log directory — the platform default unless
+`log_dir` in `.config.json` moves it — so the preserved copies are always
+beside the `run_core.log` line that names them.
 
 Retention is count-based, like the launch logs `loop.sh` keeps: the newest 20
 files stay and the rest go, so a host that fails several times a day cannot
@@ -1415,9 +1421,9 @@ registered fails loudly at startup with the supported ids named — it never
 falls back to the default, which would run the wrong agent under an explicit
 selection.
 
-> **Changed in 2.0.0 (Issue #1032).** The two variables used to *override* the
+> **Changed in 1.4.0 (Issue #1032).** The two variables used to *override* the
 > file. They no longer do: the `.config.json` key wins, which is the rule every
-> other setting follows ([RELEASE-NOTES.md](RELEASE-NOTES.md#200--the-config-file-wins-over-the-environment)).
+> other setting follows ([RELEASE-NOTES.md](RELEASE-NOTES.md#140--the-config-file-wins-over-the-environment)).
 > A host that sets both now runs the provider the file names, and a run that
 > still takes its provider from a variable says so once at startup.
 

@@ -40,6 +40,7 @@ import {
   isSuppressed,
 } from "./suppression_comments.ts";
 import { buildAttributionFooter } from "./idle_task_attribution.ts";
+import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import type { GhCommandFn } from "./runner_deprecation_scanner.ts";
 
 export type { GhCommandFn };
@@ -362,14 +363,15 @@ export async function fileWorkflowFinding(
     opts.title,
     "--body",
     body,
-    "--label",
-    "github-actions-audit",
-    "--label",
-    `severity:${opts.severity}`,
+    ...guardedLabelArgs(
+      [
+        "github-actions-audit",
+        `severity:${opts.severity}`,
+        ...(opts.extraLabels ?? []),
+      ],
+      "worker/deno/lib/workflow_scan_common.ts",
+    ),
   ];
-  for (const extra of opts.extraLabels ?? []) {
-    args.push("--label", extra);
-  }
 
   let raw: string;
   try {

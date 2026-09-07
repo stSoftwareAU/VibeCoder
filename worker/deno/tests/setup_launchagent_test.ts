@@ -88,8 +88,8 @@ Deno.test("generatePlist - escapes XML special characters in env values", () => 
 //
 // `generatePlist` escaped only the three EnvironmentVariables values; the path
 // fields — `scriptDir` and `logsDir` — were interpolated raw. Both are config
-// values (`log_dir` in `.config.json`, `VIBE_LOGS_DIR`/`LOG_DIR` in the
-// environment, the checkout path), so anything able to set one could close the
+// values (`log_dir` in `.config.json`, the checkout path), so anything able
+// to set one could close the
 // enclosing `<string>` and add elements launchd then honours: an extra
 // `ProgramArguments` entry, or a `<key>Program</key>` that replaces the
 // executable outright. These tests fail against the unfixed code.

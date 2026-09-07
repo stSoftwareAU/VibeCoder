@@ -15,7 +15,9 @@ import {
   type InstallOutcome,
   offerMissingPrerequisites,
   type PrerequisiteInstallerOptions,
+  terminalConfirm,
 } from "../setup/prerequisite_installer.ts";
+import type { ConsentReader } from "../setup/consent_prompt.ts";
 import type {
   AllPrerequisitesResult,
   PrerequisiteResult,
@@ -624,5 +626,99 @@ Deno.test("offerMissingPrerequisites - each failed tool gets its own prompt", as
   assert(
     lines.some((l) => l.includes("Installed") && l.includes("deno")),
     `the summary must name what was installed, got: ${lines.join(" | ")}`,
+  );
+});
+
+// ── One answer per question (Issue #1346) ───────────────────────────────
+
+/** A byte stream over one string, handing back as much as each read asks for. */
+function streamReader(text: string): ConsentReader {
+  let bytes = new TextEncoder().encode(text);
+  return {
+    read(buffer: Uint8Array): Promise<number | null> {
+      if (bytes.length === 0) return Promise.resolve(null);
+      const take = Math.min(bytes.length, buffer.length);
+      buffer.set(bytes.subarray(0, take));
+      bytes = bytes.subarray(take);
+      return Promise.resolve(take);
+    },
+  };
+}
+
+/**
+ * The exact trigger: one answer longer than the old fixed 256-byte read,
+ * whose tail is `y`. The fixed read consumed the first 256 bytes and left the
+ * rest — including that `y` — to answer the NEXT tool's question.
+ */
+const OVER_LONG_ANSWER = `${"n".repeat(256)}y\n`;
+
+Deno.test("terminalConfirm - an over-long answer cannot answer the next question", async () => {
+  const written: string[] = [];
+  const confirm = terminalConfirm({
+    reader: streamReader(OVER_LONG_ANSWER),
+    write: (chunk) => {
+      written.push(new TextDecoder().decode(chunk));
+      return Promise.resolve(chunk.length);
+    },
+  });
+
+  assertEquals(await confirm("Install deno? [y/N]"), false);
+  assertEquals(
+    await confirm("Install gh? [y/N]"),
+    false,
+    "the tail of the first answer must not consent to the second question",
+  );
+  assertEquals(written.length, 2, "each question is asked once");
+});
+
+Deno.test("offerMissingPrerequisites - one over-long answer installs nothing", async () => {
+  const probe = probeOf(failed("deno"), failed("gh"));
+
+  const result = await offerMissingPrerequisites(
+    probe,
+    baseOptions({
+      confirm: terminalConfirm({
+        reader: streamReader(OVER_LONG_ANSWER),
+        write: (chunk) => Promise.resolve(chunk.length),
+      }),
+    }),
+  );
+
+  assertEquals(outcomeFor(result.outcomes, "deno").status, "declined");
+  assertEquals(
+    outcomeFor(result.outcomes, "gh").status,
+    "declined",
+    "no install step may run on consent the operator never gave",
+  );
+});
+
+Deno.test("terminalConfirm - a plain yes still consents, and EOF declines", async () => {
+  const write = (chunk: Uint8Array) => Promise.resolve(chunk.length);
+
+  assertEquals(
+    await terminalConfirm({ reader: streamReader("y\n"), write })(
+      "Install deno? [y/N]",
+    ),
+    true,
+  );
+  assertEquals(
+    await terminalConfirm({ reader: streamReader("YES\n"), write })(
+      "Install deno? [y/N]",
+    ),
+    true,
+  );
+  assertEquals(
+    await terminalConfirm({ reader: streamReader("\n"), write })(
+      "Install deno? [y/N]",
+    ),
+    false,
+    "a bare Enter declines",
+  );
+  assertEquals(
+    await terminalConfirm({ reader: streamReader(""), write })(
+      "Install deno? [y/N]",
+    ),
+    false,
+    "EOF is no answer, so no consent",
   );
 });

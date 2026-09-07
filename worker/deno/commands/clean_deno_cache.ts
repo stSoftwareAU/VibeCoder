@@ -5,6 +5,7 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import { coerceBooleanFlag } from "../lib/command_args.ts";
 import {
   cleanDenoCache,
   DEFAULT_DENO_CLEAN_TIMEOUT_MS,
@@ -13,7 +14,9 @@ import {
 
 /**
  * Args:
- *   --dry-run             Pass --dry-run to `deno clean`.
+ *   --dry-run [true|false] Pass --dry-run to `deno clean`. A value that is
+ *                          neither is refused rather than read as a real
+ *                          clean (Issue #1266).
  *   --timeout-ms <number> Override the timeout (default 60000 ms).
  */
 export const cleanDenoCacheCommand: Command = {
@@ -24,7 +27,11 @@ export const cleanDenoCacheCommand: Command = {
     args: Record<string, unknown>,
     _config: WorkerConfig,
   ): Promise<CommandResult<DenoCacheCleanResult>> {
-    const dryRun = args["dry-run"] === true;
+    const dryRunResult = coerceBooleanFlag(args["dry-run"], "dry-run", false);
+    if (!dryRunResult.ok) {
+      return { success: false, message: dryRunResult.error.message };
+    }
+    const dryRun = dryRunResult.value;
 
     let timeoutMs = DEFAULT_DENO_CLEAN_TIMEOUT_MS;
     const timeoutArg = args["timeout-ms"];

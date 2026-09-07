@@ -21,7 +21,6 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { detectMarkdownlintRunner } from "../lib/markdownlint_check.ts";
-import { makeRubyLiquidParser } from "../lib/pages_liquid_check.ts";
 import { createDefaultSweepDeps } from "../lib/security_tree_sweep.ts";
 import {
   ALLOWED_ENV_NAMES,
@@ -119,28 +118,6 @@ Deno.test("markdownlint - the linter runs with a built environment, not the work
       await Deno.readTextFile(capture),
       "markdownlint probe",
     );
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-Deno.test("pages-liquid - the Ruby driver runs with a built environment, not the worker's", async () => {
-  const dir = await Deno.makeTempDir({ prefix: "liquid_env_" });
-  try {
-    const stub = `${dir}/fake-ruby`;
-    // The parser reads `ERR\t<file>\t<message>` lines, so the stub reports
-    // one record per environment variable through that channel.
-    await writeStub(
-      stub,
-      `env | while read -r line; do` +
-        ` printf 'ERR\\tenv\\t%s\\n' "$line"; done`,
-    );
-
-    const parse = makeRubyLiquidParser([stub], dir);
-    const errors = await parse([{ path: "docs/x.md", content: "# x" }]);
-
-    const dump = errors.map((error) => error.message).join("\n");
-    assertBuiltEnvironment(dump, "pages-liquid ruby driver");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

@@ -38,6 +38,18 @@
  *                        transform did not clear (the spaced generic phrase
  *                        "vibe coding" is not the product name and passes)
  *
+ *   Coverage (Issue #1265) — not a match in the content but a statement that
+ *   there *was* no content the gate could read:
+ *   - `binary-unscanned` a staged file the gate could not decode as UTF-8
+ *                        text (a NUL in the first 8 KiB, or invalid UTF-8).
+ *                        The gate has seen none of its bytes, so it cannot
+ *                        report the file clean; the only ways past it are
+ *                        dropping the file from the export or a reviewed
+ *                        allowlist entry naming its path. Coverage is part
+ *                        of the verdict: PASS means "the whole staged tree
+ *                        was examined and nothing unallowlisted was found",
+ *                        never "nothing was found in the part I could read".
+ *
  * Every finding carries path, 1-based line (0 for a hit in the path itself),
  * class, a mask of the match (first two and last two characters) and a short
  * excerpt in which **every** finding on that line is masked. The raw match
@@ -75,13 +87,22 @@ export const BUILTIN_CLASSES = [
   "branding-residue",
 ] as const;
 
+/**
+ * Coverage classes (Issue #1265): raised for an input the gate could not
+ * examine at all, so that an unscanned file is a loud finding rather than a
+ * silent omission from the verdict.
+ */
+export const COVERAGE_CLASSES = ["binary-unscanned"] as const;
+
 export type IdentifierClass = (typeof IDENTIFIER_CLASSES)[number];
 export type BuiltinClass = (typeof BUILTIN_CLASSES)[number];
-export type FindingClass = IdentifierClass | BuiltinClass;
+export type CoverageClass = (typeof COVERAGE_CLASSES)[number];
+export type FindingClass = IdentifierClass | BuiltinClass | CoverageClass;
 
 const ALL_CLASSES: readonly string[] = [
   ...IDENTIFIER_CLASSES,
   ...BUILTIN_CLASSES,
+  ...COVERAGE_CLASSES,
 ];
 
 function isFindingClass(value: string): value is FindingClass {
@@ -715,9 +736,41 @@ export interface ScanTreeOptions {
   allowlistText?: string;
 }
 
-/** True when the report lets the export proceed. */
+/**
+ * True when the report lets the export proceed.
+ *
+ * Coverage is part of the verdict (Issue #1265): every file the scan could
+ * not decode must be accounted for by a `binary-unscanned` finding, and that
+ * finding must have been either allowlisted or counted as blocking. A report
+ * whose skip counter outruns its coverage findings describes a tree the gate
+ * did not fully examine, and an unexamined tree never passes — the absence of
+ * a match in the subset that could be read is not success.
+ */
 export function gatePasses(report: GateReport): boolean {
-  return report.errors.length === 0 && report.blocking === 0;
+  if (report.errors.length > 0 || report.blocking > 0) return false;
+  const accountedFor = report.findings.filter(
+    (f) => f.klass === "binary-unscanned",
+  ).length;
+  return accountedFor === report.filesSkippedBinary;
+}
+
+/**
+ * The finding raised for a staged file the gate could not decode. It carries
+ * no excerpt of the file because the gate never read one: the path is the
+ * whole of what is known, and it is also what an allowlist entry names
+ * (`binary-unscanned <path> *`).
+ */
+function unscannableFinding(rel: string): RawFinding {
+  return {
+    path: rel,
+    line: 0,
+    klass: "binary-unscanned",
+    column: 0,
+    match: rel,
+    masked: maskMatch(rel),
+    excerpt: "binary or non-UTF-8 — contents never scanned",
+    allowlisted: false,
+  };
 }
 
 /** Scan every text file (and every path) beneath `tree`. */
@@ -735,7 +788,10 @@ export async function scanTree(options: ScanTreeOptions): Promise<GateReport> {
       await Deno.readFile(`${options.tree}/${rel}`),
     );
     if (text === null) {
+      // The gate cannot read this file, so it cannot vouch for it: record a
+      // blocking coverage finding rather than skipping it into silence.
       filesSkippedBinary++;
+      raw.push(unscannableFinding(rel));
       continue;
     }
     filesScanned++;
@@ -797,7 +853,10 @@ export function formatGateReport(report: GateReport): string {
     "Scrub gate report (Issue #4196)",
     `tree: ${report.tree}`,
     `files-scanned: ${report.filesScanned}`,
-    `files-skipped-binary: ${report.filesSkippedBinary}`,
+    `files-skipped-binary: ${report.filesSkippedBinary}` +
+    (report.filesSkippedBinary > 0
+      ? " (unreadable as text; each is a binary-unscanned finding)"
+      : ""),
     `findings: ${report.findings.length} total, ${report.blocking} blocking, ` +
     `${report.allowlisted} allowlisted`,
     `allowlist: ${report.allowlistEntries} entries, ` +
@@ -810,8 +869,15 @@ export function formatGateReport(report: GateReport): string {
       `verdict: BLOCKED (${report.blocking} blocking finding(s): ` +
         `${classCounts(report.perClass)})`,
     );
+  } else if (!gatePasses(report)) {
+    // Belt and braces: the verdict line and `gatePasses` can never disagree,
+    // so a coverage hole cannot be printed as a pass (Issue #1265).
+    lines.push(
+      `verdict: BLOCKED (${report.filesSkippedBinary} unreadable file(s) ` +
+        `unaccounted for)`,
+    );
   } else {
-    lines.push("verdict: PASS (0 blocking findings)");
+    lines.push("verdict: PASS (0 blocking findings, whole tree covered)");
   }
   lines.push("");
 

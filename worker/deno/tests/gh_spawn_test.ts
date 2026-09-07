@@ -33,6 +33,17 @@ import { UnredactableBodyError } from "../lib/gh_body_redaction.ts";
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 import { envFrom } from "./support/env_lookup.ts";
 
+/** True when the path exists; used to assert a masked copy was removed. */
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
 /** Record the arguments each spawn attempt would have used. */
 function recordingRunner(
   result: { code: number; stdout?: string; stderr?: string } = { code: 0 },
@@ -442,7 +453,6 @@ Deno.test("spawnGh - refuses a body file it cannot read rather than publishing i
 });
 
 Deno.test("spawnGh - masks an --input file body into a fresh file (Issue #1254)", async () => {
-  const { calls } = recordingRunner();
   silenceAllowlist();
   seedWriteRepoAllowlist("me/target");
   const original = `{"body":"token ${GH_TOKEN_SAMPLE}"}`;
@@ -450,7 +460,21 @@ Deno.test("spawnGh - masks an --input file body into a fresh file (Issue #1254)"
     prefix: "vibe-input-",
     suffix: ".json",
   });
-  let masked: string | undefined;
+  // The masked copy is read by the `gh` child *during* the call and removed
+  // once it exits (Issue #1364), so its contents are captured here rather
+  // than after the call — reading it afterwards would assert a leak.
+  let maskedPath: string | undefined;
+  let maskedBody: string | undefined;
+  _setGhSpawnRunner((args) => {
+    maskedPath = [...args][5];
+    maskedBody = Deno.readTextFileSync(maskedPath as string);
+    return Promise.resolve({
+      code: 0,
+      success: true,
+      stdout: "",
+      stderr: "",
+    });
+  });
   try {
     await Deno.writeTextFile(path, original);
 
@@ -463,18 +487,16 @@ Deno.test("spawnGh - masks an --input file body into a fresh file (Issue #1254)"
       path,
     ]);
 
-    masked = calls[0]?.[5];
-    assertEquals(typeof masked, "string");
-    assertEquals(masked === path, false);
-    assertEquals(
-      await Deno.readTextFile(masked as string),
-      `{"body":"token ${REDACTION_PLACEHOLDER}"}`,
-    );
+    assertEquals(typeof maskedPath, "string");
+    assertEquals(maskedPath === path, false);
+    assertEquals(maskedBody, `{"body":"token ${REDACTION_PLACEHOLDER}"}`);
     // The caller's own file is left exactly as it was.
     assertEquals(await Deno.readTextFile(path), original);
+    // And the masked copy is not left behind (Issue #1364): the chokepoint
+    // owns the directory it wrote into and removes it once the child exits.
+    assertEquals(await exists(maskedPath as string), false);
   } finally {
     await Deno.remove(path).catch(() => {});
-    if (masked) await Deno.remove(masked).catch(() => {});
     restore();
   }
 });

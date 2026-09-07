@@ -409,7 +409,7 @@ exponential backoff on transient failures.
 
 adds a **minimum-version floor**: a tool also updates when its installed version
 is below a configured floor (`software_min_versions`, default
-`{ claude: "2.1.170" }`), bypassing the timestamp gate. The rule is **run when
+`{ claude: "2.1.260" }`), bypassing the timestamp gate. The rule is **run when
 interval elapsed OR installed version < floor**:
 
 1. `readVersion(tool)` reads the installed version (`claude --version` →
@@ -1321,8 +1321,12 @@ find_oldest_issue(github_user)
    ([collect_self_diagnostic_candidates.ts](../worker/deno/lib/collect_self_diagnostic_candidates.ts),
    [self_diagnostic_provenance.ts](../worker/deno/lib/self_diagnostic_provenance.ts)).
    **Nothing is self-labelled** — the reserved-label guards are untouched and
-   `top-priority`/`work-on` stay human-only. Three signals must agree (repo,
-   marker, fleet author); the tier is capped at
+   `top-priority`/`work-on` stay human-only. Four signals must agree (repo,
+   marker, fleet author, and the filing attestation — issue number plus a
+   digest of the filed title and body — that the worker's own filer wrote to
+   the audit chain, read only from a journal that reconciles with its anchor —
+   [self_diagnostic_attestation.ts](../worker/deno/lib/self_diagnostic_attestation.ts),
+   Issue #1277); the tier is capped at
    `self_schedule_diagnostics_max_in_flight`, its decisions are written to the
    audit chain under the `self-schedule-diagnostic` verb and announced on the
    issue, a permanently-blocked diagnostic is escalated with `needs-human`, and
@@ -1989,7 +1993,7 @@ reaction fails towards *processing the comment again*.
 | Function                               | Purpose                                                                                                                                                                                                                                                                                |
 | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `create_milestone_branch_name`         | Convert title to branch name: lowercase, replace special chars with hyphens, cap the slug at 50 chars (stripping any trailing hyphen), prepend `milestone/`. Single source of truth in `git_branch.ts`; `issue_query.ts` re-exports it so PR-blocking and branch creation always agree |
-| `ensure_milestone_branch_exists()`     | Create milestone branch from default branch if not present (idempotent)                                                                                                                                                                                                                |
+| `ensure_milestone_branch_exists()`     | Create milestone branch on origin from the default branch ref if not present (idempotent; no local checkout, so a stale local branch cannot block it)                                                                                                                                                                                                                |
 | `sync_milestone_branch_with_default()` | Keep milestone branch current with default branch using **merge** (not rebase) to preserve commit history                                                                                                                                                                              |
 | `create_feature_branch_from_base()`    | Create feature branch from the milestone branch (not default) for milestone issues                                                                                                                                                                                                     |
 
@@ -2013,11 +2017,19 @@ stderr (branch protection, non-fast-forward, auth) so the handoff says _why_.
 need a human, not for local state the worker can repair. Two rules keep the
 milestone branch pushable on unattended hosts:
 
-- `ensure_milestone_branch_exists()` recreates the local branch from the default
-  branch (`git checkout -B`) whenever the **remote** milestone ref is absent.
-  The remote holds no history to preserve in that state, so a stale local branch
-  of the same name — for example one carrying a merge commit the repository's
-  rules forbid — is discarded rather than pushed.
+- `ensure_milestone_branch_exists()` creates the branch **on origin** whenever
+  the **remote** milestone ref is absent, by pushing the default branch ref
+  straight to the milestone ref name
+  (`git push origin main:refs/heads/milestone/x`). No local checkout takes part,
+  so a stale local branch of the same name can neither reach the remote — the
+  remote holds no history to preserve in that state, and a local tip carrying a
+  merge commit the repository's rules forbid must never be pushed — nor block
+  the creation. `git checkout -B` used to do this job and is refused outright
+  when another worktree holds the branch name
+  (`fatal: 'milestone/x' is already used by worktree at …`), which escalated
+  NEAT-AI-Ockham#133 to a human on three consecutive runs. The blocking local
+  checkout is left exactly as it is and named in one log line; nothing is
+  deleted or reset.
 - `sync_milestone_branch_with_default()` takes the remote milestone branch with
   `git merge --ff-only origin/<branch>` instead of a plain `git pull`, and
   resets to `origin/<branch>` when the two have diverged. A plain pull
@@ -2028,7 +2040,7 @@ milestone branch pushable on unattended hosts:
 flowchart TD
     A[Milestone issue picked up] --> B[ensureMilestoneBranchExists]
     B -->|branch exists| C[Base = milestone branch]
-    B -->|branch missing| D[Recreate from default, push]
+    B -->|branch missing| D["Push default ref to the milestone ref<br/>(no local checkout)"]
     D -->|pushed| C
     D -->|git error| E[Fail run + needs-human comment<br/>with git stderr]
     E -.->|never| F[Base = default branch]
@@ -3145,7 +3157,7 @@ links to its issue for the full rationale.
   (numbers unchanged), and GitHub Actions are pinned to commit SHAs. The
   coding-guidelines prompt (`prompts/coding_guidelines/`) documents the bump
   pattern.
-- **Quality gate additions:** `pages-liquid`, `markdownlint-cli2`,
+- **Quality gate additions:** `markdownlint-cli2`,
   `mermaid_validator` integration , and the `tail -f | head` foot-gun detector.
 - **Standard workflow templates:** `workflow_setup` v2/v3 provisions Gitleaks,
   Semgrep SAST, private-repo-14 scorer hardening, Dependency Review and

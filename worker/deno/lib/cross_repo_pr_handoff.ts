@@ -18,10 +18,10 @@
  *      guarded) and **declares** the PR it wants with a marker in its output
  *      ({@link CROSS_REPO_PR_MARKER_NAME}).
  *   2. The worker parses that declaration ({@link detectCrossRepoPrDeclaration}),
- *      validates the target — internal owner, reachable, pushable, a branch
- *      that really exists on the dependency remote, and not the default
- *      branch — then opens the PR through its own `spawnGh` chokepoint
- *      ({@link openDeclaredCrossRepoPr}).
+ *      validates the target — internal owner, a dependency the consuming repo
+ *      actually declares, reachable, pushable, a branch that really exists on
+ *      the dependency remote, and not the default branch — then opens the PR
+ *      through its own `spawnGh` chokepoint ({@link openDeclaredCrossRepoPr}).
  *   3. The dependency PR URL is cross-linked back onto the consuming issue;
  *      anything that stops the PR being opened is escalated to a human rather
  *      than dropped ({@link handOffCrossRepoPr}).
@@ -40,12 +40,16 @@
 import type { GitHubClient, Logger, Result } from "../types.ts";
 import { REPO_SLUG_PATTERN } from "./config.ts";
 import {
+  authoriseCrossRepoTarget,
   INTERNAL_OWNER,
   probeCrossRepoAccess,
   type RunCommand,
 } from "./cross_repo_fix.ts";
 import { spawnGh } from "./gh_spawn.ts";
-import { withScopedWriteRepo } from "./write_repo_allowlist.ts";
+import {
+  withScopedWriteRepo,
+  withTokenScopedRepo,
+} from "./write_repo_allowlist.ts";
 import {
   escalateToHuman as defaultEscalateToHuman,
   type EscalateToHumanOptions,
@@ -298,8 +302,8 @@ function buildPrBody(
     "",
     "Raised by the Vibe Coder worker on behalf of the run working " +
       `${consumingRepo}#${issueNumber}: the agent pushed the branch, and the ` +
-      "worker opened this PR after validating the target as an internal, " +
-      "reachable `stSoftwareAU/*` repository (Issue #182).",
+      "worker opened this PR after validating the target as a declared " +
+      "dependency of that repo, reachable and pushable (Issue #182).",
     "",
     "**Do not auto-merge on the worker's behalf** — releasing this dependency " +
       "is a human decision.",
@@ -311,13 +315,25 @@ function buildPrBody(
  * Validate a declared dependency PR and open it.
  *
  * Refuses — with an error `Result`, never a thrown exception — when the target
- * is not an internal `stSoftwareAU/*` repo, is unreachable or unpushable, when
- * the head branch does not exist on the dependency remote (i.e. the run never
- * pushed it), or when the head is the dependency's default branch. An open PR
- * for the same head is reused instead of duplicated, so a re-run is safe.
+ * is not an internal `stSoftwareAU/*` repo, is not a dependency the consuming
+ * repo declares ({@link authoriseCrossRepoTarget}), is unreachable or
+ * unpushable, when the head branch does not exist on the dependency remote
+ * (i.e. the run never pushed it), or when the head is the dependency's default
+ * branch. An open PR for the same head is reused instead of duplicated, so a
+ * re-run is safe.
+ *
+ * The owner check alone is deliberately not the gate (Issue #1382). Many
+ * separate tenant repositories share the `stSoftwareAU` owner, and the whole
+ * declaration is parsed out of the run's own generated text, so ownership
+ * establishes only that the target is in-house — not that this run has any
+ * business writing to it.
  *
  * The single `gh pr create` runs inside {@link withScopedWriteRepo}, so the
- * worker's write-repo allowlist opens for that one call and closes again.
+ * worker's write-repo allowlist opens for that one call and closes again. The
+ * probes that precede it run inside {@link withTokenScopedRepo} instead
+ * (Issue #1391) — the run's installation token is scoped to the repos it may
+ * write to, so reaching the dependency repo at all needs the credential
+ * widened for reads without widening what may be written.
  */
 export async function openDeclaredCrossRepoPr(
   options: OpenDeclaredCrossRepoPrOptions,
@@ -356,7 +372,51 @@ export async function openDeclaredCrossRepoPr(
     };
   }
 
-  // 1. Internal + reachable + pushable.
+  // 1. Authorised target. Internal ownership is not authority on its own: the
+  //    fleet works many separate tenant repos under the one owner, and this
+  //    declaration was parsed from the run's own generated output. The target
+  //    must additionally be a dependency the consuming repo itself declares,
+  //    read from that repo's default branch rather than from the run's
+  //    working tree — which the agent can edit (Issue #1382).
+  const authorisation = await authoriseCrossRepoTarget(
+    options.consumingRepo,
+    repo,
+    runner,
+  );
+  if (!authorisation.authorised) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to open a PR in '${repo}': ${authorisation.reason}.`,
+      ),
+    };
+  }
+
+  // The remaining steps all talk to the dependency repo, and a scoped
+  // installation token (Issue #1391) cannot reach a repo it was not minted
+  // for — the probes below would 404 and the bridge would report the target
+  // as unreachable. The grant is read reach only: the write allowlist still
+  // refuses every write to it bar the one `withScopedWriteRepo` opens.
+  return await withTokenScopedRepo(
+    repo,
+    () => probeAndOpenAuthorisedPr(options, runner),
+  );
+}
+
+/**
+ * Steps 2–6 of {@link openDeclaredCrossRepoPr}, once the target is authorised.
+ *
+ * Split out so the whole dependency-repo conversation runs inside one
+ * {@link withTokenScopedRepo} grant.
+ */
+async function probeAndOpenAuthorisedPr(
+  options: OpenDeclaredCrossRepoPrOptions,
+  runner: RunCommand,
+): Promise<Result<CrossRepoPrOutcome>> {
+  const { declaration } = options;
+  const { repo, branch } = declaration;
+
+  // 2. Internal + reachable + pushable.
   const access = await probeCrossRepoAccess(repo, runner);
   if (!access.reachable) {
     return {
@@ -366,7 +426,7 @@ export async function openDeclaredCrossRepoPr(
   }
   const target = access.repo;
 
-  // 2. The head must already exist on the dependency remote — the bridge
+  // 3. The head must already exist on the dependency remote — the bridge
   //    opens a PR for a branch the run pushed, it never creates one.
   const head = await runner([
     "gh",
@@ -383,7 +443,7 @@ export async function openDeclaredCrossRepoPr(
     };
   }
 
-  // 3. Never open a PR whose head is the dependency's default branch.
+  // 4. Never open a PR whose head is the dependency's default branch.
   if (access.defaultBranch && branch === access.defaultBranch) {
     return {
       ok: false,
@@ -395,7 +455,7 @@ export async function openDeclaredCrossRepoPr(
   }
   const base = declaration.base ?? access.defaultBranch;
 
-  // 4. Reuse an already-open PR for this head rather than duplicating it.
+  // 5. Reuse an already-open PR for this head rather than duplicating it.
   const existing = await runner([
     "gh",
     "pr",
@@ -419,7 +479,7 @@ export async function openDeclaredCrossRepoPr(
     };
   }
 
-  // 5. Open it — the one write the scoped grant covers.
+  // 6. Open it — the one write the scoped grant covers.
   const args = [
     "gh",
     "pr",

@@ -147,7 +147,7 @@ export type {
   ClaudeExecutionResult,
   TimeoutDiagnostics,
 } from "./claude_executor.ts";
-import { spawnGh } from "./gh_spawn.ts";
+import { spawnGh, withRunScopedGhToken } from "./gh_spawn.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
 /** A run shorter than this with no output reads as a start-up failure (#35). */
@@ -1018,7 +1018,15 @@ export async function runClaudeWithTimeout(
     // Sanitise the child environment (Issue #3203): clear it and pass an
     // explicit copy with the GitHub App private-key material dropped, so a
     // prompt-injected model running unrestricted bash cannot read the PEM.
-    const baseEnv = provider.buildChildEnv(options.parentEnv);
+    const sanitisedEnv = provider.buildChildEnv(options.parentEnv);
+    // Scope the agent's own credential to this run (Issue #1423). The
+    // write-repo allowlist's second layer — a token GitHub itself refuses to
+    // use outside the run's scope (Issue #1391) — reached only the worker's
+    // direct `gh` calls; the agent's went through the shim with the ambient,
+    // installation-wide credential, leaving the component most exposed to
+    // prompt injection with the argv check as its only backstop. Overlaid
+    // onto the SANITISED environment, never rebuilt from the worker's own.
+    const baseEnv = await withRunScopedGhToken(sanitisedEnv);
     // Interpose the `gh` guard on the child's PATH (Issue #3643): the agent
     // holds GH_TOKEN and runs unrestricted bash, so without this its own `gh`
     // writes bypass the write-repo allowlist and the reserved-label guard the

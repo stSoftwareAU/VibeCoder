@@ -713,7 +713,7 @@ prod?"* — and the answer must be no.
   bypass is explicitly forbidden by the coding guidelines.
 - **Quality gate must pass before PR open**
   ([`quality.sh`](../quality.sh) → `worker/deno/quality.ts`): lint,
-  type, tests, Liquid, markdownlint
+  type, tests, markdownlint
   must all be green or the PR is not created. (Shell-script linting is
   delegated to each target repo's own CI —.)
 - **Comment author trust** is enforced
@@ -800,6 +800,22 @@ remains the *next-scan stripping* defence; the guard adds an *in-process,
 pre-call* defence so a prompt regression or compromised dependency cannot
 land an operational label on an issue even once.
 
+**Creation-time labels (Issue #1276).** Those call sites all label an issue
+that already exists. The scan and idle-task templates apply theirs at
+creation time, pushing `--label` straight into the `gh issue create` argv,
+so none of them reached the guard — the invariant its own documentation
+asserted was enforced for only half the paths. Every such argv is now built
+by `guardedLabelArgs` in
+[`guarded_issue_labels.ts`](../worker/deno/lib/guarded_issue_labels.ts),
+which asserts each label through the same guard and **throws** rather than
+dropping a refused label silently. The templates' content labels
+(`dead-code`, `doc-coverage`, `alert-feed`, …) live in
+`WORKER_APPLIABLE_CONTENT_LABELS`, so the allowlist now describes what the
+worker actually does. The `issue-create label guard` quality check
+([`issue_create_label_check.ts`](../worker/deno/lib/issue_create_label_check.ts))
+keeps the class fixed by failing the build on any new `--label` argument
+that reaches a `create` argv without passing the chokepoint.
+
 The positive allowlist (literal labels + prefixes) is:
 
 | Class | Literal labels | Prefix patterns |
@@ -842,9 +858,9 @@ path; nothing on this map is unused.
 | `admin:public_key` (operator-only, not on the worker token in production) | `gh ssh-key add` during identity migration only | Documented in `SWITCHING-IDENTITY.md` Step 1 — recommended to mint a short-lived operator PAT for the migration rather than carry it on the long-lived worker token. |
 
 **Workflow `permissions:` blocks.** Every `.github/workflows/*.yml` in
-this repo now declares a `permissions:` block. The four pre-existing
-workflows (`gitleaks.yml`, `markdown-lint.yml`, `pages.yml`,
-`semgrep.yml`) were already minimised; `validate-scripts.yml` had no
+this repo now declares a `permissions:` block. The pre-existing
+workflows (`gitleaks.yml`, `markdown-lint.yml`, `semgrep.yml`) were
+already minimised; `validate-scripts.yml` had no
 block and inherited the org default, so added an explicit
 `permissions: contents: read` to it — the workflow runs only static
 checks (bash syntax, shellcheck, actionlint, `deno check`/lint/test) and
@@ -859,8 +875,9 @@ initial guard + capability map.
 ```mermaid
 flowchart LR
     A[Worker code calls<br/>addLabelToIssue / escalateToHuman] --> B{worker_label_guard:<br/>label in allowlist?}
+    A2[Template calls<br/>guardedLabelArgs for gh issue create] --> B
     B -- No --> C[Refuse + emit<br/>SECURITY WORKER_LABEL_REFUSED]
-    B -- Yes --> D[gh api / gh issue edit<br/>label applied]
+    B -- Yes --> D[gh api / gh issue edit / gh issue create<br/>label applied]
     E[run_core startup] --> F[gh-auth check-scopes]
     F --> G[SECURITY gh token:<br/>scopes=... workflow=...]
 ```

@@ -366,7 +366,3 @@ Deno.test("container_extension example - the image and container manuals referen
 Deno.test("container_extension example - the page cross-links containment", () => {
   assertStringIncludes(read(PAGE), "CONTAINMENT.md");
 });
-
-Deno.test("container_extension example - the page has a published title", () => {
-  assertStringIncludes(read("_data/page_titles.yml"), `${PAGE}:`);
-});

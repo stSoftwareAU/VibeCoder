@@ -560,12 +560,12 @@ Deno.test("setupBranch - uses the recreated milestone branch when it was missing
               error: new Error(`missing default branch ${defaultBranch}`),
             });
           }
-          // Recreate from the default branch, as production does.
+          // Create it on origin from the default branch, as production does.
           remoteBranches.add(milestoneBranch);
           return Promise.resolve({
             ok: true,
-            value:
-              `Milestone branch ${milestoneBranch} created and pushed to origin`,
+            value: `Milestone branch ${milestoneBranch} created on origin ` +
+              `from ${defaultBranch} (no local checkout)`,
           });
         }) as unknown as typeof deps.git.ensureMilestoneBranchExists,
     },
@@ -801,7 +801,12 @@ Deno.test("clarityPhase - early exits for question label and releases claim", as
 Deno.test("clarityPhase - skips when max clarification rounds reached", async () => {
   const config = makeConfig({ maxClarificationRounds: 2 });
   const ctx = makeContext({
-    issueComments: "## Clarification Needed\nQ1\n## Clarification Needed\nQ2",
+    // Issue #1263: the rounds are counted off the authored comment rows —
+    // `testbot` is this context's own `githubUser`.
+    issueCommentRows: [
+      { author: "testbot", body: "## Clarification Needed\nQ1" },
+      { author: "testbot", body: "## Clarification Needed\nQ2" },
+    ],
     config,
   });
   const state = makeState();
@@ -811,6 +816,30 @@ Deno.test("clarityPhase - skips when max clarification rounds reached", async ()
 
   assertEquals(result.status, "continue");
   assertEquals(state.clarityStatus, "skipped");
+});
+
+Deno.test("clarityPhase - an outsider's clarification headings do not retire the gate (Issue #1263)", async () => {
+  const config = makeConfig({ maxClarificationRounds: 2 });
+  const ctx = makeContext({
+    // Everything an outsider controls: the prompt blob, and comments of
+    // their own repeating the heading a whole limit's worth of times.
+    issueComments: "## Clarification Needed\nQ1\n## Clarification Needed\nQ2",
+    issueCommentRows: [
+      {
+        author: "outsider",
+        body: "## Clarification Needed\nQ1\n## Clarification Needed\nQ2",
+      },
+    ],
+    config,
+  });
+  const state = makeState();
+  const deps = createMockDeps();
+
+  const result = await workOnIssueClarityPhase(ctx, state, deps);
+
+  assertEquals(result.status, "continue");
+  // Assessed rather than waved through: the gate is still on.
+  assertEquals(state.clarityStatus, "assessed_clear");
 });
 
 Deno.test("clarityPhase - detailed issue bodies proceed normally", async () => {
@@ -3683,6 +3712,13 @@ Deno.test({
       if (joined.includes("pr create")) return reply(`${prUrl}\n`);
       if (joined.includes("pr list")) return reply("");
       if (joined.includes("/branches/")) return reply('{"name":"branch"}');
+      // The consuming repo's manifest declares the dependency — the
+      // authorisation the bridge now requires (Issue #1382).
+      if (joined.includes("/contents/deno.json")) {
+        return reply(JSON.stringify({
+          imports: { neat: "jsr:@stsoftware/NEAT-AI-Discovery@^1.0.0" },
+        }));
+      }
       return reply(
         JSON.stringify({
           full_name: "stSoftwareAU/NEAT-AI-Discovery",

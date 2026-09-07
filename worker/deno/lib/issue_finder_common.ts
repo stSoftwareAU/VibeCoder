@@ -19,6 +19,7 @@ import type {
 } from "./issue_finder_logger.ts";
 import type { ContentApprovalDeps } from "./content_approval_tracker.ts";
 import type { EscalateUnworkableDeps } from "./escalate_unworkable_work_on.ts";
+import type { SelfDiagnosticDeps } from "./collect_self_diagnostic_candidates.ts";
 import type { SelectionOptions } from "./issue_priority.ts";
 import { classifyGitHubError, GitHubErrorCategory } from "./github_errors.ts";
 import {
@@ -106,6 +107,14 @@ export interface FindIssuesOptions {
    * escalation routes through the iteration's `ghCommandFn`.
    */
   escalateDeps?: EscalateUnworkableDeps;
+  /**
+   * Optional injectable deps for tier 2b self-scheduling (Issue #1277).
+   *
+   * Mainly used by tests to point the filing-attestation reader at a
+   * temporary audit directory instead of the host's own. In production the
+   * collector reads `${WORK_DIR}/audit` itself.
+   */
+  selfDiagnosticDeps?: SelfDiagnosticDeps;
   /**
    * Cooldown in seconds for recently-closed PR blocking (Issue #1427).
    * Issues with a PR closed within this window are skipped to prevent

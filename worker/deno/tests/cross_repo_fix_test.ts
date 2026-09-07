@@ -8,7 +8,10 @@
  *      #1613 `@stsoftware` scope rule.
  *   2. `probeCrossRepoAccess` / `resolveCrossRepoTarget` — reachability +
  *      "can access" (clone + push) probe via an injected gh mock.
- *   3. `openCrossRepoFixPr` — end-to-end orchestration (clone → branch → fix →
+ *   3. `authoriseCrossRepoTarget` — the consuming repo's own dependency
+ *      manifest, not shared ownership, decides which repos a run may write to
+ *      (Issue #1382).
+ *   4. `openCrossRepoFixPr` — end-to-end orchestration (clone → branch → fix →
  *      commit → push → PR) driven by a scripted command runner, asserting an
  *      actual PR is opened against a *different* repo and its URL is surfaced.
  *
@@ -17,6 +20,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  authoriseCrossRepoTarget,
   classifyDependencySpec,
   type CommandOutput,
   type CrossRepoFixRequest,
@@ -303,4 +307,131 @@ Deno.test("openCrossRepoFixPr - rejects an invalid repo slug before any command"
   );
   assertEquals(result.ok, false);
   assertEquals(ran, false);
+});
+
+// ---------------------------------------------------------------------------
+// authoriseCrossRepoTarget (Issue #1382)
+// ---------------------------------------------------------------------------
+
+const CONSUMER = "stSoftwareAU/GRQ";
+const SIBLING = "stSoftwareAU/NEAT-AI-Discovery";
+
+/** A `gh` runner serving repo-relative manifest paths from a fixed map. */
+function manifestRunner(
+  files: Record<string, string>,
+): { runner: RunCommand; calls: string[][] } {
+  const calls: string[][] = [];
+  const runner: RunCommand = (cmd) => {
+    calls.push([...cmd]);
+    for (const [path, body] of Object.entries(files)) {
+      if (cmd.join(" ").includes(`/contents/${path}`)) {
+        return Promise.resolve(ok(body));
+      }
+    }
+    return Promise.resolve(fail("gh: Not Found (HTTP 404)"));
+  };
+  return { runner, calls };
+}
+
+Deno.test("authoriseCrossRepoTarget - the consuming repo itself needs no manifest", async () => {
+  const { runner, calls } = manifestRunner({});
+  const decision = await authoriseCrossRepoTarget(CONSUMER, CONSUMER, runner);
+  assertEquals(decision.authorised, true);
+  assertEquals(calls.length, 0);
+});
+
+Deno.test("authoriseCrossRepoTarget - a jsr dependency in deno.json authorises its repo", async () => {
+  const { runner } = manifestRunner({
+    "deno.json": JSON.stringify({
+      imports: { "neat/": "jsr:@stsoftware/NEAT-AI-Discovery@^1.2.0" },
+    }),
+  });
+  const decision = await authoriseCrossRepoTarget(CONSUMER, SIBLING, runner);
+  assertEquals(decision.authorised, true);
+  if (!decision.authorised) return;
+  assertEquals(decision.via, "dependency");
+  assertEquals(decision.manifestPath, "deno.json");
+});
+
+Deno.test("authoriseCrossRepoTarget - an npm dependency in package.json authorises its repo", async () => {
+  const { runner } = manifestRunner({
+    "package.json": JSON.stringify({
+      devDependencies: { "@stsoftware/NEAT-AI-Discovery": "^2.0.0" },
+    }),
+  });
+  const decision = await authoriseCrossRepoTarget(CONSUMER, SIBLING, runner);
+  assertEquals(decision.authorised, true);
+});
+
+Deno.test("authoriseCrossRepoTarget - repo-name casing does not change the decision", async () => {
+  const { runner } = manifestRunner({
+    "deno.json": JSON.stringify({
+      imports: { neat: "jsr:@stsoftware/neat-ai-discovery" },
+    }),
+  });
+  const decision = await authoriseCrossRepoTarget(CONSUMER, SIBLING, runner);
+  assertEquals(decision.authorised, true);
+});
+
+Deno.test("authoriseCrossRepoTarget - a sibling repo under the same owner is refused when undeclared", async () => {
+  const { runner } = manifestRunner({
+    "deno.json": JSON.stringify({
+      imports: { other: "jsr:@stsoftware/private-repo-14" },
+    }),
+  });
+  const decision = await authoriseCrossRepoTarget(CONSUMER, SIBLING, runner);
+  assertEquals(decision.authorised, false);
+  if (decision.authorised) return;
+  assertStringIncludes(decision.reason, "dependency");
+});
+
+Deno.test("authoriseCrossRepoTarget - an external dependency never authorises an internal repo", async () => {
+  const { runner } = manifestRunner({
+    "deno.json": JSON.stringify({
+      imports: { assert: "jsr:@std/assert@^1.0.0" },
+    }),
+  });
+  const decision = await authoriseCrossRepoTarget(CONSUMER, SIBLING, runner);
+  assertEquals(decision.authorised, false);
+});
+
+Deno.test("authoriseCrossRepoTarget - no readable manifest fails closed", async () => {
+  const { runner } = manifestRunner({});
+  const decision = await authoriseCrossRepoTarget(CONSUMER, SIBLING, runner);
+  assertEquals(decision.authorised, false);
+  if (decision.authorised) return;
+  assertStringIncludes(decision.reason, "no dependency manifest");
+});
+
+Deno.test("authoriseCrossRepoTarget - a malformed manifest is refused, not thrown", async () => {
+  const { runner } = manifestRunner({ "deno.json": "{ not json at all" });
+  const decision = await authoriseCrossRepoTarget(CONSUMER, SIBLING, runner);
+  assertEquals(decision.authorised, false);
+});
+
+Deno.test("authoriseCrossRepoTarget - the manifest is read from the default branch, never a caller-chosen ref", async () => {
+  const { runner, calls } = manifestRunner({
+    "deno.json": JSON.stringify({
+      imports: { neat: "jsr:@stsoftware/NEAT-AI-Discovery" },
+    }),
+  });
+  await authoriseCrossRepoTarget(CONSUMER, SIBLING, runner);
+  const read = calls.find((c) => c.join(" ").includes("/contents/"));
+  assertEquals(read?.[0], "gh");
+  assertStringIncludes(
+    (read ?? []).join(" "),
+    `repos/${CONSUMER}/contents/deno.json`,
+  );
+  assertEquals((read ?? []).join(" ").includes("ref="), false);
+});
+
+Deno.test("authoriseCrossRepoTarget - a malformed slug is refused before any command", async () => {
+  const { runner, calls } = manifestRunner({});
+  const decision = await authoriseCrossRepoTarget(
+    CONSUMER,
+    "stSoftwareAU/../escape",
+    runner,
+  );
+  assertEquals(decision.authorised, false);
+  assertEquals(calls.length, 0);
 });

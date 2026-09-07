@@ -14,6 +14,13 @@
  * decision — and returns it alongside the fresh child list needed to exclude
  * the milestone's own tracking issue(s) and to name the children in logs.
  *
+ * Issue #1246: which children are "the milestone's own tracking issue(s)" is
+ * decided by `milestone_tracker_identity.ts`, from the tracking-issue body
+ * marker and a fleet author — never from the title alone, which is text the
+ * issue's own author sets. A candidate that cannot be verified stays an open
+ * child, so the veto this module exists to provide is never relaxed on an
+ * unauthenticated claim.
+ *
  * Deliberate scope decision: `open_issues` counts open **pull requests**
  * assigned to the milestone as well as open issues, and the fresh child list
  * is read from the `/issues` endpoint, which likewise includes PRs. An open
@@ -25,35 +32,21 @@
  */
 
 import type { Result } from "../types.ts";
+import {
+  isMilestoneTrackingTitle,
+  type MilestoneTrackerVerification,
+  partitionMilestoneTrackers,
+} from "./milestone_tracker_identity.ts";
 
 /** Function signature for running gh CLI commands. */
 type GhCommandFn = (args: string[]) => Promise<string>;
 
 /**
- * Regex matching a milestone-tracking-issue title regardless of the inner
- * milestone title or the trailing default-branch name (Issue #2753).
- *
- * The canonical title is `Merge milestone '<title>' to <defaultBranch>`.
- * Matching only the fixed shape — not the exact `<title>`/`<defaultBranch>`
- * text — makes the idempotent lookup robust to the two field-bypass causes:
- *   1. the default branch resolving differently between runs (e.g. one run
- *      sees "Develop", another "main"), and
- *   2. the milestone being renamed after the tracker was filed.
- *
- * The lookups that use this predicate are already scoped to a single
- * milestone, so any tracking-shaped title within that scope is the tracker
- * for that milestone.
+ * Re-exported from `milestone_tracker_identity.ts` (Issue #1246), which owns
+ * every part of "is this the fleet's tracker?" now that the title is only the
+ * pre-filter. Import path preserved for existing callers.
  */
-const MILESTONE_TRACKING_TITLE_RE = /^Merge milestone '.+' to .+$/;
-
-/**
- * Return true when `title` has the milestone-tracking-issue shape
- * `Merge milestone '<title>' to <branch>` (Issue #2753). Leading/trailing
- * whitespace is tolerated so titles that drifted on whitespace still match.
- */
-export function isMilestoneTrackingTitle(title: string): boolean {
-  return MILESTONE_TRACKING_TITLE_RE.test(title.trim());
-}
+export { isMilestoneTrackingTitle };
 
 /** An open child of a milestone — an issue or a pull request. */
 export interface OpenMilestoneChild {
@@ -61,6 +54,13 @@ export interface OpenMilestoneChild {
   title: string;
   /** True when the child is a pull request rather than an issue. */
   isPullRequest: boolean;
+  /**
+   * Issue body, carried so a tracking-shaped child can be checked for the
+   * tracking-issue marker rather than trusted on its title (Issue #1246).
+   */
+  body: string;
+  /** Login of the account that opened the child (Issue #1246). */
+  author: string;
 }
 
 /** GitHub's own view of a milestone's open children, fetched fresh. */
@@ -119,6 +119,12 @@ function parseOpenChildren(raw: string): OpenMilestoneChild[] {
       title: typeof entry.title === "string" ? entry.title : "",
       isPullRequest: entry.pull_request !== undefined &&
         entry.pull_request !== null,
+      body: typeof entry.body === "string" ? entry.body : "",
+      // REST names the issue's opener `user`, not `author` (Issue #1246).
+      author: typeof (entry.user as { login?: unknown } | undefined)?.login ===
+          "string"
+        ? (entry.user as { login: string }).login
+        : "",
     }))
     .sort((a, b) => a.number - b.number);
 }
@@ -146,11 +152,13 @@ function parseOpenChildren(raw: string): OpenMilestoneChild[] {
  * @param repo - Repository in "owner/repo" format
  * @param milestoneNumber - The milestone's GitHub number
  * @param ghCommandFn - Function to execute gh CLI commands
+ * @param verification - Fleet-identity inputs for the tracker check (#1246)
  */
 export async function fetchAuthoritativeOpenChildren(
   repo: string,
   milestoneNumber: number,
   ghCommandFn: GhCommandFn,
+  verification: MilestoneTrackerVerification = {},
 ): Promise<Result<AuthoritativeOpenChildren>> {
   let rawOpenIssues: number;
   try {
@@ -184,11 +192,15 @@ export async function fetchAuthoritativeOpenChildren(
     childListError = err instanceof Error ? err.message : String(err);
   }
 
-  const trackers = allChildren.filter((child) =>
-    isMilestoneTrackingTitle(child.title)
-  );
-  const children = allChildren.filter((child) =>
-    !isMilestoneTrackingTitle(child.title)
+  // Issue #1246: a tracking-shaped *title* is only a candidate. Subtracting a
+  // child from the open count is what finalises the milestone — which merges
+  // the summary PR and deletes the milestone branch — so the exclusion is made
+  // on the tracking-issue body marker plus a fleet author, never on the title
+  // anybody can set. An unverifiable candidate stays an open child.
+  const { trackers, others: children } = await partitionMilestoneTrackers(
+    allChildren,
+    `authoritative open children of milestone #${milestoneNumber} in ${repo}`,
+    verification,
   );
   const openCount = childListAvailable
     ? Math.max(rawOpenIssues - trackers.length, children.length)

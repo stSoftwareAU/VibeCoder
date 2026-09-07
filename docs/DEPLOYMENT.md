@@ -25,7 +25,6 @@ runs itself and is steered entirely through GitHub. See
   - [Using Task Scheduler (Windows)](#using-task-scheduler-windows)
 - [Changing `container_tools` forces an image rebuild](#-changing-container_tools-forces-an-image-rebuild)
 - [Logs](#logs)
-- [GitHub Pages](#github-pages)
 - [Screenshot Support Setup](#screenshot-support-setup)
   - [Screenshot Upload Configuration](#screenshot-upload-configuration)
 
@@ -531,10 +530,19 @@ On macOS, `setup.sh` interactively offers to configure a LaunchAgent that runs t
 When you run `setup.sh` on macOS from a terminal, it asks:
 
 ```
-Install the LaunchAgent now? [Y/n]
+Install the LaunchAgent now? [y/N]
 ```
 
-Answer **Y** (the default) on machines that should run unattended via launchd. Answer **n** on a machine where you keep starting the worker manually with `loop.sh` (for example a laptop in daily interactive use). Non-interactive runs (no TTY) and non-macOS hosts skip the offer automatically — there is no longer a `VIBE_SETUP_LAUNCHAGENT` env var to set.
+Answer **y** on machines that should run unattended via launchd. Answer **n** — or press Enter, which is the default — on a machine where you keep starting the worker manually with `loop.sh` (for example a laptop in daily interactive use). Non-interactive runs (no TTY) and non-macOS hosts skip the offer automatically — there is no longer a `VIBE_SETUP_LAUNCHAGENT` env var to set.
+
+Declining on a host that already has the agent asks what to do with it, and every one of those prompts defaults to **no**: a bare Enter leaves the host exactly as it was (Issue #1369).
+
+```
+Remove the installed LaunchAgent now? [y/N]      ← only an explicit y uninstalls
+Load the LaunchAgent again now? [y/N]            ← offered when the plist is on disk but launchd has no such service
+```
+
+The second prompt is the repair for a host whose agent was booted out: the plist survives, so the old `--status` called it `installed` while nothing ran the worker. `./setup.sh` now asks launchd (`launchctl print gui/<uid>/<label>`) and reloads the plist rather than reporting it up to date.
 
 **Setup with LaunchAgent:**
 ```bash
@@ -543,7 +551,7 @@ VIBE_REPOS="myorg/repo1" \
 VIBE_LAUNCHAGENT_GH_TOKEN="ghp_your_token" \
 VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY="sk-ant-your_key" \
 ./setup.sh
-# → answer Y at the "Install the LaunchAgent now?" prompt
+# → answer y at the "Install the LaunchAgent now?" prompt
 ```
 
 **LaunchAgent environment variables:**
@@ -567,7 +575,7 @@ These only tune the *generated* LaunchAgent (tokens, paths, logs); whether it is
 | `VIBE_SKIP_SCREENSHOT_INSTALL` | Set to `true` to skip browser installation (for testing) |
 | `VIBE_MCP_CONFIG_DIR` | Directory for `.mcp.json` (default: script directory) |
 | `VIBE_SCREENSHOT_DIR` | Directory name for screenshots (default: `docs/evidence`) |
-| `VIBE_BROWSER_PROFILE_DIR` | Disposable directory the browser writes its profile to (default: `/tmp/vibe-playwright-profile-<user>`, per-account since Issue #1242) |
+| `VIBE_BROWSER_PROFILE_DIR` | Disposable directory the browser writes its profile to (default: `/tmp/vibe-playwright-profile-<user>`, per-account since Issue #1242). Must be an **absolute** path outside the checkout — a relative or inside-the-checkout value is refused (Issue #1293) |
 | `VIBE_IMGBB_API_KEY` | ImgBB API key for automatic screenshot uploads, when `.config.json` states no `imgbb_api_key` (Issue #1032) |
 
 **Testing/CI environment variables:**
@@ -749,8 +757,12 @@ nothing below needs doing by hand:
 ```text
 [i]  The Windows scheduled task runs the worker automatically via Task
 [i]  Scheduler (run.ps1 every 5 minutes, and again at logon).
-  Register the scheduled task now? [Y/n]
+  Register the scheduled task now? [y/N]
 ```
+
+Both this prompt and the unregister offer that follows a decline default to
+**no** — a bare Enter leaves the host as it is, matching `setup.sh`
+(Issue #1369).
 
 The registered definition runs `run.ps1` from the checkout every five minutes
 under a logon trigger, with `IgnoreNew` so a second launch never stacks on a
@@ -894,25 +906,6 @@ per-run logs are also size-rotated while a run is in flight.
 
 > **💡 Tip:** The worker automatically strips terminal escape sequences from Claude Code output, ensuring logs contain only human-readable text.
 
-## 🌐 GitHub Pages
-
-The README and documentation (under `docs/`) can be published to GitHub Pages so the site is available at **https://stsoftwareau.github.io/VibeCoder/**.
-
-**To enable:**
-
-1. In the repository, go to **Settings → Pages**.
-2. Under **Build and deployment**, set **Source** to **GitHub Actions**.
-3. Push a change that touches `README.md`, `docs/`, `SECURITY.md`, `AGENTS.md`, `_config.yml`, or `Gemfile` (or run the workflow manually from the Actions tab: **Deploy docs to GitHub Pages**).
-
-The workflow (`.github/workflows/pages.yml`) builds the site with Jekyll: the README is used as the landing page, and all files under `docs/` plus `SECURITY.md` and `AGENTS.md` are published. **Mermaid diagrams** in the markdown (e.g. in the README and workflow docs) are rendered in the browser via [Mermaid.js](https://mermaid.js.org/) loaded from `_includes/head-custom.html`. The site is rebuilt automatically on pushes to `Develop` that change those paths.
-
-**If the workflow reports success but the site shows 404:**
-
-1. **Set source to GitHub Actions** — In the repo go to **Settings → Pages** (under "Code and automation"). Under **Build and deployment**, set **Source** to **GitHub Actions** (not "Deploy from a branch"). If it is "Deploy from a branch", GitHub serves that branch; the Actions workflow uploads a separate artifact that is only used when Source is "GitHub Actions".
-2. **Re-run the workflow** — After changing the source, run **Actions → Deploy docs to GitHub Pages → Run workflow** (or push a change to `Develop` that touches the workflow paths). Wait for the run to complete.
-3. **Check the run** — In the workflow run, open the **build** job and confirm the step "Verify build output" shows `index.html present`. Then confirm the **deploy** job succeeded.
-4. **Cache / URL** — Try the site in a private window or after a short delay: https://stsoftwareau.github.io/VibeCoder/
-
 ## 📸 Screenshot Support Setup
 
 When working on UI changes, the worker can capture screenshots as evidence.
@@ -960,9 +953,9 @@ navigate-and-screenshot smoke test with `--network none`.
 1. Get a free API key from https://api.imgbb.com/
 2. State it in `.config.json` as `"imgbb_api_key": "your-api-key-here"`. The
    `VIBE_IMGBB_API_KEY` variable still works when the file states no key, but
-   since 2.0.0 the file wins when both are set (Issue #1032) and a run that
+   since 1.4.0 the file wins when both are set (Issue #1032) and a run that
    uses the variable says so once — see
-   [Release notes](RELEASE-NOTES.md#200--the-config-file-wins-over-the-environment).
+   [Release notes](RELEASE-NOTES.md#140--the-config-file-wins-over-the-environment).
 3. Screenshots will be automatically uploaded and URLs embedded in the PR
 
 **Option 2: Manual Upload**
@@ -995,10 +988,31 @@ claude "Take a screenshot of http://localhost:3000"
 > (no `--allow-all`). The `--deny-env=...` list blocks the worker's
 > high-value secrets — `VIBE_IMGBB_API_KEY`, `GH_TOKEN`,
 > `GITHUB_APP_PRIVATE_KEY_PATH`, `GIT_SSH_COMMAND`, and `ANTHROPIC_API_KEY`
-> — from being read by the MCP process, so a compromised release cannot
-> exfiltrate them via `Deno.env.get()`. The pin is the canonical knob
+> — from being read by the MCP process via `Deno.env.get()`. That flag binds
+> the Deno runtime only, not the children it spawns under `--allow-run`
+> (Issue #1288), so the generated config **also blanks every one of those
+> names in the server's `env` block** — the map the MCP client merges over the
+> inherited environment, and therefore what a child such as `printenv`
+> actually sees. `--deny-read` / `--deny-write` cover the credential stores
+> (`~/.ssh`, `~/.config/gh`, `$GH_CONFIG_DIR`, the GitHub App private key)
+> that the otherwise unscoped `--allow-read` would reach. The pin is the canonical knob
 > kept in `worker/deno/setup/screenshot.ts` (`PLAYWRIGHT_MCP_VERSION`);
 > Renovate's `minimumReleaseAge: 24 hours` quarantine gates upgrades.
+
+> **Cloud metadata is blocked (Issue #1292).** The server defaults to
+> allowing every origin, and the navigation target comes from issue and PR
+> text anyone can write, so the generated config passes
+> `--blocked-origins` covering the instance-metadata endpoints —
+> `169.254.169.254`, the ECS task-metadata address, the IPv6 IMDS address,
+> `metadata.google.internal` / `metadata.goog` and `100.100.100.100` — each
+> in bare-host and wildcard-port form. Without it a prompt-injected agent
+> could screenshot instance credentials into `docs/evidence/` and have the
+> worker publish that image on a public PR. The hosts are the canonical knob
+> `PLAYWRIGHT_MCP_BLOCKED_HOSTS` in `worker/deno/setup/screenshot.ts`. It is
+> a blocklist, not an allowlist, because loopback (`127.0.0.1`) and arbitrary
+> documentation hosts are legitimate targets; per the package's own caveat it
+> is defence in depth rather than a network boundary, and it does not follow
+> redirects.
 
 > **Dependency quarantine is split by ecosystem.** Deno
 > dependencies (JSR / `deno.land/x`) are quarantined by Deno's **native**
@@ -1021,13 +1035,12 @@ claude "Take a screenshot of http://localhost:3000"
 
 > **CI-installed CLIs are quarantined by pin, not by manifest.**
 > This repo ships no npm manifest, so Renovate's npm manager had nothing to
-> manage and the CLIs CI installs at build time — `markdownlint-cli2`,
-> `pa11y-ci`, `http-server` — sat outside the quarantine entirely;
-> `gem install bundler-audit` sat outside the `Gemfile` tree for the same
-> reason. Every such install now pins an exact version in the workflow, and
+> manage and the CLIs CI installs at build time — `markdownlint-cli2`, plus
+> `pa11y-ci`/`http-server` until Issue #1344 removed the Pages workflow — sat
+> outside the quarantine entirely; `gem install bundler-audit` sat outside the
+> `Gemfile` tree for the same reason. Every such install pins an exact
+> version in the workflow, and
 > `renovate.json` declares `customManagers` matching those pins in
 > `.github/workflows/*.yml`, so the **24h** `minimumReleaseAge` applies to them
 > like any other ecosystem. Installs pass `--ignore-scripts` where the package
-> permits it, keeping install-time lifecycle scripts off the runner — `pa11y-ci`
-> is the one exemption, because its puppeteer dependency fetches the browser
-> from a postinstall script.
+> permits it, keeping install-time lifecycle scripts off the runner.

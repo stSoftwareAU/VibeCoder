@@ -1,13 +1,13 @@
 /**
- * The launchers ask for the log directory, and pass the operator's own
- * override through to it (Issues #872, #873).
+ * The supervisor writes its launch logs where `mod.ts log-dir` says, and
+ * nowhere else (Issues #872, #873, #1388).
  *
- * `loop.sh` used to spell the default itself. It now asks `mod.ts log-dir`,
- * and the one thing that resolution needs from the supervisor is the
- * environment the operator set: an intermediate that blanks `LAUNCH_LOG_DIR`
- * before the child reads it silently loses the override — the launch logs, the
- * run-core log and the container's writable mount all move to the default and
- * nothing says so. That is what this suite pins.
+ * `loop.sh` used to spell the default itself, then honoured `LAUNCH_LOG_DIR`
+ * and `LOG_DIR` from its own environment. On the host, `.config.json` is the
+ * only configuration, so it now takes the resolver's answer and an exported
+ * variable — a shell profile, a crontab line, a unit file — moves nothing.
+ * That is what this suite pins: the launch log lands in the resolved directory
+ * even when both variables point somewhere else.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -50,17 +50,17 @@ async function buildLoopSandbox(tmpDir: string): Promise<void> {
 
   const binDir = join(tmpDir, "bin");
   await Deno.mkdir(binDir, { recursive: true });
-  // The stub records the environment `log-dir` was called with and answers
-  // the way the real command does: the override when there is one.
+  // The stub records that `log-dir` was called and answers the way the real
+  // command does since Issue #1388: the configured directory, whatever the
+  // environment says.
   await Deno.writeTextFile(
     join(binDir, "deno"),
     [
       "#!/bin/bash",
       `case "$*" in`,
       "  *log-dir*)",
-      `    printf 'LAUNCH_LOG_DIR=[%s]\\n' "\${LAUNCH_LOG_DIR-unset}" \\`,
-      `      >> "${tmpDir}/log-dir-env.log"`,
-      `    printf '%s\\n' "\${LAUNCH_LOG_DIR:-\${LOG_DIR:-${tmpDir}/fallback}}"`,
+      `    printf 'log-dir called\\n' >> "${tmpDir}/log-dir-env.log"`,
+      `    printf '%s\\n' "${tmpDir}/resolved"`,
       "    exit 0 ;;",
       "esac",
       `printf '%s\\n' "$*" >> "${tmpDir}/deno-args.log"`,
@@ -105,30 +105,49 @@ async function runLoopBriefly(
   }
 }
 
+/** The launch-*.log names present in a directory, or none when it is absent. */
+async function launchLogsIn(dir: string): Promise<string[]> {
+  const names: string[] = [];
+  try {
+    for await (const entry of Deno.readDir(dir)) {
+      if (entry.name.startsWith("launch-")) names.push(entry.name);
+    }
+  } catch {
+    // The directory was never created — which, for an ignored variable, is
+    // exactly the point.
+  }
+  return names;
+}
+
 Deno.test({
   name:
-    "loop.sh - an operator's LAUNCH_LOG_DIR reaches the resolver and is used (Issues #872, #873)",
+    "loop.sh - the launch log lands where the resolver says, not where LAUNCH_LOG_DIR points (Issue #1388)",
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
     const tmpDir = await Deno.makeTempDir({ prefix: "vibe_loop_logdir_" });
     try {
       await buildLoopSandbox(tmpDir);
-      const chosen = join(tmpDir, "operator-choice");
+      const stale = join(tmpDir, "operator-export");
 
-      await runLoopBriefly(tmpDir, { LAUNCH_LOG_DIR: chosen });
+      await runLoopBriefly(tmpDir, { LAUNCH_LOG_DIR: stale });
 
-      // The child that resolves the directory must see the operator's value,
-      // not an empty string the supervisor blanked on its way past.
       const seen = await Deno.readTextFile(join(tmpDir, "log-dir-env.log"));
-      assertStringIncludes(seen, `LAUNCH_LOG_DIR=[${chosen}]`);
+      assertStringIncludes(
+        seen,
+        "log-dir called",
+        "the supervisor asked the resolver",
+      );
 
-      // And the supervisor must actually write its launch log there.
-      const entries: string[] = [];
-      for await (const entry of Deno.readDir(chosen)) entries.push(entry.name);
+      const resolved = await launchLogsIn(join(tmpDir, "resolved"));
       assert(
-        entries.some((name) => name.startsWith("launch-")),
-        `no launch log in the chosen directory: ${entries.join(", ")}`,
+        resolved.length > 0,
+        "the launch log must be written in the resolved directory",
+      );
+      assertEquals(
+        await launchLogsIn(stale),
+        [],
+        "an exported LAUNCH_LOG_DIR must move nothing",
       );
     } finally {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
@@ -137,27 +156,26 @@ Deno.test({
 });
 
 Deno.test({
-  name: "loop.sh - LOG_DIR alone is honoured the same way (Issues #872, #873)",
+  name: "loop.sh - LOG_DIR is ignored the same way (Issue #1388)",
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
     const tmpDir = await Deno.makeTempDir({ prefix: "vibe_loop_logdir_" });
     try {
       await buildLoopSandbox(tmpDir);
-      const chosen = join(tmpDir, "log-dir-choice");
+      const stale = join(tmpDir, "log-dir-export");
 
-      await runLoopBriefly(tmpDir, { LOG_DIR: chosen });
+      await runLoopBriefly(tmpDir, { LOG_DIR: stale });
 
-      const entries: string[] = [];
-      for await (const entry of Deno.readDir(chosen)) entries.push(entry.name);
       assert(
-        entries.some((name) => name.startsWith("launch-")),
-        `no launch log in the chosen directory: ${entries.join(", ")}`,
+        (await launchLogsIn(join(tmpDir, "resolved"))).length > 0,
+        "the launch log must be written in the resolved directory",
       );
-      // LAUNCH_LOG_DIR was never set, so the resolver must be told so rather
-      // than handed an empty string that would read as "set to nothing".
-      const seen = await Deno.readTextFile(join(tmpDir, "log-dir-env.log"));
-      assertEquals(seen.includes("LAUNCH_LOG_DIR=[]"), false, seen);
+      assertEquals(
+        await launchLogsIn(stale),
+        [],
+        "an exported LOG_DIR must move nothing",
+      );
     } finally {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
     }

@@ -106,7 +106,7 @@ provenance, collected by
 [`collect_self_diagnostic_candidates.ts`](../../worker/deno/lib/collect_self_diagnostic_candidates.ts).
 `top-priority` and `work-on` remain human-only, unconditionally.
 
-**Three signals must agree** (`self_diagnostic_provenance.ts`) — author alone
+**Four signals must agree** (`self_diagnostic_provenance.ts`) — author alone
 is not enough, because an injected agent can file issues too:
 
 1. **Repo** — the issue is in the worker's own repo (`stSoftwareAU/VibeCoder`),
@@ -118,6 +118,35 @@ is not enough, because an injected agent can file issues too:
    forgery through a filed body is closed at the source: the filers escape
    `<!--`/`-->` out of every interpolated field.
 3. **Author** — it was filed by a fleet worker login.
+4. **Filing attestation** — the worker's own filer recorded the created issue
+   number, and a digest of the title and body it posted, in the tamper-evident
+   audit chain under the `file-self-diagnostic` verb
+   (`self_diagnostic_attestation.ts`, Issue #1277).
+
+Signals 1–3 are all things the **agent subprocess** can produce: it holds the
+run's `gh` credential, its writes are allowed in the claimed repo, and it
+writes the very body the marker lives in — so on their own they reduce to
+"filed by the worker account", which is not provenance. Signal 4 cannot be
+produced through GitHub at all: the journal lives outside every working tree,
+the agent's own `gh` calls are journalled under the mutation classifier's verb
+rather than this one, and only a journal whose hash chain reconciles with its
+chain anchor is read — so a hand-appended line, a rewritten entry, and a
+freshly dropped unanchored journal file are all skipped rather than believed.
+The audit store is tamper-*evident* rather than tamper-proof, so an agent with
+unrestricted local shell could still forge a journal, its anchor and its roster
+entry together; that is a far higher bar than typing a marker into an issue
+body, and it leaves a permanent record outside the repo.
+
+The content digest closes the follow-on move — rewriting a genuinely-filed
+diagnostic's title or body no longer makes it self-schedulable, because the
+attestation covers what the filer posted.
+
+Two consequences worth knowing: attestations are **host-local**, so a
+diagnostic is self-scheduled by the host that filed it and waits for a human on
+any other; and diagnostics filed before this gate existed carry no attestation,
+so they too wait for a human `work-on`. An unattested marker-bearing issue is
+never lost — the refusal is logged, the issue stays open, and a human `work-on`
+schedules it exactly as before.
 
 **Bounded, visible and reversible:**
 
@@ -135,7 +164,9 @@ tier 2b, so applying the label schedules a diagnostic *sooner*.
 flowchart LR
     A["Diagnostic auto-filed<br/>(marker in body)"] --> B{Repo + marker<br/>+ author agree?}
     B -- no --> W[Waits for a human `work-on`]
-    B -- yes --> C{Under the<br/>in-flight cap?}
+    B -- yes --> X{Filing attested<br/>in the audit chain?<br/>number + body digest}
+    X -- no --> W
+    X -- yes --> C{Under the<br/>in-flight cap?}
     C -- no --> R[Refused + logged]
     C -- yes --> D{Gates pass?<br/>milestone / PR / deps}
     D -- "merged PR<br/>(permanent)" --> E[needs-human + comment]
@@ -503,7 +534,7 @@ gitGraph
 - **Push rejected:** Pull/rebase and retry push; if conflict, create fresh branch and retry (see [resilience-and-concurrency.md](resilience-and-concurrency.md)).
 - **Timed-out run — WIP preserved, but no half-done PR:** A hard timeout with a dirty tree commits the work as a `wip:` commit on the claim-locked issue branch and pushes it, so the next claim (or a human) resumes from the branch instead of starting from zero; the release comment names the branch. Because that commit leaves the branch *ahead of base*, the completion phase adds a second guard beside the ahead-of-base check: when **every** commit ahead of base is a worker-authored WIP marker (`wip: …` or `WIP checkpoint: …`) **and** the branch tip is exactly where it stood before this run's agent started, no PR is raised — the resume must advance the branch first. Anything the guard cannot determine (the pre-run HEAD was unreadable, the commit log failed) fails open and the PR proceeds. See [`wip_commit_marker.ts`](../../worker/deno/lib/wip_commit_marker.ts) and [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
 - **Preservation runs before the existing-PR lookup:** An interrupted execute (timeout, SIGKILL, external SIGTERM) preserves its work **first**, then asks whether a PR exists. The order matters: the "a PR already exists → treat the run as a success" self-heal used to run first, so *any* PR for the issue — including a sibling host's, and including one already merged — skipped preservation entirely and the run's uncommitted work was discarded. The completion phase's "no commits ahead" bail-out preserves the tree the same way instead of only reporting that uncommitted changes were present. See [`phases/run_wip_preservation.ts`](../../worker/deno/lib/phases/run_wip_preservation.ts).
-- **Portable handover note (Issue #769):** Preservation saves the run's *code*; the note saves its *intent*. Beside the `wip:` commit the worker writes `docs/archive/handover/issue-<N>.md` into the clone **before** the commit runs, so the same `commitAndPushPending` carries it to the issue branch. It names the interruption cause, the branch, what was done (the commits this run added and the files it left uncommitted), what remains, and whether a wind-down notice was delivered — all from what the worker already knows, so it needs no agent call and works on the timeout path where no agent is alive. Everything in it is provider-neutral: no host paths, no session ids, nothing specific to one agent. Each interruption **rewrites** the note and keeps a short "previous attempts" tail, so a third claim can see two prior runs were interrupted. The path is the single constant `handoverFilePath()` in [`preserved_wip_branch.ts`](../../worker/deno/lib/preserved_wip_branch.ts), shared with the release comment that advertises it (Issue #770) and the resuming prompt that reads it (Issue #771) — not the `.vibe/…` the issue sketched, because [`gitignore_enforcer.ts`](../../worker/deno/lib/gitignore_enforcer.ts) ignores every hidden path in a monitored repo and [`pre_commit_safety.ts`](../../worker/deno/lib/pre_commit_safety.ts) refuses to commit one, so `git add -A` would have dropped the note silently; `docs/archive/` is excluded from the Jekyll build, the markdownlint globs and the page-title manifest, so free agent prose on a WIP branch cannot trip a docs gate. When the phase-end checkpoint has already left the tree clean, the note alone is committed as `wip: handover note …`, which the #148 WIP-only gate still refuses to build a PR from. A failed write is logged and non-fatal: losing the note never costs the code. See [`handover_note.ts`](../../worker/deno/lib/handover_note.ts).
+- **Portable handover note (Issue #769):** Preservation saves the run's *code*; the note saves its *intent*. Beside the `wip:` commit the worker writes `docs/archive/handover/issue-<N>.md` into the clone **before** the commit runs, so the same `commitAndPushPending` carries it to the issue branch. It names the interruption cause, the branch, what was done (the commits this run added and the files it left uncommitted), what remains, and whether a wind-down notice was delivered — all from what the worker already knows, so it needs no agent call and works on the timeout path where no agent is alive. Everything in it is provider-neutral: no host paths, no session ids, nothing specific to one agent. Each interruption **rewrites** the note and keeps a short "previous attempts" tail, so a third claim can see two prior runs were interrupted. The path is the single constant `handoverFilePath()` in [`preserved_wip_branch.ts`](../../worker/deno/lib/preserved_wip_branch.ts), shared with the release comment that advertises it (Issue #770) and the resuming prompt that reads it (Issue #771) — not the `.vibe/…` the issue sketched, because [`gitignore_enforcer.ts`](../../worker/deno/lib/gitignore_enforcer.ts) ignores every hidden path in a monitored repo and [`pre_commit_safety.ts`](../../worker/deno/lib/pre_commit_safety.ts) refuses to commit one, so `git add -A` would have dropped the note silently; `docs/archive/` is excluded from the markdownlint globs, so free agent prose on a WIP branch cannot trip a docs gate. When the phase-end checkpoint has already left the tree clean, the note alone is committed as `wip: handover note …`, which the #148 WIP-only gate still refuses to build a PR from. A failed write is logged and non-fatal: losing the note never costs the code. See [`handover_note.ts`](../../worker/deno/lib/handover_note.ts).
 - **Superseded by another PR (`superseded:pr#N`):** The existing-PR lookup distinguishes an **open** PR (work in flight — the run continues, as before) from a **merged or closed** one (this run has nothing left to raise). A merged sibling PR stops the run cleanly: the claim releases with a `superseded` outcome naming the PR and the branch any preserved WIP is on, the issue is **not** labelled failed, and no `unknown`-class run-failure issue is filed. Every lookup failure fails safe to "open", so a `gh` hiccup can never invent a superseded stop. See [`superseding_pr.ts`](../../worker/deno/lib/superseding_pr.ts) and [`run_outcome.ts`](../../worker/deno/lib/run_outcome.ts).
 
 ```mermaid

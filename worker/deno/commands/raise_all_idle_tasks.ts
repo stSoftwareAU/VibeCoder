@@ -25,6 +25,7 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import { coerceStringListFlag } from "../lib/command_args.ts";
 import {
   raiseAllIdleTasks,
   type RaiseAllIdleTasksOptions,
@@ -46,14 +47,6 @@ interface TestDeps {
   rootDir?: RaiseAllIdleTasksOptions["rootDir"];
 }
 
-function splitCsv(value: unknown): string[] {
-  if (typeof value !== "string" || value.length === 0) return [];
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
-
 export const raiseAllIdleTasksCommand: Command = {
   name: "raise-all-idle-tasks",
   description:
@@ -69,7 +62,17 @@ export const raiseAllIdleTasksCommand: Command = {
     const log = deps.log ?? ((line: string) => console.log(line));
 
     // Explicit --monitored-repos wins; otherwise fall back to config.repos.
-    let repos = splitCsv(args["monitored-repos"]);
+    // A value that is present but unreadable is refused, not treated as
+    // absent (Issue #1266): falling back would silently widen an unattended
+    // sweep from the named repo to every configured one.
+    const reposResult = coerceStringListFlag(
+      args["monitored-repos"],
+      "monitored-repos",
+    );
+    if (!reposResult.ok) {
+      return { success: false, message: reposResult.error.message };
+    }
+    let repos = reposResult.value;
     if (repos.length === 0 && Array.isArray(config?.repos)) {
       repos = config.repos.filter((r): r is string => typeof r === "string");
     }

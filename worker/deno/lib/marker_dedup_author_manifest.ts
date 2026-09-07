@@ -155,9 +155,14 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES: readonly string[] = [];
  * close-out path (#1244): a `gh search issues --match body` with no `--search`
  * expression, a plain `gh issue list` matched client-side, and two
  * `gh issue view --json …,comments` reads — four sites the scanner cannot
- * classify, each now filtered through this module's author check. Both lists were empty while six
- * live instances of the class sat in the tree, which is what #1216 found and
- * fixed.
+ * classify, each now filtered through this module's author check. So too is a
+ * gate that makes no `gh` call of its own and reads the marker out of a blob
+ * another module assembled — the clarity gate's clarification round limit
+ * counted a `## Clarification Needed` heading across the concatenated comment
+ * text handed to the model, which is every comment including the untrusted
+ * ones (`label_clarification.ts`, #1263, fixed there against the fleet
+ * identity). Both lists were empty while six live instances of the class sat
+ * in the tree, which is what #1216 found and fixed.
  *
  * Cleared by Issue #1124 — what each of the original entries needed, and where
  * the control now lives:

@@ -9,8 +9,9 @@
  * This collector closes that loop **without weakening any label guard**.
  * Nothing here applies a label; `top-priority` and `work-on` stay human-only
  * unconditionally. Instead an auto-filed diagnostic becomes claimable on its
- * provenance — see `self_diagnostic_provenance.ts` for the three signals
- * (repo, marker, author) that must agree.
+ * provenance — see `self_diagnostic_provenance.ts` for the four signals
+ * (repo, marker, author, and the filing attestation of
+ * `self_diagnostic_attestation.ts`) that must agree.
  *
  * The emitted candidates form tier 2b: below both human-scheduled tiers,
  * above the backlog (`issue_priority.ts`).
@@ -21,6 +22,12 @@
  *     nothing, restoring the previous behaviour exactly.
  *   - **Repo** — only `SELF_DIAGNOSTIC_REPO`; a worker-filed issue in
  *     a product repo is never self-scheduled.
+ *   - **Filing attestation** (Issue #1277) — the worker's own filer must
+ *     have recorded this issue number, and a digest of the body it posted,
+ *     in the tamper-evident audit chain (`self_diagnostic_attestation.ts`).
+ *     The body marker alone is written by whoever writes the body, so on
+ *     its own it reduced the gate to "filed by the worker account" — the
+ *     signal this module's own comments call insufficient.
  *   - **Cap** — at most `self_schedule_diagnostics_max_in_flight`
  *     diagnostics in flight (assigned = claimed), so a misfiring detector
  *     cannot fill the queue with its own work. The surplus is refused and
@@ -71,6 +78,10 @@ import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { escalateUnworkableWorkOn } from "./escalate_unworkable_work_on.ts";
 import { recordMutation, resolveRunId } from "./audit_journal.ts";
 import {
+  type AttestationVerdict,
+  verifySelfDiagnosticFilings,
+} from "./self_diagnostic_attestation.ts";
+import {
   buildSelfScheduleAnnouncement,
   buildUnschedulableDiagnosticEscalation,
   formatSelfScheduleMarker,
@@ -96,7 +107,7 @@ const DEFAULT_MAX_IN_FLIGHT = 1;
 export interface SelfScheduleRefusal {
   issueNumber: number;
   /** Short machine-readable cause, e.g. `cap-reached`. */
-  cause: "cap-reached" | "audit-failed" | "announce-failed";
+  cause: "cap-reached" | "audit-failed" | "announce-failed" | "unattested";
   /** Human-readable detail for the log line. */
   detail: string;
 }
@@ -117,6 +128,14 @@ export interface SelfDiagnosticDeps {
     issueNumber: number;
     family: SelfDiagnosticFamily;
   }) => Promise<boolean>;
+  /**
+   * Check which candidate issues the worker's own filer created
+   * (Issue #1277). Defaults to reading the real audit journals.
+   */
+  verifyFilings?: (
+    repo: string,
+    issues: readonly { number: number; body?: string }[],
+  ) => Promise<Map<number, AttestationVerdict>>;
   /** Sink for refusal/decision lines. Defaults to `console.error`. */
   log?: (message: string) => void;
   /**
@@ -190,7 +209,7 @@ export async function collectSelfDiagnosticCandidates(
     [],
     config.fleetPrAuthors,
   );
-  const recognised = repoAllIssues
+  const marked = repoAllIssues
     .map((issue) => ({ issue, family: recogniseSelfDiagnostic(issue.body) }))
     .filter((
       entry,
@@ -198,14 +217,15 @@ export async function collectSelfDiagnosticCandidates(
       entry.family !== null &&
       isFleetAuthor(entry.issue.author, fleetWorkerLogins)
     );
-  if (recognised.length === 0) return empty();
+  if (marked.length === 0) return empty();
 
   // An assigned diagnostic is a claimed one — the assignee is the fleet's
-  // claim lock — so that is what "in flight" counts.
-  const inFlight =
-    recognised.filter((e) => e.issue.assignees.length > 0).length;
+  // claim lock — so that is what "in flight" counts. Counted over every
+  // marked diagnostic, attested or not: an unattested one this route will
+  // not schedule may still be claimed, and it still occupies the slot.
+  const inFlight = marked.filter((e) => e.issue.assignees.length > 0).length;
   const familyByNumber = new Map(
-    recognised.map((e) => [e.issue.number, e.family]),
+    marked.map((e) => [e.issue.number, e.family]),
   );
 
   // Issues a human already scheduled belong to their own tier; the
@@ -219,8 +239,8 @@ export async function collectSelfDiagnosticCandidates(
     ].filter((l) => typeof l === "string" && l !== ""),
   );
 
-  const filtered = filterAndSort(
-    recognised.map((e) => e.issue).filter((issue) =>
+  const eligible = filterAndSort(
+    marked.map((e) => e.issue).filter((issue) =>
       !issue.labels.some((l) => humanScheduled.has(l))
     ),
     {
@@ -232,9 +252,50 @@ export async function collectSelfDiagnosticCandidates(
       needsHumanLabel: config.needsHumanLabel,
     },
   );
-  if (filtered.length === 0) return empty();
+  if (eligible.length === 0) return empty();
 
-  const refusals: SelfScheduleRefusal[] = [];
+  // Issue #1277: the marker is body text, and an injected agent holding the
+  // run's `gh` credential writes bodies in this very repo. So the marker is
+  // only provenance when the worker's own filer attested the filing out of
+  // band — the issue number and a digest of the title and body it posted, in
+  // the tamper-evident audit chain. Everything else is refused loudly and
+  // waits for a human. Run after the label filters above so an issue that was
+  // never a tier-2b candidate is not refused on every scan.
+  const attestationRefusals: SelfScheduleRefusal[] = [];
+  const verifyFilings = deps.verifyFilings ?? verifySelfDiagnosticFilings;
+  const verdicts = await verifyFilings(
+    repo,
+    eligible.map((issue) => ({
+      number: issue.number,
+      title: issue.title,
+      body: issue.body,
+      familyId: familyByNumber.get(issue.number)!.id,
+    })),
+  );
+  const filtered = eligible.filter((issue) => {
+    const verdict = verdicts.get(issue.number);
+    if (verdict?.attested) return true;
+    const detail = verdict?.attested === false
+      ? `${verdict.reason}: ${verdict.detail}`
+      : "no filing attestation was returned for this issue";
+    attestationRefusals.push({
+      issueNumber: issue.number,
+      cause: "unattested",
+      detail,
+    });
+    log(
+      `[self-schedule] refused ${repo}#${issue.number}: ${detail} — a body ` +
+        `marker is written by whoever writes the body, so it is not ` +
+        `provenance on its own; the diagnostic waits for a human \`work-on\``,
+    );
+    diag?.logIssueSkipped(repo, issue.number, "self-schedule-refused", detail);
+    return false;
+  });
+  if (filtered.length === 0) {
+    return { candidates: [], refusals: attestationRefusals };
+  }
+
+  const refusals: SelfScheduleRefusal[] = [...attestationRefusals];
   let remaining = maxInFlight - inFlight;
   if (remaining <= 0) {
     // Fail loud: a refused diagnostic is reported, never dropped quietly.

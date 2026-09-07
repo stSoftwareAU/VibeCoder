@@ -31,9 +31,8 @@
  * and take the WIP commit down with it.
  *
  * `docs/archive/` rather than `docs/` because a handover carries free agent
- * prose: `_config.yml` excludes the archive from the Jekyll build for exactly
- * that reason (a stray `{%` in a PR summary breaks the Pages build), and a
- * branch that later merges must not take the site down with it.
+ * prose, which the markdownlint globs deliberately exclude — a docs gate must
+ * not fail on an interrupted run's own note.
  * `preserved_wip_branch_test.ts` pins both properties.
  */
 export function handoverFilePath(issueNumber: number): string {

@@ -19,6 +19,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import { installConsoleRedaction } from "./lib/console_redaction.ts";
 import {
   formatPassDuration,
   integrationTestPass,
@@ -28,6 +29,10 @@ import {
 
 /** Run both passes, stopping at the first failure. */
 async function main(): Promise<void> {
+  // Issue #1280 (SEC-1217-12): every entry point patches its own console —
+  // this one prints pass labels alongside inherited `deno test` output.
+  installConsoleRedaction();
+
   const options = {
     denoCmd: Deno.execPath(),
     env: Deno.env.toObject(),

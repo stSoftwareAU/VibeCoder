@@ -43,6 +43,11 @@ import { terminalStyler } from "../lib/console_style.ts";
 import { type EnvLookup, processEnvLookup } from "../lib/env_lookup.ts";
 import { resolveRunMode, type RunMode } from "../lib/run_mode.ts";
 import {
+  type ConsentReader,
+  isAffirmative,
+  readConsentLine,
+} from "./consent_prompt.ts";
+import {
   CONTAINER_RUNTIME_TOOL,
   offerContainerRuntimeInstall,
 } from "./container_runtime_install.ts";
@@ -163,16 +168,36 @@ const MANAGER_LABELS: Readonly<Record<string, string>> = {
 };
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 
-/** Ask on the terminal, defaulting to no — a bare Enter declines. */
-async function defaultConfirm(question: string): Promise<boolean> {
-  await Deno.stdout.write(encoder.encode(`?  ${question} `));
-  const buffer = new Uint8Array(256);
-  const read = await Deno.stdin.read(buffer);
-  if (read === null) return false;
-  const answer = decoder.decode(buffer.subarray(0, read)).trim().toLowerCase();
-  return answer === "y" || answer === "yes";
+/** The terminal edges of {@link terminalConfirm}, injectable for tests. */
+export interface ConsentPromptSeams {
+  /** Where the answer is read. Defaults to `Deno.stdin`. */
+  reader?: ConsentReader;
+  /** Where the question is written. Defaults to `Deno.stdout`. */
+  write?: (chunk: Uint8Array) => Promise<number>;
+}
+
+/**
+ * Ask on the terminal, defaulting to no — a bare Enter declines.
+ *
+ * The answer is read one whole line at a time (Issue #1346). The offer asks
+ * once per failing prerequisite, so a fixed-size read left the tail of a long
+ * answer in the buffer to consent to the NEXT tool's install — a package
+ * installed on the operator's host in answer to a question they never saw.
+ * {@link readConsentLine} consumes exactly one line and discards the rest, so
+ * typing ahead can at worst leave the next prompt with nothing, which
+ * declines.
+ */
+export function terminalConfirm(
+  seams: ConsentPromptSeams = {},
+): (question: string) => Promise<boolean> {
+  const reader = seams.reader ?? Deno.stdin;
+  const write = seams.write ??
+    ((chunk: Uint8Array) => Deno.stdout.write(chunk));
+  return async (question: string): Promise<boolean> => {
+    await write(encoder.encode(`?  ${question} `));
+    return isAffirmative(await readConsentLine(reader));
+  };
 }
 
 /**
@@ -408,7 +433,7 @@ export async function offerMissingPrerequisites(
       reporter.info(`--auto-install consented to: ${question}`);
       return Promise.resolve(true);
     }
-    : defaultConfirm);
+    : terminalConfirm());
   const runStep = opts.runStep ?? defaultRunStep;
   const recheck = opts.recheck ??
     ((tool: string) =>

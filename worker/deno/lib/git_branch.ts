@@ -10,12 +10,17 @@
  */
 
 import type { Result } from "../types.ts";
-import { runGitCommand, runGitCommandChecked } from "./git_timeout.ts";
+import { runGitCommand } from "./git_timeout.ts";
 import type { GitCommandOptions, GitCommandOutput } from "./git_timeout.ts";
 import {
   buildCheckoutResetBranchArgs,
   buildFetchArgs,
+  buildPushCreateBranchArgs,
 } from "./git_ref_args.ts";
+import {
+  describeLocalMilestoneBranch,
+  inspectLocalMilestoneBranch,
+} from "./milestone_local_branch.ts";
 
 /** Protected branch names (case-insensitive). */
 const PROTECTED_BRANCHES = new Set([
@@ -337,10 +342,12 @@ function describeGitFailure(
  * than a generic message (Issue #3910) — callers surface it to a human
  * instead of quietly retargeting the work at the default branch.
  *
- * When the remote milestone ref is absent the local branch is always
- * recreated from the default branch (Issue #4002). These are unattended
- * machines: pushing a stale local branch of the same name is what made a
- * rules-protected repository reject the push and stop for a human.
+ * When the remote milestone ref is absent the branch is created ON ORIGIN by
+ * pushing the default branch ref straight to the milestone ref name — no
+ * local checkout takes part (Issue #1345), so a stale local branch of the
+ * same name can neither block the creation nor reach the remote (Issue
+ * #4002). Whatever local ref exists is left exactly as it is and named in one
+ * log line; nothing is deleted or reset.
  *
  * @param milestoneBranch - The milestone branch name
  * @param defaultBranch - The default branch to create from
@@ -391,60 +398,75 @@ export async function ensureMilestoneBranchExists(
     await ensureDefaultBranchCurrentFn(defaultBranch, options);
   }
 
-  // The remote milestone ref is absent, so the remote carries no history to
-  // preserve: recreate the local branch from the default branch, discarding
-  // any local-only commits (Issue #4002). A stale local branch of the same
-  // name — e.g. one carrying a merge commit the repository's rules forbid —
-  // must never be pushed as the milestone branch, so `checkout -B` resets it
-  // rather than falling back to checking it out. Mirrors the Issue #1501
-  // precedent in createFeatureBranchFromBase above.
-  const createArgs = ["checkout", "-B", milestoneBranch, defaultBranch];
-  const createResult = await runGitCommand(createArgs, options);
-
-  if (!createResult.ok || createResult.value.code !== 0) {
-    diagnostics.push(describeGitFailure(createArgs, createResult));
-    // The default branch may exist only as a remote-tracking ref (shallow or
-    // single-branch clones), so retry from origin before giving up.
-    const remoteBaseArgs = [
-      "checkout",
-      "-B",
-      milestoneBranch,
-      `origin/${defaultBranch}`,
-    ];
-    const remoteBaseResult = await runGitCommand(remoteBaseArgs, options);
-    if (!remoteBaseResult.ok || remoteBaseResult.value.code !== 0) {
-      diagnostics.push(describeGitFailure(remoteBaseArgs, remoteBaseResult));
-      return {
-        ok: false,
-        error: new Error(
-          `Failed to create milestone branch ${milestoneBranch} from ${defaultBranch}: ${
-            diagnostics.join(" | ")
-          }`,
-        ),
-      };
-    }
+  // Refresh the default branch's remote-tracking ref so the branch is created
+  // at the remote's own tip. Non-fatal on its own — the local ref is the
+  // fallback below — but a milestone branch created from a possibly stale
+  // local base is not something to leave unsaid, and it explains a later push
+  // failure (Issue #3910). Same shape as createFeatureBranchFromBase above.
+  const defaultFetchArgs = buildFetchArgs("origin", defaultBranch);
+  const defaultFetch = await runGitCommand(defaultFetchArgs, options);
+  const defaultFetchOk = defaultFetch.ok && defaultFetch.value.code === 0;
+  if (!defaultFetchOk) {
+    const failure = describeGitFailure(defaultFetchArgs, defaultFetch);
+    diagnostics.push(failure);
+    console.warn(
+      `[git_branch] Warning: failed to fetch origin/${defaultBranch} before ` +
+        `creating ${milestoneBranch} (${failure}); falling back to the local ref`,
+    );
   }
 
-  // Push to remote
-  const pushResult = await runGitCommandChecked(
-    ["push", "-u", "origin", milestoneBranch],
-    options,
-  );
+  // The remote milestone ref is absent, so the remote carries no history to
+  // preserve: create the branch ON ORIGIN by pushing the default branch ref
+  // straight to the milestone ref name (Issue #1345). No local checkout takes
+  // part, so nothing local can block the creation — NEAT-AI-Ockham#133 failed
+  // three times because a stale local checkout in another worktree held the
+  // branch name and `git checkout -B` is refused outright in that state
+  // ("fatal: 'milestone/x' is already used by worktree at …"), which escalated
+  // the run to a human on every attempt.
+  //
+  // Pushing the default branch ref also keeps the Issue #4002 invariant: a
+  // stale local branch of the same name — e.g. one carrying a merge commit the
+  // repository's rules forbid — is never what reaches the remote.
+  const sourceRefs = defaultFetchOk
+    ? [`origin/${defaultBranch}`, defaultBranch]
+    : [defaultBranch, `origin/${defaultBranch}`];
 
-  if (!pushResult.ok) {
-    diagnostics.push(pushResult.error.message);
+  for (const sourceRef of sourceRefs) {
+    const pushArgs = buildPushCreateBranchArgs(
+      "origin",
+      sourceRef,
+      milestoneBranch,
+    );
+    const pushResult = await runGitCommand(pushArgs, options);
+    if (!pushResult.ok || pushResult.value.code !== 0) {
+      diagnostics.push(describeGitFailure(pushArgs, pushResult));
+      continue;
+    }
+
+    // Nothing local was touched. Say so once, naming the checkout that used
+    // to block the creation, so an operator can find it without the run
+    // having deleted or reset anyone's work (Issue #1345).
+    const note = describeLocalMilestoneBranch(
+      milestoneBranch,
+      await inspectLocalMilestoneBranch(milestoneBranch, options),
+      sourceRef,
+    );
+    if (note !== null) {
+      console.warn(`[git_branch] ${note}`);
+    }
+
     return {
-      ok: false,
-      error: new Error(
-        `Failed to push milestone branch ${milestoneBranch}: ${
-          diagnostics.join(" | ")
-        }`,
-      ),
+      ok: true,
+      value: `Milestone branch ${milestoneBranch} created on origin from ` +
+        `${sourceRef} (no local checkout)`,
     };
   }
 
   return {
-    ok: true,
-    value: `Milestone branch ${milestoneBranch} created and pushed to origin`,
+    ok: false,
+    error: new Error(
+      `Failed to push milestone branch ${milestoneBranch} to origin from ` +
+        `${defaultBranch}: ${diagnostics.join(" | ")}`,
+    ),
   };
 }

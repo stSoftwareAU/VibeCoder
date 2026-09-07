@@ -75,8 +75,12 @@ Deno.test("merge_conflict - builds with every placeholder substituted", async ()
   );
   assert(systemPrompt.length > 0);
   assertStringIncludes(prompt, "PR #4321");
-  assertStringIncludes(prompt, "`main`");
-  assertStringIncludes(prompt, "worker/deno/lib/foo.ts");
+  // The base branch and the conflicted paths are attacker-chosen, so they now
+  // render inside this run's untrusted fence rather than inline in the prose
+  // (Issue #1377) — this assertion checks the fenced rendering that replaced
+  // the previous inline `main` splice.
+  assertStringIncludes(prompt, "```\nmain\n```");
+  assertStringIncludes(prompt, "```\nworker/deno/lib/foo.ts\n```");
   assertStringIncludes(prompt, "Run ./quality.sh");
 });
 

@@ -19,6 +19,7 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import { coerceBooleanFlag } from "../lib/command_args.ts";
 import {
   detectMissingQualityTools,
   detectTool,
@@ -48,12 +49,25 @@ export const qualityHelpersCommand: Command = {
     switch (operation) {
       case "format-failure-message": {
         const qualityOutput = String(args["quality-output"] ?? "");
-        const baselinePassed = args["baseline-passed"] !== "false";
+        // See Issue #1266: the old `!== "false"` test could never be
+        // satisfied, so a failing baseline always read as a passing one.
+        const baselinePassedResult = coerceBooleanFlag(
+          args["baseline-passed"],
+          "baseline-passed",
+          true,
+        );
+        if (!baselinePassedResult.ok) {
+          return {
+            success: false,
+            message: baselinePassedResult.error.message,
+          };
+        }
+        const baselinePassed = baselinePassedResult.value;
         const baselineOutput = String(args["baseline-output"] ?? "");
 
         const message = formatQualityFailureMessage(
           qualityOutput,
-          baselinePassed ? true : false,
+          baselinePassed,
           baselineOutput || undefined,
         );
         return {

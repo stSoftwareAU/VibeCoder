@@ -50,10 +50,16 @@ import {
   MAX_RESTAGE_ATTEMPTS,
 } from "./gh_credential_stage.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
-import { enforceGhWriteAllowlist } from "./write_repo_allowlist.ts";
+import {
+  enforceGhWriteAllowlist,
+  installationTokenRepoScope,
+} from "./write_repo_allowlist.ts";
 import { auditGhMutation } from "./audit_hook.ts";
-import { redactGhBodyArgs } from "./gh_body_redaction.ts";
-import { denoBodyFileReader, denoBodyFileWriter } from "./gh_body_file_io.ts";
+import {
+  type BodyFileWriter,
+  redactGhBodyArgs,
+} from "./gh_body_redaction.ts";
+import { bodyFileWriterIn, denoBodyFileReader } from "./gh_body_file_io.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { noteGhIssueClose } from "./issue_close_notifier.ts";
 import {
@@ -133,20 +139,103 @@ export type GhSpawnRunner = (
  * When GitHub App authentication is configured, injects `GH_TOKEN` for this
  * subprocess only (Issue #959); otherwise returns `undefined` so the process
  * inherits ambient OAuth auth.
+ *
+ * The token is minted **scoped to the run's write-repo allowlist**
+ * (Issue #1391) — the credential handed to the subprocess cannot reach a repo
+ * this run may not write to, so a write that gets past
+ * `enforceGhWriteAllowlist` is still refused by GitHub. Before a run seeds an
+ * allowlist the scope is `null` and the token keeps the installation's full
+ * reach, matching the allowlist's own fail-open-until-seeded rule.
  */
 export async function buildGhEnv(): Promise<
   Record<string, string> | undefined
 > {
-  const token = await getGhTokenForSubprocess(
-    Deno.env.get("GITHUB_APP_ID"),
-    Deno.env.get("GITHUB_APP_INSTALLATION_ID"),
-    Deno.env.get("GITHUB_APP_PRIVATE_KEY_PATH"),
-  );
+  const token = await mintRunScopedGhToken();
   if (!token) return undefined;
 
   const env: Record<string, string> = { ...Deno.env.toObject() };
   env["GH_TOKEN"] = token;
   return env;
+}
+
+/** Mints the credential a subprocess authenticates with. Injectable for tests. */
+export type GhTokenMinter = () => Promise<string | undefined>;
+
+/**
+ * Mint an installation token scoped to the run's write-repo allowlist.
+ *
+ * The one place that decides how a run-scoped credential is obtained, shared
+ * by {@link buildGhEnv} (the worker's own `gh` calls) and
+ * {@link withRunScopedGhToken} (the coding agent's). Two copies of this would
+ * be two scopes to keep in step, and the one that drifted would be the one
+ * handed to the agent.
+ */
+export function mintRunScopedGhToken(): Promise<string | undefined> {
+  return getGhTokenForSubprocess(
+    Deno.env.get("GITHUB_APP_ID"),
+    Deno.env.get("GITHUB_APP_INSTALLATION_ID"),
+    Deno.env.get("GITHUB_APP_PRIVATE_KEY_PATH"),
+    undefined,
+    installationTokenRepoScope(),
+  );
+}
+
+/**
+ * Overlay a run-scoped `GH_TOKEN` onto an ALREADY-SANITISED child environment
+ * (Issue #1423).
+ *
+ * The write-repo allowlist defends in two layers: the argv classifier refuses
+ * an off-allowlist write before `gh` is spawned, and — since Issue #1391 —
+ * the credential itself cannot reach beyond the run's scope, so a write that
+ * gets past the classifier is still refused by GitHub. The second layer
+ * existed only for the worker's own calls. The coding agent's `gh` runs
+ * through the PATH shim (`gh_guard_shim.ts`) and never reached
+ * {@link buildGhEnv}, so it authenticated with whatever ambient credential
+ * was staged for the container — the installation's full reach. For the one
+ * component driven by untrusted issue and comment text, only layer one
+ * applied.
+ *
+ * This is deliberately NOT `buildGhEnv` (Issue #1423). That function builds
+ * its environment from `Deno.env.toObject()` — the worker's WHOLE
+ * environment, `GITHUB_APP_PRIVATE_KEY_PATH` among it. Handing that to the
+ * agent would undo every exclusion `agent_env.ts`/`claude_env.ts` make and
+ * put the PEM that mints installation tokens in reach of a prompt-injected
+ * shell: a far worse leak than the scoping gap being closed. So the caller's
+ * sanitised environment is the base, and exactly one value is overlaid onto
+ * it.
+ *
+ * `GITHUB_TOKEN` is overwritten when the base carries one, because `gh`
+ * accepts it as an alternative name: leaving the ambient value in place would
+ * park an unscoped credential beside the scoped one.
+ *
+ * Degrades rather than breaks. A host with no GitHub App configured mints
+ * nothing, and the environment is returned untouched so the agent keeps the
+ * ambient auth it has always used — the same fallback `buildGhEnv`'s callers
+ * make.
+ *
+ * Residual risk, recorded rather than hidden: the credential
+ * `gh_credential_stage.ts` stages into `GH_CONFIG_DIR`'s `hosts.yml` is still
+ * on disk and still unscoped. `gh` prefers `GH_TOKEN`, so the guarded path
+ * gets the scoped credential, but a process that reads that file directly
+ * does not. Removing it from the agent's reach is a mount-and-staging change,
+ * tracked separately.
+ *
+ * @param baseEnv - The sanitised child environment, secrets already dropped.
+ * @param mint - How to obtain the token; defaults to
+ *   {@link mintRunScopedGhToken}.
+ * @returns The environment with the scoped credential overlaid, or `baseEnv`
+ *   unchanged when no token could be minted.
+ */
+export async function withRunScopedGhToken(
+  baseEnv: Record<string, string>,
+  mint: GhTokenMinter = mintRunScopedGhToken,
+): Promise<Record<string, string>> {
+  const token = await mint();
+  if (!token) return baseEnv;
+
+  const scoped: Record<string, string> = { ...baseEnv, GH_TOKEN: token };
+  if ("GITHUB_TOKEN" in baseEnv) scoped["GITHUB_TOKEN"] = token;
+  return scoped;
 }
 
 /**
@@ -300,10 +389,20 @@ export async function spawnGh(
   // scanned here too instead of published unread. An unscannable body raises
   // UnredactableBodyError, which propagates: a failed control fails the call.
   const stdinScanned = options.stdin !== undefined;
+  // Issue #1364: a masked `--input` copy needs a directory that owns it. The
+  // guard child cannot clean up — it exits before its `gh` child reads the
+  // file — but this chokepoint awaits the child, so it can, and does, in the
+  // `finally` below. The directory is created only when a body is actually
+  // masked, so the ordinary call spawns no filesystem work.
+  let maskedBodyDir: string | undefined;
+  const writeMaskedBody: BodyFileWriter = (content) => {
+    maskedBodyDir ??= Deno.makeTempDirSync({ prefix: "gh-spawn-body-" });
+    return bodyFileWriterIn(maskedBodyDir)(content);
+  };
   const redacted = redactGhBodyArgs(
     args,
     denoBodyFileReader,
-    denoBodyFileWriter,
+    writeMaskedBody,
     stdinScanned,
   );
   // A stdin body (`gh api … --input -`) never appears in argv, so the argument
@@ -311,6 +410,36 @@ export async function spawnGh(
   const spawnOptions = stdinScanned
     ? { ...options, stdin: redactSecrets(options.stdin as string) }
     : options;
+  try {
+    return await runGhAndRecover(args, redacted, spawnOptions, options);
+  } finally {
+    // The `gh` child has exited by the time the call above resolves, so the
+    // masked copy it read is safe to remove. Best-effort: a cleanup failure
+    // must never turn a completed `gh` call into a thrown one.
+    if (maskedBodyDir !== undefined) {
+      try {
+        Deno.removeSync(maskedBodyDir, { recursive: true });
+      } catch {
+        // Nothing to do — the directory is under TMPDIR either way.
+      }
+    }
+  }
+}
+
+/**
+ * Run the redacted command, recovering once from a missing credential.
+ *
+ * Split out of {@link spawnGh} so the masked-body directory's `finally` wraps
+ * the whole call — including the retry, which reads the same masked copy.
+ */
+async function runGhAndRecover(
+  args: readonly string[],
+  redacted: string[],
+  spawnOptions: GhSpawnOptions,
+  options: GhSpawnOptions,
+): Promise<GhSpawnResult> {
+  // `restageAttempts` stays the module-level budget it has always been — it
+  // caps re-staging across the whole process, not per call.
   let result = await runWithTimeout(redacted, spawnOptions);
   // Issue #564: a call that failed for want of authentication did nothing,
   // so retrying it is safe — and the credential is very likely recoverable.

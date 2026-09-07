@@ -206,6 +206,41 @@ export function buildPushArgs(
 }
 
 /**
+ * Build the argv for creating a remote branch straight from a local commit-ish
+ * (Issue #1345).
+ *
+ * `git push origin main:refs/heads/milestone/x` creates the branch on the
+ * remote without checking anything out, so a stale local branch of the same
+ * name — including one another worktree holds, which refuses `checkout -B`
+ * outright — cannot block the creation.
+ *
+ * Both halves of the refspec land inside one argument where a `:` would split
+ * them into a different source/destination pair, so both are validated as ref
+ * components rather than merely checked for a leading dash.
+ *
+ * @param remote - The remote to push to (usually "origin").
+ * @param sourceRef - The commit-ish to publish (e.g. "main", "origin/main").
+ * @param targetBranch - The branch name to create on the remote.
+ * @returns e.g. `["push", "--end-of-options", "origin",
+ *   "main:refs/heads/milestone/x"]`.
+ */
+export function buildPushCreateBranchArgs(
+  remote: string,
+  sourceRef: string,
+  targetBranch: string,
+): string[] {
+  assertSafeGitRef(remote, "push remote");
+  assertSafeRefComponent(sourceRef, "push source ref");
+  assertSafeRefComponent(targetBranch, "push target branch");
+  return [
+    "push",
+    "--end-of-options",
+    remote,
+    `${sourceRef}:refs/heads/${targetBranch}`,
+  ];
+}
+
+/**
  * Build the argv for `git rebase <upstream>`.
  *
  * @param upstream - The branch to rebase onto (untrusted positional).

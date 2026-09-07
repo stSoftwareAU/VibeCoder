@@ -322,6 +322,7 @@ export async function findOldestIssue(
       repoAllIssues,
       fetcher,
       repoClosedPRs,
+      options.selfDiagnosticDeps ?? {},
     );
     allSelfDiagnosticCandidates.push(...selfDiagnosticResult.candidates);
 

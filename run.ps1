@@ -309,11 +309,12 @@ if ($RunMode -ne "container") {
 $HomeDir_ = [Environment]::GetEnvironmentVariable("USERPROFILE")
 if (-not $HomeDir_) { $HomeDir_ = [Environment]::GetEnvironmentVariable("HOME") }
 
-# Where this host's logs go (Issues #872, #873). Asked for rather than spelled
-# here: the worker owns the one resolution - LAUNCH_LOG_DIR, then LOG_DIR, then
-# the platform's own standard location - so this launcher, run.sh, loop.sh and
-# the container mount cannot disagree, and the default moves in one place. The
-# command prints the one-off legacy-location notice on stderr.
+# Where this host's logs go (Issues #872, #873, #1388). Asked for rather than
+# spelled here: the worker owns the one resolution - the .config.json log_dir
+# key, then the platform's own standard location; LAUNCH_LOG_DIR and LOG_DIR
+# are ignored - so this launcher, run.sh, loop.sh and the container mount
+# cannot disagree, and the default moves in one place. The command prints the
+# one-off legacy-location notice, and any ignored variable, on stderr.
 $logDirResult = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
     "run",
     "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",

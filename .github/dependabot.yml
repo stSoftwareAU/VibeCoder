@@ -7,10 +7,10 @@
 # pin AND the trailing version comment, and honours a cooldown that mirrors
 # the 24h quarantine Renovate would have applied.
 #
-# Deno/JSR stays with deno.json minimumDependencyAge. Ruby/Jekyll
-# (Gemfile.lock) is updated here via the bundler ecosystem with the same
-# 24h cooldown (Issue #273); advisory scanning stays in bundle-audit and
-# dependency-review.yml. The two Dependabot ecosystems do not overlap.
+# Deno/JSR stays with deno.json minimumDependencyAge. A bundler ecosystem
+# sat here too, for the Jekyll site's Gemfile.lock; the site went with the
+# Pages publishing logic (Issue #1344) and the Ruby manifests with it
+# (Issue #1376), so github-actions is the only ecosystem Dependabot owns.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
@@ -25,12 +25,17 @@ updates:
     # "The property '#/updates/0/cooldown/semver-major-days' is not supported
     # for the package ecosystem 'github-actions'" — action releases are not
     # semantically versioned, so the semver-* cooldown keys apply only to
-    # ecosystems that are (bundler below is one). The key had been sitting
-    # here since #4400 making the entire config invalid, which meant neither
-    # ecosystem ran; it only surfaced now because Dependabot revalidates the
-    # file when it changes (Issue #273).
+    # ecosystems that are. The key had been sitting here since #4400 making
+    # the entire config invalid, which meant the ecosystem never ran; it only
+    # surfaced because Dependabot revalidates the file when it changes
+    # (Issue #273).
     #
-    # nosemgrep rationale: see the bundler entry below.
+    # nosemgrep rationale: semgrep's dependabot-missing-cooldown wants
+    # default-days: 7 on every ecosystem. A cooldown *is* set here; the rule
+    # is asserting a longer one than this repo's standard. That standard is
+    # 24h and it is deliberate and repo-wide — renovate.json
+    # `minimumReleaseAge`, both Deno `minimumDependencyAge` settings, and the
+    # worker's own VIBE_BUMP_QUARANTINE_HOURS default.
     cooldown:
       # nosemgrep: package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown
       default-days: 1
@@ -40,38 +45,5 @@ updates:
       - "dependencies"
     groups:
       github-actions:
-        patterns:
-          - "*"
-
-  - package-ecosystem: "bundler"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    # Supply-chain quarantine for Gemfile.lock (Jekyll / Pages): never take
-    # a gem younger than a day, and give majors a week (Issue #273; same
-    # intent as the github-actions entry and renovate.json's
-    # minimumReleaseAge). Advisory gates (bundle-audit, dependency-review.yml)
-    # stay in place.
-    #
-    # semgrep's dependabot-missing-cooldown wants default-days: 7 on every
-    # ecosystem. A cooldown *is* set here; the rule is asserting a longer one
-    # than this repo's standard. That standard is 24h and it is deliberate and
-    # repo-wide — renovate.json `minimumReleaseAge`, both Deno
-    # `minimumDependencyAge` settings, the github-actions entry above, and the
-    # worker's own VIBE_BUMP_QUARANTINE_HOURS default. Diverging to 7 days for
-    # Ruby alone would make Gemfile.lock the one ecosystem out of step, which
-    # is the inconsistency Issue #273 exists to remove. Majors already get the
-    # full week the rule asks for.
-    cooldown:
-      # nosemgrep: package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown
-      default-days: 1
-      semver-major-days: 7
-    commit-message:
-      prefix: "chore(bundler)"
-    labels:
-      - "dependencies"
-    groups:
-      bundler:
         patterns:
           - "*"

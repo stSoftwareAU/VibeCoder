@@ -237,7 +237,7 @@ reason. Re-check this table when the guide changes.
 | Document creation | No surface asks for a presentation, animation, or visual document; deliverables are code, Markdown, and filed issues |
 | Capability-specific tips | Section wrapper only, covering the two capability headings below; it carries no technique of its own to score |
 | Improved vision capabilities | No surface takes an image as task input. Images appear only as evidence the worker produces, and untrusted-image handling is a security rule, not an output-quality technique |
-| Frontend design | No surface generates user interfaces; the repo's own site is static Jekyll and is not model-authored |
+| Frontend design | No surface generates user interfaces; the repo ships no user-facing site — its docs are Markdown read directly on GitHub |
 | Migration considerations | Section wrapper for the migration heading below; its one prompt-visible obligation, prefill removal, is scored as row 9 |
 | Migrating to Claude Sonnet 5 from Claude Sonnet 4.5 or earlier | Migration advice for prompts written for earlier generations, not a property a current prompt surface can pass or fail |
 | Next steps | Navigation links at the end of the guide, with no technique to score |

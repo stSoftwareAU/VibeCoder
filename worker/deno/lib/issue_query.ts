@@ -444,6 +444,13 @@ export interface OpenMilestoneIssue {
   title: string;
   assignees: string[];
   body: string;
+  /**
+   * Login of the account that opened the issue (Issue #1246). Already present
+   * in the shared `issues_all` payload; projected here so the milestone
+   * helpers can tell the fleet's own tracking issue from a look-alike without
+   * a second `gh` call.
+   */
+  author: string;
 }
 
 /**
@@ -470,6 +477,7 @@ export async function fetchOpenIssuesByMilestone(
       title: issue.title,
       assignees: issue.assignees ?? [],
       body: issue.body ?? "",
+      author: issue.author ?? "",
     }));
 }
 
@@ -1090,13 +1098,27 @@ export async function invalidateAllStatePRsByBranch(
 }
 
 /**
+ * One row of {@link fetchAllStateIssuesByMilestone}.
+ *
+ * `body` and `author` are carried so `milestone_completion.ts` can prove a
+ * tracking-shaped issue is the fleet's own tracker before adopting it
+ * (Issue #1246).
+ */
+export interface AllStateMilestoneIssue {
+  number: number;
+  title: string;
+  body: string;
+  author: string;
+}
+
+/**
  * Fetch all-state issues for a given milestone number (Issue #1795).
  *
  * Wraps `gh issue list --milestone <number> --state all`. Used by
  * `hasExistingMilestoneTrackingIssue` (`milestone_completion.ts`) so
  * the worker can detect an existing tracking issue without re-issuing
  * a global title-search per scan. Cache key is
- * `issues_all_milestone_${milestoneNumber}`.
+ * `issues_all_milestone_v2_${milestoneNumber}`.
  *
  * Returns an empty array on parse failure rather than throwing.
  */
@@ -1105,14 +1127,15 @@ export async function fetchAllStateIssuesByMilestone(
   milestoneNumber: number,
   cache?: IssueCache,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
-): Promise<Array<{ number: number; title: string }>> {
-  const cacheKey = `issues_all_milestone_${milestoneNumber}`;
+): Promise<AllStateMilestoneIssue[]> {
+  // Issue #1246: the cache key carries the payload shape. The pre-#1246
+  // entries hold only `number`/`title`, and a tracker read back without its
+  // body and author cannot be verified — which would make the worker file a
+  // duplicate tracker until the old entry expired.
+  const cacheKey = `issues_all_milestone_v2_${milestoneNumber}`;
 
   if (cache) {
-    const cached = await cache.read<Array<{ number: number; title: string }>>(
-      repo,
-      cacheKey,
-    );
+    const cached = await cache.read<AllStateMilestoneIssue[]>(repo, cacheKey);
     if (cached) return cached;
   }
 
@@ -1128,7 +1151,9 @@ export async function fetchAllStateIssuesByMilestone(
       "--state",
       "all",
       "--json",
-      "number,title",
+      // Issue #1246: `body` and `author` are the authenticated evidence that
+      // a tracking-shaped issue really is the fleet's own tracker.
+      "number,title,body,author",
       "--limit",
       "100",
     ]);
@@ -1144,13 +1169,18 @@ export async function fetchAllStateIssuesByMilestone(
   }
   if (!Array.isArray(parsed)) return [];
 
-  const issues: Array<{ number: number; title: string }> = [];
+  const issues: AllStateMilestoneIssue[] = [];
   for (const item of parsed) {
     if (!isRecord(item)) continue;
     if (typeof item.number !== "number") continue;
+    const author = item.author;
     issues.push({
       number: item.number,
       title: typeof item.title === "string" ? item.title : "",
+      body: typeof item.body === "string" ? item.body : "",
+      author: isRecord(author) && typeof author.login === "string"
+        ? author.login
+        : "",
     });
   }
 
@@ -1167,7 +1197,7 @@ export async function invalidateAllStateIssuesByMilestone(
   repo: string,
   milestoneNumber: number,
 ): Promise<void> {
-  await cache.invalidate(repo, `issues_all_milestone_${milestoneNumber}`);
+  await cache.invalidate(repo, `issues_all_milestone_v2_${milestoneNumber}`);
 }
 
 /**

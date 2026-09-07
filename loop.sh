@@ -60,9 +60,9 @@ WORKER_MOD="${SCRIPT_DIR}/worker/deno/mod.ts"
 # Issue #633: where each cycle's console output is captured, so a failed
 # launch has evidence to report. The log directory is the one the host and the
 # container share — the work volume is not readable from the host. It is
-# resolved below, once Deno has been located; the operator's own
-# LAUNCH_LOG_DIR is left exactly as it was found, because blanking it here
-# would blank it for the `log-dir` command and for every child run.sh too.
+# resolved below, once Deno has been located, from `.config.json` alone: on
+# the host the config file is the only configuration (Issue #1388), so no
+# LAUNCH_LOG_DIR or LOG_DIR in this script's environment moves it.
 # LAUNCH_LOG is set empty per cycle until the file is known to be writable.
 LAUNCH_LOG=""
 
@@ -74,7 +74,7 @@ prune_launch_logs() {
     # chronological order — no `ls` parsing, and no assumption about mtime.
     local logs=()
     local candidate
-    for candidate in "${LAUNCH_LOG_DIR}"/launch-*.log; do
+    for candidate in "${LOOP_LOG_DIR}"/launch-*.log; do
         [[ -f "${candidate}" ]] && logs+=("${candidate}")
     done
     local excess=$(( ${#logs[@]} - keep ))
@@ -126,14 +126,16 @@ bounded() {
     fi
 }
 
-# Where this host's logs go (Issues #872, #873). The worker owns the one
-# resolution — `LAUNCH_LOG_DIR`, then `LOG_DIR`, then the platform's own
+# Where this host's logs go (Issues #872, #873, #1388). The worker owns the
+# one resolution — the `.config.json` `log_dir` key, then the platform's own
 # standard location — so the supervisor, run.sh, run.ps1 and the container
 # mount cannot disagree about it, and the default moves in one place. The
-# command prints the one-off legacy-location notice on stderr.
+# command prints the one-off legacy-location notice, and a line naming any
+# LAUNCH_LOG_DIR / LOG_DIR still exported here (ignored), on stderr.
 #
-# Falls back — loudly, never silently — to the pre-#873 chain when the worker
-# cannot answer: a supervisor that must never exit still says what it did.
+# Falls back — loudly, never silently — to the pre-#873 default when the
+# worker cannot answer: a supervisor that must never exit still says what it
+# did.
 resolve_launch_log_dir() {
     local resolved=""
     if [[ -n "${DENO_CMD}" && -f "${WORKER_MOD}" ]]; then
@@ -148,18 +150,18 @@ resolve_launch_log_dir() {
         printf '%s\n' "${resolved}"
         return 0
     fi
-    # The overrides are still honoured here — they are the operator's own
-    # words, not a default this script may not spell. Only the last resort,
-    # $HOME/logs, is the pre-#873 value, and reaching it means deno is missing
-    # or broken, which run.sh treats as a refused launch anyway.
-    local fallback="${LAUNCH_LOG_DIR:-${LOG_DIR:-${HOME}/logs}}"
+    # No environment variable is consulted here either (Issue #1388): the
+    # config file cannot be read without deno, so the one thing this script
+    # may spell is the pre-#873 default. Reaching it means deno is missing or
+    # broken, which run.sh treats as a refused launch anyway.
+    local fallback="${HOME}/logs"
     echo "loop.sh: cannot resolve the log directory (deno or ${WORKER_MOD}" \
         "missing, or the log-dir command failed) — falling back to ${fallback}" >&2
     printf '%s\n' "${fallback}"
 }
 
-LAUNCH_LOG_DIR="$(resolve_launch_log_dir)"
-mkdir -p "${LAUNCH_LOG_DIR}" 2>/dev/null || true
+LOOP_LOG_DIR="$(resolve_launch_log_dir)"
+mkdir -p "${LOOP_LOG_DIR}" 2>/dev/null || true
 
 # Record one launcher outcome and echo the seconds to wait before the next
 # attempt. Falls back — loudly, never silently — to the base sleep when the
@@ -447,7 +449,7 @@ while true; do
     # tee keeps it on stdout too, so the operator watching the terminal sees
     # exactly what they saw before.
     prune_launch_logs
-    LAUNCH_LOG="${LAUNCH_LOG_DIR}/launch-${VIBE_RUN_STARTED_EPOCH}.log"
+    LAUNCH_LOG="${LOOP_LOG_DIR}/launch-${VIBE_RUN_STARTED_EPOCH}.log"
     if ! : >"${LAUNCH_LOG}" 2>/dev/null; then
         # Never fail a cycle over its own diagnostics.
         echo "loop.sh: cannot write ${LAUNCH_LOG} — this cycle's launch log" \

@@ -55,6 +55,7 @@ import {
   type Harness,
   initCount,
   invocationOrder,
+  type LauncherInvocation,
   type LaunchOutcome,
   mountValues,
   recorded,
@@ -64,6 +65,7 @@ import {
   removedVolumes,
   REPO_ROOT,
   runCoreLog,
+  runErrFifoModes,
   runLauncher as runHarnessLauncher,
   setupHarness,
   spawnLauncher as spawnHarnessLauncher,
@@ -89,37 +91,60 @@ function spawnLauncher(harness: Harness): Deno.ChildProcess {
   return spawnHarnessLauncher(harness, BASH_LAUNCHER);
 }
 
-Deno.test("run.sh - LOG_DIR moves the writable host mount with it (Issues #872, #873)", async () => {
-  // The log directory is the fleet's only writable host mount, so an operator
-  // who names one must get that directory mounted — not the platform default
-  // resolved beside it.
-  const chosen = await Deno.makeTempDir({ prefix: "vibe_logdir_override_" });
+/**
+ * `run.sh` under the usual 022 umask (Issue #1299).
+ *
+ * The umask is inherited, not configurable, so a mode the launcher declines
+ * to set explicitly is whatever the invoking shell happened to allow. Fixing
+ * it here is what makes a permissions assertion mean something on a host — or
+ * a CI runner — that happens to run the suite under a stricter umask.
+ */
+const PERMISSIVE_UMASK_LAUNCHER: LauncherInvocation = {
+  name: "run.sh (umask 022)",
+  command: "bash",
+  args: ["-c", 'umask 022; exec bash "$0"', RUN_SH],
+};
+
+Deno.test("run.sh - LOG_DIR does not move the writable host mount (Issue #1388)", async () => {
+  // The log directory is the fleet's only writable host mount. On the host,
+  // `.config.json` is the only configuration, so an exported LOG_DIR must
+  // change neither the mount nor where run_core.log lands: both stay on the
+  // resolved directory, and the launcher and the mount still agree.
+  const stale = await Deno.makeTempDir({ prefix: "vibe_logdir_export_" });
   const harness = await setupHarness({
     STUB_IMAGE_INSPECT_EXIT: "0",
-    LOG_DIR: chosen,
+    LOG_DIR: stale,
   });
   try {
-    assertEquals(harness.logDir, chosen);
+    assert(
+      harness.logDir !== stale,
+      "the harness resolves through the real resolveLogDir, which must ignore LOG_DIR",
+    );
     const outcome = await runLauncher(harness);
     assertEquals(outcome.code, 0, outcome.stderr);
 
     const args = await recorded(harness, "run");
     assert(args, `no container run was recorded: ${outcome.stderr}`);
     assert(
-      mountValues(args).includes(`${chosen}:${TARGETS.logs}`),
-      `the chosen log directory is not the mount source: ${
+      mountValues(args).includes(`${harness.logDir}:${TARGETS.logs}`),
+      `the resolved log directory is not the mount source: ${
         mountValues(args).join(", ")
       }`,
     );
-    // And the launcher's own run-core log lands there too, rather than in a
-    // second directory nobody is watching.
+    assert(
+      !mountValues(args).includes(`${stale}:${TARGETS.logs}`),
+      "an exported LOG_DIR became the mount source",
+    );
+    // The launcher's own run-core log lands in the resolved directory too.
+    // (The line naming the ignored export comes from the real `log-dir`
+    // command, covered in log_dir_config_key_test.ts; the harness stubs it.)
     assert(
       (await runCoreLog(harness)).trim().length > 0,
-      "run.sh wrote no run_core.log in the chosen directory",
+      "run.sh wrote no run_core.log in the resolved directory",
     );
   } finally {
     await harness.cleanup();
-    await Deno.remove(chosen, { recursive: true }).catch(() => {});
+    await Deno.remove(stale, { recursive: true }).catch(() => {});
   }
 });
 
@@ -2160,6 +2185,38 @@ Deno.test("run.sh - the stderr capture leaves nothing behind in the temporary di
     const leftovers: string[] = [];
     for await (const entry of Deno.readDir(tmp)) leftovers.push(entry.name);
     assertEquals(leftovers, []);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - the stderr capture FIFO is private to this account (Issue #1299)", async () => {
+  // `mktemp` gives the capture log 0600, but a FIFO created beside it takes
+  // the umask instead — 0644 under the usual 022, which is world-readable.
+  // Every byte the runtime client writes to stderr passes through it, and a
+  // second reader is destructive as well as passive: bytes another process
+  // consumes are bytes the capture never sees.
+  const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+  const tmp = `${harness.tmpDir}/tmp`;
+  await Deno.mkdir(tmp, { recursive: true });
+  harness.env.TMPDIR = tmp;
+  try {
+    // Run under a permissive umask on purpose: a launcher that leaves the
+    // mode to the umask is only distinguishable from one that sets it when
+    // the umask would have allowed the wider mode through.
+    const outcome = await runHarnessLauncher(
+      harness,
+      PERMISSIVE_UMASK_LAUNCHER,
+    );
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const modes = await runErrFifoModes(harness);
+    assertEquals(
+      modes.length,
+      1,
+      `capture FIFOs seen: ${JSON.stringify(modes)}`,
+    );
+    assertEquals(modes[0], "600", "the capture FIFO must be owner-only");
   } finally {
     await harness.cleanup();
   }

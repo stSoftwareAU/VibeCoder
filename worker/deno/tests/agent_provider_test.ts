@@ -205,7 +205,7 @@ Deno.test("agent provider - configuration selects the provider and the environme
 // The behaviour change Issue #1032 makes, asserted rather than assumed: this
 // resolver used to answer "codex" here, because the environment won. A
 // deployment overriding the file from the environment switches providers on
-// upgrade, which is why it ships in 2.0.0 with a migration note.
+// upgrade, which is why it shipped in 1.4.0 with a migration note.
 Deno.test("agent provider - a host that sets both takes the config file (Issue #1032)", () => {
   assertEquals(
     resolveAgentProviderId({

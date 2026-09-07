@@ -37,6 +37,7 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import { coerceStringListFlag } from "../lib/command_args.ts";
 import {
   buildIdempotencyMarker,
   buildMilestonePrSection,
@@ -659,7 +660,14 @@ export const prManagerCommand: Command = {
 
       case "close-issues-for-merged-prs": {
         const githubUser = String(args["github-user"] ?? "");
-        const repos = args["repos"] as string[] ?? [];
+        // An unchecked `as string[]` used to let a bare `--repos owner/repo`
+        // through the length guard and then be walked character by character
+        // (Issue #1266); the coercion names the shape at the boundary.
+        const reposResult = coerceStringListFlag(args["repos"], "repos");
+        if (!reposResult.ok) {
+          return { success: false, message: reposResult.error.message };
+        }
+        const repos = reposResult.value;
         if (!githubUser || repos.length === 0) {
           return {
             success: false,

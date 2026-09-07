@@ -10,6 +10,7 @@
  */
 
 import type { RunOutcome } from "./run_outcome.ts";
+import type { IssueComment } from "./issue_data.ts";
 import type { WorkerConfig } from "../types.ts";
 import type { HeartbeatHandle } from "./heartbeat.ts";
 import type { SessionResumeState } from "./session_resume.ts";
@@ -39,6 +40,21 @@ export interface IssueContext {
    * sanitiser pass, so a forged header stays distinguishable.
    */
   commentBoundaryId?: string;
+  /**
+   * The same comments with their authors attached (Issue #1263).
+   *
+   * `issueComments` above is a blob assembled for the model: every comment
+   * concatenated, untrusted ones included, with no authorship a decision can
+   * turn on. The clarity gate's round limit used to be counted out of it by
+   * substring-matching a heading, so a heading anyone could write retired a
+   * human-in-the-loop check. These rows come from the same fetch — no extra
+   * API call — and carry the one part of a comment GitHub authenticates.
+   *
+   * Absent for the label-route producers, which build no comment blob and do
+   * not run the clarity phase; a phase that needs authorship must treat that
+   * as "nothing attributable", never as "nothing to check".
+   */
+  issueCommentRows?: readonly IssueComment[];
   githubUser: string;
   milestoneTitle?: string;
   /** Milestone number (API ID) for session branching (Issue #1322). */

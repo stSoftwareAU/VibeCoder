@@ -114,12 +114,18 @@ how the branch is fed:
   read failure in `detail`). The worker never locks on uncertainty, the same
   stance as the check-name discovery below.
 
-On a branch that has opted out or demonstrably takes direct pushes, a stale
-ruleset the worker created earlier is **deleted** — only the ruleset named
-exactly `Vibe Coder default branch` and owned by the repository; a human-
-managed or organisation ruleset is never touched, and a human-managed ruleset
-covering the branch still wins (`existing-ruleset`) before any of this runs. On
-an unreadable history nothing is written _and_ nothing is deleted.
+**Removing protection needs stronger evidence than suppressing it**
+(Issue #1289). A stale ruleset the worker created earlier is **deleted** only
+on evidence the worker trusts: demonstrable direct pushes (commit history it
+read itself) or the `direct-push` topic, which is repository *settings* and
+takes admin permission to write. The marker file is repository *content* —
+anybody with write access, or a merged PR, can land it — so it suppresses
+creating a ruleset but never removes one that already exists. Only the ruleset
+named exactly `Vibe Coder default branch` and owned by the repository is ever
+deleted; a human-managed or organisation ruleset is never touched, and a
+human-managed ruleset covering the branch still wins (`existing-ruleset`)
+before any of this runs. On an unreadable history nothing is written _and_
+nothing is deleted.
 
 The read-only sweep `audit-default-branch-rulesets` (see
 [Extending → Maintenance Commands](EXTENDING.md#-maintenance-commands)) lists,
@@ -161,7 +167,8 @@ flowchart TD
     A[ensureDefaultBranchRuleset] --> B{Foreign ruleset<br/>covers the branch?}
     B -- yes --> C["No-op<br/>(skipped: existing-ruleset)"]
     B -- no --> P{Branch takes<br/>direct pushes?}
-    P -- "opted out / direct" --> Q["No ruleset; delete our own<br/>stale one if present<br/>(skipped: opted-out /<br/>direct-push-branch)"]
+    P -- "direct pushes seen /<br/>direct-push topic" --> Q["No ruleset; delete our own<br/>stale one if present<br/>(skipped: opted-out /<br/>direct-push-branch)"]
+    P -- "marker file only" --> S["No ruleset written,<br/>nothing deleted<br/>(skipped: opted-out)"]
     P -- "history unreadable" --> R["No ruleset written,<br/>nothing deleted<br/>(skipped: direct-push-branch)"]
     P -- "PR-only" --> D[Catalogue candidates<br/>visibility + language filtered]
     D --> E{Intersect with<br/>reported check names}
@@ -182,6 +189,35 @@ genuine no-op.
 
 Pruning a stale required check is therefore a deliberate human action, not a
 side effect of onboarding or a setup run.
+
+### The update never weakens the rules it rewrites
+
+The ruleset update is a **full-document PUT**, so the same additive stance has
+to cover the rules the worker does not model, not just the contexts it does
+(Issue #1290). An admin who hardens `Vibe Coder default branch` with
+`pull_request` (required approvals), `non_fast_forward`, `deletion`,
+`required_signatures`, or bypass actors would otherwise lose all of it the next
+time a new check appeared and the sync rebuilt the body from status checks
+alone — reported as a success, because the count of preserved *contexts* says
+nothing about the rules that went.
+
+So before it rewrites the document the configurator **reads the live ruleset**
+(`GET /repos/{repo}/rulesets/{id}`), replaces only the `required_status_checks`
+rule, and carries every other rule and the `bypass_actors` list through
+unchanged. The types it kept are reported as `preservedRules` and named in the
+setup output, so a run over a hardened ruleset shows what survived.
+
+A ruleset whose current rules **cannot be read** — a 403, a 404, an unparseable
+body — fails the sync loudly and writes nothing. "Could not see it" is never
+read as "there was nothing there".
+
+```mermaid
+flowchart TD
+    A[Update planned:<br/>new context reported] --> B[GET the live ruleset]
+    B -->|read fails| C[Refuse the update<br/>— sync fails loud]
+    B -->|read succeeds| D[Replace required_status_checks<br/>keep every other rule + bypass_actors]
+    D --> E[PUT the merged document]
+```
 
 ### Setup-time sync across all monitored repos
 

@@ -399,7 +399,10 @@ Deno.test({
         home,
         envFrom({ VIBE_IMAGE_AGENT_PROVIDERS: "claude", TMPDIR: tmp }),
       );
-      // Issue #1242: per-account, so two accounts never stage into one dir.
+      // Per-account under TMPDIR (Issues #1242, #1282): the staging directory
+      // is bound to the uid running the worker, not the same `vibe-gh-config`
+      // path every local account on the host would share, so two accounts
+      // never stage into one directory.
       assertEquals(
         applied.GH_CONFIG_DIR,
         `${tmp}/vibe-gh-config-${cacheDirUserSuffix()}`,

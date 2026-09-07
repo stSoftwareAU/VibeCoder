@@ -8,10 +8,11 @@
  * other than the platform default could not say so in the file the rest of its
  * configuration lives in. `log_dir` is that key.
  *
- * The precedence the whole fleet shares: **`log_dir` wins, then
- * `LAUNCH_LOG_DIR`, then `LOG_DIR`, then the platform default.** The two
- * variables stay — a launchd or systemd unit naming `/var/log/vibe-coder` sets
- * an environment, not a config file — they simply stop being the only way.
+ * The precedence the whole fleet shares: **`log_dir` wins, then the platform
+ * default.** The two variables that used to sit between them, `LAUNCH_LOG_DIR`
+ * and `LOG_DIR`, are ignored since Issue #1388 — on the host, `.config.json`
+ * is the only configuration — and a host still exporting one is told so by
+ * name.
  *
  * What this suite pins beyond the precedence itself:
  *
@@ -26,9 +27,16 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   defaultLogDir,
+  ignoredLogDirEnvNotice,
   legacyLogDirNotice,
   LOG_DIR_CONFIG_KEY,
   readConfiguredLogDir,
@@ -98,7 +106,7 @@ Deno.test("log_dir - the config key wins over both environment names", () => {
   );
 });
 
-Deno.test("log_dir - absent the key, the environment names still work", () => {
+Deno.test("log_dir - absent the key, the environment names are ignored (Issue #1388)", () => {
   assertEquals(
     resolveLogDir(
       "/home/vibe",
@@ -106,7 +114,7 @@ Deno.test("log_dir - absent the key, the environment names still work", () => {
       "posix",
       "linux",
     ),
-    "/var/log/vibe-coder",
+    "/home/vibe/.local/state/vibe-coder",
   );
   assertEquals(
     resolveLogDir(
@@ -119,9 +127,30 @@ Deno.test("log_dir - absent the key, the environment names still work", () => {
       "linux",
       "",
     ),
-    "/var/launch-logs",
-    "a blank config value means unset, exactly as a blank variable does",
+    "/home/vibe/.local/state/vibe-coder",
+    "a blank config value means unset, and the variables do not fill the gap",
   );
+});
+
+Deno.test("log_dir - a still-exported variable is named, with the line to write instead (Issue #1388)", () => {
+  assertEquals(ignoredLogDirEnvNotice(envFrom({})), undefined);
+  assertEquals(
+    ignoredLogDirEnvNotice(envFrom({ LOG_DIR: "   " })),
+    undefined,
+    "a blank export never moved anything, so it is not worth a line",
+  );
+  const one = ignoredLogDirEnvNotice(
+    envFrom({ LOG_DIR: "/var/log/vibe-coder" }),
+  ) ?? "";
+  assertStringIncludes(one, 'LOG_DIR="/var/log/vibe-coder" is set but ignored');
+  assertStringIncludes(one, '"log_dir": "/var/log/vibe-coder"');
+  assertStringIncludes(one, "Issue #1388");
+  const both = ignoredLogDirEnvNotice(
+    envFrom({ LAUNCH_LOG_DIR: "/var/launch-logs", LOG_DIR: "/var/log/vibe" }),
+  ) ?? "";
+  assertStringIncludes(both, 'LAUNCH_LOG_DIR="/var/launch-logs"');
+  assertStringIncludes(both, 'LOG_DIR="/var/log/vibe"');
+  assertStringIncludes(both, "are set but ignored");
 });
 
 Deno.test("log_dir - absent the key and the variables, the platform default applies", () => {
@@ -240,7 +269,7 @@ Deno.test("log_dir - the launcher and the container mount resolve the same direc
   }
 });
 
-Deno.test("log_dir - the launcher falls back to the variables, then the default", async () => {
+Deno.test("log_dir - the launcher ignores the variables and says so, then takes the default", async () => {
   const dir = await Deno.makeTempDir({ prefix: "logdir-fallback-" });
   try {
     const configFile = await writeConfig(dir, { repos: ["a/b"] });
@@ -254,7 +283,12 @@ Deno.test("log_dir - the launcher falls back to the variables, then the default"
       exists: () => false,
       configFile,
     });
-    assertEquals(withEnv.logDir, "/var/log/vibe-coder");
+    assertEquals(withEnv.logDir, "/home/vibe/.local/state/vibe-coder");
+    assertStringIncludes(
+      withEnv.ignoredEnvironment ?? "",
+      'LOG_DIR="/var/log/vibe-coder" is set but ignored',
+      "the launcher tells the operator, by name, what it ignored",
+    );
 
     const bare = await resolveLogDirForCommand({
       env: envFrom({ HOME: "/home/vibe", CONFIG_FILE: configFile }),

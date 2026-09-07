@@ -14,7 +14,7 @@
  * is pure — the caller supplies the run's allowlist state — so it can be
  * evaluated in a short-lived child process with no permissions at all.
  *
- * Four checks, in order:
+ * Five checks, in order:
  *   1. **Reserved workflow labels.** A *mutation* that adds `top-priority`,
  *      `work-on`, `question`, … is refused. The check is a denylist of the
  *      reserved names (`WORKER_FORBIDDEN_LABEL_LITERALS`), not the worker's
@@ -33,7 +33,12 @@
  *      pinned `GH_CONFIG_DIR` rather than anything on GitHub, so the mutation
  *      classifier reported no mutation and they passed as reads. They are
  *      refused unconditionally — see `gh_local_state_guard.ts`.
- *   4. **Write-repo allowlist.** Mirrors `enforceGhWriteAllowlist`: inert
+ *   4. **Credential disclosure** (Issue #1371). `gh auth token` and
+ *      `gh auth status --show-token` change nothing, so they passed as
+ *      reads — but they print the run's GitHub token, and an agent holding
+ *      it can call the REST API directly, where none of the above applies.
+ *      Refused unconditionally — see `gh_credential_disclosure_guard.ts`.
+ *   5. **Write-repo allowlist.** Mirrors `enforceGhWriteAllowlist`: inert
  *      until the run seeds an allowlist, a no-op for reads and for cwd-repo
  *      writes with no explicit repo, and a refusal for a mutation that
  *      explicitly names an off-allowlist repo.
@@ -51,6 +56,7 @@ import {
   classifyIssueLifecycle,
   ISSUE_LIFECYCLE_VERBS,
 } from "./gh_issue_lifecycle.ts";
+import { classifyGhCredentialDisclosure } from "./gh_credential_disclosure_guard.ts";
 import { classifyGhLocalStateChange } from "./gh_local_state_guard.ts";
 import type { ClaimedIssue } from "./claimed_issue_guard.ts";
 import type { BodyFileReader } from "./gh_body_redaction.ts";
@@ -87,6 +93,7 @@ export type GhGuardMarker =
   | "GH_BODY_UNREADABLE"
   | "GH_UNKNOWN_COMMAND"
   | "GH_LOCAL_STATE_REFUSED"
+  | "GH_CREDENTIAL_DISCLOSURE_REFUSED"
   | "ISSUE_LIFECYCLE_REFUSED";
 
 /** The guard's verdict for one `gh` argument vector. */
@@ -565,6 +572,28 @@ export function evaluateGhCommand(
         `then uses. Credentials are provisioned non-interactively by setup.sh ` +
         `and consumed read-only; the read verbs ('gh auth status', ` +
         `'gh config get', 'gh extension list') are unaffected.`,
+    };
+  }
+
+  // Issue #1371: the guard classifies argv, so everything above holds only
+  // while the guarded channel is the agent's only route to GitHub. `gh auth
+  // token` and `gh auth status --show-token` print the run's credential, which
+  // is the one value that makes every later call unguarded — the guard was
+  // handing out its own bypass on request. They change nothing, on GitHub or
+  // locally, so neither the mutation classifier nor the local-state check saw
+  // them. Refused unconditionally: nothing in a run needs to *see* the token
+  // to use it, and plain `gh auth status` stays allowed for the health checks.
+  const disclosure = classifyGhCredentialDisclosure(args);
+  if (disclosure) {
+    return {
+      allowed: false,
+      marker: "GH_CREDENTIAL_DISCLOSURE_REFUSED",
+      reason: `Refused 'gh ${disclosure.root} ${disclosure.verb}' from the ` +
+        `agent subprocess — it prints ${disclosure.disclosed} in plaintext, ` +
+        `and a credential the agent holds directly is one this guard can no ` +
+        `longer mediate. gh authenticates itself from the pinned ` +
+        `GH_CONFIG_DIR, so no run needs to read the token; plain ` +
+        `'gh auth status' is unaffected.`,
     };
   }
 

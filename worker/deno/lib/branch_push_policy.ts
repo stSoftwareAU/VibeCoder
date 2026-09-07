@@ -13,7 +13,10 @@
  *
  *   1. **Explicit opt-out** — the repo carries the topic
  *      {@link DIRECT_PUSH_TOPIC}, or the marker file
- *      {@link NO_RULESET_MARKER_PATH} exists at the default branch head.
+ *      {@link NO_RULESET_MARKER_PATH} exists at the default branch head. The
+ *      answer records which of the two fired (`source`), because only the
+ *      admin-gated topic is strong enough to justify *removing* protection
+ *      (Issue #1289).
  *   2. **Observed direct pushes** — any of the last
  *      {@link DIRECT_PUSH_SAMPLE_SIZE} commits on the branch is not the merge
  *      of a pull request: its subject carries no `(#N)` squash marker, it is
@@ -57,8 +60,15 @@ export const NO_RULESET_MARKER_PATH = ".vibe/no-default-branch-ruleset";
 export type BranchPushPolicy =
   /** Every sampled commit arrived through a merged pull request. */
   | { kind: "pr-only"; sampled: number }
-  /** The repo opted out explicitly (topic or marker file). */
-  | { kind: "opted-out"; detail: string }
+  /**
+   * The repo opted out explicitly. `source` says which signal fired, because
+   * the two carry very different authority (Issue #1289): the topic is
+   * repository *settings*, writable only with admin permission, while the
+   * marker file is ordinary repository *content* anybody with write access —
+   * or a merged PR — can land. A caller may suppress creating a ruleset on
+   * either signal, but must never remove existing protection on `marker`.
+   */
+  | { kind: "opted-out"; source: "topic" | "marker"; detail: string }
   /** At least one sampled commit was pushed directly. */
   | { kind: "direct-push"; sha: string; subject: string; detail: string }
   /** A read failed, so the branch cannot be classified — treat as unsafe. */
@@ -215,6 +225,7 @@ export async function assessBranchPushPolicy(
   if (topic.present) {
     return {
       kind: "opted-out",
+      source: "topic",
       detail: `repository topic "${DIRECT_PUSH_TOPIC}" is set`,
     };
   }
@@ -228,6 +239,7 @@ export async function assessBranchPushPolicy(
   if (marker.present) {
     return {
       kind: "opted-out",
+      source: "marker",
       detail: `marker file ${NO_RULESET_MARKER_PATH} exists on ${branch}`,
     };
   }

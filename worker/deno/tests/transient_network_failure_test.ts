@@ -102,6 +102,42 @@ Deno.test("isTransientNetworkFailure - an ordinary programming fault is NOT tran
   }
 });
 
+Deno.test("isTransientNetworkFailure - 'eof' inside an ordinary word is NOT transient", () => {
+  // Issue #1278: the bare "eof" entry was an unanchored substring match, so
+  // any `e o f` run inside a word reclassified a genuine crash as a blip —
+  // no crash notification, no host backoff, and the worker crash-loops.
+  for (
+    const message of [
+      "TypeError: Cannot read properties of undefined (reading 'typeof')",
+      "TypeError: typeof is not a function",
+      "unknown label 'codeof-review' on issue #12",
+    ]
+  ) {
+    assertEquals(
+      isTransientNetworkFailure(message),
+      false,
+      `should NOT be transient: ${message}`,
+    );
+  }
+});
+
+Deno.test("isTransientNetworkFailure - a standalone EOF token is still transient", () => {
+  // The word-boundary fix must not lose the case the entry exists for: a
+  // truncated response body reported as a bare EOF.
+  for (
+    const message of [
+      "gh command failed (exit 1): EOF",
+      "read tcp 10.0.0.1:443: eof",
+      "fatal: the remote end hung up unexpectedly (EOF)",
+    ]
+  ) {
+    assert(
+      isTransientNetworkFailure(message),
+      `should be transient: ${message}`,
+    );
+  }
+});
+
 Deno.test("isTransientNetworkFailure - 'Could not resolve to a PullRequest' is not a DNS failure", () => {
   // The trap: GitHub's GraphQL "Could not resolve to a …" wording sits close
   // to "could not resolve host". They must not be confused — one is a blip,

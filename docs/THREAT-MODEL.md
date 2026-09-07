@@ -180,7 +180,7 @@ here exists.
 | **C12** | Per-run write-repo allowlist enforced at the worker's single `gh` spawn chokepoint; undeterminable targets fail closed | `worker/deno/lib/write_repo_allowlist.ts`, `worker/deno/lib/gh_spawn.ts` | `worker/deno/tests/write_repo_allowlist_test.ts`, `worker/deno/tests/gh_spawn_test.ts` |
 | **C13** | Agent-subprocess `gh` guard — a PATH shim re-applying the same decision, with the allowlist baked in, unknown roots refused, and local `gh` state (credentials, config, aliases, extensions) unwritable | `worker/deno/lib/gh_guard_shim.ts`, `worker/deno/lib/gh_guard_decision.ts`, `worker/deno/lib/gh_guard_cli.ts`, `worker/deno/lib/gh_local_state_guard.ts` | `worker/deno/tests/gh_guard_shim_test.ts`, `worker/deno/tests/gh_guard_decision_test.ts`, `worker/deno/tests/gh_guard_cli_test.ts`, `worker/deno/tests/gh_local_state_guard_test.ts` |
 | **C14** | Mutation classification and pflag normalisation, so attached and repeated flags cannot hide a write's target | `worker/deno/lib/audit_mutation_classifier.ts`, `worker/deno/lib/gh_flag_parser.ts` | `worker/deno/tests/audit_mutation_classifier_test.ts`, `worker/deno/tests/gh_pflag_spellings_test.ts` |
-| **C15** | Reserved workflow labels refused in-process before the worker calls the labels API, and stripped when applied by an untrusted actor | `worker/deno/lib/worker_label_guard.ts`, `worker/deno/lib/reserved_label_strip.ts` | `worker/deno/tests/worker_label_guard_test.ts`, `worker/deno/tests/reserved_label_strip_test.ts` |
+| **C15** | Reserved workflow labels refused in-process before the worker calls the labels API — on an existing issue *and* at `gh issue create` time (Issue #1276) — and stripped when applied by an untrusted actor | `worker/deno/lib/worker_label_guard.ts`, `worker/deno/lib/guarded_issue_labels.ts`, `worker/deno/lib/reserved_label_strip.ts` | `worker/deno/tests/worker_label_guard_test.ts`, `worker/deno/tests/guarded_issue_labels_test.ts`, `worker/deno/tests/reserved_label_strip_test.ts` |
 | **C16** | Tamper-evident audit journal of every classified mutation, including blocked ones | `worker/deno/lib/audit_journal.ts` | `worker/deno/tests/audit_journal_test.ts` |
 | **C17** | Bounded outbound fetches — mandatory timeout and streamed size cap on every call | `worker/deno/lib/bounded_fetch.ts` | `worker/deno/tests/bounded_fetch_test.ts` |
 | **C18** | Dependency release-age quarantine, verified against the registry and fail-closed on what it cannot read | `worker/deno/lib/npm_package_age.ts`, `worker/deno/lib/bump_age_audit.ts` | `worker/deno/tests/npm_package_age_test.ts`, `worker/deno/tests/bump_age_audit_test.ts` |
@@ -189,7 +189,7 @@ here exists.
 | **C21** | Non-interactive credential provisioning into one owner-only directory, mounted read-only per provider sub-directory | `worker/deno/lib/credential_preflight.ts`, `worker/deno/lib/container_launch.ts` | `worker/deno/tests/credential_preflight_test.ts`, `worker/deno/tests/container_launch_test.ts` |
 | **C22** | Execution containment — a disposable container with an explicit mount set, an immutable (`--read-only`) root filesystem whose only writable exceptions are the scratch `tmpfs` mounts and the named volumes, no host networking and no published ports | `worker/deno/lib/container_launch.ts`, `worker/deno/lib/container_runtime.ts` | `worker/deno/tests/container_containment_test.ts`, `worker/deno/tests/container_launch_test.ts` |
 | **C23** | Secret redaction rules applied per outbound sink, linear-time over untrusted input | `worker/deno/lib/secret_redaction.ts` | `worker/deno/tests/secret_redaction_test.ts`, `worker/deno/tests/secret_redaction_redos_test.ts` |
-| **C24** | Structural redaction chokepoints — the patched console, and both `gh` chokepoints (worker and agent) covering argv, `--body-file` / `--input` file bodies and stdin bodies | `worker/deno/lib/console_redaction.ts`, `worker/deno/lib/gh_body_redaction.ts`, `worker/deno/lib/gh_spawn.ts` | `worker/deno/tests/console_redaction_test.ts`, `worker/deno/tests/gh_body_redaction_test.ts`, `worker/deno/tests/gh_spawn_test.ts` |
+| **C24** | Structural redaction chokepoints — the patched console (installed by every entry-point process and held there by a quality-gate check), worker `gh` published text (bodies, titles and label/milestone fields), agent-authored `gh` bodies including `--body-file`, `--input` file bodies and bodies piped on stdin (Issue #1254), and `git` commit/tag/merge messages at both `runGitCommand` and the agent's own `git` PATH shim | `worker/deno/lib/console_redaction.ts`, `worker/deno/lib/console_redaction_entrypoint_check.ts`, `worker/deno/lib/gh_body_redaction.ts`, `worker/deno/lib/gh_spawn.ts`, `worker/deno/lib/git_message_redaction.ts`, `worker/deno/lib/git_guard_shim.ts`, `worker/deno/lib/git_guard_cli.ts` | `worker/deno/tests/console_redaction_test.ts`, `worker/deno/tests/console_redaction_entrypoint_check_test.ts`, `worker/deno/tests/quality_entrypoint_redaction_test.ts`, `worker/deno/tests/gh_body_redaction_test.ts`, `worker/deno/tests/gh_spawn_test.ts`, `worker/deno/tests/gh_title_redaction_test.ts`, `worker/deno/tests/git_message_redaction_test.ts`, `worker/deno/tests/git_guard_shim_test.ts` |
 | **C25** | Worker identity guard — the authenticated login must match the configured service-account allowlist | `worker/deno/lib/identity_guard.ts` | `worker/deno/tests/identity_guard_test.ts` |
 | **C26** | Commit safety — the enforced ignore allowlist plus a fail-closed pre-commit hook that blocks staged credential files | `worker/deno/lib/gitignore_enforcer.ts`, `hooks/pre-commit` | `worker/deno/tests/gitignore_enforcer_test.ts`, `worker/deno/tests/hidden_files_safety_integration_test.ts` |
 | **C27** | Repository allowlist and git-URL validation before any clone or query | `worker/deno/lib/config_validator.ts` | `worker/deno/tests/config_validator_test.ts` |
@@ -225,6 +225,7 @@ accept.
 | **R6** | **Repository-supplied build scripts execute.** The agent runs the monitored repository's own `quality.sh` and its test suite | Running the repository's gate is the product; the boundary that must hold is containment (C22) and egress control (C12, C13), not the contents of that script |
 | **R7** | **The model is not deterministic.** No prompt-level control can guarantee an instruction is never followed | Which is exactly why the boundaries below the prompt exist — see the next section |
 | **R9** | **A credential file is readable from inside the container.** C21 mounts the provider's whole credential sub-directory read-only, so any process with filesystem read access inside the container can read the credential files directly, whatever the child-environment policy (C20) withheld. A host holding a pool of tokens for one vendor (`provider-2.env`, `provider-3.env`) exposes every token in the pool this way, not only the one the run selected | The mount is how the credential reaches the worker at all, and the exposure is the same class a single-token host has always carried — several tokens raise its count, not its kind. The controls that must hold are containment (C22) and egress (C12, C13): the agent is assumed compromised, so the answer is that a stolen token cannot reach an attacker, not that it cannot be read. Isolating the credential mount from the agent subprocess is separate work with its own issue |
+| **R10** | **Instruction-carrying images are detected by asking the model to report itself.** `suspicious_image_handoff.ts` expresses detection as a prompt-level self-check: the agent is told to emit a marker when an untrusted image appears to carry instructions aimed at an AI agent, and `detectSuspiciousImageFlag` scans the agent's own output for it. An image can instruct the model to act on its content *and* to withhold the marker, so the only detector is the party under attack. Unlike the text path (C4–C9), there is no independent code-level equivalent, because arbitrary image content cannot be statically analysed for embedded instructions | Accepted for now, and **narrowed**: the model can suppress its marker but cannot remove the image reference from the body the worker already parsed, so `untrusted_image_signal.ts` records — independently, in TypeScript, before the agent sees anything — that an untrusted author put an image in front of it (Refs #1385). That signal **does not gate**: screenshots in bug reports are ordinary, and a control that fires on ordinary work is one somebody switches off, which loses the signal too. **Exit condition — what would move this from recording to gating:** any ONE of (a) a confirmed instance of an image-borne injection on this fleet, which makes the cost of false positives worth paying immediately; (b) the recorded rate showing untrusted-author images are rarer than assumed — under roughly one per week across the fleet — so mandatory review would not stall ordinary work; or (c) a narrower gate becoming available, such as requiring a corroborating text-based signal before a conclusion drawn from an image may be acted on. Absent all three this stays recording-only, and the rate should be reviewed rather than left unread |
 | **R8** | **Worker-token compromise now includes trust resolution.** A stolen worker token can list collaborators and, with a write-grant, add an instructor. A failed fetch does not widen trust (C29), but a successful fetch as the attacker does | Accepted when choosing `"github"`: GitHub's permission model *is* the allowlist. Compensate by scoping the token, rotating it, and treating collaborator-admin as a privileged role |
 
 ## 🧨 The assumption this model holds under
@@ -250,6 +251,68 @@ holds *after* the agent has already been persuaded:
 
 A change that weakens one of these in exchange for a stronger prompt-level
 defence is a bad trade, and this document exists to make that visible.
+
+## 🎯 The containment goal: no persistence past the issue
+
+The design intent, stated plainly so it can be checked rather than assumed:
+
+> **A compromise must not outlive the single issue that introduced it.**
+
+This is a direction, not a claim of perfection. Nothing here is bullet-proof
+and the document does not pretend otherwise — R1–R9 record what is knowingly
+accepted. The standard is proportionate: take every step that meaningfully
+shrinks the blast radius at a cost the fleet can carry. In practice that means
+mount read-only wherever the worker does not need to write, keep the container
+disposable, and withhold every secret from every process that does not need
+it — rather than reaching for a stronger prompt and hoping.
+
+The worker takes its instructions from public repositories. Some of that text
+is written by people who want it to do something else, and the delivery does
+not have to look like text at all — an image carrying instructions a reader
+would not see is the same attack with a different envelope. Not every agent
+that reads it will be the strongest model available; cheaper ones are used
+where the task allows, and they are easier to persuade.
+
+So *not being tricked* is not a control. It is a probability, and the design
+must not depend on it. The question this model answers is the other one: when
+an agent **is** tricked, how far can it reach, and how long does it last? A
+remote-access trojan is exactly the shape being designed out — a foothold
+established while working one issue that is still there for the next one.
+
+That splits the container's contents in two, and the split is the design rule:
+
+- **Immutable to the agent** — the prompt templates it is instructed by, and
+  the programs that invoke and constrain it: the worker's own code, the
+  `gh`/`git` guard modules, the launcher. If the agent can rewrite what
+  instructs it or what checks it, one successful injection becomes every
+  later decision in the process, and none of it appears in a pull request
+  diff.
+- **Writable by the agent** — everything it genuinely needs: its own state,
+  session store and memories, the scratch it builds in, and the clone of the
+  repository it was asked to work on. Containment that stops the agent doing
+  its job is not containment, it is a broken worker, and it will be removed
+  by whoever is on call.
+
+Anything that is writable *and* read back on a later issue is where a trojan
+would live. That is the class to hunt.
+
+**Where the boundary actually sits today.** The immutable root filesystem
+(C22) bounds persistence to the **launch**, not to the issue. One launch
+processes many issues through the slot pool, so a foothold established on
+issue *n* can still be present for issue *n+1*. Two known instances, both
+tracked:
+
+- ignored paths survive the `git clean -fd` that resets a reused clone, so
+  content placed in a dependency cache or build directory is still there for
+  the next run of that repository (#1443);
+- the `gh`/`git` guard modules execute from the writable staged copy of the
+  worker source and are re-read on every call, so the control constraining the
+  agent is modifiable by it for the rest of the launch (#1444).
+
+Neither is closed by a permission bit on the work volume, because the coding
+agent runs as the owner of that volume — see the note under R9. They are
+recorded here so the gap between the stated goal and the current boundary is
+visible rather than assumed away.
 
 ## 📌 Change process
 

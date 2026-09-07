@@ -42,13 +42,13 @@
       "id": "claude",
       "binary": "claude",
       "fragment": "providers/claude.sh",
-      "version": "2.1.223",
+      "version": "2.1.261",
       "source": "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases",
       "sha256": {
-        "amd64": "98226474f802e3094d6a86c5ade8883c16206d0fcb5c400b7401c800063e99d7",
-        "arm64": "60e83d8db0e894d0e54413e5e7daa256d180db660f51e139a51b614fc30cf3ac"
+        "amd64": "4ae40dd1784e85753e742e09f267d29ecbb82890361ad3817d27560866d364a6",
+        "arm64": "7bbed5a9b0fc2e4ec67bad3490d06ca91b86d6b037d47520b7898951757d1b8a"
       },
-      "notes": "Coding-agent provider layer (Issue #4067). container/providers/claude.sh reads these pins with jq and verifies the download before installing it; the base Containerfile only selects the fragments via the set-valued AGENT_PROVIDERS build argument (Issue #4105), so a second provider adds a fragment and an entry here."
+      "notes": "Coding-agent provider layer (Issue #4067). container/providers/claude.sh reads these pins with jq and verifies the download before installing it; the base Containerfile only selects the fragments via the set-valued AGENT_PROVIDERS build argument (Issue #4105), so a second provider adds a fragment and an entry here. Raised from 2.1.223 to 2.1.261 by Issue #1362: the CLI resolves the `fable` alias from its own bundled table, 2.1.223 resolved it to claude-fable-5, and in-container the image IS the update mechanism (skipSoftwareUpdateFromEnv) so softwareMinVersions cannot pull a running container forward. 2.1.261 carries Fable 5.1 as the default fable model (2.1.257) plus its prompt-cache fixes (2.1.260), and cleared the 24h dependency quarantine; checksums verified against the pinned artefacts and the arm64 binary run to confirm it reports 2.1.261."
     },
     {
       "id": "codex",

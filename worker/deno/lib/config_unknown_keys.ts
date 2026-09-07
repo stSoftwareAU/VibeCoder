@@ -138,8 +138,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "github_app_id",
   "github_app_installation_id",
   "github_app_private_key_path",
-  // The host log directory (Issue #873). Absolute, or anchored at `~`; it
-  // outranks LAUNCH_LOG_DIR and LOG_DIR, which stay for a system service.
+  // The host log directory (Issue #873). Absolute, or anchored at `~`; the
+  // only way to move it — LAUNCH_LOG_DIR and LOG_DIR are ignored (#1388).
   "log_dir",
 
   // Numeric settings

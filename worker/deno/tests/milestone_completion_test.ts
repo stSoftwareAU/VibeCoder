@@ -21,6 +21,15 @@ import {
   type MilestoneCompletionDeps,
   selectDuplicateTrackersToClose,
 } from "../lib/milestone_completion.ts";
+import { MILESTONE_TRACKING_MARKER } from "../lib/milestone_tracker_identity.ts";
+
+/**
+ * Issue #1246: a tracking-shaped title is only a candidate — the fleet's own
+ * tracker is proved by the body marker plus the author, so these fixtures
+ * state the fleet ("bot", the login every tracker fixture here uses) rather
+ * than writing a config file.
+ */
+const VERIFICATION = { authorOptions: { fleetAuthors: ["bot"] } };
 
 // ============================================================================
 // checkMilestoneComplete
@@ -35,7 +44,13 @@ Deno.test("checkMilestoneComplete - returns true when no open issues remain", as
     return "[]";
   };
 
-  const result = await checkMilestoneComplete("owner/repo", "v1.0", ghFn);
+  const result = await checkMilestoneComplete(
+    "owner/repo",
+    "v1.0",
+    ghFn,
+    undefined,
+    VERIFICATION,
+  );
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value, true);
@@ -65,7 +80,13 @@ Deno.test("checkMilestoneComplete - returns false when open issues exist", async
     return "[]";
   };
 
-  const result = await checkMilestoneComplete("owner/repo", "v1.0", ghFn);
+  const result = await checkMilestoneComplete(
+    "owner/repo",
+    "v1.0",
+    ghFn,
+    undefined,
+    VERIFICATION,
+  );
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value, false);
@@ -77,7 +98,13 @@ Deno.test("checkMilestoneComplete - returns error on gh failure", async () => {
     throw new Error("API error");
   };
 
-  const result = await checkMilestoneComplete("owner/repo", "v1.0", ghFn);
+  const result = await checkMilestoneComplete(
+    "owner/repo",
+    "v1.0",
+    ghFn,
+    undefined,
+    VERIFICATION,
+  );
   assertEquals(result.ok, false);
 });
 
@@ -169,7 +196,12 @@ Deno.test("hasExistingMilestoneTrackingIssue - returns issue number when found",
     const key = args.join(" ");
     if (key.includes("issue list") && key.includes("--milestone 1")) {
       return JSON.stringify([
-        { number: 200, title: "Merge milestone 'v1.0' to main" },
+        {
+          number: 200,
+          title: "Merge milestone 'v1.0' to main",
+          body: MILESTONE_TRACKING_MARKER,
+          author: { login: "bot" },
+        },
       ]);
     }
     return "[]";
@@ -181,6 +213,8 @@ Deno.test("hasExistingMilestoneTrackingIssue - returns issue number when found",
     1,
     "main",
     ghFn,
+    undefined,
+    VERIFICATION,
   );
   assertEquals(result.ok, true);
   if (result.ok) {
@@ -203,6 +237,8 @@ Deno.test("hasExistingMilestoneTrackingIssue - returns null when not found", asy
     1,
     "main",
     ghFn,
+    undefined,
+    VERIFICATION,
   );
   assertEquals(result.ok, true);
   if (result.ok) {
@@ -222,7 +258,12 @@ Deno.test("hasExistingMilestoneTrackingIssue - reuses tracker despite default-br
     if (key.includes("issue list") && key.includes("--milestone 3")) {
       // Existing tracker was filed when the default branch was "Develop".
       return JSON.stringify([
-        { number: 250, title: "Merge milestone 'Milestone 3' to Develop" },
+        {
+          number: 250,
+          title: "Merge milestone 'Milestone 3' to Develop",
+          body: MILESTONE_TRACKING_MARKER,
+          author: { login: "bot" },
+        },
       ]);
     }
     return "[]";
@@ -236,6 +277,8 @@ Deno.test("hasExistingMilestoneTrackingIssue - reuses tracker despite default-br
     3,
     "main",
     ghFn,
+    undefined,
+    VERIFICATION,
   );
   assertEquals(result.ok, true);
   if (result.ok) {
@@ -249,7 +292,12 @@ Deno.test("hasExistingMilestoneTrackingIssue - reuses tracker after milestone re
     if (key.includes("issue list") && key.includes("--milestone 4")) {
       // Tracker filed under the old milestone title; milestone since renamed.
       return JSON.stringify([
-        { number: 260, title: "Merge milestone 'Milestone 4 (old)' to main" },
+        {
+          number: 260,
+          title: "Merge milestone 'Milestone 4 (old)' to main",
+          body: MILESTONE_TRACKING_MARKER,
+          author: { login: "bot" },
+        },
       ]);
     }
     return "[]";
@@ -261,6 +309,8 @@ Deno.test("hasExistingMilestoneTrackingIssue - reuses tracker after milestone re
     4,
     "main",
     ghFn,
+    undefined,
+    VERIFICATION,
   );
   assertEquals(result.ok, true);
   if (result.ok) {
@@ -273,8 +323,18 @@ Deno.test("hasExistingMilestoneTrackingIssue - returns canonical lowest-numbered
     const key = args.join(" ");
     if (key.includes("issue list") && key.includes("--milestone 5")) {
       return JSON.stringify([
-        { number: 410, title: "Merge milestone 'M5' to Develop" },
-        { number: 401, title: "Merge milestone 'M5' to Develop" },
+        {
+          number: 410,
+          title: "Merge milestone 'M5' to Develop",
+          body: MILESTONE_TRACKING_MARKER,
+          author: { login: "bot" },
+        },
+        {
+          number: 401,
+          title: "Merge milestone 'M5' to Develop",
+          body: MILESTONE_TRACKING_MARKER,
+          author: { login: "bot" },
+        },
         { number: 420, title: "Some unrelated milestone issue" },
       ]);
     }
@@ -287,6 +347,8 @@ Deno.test("hasExistingMilestoneTrackingIssue - returns canonical lowest-numbered
     5,
     "Develop",
     ghFn,
+    undefined,
+    VERIFICATION,
   );
   assertEquals(result.ok, true);
   if (result.ok) {
@@ -412,6 +474,7 @@ function createMockDeps(
     repos: ["owner/repo"],
     ghCommandFn: async (_args: string[]) => "[]",
     log: (_msg: string) => {},
+    authorOptions: { fleetAuthors: ["bot"] },
     ...overrides,
   };
 }
@@ -576,7 +639,12 @@ Deno.test("checkAndHandleMilestoneCompletions - reuses existing tracker with dri
     // All-state milestone lookup returns the existing "to Develop" tracker.
     if (key.includes("issue list") && key.includes("--state all")) {
       return JSON.stringify([
-        { number: 250, title: "Merge milestone 'Milestone 3' to Develop" },
+        {
+          number: 250,
+          title: "Merge milestone 'Milestone 3' to Develop",
+          body: MILESTONE_TRACKING_MARKER,
+          author: { login: "bot" },
+        },
       ]);
     }
     if (key.includes("pr list")) {
@@ -850,7 +918,12 @@ Deno.test("checkAndHandleMilestoneCompletions - reuses existing tracking issue",
       key.includes("--milestone")
     ) {
       return JSON.stringify([
-        { number: 200, title: "Merge milestone 'v1.0' to main" },
+        {
+          number: 200,
+          title: "Merge milestone 'v1.0' to main",
+          body: MILESTONE_TRACKING_MARKER,
+          author: { login: "bot" },
+        },
       ]);
     }
     if (key.includes("pr list") && key.includes("--state all")) {
@@ -978,6 +1051,8 @@ Deno.test("Issue #1133 - tracking issue closed immediately after summary PR crea
       return JSON.stringify([{
         number: 500,
         title: "Merge milestone 'v2.0' to main",
+        body: MILESTONE_TRACKING_MARKER,
+        author: { login: "bot" },
       }]);
     }
     // No existing summary PR
@@ -1059,6 +1134,8 @@ Deno.test("Issue #1133 - tracking issue closed when summary PR already exists", 
       return JSON.stringify([{
         number: 600,
         title: "Merge milestone 'v3.0' to main",
+        body: MILESTONE_TRACKING_MARKER,
+        author: { login: "bot" },
       }]);
     }
     // Summary PR already exists
@@ -1243,6 +1320,8 @@ Deno.test("Issue #1210 - milestone closed when summary PR is merged", async () =
       return JSON.stringify([{
         number: 1068,
         title: "Merge milestone 'Better Discovery' to main",
+        body: MILESTONE_TRACKING_MARKER,
+        author: { login: "bot" },
       }]);
     }
     // Summary PR already exists
@@ -1335,6 +1414,8 @@ Deno.test("Issue #1210 - milestone NOT closed when summary PR is still open", as
       return JSON.stringify([{
         number: 800,
         title: "Merge milestone 'v5.0' to main",
+        body: MILESTONE_TRACKING_MARKER,
+        author: { login: "bot" },
       }]);
     }
     // Summary PR already exists
@@ -1502,6 +1583,8 @@ Deno.test("Issue #1133 - tracking issue left open when summary PR creation fails
       return JSON.stringify([{
         number: 700,
         title: "Merge milestone 'v4.0' to main",
+        body: MILESTONE_TRACKING_MARKER,
+        author: { login: "bot" },
       }]);
     }
     // No existing summary PR
@@ -1782,13 +1865,20 @@ Deno.test("checkMilestoneComplete - ignores an open tracking issue (Issue #3214)
           milestone: { title: "scan" },
           author: { login: "bot" },
           url: "u",
+          body: MILESTONE_TRACKING_MARKER,
         },
       ]);
     }
     return "[]";
   };
 
-  const result = await checkMilestoneComplete("owner/repo", "scan", ghFn);
+  const result = await checkMilestoneComplete(
+    "owner/repo",
+    "scan",
+    ghFn,
+    undefined,
+    VERIFICATION,
+  );
   assertEquals(result.ok, true);
   if (result.ok) assertEquals(result.value, true);
 });
@@ -1807,6 +1897,7 @@ Deno.test("checkMilestoneComplete - still false when a real issue is open beside
           milestone: { title: "scan" },
           author: { login: "bot" },
           url: "u",
+          body: MILESTONE_TRACKING_MARKER,
         },
         {
           number: 42,
@@ -1823,7 +1914,13 @@ Deno.test("checkMilestoneComplete - still false when a real issue is open beside
     return "[]";
   };
 
-  const result = await checkMilestoneComplete("owner/repo", "scan", ghFn);
+  const result = await checkMilestoneComplete(
+    "owner/repo",
+    "scan",
+    ghFn,
+    undefined,
+    VERIFICATION,
+  );
   assertEquals(result.ok, true);
   if (result.ok) assertEquals(result.value, false);
 });
@@ -1844,6 +1941,7 @@ Deno.test("getOpenMilestoneTrackers - returns only tracking-shaped open issues, 
           milestone: { title: "Milestone 3" },
           author: { login: "bot" },
           url: "u",
+          body: MILESTONE_TRACKING_MARKER,
         },
         {
           number: 369,
@@ -1854,6 +1952,7 @@ Deno.test("getOpenMilestoneTrackers - returns only tracking-shaped open issues, 
           milestone: { title: "Milestone 3" },
           author: { login: "bot" },
           url: "u",
+          body: MILESTONE_TRACKING_MARKER,
         },
         {
           number: 400,
@@ -1874,6 +1973,8 @@ Deno.test("getOpenMilestoneTrackers - returns only tracking-shaped open issues, 
     "owner/repo",
     "Milestone 3",
     ghFn,
+    undefined,
+    VERIFICATION,
   );
   assertEquals(trackers, [369, 377]);
 });
@@ -1971,6 +2072,7 @@ Deno.test("checkAndHandleMilestoneCompletions - self-heals a deadlocked issue-on
           milestone: { title: "scan" },
           author: { login: "bot" },
           url: "u",
+          body: MILESTONE_TRACKING_MARKER,
         },
       ]);
     }
@@ -2047,6 +2149,7 @@ Deno.test("checkAndHandleMilestoneCompletions - closes duplicate trackers each p
           milestone: { title: "Milestone 3" },
           author: { login: "bot" },
           url: "u",
+          body: MILESTONE_TRACKING_MARKER,
         },
         {
           number: 377,
@@ -2057,6 +2160,7 @@ Deno.test("checkAndHandleMilestoneCompletions - closes duplicate trackers each p
           milestone: { title: "Milestone 3" },
           author: { login: "bot" },
           url: "u",
+          body: MILESTONE_TRACKING_MARKER,
         },
       ]);
     }
@@ -2068,7 +2172,12 @@ Deno.test("checkAndHandleMilestoneCompletions - closes duplicate trackers each p
     // Existing canonical tracker via the milestone-keyed all-state lookup.
     if (key.includes("issue list") && key.includes("--state all")) {
       return JSON.stringify([
-        { number: 369, title: "Merge milestone 'Milestone 3' to main" },
+        {
+          number: 369,
+          title: "Merge milestone 'Milestone 3' to main",
+          body: MILESTONE_TRACKING_MARKER,
+          author: { login: "bot" },
+        },
       ]);
     }
     if (key.includes("api") && key.includes("/branches/")) {
@@ -2131,6 +2240,7 @@ Deno.test("checkAndHandleMilestoneCompletions - closes a premature tracker when 
           milestone: { title: "TPMUM-715" },
           author: { login: "bot" },
           url: "u",
+          body: MILESTONE_TRACKING_MARKER,
         },
         {
           number: 820,
@@ -2464,7 +2574,13 @@ Deno.test("Issue #3908 - the milestone's own tracking issue is not an open child
   const deps = createMockDeps({
     ghCommandFn: vetoScenarioGhFn(writes, (key) =>
       authoritativeStub(key, 1, [
-        { number: 300, title: "Merge milestone 'v1.0' to main" },
+        {
+          number: 300,
+          title: "Merge milestone 'v1.0' to main",
+          body: MILESTONE_TRACKING_MARKER,
+          // The REST child listing names the opener `user` (Issue #1246).
+          user: { login: "bot" },
+        },
       ])),
   });
 

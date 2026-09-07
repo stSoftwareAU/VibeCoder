@@ -37,19 +37,28 @@ const SETUP_PS1 = new URL("../../../setup.ps1", import.meta.url).pathname;
  */
 async function runPrompt(
   answer: string,
+  options: { status?: string; secondAnswer?: string } = {},
 ): Promise<{ code: number; stdout: string }> {
   const script = `
     set -uo pipefail
     source "${SETUP_SH}"
     is_macos() { return 0; }
     print_info() { :; }
-    print_warning() { :; }
+    print_warning() { echo "WARNED:$*"; }
     print_error() { :; }
     # The interactive guard tests the real stdin; force it so a piped answer
     # still reaches the prompt.
     eval 'prompt_launchagent_setup() {
       '"$(declare -f prompt_launchagent_setup | sed -n '3,$p' | sed 's/if \\[\\[ ! -t 0 \\]\\]; then/if false; then/')"
-    run_setup_cli() { echo "CALLED:$*"; }
+    # The status query answers as the test asked; everything else prints a
+    # marker instead of touching the host.
+    run_setup_cli() {
+      if [[ "$*" == "launchagent --status" ]]; then
+        echo "\${VIBE_TEST_AGENT_STATUS:-not-installed}"
+        return 0
+      fi
+      echo "CALLED:$*"
+    }
     prompt_launchagent_setup
   `;
   const cmd = new Deno.Command("bash", {
@@ -57,10 +66,14 @@ async function runPrompt(
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",
+    env: options.status ? { VIBE_TEST_AGENT_STATUS: options.status } : {},
   });
   const child = cmd.spawn();
   const writer = child.stdin.getWriter();
-  await writer.write(new TextEncoder().encode(`${answer}\n`));
+  const answers = options.secondAnswer === undefined
+    ? `${answer}\n`
+    : `${answer}\n${options.secondAnswer}\n`;
+  await writer.write(new TextEncoder().encode(answers));
   await writer.close();
   const out = await child.output();
   return { code: out.code, stdout: new TextDecoder().decode(out.stdout) };
@@ -94,6 +107,126 @@ Deno.test("setup.sh - only an explicit yes installs the LaunchAgent (Issue #26)"
       `'${answer}' must not install; got: ${stdout}`,
     );
   }
+});
+
+// ── The removal prompt (Issue #1369) ─────────────────────────────────────
+//
+// Declining the install on a host that already has the agent offers to remove
+// it — and that offer used to read `[Y/n]`, so the operator who walked the
+// wizard with Enter to change a credential uninstalled the worker instead.
+// That happened twice on GRQ-25; launchd's log recorded the removal and the
+// host sat dead until someone noticed the next day. Enter must change nothing
+// on both LaunchAgent prompts, not just the install one.
+
+/**
+ * Did a branch run this subcommand?
+ *
+ * The prompts are written with `echo -n`, so a marker shares the prompt's
+ * line — a substring test, not a line test.
+ */
+function called(stdout: string, subcommand: string): boolean {
+  return stdout.includes(`CALLED:${subcommand}`);
+}
+
+Deno.test("setup.sh - a bare Enter does NOT remove the installed LaunchAgent (Issue #1369)", async () => {
+  const { stdout } = await runPrompt("", {
+    status: "installed",
+    secondAnswer: "",
+  });
+  assertEquals(
+    called(stdout, "launchagent --uninstall"),
+    false,
+    `Enter must leave the LaunchAgent as it is; got: ${stdout}`,
+  );
+});
+
+Deno.test("setup.sh - only an explicit yes removes the LaunchAgent (Issue #1369)", async () => {
+  for (const answer of ["y", "Y", "yes", "YES"]) {
+    const { stdout } = await runPrompt("n", {
+      status: "installed",
+      secondAnswer: answer,
+    });
+    assertEquals(
+      called(stdout, "launchagent --uninstall"),
+      true,
+      `'${answer}' should remove the agent; got: ${stdout}`,
+    );
+  }
+  // Everything else keeps it — Enter, an explicit no, "-" for leave-as-is,
+  // and a typo, which must fail safe.
+  for (const answer of ["", "n", "N", "no", "NO", "-", "  ", "yep"]) {
+    const { stdout } = await runPrompt("n", {
+      status: "installed",
+      secondAnswer: answer,
+    });
+    assertEquals(
+      called(stdout, "launchagent --uninstall"),
+      false,
+      `'${answer}' must not remove the agent; got: ${stdout}`,
+    );
+  }
+});
+
+// ── A plist launchd has forgotten (Issue #1369) ──────────────────────────
+//
+// The offer used to come from a `stat` of the plist, so the host that had
+// just lost its agent was told the worker runs every five minutes and was
+// offered the uninstall. What it needs is the agent loaded again.
+
+Deno.test("setup.sh - an unloaded plist is offered the repair, not the uninstall (Issue #1369)", async () => {
+  const { stdout } = await runPrompt("n", {
+    status: "plist-not-loaded",
+    secondAnswer: "y",
+  });
+
+  assertEquals(called(stdout, "launchagent --uninstall"), false, stdout);
+  assertEquals(
+    called(stdout, "launchagent\n") || stdout.trimEnd().endsWith(
+      "CALLED:launchagent",
+    ),
+    true,
+    `an explicit yes should load the agent again; got: ${stdout}`,
+  );
+});
+
+Deno.test("setup.sh - Enter on an unloaded plist changes nothing (Issue #1369)", async () => {
+  const { stdout } = await runPrompt("n", {
+    status: "plist-not-loaded",
+    secondAnswer: "",
+  });
+
+  assertEquals(called(stdout, "launchagent --uninstall"), false, stdout);
+  assertEquals(
+    stdout.includes("CALLED:launchagent"),
+    false,
+    `Enter must neither load nor remove anything; got: ${stdout}`,
+  );
+});
+
+Deno.test("setup.sh - an unloaded plist is not described as a running worker (Issue #1369)", async () => {
+  // The warning IS the operator's information: on this host nothing runs the
+  // worker, and saying launchd starts it every 5 minutes is what sent the
+  // GRQ-25 operator to the uninstall prompt.
+  const { stdout } = await runPrompt("n", {
+    status: "plist-not-loaded",
+    secondAnswer: "",
+  });
+
+  assertStringIncludes(stdout, "WARNED:");
+  assertEquals(
+    stdout.includes("starts the worker every 5 minutes"),
+    false,
+    `an unloaded agent must not be described as running; got: ${stdout}`,
+  );
+});
+
+Deno.test("setup.sh / setup.ps1 - both removal prompts are marked [y/N] (Issue #1369)", async () => {
+  // Parity with the install prompts below: the marker shown to the operator
+  // IS the contract, and it must match the branch behaviour tested above.
+  const sh = await Deno.readTextFile(SETUP_SH);
+  assertStringIncludes(sh, "Remove the installed LaunchAgent now? [y/N]");
+  const ps1 = await Deno.readTextFile(SETUP_PS1);
+  assertStringIncludes(ps1, "Unregister the scheduled task now? [y/N]");
 });
 
 Deno.test("setup.sh / setup.ps1 - both install prompts are marked [y/N] (Issue #26)", async () => {

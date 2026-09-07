@@ -24,10 +24,9 @@
  * sketched could never have been committed: `gitignore_enforcer.ts` ignores
  * every hidden path in a monitored repo and `pre_commit_safety.ts` refuses to
  * commit one, so `git add -A` would have dropped it silently — preserved
- * nowhere, reported as written. `docs/archive/` is excluded from the Jekyll
- * build, the markdownlint globs and the page-title manifest, so a note left
- * on a WIP branch cannot trip a docs gate and strand the very branch it
- * exists to rescue.
+ * nowhere, reported as written. `docs/archive/` is excluded from the
+ * markdownlint globs, so a note left on a WIP branch cannot trip a docs gate
+ * and strand the very branch it exists to rescue.
  *
  * Every failure here is non-fatal and logged, exactly as a failed WIP
  * checkpoint is: losing the note must never cost the code.
@@ -151,10 +150,11 @@ function stripNonPortable(text: string): string {
 /**
  * Defuse Liquid tags in interpolated content.
  *
- * The note is committed into a repository whose `docs/` tree may be built by
- * GitHub Pages, and a stray `{%`/`{{` inside a commit subject or a path would
- * break that build. Only interpolated values are treated — the note's own
- * prose carries no braces.
+ * The note is committed into a *monitored* repository, whose `docs/` tree may
+ * be built by GitHub Pages, and a stray `{%`/`{{` inside a commit subject or a
+ * path would break that build. This repository stopped publishing in Issue
+ * #1344; the ones the worker writes notes into did not. Only interpolated
+ * values are treated — the note's own prose carries no braces.
  */
 function defuseLiquid(text: string): string {
   return text.replace(/\{\{/g, "{ {").replace(/\{%/g, "{ %");

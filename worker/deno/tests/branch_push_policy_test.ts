@@ -197,6 +197,26 @@ Deno.test("push_policy - the marker file opts out", async () => {
   );
 });
 
+Deno.test("push_policy - the opt-out names which signal fired", async () => {
+  // Issue #1289: the caller must be able to tell the admin-gated topic from
+  // the marker file, which is ordinary repository content.
+  const topic = await assessBranchPushPolicy(
+    "org/data",
+    "main",
+    makeGh({ topics: [DIRECT_PUSH_TOPIC] }).gh,
+  );
+  assert(topic.kind === "opted-out");
+  assertEquals(topic.source, "topic");
+
+  const marker = await assessBranchPushPolicy(
+    "org/data",
+    "main",
+    makeGh({ marker: true }).gh,
+  );
+  assert(marker.kind === "opted-out");
+  assertEquals(marker.source, "marker");
+});
+
 // ---------------------------------------------------------------------------
 // Uncertainty is never a licence to lock
 // ---------------------------------------------------------------------------

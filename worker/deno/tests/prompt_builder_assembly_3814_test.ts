@@ -327,12 +327,16 @@ Deno.test("Gap 5 - an absent custom-instruction value emits no empty tag", async
   assertEquals(prompt.includes("Repository-Specific Instructions"), false);
 });
 
+/**
+ * The summary is still tagged, but it is now fenced in the run's boundary
+ * rather than spliced bare inside the tag (Issue #1373) — so the assertion
+ * checks the tag and the summary text, not their former adjacency.
+ */
 Deno.test("Gap 5 - the activity summary is tagged", async () => {
   const prompt = await issuePrompt({ recentActivity: "3 PRs merged today." });
-  assertStringIncludes(
-    prompt,
-    "<recent_activity>\n3 PRs merged today.\n</recent_activity>",
-  );
+  assertStringIncludes(prompt, "<recent_activity>");
+  assertStringIncludes(prompt, "3 PRs merged today.");
+  assertStringIncludes(prompt, "</recent_activity>");
 });
 
 Deno.test("Gap 5 - the milestone block is tagged and its branch scrubbed", async () => {
