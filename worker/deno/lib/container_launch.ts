@@ -260,7 +260,18 @@ export interface ContainerLaunchInputs {
    * is what makes the content durable. Names are validated the same way as
    * the defaults, so the override cannot smuggle in a host path.
    */
-  volumes?: { work: string; approvalState: string; agentState?: string };
+  /**
+   * Per-run throwaway volume names, used by the containment integration
+   * tests so they never touch a production host's state (Issue #4186).
+   *
+   * Every field is REQUIRED. `agentState` was optional when it was added
+   * (Issue #1407), which meant a caller isolating the other two silently
+   * fell back to the PRODUCTION `vibe-agent-state` name — mounting the live
+   * agent session store into a throwaway container, which is exactly what
+   * this override exists to prevent. An optional isolation knob isolates
+   * nothing; a missing name must be a compile error, not a fallback.
+   */
+  volumes?: { work: string; approvalState: string; agentState: string };
   /**
    * Absolute host paths of the operator's `custom_label_prompts` templates
    * (Issue #850, part of #843), in configuration order.

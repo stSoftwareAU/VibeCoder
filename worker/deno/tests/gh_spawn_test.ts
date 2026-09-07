@@ -30,6 +30,15 @@ import {
   WriteTargetUndeterminableError,
 } from "../lib/write_repo_allowlist.ts";
 import { envFrom } from "./support/env_lookup.ts";
+import {
+  getGhCallMetrics,
+  resetGhCallMetrics,
+} from "../lib/gh_call_metrics.ts";
+import {
+  clearPrimaryQuotaLatch,
+  latchPrimaryQuota,
+} from "../lib/primary_quota_latch.ts";
+import { probeGraphqlQuota } from "../lib/graphql_quota_probe.ts";
 
 /** Record the arguments each spawn attempt would have used. */
 function recordingRunner(
@@ -394,5 +403,115 @@ Deno.test("spawnGh - a non-auth failure is returned as-is, never retried", async
   } finally {
     _resetGhSpawnRunner();
     resetGhRestageAttempts();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1485: telemetry and the primary-quota latch live at the chokepoint,
+// so a module that spawns `gh` directly is counted and short-circuited
+// exactly like one that goes through `runGhCommandRaw`.
+// ---------------------------------------------------------------------------
+
+Deno.test("spawnGh - records every spawn in the gh call metrics (Issue #1485)", async () => {
+  resetGhCallMetrics();
+  clearPrimaryQuotaLatch();
+  const { calls } = recordingRunner({ code: 0, stdout: "[]" });
+  try {
+    await spawnGh(["issue", "list", "--repo", "o/r"]);
+    await spawnGh(["pr", "view", "7", "--json", "state"]);
+    await spawnGh(["api", "rate_limit"]);
+    await runGhOrThrow(["api", "graphql", "-f", "query=Q"]);
+    assertEquals(calls.length, 4);
+    const snap = getGhCallMetrics();
+    assertEquals(snap.total, 4, "one record per spawned gh process");
+    assertEquals(snap.graphqlTotal, 3, "only the REST api call is not GraphQL");
+    assertEquals(snap.bySubCommand["issue list"], 1);
+    assertEquals(snap.bySubCommand["pr view"], 1);
+    assertEquals(snap.bySubCommand["api"], 1);
+    assertEquals(snap.bySubCommand["api graphql"], 1);
+  } finally {
+    restore();
+    resetGhCallMetrics();
+  }
+});
+
+Deno.test("spawnGh - a latched GraphQL-backed call fails without spawning or counting (Issue #1485)", async () => {
+  resetGhCallMetrics();
+  clearPrimaryQuotaLatch();
+  const { calls } = recordingRunner({ code: 0, stdout: "[]" });
+  try {
+    latchPrimaryQuota(Math.floor(Date.now() / 1000) + 3600);
+    const result = await spawnGh(["issue", "list", "--repo", "o/r"]);
+    assertEquals(result.success, false);
+    assertEquals(result.code, 1);
+    // The skip message carries the primary-quota phrase so the scans' log
+    // lines and the Issue #1780 pause still classify it correctly.
+    assertEquals(
+      /api rate limit already exceeded/i.test(result.stderr),
+      true,
+      `skip message should name the primary quota: ${result.stderr}`,
+    );
+    assertEquals(calls, [], "a latched call must not spawn gh");
+    assertEquals(getGhCallMetrics().total, 0, "a skipped call is not a call");
+
+    // runGhOrThrow surfaces the same skip as its usual failure shape.
+    const error = await assertRejects(
+      () => runGhOrThrow(["pr", "list", "--repo", "o/r"]),
+      Error,
+    );
+    assertEquals(/api rate limit already exceeded/i.test(error.message), true);
+    assertEquals(calls, []);
+  } finally {
+    restore();
+    clearPrimaryQuotaLatch();
+    resetGhCallMetrics();
+  }
+});
+
+Deno.test("spawnGh - a REST `gh api <path>` still runs while latched (Issue #1485)", async () => {
+  resetGhCallMetrics();
+  clearPrimaryQuotaLatch();
+  const { calls } = recordingRunner({ code: 0, stdout: "{}" });
+  try {
+    latchPrimaryQuota(Math.floor(Date.now() / 1000) + 3600);
+    const result = await spawnGh(["api", "rate_limit"]);
+    assertEquals(result.success, true);
+    await spawnGh(["api", "-X", "DELETE", "repos/o/r/issues/1/assignees"]);
+    assertEquals(calls.length, 2, "REST rides the core quota, not GraphQL");
+    assertEquals(getGhCallMetrics().total, 2);
+    assertEquals(getGhCallMetrics().graphqlTotal, 0);
+  } finally {
+    restore();
+    clearPrimaryQuotaLatch();
+    resetGhCallMetrics();
+  }
+});
+
+Deno.test("spawnGh - bypassQuotaLatch lets the quota probe run while latched (Issue #1485)", async () => {
+  clearPrimaryQuotaLatch();
+  const resetAt = new Date(Date.now() + 1800_000).toISOString();
+  const { calls } = recordingRunner({
+    code: 0,
+    stdout: JSON.stringify({
+      data: { rateLimit: { limit: 5000, remaining: 0, used: 5000, resetAt } },
+    }),
+  });
+  try {
+    latchPrimaryQuota(Math.floor(Date.now() / 1000) + 3600);
+    // The explicit escape hatch.
+    const direct = await spawnGh(["api", "graphql", "-f", "query=Q"], {
+      bypassQuotaLatch: true,
+    });
+    assertEquals(direct.success, true);
+    assertEquals(calls.length, 1);
+    // And the probe's default spawn uses it — the probe is what learns the
+    // reset that lifts the latch, so it can never be latched out.
+    const reading = await probeGraphqlQuota();
+    assertEquals(reading.ok, true);
+    assertEquals(calls.length, 2, "the probe must reach the runner");
+  } finally {
+    restore();
+    clearPrimaryQuotaLatch();
+    resetGhCallMetrics();
   }
 });

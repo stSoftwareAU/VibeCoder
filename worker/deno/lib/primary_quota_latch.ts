@@ -13,9 +13,9 @@
  * This module is the fix: the first time any `gh` invocation reports the
  * primary-quota message, {@link latchPrimaryQuota} records the reset time,
  * and {@link isPrimaryQuotaLatched} lets the shared chokepoint
- * (`github.ts` `runGhCommandRaw`) short-circuit every subsequent
- * GraphQL-backed call — no spawn, no retry, no secondary-limit cost — until
- * the quota resets. The chokepoint also writes the shared rate-limit signal
+ * (`gh_spawn.ts` `spawnGh`, since Issue #1485 — every `gh` process in the
+ * worker passes it) short-circuit every subsequent GraphQL-backed call — no
+ * spawn, no retry, no secondary-limit cost — until the quota resets. The chokepoint also writes the shared rate-limit signal
  * so the existing Issue #1780 mid-cycle pause engages at the next pass.
  *
  * The latch is a module-global: it lives for the life of the worker process
@@ -25,8 +25,21 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import { formatRateLimitReset } from "./rate_limit_signal.ts";
+
 /** The epoch (Unix seconds) the primary quota is latched until, or null. */
 let latchedUntilEpoch: number | null = null;
+
+/**
+ * Why the latch is held: the hourly primary quota being spent, or a
+ * secondary (burst) limit's short cool-down (Issue #1456). The skip message
+ * names which, so an operator reading the log knows whether to expect a
+ * minute's pause or an hour's.
+ */
+export type PrimaryQuotaLatchKind = "primary" | "secondary";
+
+/** The kind of the current latch; meaningless while not latched. */
+let latchKind: PrimaryQuotaLatchKind = "primary";
 
 /** Current wall-clock in Unix seconds. */
 function nowSeconds(): number {
@@ -102,18 +115,44 @@ export function primaryQuotaLatchedUntil(): number | null {
  *
  * @param resetEpoch - When the quota resets (Unix seconds).
  * @param now - Injectable time source (Unix seconds) for testing.
+ * @param kind - Whether this is the hourly quota or a burst cool-down.
  */
 export function latchPrimaryQuota(
   resetEpoch: number,
   now: number = nowSeconds(),
+  kind: PrimaryQuotaLatchKind = "primary",
 ): void {
   if (!Number.isFinite(resetEpoch) || resetEpoch <= now) return;
   latchedUntilEpoch = latchedUntilEpoch === null
     ? resetEpoch
     : Math.max(latchedUntilEpoch, resetEpoch);
+  latchKind = kind;
 }
 
 /** Clear the latch (on a confirmed reset, or between tests). */
 export function clearPrimaryQuotaLatch(): void {
   latchedUntilEpoch = null;
+  latchKind = "primary";
+}
+
+/**
+ * The one-line reason a latched `gh` call is skipped, naming the reset.
+ *
+ * Carries the primary-quota phrase so callers that classify by message
+ * (the scans' log lines, the Issue #1780 pause) still recognise it. Lives
+ * here, beside the latch, so the spawn chokepoint can produce it without
+ * importing `github.ts` (which imports the chokepoint).
+ *
+ * @param now - Injectable time source (Unix seconds) for testing.
+ */
+export function primaryQuotaSkipMessage(now: number = nowSeconds()): string {
+  const until = primaryQuotaLatchedUntil();
+  const eta = until === null
+    ? "reset time unknown"
+    : formatRateLimitReset(until, now);
+  return latchKind === "secondary"
+    ? `gh command skipped: GitHub secondary rate limit cool-down (API rate ` +
+      `limit already exceeded on a burst, hourly quota still available) — ${eta}`
+    : `gh command skipped: GraphQL primary quota exhausted (API rate ` +
+      `limit already exceeded) — ${eta}`;
 }
