@@ -46,6 +46,7 @@ import {
   type RunFailureClassification,
 } from "./run_outcome_classifier.ts";
 import { withStateLock } from "./state_mutex.ts";
+import { redactedTail } from "./redacted_text.ts";
 
 /** Marker prefix; the body carries `<!-- VIBE_RUN_FAILURE:<class> -->`. */
 export const RUN_FAILURE_MARKER_PREFIX = "VIBE_RUN_FAILURE";
@@ -198,9 +199,9 @@ async function writeState(path: string, state: FilingState): Promise<void> {
 export function formatRunFailureExcerpt(message: string): string {
   const signals = extractFailureSignals(message, CI_FAILURE_SIGNAL_LINES);
   const chosen = signals.length > 0 ? signals.join("\n") : message;
-  const bounded = chosen.length > CI_FAILURE_EXCERPT_BYTES
-    ? chosen.slice(-CI_FAILURE_EXCERPT_BYTES)
-    : chosen;
+  // Redacted whole, then bounded (Issue #1257): the excerpt is filed into a
+  // public issue body, and the failure message quotes the agent's own output.
+  const bounded = redactedTail(chosen, CI_FAILURE_EXCERPT_BYTES);
   // Never let the excerpt carry a marker of ours or close the fence.
   return bounded.replace(/<!--/g, "<!- -").replace(/-->/g, "- ->").replace(
     /```/g,

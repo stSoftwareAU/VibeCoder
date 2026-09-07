@@ -148,10 +148,13 @@ export type {
   TimeoutDiagnostics,
 } from "./claude_executor.ts";
 import { spawnGh } from "./gh_spawn.ts";
-import { redactSecrets } from "./secret_redaction.ts";
+import { redactedLineTail } from "./redacted_text.ts";
 
 /** A run shorter than this with no output reads as a start-up failure (#35). */
 const STARTUP_FAILURE_MS = 2000;
+
+/** Stderr lines carried into a failure log or comment (Issue #1257). */
+const STDERR_TAIL_LINES = 5;
 
 /**
  * Build the log line for a non-rate-limit Claude failure (Issue #35).
@@ -172,9 +175,7 @@ export function buildClaudeFailureLog(input: {
   output: string;
   wallClockMs: number;
 }): string {
-  const stderrTail = redactSecrets(
-    input.stderr.trim().split("\n").slice(-5).join("\n"),
-  );
+  const stderrTail = redactedLineTail(input.stderr.trim(), STDERR_TAIL_LINES);
   const elapsedSeconds = Math.round(input.wallClockMs / 100) / 10;
   const startupFailure = input.wallClockMs < STARTUP_FAILURE_MS &&
     input.output.trim().length === 0;
@@ -2458,8 +2459,9 @@ export async function runClaudeWithRetry(
       // diagnostics) instead of accepting it as run-end; the execute phase
       // then fails the phase (not `continue`) and the bounded infrastructure
       // retry applies.
-      const stderrTail = redactSecrets(
-        (result.value.stderr ?? "").trim().split("\n").slice(-5).join("\n"),
+      const stderrTail = redactedLineTail(
+        (result.value.stderr ?? "").trim(),
+        STDERR_TAIL_LINES,
       );
       const elapsedSeconds = Math.round(
         (result.value.runStats?.wallClockMs ?? 0) / 1000,
@@ -2579,8 +2581,11 @@ export async function runClaudeWithRetry(
     // the phase-level infrastructure retry (#1550) owns the one bounded
     // retry, because transient memory pressure may have passed.
     if (exitCode === 137) {
-      const stderrTail = (stderr ?? "").trim().split("\n").slice(-5).join(
-        "\n",
+      // Redacted before the cut (Issue #1257): this tail is logged and reaches
+      // the failure comment, and it had no redaction at all.
+      const stderrTail = redactedLineTail(
+        (stderr ?? "").trim(),
+        STDERR_TAIL_LINES,
       );
       // Read the memory pressure now, at the kill (Issue #4374): the
       // reading is the OOM evidence the release comment and the auto-filed

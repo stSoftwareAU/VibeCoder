@@ -49,6 +49,7 @@ import {
 // takes for every ecosystem's rules to be available to the pass.
 import "./dependency_conflict_json.ts";
 import "./dependency_conflict_native.ts";
+import { redactedHead } from "./redacted_text.ts";
 import {
   isSafeRepoRelativePath,
   type LockRegenLogger,
@@ -165,10 +166,21 @@ function defaultWriter(
   return (path, text) => Deno.writeTextFile(joinPath(workingDir, path), text);
 }
 
-/** Bound git output so one runaway command cannot flood a PR comment. */
-function gitDetail(outcome: ConflictGitOutcome): string {
+/** Characters of git output quoted in a deferral reason. */
+const CONFLICT_DETAIL_CHARS = 500;
+
+/**
+ * Bound git output so one runaway command cannot flood a PR comment.
+ *
+ * Redacted in full before the cut (Issue #1257): the detail is quoted into a
+ * public deferral comment, and git's own failure text carries the remote URL.
+ * Exported so the ordering is tested behaviourally.
+ */
+export function formatConflictGitDetail(outcome: ConflictGitOutcome): string {
   const text = `${outcome.stderr}\n${outcome.stdout}`.trim();
-  return text.length > 0 ? text.slice(0, 500) : `exit ${outcome.code}`;
+  return text.length > 0
+    ? redactedHead(text, CONFLICT_DETAIL_CHARS)
+    : `exit ${outcome.code}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,7 +293,12 @@ export async function applyDependencyConflictRules(
     if (staged.code !== 0) {
       await restore();
       manifestOutcomes.set(path, "unresolved");
-      defer(path, `staging the resolved ${path} failed: ${gitDetail(staged)}`);
+      defer(
+        path,
+        `staging the resolved ${path} failed: ${
+          formatConflictGitDetail(staged)
+        }`,
+      );
       continue;
     }
 

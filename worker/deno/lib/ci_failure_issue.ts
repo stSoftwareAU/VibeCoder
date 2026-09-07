@@ -40,7 +40,7 @@ import {
   resolveCiLogProvider,
 } from "./ci_log_provider.ts";
 import type { GhCommandFn } from "./github_actions_log_fetcher.ts";
-import { truncateLogTail } from "./log_tail.ts";
+import { redactedLogTail } from "./redacted_text.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import {
   codeFenceFor,
@@ -344,17 +344,19 @@ export function formatCiFailureContext(
     );
   }
 
-  // Truncate first so the byte cap applies to the raw log, then scrub —
-  // sanitisation substitutes wider characters and would skew the cap.
+  // Redact the whole log, then cut (Issue #1257). This site used to cut first
+  // so the byte cap applied to the raw log; that inverted the SECURITY.md rule
+  // — the cut splits a credential, and the fragment left in the kept tail has
+  // lost the anchor every signature rule keys on, so the later pass matches
+  // nothing. Redacting first is also the *tighter* cap: a placeholder wider
+  // than the secret it replaced can no longer push the block past the budget.
   //
   // Issue #3648: build logs routinely echo injected credentials (a tokenised
   // clone URL, a `--api-key` flag, an `export FOO_TOKEN=…` line), and the run
   // is explicitly instructed above to quote the log lines it diagnosed from
   // back into a public issue comment. Redact before the log reaches the prompt
   // so a secret never becomes quotable in the first place.
-  const logBlock = sanitiseDelimiterPatterns(
-    redactSecrets(truncateLogTail(log, maxBytes)),
-  );
+  const logBlock = sanitiseDelimiterPatterns(redactedLogTail(log, maxBytes));
   const logFence = codeFenceFor(logBlock);
   parts.push(
     "Console log tail:",

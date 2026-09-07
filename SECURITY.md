@@ -363,7 +363,8 @@ fragment that no rule matches on the later pass.
 That ordering is held by a **type**, not by every call site remembering
 (Issue #1217). `RedactedText`
 ([`worker/deno/lib/redacted_text.ts`](worker/deno/lib/redacted_text.ts)) is a
-branded string only `redactedTail()` / `redactedHead()` / `joinRedacted()` can
+branded string only `redactedTail()` / `redactedHead()` / `redactedLineTail()`
+/ `redactedLogTail()` / `joinRedacted()` can
 mint, and each redacts the whole input before it trims. A field carrying text
 destined for a size-capped public sink is typed `RedactedText`, so handing it
 `output.slice(-500)` fails `deno check` — a stage of the quality gate — rather
@@ -375,6 +376,24 @@ runs afterwards, when it builds the world-readable failure comment. Give a new
 size-capped sink the same brand. The sink enumeration behind that change — which
 paths route through `redactSecrets()` and which bypass it — is
 [`docs/audits/security-sweep-1217-env-config-secrets.md`](docs/audits/security-sweep-1217-env-config-secrets.md).
+
+**The order is also enforced statically, because the brand cannot see a nested
+cut** (Issue #1257). `RedactedText` stops a raw slice reaching a *branded
+field*; nothing stopped a call site writing
+`redactSecrets(truncateLogTail(log, maxBytes))`, and fourteen sinks had drifted
+into exactly that — two of them documenting the inversion in their own comments
+as a way of keeping the byte cap honest. (It does not: redacting first is the
+*tighter* cap, because a placeholder wider than the secret it replaced can no
+longer push the finished block past the budget.) The `redact before truncate`
+quality check
+([`worker/deno/lib/redact_truncate_order_check.ts`](worker/deno/lib/redact_truncate_order_check.ts))
+fails the build on any truncation — `.slice()`, `.substring()`,
+`truncateLogTail()` — nested inside a redaction call, in the same shape as the
+`gh`/`git` spawn chokepoint checks. It sees the inversion it can prove; a
+truncation with no redaction anywhere near it is still a call-site
+responsibility, which is why the sinks themselves were converted rather than
+merely guarded.
+
 
 **Redaction bounds its own work, never its input.** Because that ordering hands
 `redactSecrets()` untruncated, attacker-influenceable text, every rule must run
