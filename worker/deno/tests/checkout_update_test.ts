@@ -1029,3 +1029,52 @@ Deno.test("updateCheckout - an absent update mode is dynamic and unchanged (Issu
   assertEquals(order.includes("fetchOrigin"), false);
   assert(order.includes(`log:Updating ${OPTIONS.repoDir} to origin/trunk`));
 });
+
+Deno.test("resetCheckoutToDefaultBranch - a tokenised remote URL never reaches pull.log (Issue #1258)", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "checkout_update_redact_" });
+  const token = `ghs_${"A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"}`;
+  try {
+    const reset = await resetCheckoutToDefaultBranch(
+      `${tmp}/repo`,
+      "main",
+      tmp,
+      {
+        run: (args) => {
+          if (args[0] !== "fetch") {
+            return Promise.resolve({
+              ok: true as const,
+              value: { code: 0, stdout: "", stderr: "" },
+            });
+          }
+          // git's canonical carrier for the credential: the remote URL echoed
+          // back inside its own error text.
+          return Promise.resolve({
+            ok: true as const,
+            value: {
+              code: 0,
+              stdout: "",
+              stderr:
+                `remote: Repository not found.\nfatal: could not read from ` +
+                `https://x-access-token:${token}@github.com/owner/repo.git\n`,
+            },
+          });
+        },
+        sleep: () => Promise.resolve(),
+      },
+    );
+
+    assertEquals(reset.ok, true);
+    const pullLog = await Deno.readTextFile(`${tmp}/pull.log`);
+    assertEquals(
+      pullLog.includes(token),
+      false,
+      "the token must not survive into pull.log",
+    );
+    assertStringIncludes(pullLog, "***REDACTED***");
+    // The diagnostic itself is preserved — only the credential is masked.
+    assertStringIncludes(pullLog, "remote: Repository not found.");
+    assertStringIncludes(pullLog, "github.com/owner/repo.git");
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
