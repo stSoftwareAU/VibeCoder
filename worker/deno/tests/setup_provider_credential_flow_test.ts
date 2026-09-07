@@ -301,12 +301,25 @@ Deno.test("setup.sh - a Codex-only host with no claude CLI reaches the configura
     const bin = `${tmp}/bin`;
     await Deno.mkdir(bin, { recursive: true });
     // A container runtime that answers its probe, and a gh that is logged in.
-    await Deno.writeTextFile(`${bin}/docker`, "#!/bin/bash\nexit 0\n");
+    //
+    // Hermetic by construction (Issue #1457): the prerequisite probe asks
+    // for the runtime its *platform* prefers — `container system status` on
+    // macOS, `docker version` / `podman version` elsewhere — and resolves it
+    // on the PATH below, which ends in the host's real `/usr/bin:/bin`. With
+    // only `docker` stubbed, a macOS host without Apple container failed the
+    // probe (correctly — container mode has no host fallback) and this test
+    // failed for a reason unrelated to the credential flow it exercises. So
+    // every runtime the launchers know is stubbed here, and the result is
+    // the same on a host with a runtime and on one without.
+    const runtimeStubs = ["container", "docker", "podman"];
+    for (const runtime of runtimeStubs) {
+      await Deno.writeTextFile(`${bin}/${runtime}`, "#!/bin/bash\nexit 0\n");
+    }
     await Deno.writeTextFile(
       `${bin}/gh`,
       '#!/bin/bash\nif [[ "$1 $2" == "api user" ]]; then echo worker; fi\nexit 0\n',
     );
-    for (const stub of ["docker", "gh"]) {
+    for (const stub of [...runtimeStubs, "gh"]) {
       await Deno.chmod(`${bin}/${stub}`, 0o755);
     }
     for (const real of ["git", "deno"]) {
