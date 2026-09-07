@@ -354,6 +354,7 @@
       "paths": [
         "worker/deno/lib/acting_github_user.ts",
         "worker/deno/lib/agent_provider.ts",
+        "worker/deno/lib/agent_state_dir.ts",
         "worker/deno/lib/ci_check_state_dir.ts",
         "worker/deno/lib/codex_env.ts",
         "worker/deno/lib/command_work_dir.ts",
@@ -639,6 +640,7 @@
         "worker/deno/lib/live_slot_holds.ts",
         "worker/deno/lib/liveness_guard.ts",
         "worker/deno/lib/log_tail.ts",
+        "worker/deno/lib/loop_contract.ts",
         "worker/deno/lib/main_branch_ruleset.ts",
         "worker/deno/lib/main_branch_ruleset_check.ts",
         "worker/deno/lib/maintenance_lane.ts",
@@ -715,6 +717,7 @@
         "worker/deno/lib/prompt_override_resolver.ts",
         "worker/deno/lib/prompt_prefix.ts",
         "worker/deno/lib/provider_token_usage.ts",
+        "worker/deno/lib/public_url_guard.ts",
         "worker/deno/lib/publish_decision_check.ts",
         "worker/deno/lib/push_claim_verification.ts",
         "worker/deno/lib/push_recovery_retry.ts",

@@ -287,7 +287,7 @@ Deno.test("not_found - remediation comment + escalateToHuman, repo not added", a
   assertEquals(escalations[0]!.issueNumber, ISSUE);
   assertEquals(
     escalations[0]!.nextStep.includes(
-      `repos/${TARGET}/collaborators/vibe-bot -f permission=triage`,
+      `repos/${TARGET}/collaborators/vibe-bot -f permission=push`,
     ),
     true,
   );
@@ -300,7 +300,7 @@ Deno.test("not_found - remediation comment + escalateToHuman, repo not added", a
   );
 });
 
-Deno.test("no_access - escalates with triage remediation, repo not added", async () => {
+Deno.test("no_access - escalates with push remediation, repo not added", async () => {
   const escalations: EscalateArgs[] = [];
   const gh = recordingGh();
 
@@ -325,7 +325,7 @@ Deno.test("no_access - escalates with triage remediation, repo not added", async
   assertEquals(success, true);
   assertEquals(data?.outcome, "no_access");
   assertEquals(escalations.length, 1);
-  assertEquals(escalations[0]!.reason.includes("triage"), true);
+  assertEquals(escalations[0]!.reason.includes("push"), true);
 });
 
 Deno.test("transient validation error - leaves issue open, no escalation/close", async () => {
@@ -728,16 +728,16 @@ Deno.test("buildBranchProtectionLine - configured, no-change, and failure varian
   assertEquals(failed.includes("403 admin rights required"), true);
 });
 
-Deno.test("buildEscalationText embeds the triage grant command", () => {
+Deno.test("buildEscalationText embeds the push grant command (Issue #1455)", () => {
   const nf = buildEscalationText("not_found", TARGET, "vibe-bot");
   assertEquals(
     nf.nextStep.includes(
-      `gh api -X PUT repos/${TARGET}/collaborators/vibe-bot -f permission=triage`,
+      `gh api -X PUT repos/${TARGET}/collaborators/vibe-bot -f permission=push`,
     ),
     true,
   );
   assertEquals(nf.reason.includes("could not be found"), true);
 
   const na = buildEscalationText("no_access", TARGET, "vibe-bot");
-  assertEquals(na.reason.includes("triage"), true);
+  assertEquals(na.reason.includes("push"), true);
 });

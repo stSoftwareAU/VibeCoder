@@ -78,7 +78,10 @@ import { syncWorkflowsForAllRepos } from "./workflow_sync.ts";
 import { syncBestPracticesForAllRepos } from "./best_practices_sync.ts";
 import { relabelBestPracticesForAllRepos } from "./best_practices_relabel.ts";
 import { syncGitignoreForAllRepos } from "./gitignore_sync.ts";
-import { verifyMonitoredCollaborators } from "./collaborator_precheck.ts";
+import {
+  statusExplanation,
+  verifyMonitoredCollaborators,
+} from "./collaborator_precheck.ts";
 import {
   assessDefaultBranchAutoMerge,
   checkMilestoneRuleset,
@@ -1006,14 +1009,21 @@ async function runVerifyCollaborator(configPath: string): Promise<boolean> {
 
     if (result.misses.length === 0 && !result.identityGuardInactive) {
       printSuccess(
-        `Collaborator precheck passed: ${result.workerUser} can be assigned issues on all ${repos.length} repo(s)`,
+        `Collaborator precheck passed: ${result.workerUser} has push access on all ${repos.length} repo(s)`,
       );
       return true;
     }
 
+    // The split on the console, in words (Issue #1455): a filed issue is
+    // easy to miss on a host someone is standing at.
     for (const miss of result.misses) {
-      printWarning(`${miss.repo}: ${miss.status}`);
+      printWarning(
+        `${miss.repo}: ${miss.status} — ${statusExplanation(miss.status)}`,
+      );
     }
+    printWarning(
+      `Grant push: gh api -X PUT repos/<owner>/<repo>/collaborators/${result.workerUser} -f permission=push`,
+    );
     if (result.issueFiled) {
       printWarning(
         `Filed a setup-precheck issue against stSoftwareAU/VibeCoder for ${result.misses.length} repo(s)`,

@@ -24,6 +24,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  AGENT_STATE_VOLUME_NAME,
   APPROVAL_STATE_VOLUME_NAME,
   containerTargetPaths,
   WORK_VOLUME_NAME,
@@ -162,10 +163,12 @@ Deno.test("run.sh - launches the container with exactly the permitted mounts", a
       // The checkout is read-only (Issue #514): the worker never modifies
       // the code it is running.
       `${REPO_ROOT}:${TARGETS.base}:ro`,
-      // The work dir and its approval-state sibling ride named volumes
-      // (Issue #4186): no host directory holds the worker's repositories.
+      // The work dir and its two siblings ride named volumes (Issue #4186,
+      // Issue #1407): no host directory holds the worker's repositories, and
+      // the agent's own state is on a volume of its own.
       `${WORK_VOLUME_NAME}:${TARGETS.work}`,
       `${APPROVAL_STATE_VOLUME_NAME}:${TARGETS.approvalState}`,
+      `${AGENT_STATE_VOLUME_NAME}:${TARGETS.agentState}`,
       `${harness.logDir}:${TARGETS.logs}`,
       `${harness.tmpDir}/home/.vibe-coder/run-config:${TARGETS.config}:ro`,
       // Issue #4067: only the worker's `gh` material and the active
@@ -202,7 +205,9 @@ Deno.test("run.sh - ensures the named volumes and runs the ownership init (Issue
     assert(create, "an absent volume must be created");
     assertEquals(create[0], "volume");
     assertEquals(create[1], "create");
-    assertEquals(create[2], APPROVAL_STATE_VOLUME_NAME);
+    // The recorder keeps the last invocation, which is now the agent-state
+    // volume (Issue #1407) — the third and last created.
+    assertEquals(create[2], AGENT_STATE_VOLUME_NAME);
 
     // The ownership init: root chowns the volume mount roots to the image's
     // worker account before the worker starts, and nothing else — no host
@@ -215,9 +220,13 @@ Deno.test("run.sh - ensures the named volumes and runs the ownership init (Issue
       init[init.indexOf("--entrypoint") + 1],
       "/usr/local/bin/vibe-volume-init",
     );
+    // Issue #1407: the agent-state volume is chowned by the same init, so
+    // the agent can write its sessions from the first launch. Asserted here
+    // rather than assumed from the plan's initArgs.
     assertEquals(mountValues(init), [
       `${WORK_VOLUME_NAME}:${TARGETS.work}`,
       `${APPROVAL_STATE_VOLUME_NAME}:${TARGETS.approvalState}`,
+      `${AGENT_STATE_VOLUME_NAME}:${TARGETS.agentState}`,
     ]);
 
     // The worker itself still ran.

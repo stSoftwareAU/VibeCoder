@@ -5,7 +5,15 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { formatBenchmarkTable, runBenchmark } from "../lib/benchmark.ts";
+import {
+  formatBenchmarkTable,
+  runBenchmark,
+  runBenchmarkCommand,
+} from "../lib/benchmark.ts";
+import {
+  __resetWorkVolumeFault,
+  workVolumeFault,
+} from "../lib/work_volume_fault.ts";
 import { benchmarkCommand } from "../commands/benchmark.ts";
 import type { WorkerConfig } from "../types.ts";
 
@@ -101,4 +109,58 @@ Deno.test("perf workload command - runs the real fs and cpu steps and emits a JS
   } finally {
     await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
   }
+});
+
+// ---------- git goes through the chokepoint (Issue #1396) ----------
+
+Deno.test("perf workload runner - the git fixture inherits the chokepoint's work-volume fault detection (Issue #1396)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "bench_git_" });
+  __resetWorkVolumeFault();
+  try {
+    const init = await runBenchmarkCommand("git", [
+      "-C",
+      dir,
+      "init",
+      "-q",
+      "-b",
+      "main",
+    ]);
+    assertEquals(init.code, 0, init.stderr);
+    assertEquals(workVolumeFault(), null);
+
+    // A git call that fails the way an I/O-faulted work volume fails. Routed
+    // through `runGitCommand`, the failure is recorded as a work-volume fault
+    // (Issue #229); spawned directly, it was invisible.
+    const faulty = await runBenchmarkCommand("git", [
+      "-C",
+      dir,
+      "-c",
+      `alias.benchfault=!echo "Input/output error" >&2; exit 1`,
+      "benchfault",
+    ]);
+    assertEquals(faulty.code, 1, faulty.stderr);
+    assertStringIncludes(faulty.stderr, "Input/output error");
+
+    const fault = workVolumeFault();
+    assert(fault !== null, "the git failure was not seen by the chokepoint");
+    assertStringIncludes(fault.detail, "Input/output error");
+    assertStringIncludes(fault.command, "git -C");
+  } finally {
+    __resetWorkVolumeFault();
+    await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("perf workload runner - a non-git binary still spawns directly (Issue #1396)", async () => {
+  const ok = await runBenchmarkCommand("sh", ["-c", "exit 0"]);
+  assertEquals(ok.code, 0);
+  const failed = await runBenchmarkCommand("sh", [
+    "-c",
+    "echo boom >&2; exit 3",
+  ]);
+  assertEquals(failed.code, 3);
+  assertStringIncludes(failed.stderr, "boom");
+  // A spawn that cannot start is reported, never swallowed as success.
+  const missing = await runBenchmarkCommand("nonexistent_bench_bin_1396", []);
+  assertEquals(missing.code, -1);
 });

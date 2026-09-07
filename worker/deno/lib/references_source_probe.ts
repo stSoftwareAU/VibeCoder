@@ -28,12 +28,8 @@
  */
 
 import type { ReferenceEntry } from "./references_doc.ts";
-import {
-  DEFAULT_FETCH_TIMEOUT_MS,
-  describeFetchFailure,
-  readTextBounded,
-  withRequestTimeout,
-} from "./bounded_fetch.ts";
+import { readTextBounded } from "./bounded_fetch.ts";
+import { fetchPublicUrl } from "./public_url_guard.ts";
 import { runGhCommand } from "./github.ts";
 
 /** One unit of material that has landed in a source since we last looked. */
@@ -313,17 +309,17 @@ export function probeReferenceSource(
     : probeRepository(repository.owner, repository.repo, since, deps);
 }
 
-/** Fetch a source page, bounded in time and size, failing loud on any error. */
+/**
+ * Fetch a source page, bounded in time and size, failing loud on any error.
+ *
+ * The URL comes from a `docs/REFERENCES.md` row, which is only checked for an
+ * `https://` prefix when the document is parsed, so the fetch itself goes
+ * through the SSRF guard (Issue #1387): a row pointing at `127.0.0.1`, at
+ * `169.254.169.254`, or at a public host that redirects to either is refused
+ * rather than dereferenced.
+ */
 async function fetchSourceText(url: string): Promise<string> {
-  let response: Response;
-  try {
-    response = await fetch(url, withRequestTimeout({ redirect: "follow" }));
-  } catch (error) {
-    throw new Error(
-      `could not fetch ${url}: ` +
-        describeFetchFailure(error, DEFAULT_FETCH_TIMEOUT_MS),
-    );
-  }
+  const response = await fetchPublicUrl(url, {});
   if (!response.ok) {
     // Draining is not needed — an unread body is cancelled with the response.
     await response.body?.cancel();
