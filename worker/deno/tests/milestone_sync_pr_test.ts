@@ -153,3 +153,70 @@ Deno.test("raiseMilestoneSyncPr - an unreadable listing files rather than losing
   assert(result.ok && result.value.opened);
   assert(gh.some((a) => a[1] === "create"));
 });
+
+// ---------------------------------------------------------------------------
+// Stale lease baseline (Issue #1568)
+//
+// `--force-with-lease` with no explicit value verifies against the
+// remote-tracking ref `refs/remotes/origin/<branch>`. When that ref does not
+// exist locally, git cannot verify and refuses with `(stale info)` — which is
+// what a single-branch clone produces for a sync branch some *other* host
+// created, because the narrow refspec never materialises it.
+//
+// Reproduced against real git before this was written: creating a branch that
+// does not exist on the remote is fine; pushing to one that exists remotely
+// with no local tracking ref is rejected every time, and nothing about it
+// improves on the next cycle. NEAT-AI-Ockham's milestone sync had been
+// failing this way, reporting "PUSH REFUSED by a repository rule" — a
+// diagnosis that sends a reader to look at branch protection for a problem
+// that is really a missing fetch.
+// ---------------------------------------------------------------------------
+
+Deno.test("raiseMilestoneSyncPr - establishes the lease baseline before pushing (Issue #1568)", async () => {
+  const { deps, git } = fakeDeps();
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
+  assert(result.ok);
+
+  const branch = syncBranchFor(MILESTONE);
+  const fetchIndex = git.findIndex((a) => a[0] === "fetch");
+  const pushIndex = git.findIndex((a) => a[0] === "push");
+
+  assert(fetchIndex >= 0, "no fetch established the lease baseline");
+  assert(
+    fetchIndex < pushIndex,
+    "the baseline must be fetched before the lease push, not after",
+  );
+  // The tracking ref the lease reads is exactly what must be populated.
+  assertStringIncludes(
+    git[fetchIndex]!.join(" "),
+    `refs/remotes/origin/${branch}`,
+  );
+});
+
+Deno.test("raiseMilestoneSyncPr - a branch absent from the remote still pushes (Issue #1568)", async () => {
+  // `git fetch origin <branch>` fails when the branch does not exist yet.
+  // That is the ordinary first-run case and must not stop the sync — git
+  // creates the branch, and a create needs no lease baseline.
+  const git: string[][] = [];
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, {
+    git: (args: string[]) => {
+      git.push(args);
+      return Promise.resolve(
+        args[0] === "fetch"
+          ? { code: 128, stderr: "fatal: couldn't find remote ref" }
+          : { code: 0, stderr: "" },
+      );
+    },
+    gh: (args: string[]) =>
+      Promise.resolve(
+        args[1] === "list"
+          ? "[]"
+          : args[1] === "create"
+          ? "https://github.com/org/repo/pull/700\n"
+          : "",
+      ),
+  });
+
+  assert(result.ok, JSON.stringify(result));
+  assert(git.some((a) => a[0] === "push"));
+});
