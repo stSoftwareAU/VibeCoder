@@ -549,6 +549,8 @@
         "worker/deno/lib/find_planning_issues.ts",
         "worker/deno/lib/fleet_authors.ts",
         "worker/deno/lib/fleet_config_validation.ts",
+        "worker/deno/lib/fleet_pr_prefetch.ts",
+        "worker/deno/lib/fleet_pr_search.ts",
         "worker/deno/lib/fleet_telemetry.ts",
         "worker/deno/lib/gemini_auth.ts",
         "worker/deno/lib/gemini_executor.ts",
