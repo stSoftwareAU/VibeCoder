@@ -1419,9 +1419,9 @@ registered fails loudly at startup with the supported ids named — it never
 falls back to the default, which would run the wrong agent under an explicit
 selection.
 
-> **Changed in 2.0.0 (Issue #1032).** The two variables used to *override* the
+> **Changed in 1.4.0 (Issue #1032).** The two variables used to *override* the
 > file. They no longer do: the `.config.json` key wins, which is the rule every
-> other setting follows ([RELEASE-NOTES.md](RELEASE-NOTES.md#200--the-config-file-wins-over-the-environment)).
+> other setting follows ([RELEASE-NOTES.md](RELEASE-NOTES.md#140--the-config-file-wins-over-the-environment)).
 > A host that sets both now runs the provider the file names, and a run that
 > still takes its provider from a variable says so once at startup.
 
