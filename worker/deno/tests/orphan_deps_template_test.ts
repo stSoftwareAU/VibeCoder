@@ -69,6 +69,15 @@ const STUB_PROMPT = [
 const okPrompt = (): Promise<Result<string>> =>
   Promise.resolve({ ok: true, value: STUB_PROMPT });
 
+/**
+ * A filed finding body whose severity the deterministic gate corroborates
+ * (Issue #1549) — it cites the registry `deprecated` field.
+ */
+const CORROBORATED_BODY = [
+  "## Evidence",
+  "Registry `deprecated`: no longer maintained.",
+].join("\n");
+
 /** A fleet login, so a stubbed wrapper reads as one the fleet filed. */
 const FLEET_DEDUP_AUTHOR = "vibe-bot";
 
@@ -86,6 +95,12 @@ function makeGhStub(scenario: {
   knownOpen?: Array<{ number: number; body: string }>;
   /** Open wrapper titles returned by the `--json number,title` query. */
   openWrapperTitles?: string[];
+  /**
+   * Labels + body the severity gate reads back per filed finding
+   * (Issue #1549). Defaults to a corroborated `severity:high` deprecation
+   * for every number, so a test that is not about the gate is unaffected.
+   */
+  filedFindings?: Record<number, { labels: string[]; body: string }>;
 }): { gh: (args: string[]) => Promise<string>; calls: string[][] } {
   const calls: string[][] = [];
   let snapshotCount = 0;
@@ -111,6 +126,18 @@ function makeGhStub(scenario: {
             author: { login: FLEET_DEDUP_AUTHOR },
           })),
         ),
+      );
+    }
+    // The severity gate's per-finding read (Issue #1549).
+    if (jsonField === "labels,body") {
+      const number = Number(args[2]);
+      const finding = scenario.filedFindings?.[number] ??
+        { labels: ["orphan-deps", "severity:high"], body: CORROBORATED_BODY };
+      return Promise.resolve(
+        JSON.stringify({
+          labels: finding.labels.map((name) => ({ name })),
+          body: finding.body,
+        }),
       );
     }
     // The wrapper-veto search now also asks for `author`, because a
@@ -280,6 +307,45 @@ Deno.test("runTask - happy path ensures label and diffs snapshot", async () => {
     calls.some((c) =>
       c.includes("--label") && c.includes(ORPHAN_DEPS_LABEL) &&
       c.includes("number")
+    ),
+  );
+});
+
+Deno.test("runTask - an uncorroborated severity is flagged in the summary (Issue #1549)", async () => {
+  const { gh, calls } = makeGhStub({
+    snapshots: [[], [7]],
+    filedFindings: {
+      7: {
+        labels: ["orphan-deps", "severity:high"],
+        body: "## Evidence\nLast published 2021-01-01 — 60 months ago.",
+      },
+    },
+  });
+  const t = createOrphanDepsTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
+    ghCommandFn: gh,
+    loadPromptFn: okPrompt,
+    ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+    collectSuppressedIdsFn: () => Promise.resolve([]),
+    runScanFn: () => Promise.resolve({ ok: true, value: true }),
+  });
+
+  const result = await t.runTask({
+    repo: "acme/widget",
+    workDir: "/tmp/widget",
+    idleTaskIssueNumber: 100,
+  });
+
+  assertEquals(result.ok, true);
+  assertStringIncludes(
+    result.summary,
+    "Severity not corroborated — flagged for human review: #7 (overstated).",
+  );
+  // The escalation is comment-plus-label, never a silent relabel.
+  assert(calls.some((c) => c[0] === "issue" && c[1] === "comment"));
+  assert(
+    calls.some((c) =>
+      c[0] === "issue" && c[1] === "edit" && c.includes("needs-human")
     ),
   );
 });
