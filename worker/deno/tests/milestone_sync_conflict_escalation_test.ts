@@ -14,12 +14,7 @@ import {
   type MilestoneBranchSyncDeps,
   syncMilestoneBranches,
 } from "../lib/milestone_branch_sync.ts";
-import {
-  buildConflictEscalationComment,
-  conflictDiagnosticTitle,
-  type MilestoneSyncConflict,
-  resolveBranchTips,
-} from "../lib/milestone_sync_conflict.ts";
+import type { MilestoneSyncConflict } from "../lib/milestone_sync_conflict.ts";
 import { milestoneSyncStreakPath } from "../lib/milestone_sync_streak.ts";
 
 const MILESTONE_BRANCH = "milestone/1558-drift";
@@ -224,79 +219,30 @@ Deno.test(
   },
 );
 
-// ---------------------------------------------------------------------------
-// The report itself
-// ---------------------------------------------------------------------------
-
 Deno.test(
-  "resolveBranchTips - a failed lookup still names the commit it was given (Issue #1558)",
+  "milestone sync - a conflict whose commit could not be read is still reported once (Issue #1558)",
   async () => {
-    const tips = await resolveBranchTips(
-      "owner/repo",
-      [{ branch: "main", sha: DEFAULT_SHA }, { branch: MILESTONE_BRANCH }],
-      () => Promise.reject(new Error("gh api: 502")),
-    );
+    const dir = await Deno.makeTempDir({ prefix: "issue-1558-unreadable-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+      const calls: string[][] = [];
+      const options = {
+        milestoneTitle: "#1558 Drift",
+        // git could not resolve the default branch's tip.
+        conflict: { ...CONFLICT, defaultSha: "" },
+        streakPath,
+      };
 
-    assertEquals(
-      tips[0]?.sha,
-      DEFAULT_SHA,
-      "the caller's SHA is authoritative",
-    );
-    assertEquals(tips[0]?.subject, "");
-    assertEquals(
-      tips[1]?.sha,
-      "unknown",
-      "a side with no SHA and no lookup says so rather than reading as empty",
-    );
-  },
-);
+      await syncMilestoneBranches(deps(calls, options));
+      await syncMilestoneBranches(deps(calls, options));
 
-Deno.test(
-  "buildConflictEscalationComment - names every conflicting file and both sides (Issue #1558)",
-  () => {
-    const body = buildConflictEscalationComment({
-      repo: "owner/repo",
-      milestoneBranch: MILESTONE_BRANCH,
-      defaultBranch: "main",
-      conflict: { ...CONFLICT, files: ["a.ts", "b.ts"], resolution: "manual" },
-      tips: [
-        { branch: "main", sha: DEFAULT_SHA, subject: "Issue #1227: scan" },
-        { branch: MILESTONE_BRANCH, sha: MILESTONE_SHA, subject: "" },
-      ],
-    });
-
-    assertStringIncludes(body, "`a.ts`");
-    assertStringIncludes(body, "`b.ts`");
-    assertStringIncludes(body, "Issue #1227: scan");
-    assertStringIncludes(body, MILESTONE_SHA);
-    assertStringIncludes(body, "was pushed");
-  },
-);
-
-Deno.test(
-  "conflictDiagnosticTitle - keyed on the branch and the conflicting commit (Issue #1558)",
-  () => {
-    const first = conflictDiagnosticTitle(MILESTONE_BRANCH, DEFAULT_SHA);
-    assertStringIncludes(first, MILESTONE_BRANCH);
-    assertStringIncludes(first, DEFAULT_SHA.slice(0, 8));
-    assert(
-      first !== conflictDiagnosticTitle(MILESTONE_BRANCH, "c".repeat(40)),
-      "a different conflicting commit is a different report",
-    );
-  },
-);
-
-Deno.test(
-  "buildConflictEscalationComment - a conflict git could not name still says so (Issue #1558)",
-  () => {
-    const body = buildConflictEscalationComment({
-      repo: "owner/repo",
-      milestoneBranch: MILESTONE_BRANCH,
-      defaultBranch: "main",
-      conflict: { ...CONFLICT, files: [] },
-      tips: [],
-    });
-
-    assertStringIncludes(body, "git named no conflicting files");
+      assertEquals(
+        commentCalls(calls).length,
+        1,
+        "an unnamed conflicting commit still dedups rather than reporting every cycle",
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
   },
 );

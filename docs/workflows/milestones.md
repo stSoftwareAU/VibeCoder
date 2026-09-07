@@ -285,7 +285,7 @@ Two things hold this in place:
 | Option | Default | Description |
 |--------|---------|-------------|
 | `sync_milestone_branches` | `true` | Enable or disable periodic milestone branch sync |
-| `milestone_sync_cooldown_seconds` | `3600` | Minimum seconds between sync attempts for the same milestone |
+| `milestone_sync_cooldown_seconds` | `3600` | Minimum seconds between sync attempts for the same milestone — bypassed for a milestone that has just closed an issue (see below) |
 
 To disable milestone branch sync entirely, set `sync_milestone_branches: false` in `.config.json`.
 
@@ -293,6 +293,8 @@ To disable milestone branch sync entirely, set `sync_milestone_branches: false` 
 
 - The sync is **best-effort** — failures are logged but do not block the main event loop or prevent other work.
 - The cooldown state is held in memory and resets when the worker process restarts.
+- A milestone whose REST `closed_issues` count has **moved** since the previous cycle skips the cooldown and syncs now (Issue #1558): something just closed, which means a sub-issue PR merged, which is exactly when both sides have moved and a conflict is still one day wide.
+- A merge that conflicts is still resolved towards the default branch, but it is reported on that cycle — naming the conflicting files and both sides' commits — rather than surfacing at rollup time. A clean merge raises nothing.
 - This complements (syncing before each feature branch creation) by proactively keeping milestone branches current between issues.
 
 ## 🏷️ Issue ordering within milestones

@@ -42,10 +42,7 @@ import { checkoutPrBranchAtRemoteHead } from "./pr_branch_checkout.ts";
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
-import type {
-  MilestoneSyncConflict,
-  MilestoneSyncOutcome,
-} from "./milestone_sync_conflict.ts";
+import type { MilestoneSyncOutcome } from "./milestone_sync_conflict.ts";
 import {
   checkMergedTree,
   mergeGateFailureError,
@@ -539,22 +536,6 @@ async function readRef(
 }
 
 /**
- * The conflict report carried back with a merge that landed (Issue #1558).
- *
- * Built even when git named no files: a conflict the sync could not itself
- * describe still has to reach a human, and an empty list says exactly that
- * rather than passing the merge off as clean.
- */
-function buildConflict(
-  files: string[],
-  milestoneSha: string,
-  defaultSha: string,
-  resolution: MilestoneSyncConflict["resolution"],
-): MilestoneSyncConflict {
-  return { files, milestoneSha, defaultSha, resolution };
-}
-
-/**
  * Sync a milestone branch with the default branch (Issue #422, #605).
  *
  * Uses merge (not rebase) to preserve milestone commit history. The merge is
@@ -812,7 +793,9 @@ export async function syncMilestoneBranchWithDefault(
 
   // Merge conflict. Record what collided BEFORE aborting — once the merge is
   // aborted git no longer knows, and a conflict nobody can name is a
-  // conflict nobody reconciles (Issue #1558).
+  // conflict nobody reconciles (Issue #1558). An empty list is still carried:
+  // a conflict the sync could not describe must still reach a human rather
+  // than pass off as clean.
   const conflictedFiles = await listConflictedFiles(options);
   const defaultSha = await readRef(defaultBranch, options);
 
@@ -840,12 +823,12 @@ export async function syncMilestoneBranchWithDefault(
       value: {
         message:
           `${selfHealNote}${gated.value}Issue #605: Auto-resolved merge conflicts (favouring '${defaultBranch}' changes)`,
-        conflict: buildConflict(
-          conflictedFiles,
-          preMergeSha,
+        conflict: {
+          files: conflictedFiles,
+          milestoneSha: preMergeSha,
           defaultSha,
-          "theirs",
-        ),
+          resolution: "theirs",
+        },
       },
     };
   }
@@ -863,9 +846,16 @@ export async function syncMilestoneBranchWithDefault(
   // reported with the outcome so a deletion is never a silent one.
   let deletionNote = "";
 
+  // What the resolution below actually operated on, so the conflict report
+  // names the files that were resolved rather than an earlier attempt's
+  // (Issue #1558). Falls back to the first merge's list when the retry needed
+  // no resolution at all.
+  let resolvedFiles = conflictedFiles;
+
   if (!finalMergeResult.ok || finalMergeResult.value.code !== 0) {
     // Get conflicted files and resolve each
     const stillConflicted = await listConflictedFiles(options);
+    resolvedFiles = stillConflicted;
 
     if (stillConflicted.length === 0) {
       await runGitCommand(["merge", "--abort"], options);
@@ -934,12 +924,12 @@ export async function syncMilestoneBranchWithDefault(
     value: {
       message:
         `${selfHealNote}${gatedResolved.value}${deletionNote}Issue #605: Resolved merge conflicts for '${milestoneBranch}' (accepted '${defaultBranch}' changes)`,
-      conflict: buildConflict(
-        conflictedFiles,
-        preMergeSha,
+      conflict: {
+        files: resolvedFiles,
+        milestoneSha: preMergeSha,
         defaultSha,
-        "manual",
-      ),
+        resolution: "manual",
+      },
     },
   };
 }

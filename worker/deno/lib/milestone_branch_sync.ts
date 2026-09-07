@@ -38,6 +38,7 @@ import {
   type MilestoneSyncConflict,
   type MilestoneSyncOutcome,
   resolveBranchTips,
+  UNRESOLVED_SHA,
 } from "./milestone_sync_conflict.ts";
 import {
   loadSyncStreaks,
@@ -538,8 +539,11 @@ export async function syncMilestoneBranches(
           const streakKey = `${repo}|${milestone.milestoneBranch}`;
           const conflict = syncResult.value.conflict;
           if (conflict) {
+            // A conflict whose default-branch commit could not be read still
+            // needs a dedup key, or the same report goes out every cycle.
+            const conflictKey = conflict.defaultSha || UNRESOLVED_SHA;
             let reportedSha = streaks[streakKey]?.conflictEscalatedSha;
-            if (reportedSha !== conflict.defaultSha) {
+            if (reportedSha !== conflictKey) {
               const escalated = await escalateSyncConflict(
                 repo,
                 milestone,
@@ -549,19 +553,25 @@ export async function syncMilestoneBranches(
               );
               // Only a report that went out is remembered: an escalation
               // that failed must be retried next cycle, not marked done.
-              if (escalated) reportedSha = conflict.defaultSha;
+              if (escalated) reportedSha = conflictKey;
             }
             if (streakPath) {
               // The sync succeeded, so any failure streak ends here
               // (Issue #4260) while the reported-conflict marker survives.
+              const existing = streaks[streakKey];
               if (reportedSha) {
-                streaks[streakKey] = {
-                  count: 0,
-                  escalated: false,
-                  conflictEscalatedSha: reportedSha,
-                };
-                streaksDirty = true;
-              } else if (streaks[streakKey]) {
+                if (
+                  existing?.conflictEscalatedSha !== reportedSha ||
+                  existing.count !== 0 || existing.escalated
+                ) {
+                  streaks[streakKey] = {
+                    count: 0,
+                    escalated: false,
+                    conflictEscalatedSha: reportedSha,
+                  };
+                  streaksDirty = true;
+                }
+              } else if (existing) {
                 delete streaks[streakKey];
                 streaksDirty = true;
               }
@@ -693,10 +703,15 @@ async function escalateSyncConflict(
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
 ): Promise<boolean> {
-  const tips = await resolveBranchTips(repo, [
-    { branch: milestone.defaultBranch, sha: conflict.defaultSha },
-    { branch: milestone.milestoneBranch, sha: conflict.milestoneSha },
-  ], ghCommandFn);
+  const tips = await resolveBranchTips(
+    repo,
+    [
+      { branch: milestone.defaultBranch, sha: conflict.defaultSha },
+      { branch: milestone.milestoneBranch, sha: conflict.milestoneSha },
+    ],
+    ghCommandFn,
+    log,
+  );
 
   const body = buildConflictEscalationComment({
     repo,
@@ -751,10 +766,15 @@ async function escalateMergeGateFailure(
 ): Promise<boolean> {
   // Both sides' commits travel with every sync escalation (Issue #1558), so
   // whoever picks it up can diff each side rather than reconstruct it.
-  const tips = await resolveBranchTips(repo, [
-    { branch: milestone.defaultBranch },
-    { branch: milestone.milestoneBranch },
-  ], ghCommandFn);
+  const tips = await resolveBranchTips(
+    repo,
+    [
+      { branch: milestone.defaultBranch },
+      { branch: milestone.milestoneBranch },
+    ],
+    ghCommandFn,
+    log,
+  );
 
   const gateBody = `${
     buildMergeGateEscalationComment({
@@ -979,10 +999,15 @@ async function escalateSyncFailure(
     // Compare is a nicety; the comment stands without it.
   }
 
-  const tips = await resolveBranchTips(repo, [
-    { branch: milestone.defaultBranch },
-    { branch: milestone.milestoneBranch },
-  ], ghCommandFn);
+  const tips = await resolveBranchTips(
+    repo,
+    [
+      { branch: milestone.defaultBranch },
+      { branch: milestone.milestoneBranch },
+    ],
+    ghCommandFn,
+    log,
+  );
 
   const body = `## Milestone branch sync is stuck — needs a human\n\n` +
     `\`${milestone.milestoneBranch}\` has failed to sync with ` +

@@ -48,6 +48,13 @@ export interface BranchTip {
   subject: string;
 }
 
+/**
+ * Stands in for a commit that could not be read (Issue #1558). Named rather
+ * than blank: a side the escalation could not resolve must say so, not read
+ * as an empty field nobody notices.
+ */
+export const UNRESOLVED_SHA = "unknown";
+
 /** Abbreviate a SHA for prose without losing the full one elsewhere. */
 function short(sha: string): string {
   return sha.slice(0, 8);
@@ -80,6 +87,7 @@ export async function resolveBranchTips(
   repo: string,
   sides: { branch: string; sha?: string }[],
   ghCommandFn: GhCommandFn,
+  log?: (message: string) => void,
 ): Promise<BranchTip[]> {
   const tips: BranchTip[] = [];
   for (const side of sides) {
@@ -102,10 +110,15 @@ export async function resolveBranchTips(
         if (!sha) sha = resolved;
         subject = space === -1 ? "" : trimmed.slice(space + 1).trim();
       }
-    } catch {
-      // The SHA is what matters; a missing subject is not worth a failure.
+    } catch (err) {
+      // The SHA is what matters, so this does not fail the escalation — but
+      // a degraded report says why it is degraded rather than going quiet.
+      log?.(
+        `Could not read commit '${ref}' in ${repo} for a milestone sync ` +
+          `escalation: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
-    tips.push({ branch: side.branch, sha: sha || "unknown", subject });
+    tips.push({ branch: side.branch, sha: sha || UNRESOLVED_SHA, subject });
   }
   return tips;
 }
@@ -122,7 +135,7 @@ export function conflictDiagnosticTitle(
   defaultSha: string,
 ): string {
   return `Milestone sync merged with conflicts: ${milestoneBranch} @ ${
-    short(defaultSha)
+    defaultSha ? short(defaultSha) : UNRESOLVED_SHA
   }`;
 }
 
