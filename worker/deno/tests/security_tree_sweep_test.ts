@@ -749,18 +749,118 @@ Deno.test("baselining one unlocated finding leaves the others reported (Issue #1
     ],
   }));
   assertEquals(errors, []);
-  const { rows, newRows } = classifyClusters(clusters, baseline);
+  const { rows, newRows, trackedRows } = classifyClusters(clusters, baseline);
   assertEquals(rows.length, 3);
+  assertEquals(newRows.length, 0, "an open security issue is not unbaselined");
+  // Issue #1518 changed where the two survivors are reported, not whether
+  // they are: each is an OPEN security issue, so it is `tracked` against
+  // that issue rather than `new`. The property #1473 protects — baselining
+  // one unlocated finding must not silence the rest of its family — is
+  // asserted here exactly as before, against the tracked rows.
   assertEquals(
-    newRows.length,
+    trackedRows.length,
     2,
     "the two open findings stay reported after the third is baselined",
   );
   const stillOpen = new Set(
-    newRows.flatMap((r) => r.findings.map((f) => f.ruleId)),
+    trackedRows.flatMap((r) => r.findings.map((f) => f.ruleId)),
   );
   assert(stillOpen.has("SEC-82c5ad559169"));
   assert(stillOpen.has("SEC-8cdfc5eeea3f"));
+  assertEquals(
+    trackedRows.map((r) => r.issue).sort(),
+    [1421, 1422],
+    "each tracked row names the issue that keeps it alive",
+  );
+});
+
+Deno.test("classifyClusters - an open security issue is tracked, never unbaselined (Issue #1518)", async () => {
+  const clusters = await dedupeFindings(
+    parseWorkerScanIssues(UNLOCATED_WORKER_ISSUES_JSON),
+  );
+  const { baseline, errors } = parseSweepBaseline("{}");
+  assertEquals(errors, []);
+  const { rows, newRows, trackedRows } = classifyClusters(clusters, baseline);
+  assertEquals(rows.length, 3);
+  // The gate had been red on every run since 2026-09-06 because each open
+  // `security` issue counted as an unbaselined finding, and the backlog is
+  // never empty. A finding that IS an open issue is already triaged.
+  assertEquals(newRows.length, 0, "an open issue must not fail the sweep");
+  assertEquals(trackedRows.length, 3);
+  for (const row of trackedRows) {
+    assertEquals(row.status, "tracked");
+    assert(
+      row.issue !== undefined,
+      "a tracked row names the issue that keeps it alive",
+    );
+  }
+  assertEquals(
+    trackedRows.map((r) => r.issue).sort(),
+    [1421, 1422, 1423],
+  );
+});
+
+Deno.test("classifyClusters - a scanner that saw the same site keeps it new (Issue #1518)", async () => {
+  const clusters = await dedupeFindings([
+    ...parseWorkerScanIssues(WORKER_ISSUES_JSON),
+    ...parseSemgrepJson(SEMGREP_JSON),
+    ...parseCodeqlAlerts(CODEQL_ALERTS_JSON),
+  ]);
+  const { baseline } = parseSweepBaseline("{}");
+  const { rows, newRows } = classifyClusters(clusters, baseline);
+  const planted = rows.find((r) => r.path === PLANTED_PATH)!;
+  assertEquals(
+    planted.sources,
+    ["codeql", "semgrep", "worker-scan"],
+    "the fixture is the cluster all three sources saw",
+  );
+  assertEquals(
+    planted.status,
+    "new",
+    "a site a scanner independently flagged is a code finding, not a " +
+      "tracked issue — being mirrored by an issue must not soften it",
+  );
+  assert(newRows.some((r) => r.id === planted.id));
+});
+
+Deno.test("renderSweepReport - tracked findings are reported and the verdict stays green (Issue #1518)", async () => {
+  const clusters = await dedupeFindings(
+    parseWorkerScanIssues(UNLOCATED_WORKER_ISSUES_JSON),
+  );
+  const { baseline } = parseSweepBaseline("{}");
+  const { rows, newRows, trackedRows } = classifyClusters(clusters, baseline);
+  const report = renderSweepReport({
+    repoDir: "/tmp/VibeCoder",
+    slug: "o/r",
+    coverage: { trackedFiles: 3, roots: ["worker/"] },
+    sourceStatus: [{
+      source: "worker-scan",
+      status: "ran",
+      rawCount: 3,
+      detail: "open security issues",
+    }],
+    rows,
+    newRows,
+    trackedRows,
+    alreadyOpen: [],
+    filed: [],
+    deferred: [],
+    staleEntries: [],
+    baselineErrors: [],
+    baselinePath: "/tmp/VibeCoder/.github/security-tree-sweep-baseline.json",
+  });
+  assertStringIncludes(report, "## Tracked by an open issue");
+  assertStringIncludes(report, "tracked (#1421)");
+  assertStringIncludes(report, "SEC-82c5ad559169");
+  assertStringIncludes(
+    report,
+    "✅ No unbaselined findings. 3 finding(s) tracked by an open issue.",
+  );
+  assertEquals(
+    report.includes("**NEW**"),
+    false,
+    "an open issue is never reported as a new finding",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -1064,6 +1164,7 @@ Deno.test("renderSweepReport snapshot for an empty, clean sweep", () => {
     ],
     rows: [],
     newRows: [],
+    trackedRows: [],
     alreadyOpen: [],
     filed: [],
     deferred: [],
@@ -1091,13 +1192,13 @@ Deno.test("renderSweepReport snapshot for an empty, clean sweep", () => {
     "",
     "## Summary",
     "",
-    "| Severity | Deduplicated | New | Baselined |",
-    "| -------- | -----------: | --: | --------: |",
-    "| critical | 0 | 0 | 0 |",
-    "| high | 0 | 0 | 0 |",
-    "| medium | 0 | 0 | 0 |",
-    "| low | 0 | 0 | 0 |",
-    "| **total** | **0** | **0** | **0** |",
+    "| Severity | Deduplicated | New | Tracked | Baselined |",
+    "| -------- | -----------: | --: | ------: | --------: |",
+    "| critical | 0 | 0 | 0 | 0 |",
+    "| high | 0 | 0 | 0 | 0 |",
+    "| medium | 0 | 0 | 0 | 0 |",
+    "| low | 0 | 0 | 0 | 0 |",
+    "| **total** | **0** | **0** | **0** | **0** |",
     "",
     "## Triage table",
     "",
