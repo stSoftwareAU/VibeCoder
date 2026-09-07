@@ -67,6 +67,50 @@ vibe_first_writable_dir() {
   return 1
 }
 
+# A private temporary file, created inside a directory this container owns
+# rather than in world-writable /tmp (Issue #1522, CWE-367).
+#
+# The caller passes a private directory and a name stem; the file comes back
+# on stdout. `mktemp` is the normal path. When it is unavailable — /tmp
+# refused and every mktemp in the container failing has been seen (see the
+# scratch-root block below) — the fallback creates the file under `set -C`,
+# whose O_EXCL open fails on an existing file or symlink instead of following
+# it, and retries once under a random name so a leftover does not strand the
+# fallback for ever. A path that cannot be created safely is a failure the
+# caller must handle, never a write through whatever is already there.
+vibe_private_temp_file() {
+  local dir="$1" name="$2" candidate
+  # The mode is asserted rather than assumed: `mkdir -p` succeeds through a
+  # pre-existing symlink and leaves an existing directory's mode alone, so a
+  # directory that is not a private directory of ours is a failure, not a
+  # place to write.
+  (umask 077 && mkdir -p "${dir}") 2>/dev/null || return 1
+  [[ -d "${dir}" && ! -L "${dir}" ]] || return 1
+  chmod 700 "${dir}" 2>/dev/null || return 1
+  candidate="$(mktemp "${dir}/${name}.XXXXXX" 2>/dev/null)" || candidate=""
+  if [[ -n "${candidate}" ]]; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+  # No usable mktemp. `set -C` opens with O_EXCL, so a leftover from a killed
+  # launch — or a symlink another local process planted — fails the create
+  # instead of being followed or written through.
+  candidate="${dir}/${name}"
+  if ! (
+    set -C
+    : > "${candidate}"
+  ) 2>/dev/null; then
+    # Something is already there. A random name gets this launch past a
+    # leftover without ever clobbering it; noclobber still guards the open.
+    candidate="${dir}/${name}.$$.${RANDOM}${RANDOM}"
+    (
+      set -C
+      : > "${candidate}"
+    ) 2>/dev/null || return 1
+  fi
+  printf '%s\n' "${candidate}"
+}
+
 VIBE_WORK_ROOT="${HOME:-/home/vibe}/auto-issue-work"
 TMP_SCRATCH_ROOT="${TMPDIR:-/tmp}/vibe-scratch"
 
@@ -375,10 +419,19 @@ if [[ -n "${HOME:-}" ]]; then
     #     tar pipe (portable: GNU and BSD tar both take -T; `cp -n` exit
     #     codes differ between them).
     DENO_SEED_DIR="${VIBE_DENO_SEED_DIR:-/opt/deno-seed}"
+    #     The missing-file lists are private to this container: a 0700
+    #     directory on the durable cache volume, never shared /tmp
+    #     (Issue #1522).
+    DENO_SEED_TMP_DIR="${DENO_CACHE_DIR}/.seed-tmp"
     seeded=false
     for sub in npm remote; do
       [[ -d "${DENO_SEED_DIR}/${sub}" ]] || continue
-      missing_list="$(mktemp 2>/dev/null || echo "/tmp/vibe-deno-seed-$$.${sub}")"
+      if ! missing_list="$(
+        vibe_private_temp_file "${DENO_SEED_TMP_DIR}" "seed-${sub}"
+      )"; then
+        echo "Warning: could not seed ${DENO_CACHE_DIR}/${sub} from ${DENO_SEED_DIR}/${sub} — no private temporary file could be created under ${DENO_SEED_TMP_DIR} — the first use will fetch from the registry" >&2
+        continue
+      fi
       (cd "${DENO_SEED_DIR}/${sub}" && find . -type f 2>/dev/null) \
         | while IFS= read -r rel; do
             [[ -e "${DENO_CACHE_DIR}/${sub}/${rel}" ]] || printf '%s\n' "${rel}"
