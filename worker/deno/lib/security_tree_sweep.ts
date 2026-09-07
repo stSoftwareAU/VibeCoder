@@ -45,6 +45,7 @@
 
 import { parseHttpStatus } from "./alert_feeds/code_scanning_alerts.ts";
 import { runGhCommand } from "./github.ts";
+import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import { listAllOpenIssueTitles } from "./idle_task_snapshot.ts";
 import { ensureLabelExists } from "./label_operations.ts";
 import {
@@ -1583,7 +1584,12 @@ async function fileSweepIssue(
     "--body",
     buildSweepIssueBody(row, baselineRelPath),
   ];
-  for (const label of buildSweepIssueLabels(row)) args.push("--label", label);
+  args.push(
+    ...guardedLabelArgs(
+      buildSweepIssueLabels(row),
+      "worker/deno/lib/security_tree_sweep.ts",
+    ),
+  );
   const raw = await ghCommandFn(args);
   const m = /\/issues\/(\d+)\s*$/.exec(raw.trim());
   const number = m?.[1] !== undefined ? Number.parseInt(m[1], 10) : Number.NaN;

@@ -575,7 +575,7 @@ These only tune the *generated* LaunchAgent (tokens, paths, logs); whether it is
 | `VIBE_SKIP_SCREENSHOT_INSTALL` | Set to `true` to skip browser installation (for testing) |
 | `VIBE_MCP_CONFIG_DIR` | Directory for `.mcp.json` (default: script directory) |
 | `VIBE_SCREENSHOT_DIR` | Directory name for screenshots (default: `docs/evidence`) |
-| `VIBE_BROWSER_PROFILE_DIR` | Disposable directory the browser writes its profile to (default: `/tmp/vibe-playwright-profile`) |
+| `VIBE_BROWSER_PROFILE_DIR` | Disposable directory the browser writes its profile to (default: `/tmp/vibe-playwright-profile`). Must be an **absolute** path outside the checkout — a relative or inside-the-checkout value is refused (Issue #1293) |
 | `VIBE_IMGBB_API_KEY` | ImgBB API key for automatic screenshot uploads, when `.config.json` states no `imgbb_api_key` (Issue #1032) |
 
 **Testing/CI environment variables:**
@@ -987,10 +987,31 @@ claude "Take a screenshot of http://localhost:3000"
 > (no `--allow-all`). The `--deny-env=...` list blocks the worker's
 > high-value secrets — `VIBE_IMGBB_API_KEY`, `GH_TOKEN`,
 > `GITHUB_APP_PRIVATE_KEY_PATH`, `GIT_SSH_COMMAND`, and `ANTHROPIC_API_KEY`
-> — from being read by the MCP process, so a compromised release cannot
-> exfiltrate them via `Deno.env.get()`. The pin is the canonical knob
+> — from being read by the MCP process via `Deno.env.get()`. That flag binds
+> the Deno runtime only, not the children it spawns under `--allow-run`
+> (Issue #1288), so the generated config **also blanks every one of those
+> names in the server's `env` block** — the map the MCP client merges over the
+> inherited environment, and therefore what a child such as `printenv`
+> actually sees. `--deny-read` / `--deny-write` cover the credential stores
+> (`~/.ssh`, `~/.config/gh`, `$GH_CONFIG_DIR`, the GitHub App private key)
+> that the otherwise unscoped `--allow-read` would reach. The pin is the canonical knob
 > kept in `worker/deno/setup/screenshot.ts` (`PLAYWRIGHT_MCP_VERSION`);
 > Renovate's `minimumReleaseAge: 24 hours` quarantine gates upgrades.
+
+> **Cloud metadata is blocked (Issue #1292).** The server defaults to
+> allowing every origin, and the navigation target comes from issue and PR
+> text anyone can write, so the generated config passes
+> `--blocked-origins` covering the instance-metadata endpoints —
+> `169.254.169.254`, the ECS task-metadata address, the IPv6 IMDS address,
+> `metadata.google.internal` / `metadata.goog` and `100.100.100.100` — each
+> in bare-host and wildcard-port form. Without it a prompt-injected agent
+> could screenshot instance credentials into `docs/evidence/` and have the
+> worker publish that image on a public PR. The hosts are the canonical knob
+> `PLAYWRIGHT_MCP_BLOCKED_HOSTS` in `worker/deno/setup/screenshot.ts`. It is
+> a blocklist, not an allowlist, because loopback (`127.0.0.1`) and arbitrary
+> documentation hosts are legitimate targets; per the package's own caveat it
+> is defence in depth rather than a network boundary, and it does not follow
+> redirects.
 
 > **Dependency quarantine is split by ecosystem.** Deno
 > dependencies (JSR / `deno.land/x`) are quarantined by Deno's **native**

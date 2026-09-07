@@ -31,6 +31,7 @@
  */
 
 import { runGhCommand } from "./github.ts";
+import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import type { Logger } from "../types.ts";
 
 /**
@@ -254,7 +255,12 @@ export async function maybeCreateCarrierSubIssue(
     return { created: false, skippedReason: "nothing-to-do" };
   }
 
-  // Create the carrier.
+  // Create the carrier. The label args are built before the try so a
+  // refused label fails loud rather than reading as a `gh` failure.
+  const labelArgs = guardedLabelArgs(
+    [CARRIER_SUB_ISSUE_LABEL],
+    "worker/deno/lib/planning_carrier.ts",
+  );
   let carrierUrl: string;
   let carrierNumber: number;
   try {
@@ -267,8 +273,7 @@ export async function maybeCreateCarrierSubIssue(
       buildCarrierTitle(parentIssueNumber, parentIssueTitle),
       "--body",
       buildCarrierBody(parentIssueNumber),
-      "--label",
-      CARRIER_SUB_ISSUE_LABEL,
+      ...labelArgs,
     ]);
     const parsed = parseCarrierUrl(createOut, repo);
     if (parsed === null) {

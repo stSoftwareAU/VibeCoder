@@ -81,6 +81,7 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import { guardedLabelArgs } from "../lib/guarded_issue_labels.ts";
 import type { Result } from "../types.ts";
 import {
   type ExistingIdleTaskIssue,
@@ -1482,7 +1483,10 @@ export const maybeFileIdleTaskCommand: Command = {
       "create",
       "--repo",
       targetRepo,
-      ...safeLabels.flatMap((l) => ["--label", l]),
+      ...guardedLabelArgs(
+        safeLabels,
+        "worker/deno/commands/maybe_file_idle_task.ts",
+      ),
     ];
     if (milestone !== null) {
       // `gh issue create --milestone` expects the milestone *title*,

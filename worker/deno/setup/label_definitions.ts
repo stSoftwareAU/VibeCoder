@@ -221,18 +221,45 @@ export const DEFAULT_LABEL_COLOUR = "d73a4a";
 /**
  * Labels that have been deprecated and should be removed from repos.
  * Add entries here when retiring a label.
+ *
+ * Only labels the fleet itself created belong here. GitHub's stock labels
+ * are listed in {@link PROTECTED_STOCK_LABELS} and are never deleted
+ * (Issue #1295).
  */
 export const DEPRECATED_LABELS: readonly string[] = [
   "best-model", // Removed: opus is always used, label had no effect
-  "good first issue", // Removed: unnecessary workflow complexity
   "skip-clarification", // Removed: redundant — documentation label provides identical bypass (Issue #1155)
   "needs-clarification", // Removed: handoff signal consolidated onto `needs-human` (Issue #2031)
   "answered", // Removed: question workflow signals handoff with `needs-human` (Issue #2030)
   "claude", // Removed: replaced by hardwired top-priority/work-on/low-priority/idle-task tiers (Issue #2022)
-  "help wanted", // Removed: replaced by hardwired top-priority/work-on/low-priority/idle-task tiers (Issue #2022)
   "refined", // Removed: refinement workflow now signals completion via needs-human (Issue #2029)
   "idle-task-pending", // Removed: approval gate retired — `idle-task` is already lowest priority (Issue #2077)
 ] as const;
+
+/**
+ * GitHub's own stock labels, which ship with every new repository (Issue #1295).
+ *
+ * The worker never created them and human maintainers commonly use them for
+ * their own triage, so the deprecated-label pass never deletes them —
+ * deletion is irreversible and takes the label's attachment to every issue
+ * with it. The worker stopped *reading* `help wanted` as a discovery label in
+ * Issue #2022, which is a reason to ignore it, not a licence to delete a
+ * maintainer's label.
+ *
+ * The guard is enforced in code (`removeDeprecatedLabels`), so re-adding one
+ * of these names to {@link DEPRECATED_LABELS} by mistake still deletes
+ * nothing.
+ */
+export const PROTECTED_STOCK_LABELS: readonly string[] = [
+  "good first issue",
+  "help wanted",
+] as const;
+
+/** True when `name` is one of GitHub's stock labels the fleet must not delete. */
+export function isProtectedStockLabel(name: string): boolean {
+  const normalised = name.trim().toLowerCase();
+  return PROTECTED_STOCK_LABELS.includes(normalised);
+}
 
 /**
  * UI languages used to detect repos with frontend components.
