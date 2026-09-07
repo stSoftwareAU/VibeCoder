@@ -21,6 +21,7 @@
  */
 
 import type { GateLogger } from "./failure_detection_gate.ts";
+import { RepoLoopQuotaStop } from "./repo_loop_quota_stop.ts";
 import { FAILURE_DETECTION_REPAIR_LABEL } from "./config_defaults.ts";
 
 /** An open planning parent carrying the resume label. */
@@ -62,13 +63,22 @@ export async function findFailureDetectionRepairParents(opts: {
   const label = opts.label ?? FAILURE_DETECTION_REPAIR_LABEL;
   const limit = opts.limit ?? DEFAULT_LIMIT;
   const parents: FailureDetectionRepairParent[] = [];
+  const repos = new Set(opts.repos);
+  // Issue #1515: one quota exhaustion is one line, not one per repository.
+  const quota = new RepoLoopQuotaStop(
+    "Failure-Detection resume",
+    repos.size,
+    (message) => opts.logger.warn(message),
+  );
 
-  for (const repo of new Set(opts.repos)) {
+  for (const repo of repos) {
+    if (quota.latchedBeforeRepo()) break;
     if (!REPO_RE.test(repo)) {
       opts.logger.warn(
         "Failure-Detection resume: skipping malformed repository name (Issue #60)",
         { repo },
       );
+      quota.repoDone();
       continue;
     }
 
@@ -89,16 +99,20 @@ export async function findFailureDetectionRepairParents(opts: {
         "number,title",
       ]);
     } catch (err) {
+      // The quota is one condition for every repository, said once.
+      if (quota.isQuotaFailure(err)) break;
       // Loud but non-fatal: this repository's outstanding repairs are invisible
       // this cycle, and the remaining repositories are still scanned.
       opts.logger.warn(
         "Failure-Detection resume: could not list labelled parents for this repository (Issue #60)",
         { repo, error: err instanceof Error ? err.message : String(err) },
       );
+      quota.repoDone();
       continue;
     }
 
     parents.push(...parseRepairParents(repo, raw, opts.logger));
+    quota.repoDone();
   }
 
   return parents;
