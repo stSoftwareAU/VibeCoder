@@ -62,6 +62,11 @@ export interface FindIssuesOptions {
   /** Optional function to check if repo is deprioritised */
   isRepoDeprioritised?: (repo: string) => boolean;
   /**
+   * Whether this host's token can push workflow files (Issue #1475).
+   * Defaults to the launcher's preflight verdict; tests inject it.
+   */
+  hasWorkflowScope?: boolean;
+  /**
    * Repositories leased **wholesale** on this host (Issue #4176, narrowed by
    * Issue #1091) — the maintenance lane's leases (Issue #213), whose pass
    * may touch any branch of the clone. Skipped entirely, before any

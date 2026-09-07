@@ -70,6 +70,11 @@ export const SKIP_REASONS = [
   "self-schedule-refused",
   /** Issue #505: an unschedulable diagnostic escalated to a human */
   "self-schedule-escalated",
+  /**
+   * Issue #1475: the issue is workflow work and this host's token lacks the
+   * `workflow` scope, so the push would be rejected — skipped, not claimed.
+   */
+  "workflow-scope-missing",
 ] as const;
 
 /**
