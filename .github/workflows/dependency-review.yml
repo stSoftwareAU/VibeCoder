@@ -7,10 +7,11 @@
 # committed tree on a schedule (detect-after-merge); this one is the
 # pre-merge gate on what the PR adds.
 #
-# GitHub's dependency graph understands the Ruby/Jekyll `Gemfile.lock`, so
-# that ecosystem is covered here. The Deno tree keeps its own advisory
-# coverage via `deno audit` in dependency-audit.yml (GitHub's graph does not
-# parse `deno.lock`), so nothing is lost by the graph not seeing it.
+# The graph covered the Ruby/Jekyll `Gemfile.lock` while the Pages site had
+# one; both went with the site (Issues #1344, #1376). The Deno tree keeps its
+# own advisory coverage via `deno audit` in dependency-audit.yml (GitHub's
+# graph does not parse `deno.lock`), so nothing is lost by the graph not
+# seeing it.
 #
 # Third-party actions are pinned to 40-character commit SHAs (Issue #2123)
 # so a hijacked tag cannot inject code; the tag each SHA resolves to is
