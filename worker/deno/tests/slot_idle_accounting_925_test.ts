@@ -564,13 +564,13 @@ Deno.test(
     const ledger = new SlotIdleLedger();
     ledger.start(0, 2);
     // No slot exists while the loop waits for the quota to refresh.
-    ledger.recordBlockedSlotSeconds("token_blocked", 30);
+    ledger.recordBlockedSlotSeconds("usage_blocked", 30);
     ledger.recordBlockedSlotSeconds("rate_limited", 20);
     const snapshot = ledger.snapshot(100_000);
     assertEquals(snapshot.idleSlotSeconds, 0);
     assertEquals(snapshot.blockedSlotSeconds, 100);
     assertEquals(snapshot.blockedByReason, {
-      token_blocked: 60,
+      usage_blocked: 60,
       rate_limited: 40,
     });
     // The remainder is capacity with no slot running — reported, not idle.
@@ -585,10 +585,10 @@ Deno.test(
     ledger.start(0, 2);
     ledger.recordBlockedStop("rate_limited");
     ledger.recordBlockedStop("rate_limited");
-    ledger.recordBlockedStop("token_blocked");
+    ledger.recordBlockedStop("usage_blocked");
     assertEquals(ledger.snapshot(1000).blockedStops, {
       rate_limited: 2,
-      token_blocked: 1,
+      usage_blocked: 1,
     });
   },
 );

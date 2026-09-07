@@ -3585,7 +3585,7 @@ async function slotPreClaimGuardTripped(
       // where `recordBlockedSlotSeconds` books the seconds.
       const signalKind = await deps.getRateLimitBlockKind?.() ?? "github";
       recordSlotBlockedStop(
-        signalKind === "usage" ? "token_blocked" : "rate_limited",
+        signalKind === "usage" ? "usage_blocked" : "rate_limited",
       );
       deps.log(
         `[${slotId}] Rate limit signal active — no further claims; draining the pool.`,
@@ -4456,7 +4456,7 @@ export async function runCoreLoop(
      * What the fleet was blocked on (Issue #855). Every caller but the
      * mid-loop signal branch knows statically that it is GitHub.
      */
-    blockKind: "rate_limited" | "token_blocked" = "rate_limited",
+    blockKind: "rate_limited" | "usage_blocked" = "rate_limited",
   ): Promise<{ outcome: "ok" | "shutdown" | "cap" | "duration" | "error" }> {
     // Refuse to wait past the run-duration cap — exit cleanly so the
     // supervisor can respawn for the next window.
@@ -4790,7 +4790,7 @@ export async function runCoreLoop(
             const signalKind = await deps.getRateLimitBlockKind?.() ??
               "github";
             const blockKind = signalKind === "usage"
-              ? "token_blocked" as const
+              ? "usage_blocked" as const
               : "rate_limited" as const;
             const remaining = await deps.getRateLimitRemainingSeconds();
             if (remaining > 0) {
