@@ -129,9 +129,10 @@ background service is offered, where files land — is covered in
      findings.
    - `gitignore-sync` — applies the canonical `.gitignore` safety block to
      every monitored repository.
-   - `verify-monitored-collaborator` — checks the worker account is a
-     collaborator on every monitored repository, filing an issue where it is
-     not.
+   - `verify-monitored-collaborator` — checks the worker account has push
+     access on every monitored repository (triage is not enough: the
+     trusted-author refresh lists collaborators, which needs push), filing an
+     issue where it has not.
    - `branch-protection-sync` — applies the default-branch ruleset to every
      monitored repository, then reports each repository's `milestone/**`
      ruleset. On a terminal it offers to create a missing one, mirroring the
@@ -1266,7 +1267,7 @@ re-run converges on the same state rather than piling up duplicates.
 | `best-practices-sync` | Repo-side. Audits workflows for best-practice findings and files (or updates) one follow-up issue per repository. | Yes — same housekeeping category. |
 | `best-practices-relabel` | Repo-side. One-off back-fill of severity and category labels onto best-practice issues filed before those labels existed. Supports `--dry-run`. | Yes — internal maintenance; not part of `setup all`, and a fresh setup has nothing to relabel. |
 | `gitignore-sync` | Repo-side. Applies the canonical `.gitignore` and `.gitattributes` safety blocks to every monitored repository, so worker artefacts and credential-shaped files stay out of commits. | Yes, but recommended — the safety blocks exist for a reason. |
-| `verify-monitored-collaborator` | Repo-side, read-mostly. Verifies the worker account can be assigned issues on every monitored repository; files (or updates) a precheck issue for any repository that fails, and warns when `service_accounts` is empty. | Yes, but it is the step that tells you access is wrong *before* the first run does. |
+| `verify-monitored-collaborator` | Repo-side, read-mostly. Verifies the worker account has push access on every monitored repository — triage alone lets it be assigned issues but not list collaborators or push a branch (Issue #1455); files (or updates) a precheck issue naming the push grant for any repository that fails, and warns when `service_accounts` is empty. | Yes, but it is the step that tells you access is wrong *before* the first run does. |
 | `branch-protection-sync` | Repo-side. Applies the worker's default-branch ruleset to every monitored repository; repositories whose default branch takes direct pushes, or that opted out, are skipped, and leftover classic branch protection is flagged for manual removal. | Yes — but without it merges are not gated the way a scripted setup leaves them. |
 | `backfill-idle-task-labels` | Repo-side. One-off back-fill of the `idle-task` label onto security-scan wrapper issues that predate the label. | Yes — a fresh setup has nothing to back-fill. |
 | `label-colour-reconcile` | Repo-side. Repaints fleet-managed labels whose colour drifted from the canonical table — the `severity:*` / `confidence:*` ramps, `security`, `lang:*` and the per-scan category labels. Only labels the table **names** are touched, and none are created; a label a human added is left as they set it. Supports `--dry-run`. | Yes — a fresh setup has nothing to reconcile; run it on a fleet that predates the canonical table. |
