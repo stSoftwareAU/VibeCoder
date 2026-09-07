@@ -182,10 +182,10 @@ that no named exception covers:
 
 The setup contract covers **credential handling** as well as the subcommands
 each script runs (Issue #1430): a `provider.env` value carrying a line break
-must be refused on both sides (Issue #1301), and credential directories must
-be owner-only from the instant they exist rather than created wide and
-narrowed afterwards (Issue #1374). Both landed on `setup.sh` alone and the
-contract passed cleanly, because it compared only what each script *ran*.
+must be refused on both sides (Issue #1301), and credential directories must be
+owner-only from the instant they exist rather than created wide and narrowed
+afterwards (Issue #1374) — on Windows too, where the guarantee is an ACL
+carried by the creation call rather than a umask.
 
 The supervisor gate is the newest (Issue #1403) and the reason the other two
 exist: `loop` had no parity test, and the two supervisors drifted to 501 and

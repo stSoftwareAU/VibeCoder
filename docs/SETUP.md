@@ -388,11 +388,13 @@ Docker first, then Podman. What the runtime runs and how the image is built is
 credential directories are `chmod` 0700 and the files within 0600 — and they
 are *created* owner-only, under a `umask 077`, rather than created under the
 host's ambient umask and narrowed afterwards, so no window exists in which a
-co-resident local account can enumerate them (Issue #1374). `setup.ps1` keeps
-the same guarantee on a POSIX host — `New-VibeCredentialDirectory` creates
-every level through one `umask 077` `mkdir -p`, exactly as `setup.sh` does. On
-Windows the same protection is an ACL: each missing directory is created with
-an explicit, de-inherited ACL granting the current identity alone, and
+co-resident local account can enumerate them (Issue #1374). `setup.ps1` creates
+its credential *directories* the same way on a POSIX host —
+`New-VibeCredentialDirectory` runs one `mkdir -p` under `umask 077`, exactly as
+`setup.sh` does — and narrows the files within to 0600 immediately afterwards,
+which is safe because the directory holding them is already owner-only. On
+Windows the same protection is an ACL: each missing directory is created
+carrying an explicit, de-inherited ACL granting the current identity alone, and
 `Protect-VibePath` (`setup.ps1`) re-applies it to a directory that already
 existed, so a profile that gives *Users* read access cannot leak a
 credential. Windows also writes every credential and config file LF-terminated

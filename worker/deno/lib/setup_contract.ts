@@ -76,11 +76,17 @@ const PROVIDER_PROVISION_VAR = /VIBE_LAUNCHAGENT_[A-Z]+_API_KEY/g;
  * around the creation itself; the pairing is what is matched, because either
  * half alone proves nothing.
  */
-const OWNER_ONLY_DIRECTORY_CREATION: Record<LauncherDialect, RegExp> = {
+const OWNER_ONLY_DIRECTORY_CREATION: Record<LauncherDialect, RegExp[]> = {
   // A subshell sets the mask, then one `mkdir -p` creates every level under it.
-  bash: /umask 077\s*\n\s*mkdir -p/,
-  // The same subshell, spelled as the one-line `sh -c` PowerShell needs.
-  powershell: /umask 077;\s*mkdir -p/,
+  bash: [/umask 077\s*\n\s*mkdir -p/],
+  // Both halves of the PowerShell twin, because it serves two platforms: the
+  // same subshell spelled as the one-line `sh -c` off Windows, and — on
+  // Windows, where there is no umask — the ACL carried by the creation call
+  // itself, in either edition's spelling.
+  powershell: [
+    /umask 077;\s*mkdir -p/,
+    /CreateDirectory\(\s*\$(?:directory, \$security|security, \$directory)\)/,
+  ],
 };
 
 /**
@@ -93,11 +99,11 @@ const OWNER_ONLY_DIRECTORY_CREATION: Record<LauncherDialect, RegExp> = {
  * matched by its condition rather than its message, because each script wraps
  * that message its own way.
  */
-const NEWLINE_CREDENTIAL_GUARD: Record<LauncherDialect, RegExp> = {
+const NEWLINE_CREDENTIAL_GUARD: Record<LauncherDialect, RegExp[]> = {
   // [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]
-  bash: /\*\$'\\n'\*/,
+  bash: [/\*\$'\\n'\*/],
   // $value -match "[`r`n]"
-  powershell: /-match\s+"\[`r`n\]"/,
+  powershell: [/-match\s+"\[`r`n\]"/],
 };
 
 /** How each dialect spells "run this setup CLI subcommand". */
@@ -183,9 +189,15 @@ function runs(lines: string[], ...fragments: string[]): boolean {
   );
 }
 
-/** Does the executable source, read as one block, match `pattern`? */
-function matches(lines: string[], pattern: RegExp): boolean {
-  return pattern.test(lines.join("\n"));
+/**
+ * Does the executable source, read as one block, match every pattern?
+ *
+ * Read as one block rather than line by line, because a construct the
+ * formatter wrapped runs exactly like an unwrapped one.
+ */
+function matchesAll(lines: string[], patterns: RegExp[]): boolean {
+  const code = lines.join("\n");
+  return patterns.every((pattern) => pattern.test(code));
 }
 
 /**
@@ -228,11 +240,14 @@ export function extractSetupContract(
     removesCacheOnlyWorkDir: dialect === "bash"
       ? runs(code, "rm -rf", ".vibe-cache")
       : runs(code, "Remove-Item", ".vibe-cache"),
-    createsCredentialDirsOwnerOnly: matches(
+    createsCredentialDirsOwnerOnly: matchesAll(
       code,
       OWNER_ONLY_DIRECTORY_CREATION[dialect],
     ),
-    refusesNewlineCredential: matches(code, NEWLINE_CREDENTIAL_GUARD[dialect]),
+    refusesNewlineCredential: matchesAll(
+      code,
+      NEWLINE_CREDENTIAL_GUARD[dialect],
+    ),
   };
 }
 

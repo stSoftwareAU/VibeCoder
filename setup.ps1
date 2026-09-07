@@ -234,17 +234,24 @@ function Protect-VibePath {
     Windows PowerShell 5.1 is a supported host (see docs/DEPLOYMENT.md).
 
     Callers still call Protect-VibePath afterwards: a directory that already
-    existed keeps whatever mode it was created with, and only that narrows it.
+    existed keeps whatever mode it was created with, and only that narrows it —
+    and on Windows it is also what repairs the ACL if the creation below could
+    not carry one.
 #>
 function New-VibeCredentialDirectory {
     param([Parameter(Mandatory = $true)][string] $Path)
 
+    # Resolved against PowerShell's own location rather than the process
+    # working directory the .NET and `sh` calls below would otherwise use.
+    $resolver = $ExecutionContext.SessionState.Path
+    $full = $resolver.GetUnresolvedProviderPathFromPSPath($Path)
+
     if (-not $script:VibeIsWindows) {
         # The path travels as `$1`, never interpolated into the command, so a
         # directory name cannot be read as shell syntax.
-        & sh -c 'umask 077; mkdir -p -- "$1"' sh $Path
+        & sh -c 'umask 077; mkdir -p -- "$1"' sh $full
         if ($LASTEXITCODE -ne 0) {
-            throw "Could not create credential directory $Path (mkdir exited $LASTEXITCODE)"
+            throw "Could not create credential directory $full (mkdir exited $LASTEXITCODE)"
         }
         return
     }
@@ -252,7 +259,7 @@ function New-VibeCredentialDirectory {
     # Deepest-first walk up to the first ancestor that exists, so the missing
     # ones are created top-down with the owner-only ACL already on them.
     $missing = [System.Collections.Generic.List[string]]::new()
-    $cursor = $Path
+    $cursor = $full
     while ($cursor -and -not (Test-Path -LiteralPath $cursor)) {
         $missing.Insert(0, $cursor)
         $parent = Split-Path -Parent $cursor
@@ -269,11 +276,27 @@ function New-VibeCredentialDirectory {
             $identity, "FullControl", "ContainerInherit,ObjectInherit", "None",
             "Allow"))
     foreach ($directory in $missing) {
-        if ($PSVersionTable.PSEdition -eq "Desktop") {
-            [void][System.IO.Directory]::CreateDirectory($directory, $security)
-        } else {
-            [void][System.IO.FileSystemAclExtensions]::CreateDirectory(
-                $security, $directory)
+        try {
+            if ($PSVersionTable.PSEdition -eq "Desktop") {
+                # Windows PowerShell 5.1 (.NET Framework) carries the security
+                # descriptor on Directory.CreateDirectory itself.
+                [void][System.IO.Directory]::CreateDirectory(
+                    $directory, $security)
+            } else {
+                # PowerShell 7 (.NET) moved it to an extension method.
+                [void][System.IO.FileSystemAclExtensions]::CreateDirectory(
+                    $security, $directory)
+            }
+        } catch {
+            # A host whose runtime carries neither spelling must still get its
+            # credential directory - so it is created and narrowed at once,
+            # which is where every Windows host stood before Issue #1374, and
+            # the degradation is announced rather than hidden.
+            Write-VibeWarning ("Could not create $directory with an " +
+                "owner-only ACL ($($_.Exception.Message)) - creating it and " +
+                "restricting it immediately instead")
+            [void](New-Item -ItemType Directory -Force -Path $directory)
+            Protect-VibePath -Path $directory -Mode "700"
         }
     }
 }
@@ -474,8 +497,8 @@ function Set-VibeProviderCredential {
 
     if (-not $value) { return $false }
 
-    # One `NAME=value` line is the whole file format, and all three readers -
-    # setup.sh, this script and worker/deno/lib/credential_preflight.ts - split
+    # One `NAME=value` line is the whole file format, and all three readers —
+    # setup.sh, this script and worker/deno/lib/credential_preflight.ts — split
     # on the first `=` and take the rest of the line. A value carrying a line
     # break cannot be represented that way, so writing it would store a
     # truncated credential behind a success message and leave the worker to

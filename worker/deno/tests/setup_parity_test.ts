@@ -233,6 +233,28 @@ Deno.test("extractSetupContract - reads a script's credential handling", () => {
   assertEquals(wide.refusesNewlineCredential, false);
 });
 
+Deno.test("extractSetupContract - PowerShell must carry both platforms' halves", () => {
+  // setup.ps1 serves POSIX and Windows, and a contract that saw only the
+  // `umask` half would go green on a script whose Windows branch was deleted.
+  const posixOnly = extractSetupContract(
+    "posix-only.ps1",
+    [`& sh -c 'umask 077; mkdir -p -- "$1"' sh $full`].join("\n"),
+    "powershell",
+  );
+  assertEquals(posixOnly.createsCredentialDirsOwnerOnly, false);
+
+  const both = extractSetupContract(
+    "both.ps1",
+    [
+      `& sh -c 'umask 077; mkdir -p -- "$1"' sh $full`,
+      "[void][System.IO.FileSystemAclExtensions]::CreateDirectory(",
+      "    $security, $directory)",
+    ].join("\n"),
+    "powershell",
+  );
+  assertEquals(both.createsCredentialDirsOwnerOnly, true);
+});
+
 Deno.test("extractSetupContract - a commented-out guard does not count", () => {
   const contract = extractSetupContract(
     "commented.ps1",
@@ -257,6 +279,24 @@ Deno.test("compareSetupContracts - a one-sided credential fix is a divergence (I
       .replace(/umask 077; mkdir -p/, "mkdir -p"),
     "powershell",
   );
+
+  // Dropping the Windows half alone is a divergence too — that platform has
+  // no umask, so the ACL carried by the creation call is the whole guarantee
+  // there. Both editions' spellings go, because either one satisfies it.
+  const windowsDropped = extractSetupContract(
+    "setup.ps1",
+    SETUP_PS1_SOURCE
+      .replace(
+        /CreateDirectory\(\s*\$directory, \$security\)/,
+        "CreateDirectory($directory)",
+      )
+      .replace(
+        /CreateDirectory\(\s*\$security, \$directory\)/,
+        "CreateDirectory($directory)",
+      ),
+    "powershell",
+  );
+  assertEquals(windowsDropped.createsCredentialDirsOwnerOnly, false);
 
   assertEquals(drifted.refusesNewlineCredential, false);
   assertEquals(drifted.createsCredentialDirsOwnerOnly, false);
