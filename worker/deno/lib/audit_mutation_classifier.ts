@@ -170,6 +170,59 @@ const GH_CWD_SCOPED_ROOTS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Root spellings of the `gh extension` command (Issue #1396).
+ *
+ * The real binary accepts all three, so anything that reasons about the root
+ * must accept all three or the odd spelling walks past it. Exported as the
+ * single source of these aliases: `gh_local_state_guard.ts` normalises the
+ * agent-side refusal against this same set, so a spelling added here cannot
+ * be honoured by one and missed by the other.
+ */
+export const GH_EXTENSION_ROOTS: ReadonlySet<string> = new Set([
+  "extension",
+  "extensions",
+  "ext",
+]);
+
+/**
+ * `gh extension` sub-verbs that change the **local tool**, not GitHub
+ * (Issue #1396).
+ *
+ * Nothing under the `extension` root writes to a repository: an install
+ * downloads and unpacks an extension into `GH_CONFIG_DIR`, an upgrade
+ * replaces it, a remove deletes it, a create scaffolds one locally. They are
+ * still mutations worth journalling — `software_updates.ts` installs pinned
+ * extensions on the worker's own host — so they classify as `non-repo` rather
+ * than as reads: recorded by the audit journal, and allowed by the write-repo
+ * allowlist because there is no write target to compare against it.
+ *
+ * Before this the root was split across both tables by accident: `install` and
+ * `upgrade` matched no mutating verb at all and classified as reads, so the
+ * worker's own extension upgrades were never journalled, while `remove` and
+ * `create` matched {@link GH_GENERIC_MUTATING_VERBS} against a root that is
+ * not cwd-scoped and so failed closed as an undeterminable repo write. One
+ * root, two opposite answers, neither of them right — which is what kept the
+ * `gh extension` caller outside the `spawnGh` chokepoint.
+ *
+ * Reads (`list`, `browse`, `search`) and `exec` — which runs an installed
+ * extension rather than changing the installed set — are not mutations here.
+ * The verb list therefore differs from `GH_LOCAL_STATE_VERBS.extension` in
+ * `gh_local_state_guard.ts` on purpose, and the two are not one list: this one
+ * answers "did the local tool change, and should the journal say so", which
+ * takes in `create` and leaves out `exec`; the guard's answers "may the agent
+ * run this at all", which refuses `exec` — an extension the guard cannot see
+ * inside — and has no reason to name `create`. The agent is refused every
+ * verb in the guard's list whatever this one says (Issue #187); this
+ * classification governs the worker's own calls.
+ */
+const GH_EXTENSION_LOCAL_VERBS: ReadonlySet<string> = new Set([
+  "install",
+  "upgrade",
+  "remove",
+  "create",
+]);
+
+/**
  * GraphQL mutations sanctioned as touching no repository (Issue #3703).
  *
  * A GraphQL mutation carries no derivable `owner/repo`, so it fails closed
@@ -586,6 +639,20 @@ export function classifyGhMutation(
   const verbIdx = firstNonFlag(args, rootIdx + 1);
   const verb = args[verbIdx];
   if (!verb) return null;
+
+  // Issue #1396: `gh extension` changes the local tool, never a repository,
+  // so it is classified explicitly rather than left to the tables below —
+  // journalled as a `non-repo` mutation, and never refused as an
+  // undeterminable repo write.
+  if (GH_EXTENSION_ROOTS.has(root.toLowerCase())) {
+    if (!GH_EXTENSION_LOCAL_VERBS.has(verb.toLowerCase())) return null;
+    const extTarget = args[verbIdx + 1];
+    return {
+      verb: `extension-${verb.toLowerCase()}`,
+      ...(extTarget && !extTarget.startsWith("-") ? { target: extTarget } : {}),
+      scope: "non-repo",
+    };
+  }
 
   const mutatingVerbs = GH_MUTATING_VERBS[root];
   const mutating = mutatingVerbs
