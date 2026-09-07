@@ -30,7 +30,7 @@
  *     and would drive idle to zero on a half-idle pool.
  *   - **blocked** — wall time the loop spent paused between runs on a
  *     GitHub rate limit (`rate_limited`) or a model usage limit
- *     (`token_blocked`).
+ *     (`usage_blocked`).
  *   - **idle** — everything else (scanning, maintenance passes, the
  *     end-of-cycle sleep), attributed to the reason the cycle claimed
  *     nothing.
@@ -44,7 +44,7 @@
  *
  * One deliberate overlap: a block that happens *inside* a run (the agent's
  * own rate-limit retry ladder sleeps in-process) is counted in
- * `token_blocked_seconds` / `rate_limited_seconds`, because the issue asks
+ * `usage_blocked_seconds` / `rate_limited_seconds`, because the issue asks
  * how long the fleet was blocked on tokens, but is **not** added to
  * `idle_by_reason` — the fleet was holding a claim, not idle. So the
  * blocked totals can exceed the blocked share of `idle_seconds`.
@@ -76,10 +76,10 @@ export type FleetIdleReason =
   /** Paused on a GitHub rate limit. */
   | "rate_limited"
   /** Paused on a model usage/quota limit. */
-  | "token_blocked";
+  | "usage_blocked";
 
 /** The kinds of block that stop the fleet claiming work. */
-export type FleetBlockKind = "rate_limited" | "token_blocked";
+export type FleetBlockKind = "rate_limited" | "usage_blocked";
 
 /** Terminal outcome of one claimed issue. */
 export type FleetRunOutcome = "success" | "failure" | "skip";
@@ -465,8 +465,20 @@ export function formatFleetSummary(nowMs: number = Date.now()): string {
     `idle_pct=${idlePct}`,
     `occupied=${s.occupiedSeconds}s`,
     `busy=${s.busySeconds}s`,
-    `token_blocked=${s.tokenBlockedSeconds}s`,
-    `token_blocked_waits=${s.tokenBlockedWaits}`,
+    // `usage_blocked`, not `token_blocked` (both here and as the block-kind
+    // identifier that keys `idle_by_reason` / `blocked_by_reason`): the
+    // secret redactor masks the value of any `key=value` whose key contains
+    // TOKEN, so this line went out with `***REDACTED***` where the one metric
+    // that answers "is a subscription being drained?" should be. The rule is
+    // right to be blunt — `PASSWORD=12345` must stay masked — so the metric
+    // is renamed rather than the rule loosened. `usage` is the vocabulary the
+    // signal kind already uses (`signalKind === "usage"`).
+    //
+    // The persisted sidecar fields keep their `tokenBlocked*` names: they are
+    // JSON state that accumulates across runs, and renaming them would orphan
+    // every prior file's accumulated value.
+    `usage_blocked=${s.tokenBlockedSeconds}s`,
+    `usage_blocked_waits=${s.tokenBlockedWaits}`,
     `rate_limited=${s.rateLimitedSeconds}s`,
     `rate_limit_waits=${s.rateLimitWaits}`,
     `claims=${s.claims}`,

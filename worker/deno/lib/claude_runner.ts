@@ -2931,8 +2931,8 @@ export async function runClaudeWithRetry(
         await clock.sleep(actualWait * 1000);
         // Issue #855: this ladder sleeps in-process, inside a claimed run.
         // Without recording it, an hour spent waiting on the model's own
-        // rate limit reads as an hour of work and `token_blocked` stays 0.
-        recordInRunBlockedSeconds("token_blocked", actualWait);
+        // rate limit reads as an hour of work and `usage_blocked` stays 0.
+        recordInRunBlockedSeconds("usage_blocked", actualWait);
         totalWaitTime += actualWait;
         waitInterval *= 2; // Exponential backoff
         continue;

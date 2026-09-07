@@ -820,7 +820,7 @@ at exit:
 
 ```text
 fleet-summary: wall=92520s idle=39600s idle_pct=42.8 occupied=52920s
-  busy=52920s token_blocked=0s token_blocked_waits=0 rate_limited=0s
+  busy=52920s usage_blocked=0s usage_blocked_waits=0 rate_limited=0s
   rate_limit_waits=0 claims=32 successes=17 failures=13 skips=2
   success_rate=0.57
   idle_by_reason=nothing_claimable_backlog=32000s,host_disk_low=7600s
@@ -835,7 +835,7 @@ The run's wall time is partitioned into three non-overlapping spans, so
 ```mermaid
 flowchart LR
     W["run wall time"] --> O["occupied<br/>≥1 stream holding a claim"]
-    W --> K["blocked<br/>rate_limited / token_blocked"]
+    W --> K["blocked<br/>rate_limited / usage_blocked"]
     W --> I["idle<br/>scan, maintenance, sleep"]
     I --> R["attributed to the idle census's reason<br/>(nothing_claimable_backlog, dependency_blocked, host_disk_low, …)<br/>or 'served' when the cycle claimed work"]
     style O fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -859,10 +859,15 @@ flowchart LR
   reported separately from idle with nothing to claim
   (`nothing_claimable_empty`) — the first is a fault, the second is not.
 - **A block inside a run** — the agent's own retry ladder sleeps in-process —
-  counts towards `token_blocked_seconds` but not towards `idle_by_reason`: the
+  counts towards `usage_blocked_seconds` but not towards `idle_by_reason`: the
   fleet was holding a claim, not idle. This is the one deliberate overlap, and
   it is why the blocked totals can exceed the blocked share of `idle_seconds`.
-- **`rate_limited` vs `token_blocked`** are separated by the shared
+- The metric is `usage_blocked`, not `token_blocked` (renamed): the secret
+  redactor masks the value of any `key=value` whose key contains `TOKEN`, so
+  the old name published as `token_blocked=***REDACTED***` and the figure was
+  unreadable in every log. The persisted sidecar fields keep their
+  `tokenBlocked*` names so prior accumulated state still loads.
+- **`rate_limited` vs `usage_blocked`** are separated by the shared
   `.rate_limit_signal` file, which now records whether a GitHub API limit or a
   model usage limit wrote it. Each carries a wait count alongside the total
   backoff.
@@ -921,7 +926,7 @@ run wall seconds` — against which four non-overlapping spans are booked:
   looking for it.
 - **`blocked`** — slot-seconds the whole fleet was paused waiting for a quota,
   split by the same two reasons `fleet-summary:` uses: `rate_limited` (GitHub
-  API) and `token_blocked` (model usage), read from the shared
+  API) and `usage_blocked` (model usage), read from the shared
   `.rate_limit_signal` file. Booked from the loop-level pauses, where the
   waiting actually happens; a slot that meets an active signal at its pre-claim
   guard drains the pool at once rather than waiting in the slot, and that stop
