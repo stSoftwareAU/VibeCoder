@@ -37,7 +37,7 @@ time budget, and the caller still owes the response a bounded read.
 
 **SEC-08c4f1a7e2b9 — bare 32-hex credential unmasked by `redactSecrets` (low).**
 `secret_redaction.ts` masked the ImgBB API key only while it kept a wrapper —
-an `--imgbb-api-key <key>` flag or a `VIBE_IMGBB_API_KEY=<key>` assignment.
+an `--imgbb-api-key` flag or a `VIBE_IMGBB_API_KEY` environment assignment.
 Stripped of both (an upload client echoing the rejected key into an error
 string, or the key sitting in an `?key=` query parameter) it is a bare hex blob
 with no provider prefix and no rule matched it, even though
