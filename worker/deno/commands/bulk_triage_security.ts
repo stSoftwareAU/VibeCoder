@@ -9,6 +9,10 @@
  * and minimum-age filters, and — unless `--dry-run` is passed — applies
  * the pickup label (`work-on` by default) in bulk.
  *
+ * Every flag is coerced, and an unrecognised flag is refused (Issue #1266):
+ * the default branch here is the live one, so a `--dry-run` or `--severities`
+ * the parser cannot read must stop the command rather than be dropped.
+ *
  * The command is meant to be run by a **human operator** with their own
  * `gh` credentials. The worker is not authorised to apply `work-on` —
  * `label_security.ts` strips a worker-applied pickup label on the next
@@ -41,6 +45,11 @@
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
+  coerceBooleanFlag,
+  coerceStringListFlag,
+  findUnknownOptions,
+} from "../lib/command_args.ts";
+import {
   type BulkTriageSummary,
   DEFAULT_APPLY_LABEL,
   DEFAULT_FINDINGS_LABELS,
@@ -57,13 +66,24 @@ interface TestDeps {
   now?: () => Date;
 }
 
-function splitCsv(value: unknown): string[] {
-  if (typeof value !== "string" || value.length === 0) return [];
-  return value
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
+/**
+ * Options this command accepts (Issue #1266).
+ *
+ * `parseArgs` drops an unrecognised flag, so without this set a misspelled
+ * `--dry-run` is indistinguishable from no `--dry-run` at all — and this
+ * command's default is the live one. `__testDeps` is the injected seam the
+ * tests wire their stubs through.
+ */
+const KNOWN_OPTIONS: ReadonlySet<string> = new Set([
+  "monitored-repos",
+  "apply-label",
+  "findings-labels",
+  "severities",
+  "min-age-days",
+  "max",
+  "dry-run",
+  "__testDeps",
+]);
 
 function parseIntArg(
   value: unknown,
@@ -85,10 +105,6 @@ function parseIntArg(
     ok: false,
     error: `Invalid integer for --${label}: ${String(value)}`,
   };
-}
-
-function isBooleanFlag(value: unknown): boolean {
-  return value === true || value === "true" || value === "1";
 }
 
 /**
@@ -120,9 +136,28 @@ export const bulkTriageSecurityCommand: Command = {
     args: Record<string, unknown>,
     _config: WorkerConfig,
   ): Promise<CommandResult<BulkTriageSummary>> {
-    const repos = splitCsv(args["monitored-repos"]);
     const deps: TestDeps = (args["__testDeps"] as TestDeps | undefined) ?? {};
     const log = deps.log ?? ((line: string) => console.log(line));
+
+    const unknown = findUnknownOptions(args, KNOWN_OPTIONS);
+    if (unknown.length > 0) {
+      return {
+        success: false,
+        message: `Unknown option(s) ${
+          unknown.map((k) => `--${k}`).join(", ")
+        } — refused rather than ignored, because a mistyped --dry-run would ` +
+          `otherwise read as a live run`,
+      };
+    }
+
+    const reposResult = coerceStringListFlag(
+      args["monitored-repos"],
+      "monitored-repos",
+    );
+    if (!reposResult.ok) {
+      return { success: false, message: reposResult.error.message };
+    }
+    const repos = reposResult.value;
 
     if (repos.length === 0) {
       return {
@@ -136,13 +171,28 @@ export const bulkTriageSecurityCommand: Command = {
       ? (args["apply-label"] as string)
       : DEFAULT_APPLY_LABEL;
 
-    const findingsLabelsArg = splitCsv(args["findings-labels"]);
-    const findingsLabels = findingsLabelsArg.length > 0
-      ? findingsLabelsArg
+    const findingsLabelsResult = coerceStringListFlag(
+      args["findings-labels"],
+      "findings-labels",
+    );
+    if (!findingsLabelsResult.ok) {
+      return { success: false, message: findingsLabelsResult.error.message };
+    }
+    const findingsLabels = findingsLabelsResult.value.length > 0
+      ? findingsLabelsResult.value
       : DEFAULT_FINDINGS_LABELS;
 
-    const severitiesArg = splitCsv(args["severities"]);
-    const severitiesResult = validateSeverities(severitiesArg);
+    // An unreadable --severities must not collapse to "no severity filter":
+    // that silently widens the sweep from the named severities to everything
+    // carrying a findings label.
+    const severitiesArg = coerceStringListFlag(
+      args["severities"],
+      "severities",
+    );
+    if (!severitiesArg.ok) {
+      return { success: false, message: severitiesArg.error.message };
+    }
+    const severitiesResult = validateSeverities(severitiesArg.value);
     if (!severitiesResult.ok) {
       return { success: false, message: severitiesResult.error };
     }
@@ -174,7 +224,11 @@ export const bulkTriageSecurityCommand: Command = {
       };
     }
 
-    const dryRun = isBooleanFlag(args["dry-run"]);
+    const dryRunResult = coerceBooleanFlag(args["dry-run"], "dry-run", false);
+    if (!dryRunResult.ok) {
+      return { success: false, message: dryRunResult.error.message };
+    }
+    const dryRun = dryRunResult.value;
 
     const summary = await runBulkTriage({
       repos,

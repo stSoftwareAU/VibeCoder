@@ -237,3 +237,143 @@ export function validateSuggestImprovementsArgs(
     },
   };
 }
+
+// =============================================================================
+// Shared CLI flag coercion (Issue #1266)
+// =============================================================================
+
+/**
+ * Render a rejected flag value for an operator-facing message.
+ *
+ * Values are summarised rather than dumped: a flag value can carry whatever
+ * the operator's shell expanded into it.
+ */
+function describeFlagValue(value: unknown): string {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) return `a list of ${value.length}`;
+  if (value !== null && typeof value === "object") return "an object";
+  return String(value);
+}
+
+/**
+ * Coerce a parsed CLI flag into a boolean, failing closed.
+ *
+ * `mod.ts::parseArgs` JSON-parses every flag value and treats a value that
+ * begins with `--` as the next flag, so a boolean flag arrives as a real
+ * boolean only when it was written well: `--dry-run`, `--dry-run true` and
+ * `--dry-run false`. Anything else — a number, an unrecognised word, an
+ * empty shell expansion that swallowed the next flag — is **refused** rather
+ * than mapped to `undefined`. That distinction is the whole point: for a
+ * safety flag, `undefined` means "absent", and absence selects the more
+ * dangerous default, so a value that cannot be read would silently disarm
+ * the guard the operator believed they had set.
+ *
+ * @param value    Raw value from the parsed argument record.
+ * @param flag     Flag name without the leading `--`, used in the message.
+ * @param fallback Value used when the flag is genuinely absent.
+ */
+export function coerceBooleanFlag(
+  value: unknown,
+  flag: string,
+  fallback: boolean,
+): Result<boolean> {
+  if (value === undefined || value === null) {
+    return { ok: true, value: fallback };
+  }
+  if (typeof value === "boolean") {
+    return { ok: true, value };
+  }
+  if (typeof value === "string") {
+    const normalised = value.trim().toLowerCase();
+    if (normalised === "true") return { ok: true, value: true };
+    if (normalised === "false") return { ok: true, value: false };
+  }
+  return {
+    ok: false,
+    error: new Error(
+      `Invalid --${flag}: expected true or false, got ` +
+        `${describeFlagValue(value)}. A flag whose value cannot be read is ` +
+        `refused, not ignored — ignoring it would select the default.`,
+    ),
+  };
+}
+
+/**
+ * Coerce a parsed CLI flag into a list of strings, failing closed.
+ *
+ * Accepts a comma-separated string (`--repos org/a,org/b`), a JSON array
+ * (`parseArgs` will already have parsed `--repos '["org/a"]'` into one), or
+ * absence, which yields the empty list so a caller can apply its own
+ * default. A value that is *present but not a usable list* — `true` from a
+ * swallowed next flag, a number, an empty expansion — is an error, because
+ * quietly treating it as absence widens whatever the list was narrowing.
+ *
+ * @param value Raw value from the parsed argument record.
+ * @param flag  Flag name without the leading `--`, used in the message.
+ */
+export function coerceStringListFlag(
+  value: unknown,
+  flag: string,
+): Result<string[]> {
+  const refuse = (reason: string): Result<string[]> => ({
+    ok: false,
+    error: new Error(
+      `Invalid --${flag}: ${reason}. A list flag whose value cannot be read ` +
+        `is refused, not treated as absent.`,
+    ),
+  });
+
+  if (value === undefined || value === null) {
+    return { ok: true, value: [] };
+  }
+
+  const entries: string[] = [];
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (typeof entry !== "string" || entry.trim().length === 0) {
+        return refuse(
+          `every entry must be a non-empty string, got ` +
+            `${describeFlagValue(entry)}`,
+        );
+      }
+      entries.push(entry.trim());
+    }
+  } else if (typeof value === "string") {
+    for (const part of value.split(",")) {
+      const trimmed = part.trim();
+      if (trimmed.length > 0) entries.push(trimmed);
+    }
+  } else {
+    return refuse(
+      `expected a comma-separated list, got ${describeFlagValue(value)}`,
+    );
+  }
+
+  if (entries.length === 0) {
+    return refuse("present but empty");
+  }
+  return { ok: true, value: entries };
+}
+
+/**
+ * List the options a command was given that it does not recognise.
+ *
+ * `parseArgs` ignores an unrecognised flag, so a typo is indistinguishable
+ * from absence — and for a safety flag, absence is the dangerous branch. A
+ * destructive command pairs this with a `KNOWN_OPTIONS` set so a misspelled
+ * `--dry-run` is refused rather than silently dropped, the discipline
+ * `commands/export_scrub_gate.ts` already applied.
+ *
+ * Injected test seams are ordinary keys, so a command that uses one lists it
+ * in its own known set.
+ *
+ * @param args  Parsed argument record.
+ * @param known Option names, without the leading `--`, the command accepts.
+ * @returns The unrecognised names, without the leading `--`, in input order.
+ */
+export function findUnknownOptions(
+  args: Record<string, unknown>,
+  known: ReadonlySet<string>,
+): string[] {
+  return Object.keys(args).filter((key) => !known.has(key));
+}

@@ -83,6 +83,9 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   "tests/setup_ps1_test.ts",
   "tests/setup_workdir_reminder_test.ts",
   "tests/volume_init_script_test.ts",
+  // Issue #1384: runs the entrypoint over a work root laid out with
+  // clones beside the worker's own state, then reads the mode bits back.
+  "tests/work_root_group_grant_test.ts",
 ];
 
 /**
