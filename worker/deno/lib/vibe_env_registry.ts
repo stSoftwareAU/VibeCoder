@@ -584,6 +584,13 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "switch",
     note: "a CREDENTIAL provisioned to setup; must never reach .config.json",
   },
+  VIBE_BROWSER_ALLOWED_HOSTS: {
+    role: "switch",
+    note: "escape hatch that extends the Playwright MCP server's --allow-net " +
+      "host allowlist (Issue #1386); no launcher sets it — an operator whose " +
+      "browser work needs a non-loopback host names it here. It only ever " +
+      "adds to the loopback default, never replaces it",
+  },
   VIBE_EGRESS_PROBE_TARGET: {
     role: "switch",
     note:

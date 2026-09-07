@@ -56,53 +56,53 @@ Deno.test("scanContentForGhSpawn - ignores comments mentioning the pattern", () 
   assertEquals(violations, []);
 });
 
-Deno.test("scanContentForGhSpawn - flags a variable binary handed a gh argv literal", () => {
-  // The shape Issue #1227 records: `language_detector.ts` spawned `cmd[0]`
-  // and its callers passed `["gh", "api", …]`.
+Deno.test("scanContentForGhSpawn - flags the generic wrapper called with gh (Issue #1378)", () => {
+  const violations = scanContentForGhSpawn(
+    [
+      "const result = await runWithTimeout(",
+      '  "gh",',
+      '  ["api", `repos/${repo}`, "--jq", ".default_branch"],',
+      "  { timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS },",
+      ");",
+    ].join("\n"),
+    "worker/deno/lib/shell_helpers.ts",
+  );
+  assertEquals(violations.length, 1);
+  assertEquals(violations[0]?.line, 1);
+});
+
+Deno.test("scanContentForGhSpawn - flags a gh spawn routed through a variable (Issue #1378)", () => {
   const violations = scanContentForGhSpawn(
     [
       "function createDefaultRunCommand() {",
       "  return async (cmd: string[]) => {",
-      "    const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
+      "    const command = new Deno.Command(cmd[0]!, {",
+      "      args: cmd.slice(1),",
+      "    });",
       "    return await command.output();",
       "  };",
       "}",
       "const runner = createDefaultRunCommand();",
-      'await runner(["gh", "api", `repos/${repo}/languages`]);',
+      'const out = await runner(["gh", "api", `repos/${repo}`]);',
     ].join("\n"),
-    "worker/deno/lib/example.ts",
+    "worker/deno/lib/repo_visibility.ts",
   );
   assertEquals(violations.length, 1);
   assertEquals(violations[0]?.line, 3);
 });
 
-Deno.test("scanContentForGhSpawn - a variable binary that delegates gh to the chokepoint is clean", () => {
+Deno.test("scanContentForGhSpawn - a runner that delegates to the chokepoint is compliant", () => {
   const violations = scanContentForGhSpawn(
     [
       'import { spawnGh } from "./gh_spawn.ts";',
-      "function createDefaultRunCommand() {",
-      "  return async (cmd: string[]) => {",
-      '    if (cmd[0] === "gh") return await spawnGh(cmd.slice(1));',
-      "    const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
-      "    return await command.output();",
-      "  };",
-      "}",
-      'await createDefaultRunCommand()(["gh", "api", "repos/o/r/languages"]);',
-    ].join("\n"),
-    "worker/deno/lib/example.ts",
-  );
-  assertEquals(violations, []);
-});
-
-Deno.test("scanContentForGhSpawn - a generic runner that never names gh is clean", () => {
-  const violations = scanContentForGhSpawn(
-    [
-      "export async function runCommand(cmd: string[]) {",
+      "async function run(cmd: string[]) {",
+      '  if (cmd[0] === "gh") return await spawnGh(cmd.slice(1));',
       "  const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
       "  return await command.output();",
       "}",
+      'export const visibility = () => run(["gh", "api", "repos/o/r"]);',
     ].join("\n"),
-    "worker/deno/lib/example.ts",
+    "worker/deno/lib/purge_stale_workflow_issues.ts",
   );
   assertEquals(violations, []);
 });

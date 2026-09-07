@@ -23,16 +23,20 @@
  * check (Issue #1214) in `spawn_chokepoint_scan.ts`, and is pure and exported
  * so both can be tested behaviourally against literal inputs.
  *
+ * Issue #1378 closed the indirection blind spot this check used to carry: a
+ * spawn written as `new Deno.Command(cmd[0], …)` with `"gh"` supplied by the
+ * caller, or `runWithTimeout("gh", …)`, is now flagged by
+ * {@link GH_INDIRECT_SPAWN_RULES} as well.
+ *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
 import {
   type DirectSpawnScanResult,
   type DirectSpawnViolation,
+  type IndirectSpawnRules,
   scanContentForDirectSpawn,
-  scanContentForVariableBinarySpawn,
   scanDirectoriesForDirectSpawn,
-  type VariableBinarySpawnOptions,
 } from "./spawn_chokepoint_scan.ts";
 
 /** A single direct-spawn violation found during scanning. */
@@ -68,38 +72,46 @@ export const GH_SPAWN_PATTERN =
   /new\s+Deno\.Command\s*\(\s*["'`]gh["'`]|Deno\.Command\s*\(\s*["'`]gh["'`]/;
 
 /**
- * Modules whose `gh` argv literal is not a `gh` spawn (Issue #1259).
- *
- * `prerequisite_install_plan.ts` names `gh` as *package data* — the formula
- * and package identifiers a host installs the CLI from — and the one process
- * it spawns is the package manager (`brew`, `apt-get`, `winget`), never `gh`.
+ * The indirection signals for `gh` (Issue #1378) — the shapes that reached
+ * the binary through a variable and so stayed invisible to
+ * {@link GH_SPAWN_PATTERN}.
  */
-export const GH_VARIABLE_SPAWN_ALLOWLIST: ReadonlySet<string> = new Set<
-  string
->([
+export const GH_INDIRECT_SPAWN_RULES: IndirectSpawnRules = {
+  wrapperPattern: /\brunWithTimeout\s*\(\s*["'`]gh["'`]/,
+  argvHeadPattern: /\(\s*\[?\s*["'`]gh["'`]\s*,/,
+  chokepointImportPattern: /from\s+["'`][^"'`]*gh_spawn\.ts["'`]/,
+};
+
+/**
+ * Modules exempt from the indirection signal (Issue #1378). Their **literal**
+ * spawns are never exempt.
+ *
+ * Two different things can put an entry here, and conflating them is how an
+ * exemption set rots:
+ *
+ *  - a **documented false positive** — the module names `gh` as data, not as
+ *    a binary, so there is nothing to fix and the entry is permanent;
+ *  - a **known gap** — a real bypass carrying its own follow-up issue, which
+ *    must shrink, never grow.
+ *
+ * Issue #1429 emptied the known-gap half: `software_updates.ts` routes
+ * `gh extension install/list` through `spawnGh` (Issue #1396) and satisfies
+ * the rule on its own merits.
+ *
+ * The one entry below is a false positive, carried over from the checker this
+ * one supersedes (Issue #1227's `GH_VARIABLE_SPAWN_ALLOWLIST`, merged in from
+ * `main`). `prerequisite_install_plan.ts` names `gh` as *package data* — the
+ * formula and package identifiers a host installs the CLI from, written
+ * `brewFormula("gh", "gh")`, which reads to the argv-head pattern as a
+ * command array. The one process it spawns is the package manager (`brew`,
+ * `apt-get`, `winget`), never `gh`.
+ */
+export const GH_INDIRECT_KNOWN_GAPS: ReadonlySet<string> = new Set<string>([
   "worker/deno/setup/prerequisite_install_plan.ts",
 ]);
 
 /**
- * Rules for the variable-binary half of the check (Issue #1227).
- *
- * `language_detector.ts` and `workflow_auditor.ts` spawned `new
- * Deno.Command(cmd[0]!, …)` and were handed `["gh", "api", …]` by their
- * production callers — direct `gh` spawns the literal pattern above could not
- * see. A module is flagged when it names `gh` at the head of an argv literal
- * and does not import the chokepoint.
- */
-export const GH_VARIABLE_BINARY_RULES: VariableBinarySpawnOptions = {
-  /** `"gh",` as an argv element — the head of a `gh` command array. */
-  argvPattern: /["'`]gh["'`]\s*,/,
-  /** An import of the chokepoint module, i.e. the module delegates `gh`. */
-  delegationPattern: /from\s+["'][^"']*gh_spawn\.ts["']/,
-  allowlist: GH_VARIABLE_SPAWN_ALLOWLIST,
-};
-
-/**
- * Scan a file's content for direct `gh` spawns — both the literal binary name
- * and a variable binary in a module that names `gh` itself (Issue #1227).
+ * Scan a file's content for direct or indirect `gh` spawns.
  *
  * Block comments and trailing line comments are ignored so prose mentioning
  * the forbidden pattern (including this module's own documentation) does not
@@ -113,14 +125,12 @@ export function scanContentForGhSpawn(
   content: string,
   repoRelPath: string,
 ): GhSpawnViolation[] {
-  return [
-    ...scanContentForDirectSpawn(content, repoRelPath, GH_SPAWN_PATTERN),
-    ...scanContentForVariableBinarySpawn(
-      content,
-      repoRelPath,
-      GH_VARIABLE_BINARY_RULES,
-    ),
-  ];
+  return scanContentForDirectSpawn(
+    content,
+    repoRelPath,
+    GH_SPAWN_PATTERN,
+    GH_INDIRECT_SPAWN_RULES,
+  );
 }
 
 /**
@@ -138,6 +148,7 @@ export function scanDirectoriesForGhSpawn(
   return scanDirectoriesForDirectSpawn(repoRoot, relDirs, {
     pattern: GH_SPAWN_PATTERN,
     allowlist: GH_SPAWN_ALLOWLIST,
-    variableBinary: GH_VARIABLE_BINARY_RULES,
+    rules: GH_INDIRECT_SPAWN_RULES,
+    indirectExempt: GH_INDIRECT_KNOWN_GAPS,
   });
 }
