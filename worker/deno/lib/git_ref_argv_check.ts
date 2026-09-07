@@ -12,7 +12,10 @@
  * This scanner flags any array literal beginning with one of the guarded
  * git verbs — `fetch`, `pull`, `push`, `checkout`, `rebase` — passed to a
  * `runGitCommand`/`Deno.Command("git", …)` call, so a new inline call site
- * cannot reintroduce the vulnerability without failing the gate. `git_ref_args.ts`
+ * cannot reintroduce the vulnerability without failing the gate. An argv
+ * whose *first* element is the `git` binary and whose verb sits further along
+ * is flagged too (Issue #1548) — a generic runner is handed the binary as
+ * well, so the verb never reaches the head of the array. `git_ref_args.ts`
  * itself (which constructs these arrays as the sanctioned output) is allowlisted.
  *
  * The pattern is applied both per-line and to the comment-stripped file as a
@@ -73,6 +76,22 @@ export const GIT_REF_ARGV_PATTERN = new RegExp(
 );
 
 /**
+ * Matches an array literal whose first element is the `git` **binary** and
+ * whose verb sits further along, e.g.
+ * `["git", "-C", repoDir, "push", "-u", "origin", req.branch]` (Issue #1548).
+ *
+ * {@link GIT_REF_ARGV_PATTERN} anchors on the verb in the first slot, so it
+ * cannot see an argv built for a generic runner that is handed the binary
+ * too — which is exactly how `cross_repo_fix.ts` built an unguarded
+ * `git push -u origin <branch>` in full view of a gate reporting a clean
+ * tree. The same two predicates decide whether the match is a violation.
+ */
+export const GIT_REF_ARGV_BINARY_HEAD_PATTERN = new RegExp(
+  "\\[\\s*[\"'`]git[\"'`][^\\]]*?[\"'`](?:fetch|pull|push|checkout|rebase)[\"'`][^\\]]*\\]",
+  "g",
+);
+
+/**
  * An attacker-controlled branch identifier, in any object path.
  *
  * `defaultBranch` joins the set in Issue #1269. It was excluded as a "safe
@@ -81,13 +100,18 @@ export const GIT_REF_ARGV_PATTERN = new RegExp(
  * value — and handed it to `git checkout` as a bare positional. The
  * exclusion was an assumption about provenance the code did not hold.
  *
+ * A `.branch` property access joins the set in Issue #1548:
+ * `openCrossRepoFixPr` passed `req.branch` — a request field the module's own
+ * docs intend to be fed from issue content — straight to `git push -u origin
+ * <branch>`, and no identifier in this set matched it.
+ *
  * The remaining internal refs (baseBranch, milestoneBranch, remotes,
  * `--abort`, `--`) stay excluded — this gate is CWE-88 (a dash-leading,
  * externally-derived branch reaching git as a positional), not a blanket ban
  * on positional refs.
  */
 export const GIT_REF_ARGV_UNTRUSTED_IDENTIFIER =
-  /\b(?:head(?:Ref)?[Bb]ranch|branchName|headRefName|defaultBranch)\b/;
+  /\b(?:head(?:Ref)?[Bb]ranch|branchName|headRefName|defaultBranch)\b|\.branch\b/;
 
 /**
  * Whether one array-literal's text is an unguarded guarded-verb call.
@@ -131,12 +155,18 @@ export function scanContentForGitRefArgv(
   // multi-line literal (Issue #268) is found by the same expression as a
   // single-line one — no separate line-local scan is needed.
   const withoutLineComments = stripped.replace(/\/\/.*$/gm, "");
-  const globalPattern = new RegExp(GIT_REF_ARGV_PATTERN.source, "g");
-  for (const match of withoutLineComments.matchAll(globalPattern)) {
-    if (!isUnguardedGitRefArgv(match[0])) continue;
-    const index = match.index ?? 0;
-    const line = withoutLineComments.slice(0, index).split("\n").length;
-    addViolation(line, lines[line - 1] ?? match[0]);
+  for (
+    const source of [
+      GIT_REF_ARGV_PATTERN.source,
+      GIT_REF_ARGV_BINARY_HEAD_PATTERN.source,
+    ]
+  ) {
+    for (const match of withoutLineComments.matchAll(new RegExp(source, "g"))) {
+      if (!isUnguardedGitRefArgv(match[0])) continue;
+      const index = match.index ?? 0;
+      const line = withoutLineComments.slice(0, index).split("\n").length;
+      addViolation(line, lines[line - 1] ?? match[0]);
+    }
   }
 
   return violations;

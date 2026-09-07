@@ -71,8 +71,12 @@ take an injectable command runner (no real network in tests).
 - `openCrossRepoFixPr(request, runner)` → clones, branches, runs the caller's
   `applyFix`, commits, pushes, and opens the PR; returns a `Result` carrying the
   **PR URL**. Refuses to push to the dependency repo's default branch (the
-  read-only invariant,). Any failed step returns an error `Result`
-  rather than throwing, so the caller can fall back to deferral.
+  read-only invariant,). Refuses a branch name that is not a valid git ref
+  component — empty, dash-leading, or carrying whitespace / `~^:?*[\` / `..`
+  — before any subprocess is spawned, since the name reaches git as a
+  positional on both `checkout -b` and `push` (Issue #1548). Any failed step
+  returns an error `Result` rather than throwing, so the caller can fall back
+  to deferral.
 
 > **Transitive root causes.** `resolveCrossRepoTarget` resolves a single spec.
 > When the root cause lives further down the chain (dep-of-a-dep), the consuming
@@ -124,8 +128,10 @@ the agent's boundary**:
    ```
 
    `repo`, `branch` and `title` are required; `base` defaults to the
-   dependency's default branch and `summary` is folded into the PR body. The
-   instruction lives in `prompts/coding_guidelines/` and `prompts/issue/`.
+   dependency's default branch and `summary` is folded into the PR body.
+   `branch` must be a valid git ref component — a dash-leading name is refused
+   rather than handed to git as an option (Issue #1548). The instruction lives
+   in `prompts/coding_guidelines/` and `prompts/issue/`.
 2. The worker parses the declaration, treats every field as untrusted model
    output (shape-validated before it becomes a `gh` argument), and validates the
    target: internal `stSoftwareAU/*` owner, **a dependency the consuming repo's

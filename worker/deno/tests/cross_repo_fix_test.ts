@@ -309,6 +309,97 @@ Deno.test("openCrossRepoFixPr - rejects an invalid repo slug before any command"
   assertEquals(ran, false);
 });
 
+Deno.test("openCrossRepoFixPr - rejects a dash-leading branch before any command (Issue #1548)", async () => {
+  let ran = false;
+  const runner: RunCommand = (_cmd) => {
+    ran = true;
+    return Promise.resolve(ok());
+  };
+  const result = await openCrossRepoFixPr(
+    baseRequest({ branch: "--receive-pack=touch /tmp/pwned" }),
+    runner,
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) assertStringIncludes(result.error.message, "must not begin");
+  // Nothing was spawned: the branch never reached `git push -u origin <ref>`.
+  assertEquals(ran, false);
+});
+
+Deno.test("openCrossRepoFixPr - rejects a branch that is not a valid ref component (Issue #1548)", async () => {
+  let ran = false;
+  const runner: RunCommand = (_cmd) => {
+    ran = true;
+    return Promise.resolve(ok());
+  };
+  const result = await openCrossRepoFixPr(
+    baseRequest({ branch: "fix/bad:refspec" }),
+    runner,
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "not a valid ref component");
+  }
+  assertEquals(ran, false);
+});
+
+/**
+ * Parse a `git push` argv the way git itself does (Issue #1548).
+ *
+ * Everything after `--end-of-options` is a positional; before it, a
+ * `-`-leading token is an *option* — and `--receive-pack=<cmd>` runs `<cmd>`
+ * on the remote. Modelling git's own rule is what lets the test disagree with
+ * the code: an argv that hands the branch to git as an option is reported as
+ * an option here, whatever the argv text happens to read like.
+ */
+function parseGitPushArgv(
+  argv: string[],
+): { options: string[]; positionals: string[] } {
+  const options: string[] = [];
+  const positionals: string[] = [];
+  let optionsEnded = false;
+  for (const arg of argv.slice(argv.indexOf("push") + 1)) {
+    if (!optionsEnded && arg === "--end-of-options") {
+      optionsEnded = true;
+      continue;
+    }
+    if (!optionsEnded && arg.startsWith("-")) {
+      options.push(arg);
+      continue;
+    }
+    positionals.push(arg);
+  }
+  return { options, positionals };
+}
+
+Deno.test("openCrossRepoFixPr - git parses the branch as a ref, never as an option (Issue #1548)", async () => {
+  const { runner, calls } = scriptedRunner();
+  const result = await openCrossRepoFixPr(baseRequest(), runner);
+
+  assertEquals(result.ok, true);
+  const pushed = calls.find((c) => c[0] === "git" && c.includes("push")) ?? [];
+  const parsed = parseGitPushArgv(pushed);
+  // The remote and the branch are refs to git; the only option is `-u`.
+  assertEquals(parsed.positionals, ["origin", "fix/issue-2941-root-cause"]);
+  assertEquals(parsed.options, ["-u"]);
+
+  // Second layer: the argv *shape* neutralises an option-shaped ref on its
+  // own, so input validation is not the only thing standing between a hostile
+  // branch and `git push --receive-pack=<cmd>`.
+  const hostile = pushed.map((arg) =>
+    arg === "fix/issue-2941-root-cause"
+      ? "--receive-pack=touch /tmp/pwned"
+      : arg
+  );
+  const parsedHostile = parseGitPushArgv(hostile);
+  assertEquals(parsedHostile.options, ["-u"]);
+  assertEquals(parsedHostile.positionals, [
+    "origin",
+    "--receive-pack=touch /tmp/pwned",
+  ]);
+});
+
 // ---------------------------------------------------------------------------
 // authoriseCrossRepoTarget (Issue #1382)
 // ---------------------------------------------------------------------------
