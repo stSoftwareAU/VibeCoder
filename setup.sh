@@ -265,6 +265,26 @@ credential_dir() {
     printf '%s' "${VIBE_CREDENTIAL_DIR:-$HOME/.vibe-coder/credentials}"
 }
 
+# Create a credential directory that is owner-only from the instant it exists
+# (Issue #1374).
+#
+# `mkdir -p` applies the ambient umask — commonly 022 — so a directory created
+# that way and narrowed by a following `chmod 700` is world-readable and
+# world-executable for the window between the two calls, long enough for a
+# co-resident local account on a shared host to enumerate it. The umask is set
+# in a subshell so it covers every parent `mkdir -p` creates on the way, which
+# `mkdir -m 700` would not: those parents are never chmod'd afterwards, so a
+# loose mode there is permanent rather than a window.
+#
+# Callers still chmod afterwards: a directory that already existed keeps
+# whatever mode it was created with, and only the chmod narrows that.
+make_credential_dir() {
+    (
+        umask 077
+        mkdir -p "$@"
+    )
+}
+
 # The credential facets of every registered coding-agent provider, one row per
 # provider: sub-directory|provisioning variable|credential variable names.
 #
@@ -350,12 +370,15 @@ provision_provider_credential() {
     # line break cannot be represented that way, so writing it would store a
     # truncated credential behind a ✓ and leave the worker to discover the
     # broken token unattended (Issue #1301). Refuse it loudly instead.
+    #
+    # Checked BEFORE the directory is created: a refused credential should
+    # leave nothing behind.
     if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
         print_error "The ${subdir} credential contains a newline — provider.env holds one ${name}=value line, so nothing was written (re-copy the credential without the line break)"
         return 1
     fi
 
-    mkdir -p "$provider_dir"
+    make_credential_dir "$provider_dir"
     chmod 700 "$dir" "$provider_dir"
     (
         umask 077
@@ -403,7 +426,7 @@ provision_vibe_credentials() {
     fi
 
     if [[ -n "$gh_token" ]]; then
-        mkdir -p "$gh_dir"
+        make_credential_dir "$gh_dir"
         chmod 700 "$dir" "$gh_dir"
         write_gh_hosts_file "$gh_dir" "$gh_token"
         VIBE_PROVISIONED_GH_CONFIG_DIR="$gh_dir"
@@ -502,7 +525,7 @@ interactive_credentials_flow() {
             local copy_gh=""
             IFS= read -r copy_gh || copy_gh=""
             if [[ "$copy_gh" != "n" && "$copy_gh" != "N" ]]; then
-                mkdir -p "${dir}/gh"
+                make_credential_dir "${dir}/gh"
                 chmod 700 "$dir" "${dir}/gh"
                 # The host login usually keeps its token in the OS keychain,
                 # which the container cannot reach — extract it and write a
@@ -1140,7 +1163,7 @@ prompt_interactive_config() {
         local expanded_gh_dir="${INTERACTIVE_GH_CONFIG_DIR/#\~/$HOME}"
         if [[ ! -d "$expanded_gh_dir" ]]; then
             print_info "Creating gh config directory: ${INTERACTIVE_GH_CONFIG_DIR}"
-            mkdir -p "$expanded_gh_dir"
+            make_credential_dir "$expanded_gh_dir"
         fi
         # Check if already authenticated in this config dir
         if GH_CONFIG_DIR="$expanded_gh_dir" gh auth status &>/dev/null; then

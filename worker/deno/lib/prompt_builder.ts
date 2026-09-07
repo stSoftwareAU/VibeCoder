@@ -2140,23 +2140,26 @@ export async function buildMergeConflictPrompt(
 
   const qualityBlock = qualityInstructions ? `\n\n${qualityInstructions}` : "";
 
-  // Branch and path names come from GitHub and the repository tree, so they
-  // are attacker-influenceable (Issue #2606): sanitise delimiter-like
-  // patterns before they reach the template.
-  const fileList = conflictedFiles.length > 0
-    ? conflictedFiles.map((f) => `- \`${sanitiseDelimiterPatterns(f)}\``).join(
-      "\n",
-    )
-    : "- (none reported by git — run `git status` and resolve what it lists)";
-
-  // One nonce for the whole prompt: the repository guidance and the
-  // originating issues are both untrusted GitHub-supplied text, so both are
-  // fenced with this run's markers (Issue #1114).
+  // One nonce for the whole prompt: the repository guidance, the originating
+  // issues, the base branch name and the conflicted paths are all untrusted
+  // GitHub-supplied text, so all of them are fenced with this run's markers
+  // (Issues #1114, #1377).
   const delimiters = createPromptDelimiters();
+
+  // A fork-based contributor chooses both the branch name their pull request
+  // carries and the paths of the files it touches, so both reach this prompt
+  // as attacker-chosen text (Issue #2606). Scrubbing delimiter patterns closes
+  // fence forgery but says nothing about trust level: spliced into the
+  // worker's own prose, an instruction-shaped branch or path still reads as
+  // prompt-authored text (Issue #1377). Both now render inside the run's
+  // untrusted fence, and the caller names the block in `untrustedBlocks`.
+  const fileList = conflictedFiles.length > 0
+    ? fenceUntrustedValue(conflictedFiles.join("\n"), delimiters)
+    : "- (none reported by git — run `git status` and resolve what it lists)";
 
   const substitution = substitute(templateResult.value, {
     PR_NUMBER: prNumber,
-    BASE_BRANCH: sanitiseDelimiterPatterns(baseBranch),
+    BASE_BRANCH: fenceUntrustedValue(baseBranch, delimiters),
     CONFLICTED_FILES: fileList,
     QUALITY_INSTRUCTIONS: qualityBlock,
     VERBOSITY_INSTRUCTIONS: buildVerbosityBlock(verbosityLevel),
@@ -2176,12 +2179,10 @@ export async function buildMergeConflictPrompt(
   );
 
   const prompt =
-    `PR #${prNumber} in repository ${repo} conflicts with its base branch \`${
-      sanitiseDelimiterPatterns(baseBranch)
-    }\`, and a merge of the base into the PR branch is in progress in your working tree.
+    `PR #${prNumber} in repository ${repo} conflicts with its base branch, and a merge of the base into the PR branch is in progress in your working tree.
 ${
       buildBoundaryIntegrityInstruction(delimiters.boundaryId, [
-        "the branch and file names named below",
+        "the base branch name and conflicted file paths quoted below",
         ...(repoContextSection
           ? ["the repository-supplied guidance document"]
           : []),
