@@ -86,6 +86,21 @@ interface GitScript {
   markersAfterAgent: boolean;
   /** Exit code for `git merge-base --is-ancestor`. */
   ancestorCode: number;
+  /**
+   * What `git rev-parse --is-shallow-repository` answers (Issue #1458). The
+   * default is a full clone, so the deepen step is a no-op and the rest of
+   * this suite exercises the merge exactly as before.
+   */
+  shallow: boolean;
+  /**
+   * Whether a merge base exists BEFORE the merge, for the deepen step's own
+   * `git merge-base` probe (Issue #1458). Irrelevant on a full clone.
+   */
+  mergeBaseBeforeMerge: boolean;
+  /** Whether `git fetch --deepen` / `--unshallow` produces that merge base. */
+  mergeBaseAfterDeepen: boolean;
+  /** stderr of a failing merge (default: a content conflict). */
+  mergeStderr?: string;
 }
 
 function makeGitScript(overrides?: Partial<GitScript>): GitScript {
@@ -95,6 +110,9 @@ function makeGitScript(overrides?: Partial<GitScript>): GitScript {
     unmergedAfterAgent: [],
     markersAfterAgent: false,
     ancestorCode: 0,
+    shallow: false,
+    mergeBaseBeforeMerge: true,
+    mergeBaseAfterDeepen: true,
     ...overrides,
   };
 }
@@ -105,11 +123,34 @@ function makeGit(
 ): Partial<GitDeps> {
   let unmergedQueries = 0;
   let mergeDone = false;
+  let deepened = false;
 
   return {
     runGitCommand: ((args: string[]) => {
       captured.gitArgs.push(args);
       captured.events.push(`git:${args.slice(0, 2).join(" ")}`);
+
+      if (args[0] === "rev-parse" && args.includes("--is-shallow-repository")) {
+        return Promise.resolve({
+          ok: true,
+          value: {
+            code: 0,
+            stdout: script.shallow ? "true" : "false",
+            stderr: "",
+          },
+        });
+      }
+
+      if (
+        args[0] === "fetch" &&
+        args.some((a) => a.startsWith("--deepen=") || a === "--unshallow")
+      ) {
+        deepened = true;
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        });
+      }
 
       if (args[0] === "merge" && args[1]?.startsWith("origin/")) {
         mergeDone = true;
@@ -118,7 +159,9 @@ function makeGit(
           value: {
             code: script.mergeCode,
             stdout: "",
-            stderr: script.mergeCode === 0 ? "" : "CONFLICT (content)",
+            stderr: script.mergeCode === 0
+              ? ""
+              : script.mergeStderr ?? "CONFLICT (content)",
           },
         });
       }
@@ -143,12 +186,28 @@ function makeGit(
         });
       }
 
-      if (args[0] === "merge-base") {
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
         return Promise.resolve({
           ok: true,
           value: {
             code: mergeDone ? script.ancestorCode : 1,
             stdout: "",
+            stderr: "",
+          },
+        });
+      }
+
+      if (args[0] === "merge-base") {
+        // The deepen step's probe (Issue #1458): does a common ancestor exist
+        // in the clone yet?
+        const present = deepened
+          ? script.mergeBaseAfterDeepen
+          : script.mergeBaseBeforeMerge;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            code: present ? 0 : 1,
+            stdout: present ? "abc123\n" : "",
             stderr: "",
           },
         });
@@ -432,6 +491,110 @@ Deno.test("processMergeConflict - a base that is still not an ancestor fails the
 
   assert(result.ok);
   assertEquals(result.value.merged, false);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1458: the depth-1 clone must hold the merge base before merging
+// ---------------------------------------------------------------------------
+
+Deno.test("processMergeConflict - a full clone is not deepened (Issue #1458)", async () => {
+  const { captured, result } = await runProcessor(makeInput(), makeGitScript());
+  assert(result.ok);
+  assertEquals(result.value.merged, true);
+  assertEquals(
+    captured.gitArgs.some((a) =>
+      a[0] === "fetch" &&
+      a.some((x) => x.startsWith("--deepen") || x === "--unshallow")
+    ),
+    false,
+    "no deepen or unshallow on a full clone",
+  );
+});
+
+Deno.test("processMergeConflict - a shallow clone is deepened to the merge base before the merge (Issue #1458)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({
+      shallow: true,
+      mergeBaseBeforeMerge: false,
+      mergeBaseAfterDeepen: true,
+    }),
+  );
+  assert(result.ok);
+  assertEquals(result.value.merged, true, result.value.summary);
+  const deepenAt = captured.events.findIndex((e) =>
+    e === "git:fetch --deepen=50"
+  );
+  const mergeAt = captured.events.findIndex((e) =>
+    e.startsWith("git:merge origin/")
+  );
+  assert(deepenAt >= 0, `no deepen recorded: ${captured.events.join(", ")}`);
+  assert(deepenAt < mergeAt, "the deepen must precede the merge");
+});
+
+Deno.test("processMergeConflict - no common ancestor even after unshallow escalates without spending an attempt (Issue #1458)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({
+      shallow: true,
+      mergeBaseBeforeMerge: false,
+      mergeBaseAfterDeepen: false,
+    }),
+  );
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  assertEquals(result.value.escalated, true, result.value.summary);
+  assert(
+    result.value.summary.includes("common ancestor"),
+    result.value.summary,
+  );
+  // No merge was tried, no attempt marker was posted, no failed-attempt
+  // conclusion spent the budget — the clone, not the PR, is the problem.
+  assertEquals(
+    captured.events.some((e) => e.startsWith("git:merge origin/")),
+    false,
+  );
+  assertEquals(
+    captured.comments.some((c) =>
+      c.includes("Merge-conflict resolution — attempt")
+    ),
+    false,
+    "an attempt must not be opened for a clone problem",
+  );
+  assertEquals(
+    captured.labelsAdded.includes("needs-human"),
+    true,
+    captured.labelsAdded.join(","),
+  );
+  assert(
+    captured.comments.some((c) =>
+      c.includes("common ancestor") && c.includes("Issue #1458")
+    ),
+    captured.comments.join("\n---\n"),
+  );
+});
+
+Deno.test("processMergeConflict - 'refusing to merge unrelated histories' is a clone fault, not a failed attempt (Issue #1458)", async () => {
+  // Belt and braces: should git still refuse after the deepen step, the
+  // refusal is classified for what it is rather than as a generic
+  // "did not conflict but failed" that spends an attempt.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({
+      mergeCode: 128,
+      unmergedAfterMerge: [],
+      mergeStderr: "fatal: refusing to merge unrelated histories",
+    }),
+  );
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  assertEquals(result.value.escalated, true, result.value.summary);
+  assertEquals(
+    captured.comments.some((c) => c.includes("attempt 1 of 2 failed")),
+    false,
+    "the refusal must not be posted as a failed attempt",
+  );
+  assertEquals(captured.labelsAdded.includes("needs-human"), true);
 });
 
 Deno.test("processMergeConflict - the final failed attempt escalates to a human", async () => {
