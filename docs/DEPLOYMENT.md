@@ -576,6 +576,7 @@ These only tune the *generated* LaunchAgent (tokens, paths, logs); whether it is
 | `VIBE_MCP_CONFIG_DIR` | Directory for `.mcp.json` (default: script directory) |
 | `VIBE_SCREENSHOT_DIR` | Directory name for screenshots (default: `docs/evidence`) |
 | `VIBE_BROWSER_PROFILE_DIR` | Disposable directory the browser writes its profile to (default: `/tmp/vibe-playwright-profile-<user>`, per-account since Issue #1242). Must be an **absolute** path outside the checkout — a relative or inside-the-checkout value is refused (Issue #1293) |
+| `VIBE_BROWSER_ALLOWED_HOSTS` | Extra hosts the Playwright MCP **server process** may connect to, comma-separated `host` or `host:port` (Issue #1386). Adds to the loopback default `PLAYWRIGHT_MCP_ALLOWED_NET_HOSTS`; it never replaces it |
 | `VIBE_IMGBB_API_KEY` | ImgBB API key for automatic screenshot uploads, when `.config.json` states no `imgbb_api_key` (Issue #1032) |
 
 **Testing/CI environment variables:**
@@ -982,7 +983,7 @@ Without an ImgBB API key, screenshots are saved to `docs/evidence/` and the PR i
 # version (do NOT use @latest — a hijacked publish would land
 # silently). Bumps go through Renovate's quarantine.
 deno run \
-    --allow-read --allow-write --allow-net --allow-env \
+    --allow-read --allow-write --allow-net=127.0.0.1,localhost,[::1] --allow-env \
     --deny-env=ANTHROPIC_API_KEY,GH_TOKEN,GITHUB_TOKEN,GITHUB_APP_PRIVATE_KEY,GITHUB_APP_PRIVATE_KEY_PATH,GIT_SSH_COMMAND,VIBE_IMGBB_API_KEY \
     --allow-run --allow-sys \
     npm:@playwright/mcp@0.0.75 --headless --output-dir ./docs/evidence
@@ -1006,6 +1007,23 @@ claude "Take a screenshot of http://localhost:3000"
 > that the otherwise unscoped `--allow-read` would reach. The pin is the canonical knob
 > kept in `worker/deno/setup/screenshot.ts` (`PLAYWRIGHT_MCP_VERSION`);
 > Renovate's `minimumReleaseAge: 24 hours` quarantine gates upgrades.
+
+> **The server's own egress is host-scoped (Issue #1386).** `--allow-net` is
+> never granted bare: the generated config emits
+> `--allow-net=127.0.0.1,localhost,[::1]` — loopback, which is where
+> `playwright-core` reaches the browser it launched and where the prompts tell
+> the agent to serve a local page from. `npm:` module resolution is gated by
+> Deno's import permissions, not `--allow-net`, so no registry host is needed.
+> The hosts are the canonical knob `PLAYWRIGHT_MCP_ALLOWED_NET_HOSTS` in
+> `worker/deno/setup/screenshot.ts`, and an operator who needs one more (a CI
+> preview URL, a dev server on a non-loopback address) *adds* to it with
+> `VIBE_BROWSER_ALLOWED_HOSTS` (comma-separated `host` or `host:port`) — the
+> knob can never replace the list or widen it to everything. Like every Deno
+> permission this binds the server process only: Chromium is spawned under
+> `--allow-run` and does its own networking, so a prompt-injected
+> `browser_navigate` is bounded by `--blocked-origins` below and the
+> container's egress boundary. What the scoping removes is the MCP server
+> process itself as a general-purpose exfiltration channel.
 
 > **Cloud metadata is blocked (Issue #1292).** The server defaults to
 > allowing every origin, and the navigation target comes from issue and PR

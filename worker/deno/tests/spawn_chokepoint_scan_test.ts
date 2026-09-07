@@ -11,29 +11,19 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  type IndirectSpawnRules,
   scanContentForDirectSpawn,
-  scanContentForVariableBinarySpawn,
   scanDirectoriesForDirectSpawn,
-  type VariableBinarySpawnOptions,
 } from "../lib/spawn_chokepoint_scan.ts";
 
 const DOCKER_SPAWN = /new\s+Deno\.Command\s*\(\s*["'`]docker["'`]/;
 
-/** Variable-binary rules for a fictional `docker` chokepoint. */
-const DOCKER_VARIABLE: VariableBinarySpawnOptions = {
-  argvPattern: /["'`]docker["'`]\s*,/,
-  delegationPattern: /from\s+["'][^"']*docker_spawn\.ts["']/,
-  allowlist: new Set(["worker/deno/lib/exempt.ts"]),
+/** The indirection rules a check supplies for a `docker` chokepoint. */
+const DOCKER_RULES: IndirectSpawnRules = {
+  wrapperPattern: /\brunWithTimeout\s*\(\s*["'`]docker["'`]/,
+  argvHeadPattern: /\(\s*\[?\s*["'`]docker["'`]\s*,/,
+  chokepointImportPattern: /from\s+["'`][^"'`]*docker_spawn\.ts["'`]/,
 };
-
-/** A module that spawns a variable binary and names `docker` itself. */
-const VARIABLE_BINARY_MODULE = [
-  "async function run(cmd: string[]) {",
-  "  const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
-  "  return await command.output();",
-  "}",
-  'const out = await run(["docker", "ps"]);',
-].join("\n");
 
 Deno.test("scanContentForDirectSpawn - records the line and the trimmed text", () => {
   const violations = scanContentForDirectSpawn(
@@ -60,6 +50,136 @@ Deno.test("scanContentForDirectSpawn - a pattern that does not match yields noth
     DOCKER_SPAWN,
   );
   assertEquals(violations, []);
+});
+
+Deno.test("scanContentForDirectSpawn - matches a literal spawn split across lines", () => {
+  const violations = scanContentForDirectSpawn(
+    [
+      "const c = new Deno.Command(",
+      '  "docker",',
+      '  { args: ["ps"] },',
+      ");",
+    ].join("\n"),
+    "worker/deno/lib/example.ts",
+    DOCKER_SPAWN,
+  );
+  assertEquals(violations.length, 1);
+  assertEquals(violations[0]?.line, 1);
+});
+
+Deno.test("scanContentForDirectSpawn - flags a generic wrapper called with the literal binary", () => {
+  const violations = scanContentForDirectSpawn(
+    [
+      "const result = await runWithTimeout(",
+      '  "docker",',
+      '  ["ps", "--all"],',
+      "  { timeoutMs },",
+      ");",
+    ].join("\n"),
+    "worker/deno/lib/example.ts",
+    DOCKER_SPAWN,
+    DOCKER_RULES,
+  );
+  assertEquals(violations.length, 1);
+  assertEquals(violations[0]?.line, 1);
+});
+
+Deno.test("scanContentForDirectSpawn - flags an indirect spawn in a file that routes the binary", () => {
+  const violations = scanContentForDirectSpawn(
+    [
+      "function runner(cmd: string[]) {",
+      "  const command = new Deno.Command(cmd[0]!, {",
+      "    args: cmd.slice(1),",
+      "  });",
+      "  return command.output();",
+      "}",
+      'export const ps = () => runner(["docker", "ps"]);',
+    ].join("\n"),
+    "worker/deno/lib/example.ts",
+    DOCKER_SPAWN,
+    DOCKER_RULES,
+  );
+  assertEquals(violations.length, 1);
+  assertEquals(violations[0]?.line, 2);
+});
+
+Deno.test("scanContentForDirectSpawn - an indirect spawn of another binary is left alone", () => {
+  const violations = scanContentForDirectSpawn(
+    [
+      "function runner(cmd: string[]) {",
+      "  const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
+      "  return command.output();",
+      "}",
+      'export const ls = () => runner(["podman", "ps"]);',
+    ].join("\n"),
+    "worker/deno/lib/example.ts",
+    DOCKER_SPAWN,
+    DOCKER_RULES,
+  );
+  assertEquals(violations, []);
+});
+
+Deno.test("scanContentForDirectSpawn - a file importing the chokepoint is not flagged for indirection", () => {
+  const violations = scanContentForDirectSpawn(
+    [
+      'import { spawnDocker } from "./docker_spawn.ts";',
+      "function runner(cmd: string[]) {",
+      '  if (cmd[0] === "docker") return spawnDocker(cmd.slice(1));',
+      "  const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
+      "  return command.output();",
+      "}",
+      'export const ps = () => runner(["docker", "ps"]);',
+    ].join("\n"),
+    "worker/deno/lib/example.ts",
+    DOCKER_SPAWN,
+    DOCKER_RULES,
+  );
+  assertEquals(violations, []);
+});
+
+Deno.test("scanContentForDirectSpawn - without rules the indirection is invisible", () => {
+  const violations = scanContentForDirectSpawn(
+    [
+      "const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
+      'export const ps = () => runner(["docker", "ps"]);',
+    ].join("\n"),
+    "worker/deno/lib/example.ts",
+    DOCKER_SPAWN,
+  );
+  assertEquals(violations, []);
+});
+
+Deno.test("scanDirectoriesForDirectSpawn - indirectExempt skips the indirection rule only", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${tmpDir}/src`, { recursive: true });
+    const indirect = [
+      "const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
+      'export const ps = () => runner(["docker", "ps"]);',
+      "",
+    ].join("\n");
+    await Deno.writeTextFile(`${tmpDir}/src/gap.ts`, indirect);
+    await Deno.writeTextFile(
+      `${tmpDir}/src/gap_direct.ts`,
+      indirect + 'const c = new Deno.Command("docker", { args });\n',
+    );
+
+    const result = await scanDirectoriesForDirectSpawn(tmpDir, ["src"], {
+      pattern: DOCKER_SPAWN,
+      allowlist: new Set<string>(),
+      rules: DOCKER_RULES,
+      indirectExempt: new Set(["src/gap.ts", "src/gap_direct.ts"]),
+    });
+
+    // The exempt file's indirection is forgiven; its literal spawn is not.
+    assertEquals(
+      result.violations.map((v) => v.file),
+      ["src/gap_direct.ts"],
+    );
+    assertEquals(result.violations[0]?.line, 3);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
 });
 
 Deno.test("scanDirectoriesForDirectSpawn - excludeTests skips co-located test files", async () => {
@@ -97,74 +217,16 @@ Deno.test("scanDirectoriesForDirectSpawn - excludeTests skips co-located test fi
 // Variable-binary spawns (Issue #1227)
 // ---------------------------------------------------------------------------
 
-Deno.test("scanContentForVariableBinarySpawn - flags a variable binary in a module that names the guarded binary", () => {
-  const violations = scanContentForVariableBinarySpawn(
-    VARIABLE_BINARY_MODULE,
-    "worker/deno/lib/example.ts",
-    DOCKER_VARIABLE,
-  );
-  assertEquals(violations.length, 1);
-  assertEquals(violations[0]?.line, 2);
-  assertEquals(
-    violations[0]?.text,
-    "const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
-  );
-});
+// The variable-binary suite that used to sit here tested
+// `scanContentForVariableBinarySpawn` (Issue #1227), which the indirection
+// rules above supersede: #1227's signal is #1378's second signal, and #1378
+// adds the generic-wrapper signal it never had. Each of its cases has an
+// equivalent above — flagging, the generic runner, the delegating module, the
+// exemption set — bar the one below, which is ported onto the rules so the
+// comment-stripping coverage is not lost with the mechanism.
 
-Deno.test("scanContentForVariableBinarySpawn - a generic runner that never names the binary is clean", () => {
-  const violations = scanContentForVariableBinarySpawn(
-    [
-      "async function run(cmd: string[]) {",
-      "  const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
-      "  return await command.output();",
-      "}",
-      'const out = await run(["podman", "ps"]);',
-    ].join("\n"),
-    "worker/deno/lib/example.ts",
-    DOCKER_VARIABLE,
-  );
-  assertEquals(violations, []);
-});
-
-Deno.test("scanContentForVariableBinarySpawn - a module that delegates to the chokepoint is clean", () => {
-  const violations = scanContentForVariableBinarySpawn(
-    [
-      'import { spawnDocker } from "./docker_spawn.ts";',
-      "async function run(cmd: string[]) {",
-      '  if (cmd[0] === "docker") return await spawnDocker(cmd.slice(1));',
-      "  const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
-      "  return await command.output();",
-      "}",
-    ].join("\n"),
-    "worker/deno/lib/example.ts",
-    DOCKER_VARIABLE,
-  );
-  assertEquals(violations, []);
-});
-
-Deno.test("scanContentForVariableBinarySpawn - honours the false-positive allowlist", () => {
-  const violations = scanContentForVariableBinarySpawn(
-    VARIABLE_BINARY_MODULE,
-    "worker/deno/lib/exempt.ts",
-    DOCKER_VARIABLE,
-  );
-  assertEquals(violations, []);
-});
-
-Deno.test("scanContentForVariableBinarySpawn - a literal binary is left to the literal pattern", () => {
-  const violations = scanContentForVariableBinarySpawn(
-    [
-      'const c = new Deno.Command("docker", { args: ["ps"] });',
-      'const argv = ["docker", "ps"];',
-    ].join("\n"),
-    "worker/deno/lib/example.ts",
-    DOCKER_VARIABLE,
-  );
-  assertEquals(violations, []);
-});
-
-Deno.test("scanContentForVariableBinarySpawn - ignores comments naming the binary", () => {
-  const violations = scanContentForVariableBinarySpawn(
+Deno.test("scanContentForDirectSpawn - a comment naming the binary is not an indirect spawn", () => {
+  const violations = scanContentForDirectSpawn(
     [
       "/**",
       ' * Callers pass ["docker", "ps"] — never spawn it here.',
@@ -172,32 +234,8 @@ Deno.test("scanContentForVariableBinarySpawn - ignores comments naming the binar
       "const command = new Deno.Command(cmd[0]!, { args });",
     ].join("\n"),
     "worker/deno/lib/example.ts",
-    DOCKER_VARIABLE,
+    DOCKER_SPAWN,
+    DOCKER_RULES,
   );
   assertEquals(violations, []);
-});
-
-Deno.test("scanDirectoriesForDirectSpawn - variableBinary rules are applied during the walk", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  try {
-    await Deno.mkdir(`${tmpDir}/src`, { recursive: true });
-    await Deno.writeTextFile(`${tmpDir}/src/evades.ts`, VARIABLE_BINARY_MODULE);
-
-    const withoutRules = await scanDirectoriesForDirectSpawn(tmpDir, ["src"], {
-      pattern: DOCKER_SPAWN,
-      allowlist: new Set<string>(),
-    });
-    assertEquals(withoutRules.violations, []);
-
-    const withRules = await scanDirectoriesForDirectSpawn(tmpDir, ["src"], {
-      pattern: DOCKER_SPAWN,
-      allowlist: new Set<string>(),
-      variableBinary: DOCKER_VARIABLE,
-    });
-    assertEquals(withRules.violations.map((v) => `${v.file}:${v.line}`), [
-      "src/evades.ts:2",
-    ]);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
 });
