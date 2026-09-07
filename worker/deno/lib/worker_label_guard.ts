@@ -180,8 +180,19 @@ export const WORKER_APPLIABLE_LABEL_PREFIXES: readonly string[] = [
  * required in `allowed_authors` for PR-dedup (Issue #3138) — the earlier
  * "the worker account is not on the allowlist" assumption is false there.
  *
- * This list is **not** consulted at runtime — `isWorkerAppliableLabel`
- * uses the positive list above. The forbidden list is informational.
+ * This list IS consulted at runtime, and the claim that it is not was wrong
+ * (Issue #1422). `isWorkerAppliableLabel` — the worker's own positive check —
+ * does not read it, which is what the old wording meant. But
+ * `gh_guard_decision.ts` builds the agent subprocess's `FORBIDDEN_LABELS`
+ * denylist from it, and the `gh` PATH shim re-enters that check for every
+ * label mutation the agent issues directly. Calling it "informational" is
+ * plausibly why it was allowed to drift from `RESERVED_LABELS` while the
+ * agent guard depended on it.
+ *
+ * Adding an entry here therefore changes what the agent may do. The guard
+ * takes the UNION of this list and `RESERVED_LABELS`, so this list is the
+ * place for a label that is forbidden to the agent but not otherwise
+ * reserved — `best-model` is the current example.
  */
 export const WORKER_FORBIDDEN_LABEL_LITERALS: readonly string[] = [
   "top-priority",
