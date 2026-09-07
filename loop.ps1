@@ -19,6 +19,13 @@
 # Issue #1401: Each cycle ends by pulling the checkout, exactly as loop.sh
 #              does, so a supervised Windows host cannot run frozen code for
 #              ever. A failed pull is logged and the loop continues.
+# Issue #1403: loop.sh and loop.ps1 are held to one supervision contract by
+#              worker/deno/tests/loop_parity_test.ts. A capability added or
+#              removed here without its bash twin fails the gate, and the three
+#              intended asymmetries - no host-side run cap, no Apple container
+#              control-plane probe, no process-group signal traps - are named
+#              exceptions in worker/deno/lib/loop_contract.ts rather than
+#              silent drift.
 # Issue #1402: The log directory is asked of the worker (`mod.ts log-dir`),
 #              never spelled here, and each cycle's own record is written
 #              under it — the Issue #873 defect PR #1197 fixed in run.ps1 was
