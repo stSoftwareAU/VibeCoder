@@ -286,15 +286,65 @@ export function ghSubVerb(args: readonly string[]): string | undefined {
 }
 
 /**
- * Strip an absolute API origin from an endpoint.
+ * The only host a `gh api` endpoint may name and still be classified from its
+ * path (Issue #1420).
+ *
+ * A GitHub Enterprise deployment answers on its own host. Naming it here is
+ * the one edit that would extend this, and it is deliberately not read from
+ * `GH_HOST`: that variable reaches this classifier through the same argv-
+ * adjacent environment the guard exists to distrust. An enterprise fleet's
+ * ABSOLUTE endpoints therefore classify as `unknown` and are refused —
+ * fail-closed, and the relative form every normal call uses is unaffected.
+ */
+export const GITHUB_API_HOST = "api.github.com";
+
+/** Does this endpoint carry a `scheme://` origin at all? */
+const ABSOLUTE_ENDPOINT = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/**
+ * The path part of a `gh api` endpoint, or `undefined` when the endpoint
+ * addresses a host this run cannot vouch for (Issue #1420).
  *
  * `gh api` accepts a full URL as well as a path, so
  * `https://api.github.com/repos/o/r/issues` must resolve the same repo as
  * `repos/o/r/issues` (Issue #3703 — absolute endpoints previously derived no
- * repo and slipped past the allowlist).
+ * repo and slipped past the allowlist). That strip took ANY scheme and ANY
+ * host, so the origin was discarded without being looked at: a URL whose path
+ * named an allowed repository classified as an allowed on-repo write however
+ * far from GitHub it actually pointed, and `gh` then sent the request — field
+ * and body data included — to that host. The allowlist decides *where* a
+ * write may go, and such a request never reaches GitHub, so nothing
+ * server-side stands behind it either.
+ *
+ * The host is therefore compared, and compared as a parsed **hostname**: a
+ * substring or prefix test on the raw URL is fooled by userinfo
+ * (`https://api.github.com@elsewhere.example/…`, whose host is
+ * `elsewhere.example`) and by a suffix (`evil-api.github.com.attacker.example`).
+ *
+ * The path is taken from the ORIGINAL text rather than from `URL.pathname`,
+ * because URL parsing percent-encodes the braces in the
+ * `repos/{owner}/{repo}/…` placeholder form and that must keep matching.
+ *
+ * @param endpoint - The endpoint argument as written on the command line.
+ * @returns The path with any leading `/` removed, or `undefined` when the
+ *   endpoint is absolute and does not address {@link GITHUB_API_HOST}.
  */
-function stripEndpointOrigin(endpoint: string): string {
-  return endpoint.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\//i, "");
+function endpointPath(endpoint: string): string | undefined {
+  if (!ABSOLUTE_ENDPOINT.test(endpoint)) return endpoint;
+
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    // An origin we cannot parse is an origin we cannot vouch for.
+    return undefined;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return undefined;
+  if (url.hostname.toLowerCase() !== GITHUB_API_HOST) return undefined;
+
+  const afterScheme = endpoint.slice(endpoint.indexOf("://") + 3);
+  const slash = afterScheme.indexOf("/");
+  return slash < 0 ? "" : afterScheme.slice(slash + 1);
 }
 
 /** Whether an endpoint path is repo-scoped via `{owner}/{repo}` placeholders. */
@@ -304,7 +354,8 @@ function isPlaceholderRepoEndpoint(endpoint: string): boolean {
 
 /** Parse `owner/repo` out of a REST endpoint like `repos/o/r/issues`. */
 function repoFromEndpoint(endpoint: string): string | undefined {
-  const path = stripEndpointOrigin(endpoint);
+  const path = endpointPath(endpoint);
+  if (path === undefined) return undefined;
   if (isPlaceholderRepoEndpoint(path)) return undefined;
   const match = path.match(/^\/?repos\/([^/]+)\/([^/]+)/);
   return match ? `${match[1]}/${match[2]}` : undefined;
@@ -546,9 +597,15 @@ function classifyGhApi(
   // cannot be checked against the allowlist, so it fails closed. The
   // `repos/{owner}/{repo}/…` placeholder form is resolved by `gh` from the
   // current clone and is therefore cwd-scoped.
+  // Issue #1420: the placeholder branch is host-checked too. `gh` resolves
+  // `repos/{owner}/{repo}/…` from the current clone, which is why it is
+  // cwd-scoped and needs no allowlist comparison — but that reasoning holds
+  // only for a request actually bound for GitHub's API. Pointed elsewhere,
+  // the same path is a write to somebody else's host.
+  const path = endpoint ? endpointPath(endpoint) : undefined;
   const scope: MutationScope = repo
     ? "explicit"
-    : (endpoint && isPlaceholderRepoEndpoint(stripEndpointOrigin(endpoint)))
+    : (path !== undefined && isPlaceholderRepoEndpoint(path))
     ? "cwd"
     : "unknown";
   return {
