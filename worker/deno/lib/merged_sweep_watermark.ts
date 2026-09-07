@@ -35,6 +35,15 @@ export function mergedReconcileWatermarkPath(workDir: string): string {
   return `${workDir}/merged_reconcile_watermarks.json`;
 }
 
+/**
+ * Watermark file for the merged-PR issue sweep (Issue #1477). Its own file,
+ * for the same reason as the reconciler's: the three merged-PR passes
+ * advance independently, each holding back on what it alone left undone.
+ */
+export function mergedIssueSweepWatermarkPath(workDir: string): string {
+  return `${workDir}/merged_issue_sweep_watermarks.json`;
+}
+
 /** Load watermarks; a missing or corrupt file reads as empty. */
 export async function loadSweepWatermarks(
   path: string,
