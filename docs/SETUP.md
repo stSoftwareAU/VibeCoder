@@ -382,7 +382,10 @@ Docker first, then Podman. What the runtime runs and how the image is built is
 [CONTAINMENT.md](CONTAINMENT.md).
 
 **File permissions on credential and config files.** On macOS and Linux the
-credential directories are `chmod` 0700 and the files within 0600. On Windows
+credential directories are `chmod` 0700 and the files within 0600 — and they
+are *created* owner-only, under a `umask 077`, rather than created under the
+host's ambient umask and narrowed afterwards, so no window exists in which a
+co-resident local account can enumerate them (Issue #1374). On Windows
 the same protection is an ACL: `Protect-VibePath` (`setup.ps1`) strips the
 path's inherited access outright and grants full control to the current
 identity alone, so a profile that gives *Users* read access cannot leak a
