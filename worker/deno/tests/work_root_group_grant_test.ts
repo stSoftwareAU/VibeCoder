@@ -28,6 +28,7 @@ const ENTRYPOINT = new URL("../../../container/entrypoint.sh", import.meta.url)
 const GROUP_WRITE = 0o020;
 const GROUP_READ_EXECUTE = 0o050;
 const SETGID = 0o2000;
+const STICKY = 0o1000;
 
 /**
  * A stub PATH the entrypoint's work-root block can actually run through.
@@ -143,6 +144,32 @@ Deno.test("entrypoint - the worker's own state directories are never handed grou
         `${reserved} must stay traversable by the untrusted account`,
       );
     }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - the work root carries the sticky bit (Issue #1442)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
+  try {
+    const workRoot = await runOverWorkRoot(dir);
+    const stat = await Deno.stat(workRoot);
+    const mode = stat.mode;
+    assert(mode !== null, "no mode bits on this platform");
+
+    // Write permission on a directory governs rename and unlink of the
+    // entries inside it, whatever mode each entry carries. Without `+t` the
+    // untrusted account could rename or delete every sibling clone, the audit
+    // journal and the session store — measured as succeeding on a live volume.
+    assertEquals(mode & STICKY, STICKY, "the work root must be sticky");
+
+    // And the grant it bounds is still there: the gate creates its own tier-2
+    // data sibling in this directory, which needs group write on the root.
+    assertEquals(
+      mode & GROUP_WRITE,
+      GROUP_WRITE,
+      "removing group write would break the tier-2 sibling clone the gate makes",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
