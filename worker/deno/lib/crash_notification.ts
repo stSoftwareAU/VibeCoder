@@ -19,6 +19,7 @@ import type { Result } from "../types.ts";
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { spawnGh } from "./gh_spawn.ts";
+import { runningInContainerImage } from "./container_stamp.ts";
 
 /** Configuration for crash notifications. */
 export interface CrashNotificationConfig {
@@ -62,7 +63,8 @@ export function resolveCrashStateDir(
   if (explicit) return explicit;
   // VIBE_IMAGE_AGENT_PROVIDERS is stamped into the image, so it is the
   // container signal every other module uses (see optional_feature_env.ts).
-  const inContainer = env("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined;
+  // Read by value, not presence: a blank stamp is a host run (Issue #1493).
+  const inContainer = runningInContainerImage(env);
   const trimmedWorkDir = workDir?.trim();
   if (inContainer && trimmedWorkDir) {
     return `${trimmedWorkDir}/${CRASH_STATE_DIR_NAME}`;
