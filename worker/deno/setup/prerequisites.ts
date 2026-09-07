@@ -58,6 +58,10 @@ import {
   detectContainerRuntime,
 } from "../lib/container_runtime.ts";
 import { resolveRunMode, type RunMode } from "../lib/run_mode.ts";
+import {
+  createSetupRunCommand,
+  type SetupRunCommand,
+} from "./setup_command_runner.ts";
 
 /** Result of a single prerequisite check. */
 export interface PrerequisiteResult {
@@ -174,20 +178,14 @@ export async function commandExists(
   }
 }
 
-async function defaultRunCommand(cmd: string[]): Promise<CommandOutput> {
-  const command = new Deno.Command(cmd[0]!, {
-    args: cmd.slice(1),
-    stdout: "piped",
-    stderr: "piped",
-  });
-  const output = await command.output();
-  const decoder = new TextDecoder();
-  return {
-    success: output.success,
-    stdout: decoder.decode(output.stdout).trim(),
-    stderr: decoder.decode(output.stderr).trim(),
-  };
-}
+/**
+ * The probe's own runner (Issue #1259).
+ *
+ * Delegates to the shared setup runner so a `gh` or `git` probe goes through
+ * its chokepoint; every other prerequisite (`jq`, `deno`, a package manager)
+ * is spawned directly there, because no chokepoint owns it.
+ */
+const defaultRunCommand: SetupRunCommand = createSetupRunCommand();
 
 /**
  * Resolve effective options by merging environment variables.
@@ -254,24 +252,8 @@ export async function checkGhAuth(
     return { ok: false, tool: "gh", message: "gh CLI is not installed", hint };
   }
   // Check authentication — use custom GH_CONFIG_DIR if configured
-  const ghEnv = resolved.ghConfigDir
-    ? { GH_CONFIG_DIR: resolved.ghConfigDir }
-    : undefined;
-  const authRunner = ghEnv
-    ? async (cmd: string[]) => {
-      const command = new Deno.Command(cmd[0]!, {
-        args: cmd.slice(1),
-        stdout: "piped",
-        stderr: "piped",
-        env: { ...Deno.env.toObject(), ...ghEnv },
-      });
-      const output = await command.output();
-      return {
-        success: output.code === 0,
-        stdout: new TextDecoder().decode(output.stdout).trim(),
-        stderr: new TextDecoder().decode(output.stderr).trim(),
-      };
-    }
+  const authRunner = resolved.ghConfigDir
+    ? createSetupRunCommand(resolved.ghConfigDir)
     : runner;
   const authResult = await authRunner(["gh", "auth", "status"]);
   if (!authResult.success) {

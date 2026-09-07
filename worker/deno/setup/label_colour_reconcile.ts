@@ -17,6 +17,7 @@
  */
 
 import { getLabelByName } from "./label_definitions.ts";
+import { createSetupRunCommand } from "./setup_command_runner.ts";
 
 /** Outcome of one command run. */
 interface CommandOutput {
@@ -71,29 +72,6 @@ export interface LabelColourReconcileResult {
 interface RemoteLabel {
   name: string;
   color: string;
-}
-
-function createDefaultRunCommand(
-  ghConfigDir?: string,
-): (cmd: string[]) => Promise<CommandOutput> {
-  return async (cmd: string[]): Promise<CommandOutput> => {
-    const env = ghConfigDir
-      ? { ...Deno.env.toObject(), GH_CONFIG_DIR: ghConfigDir }
-      : undefined;
-    const command = new Deno.Command(cmd[0]!, {
-      args: cmd.slice(1),
-      stdout: "piped",
-      stderr: "piped",
-      env,
-    });
-    const output = await command.output();
-    const decoder = new TextDecoder();
-    return {
-      success: output.success,
-      stdout: decoder.decode(output.stdout).trim(),
-      stderr: decoder.decode(output.stderr).trim(),
-    };
-  };
 }
 
 /**
@@ -151,7 +129,7 @@ export async function reconcileLabelColoursForRepo(
   repo: string,
   opts: LabelColourReconcileOptions = {},
 ): Promise<LabelColourReconcileResult> {
-  const runner = opts.runCommand ?? createDefaultRunCommand(opts.ghConfigDir);
+  const runner = opts.runCommand ?? createSetupRunCommand(opts.ghConfigDir);
   const dryRun = opts.dryRun === true;
   const base: LabelColourReconcileResult = {
     ok: true,
