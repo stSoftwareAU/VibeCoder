@@ -59,12 +59,13 @@ import {
   GIT_GUARD_REFUSE_MARKER,
 } from "./git_guard_cli.ts";
 import { posixSingleQuote as shellQuote } from "./shell_quote.ts";
+import { resolveGuardModulePath } from "./guard_module_path.ts";
 
 /** Absolute path of the guard entry point the `git` shim invokes. */
 export function defaultGitGuardModulePath(): string {
-  return decodeURIComponent(
-    new URL("./git_guard_cli.ts", import.meta.url).pathname,
-  );
+  // Issue #1444: resolved from the read-only checkout for the same reason as
+  // its `gh` twin — see `guard_module_path.ts`.
+  return resolveGuardModulePath("git_guard_cli.ts", import.meta.url);
 }
 
 /**
