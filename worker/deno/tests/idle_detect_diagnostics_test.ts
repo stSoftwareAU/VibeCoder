@@ -1177,3 +1177,74 @@ Deno.test("auditClaimableState - a throwing hold source never blocks the audit (
 
   assertEquals(result.claimableTotal, 1);
 });
+
+Deno.test("auditClaimableState - openIssuesFn serves the listing so the audit makes no gh issue list call of its own (Issue #1456)", async () => {
+  const ghCalls: string[][] = [];
+  const logs: string[] = [];
+  const result = await auditClaimableState({
+    repos: ["org/alpha", "org/beta"],
+    workerUser: "vibebot",
+    tick: 3,
+    scanFoundClaimable: false,
+    ghCommandFn: (args) => {
+      ghCalls.push([...args]);
+      if (args[0] === "issue" && args[1] === "list") {
+        return Promise.reject(
+          new Error("the audit must read through openIssuesFn, not list live"),
+        );
+      }
+      return Promise.resolve("[]");
+    },
+    openIssuesFn: (repo, limit) => {
+      if (limit <= 0) throw new Error("a positive limit is expected");
+      // The shape the shared `issues_all` cache holds: already flattened.
+      return Promise.resolve(
+        repo === "org/alpha"
+          ? [{
+            number: 1,
+            title: "t",
+            labels: ["top-priority"],
+            assignees: [],
+            milestone: "",
+          }]
+          : [],
+      );
+    },
+    log: (line) => logs.push(line),
+    hostnameFn: () => "host-x",
+    pidFn: () => 7,
+  });
+  assertEquals(result.claimableTotal, 1);
+  assert(
+    !ghCalls.some((c) => c[0] === "issue" && c[1] === "list"),
+    "no live issue listing expected",
+  );
+  assert(!logs.some((l) => l.includes("reason=probe_error")), logs.join("\n"));
+});
+
+Deno.test("auditClaimableState - a failing openIssuesFn is a probe_error for that repo only (Issue #1456)", async () => {
+  const logs: string[] = [];
+  const result = await auditClaimableState({
+    repos: ["org/alpha", "org/beta"],
+    workerUser: "vibebot",
+    tick: 4,
+    scanFoundClaimable: false,
+    ghCommandFn: () => Promise.resolve("[]"),
+    openIssuesFn: (repo) =>
+      repo === "org/alpha"
+        ? Promise.reject(new Error("GraphQL: API rate limit already exceeded"))
+        : Promise.resolve([{
+          number: 2,
+          title: "t",
+          labels: ["top-priority"],
+          assignees: [],
+          milestone: "",
+        }]),
+    log: (line) => logs.push(line),
+    hostnameFn: () => "host-x",
+    pidFn: () => 7,
+  });
+  assertEquals(result.claimableTotal, 1);
+  const alpha = logs.find((l) => l.includes("repo=org/alpha"));
+  assert(alpha !== undefined && alpha.includes("reason=probe_error"), alpha);
+});

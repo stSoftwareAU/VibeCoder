@@ -98,7 +98,10 @@ async function auditTotalVia(heldBy: string | null): Promise<number> {
       workDir,
       githubUser: WORKER_USER,
       logger: createLogger({ write: () => {} }),
-      config: fixtureConfig(),
+      // The audit now reads through the run's `IssueCache`, which lives
+      // under `config.workDir` — point it at this test's own directory so
+      // the three cases never read each other's cached listing (Issue #1456).
+      config: { ...fixtureConfig(), workDir },
       idleDetectGhCommandFn: makeGh(heldBy),
     });
     const result = await deps.runIdleDetectAudit!({

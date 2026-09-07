@@ -229,6 +229,7 @@
         "worker/deno/lib/github_rate_limit_preflight.ts",
         "worker/deno/lib/github_status.ts",
         "worker/deno/lib/gitleaks_pr_coverage_scanner.ts",
+        "worker/deno/lib/graphql_quota_probe.ts",
         "worker/deno/lib/green_gate_report.ts",
         "worker/deno/lib/heartbeat_sweep.ts",
         "worker/deno/lib/host_disk.ts",
