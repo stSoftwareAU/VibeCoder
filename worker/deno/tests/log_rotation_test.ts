@@ -285,6 +285,55 @@ Deno.test("log_rotation - rotateAllLogs handles non-existent directory", async (
   assertEquals(result.rotatedCount, 0);
 });
 
+Deno.test("log_rotation - rotateAllLogs skips a symlinked worker-owned log", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const logDir = `${tmpDir}/logs`;
+  await Deno.mkdir(logDir, { recursive: true });
+
+  // `worker.log` is on the allowlist (Issue #1267), so this fixture reaches
+  // the symlink guard rather than being turned away by name.
+  await Deno.writeFile(
+    `${logDir}/worker-20260817-021352.log`,
+    new Uint8Array(2048),
+  );
+  await Deno.symlink(
+    `${logDir}/worker-20260817-021352.log`,
+    `${logDir}/worker.log`,
+  );
+
+  try {
+    const result = await rotateAllLogs(logDir, {
+      maxSizeMb: 0.001,
+      maxRotations: 3,
+    });
+    assertEquals(await fileExists(`${logDir}/worker.log.1`), false);
+    assertEquals(await fileExists(`${logDir}/worker.log`), true);
+    assertEquals(result.rotatedCount, 0);
+    assertEquals(result.skippedCount, 1);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("log_rotation - rotateAllLogs rotates worker.log when it is a real file", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const logDir = `${tmpDir}/logs`;
+  await Deno.mkdir(logDir, { recursive: true });
+
+  await Deno.writeFile(`${logDir}/worker.log`, new Uint8Array(2048));
+
+  try {
+    const result = await rotateAllLogs(logDir, {
+      maxSizeMb: 0.001,
+      maxRotations: 3,
+    });
+    assertEquals(await fileExists(`${logDir}/worker.log.1`), true);
+    assertEquals(result.rotatedCount, 1);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 // =============================================================================
 // Filename allowlist tests (Issue #1267)
 // =============================================================================
@@ -301,6 +350,10 @@ Deno.test("log_rotation - isRotatableLogName accepts the worker's own logs", () 
       "launchagent-stderr.log",
       "self-heal.jsonl",
       "agent-vibe-abc123-1267.jsonl",
+      // Worker-owned sinks nothing else bounds (Issue #1267).
+      "worker.log",
+      "cron.log",
+      "security.log",
     ]
   ) {
     assertEquals(isRotatableLogName(name), true, name);

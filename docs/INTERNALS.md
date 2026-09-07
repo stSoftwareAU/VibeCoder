@@ -366,9 +366,10 @@ flowchart LR
 Per-run logging: each run writes its own `worker-<timestamp>.log`. Those are
 bounded by gzip-at-start plus age-based retention, not by size rotation —
 [log_rotation.ts](../worker/deno/lib/log_rotation.ts) size-rotates the worker's
-other logs (`run_core.log`, `pull.log`, `launch*.log`, `self-heal.jsonl`,
-`agent-*.jsonl`) and deliberately leaves `worker-*.log` to the two modules
-below (Issue #1267).
+other logs (`run_core.log`, `pull.log`, `worker.log`, `cron.log`,
+`security.log`, `launch*.log`, `self-heal.jsonl`, `agent-*.jsonl`) and
+deliberately leaves `worker-<timestamp>.log` to the two modules below
+(Issue #1267).
 
 Worker-log lifecycle: the running process's `worker-<PID>.log` stays plain text;
 every prior run's log is gzipped at the next worker start

@@ -62,7 +62,11 @@ export interface RotateAllResult {
  * anchors on `.log` / `.jsonl` exactly, which keeps rotated backups (`.log.1`)
  * and gzipped copies (`.log.gz`) out.
  *
- * `worker-*.log` is deliberately absent. Its retention has always belonged
+ * `worker.log` — the logger's own sink — is on the list because nothing else
+ * bounds it when it is a real file rather than the usual symlink; the symlink
+ * guard in {@link rotateAllLogs} still spares the symlink form.
+ *
+ * `worker-<stamp>.log` is deliberately absent. Its retention has always belonged
  * elsewhere — `lib/worker_log_gzip.ts` compresses every prior run's log at
  * worker start and `lib/worker_log_cleanup.ts` ages the results out — and the
  * old skip here said so, but only for the `worker-<pid>.log` shape. The
@@ -83,6 +87,16 @@ const ROTATABLE_LOG_PATTERNS: readonly RegExp[] = [
   // Launcher logs, including the macOS LaunchAgent's stdout/stderr.
   /^launch-[A-Za-z0-9._-]*\.log$/,
   /^launchagent-[A-Za-z0-9._-]*\.log$/,
+  // The logger's own sink (`lib/run_core_production_deps.ts`). Normally a
+  // symlink to the run's `worker-<stamp>.log`, in which case the symlink
+  // guard below skips it; when the symlink is absent the logger creates a
+  // real file that nothing else bounds.
+  /^worker\.log$/,
+  // Cron/launcher stdout, per the documented deployment (`README.md`,
+  // `docs/DEPLOYMENT.md`) — appended every five minutes, forever.
+  /^cron\.log$/,
+  // The optional dedicated security sink (`SECURITY_LOG_FILE`, `SECURITY.md`).
+  /^security\.log$/,
   // Structured event logs (`lib/self_heal_events.ts`).
   /^self-heal\.jsonl$/,
   // Agent stream-json transcripts (`lib/agent_transcript.ts`).
