@@ -44,6 +44,23 @@ export interface OpenPR {
    * scan set. Optional: cache entries written before #4024 lack it.
    */
   author?: string;
+  /**
+   * The login of the head repository's owner, when the query asked for it
+   * (Issue #1264). `gh pr list --head <branch>` matches on `headRefName`
+   * alone, so a fork's PR appears in a per-branch listing exactly like a
+   * PR from the target repo. Any consumer that acts *destructively* on a
+   * listed PR must compare this against the target repo's owner. Optional:
+   * queries that do not request the field, and cache entries written
+   * before #1264, leave it unset — treat unset as "ownership unknown" and
+   * refuse to act.
+   */
+  headRepositoryOwner?: string;
+  /**
+   * True when the head branch lives in a **different** repository — a fork
+   * (Issue #1264). Set only when the query asked for it; unset means
+   * "unknown", which a destructive consumer must treat as "not ours".
+   */
+  isCrossRepository?: boolean;
 }
 
 /**
@@ -228,7 +245,7 @@ export function parsePRListJson(jsonStr: string): OpenPR[] {
     for (const item of raw) {
       if (!isRecord(item)) continue;
       if (typeof item.number !== "number") continue;
-      items.push({
+      const entry: OpenPR = {
         number: item.number,
         title: typeof item.title === "string" ? item.title : "",
         baseRefName: typeof item.baseRefName === "string"
@@ -237,7 +254,22 @@ export function parsePRListJson(jsonStr: string): OpenPR[] {
         headRefName: typeof item.headRefName === "string"
           ? item.headRefName
           : "",
-      });
+      };
+      // Issue #1264: `author` and `headRepositoryOwner` are nested login
+      // objects in the `gh` JSON. Only set when actually present, so an
+      // absent field stays `undefined` ("unknown") rather than "".
+      const author = isRecord(item.author) ? item.author.login : undefined;
+      if (typeof author === "string" && author !== "") entry.author = author;
+      const headOwner = isRecord(item.headRepositoryOwner)
+        ? item.headRepositoryOwner.login
+        : undefined;
+      if (typeof headOwner === "string" && headOwner !== "") {
+        entry.headRepositoryOwner = headOwner;
+      }
+      if (typeof item.isCrossRepository === "boolean") {
+        entry.isCrossRepository = item.isCrossRepository;
+      }
+      items.push(entry);
     }
     return items;
   } catch {
@@ -794,7 +826,11 @@ export async function fetchPRsByBranch(
       "--state",
       state,
       "--json",
-      "number,title,baseRefName,headRefName",
+      // Issue #1264: ownership fields travel with every per-branch listing
+      // so a consumer that closes a PR can tell a fleet PR on this repo
+      // from an outsider's fork PR that merely shares the branch name.
+      "number,title,baseRefName,headRefName,author,headRepositoryOwner," +
+      "isCrossRepository",
       "--limit",
       "50",
     ]);

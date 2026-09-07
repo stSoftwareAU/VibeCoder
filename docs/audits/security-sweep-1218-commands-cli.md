@@ -249,6 +249,14 @@ to the issue: `closeDuplicatePrs` is not CLI-only.
 `:524` binds the real implementation, so the unauthenticated head-branch
 selection runs unattended during ordinary issue work.
 
+SEC-1218-02 has since been fixed on #1264: `closeDuplicatePrs` now lists
+`author` and `headRepositoryOwner` with each candidate and closes one only when
+its author is in the push-capable fleet maintenance set **and** its head
+repository is the target repo, so an outsider's PR that merely shares a
+worker-shaped branch name is left open. The operation is also report-only by
+default — both the library and `--operation close-duplicate-prs` need an
+explicit `dryRun: false` / `--dry-run false` before anything is closed.
+
 Deduped onto issues that already existed rather than re-filed: the variable
 binary name that evades the `gh` chokepoint gate (**#1227**) and the unscanned
 `worker/deno/setup/` tree with two literal violations in it (**#1259**). Both
