@@ -9,6 +9,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import { extractClosingIssueNumbers } from "./pr_body.ts";
 import { runGhCommand } from "./github.ts";
 import { prTitleReferencesIssue } from "./pr_title_issue_ref.ts";
 // Issue #2900: re-export the single canonical milestone-branch namer from
@@ -89,6 +90,15 @@ export interface MergedPR {
    * decidable with this timestamp.
    */
   mergedAt: string;
+  /**
+   * Issues the PR body's closing keywords name (`Fixes #N`, `Closes #N`, …),
+   * same-repository only (Issue #1528). GitHub honours them only on a merge
+   * into the default branch, so a sub-issue PR merged into a milestone
+   * branch never closed its issue and held the rollup shut; the closers read
+   * them here instead. Absent on a cache entry written before this field was
+   * collected — treat as no references, never as "no fix".
+   */
+  closingRefs?: number[];
 }
 
 /**
@@ -106,6 +116,8 @@ export interface ClosedPR {
    * missing value is treated as closed-unmerged.
    */
   merged?: boolean;
+  /** Issues the PR body's closing keywords name (Issue #1528); see MergedPR. */
+  closingRefs?: number[];
 }
 
 /**
@@ -120,6 +132,8 @@ export interface ClosedPRWithMerge {
   title: string;
   mergedAt: string | null;
   closedAt: string | null;
+  /** Issues the PR body's closing keywords name (Issue #1528); see MergedPR. */
+  closingRefs?: number[];
 }
 
 /**
@@ -1418,7 +1432,7 @@ export async function fetchMergedPRsByUser(
     "--author",
     githubUser,
     "--json",
-    "number,title,headRefName,mergedAt",
+    "number,title,headRefName,mergedAt,body",
     "--limit",
     String(limit),
   ]);
@@ -1445,6 +1459,10 @@ export async function fetchMergedPRsByUser(
       title: typeof item.title === "string" ? item.title : "",
       headRefName: typeof item.headRefName === "string" ? item.headRefName : "",
       mergedAt: typeof item.mergedAt === "string" ? item.mergedAt : "",
+      // The body itself is not cached — only what the closers need from it.
+      closingRefs: extractClosingIssueNumbers(
+        typeof item.body === "string" ? item.body : "",
+      ),
     });
   }
 
@@ -2229,7 +2247,7 @@ export async function fetchClosedPRsByUser(
     "--author",
     githubUser,
     "--json",
-    "number,title,mergedAt,closedAt",
+    "number,title,mergedAt,closedAt,body",
     "--limit",
     String(limit),
   ]);
@@ -2251,6 +2269,10 @@ export async function fetchClosedPRsByUser(
       title: typeof item.title === "string" ? item.title : "",
       mergedAt: typeof item.mergedAt === "string" ? item.mergedAt : null,
       closedAt: typeof item.closedAt === "string" ? item.closedAt : null,
+      // Issue #1528: what the body's closing keywords name, not the body.
+      closingRefs: extractClosingIssueNumbers(
+        typeof item.body === "string" ? item.body : "",
+      ),
     });
   }
 
@@ -2389,6 +2411,7 @@ export async function fetchRecentlyClosedPRsForFleet(
           title: pr.title,
           closedAt: pr.closedAt ?? pr.mergedAt ?? "",
           merged: true,
+          ...(pr.closingRefs ? { closingRefs: pr.closingRefs } : {}),
         });
         continue;
       }
@@ -2402,6 +2425,7 @@ export async function fetchRecentlyClosedPRsForFleet(
         title: pr.title,
         closedAt: pr.closedAt,
         merged: false,
+        ...(pr.closingRefs ? { closingRefs: pr.closingRefs } : {}),
       });
     }
   }

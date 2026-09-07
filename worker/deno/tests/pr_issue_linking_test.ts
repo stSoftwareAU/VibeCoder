@@ -849,6 +849,96 @@ Deno.test("pr_issue_linking - closeIssuesForMergedPrs closes open issues", async
   assertEquals(closedIssues[0], "42");
 });
 
+// Issue #1528: a PR whose title names no issue but whose body says
+// `Closes #N`, merged into a milestone branch, closes N — with a comment
+// that says which branch the fix lives on.
+const MILESTONE_LANDING = () =>
+  Promise.resolve({
+    landed: true as const,
+    via: "milestone-route-open" as const,
+    mergeCommit: "f00dcafe",
+    baseRefName: "milestone/fix-scan-issues-20260906",
+  });
+
+Deno.test("pr_issue_linking - closeIssuesForMergedPrs closes the issues a PR body names, on a milestone branch, naming the branch (Issue #1528)", async () => {
+  const closes: Array<{ issue: string; comment: string }> = [];
+  const fn = async (args: string[]): Promise<string> => {
+    if (args[0] === "pr" && args[1] === "list") {
+      return JSON.stringify([{
+        number: 1509,
+        title:
+          "🟡 close-duplicate-prs picks its victims by head-branch name alone",
+        headRefName: "issue-1264",
+        mergedAt: "2026-09-07T11:00:00Z",
+        body: "Closes #1264\nFixes #1270",
+      }]);
+    }
+    if (args[0] === "issue" && args[1] === "view") {
+      return JSON.stringify({
+        state: "OPEN",
+        labels: [],
+        createdAt: "2026-09-05T00:00:00Z",
+      });
+    }
+    if (args[0] === "issue" && args[1] === "close") {
+      closes.push({
+        issue: args[2]!,
+        comment: args[args.indexOf("--comment") + 1] ?? "",
+      });
+    }
+    return "";
+  };
+  const count = await closeIssuesForMergedPrs(
+    ["owner/repo"],
+    "bot-user",
+    fn,
+    "planning",
+    undefined,
+    { verifyMergeLandedFn: MILESTONE_LANDING },
+  );
+  assertEquals(count, 2);
+  assertEquals(closes.map((c) => c.issue), ["1264", "1270"]);
+  assertEquals(
+    closes[0]!.comment.includes("PR #1509"),
+    true,
+    closes[0]!.comment,
+  );
+  assertEquals(
+    closes[0]!.comment.includes("milestone/fix-scan-issues-20260906"),
+    true,
+    closes[0]!.comment,
+  );
+});
+
+Deno.test("pr_issue_linking - closeIssuesForMergedPrs on the default branch keeps the plain comment (Issue #1528)", async () => {
+  const comments: string[] = [];
+  const fn = async (args: string[]): Promise<string> => {
+    if (args[0] === "pr" && args[1] === "list") return MOCK_MERGED_PRS;
+    if (args[0] === "issue" && args[1] === "view") {
+      return JSON.stringify({
+        state: "OPEN",
+        labels: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+    }
+    if (args[0] === "issue" && args[1] === "close") {
+      comments.push(args[args.indexOf("--comment") + 1] ?? "");
+    }
+    return "";
+  };
+  await closeIssuesForMergedPrs(
+    ["owner/repo"],
+    "bot-user",
+    fn,
+    "planning",
+    undefined,
+    {
+      verifyMergeLandedFn: alwaysLanded,
+    },
+  );
+  assertEquals(comments, ["Closed automatically — PR #1 has been merged."]);
+});
+
 Deno.test("pr_issue_linking - closeIssuesForMergedPrs skips closed issues", async () => {
   const fn = async (args: string[]): Promise<string> => {
     if (args[0] === "pr" && args[1] === "list") {
