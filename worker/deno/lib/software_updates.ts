@@ -50,6 +50,7 @@ import {
   type ReleaseChannel,
 } from "./tool_release_age.ts";
 import { spawnGh } from "./gh_spawn.ts";
+import { runningInContainerImage } from "./container_stamp.ts";
 
 /** Default update check interval: 7 days in seconds. */
 export const DEFAULT_UPDATE_INTERVAL_SECONDS = 604800;
@@ -1806,5 +1807,7 @@ export function skipSoftwareUpdateFromEnv(
   getEnv: (name: string) => string | undefined = (name) => Deno.env.get(name),
 ): boolean {
   if (getEnv("SKIP_SOFTWARE_UPDATE") === "true") return true;
-  return getEnv("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined;
+  // By value, not presence: a blank stamp is a host run, which still needs
+  // the update step (Issue #1493).
+  return runningInContainerImage(getEnv);
 }

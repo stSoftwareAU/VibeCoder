@@ -478,3 +478,74 @@ Deno.test("nukeWorkDir - keeps the audit trail and its roster sidecars (Issue #3
     await Deno.remove(workDir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// A blank container stamp is a HOST run (Issue #1493, follow-up to #1262)
+// ---------------------------------------------------------------------------
+
+Deno.test("checkAndCleanupDiskSpace - a blank container stamp does not arm the container preserve guard (Issue #1493)", async () => {
+  // The #4164 guard was keyed on the PRESENCE of the image stamp, so
+  // `VIBE_IMAGE_AGENT_PROVIDERS=` on a HOST run read the whole machine's
+  // free space, decided the pressure was elsewhere, and left the work
+  // directory in place — the aggressive cleanup the host was over threshold
+  // for never ran. Blank reads as absent: the host cleans up as it always did.
+  for (const blank of ["", "   "]) {
+    const workDir = await Deno.makeTempDir();
+    try {
+      await Deno.writeTextFile(`${workDir}/stale.txt`, "stale\n");
+      const result = await checkAndCleanupDiskSpace({
+        workDir,
+        threshold: 90,
+        skipDenoCache: true,
+        outerCheckUsage: () => Promise.resolve(95),
+        env: (name) =>
+          name === "VIBE_IMAGE_AGENT_PROVIDERS" ? blank : undefined,
+        // Ample free space — the only thing that could hold the nuke back is
+        // the container guard, and on a host it must not be consulted.
+        freeBytesProbe: () => Promise.resolve(50 * 1024 ** 3),
+      });
+      assertEquals(
+        result.cleanedUp,
+        true,
+        `a stamp of ${JSON.stringify(blank)} must not arm the container guard`,
+      );
+      assertEquals(
+        /preserving/.test(result.message),
+        false,
+        result.message,
+      );
+      assertEquals(
+        await Deno.stat(`${workDir}/stale.txt`).then(() => true, () => false),
+        false,
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("checkAndCleanupDiskSpace - a real container stamp still preserves the workDir (Issue #1493)", async () => {
+  // The other direction: #4164's guard must survive the narrowed predicate,
+  // whitespace padding included.
+  const workDir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${workDir}/keep.txt`, "clone cache\n");
+    const result = await checkAndCleanupDiskSpace({
+      workDir,
+      threshold: 90,
+      skipDenoCache: true,
+      outerCheckUsage: () => Promise.resolve(95),
+      env: (name) =>
+        name === "VIBE_IMAGE_AGENT_PROVIDERS" ? " claude " : undefined,
+      freeBytesProbe: () => Promise.resolve(50 * 1024 ** 3),
+    });
+    assertEquals(result.cleanedUp, false);
+    assertEquals(/preserving/.test(result.message), true, result.message);
+    assertEquals(
+      await Deno.readTextFile(`${workDir}/keep.txt`),
+      "clone cache\n",
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});

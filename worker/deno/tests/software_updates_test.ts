@@ -2414,3 +2414,34 @@ Deno.test("softwareUpdateOptionsFromEnv - carries the update mode and its pins",
     undefined,
   );
 });
+
+// ---------------------------------------------------------------------------
+// A blank container stamp is a HOST run (Issue #1493, follow-up to #1262)
+// ---------------------------------------------------------------------------
+
+Deno.test("skipSoftwareUpdateFromEnv - a blank container stamp does not suppress the update step (Issue #1493)", () => {
+  // The suppression was keyed on the PRESENCE of the image stamp, so
+  // `VIBE_IMAGE_AGENT_PROVIDERS=` silently disabled every tool update on a
+  // host run — the host has no image to rebuild, so the tools simply never
+  // moved. Blank reads as absent: the host still updates.
+  for (const blank of ["", "   "]) {
+    assertEquals(
+      skipSoftwareUpdateFromEnv((n) =>
+        n === "VIBE_IMAGE_AGENT_PROVIDERS" ? blank : undefined
+      ),
+      false,
+      `a stamp of ${JSON.stringify(blank)} must not suppress the update step`,
+    );
+  }
+});
+
+Deno.test("skipSoftwareUpdateFromEnv - a real container stamp still suppresses (Issue #1493)", () => {
+  // The other direction: #4062's "the image is the update mechanism" must
+  // survive the narrowed predicate, whitespace padding included.
+  assertEquals(
+    skipSoftwareUpdateFromEnv((n) =>
+      n === "VIBE_IMAGE_AGENT_PROVIDERS" ? " claude " : undefined
+    ),
+    true,
+  );
+});
