@@ -28,6 +28,11 @@ Design notes:
 
 Closes #1260.
 
+One change outside the issue's scope: `worker/deno/lib/gh_spawn.ts` carried
+pre-existing formatting drift on the milestone branch that failed the `deno fmt`
+gate, so it was reformatted in its own commit. Formatting only, no behaviour
+change.
+
 ## Evidence
 
 Backend-only change with no web interface to screenshot. Evidence is the test
