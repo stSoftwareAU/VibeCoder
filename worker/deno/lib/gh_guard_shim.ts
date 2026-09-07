@@ -72,6 +72,12 @@ import { recordMutation, resolveRunId } from "./audit_journal.ts";
 import { isAuditJournalEnabled } from "./audit_hook.ts";
 import { resolveGuardModulePath } from "./guard_module_path.ts";
 import {
+  DENO_SEED_DIR_ENV,
+  expectsReadOnlyGuardCache,
+  type GuardDenoDir,
+  resolveGuardDenoDir,
+} from "./guard_deno_dir.ts";
+import {
   GH_GUARD_ALLOW_MARKER,
   GH_GUARD_REFUSE_MARKER,
 } from "./gh_guard_cli.ts";
@@ -206,6 +212,11 @@ export interface GhGuardShim {
   gitShimPath?: string;
   /** The child environment with the wrapper first on `PATH`. */
   env: Record<string, string>;
+  /**
+   * The Deno cache both wrappers pin for their guard child (Issue #1448) —
+   * the image's read-only seed when it is there, else a per-run directory.
+   */
+  denoDir: GuardDenoDir;
   /** Remove the wrapper directory. Best-effort; warns on failure. */
   cleanup: () => Promise<void>;
 }
@@ -262,6 +273,12 @@ export function renderGhShimScript(opts: {
   verdictDir: string;
   /** The run's own values for {@link GH_PINNED_ENV_VARS}. */
   pinnedEnv?: Readonly<Record<string, string>>;
+  /**
+   * The `DENO_DIR` the guard child runs with (Issue #1448). Pinned in the
+   * wrapper so the agent's environment cannot point the child at a cache it
+   * prepared; see `guard_deno_dir.ts` for why it is the read-only seed.
+   */
+  denoDir: string;
 }): string {
   const claim = opts.claimedIssue;
   const guardArgs = [
@@ -295,6 +312,11 @@ export function renderGhShimScript(opts: {
     else pins.push(`export ${name}=${shellQuote(value)}`);
   }
   const targetEnvLines = [`unset ${cleared.join(" ")}`, ...pins].join("\n");
+  // Issue #1448 — the guard child must not read code back from a cache the
+  // agent can write or choose. Pinned here, beside the gh target variables,
+  // for the same reason they are: the wrapper judges argv, and everything
+  // else the child could be steered by is the run's to set, not the caller's.
+  const denoDirLine = `export DENO_DIR=${shellQuote(opts.denoDir)}`;
 
   const ALLOW_MARKER = GH_GUARD_ALLOW_MARKER;
   const REFUSE_MARKER = GH_GUARD_REFUSE_MARKER;
@@ -314,6 +336,9 @@ set -uo pipefail
 # config file whose aliases it expands. The guard judges argv alone, so the
 # run's own values are re-asserted here rather than inherited from the caller.
 ${targetEnvLines}
+# Issue #1448 — and the cache the guard child reads its own compiled modules
+# back from is the run's choice too: a read-only directory where one exists.
+${denoDirLine}
 
 GUARD_ARGS=(${guardArgs})
 
@@ -487,6 +512,21 @@ export async function installGhGuardShim(
     );
   }
 
+  // Issue #1448: both wrappers pin the guard child's Deno cache — the image's
+  // read-only seed when this host has one, else a directory of this run's
+  // own. Only the container is expected to have the seed; there, its absence
+  // (or a writable one) means the guard's compiled modules are agent-writable
+  // between calls, which is said out loud rather than assumed away.
+  const denoDir = resolveGuardDenoDir(`${dir}/deno-cache`, env);
+  if (!denoDir.readOnly && expectsReadOnlyGuardCache(env)) {
+    warn(
+      `[SECURITY] [GH_GUARD_CACHE_WRITABLE] the guard child's Deno cache ` +
+        `${denoDir.path} is writable by the agent's own uid — no read-only ` +
+        `seed cache is available (${DENO_SEED_DIR_ENV}) — so the guard's ` +
+        `compiled modules can be modified between calls (Issue #1448).`,
+    );
+  }
+
   // Issue #1284: the `git` wrapper goes in the same directory, so one PATH
   // prefix covers both binaries and one cleanup removes both.
   const realGitPath = resolveExecutable("git", pathValue);
@@ -502,6 +542,7 @@ export async function installGhGuardShim(
           guardModulePath: defaultGitGuardModulePath(),
           realGitPath,
           verdictDir: dir,
+          denoDir: denoDir.path,
         }),
       );
       await Deno.chmod(gitShimPath, 0o755);
@@ -516,6 +557,7 @@ export async function installGhGuardShim(
         allowedRepos: opts.allowedRepos,
         ...(opts.claimedIssue ? { claimedIssue: opts.claimedIssue } : {}),
         verdictDir: dir,
+        denoDir: denoDir.path,
         pinnedEnv: Object.fromEntries(
           GH_PINNED_ENV_VARS.flatMap((name) => {
             const value = opts.baseEnv[name];
@@ -541,6 +583,7 @@ export async function installGhGuardShim(
       shimPath,
       ...(gitShimPath ? { gitShimPath } : {}),
       env: { ...opts.baseEnv, PATH: pathValue ? `${dir}:${pathValue}` : dir },
+      denoDir,
       cleanup: async () => {
         try {
           await Deno.remove(dir, { recursive: true });

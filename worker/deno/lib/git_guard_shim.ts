@@ -83,6 +83,11 @@ export function renderGitShimScript(opts: {
   realGitPath: string;
   /** The wrapper's own private directory — where it buffers the verdict. */
   verdictDir: string;
+  /**
+   * The `DENO_DIR` the guard child runs with (Issue #1448) — pinned so the
+   * agent's environment cannot choose it; see `guard_deno_dir.ts`.
+   */
+  denoDir: string;
 }): string {
   // bash 3.2 (macOS) under `set -u` treats an empty array expansion as an
   // unbound variable, hence the ${arr[@]+"${arr[@]}"} guard.
@@ -94,6 +99,11 @@ export function renderGitShimScript(opts: {
 # runs, then delegates to the real binary. A pushed commit message is
 # permanent public history.
 set -uo pipefail
+
+# Issue #1448 — the guard child reads its compiled modules back from this
+# cache, so it is the run's choice (read-only where one exists), not the
+# caller's.
+export DENO_DIR=${shellQuote(opts.denoDir)}
 
 # Fast path: nothing that could carry a message, so there is nothing to
 # redact. The patterns are a strict superset of what the guard rewrites —
