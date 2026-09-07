@@ -246,6 +246,7 @@ Deno.test({
           guardModulePath: `${stub.dir}/absent_guard.ts`,
           realGitPath: `${stub.dir}/git`,
           verdictDir: shim.dir,
+          denoDir: shim.denoDir.path,
         }),
       );
       await Deno.chmod(shim.gitShimPath!, 0o755);

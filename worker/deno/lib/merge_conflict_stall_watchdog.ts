@@ -36,6 +36,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
+import { RepoLoopQuotaStop } from "./repo_loop_quota_stop.ts";
 import type { Logger, Result } from "../types.ts";
 import {
   escalateAsWork,
@@ -755,9 +756,19 @@ export async function scanConflictQueueStalls(
 
   const now = nowMs();
   const stalls: ConflictQueueStall[] = [];
+  // Issue #1515: one quota exhaustion is one line, not one per repository.
+  const quota = new RepoLoopQuotaStop(
+    "Merge-conflict stall watchdog",
+    repos.length,
+    (message) => logger.warn(message),
+  );
 
   for (const repo of repos) {
-    if (isRepoAllowed && !isRepoAllowed(repo)) continue;
+    if (quota.latchedBeforeRepo()) break;
+    if (isRepoAllowed && !isRepoAllowed(repo)) {
+      quota.repoDone();
+      continue;
+    }
 
     let labelled: LabelledPr[];
     try {
@@ -776,6 +787,7 @@ export async function scanConflictQueueStalls(
         ]),
       );
     } catch (error) {
+      if (quota.isQuotaFailure(error)) break;
       logger.warn(
         "Merge-conflict stall watchdog: failed to list labelled PRs",
         {
@@ -783,6 +795,7 @@ export async function scanConflictQueueStalls(
           error: errorMessage(error),
         },
       );
+      quota.repoDone();
       continue;
     }
 
@@ -876,6 +889,7 @@ export async function scanConflictQueueStalls(
         });
       }
     }
+    quota.repoDone();
   }
 
   return stalls;
