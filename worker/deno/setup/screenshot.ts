@@ -48,6 +48,15 @@ export const PLAYWRIGHT_MCP_VERSION = "0.0.75";
  * (ImgBB API key, GitHub App credentials, SSH command, Anthropic API key).
  * Deno's `--deny-env=<list>` takes precedence over `--allow-env`, so even a
  * compromised release cannot read these via `Deno.env.get()`.
+ *
+ * Issue #1288: that qualifier — "via `Deno.env.get()`" — was the whole hole.
+ * `--deny-env` is a permission check *inside* the Deno runtime; it does not
+ * remove the value from the process environment, and `--allow-run` on the
+ * next line lets the server spawn a child that inherits it verbatim
+ * (`printenv GH_TOKEN` walks straight past the deny list). So every name here
+ * is also **blanked in the server's own environment** by
+ * {@link generateMcpConfig}, which is what a child actually inherits. The
+ * flag stays as defence in depth for the in-process read.
  */
 export const PLAYWRIGHT_MCP_DENIED_ENV: readonly string[] = [
   "ANTHROPIC_API_KEY",
@@ -58,6 +67,62 @@ export const PLAYWRIGHT_MCP_DENIED_ENV: readonly string[] = [
   "GIT_SSH_COMMAND",
   "VIBE_IMGBB_API_KEY",
 ];
+
+/**
+ * Hosts serving cloud instance-metadata (IMDS) endpoints.
+ *
+ * Issue #1292: the generated config carries neither `--allowed-origins` nor
+ * `--blocked-origins`, and `@playwright/mcp` defaults to allowing every
+ * origin. The navigation target is attacker-influenced — issue and PR text
+ * drives the agent — so a prompt injection could `browser_navigate` to
+ * `http://169.254.169.254/latest/meta-data/`, screenshot the instance
+ * credentials into `docs/evidence/`, and have the worker publish that image
+ * on a public PR. Blocking these hosts closes the carrier.
+ *
+ * A blocklist, not an allowlist: loopback is navigable by design (the prompts
+ * tell the agent to serve local pages on `127.0.0.1`) and so is any
+ * documentation host a UI task legitimately needs.
+ */
+export const PLAYWRIGHT_MCP_BLOCKED_HOSTS: readonly string[] = [
+  "169.254.169.254", // AWS / Azure / GCP / OpenStack / DigitalOcean IMDS
+  "169.254.170.2", // AWS ECS task metadata
+  "[fd00:ec2::254]", // AWS IMDS over IPv6
+  "metadata.google.internal", // GCP
+  "metadata.goog", // GCP alias
+  "100.100.100.100", // Alibaba Cloud
+];
+
+/**
+ * Build the `--blocked-origins` value: a semicolon-separated origin list.
+ *
+ * `@playwright/mcp` matches each entry as a glob — a bare host becomes
+ * `*://host/**` (any scheme, default port only), and `http://host:*` becomes
+ * `http://host:*` + path (any port). Neither form covers the other, so every
+ * host is emitted in all three.
+ *
+ * Note the package's own caveat: origin filtering is defence in depth, not a
+ * security boundary, and it does not follow redirects.
+ *
+ * @param hosts - Hosts to block (default: {@link PLAYWRIGHT_MCP_BLOCKED_HOSTS}).
+ * @returns The semicolon-separated origin list.
+ * @throws Error when a host contains the `;` separator — that would split one
+ *   entry into two origins that match nothing, leaving a list that looks
+ *   complete and blocks nothing.
+ */
+export function blockedOriginsValue(
+  hosts: readonly string[] = PLAYWRIGHT_MCP_BLOCKED_HOSTS,
+): string {
+  const unexpressible = hosts.find((host) => host.includes(";"));
+  if (unexpressible !== undefined) {
+    throw new Error(
+      `Cannot block "${unexpressible}": a semicolon in the host splits the ` +
+        `origin list, which would silently disable the guard.`,
+    );
+  }
+  return hosts
+    .flatMap((host) => [host, `http://${host}:*`, `https://${host}:*`])
+    .join(";");
+}
 
 /**
  * Where the container image bakes Playwright's browsers (Issue #4069).
@@ -156,11 +221,163 @@ export function resolveBrowserEnvironment(
   const baked = dirExists(candidate);
 
   const override = getEnv("VIBE_BROWSER_PROFILE_DIR")?.trim();
+  if (override && !isAbsolutePath(override, os)) {
+    // Issue #1293: a relative value resolves against the MCP server's working
+    // directory — the clone — so both the profile and the per-navigation
+    // accessibility snapshots would land in the tree and in the next commit.
+    throw new Error(
+      `VIBE_BROWSER_PROFILE_DIR="${override}" is not an absolute path. A ` +
+        `relative value resolves against the clone, so browser state would ` +
+        `be written into the repository. Point it at a disposable absolute ` +
+        `location such as ${defaultProfileDir(os, getEnv)}.`,
+    );
+  }
   const profileDir = override && override !== ""
     ? override
     : defaultProfileDir(os, getEnv);
 
   return { browsersPath: baked ? candidate : undefined, profileDir, baked };
+}
+
+/**
+ * Path semantics for a platform (Issue #1293).
+ *
+ * The guard below compares two directories, so it has to agree with the
+ * platform on what separates a segment and on whether two spellings name the
+ * same directory. Hand-rolled rather than pulled from `@std/path`: nothing in
+ * `worker/deno` imports it, and `deno_lock_declared_deps_test.ts` keeps it out
+ * of the lockfile (Issue #3661) — the same call `disk_space.ts` and
+ * `stale_workdir.ts` already made for their own path helpers.
+ */
+interface PathRules {
+  /** Matches one or more separators. */
+  separator: RegExp;
+  /** Rewrite alternative spellings the OS accepts into the plain one. */
+  canonicalise: (path: string) => string;
+  /** Root prefix of an absolute path, or `""` when the path is relative. */
+  root: (path: string) => string;
+  /** Canonical form of a segment for comparison. */
+  fold: (segment: string) => string;
+}
+
+const POSIX_PATH_RULES: PathRules = {
+  separator: /\/+/,
+  canonicalise: (path) => path,
+  root: (path) => (path.startsWith("/") ? "/" : ""),
+  fold: (segment) => segment,
+};
+
+const WINDOWS_PATH_RULES: PathRules = {
+  separator: /[\\/]+/,
+  // `\\?\C:\x` and `\\.\C:\x` are the same directory as `C:\x`, and
+  // `\\?\UNC\host\share` the same as `\\host\share`. Left in place the device
+  // prefix parses as a UNC root of its own, so the checkout and the profile
+  // would look like they sit on different volumes and never compare.
+  canonicalise: (path) =>
+    path
+      .replace(/^[\\/]{2}[?.][\\/]+UNC[\\/]+/i, "\\\\")
+      .replace(/^[\\/]{2}[?.][\\/]+/, ""),
+  // A drive-qualified path (`C:\x`, `c:/x`) or a UNC share (`\\host\share`).
+  // A drive-less rooted path such as `\x` is deliberately NOT absolute: which
+  // drive it lands on depends on the process, so it cannot be compared.
+  root: (path) =>
+    path.match(/^[A-Za-z]:[\\/]/)?.[0] ??
+      path.match(/^[\\/]{2}[^\\/]+[\\/]+[^\\/]+/)?.[0] ?? "",
+  // Windows paths are case-insensitive and it strips trailing dots and spaces
+  // from a component, so `C:\Repo`, `c:\repo` and `c:\repo. ` are one
+  // directory and must compare equal.
+  fold: (segment) => segment.replace(/[. ]+$/, "").toLowerCase(),
+};
+
+function pathRules(os: typeof Deno.build.os): PathRules {
+  return os === "windows" ? WINDOWS_PATH_RULES : POSIX_PATH_RULES;
+}
+
+/** True when `path` names a location the platform can resolve on its own. */
+function isAbsolutePath(path: string, os: typeof Deno.build.os): boolean {
+  const rules = pathRules(os);
+  return rules.root(rules.canonicalise(path)) !== "";
+}
+
+/**
+ * Canonical `[root, ...segments]` for an absolute path: alternative spellings
+ * rewritten, `.` dropped, `..` applied, separators collapsed, and each part
+ * folded for comparison.
+ */
+function pathParts(rawPath: string, rules: PathRules): string[] {
+  const path = rules.canonicalise(rawPath);
+  const root = rules.root(path);
+  const segments: string[] = [];
+  for (const segment of path.slice(root.length).split(rules.separator)) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      segments.pop();
+      continue;
+    }
+    segments.push(rules.fold(segment));
+  }
+  return [rules.fold(root.split(rules.separator).join("/")), ...segments];
+}
+
+/**
+ * True when `child` is `root` itself or sits beneath it.
+ *
+ * Compares whole segments, so `/workspace-scratch` is not inside `/workspace`
+ * — the trap a string-prefix test walks straight into.
+ */
+function isPathInside(
+  child: string,
+  root: string,
+  os: typeof Deno.build.os,
+): boolean {
+  const rules = pathRules(os);
+  const childParts = pathParts(child, rules);
+  const rootParts = pathParts(root, rules);
+  return childParts.length >= rootParts.length &&
+    rootParts.every((part, index) => part === childParts[index]);
+}
+
+/**
+ * Credential stores the Playwright MCP server has no business touching.
+ *
+ * Issue #1288: `--allow-read` / `--allow-write` are granted unscoped, so a
+ * hijacked publish can read `~/.config/gh/hosts.yml` or `~/.ssh/id_*` without
+ * going near the environment at all. Deny-listing the credential stores is
+ * the targeted counterpart to {@link PLAYWRIGHT_MCP_DENIED_ENV}: an allowlist
+ * of every path the server legitimately reads varies with the host layout
+ * (Deno cache, npm cache, fontconfig, the clone) and a near miss breaks every
+ * screenshot, whereas these paths are never legitimate reads.
+ *
+ * Residual risk, stated plainly: like every Deno permission this binds the
+ * server process only. Launching Chromium requires `--allow-run`, and
+ * Chromium can read a `file://` URL itself, so the container boundary — not
+ * this list — is what bounds a spawned child.
+ *
+ * @param deps - Injectable environment seam (testing).
+ * @returns Absolute paths to deny, in a stable order and without duplicates.
+ */
+export function resolveDeniedPaths(
+  deps: Pick<BrowserEnvironmentDeps, "getEnv"> = {},
+): string[] {
+  const getEnv = deps.getEnv ?? defaultGetEnv;
+  const home = getEnv("HOME")?.trim().replace(/[\\/]+$/, "");
+  const paths = [
+    ...(home
+      ? [
+        `${home}/.ssh`,
+        `${home}/.config/gh`,
+        `${home}/.aws`,
+        `${home}/.gnupg`,
+        `${home}/.netrc`,
+        `${home}/.git-credentials`,
+      ]
+      : []),
+    // Relocated stores: the container points these away from HOME.
+    ...["GH_CONFIG_DIR", "CLAUDE_CONFIG_DIR", "GITHUB_APP_PRIVATE_KEY_PATH"]
+      .map((name) => getEnv(name)?.trim())
+      .filter((value): value is string => !!value && value !== ""),
+  ];
+  return [...new Set(paths)];
 }
 
 /** Configuration for screenshot setup. */
@@ -191,6 +408,17 @@ export interface ScreenshotConfig {
    * {@link resolveBrowserEnvironment}.
    */
   browserEnvironment?: BrowserEnvironment;
+  /**
+   * Paths the MCP server may neither read nor write (Issue #1288). When
+   * omitted they are resolved from the process environment by
+   * {@link resolveDeniedPaths}.
+   */
+  deniedPaths?: readonly string[];
+  /**
+   * Host platform (default: `Deno.build.os`). Decides the path semantics the
+   * profile-directory guard compares with (Issue #1293).
+   */
+  os?: typeof Deno.build.os;
 }
 
 /** Result of a screenshot setup operation. */
@@ -310,17 +538,31 @@ export async function checkLinuxBrowserDeps(
  * browser profile is written to a disposable directory rather than into the
  * mounted checkout.
  *
+ * Issue #1288: permission flags bind the server process, not the children it
+ * spawns under `--allow-run`, so the secrets are additionally blanked in the
+ * `env` block the client hands the server — that is what a child inherits —
+ * and the credential stores in {@link resolveDeniedPaths} are denied so the
+ * otherwise unscoped `--allow-read` / `--allow-write` cannot reach them.
+ *
+ * Issue #1293: the containment check resolves `.`/`..`, honours the platform's
+ * separators and case rules, and refuses a non-absolute path outright — a raw
+ * string prefix against a hard-coded `/` never fired on Windows and a `..`
+ * walk passed straight through it.
+ *
  * @param config - Screenshot setup configuration.
  * @returns The `.mcp.json` document, pretty-printed.
  * @throws Error when the resolved profile directory sits inside the mounted
- *   checkout — browser state must never be written there.
+ *   checkout, or when either directory is not absolute — browser state must
+ *   never be written there.
  */
 export function generateMcpConfig(config: ScreenshotConfig): string {
   const mcpDir = config.mcpConfigDir ?? config.scriptDir;
   const denyEnv = PLAYWRIGHT_MCP_DENIED_ENV.join(",");
-  const browser = config.browserEnvironment ?? resolveBrowserEnvironment();
+  const os = config.os ?? Deno.build.os;
+  const browser = config.browserEnvironment ??
+    resolveBrowserEnvironment({ os });
 
-  assertDisposableProfileDir(browser.profileDir, mcpDir);
+  assertDisposableProfileDir(browser.profileDir, mcpDir, os);
   // The server's output directory is scratch beside the profile, NOT the
   // checkout's docs/evidence (Issue #4355): on every `browser_navigate` the
   // server writes an accessibility snapshot (`page-<ts>.yml`) into
@@ -331,10 +573,31 @@ export function generateMcpConfig(config: ScreenshotConfig): string {
   // gate and the PR expect it.
   const outputDir = defaultOutputDir(browser.profileDir);
 
+  // Issue #1288: an empty deny list must drop the flag — `--deny-read=` with
+  // no value denies every read and breaks the server outright.
+  const deniedPaths = [...(config.deniedPaths ?? resolveDeniedPaths())];
+  // Deno splits permission lists on commas, so a path containing one would
+  // silently deny two paths that do not exist. Fail loud rather than emit a
+  // deny list that looks complete and protects nothing.
+  const unexpressible = deniedPaths.find((path) => path.includes(","));
+  if (unexpressible !== undefined) {
+    throw new Error(
+      `Cannot deny "${unexpressible}": a comma in the path breaks Deno's ` +
+        `permission list, which would silently disable the guard. Move the ` +
+        `credential store to a path without a comma.`,
+    );
+  }
+
   const args = [
     "run",
     "--allow-read",
     "--allow-write",
+    ...(deniedPaths.length > 0
+      ? [
+        `--deny-read=${deniedPaths.join(",")}`,
+        `--deny-write=${deniedPaths.join(",")}`,
+      ]
+      : []),
     "--allow-net",
     "--allow-env",
     `--deny-env=${denyEnv}`,
@@ -358,11 +621,29 @@ export function generateMcpConfig(config: ScreenshotConfig): string {
 
   args.push("--user-data-dir", browser.profileDir);
   args.push("--output-dir", outputDir);
+  // Issue #1292: the navigation target comes from attacker-writable issue and
+  // PR text, so the cloud metadata endpoints are blocked before the agent can
+  // point the browser at them and screenshot instance credentials into a
+  // public PR.
+  args.push("--blocked-origins", blockedOriginsValue());
 
-  const playwright: Record<string, unknown> = { command: "deno", args };
-  if (browser.browsersPath) {
-    playwright.env = { PLAYWRIGHT_BROWSERS_PATH: browser.browsersPath };
-  }
+  // Issue #1288: the child inherits the environment, not the permission
+  // flags, so blank the secrets here — this map is what the MCP client hands
+  // the server, and it is what `printenv` in a grandchild sees. Verified
+  // against the Claude Code client: it MERGES this map over the inherited
+  // environment (a value set here overrides the real one, and PATH/HOME
+  // still reach the server), so blanking removes the secret without
+  // stripping the environment the browser needs to launch.
+  const playwright: Record<string, unknown> = {
+    command: "deno",
+    args,
+    env: {
+      ...Object.fromEntries(PLAYWRIGHT_MCP_DENIED_ENV.map((n) => [n, ""])),
+      ...(browser.browsersPath
+        ? { PLAYWRIGHT_BROWSERS_PATH: browser.browsersPath }
+        : {}),
+    },
+  };
 
   return JSON.stringify({ mcpServers: { playwright } }, null, 2);
 }
@@ -380,11 +661,35 @@ export function defaultOutputDir(profileDir: string): string {
   return `${parent}${sep}${BROWSER_OUTPUT_DIR_NAME}`;
 }
 
-function assertDisposableProfileDir(profileDir: string, mcpDir: string): void {
-  const normalise = (p: string) => p.replace(/[\\/]+$/, "");
-  const root = normalise(mcpDir);
-  const profile = normalise(profileDir);
-  if (root !== "" && (profile === root || profile.startsWith(`${root}/`))) {
+function assertDisposableProfileDir(
+  profileDir: string,
+  mcpDir: string,
+  os: typeof Deno.build.os,
+): void {
+  // Issue #1293: both paths must be absolute before containment means
+  // anything. A relative one is resolved by whoever consumes it — the MCP
+  // server resolves the profile against the clone — so it cannot be compared
+  // here and must not be waved through.
+  if (!isAbsolutePath(profileDir, os)) {
+    throw new Error(
+      `Browser profile directory "${profileDir}" is not an absolute path, ` +
+        `so it resolves against the clone and browser state would be written ` +
+        `into the repository. Point VIBE_BROWSER_PROFILE_DIR at a disposable ` +
+        `absolute location such as /tmp/${BROWSER_PROFILE_DIR_NAME}.`,
+    );
+  }
+
+  const root = mcpDir.trim();
+  if (root === "") return;
+  if (!isAbsolutePath(root, os)) {
+    throw new Error(
+      `Checkout directory "${mcpDir}" is not an absolute path, so the ` +
+        `browser profile cannot be proven to sit outside it. Pass an ` +
+        `absolute directory.`,
+    );
+  }
+
+  if (isPathInside(profileDir, root, os)) {
     throw new Error(
       `Browser profile directory "${profileDir}" is inside the mounted ` +
         `checkout "${mcpDir}". Point VIBE_BROWSER_PROFILE_DIR at a ` +
@@ -513,7 +818,8 @@ export async function setupPlaywrightMcp(
 
   // Issue #4069: a baked browser brings its own system libraries, so the
   // dpkg probe is a host-only concern.
-  const browser = config.browserEnvironment ?? resolveBrowserEnvironment();
+  const browser = config.browserEnvironment ??
+    resolveBrowserEnvironment({ os: config.os ?? Deno.build.os });
   if (Deno.build.os === "linux" && !browser.baked) {
     const browserDeps = await checkLinuxBrowserDeps(config.runCommand);
     if (!browserDeps.ok) {

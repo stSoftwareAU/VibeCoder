@@ -174,6 +174,10 @@ export function extractSubIssueReferences(
   // Match task list items with full GitHub URLs
   if (repo) {
     const escapedRepo = repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // The only interpolated value is the repo slug, escaped on the line above,
+    // so it cannot inject regex syntax; every quantifier around it is anchored
+    // on a literal and none is ambiguous (Issue #1274).
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
     const urlPattern = new RegExp(
       `^-\\s*\\[[ xX]\\]\\s*https://github\\.com/${escapedRepo}/issues/(\\d+)`,
       "gm",
@@ -220,6 +224,17 @@ export function extractSubIssueReferences(
  * matching `#1001`. Code spans are stripped first (Issue #3218) so a
  * `Parent: #N` quoted in a documentation snippet creates no child edge.
  *
+ * Every whitespace run in the pattern is bounded (Issue #1274). `parent\s*:?\s*#`
+ * put two unbounded whitespace quantifiers either side of an optional colon, so
+ * the split between them was fully ambiguous: `Parent` + 65 000 spaces cost
+ * 4.1 s in a single `matchAll`, and this body is a *referenced child issue's*,
+ * fetched once per `- [ ] #N` line of the parent — a padded body per reference
+ * multiplies that on the claim path. `stripCodeSpans` is no defence: it
+ * preserves whitespace runs verbatim. Bounding each run at eight characters
+ * caps the split at a constant while still matching every real spelling
+ * (`Parent: #1`, `Parent:\n#1`, `Part  of #1`); no worker writes eight or more
+ * spaces inside one of these links.
+ *
  * @param body - The child issue body text
  * @param parentNumber - The parent issue number to look for
  * @returns true if the body references the parent
@@ -230,7 +245,7 @@ export function hasBackReference(body: string, parentNumber: number): boolean {
   // A static pattern capturing the number, compared numerically — no dynamic
   // RegExp built from a caller-supplied value (ReDoS/injection risk).
   const parentLinkPattern =
-    /\b(?:part\s+of|child\s+of|parent\s*:?)\s*#(\d+)\b/gi;
+    /\b(?:part\s{1,8}of|child\s{1,8}of|parent\s{0,8}:?)\s{0,8}#(\d+)\b/gi;
   for (const match of scan.matchAll(parentLinkPattern)) {
     if (parseInt(match[1]!, 10) === parentNumber) return true;
   }

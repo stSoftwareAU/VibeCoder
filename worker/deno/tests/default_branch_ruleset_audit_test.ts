@@ -66,6 +66,21 @@ function makeGh(repos: Record<string, FakeRepo>): {
       if (repo.foreign) list.push({ id: 2, name: "Develop" });
       return Promise.resolve(JSON.stringify(list));
     }
+    const detailMatch = endpoint.match(/\/rulesets\/(\d+)$/);
+    if (detailMatch) {
+      // The update path reads the live ruleset before rewriting it
+      // (Issue #1290); the worker's own ruleset carries just its checks rule.
+      return Promise.resolve(
+        JSON.stringify({
+          id: Number(detailMatch[1]),
+          name: VIBE_RULESET_NAME,
+          rules: [{
+            type: "required_status_checks",
+            parameters: { required_status_checks: [{ context: "gitleaks" }] },
+          }],
+        }),
+      );
+    }
     if (/\/rules\/branches\//.test(endpoint)) {
       const rules = [];
       if (repo.own) {

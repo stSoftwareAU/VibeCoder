@@ -118,6 +118,7 @@ import {
   registerTemplate,
 } from "../idle_task_template.ts";
 import { runGhCommand as defaultGhCommand } from "../github.ts";
+import { guardedLabelArgs } from "../guarded_issue_labels.ts";
 import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
 import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
 import { loadPrompt as defaultLoadPrompt } from "../prompt_manager.ts";
@@ -550,6 +551,12 @@ async function fileActionlintMissingIssue(
     "invocations) for the recommended invocation.",
   ].join("\n");
 
+  // Built before the try: a refused label is a programming error and must
+  // fail loud rather than look like a `gh` failure.
+  const labelArgs = guardedLabelArgs(
+    [GITHUB_ACTIONS_AUDIT_LABEL, "severity:high"],
+    "worker/deno/lib/idle_task_templates/github_actions_audit_template.ts",
+  );
   let raw: string;
   try {
     raw = await ghCommandFn([
@@ -561,10 +568,7 @@ async function fileActionlintMissingIssue(
       title,
       "--body",
       body,
-      "--label",
-      GITHUB_ACTIONS_AUDIT_LABEL,
-      "--label",
-      "severity:high",
+      ...labelArgs,
     ]);
   } catch {
     return null;

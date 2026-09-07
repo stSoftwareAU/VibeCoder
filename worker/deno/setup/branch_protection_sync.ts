@@ -76,6 +76,12 @@ export interface SyncResult {
    */
   preserved: string[];
   /**
+   * Types of the live ruleset's other rules carried through unchanged by an
+   * update (`pull_request`, `non_fast_forward`, …) — the full-document PUT
+   * never drops a rule an admin added (Issue #1290).
+   */
+  preservedRules?: string[];
+  /**
    * True when the worker's own stale ruleset was deleted because the branch
    * takes direct pushes or opted out (Issue #4356).
    */
@@ -271,6 +277,7 @@ export async function syncBranchProtectionForRepo(
     deleted: outcome.deleted,
     added: outcome.added,
     preserved: outcome.preserved,
+    preservedRules: outcome.preservedRules,
     skipped: outcome.skipped,
     detail: outcome.detail,
     legacyClassicProtection: outcome.legacyClassicProtection,
