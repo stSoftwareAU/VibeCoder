@@ -20,6 +20,7 @@
 import type { Result } from "../types.ts";
 import { defaultLogger } from "./logger.ts";
 import { isAllowedSessionPath } from "./session_file_policy.ts";
+import { resolveAgentStateDir } from "./agent_state_dir.ts";
 
 /** Maximum total size in bytes for a single repo's session store (50 MB). */
 const DEFAULT_MAX_SESSION_SIZE_BYTES = 50 * 1024 * 1024;
@@ -47,14 +48,18 @@ export interface SessionManagerOptions {
  * @returns Absolute path to the per-repo session store base
  */
 export function getSessionStorePath(workDir: string, repo: string): string {
+  // Issue #1407: rooted on the agent-state volume, a sibling of the work dir.
+  // Session isolation is unchanged — the store is still keyed per owner, per
+  // repository and per work stream — only the root moves, so tightening the
+  // work volume cannot reach the agent's own sessions. Falls back to the work
+  // dir when it names no directory to sit beside.
+  const root = resolveAgentStateDir(workDir) || workDir;
   const parts = repo.split("/");
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
     // Fallback: use the full repo string sanitised
-    return `${workDir}/.claude-sessions/${
-      repo.replace(/[^a-zA-Z0-9_-]/g, "_")
-    }`;
+    return `${root}/.claude-sessions/${repo.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
   }
-  return `${workDir}/.claude-sessions/${parts[0]}/${parts[1]}`;
+  return `${root}/.claude-sessions/${parts[0]}/${parts[1]}`;
 }
 
 /**

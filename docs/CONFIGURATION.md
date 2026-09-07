@@ -2503,8 +2503,8 @@ verbatim:
 ```
 
 A blank config value means unset, exactly as an absent key does. One
-resolution serves the launcher, `run.sh`, `loop.sh`, `run.ps1` and the
-container mount (Issues #872, #873, #1388) — ask for it rather than assuming
+resolution serves the launcher, `run.sh`, `loop.sh`, `run.ps1`, `loop.ps1`
+and the container mount (Issues #872, #873, #1388, #1402) — ask for it rather than assuming
 it:
 
 ```bash

@@ -73,6 +73,7 @@ worker actually uses: `gh`, and one per *enabled* coding-agent provider:
 | the worker checkout          | `/workspace`                                    | `ro` |
 | volume `vibe-work`           | `/home/vibe/auto-issue-work`                    | `rw` |
 | volume `vibe-approval-state` | `/home/vibe/auto-issue-work-approval-state`     | `rw` |
+| volume `vibe-agent-state`    | `/home/vibe/auto-issue-work-agent-state`        | `rw` |
 | the worker log directory     | `/home/vibe/logs`                               | `rw` |
 | staged `.config.json` dir    | `/home/vibe/.vibe-coder/run-config`             | `ro` |
 | `…/credentials/gh`           | `/home/vibe/.vibe-coder/credentials/gh`         | `ro` |
@@ -91,7 +92,8 @@ worker actually uses: `gh`, and one per *enabled* coding-agent provider:
 - **The workspace is a named volume, not a host directory**.
   The work dir — repo clones, build churn, agent transcripts, session
   stores — and its content-approval sibling live on runtime-managed volumes
-  (`vibe-work`, `vibe-approval-state`): guest-owned filesystems at native
+  (`vibe-work`, `vibe-approval-state`, `vibe-agent-state`): guest-owned
+  filesystems at native
   speed where the virtiofs host mount was 50–75× slower on the metadata
   churn git and the build tools are made of. The volumes are keyed by fixed
   names, so their content survives every container **and** every image

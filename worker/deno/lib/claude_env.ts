@@ -42,6 +42,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { resolveAgentStateDir } from "./agent_state_dir.ts";
 import {
   AGENT_ENV_SECRET_NAME_PATTERN,
   buildAgentChildEnv,
@@ -174,7 +175,14 @@ export function buildClaudeChildEnv(
     const workDir = env["WORK_DIR"] ??
       (env["HOME"] ? `${env["HOME"]}/auto-issue-work` : undefined);
     if (workDir) {
-      env["CLAUDE_CONFIG_DIR"] = `${workDir}/.claude-config`;
+      // Issue #1407: the agent's own state rides its own volume, a sibling of
+      // the work dir, so tightening the work volume can never lock the agent
+      // out of its configuration. Falls back to the old in-work-dir location
+      // only when workDir names no directory to sit beside.
+      const agentState = resolveAgentStateDir(workDir);
+      env["CLAUDE_CONFIG_DIR"] = agentState
+        ? `${agentState}/claude-config`
+        : `${workDir}/.claude-config`;
     }
   }
   return env;

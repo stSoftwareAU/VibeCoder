@@ -450,6 +450,144 @@ Deno.test("scrub-gate - a reviewed allowlist entry is the only way an unscanned 
   }
 });
 
+// =============================================================================
+// A staged symlink is an unscanned input (Issue #1412)
+// =============================================================================
+
+/** A tree carrying one symlink, pointing wherever the caller says. */
+async function treeWithSymlink(
+  target: string,
+  rel = "docs/link.md",
+): Promise<string> {
+  const root = await makeTree(CLEAN_TREE);
+  await Deno.symlink(target, `${root}/${rel}`);
+  return root;
+}
+
+Deno.test("scrub-gate - a staged symlink blocks, and the report names its path", async () => {
+  // The target is an operator home path: content the gate never reads, and
+  // exactly what a silent skip would have published.
+  const root = await treeWithSymlink(`${LINUX_HOME}/secret.md`);
+  try {
+    const report = await scanTree({
+      tree: root,
+      identifiersText: IDENTIFIERS,
+      allowlistText: LOGO_ALLOWLIST,
+    });
+    assertEquals(report.errors, []);
+    assertEquals(report.symlinksSkipped, 1);
+    assertEquals(report.perClass["symlink-unscanned"], 1);
+    assertEquals(report.blocking, 1);
+    assert(!gatePasses(report), "a staged symlink must never pass the gate");
+
+    const text = formatGateReport(report);
+    assertStringIncludes(text, "verdict: BLOCKED");
+    assertStringIncludes(text, "[symlink-unscanned] docs/link.md");
+    assertStringIncludes(text, "symlinks-skipped: 1");
+    // The gate never followed the link, so the target never reaches the report.
+    assert(!text.includes(LINUX_HOME), "report leaks the symlink target");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("scrub-gate - a symlinked directory is reported, not descended into", async () => {
+  const root = await treeWithSymlink("../worker", "docs/tree-link");
+  try {
+    const report = await scanTree({
+      tree: root,
+      identifiersText: IDENTIFIERS,
+      allowlistText: LOGO_ALLOWLIST,
+    });
+    assertEquals(report.symlinksSkipped, 1);
+    // Three real files only: nothing was pulled in through the link.
+    assertEquals(report.filesScanned, 3);
+    assertEquals(report.perClass["symlink-unscanned"], 1);
+    assert(!gatePasses(report));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("scrub-gate - a reviewed allowlist entry is the only way a symlink passes", async () => {
+  const root = await treeWithSymlink("README.md");
+  try {
+    const allowed = await scanTree({
+      tree: root,
+      identifiersText: IDENTIFIERS,
+      allowlistText: LOGO_ALLOWLIST +
+        "# Reviewed: fixture link to the tree's own README, target inspected\n" +
+        "symlink-unscanned docs/link.md *\n",
+    });
+    assertEquals(allowed.errors, []);
+    assertEquals(allowed.blocking, 0);
+    assert(gatePasses(allowed));
+    assertStringIncludes(formatGateReport(allowed), "verdict: PASS");
+
+    // An entry naming a different path does not cover it.
+    const elsewhere = await scanTree({
+      tree: root,
+      identifiersText: IDENTIFIERS,
+      allowlistText: LOGO_ALLOWLIST +
+        "# Reviewed: names a path that is not the link\n" +
+        "symlink-unscanned docs/other.md *\n",
+    });
+    assertEquals(elsewhere.blocking, 1);
+    assert(!gatePasses(elsewhere));
+
+    // An entry without a justifying comment is a gate error, not an exemption.
+    const unjustified = await scanTree({
+      tree: root,
+      identifiersText: IDENTIFIERS,
+      allowlistText: LOGO_ALLOWLIST + "symlink-unscanned docs/link.md *\n",
+    });
+    assert(unjustified.errors.length >= 1);
+    assert(!gatePasses(unjustified));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("scrub-gate - removing the symlink is the other way past the gate", async () => {
+  const root = await treeWithSymlink("README.md");
+  try {
+    await Deno.remove(`${root}/docs/link.md`);
+    const report = await scanTree({
+      tree: root,
+      identifiersText: IDENTIFIERS,
+      allowlistText: LOGO_ALLOWLIST,
+    });
+    assertEquals(report.symlinksSkipped, 0);
+    assertEquals(report.blocking, 0);
+    assert(gatePasses(report));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("scrub-gate - a skipped symlink that raised no finding cannot report PASS", () => {
+  // The #1412 counterpart of the #1265 invariant: a counter with no matching
+  // coverage finding describes a tree the gate did not fully examine.
+  const report = {
+    tree: "/staged",
+    filesScanned: 3,
+    filesSkippedBinary: 0,
+    symlinksSkipped: 1,
+    findings: [],
+    blocking: 0,
+    allowlisted: 0,
+    errors: [],
+    allowlistEntries: 0,
+    unusedAllowlist: [],
+    perClass: {},
+    perTopDir: {},
+  };
+  assert(!gatePasses(report), "an unaccounted symlink must not read as a pass");
+  const text = formatGateReport(report);
+  assertStringIncludes(text, "verdict: BLOCKED");
+  assertStringIncludes(text, "1 symlink(s) unaccounted for");
+});
+
 Deno.test("scrub-gate - a skipped file that raised no finding cannot report PASS", () => {
   // Defends the invariant directly: even a report assembled with the counter
   // set and no matching finding must not read as a pass.
@@ -457,6 +595,7 @@ Deno.test("scrub-gate - a skipped file that raised no finding cannot report PASS
     tree: "/staged",
     filesScanned: 3,
     filesSkippedBinary: 1,
+    symlinksSkipped: 0,
     findings: [],
     blocking: 0,
     allowlisted: 0,

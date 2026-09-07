@@ -32,6 +32,11 @@ set -uo pipefail
 #           failure of this host: run.sh exits with the runtime client's own
 #           status (255 when its container is stopped under it), so it declares
 #           the signal in a marker the recorder consumes.
+#   #1403 — loop.sh and loop.ps1 are held to one supervision contract by
+#           worker/deno/tests/loop_parity_test.ts: a capability added or
+#           removed here without its PowerShell twin fails the gate, and the
+#           three intended asymmetries are named exceptions in
+#           worker/deno/lib/loop_contract.ts rather than silent drift.
 #   #4072 — a failed launcher is now recorded rather than retried blindly: the
 #           worker's `container-restart-backoff` command grows the wait across
 #           consecutive failures, records the recovery as a self-heal event and
