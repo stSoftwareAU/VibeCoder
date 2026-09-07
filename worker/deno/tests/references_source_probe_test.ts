@@ -142,6 +142,14 @@ Deno.test("normalisePageText - a spaced or attributed end tag still closes the b
     normalisePageText("<script>var nonce='abc123'</script\n><p>Visible</p>"),
     "Visible",
   );
+  // An end tag carrying junk closes the element too — the other shape
+  // js/bad-tag-filter names.
+  assertEquals(
+    normalisePageText(
+      '<script>var nonce="abc123"</script foo="1"><p>Visible</p>',
+    ),
+    "Visible",
+  );
 });
 
 Deno.test("normalisePageText ignores whitespace-only differences", () => {

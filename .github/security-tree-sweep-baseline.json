@@ -244,7 +244,8 @@
       "rule": "useless-assignment-to-local",
       "line": 5513,
       "snippet": "fleetSummaryEmitted = true;",
-      "reason": "The write is the last one on the flag, so the analyser is right that nothing reads it. Kept deliberately: it is the second half of the `if (!fleetSummaryEmitted)` guard that stops the fleet summary being emitted twice (Issue #855), and the `finally` block it sits in is exactly where a later `await` would be appended — dropping the write would make the guard silently wrong then. A code-quality observation, not a security finding (Issue #1518 triage, js/useless-assignment-to-local)."
+      "reason": "The write is the last one on the flag, so the analyser is right that nothing reads it. Kept deliberately: it is the second half of the `if (!fleetSummaryEmitted)` guard that stops the fleet summary being emitted twice (Issue #855), and the `finally` block it sits in is exactly where a later `await` would be appended — dropping the write would make the guard silently wrong then. A code-quality observation, not a security finding (Issue #1518 triage, js/useless-assignment-to-local).",
+      "issue": 1518
     }
   ]
 }

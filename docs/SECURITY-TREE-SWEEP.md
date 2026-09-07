@@ -233,15 +233,38 @@ says so in its Sources table.
 
 ## The 2026-09 triage, and whether `sweep` should be required
 
-The gate was red on every run from 2026-09-06 (Issue #1518). The thirteen
-unbaselined findings of the 2026-09-07 run separated into three classes,
-which is how any future backlog should be read.
+The gate was red on every run from 2026-09-06 (Issue #1518). The issue counted
+fourteen unbaselined findings; by the 13:16 run of 2026-09-07 there were
+thirteen, because the fourteenth was the mirror of #1463 and that issue had
+closed — the whole of class (c), *already fixed, finding now gone*, cleared
+itself while the issue was being written. That is the class working as
+intended, and it is why no triage was owed to it.
+
+The thirteen that remained separated into three classes, which is how any
+future backlog should be read.
 
 | Class | What it was | What it took |
 | ----- | ----------- | ------------ |
-| Located CodeQL results | Ten results in real files | Two fixed in code (`references_source_probe.ts` missed `</script >`, js/bad-tag-filter; a no-op `.replace(":", ":")` in `security_scan_defensive_labels_test.ts`, js/identity-replacement); seven baselined as false positives and one as accepted, each with its own reason |
-| Worker-scan findings | Three open `security` issues | Neither fixed nor baselined — classified `tracked` (above). They clear when their issues close, and the backlog refills, which is why the class needed a status rather than a triage pass |
-| Stale baseline entries | Ten `unsafe-regex` entries matching nothing | Removed. `p/default` no longer emits `detect-non-literal-regexp`; the reasoning stays in this file's history if it ever returns |
+| (a) Located CodeQL results | Ten results in real files | Two fixed in code (`references_source_probe.ts` did not close on `</script >` or `</script foo>`, js/bad-tag-filter; a no-op `.replace(":", ":")` in `security_scan_defensive_labels_test.ts`, js/identity-replacement) — both clear when CodeQL next analyses the tree. Seven baselined as false positives and one as accepted, each with its own reason |
+| (b) Worker-scan findings | Three open `security` issues | Neither fixed nor baselined — classified `tracked` (above). Two more (#1548, #1549) arrived during the fix, which is the point: the class refills, so it needed a status rather than a triage pass |
+| (c) Stale findings | The #1463 mirror, gone before the fix | Nothing. A closed issue leaves the worker source on its own |
+
+Separately, ten `unsafe-regex` baseline entries matched nothing and were
+removed: `p/default` no longer emits `detect-non-literal-regexp`, and a stale
+entry suppresses nothing. If that rule ever returns, the ten reasons are in
+the history of the baseline file, on the Issue #1518 commit.
+
+The one **accepted** entry (`run_core.ts`, js/useless-assignment-to-local) is
+recorded in the baseline with its reasoning and tracked against Issue #1518,
+**not** as a threat-model residual risk. R-entries state exposures a reader
+must weigh; a write nobody reads carries none, and adding it to that table
+would dilute the entries that do. An accepted finding with real exposure still
+belongs in [the threat model](THREAT-MODEL.md).
+
+A tracked finding keeps its severity in the summary table and is named with
+its issue in the report and on the CLI, so an ageing critical stays visible
+even though it does not fail the run. Closing it is the security backlog's
+job; the sweep's job is to say whether anything is **untriaged**.
 
 **Is `sweep` a required status check?** Not yet, and deliberately. It blocks
 nothing today, which is what let it stay red for a fortnight. Making it

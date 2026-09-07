@@ -2315,11 +2315,13 @@ function buildSummary(counts: {
   const scope = `${counts.rows} deduplicated finding(s) across ` +
     `${counts.trackedFiles} tracked file(s)`;
   if (counts.ok) {
-    const tracked = counts.trackedRows > 0
-      ? `, ${counts.trackedRows} tracked by an open issue`
-      : "";
-    return `✅ Whole-tree security sweep clean: ${scope}, all baselined` +
-      `${tracked}.`;
+    // A tracked finding is not baselined — it is an open issue — so the
+    // clean line must not claim it was (Issue #1518).
+    const triaged = counts.trackedRows > 0
+      ? `all baselined or tracked (${counts.trackedRows} tracked by an ` +
+        `open issue)`
+      : "all baselined";
+    return `✅ Whole-tree security sweep clean: ${scope}, ${triaged}.`;
   }
   const problems: string[] = [];
   if (counts.baselineErrors > 0) {
@@ -2336,6 +2338,9 @@ function buildSummary(counts: {
     if (parts.length > 0) text += ` (${parts.join(", ")})`;
     problems.push(text);
   }
+  const tracked = counts.trackedRows > 0
+    ? `, ${counts.trackedRows} tracked by an open issue`
+    : "";
   return `❌ Whole-tree security sweep failed: ${problems.join(", ")} ` +
-    `(${scope}).`;
+    `(${scope}${tracked}).`;
 }
