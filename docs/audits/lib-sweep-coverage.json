@@ -497,6 +497,7 @@
         "worker/deno/lib/content_approval_state_dir.ts",
         "worker/deno/lib/context_budget_guard.ts",
         "worker/deno/lib/cost_estimate.ts",
+        "worker/deno/lib/current_models.ts",
         "worker/deno/lib/custom_label_dispatch.ts",
         "worker/deno/lib/custom_label_pr_dispatch.ts",
         "worker/deno/lib/custom_prompt_loader.ts",
