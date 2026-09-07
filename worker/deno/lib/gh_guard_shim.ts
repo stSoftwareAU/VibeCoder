@@ -177,7 +177,11 @@ export type GhGuardShimOutcome =
 
 /** An installed shim, its child environment, and its cleanup hook. */
 export interface GhGuardShim {
-  /** Directory holding the wrapper (prepended to the child's `PATH`). */
+  /**
+   * Directory holding the wrapper (prepended to the child's `PATH`). It also
+   * holds the per-`gh`-call verdict buffers and any masked `--input` body the
+   * guard materialised, so removing it removes those too (Issue #1364).
+   */
   dir: string;
   /** Absolute path of the wrapper itself. */
   shimPath: string;
@@ -252,6 +256,12 @@ export function renderGhShimScript(opts: {
         ...claim.allowedVerbs.flatMap((v) => ["--allow-issue-verb", v]),
       ]
       : []),
+    // Issue #1364 — a masked `gh api --input` body is a fresh file the child
+    // reads after the guard has exited, so the guard cannot remove it. It
+    // lands in the wrapper's own per-spawn directory instead of TMPDIR, and
+    // dies with it when the spawn site cleans up.
+    "--body-dir",
+    opts.verdictDir,
   ].map(shellQuote).join(" ");
 
   // Issue #3866: clear what the run never sets, pin what it does. `unset`
@@ -290,9 +300,10 @@ GUARD_ARGS=(${guardArgs})
 # Issue #3938 — the guard returns the argv to run, with the published bodies
 # redacted, as NUL-terminated fields. A NUL cannot cross a command
 # substitution, so the verdict is buffered in the wrapper's own private
-# directory (0700, per run, removed when the child exits) instead. No external
-# command is used for it: a security wrapper must not need a PATH lookup, and
-# the agent controls its own PATH.
+# directory (0700, per spawn, removed when the child exits) instead. No
+# external command is used for it: a security wrapper must not need a PATH
+# lookup, and the agent controls its own PATH. Issue #1364 — a masked
+# --input body is written to that same directory, so it too is removed with it.
 GUARD_OUT=${shellQuote(opts.verdictDir)}/verdict.$$
 if ! : > "$GUARD_OUT"; then
   printf '%s\\n' "[SECURITY] [GH_GUARD_ERROR] could not create the guard's verdict file — refusing to run this gh command." >&2
@@ -301,6 +312,7 @@ fi
 
 status=0
 ${shellQuote(opts.denoPath)} run --quiet --no-config --no-lock --allow-read \\
+  --allow-write=${shellQuote(opts.verdictDir)} \\
   ${shellQuote(opts.guardModulePath)} \\
   \${GUARD_ARGS[@]+"\${GUARD_ARGS[@]}"} -- "$@" >"$GUARD_OUT" || status=$?
 

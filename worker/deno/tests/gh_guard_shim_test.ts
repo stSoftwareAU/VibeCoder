@@ -30,6 +30,7 @@ import {
   seedWriteRepoAllowlist,
 } from "../lib/write_repo_allowlist.ts";
 import { WORKER_FORBIDDEN_LABEL_LITERALS } from "../lib/worker_label_guard.ts";
+import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 
 /** The `gh` target variables the wrapper is expected to control (#3866). */
 const GH_TARGET_ENV_NAMES = [
@@ -97,6 +98,16 @@ function baseEnvWithoutGhTargets(path: string): Record<string, string> {
   const env: Record<string, string> = { ...Deno.env.toObject(), PATH: path };
   for (const name of GH_TARGET_ENV_NAMES) delete env[name];
   return env;
+}
+
+/** Whether `path` still exists on disk (Issue #1364 lifetime assertions). */
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Read the stub's call log (empty string when it never ran). */
@@ -1184,6 +1195,109 @@ Deno.test({
     } finally {
       await shim.cleanup();
       await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1364 — the masked `--input` copy lives and dies with the shim.
+//
+// The guard used to materialise a redacted body with a bare
+// `Deno.makeTempFileSync()`: nothing owned the file, so TMPDIR grew for the
+// life of the container. It now writes into the wrapper's own per-spawn
+// directory, which the spawn site removes once the child has exited.
+// ---------------------------------------------------------------------------
+
+/** A realistic GitHub token shape, matching the redaction tests (#3938). */
+const SHIM_TOKEN_SAMPLE = `ghp_${"a1B2c3D4e5".repeat(4)}`;
+
+/**
+ * A stub `gh` that logs its arguments and the contents of its `--input` file.
+ *
+ * Only bash builtins: the shim's PATH holds the wrapper and this stub alone,
+ * so no external command would resolve.
+ */
+async function makeInputEchoingStubGh(): Promise<StubGh> {
+  const dir = await Deno.makeTempDir({ prefix: "gh_guard_input_stub_" });
+  const log = `${dir}/calls.log`;
+  await Deno.writeTextFile(
+    `${dir}/gh`,
+    `#!/bin/bash\n` +
+      `printf '%s\\n' "$@" >> "${log}"\n` +
+      `prev=""\n` +
+      `for a in "$@"; do\n` +
+      `  if [ "$prev" = "--input" ]; then printf 'BODY:%s\\n' "$(<"$a")" >> "${log}"; fi\n` +
+      `  prev="$a"\n` +
+      `done\n` +
+      `printf 'stub-gh-ok\\n'\n`,
+  );
+  await Deno.chmod(`${dir}/gh`, 0o755);
+  return { dir, log };
+}
+
+Deno.test({
+  name:
+    "gh-guard-shim #1364 - a masked --input body is delivered from the shim's own directory and leaves TMPDIR clean",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const stub = await makeInputEchoingStubGh();
+    const tmp = await Deno.makeTempDir({ prefix: "gh_guard_tmpdir_" });
+    const shim = expectInstalled(
+      await installGhGuardShim({
+        baseEnv: { ...Deno.env.toObject(), PATH: stub.dir, TMPDIR: tmp },
+        active: true,
+        allowedRepos: [OWN_REPO],
+      }),
+    );
+    try {
+      const body = await writeInputBody(stub.dir, "comment.json", {
+        body: `token ${SHIM_TOKEN_SAMPLE}`,
+      });
+      const result = await runShim(shim.shimPath, shim.env, [
+        "api",
+        `repos/${OWN_REPO}/issues/1/comments`,
+        "--input",
+        body,
+      ]);
+
+      assertEquals(result.code, 0, `expected exit 0, stderr: ${result.stderr}`);
+      const log = await readLog(stub.log);
+      assertStringIncludes(log, REDACTION_PLACEHOLDER);
+      assertEquals(
+        log.includes(SHIM_TOKEN_SAMPLE),
+        false,
+        "the secret must never reach gh",
+      );
+
+      // The delivered body is a fresh file inside the wrapper's own directory,
+      // never the agent's file and never a loose temp file.
+      const lines = log.split("\n");
+      const masked = lines[lines.indexOf("--input") + 1] ?? "";
+      assert(
+        masked.startsWith(`${shim.dir}/`),
+        `expected the masked body under ${shim.dir}, got ${masked}`,
+      );
+      assertEquals(
+        [...Deno.readDirSync(tmp)].length,
+        0,
+        "no masked body may be left loose in TMPDIR",
+      );
+
+      // The agent's own file is untouched.
+      assertStringIncludes(await Deno.readTextFile(body), SHIM_TOKEN_SAMPLE);
+
+      // The spawn site's cleanup takes the masked body with it.
+      await shim.cleanup();
+      assertEquals(
+        await pathExists(masked),
+        false,
+        "the masked body must not outlive the shim directory",
+      );
+    } finally {
+      await Deno.remove(shim.dir, { recursive: true }).catch(() => {});
+      await Deno.remove(stub.dir, { recursive: true });
+      await Deno.remove(tmp, { recursive: true });
     }
   },
 });
