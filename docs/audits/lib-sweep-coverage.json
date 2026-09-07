@@ -748,6 +748,7 @@
         "worker/deno/lib/repo_availability.ts",
         "worker/deno/lib/repo_checkout_path.ts",
         "worker/deno/lib/repo_context_reader.ts",
+        "worker/deno/lib/repo_loop_quota_stop.ts",
         "worker/deno/lib/reproduction_status_gate.ts",
         "worker/deno/lib/required_status_check_guidance.ts",
         "worker/deno/lib/requirements_rubric.ts",

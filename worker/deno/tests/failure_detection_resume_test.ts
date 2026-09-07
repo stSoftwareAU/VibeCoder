@@ -228,6 +228,38 @@ Deno.test("findFailureDetectionRepairParents - a failing repo never hides the ot
   assertEquals(parents.map((p) => p.number), [3]);
 });
 
+Deno.test("findFailureDetectionRepairParents - an exhausted quota costs one call and one line, and skips the rest (Issue #1515)", async () => {
+  const seen: string[] = [];
+  const warnings: string[] = [];
+  const parents = await findFailureDetectionRepairParents({
+    repos: Array.from({ length: 19 }, (_, i) => `owner/repo-${i}`),
+    ghCommandFn: (args) => {
+      seen.push(args[args.indexOf("--repo") + 1] ?? "");
+      return Promise.reject(
+        new Error(
+          "gh command failed (exit 1): GraphQL: API rate limit already exceeded for user ID 1.",
+        ),
+      );
+    },
+    logger: {
+      info: () => {},
+      warn: (message: string) => {
+        warnings.push(message);
+      },
+    },
+  });
+
+  assertEquals(parents, []);
+  assertEquals(seen.length, 1, "the first refusal is the last call");
+  assertEquals(warnings.length, 1, warnings.join("\n"));
+  assert(
+    warnings[0]!.startsWith(
+      "Failure-Detection resume: GraphQL quota exhausted",
+    ),
+  );
+  assert(warnings[0]!.includes("skipped 19 of 19 repo(s)"));
+});
+
 Deno.test("findFailureDetectionRepairParents - skips malformed repo names and malformed responses", async () => {
   const parents = await findFailureDetectionRepairParents({
     repos: ["not-a-repo", "owner/good"],

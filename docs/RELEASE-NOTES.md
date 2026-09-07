@@ -32,6 +32,7 @@ if your worker login is read-only on any monitored repository.**
 | The housekeeping merged-PR issue sweep pre-flights the quota once, stops at the first rate-limit refusal and reports one skipped sweep instead of one failure per repository; it reads through the shared scan and timeline caches and keeps its own watermark (`merged_issue_sweep_watermarks.json` in the work directory) | #1477 |
 | A GitHub mutation that runs while the write-repo allowlist is inactive is still allowed, but the first of each kind per context now logs `[SECURITY] [WRITE_REPO_UNSEEDED]` and journals an `unseeded-<verb>` audit event, so an unseeded write path is visible instead of indistinguishable from a protected one | #1425 |
 | The agent-side `gh`/`git` guard wrappers pin the guard child's `DENO_DIR` to the image's read-only Deno seed, so neither the agent's environment nor its uid can feed the guard the compiled modules it reads back on every call; a container without a read-only seed reports `[SECURITY] [GH_GUARD_CACHE_WRITABLE]` | #1448 |
+| The merge-conflict stall watchdog, the Failure-Detection resume collector and the auto-merge sweep stop at the first GraphQL quota refusal and log one line naming how many repositories were left for the next cycle, instead of one warning per repository; the behaviour is one shared helper (`repo_loop_quota_stop.ts`) for every per-repository loop | #1515 |
 
 ### In detail
 
@@ -97,6 +98,16 @@ memory and persists nothing. Expect each agent `gh` call to spend about 0.2 s
 more in the guard. A container without a read-only seed falls back to a
 per-run directory and logs `[SECURITY] [GH_GUARD_CACHE_WRITABLE]` once per
 agent spawn; a developer host falls back silently. Nothing to configure.
+
+Three more per-repository scans — the merge-conflict stall watchdog, the
+Failure-Detection resume collector and the auto-merge sweep — now stop at the
+first primary-quota refusal (Issue #1515), as the merged-PR issue sweep has
+since #1477. One exhaustion used to produce one WARNING per monitored
+repository from each of them, thirty-odd lines a second that read as a
+fleet-wide failure; it is now one line per scan: `<scan>: GraphQL quota
+exhausted — skipped N of M repo(s) this cycle, resumes next cycle: <reason>`.
+An ordinary per-repository failure is still reported per repository, and a
+healthy quota still visits every repository. Nothing to configure.
 
 ## 1.5.5 — the log directory comes from the file alone
 
