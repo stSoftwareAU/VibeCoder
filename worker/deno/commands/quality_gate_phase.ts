@@ -9,7 +9,9 @@
  * Arguments:
  *   --repo                      Repository in "owner/repo" format
  *   --quality-script            Path to quality script (default: ./quality.sh)
- *   --baseline-quality-passed   Whether baseline quality passed (default: "true")
+ *   --baseline-quality-passed   Whether baseline quality passed — `true`,
+ *                               `false`, or omitted for true. A value that
+ *                               is neither is refused (Issue #1266).
  *   --baseline-quality-output   Baseline quality output (default: "")
  *   --timeout-seconds           Default timeout in seconds (default: 600)
  *
@@ -20,6 +22,7 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import { coerceBooleanFlag } from "../lib/command_args.ts";
 import {
   buildFinalFailureMessage,
   type QualityGateRunResult,
@@ -43,7 +46,21 @@ export const qualityGatePhaseCommand: Command = {
   ): Promise<CommandResult<QualityGatePhaseData>> {
     const repo = String(args["repo"] ?? "");
     const qualityScript = String(args["quality-script"] ?? "./quality.sh");
-    const baselineQualityPassed = args["baseline-quality-passed"] !== "false";
+    // Compared against the string "false" this flag could never be turned
+    // off, so a red baseline was always reported as green and its failures
+    // were attributed to the change under test (Issue #1266).
+    const baselineQualityPassedResult = coerceBooleanFlag(
+      args["baseline-quality-passed"],
+      "baseline-quality-passed",
+      true,
+    );
+    if (!baselineQualityPassedResult.ok) {
+      return {
+        success: false,
+        message: baselineQualityPassedResult.error.message,
+      };
+    }
+    const baselineQualityPassed = baselineQualityPassedResult.value;
     const baselineQualityOutput = String(args["baseline-quality-output"] ?? "");
     const timeoutSeconds = Number(args["timeout-seconds"] ?? 600);
 
@@ -56,7 +73,7 @@ export const qualityGatePhaseCommand: Command = {
       repo,
       qualityScript,
       repoConfigs: config.repoConfig,
-      baselineQualityPassed: baselineQualityPassed ? true : false,
+      baselineQualityPassed,
       baselineQualityOutput: baselineQualityOutput || undefined,
       defaultTimeoutSeconds: timeoutSeconds,
     });
