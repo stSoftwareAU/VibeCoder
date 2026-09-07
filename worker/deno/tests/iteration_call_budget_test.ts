@@ -53,6 +53,7 @@ import { assert, assertEquals } from "@std/assert";
 
 import { findOldestIssue } from "../lib/find_oldest_issue.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
+import { prefetchFleetOpenPrs } from "../lib/fleet_pr_prefetch.ts";
 import { TimelineBatchRegistry } from "../lib/timeline_batch_registry.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
@@ -407,6 +408,102 @@ Deno.test(
       );
     } finally {
       await cleanup();
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Cross-repo open-PR prefetch (Issue #1486)
+// ---------------------------------------------------------------------------
+
+/**
+ * A `gh` mock that also answers the cross-repo open-PR search.
+ *
+ * Delegates everything else to {@link createRecordingMockGh}, so both halves
+ * of the comparison below count calls the same way.
+ */
+function createPrefetchAwareMockGh(): (args: string[]) => Promise<string> {
+  const inner = createRecordingMockGh();
+  return (args: string[]): Promise<string> => {
+    if (args.some((a) => a.startsWith("q=") && a.includes("is:pr"))) {
+      recordGhCall(args);
+      return Promise.resolve(JSON.stringify({
+        data: {
+          search: {
+            issueCount: 0,
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [],
+          },
+        },
+      }));
+    }
+    return inner(args);
+  };
+}
+
+Deno.test(
+  "iteration call budget - the cross-repo prefetch removes the per-repo open-PR listings (Issue #1486)",
+  async () => {
+    const config = makeConfig();
+    const guardAuthors = ["bot", "alice"];
+
+    // --- Before: one cold iteration on the per-repo path ---
+    const before = await makeFreshCache();
+    let beforePrList = 0;
+    try {
+      resetGhCallMetrics();
+      const found = await findOldestIssue(config, {
+        githubUser: "bot",
+        ghCommandFn: createRecordingMockGh(),
+        cache: before.cache,
+        timelineBatchRegistry: new TimelineBatchRegistry(),
+        selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+      });
+      assertEquals(found.found, true);
+      beforePrList = getGhCallMetrics().bySubCommand["pr list"] ?? 0;
+    } finally {
+      await before.cleanup();
+    }
+
+    // --- After: the same cold iteration, preceded by one search per owner ---
+    const after = await makeFreshCache();
+    try {
+      resetGhCallMetrics();
+      const mockGh = createPrefetchAwareMockGh();
+      const outcome = await prefetchFleetOpenPrs({
+        repos: REPOS,
+        guardAuthors,
+        cache: after.cache,
+        ghCommandFn: mockGh,
+      });
+      assertEquals(
+        outcome.searchCalls,
+        1,
+        "three repos share one owner, so one search covers them all",
+      );
+
+      const found = await findOldestIssue(config, {
+        githubUser: "bot",
+        ghCommandFn: mockGh,
+        cache: after.cache,
+        timelineBatchRegistry: new TimelineBatchRegistry(),
+        selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+      });
+      assertEquals(found.found, true);
+      const afterPrList = getGhCallMetrics().bySubCommand["pr list"] ?? 0;
+
+      // The open half of the fan-out (repos x guard authors) is gone; the
+      // closed half keeps its per-repo listing by design, so the remainder
+      // is exactly that half.
+      const openHalf = REPOS.length * guardAuthors.length;
+      assertEquals(
+        afterPrList,
+        beforePrList - openHalf,
+        `expected the ${openHalf} open-PR listings to be served by the ` +
+          `prefetch (before=${beforePrList}, after=${afterPrList})`,
+      );
+    } finally {
+      await after.cleanup();
     }
   },
 );

@@ -1042,6 +1042,22 @@ export interface RunCoreDeps {
   resetIterationCaches?: () => void;
 
   /**
+   * Prefetch the fleet's open-PR listings cross-repo (Issue #1486).
+   *
+   * One GitHub search per repository owner replaces the per-repo per-author
+   * `gh pr list` fan-out: the result is written into the same per-cycle cache
+   * entries the duplicate guard, the maintenance scans and the invitation
+   * lookup already read, so those passes are served without a call each.
+   * Called once per iteration, after the trusted-author refresh whose
+   * `allowed_authors` decide which logins to search for.
+   *
+   * A failure is logged and the iteration continues on the per-repo path;
+   * the saving is forfeited, never the correctness. Optional so existing
+   * test deps can omit it.
+   */
+  prefetchFleetOpenPrs?: () => Promise<void>;
+
+  /**
    * Refresh the trusted-author snapshot at the top of each cycle
    * (Issue #253).
    *
@@ -4693,6 +4709,27 @@ export async function runCoreLoop(
               );
               await deps.sleep(config.sleepInterval * 1000);
               continue;
+            }
+          }
+
+          // --- Cross-repo open-PR prefetch (Issue #1486) ---
+          // One search per owner fills the listing caches the duplicate
+          // guard, the maintenance scans and the invitation lookup read, so
+          // this cycle does not issue ~130 per-repo per-author listings. Runs
+          // after the trust refresh because `allowed_authors` decides which
+          // logins are searched. A failure is reported and the cycle
+          // continues on the per-repo path.
+          if (deps.prefetchFleetOpenPrs) {
+            try {
+              await deps.prefetchFleetOpenPrs();
+            } catch (prefetchErr) {
+              deps.logError(
+                `[fleet-pr-prefetch] cross-repo prefetch failed: ${
+                  prefetchErr instanceof Error
+                    ? prefetchErr.message
+                    : String(prefetchErr)
+                } - falling back to per-repo listings this cycle`,
+              );
             }
           }
 
