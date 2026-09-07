@@ -257,6 +257,11 @@ async function buildHostFixture(
     volumes: {
       work: `vibe-tabletop-work-${token}`,
       approvalState: `vibe-tabletop-approval-${token}`,
+      // Issue #1407: this was omitted while `agentState` was optional, so the
+      // tabletop — an adversarial exercise — isolated two volumes and then
+      // mounted the PRODUCTION `vibe-agent-state` for the third. Every volume
+      // this container sees is per-run and thrown away with it.
+      agentState: `vibe-tabletop-agent-${token}`,
     },
   });
 

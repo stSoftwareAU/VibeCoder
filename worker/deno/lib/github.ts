@@ -22,7 +22,6 @@ import {
 } from "./validation.ts";
 import { retryWithBackoff } from "./retry.ts";
 import { isReservedLabel } from "./config_defaults.ts";
-import { recordGhCall } from "./gh_call_metrics.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
 import { probeGraphqlQuota } from "./graphql_quota_probe.ts";
 import {
@@ -30,7 +29,7 @@ import {
   isPrimaryRateLimitMessage,
   isQuotaExemptGhCall,
   latchPrimaryQuota,
-  primaryQuotaLatchedUntil,
+  primaryQuotaSkipMessage,
 } from "./primary_quota_latch.ts";
 import {
   formatRateLimitReset,
@@ -238,10 +237,9 @@ export async function runGhCommandRaw(
     throw new Error(primaryQuotaSkipMessage());
   }
 
-  // Issue #1671: record per-iteration `gh` call telemetry. This is
-  // the lowest-level `gh` entry-point in this module, so every `gh`
-  // invocation (whether retried or not) is counted exactly once per attempt.
-  recordGhCall(args);
+  // Issue #1671 / #1485: the per-iteration `gh` call telemetry is recorded
+  // in `spawnGh`, the chokepoint every `gh` invocation passes, so a call
+  // made through this wrapper and one made directly are counted alike.
 
   // Issue #3311/#3703: egress containment lives in the shared chokepoint —
   // `spawnGh` refuses an off-allowlist (or undeterminable) write BEFORE the
@@ -278,24 +276,6 @@ export const SECONDARY_LIMIT_MIN_REMAINING = 100;
  * guidance is "at least one minute" when no `retry-after` is sent.
  */
 export const SECONDARY_LIMIT_BACKOFF_SECONDS = 60;
-
-/** Whether the current latch is a burst cool-down, not the hourly quota. */
-let latchedForSecondaryLimit = false;
-
-/** The one-line reason a latched `gh` call is skipped, naming the reset. */
-function primaryQuotaSkipMessage(): string {
-  const until = primaryQuotaLatchedUntil();
-  const eta = until === null
-    ? "reset time unknown"
-    : formatRateLimitReset(until, Math.floor(Date.now() / 1000));
-  // Carries the primary-quota phrase so callers that classify by message
-  // (the scans' log lines, the Issue #1780 pause) still recognise it.
-  return latchedForSecondaryLimit
-    ? `gh command skipped: GitHub secondary rate limit cool-down (API rate ` +
-      `limit already exceeded on a burst, hourly quota still available) — ${eta}`
-    : `gh command skipped: GraphQL primary quota exhausted (API rate ` +
-      `limit already exceeded) — ${eta}`;
-}
 
 /**
  * Record the first primary-GraphQL-quota exhaustion of the window (Issue #42).
@@ -335,8 +315,7 @@ async function notePrimaryQuotaExhaustion(
         SECONDARY_LIMIT_BACKOFF_SECONDS,
         probe.value.retryAfterSeconds ?? 0,
       );
-      latchedForSecondaryLimit = true;
-      latchPrimaryQuota(now + waitSeconds, now);
+      latchPrimaryQuota(now + waitSeconds, now, "secondary");
       if (workDir) {
         await writeRateLimitSignal(workDir, waitSeconds, undefined, "github");
       }
@@ -349,7 +328,6 @@ async function notePrimaryQuotaExhaustion(
       return;
     }
 
-    latchedForSecondaryLimit = false;
     const resetEpoch = probe.ok && probe.value.reset > now
       ? probe.value.reset
       : await readGraphqlResetEpoch(now);

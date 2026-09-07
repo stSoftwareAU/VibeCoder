@@ -211,7 +211,11 @@ Deno.test("buildContainerLaunchPlan - volume-name overrides isolate tests, never
   const error = assertThrows(
     () =>
       buildContainerLaunchPlan(inputs({
-        volumes: { work: "/etc", approvalState: "vibe-test-as-1234" },
+        volumes: {
+          work: "/etc",
+          approvalState: "vibe-test-as-1234",
+          agentState: "vibe-test-agent-1234",
+        },
       })),
     Error,
   );
