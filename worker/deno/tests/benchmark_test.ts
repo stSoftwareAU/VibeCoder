@@ -111,7 +111,7 @@ Deno.test("perf workload command - runs the real fs and cpu steps and emits a JS
 // A blank container stamp is a HOST run (Issue #1493, follow-up to #1262)
 // ---------------------------------------------------------------------------
 
-Deno.test("resolveBenchmarkMode - a blank container stamp reports a host run, not a container (Issue #1493)", () => {
+Deno.test("perf run-mode label - a blank container stamp reports a host run, not a container (Issue #1493)", () => {
   // The label was keyed on the PRESENCE of the image stamp, so
   // `VIBE_IMAGE_AGENT_PROVIDERS=` filed a HOST run's wall times into the
   // fleet's container series. Reporting only, but a benchmark comparing
@@ -129,7 +129,7 @@ Deno.test("resolveBenchmarkMode - a blank container stamp reports a host run, no
   assertEquals(resolveBenchmarkMode(undefined, emptyEnv), "unknown");
 });
 
-Deno.test("resolveBenchmarkMode - a real container stamp still reports a container run (Issue #1493)", () => {
+Deno.test("perf run-mode label - a real container stamp still reports a container run (Issue #1493)", () => {
   assertEquals(
     resolveBenchmarkMode(
       undefined,
@@ -139,7 +139,7 @@ Deno.test("resolveBenchmarkMode - a real container stamp still reports a contain
   );
 });
 
-Deno.test("resolveBenchmarkMode - --mode and VIBE_RUN_MODE still win over the stamp (Issue #1493)", () => {
+Deno.test("perf run-mode label - --mode and VIBE_RUN_MODE still win over the stamp (Issue #1493)", () => {
   assertEquals(
     resolveBenchmarkMode(
       "native",

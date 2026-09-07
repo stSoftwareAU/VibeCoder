@@ -236,6 +236,13 @@ counted from the issue's authored comments, filtered through the fleet identity
 in `alert_dedup_authors.ts`, rather than by matching a heading in the comment
 blob assembled for the model.
 
+SEC-1218-07 has since been fixed on #1269: `setupRepo` validates the branch it
+reads from `.vibe_default_branch` with `assertSafeRefComponent` and refuses the
+repo when the file is poisoned, both `git checkout <defaultBranch>` sites route
+through `buildCheckoutArgs`, and `defaultBranch` joined
+`GIT_REF_ARGV_UNTRUSTED_IDENTIFIER` so the CI chokepoint no longer treats a
+working-tree-derived default branch as a safe internal ref.
+
 SEC-1218-02's reachability was corrected after filing and the correction posted
 to the issue: `closeDuplicatePrs` is not CLI-only.
 `lib/issue_worker_wiring.ts:88` imports it, `:255` declares it on `PrDeps` and
