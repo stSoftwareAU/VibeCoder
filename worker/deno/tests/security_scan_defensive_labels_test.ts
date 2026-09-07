@@ -86,10 +86,12 @@ Deno.test("security_scan - defensive creation uses the canonical colour and desc
   for (const label of FILER_LABELS) {
     const canonical = CONTENT_LABEL_DEFINITIONS.find((d) => d.name === label);
     assert(canonical, `${label} is missing from CONTENT_LABEL_DEFINITIONS`);
+    // The label names are literals from FILER_LABELS — letters, `-` and `:`
+    // only — so nothing here needs escaping (Issue #1518: the old
+    // `.replace(":", ":")` replaced a colon with itself, which CodeQL
+    // js/identity-replacement flagged, and it protected nothing).
     const line = flat.match(
-      new RegExp(
-        `gh label create ${label.replace(":", ":")}\\s[^|]*\\|\\| true`,
-      ),
+      new RegExp(`gh label create ${label}\\s[^|]*\\|\\| true`),
     );
     assert(line, `no defensive creation line for ${label}`);
     if (!line[0].includes(canonical.colour)) {

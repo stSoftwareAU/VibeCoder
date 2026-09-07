@@ -1,55 +1,6 @@
 {
-  "note": "Baseline for the whole-tree security sweep (Issue #4193). Run `deno task security-tree-sweep` from worker/deno (or `deno run --allow-read --allow-write --allow-run --allow-env worker/deno/mod.ts security-tree-sweep --slug stSoftwareAU/VibeCoder` from the repository root). Every deduplicated finding the sweep reports must either be fixed or appear in exactly one list here. `falsePositives` entries need a `reason` explaining why the match is benign. `accepted` entries are real but tolerated risks: they need a `reason` and should carry the tracking `issue` number. Entries match on `path` plus `rule` (a rule family such as `command-injection`, or a tool-native rule id) and, optionally, a `line` anchor within the sweep's 10-line window. The sweep exits non-zero while any finding is unlisted; a stale entry (matching nothing) is reported so it can be removed.",
+  "note": "Baseline for the whole-tree security sweep (Issue #4193). Run `deno task security-tree-sweep` from worker/deno (or `deno run --allow-read --allow-write --allow-run --allow-env worker/deno/mod.ts security-tree-sweep --slug stSoftwareAU/VibeCoder` from the repository root). Every deduplicated finding the sweep reports must either be fixed or appear in exactly one list here. `falsePositives` entries need a `reason` explaining why the match is benign. `accepted` entries are real but tolerated risks: they need a `reason` and should carry the tracking `issue` number. Entries match on `path` plus `rule` (a rule family such as `command-injection`, or a tool-native rule id) and, optionally, a `line` anchor within the sweep's 10-line window. The sweep exits non-zero while any finding is unlisted; a stale entry (matching nothing) is reported so it can be removed. A finding the worker scan alone reported is NOT baseline material: it mirrors an open `security` issue, so the sweep classifies it `tracked` and it clears when that issue closes (Issue #1518).",
   "falsePositives": [
-    {
-      "path": "worker/deno/lib/issue_dependencies.ts",
-      "rule": "unsafe-regex",
-      "line": 177,
-      "snippet": "const urlPattern = new RegExp(",
-      "reason": "The interpolated repository slug is escaped with the standard metacharacter replace immediately above the `new RegExp`, so no pattern syntax can reach the compiler (Issue #4193 triage of semgrep detect-non-literal-regexp)."
-    },
-    {
-      "path": "worker/deno/lib/issue_dependencies.ts",
-      "rule": "unsafe-regex",
-      "line": 216,
-      "snippet": "const pattern = new RegExp(",
-      "reason": "The only interpolated value is a GitHub issue number coerced from a `number` (digits only), so the pattern is fixed-shape and cannot be steered or made super-linear by input (Issue #4193 triage of semgrep detect-non-literal-regexp)."
-    },
-    {
-      "path": "worker/deno/lib/planning_processor.ts",
-      "rule": "unsafe-regex",
-      "line": 191,
-      "snippet": "const pattern = new RegExp(",
-      "reason": "The interpolated repository slug is escaped with the standard metacharacter replace immediately above the `new RegExp`, so no pattern syntax can reach the compiler (Issue #4193 triage of semgrep detect-non-literal-regexp)."
-    },
-    {
-      "path": "worker/deno/lib/pr_body.ts",
-      "rule": "unsafe-regex",
-      "line": 28,
-      "snippet": "const pattern = new RegExp(",
-      "reason": "The only interpolated value is a GitHub issue number coerced from a `number` (digits only), so the pattern is fixed-shape and cannot be steered or made super-linear by input (Issue #4193 triage of semgrep detect-non-literal-regexp)."
-    },
-    {
-      "path": "worker/deno/lib/pr_issue_linking.ts",
-      "rule": "unsafe-regex",
-      "line": 415,
-      "snippet": "const markerPattern = new RegExp(`vibe-worker-issue-${issueStr}([^0-9]|$)`);",
-      "reason": "The only interpolated value is a GitHub issue number coerced from a `number` (digits only), so the pattern is fixed-shape and cannot be steered or made super-linear by input (Issue #4193 triage of semgrep detect-non-literal-regexp)."
-    },
-    {
-      "path": "worker/deno/lib/quality_helpers.ts",
-      "rule": "unsafe-regex",
-      "line": 375,
-      "snippet": "new RegExp(`(^|[\\\\s/\"])(${tool})([\\\\s\"']|$)`, \"m\");",
-      "reason": "`tool` comes from the worker's own constant list of expected quality tools (deno, shellcheck, ...), never from repository or issue content (Issue #4193 triage of semgrep detect-non-literal-regexp)."
-    },
-    {
-      "path": "worker/deno/lib/repo_config.ts",
-      "rule": "unsafe-regex",
-      "line": 361,
-      "snippet": "new RegExp(checkNamePattern);",
-      "reason": "Validate-only compile of the operator-side `checkNamePattern` from .config.json inside a try/catch; the pattern is operator-trusted and is length- and nested-quantifier-guarded again in ci_log_provider.ts before any match runs (Issue #4193 triage of semgrep detect-non-literal-regexp)."
-    },
     {
       "path": "worker/deno/lib/unused_config_detector.ts",
       "rule": "unsafe-regex",
@@ -147,23 +98,6 @@
       "reason": "The canary is a detection marker planted for one harness run, not key material: a slight modulo bias in its characters does not weaken what it proves (whether the literal reaches an outbound artefact) (Issue #4409 CodeQL js/biased-cryptographic-random)."
     },
     {
-      "path": "worker/deno/lib/export_scrub_gate.ts",
-      "rule": "unsafe-regex",
-      "reason": "The pattern comes from the operator's private identifiers file, and a plain literal is metacharacter-escaped before compilation; a `/regex/` entry is the operator's own expression (Issue #4409 semgrep detect-non-literal-regexp)."
-    },
-    {
-      "path": "worker/deno/lib/export_redact.ts",
-      "rule": "unsafe-regex",
-      "reason": "`applyRename` compiles the operator's own rename rule, and `rule.from` is metacharacter-escaped with `escapeRegExp` immediately above the `new RegExp`, so no pattern syntax reaches the compiler (semgrep detect-non-literal-regexp; same triage as `export_scrub_gate.ts`)."
-    },
-    {
-      "path": "worker/deno/lib/repo_settings_harden.ts",
-      "rule": "unsafe-regex",
-      "line": 128,
-      "snippet": "const re = new RegExp(",
-      "reason": "The pattern is a GitHub allow-list glob whose only wildcard is `*`; every other character is escaped before compilation and the glob comes from the repository's own settings (Issue #4409 semgrep detect-non-literal-regexp)."
-    },
-    {
       "path": "worker/deno/tests/batch_api_test.ts",
       "rule": "incomplete-url-substring-sanitization",
       "reason": "Test assertions that a string contains a host name are not sanitisation (Issue #4409 CodeQL triage)."
@@ -231,6 +165,55 @@
       "line": 148,
       "snippet": "output.includes(\"platform.deepseek.com\"),",
       "reason": "Test assertion, not sanitisation: it checks that the DeepSeek warning NAMES `platform.deepseek.com` so an operator knows where to get a key. No URL is parsed, trusted or acted on — the string is the message under test (Issue #4193 triage, js/incomplete-url-substring-sanitization)."
+    },
+    {
+      "path": "worker/deno/lib/container_extension_config.ts",
+      "rule": "comparison-between-incompatible-types",
+      "line": 87,
+      "snippet": "return typeof value === \"object\" && value !== null && !Array.isArray(value);",
+      "reason": "The flagged comparison IS the null guard the `typeof x === \"object\"` idiom requires: `typeof null` is `\"object\"`, so dropping `value !== null` is the bug the rule reads it as. CodeQL narrows `value` to `object` from the first conjunct and then objects to comparing that narrowed type with null — an artefact of its own inference, not a defect (Issue #1518 triage, js/comparison-between-incompatible-types)."
+    },
+    {
+      "path": "worker/deno/lib/merge_conflict_deferrals.ts",
+      "rule": "comparison-between-incompatible-types",
+      "line": 394,
+      "snippet": "if (typeof raw !== \"object\" || raw === null) return undefined;",
+      "reason": "Same idiom and same analyser artefact as `container_extension_config.ts`: `typeof null` is `\"object\"`, so the `raw === null` arm is the guard that makes the narrowing sound. Removing it to satisfy the rule would reintroduce the null dereference it is there to stop (Issue #1518 triage, js/comparison-between-incompatible-types)."
+    },
+    {
+      "path": "worker/deno/lib/idle_starvation_escalation.ts",
+      "rule": "bad-tag-filter",
+      "line": 356,
+      "snippet": "return text.replace(/<!--/g, \"<!- -\").replace(/-->/g, \"- ->\")",
+      "reason": "`bodySafe` neutralises both marker tokens with a global replace to `<!- -`/`- ->`; the replacements insert a space inside the token and never delete characters, so neither pass can re-form the other's token. Same idiom already triaged in `heartbeat_storage.ts` and `run_failure_issue.ts` (Issue #1518 triage, CodeQL js/bad-tag-filter)."
+    },
+    {
+      "path": "worker/deno/tests/container_egress_probe_test.ts",
+      "rule": "incomplete-url-substring-sanitization",
+      "line": 231,
+      "snippet": "assert(!args.join(\" \").includes(\"github.com\"));",
+      "reason": "Test assertion, not sanitisation: it checks that the probe's argv NAMES no host at all (Issue #997 — the probe dials a literal IP). Nothing is parsed, trusted or acted on; the string is the argv under test (Issue #1518 triage, js/incomplete-url-substring-sanitization)."
+    },
+    {
+      "path": "worker/deno/tests/pages_publishing_removed_test.ts",
+      "rule": "incomplete-url-substring-sanitization",
+      "line": 104,
+      "snippet": "if (body.includes(\"stsoftwareau.github.io\")) offenders.push(path);",
+      "reason": "A documentation scan, not sanitisation: it fails the suite when any tracked Markdown file still mentions the retired Pages host. Over-matching a look-alike host would only add an offender to review, which is the safe direction (Issue #1518 triage, js/incomplete-url-substring-sanitization)."
+    },
+    {
+      "path": "worker/deno/tests/security_scan_overflow_1387_test.ts",
+      "rule": "incomplete-url-substring-sanitization",
+      "line": 91,
+      "snippet": "assert(out.includes(\"api.imgbb.com\"), out);",
+      "reason": "Test assertion, not sanitisation: it checks that redaction removed the key and LEFT the host, so an operator can still see which upload leaked. No URL is parsed or trusted — the string is the redacted output under test (Issue #1518 triage, js/incomplete-url-substring-sanitization)."
+    },
+    {
+      "path": "worker/deno/tests/parallel_unsafe_test_manifest_test.ts",
+      "rule": "missing-space-in-concatenation",
+      "line": 215,
+      "snippet": "\"import { assertLinear\" + 'Growth } from \"./support/gro' + 'wth.ts\";',",
+      "reason": "Deliberate, and the missing space is the point: the fixture is assembled from halves so this test file does not itself contain the literal `assertLinearGrowth`, which the manifest scan under test searches for. Written whole, the fixture would classify its own test file as measuring wall-clock time. Same triage as the `export_branding_test.ts` split fixtures (Issue #1518 triage, js/missing-space-in-concatenation)."
     }
   ],
   "accepted": [
@@ -255,6 +238,13 @@
       "line": 1413,
       "snippet": "if (timedOut || runFinished) return;",
       "reason": "`timedOut`/`runFinished` are closure flags set from timer and completion callbacks, so the re-check before arming the next watchdog is not redundant at runtime even where the analyser proves it constant along one path. The same guard appears on the arming and wind-down paths and this one entry covers every occurrence — a second entry with the identical snippet could never match, because the fingerprint lookup stops at the first. A code-quality observation, not a security finding (js/trivial-conditional)."
+    },
+    {
+      "path": "worker/deno/lib/run_core.ts",
+      "rule": "useless-assignment-to-local",
+      "line": 5513,
+      "snippet": "fleetSummaryEmitted = true;",
+      "reason": "The write is the last one on the flag, so the analyser is right that nothing reads it. Kept deliberately: it is the second half of the `if (!fleetSummaryEmitted)` guard that stops the fleet summary being emitted twice (Issue #855), and the `finally` block it sits in is exactly where a later `await` would be appended — dropping the write would make the guard silently wrong then. A code-quality observation, not a security finding (Issue #1518 triage, js/useless-assignment-to-local)."
     }
   ]
 }

@@ -125,6 +125,25 @@ Deno.test("normalisePageText drops scripts, styles, comments and markup", () => 
   assertEquals(text, "Rule 2 Nothing is fetched.");
 });
 
+Deno.test("normalisePageText - a spaced or attributed end tag still closes the block (Issue #1518)", () => {
+  // CodeQL js/bad-tag-filter: HTML allows whitespace before the `>` of an end
+  // tag, so `</script >` closes the element. The old patterns demanded
+  // `</script>` exactly, and every byte of a page that used the spaced form
+  // survived into the "visible" text — the nonce the fingerprint exists to
+  // ignore came straight back in.
+  assertEquals(
+    normalisePageText(
+      "<html><style>a{colour:red}</style ><script>var nonce='abc123'" +
+        "</script  ><body><h1>Rule 2</h1></body></html>",
+    ),
+    "Rule 2",
+  );
+  assertEquals(
+    normalisePageText("<script>var nonce='abc123'</script\n><p>Visible</p>"),
+    "Visible",
+  );
+});
+
 Deno.test("normalisePageText ignores whitespace-only differences", () => {
   assertEquals(
     normalisePageText("<p>one</p>\n\n<p>two</p>"),
