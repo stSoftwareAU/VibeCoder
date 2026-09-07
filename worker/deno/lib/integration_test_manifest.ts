@@ -112,6 +112,12 @@ export const SCRIPT_READING_UNIT_TESTS: ReadonlyMap<string, string> = new Map([
     "seed directory matches the Containerfile; runs in 1.2s",
   ],
   [
+    "tests/loop_checkout_refresh_test.ts",
+    "reads loop.sh and loop.ps1 with Deno.readTextFile to assert both " +
+    "supervisors pull their checkout at the end of every cycle (Issue " +
+    "#1401); it never spawns either one, and runs in milliseconds",
+  ],
+  [
     "tests/workflow_definitions_test.ts",
     "reads .github/scripts/deno-test-shard.sh to assert the workflow and " +
     "the script agree on sharding; runs in 1.2s",
