@@ -237,6 +237,30 @@ export async function raiseMilestoneSyncPr(
 ): Promise<Result<MilestoneSyncPrOutcome>> {
   const branch = syncBranchFor(milestoneBranch);
 
+  // Issue #1568: `--force-with-lease` with no explicit value verifies against
+  // `refs/remotes/origin/<branch>`. A clone that has never fetched that ref
+  // cannot offer git a baseline, so git refuses with `(stale info)` — not
+  // because anything conflicts, but because it has nothing to compare. A
+  // single-branch clone reaches that state for any sync branch another host
+  // created: the narrow refspec never materialises it, and no later cycle
+  // materialises it either, so the sync is wedged for good. NEAT-AI-Ockham's
+  // milestone sync had been failing this way every cycle.
+  //
+  // Fetching the branch supplies the baseline. It is deliberately *not* a
+  // fetch of everything, and deliberately best-effort: `git fetch origin
+  // <branch>` fails when the branch does not exist on the remote yet, which
+  // is the ordinary first-run case — a create needs no baseline, and the push
+  // below handles it.
+  //
+  // This does not weaken the lease. The baseline is taken from whatever the
+  // remote holds at this moment; if another host moves the branch after that,
+  // the push is still refused, which is the case the lease exists for.
+  await deps.git([
+    "fetch",
+    "origin",
+    `refs/heads/${branch}:refs/remotes/origin/${branch}`,
+  ]);
+
   // Force-with-lease: the sync branch is this function's alone, and a stale
   // one from an earlier cycle carries a merge that is no longer current.
   // `--force-with-lease` still refuses if somebody else moved it.
