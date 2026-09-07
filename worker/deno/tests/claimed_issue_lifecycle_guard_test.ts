@@ -321,6 +321,7 @@ Deno.test("the shim bakes the claim into the wrapper's guard arguments", () => {
     allowedRepos: [CLAIM.repo],
     claimedIssue: CLAIM,
     verdictDir: "/tmp/verdict",
+    denoDir: "/opt/deno-seed",
   });
   assertStringIncludes(script, "--claimed-issue");
   assertStringIncludes(script, `${CLAIM.repo}#94`);
@@ -335,6 +336,7 @@ Deno.test("the shim omits the claim arguments when no claim is seeded", () => {
     active: true,
     allowedRepos: [CLAIM.repo],
     verdictDir: "/tmp/verdict",
+    denoDir: "/opt/deno-seed",
   });
   assert(!script.includes("--claimed-issue"));
 });
