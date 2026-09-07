@@ -38,7 +38,6 @@ import type {
   Result,
   UpdateMode,
 } from "../types.ts";
-import { spawnGh } from "./gh_spawn.ts";
 import {
   CLAUDE_CLI_NPM_PACKAGE,
   createReleaseAgeGate,
@@ -50,6 +49,7 @@ import {
   type ReleaseAgeVerdict,
   type ReleaseChannel,
 } from "./tool_release_age.ts";
+import { spawnGh } from "./gh_spawn.ts";
 
 /** Default update check interval: 7 days in seconds. */
 export const DEFAULT_UPDATE_INTERVAL_SECONDS = 604800;
