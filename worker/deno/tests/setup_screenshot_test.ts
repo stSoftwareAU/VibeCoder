@@ -29,7 +29,10 @@ import type {
   ScreenshotConfig,
 } from "../setup/screenshot.ts";
 import type { NpmAgeFetchDeps } from "../lib/npm_package_age.ts";
-import { cacheDirUserSuffix } from "../lib/private_cache_dir.ts";
+import {
+  cacheDirUserSuffix,
+  sharedTmpStateDir,
+} from "../lib/private_cache_dir.ts";
 
 /**
  * The disposable profile directory (Issue #1242): per-account, so two users
@@ -228,13 +231,12 @@ Deno.test("generateMcpConfig - output dir is scratch beside the browser profile,
     const out = args[args.indexOf("--output-dir") + 1]!;
     assertEquals(out.startsWith("/opt/vibe"), false, out);
     assertEquals(out.startsWith("/custom/dir"), false, out);
-    // Issue #1242: the scratch output dir carries the per-account suffix
-    // when it sits under the shared temporary root.
-    assertEquals(
-      out.startsWith(`/tmp/${BROWSER_OUTPUT_DIR_NAME}`),
-      true,
-      out,
-    );
+    // Issue #1242: the scratch output dir is the shared temporary root's
+    // per-account directory. Composed here rather than spelled `/tmp/...`:
+    // the root is TMPDIR when the host sets one, so a literal `/tmp` prefix
+    // asserts the developer's platform rather than the behaviour — it holds
+    // on CI's Linux and never on macOS.
+    assertEquals(out, sharedTmpStateDir(BROWSER_OUTPUT_DIR_NAME), out);
     const profile = args[args.indexOf("--user-data-dir") + 1]!;
     assertEquals(
       out.slice(0, out.lastIndexOf("/")),

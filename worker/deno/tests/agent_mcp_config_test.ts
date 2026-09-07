@@ -16,11 +16,17 @@ import {
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
-import { PLAYWRIGHT_MCP_VERSION } from "../setup/screenshot.ts";
+import {
+  BROWSER_OUTPUT_DIR_NAME,
+  PLAYWRIGHT_MCP_VERSION,
+} from "../setup/screenshot.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 import { envFrom } from "./support/env_lookup.ts";
 import { fakeClock } from "./support/fake_clock.ts";
-import { cacheDirUserSuffix } from "../lib/private_cache_dir.ts";
+import {
+  cacheDirUserSuffix,
+  sharedTmpStateDir,
+} from "../lib/private_cache_dir.ts";
 
 Deno.test("agent mcp config - writes the Playwright server config to the worker cache (never the clone) with the clone's docs/evidence as output dir and the chromium channel (Issue #4355)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "mcp-cfg-" });
@@ -43,12 +49,12 @@ Deno.test("agent mcp config - writes the Playwright server config to the worker 
       false,
     );
     // Issue #1242: the scratch output dir is per-account under the shared
-    // temporary root, so the name carries a suffix.
-    assert(
-      args[args.indexOf("--output-dir") + 1]!.startsWith(
-        "/tmp/vibe-playwright-output",
-      ),
+    // temporary root. Composed rather than spelled `/tmp/...`, because that
+    // root is TMPDIR wherever the host sets one — a literal prefix passes on
+    // CI's Linux and fails on every macOS checkout.
+    assertEquals(
       args[args.indexOf("--output-dir") + 1],
+      sharedTmpStateDir(BROWSER_OUTPUT_DIR_NAME),
     );
     assert(args.includes("--headless"));
   } finally {
