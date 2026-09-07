@@ -21,6 +21,7 @@ import {
   attachClusterSnippets,
   buildCodeqlAlertsArgs,
   buildSemgrepCommand,
+  buildSweepIssueBody,
   classifyClusters,
   type CommandOutcome,
   computeSweepId,
@@ -477,6 +478,44 @@ Deno.test("ruleFamily maps semgrep, CodeQL and worker rule names onto one family
   assertEquals(ruleFamily("codeql", "js/some-new-rule"), "some-new-rule");
 });
 
+Deno.test("ruleFamily never takes a file extension as the family (Issue #1473)", () => {
+  // The real #1420 title: the last segment after splitting on `.` was `ts)`,
+  // so every security issue whose title ends in a filename became family
+  // `ts` and shared one sweep id, reported as an unattributable critical.
+  const title = "repo-write allowlist classifies gh api by path only, " +
+    "ignoring the endpoint's host (audit_mutation_classifier.ts)";
+  const family = ruleFamily("worker-scan", title);
+  assert(family !== "ts", "a file extension is not a rule family");
+  assertEquals(family, "unclassified");
+  // Same for the other extensions the fleet's filenames end in.
+  assertEquals(
+    ruleFamily("worker-scan", "some finding (loop.sh)"),
+    "unclassified",
+  );
+  assertEquals(
+    ruleFamily("worker-scan", "some finding (config.json)"),
+    "unclassified",
+  );
+  assertEquals(
+    ruleFamily("worker-scan", "some finding (ci.yml)"),
+    "unclassified",
+  );
+  // A rule id that is nothing but an extension names nothing either.
+  assertEquals(ruleFamily("worker-scan", "ts"), "unclassified");
+  // A bare rule id whose last segment is an extension keeps the segment
+  // before it rather than the language name.
+  assertEquals(
+    ruleFamily("semgrep", "rules/audit_mutation_classifier.ts"),
+    "audit-mutation-classifier",
+  );
+  // A prose class that was never split still slugs as before: it is the
+  // whole classification, not a fragment of a sentence.
+  assertEquals(
+    ruleFamily("worker-scan", "insecure temp file"),
+    "insecure-temp-file",
+  );
+});
+
 Deno.test("computeSweepId is stable and independent of source", async () => {
   const a = await computeSweepId("command-injection", PLANTED_PATH, 12);
   const b = await computeSweepId("command-injection", PLANTED_PATH, 13);
@@ -485,6 +524,65 @@ Deno.test("computeSweepId is stable and independent of source", async () => {
   assertEquals(a.length, "SWEEP-".length + 12);
   assertEquals(a, b, "lines in the same window share an id");
   assert(a !== c, "a distant line is a different finding");
+});
+
+// Golden ids, computed from the pre-#1473 formula
+// `SWEEP-` + sha256(`family|path|lineBucket`)[0..12]. Every id already
+// stamped into a filed sweep issue was produced this way, so a located
+// finding must keep hashing to exactly these strings. If this test fails,
+// the change moved ids the fleet has already committed to.
+const PINNED_LOCATED_IDS: ReadonlyArray<
+  readonly [string, string, number | null, string]
+> = [
+  ["command-injection", PLANTED_PATH, 12, "SWEEP-ec66c484ced0"],
+  ["unsafe-regex", "worker/deno/lib/pr_body.ts", 177, "SWEEP-f687068d3480"],
+];
+
+Deno.test("computeSweepId leaves located findings byte-for-byte unchanged (Issue #1473)", async () => {
+  for (const [family, path, line, expected] of PINNED_LOCATED_IDS) {
+    assertEquals(
+      await computeSweepId(family, path, line),
+      expected,
+      `${family}|${path}|${line} must keep its pre-#1473 id`,
+    );
+    // A discriminator is ignored outright for a located finding, so no
+    // caller can move an id that a filed issue or a baseline anchor uses.
+    assertEquals(
+      await computeSweepId(family, path, line, "SEC-8d02435d8683"),
+      expected,
+      "a discriminator must not change a located finding's id",
+    );
+  }
+});
+
+Deno.test("computeSweepId separates unlocated findings by their own id (Issue #1473)", async () => {
+  const base = await computeSweepId("command-injection", "unknown", null);
+  // The degenerate id from the 2026-09-07 run: family alone.
+  assertEquals(base, "SWEEP-725379039689");
+  const a = await computeSweepId(
+    "command-injection",
+    "unknown",
+    null,
+    "SEC-8d02435d8683",
+  );
+  const b = await computeSweepId(
+    "command-injection",
+    "unknown",
+    null,
+    "SEC-82c5ad559169",
+  );
+  assert(a !== b, "two unrelated findings must not share one id");
+  assert(a !== base, "the discriminator must actually be mixed in");
+  assertEquals(
+    a,
+    await computeSweepId(
+      "command-injection",
+      "unknown",
+      null,
+      "SEC-8d02435d8683",
+    ),
+    "the same finding keeps one stable id across runs",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -582,6 +680,87 @@ Deno.test("classifyClusters marks baselined, new and stale entries", async () =>
   assertEquals(classified.newRows.length, 2); // planted + workflow rule
   assertEquals(classified.staleEntries.length, 1);
   assertStringIncludes(classified.staleEntries[0]!, "gone/away.ts");
+});
+
+// The three real command-injection issues from the 2026-09-07 run: same
+// family, no location, three different findings. #1423 was fixed; #1421 and
+// #1422 were still open.
+const UNLOCATED_WORKER_ISSUES_JSON = JSON.stringify([
+  {
+    number: 1423,
+    title: "🔴 Command injection reaches the shell through a run argument",
+    body:
+      "<!-- finding-id: SEC-8d02435d8683 -->\nUntrusted input reaches a shell.",
+    labels: [{ name: "security" }, { name: "severity:critical" }],
+  },
+  {
+    number: 1422,
+    title: "🔴 Command injection in an unrelated helper",
+    body: "<!-- finding-id: SEC-82c5ad559169 -->\nA second, unrelated finding.",
+    labels: [{ name: "security" }, { name: "severity:critical" }],
+  },
+  {
+    number: 1421,
+    title: "🔴 Command injection through a third path",
+    body: "<!-- finding-id: SEC-8cdfc5eeea3f -->\nA third, unrelated finding.",
+    labels: [{ name: "security" }, { name: "severity:critical" }],
+  },
+]);
+
+Deno.test("dedupeFindings keeps unlocated worker findings apart (Issue #1473)", async () => {
+  const findings = parseWorkerScanIssues(UNLOCATED_WORKER_ISSUES_JSON);
+  assertEquals(findings.length, 3);
+  for (const f of findings) assertEquals(f.path, "unknown");
+  const clusters = await dedupeFindings(findings);
+  assertEquals(
+    clusters.length,
+    3,
+    "three unrelated findings must not collapse into one family cluster",
+  );
+  const ids = new Set(clusters.map((c) => c.id));
+  assertEquals(ids.size, 3, "each finding carries its own sweep id");
+  assert(
+    !ids.has("SWEEP-725379039689"),
+    "the family-only id must no longer be produced",
+  );
+});
+
+Deno.test("baselining one unlocated finding leaves the others reported (Issue #1473)", async () => {
+  const clusters = await dedupeFindings(
+    parseWorkerScanIssues(UNLOCATED_WORKER_ISSUES_JSON),
+  );
+  // Triage exactly the fixed one, by the rule the sweep's own issue body
+  // now tells the triager to use.
+  const fixed = clusters.find((c) =>
+    c.findings.some((f) => f.ruleId === "SEC-8d02435d8683")
+  )!;
+  assertStringIncludes(
+    buildSweepIssueBody(fixed, ".github/security-tree-sweep-baseline.json"),
+    '"rule": "SEC-8d02435d8683"',
+    "an unlocated finding must be triaged by its own id, not by its family",
+  );
+  const { baseline, errors } = parseSweepBaseline(JSON.stringify({
+    falsePositives: [
+      {
+        path: "unknown",
+        rule: "SEC-8d02435d8683",
+        reason: "Fixed and merged in #1434 — this finding no longer exists.",
+      },
+    ],
+  }));
+  assertEquals(errors, []);
+  const { rows, newRows } = classifyClusters(clusters, baseline);
+  assertEquals(rows.length, 3);
+  assertEquals(
+    newRows.length,
+    2,
+    "the two open findings stay reported after the third is baselined",
+  );
+  const stillOpen = new Set(
+    newRows.flatMap((r) => r.findings.map((f) => f.ruleId)),
+  );
+  assert(stillOpen.has("SEC-82c5ad559169"));
+  assert(stillOpen.has("SEC-8cdfc5eeea3f"));
 });
 
 // ---------------------------------------------------------------------------

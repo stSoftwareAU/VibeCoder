@@ -101,9 +101,21 @@ tool's rule name onto a shared class so
 `javascript.lang.security.detect-child-process` (semgrep),
 `js/command-line-injection` (CodeQL) and `command injection` (worker) are one
 finding, `command-injection`. Unknown rules fall back to their last path
-segment. A cluster carries the highest severity and confidence any source
-gave it and lists every source that saw it — so a location flagged by all
-three tools is reported once, not three times.
+segment, never to a bare file extension: `ts` is a language, not a class of
+vulnerability, and a title fragment that only looks like one names nothing
+(such a finding is reported as `unclassified`). A cluster carries the highest
+severity and confidence any source gave it and lists every source that saw it
+— so a location flagged by all three tools is reported once, not three times.
+
+**Findings with no location** (`path = unknown` — every `worker-scan` finding
+harvested from an issue) would otherwise fingerprint to their family alone:
+three unrelated command-injection issues shared one id, and baselining it
+would have silenced the family and every future member of it (Issue #1473).
+Such a finding mixes its own stable rule id — the `SEC-…` the worker's scan
+stamps on the issue — into the fingerprint, so one issue means one id.
+Triage it in the baseline by that `SEC-…` rule id rather than by its family;
+the sweep issue's own triage snippet already does. A finding with a real path
+is fingerprinted exactly as before.
 
 ## The report
 
