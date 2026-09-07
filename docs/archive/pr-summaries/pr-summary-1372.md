@@ -9,12 +9,12 @@ plan-specific defangs in `sanitisePlanForComment()` only demote structural
 markers, so an issue that told a drafter to echo its instructions or this run's
 `BOUNDARY_<nonce>` walked that text straight into a public comment (CWE-200).
 
-`sanitisePlanForComment()` (`worker/deno/lib/quorum_processor.ts:170`) now
+`sanitisePlanForComment()` (`worker/deno/lib/quorum_processor.ts:158`) now
 chains `redactPromptLeakage()` ahead of `redactSecrets()`. That single function
 is the only route every published surface takes — the winning plan
 (`quorum_processor.ts:212`), the runner-up and judge's reasoning via `details()`
-(`:214`, `:220`), the degradation detail (`:230`) and each unjudged plan
-(`:238`) — so one chokepoint closes every sink. Closes #1372.
+(`:216`, `:220`), the degradation detail (`:230`) and each unjudged plan
+(`:240`) — so one chokepoint closes every sink. Closes #1372.
 
 ```mermaid
 flowchart LR
@@ -31,8 +31,13 @@ flowchart LR
 Backend-only change — no web interface to screenshot. Verified by tests:
 
 - `deno test worker/deno/tests/quorum_processor_test.ts` — 22 passed, 0 failed.
-- `./quality.sh` — PASSED (deno tests, lint, type check, fmt, semgrep,
-  markdownlint, mermaid and the chokepoint guards all green).
+- `./quality.sh` — every check PASSED (lint, type check, fmt, semgrep,
+  markdownlint, mermaid and the chokepoint guards) except `deno tests`, whose
+  only two failures are pre-existing on `main` and unrelated to this diff:
+  `worker/deno/tests/gh_guard_shim_test.ts` Issue #1448 cases at `:1416` and
+  `:1479`. Reproduced on a clean `main` checkout at commit `4aada087` — they
+  assume the container's default Deno seed directory is absent. Filed as #1531;
+  this branch touches neither file.
 
 Regression linkage: both new tests were run against the unfixed code and failed
 (`an echoed instruction phrase must not survive to a public comment` —
@@ -50,7 +55,7 @@ sentence-length instruction phrase, replacing them with
 a comment:
 `grep -rn "winner\.text\|plan\.text\|runnerUp\.text\|\.reasoning"
 worker/deno/lib/`
-shows `quorum_processor.ts` lines 212/214/230/238 as the only consumers, and all
+shows `quorum_processor.ts` lines 212/216/230/240 as the only consumers, and all
 four route through the sanitiser. Wrapping, markdown emphasis and case do not
 bypass it — matching runs over normalised, whitespace- collapsed text — and
 redaction is applied to the whole string after the structural defangs, so a leak
