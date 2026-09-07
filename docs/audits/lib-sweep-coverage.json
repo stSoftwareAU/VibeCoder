@@ -635,6 +635,7 @@
         "worker/deno/lib/live_slot_holds.ts",
         "worker/deno/lib/liveness_guard.ts",
         "worker/deno/lib/log_tail.ts",
+        "worker/deno/lib/loop_contract.ts",
         "worker/deno/lib/main_branch_ruleset.ts",
         "worker/deno/lib/main_branch_ruleset_check.ts",
         "worker/deno/lib/maintenance_lane.ts",

@@ -274,14 +274,20 @@ function has(
  * (`readonly QUOTA_PAUSE_EXIT=75`, `$QuotaPauseExit = 75`).
  */
 function distinguishes(code: string, status: number): boolean {
-  const assignment = new RegExp(
-    `(?:^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*${status}\\s*$`,
-    "gm",
-  );
-  let match: RegExpExecArray | null;
-  while ((match = assignment.exec(code)) !== null) {
-    const name = match[1];
-    if (name === undefined || !name.toLowerCase().includes("exit")) continue;
+  const literal = String(status);
+  for (const line of code.split("\n")) {
+    const trimmed = line.trimEnd();
+    // `... = 75` — the assignment, not a comparison against one.
+    if (!trimmed.endsWith(literal)) continue;
+    const head = trimmed.slice(0, -literal.length).trimEnd();
+    if (!head.endsWith("=")) continue;
+    // The last identifier before the `=`, with any sigil dropped:
+    // `readonly QUOTA_PAUSE_EXIT=75` and `$QuotaPauseExit = 75` both give
+    // the name. Split on a static character class — a pattern built from the
+    // status would be a needless dynamic regex.
+    const name = head.slice(0, -1).trimEnd().split(/[^A-Za-z0-9_]/).pop() ?? "";
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) continue;
+    if (!name.toLowerCase().includes("exit")) continue;
     if (code.split(name).length - 1 >= 2) return true;
   }
   return false;
