@@ -1730,8 +1730,9 @@ redaction and the read access that follow. See
 Transcripts are bounded by the housekeeping every run already performs, with
 no operator action:
 
-- `log-rotation` size-rotates `*.jsonl`, transcripts included, into
-  `.jsonl.N` backups.
+- `log-rotation` size-rotates `agent-*.jsonl` transcripts into `.jsonl.N`
+  backups. It rotates only the worker's own log names (Issue #1267) — a
+  third-party `.log` or `.jsonl` sharing the log directory is left alone.
 - `worker-log-cleanup` then applies the worker-log retention policy to
   `agent-*.jsonl` and its rotated and gzipped forms: deleted after **3 days**,
   with a hard cap of **200** retained files, oldest deleted first.
