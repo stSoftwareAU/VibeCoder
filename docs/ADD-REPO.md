@@ -184,14 +184,17 @@ correct — they are claimed once the reloaded config includes the new slug.
 | --- | --- | --- |
 | **Unparseable title** (no valid `owner/repo`) | Posts an explanatory comment asking for a `add-repo: owner/repo` title, then closes the issue. | No |
 | **Repo not found / not visible** (404/403) | Posts a remediation comment and escalates with the `needs-human` label via `escalateToHuman` (the only sanctioned path to that label). | No |
-| **No triage access** (visible but worker cannot be assigned issues) | Posts a remediation comment with the `gh api ... permission=triage` fix and escalates with `needs-human`. | No |
+| **No push access** (visible, but the worker lacks write — triage alone is not enough, Issue #1455) | Posts a remediation comment with the `gh api ... permission=push` fix and escalates with `needs-human`. | No |
 | **Transient validation error** (e.g. the visibility lookup itself fails) | Leaves the issue open so the next loop iteration retries. No escalation, no close. | No |
 
 The remediation comment for the not-found / no-access cases includes the exact
-command a repo admin runs to grant the worker triage access:
+command a repo admin runs to grant the worker push access. Push, not triage: a
+monitored repo's collaborators are listed on every trusted-author refresh,
+which GitHub serves only to a login with push, and a branch cannot be pushed
+without it (Issue #1455):
 
 ```bash
-gh api -X PUT repos/owner/repo/collaborators/<worker-user> -f permission=triage
+gh api -X PUT repos/owner/repo/collaborators/<worker-user> -f permission=push
 ```
 
 After granting access, re-file the add-repo issue.

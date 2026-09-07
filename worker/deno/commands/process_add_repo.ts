@@ -320,16 +320,19 @@ export function buildEscalationText(
   repo: string,
   workerUser: string,
 ): { reason: string; nextStep: string } {
+  // Push, not triage (Issue #1455): a monitored repo's collaborators are
+  // listed on every trusted-author refresh, which GitHub serves only to a
+  // login with push, and a branch cannot be pushed without it.
   const remediation =
-    `gh api -X PUT repos/${repo}/collaborators/${workerUser} -f permission=triage`;
+    `gh api -X PUT repos/${repo}/collaborators/${workerUser} -f permission=push`;
   const reason = status === "not_found"
     ? `The target repository \`${repo}\` could not be found, or the worker ` +
       `token cannot see it (404/403). It was NOT added to the monitored list.`
-    : `The worker has read access to \`${repo}\` but cannot be assigned ` +
-      `issues there (\`triage\` permission is false). It was NOT added to ` +
-      `the monitored list.`;
+    : `The worker can see \`${repo}\` but lacks push (write) access there ` +
+      `(\`push\` permission is false; triage alone is not enough). It was ` +
+      `NOT added to the monitored list.`;
   const nextStep =
-    "Grant the worker triage (assignable) access as a repo admin, then " +
+    "Grant the worker push (write) access as a repo admin, then " +
     "re-file the add-repo issue:\n\n" +
     "```bash\n" + remediation + "\n```";
   return { reason, nextStep };
