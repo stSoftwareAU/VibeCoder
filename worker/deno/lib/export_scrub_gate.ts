@@ -270,8 +270,8 @@ export function compileIdentifier(value: string): RegExp | null {
     // The value comes from the operator's private identifiers file, and a
     // literal is metacharacter-escaped before compilation — the same
     // justification `compileRepoName` above carries.
-    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
     if (regexForm) {
+      // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
       return new RegExp(regexForm[1]!, `g${regexForm[2] ?? ""}`);
     }
     // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
