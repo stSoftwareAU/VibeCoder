@@ -59,6 +59,45 @@
  */
 
 import { redactSecrets } from "./secret_redaction.ts";
+import { redactPromptLeakage } from "./prompt_leak_redaction.ts";
+
+/**
+ * The full mask applied to every body this module touches (Issue #1421).
+ *
+ * `redactSecrets` alone was the whole mask, so this chokepoint — the one
+ * place the module doc promises "every present and future public sink
+ * inherits redaction by construction" — carried no LLM07 backstop. Prompt
+ * injection during an ordinary run (`work-on`, `planning`, `grill-me`,
+ * `ci_fix`, revision) could have the agent echo the system prompt, the
+ * `<coding_guidelines>` block or this run's `BOUNDARY_<id>` nonce into a
+ * comment or PR body, and only secret-SHAPED text was masked on the way out.
+ * `redactPromptLeakage` existed for exactly that and had one caller,
+ * `answer_sanitiser.ts`, covering only the question-answering path.
+ *
+ * Order follows `answer_sanitiser.ts:100` — prompt-leak first, secrets
+ * second. (The issue text describes the opposite order; the code is the
+ * authority.) Whole-block scaffolding is collapsed to a placeholder first,
+ * then the secret pass runs over what remains, so a token inside a block
+ * cannot survive by being removed from the secret pass's view.
+ *
+ * One helper, used by every branch, so a body-carrying argument added later
+ * cannot pick up half the mask.
+ */
+function maskBody(text: string): string {
+  return redactSecrets(redactPromptLeakage(text));
+}
+
+/**
+ * The same mask, for a body that is not an argv element (Issue #1421).
+ *
+ * `gh api --input -` sends its body on stdin, which never passes through
+ * `redactGhBodyArgs` because there is no argument to rewrite. Exported so
+ * `spawnGh` can apply the identical mask to `options.stdin` and the
+ * chokepoint's guarantee covers both routes rather than only the visible one.
+ */
+export function redactGhBodyText(text: string): string {
+  return maskBody(text);
+}
 
 /**
  * Flags whose following argument is published text.
@@ -188,7 +227,7 @@ export function redactGhBodyArgs(
     const isTextFlag = TEXT_FLAGS.has(arg) ||
       (titleShorthandIsText && arg === TITLE_SHORTHAND);
     if (isTextFlag && next !== undefined) {
-      out[i + 1] = redactSecrets(next);
+      out[i + 1] = maskBody(next);
       i++;
       continue;
     }
@@ -196,7 +235,7 @@ export function redactGhBodyArgs(
     // `--body=<text>` / `--title=<text>`
     const prefix = TEXT_FLAG_PREFIXES.find((p) => arg.startsWith(p));
     if (prefix !== undefined) {
-      out[i] = `${prefix}${redactSecrets(arg.substring(prefix.length))}`;
+      out[i] = `${prefix}${maskBody(arg.substring(prefix.length))}`;
       continue;
     }
 
@@ -273,7 +312,7 @@ function redactFieldAssignment(
     return masked === undefined ? field : `${key}=${masked}`;
   }
 
-  return `${key}=${redactSecrets(value)}`;
+  return `${key}=${maskBody(value)}`;
 }
 
 /**
@@ -304,7 +343,7 @@ function maskedBodyFile(
       }`,
     );
   }
-  const masked = redactSecrets(text);
+  const masked = maskBody(text);
   return masked === text ? undefined : masked;
 }
 
@@ -368,7 +407,7 @@ function maskedJsonBody(text: string): string | undefined {
     if (
       PUBLISHED_FIELD_KEYS.has(key.toLowerCase()) && typeof value === "string"
     ) {
-      const redacted = redactSecrets(value);
+      const redacted = maskBody(value);
       if (redacted !== value) {
         obj[key] = redacted;
         changed = true;
@@ -378,7 +417,7 @@ function maskedJsonBody(text: string): string | undefined {
   const serialised = changed ? JSON.stringify(obj) : text;
   // A secret the key-scan could not reach — a non-body field, a nested value —
   // still survives here. Fail closed rather than publish it unscanned.
-  if (redactSecrets(serialised) !== serialised) {
+  if (maskBody(serialised) !== serialised) {
     throw new UnredactableBodyError(
       "<input-body>",
       "the --input body carries a secret outside its redactable body " +
@@ -397,7 +436,7 @@ function maskedJsonBody(text: string): string | undefined {
  * @throws UnredactableBodyError when a non-object body contains a secret.
  */
 function rawBodyFallback(text: string): undefined {
-  if (redactSecrets(text) !== text) {
+  if (maskBody(text) !== text) {
     throw new UnredactableBodyError(
       "<input-body>",
       "the --input body is not a JSON object and contains a secret, so it " +

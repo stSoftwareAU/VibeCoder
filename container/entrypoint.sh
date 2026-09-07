@@ -110,8 +110,26 @@ TMP_SCRATCH_ROOT="${TMPDIR:-/tmp}/vibe-scratch"
 # rather than in the shared root, which is a change to the volume layout and
 # is tracked separately against Issue #1384.
 if [[ -d "${VIBE_WORK_ROOT}" ]] && getent group vibework >/dev/null 2>&1; then
+  # The sticky bit is the half that bounds the group grant (Issue #1442).
+  # Write permission on a DIRECTORY governs renaming and unlinking the entries
+  # inside it, independent of each entry's own mode — so a group-writable root
+  # let the untrusted account rename or delete any sibling repository's clone,
+  # the audit journal and the session store, whatever per-entry hardening was
+  # applied below. `+t` restricts that to the owner of each entry, exactly as
+  # it does for /tmp, while leaving the one case the grant exists for intact:
+  # a monitored repository's gate creating its own tier-2 data sibling
+  # (`work_volume_tiers.ts`) still works, because creating an entry needs
+  # write on the root and removing SOMEBODY ELSE'S no longer does.
+  #
+  # Measured on a live volume before this was added: as uid 1001, renaming a
+  # work-root entry it did not own succeeded. It no longer can.
+  #
+  # This closes rename and unlink ONLY. Cross-repo read and write inside a
+  # sibling clone are governed by that clone's own mode and stay open — see
+  # #1407. And it bounds uid 1001 (`agent`, which runs repository-supplied
+  # code), NOT the coding agent, which runs as `vibe` and owns these entries.
   if chgrp vibework "${VIBE_WORK_ROOT}" 2>/dev/null &&
-    chmod g+rwxs "${VIBE_WORK_ROOT}" 2>/dev/null; then
+    chmod g+rwxs,+t "${VIBE_WORK_ROOT}" 2>/dev/null; then
     for entry in "${VIBE_WORK_ROOT}"/*/; do
       [[ -d "${entry}" ]] || continue
       entry_name="${entry%/}"
