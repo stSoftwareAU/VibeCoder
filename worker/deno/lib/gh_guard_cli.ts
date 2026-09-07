@@ -37,6 +37,8 @@ import {
   redactGhBodyArgs,
   UnredactableBodyError,
 } from "./gh_body_redaction.ts";
+// Shared with `spawnGh` (Issue #1254) so the two chokepoints cannot drift.
+import { bodyFileWriterIn, denoBodyFileReader } from "./gh_body_file_io.ts";
 import { installConsoleRedaction } from "./console_redaction.ts";
 import { encodeNulFields } from "./guard_field_encoding.ts";
 import { evaluateGhCommand } from "./gh_guard_decision.ts";
@@ -76,38 +78,6 @@ export interface GhGuardCliResult {
  */
 export function encodeGuardStdout(result: GhGuardCliResult): string {
   return encodeNulFields([result.stdout, ...(result.ghArgs ?? [])]);
-}
-
-/** Production body-file reader — used when the caller supplies none. */
-const denoBodyFileReader: BodyFileReader = (path) =>
-  Deno.readTextFileSync(path);
-
-/**
- * Production writer for a masked `--input` body (Issue #92): a fresh file the
- * redacted JSON lands in, so the agent's own file is never rewritten.
- *
- * The file is created **inside a directory the caller names** (Issue #1364).
- * It used to be a bare `Deno.makeTempFileSync()`, which put it in TMPDIR with
- * nothing owning it: the copy must outlive this process — the `gh` child reads
- * it after the guard has exited — so the guard cannot delete it, and no one
- * else knew it existed. Writing into the wrapper's own per-spawn directory
- * gives it an owner: the spawn site removes that directory once the agent
- * child has exited, on both the success and the failure path.
- *
- * @param dir - Directory the masked copy is created in; the caller owns its
- *   lifetime.
- * @returns A writer that returns the path of the file it wrote.
- */
-export function bodyFileWriterIn(dir: string): BodyFileWriter {
-  return (content) => {
-    const path = Deno.makeTempFileSync({
-      dir,
-      prefix: "gh-input-",
-      suffix: ".json",
-    });
-    Deno.writeTextFileSync(path, content);
-    return path;
-  };
 }
 
 /** The guard's own argv, split from the `gh` arguments that follow `--`. */

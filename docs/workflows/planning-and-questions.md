@@ -551,6 +551,14 @@ bracketed placeholder — and a bare `Out of scope` with no reason fails too. A
 **missing** table, a table with **no rows**, and a parent that cannot be read
 all fail: absence of the artefact is not evidence of coverage.
 
+**The scan is bounded.** Every comment on the parent is re-read on each
+planning close, and a comment body is writable by any account on a public
+repository, so a candidate longer than `MAX_COVERAGE_SCAN_CHARS` (64 KiB) is
+**rejected without being scanned** and the skip is logged — an unscanned
+candidate is not a candidate that carried no table (Issue #1245). A genuine
+coverage table is a few hundred characters, so the next candidate, or the
+parent body, still decides.
+
 **The outcome — no second escalation path.** An uncovered ask needs a decision
 no self-repair can make (create the missing sub-issue, or accept the ask as out
 of scope), so the gate routes through the existing `escalateToHuman()`
@@ -573,6 +581,43 @@ flowchart TD
     C -->|yes| D{Every ask covered<br/>or out of scope with a reason?}
     D -->|yes| F[Close the parent as completed]
     D -->|no| E["escalateToHuman() — needs-human<br/>+ comment naming each uncovered ask<br/>parent left open · run succeeds"]
+```
+
+#### 🔐 Every close-out signal is author-verified (Issue #1244)
+
+Four reads decide whether a planning parent may be closed, and all four used to
+read text **any GitHub account can write** without asking who wrote it. The
+author is the only part of a match GitHub authenticates, so each is now filtered
+through the fleet author check (`selectFleetAuthoredMatches` /
+`selectFleetAuthoredComments`) against the fleet identity — this host's login ∪
+`fleet_pr_authors` ∪ `service_accounts`, never `allowed_authors` and never
+`--author @me`, which would break cross-host convergence:
+
+| Read | What it decided | Planted input |
+| --- | --- | --- |
+| `checkSubIssuesOnGitHub()` — `gh search issues --match body "Part of #N"` | skip the planner, close the parent | one issue body saying `Part of #N` |
+| `listSubIssuesViaIssueList()` — `Part of #N` / `Parent: #N` / `Child of #N` in any body | the same close path, and it suppressed the #1219 retry | the same |
+| `fetchNothingToDoSignal()` — `Nothing to do —` in any comment | skip the carrier sub-issue, dropping real work | one comment |
+| `runPlanCoverageGate()` — first comment carrying a coverage table wins | pass the gate before the parent's own failing table is read | one comment with a two-column table |
+
+**The fail direction is always towards doing the work.** An unattributable match
+— including *every* match when the fleet identity cannot be resolved — is
+discarded and the discard is logged: the planner runs, the carrier is created,
+and the coverage gate falls through to the parent body and escalates. Two
+signals are deliberately left unfiltered because they are already
+authenticated: the `invalid` / `duplicate` / `wontfix` labels need triage
+permission, and the parent **body** belongs to the issue whose work is being
+planned, not to a third party commenting on it.
+
+```mermaid
+flowchart LR
+    A["issue body / comment<br/>(anyone may write)"] --> B{marker matches?}
+    B -- no --> D
+    B -- yes --> C{author in fleet?}
+    C -- "yes" --> E["close-out signal honoured"]
+    C -- "no / unresolvable" --> D["signal discarded + logged<br/>plan · carry · escalate"]
+    style D fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style E fill:#adb5bd,stroke:#6c757d,color:#000
 ```
 
 #### 🚫 No MVP-slice gate — milestones merge as a whole (Issue #1120)

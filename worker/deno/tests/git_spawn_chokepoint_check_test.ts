@@ -10,6 +10,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  GIT_SPAWN_SCAN_DIRS,
   scanContentForGitSpawn,
   scanDirectoriesForGitSpawn,
 } from "../lib/git_spawn_chokepoint_check.ts";
@@ -65,6 +66,53 @@ Deno.test("scanContentForGitSpawn - ignores comments mentioning the pattern", ()
       "export const x = 1;",
     ].join("\n"),
     "worker/deno/lib/example.ts",
+  );
+  assertEquals(violations, []);
+});
+
+Deno.test("scanContentForGitSpawn - flags a variable binary handed a git argv literal", () => {
+  const violations = scanContentForGitSpawn(
+    [
+      "async function run(call: { bin: string; args: string[] }) {",
+      "  const command = new Deno.Command(call.bin, { args: call.args });",
+      "  return await command.output();",
+      "}",
+      'await run({ bin: "git", args: ["ls-files"] });',
+    ].join("\n"),
+    "worker/deno/lib/example.ts",
+  );
+  assertEquals(violations.length, 1);
+  assertEquals(violations[0]?.line, 2);
+});
+
+Deno.test("scanContentForGitSpawn - a variable binary that delegates git to the chokepoint is clean", () => {
+  const violations = scanContentForGitSpawn(
+    [
+      'import { runGitCommand } from "./git_timeout.ts";',
+      "async function run(call: { bin: string; args: string[] }) {",
+      '  if (call.bin === "git") return await runGitCommand(call.args);',
+      "  const command = new Deno.Command(call.bin, { args: call.args });",
+      "  return await command.output();",
+      "}",
+      'await run({ bin: "git", args: ["ls-files"] });',
+    ].join("\n"),
+    "worker/deno/lib/example.ts",
+  );
+  assertEquals(violations, []);
+});
+
+Deno.test("scanContentForGitSpawn - an allowlisted module naming git as tool data is clean", () => {
+  // `secrets_history_scan.ts` passes "git" as gitleaks' source-type argument,
+  // not as a binary — a documented false positive (Issue #1227).
+  const violations = scanContentForGitSpawn(
+    [
+      "async function run(cmd: { bin: string; args: string[] }) {",
+      "  const command = new Deno.Command(cmd.bin, { args: cmd.args });",
+      "  return await command.output();",
+      "}",
+      'await run({ bin: "gitleaks", args: ["git", "/repo"] });',
+    ].join("\n"),
+    "worker/deno/lib/secrets_history_scan.ts",
   );
   assertEquals(violations, []);
 });
@@ -135,6 +183,32 @@ Deno.test("scanDirectoriesForGitSpawn - missing directories yield no violations"
 });
 
 // The production tree must satisfy the invariant this check enforces. Before
+// Issue #1259: `worker/deno/setup` was never in the scanned set, so the setup
+// prerequisite probe ran `git config --global …` untimed and unjournalled
+// while the gate reported clean. This fails against the unfixed scan set.
+Deno.test("GIT_SPAWN_SCAN_DIRS - a direct git spawn under setup/ is caught", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${tmpDir}/worker/deno/setup`, { recursive: true });
+    await Deno.writeTextFile(
+      `${tmpDir}/worker/deno/setup/prerequisites.ts`,
+      'const c = new Deno.Command("git", { args: ["config", "--global"] });\n',
+    );
+
+    const result = await scanDirectoriesForGitSpawn(
+      tmpDir,
+      GIT_SPAWN_SCAN_DIRS,
+    );
+
+    assertEquals(
+      result.violations.map((v) => v.file),
+      ["worker/deno/setup/prerequisites.ts"],
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 // Issue #1214 this listed seven bypass sites — `codebase_map.ts`,
 // `prompt_manager.ts`, `security_sarif_upload.ts`, `semgrep_check.ts`,
 // `bash_script_refs_scanner.ts`, `stale_workdir.ts` and `pr_manager.ts` — each
@@ -144,10 +218,10 @@ Deno.test("scanDirectoriesForGitSpawn - the worker tree has no direct git spawns
     /\/$/,
     "",
   );
-  const result = await scanDirectoriesForGitSpawn(repoRoot, [
-    "worker/deno/lib",
-    "worker/deno/commands",
-  ]);
+  const result = await scanDirectoriesForGitSpawn(
+    repoRoot,
+    GIT_SPAWN_SCAN_DIRS,
+  );
   assertEquals(
     result.violations.map((v) => `${v.file}:${v.line}`),
     [],

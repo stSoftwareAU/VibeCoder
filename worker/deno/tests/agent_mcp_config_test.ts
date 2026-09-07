@@ -16,10 +16,17 @@ import {
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
-import { PLAYWRIGHT_MCP_VERSION } from "../setup/screenshot.ts";
+import {
+  BROWSER_OUTPUT_DIR_NAME,
+  PLAYWRIGHT_MCP_VERSION,
+} from "../setup/screenshot.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 import { envFrom } from "./support/env_lookup.ts";
 import { fakeClock } from "./support/fake_clock.ts";
+import {
+  cacheDirUserSuffix,
+  sharedTmpStateDir,
+} from "../lib/private_cache_dir.ts";
 
 Deno.test("agent mcp config - writes the Playwright server config to the worker cache (never the clone) with the clone's docs/evidence as output dir and the chromium channel (Issue #4355)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "mcp-cfg-" });
@@ -41,10 +48,13 @@ Deno.test("agent mcp config - writes the Playwright server config to the worker 
       args[args.indexOf("--output-dir") + 1]!.startsWith(clone),
       false,
     );
-    assert(
-      args[args.indexOf("--output-dir") + 1]!.endsWith(
-        "/vibe-playwright-output",
-      ),
+    // Issue #1242: the scratch output dir is per-account under the shared
+    // temporary root. Composed rather than spelled `/tmp/...`, because that
+    // root is TMPDIR wherever the host sets one — a literal prefix passes on
+    // CI's Linux and fails on every macOS checkout.
+    assertEquals(
+      args[args.indexOf("--output-dir") + 1],
+      sharedTmpStateDir(BROWSER_OUTPUT_DIR_NAME),
     );
     assert(args.includes("--headless"));
   } finally {
@@ -233,9 +243,14 @@ Deno.test("agent mcp config - with no WORK_DIR the config lands under the OS tem
   try {
     const path = await ensureAgentMcpConfig({ cwd: "/w/some-clone", env });
     assert(path, "config path");
-    assert(path.startsWith(`${tmp}/vibe-playwright-mcp/`), path);
+    // Issue #1242: per-account, so the directory is not the same path for
+    // every account on the host.
+    assert(path.startsWith(`${tmp}/vibe-playwright-mcp-`), path);
     assert(!path.startsWith("/home/vibe/auto-issue-work"), path);
-    assertEquals(defaultMcpConfigDir({ env }), `${tmp}/vibe-playwright-mcp`);
+    assertEquals(
+      defaultMcpConfigDir({ env }),
+      `${tmp}/vibe-playwright-mcp-${cacheDirUserSuffix()}`,
+    );
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }

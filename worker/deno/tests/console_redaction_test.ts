@@ -97,3 +97,62 @@ Deno.test("installConsoleRedaction - is idempotent and restorable", () => {
   assertEquals(globalThis.console.error, before);
   assertEquals(restoreConsole(), false, "restore with no patch is a no-op");
 });
+
+Deno.test("installConsoleRedaction - masks a secret in an Error message and stack", () => {
+  const token = `ghp_${"c".repeat(36)}`;
+  const error = new Error(`clone failed with ${token}`);
+  const seen = captureThroughPatch("error", [error]);
+  const received = seen[0] as Error;
+  assert(received instanceof Error, "an Error must stay an Error");
+  assertEquals(received.message.includes(token), false);
+  assertStringIncludes(received.message, REDACTION_PLACEHOLDER);
+  assertEquals(String(received.stack).includes(token), false);
+});
+
+Deno.test("installConsoleRedaction - leaves the caller's Error unmutated", () => {
+  const token = `ghp_${"d".repeat(36)}`;
+  const error = new Error(`clone failed with ${token}`);
+  const originalStack = error.stack;
+  captureThroughPatch("error", [error]);
+  assertStringIncludes(error.message, token);
+  assertEquals(error.stack, originalStack);
+});
+
+Deno.test("installConsoleRedaction - masks a secret in a nested Error cause", () => {
+  const token = `ghp_${"e".repeat(36)}`;
+  const error = new Error("push failed", {
+    cause: new Error(`remote rejected ${token}`),
+  });
+  const seen = captureThroughPatch("error", [error]);
+  const cause = (seen[0] as { cause?: unknown }).cause as Error;
+  assert(cause instanceof Error, "the cause must stay an Error");
+  assertEquals(cause.message.includes(token), false);
+  assertStringIncludes(cause.message, REDACTION_PLACEHOLDER);
+});
+
+Deno.test("installConsoleRedaction - keeps the Error subclass and its own properties", () => {
+  class CommandError extends Error {
+    constructor(message: string, readonly exitCode: number) {
+      super(message);
+      this.name = "CommandError";
+    }
+  }
+  const token = `ghp_${"f".repeat(36)}`;
+  const seen = captureThroughPatch("error", [
+    new CommandError(`git exited: ${token}`, 128),
+  ]);
+  const received = seen[0] as CommandError;
+  assert(received instanceof CommandError, "the subclass must be preserved");
+  assertEquals(received.name, "CommandError");
+  assertEquals(received.exitCode, 128);
+  assertEquals(received.message.includes(token), false);
+});
+
+Deno.test("installConsoleRedaction - a self-referencing cause chain terminates", () => {
+  const token = `ghp_${"a".repeat(36)}`;
+  const error = new Error(`loop ${token}`) as Error & { cause?: unknown };
+  error.cause = error;
+  const seen = captureThroughPatch("error", [error]);
+  const received = seen[0] as Error;
+  assertEquals(received.message.includes(token), false);
+});

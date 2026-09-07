@@ -50,6 +50,7 @@ import {
   type ReleaseChannel,
 } from "./tool_release_age.ts";
 import { spawnGh } from "./gh_spawn.ts";
+import { runningInContainerImage } from "./container_stamp.ts";
 import {
   WriteRepoBlockedError,
   WriteTargetUndeterminableError,
@@ -78,6 +79,30 @@ export const DEFAULT_UPDATE_RETRY_BACKOFF_SECONDS: readonly number[] = [
 
 /** Classification of an update command failure (Issue #1496). */
 export type UpdateErrorClass = "transient" | "permanent";
+
+/**
+ * What one {@link checkSoftwareUpdates} run actually did (Issue #1270).
+ *
+ * The run used to report nothing at all, so a caller could not tell a weekly
+ * check that upgraded three tools from one that attempted nothing, or from one
+ * whose every install failed — all three ended in "check complete". The caller
+ * now gets the facts and decides its own exit status from them.
+ */
+export interface SoftwareUpdateRunOutcome {
+  /**
+   * `suppressed` — the whole step is off (container image / SKIP_SOFTWARE_UPDATE);
+   * `frozen` — the host installed its pinned versions;
+   * `not-due` — the interval has not elapsed and no version floor forced a run;
+   * `ran` — the update pass executed.
+   */
+  status: "suppressed" | "frozen" | "not-due" | "ran";
+  /** Tools whose update was actually attempted. */
+  attempted: string[];
+  /** Tools whose update an explicit skip flag suppressed. */
+  skipped: string[];
+  /** Tools whose attempted update failed after its retries were exhausted. */
+  failed: string[];
+}
 
 /** Options for software update checking. */
 export interface SoftwareUpdateOptions {
@@ -177,17 +202,46 @@ export interface UpdateRetryOptions {
 }
 
 /**
+ * Refuse a duration that cannot be compared or waited on (Issue #1270).
+ *
+ * `NaN` is the dangerous value here, not a negative one: every comparison
+ * against it is `false` and `setTimeout(fn, NaN)` fires immediately, so a
+ * `NaN` interval turns the update gate permanently closed while a `NaN`
+ * timeout aborts every install — both while the caller still reports success.
+ * Neither is recoverable by guessing a default, so the value is refused.
+ *
+ * @param value Seconds supplied by a caller.
+ * @param label Operator-facing name of the setting, e.g. `--timeout`.
+ * @throws When the value is not a finite, strictly positive number.
+ */
+function assertPositiveSeconds(value: number, label: string): void {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(
+      `Invalid ${label}: expected a positive number of seconds, got ` +
+        `${value}. A non-finite or non-positive duration is refused rather ` +
+        `than passed on — it would silently disable the check it controls.`,
+    );
+  }
+}
+
+/**
  * Check if enough time has elapsed since the last update check.
  *
  * Reads the timestamp file to determine when the last update check occurred.
  * Returns true if the interval has elapsed, the file is missing, or contains
  * invalid content.
+ *
+ * @throws When `intervalSeconds` is not a finite, positive number
+ *   (Issue #1270) — `elapsed >= NaN` is `false`, so a `NaN` interval would
+ *   otherwise close the gate forever without a word.
  */
 export function shouldCheckForUpdates(
   timestampDir: string,
   intervalSeconds: number = DEFAULT_UPDATE_INTERVAL_SECONDS,
   nowFn: () => number = () => Math.floor(Date.now() / 1000),
 ): boolean {
+  assertPositiveSeconds(intervalSeconds, "update interval");
+
   const tsFile = `${timestampDir}/.last_software_update_check`;
 
   let content: string;
@@ -1089,10 +1143,10 @@ export function resolveQuarantineClearedVersions(
 export async function updateClaudeCli(
   logger: Logger,
   options: ToolUpdateOptions = {},
-): Promise<void> {
+): Promise<boolean> {
   if (options.skip) {
     logger.info("Claude CLI update skipped (skipClaude=true)");
-    return;
+    return true;
   }
 
   // Pinned install (Issue #623): `claude update` takes no version argument, so
@@ -1104,7 +1158,7 @@ export async function updateClaudeCli(
       options.targetVersion,
       options,
     );
-    return;
+    return true;
   }
 
   logger.info("Checking for Claude CLI updates...");
@@ -1113,7 +1167,7 @@ export async function updateClaudeCli(
     kind: "npm",
     pkg: CLAUDE_CLI_NPM_PACKAGE,
   });
-  if (!passesQuarantine(logger, "Claude CLI", verdict)) return;
+  if (!passesQuarantine(logger, "Claude CLI", verdict)) return true;
 
   const result = await runUpdateWithRetry(
     logger,
@@ -1127,6 +1181,7 @@ export async function updateClaudeCli(
     if (result.finalOutput) logger.info(`Update output: ${result.finalOutput}`);
     persistSuccess(logger, "claude", options);
   }
+  return result.success;
 }
 
 /**
@@ -1220,10 +1275,10 @@ async function upgradeGhExtensions(
 export async function updateGhCli(
   logger: Logger,
   options: ToolUpdateOptions = {},
-): Promise<void> {
+): Promise<boolean> {
   if (options.skip) {
     logger.info("GH CLI update skipped (skipGh=true)");
-    return;
+    return true;
   }
 
   // Pinned install (Issue #623): `brew upgrade gh` takes no version argument,
@@ -1231,7 +1286,7 @@ export async function updateGhCli(
   // the binary is pinned — extensions keep their own age-gated upgrade path.
   if (options.targetVersion) {
     await installPinnedVersion(logger, "gh", options.targetVersion, options);
-    return;
+    return true;
   }
 
   logger.info("Checking for GH CLI updates...");
@@ -1243,6 +1298,7 @@ export async function updateGhCli(
   // Upgrade GH CLI binary via brew (if available). `which brew` is a short,
   // deterministic probe and does not need retry — classify its absence as
   // "brew not installed" and skip the binary upgrade.
+  let ok = true;
   const brewProbe = await runFn(["which", "brew"], 5);
   if (brewProbe.ok && brewProbe.value.exitCode === 0) {
     const binaryVerdict = await gate.check({
@@ -1257,7 +1313,8 @@ export async function updateGhCli(
         ["brew", "upgrade", "gh"],
         retryOpts,
       );
-      if (brewResult.success && brewResult.finalOutput) {
+      if (!brewResult.success) ok = false;
+      else if (brewResult.finalOutput) {
         logger.info(`brew upgrade gh: ${brewResult.finalOutput}`);
       }
     }
@@ -1269,7 +1326,10 @@ export async function updateGhCli(
   if (await upgradeGhExtensions(logger, gate, retryOpts)) {
     logger.info("GH CLI update completed successfully");
     persistSuccess(logger, "gh", options);
+  } else {
+    ok = false;
   }
+  return ok;
 }
 
 /**
@@ -1284,10 +1344,10 @@ export async function updateGhCli(
 export async function updateDeno(
   logger: Logger,
   options: ToolUpdateOptions = {},
-): Promise<void> {
+): Promise<boolean> {
   if (options.skip) {
     logger.info("Deno update skipped (skipDeno=true)");
-    return;
+    return true;
   }
 
   // Pinned install (Issue #623): `deno upgrade` already accepts a version, so
@@ -1296,7 +1356,7 @@ export async function updateDeno(
   // cannot run must fail loud, not return quietly.
   if (options.targetVersion) {
     await installPinnedVersion(logger, "deno", options.targetVersion, options);
-    return;
+    return true;
   }
 
   const retryOpts = buildRetryOptions(options);
@@ -1306,7 +1366,7 @@ export async function updateDeno(
   const denoCheck = await runFn(["which", "deno"], 5);
   if (!denoCheck.ok || denoCheck.value.exitCode !== 0) {
     logger.info("Deno not installed — skipping update");
-    return;
+    return true;
   }
 
   logger.info("Checking for Deno updates...");
@@ -1315,10 +1375,10 @@ export async function updateDeno(
     kind: "github",
     repo: DENO_RELEASE_REPO,
   });
-  if (!passesQuarantine(logger, "Deno", verdict)) return;
+  if (!passesQuarantine(logger, "Deno", verdict)) return true;
   if (!verdict.version) {
     logger.warn("Deno upgrade skipped: no resolved version to pin to");
-    return;
+    return true;
   }
 
   const result = await runUpdateWithRetry(
@@ -1333,11 +1393,18 @@ export async function updateDeno(
     if (result.finalOutput) logger.info(`Update output: ${result.finalOutput}`);
     persistSuccess(logger, "deno", options);
   }
+  return result.success;
 }
 
-/** The updater for each tool, shared by the dynamic and frozen paths. */
+/**
+ * The updater for each tool, shared by the dynamic and frozen paths.
+ *
+ * Each returns false only when an update it actually attempted failed after
+ * its retries (Issue #1270) — a skip, a quarantine hold or an absent binary
+ * is not a failure.
+ */
 const TOOL_UPDATERS: Readonly<
-  Record<PinnedTool, (l: Logger, o: ToolUpdateOptions) => Promise<void>>
+  Record<PinnedTool, (l: Logger, o: ToolUpdateOptions) => Promise<boolean>>
 > = {
   claude: updateClaudeCli,
   gh: updateGhCli,
@@ -1359,13 +1426,17 @@ const TOOL_UPDATERS: Readonly<
  * pinned version is logged at install so the choice stays auditable.
  *
  * @throws When a tool has no pinned version, or its pinned install fails.
+ * @returns Which tools were installed and which a skip flag suppressed
+ *   (Issue #1270), so the caller can report what the launch actually did.
  */
 async function installFrozenToolVersions(
   logger: Logger,
   pinned: PinnedToolVersions,
   toolOpts: ToolUpdateOptions,
   skips: Record<string, boolean>,
-): Promise<void> {
+): Promise<{ attempted: string[]; skipped: string[] }> {
+  const attempted: string[] = [];
+  const skipped: string[] = [];
   for (const tool of UPDATE_TOOLS) {
     const label = TOOL_LABELS[tool];
     const version = pinned[tool]?.trim();
@@ -1379,6 +1450,7 @@ async function installFrozenToolVersions(
       );
     }
     if (skips[tool]) {
+      skipped.push(tool);
       logger.warn(
         `${label} is pinned to ${version} (update_mode=frozen) but its ` +
           `update is suppressed (${
@@ -1389,8 +1461,10 @@ async function installFrozenToolVersions(
       continue;
     }
     logger.info(`${label} pinned to ${version} (update_mode=frozen)`);
+    attempted.push(tool);
     await TOOL_UPDATERS[tool](logger, { ...toolOpts, targetVersion: version });
   }
+  return { attempted, skipped };
 }
 
 /** Version-reading commands per tool (Issue #2622). */
@@ -1493,6 +1567,8 @@ export function shouldAttemptFloorUpdate(
   intervalSeconds: number = DEFAULT_UPDATE_INTERVAL_SECONDS,
   nowFn: () => number = () => Math.floor(Date.now() / 1000),
 ): boolean {
+  assertPositiveSeconds(intervalSeconds, "update interval");
+
   const tsFile = `${timestampDir}/.last_floor_update_attempt_${tool}`;
   let content: string;
   try {
@@ -1596,7 +1672,7 @@ async function verifyFloorAfterUpdate(
 export async function checkSoftwareUpdates(
   logger: Logger,
   options: SoftwareUpdateOptions = {},
-): Promise<void> {
+): Promise<SoftwareUpdateRunOutcome> {
   // Defence in depth for Issue #4062: the bootstrap gates its call on
   // skipSoftwareUpdateFromEnv, but other callers (run-core's periodic path)
   // reached this entry directly and ran the weekly check inside the
@@ -1610,7 +1686,7 @@ export async function checkSoftwareUpdates(
         "is the update mechanism (Issue #4062), or SKIP_SOFTWARE_UPDATE is " +
         "set",
     );
-    return;
+    return { status: "suppressed", attempted: [], skipped: [], failed: [] };
   }
 
   const timestampDir = options.timestampDir ??
@@ -1618,6 +1694,13 @@ export async function checkSoftwareUpdates(
   const intervalSeconds = options.intervalSeconds ??
     DEFAULT_UPDATE_INTERVAL_SECONDS;
   const timeout = options.timeout ?? DEFAULT_UPDATE_TIMEOUT_SECONDS;
+
+  // Issue #1270: refuse a NaN or non-positive duration here rather than
+  // letting it reach the interval comparison and `setTimeout`, where it
+  // silently turns the gate permanently closed and aborts every install
+  // while the run still reports success.
+  assertPositiveSeconds(intervalSeconds, "update interval");
+  assertPositiveSeconds(timeout, "update timeout");
   const nowFn = options.now ?? (() => Math.floor(Date.now() / 1000));
   const minVersions = options.minVersions ?? {};
   const readVersion = options.readVersion ??
@@ -1645,13 +1728,13 @@ export async function checkSoftwareUpdates(
   // no-op once the tool reports its pinned version, so running every launch
   // costs one `--version` read per tool.
   if (options.updateMode === "frozen") {
-    await installFrozenToolVersions(
+    const frozen = await installFrozenToolVersions(
       logger,
       options.pinnedToolVersions ?? {},
       toolOpts,
       skips,
     );
-    return;
+    return { status: "frozen", ...frozen, failed: [] };
   }
 
   const intervalElapsed = shouldCheckForUpdates(
@@ -1700,7 +1783,7 @@ export async function checkSoftwareUpdates(
 
   if (!intervalElapsed && floorTriggered.size === 0) {
     logger.info("Software updates checked recently — skipping");
-    return;
+    return { status: "not-due", attempted: [], skipped: [], failed: [] };
   }
 
   logger.info(
@@ -1710,6 +1793,10 @@ export async function checkSoftwareUpdates(
         [...floorTriggered].join(", ")
       })...`,
   );
+
+  const attempted: string[] = [];
+  const skipped: string[] = [];
+  const failed: string[] = [];
 
   // Preserve the historical claude → gh → deno ordering.
   for (const tool of UPDATE_TOOLS) {
@@ -1723,7 +1810,10 @@ export async function checkSoftwareUpdates(
         })`,
       );
     }
-    await TOOL_UPDATERS[tool](logger, { ...toolOpts, skip });
+    (skip ? skipped : attempted).push(tool);
+    if (!await TOOL_UPDATERS[tool](logger, { ...toolOpts, skip })) {
+      failed.push(tool);
+    }
     if (floorTriggered.has(tool)) {
       // Record the attempt regardless of outcome so an unreachable floor does
       // not retry-loop every iteration.
@@ -1740,11 +1830,24 @@ export async function checkSoftwareUpdates(
     recordUpdateCheck(timestampDir, nowFn);
   }
 
+  // Issue #1270: an update that was attempted and failed is stated, not left
+  // to a warning buried in the middle of the log. The worker still continues
+  // — the caller decides what a failed tool update means for its own exit
+  // status.
+  if (failed.length > 0) {
+    logger.error(
+      `Software update failed for: ${failed.join(", ")} — the host is still ` +
+        `running the versions it had`,
+    );
+  }
+
   logger.info(
     intervalElapsed
       ? "Weekly software update check complete"
       : "Floor-triggered software update complete",
   );
+
+  return { status: "ran", attempted, skipped, failed };
 }
 
 /** Config fields {@link softwareUpdateOptionsFromEnv} reads. */
@@ -1827,5 +1930,7 @@ export function skipSoftwareUpdateFromEnv(
   getEnv: (name: string) => string | undefined = (name) => Deno.env.get(name),
 ): boolean {
   if (getEnv("SKIP_SOFTWARE_UPDATE") === "true") return true;
-  return getEnv("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined;
+  // By value, not presence: a blank stamp is a host run, which still needs
+  // the update step (Issue #1493).
+  return runningInContainerImage(getEnv);
 }

@@ -49,6 +49,7 @@ import {
   type AlertDedupRow,
   selectFleetAuthoredMatches,
 } from "../lib/alert_dedup_authors.ts";
+import { createSetupRunCommand } from "./setup_command_runner.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -241,27 +242,6 @@ export async function ensureDerivedLabels(
     if (result.ok) ensured.push(label);
   }
   return ensured;
-}
-
-function defaultRunner(ghConfigDir?: string): GhCommandFn {
-  return async (cmd: string[]): Promise<CommandOutput> => {
-    const env = ghConfigDir
-      ? { ...Deno.env.toObject(), GH_CONFIG_DIR: ghConfigDir }
-      : undefined;
-    const command = new Deno.Command(cmd[0]!, {
-      args: cmd.slice(1),
-      stdout: "piped",
-      stderr: "piped",
-      env,
-    });
-    const out = await command.output();
-    const decoder = new TextDecoder();
-    return {
-      success: out.success,
-      stdout: decoder.decode(out.stdout).trim(),
-      stderr: decoder.decode(out.stderr).trim(),
-    };
-  };
 }
 
 /**
@@ -525,7 +505,8 @@ export async function syncBestPracticesForRepo(
   repo: string,
   options: SyncRepoOptions = {},
 ): Promise<BestPracticesSyncResult> {
-  const runner = options.ghCommandFn ?? defaultRunner(options.ghConfigDir);
+  const runner = options.ghCommandFn ??
+    createSetupRunCommand(options.ghConfigDir);
 
   const auditResult = await auditWorkflowBestPractices({
     repo,
@@ -639,7 +620,8 @@ export async function syncBestPracticesForRepo(
 export async function syncBestPracticesForAllRepos(
   options: SyncAllOptions,
 ): Promise<BestPracticesSyncResult[]> {
-  const runner = options.ghCommandFn ?? defaultRunner(options.ghConfigDir);
+  const runner = options.ghCommandFn ??
+    createSetupRunCommand(options.ghConfigDir);
   const results: BestPracticesSyncResult[] = [];
   for (const repo of options.repos) {
     if (!repo) continue;

@@ -53,6 +53,7 @@ import {
   type AlertDedupRow,
   selectFleetAuthoredMatches,
 } from "../lib/alert_dedup_authors.ts";
+import { createSetupRunCommand } from "./setup_command_runner.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -125,32 +126,6 @@ export function parseSeveritiesFromBody(
   return out;
 }
 
-/** Build the default `gh` runner (mirrors best_practices_sync.defaultRunner). */
-function defaultRunner(ghConfigDir?: string): GhCommandFn {
-  return async (cmd: string[]): Promise<{
-    success: boolean;
-    stdout: string;
-    stderr: string;
-  }> => {
-    const env = ghConfigDir
-      ? { ...Deno.env.toObject(), GH_CONFIG_DIR: ghConfigDir }
-      : undefined;
-    const command = new Deno.Command(cmd[0]!, {
-      args: cmd.slice(1),
-      stdout: "piped",
-      stderr: "piped",
-      env,
-    });
-    const result = await command.output();
-    const decoder = new TextDecoder();
-    return {
-      success: result.success,
-      stdout: decoder.decode(result.stdout).trim(),
-      stderr: decoder.decode(result.stderr).trim(),
-    };
-  };
-}
-
 /**
  * List open **fleet-filed** issues carrying the best-practices marker,
  * returning each issue's number, labels, and body.
@@ -216,7 +191,8 @@ export async function relabelBestPracticesForRepo(
   repo: string,
   options: RelabelRepoOptions = {},
 ): Promise<RelabelResult> {
-  const runner = options.ghCommandFn ?? defaultRunner(options.ghConfigDir);
+  const runner = options.ghCommandFn ??
+    createSetupRunCommand(options.ghConfigDir);
 
   let issues: ExistingIssue[];
   try {
@@ -283,7 +259,8 @@ export async function relabelBestPracticesForRepo(
 export async function relabelBestPracticesForAllRepos(
   options: RelabelAllOptions,
 ): Promise<RelabelResult[]> {
-  const runner = options.ghCommandFn ?? defaultRunner(options.ghConfigDir);
+  const runner = options.ghCommandFn ??
+    createSetupRunCommand(options.ghConfigDir);
   const results: RelabelResult[] = [];
   for (const repo of options.repos) {
     if (!repo) continue;

@@ -149,14 +149,20 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES: readonly string[] = [];
  * REST comments with no `--jq` at all (`issue_comment_pages.ts`), projects
  * without a `select(.body` (`run_failure_issue.ts`), reads `--jq .[].body`
  * across all authors (`milestone_children_gate.ts`, #1249) or matches
- * client-side over a plain `gh issue list` (`idle_task_snapshot.ts`, #1243) is
- * invisible to it. So is a gate that makes no `gh` call of its own and reads
- * the marker out of a blob another module assembled — the clarity gate's
- * clarification round limit counted a `## Clarification Needed` heading
- * across the concatenated comment text handed to the model, which is every
- * comment including the untrusted ones (`label_clarification.ts`, #1263,
- * fixed there against the fleet identity). Both lists were empty while six live instances of the class
- * sat in the tree, which is what #1216 found and fixed.
+ * client-side over a plain `gh issue list` (`idle_task_snapshot.ts`, #1243 —
+ * fixed there, and still invisible to the scanner, which is why its entry had
+ * to be deleted by hand) is invisible to it. So is the whole planning
+ * close-out path (#1244): a `gh search issues --match body` with no `--search`
+ * expression, a plain `gh issue list` matched client-side, and two
+ * `gh issue view --json …,comments` reads — four sites the scanner cannot
+ * classify, each now filtered through this module's author check. So too is a
+ * gate that makes no `gh` call of its own and reads the marker out of a blob
+ * another module assembled — the clarity gate's clarification round limit
+ * counted a `## Clarification Needed` heading across the concatenated comment
+ * text handed to the model, which is every comment including the untrusted
+ * ones (`label_clarification.ts`, #1263, fixed there against the fleet
+ * identity). Both lists were empty while six live instances of the class sat
+ * in the tree, which is what #1216 found and fixed.
  *
  * Cleared by Issue #1124 — what each of the original entries needed, and where
  * the control now lives:
@@ -181,34 +187,26 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES: readonly string[] = [];
  *   - `lib/failure_detection_resume.ts` — `readRecordedAttempts` already
  *     verified its attempt markers through `selectFleetAuthoredComments`
  *     (failing towards retrying); the entry outlived the fix.
+ *
+ * Cleared again by Issue #1247 (SEC-1216-06), which fixed the merge-conflict
+ * pair #1216 recorded here:
+ *
+ *   - `lib/pr_merge_conflict_scan.ts` — `parseConflictAttempts` counted
+ *     `CONFLICT_FAILED_MARKER` comments straight off the raw REST array and
+ *     handed the tally to `hasExhaustedConflictAttempts` → `abandonRestart`,
+ *     so two planted comments made the worker **close** the PR. The thread is
+ *     now reduced to the fleet's own by `conflict_marker_trust.ts` before
+ *     anything counts it, failing towards *not* abandoning.
+ *   - `lib/conflict_abandon_restart.ts` — `restartMarkerPrNumbers` and
+ *     `summariseFailedAttempts` read the restart and attempt markers off the
+ *     originating issue and the PR thread. Both are attributed now. The fail
+ *     direction the entry called out is what made this a design decision
+ *     rather than a filter: the restart marker suppresses a *destructive*
+ *     action, so an unattributable claim **declines** the abandon
+ *     (`restart-claim-unverifiable`) instead of being discarded, and only a
+ *     claim positively attributed to an outsider is dropped.
  */
-export const MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS: readonly string[] = [
-  // Issue #1216, SEC-1216-06 (#1247). Both read marker text out of the raw
-  // comment array `issue_comment_pages.fetchIssueCommentPages` returns, which
-  // carries every author. `parseConflictAttempts` counts
-  // `CONFLICT_FAILED_MARKER` comments and hands the tally to
-  // `hasExhaustedConflictAttempts` → `abandonRestart`, so two planted comments
-  // make the worker CLOSE the PR; `restartMarkerPrNumbers` and
-  // `summariseFailedAttempts` read the restart and attempt markers off the
-  // originating issue and the PR thread.
-  //
-  // Recorded rather than fixed with the rest of the class because the fail
-  // direction is not the usual one: the restart marker suppresses a
-  // *destructive* action, so discarding an unverifiable match relaxes the
-  // "one restart per originating issue" bound instead of tightening it. That
-  // bound has to be re-expressed against something authenticated before the
-  // author check can land, which is a design decision, not a filter.
-  "lib/conflict_abandon_restart.ts",
-  // Issue #1216, SEC-1216-02 (#1243). `listOpenIssueBodies` asks for
-  // `number,body` and matches `<!-- finding-id: … -->` client-side, so the
-  // scanner's `--search … in:body` shape never sees it. A hit makes
-  // `fileFindingOnce` skip `gh issue create`, and the same read feeds
-  // `{{KNOWN_OPEN_FINDING_IDS}}` to the scanning agent as a skip-list, so one
-  // issue anybody opens suppresses a real finding across ~12 scanners.
-  "lib/idle_task_snapshot.ts",
-  // Issue #1216, SEC-1216-06 (#1247).
-  "lib/pr_merge_conflict_scan.ts",
-];
+export const MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS: readonly string[] = [];
 
 // ---------------------------------------------------------------------------
 // The classifier

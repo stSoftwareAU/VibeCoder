@@ -42,6 +42,7 @@ import {
   type AlertDedupRow,
   selectFleetAuthoredMatches,
 } from "../lib/alert_dedup_authors.ts";
+import { createSetupRunCommand } from "./setup_command_runner.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -111,30 +112,6 @@ export interface WorkflowSyncResult {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-/** Create a default command runner using Deno.Command with optional gh config. */
-function createDefaultRunCommand(
-  ghConfigDir?: string,
-): (cmd: string[]) => Promise<CommandOutput> {
-  return async (cmd: string[]): Promise<CommandOutput> => {
-    const env = ghConfigDir
-      ? { ...Deno.env.toObject(), GH_CONFIG_DIR: ghConfigDir }
-      : undefined;
-    const command = new Deno.Command(cmd[0]!, {
-      args: cmd.slice(1),
-      stdout: "piped",
-      stderr: "piped",
-      env,
-    });
-    const output = await command.output();
-    const decoder = new TextDecoder();
-    return {
-      success: output.success,
-      stdout: decoder.decode(output.stdout).trim(),
-      stderr: decoder.decode(output.stderr).trim(),
-    };
-  };
-}
 
 /** Generate the deduplication tag for a missing workflow spec. */
 export function deduplicationTag(specId: string): string {
@@ -467,7 +444,7 @@ export async function syncWorkflowsForRepo(
   options: WorkflowSyncOptions = {},
 ): Promise<WorkflowSyncResult> {
   const runner = options.runCommand ??
-    createDefaultRunCommand(options.ghConfigDir);
+    createSetupRunCommand(options.ghConfigDir);
   const log = options.log ?? ((message: string) => console.warn(message));
   const langOpts: LanguageDetectorOptions = {
     runCommand: runner,

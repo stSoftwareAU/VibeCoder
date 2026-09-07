@@ -32,6 +32,19 @@ export const SPEND_CEILING_ENV = "VIBE_DAILY_SPEND_CEILING_USD";
 /** Environment variable overriding the credit log directory. */
 export const CREDIT_LOG_DIR_ENV = "VIBE_CREDIT_LOG_DIR";
 
+/**
+ * Name of the worker-private credit log directory inside the work dir
+ * (Issue #1239).
+ *
+ * The logs used to sit directly in the work root, which is group-writable by
+ * the untrusted `agent` account and carries no sticky bit — so that account
+ * could delete the day's log and zero the ceiling's only input, or plant a
+ * symlink at the predictable log path. `logInvocation` creates this
+ * subdirectory `0700`, which the `agent` account can neither write into nor
+ * remove while it holds the day's log.
+ */
+export const CREDIT_LOG_DIR_NAME = ".credit-logs";
+
 /** Audit verb recorded when the ceiling stops a cycle. */
 export const SPEND_CEILING_AUDIT_VERB = "spend-ceiling-stop";
 
@@ -90,7 +103,11 @@ export function resolveSpendCeilingUsd(raw: string | undefined): number {
 }
 
 /**
- * Resolve the credit log directory, defaulting to the worker's work dir.
+ * Resolve the credit log directory, defaulting to the worker-private
+ * {@link CREDIT_LOG_DIR_NAME} subdirectory of the work dir (Issue #1239).
+ *
+ * An explicit `VIBE_CREDIT_LOG_DIR` still wins; the operator owns that path's
+ * permissions.
  *
  * @param workDir - Worker work directory
  * @param raw - Raw environment override
@@ -101,7 +118,8 @@ export function resolveCreditLogDir(
   raw: string | undefined,
 ): string {
   const trimmed = raw?.trim() ?? "";
-  return trimmed === "" ? workDir : trimmed;
+  if (trimmed !== "") return trimmed;
+  return `${workDir.replace(/\/+$/, "")}/${CREDIT_LOG_DIR_NAME}`;
 }
 
 /** Default audit sink — a hash-chained journal entry for the breach. */

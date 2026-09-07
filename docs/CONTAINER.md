@@ -164,7 +164,7 @@ flowchart TD
     R["resolveBrowserEnvironment()"] --> E{"PLAYWRIGHT_BROWSERS_PATH<br/>exists?"}
     E -->|yes, in the image| B["baked: env PLAYWRIGHT_BROWSERS_PATH<br/>+ --no-sandbox"]
     E -->|no, on a host| H["host: install once at setup,<br/>Chromium keeps its sandbox"]
-    B --> P["--user-data-dir /tmp/vibe-playwright-profile"]
+    B --> P["--user-data-dir /tmp/vibe-playwright-profile-&lt;user&gt;"]
     H --> P
     P --> X["❌ throws when the profile<br/>would land in the checkout"]
     style B fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -176,7 +176,9 @@ flowchart TD
   proves it by running the navigate-and-screenshot smoke test with
   `--network none`: a browser fetch there would fail outright.
 - **Profile state is disposable.** `--user-data-dir` points at
-  `/tmp/vibe-playwright-profile` — the launcher mounts `/tmp` as a `tmpfs`, so
+  `/tmp/vibe-playwright-profile-<user>` — per-account since Issue #1242, so no
+  other account on the host can create it first — and the launcher mounts
+  `/tmp` as a `tmpfs`, so
   the profile dies with the container. Generating a config whose profile
   directory sits inside the mounted checkout throws rather than writing browser
   state into the repository. `VIBE_BROWSER_PROFILE_DIR` overrides the location;
@@ -213,7 +215,7 @@ flowchart TD
   the agent never runs from. The server is told `--browser chromium` (its
   default `chrome` channel is Google Chrome, which the image does not ship),
   and its `--output-dir` is scratch beside the browser profile
-  (`/tmp/vibe-playwright-output`) because every `browser_navigate` writes an
+  (`/tmp/vibe-playwright-output-<user>`) because every `browser_navigate` writes an
   accessibility snapshot there; screenshots named explicitly
   (`filename: docs/evidence/<name>.png`) resolve against the clone and land
   where the evidence gate and the PR expect them. `container-build.yml`
@@ -1607,8 +1609,12 @@ Two invariants keep the set honest:
   `imageAgentProviderIds()` in `agent_provider.ts` reads it back and
   `resolveAgentProviderId()` fails loudly when a phase asks for a provider the
   running image did not install — rather than a "command not found" mid-run.
-  With no stamp (an uncontained worker on a host) there is no image set to
-  check against, and the check stands aside.
+  With no stamp — absent, or blank, which is the same thing (Issue #1262):
+  an uncontained worker on a host — there is no image set to check against,
+  and the check stands aside. Every reader of the stamp asks
+  `runningInContainerImage()` in `worker/deno/lib/container_stamp.ts` rather
+  than spelling the test itself, so "blank is a host" holds at all of them and
+  not only at the three #1262 converted (Issue #1493).
 
 ```mermaid
 flowchart LR

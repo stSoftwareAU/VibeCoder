@@ -151,8 +151,12 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
  * for the same adversarial input — a super-linear pattern at those sizes never
  * returns, so the runner's own timeout is the detector — and they left this
  * list for the parallel pass. What remains here genuinely races a real clock:
- * the growth helper's own tests, and a launcher watchdog timed against a real
- * container.
+ * the growth helper's own tests, a launcher watchdog timed against a real
+ * container, and `plan_coverage_gate_bounds_1245_test.ts`, whose pattern
+ * costs about twelve seconds on the largest input GitHub will accept — slow
+ * enough to stall a planning close, but not slow enough to hang a test, so
+ * the behavioural form has nothing to detect and the ratio is the only signal
+ * (Issue #1245).
  *
  * The asymmetry here runs the opposite way to the integration manifest, and
  * that is why {@link measuresWallClock} can afford to be broad. A file wrongly
@@ -161,6 +165,7 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
  */
 export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   "tests/growth_bound_test.ts",
+  "tests/plan_coverage_gate_bounds_1245_test.ts",
   "tests/run_ps1_launcher_test.ts",
 ];
 

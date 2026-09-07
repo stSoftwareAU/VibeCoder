@@ -105,6 +105,8 @@ import { CLAUDE_PROVIDER_ID } from "../lib/agent_provider.ts";
 import { loadExistingConfig } from "./config_setup.ts";
 import { runUpdateModeSetup } from "./update_mode_setup.ts";
 import { resolveRunMode, type RunMode } from "../lib/run_mode.ts";
+import { runGhOrThrow } from "../lib/gh_spawn.ts";
+import { expandHome } from "./setup_command_runner.ts";
 import { readConfiguredRunMode } from "../commands/run_mode.ts";
 
 // ── Colour helpers ──────────────────────────────────────────────────────
@@ -131,36 +133,19 @@ function printWarning(msg: string): void {
  * Its own runner rather than the sync's: that one returns a structured
  * `CommandOutput`, while the ruleset reads want raw JSON on stdout and a
  * throw on failure, matching the `GhJson` seam.
+ *
+ * Routed through `runGhOrThrow` (Issue #1259). It spawned `gh` itself, and
+ * `milestone_ruleset_check.ts` hands it `--input` bodies — a request body
+ * published through none of the write-repo allowlist, `redactGhBodyArgs` or
+ * the audit journal.
  */
 function createSetupGhJson(ghConfigDir?: string) {
-  return async (args: string[], stdin?: string): Promise<string> => {
-    const env = ghConfigDir
-      ? { ...Deno.env.toObject(), GH_CONFIG_DIR: ghConfigDir }
-      : undefined;
-    const command = new Deno.Command("gh", {
-      args,
-      stdin: stdin === undefined ? "null" : "piped",
-      stdout: "piped",
-      stderr: "piped",
-      ...(env ? { env } : {}),
+  const dir = expandHome(ghConfigDir);
+  return (args: string[], stdin?: string): Promise<string> =>
+    runGhOrThrow(args, {
+      ...(stdin === undefined ? {} : { stdin }),
+      ...(dir ? { env: { GH_CONFIG_DIR: dir } } : {}),
     });
-    if (stdin !== undefined) {
-      const child = command.spawn();
-      const writer = child.stdin.getWriter();
-      await writer.write(new TextEncoder().encode(stdin));
-      await writer.close();
-      const piped = await child.output();
-      const decode = new TextDecoder();
-      if (!piped.success) throw new Error(decode.decode(piped.stderr).trim());
-      return decode.decode(piped.stdout);
-    }
-    const output = await command.output();
-    const decoder = new TextDecoder();
-    if (!output.success) {
-      throw new Error(decoder.decode(output.stderr).trim());
-    }
-    return decoder.decode(output.stdout);
-  };
 }
 
 /** The terminal edges of {@link askCreateMilestoneRuleset}, injectable. */

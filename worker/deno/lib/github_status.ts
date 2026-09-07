@@ -18,6 +18,7 @@
 
 import type { Result } from "../types.ts";
 import { spawnGh } from "./gh_spawn.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 /** Maximum length for GitHub status messages. */
 const GH_STATUS_MAX_LENGTH = 80;
@@ -112,12 +113,14 @@ export function buildGhStatusMessage(
       break;
   }
 
-  // Truncate to maximum length
-  if (message.length > GH_STATUS_MAX_LENGTH) {
-    message = message.substring(0, GH_STATUS_MAX_LENGTH - 3) + "...";
-  }
-
-  return message;
+  // Redact the whole message, then truncate (Issue #1257). The issue title is
+  // untrusted text and this status is world-readable, so a token pasted into a
+  // title would otherwise be published — and cutting first would leave a
+  // fragment no signature rule matches.
+  const masked = redactSecrets(message);
+  return masked.length > GH_STATUS_MAX_LENGTH
+    ? masked.substring(0, GH_STATUS_MAX_LENGTH - 3) + "..."
+    : masked;
 }
 
 /**

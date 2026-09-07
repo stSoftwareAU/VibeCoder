@@ -31,6 +31,7 @@ import {
 import { ensureDefaultBranchCurrent } from "./git_push.ts";
 import {
   assertSafeGitRef,
+  assertSafeRefComponent,
   buildCheckoutArgs,
   buildCheckoutNewBranchArgs,
   buildFetchArgs,
@@ -91,7 +92,7 @@ export async function syncFeatureBranchWithDefault(
   // Refuse an option-injecting ref before any git runs (Issue #12).
   try {
     assertSafeGitRef(branchName, "feature branch name");
-    assertSafeGitRef(defaultBranch, "default branch name");
+    assertSafeRefComponent(defaultBranch, "default branch name");
   } catch (err) {
     return {
       ok: false,
@@ -159,7 +160,7 @@ export async function syncFeatureBranchWithDefault(
 
   // Attempt rebase
   const rebaseResult = await runGitCommand(
-    ["rebase", defaultBranch],
+    buildRebaseArgs(defaultBranch),
     options,
   );
 
@@ -196,7 +197,7 @@ export async function syncFeatureBranchWithDefault(
 
     if (remoteCommitCount > 0) {
       // Preserve remote commits (Issue #586)
-      await runGitCommand(["checkout", defaultBranch], options);
+      await runGitCommand(buildCheckoutArgs(defaultBranch), options);
       await runGitCommand(buildBranchDeleteArgs(branchName, true), options);
 
       const restoreResult = await runGitCommand(
@@ -245,7 +246,7 @@ export async function syncFeatureBranchWithDefault(
   }
 
   // No remote branch or no remote commits — recreate from the default branch
-  await runGitCommand(["checkout", defaultBranch], options);
+  await runGitCommand(buildCheckoutArgs(defaultBranch), options);
   await runGitCommand(buildBranchDeleteArgs(branchName, true), options);
   await runGitCommand(buildCheckoutNewBranchArgs(branchName), options);
 
@@ -539,6 +540,22 @@ export async function syncMilestoneBranchWithDefault(
    */
   mergeGate: MergeGateFn = checkMergedTree,
 ): Promise<Result<string>> {
+  // Refuse an option-injecting ref before any git runs (Issue #12). The
+  // default branch is repo-derived (setupRepo reads it from
+  // `.vibe_default_branch` inside the clone, Issue #1269) and reaches
+  // `git merge <defaultBranch>` below as a bare positional, which the ref-argv
+  // gate does not cover — so it is checked here, as the feature-branch sync
+  // already does.
+  try {
+    assertSafeGitRef(milestoneBranch, "milestone branch name");
+    assertSafeRefComponent(defaultBranch, "default branch name");
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
+
   // Pre-check disk space before pull/merge (Issue #1174)
   if (options.cwd) {
     const spaceCheck = await requireDiskSpaceForGitOperation(
