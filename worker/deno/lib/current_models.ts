@@ -31,7 +31,7 @@ import { type ModelTier, parseClaudeModernVersion } from "./token_usage.ts";
  * only when a stale generation of that tier is genuinely worth flagging.
  *
  * A row must name a real id of its own tier that is current: the invariant is
- * pinned by `worker/deno/tests/model_generation_test.ts`.
+ * pinned by `worker/deno/tests/current_models_test.ts`.
  */
 export const CURRENT_TIER_MODELS: ReadonlyMap<ModelTier, string> = new Map<
   ModelTier,
@@ -41,8 +41,20 @@ export const CURRENT_TIER_MODELS: ReadonlyMap<ModelTier, string> = new Map<
   ["fable", "claude-fable-5-1"],
 ]);
 
+/** A model identified as an earlier generation of a tracked tier. */
+export interface PreviousGeneration {
+  /** The tier the stale model belongs to. */
+  tier: ModelTier;
+  /** The current model id of that tier. */
+  current: string;
+}
+
 /**
- * The current model of `model`'s tier, when `model` is an earlier generation.
+ * The tier and current model of `model`, when `model` is an earlier generation.
+ *
+ * Both fields come from the same parse, so a caller rendering "served X is a
+ * previous-generation <tier> (current: Y)" never has to re-derive the tier and
+ * cannot end up naming one the comparison did not use.
  *
  * Returns `undefined` — meaning "nothing to report" — when the id is the
  * current generation, a *newer* generation than the reference (the reference
@@ -51,9 +63,11 @@ export const CURRENT_TIER_MODELS: ReadonlyMap<ModelTier, string> = new Map<
  * latest of its tier), or an id the version parser does not recognise.
  *
  * @param model - A served or configured model identifier
- * @returns The current model id of that tier, or undefined when not stale
+ * @returns The tier and its current model, or undefined when not stale
  */
-export function previousGenerationOf(model: string): string | undefined {
+export function previousGenerationOf(
+  model: string,
+): PreviousGeneration | undefined {
   const parsed = parseClaudeModernVersion(model.trim().toLowerCase());
   if (!parsed) return undefined;
   const current = CURRENT_TIER_MODELS.get(parsed.tier);
@@ -62,5 +76,5 @@ export function previousGenerationOf(model: string): string | undefined {
   if (!reference || reference.tier !== parsed.tier) return undefined;
   const older = parsed.major < reference.major ||
     (parsed.major === reference.major && parsed.minor < reference.minor);
-  return older ? current : undefined;
+  return older ? { tier: parsed.tier, current } : undefined;
 }

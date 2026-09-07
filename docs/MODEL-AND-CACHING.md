@@ -2075,12 +2075,13 @@ which prices at the current tier rate — the same alias-follows-the-latest rule
 the `opus` and `sonnet` rows use.
 
 **The flip is the CLI's, not the worker's.** The Claude CLI resolves the alias
-from its own bundled table — CLI 2.1.223 (the version in the image) knows only
-`claude-fable-5`, so a container on it kept being served Fable 5 and costed at
-the Fable 5 row. Both rows are carried for exactly that reason: no configuration
-changes on either side of the flip, and the
-[minimum-version floor](CONFIGURATION.md#-minimum-version-floor) is what keeps
-the CLI current enough to pick the new alias up.
+from its own bundled table — CLI 2.1.223 (the version the image used to pin)
+knows only `claude-fable-5`, so a container on it kept being served Fable 5 and
+costed at the Fable 5 row. Both rows are carried for exactly that reason: no
+configuration changes on either side of the flip. **Which CLI a run gets has two
+answers**: in the container the image is the update mechanism, so
+`container/tools.json` is the lever; on a host it is the
+[minimum-version floor](CONFIGURATION.md#-minimum-version-floor).
 
 ##### Which CLI version actually serves 5.1 (Issue #1362)
 
@@ -2095,13 +2096,25 @@ the floor read as satisfied. Read out of the shipped CLI bundles:
 | 2.1.258–2.1.259 | `claude-fable-5-1` | 5.1 served, but its prompt caching is still broken |
 | **2.1.260+** | `claude-fable-5-1` | Fixes context after tool results being re-sent uncached on every tool-call turn, and a mid-session effort change invalidating the cache |
 
-2.1.263 carries `fable: {default: "claude-fable-5-1"}` and
+2.1.261 and 2.1.263 carry `fable: {default: "claude-fable-5-1"}` and
 `latest_per_family: {fable: "claude-fable-5-1"}` in that table; 2.1.223 contains
 no `claude-fable-5-1` string at all. The floor is therefore **2.1.260**, not
 2.1.257: the entire saving of 5.1 is in cache reads, so a CLI that serves 5.1
 while re-sending the cached prefix uncached defeats the reason for the bump. No
 phase default pins `claude-fable-5-1` — the alias still does the work, exactly as
 the alias-follows-the-latest rule intends.
+
+**Both levers had to move.** Inside the image `skipSoftwareUpdateFromEnv()`
+suppresses the software-update step entirely — the image *is* the update
+mechanism — so the floor alone could never pull a running container forward.
+`container/tools.json` now pins **2.1.261** (checksum-verified per architecture,
+24h quarantine cleared), which is what makes a fleet run report
+`Served model(s): claude-fable-5-1`. The floor governs host installs, and a host
+in the default `dynamic` update mode runs bare `claude update`, which follows
+the CLI's `stable` channel — `stable` sat at 2.1.236 when the floor was raised,
+so such a host reports "below required floor" once per interval (loudly, by
+design) until `stable` reaches 2.1.260 or the host pins a version through
+`update_mode: frozen`.
 
 **A previous-generation Fable is now degraded.** `modelsMatch()` matches at
 tier-family level, so a run served `claude-fable-5` while `claude-fable-5-1` is

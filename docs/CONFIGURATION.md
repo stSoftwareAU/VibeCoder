@@ -517,6 +517,14 @@ Semantics:
   model in 2.1.257) *and* carries the 5.1 prompt-cache fixes that landed in
   2.1.260 (Issue #1362). Setting the key replaces the default map; provide an
   empty map to remove the floor.
+- **Hosts only, and the update channel bounds it.** Inside the worker container
+  the software-update step is suppressed altogether — the image is the update
+  mechanism, so `container/tools.json` is what decides the CLI version there
+  (pinned to 2.1.261 for the same issue). On a host in the default `dynamic`
+  mode the updater runs bare `claude update`, which follows the CLI's `stable`
+  channel; `stable` was 2.1.236 when this floor was raised, so such a host logs
+  "below required floor" once per interval until `stable` catches up or the host
+  moves to `update_mode: frozen` with a pinned version.
 
 **Gate role for new models.** Because the worker passes tier *aliases* (`opus`,
 `fable`, `haiku`) and the CLI resolves each to the latest model of that tier, the

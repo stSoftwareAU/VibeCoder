@@ -433,19 +433,12 @@ export const OPERATIONAL_DEFAULTS = {
    * immediately, bypassing the 7-day interval gate. Generic per-tool map so
    * gh/deno floors can be added later; empty for tools without a floor.
    *
-   * `claude` is pinned to 2.1.260 (Issue #1362), raised from the 2.1.170
-   * `--model fable` floor. The CLI resolves the `fable` alias from its own
-   * bundled table, so the floor is what decides which Fable generation the
-   * eight Fable-preferring phases are actually served:
-   *
-   * - 2.1.257 added `claude-fable-5-1` and made it the default `fable` model.
-   *   Below that — 2.1.223 was in the image — the alias still resolved to
-   *   `claude-fable-5`, silently costing 4× the Fable 5.1 cache-read rate.
-   * - 2.1.260 fixed two Fable 5.1 prompt-cache defects: context attached after
-   *   tool results was re-sent uncached on every tool-call turn, and changing
-   *   effort mid-session invalidated the cache. The whole saving of 5.1 is in
-   *   cache reads, so 2.1.257–2.1.259 serve the right model with the wrong
-   *   cache behaviour — hence the floor sits at the fix, not at the release.
+   * `claude` is pinned to 2.1.260 (Issue #1362) — the oldest release that
+   * resolves the `fable` alias to Fable 5.1 *and* carries its prompt-cache
+   * fixes. The CLI resolves the alias from its own bundled table, so this floor
+   * decides which Fable generation the Fable-preferring phases are served; the
+   * per-version evidence is in
+   * `docs/MODEL-AND-CACHING.md#which-cli-version-actually-serves-51-issue-1362`.
    */
   softwareMinVersions: { claude: "2.1.260" } as Readonly<
     Record<string, string>

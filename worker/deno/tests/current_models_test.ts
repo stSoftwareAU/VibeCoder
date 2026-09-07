@@ -17,21 +17,24 @@ import { lookupModelPricing } from "../lib/token_usage.ts";
 // ---------------------------------------------------------------------------
 
 Deno.test("previousGenerationOf - Fable 5 is a previous generation of Fable 5.1 (Issue #1362)", () => {
-  assertEquals(previousGenerationOf("claude-fable-5"), "claude-fable-5-1");
+  assertEquals(previousGenerationOf("claude-fable-5"), {
+    tier: "fable",
+    current: "claude-fable-5-1",
+  });
 });
 
 Deno.test("previousGenerationOf - a dated Fable 5 id is still a previous generation (Issue #1362)", () => {
   // The date suffix is not a minor version, so `claude-fable-5-20260101`
   // resolves to 5.0 and is stale against the current 5.1.
   assertEquals(
-    previousGenerationOf("claude-fable-5-20260101"),
+    previousGenerationOf("claude-fable-5-20260101")?.current,
     "claude-fable-5-1",
   );
 });
 
 Deno.test("previousGenerationOf - case and surrounding whitespace do not matter (Issue #1362)", () => {
   assertEquals(
-    previousGenerationOf("  Claude-Fable-5  "),
+    previousGenerationOf("  Claude-Fable-5  ")?.current,
     "claude-fable-5-1",
   );
 });

@@ -299,18 +299,21 @@ function assessPreviousGeneration(
   matching: string[],
   expectedModel: string,
 ): DegradationVerdict | undefined {
-  if (matching.length === 0) return undefined;
+  // The expectation itself pins an older generation — the operator asked for
+  // that model, so serving it is right.
   if (previousGenerationOf(expectedModel)) return undefined;
-  if (matching.some((s) => !previousGenerationOf(s))) return undefined;
 
   const unique = [...new Set(matching)];
-  const first = unique[0] as string;
-  const current = previousGenerationOf(first) as string;
-  const tier = modelFamily(first) ?? current;
+  const stale = unique.map(previousGenerationOf);
+  // Lenient, as the tier rule above: one current model keeps the run healthy.
+  const reference = stale[0];
+  if (!reference || stale.some((s) => s === undefined)) return undefined;
+
+  const { tier, current } = reference;
   return {
     degraded: true,
     reason: unique.length === 1
-      ? `served model \`${first}\` is a previous-generation \`${tier}\` ` +
+      ? `served model \`${unique[0]}\` is a previous-generation \`${tier}\` ` +
         `(current: \`${current}\`)`
       : `every served model is a previous-generation \`${tier}\` (served: ${
         unique.map((m) => `\`${m}\``).join(", ")
@@ -322,18 +325,22 @@ function assessPreviousGeneration(
  * Assess whether a planning run was degraded.
  *
  * Degraded when **no** served model observed across the judged invocations
- * matches the expected model (prefix/alias-aware), **or** an invocation records
- * an explicit `fallbackModel` (rate-limit downgrade) or `preflightDegraded`
- * flag. Only invocations tagged with {@link phase} are judged — auxiliary calls
- * never trigger the flag.
+ * matches the expected model (prefix/alias-aware), when every model that *did*
+ * match it is a previous generation of that tier ({@link assessPreviousGeneration},
+ * Issue #1362), **or** when an invocation records an explicit `fallbackModel`
+ * (rate-limit downgrade) or `preflightDegraded` flag. Only invocations tagged
+ * with {@link phase} are judged — auxiliary calls never trigger the flag.
  *
  * The served-model rule is **lenient at run level** (Issue #3593): a mixed run
  * where the expected model served part of the work and another tier served the
  * rest is *not* degraded — the plan was still generated with the expected tier
- * in play. This is the same rule `isMismatch()` in
- * `planning_run_aggregation.ts` already applies to the fleet aggregate, so the
- * per-run verdict and the aggregate can no longer disagree. Every served model
- * still appears in the stats comment, so partial service stays visible.
+ * in play. The generation rule is lenient the same way. On the tier question
+ * this matches `isMismatch()` in `planning_run_aggregation.ts`, so the per-run
+ * verdict and the fleet aggregate cannot disagree about tier substitution; the
+ * aggregate deliberately does not judge *generation* — it answers "was the
+ * Fable tier substituted across runs" (Issue #2698), which is a different
+ * question. Every served model still appears in the stats comment, so partial
+ * service stays visible.
  *
  * **Indeterminate** (Issue #2745): when no degradation is detected but a judged
  * invocation ran and produced output (its `runStats` is present) while **no**
@@ -409,17 +416,8 @@ export function assessDegradation(
       };
     }
 
-    // Previous-generation top tier (Issue #1362). The tier matched, but every
-    // model that matched it is an older generation than the tier's current one
-    // — the shape a stale Claude CLI produces, because it resolves the `fable`
-    // alias from its own table and keeps serving the generation it knows. That
-    // is a real downgrade (Fable 5 reads cache at 4× the Fable 5.1 rate) and
-    // used to pass as healthy, so it is reported rather than swallowed.
-    //
-    // Skipped when the expected model is itself pinned to an older generation:
-    // an operator who set `best_planning_model: claude-fable-5` got exactly the
-    // model they asked for. Leniency matches the tier rule above — one
-    // invocation served by the current model keeps the run healthy.
+    // The tier matched, but on a previous generation of it (Issue #1362) —
+    // rules in `assessPreviousGeneration` above.
     const staleVerdict = assessPreviousGeneration(matching, expectedModel);
     if (staleVerdict) return staleVerdict;
   }
