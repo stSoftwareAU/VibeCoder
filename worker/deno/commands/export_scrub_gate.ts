@@ -26,6 +26,7 @@
  */
 
 import type { Command, CommandResult } from "../types.ts";
+import { findUnknownOptions } from "../lib/command_args.ts";
 import {
   formatGateReport,
   gatePasses,
@@ -53,7 +54,7 @@ export const exportScrubGateCommand: Command = {
   async execute(
     args: Record<string, unknown>,
   ): Promise<CommandResult<GateReport>> {
-    const unknown = Object.keys(args).filter((k) => !KNOWN_OPTIONS.has(k));
+    const unknown = findUnknownOptions(args, KNOWN_OPTIONS);
     if (unknown.length > 0) {
       return {
         success: false,
