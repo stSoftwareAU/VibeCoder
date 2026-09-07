@@ -2,9 +2,10 @@
  * "Am I running inside the worker container image?" — one rule (Issue #1262).
  *
  * The container build stamps the provider set it installed into
- * {@linkcode CONTAINER_IMAGE_STAMP_ENV}, and no host run has it. Several
- * modules key container-only behaviour off that stamp, and each of them
- * spelled the test as `env(...) !== undefined` — a *presence* test, which
+ * {@linkcode CONTAINER_IMAGE_STAMP_ENV}, and no host run has it. The three
+ * readers this module serves — `service_account_env.ts`,
+ * `stuck_issue_detector.ts` and `agent_provider.ts` — each spelled the test
+ * as `env(...) !== undefined`, a *presence* test, which
  * `VIBE_IMAGE_AGENT_PROVIDERS=` (the empty string) satisfies.
  *
  * That is a mode switch a blank value must not flip. The sharpest case is

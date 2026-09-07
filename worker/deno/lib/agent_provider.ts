@@ -897,9 +897,8 @@ export function imageAgentProviderIds(
   selection: AgentProviderSelection = {},
 ): string[] | undefined {
   const env = selection.env ?? ((name: string) => Deno.env.get(name));
-  // Blank reads as absent, on the one rule every stamp reader shares
-  // (Issue #1262): an empty stamp names no provider set, so it cannot stand
-  // in for one.
+  // Blank reads as absent, on the shared stamp rule (Issue #1262): an empty
+  // stamp names no provider set, so it cannot stand in for one.
   if (!runningInContainerImage(env)) return undefined;
   const stamped = env(IMAGE_AGENT_PROVIDERS_ENV) ?? "";
 

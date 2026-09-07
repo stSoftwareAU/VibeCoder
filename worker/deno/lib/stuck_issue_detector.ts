@@ -117,7 +117,13 @@ export async function detectAndRecoverStuckIssues(
   nowFn: () => number = () => Math.floor(Date.now() / 1000),
   cache?: import("./issue_cache.ts").IssueCache,
   options: {
+    /** Environment lookup; defaults to the process environment. */
     env?: (name: string) => string | undefined;
+    /**
+     * Injectable `gh` runner, forwarded to all three scans so a test can
+     * assert the sweep decision without reaching the network. Unset in
+     * production, where each scan falls back to the real `gh`.
+     */
     ghCommandFn?: (args: string[]) => Promise<string>;
   } = {},
 ): Promise<Result<RecoveryScanResult>> {

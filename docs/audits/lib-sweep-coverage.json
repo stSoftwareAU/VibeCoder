@@ -1,7 +1,7 @@
 {
   "root": "worker/deno/lib",
   "parent": 1209,
-  "description": "Coverage ledger for the chunk-12 security sweep of worker/deno/lib/. Every non-test module under root belongs to exactly one slice. Enforced by worker/deno/tests/lib_sweep_coverage_test.ts \u2014 a module absent from every slice is an unswept file and fails the test.",
+  "description": "Coverage ledger for the chunk-12 security sweep of worker/deno/lib/. Every non-test module under root belongs to exactly one slice. Enforced by worker/deno/tests/lib_sweep_coverage_test.ts — a module absent from every slice is an unswept file and fails the test.",
   "slices": [
     {
       "issue": 1214,
@@ -349,7 +349,7 @@
       "chunk": "12d",
       "title": "environment, configuration and secret sinks",
       "ledger": "docs/audits/security-sweep-1217-env-config-secrets.md",
-      "definition": "grep -rl \"Deno.env\" lib/ --include='*.ts' minus 12a, 12b and 12c",
+      "definition": "grep -rl \"Deno.env\" lib/ --include='*.ts' minus 12a, 12b and 12c; plus container_stamp.ts, the stamp reader this slice's SEC-1217-11 fix (#1262) extracted from agent_provider.ts, service_account_env.ts and stuck_issue_detector.ts",
       "status": "swept",
       "paths": [
         "worker/deno/lib/acting_github_user.ts",
@@ -359,6 +359,7 @@
         "worker/deno/lib/command_work_dir.ts",
         "worker/deno/lib/config_validator.ts",
         "worker/deno/lib/container_launch.ts",
+        "worker/deno/lib/container_stamp.ts",
         "worker/deno/lib/credential_preflight.ts",
         "worker/deno/lib/env_lookup.ts",
         "worker/deno/lib/gemini_env.ts",

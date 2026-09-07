@@ -379,6 +379,7 @@ Every module below was read at its `Deno.env` reads and config-load sites.
 | `command_work_dir.ts` | `WORK_DIR` as a defaulted parameter; empty ⇒ refusal | clean |
 | `config_validator.ts` | `HOME` for `~` expansion; messages echo the App id and key **path**, never material | clean |
 | `container_launch.ts` | resource, path and marker variables; no secret in `runArgs` | clean |
+| `container_stamp.ts` | `VIBE_IMAGE_AGENT_PROVIDERS` — the one stamp rule the SEC-1217-11 fix (#1262) extracted; blank ⇒ host | clean |
 | `credential_preflight.ts` | credential variables **by presence only** (`firstEnvValue` returns the *name*) | clean |
 | `env_lookup.ts` | the `Deno.env.get` seam itself | clean |
 | `gemini_env.ts` | as `codex_env.ts` | clean |
