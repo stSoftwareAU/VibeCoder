@@ -358,6 +358,11 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "launch_plumbing",
     note: "the checkout root the launcher hands the guest",
   },
+  VIBE_DENO_SEED_DIR: {
+    role: "launch_plumbing",
+    note:
+      "the image's read-only Deno seed the guard child's cache is pinned to (Issue #1448)",
+  },
   VIBE_BUILD_COMMIT: {
     role: "launch_plumbing",
     note: "the commit the image was built from",
