@@ -18,6 +18,7 @@
 
 import { detectRateLimit, detectUsageLimit } from "./claude_executor.ts";
 import { isClaudeAuthError } from "./claude_auth.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 /** Max stderr length included in messages and log output. */
 export const STDERR_PREVIEW_MAX = 500;
@@ -45,11 +46,18 @@ export interface HealthFailureSummary {
   stdoutPreview: string;
 }
 
-/** Truncate a string to `max` chars, appending an ellipsis when cut. */
+/**
+ * Redact a string in full, then truncate it to `max` chars, appending an
+ * ellipsis when cut (Issue #1257).
+ *
+ * The probe's stdout and stderr are the CLI's own words about an auth failure,
+ * so they are exactly where a credential appears, and both previews reach the
+ * worker log and the health-failure comment. Cutting first would split the
+ * credential and leave a fragment no signature rule matches.
+ */
 function truncate(text: string, max: number): string {
-  const trimmed = text.trim();
-  if (trimmed.length <= max) return trimmed;
-  return trimmed.slice(0, max) + "…";
+  const masked = redactSecrets(text.trim());
+  return masked.length <= max ? masked : masked.slice(0, max) + "…";
 }
 
 /** Collapse internal whitespace to a single space for one-line summaries. */

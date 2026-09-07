@@ -144,9 +144,21 @@ nothing at the sink and is published.
 | --- | --- |
 | `lib/failure_message.ts:142,161` and the ten phase-module call sites feeding it | **fixed in this change** — see below |
 | `lib/kill_diagnostics.ts:86,94` | **fixed in this change** — SEC-1217-05 (#1256) |
-| `lib/pr_failure_actions.ts:187-189`, `lib/ci_failure_issue.ts:356` (the inversion documented in their own comments) | SEC-1217-06 (#1257) |
-| `lib/quality_helpers.ts:277,283,366`; `lib/claude_runner.ts:176,2452,2572`; `lib/bump_deps.ts:257`; `lib/github_status.ts:117` | SEC-1217-06 (#1257) |
+| `lib/pr_failure_actions.ts:187-189`, `lib/ci_failure_issue.ts:356` (the inversion documented in their own comments) | **fixed** — SEC-1217-06 (#1257) |
+| `lib/quality_helpers.ts:277,283,366`; `lib/claude_runner.ts:176,2452,2572`; `lib/bump_deps.ts:257`; `lib/github_status.ts:117` | **fixed** — SEC-1217-06 (#1257) |
 | `lib/crash_notification.ts:190-193`, `lib/bump_deps.ts:194-197`, `lib/dependency_lock_regen.ts:290-299`, `lib/run_callbacks.ts:293-297`, `lib/phases/handle_no_changes_phase.ts:56` | **correct order** — the pattern to copy |
+
+**SEC-1217-06 is closed (#1257).** Every site above now redacts the whole text
+before it cuts, through the `redacted_text.ts` constructors — `redactedLineTail`
+and `redactedLogTail` were added for the line-granular and byte-capped shapes —
+and `execute_claude_phase.ts` brands its failure-output tail so the message
+builders cannot be handed a raw slice. The two comments that argued the
+inversion kept the byte cap honest were wrong on their own terms and are
+replaced: redacting first is the *tighter* cap, because a placeholder wider than
+the secret it replaced can no longer push the finished block past the budget.
+The class is held open-ended by the `redact before truncate` quality check
+(`lib/redact_truncate_order_check.ts`), which fails the build on any truncation
+nested inside a redaction call.
 
 ### 7 · Config or env interpolated into an error or a report
 

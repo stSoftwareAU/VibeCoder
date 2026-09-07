@@ -16,6 +16,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 /** Status of an individual quality check. */
 export type CheckStatus = "PASSED" | "SKIPPED" | "FAILED";
@@ -268,12 +269,17 @@ The PR was not created because local quality checks must pass before raising a P
     return `${header}\n\n${footer}`;
   }
 
-  const outputLines = qualityOutput.split("\n");
+  // Redact the whole output before either cut (Issue #1257): `./quality.sh`
+  // echoes whatever a failing check printed — a tokenised remote URL, an
+  // `export *_TOKEN=` line — and this message is posted as a public comment.
+  // Cutting first would split a credential into a fragment no rule matches.
+  const redactedOutput = redactSecrets(qualityOutput);
+  const outputLines = redactedOutput.split("\n");
   const totalLines = outputLines.length;
 
   // Extract the last N lines for the prominent section
   const tailOutput = totalLines <= tailLines
-    ? qualityOutput
+    ? redactedOutput
     : outputLines.slice(-tailLines).join("\n");
 
   // Build the full output for the details block, truncated if needed
@@ -285,7 +291,7 @@ The PR was not created because local quality checks must pass before raising a P
     truncationNotice =
       `(${linesTruncated} lines truncated \u2014 showing last ${maxFullLines} of ${totalLines} lines)`;
   } else {
-    fullOutput = qualityOutput;
+    fullOutput = redactedOutput;
   }
 
   const parts: string[] = [];
@@ -357,7 +363,10 @@ export function formatBaselineQualityNote(baselineOutput: string): string {
   }
 
   const maxLines = 50;
-  const outputLines = baselineOutput.split("\n");
+  // Redacted whole, then cut (Issue #1257) — this note is quoted into a public
+  // failure comment.
+  const redactedOutput = redactSecrets(baselineOutput);
+  const outputLines = redactedOutput.split("\n");
   const totalLines = outputLines.length;
 
   let displayOutput: string;
@@ -366,7 +375,7 @@ export function formatBaselineQualityNote(baselineOutput: string): string {
       outputLines.slice(-maxLines).join("\n")
     }`;
   } else {
-    displayOutput = baselineOutput;
+    displayOutput = redactedOutput;
   }
 
   return `> **Note:** Quality checks were already failing on the clean repository before the worker started. The following pre-existing failures were detected:\n>\n\`\`\`\n${displayOutput}\n\`\`\``;

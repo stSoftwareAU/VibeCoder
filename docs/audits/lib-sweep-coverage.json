@@ -1,7 +1,7 @@
 {
   "root": "worker/deno/lib",
   "parent": 1209,
-  "description": "Coverage ledger for the chunk-12 security sweep of worker/deno/lib/. Every non-test module under root belongs to exactly one slice. Enforced by worker/deno/tests/lib_sweep_coverage_test.ts — a module absent from every slice is an unswept file and fails the test.",
+  "description": "Coverage ledger for the chunk-12 security sweep of worker/deno/lib/. Every non-test module under root belongs to exactly one slice. Enforced by worker/deno/tests/lib_sweep_coverage_test.ts \u2014 a module absent from every slice is an unswept file and fails the test.",
   "slices": [
     {
       "issue": 1214,
@@ -730,6 +730,7 @@
         "worker/deno/lib/rate_limit_wait.ts",
         "worker/deno/lib/reactive_phase_timeout.ts",
         "worker/deno/lib/recovery_telemetry.ts",
+        "worker/deno/lib/redact_truncate_order_check.ts",
         "worker/deno/lib/redacted_text.ts",
         "worker/deno/lib/references_doc.ts",
         "worker/deno/lib/release_notice.ts",

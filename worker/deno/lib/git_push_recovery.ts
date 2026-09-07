@@ -26,6 +26,8 @@ import type { GitCommandOptions } from "./git_timeout.ts";
 import { isProtectedBranch } from "./git_branch.ts";
 import { resolveRebaseConflicts } from "./git_conflict_resolution.ts";
 import { buildForceWithLeaseArgs } from "./git_push_lease_args.ts";
+import { redactedLineTail } from "./redacted_text.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 /** Matches a git object id (SHA-1 or SHA-256, in full or abbreviated form). */
 const OBJECT_ID_PATTERN = /^[0-9a-f]{7,64}$/;
@@ -48,14 +50,24 @@ function recoveryError(step: string, detail: string): Error {
   );
 }
 
-/** The last few stderr lines of a git result, whichever way it failed. */
-function gitFailureDetail(
+/**
+ * The last few stderr lines of a git result, whichever way it failed.
+ *
+ * Redacted in full before the cut (Issue #1257): a push failure quotes the
+ * remote URL, which carries the run's token when the remote was written with
+ * credentials embedded, and this detail reaches the log and the failure
+ * comment. Exported so the ordering is tested behaviourally.
+ */
+export function gitFailureDetail(
   result: Result<{ code: number; stdout: string; stderr: string }>,
 ): string {
-  if (!result.ok) return result.error.message;
+  if (!result.ok) return redactSecrets(result.error.message);
   const text = result.value.stderr.trim() || result.value.stdout.trim();
-  return text.split("\n").slice(-5).join(" | ");
+  return redactedLineTail(text, GIT_DETAIL_TAIL_LINES).split("\n").join(" | ");
 }
+
+/** Stderr lines kept in a recovery failure detail. */
+const GIT_DETAIL_TAIL_LINES = 5;
 
 /**
  * Capture `refs/remotes/origin/<branch>` before anything refreshes it (Issue #3723).
