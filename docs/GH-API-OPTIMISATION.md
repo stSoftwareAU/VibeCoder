@@ -238,6 +238,40 @@ The same metrics object is exported through `getGhCallMetrics()` for
 programmatic inspection, and `find_oldest_issue.ts` reuses the
 underlying counters so its `cache: N hits, M misses` log matches.
 
+### The `graphql-quota:` line — points, as GitHub counts them
+
+The call counters above count *this process's* invocations, and they
+count them as calls, not points: a `gh issue list --limit 500` is one
+call and about five points, a 25-issue timeline batch is one call and
+about twenty-five. The line that follows them is different in kind —
+it is GitHub's own accounting of the account's GraphQL primary quota,
+read from the response headers of a free `{ rateLimit { … } }` probe
+(`worker/deno/lib/graphql_quota_probe.ts`, Issue #1456):
+
+```
+graphql-quota: used=1579/5000 remaining=3421 window-reopens at 2026-09-07 11:57:27 AEST (in 13m 2s) spent-since-last-cycle=363 (every consumer of this GitHub account, not just this host)
+```
+
+Reading the line:
+
+- **`used` / `remaining`** — the window's true state. When `remaining`
+  is far below what the `gh-calls:` counts could explain, sibling hosts
+  on the same GitHub account are spending the balance.
+- **`window-reopens`** — the reset GitHub reports. This is the value the
+  primary-quota latch and the pre-flight pause now wait for; it is
+  typically minutes away, not the flat hour the REST `rate_limit`
+  document used to imply.
+- **`spent-since-last-cycle`** — the points the *account* spent between
+  this reading and the previous cycle's, idle sleep included. It is not
+  this host's cost alone, and the line says so.
+
+Why not `gh api rate_limit`? Because it lies for at least some tokens:
+in production it reported the GraphQL bucket as `used: 0` with a reset
+exactly one hour out while, in the same second, a GraphQL response on
+the same token carried `X-Ratelimit-Used: 1104` and a reset eighteen
+minutes away. The headers are the bucket's own accounting; the REST
+document is now only the fallback when the probe cannot run.
+
 ## Trade-offs
 
 - **TTL vs staleness.** A 10-minute issue-list TTL means the worker

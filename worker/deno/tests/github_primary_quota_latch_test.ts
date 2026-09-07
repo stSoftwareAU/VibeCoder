@@ -16,13 +16,18 @@ import {
   _setGhSpawnRunner,
   type GhSpawnResult,
 } from "../lib/gh_spawn.ts";
-import { runGhCommandRaw } from "../lib/github.ts";
+import {
+  runGhCommandRaw,
+  SECONDARY_LIMIT_BACKOFF_SECONDS,
+} from "../lib/github.ts";
 import {
   clearPrimaryQuotaLatch,
   isPrimaryQuotaLatched,
   latchPrimaryQuota,
+  primaryQuotaLatchedUntil,
 } from "../lib/primary_quota_latch.ts";
 import { readRateLimitSignal } from "../lib/rate_limit_signal.ts";
+import { isGraphqlQuotaProbe } from "../lib/graphql_quota_probe.ts";
 
 const RATE_LIMIT_MSG = "GraphQL: API rate limit already exceeded for user";
 
@@ -201,5 +206,171 @@ Deno.test("chokepoint - a REST claim release stays callable while latched (Issue
   } finally {
     _resetGhSpawnRunner();
     clearPrimaryQuotaLatch();
+  }
+});
+
+Deno.test("chokepoint - the latch trusts the GraphQL probe headers over a rate_limit document that reports an untouched bucket (Issue #1456)", async () => {
+  // Observed in production: `gh api rate_limit` answered `used: 0` with a
+  // reset exactly one hour out while the same token's GraphQL response
+  // headers said the window was spent and reopened in fifteen minutes. The
+  // old latch waited the hour; this one waits the fifteen minutes.
+  clearPrimaryQuotaLatch();
+  const workDir = await Deno.makeTempDir({ prefix: "quota_latch_probe_" });
+  const nowSec = Math.floor(Date.now() / 1000);
+  const trueReset = nowSec + 900;
+  const lyingReset = nowSec + 3600;
+  _setGhSpawnRunner((args) => {
+    if (isGraphqlQuotaProbe(args)) {
+      // GitHub's exhausted shape: headers name the reset, the body is an
+      // error, and gh exits non-zero on that body.
+      return Promise.resolve({
+        code: 1,
+        success: false,
+        stdout: [
+          "HTTP/2.0 200 OK",
+          "X-Ratelimit-Limit: 5000",
+          "X-Ratelimit-Remaining: 0",
+          `X-Ratelimit-Reset: ${trueReset}`,
+          "X-Ratelimit-Resource: graphql",
+          "X-Ratelimit-Used: 5000",
+          "",
+          '{"errors":[{"type":"RATE_LIMITED","message":"API rate limit already exceeded for user ID 1."}]}',
+        ].join("\r\n"),
+        stderr: RATE_LIMIT_MSG,
+      });
+    }
+    if (args[0] === "api" && args.includes("rate_limit")) {
+      return Promise.resolve(ok(JSON.stringify({
+        resources: {
+          graphql: { limit: 5000, used: 0, remaining: 5000, reset: lyingReset },
+          core: { limit: 5000, used: 0, remaining: 5000, reset: lyingReset },
+        },
+      })));
+    }
+    return Promise.resolve(fail(RATE_LIMIT_MSG));
+  });
+  try {
+    await assertRejects(
+      () => runGhCommandRaw(["pr", "list", "--repo", "o/r"], { workDir }),
+      Error,
+      "already exceeded",
+    );
+    assert(isPrimaryQuotaLatched(nowSec), "the failure should latch");
+    assertEquals(
+      primaryQuotaLatchedUntil(),
+      trueReset,
+      "the latch must hold until the headers' reset, not the REST guess",
+    );
+    const signal = await readRateLimitSignal(workDir);
+    assert(signal.ok, "a signal file should be written");
+    if (signal.ok) {
+      assert(signal.value.waitSeconds > 0);
+      assert(
+        signal.value.waitSeconds <= 900,
+        `the signal must carry the true wait, got ${signal.value.waitSeconds}s`,
+      );
+    }
+  } finally {
+    _resetGhSpawnRunner();
+    clearPrimaryQuotaLatch();
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("chokepoint - a refusal with the hourly quota still available is a secondary limit: a one-minute cool-down, not an hour (Issue #1456)", async () => {
+  // Observed in production: `gh pr list` answered "API rate limit already
+  // exceeded" while the account held 4,700 of 5,000 points in a window that
+  // had just opened. Latching until the hourly reset idled the host for
+  // the rest of the hour over a burst limit that clears in a minute.
+  clearPrimaryQuotaLatch();
+  const workDir = await Deno.makeTempDir({ prefix: "quota_latch_burst_" });
+  const nowSec = Math.floor(Date.now() / 1000);
+  const hourlyReset = nowSec + 3500;
+  _setGhSpawnRunner((args) => {
+    if (isGraphqlQuotaProbe(args)) {
+      return Promise.resolve(ok([
+        "HTTP/2.0 200 OK",
+        "X-Ratelimit-Limit: 5000",
+        "X-Ratelimit-Remaining: 4700",
+        `X-Ratelimit-Reset: ${hourlyReset}`,
+        "X-Ratelimit-Resource: graphql",
+        "X-Ratelimit-Used: 300",
+        "",
+        '{"data":{"rateLimit":{"limit":5000,"remaining":4700,"used":300}}}',
+      ].join("\r\n")));
+    }
+    return Promise.resolve(fail(RATE_LIMIT_MSG));
+  });
+  try {
+    await assertRejects(
+      () => runGhCommandRaw(["pr", "list", "--repo", "o/r"], { workDir }),
+      Error,
+      "already exceeded",
+    );
+    const until = primaryQuotaLatchedUntil();
+    assert(until !== null, "the refusal should still latch");
+    assert(
+      until <= nowSec + SECONDARY_LIMIT_BACKOFF_SECONDS + 1,
+      `a burst limit must cool down briefly, latched ${until - nowSec}s`,
+    );
+    assert(until >= nowSec + SECONDARY_LIMIT_BACKOFF_SECONDS - 1);
+    const signal = await readRateLimitSignal(workDir);
+    assert(
+      signal.ok && signal.value.waitSeconds <= SECONDARY_LIMIT_BACKOFF_SECONDS,
+    );
+    // The skip message names the cool-down and keeps the phrase the pause
+    // path classifies on.
+    const err = await assertRejects(
+      () => runGhCommandRaw(["issue", "list", "--repo", "o/r"], { workDir }),
+      Error,
+    );
+    assert(/secondary rate limit/i.test(err.message), err.message);
+    assert(/api rate limit already exceeded/i.test(err.message), err.message);
+  } finally {
+    _resetGhSpawnRunner();
+    clearPrimaryQuotaLatch();
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("chokepoint - a secondary limit honours a longer retry-after (Issue #1456)", async () => {
+  clearPrimaryQuotaLatch();
+  const workDir = await Deno.makeTempDir({ prefix: "quota_latch_retry_" });
+  const nowSec = Math.floor(Date.now() / 1000);
+  _setGhSpawnRunner((args) => {
+    if (isGraphqlQuotaProbe(args)) {
+      return Promise.resolve({
+        code: 1,
+        success: false,
+        stdout: [
+          "HTTP/2.0 403 Forbidden",
+          "Retry-After: 120",
+          "X-Ratelimit-Limit: 5000",
+          "X-Ratelimit-Remaining: 4900",
+          `X-Ratelimit-Reset: ${nowSec + 3000}`,
+          "X-Ratelimit-Resource: graphql",
+          "X-Ratelimit-Used: 100",
+          "",
+          '{"message":"You have exceeded a secondary rate limit."}',
+        ].join("\r\n"),
+        stderr: "gh: You have exceeded a secondary rate limit.",
+      });
+    }
+    return Promise.resolve(fail(RATE_LIMIT_MSG));
+  });
+  try {
+    await assertRejects(
+      () => runGhCommandRaw(["pr", "list", "--repo", "o/r"], { workDir }),
+      Error,
+    );
+    const until = primaryQuotaLatchedUntil();
+    assert(
+      until !== null && until >= nowSec + 119 && until <= nowSec + 121,
+      `latched ${until}`,
+    );
+  } finally {
+    _resetGhSpawnRunner();
+    clearPrimaryQuotaLatch();
+    await Deno.remove(workDir, { recursive: true });
   }
 });

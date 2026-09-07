@@ -24,6 +24,7 @@ import { retryWithBackoff } from "./retry.ts";
 import { isReservedLabel } from "./config_defaults.ts";
 import { recordGhCall } from "./gh_call_metrics.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
+import { probeGraphqlQuota } from "./graphql_quota_probe.ts";
 import {
   isPrimaryQuotaLatched,
   isPrimaryRateLimitMessage,
@@ -263,6 +264,24 @@ export async function runGhCommandRaw(
 /** True while a single primary-quota exhaustion is being recorded. */
 let quotaExhaustionNoteInFlight = false;
 
+/**
+ * Points the account must still hold for a "rate limit already exceeded"
+ * answer to be read as a secondary (burst) limit rather than the hourly
+ * quota (Issue #1456). GitHub's own wording is the same for both; the
+ * balance is not. Observed: the refusal arrived with 4,700 of 5,000 points
+ * untouched.
+ */
+export const SECONDARY_LIMIT_MIN_REMAINING = 100;
+
+/**
+ * How long GraphQL-backed calls pause after a secondary limit. GitHub's
+ * guidance is "at least one minute" when no `retry-after` is sent.
+ */
+export const SECONDARY_LIMIT_BACKOFF_SECONDS = 60;
+
+/** Whether the current latch is a burst cool-down, not the hourly quota. */
+let latchedForSecondaryLimit = false;
+
 /** The one-line reason a latched `gh` call is skipped, naming the reset. */
 function primaryQuotaSkipMessage(): string {
   const until = primaryQuotaLatchedUntil();
@@ -271,14 +290,17 @@ function primaryQuotaSkipMessage(): string {
     : formatRateLimitReset(until, Math.floor(Date.now() / 1000));
   // Carries the primary-quota phrase so callers that classify by message
   // (the scans' log lines, the Issue #1780 pause) still recognise it.
-  return `gh command skipped: GraphQL primary quota exhausted (API rate ` +
-    `limit already exceeded) — ${eta}`;
+  return latchedForSecondaryLimit
+    ? `gh command skipped: GitHub secondary rate limit cool-down (API rate ` +
+      `limit already exceeded on a burst, hourly quota still available) — ${eta}`
+    : `gh command skipped: GraphQL primary quota exhausted (API rate ` +
+      `limit already exceeded) — ${eta}`;
 }
 
 /**
  * Record the first primary-GraphQL-quota exhaustion of the window (Issue #42).
  *
- * Reads the reset from the free `gh api rate_limit` call (bypassing the
+ * Reads the reset from the free GraphQL quota probe (bypassing the
  * chokepoint so it neither records telemetry nor recurses), latches the
  * process until then, and writes the shared rate-limit signal so sibling
  * workers and the Issue #1780 pause observe the same window. Idempotent and
@@ -295,10 +317,44 @@ async function notePrimaryQuotaExhaustion(
   quotaExhaustionNoteInFlight = true;
   try {
     const now = Math.floor(Date.now() / 1000);
-    const resetEpoch = await readGraphqlResetEpoch(now);
+    const workDir = workDirOverride ?? Deno.env.get("WORK_DIR");
+    const probe = await probeGraphqlQuota();
+
+    // GitHub says "API rate limit already exceeded" for two different
+    // things: the hourly primary quota being spent, and a secondary limit
+    // tripped by a burst (points per minute, concurrent requests, CPU
+    // time). The account's balance tells them apart. A burst refusal with
+    // most of the hour's points untouched used to latch the process until
+    // the hourly reset — up to an hour of idling for a one-minute
+    // cool-down, every hour the fleet's cycles happened to collide
+    // (Issue #1456).
+    if (
+      probe.ok && probe.value.remaining >= SECONDARY_LIMIT_MIN_REMAINING
+    ) {
+      const waitSeconds = Math.max(
+        SECONDARY_LIMIT_BACKOFF_SECONDS,
+        probe.value.retryAfterSeconds ?? 0,
+      );
+      latchedForSecondaryLimit = true;
+      latchPrimaryQuota(now + waitSeconds, now);
+      if (workDir) {
+        await writeRateLimitSignal(workDir, waitSeconds, undefined, "github");
+      }
+      defaultLogger.warn(
+        `GitHub refused a GraphQL call as rate-limited while the account ` +
+          `still holds ${probe.value.remaining}/${probe.value.limit} points — ` +
+          `a secondary (burst) limit, not the hourly quota. Pausing ` +
+          `GraphQL-backed gh calls for ${waitSeconds}s.`,
+      );
+      return;
+    }
+
+    latchedForSecondaryLimit = false;
+    const resetEpoch = probe.ok && probe.value.reset > now
+      ? probe.value.reset
+      : await readGraphqlResetEpoch(now);
     latchPrimaryQuota(resetEpoch, now);
     const waitSeconds = Math.max(0, resetEpoch - now);
-    const workDir = workDirOverride ?? Deno.env.get("WORK_DIR");
     if (workDir) {
       await writeRateLimitSignal(workDir, waitSeconds, undefined, "github");
     }
@@ -320,11 +376,22 @@ async function notePrimaryQuotaExhaustion(
 }
 
 /**
- * Read the GraphQL reset epoch from `gh api rate_limit`, falling back to one
- * hour from now when the call or parse fails (a conservative window the latch
- * auto-lifts from the moment the real quota returns).
+ * Read the GraphQL reset epoch, falling back to one hour from now when
+ * nothing can be learnt (a conservative window the latch auto-lifts from the
+ * moment the real quota returns).
+ *
+ * The free GraphQL probe is asked first: its response headers are the
+ * bucket's own accounting and are still sent once the quota is gone.
+ * `gh api rate_limit` is only a last resort — it has been observed reporting
+ * the GraphQL bucket as untouched, with a reset exactly one hour out, while
+ * the headers said otherwise, which is what latched the worker for a flat
+ * hour on every exhaustion (Issue #1456).
  */
 async function readGraphqlResetEpoch(now: number): Promise<number> {
+  const probe = await probeGraphqlQuota();
+  if (probe.ok && probe.value.reset > now) {
+    return probe.value.reset;
+  }
   try {
     const raw = await runGhOrThrow(["api", "rate_limit"]);
     const parsed = JSON.parse(raw) as {

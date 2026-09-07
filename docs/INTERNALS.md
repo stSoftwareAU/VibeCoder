@@ -572,7 +572,7 @@ exploits exactly that split (Issue #42).
 ```mermaid
 flowchart TD
     pass["Top of a priority pass"]
-    pre{"gh api rate_limit<br/>(free, core quota)<br/>quota gone?"}
+    pre{"GraphQL quota probe<br/>(free, headers)<br/>quota gone?"}
     pause["Pause until reset<br/>(Issue #1780 path)"]
     work["Dispatch priorities"]
     call["Any GraphQL-backed gh call"]
@@ -598,13 +598,41 @@ flowchart TD
   catches-and-continues can no longer drive hundreds of doomed `gh` processes.
   It auto-expires the instant the recorded reset passes.
 - **REST stays callable.** `isQuotaExemptGhCall` exempts `gh api <rest-path>`
-  (but never `gh api graphql`), so the free `gh api rate_limit` read can still
-  learn the reset, a finished run still releases its claim, and
+  (but never `gh api graphql`), so a finished run still releases its claim, and
   [pr_create_rest.ts](../worker/deno/lib/pr_create_rest.ts) still opens the PR
   for an already-pushed, quality-gated branch instead of orphaning it.
-- **The per-pass pre-flight gate** re-reads `gh api rate_limit` at the top of
-  every priority pass, not just at process start, so exhaustion caused by a
-  sibling worker sharing the token is caught before this pass spends anything.
+- **The reset comes from the GraphQL response headers, not `gh api rate_limit`**
+  (Issue #1456).
+  [graphql_quota_probe.ts](../worker/deno/lib/graphql_quota_probe.ts) runs
+  `gh api --include graphql` for `{ rateLimit { … } }` — a query GitHub does
+  not charge — outside the chokepoint, and reads `X-Ratelimit-Remaining` /
+  `X-Ratelimit-Reset` from the headers, which GitHub still sends on the
+  200-with-errors body it returns once the quota is gone. The REST
+  `rate_limit` document was observed reporting the GraphQL bucket as
+  untouched (`used: 0`, reset exactly one hour out) while the headers on the
+  same token said a third of it was spent and the window reopened in
+  eighteen minutes; fed that view, the latch waited a flat hour on every
+  exhaustion and resumed blind. `gh api rate_limit` is now only the fallback
+  when the probe cannot run at all.
+- **"Already exceeded" has two meanings, and the balance tells them apart.**
+  GitHub answers a burst that trips a *secondary* limit (points per minute,
+  concurrent requests, CPU time) with the same "API rate limit already
+  exceeded" wording as a spent hourly quota. The chokepoint probes before it
+  latches: with the account still holding at least
+  `SECONDARY_LIMIT_MIN_REMAINING` points the refusal is a burst, and the
+  latch is a one-minute cool-down (or GitHub's `retry-after`, whichever is
+  longer) instead of a hold until the hourly reset. Observed in production:
+  the refusal arrived with 4,700 of 5,000 points untouched, and the old
+  latch idled the host for the rest of the hour.
+- **The numbers are the account's, not the host's.** GitHub meters the
+  primary quota per user, so `used` climbs when a sibling host on the same
+  GitHub account spends. That is why the gate asks GitHub rather than
+  trusting its own call counts, and why the per-cycle `graphql-quota:` line
+  (see [GH-API-OPTIMISATION.md](GH-API-OPTIMISATION.md#telemetry)) says so.
+- **The per-pass pre-flight gate** re-runs the probe at the top of every
+  priority pass, not just at process start, so exhaustion caused by a
+  sibling worker sharing the account is caught before this pass spends
+  anything.
 
 #### 🧭 Scan cursor — resume near where a rate limit fired
 
