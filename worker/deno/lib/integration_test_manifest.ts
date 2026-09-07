@@ -89,6 +89,9 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   // Issue #1384: runs the entrypoint over a work root laid out with
   // clones beside the worker's own state, then reads the mode bits back.
   "tests/work_root_group_grant_test.ts",
+  // Issue #1445: reads the real entrypoint to pin that prompts stay on the
+  // read-only checkout mount and are never staged into the writable copy.
+  "tests/prompt_immutability_test.ts",
 ];
 
 /**
