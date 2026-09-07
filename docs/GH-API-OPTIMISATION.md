@@ -96,6 +96,122 @@ removed a redundant second-phase `fetchAllIssues` call by passing the
 in-memory list from the availability check straight to
 `collectLabelCandidates` / `collectWorkOnCandidates`.
 
+## Cross-repo prefetch — one search per owner (Issue #1486)
+
+List-then-filter removes the *per-label* fan-out; the same idea applied
+across repositories removes the *per-repo per-author* one. Three passes ask
+GitHub the same question once per repo **and** once per author:
+
+| Consumer | Cache key | Author set |
+| --- | --- | --- |
+| Open-PR duplicate guard (`fetchOpenPRsByUser`) | `prs_<login>` | `resolveFleetPrAuthorSet` |
+| PR maintenance (`listOpenPrs`) | `prs_maint_<login>` | `resolveFleetMaintenanceAuthorSet` |
+| Human-invitation lookup (`listInvitedHumanPrs`) | `prs_invited_<login>` | `allowed_authors` minus the maintenance set |
+
+At 19 repos with 2 fleet authors and 3 authorised commenters that is ~130
+GraphQL-backed `gh pr list` calls on a cold cycle. GitHub's search API
+answers all of them at once: it takes a whole owner, and repeated `author:`
+qualifiers are ORed. `worker/deno/lib/fleet_pr_search.ts` issues that search
+through `gh api graphql` — REST `gh search prs` cannot return
+`baseRefName`, `headRefOid`, `autoMergeRequest` or `mergeable`, and the
+consumers need all four — and
+`worker/deno/lib/fleet_pr_prefetch.ts` writes the answer into the very cache
+entries above. `run_core` calls it once per iteration, after the
+trusted-author refresh that decides which logins to search for.
+
+```mermaid
+flowchart LR
+    P["prefetchFleetOpenPrs<br/>1 GraphQL search per owner"] --> C[(IssueCache)]
+    C --> G["open-PR guard<br/>prs_&lt;login&gt;"]
+    C --> M["PR maintenance<br/>prs_maint_&lt;login&gt;"]
+    C --> I["invitation lookup<br/>prs_invited_&lt;login&gt;"]
+    G -. miss / forceRefresh .-> L["gh pr list --repo --author"]
+    M -. miss .-> L
+    I -. miss .-> L
+```
+
+Three boundaries keep this from trading correctness for calls:
+
+- **Never truncate silently.** Search caps a result set at 1,000 matches. The
+  search pages to exhaustion and returns a **failure** — not a short list —
+  when the page budget is exceeded, GraphQL reports errors, or a page claims
+  a successor without a cursor. A failed owner writes nothing, so its repos
+  simply run their per-repo listings as before.
+- **The per-repo path stays.** A cache miss, an owner the search could not
+  cover, and the `forceRefresh` read-after-write re-check
+  (`fetchOpenPRsByUser`, Issue #3150) all still issue `gh pr list`. Search is
+  eventually consistent, so any path that needs read-after-write must keep
+  using it — and the duplicate guard does: `claimIssue` re-checks the repo it
+  is about to claim **live**, bypassing this cache, so a blind or stale
+  discovery-time answer cannot by itself open a duplicate PR.
+- **A conversation that did not fit one page is not served.** The invitation
+  predicate reads every label, comment and review, so the search asks for
+  each connection's `totalCount`; a PR holding more than one page is left to
+  the per-repo listing rather than admitted — or refused — on a partial read.
+- **A warm cycle costs nothing.** A per-owner marker is written beside the
+  entries and read before the next pass, so a second cycle inside the cache
+  TTL issues no search at all. An entry invalidated in the meantime simply
+  misses and falls back to its per-repo listing.
+- **Open PRs only.** The closed/merged half is deliberately left on its
+  per-repo listing: `fetchRecentlyClosedPRsForFleet` treats a merged PR as a
+  **permanent** skip regardless of age, and this fleet has ~8,500 closed PRs
+  against a 1,000-result search ceiling (~1,240 in the last 30 days alone).
+  A windowed cross-repo search would silently drop older merged PRs and
+  weaken the duplicate-PR guard.
+
+Measured on the three-repo, two-author fixture in
+`worker/deno/tests/iteration_call_budget_test.ts`: `pr list` falls from 12 to
+6 for one cold iteration — the whole open half — at the cost of one
+`api graphql` search. The remaining 6 are the closed half.
+
+### One cache key, one limit (Issue #1486)
+
+`fetchAllIssues` shares a single `issues_all` entry between callers asking
+for different limits (200 from `find_oldest_issue`, 100 from
+`stuck_recovery` and `find_planning_issues`). Whichever call ran first used
+to decide what every later caller saw, so a pass expecting 200 issues could
+silently be handed 100. The entry now stores the `--limit` it was fetched
+with: a narrower entry is refetched rather than served, unless it came back
+short of its own limit, which proves the listing was exhaustive.
+
+## A cheap REST signal gates the expensive GraphQL call (Issue #1488)
+
+REST and GraphQL bill against **separate budgets**, so a cheap REST probe
+that decides whether to spend a GraphQL call is close to free. The milestone
+branch sync is the worked example: per repo per cycle it makes a REST
+`repos/<repo>/milestones` listing *and* a GraphQL
+`gh issue list --state closed`, and the GraphQL half exists only to answer
+"has anything been completed in this milestone yet?". The REST payload
+already carries `closed_issues` per milestone, so it answers the gate:
+
+| REST `closed_issues` | Decision |
+| --- | --- |
+| Milestone list empty | Nothing to sync — no GraphQL |
+| `0` | Nothing completed, so not active by the pass's own definition — no GraphQL |
+| Unchanged since the last observation | The closed set cannot have moved — reuse the recorded verdict, no GraphQL |
+| Moved, in either direction | Spend the GraphQL query and record the new verdict |
+
+Two properties make this safe where a TTL over the closed-issue list would
+not be:
+
+- **The gate derives from the same authority the answer does**, so a skipped
+  cycle cannot act on a stale view — this is invalidation by change, not by
+  clock.
+- **Any** movement invalidates. The count falls when an issue is reopened or
+  moved out of a milestone, so an increase-only check would latch a stale
+  "active".
+
+Observations are keyed by milestone **number**, not title (a rename keeps the
+number), and persist in `milestone_activity.json` in the work directory
+beside `milestone_sync_failures.json`. The first observation after a restart
+has no baseline and queries once — correct, not a miss. See
+[milestone_activity_gate.ts](../worker/deno/lib/milestone_activity_gate.ts).
+
+The general form applies beyond milestones: **any hot GraphQL path with a
+REST-visible change signal is a candidate for the same treatment**, and REST
+additionally supports conditional requests — a `304 Not Modified` costs
+nothing against the rate limit at all, which GraphQL has no equivalent for.
+
 ## Pagination — never trust the default 30
 
 GitHub's REST and GraphQL APIs return only the **first 30 records** by
@@ -169,6 +285,7 @@ trade-off.
 | Worker writes a claim comment | Repo's issue list (claim is reflected in the issue body / labels) | `IssueCache.invalidateRepo(repo)` |
 | Worker creates/closes a PR | Repo's PR list cache (`prs_${user}`, `prs_closed_${user}`) | `IssueCache.invalidate(repo, key)` |
 | Worker closes/reopens an issue | That repo's `issues_all`, `issues_closed_all`, `issue_labels_${number}` and `pr_linkage_open_v2_${number}` | `noteGhIssueClose` at the `gh` chokepoint (Issue #181) |
+| Milestone REST `closed_issues` moves | That milestone's recorded closed-issue verdict (Issue #1488) | `decideMilestoneQuery` in `milestone_activity_gate.ts` |
 | Rate-limit signal active | Pre-flight cache is bypassed unconditionally | Step 1 of `preflightGitHubRateLimit` |
 | Pre-flight remaining < 2× threshold | Pre-flight cache is bypassed for this call (re-checks fresh) | `readPreflightCache` returns null |
 | Worker label change to timeline (planned) | Timeline entry for the affected issue | `IssueCache.invalidate(repo, "${number}#timeline")` (future) |
@@ -307,6 +424,12 @@ document is now only the fallback when the probe cannot run.
   directory. The `gh_call_metrics` counters are in-memory only because
   they are reset every iteration and never need to outlive the
   process.
+- **Search vs per-repo listing.** One cross-repo search replaces ~130
+  per-repo per-author listings, but search is *eventually consistent* and
+  capped at 1,000 results. The prefetch therefore covers only the periodic
+  open-PR sweeps, refuses to serve a truncated result set, and leaves both
+  the read-after-write re-check and the whole closed/merged half on the
+  per-repo path.
 - **REST vs GraphQL.** REST endpoints are well-cached by GitHub and
   simpler to call, but the timeline endpoint returns a large payload
   that must be filtered client-side. GraphQL lets us request only
