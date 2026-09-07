@@ -64,6 +64,8 @@ import {
   type ProviderTokenSelector,
 } from "./credential_preflight.ts";
 import type { AgentProviderDescriptor } from "./agent_provider.ts";
+import { getPromptsDir } from "./prompt_manager.ts";
+import { checkPromptsImmutable } from "./prompt_immutability.ts";
 import { createClaudeBudgetTokenSelector } from "./claude_token_selection.ts";
 import {
   NETWORK_UNAVAILABLE_MARKER,
@@ -87,6 +89,8 @@ export type RunWorkerOutcome =
   | "bootstrap-failed"
   | "config-invalid"
   | "credentials-invalid"
+  /** The worker's own prompt templates were writable (Issue #1445). */
+  | "prompts-writable"
   | "github-user-failed"
   | "identity-mismatch"
   | "completed"
@@ -660,6 +664,28 @@ ${credentialFailure}`);
         outcome: "credentials-invalid",
         exitCode: 1,
         reason: credentialFailure,
+      };
+    }
+
+    // Step 4.6: The worker's own prompts must be unwritable (Issue #1445).
+    // The container arranges this — a read-only checkout mount (Issue #514)
+    // and an entrypoint that stages only `worker/deno` — but that is three
+    // decisions in two files lining up, not a guarantee. Checked here so a
+    // staging change or a mis-set PROMPTS_DIR fails the launch loudly rather
+    // than leaving the instructions the worker follows editable by the agent
+    // it is instructing. Prompts change through a reviewed PR, never in place.
+    const promptsVerdict = await checkPromptsImmutable(
+      getPromptsDir(`${repoDir}/worker/deno`, env),
+      env,
+    );
+    if (!promptsVerdict.ok) {
+      deps.logError(
+        `[run-worker] prompt immutability check failed: ${promptsVerdict.reason}`,
+      );
+      return {
+        outcome: "prompts-writable",
+        exitCode: 1,
+        reason: promptsVerdict.reason ?? "prompts are writable",
       };
     }
 
