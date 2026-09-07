@@ -97,6 +97,7 @@ closed. `spawnGh` supplies neither, so those branches are skipped outright
 | `--body-file`, `-F <path>`, `-f key=@path`, `--input <path>` (`lib/repo_settings_harden.ts:484-485`, `lib/milestone_ruleset_check.ts:753`) | **BYPASS**, fail-**open** — SEC-1217-03 (#1254) |
 | piped stdin bodies (`lib/security_sarif_upload.ts:196-215`, `lib/repo_rulesets.ts:328-361`) | **BYPASS** — SEC-1217-03 (#1254); the SARIF leg is also SEC-1217-04 (#1255) |
 | `--title`, `-f title=`, `-f description=`, `-f name=` | **BYPASS** — SEC-1217-15 (#1283) |
+| `setup/` `gh` spawns (`setup/config_writer.ts:104`, `setup/setup_cli.ts:131`, and the seven copied setup runners) | ~~BYPASS~~ **FIXED** — SEC-1217-08 (#1259): every setup `gh` and `git` call routes through `setup/setup_command_runner.ts`, and the chokepoint gate now scans `worker/deno/setup` |
 | `git commit -m <message>` via `runGitCommand` | ~~BYPASS~~ **FIXED** — SEC-1217-16 (#1284): `covered-by-redactGitMessageArgs` inside `runGitCommand` |
 | the agent's own `git commit && git push` (no `git` PATH shim exists) | ~~BYPASS~~ **FIXED** — SEC-1217-16 (#1284), the sharper half: a `git` PATH shim now rides beside the `gh` one and applies the same redaction |
 | `fetch()` to `api.github.com` | none exists — verified |
@@ -321,7 +322,7 @@ unfixed code and passing after the fix.
 | SEC-1217-04 — the SARIF payload is gzipped before any redactor can see it | [#1255](https://github.com/stSoftwareAU/VibeCoder/issues/1255) | high |
 | SEC-1217-06 — the truncate-before-redact inversions **outside** the failure-message path (the `ci_failure_issue` / `pr_failure_actions` / `quality_helpers` / `bump_deps` sites), which this change does not touch | [#1257](https://github.com/stSoftwareAU/VibeCoder/issues/1257) | medium |
 | SEC-1217-07 — `pull.log` and `run_core.log` are written outside the logger | [#1258](https://github.com/stSoftwareAU/VibeCoder/issues/1258) | medium |
-| SEC-1217-08 — `setup/` spawns `gh` directly and the chokepoint gate does not scan `setup/` | [#1259](https://github.com/stSoftwareAU/VibeCoder/issues/1259) | medium |
+| SEC-1217-08 — `setup/` spawns `gh` directly and the chokepoint gate does not scan `setup/` — since **fixed** in #1259 | [#1259](https://github.com/stSoftwareAU/VibeCoder/issues/1259) | medium |
 | SEC-1217-09 — `console_redaction` passes non-string arguments through | [#1260](https://github.com/stSoftwareAU/VibeCoder/issues/1260) | low |
 | SEC-1217-10 — `baseline_quality_cache` and `issue_cache` persist unredacted output | [#1261](https://github.com/stSoftwareAU/VibeCoder/issues/1261) | low |
 | SEC-1217-11 — the `gh` container fallback is keyed on the *presence* of `VIBE_IMAGE_AGENT_PROVIDERS` | [#1262](https://github.com/stSoftwareAU/VibeCoder/issues/1262) | low |

@@ -25,8 +25,14 @@ import {
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { scanDirectoriesForHardcodedBranches } from "./hardcoded_branch_check.ts";
 import { scanDirectoriesForDirectNeedsHuman } from "./needs_human_direct_label_check.ts";
-import { scanDirectoriesForGhSpawn } from "./gh_spawn_chokepoint_check.ts";
-import { scanDirectoriesForGitSpawn } from "./git_spawn_chokepoint_check.ts";
+import {
+  GH_SPAWN_SCAN_DIRS,
+  scanDirectoriesForGhSpawn,
+} from "./gh_spawn_chokepoint_check.ts";
+import {
+  GIT_SPAWN_SCAN_DIRS,
+  scanDirectoriesForGitSpawn,
+} from "./git_spawn_chokepoint_check.ts";
 import { scanDirectoriesForRedactInversion } from "./redact_truncate_order_check.ts";
 import { scanDirectoriesForSharedTmpPath } from "./tmp_state_dir_check.ts";
 import { scanDirectoriesForHomeWorkDir } from "./home_workdir_check.ts";
@@ -403,8 +409,8 @@ async function runNeedsHumanHelperCheck(
 /**
  * Run the `gh` spawn chokepoint check (Issue #3703).
  *
- * Scans Deno lib/ and commands/ source files for a direct
- * `new Deno.Command("gh", …)`. Such a spawn bypasses both the per-run
+ * Scans Deno lib/, commands/ and setup/ source files (Issue #1259) for a
+ * direct `new Deno.Command("gh", …)`. Such a spawn bypasses both the per-run
  * write-repo allowlist and the audit journal, which is exactly how ~20
  * modules had drifted away from the documented chokepoint. The only
  * permitted spawn is the chokepoint itself (`worker/deno/lib/gh_spawn.ts`).
@@ -417,7 +423,7 @@ async function runGhSpawnChokepointCheck(
   config: QualityGateConfig,
 ): Promise<CheckExecutionResult> {
   const name = "gh spawn chokepoint";
-  const relDirs = ["worker/deno/lib", "worker/deno/commands"];
+  const relDirs = GH_SPAWN_SCAN_DIRS;
 
   let hasDirs = false;
   for (const relDir of relDirs) {
@@ -539,8 +545,8 @@ async function runRedactTruncateOrderCheck(
 /**
  * Run the `git` spawn chokepoint check (Issue #1214).
  *
- * Scans Deno lib/ and commands/ source files for a direct
- * `new Deno.Command("git", …)`. Such a spawn bypasses the timeout, the audit
+ * Scans Deno lib/, commands/ and setup/ source files (Issue #1259) for a
+ * direct `new Deno.Command("git", …)`. Such a spawn bypasses the timeout, the audit
  * journal and the work-volume fault detector that `runGitCommand` owns — the
  * unpushed-work rescue in `stale_workdir.ts` was pushing to a remote outside
  * all three. The only permitted spawn is the chokepoint itself
@@ -553,7 +559,7 @@ async function runGitSpawnChokepointCheck(
   config: QualityGateConfig,
 ): Promise<CheckExecutionResult> {
   const name = "git spawn chokepoint";
-  const relDirs = ["worker/deno/lib", "worker/deno/commands"];
+  const relDirs = GIT_SPAWN_SCAN_DIRS;
 
   let hasDirs = false;
   for (const relDir of relDirs) {

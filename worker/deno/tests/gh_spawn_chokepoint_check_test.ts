@@ -10,6 +10,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  GH_SPAWN_SCAN_DIRS,
   scanContentForGhSpawn,
   scanDirectoriesForGhSpawn,
 } from "../lib/gh_spawn_chokepoint_check.ts";
@@ -149,17 +150,38 @@ Deno.test("scanDirectoriesForGhSpawn - missing directories yield no violations",
   assertEquals(result.violations, []);
 });
 
+// Issue #1259: `worker/deno/setup` was never in the scanned set, so the setup
+// tree spawned `gh` outside the chokepoint while the gate reported clean. This
+// fails against the unfixed scan set, which omits the directory entirely.
+Deno.test("GH_SPAWN_SCAN_DIRS - a direct gh spawn under setup/ is caught", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${tmpDir}/worker/deno/setup`, { recursive: true });
+    await Deno.writeTextFile(
+      `${tmpDir}/worker/deno/setup/config_writer.ts`,
+      'const c = new Deno.Command("gh", { args: ["api", "user"] });\n',
+    );
+
+    const result = await scanDirectoriesForGhSpawn(tmpDir, GH_SPAWN_SCAN_DIRS);
+
+    assertEquals(
+      result.violations.map((v) => v.file),
+      ["worker/deno/setup/config_writer.ts"],
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 // The production tree must satisfy the invariant this check enforces —
-// literal `gh` spawns and variable-binary ones alike (Issue #1227).
+// literal `gh` spawns and variable-binary ones alike (Issue #1227), across
+// every scanned directory including `setup/` (Issue #1259).
 Deno.test("scanDirectoriesForGhSpawn - the worker tree has no direct gh spawns", async () => {
   const repoRoot = new URL("../../../", import.meta.url).pathname.replace(
     /\/$/,
     "",
   );
-  const result = await scanDirectoriesForGhSpawn(repoRoot, [
-    "worker/deno/lib",
-    "worker/deno/commands",
-  ]);
+  const result = await scanDirectoriesForGhSpawn(repoRoot, GH_SPAWN_SCAN_DIRS);
   assertEquals(
     result.violations.map((v) => `${v.file}:${v.line}`),
     [],

@@ -52,6 +52,20 @@ export const GIT_SPAWN_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "worker/deno/lib/git_timeout.ts",
 ]);
 
+/**
+ * The directories the quality gate scans (Issue #1259).
+ *
+ * `worker/deno/setup` was never scanned, so the setup prerequisite probe ran
+ * `git config --global …` through its own untimed, unjournalled spawn while
+ * the gate reported a clean tree. Kept in step with
+ * `GH_SPAWN_SCAN_DIRS` — the two checks scan the same tree.
+ */
+export const GIT_SPAWN_SCAN_DIRS: readonly string[] = [
+  "worker/deno/lib",
+  "worker/deno/commands",
+  "worker/deno/setup",
+];
+
 /** Matches a direct `git` subprocess construction. */
 export const GIT_SPAWN_PATTERN =
   /new\s+Deno\.Command\s*\(\s*["'`]git["'`]|Deno\.Command\s*\(\s*["'`]git["'`]/;
@@ -59,16 +73,20 @@ export const GIT_SPAWN_PATTERN =
 /**
  * Modules whose `git` argv literal is not a `git` spawn (Issue #1227).
  *
- * Both name `git` as data rather than as a binary: `secrets_history_scan.ts`
- * passes it as the *source type* argument to gitleaks and trufflehog
- * (`gitleaks git <dir>`), and `claude_runner.ts` lists it among the CLI tools
- * the worker requires. Neither spawns `git` itself.
+ * All three name `git` as data rather than as a binary:
+ * `secrets_history_scan.ts` passes it as the *source type* argument to
+ * gitleaks and trufflehog (`gitleaks git <dir>`), `claude_runner.ts` lists it
+ * among the CLI tools the worker requires, and
+ * `prerequisite_install_plan.ts` names it as the package a host installs
+ * (Issue #1259) — the process it spawns is the package manager. None spawns
+ * `git` itself.
  */
 export const GIT_VARIABLE_SPAWN_ALLOWLIST: ReadonlySet<string> = new Set<
   string
 >([
   "worker/deno/lib/secrets_history_scan.ts",
   "worker/deno/lib/claude_runner.ts",
+  "worker/deno/setup/prerequisite_install_plan.ts",
 ]);
 
 /** Rules for the variable-binary half of the check (Issue #1227). */

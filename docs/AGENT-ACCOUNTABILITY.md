@@ -176,7 +176,10 @@ subprocess chokepoints, so a new call site needs no extra wiring:
   quality check now fails the build on any direct
   `new Deno.Command("gh", …)` outside `gh_spawn.ts` — including a spawn whose
   binary is a **variable** in a module that names `gh` itself, which is how
-  five more modules stayed outside the journal until Issue #1227.
+  five more modules stayed outside the journal until Issue #1227. The scanned
+  set is `worker/deno/lib`, `worker/deno/commands` and — since Issue #1259 —
+  `worker/deno/setup`, whose own runners are now the shared
+  [`worker/deno/setup/setup_command_runner.ts`](../worker/deno/setup/setup_command_runner.ts).
 - `runGitCommand()` in
   [`worker/deno/lib/git_timeout.ts`](../worker/deno/lib/git_timeout.ts)
   — `git push` (commits pushed). Every other (local) git sub-command is

@@ -48,9 +48,37 @@ export const GH_SPAWN_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "worker/deno/lib/gh_spawn.ts",
 ]);
 
+/**
+ * The directories the quality gate scans (Issue #1259).
+ *
+ * `worker/deno/setup` was never in this set, so `setup/` grew seven copies of
+ * a runner that spawned `gh` itself — outside the write-repo allowlist, the
+ * body redaction and the audit journal — while the gate reported a clean
+ * tree. Scanning the directory is the durable half of that fix: it is what
+ * stops the next one.
+ */
+export const GH_SPAWN_SCAN_DIRS: readonly string[] = [
+  "worker/deno/lib",
+  "worker/deno/commands",
+  "worker/deno/setup",
+];
+
 /** Matches a direct `gh` subprocess construction. */
 export const GH_SPAWN_PATTERN =
   /new\s+Deno\.Command\s*\(\s*["'`]gh["'`]|Deno\.Command\s*\(\s*["'`]gh["'`]/;
+
+/**
+ * Modules whose `gh` argv literal is not a `gh` spawn (Issue #1259).
+ *
+ * `prerequisite_install_plan.ts` names `gh` as *package data* — the formula
+ * and package identifiers a host installs the CLI from — and the one process
+ * it spawns is the package manager (`brew`, `apt-get`, `winget`), never `gh`.
+ */
+export const GH_VARIABLE_SPAWN_ALLOWLIST: ReadonlySet<string> = new Set<
+  string
+>([
+  "worker/deno/setup/prerequisite_install_plan.ts",
+]);
 
 /**
  * Rules for the variable-binary half of the check (Issue #1227).
@@ -66,7 +94,7 @@ export const GH_VARIABLE_BINARY_RULES: VariableBinarySpawnOptions = {
   argvPattern: /["'`]gh["'`]\s*,/,
   /** An import of the chokepoint module, i.e. the module delegates `gh`. */
   delegationPattern: /from\s+["'][^"']*gh_spawn\.ts["']/,
-  allowlist: new Set<string>(),
+  allowlist: GH_VARIABLE_SPAWN_ALLOWLIST,
 };
 
 /**
