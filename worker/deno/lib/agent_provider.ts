@@ -43,6 +43,10 @@ import {
   warnDeprecatedEnvSetting,
 } from "./config_precedence.ts";
 import type { EnvLookup } from "./env_lookup.ts";
+import {
+  CONTAINER_IMAGE_STAMP_ENV,
+  runningInContainerImage,
+} from "./container_stamp.ts";
 import { getCheaperModel } from "./config_defaults.ts";
 import {
   buildClaudeChildEnv,
@@ -132,8 +136,11 @@ export const ENABLED_AGENT_PROVIDERS_ENV = "VIBE_AGENT_PROVIDERS";
  * `container/Containerfile` bakes it from the `AGENT_PROVIDERS` build
  * argument, so the running image reports the agents it actually carries
  * rather than the worker assuming the default set.
+ *
+ * The canonical spelling lives in `container_stamp.ts`, which also owns the
+ * one rule for reading it (Issue #1262), so the two cannot drift.
  */
-export const IMAGE_AGENT_PROVIDERS_ENV = "VIBE_IMAGE_AGENT_PROVIDERS";
+export const IMAGE_AGENT_PROVIDERS_ENV = CONTAINER_IMAGE_STAMP_ENV;
 
 /**
  * Build argument the Containerfile selects the installed set with (#729).
@@ -890,8 +897,11 @@ export function imageAgentProviderIds(
   selection: AgentProviderSelection = {},
 ): string[] | undefined {
   const env = selection.env ?? ((name: string) => Deno.env.get(name));
-  const stamped = env(IMAGE_AGENT_PROVIDERS_ENV);
-  if (stamped === undefined || stamped.trim() === "") return undefined;
+  // Blank reads as absent, on the one rule every stamp reader shares
+  // (Issue #1262): an empty stamp names no provider set, so it cannot stand
+  // in for one.
+  if (!runningInContainerImage(env)) return undefined;
+  const stamped = env(IMAGE_AGENT_PROVIDERS_ENV) ?? "";
 
   const ids: string[] = [];
   for (const raw of stamped.split(",")) {

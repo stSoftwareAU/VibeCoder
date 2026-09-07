@@ -101,6 +101,7 @@ export {
   type RecoveryDecisionEvent,
   type RecoverySource,
 } from "./recovery_telemetry.ts";
+import { runningInContainerImage } from "./container_stamp.ts";
 
 /**
  * Full recovery scan — runs all detection and recovery mechanisms.
@@ -115,33 +116,38 @@ export async function detectAndRecoverStuckIssues(
   githubUser: string,
   nowFn: () => number = () => Math.floor(Date.now() / 1000),
   cache?: import("./issue_cache.ts").IssueCache,
-  options: { env?: (name: string) => string | undefined } = {},
+  options: {
+    env?: (name: string) => string | undefined;
+    ghCommandFn?: (args: string[]) => Promise<string>;
+  } = {},
 ): Promise<Result<RecoveryScanResult>> {
   // Container mode sweeps every local heartbeat at start-up (Issue #4241):
   // one worker per container is structural, so any file that exists here
   // is a dead run's — and on the durable volume it would otherwise
   // suppress recovery until it aged past the stuck timeout. Injectable env
-  // so the suites pass with and without the image stamp.
+  // so the suites pass with and without the image stamp. The stamp counts
+  // only when it is non-blank (Issue #1262): a blank value must not flip a
+  // host run into sweeping a sibling worker's live claim.
   const env = options.env ?? ((name: string) => Deno.env.get(name));
-  const inContainer = env("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined;
+  const inContainer = runningInContainerImage(env);
   const stuckRecovered = await detectAndRecoverStuckHeartbeats(
     config,
     githubUser,
     nowFn,
-    { sweepAllHeartbeats: inContainer },
+    { sweepAllHeartbeats: inContainer, ghCommandFn: options.ghCommandFn },
   );
   const noHeartbeatRecovered = await detectAssignedWithoutHeartbeat(
     config,
     githubUser,
     nowFn,
-    undefined,
+    options.ghCommandFn,
     cache,
   );
   const staleRecovered = await recoverStaleGithubAssignments(
     config,
     githubUser,
     nowFn,
-    undefined,
+    options.ghCommandFn,
     cache,
   );
 

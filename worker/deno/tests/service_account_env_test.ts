@@ -442,3 +442,54 @@ Deno.test("buildServiceAccountEnv - a writable gh config dir is left alone", asy
     await Deno.remove(home, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// A blank container stamp is a HOST run (Issue #1262)
+// ---------------------------------------------------------------------------
+
+Deno.test("buildServiceAccountEnv - a blank container stamp does not enable the ambient fall-through (Issue #1262)", async () => {
+  // SEC-1217-11: the fallback was keyed on the PRESENCE of the stamp, so
+  // `VIBE_IMAGE_AGENT_PROVIDERS=` satisfied it on a host run. With a
+  // configured `gh_config_dir` that does not exist, resolution then fell
+  // through to the ambient `GH_CONFIG_DIR` and the worker authenticated as
+  // whoever wrote that `hosts.yml` — the Issue #3530 leak. On the host the
+  // configured-but-missing path must keep failing loudly instead.
+  const home = await Deno.makeTempDir();
+  try {
+    const ambient = `${home}/ambient-gh`;
+    await Deno.mkdir(ambient, { recursive: true });
+    await Deno.writeTextFile(`${ambient}/hosts.yml`, "github.com:\n");
+    const applied = buildServiceAccountEnv(
+      buildDefaultWorkerConfig({ ghConfigDir: "~/.config/gh-vibe" }),
+      home,
+      envFrom({
+        VIBE_IMAGE_AGENT_PROVIDERS: "",
+        GH_CONFIG_DIR: ambient,
+      }),
+    );
+    assertEquals(applied.GH_CONFIG_DIR, `${home}/.config/gh-vibe`);
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("buildServiceAccountEnv - a whitespace container stamp does not enable the ambient fall-through (Issue #1262)", async () => {
+  // Same rule, trimmed: a stamp of spaces names no provider set either.
+  const home = await Deno.makeTempDir();
+  try {
+    const ambient = `${home}/ambient-gh`;
+    await Deno.mkdir(ambient, { recursive: true });
+    await Deno.writeTextFile(`${ambient}/hosts.yml`, "github.com:\n");
+    const applied = buildServiceAccountEnv(
+      buildDefaultWorkerConfig({ ghConfigDir: "~/.config/gh-vibe" }),
+      home,
+      envFrom({
+        VIBE_IMAGE_AGENT_PROVIDERS: "   ",
+        GH_CONFIG_DIR: ambient,
+      }),
+    );
+    assertEquals(applied.GH_CONFIG_DIR, `${home}/.config/gh-vibe`);
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
