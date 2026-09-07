@@ -52,6 +52,12 @@ import {
 } from "../lib/software_updates.ts";
 import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import {
+  _resetWriteRepoAllowlistSinks,
+  _setWriteRepoAllowlistSinks,
+  resetWriteRepoAllowlist,
+  seedWriteRepoAllowlist,
+} from "../lib/write_repo_allowlist.ts";
+import {
   describeChannel,
   type ReleaseAgeGate,
   type ReleaseChannel,
@@ -1306,6 +1312,68 @@ Deno.test("runWithTimeout - the pinned extension install is routed through the c
     ]]);
   } finally {
     _resetGhSpawnRunner();
+  }
+});
+
+Deno.test("runWithTimeout - a refused gh write fails loud instead of spawning", async () => {
+  // The chokepoint refuses before any process starts, so the caller sees the
+  // refusal rather than a subprocess result. `gh gist create` names no
+  // derivable repo, which is the fail-closed branch of the allowlist.
+  const logs: string[] = [];
+  _setWriteRepoAllowlistSinks({
+    record: () => Promise.resolve({ ok: true, value: undefined as never }),
+    log: (m: string) => logs.push(m),
+  });
+  seedWriteRepoAllowlist("stSoftwareAU/VibeCoder");
+  let spawned = 0;
+  _setGhSpawnRunner(() => {
+    spawned++;
+    return Promise.resolve({ code: 0, success: true, stdout: "", stderr: "" });
+  });
+  try {
+    const result = await runWithTimeout(["gh", "gist", "create", "x"], 30);
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertStringIncludes(result.error.message, "undeterminable");
+    }
+    assertEquals(spawned, 0);
+    assertStringIncludes(logs.join("\n"), "WRITE_TARGET_UNDETERMINABLE");
+  } finally {
+    _resetGhSpawnRunner();
+    resetWriteRepoAllowlist();
+    _resetWriteRepoAllowlistSinks();
+  }
+});
+
+Deno.test("runUpdateWithRetry - a refused gh write is permanent, not retried three times", async () => {
+  const { logger, warns } = testLogger();
+  _setWriteRepoAllowlistSinks({
+    record: () => Promise.resolve({ ok: true, value: undefined as never }),
+    log: () => {},
+  });
+  seedWriteRepoAllowlist("stSoftwareAU/VibeCoder");
+  const sleeps: number[] = [];
+  try {
+    const result = await runUpdateWithRetry(
+      logger,
+      "gh gist",
+      ["gh", "gist", "create", "x"],
+      {
+        sleepFn: (s: number) => {
+          sleeps.push(s);
+          return Promise.resolve();
+        },
+      },
+    );
+    assertEquals(result.success, false);
+    // Refused identically on every attempt — retrying only delays the warning.
+    assertEquals(result.attempts, 1);
+    assertEquals(result.classification, "permanent");
+    assertEquals(sleeps, []);
+    assertStringIncludes(warns.join("\n"), "failed permanently");
+  } finally {
+    resetWriteRepoAllowlist();
+    _resetWriteRepoAllowlistSinks();
   }
 });
 

@@ -89,6 +89,10 @@ export interface BenchmarkOptions {
  * "Input/output error" records the fault the claim guards read, instead of
  * being reported as a slow benchmark.
  *
+ * Each fixture call is bounded by `runGitCommand`'s own timeout (60s by
+ * default, `GIT_COMMAND_TIMEOUT`), which is the point: a benchmark step that
+ * outruns it is a hang to report, not a measurement to wait for.
+ *
  * Exported so the routing is testable against a real repository; production
  * callers get it as the default {@link BenchmarkOptions.run}.
  *

@@ -659,7 +659,7 @@ Deno.test("write-repo-allowlist - a scoped grant blocks nothing while enforcemen
 
 Deno.test("write-repo-allowlist - a pinned gh extension install is allowed, not refused as undeterminable", async () => {
   try {
-    captureSinks();
+    const { audits, logs } = captureSinks();
     seedWriteRepoAllowlist("stSoftwareAU/VibeCoder");
     // The extension's source repo is not on the allowlist and never needs to
     // be: installing an extension writes to the local gh installation, not to
@@ -676,6 +676,39 @@ Deno.test("write-repo-allowlist - a pinned gh extension install is allowed, not 
     await enforceGhWriteAllowlist(["extension", "upgrade", "gh-dash"]);
     await enforceGhWriteAllowlist(["extension", "remove", "gh-dash"]);
     await enforceGhWriteAllowlist(["extension", "list"]);
+
+    // Allowed means allowed: no `blocked-*` audit event and no `[SECURITY]`
+    // line — a test that only checked "did not throw" would still pass with
+    // enforcement inert.
+    assertEquals(audits, []);
+    assertEquals(logs, []);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("write-repo-allowlist - an off-allowlist repo write is still refused beside the extension exception", async () => {
+  try {
+    const { audits, logs } = captureSinks();
+    seedWriteRepoAllowlist("stSoftwareAU/VibeCoder");
+    // The `non-repo` extension scope grants nothing to a real repo write:
+    // the same argv shape against `issue` is blocked exactly as before.
+    await assertRejects(
+      () =>
+        enforceGhWriteAllowlist([
+          "issue",
+          "comment",
+          "1",
+          "-R",
+          "attacker/repo",
+          "--body",
+          "x",
+        ]),
+      WriteRepoBlockedError,
+    );
+    assertEquals(audits.length, 1);
+    assertEquals(audits[0]?.verb, "blocked-issue-comment");
+    assertStringIncludes(logs.join("\n"), "WRITE_REPO_BLOCKED");
   } finally {
     cleanup();
   }

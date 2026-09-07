@@ -185,21 +185,26 @@ Named here so a later sweep does not re-litigate them.
   option. PR titles and commit subjects reach prompt text, never argv.
 - **`secrets_history_scan.ts`** — `gitleaks`/`trufflehog` argv is worker-owned
   paths and fixed flags only.
-- **`benchmark.ts:83`** — the runner is generic, but every call site passes
-  fixed literals (`deno check`, `git init/add/commit` against a fixture
-  directory the benchmark itself creates). It inherits the environment and has
-  no timeout, but it is an operator-invoked diagnostic with no
-  untrusted-repository interaction in its call graph.
+- **`benchmark.ts` (`runBenchmarkCommand`)** — the runner is generic, but every
+  call site passes fixed literals (`deno check`, `git init/add/commit` against
+  a fixture directory the benchmark itself creates). Its `git` half now routes
+  through `runGitCommand` (Issue #1396), so the fixture calls carry the
+  chokepoint's timeout, audit journal and work-volume fault detection; the
+  remaining direct spawn is the `deno check` step, an operator-invoked
+  diagnostic with no untrusted-repository interaction in its call graph.
 - **`container_runtime.ts:591`** — the binary is `candidate.executable` from the
   static `CONTAINER_RUNTIMES` table (the docker/podman/apple-container probes),
   not attacker input, and the probe is bounded by a 15s `AbortController`. This
   is the `docker`/`podman` half of the chokepoint question below.
 - **`quality_helpers.ts:200`** — `which <toolName>`, where `toolName` is the
   literal `"deno"` supplied by `quality_gate.ts`.
-- **`software_updates.ts:368`** — `version` is validated against
-  `PINNED_VERSION_PATTERN` before it can reach the argv builder, which blocks a
-  leading `-`; the timeout is a required parameter; and the installs target
-  first-party tooling with `--ignore-scripts`.
+- **`software_updates.ts` (`runUpdateCommand`)** — `version` is validated
+  against `PINNED_VERSION_PATTERN` before it can reach the argv builder, which
+  blocks a leading `-`; the timeout is a required parameter; and the installs
+  target first-party tooling with `--ignore-scripts`. Since Issue #1396 the
+  runner no longer builds a `gh` process at all — a `gh` argv is handed to
+  `spawnGh`, so the write-repo allowlist and the audit journal apply — and the
+  direct spawn covers `brew`, `claude`, `deno`, `npm` and `which` only.
 - **`subprocess_timeout.ts`, `tabletop_container_runner.ts`,
   `worker_identity.ts`, `worker_log_gzip.ts`, `session_resume.ts`,
   `write_repo_allowlist.ts`** — either not spawn sites, or argv is

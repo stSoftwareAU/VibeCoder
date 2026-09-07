@@ -172,10 +172,13 @@ const GH_CWD_SCOPED_ROOTS: ReadonlySet<string> = new Set([
 /**
  * Root spellings of the `gh extension` command (Issue #1396).
  *
- * The real binary accepts all three, so the classification must too — the
- * same aliases `gh_local_state_guard.ts` normalises for the agent-side guard.
+ * The real binary accepts all three, so anything that reasons about the root
+ * must accept all three or the odd spelling walks past it. Exported as the
+ * single source of these aliases: `gh_local_state_guard.ts` normalises the
+ * agent-side refusal against this same set, so a spelling added here cannot
+ * be honoured by one and missed by the other.
  */
-const GH_EXTENSION_ROOTS: ReadonlySet<string> = new Set([
+export const GH_EXTENSION_ROOTS: ReadonlySet<string> = new Set([
   "extension",
   "extensions",
   "ext",
@@ -193,17 +196,24 @@ const GH_EXTENSION_ROOTS: ReadonlySet<string> = new Set([
  * than as reads: recorded by the audit journal, and allowed by the write-repo
  * allowlist because there is no write target to compare against it.
  *
- * Before this, `install` matched no mutating verb and classified as a read
- * (unjournalled), while `upgrade` and `remove` matched
- * {@link GH_GENERIC_MUTATING_VERBS} against a root that is not cwd-scoped and
- * so failed closed as an undeterminable repo write — which is what kept the
+ * Before this the root was split across both tables by accident: `install` and
+ * `upgrade` matched no mutating verb at all and classified as reads, so the
+ * worker's own extension upgrades were never journalled, while `remove` and
+ * `create` matched {@link GH_GENERIC_MUTATING_VERBS} against a root that is
+ * not cwd-scoped and so failed closed as an undeterminable repo write. One
+ * root, two opposite answers, neither of them right — which is what kept the
  * `gh extension` caller outside the `spawnGh` chokepoint.
  *
  * Reads (`list`, `browse`, `search`) and `exec` — which runs an installed
- * extension rather than changing the installed set — are not mutations. The
- * agent subprocess is refused every one of these verbs separately by
- * `gh_local_state_guard.ts` (Issue #187); this classification governs the
- * worker's own calls.
+ * extension rather than changing the installed set — are not mutations here.
+ * The verb list therefore differs from `GH_LOCAL_STATE_VERBS.extension` in
+ * `gh_local_state_guard.ts` on purpose, and the two are not one list: this one
+ * answers "did the local tool change, and should the journal say so", which
+ * takes in `create` and leaves out `exec`; the guard's answers "may the agent
+ * run this at all", which refuses `exec` — an extension the guard cannot see
+ * inside — and has no reason to name `create`. The agent is refused every
+ * verb in the guard's list whatever this one says (Issue #187); this
+ * classification governs the worker's own calls.
  */
 const GH_EXTENSION_LOCAL_VERBS: ReadonlySet<string> = new Set([
   "install",

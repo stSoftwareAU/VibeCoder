@@ -50,6 +50,10 @@ import {
   type ReleaseChannel,
 } from "./tool_release_age.ts";
 import { spawnGh } from "./gh_spawn.ts";
+import {
+  WriteRepoBlockedError,
+  WriteTargetUndeterminableError,
+} from "./write_repo_allowlist.ts";
 
 /** Default update check interval: 7 days in seconds. */
 export const DEFAULT_UPDATE_INTERVAL_SECONDS = 604800;
@@ -346,6 +350,17 @@ export function classifyUpdateError(
   return "transient";
 }
 
+/**
+ * Whether an error is the `gh` chokepoint refusing the call (Issue #1396).
+ *
+ * Matched on the error type rather than its message, so a reworded refusal
+ * cannot quietly become retryable again.
+ */
+function isWriteRefusal(err: Error): boolean {
+  return err instanceof WriteRepoBlockedError ||
+    err instanceof WriteTargetUndeterminableError;
+}
+
 /** One finished update subprocess, however it was spawned. */
 interface UpdateCommandOutput {
   code: number;
@@ -505,10 +520,13 @@ export async function runUpdateWithRetry(
       }
       lastClass = classifyUpdateError(lastExit, lastOutput);
     } else {
-      // Spawn error — classify as transient so we retry.
+      // Spawn error — classify as transient so we retry, unless the `gh`
+      // chokepoint refused the call (Issue #1396). A write the allowlist
+      // refused is refused identically on every attempt, so retrying it only
+      // delays the warning and re-emits the `[SECURITY]` line three times.
       lastExit = -1;
       lastOutput = runResult.error.message;
-      lastClass = "transient";
+      lastClass = isWriteRefusal(runResult.error) ? "permanent" : "transient";
     }
 
     if (lastClass === "permanent") {
