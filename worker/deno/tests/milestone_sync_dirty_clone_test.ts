@@ -85,8 +85,8 @@ Deno.test("syncMilestoneBranchWithDefault - a dirty shared clone is reset rather
       }`,
     );
     // It says what it discarded — a surprise must stay diagnosable.
-    assertStringIncludes(result.value, "SELF-HEALING");
-    assertStringIncludes(result.value, "shared.txt");
+    assertStringIncludes(result.value.message, "SELF-HEALING");
+    assertStringIncludes(result.value.message, "shared.txt");
 
     // The branch really is on the milestone line with main integrated.
     const branch = await runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], {
@@ -137,9 +137,9 @@ Deno.test("syncMilestoneBranchWithDefault - a clean clone reports no self-healin
 
     assert(result.ok);
     assertEquals(
-      result.value.includes("discarded"),
+      result.value.message.includes("discarded"),
       false,
-      `a clean clone must not claim a discard: ${result.value}`,
+      `a clean clone must not claim a discard: ${result.value.message}`,
     );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });

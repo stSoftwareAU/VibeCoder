@@ -199,7 +199,7 @@ Deno.test(
         result.ok,
         `expected a successful sync: ${!result.ok && result.error.message}`,
       );
-      assertStringIncludes(result.value, "UNGATED");
+      assertStringIncludes(result.value.message, "UNGATED");
       assert(
         (await remoteSha(fx, "milestone/974")) !== fx.milestoneSha,
         "an unchecked repo still syncs — it simply says the tree was not checked",
