@@ -147,6 +147,7 @@ answer is enforced.
 | **AP-7** | **Edit after approval (TOCTOU)** — a trusted approval is captured, then the body or title is rewritten before the prompt is built | A1–A4, A6 | C10 | `worker/deno/lib/pickup_content_integrity.ts` |
 | **AP-8** | **Exfiltration via GitHub writes** — a successful injection posts private repository contents as a comment, PR body or issue in a different, public repository | A4, A5 | C12, C13, C14, C16 | `worker/deno/lib/write_repo_allowlist.ts` |
 | **AP-9** | **Exfiltration or denial of service via outbound fetch** — a hostile or hung server streams until the heap is exhausted, or never responds at all | A2, A5 | C17 | `worker/deno/lib/bounded_fetch.ts` |
+| **AP-17** | **Server-side request forgery via a document-supplied URL** — a merged edit to a fetched document (a `docs/REFERENCES.md` credit row) points the worker at loopback, at the cloud metadata service, or at an RFC-1918 host, directly or through a redirect | A1, A5 | C30 | `worker/deno/lib/public_url_guard.ts` |
 | **AP-10** | **Supply-chain compromise** — a freshly published dependency, or a hijacked host toolchain release, executes on the host with the worker's privileges | A1, A2 | C18, C19 | `worker/deno/lib/npm_package_age.ts` |
 | **AP-11** | **Credential theft from the agent's environment** — the injected agent reads a credential straight out of its own process environment or the credential directory | A1 | C20, C21 | `worker/deno/lib/claude_env.ts` |
 | **AP-12** | **Host compromise beyond the work directory** — the agent reads or writes host material that is none of its business | A2, A4 | C21, C22 | `worker/deno/lib/container_launch.ts` |
@@ -195,6 +196,7 @@ here exists.
 | **C27** | Repository allowlist and git-URL validation before any clone or query | `worker/deno/lib/config_validator.ts` | `worker/deno/tests/config_validator_test.ts` |
 | **C28** | Automated-failure comment path masks secrets before posting | `worker/deno/lib/label_failure.ts` | **Gap G2** |
 | **C29** | Fail-closed trusted-author refresh — any collaborator or exclusion-team fetch failure skips the cycle rather than widening trust; `service_accounts` and the host login are excluded so a fleet account cannot authorise itself | `worker/deno/lib/run_core.ts`, `worker/deno/lib/collaborator_permissions.ts`, `worker/deno/lib/trust_exclusions.ts` | `worker/deno/tests/run_core_trust_refresh_test.ts`, `worker/deno/tests/trust_exclusions_test.ts` |
+| **C30** | SSRF guard on externally-supplied URLs — HTTPS-only shape checks, private/loopback/link-local address refusal (literals and what a hostname resolves to), and manual redirect following that re-validates every hop | `worker/deno/lib/public_url_guard.ts` | `worker/deno/tests/public_url_guard_test.ts`, `worker/deno/tests/security_scan_overflow_1387_test.ts` |
 
 ## 🕳️ Known gaps — controls with no enforcing test
 
