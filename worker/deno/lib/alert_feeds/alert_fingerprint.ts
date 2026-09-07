@@ -33,6 +33,59 @@
 
 import { parseGhJsonArray } from "../idle_task_snapshot.ts";
 
+// ---------------------------------------------------------------------------
+// Token grammar (Issue #1275)
+// ---------------------------------------------------------------------------
+
+/**
+ * Characters a fingerprint token may contain.
+ *
+ * The sibling `finding-id` scheme constrains its grammar to `[A-Za-z0-9-]+`
+ * (`idle_task_snapshot.ts`); a fingerprint additionally admits `:` and `/` for
+ * its `source:owner/repo:key` shape, plus `.` and `_` which real advisory and
+ * rule ids use. Everything else — notably `<`, `>`, `!` and whitespace — is
+ * percent-encoded, because the marker is rendered **outside** the untrusted
+ * fence and would otherwise let a free-text rule id or package name close the
+ * comment and open a forged second marker.
+ */
+const FINGERPRINT_DISALLOWED = /[^A-Za-z0-9:/._-]/gu;
+
+/**
+ * Whole-token form: the literal characters above **plus** the `%` introducing
+ * a percent-escape. A raw `%` in an alert field is itself escaped (to `%25`),
+ * so admitting `%` here does not widen what an attacker can place in a token.
+ */
+const FINGERPRINT_TOKEN_RE = /^[A-Za-z0-9:/._%-]+$/;
+
+/** Percent-encode one code point as its UTF-8 bytes (`>` → `%3E`). */
+function percentEncode(codePoint: string): string {
+  return Array.from(new TextEncoder().encode(codePoint))
+    .map((byte) => `%${byte.toString(16).toUpperCase().padStart(2, "0")}`)
+    .join("");
+}
+
+/**
+ * Constrain `token` to the fingerprint grammar by percent-encoding every
+ * character outside it (Issue #1275).
+ *
+ * Applied once, where a fingerprint is **built** — not where it is rendered —
+ * so the token is inert by construction wherever it is later used. Because `%`
+ * is itself outside the grammar it is encoded too, which keeps the mapping
+ * injective: two distinct alerts can never collapse onto one fingerprint and
+ * silently suppress each other. A token drawn only from the grammar (every
+ * real GHSA id, every ordinary rule id such as `js/zipslip`) is returned
+ * byte-unchanged, so alerts already filed under the old scheme are not
+ * re-filed.
+ */
+export function sanitiseFingerprintToken(token: string): string {
+  return token.replace(FINGERPRINT_DISALLOWED, percentEncode);
+}
+
+/** Whether `token` is a well-formed fingerprint token. */
+export function isFingerprintToken(token: string): boolean {
+  return FINGERPRINT_TOKEN_RE.test(token);
+}
+
 /** The subset of a Dependabot alert a fingerprint depends on. */
 export interface DependabotFingerprintInput {
   /** Repo-scoped alert number (stable identifier within the repo). */
@@ -55,7 +108,7 @@ export function dependabotAlertFingerprint(
 ): string {
   const ghsa = (alert.ghsaId ?? "").trim();
   const key = ghsa !== "" ? ghsa : `n${alert.number}`;
-  return `dependabot:${repo}:${key}`;
+  return sanitiseFingerprintToken(`dependabot:${repo}:${key}`);
 }
 
 /**
@@ -66,13 +119,19 @@ export function dependabotAlertFingerprint(
  * primitive-argument builder (rather than taking a code-scanning alert type)
  * so it does not couple this module to the not-yet-merged code-scanning
  * fetcher (#3393) — the caller passes the two fields directly.
+ *
+ * `ruleId` is documented by the fetcher as free text carried verbatim from the
+ * SARIF upload, so the assembled token is constrained to the fingerprint
+ * grammar ({@link sanitiseFingerprintToken}, Issue #1275).
  */
 export function codeScanningAlertFingerprint(
   repo: string,
   ruleId: string,
   alertNumber: number,
 ): string {
-  return `code-scanning:${repo}:${ruleId}:${alertNumber}`;
+  return sanitiseFingerprintToken(
+    `code-scanning:${repo}:${ruleId}:${alertNumber}`,
+  );
 }
 
 /**
@@ -81,8 +140,21 @@ export function codeScanningAlertFingerprint(
  * Mirrors the `<!-- finding-id: … -->` convention but uses a distinct
  * `alert-fingerprint` key because the fingerprint contains colons and slashes
  * that the finding-id grammar (`[A-Za-z0-9-]+`) does not admit.
+ *
+ * Fails loud on a token outside the grammar (Issue #1275): the marker is the
+ * one part of the body rendered outside the untrusted fence, so an unsanitised
+ * token reaching here is a defect that would let a forged second marker
+ * suppress a real alert for ever. Every builder in this module sanitises, so a
+ * throw means a caller has assembled a fingerprint by hand.
  */
 export function alertFingerprintMarker(fingerprint: string): string {
+  if (!isFingerprintToken(fingerprint)) {
+    throw new Error(
+      "alert fingerprint is outside the token grammar " +
+        "([A-Za-z0-9:/._-]) — build it with " +
+        "dependabotAlertFingerprint / codeScanningAlertFingerprint",
+    );
+  }
   return `<!-- alert-fingerprint: ${fingerprint} -->`;
 }
 
@@ -94,13 +166,18 @@ const ALERT_FINGERPRINT_RE = /<!--\s*alert-fingerprint:\s*([^\s>]+)\s*-->/gi;
 /**
  * Extract every alert fingerprint embedded in an issue body via
  * {@link alertFingerprintMarker}. Returns `[]` when none are present.
+ *
+ * Tokens outside the fingerprint grammar are dropped rather than admitted to
+ * the known-open set (Issue #1275) — every genuine marker is written by
+ * {@link alertFingerprintMarker}, which only emits grammar-valid tokens, so an
+ * off-grammar token is by definition not one the fleet wrote.
  */
 export function extractAlertFingerprints(body: string): string[] {
   const out: string[] = [];
   if (typeof body !== "string") return out;
   for (const match of body.matchAll(ALERT_FINGERPRINT_RE)) {
     const token = match[1];
-    if (token) out.push(token);
+    if (token && isFingerprintToken(token)) out.push(token);
   }
   return out;
 }
