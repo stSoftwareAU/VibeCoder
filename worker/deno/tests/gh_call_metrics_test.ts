@@ -367,10 +367,35 @@ Deno.test("gh_call_metrics - recordGhCall counts GraphQL calls separately from R
   recordGhCall(["issue", "list"]);
 
   const snap = getGhCallMetrics();
-  assertEquals(snap.graphqlTotal, 2);
+  // Issue #1485: `gh issue list` is GraphQL-backed too — three GraphQL
+  // calls, and only the plain REST `gh api rate_limit` is not one.
+  assertEquals(snap.graphqlTotal, 3);
   // REST api bucket excludes the graphql calls.
   assertEquals(snap.bySubCommand["api"], 1);
   assertEquals(snap.bySubCommand["api graphql"], 2);
+  assertEquals(snap.bySubCommand["issue list"], 1);
+});
+
+Deno.test("gh_call_metrics - every gh sub-command counts as GraphQL; only REST `gh api <path>` does not (Issue #1485)", () => {
+  resetGhCallMetrics();
+
+  // The sub-commands the worker actually issues — all GraphQL-backed.
+  recordGhCall(["issue", "list", "--repo", "o/r", "--json", "number"]);
+  recordGhCall(["pr", "list", "--repo", "o/r", "--state", "open"]);
+  recordGhCall(["pr", "view", "42", "--json", "mergeable"]);
+  recordGhCall(["search", "issues", "--assignee", "me"]);
+  recordGhCall(["--repo", "o/r", "issue", "view", "1"]); // leading flag
+  recordGhCall(["api", "graphql", "-f", "query=Q"]);
+  // REST calls ride the core quota and must not be counted.
+  recordGhCall(["api", "rate_limit"]);
+  recordGhCall(["api", "-X", "PUT", "repos/o/r/pulls/1/update-branch"]);
+  recordGhCall(["api", "--paginate", "repos/o/r/issues/1/comments"]);
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.total, 9);
+  assertEquals(snap.graphqlTotal, 6);
+  assertEquals(snap.bySubCommand["api"], 3);
+  assertStringIncludes(formatGraphQLSummary(), "graphql-calls: 6 total");
 });
 
 Deno.test("gh_call_metrics - enterGraphQLSource attributes GraphQL calls to the source", () => {
@@ -395,7 +420,7 @@ Deno.test("gh_call_metrics - GraphQL source ignores non-GraphQL calls", () => {
   resetGhCallMetrics();
 
   enterGraphQLSource("pr-linkage");
-  recordGhCall(["issue", "list"]); // REST inside a GraphQL block — not attributed
+  recordGhCall(["api", "rate_limit"]); // REST inside a GraphQL block — not attributed
   recordGhCall(["api", "graphql", "-f", "query=Q1"]);
   exitGraphQLSource();
 
@@ -463,7 +488,7 @@ Deno.test("gh_call_metrics - formatGraphQLSummary lists sources descending", () 
 
 Deno.test("gh_call_metrics - formatGraphQLSummary emits zero summary when no GraphQL calls", () => {
   resetGhCallMetrics();
-  recordGhCall(["issue", "list"]);
+  recordGhCall(["api", "rate_limit"]); // REST only
   const summary = formatGraphQLSummary();
   assertEquals(summary, "graphql-calls: 0 total");
 });

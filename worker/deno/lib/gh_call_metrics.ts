@@ -13,6 +13,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { isQuotaExemptGhCall } from "./primary_quota_latch.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 /**
@@ -42,10 +43,14 @@ export interface GhCallMetricsSnapshot {
   /** Per-iteration comment-cache misses (Issue #1841). */
   commentsCacheMisses: number;
   /**
-   * Total GraphQL invocations (`gh api graphql ...`) issued this
-   * iteration (Issue #1924). Each GraphQL request consumes ~1 point
-   * from the 5000-point hourly quota, so this counter is a useful
-   * proxy for GraphQL-budget burn rate.
+   * Total GraphQL-backed invocations issued this iteration (Issue #1485):
+   * every `gh` sub-command (`issue list`, `pr view`, `search`, …) and the
+   * explicit `gh api graphql`. Only a plain REST `gh api <path>` is not
+   * GraphQL — the same predicate the primary-quota latch uses, so the two
+   * cannot disagree. Before #1485 only `api graphql` was counted, and the
+   * `graphql-calls:` line was a fraction of the real burn. Each GraphQL
+   * request consumes at least one point from the 5000-point hourly quota,
+   * so this counter is the proxy for GraphQL-budget burn rate (Issue #1924).
    */
   graphqlTotal: number;
   /**
@@ -284,8 +289,10 @@ export function recordGhCall(args: readonly string[]): void {
     state.byPriority.set(top, (state.byPriority.get(top) ?? 0) + 1);
   }
 
-  // Issue #1924: GraphQL-specific attribution.
-  if (bucket === "api graphql") {
+  // Issue #1924: GraphQL-specific attribution. Issue #1485: what counts as
+  // GraphQL is decided once, in primary_quota_latch.ts — every `gh`
+  // sub-command is GraphQL-backed; only a plain REST `gh api <path>` is not.
+  if (!isQuotaExemptGhCall(args)) {
     state.graphqlTotal++;
     const src = state.graphqlSourceStack[state.graphqlSourceStack.length - 1] ??
       "unattributed";
@@ -443,9 +450,12 @@ export function formatGhCallsByPrioritySummary(): string {
  * the hottest GraphQL path is named first.
  *
  * GraphQL is metered separately from REST (5000 points/hour vs
- * 5000 calls/hour), and each `gh api graphql` request consumes ~1
+ * 5000 calls/hour), and each GraphQL-backed request consumes at least one
  * point. This summary is the operator-facing signal for the 5000-point
- * quota burn rate.
+ * quota burn rate, and since Issue #1485 it counts every GraphQL-backed
+ * call the process makes — `gh issue list`, `gh pr view`, `gh search`, as
+ * well as `gh api graphql` — recorded at the `gh` spawn chokepoint, so no
+ * module can issue one uncounted.
  *
  * Example:
  *   `graphql-calls: 245 total, pr-linkage=110, milestone-health=45,
