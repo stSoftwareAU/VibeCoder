@@ -56,15 +56,22 @@ import {
   parallelUnsafeIgnoreArg,
 } from "./parallel_unsafe_test_manifest.ts";
 import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
+import {
+  CONTAINER_IMAGE_STAMP_ENV,
+  runningInContainerImage,
+} from "./container_stamp.ts";
 
 /**
  * The variable the container image exports and no host run has (#4269).
  *
  * `fleet_health.ts` and `optional_feature_env.ts` already read exactly this
  * to tell the two apart; a third spelling of "am I in the container" would
- * be a third thing to keep in step.
+ * be a third thing to keep in step. So this is an alias for
+ * {@linkcode CONTAINER_IMAGE_STAMP_ENV} rather than its own string literal
+ * (Issue #1493): the name stays for the callers that import it, the
+ * definition lives in `container_stamp.ts`.
  */
-export const CONTAINER_MARKER_VAR = "VIBE_IMAGE_AGENT_PROVIDERS";
+export const CONTAINER_MARKER_VAR = CONTAINER_IMAGE_STAMP_ENV;
 
 /**
  * Names the suite genuinely needs beyond `ALLOWED_ENV_NAMES` (Issue #1281).
@@ -246,7 +253,7 @@ export function unitTestPasses(
   const parallelEnv = { ...env };
   // An operator's own DENO_JOBS wins; the bound is only a default.
   if (
-    options.env[CONTAINER_MARKER_VAR] !== undefined &&
+    runningInContainerImage((name) => options.env[name]) &&
     parallelEnv.DENO_JOBS === undefined
   ) {
     parallelEnv.DENO_JOBS = CONTAINER_DENO_JOBS;

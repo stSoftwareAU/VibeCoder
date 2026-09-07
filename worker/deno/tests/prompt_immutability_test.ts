@@ -24,6 +24,7 @@ import {
   PROMPT_PROBE_PREFIX,
   type PromptProbeDeps,
 } from "../lib/prompt_immutability.ts";
+import { CONTAINER_IMAGE_STAMP_ENV } from "../lib/container_stamp.ts";
 
 const DIR = "/workspace/prompts";
 
@@ -150,4 +151,52 @@ Deno.test("prompt immutability - the entrypoint keeps prompts on the read-only m
     !/cp -R "\$\{BASE_DIR\}\/prompts"/.test(entrypoint),
     "prompts must never be staged into the writable local copy",
   );
+});
+
+// ---------------------------------------------------------------------------
+// A blank container stamp is a HOST run (Issue #1493, follow-up to #1262)
+// ---------------------------------------------------------------------------
+
+Deno.test("prompt immutability - a blank in-image stamp does not refuse a developer host (Issue #1493)", async () => {
+  // The refusal was keyed on the PRESENCE of the in-image signal, so
+  // `VIBE_IMAGE_AGENT_PROVIDERS=` refused to start on a host whose checkout
+  // is legitimately writable — a run the check exists to leave alone. Blank
+  // reads as absent.
+  const deps: PromptProbeDeps = {
+    writeTextFile: () => Promise.resolve(),
+    remove: () => Promise.resolve(),
+  };
+  for (const blank of ["", "   "]) {
+    const verdict = await checkPromptsImmutable(
+      DIR,
+      (name) => (name === IN_IMAGE_ENV ? blank : undefined),
+      deps,
+    );
+    assertEquals(
+      verdict.ok,
+      true,
+      `a stamp of ${JSON.stringify(blank)} must not refuse a host run`,
+    );
+  }
+});
+
+Deno.test("prompt immutability - a real in-image stamp still refuses a writable prompts dir (Issue #1493)", async () => {
+  // The other direction: #1445's refusal must survive the narrowed
+  // predicate, whitespace padding included.
+  const deps: PromptProbeDeps = {
+    writeTextFile: () => Promise.resolve(),
+    remove: () => Promise.resolve(),
+  };
+  const verdict = await checkPromptsImmutable(
+    DIR,
+    (name) => (name === IN_IMAGE_ENV ? " claude " : undefined),
+    deps,
+  );
+  assertEquals(verdict.ok, false);
+  assertStringIncludes(verdict.reason ?? "", DIR);
+});
+
+Deno.test("prompt immutability - IN_IMAGE_ENV is the canonical stamp name (Issue #1493)", () => {
+  // Aliased rather than re-spelled, so the two cannot drift apart.
+  assertEquals(IN_IMAGE_ENV, CONTAINER_IMAGE_STAMP_ENV);
 });

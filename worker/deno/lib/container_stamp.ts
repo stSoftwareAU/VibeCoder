@@ -2,11 +2,9 @@
  * "Am I running inside the worker container image?" — one rule (Issue #1262).
  *
  * The container build stamps the provider set it installed into
- * {@linkcode CONTAINER_IMAGE_STAMP_ENV}, and no host run has it. The three
- * readers this module serves — `service_account_env.ts`,
- * `stuck_issue_detector.ts` and `agent_provider.ts` — each spelled the test
- * as `env(...) !== undefined`, a *presence* test, which
- * `VIBE_IMAGE_AGENT_PROVIDERS=` (the empty string) satisfies.
+ * {@linkcode CONTAINER_IMAGE_STAMP_ENV}, and no host run has it. Every
+ * reader spelled the test as `env(...) !== undefined`, a *presence* test,
+ * which `VIBE_IMAGE_AGENT_PROVIDERS=` (the empty string) satisfies.
  *
  * That is a mode switch a blank value must not flip. The sharpest case is
  * the `gh` credential fallback in `service_account_env.ts`: in container mode
@@ -19,6 +17,15 @@
  *
  * So the rule is value, not presence: the stamp counts only when it is
  * non-blank, and a blank stamp reads exactly like an absent one — host.
+ *
+ * Every container-mode reader in the worker now asks this module rather than
+ * spelling the test itself (Issue #1493): `service_account_env.ts`,
+ * `stuck_issue_detector.ts`, `agent_provider.ts`, `run_housekeeping.ts`,
+ * `claude_env.ts`, `crash_notification.ts`, `disk_space.ts`,
+ * `software_updates.ts`, `prompt_immutability.ts`, `unit_test_passes.ts`
+ * and `commands/benchmark.ts`. The two modules that had their own name for
+ * the variable — `IN_IMAGE_ENV` and `CONTAINER_MARKER_VAR` — alias
+ * {@linkcode CONTAINER_IMAGE_STAMP_ENV} so they cannot drift from it.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.).
  */
