@@ -29,6 +29,7 @@ if your worker login is read-only on any monitored repository.**
 | A monitored repo the worker's login cannot list (404, or 403 "Must have push access") is skipped and named once instead of failing every cycle | #1453 |
 | A successful trusted-author resolve is reused for `trusted_authors_cache_hours` (new key, default `1`; `0` restores the per-cycle refresh), and a transient failure serves the snapshot, with its age logged, for up to six hours | #1453 |
 | The `graphql-calls:` line counts every GraphQL-backed `gh` call (`issue list`, `pr view`, `search`, … as well as `api graphql`), and both the counter and the primary-quota latch are enforced at the `gh` spawn chokepoint, so the thirty-odd modules that spawn `gh` directly are counted and short-circuited too | #1485 |
+| The housekeeping merged-PR issue sweep pre-flights the quota once, stops at the first rate-limit refusal and reports one skipped sweep instead of one failure per repository; it reads through the shared scan and timeline caches and keeps its own watermark (`merged_issue_sweep_watermarks.json` in the work directory) | #1477 |
 
 ### In detail
 
@@ -59,6 +60,17 @@ and the latch both moved to the `gh` spawn chokepoint, so a module that
 spawns `gh` directly is counted, and once the hourly quota is exhausted it
 is skipped without a process, exactly like one that goes through
 `runGhCommandRaw()`. Nothing to configure.
+
+The housekeeping `merged-pr-issue-sweep` step (Issue #1477) no longer loops
+every monitored repository against an exhausted GraphQL quota. It pre-flights
+once per sweep, stops at the first primary-quota refusal, and logs one warning
+naming the condition and how many repositories it left for the next cycle —
+a quota stop is a skip, not a housekeeping failure. It now reads the open-issue
+and closed-PR lists through the same `.gh-scan-cache` and `.gh-timeline-cache`
+the discovery passes fill, and keeps a per-repository watermark in
+`merged_issue_sweep_watermarks.json` under the work directory, advancing only
+past merged PRs it closed or ruled out for good. Delete that file to make the
+sweep re-examine everything once. Nothing to configure.
 
 ## 1.5.5 — the log directory comes from the file alone
 

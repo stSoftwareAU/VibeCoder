@@ -20,6 +20,11 @@ import {
   sweepMergedPrIssues,
 } from "../lib/merged_pr_issue_sweep.ts";
 import type { Logger } from "../types.ts";
+import { IssueCache } from "../lib/issue_cache.ts";
+import {
+  loadSweepWatermarks,
+  mergedIssueSweepWatermarkPath,
+} from "../lib/merged_sweep_watermark.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -78,11 +83,19 @@ interface GhWorld {
   compareStatus?: string;
   /** Repos whose issue list fetch fails. */
   failingIssueRepos?: string[];
+  /** Repos whose issue list fetch is refused for want of GraphQL quota. */
+  rateLimitedRepos?: string[];
 }
 
 interface GhCalls {
   closes: Array<{ issue: string; comment: string }>;
+  /** Every `gh` argv the sweep issued, in order (opt in). */
+  all?: string[][];
 }
+
+/** What GitHub says when the hourly primary quota is spent. */
+const RATE_LIMIT_MESSAGE =
+  "gh command failed (exit 1): GraphQL: API rate limit already exceeded for user ID 283951956.";
 
 /**
  * A `gh` mock backed by a small world model, so the sweep exercises the real
@@ -92,10 +105,14 @@ function makeGh(world: GhWorld, calls: GhCalls) {
   return (args: string[]): Promise<string> => {
     const joined = args.join(" ");
     const repo = args[args.indexOf("--repo") + 1] ?? "";
+    calls.all?.push([...args]);
 
     if (args[0] === "issue" && args[1] === "list") {
       if (world.failingIssueRepos?.includes(repo)) {
         return Promise.reject(new Error("gh: issue list failed (403)"));
+      }
+      if (world.rateLimitedRepos?.includes(repo)) {
+        return Promise.reject(new Error(RATE_LIMIT_MESSAGE));
       }
       return Promise.resolve(JSON.stringify(
         world.issues.map((i) => ({
@@ -393,4 +410,280 @@ Deno.test("sweepMergedPrIssues - no repos is a clean no-op", async () => {
   assertEquals(result.scanned, 0);
   assertEquals(result.closed, 0);
   assertEquals(result.failures, []);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1477: quota is a skip, reported once — not N repo failures
+// ---------------------------------------------------------------------------
+
+const NINETEEN_REPOS = Array.from({ length: 19 }, (_, i) => `org/repo-${i}`);
+
+Deno.test("sweepMergedPrIssues - an exhausted quota costs one call, one line, and skips the rest (Issue #1477)", async () => {
+  const calls: GhCalls = { closes: [], all: [] };
+  const lines: string[] = [];
+  const world = landedWorld({ rateLimitedRepos: NINETEEN_REPOS });
+
+  const result = await sweepMergedPrIssues(
+    baseOptions({ repos: NINETEEN_REPOS }),
+    {
+      ghCommandFn: makeGh(world, calls),
+      logger: makeLogger(lines),
+      isQuotaLatchedFn: () => false,
+    },
+  );
+
+  assertEquals(calls.all?.length, 1, "the first refusal is the last call");
+  assertEquals(result.failures, [], "one quota exhaustion is not 19 failures");
+  assertEquals(result.closed, 0);
+  assertEquals(result.reposSkipped, 19);
+  assertStringIncludes(
+    result.quotaExhausted ?? "",
+    "rate limit already exceeded",
+  );
+  const warnings = lines.filter((l) => l.startsWith("warn:"));
+  assertEquals(warnings.length, 1, "exactly one line names the condition");
+  assertStringIncludes(warnings[0] ?? "", "quota exhausted");
+  assertStringIncludes(warnings[0] ?? "", "19 of 19 repo(s)");
+  assertEquals(lines.filter((l) => l.startsWith("error:")), []);
+  assertStringIncludes(result.message, "quota exhausted, sweep skipped");
+  assertStringIncludes(result.message, "resumes next cycle");
+});
+
+Deno.test("sweepMergedPrIssues - a quota refusal part-way keeps the repos already swept (Issue #1477)", async () => {
+  const calls: GhCalls = { closes: [], all: [] };
+  const lines: string[] = [];
+  const world = landedWorld({ rateLimitedRepos: ["org/limited"] });
+
+  const result = await sweepMergedPrIssues(
+    baseOptions({ repos: ["org/repo", "org/limited", "org/after"] }),
+    {
+      ghCommandFn: makeGh(world, calls),
+      logger: makeLogger(lines),
+      isQuotaLatchedFn: () => false,
+    },
+  );
+
+  assertEquals(result.closed, 1, "the first repo's close stands");
+  assertEquals(result.reposSkipped, 2, "the refused repo and the one after it");
+  assertEquals(result.failures, []);
+  assert(
+    !calls.all?.some((a) => a.includes("org/after")),
+    "no call may be made for a repo after the refusal",
+  );
+});
+
+Deno.test("sweepMergedPrIssues - a latch already set stops the sweep before any call (Issue #1477)", async () => {
+  const calls: GhCalls = { closes: [], all: [] };
+  const lines: string[] = [];
+
+  const result = await sweepMergedPrIssues(
+    baseOptions({ repos: NINETEEN_REPOS }),
+    {
+      ghCommandFn: makeGh(landedWorld(), calls),
+      logger: makeLogger(lines),
+      isQuotaLatchedFn: () => true,
+    },
+  );
+
+  assertEquals(calls.all, [], "a latched process spends nothing");
+  assertEquals(result.reposSkipped, 19);
+  assertEquals(result.failures, []);
+  assertEquals(lines.filter((l) => l.startsWith("warn:")).length, 1);
+});
+
+Deno.test("sweepMergedPrIssues - a rate-limited pre-flight skips the whole sweep without a call (Issue #1477)", async () => {
+  const calls: GhCalls = { closes: [], all: [] };
+  const lines: string[] = [];
+  let preflights = 0;
+
+  const result = await sweepMergedPrIssues(
+    baseOptions({ repos: NINETEEN_REPOS }),
+    {
+      ghCommandFn: makeGh(landedWorld(), calls),
+      logger: makeLogger(lines),
+      isQuotaLatchedFn: () => false,
+      preflightFn: () => {
+        preflights++;
+        return Promise.resolve({
+          rateLimited: true,
+          remainingSeconds: 1200,
+          message: "Rate-limit signal still active (1200s remaining)",
+        });
+      },
+    },
+  );
+
+  assertEquals(preflights, 1, "asked once per sweep, not once per repo");
+  assertEquals(calls.all, []);
+  assertEquals(result.reposSkipped, 19);
+  assertStringIncludes(result.quotaExhausted ?? "", "signal still active");
+  assertStringIncludes(result.message, "sweep skipped");
+});
+
+Deno.test("sweepMergedPrIssues - a healthy quota still sweeps every repository (Issue #1477)", async () => {
+  const calls: GhCalls = { closes: [], all: [] };
+  const lines: string[] = [];
+  let preflights = 0;
+
+  const result = await sweepMergedPrIssues(
+    baseOptions({ repos: ["org/a", "org/b", "org/c"] }),
+    {
+      ghCommandFn: makeGh(landedWorld(), calls),
+      logger: makeLogger(lines),
+      isQuotaLatchedFn: () => false,
+      preflightFn: () => {
+        preflights++;
+        return Promise.resolve({
+          rateLimited: false,
+          remainingSeconds: 0,
+          message: "ok",
+        });
+      },
+    },
+  );
+
+  assertEquals(preflights, 1);
+  assertEquals(result.closed, 3, "one landed fix per repo, all closed");
+  assertEquals(result.reposSkipped, 0);
+  assertEquals(result.quotaExhausted, undefined);
+  assertEquals(lines.filter((l) => l.startsWith("warn:")), []);
+  assertEquals(calls.closes.length, 3);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1477: the shared cache and the sweep watermark
+// ---------------------------------------------------------------------------
+
+Deno.test("sweepMergedPrIssues - reads the issue and PR lists through the shared cache (Issue #1477)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "merged-sweep-cache-" });
+  try {
+    const cache = new IssueCache(dir, 600);
+    const listCalls = (calls: GhCalls): number =>
+      (calls.all ?? []).filter((a) =>
+        (a[0] === "issue" || a[0] === "pr") && a[1] === "list"
+      ).length;
+
+    // A world with nothing to close, so the second sweep is the same read.
+    const world = landedWorld({ issues: [] });
+    const first: GhCalls = { closes: [], all: [] };
+    await sweepMergedPrIssues(baseOptions(), {
+      ghCommandFn: makeGh(world, first),
+      logger: makeLogger(),
+      isQuotaLatchedFn: () => false,
+      cache,
+    });
+    assert(listCalls(first) > 0, "a cold cache is filled by real calls");
+
+    const second: GhCalls = { closes: [], all: [] };
+    await sweepMergedPrIssues(baseOptions(), {
+      ghCommandFn: makeGh(world, second),
+      logger: makeLogger(),
+      isQuotaLatchedFn: () => false,
+      cache,
+    });
+    assertEquals(listCalls(second), 0, "a warm cache costs no list calls");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("sweepMergedPrIssues - the watermark skips a PR already swept, without a call (Issue #1477)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "merged-sweep-mark-" });
+  try {
+    const watermarkPath = mergedIssueSweepWatermarkPath(dir);
+    const world = landedWorld();
+
+    const first: GhCalls = { closes: [], all: [] };
+    const one = await sweepMergedPrIssues(baseOptions({ watermarkPath }), {
+      ghCommandFn: makeGh(world, first),
+      logger: makeLogger(),
+      isQuotaLatchedFn: () => false,
+    });
+    assertEquals(one.closed, 1);
+    assertEquals(await loadSweepWatermarks(watermarkPath), { "org/repo": 49 });
+
+    // The stale list still shows #48 open; the sweep must not re-spend on it.
+    const second: GhCalls = { closes: [], all: [] };
+    const two = await sweepMergedPrIssues(baseOptions({ watermarkPath }), {
+      ghCommandFn: makeGh(world, second),
+      logger: makeLogger(),
+      isQuotaLatchedFn: () => false,
+    });
+    assertEquals(two.candidates, 0);
+    assertEquals(two.belowWatermark, 1);
+    assertEquals(second.closes, []);
+    assert(
+      !second.all?.some((a) => a[0] === "pr" && a[1] === "view"),
+      "a PR below the watermark is not looked at again",
+    );
+    assertStringIncludes(two.message, "1 below watermark");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("sweepMergedPrIssues - the watermark holds back on what the sweep left open (Issue #1477)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "merged-sweep-hold-" });
+  try {
+    const watermarkPath = mergedIssueSweepWatermarkPath(dir);
+    // #48 carries needs-human, so PR #49 is not settled; PR #60 merged and
+    // names nothing open, so it is.
+    const world = landedWorld({
+      issues: [{
+        number: 48,
+        title: "Producer emits stale scores",
+        labels: ["needs-human"],
+        createdAt: "2026-08-26T00:00:00Z",
+      }],
+      prs: [
+        {
+          number: 49,
+          title: "Fix the producer (Issue #48)",
+          mergedAt: "2026-08-28T04:55:00Z",
+          closedAt: "2026-08-28T04:55:00Z",
+          mergeCommit: "f00dcafe",
+        },
+        {
+          number: 60,
+          title: "Unrelated tidy-up",
+          mergedAt: "2026-08-29T04:55:00Z",
+          closedAt: "2026-08-29T04:55:00Z",
+          mergeCommit: "0ddba11",
+        },
+      ],
+    });
+
+    const calls: GhCalls = { closes: [], all: [] };
+    const result = await sweepMergedPrIssues(baseOptions({ watermarkPath }), {
+      ghCommandFn: makeGh(world, calls),
+      logger: makeLogger(),
+      isQuotaLatchedFn: () => false,
+    });
+    assertEquals(result.closed, 0);
+    // Window reaches #60, but #49 was left open, so the mark stops at 48.
+    assertEquals(await loadSweepWatermarks(watermarkPath), { "org/repo": 48 });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("sweepMergedPrIssues - a quota stop never advances the interrupted repo's watermark (Issue #1477)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "merged-sweep-quota-mark-" });
+  try {
+    const watermarkPath = mergedIssueSweepWatermarkPath(dir);
+    const world = landedWorld({ rateLimitedRepos: ["org/limited"] });
+    const calls: GhCalls = { closes: [], all: [] };
+    await sweepMergedPrIssues(
+      baseOptions({ repos: ["org/repo", "org/limited"], watermarkPath }),
+      {
+        ghCommandFn: makeGh(world, calls),
+        logger: makeLogger(),
+        isQuotaLatchedFn: () => false,
+      },
+    );
+    // The swept repo's progress is kept; the refused one has no mark.
+    assertEquals(await loadSweepWatermarks(watermarkPath), { "org/repo": 49 });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
