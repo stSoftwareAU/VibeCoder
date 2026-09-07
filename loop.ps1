@@ -16,6 +16,9 @@
 #              worker's `container-restart-backoff` command grows the wait
 #              across consecutive failures, records the recovery as a self-heal
 #              event and escalates a repeatedly failing host through GitHub.
+# Issue #1401: Each cycle ends by pulling the checkout, exactly as loop.sh
+#              does, so a supervised Windows host cannot run frozen code for
+#              ever. A failed pull is logged and the loop continues.
 ################################################################################
 
 $ErrorActionPreference = "Stop"
@@ -145,4 +148,25 @@ while ($true) {
     $sleepSeconds = Get-NextSleepSeconds -Status $status
     Write-Host "Sleeping ${sleepSeconds}s..."
     Start-Sleep -Seconds $sleepSeconds
+
+    # Refresh the checkout at the end of every cycle, the same point loop.sh
+    # pulls at (Issue #1401). run.ps1 updates the checkout too, through
+    # worker-checkout-update, but only once a cycle reaches that step: a run
+    # that dies earlier - no deno on PATH, an unreadable configuration, a
+    # refused run mode - never gets there, and this host would then run the
+    # revision it was started with for ever, unable to pick up the very fix
+    # that would repair it.
+    #
+    # Non-fatal and loud, as in loop.sh: a pull that fails is reported and the
+    # loop keeps supervising. try/catch because PowerShell 7.4 turns a failing
+    # native command into a terminating error under $ErrorActionPreference =
+    # "Stop", and a missing git throws outright.
+    try {
+        & git pull
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "loop.ps1: git pull exited with status $LASTEXITCODE — continuing"
+        }
+    } catch {
+        Write-Host "loop.ps1: git pull failed ($($_.Exception.Message)) — continuing"
+    }
 }
