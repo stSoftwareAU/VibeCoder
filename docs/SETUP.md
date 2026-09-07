@@ -1050,6 +1050,34 @@ The rest of the token — `repo` (or the fine-grained equivalent) plus
 See [SECURITY.md — Token Security](../SECURITY.md#-token-security) and
 [CONFIGURATION.md — Two axes of trust](CONFIGURATION.md#two-axes-of-trust).
 
+### The `workflow` scope
+
+Every monitored repository in this fleet carries `.github/workflows/`, and
+GitHub refuses a push from **any** OAuth token that creates or updates a file
+there unless the token has the `workflow` scope — the rejection reads
+`refusing to allow an OAuth App to create or update workflow … without
+'workflow' scope`, and it arrives only at the push, after the agent has done
+its work. A token minted by a plain `gh auth login` does **not** carry it.
+
+The worker reads the scope at start-up and, without it (Issue #1475):
+
+- logs `[SECURITY] gh token lacks the 'workflow' scope` at WARN with the fix;
+- **skips** an issue whose title names a workflow or GitHub Actions, or whose
+  body names `.github/workflows` (skip reason `workflow-scope-missing`);
+- **fails a run before the push** when the branch's diff touches
+  `.github/workflows/`, naming the files and the fix, and classifies it as
+  the host's credential (`token-scope`), never the issue's fault.
+
+`setup.sh` warns when the provisioned token lacks the scope. The fix, for the
+worker account:
+
+```bash
+gh auth refresh -s workflow     # adds the scope to the existing login
+```
+
+then re-provision `gh/hosts.yml` from the refreshed token and restart the
+worker.
+
 ## Manual setup: writing `.config.json`
 
 `.config.json` lives in the root of the VibeCoder checkout — every script

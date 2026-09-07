@@ -430,9 +430,16 @@ export function createDefaultRunWorkerDeps(
             hasWorkflowScope ? "true" : "false",
           );
           if (!hasWorkflowScope) {
-            logger.info(
-              "WARNING: gh token lacks 'workflow' scope — pushes touching " +
-                ".github/workflows/ will be rejected",
+            // Issue #1475: this used to be an INFO line the operator never
+            // saw, and the worker then claimed two workflow issues and lost
+            // both at push. Say it at WARN, with the fix in the line.
+            logger.warn(
+              "[SECURITY] gh token lacks the 'workflow' scope: pushes that " +
+                "create or update .github/workflows/ will be rejected, so " +
+                "issues that are workflow work are skipped and a run whose " +
+                "diff touches a workflow fails before the push (Issue " +
+                "#1475). Fix: `gh auth refresh -s workflow` for the worker " +
+                "account, then re-provision gh/hosts.yml and restart.",
             );
           }
         }
