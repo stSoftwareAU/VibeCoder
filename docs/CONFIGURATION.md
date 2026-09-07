@@ -359,7 +359,7 @@ explicitly overridden.
 | `deepseek_phase_model_overrides` | `{}` | Per-phase **DeepSeek** model overrides, applied when `agent_provider` is `deepseek`. Same shape as `phase_model_overrides`, with DeepSeek model ids (`deepseek-reasoner` for the planning-shaped phases, `deepseek-chat` elsewhere). There is no DeepSeek effort key — DeepSeek's Anthropic-compatible endpoint has no effort control, and an effort requested for a DeepSeek phase is warned about instead. See [DeepSeek per-phase routing](MODEL-AND-CACHING.md#-deepseek-per-phase-routing). |
 | `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#-idle-task-template-weights))                                                                                                                                                                      |
 | `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence)) |
-| `software_min_versions`      | `{ "claude": "2.1.170" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
+| `software_min_versions`      | `{ "claude": "2.1.260" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
 | `log_dir` | platform default | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. The only way to move it — no environment variable does (Issue #1388); absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go). |
 | `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                           |
 | `exclusion_team`             | unset                     | Optional GitHub org team in `org/slug` form, excluded from the derived directing set **on top of** the Vibe Coder logins. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. See [Two axes of trust](#two-axes-of-trust). |
@@ -489,7 +489,7 @@ floors for `gh`/`deno` can be added later:
 ```json
 {
   "software_min_versions": {
-    "claude": "2.1.170"
+    "claude": "2.1.260"
   }
 }
 ```
@@ -512,9 +512,11 @@ Semantics:
 - **Skip flag still wins.** `SKIP_CLAUDE_UPDATE=true` (and the `gh`/`deno`
   equivalents) still suppresses the update, but logs that a version floor is
   unmet when it does so.
-- **Default.** `{ "claude": "2.1.170" }` — the oldest Claude CLI release
-  verified to support `--model fable`. Setting the key replaces the default map;
-  provide an empty map to remove the floor.
+- **Default.** `{ "claude": "2.1.260" }` — the oldest Claude CLI release
+  that resolves the `fable` alias to **Fable 5.1** (added as the default Fable
+  model in 2.1.257) *and* carries the 5.1 prompt-cache fixes that landed in
+  2.1.260 (Issue #1362). Setting the key replaces the default map; provide an
+  empty map to remove the floor.
 
 **Gate role for new models.** Because the worker passes tier *aliases* (`opus`,
 `fable`, `haiku`) and the CLI resolves each to the latest model of that tier, the

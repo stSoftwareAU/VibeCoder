@@ -319,9 +319,13 @@ const SONNET_MODERN_MIN_MAJOR = 5;
  * resolve rather than dropping to a null cost. Returns null for ids outside
  * the 4/5 families.
  *
+ * Exported for `model_generation.ts` (Issue #1362), which compares a served id
+ * against the tier's current model — the same parse, so it must not be a second
+ * copy that can drift from this one.
+ *
  * @param model - Lowercased model identifier
  */
-function parseClaudeModernVersion(
+export function parseClaudeModernVersion(
   model: string,
 ): { tier: ModelTier; major: number; minor: number } | null {
   const match = model.match(

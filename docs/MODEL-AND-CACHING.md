@@ -2075,13 +2075,49 @@ which prices at the current tier rate — the same alias-follows-the-latest rule
 the `opus` and `sonnet` rows use.
 
 **The flip is the CLI's, not the worker's.** The Claude CLI resolves the alias
-locally — `claude --model fable --print --output-format stream-json` on CLI
-2.1.223 still reports `"model":"claude-fable-5"` at init — so a container whose
-CLI predates the 5.1 alias table keeps being served Fable 5 and is costed at the
-Fable 5 row. Both rows are carried for exactly that reason: no configuration
+from its own bundled table — CLI 2.1.223 (the version in the image) knows only
+`claude-fable-5`, so a container on it kept being served Fable 5 and costed at
+the Fable 5 row. Both rows are carried for exactly that reason: no configuration
 changes on either side of the flip, and the
-[minimum-version floor](CONFIGURATION.md#-minimum-version-floor) (`claude`,
-2.1.170) is what keeps the CLI current enough to pick the new alias up.
+[minimum-version floor](CONFIGURATION.md#-minimum-version-floor) is what keeps
+the CLI current enough to pick the new alias up.
+
+##### Which CLI version actually serves 5.1 (Issue #1362)
+
+The floor was `2.1.170` — the `--model fable` release — which is well below the
+5.1 alias table, so Fable-preferring phases went on being served Fable 5 while
+the floor read as satisfied. Read out of the shipped CLI bundles:
+
+| CLI | `fable` alias resolves to | Notes |
+|-----|---------------------------|-------|
+| ≤ 2.1.256 | `claude-fable-5` | 5.1 is not in the alias table at all |
+| 2.1.257 | `claude-fable-5-1` | "Added Claude Fable 5.1 (`claude-fable-5-1`), now the default Fable model" |
+| 2.1.258–2.1.259 | `claude-fable-5-1` | 5.1 served, but its prompt caching is still broken |
+| **2.1.260+** | `claude-fable-5-1` | Fixes context after tool results being re-sent uncached on every tool-call turn, and a mid-session effort change invalidating the cache |
+
+2.1.263 carries `fable: {default: "claude-fable-5-1"}` and
+`latest_per_family: {fable: "claude-fable-5-1"}` in that table; 2.1.223 contains
+no `claude-fable-5-1` string at all. The floor is therefore **2.1.260**, not
+2.1.257: the entire saving of 5.1 is in cache reads, so a CLI that serves 5.1
+while re-sending the cached prefix uncached defeats the reason for the bump. No
+phase default pins `claude-fable-5-1` — the alias still does the work, exactly as
+the alias-follows-the-latest rule intends.
+
+**A previous-generation Fable is now degraded.** `modelsMatch()` matches at
+tier-family level, so a run served `claude-fable-5` while `claude-fable-5-1` is
+current passed as healthy and the downgrade was invisible outside the bill.
+`worker/deno/lib/model_generation.ts` carries `CURRENT_TIER_MODELS` — the
+worker-maintained "latest model of this tier", updated alongside the pricing
+rows above — and `assessDegradation()` reports a run whose served models all
+belong to an older generation of the expected tier as degraded, naming both:
+
+```text
+- **Degraded:** ⚠️ yes — served model `claude-fable-5` is a previous-generation `fable` (current: `claude-fable-5-1`)
+```
+
+Same leniency as the tier-level rule: one invocation served by the current model
+keeps the run healthy. An operator who pins `best_planning_model` to an older
+generation is never flagged — they were served the model they asked for.
 
 Fable 5.1's three breaking Messages-API changes — forced `tool_choice` rejected,
 thinking blocks bound to the model and to an unedited conversation prefix — do

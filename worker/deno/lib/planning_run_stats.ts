@@ -30,6 +30,7 @@ import {
   formatCacheHitRate,
   isCacheHitRateRegressed,
 } from "./prompt_cache_telemetry.ts";
+import { previousGenerationOf } from "./model_generation.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -285,6 +286,39 @@ export function resolveExpectedPlanningModel(
 // ---------------------------------------------------------------------------
 
 /**
+ * Verdict for a run whose served models matched the expected *tier* but are all
+ * a previous generation of it (Issue #1362).
+ *
+ * @param matching - The served models that satisfied the expected model
+ * @param expectedModel - The expected (configured/derived) model
+ * @returns A degraded verdict naming the served and current models, or
+ *   undefined when nothing is stale (or the expectation itself pins an older
+ *   generation, which is the operator's own choice)
+ */
+function assessPreviousGeneration(
+  matching: string[],
+  expectedModel: string,
+): DegradationVerdict | undefined {
+  if (matching.length === 0) return undefined;
+  if (previousGenerationOf(expectedModel)) return undefined;
+  if (matching.some((s) => !previousGenerationOf(s))) return undefined;
+
+  const unique = [...new Set(matching)];
+  const first = unique[0] as string;
+  const current = previousGenerationOf(first) as string;
+  const tier = modelFamily(first) ?? current;
+  return {
+    degraded: true,
+    reason: unique.length === 1
+      ? `served model \`${first}\` is a previous-generation \`${tier}\` ` +
+        `(current: \`${current}\`)`
+      : `every served model is a previous-generation \`${tier}\` (served: ${
+        unique.map((m) => `\`${m}\``).join(", ")
+      }; current: \`${current}\`)`,
+  };
+}
+
+/**
  * Assess whether a planning run was degraded.
  *
  * Degraded when **no** served model observed across the judged invocations
@@ -360,9 +394,8 @@ export function assessDegradation(
   // degraded — the same rule `isMismatch()` applies to the fleet aggregate.
   if (expectedResolved) {
     const served = judged.flatMap((inv) => inv.runStats?.servedModels ?? []);
-    if (
-      served.length > 0 && !served.some((s) => modelsMatch(expectedModel, s))
-    ) {
+    const matching = served.filter((s) => modelsMatch(expectedModel, s));
+    if (served.length > 0 && matching.length === 0) {
       const unique = [...new Set(served)];
       return {
         degraded: true,
@@ -375,6 +408,20 @@ export function assessDegradation(
           })`,
       };
     }
+
+    // Previous-generation top tier (Issue #1362). The tier matched, but every
+    // model that matched it is an older generation than the tier's current one
+    // — the shape a stale Claude CLI produces, because it resolves the `fable`
+    // alias from its own table and keeps serving the generation it knows. That
+    // is a real downgrade (Fable 5 reads cache at 4× the Fable 5.1 rate) and
+    // used to pass as healthy, so it is reported rather than swallowed.
+    //
+    // Skipped when the expected model is itself pinned to an older generation:
+    // an operator who set `best_planning_model: claude-fable-5` got exactly the
+    // model they asked for. Leniency matches the tier rule above — one
+    // invocation served by the current model keeps the run healthy.
+    const staleVerdict = assessPreviousGeneration(matching, expectedModel);
+    if (staleVerdict) return staleVerdict;
   }
 
   // No degradation detected. If a judged invocation ran and produced output but

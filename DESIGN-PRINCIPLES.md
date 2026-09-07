@@ -2078,9 +2078,9 @@ for another day and every `--model fable` invocation would fail meanwhile.
 version is below a configured floor.** Floors live in the
 `software_min_versions` config key (defaults in
 `worker/deno/lib/config_defaults.ts`, the single source of truth; default
-`{ claude: "2.1.170" }` — the oldest release verified to support
-`--model fable`). The map is generic per tool so `gh`/`deno` floors can be added
-later.
+`{ claude: "2.1.260" }` — the oldest release that resolves the `fable` alias
+to Fable 5.1 *and* carries its prompt-cache fixes, Issue #1362). The map is
+generic per tool so `gh`/`deno` floors can be added later.
 
 - **Below floor → immediate update**, bypassing the timestamp gate. At/above
   floor preserves the existing interval behaviour exactly.
