@@ -574,17 +574,46 @@ a public comment:
   paragraph, which is all the meta-commentary strip ever looked at — so leaked
   instructions placed after a blank line are still caught.
 - It masks three shapes: the `<coding_guidelines>` block, the run's randomised
-  boundary/comment markers, and paragraphs echoing sentence-length verbatim
-  phrases from the prompt scaffolding. Matching is done on normalised text
-  (lower-case, markdown stripped, whitespace collapsed), because the templates
-  hard-wrap at 80 columns.
+  boundary/comment markers, and paragraphs carrying sentence-length phrases
+  from the prompt scaffolding.
 - Masked content is replaced with `***PROMPT-LEAK-REDACTED***` — visible, not
   silent, so a stripped answer reads as stripped.
 - Phrases are deliberately sentence-length: an answer that merely *discusses*
   the prompt-injection defences is left byte-identical.
 
+**Beyond verbatim echoes (Issue #1463).** Matching used to be exact substring
+comparison, so a *paraphrased*, letter-spaced or fence-dumped echo of the same
+instructions was posted unmasked while a verbatim one was caught. Three
+detectors now run per paragraph block:
+
+| Detector | Catches | Rule name |
+| --- | --- | --- |
+| Punctuation-blind substring (block and phrase squashed to alphanumerics) | verbatim echoes, markdown emphasis, 80-column wraps, `S-e-c-u-r-i-t-y` letter spelling | `instruction-phrase` |
+| Content-token window (stop-words dropped, suffix-stemmed, small synonym table; ≥75% of a phrase's distinct tokens inside a window twice the phrase's length) | reordering, inserted words, swapped nouns — "in my own words" restatements | `instruction-paraphrase` |
+| Marker density (≥2 nonce-shaped delimiters in one block) | a leaked fence pair, whose fenced text used to survive with only the nonces masked | `boundary-marker-density` |
+
+**Residual risk, tracked not assumed.** Pattern matching cannot decide meaning:
+a **translated** leak, a **heavy paraphrase** that replaces the vocabulary, an
+**encoded** (base64/ROT13) reproduction, and a sentence **split across
+paragraph blocks** all remain undetected. The in-prompt instruction not to
+reveal the prompt is the first line of defence for those; this module is the
+enforced backstop for the mechanical shapes. The gaps are listed in the
+module's own design notes so they stay visible.
+
+**False positives cost real output.** `redactPromptLeakage` runs on every
+published `gh` body and title, so a mask on legitimate prose is a live cost,
+not a theoretical one. Thresholds were tuned against this repository's own
+documentation and its 8,892 archived PR-summary paragraphs; the three phrases
+whose vocabulary is the repository's everyday vocabulary — the
+reserved-workflow-labels sentence, the technical-requirements sentence and the
+GitHub-issue-provenance sentence — are listed in `VERBATIM_ONLY_PHRASES` and
+matched verbatim only. A paraphrase match also needs at least four distinct
+content tokens, whatever the ratio computes, so three shared words never mask a
+paragraph.
+
 Add a phrase to `RAW_LEAK_PHRASES` when a new distinctive instruction sentence
-enters the prompt scaffolding, and cover it in
+enters the prompt scaffolding — and to `VERBATIM_ONLY_PHRASES` as well when its
+content words are ones ordinary answers use — then cover it in
 `worker/deno/tests/prompt_leak_redaction_test.ts`.
 
 ## ⚙️ Configuration Security
