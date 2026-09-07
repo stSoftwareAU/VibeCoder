@@ -112,6 +112,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "quorum_judge",
   "max_rate_limit_retries",
   "max_rate_limit_wait",
+  // Hours between trusted-author refreshes (Issue #1453).
+  "trusted_authors_cache_hours",
   "retry_max_delay",
   "max_issue_body_tokens",
   "summarise_timeout",

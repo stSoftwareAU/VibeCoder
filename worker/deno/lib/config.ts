@@ -688,6 +688,21 @@ export async function loadConfig(
     OPERATIONAL_DEFAULTS.maxRateLimitRetries;
   const maxRateLimitWait = file.max_rate_limit_wait ??
     OPERATIONAL_DEFAULTS.maxRateLimitWait;
+  // Issue #1453: how long the trusted-author snapshot is reused. Bounded at a
+  // day — a revoked collaborator must not stay trusted longer than that — and
+  // `0` keeps the per-cycle refresh for a deployment that wants it.
+  const trustedAuthorsCacheHours = file.trusted_authors_cache_hours ??
+    OPERATIONAL_DEFAULTS.trustedAuthorsCacheHours;
+  if (
+    typeof trustedAuthorsCacheHours !== "number" ||
+    !Number.isFinite(trustedAuthorsCacheHours) ||
+    trustedAuthorsCacheHours < 0 || trustedAuthorsCacheHours > 24
+  ) {
+    throw new Error(
+      `trusted_authors_cache_hours must be a number between 0 and 24, got ` +
+        `${JSON.stringify(file.trusted_authors_cache_hours)}`,
+    );
+  }
   const retryMaxDelay = file.retry_max_delay ??
     OPERATIONAL_DEFAULTS.retryMaxDelay;
   const maxIssueBodyTokens = file.max_issue_body_tokens ??
@@ -925,6 +940,7 @@ export async function loadConfig(
     claudeKillAfter,
     maxClarificationRounds,
     sleepInterval,
+    trustedAuthorsCacheHours,
     maxConcurrentIssues,
     creditWaitInterval,
     refinementTimeout,

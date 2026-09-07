@@ -14,6 +14,40 @@ the major and are minted from
 automatic increment; one landed on the automatic patch because the floor was
 not moved ahead of it, and it is recorded under the version it actually took.
 
+## Unreleased — derived trust skips unlistable repos and reuses its snapshot
+
+**Behaviour change to the fail-closed trust rule. Nothing to migrate; read it
+if your worker login is read-only on any monitored repository.**
+
+> Not yet tagged. Recorded here so the version that carries it can be named
+> when it is cut.
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| A monitored repo the worker's login cannot list (404, or 403 "Must have push access") is skipped and named once instead of failing every cycle | #1453 |
+| A successful trusted-author resolve is reused for `trusted_authors_cache_hours` (new key, default `1`; `0` restores the per-cycle refresh), and a transient failure serves the snapshot, with its age logged, for up to six hours | #1453 |
+
+### In detail
+
+Two behaviour changes to the per-cycle trusted-author refresh (Issue #1453):
+
+- A monitored repo the worker's login **cannot list** (404, or 403 "Must have
+  push access") no longer fails the whole resolve. It is skipped, named once
+  in the log, and left out of the fold; the cycle proceeds on the repos that
+  did resolve. A least-privilege service account with read-only access to
+  data repositories keeps working — before this it stood the host down on
+  every cycle. Only when every repo is unlistable does the resolve fail.
+- A successful resolve is reused for `trusted_authors_cache_hours` (default
+  `1`; `0` restores the per-cycle refresh) before the collaborator lists are
+  fetched again, and on a *transient* failure the snapshot is served, with its
+  age logged, for up to six hours. A collaborator added or revoked mid-window
+  is seen at the next refresh.
+
+Nothing to migrate. To keep the previous cadence, state
+`"trusted_authors_cache_hours": 0`.
+
 ## 1.5.5 — the log directory comes from the file alone
 
 **Behaviour change, not a fix. Read the migration before upgrading a host that

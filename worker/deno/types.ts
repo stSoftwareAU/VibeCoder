@@ -359,6 +359,12 @@ export interface WorkerConfig {
   maxRateLimitRetries: number;
   /** Maximum total wait time in seconds for rate limit retries */
   maxRateLimitWait: number;
+  /**
+   * Hours a successful trusted-author resolve is reused before the
+   * collaborator lists are fetched again (Issue #1453). `0` refreshes every
+   * cycle, the pre-#1453 behaviour.
+   */
+  trustedAuthorsCacheHours: number;
   /** Maximum delay in seconds between retries */
   retryMaxDelay: number;
   /** Maximum tokens in issue body before summarisation */
@@ -1127,6 +1133,8 @@ export interface ConfigFile {
   quorum_judge?: string;
   max_rate_limit_retries?: number;
   max_rate_limit_wait?: number;
+  /** Hours the trusted-author snapshot is reused between refreshes (#1453). */
+  trusted_authors_cache_hours?: number;
   retry_max_delay?: number;
   max_issue_body_tokens?: number;
   summarise_timeout?: number;
