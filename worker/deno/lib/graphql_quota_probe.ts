@@ -207,7 +207,9 @@ export type GraphqlQuotaProbeSpawn = (
  * non-zero on that body — only unparseable output is.
  */
 export async function probeGraphqlQuota(
-  spawn: GraphqlQuotaProbeSpawn = (args) => spawnGh(args),
+  // The probe is what lifts the latch, so it must run while latched (#1485).
+  spawn: GraphqlQuotaProbeSpawn = (args) =>
+    spawnGh(args, { bypassQuotaLatch: true }),
 ): Promise<Result<GraphqlQuotaReading>> {
   let result: GhSpawnResult;
   try {

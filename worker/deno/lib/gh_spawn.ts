@@ -51,6 +51,12 @@ import {
 import { auditGhMutation } from "./audit_hook.ts";
 import { redactGhBodyArgs } from "./gh_body_redaction.ts";
 import { noteGhIssueClose } from "./issue_close_notifier.ts";
+import { recordGhCall } from "./gh_call_metrics.ts";
+import {
+  isPrimaryQuotaLatched,
+  isQuotaExemptGhCall,
+  primaryQuotaSkipMessage,
+} from "./primary_quota_latch.ts";
 
 /** Options for a single `gh` invocation. */
 export interface GhSpawnOptions {
@@ -82,6 +88,12 @@ export interface GhSpawnOptions {
    * child inherits.
    */
   setHostEnv?: (name: string, value: string) => void;
+  /**
+   * Run even while the primary GraphQL quota is latched (Issue #1485).
+   * Only the quota probe that learns the reset may set this — it is the
+   * one GraphQL call that lifts the latch rather than burning against it.
+   */
+  bypassQuotaLatch?: boolean;
 }
 
 /** Outcome of a `gh` invocation. */
@@ -307,6 +319,28 @@ export async function spawnGh(
   options: GhSpawnOptions = {},
 ): Promise<GhSpawnResult> {
   await enforceGhWriteAllowlist(args);
+  // Issue #42 / #1485: once the primary GraphQL quota is exhausted, every
+  // further GraphQL-backed call in the window is guaranteed to fail. The
+  // short-circuit used to live in `runGhCommandRaw` alone, so the thirty-odd
+  // modules that call this chokepoint directly kept spawning doomed `gh`
+  // processes after the latch had fired. It lives here now, at the one
+  // place every `gh` spawn passes — before the spawn and before the
+  // telemetry — and a REST `gh api <path>` still rides the core quota.
+  if (
+    !options.bypassQuotaLatch && !isQuotaExemptGhCall(args) &&
+    isPrimaryQuotaLatched()
+  ) {
+    return {
+      code: 1,
+      success: false,
+      stdout: "",
+      stderr: primaryQuotaSkipMessage(),
+    };
+  }
+  // Issue #1671 / #1485: per-iteration `gh` call telemetry, recorded at the
+  // chokepoint so every invocation — from any module — is counted exactly
+  // once per attempt.
+  recordGhCall(args);
   // Mask secrets in the published body arguments (Issue #3707) — the last
   // point before a comment or PR body leaves the worker for GitHub.
   const redacted = redactGhBodyArgs(args);
@@ -327,6 +361,8 @@ export async function spawnGh(
       ...(options.setHostEnv ? { setEnv: options.setHostEnv } : {}),
     };
     if (ensureUsableGhConfigDir(staging)) {
+      // The retry is a second real `gh` process against the same quota.
+      recordGhCall(args);
       result = await runner(redacted, withStagedGhConfigDir(options, hostEnv));
     }
   }
