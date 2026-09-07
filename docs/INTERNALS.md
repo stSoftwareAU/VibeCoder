@@ -363,9 +363,12 @@ flowchart LR
     style K fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-Per-PID logging: each process writes to its own log file with automatic
-size-based rotation (keeps 10 log files via
-[log_rotation.ts](../worker/deno/lib/log_rotation.ts)).
+Per-run logging: each run writes its own `worker-<timestamp>.log`. Those are
+bounded by gzip-at-start plus age-based retention, not by size rotation —
+[log_rotation.ts](../worker/deno/lib/log_rotation.ts) size-rotates the worker's
+other logs (`run_core.log`, `pull.log`, `launch*.log`, `self-heal.jsonl`,
+`agent-*.jsonl`) and deliberately leaves `worker-*.log` to the two modules
+below (Issue #1267).
 
 Worker-log lifecycle: the running process's `worker-<PID>.log` stays plain text;
 every prior run's log is gzipped at the next worker start

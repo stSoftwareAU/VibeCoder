@@ -114,15 +114,22 @@ Deno.test("log-rotation command - leaves an unrelated postgres.log untouched", a
       await Deno.readTextFile(`${logDir}/postgres.log`),
       "third-party log",
     );
-    let backupExists = true;
-    try {
-      await Deno.stat(`${logDir}/postgres.log.1`);
-    } catch {
-      backupExists = false;
-    }
-    assertEquals(backupExists, false);
+    assertEquals(await fileExists(`${logDir}/postgres.log.1`), false);
     assertEquals((result.data as { rotatedCount: number }).rotatedCount, 0);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Helper
+// ---------------------------------------------------------------------------
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}

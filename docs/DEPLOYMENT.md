@@ -901,8 +901,9 @@ zcat "${LOG_DIR}/worker-<PID>.log.gz" | less
 
 Worker logs — plain or gzipped — are deleted once older than
 `WORKER_LOG_MAX_AGE_DAYS` (default 3), with header-only stubs pruned after an
-hour and a hard cap of `WORKER_LOG_HARD_CAP_COUNT` (default 200) files. Large
-per-run logs are also size-rotated while a run is in flight.
+hour and a hard cap of `WORKER_LOG_HARD_CAP_COUNT` (default 200) files. Those
+three limits are what bounds a `worker-*.log`; size rotation applies to the
+worker's other logs — `run_core.log` is size-rotated while a run is in flight.
 
 > **💡 Tip:** The worker automatically strips terminal escape sequences from Claude Code output, ensuring logs contain only human-readable text.
 

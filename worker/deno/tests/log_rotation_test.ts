@@ -319,12 +319,35 @@ Deno.test("log_rotation - isRotatableLogName refuses files the worker does not o
       // Rotated backups and gzipped copies are not rotated again.
       "run_core.log.1",
       "run_core.log.gz",
-      // worker-*.log retention belongs to worker_log_cleanup.ts.
+      // worker-*.log retention belongs to worker_log_gzip.ts and
+      // worker_log_cleanup.ts, in both name shapes (Issue #4227).
       "worker-12345.log",
       "worker-20260817-021352.log",
+      "worker-20260817-021352-1.log",
     ]
   ) {
     assertEquals(isRotatableLogName(name), false, name);
+  }
+});
+
+Deno.test("log_rotation - isRotatableLogName refuses edge-case names", () => {
+  for (
+    const name of [
+      "",
+      // Anchored at both ends — no prefix, suffix or path part sneaks in.
+      "arun_core.log",
+      "run_core.log ",
+      "run_core.logx",
+      "sub/run_core.log",
+      "../../.bashrc",
+      "../run_core.log",
+      // The character class is ASCII, so a unicode look-alike is not a match.
+      "sélf-heal.jsonl",
+      "agent-vibé.jsonl",
+      "\u0000run_core.log",
+    ]
+  ) {
+    assertEquals(isRotatableLogName(name), false, JSON.stringify(name));
   }
 });
 

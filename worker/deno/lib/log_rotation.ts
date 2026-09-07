@@ -60,11 +60,21 @@ export interface RotateAllResult {
  * So the pass now names what it rotates, the same allowlist discipline
  * `isForeignDebrisName` applies to the sibling cleanup sweep. Each pattern
  * anchors on `.log` / `.jsonl` exactly, which keeps rotated backups (`.log.1`)
- * and gzipped copies (`.log.gz`) out. `worker-*.log` is deliberately absent —
- * its retention belongs to `lib/worker_log_cleanup.ts`.
+ * and gzipped copies (`.log.gz`) out.
+ *
+ * `worker-*.log` is deliberately absent. Its retention has always belonged
+ * elsewhere — `lib/worker_log_gzip.ts` compresses every prior run's log at
+ * worker start and `lib/worker_log_cleanup.ts` ages the results out — and the
+ * old skip here said so, but only for the `worker-<pid>.log` shape. The
+ * timestamp names of Issue #4227 (`worker-20260817-021352.log`) slipped past
+ * that regex, so between #4227 and this change the pass did size-rotate a
+ * worker log. That was never a bound: housekeeping runs at start, where the
+ * only surviving plain worker log is the run's **own**, still a few KB, and
+ * renaming a file the driver holds open by fd moves the bytes without
+ * detaching the writer. The named boundary is restored rather than widened.
  */
 const ROTATABLE_LOG_PATTERNS: readonly RegExp[] = [
-  // Run driver and git-update logs (`lib/checkout_update.ts`, `run_core.sh`).
+  // Run driver and git-update logs (`run.sh`, `lib/checkout_update.ts`).
   /^run_core\.log$/,
   /^run_guard\.log$/,
   /^pull\.log$/,
@@ -173,8 +183,9 @@ export async function checkAndRotateLog(
  * Scans the given directory and rotates any file the worker owns that exceeds
  * the size threshold. Skips:
  *   - Every name outside {@link isRotatableLogName}, which covers third-party
- *     files sharing the directory and `worker-*.log` (retained separately by
- *     `lib/worker_log_cleanup.ts`)
+ *     files sharing the directory and `worker-*.log` in both its shapes
+ *     (gzipped and aged out by `lib/worker_log_gzip.ts` and
+ *     `lib/worker_log_cleanup.ts` instead)
  *   - Symlinks (e.g., worker.log -> worker-PID.log)
  *   - Already-rotated and gzipped copies (`*.log.N`, `*.log.gz`)
  */
