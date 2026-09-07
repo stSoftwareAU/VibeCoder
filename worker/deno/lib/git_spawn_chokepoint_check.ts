@@ -18,15 +18,10 @@
  * worker spawns most, sharing its scanning machinery via
  * `spawn_chokepoint_scan.ts`.
  *
- * A literal pattern cannot see `new Deno.Command(cmd[0], …)` with `"git"`
- * supplied by the caller, so the check also flags a variable binary in any
- * module that names `git` at the head of an argv literal and does not import
- * the chokepoint (Issue #1227).
- *
- * Residual risk, stated: the variable-binary half is module-level, so a module
- * that legitimately imports `git_timeout.ts` for one path can still spawn a
- * variable `git` on another, and the two entries in
- * {@link GIT_VARIABLE_SPAWN_ALLOWLIST} are exempt outright.
+ * Issue #1378 closed the indirection blind spot this check used to carry: a
+ * spawn written as `new Deno.Command(cmd[0], …)` with `"git"` supplied by the
+ * caller, or `runWithTimeout("git", …)`, is now flagged by
+ * {@link GIT_INDIRECT_SPAWN_RULES} as well.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
@@ -34,10 +29,9 @@
 import {
   type DirectSpawnScanResult,
   type DirectSpawnViolation,
+  type IndirectSpawnRules,
   scanContentForDirectSpawn,
-  scanContentForVariableBinarySpawn,
   scanDirectoriesForDirectSpawn,
-  type VariableBinarySpawnOptions,
 } from "./spawn_chokepoint_scan.ts";
 
 export type {
@@ -71,36 +65,43 @@ export const GIT_SPAWN_PATTERN =
   /new\s+Deno\.Command\s*\(\s*["'`]git["'`]|Deno\.Command\s*\(\s*["'`]git["'`]/;
 
 /**
- * Modules whose `git` argv literal is not a `git` spawn (Issue #1227).
- *
- * All three name `git` as data rather than as a binary:
- * `secrets_history_scan.ts` passes it as the *source type* argument to
- * gitleaks and trufflehog (`gitleaks git <dir>`), `claude_runner.ts` lists it
- * among the CLI tools the worker requires, and
- * `prerequisite_install_plan.ts` names it as the package a host installs
- * (Issue #1259) — the process it spawns is the package manager. None spawns
- * `git` itself.
+ * The indirection signals for `git` (Issue #1378) — the shapes that reached
+ * the binary through a variable and so stayed invisible to
+ * {@link GIT_SPAWN_PATTERN}.
  */
-export const GIT_VARIABLE_SPAWN_ALLOWLIST: ReadonlySet<string> = new Set<
-  string
->([
-  "worker/deno/lib/secrets_history_scan.ts",
-  "worker/deno/lib/claude_runner.ts",
-  "worker/deno/setup/prerequisite_install_plan.ts",
-]);
-
-/** Rules for the variable-binary half of the check (Issue #1227). */
-export const GIT_VARIABLE_BINARY_RULES: VariableBinarySpawnOptions = {
-  /** `"git",` as an argv element — the head of a `git` command array. */
-  argvPattern: /["'`]git["'`]\s*,/,
-  /** An import of the chokepoint module, i.e. the module delegates `git`. */
-  delegationPattern: /from\s+["'][^"']*git_timeout\.ts["']/,
-  allowlist: GIT_VARIABLE_SPAWN_ALLOWLIST,
+export const GIT_INDIRECT_SPAWN_RULES: IndirectSpawnRules = {
+  wrapperPattern: /\brunWithTimeout\s*\(\s*["'`]git["'`]/,
+  argvHeadPattern: /\(\s*\[?\s*["'`]git["'`]\s*,/,
+  chokepointImportPattern: /from\s+["'`][^"'`]*git_timeout\.ts["'`]/,
 };
 
 /**
- * Scan a file's content for direct `git` spawns — both the literal binary
- * name and a variable binary in a module that names `git` itself.
+ * Modules exempt from the indirection signal (Issue #1378). Their **literal**
+ * spawns are never exempt. See {@link GH_INDIRECT_KNOWN_GAPS} for why a false
+ * positive and a known gap are recorded as different things.
+ *
+ * Issue #1429 emptied the known-gap half: `benchmark.ts` builds its throwaway
+ * fixture repositories through `runGitCommand` (Issue #1396) and satisfies
+ * the rule on its own merits.
+ *
+ * The one entry below is a false positive, carried over from the checker this
+ * one supersedes (Issue #1227's `GIT_VARIABLE_SPAWN_ALLOWLIST`, merged in
+ * from `main`). `prerequisite_install_plan.ts` names `git` as the package a
+ * host installs (Issue #1259); the process it spawns is the package manager.
+ *
+ * That allowlist held two further entries — `secrets_history_scan.ts`, which
+ * passes `git` as the *source type* argument to gitleaks and trufflehog, and
+ * `claude_runner.ts`, which lists it among the CLI tools the worker requires.
+ * Neither is needed here: this rule demands an indirect construction in the
+ * same file as well as the argv-head shape, and neither module has one. The
+ * narrower rule needs fewer exemptions, which is the point of it.
+ */
+export const GIT_INDIRECT_KNOWN_GAPS: ReadonlySet<string> = new Set<string>([
+  "worker/deno/setup/prerequisite_install_plan.ts",
+]);
+
+/**
+ * Scan a file's content for direct or indirect `git` spawns.
  *
  * @param content - The raw file text.
  * @param repoRelPath - Repo-relative path, recorded on each violation.
@@ -110,14 +111,12 @@ export function scanContentForGitSpawn(
   content: string,
   repoRelPath: string,
 ): DirectSpawnViolation[] {
-  return [
-    ...scanContentForDirectSpawn(content, repoRelPath, GIT_SPAWN_PATTERN),
-    ...scanContentForVariableBinarySpawn(
-      content,
-      repoRelPath,
-      GIT_VARIABLE_BINARY_RULES,
-    ),
-  ];
+  return scanContentForDirectSpawn(
+    content,
+    repoRelPath,
+    GIT_SPAWN_PATTERN,
+    GIT_INDIRECT_SPAWN_RULES,
+  );
 }
 
 /**
@@ -139,6 +138,7 @@ export function scanDirectoriesForGitSpawn(
     pattern: GIT_SPAWN_PATTERN,
     allowlist: GIT_SPAWN_ALLOWLIST,
     excludeTests: true,
-    variableBinary: GIT_VARIABLE_BINARY_RULES,
+    rules: GIT_INDIRECT_SPAWN_RULES,
+    indirectExempt: GIT_INDIRECT_KNOWN_GAPS,
   });
 }

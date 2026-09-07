@@ -7,10 +7,8 @@
  */
 
 import type { Result } from "../types.ts";
-import {
-  DEFAULT_SUBPROCESS_TIMEOUT_MS,
-  runWithTimeout,
-} from "./subprocess_timeout.ts";
+import { type GhSpawnResult, spawnGh } from "./gh_spawn.ts";
+import { DEFAULT_SUBPROCESS_TIMEOUT_MS } from "./subprocess_timeout.ts";
 import {
   defaultBranchCachePath,
   getCachedDefaultBranch,
@@ -113,9 +111,9 @@ export async function invalidateDefaultBranch(
  *
  * @param repo - Repository in "owner/repo" format
  * @param ghCommandFn - Optional gh command function for testing
- *   (Issue #1805). When provided, supersedes the default
- *   `runWithTimeout`-based REST call so the API layer can be exercised
- *   from unit tests without invoking a real subprocess.
+ *   (Issue #1805). When provided, supersedes the default `spawnGh`-based
+ *   REST call so the API layer can be exercised from unit tests without
+ *   invoking a real subprocess.
  * @param cachePath - Where the persistent (layer 2) cache lives
  *   (Issue #964). Defaults to {@link defaultBranchCachePath}, so production
  *   callers pass nothing; a test names a throwaway path instead of pointing
@@ -169,40 +167,41 @@ export async function getRepoDefaultBranch(
       };
     }
   } else {
-    const result = await runWithTimeout(
-      "gh",
-      ["api", `repos/${repo}`, "--jq", ".default_branch"],
-      { timeoutMs: DEFAULT_SUBPROCESS_TIMEOUT_MS },
-    );
-
-    if (!result.ok) {
+    // Issue #1378: the shared `gh` chokepoint, not the generic subprocess
+    // wrapper. `runWithTimeout("gh", …)` reached the binary outside the
+    // write-repo allowlist and the audit journal — and outside the quality
+    // gate, whose scan only saw a literal `Deno.Command("gh", …)`.
+    let result: GhSpawnResult;
+    try {
+      result = await spawnGh(
+        ["api", `repos/${repo}`, "--jq", ".default_branch"],
+        { signal: AbortSignal.timeout(DEFAULT_SUBPROCESS_TIMEOUT_MS) },
+      );
+    } catch (err) {
+      const timedOut = err instanceof DOMException &&
+        (err.name === "AbortError" || err.name === "TimeoutError");
       return {
         ok: false,
         error: new Error(
-          `Failed to fetch default branch for ${repo}: ${result.error.message}`,
+          timedOut
+            ? `Timed out fetching default branch for ${repo}`
+            : `Failed to fetch default branch for ${repo}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
         ),
       };
     }
 
-    if (result.value.timedOut) {
+    if (!result.success) {
       return {
         ok: false,
         error: new Error(
-          `Timed out fetching default branch for ${repo}`,
+          `Could not determine default branch for ${repo}: ${result.stderr}`,
         ),
       };
     }
 
-    if (!result.value.success) {
-      return {
-        ok: false,
-        error: new Error(
-          `Could not determine default branch for ${repo}: ${result.value.stderr}`,
-        ),
-      };
-    }
-
-    branch = result.value.stdout;
+    branch = result.stdout.trim();
   }
 
   if (!branch || branch === "null") {

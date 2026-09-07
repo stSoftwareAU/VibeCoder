@@ -70,14 +70,29 @@ Deno.test("scanContentForGitSpawn - ignores comments mentioning the pattern", ()
   assertEquals(violations, []);
 });
 
-Deno.test("scanContentForGitSpawn - flags a variable binary handed a git argv literal", () => {
+Deno.test("scanContentForGitSpawn - flags the generic wrapper called with git (Issue #1378)", () => {
   const violations = scanContentForGitSpawn(
     [
-      "async function run(call: { bin: string; args: string[] }) {",
-      "  const command = new Deno.Command(call.bin, { args: call.args });",
+      "const origin = await runWithTimeout(",
+      '  "git",',
+      '  ["remote", "get-url", "origin"],',
+      "  { cwd: repoDir, timeoutMs },",
+      ");",
+    ].join("\n"),
+    "worker/deno/lib/release_check.ts",
+  );
+  assertEquals(violations.length, 1);
+  assertEquals(violations[0]?.line, 1);
+});
+
+Deno.test("scanContentForGitSpawn - flags a git spawn routed through a variable (Issue #1378)", () => {
+  const violations = scanContentForGitSpawn(
+    [
+      "async function runner(cmd: string[]) {",
+      "  const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
       "  return await command.output();",
       "}",
-      'await run({ bin: "git", args: ["ls-files"] });',
+      'export const head = () => runner(["git", "rev-parse", "HEAD"]);',
     ].join("\n"),
     "worker/deno/lib/example.ts",
   );
@@ -85,34 +100,18 @@ Deno.test("scanContentForGitSpawn - flags a variable binary handed a git argv li
   assertEquals(violations[0]?.line, 2);
 });
 
-Deno.test("scanContentForGitSpawn - a variable binary that delegates git to the chokepoint is clean", () => {
+Deno.test("scanContentForGitSpawn - a runner that delegates to the chokepoint is compliant", () => {
   const violations = scanContentForGitSpawn(
     [
       'import { runGitCommand } from "./git_timeout.ts";',
-      "async function run(call: { bin: string; args: string[] }) {",
-      '  if (call.bin === "git") return await runGitCommand(call.args);',
-      "  const command = new Deno.Command(call.bin, { args: call.args });",
+      "async function runner(cmd: string[]) {",
+      '  if (cmd[0] === "git") return await runGitCommand(cmd.slice(1));',
+      "  const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
       "  return await command.output();",
       "}",
-      'await run({ bin: "git", args: ["ls-files"] });',
+      'export const head = () => runner(["git", "rev-parse", "HEAD"]);',
     ].join("\n"),
     "worker/deno/lib/example.ts",
-  );
-  assertEquals(violations, []);
-});
-
-Deno.test("scanContentForGitSpawn - an allowlisted module naming git as tool data is clean", () => {
-  // `secrets_history_scan.ts` passes "git" as gitleaks' source-type argument,
-  // not as a binary — a documented false positive (Issue #1227).
-  const violations = scanContentForGitSpawn(
-    [
-      "async function run(cmd: { bin: string; args: string[] }) {",
-      "  const command = new Deno.Command(cmd.bin, { args: cmd.args });",
-      "  return await command.output();",
-      "}",
-      'await run({ bin: "gitleaks", args: ["git", "/repo"] });',
-    ].join("\n"),
-    "worker/deno/lib/secrets_history_scan.ts",
   );
   assertEquals(violations, []);
 });
