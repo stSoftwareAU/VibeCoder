@@ -36,9 +36,23 @@ async function writeScriptStub(
   await Deno.mkdir(binDir, { recursive: true });
   const body = [
     "#!/bin/bash",
-    // The transcript is the last argument on both the macOS and Linux forms
-    // of the invocation.
-    'transcript="${!#}"',
+    // The transcript is NOT in the same position on the two platforms:
+    //   macOS   script -q <transcript> claude setup-token     (second)
+    //   Linux   script -q -c "claude setup-token" <transcript>  (last)
+    // Taking the last argument wrote the token to a file named `setup-token`
+    // in the CWD on macOS and left the real transcript empty, so the suite
+    // passed on CI's Linux and failed on every macOS checkout — and littered
+    // the working tree with the file it had misidentified.
+    //
+    // Matched on the name `capture_setup_token` mktemps, which is the same
+    // on both platforms. Deliberately not "the argument that is a file": the
+    // stray `setup-token` left by the old stub satisfied that too, so the
+    // bug repaired itself into a different wrong answer.
+    'transcript=""',
+    'for arg in "$@"; do',
+    '  case "$arg" in */vibe-setup-token.*) transcript="$arg" ;; esac',
+    "done",
+    '[ -n "$transcript" ] || { echo "stub: no transcript in: $*" >&2; exit 1; }',
     `printf 'Paste this token: ${FAKE_TOKEN}\\n' > "$transcript"`,
     ...(interrupt
       ? [
