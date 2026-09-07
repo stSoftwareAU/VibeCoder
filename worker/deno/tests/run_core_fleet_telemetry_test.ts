@@ -171,7 +171,7 @@ Deno.test(
     assertStringIncludes(summary, "idle_by_reason=host_disk_low=");
     assertStringIncludes(summary, "claims=0");
     assertStringIncludes(summary, "success_rate=n/a");
-    assertStringIncludes(summary, "token_blocked=0s");
+    assertStringIncludes(summary, "usage_blocked=0s");
     assertStringIncludes(summary, "rate_limited=0s");
   },
 );
@@ -334,7 +334,7 @@ Deno.test(
 
     const summary = lastFleetSummary(logs);
     assertStringIncludes(summary, "rate_limit_waits=1");
-    assertStringIncludes(summary, "token_blocked=0s");
+    assertStringIncludes(summary, "usage_blocked=0s");
     assert(
       /rate_limited=[1-9]\d*s/.test(summary),
       `expected non-zero rate_limited seconds in: ${summary}`,
@@ -366,11 +366,11 @@ Deno.test(
     await runCoreLoop(config, deps);
 
     const summary = lastFleetSummary(logs);
-    assertStringIncludes(summary, "token_blocked_waits=1");
+    assertStringIncludes(summary, "usage_blocked_waits=1");
     assertStringIncludes(summary, "rate_limited=0s");
     assert(
-      /token_blocked=[1-9]\d*s/.test(summary),
-      `expected non-zero token_blocked seconds in: ${summary}`,
+      /usage_blocked=[1-9]\d*s/.test(summary),
+      `expected non-zero usage_blocked seconds in: ${summary}`,
     );
   },
 );

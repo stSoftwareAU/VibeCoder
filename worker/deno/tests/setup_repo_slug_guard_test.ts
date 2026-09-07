@@ -204,7 +204,7 @@ Deno.test("buildIssueBody - never emits a pasteable command for an injected slug
   // The valid repo still gets its invite command...
   assert(
     body.includes(
-      "gh api -X PUT repos/org/repo/collaborators/worker-bot -f permission=triage",
+      "gh api -X PUT repos/org/repo/collaborators/worker-bot -f permission=push",
     ),
     body,
   );

@@ -24,6 +24,12 @@ export type FailureCategory =
   | "killed"
   | "quality_check"
   | "push_failure"
+  /**
+   * The worker's token lacks the `workflow` OAuth scope and the run's diff
+   * touches `.github/workflows/`, so the push would be rejected (Issue
+   * #1475). A property of the host's credential, not of the issue.
+   */
+  | "token_scope"
   | "no_changes"
   | "evidence_missing"
   | "internal_error"
@@ -56,6 +62,8 @@ export type CategoryDisplay =
   | "killed"
   | "quality-failure"
   | "missing-tools"
+  /** Issue #1475: the host's token lacks the `workflow` scope. */
+  | "token-scope"
   | "infrastructure-error"
   | "task-not-understood"
   | "scheduled-release"
@@ -224,6 +232,12 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
     return "quality_check";
   }
 
+  // Issue #1475: checked before the push-failure phrases, and before the
+  // push itself — the message names the scope and the workflow paths.
+  if (failureMessage.includes("lacks the 'workflow' scope")) {
+    return "token_scope";
+  }
+
   if (
     failureMessage.includes("Git push failed") ||
     failureMessage.includes("git push failed")
@@ -301,6 +315,7 @@ const VALID_FAILURE_CATEGORIES: ReadonlySet<string> = new Set<FailureCategory>([
   "zero_output",
   "quality_check",
   "push_failure",
+  "token_scope",
   "no_changes",
   "evidence_missing",
   "internal_error",
@@ -341,6 +356,9 @@ export function isInfrastructureFailure(category: FailureCategory): boolean {
     case "internal_error":
     case "push_failure":
     case "missing_tools":
+    // A host credential without a scope is the environment, not the issue
+    // (Issue #1475): release it for a host whose token can push it.
+    case "token_scope":
     // A run cut off before finishing is transient — retry, do not blame the
     // issue or escalate it to a human (Issue #108).
     case "interrupted":
@@ -383,6 +401,8 @@ export function getFailureCategoryDisplay(
       return "quality-failure";
     case "missing_tools":
       return "missing-tools";
+    case "token_scope":
+      return "token-scope";
     case "push_failure":
     case "evidence_missing":
     case "internal_error":
@@ -672,6 +692,12 @@ export function getFailureDiagnosis(
 - This is not related to the issue content or complexity
 - Check repository access permissions and network connectivity`;
 
+    case "token_scope":
+      return `- The worker's GitHub token lacks the \`workflow\` OAuth scope, and this change creates or updates a file under \`.github/workflows/\`
+- GitHub rejects such a push from any OAuth token without that scope, so the run stopped **before** pushing (Issue #1475)
+- This is a **host credential issue**, not related to the issue content — no attempt was made to push
+- An operator must grant the scope to the worker account (\`gh auth refresh -s workflow\`), re-provision \`gh/hosts.yml\` and restart the worker; a host whose token has the scope can pick the issue up as it is`;
+
     case "no_changes":
       if (clarityWasAssessed(clarityStatus)) {
         return `- Claude completed but made no changes to the codebase
@@ -757,6 +783,8 @@ export function getFailureDiagnosisOneliner(
       return "Likely cause: required tools (e.g., npm, node) not installed on worker machine.";
     case "push_failure":
       return "Likely cause: git push failed (permissions or network issue).";
+    case "token_scope":
+      return "Likely cause: the worker's token lacks the 'workflow' scope and the change touches .github/workflows/ (Issue #1475).";
     case "no_changes":
       if (clarityWasAssessed(clarityStatus)) {
         return "Likely cause: Claude could not determine what changes to make (issue was assessed as clear).";

@@ -331,6 +331,13 @@ export const OPERATIONAL_DEFAULTS = {
   quorumKillAfter: 10,
   maxRateLimitRetries: 2,
   maxRateLimitWait: 600,
+  /**
+   * One hour between collaborator refreshes (Issue #1453). The operator's
+   * stated trade-off: a newly added team member may wait an hour or two to
+   * be trusted; in return the fleet stops spending ~33 API calls per cycle
+   * per host on a set that changes a few times a year.
+   */
+  trustedAuthorsCacheHours: 1,
   retryMaxDelay: 60,
   maxIssueBodyTokens: 50000,
   summariseTimeout: 120,
@@ -1412,6 +1419,7 @@ export function buildDefaultWorkerConfig(
     quorumJudge: defaultQuorumJudge(),
     maxRateLimitRetries: OPERATIONAL_DEFAULTS.maxRateLimitRetries,
     maxRateLimitWait: OPERATIONAL_DEFAULTS.maxRateLimitWait,
+    trustedAuthorsCacheHours: OPERATIONAL_DEFAULTS.trustedAuthorsCacheHours,
     retryMaxDelay: OPERATIONAL_DEFAULTS.retryMaxDelay,
     maxIssueBodyTokens: OPERATIONAL_DEFAULTS.maxIssueBodyTokens,
     summariseTimeout: OPERATIONAL_DEFAULTS.summariseTimeout,

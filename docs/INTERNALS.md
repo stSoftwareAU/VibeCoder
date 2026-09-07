@@ -169,6 +169,44 @@ The worker runs on **macOS**, **Linux**, and **Windows**:
 - `run.ps1` / `loop.ps1` — PowerShell launchers (Windows)
 - `worker/deno/` — Cross-platform TypeScript (all platforms)
 
+Each pair is held to **one contract by a parity test**, so a Windows host never
+ends up with a quieter, thinner worker than a macOS one. Each test reads both
+scripts' sources, extracts the contract each keeps, and fails on a divergence
+that no named exception covers:
+
+| Pair | Contract module | Parity test |
+| --- | --- | --- |
+| `setup.sh` / `setup.ps1` | `worker/deno/lib/setup_contract.ts` | `tests/setup_parity_test.ts` |
+| `run.sh` / `run.ps1` | `worker/deno/lib/launcher_contract.ts` | `tests/launcher_parity_test.ts` |
+| `loop.sh` / `loop.ps1` | `worker/deno/lib/loop_contract.ts` | `tests/loop_parity_test.ts` |
+
+The setup contract covers **credential handling** as well as the subcommands
+each script runs (Issue #1430): a `provider.env` value carrying a line break
+must be refused on both sides (Issue #1301), and credential directories must be
+owner-only from the instant they exist rather than created wide and narrowed
+afterwards (Issue #1374) — on Windows too, where the guarantee is an ACL
+carried by the creation call rather than a umask.
+
+The supervisor gate is the newest (Issue #1403) and the reason the other two
+exist: `loop` had no parity test, and the two supervisors drifted to 501 and
+148 lines before anyone noticed that `loop.ps1` never pulled its checkout
+(Issue #1401) or resolved its log directory (Issue #1402). It compares the
+never-exit loop, the delegated backoff, the resolved log directory, the
+per-cycle launch log and its pruning, the checkout refresh, the frozen
+lockfile, and the launcher exit statuses each supervisor tells apart — and it
+reports faults in one supervisor whatever the other does, because two
+supervisors that both stop pulling their checkout agree with each other and are
+both wrong.
+
+Three asymmetries are intended, and each is **named with the condition that
+would end it** rather than tolerated silently:
+
+| Exception | Why | Lapses when |
+| --- | --- | --- |
+| `host-side-run-bound` | `loop.ps1` invokes `run.ps1` in-process and can bound nothing host-side (Issue #423) | a supervisor caps a run without reaping the container the kill orphans (Issue #322) |
+| `macos-container-control-plane` | the probe exists for the macOS-only Apple `container` runtime and recovers through the Unix process tree (Issue #323) | a supervisor probes without being able to recover |
+| `process-group-signals` | SIGTERM/SIGHUP reach a bash supervisor through the Unix process group (Issue #1836) | the bash supervisor drops its traps |
+
 ---
 
 ## 🔄 1. Worker run loop and process lifecycle
@@ -820,7 +858,7 @@ at exit:
 
 ```text
 fleet-summary: wall=92520s idle=39600s idle_pct=42.8 occupied=52920s
-  busy=52920s token_blocked=0s token_blocked_waits=0 rate_limited=0s
+  busy=52920s usage_blocked=0s usage_blocked_waits=0 rate_limited=0s
   rate_limit_waits=0 claims=32 successes=17 failures=13 skips=2
   success_rate=0.57
   idle_by_reason=nothing_claimable_backlog=32000s,host_disk_low=7600s
@@ -835,7 +873,7 @@ The run's wall time is partitioned into three non-overlapping spans, so
 ```mermaid
 flowchart LR
     W["run wall time"] --> O["occupied<br/>≥1 stream holding a claim"]
-    W --> K["blocked<br/>rate_limited / token_blocked"]
+    W --> K["blocked<br/>rate_limited / usage_blocked"]
     W --> I["idle<br/>scan, maintenance, sleep"]
     I --> R["attributed to the idle census's reason<br/>(nothing_claimable_backlog, dependency_blocked, host_disk_low, …)<br/>or 'served' when the cycle claimed work"]
     style O fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -859,10 +897,15 @@ flowchart LR
   reported separately from idle with nothing to claim
   (`nothing_claimable_empty`) — the first is a fault, the second is not.
 - **A block inside a run** — the agent's own retry ladder sleeps in-process —
-  counts towards `token_blocked_seconds` but not towards `idle_by_reason`: the
+  counts towards `usage_blocked_seconds` but not towards `idle_by_reason`: the
   fleet was holding a claim, not idle. This is the one deliberate overlap, and
   it is why the blocked totals can exceed the blocked share of `idle_seconds`.
-- **`rate_limited` vs `token_blocked`** are separated by the shared
+- The metric is `usage_blocked`, not `token_blocked` (renamed): the secret
+  redactor masks the value of any `key=value` whose key contains `TOKEN`, so
+  the old name published as `token_blocked=***REDACTED***` and the figure was
+  unreadable in every log. The persisted sidecar fields keep their
+  `tokenBlocked*` names so prior accumulated state still loads.
+- **`rate_limited` vs `usage_blocked`** are separated by the shared
   `.rate_limit_signal` file, which now records whether a GitHub API limit or a
   model usage limit wrote it. Each carries a wait count alongside the total
   backoff.
@@ -921,7 +964,7 @@ run wall seconds` — against which four non-overlapping spans are booked:
   looking for it.
 - **`blocked`** — slot-seconds the whole fleet was paused waiting for a quota,
   split by the same two reasons `fleet-summary:` uses: `rate_limited` (GitHub
-  API) and `token_blocked` (model usage), read from the shared
+  API) and `usage_blocked` (model usage), read from the shared
   `.rate_limit_signal` file. Booked from the loop-level pauses, where the
   waiting actually happens; a slot that meets an active signal at its pre-claim
   guard drains the pool at once rather than waiting in the slot, and that stop

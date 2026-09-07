@@ -66,6 +66,38 @@ export type CollaboratorFetchResult =
   | { ok: false; reason: CollaboratorFetchReason; detail: string };
 
 /**
+ * Whether a failed fetch says the *login* cannot list this repository's
+ * collaborators — a property of the deployment, not of GitHub's availability
+ * (Issue #1453).
+ *
+ * GitHub answers `GET /repos/{owner}/{repo}/collaborators` with 404 for a
+ * login that cannot see the repo and with 403 "Must have push access to view
+ * repository collaborators" for one that can only read it. Neither will be
+ * cleared by a retry, and the worker could never write to such a repo
+ * anyway. A 403 that names a rate limit is the opposite kind of failure: the
+ * quota comes back, and the repo must not be mistaken for one the login
+ * cannot push to — that misreading would drop a repo from the trust fold on
+ * every busy hour.
+ *
+ * @param result - A failed fetch outcome
+ * @returns True for a permanent access denial; false for anything a retry
+ *   or a later hour might fix
+ */
+export function isCollaboratorAccessDenied(
+  result: Extract<CollaboratorFetchResult, { ok: false }>,
+): boolean {
+  if (result.reason === "http-404") return true;
+  if (result.reason !== "http-403") return false;
+  if (
+    /rate limit|secondary limit|abuse detection|retry later/i.test(
+      result.detail,
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+/**
  * Reserved for callers. This module does not cache, exclude, or consult
  * config — those belong to separate sub-issues of #234.
  */

@@ -30,6 +30,11 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import {
+  issueLooksLikeWorkflowWork,
+  tokenHasWorkflowScope,
+  WORKFLOW_SCOPE_REMEDIATION,
+} from "./workflow_scope.ts";
 import type { WorkerConfig } from "../types.ts";
 import { runGhCommand } from "./github.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
@@ -102,6 +107,12 @@ export interface NewWorkGateContext {
   fleetWorkerLogins: string[];
   /** The fleet's push-capable logins; only their PRs defer an issue (#4133). */
   pushCapableAuthors: string[];
+  /**
+   * Whether this host's token carries the `workflow` scope (Issue #1475).
+   * Without it an issue whose deliverable is a workflow file is skipped —
+   * the push would be rejected after a full agent run.
+   */
+  hasWorkflowScope: boolean;
 }
 
 /**
@@ -168,6 +179,7 @@ export async function buildNewWorkGateContext(
       githubUser: options.githubUser,
       fleetPrAuthors: config.fleetPrAuthors ?? [],
     }),
+    hasWorkflowScope: options.hasWorkflowScope ?? tokenHasWorkflowScope(),
   };
 }
 
@@ -246,6 +258,21 @@ export async function filterNewWorkEligible(
 
   for (const issue of survived) {
     const milestoneTitle = issue.milestone;
+
+    // Issue #1475: a token without the `workflow` scope cannot push a
+    // workflow file, and GitHub only says so at the push — after the agent
+    // has run. Skip what the title or body already gives away.
+    if (
+      !ctx.hasWorkflowScope &&
+      issueLooksLikeWorkflowWork(issue.title, issue.body)
+    ) {
+      note(
+        issue,
+        "workflow-scope-missing",
+        `this host's token lacks the workflow scope — ${WORKFLOW_SCOPE_REMEDIATION}`,
+      );
+      continue;
+    }
 
     if (
       isMilestoneOccupied(

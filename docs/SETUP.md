@@ -129,9 +129,10 @@ background service is offered, where files land — is covered in
      findings.
    - `gitignore-sync` — applies the canonical `.gitignore` safety block to
      every monitored repository.
-   - `verify-monitored-collaborator` — checks the worker account is a
-     collaborator on every monitored repository, filing an issue where it is
-     not.
+   - `verify-monitored-collaborator` — checks the worker account has push
+     access on every monitored repository (triage is not enough: the
+     trusted-author refresh lists collaborators, which needs push), filing an
+     issue where it has not.
    - `branch-protection-sync` — applies the default-branch ruleset to every
      monitored repository, then reports each repository's `milestone/**`
      ruleset. On a terminal it offers to create a missing one, mirroring the
@@ -388,10 +389,15 @@ Docker first, then Podman. What the runtime runs and how the image is built is
 credential directories are `chmod` 0700 and the files within 0600 — and they
 are *created* owner-only, under a `umask 077`, rather than created under the
 host's ambient umask and narrowed afterwards, so no window exists in which a
-co-resident local account can enumerate them (Issue #1374). On Windows
-the same protection is an ACL: `Protect-VibePath` (`setup.ps1`) strips the
-path's inherited access outright and grants full control to the current
-identity alone, so a profile that gives *Users* read access cannot leak a
+co-resident local account can enumerate them (Issue #1374). `setup.ps1` creates
+its credential *directories* the same way on a POSIX host —
+`New-VibeCredentialDirectory` runs one `mkdir -p` under `umask 077`, exactly as
+`setup.sh` does — and narrows the files within to 0600 immediately afterwards,
+which is safe because the directory holding them is already owner-only. On
+Windows the same protection is an ACL: each missing directory is created
+carrying an explicit, de-inherited ACL granting the current identity alone, and
+`Protect-VibePath` (`setup.ps1`) re-applies it to a directory that already
+existed, so a profile that gives *Users* read access cannot leak a
 credential. Windows also writes every credential and config file LF-terminated
 and without a byte-order mark (`Write-VibeTextFile`), because the container
 reads them on Linux — hand-edit these files on Windows with the same
@@ -681,8 +687,9 @@ The file is **data, never a shell script**. Every reader — `setup.sh`,
 first `=` and takes the remainder verbatim, so a value holding a space, a `;`,
 a `#` or `$(...)` is stored and read as those characters rather than executed
 (Issue #1301). One consequence: the whole value must fit on one line, so
-`setup.sh` refuses to write a credential containing a line break instead of
-storing a truncated token behind a success message.
+`setup.sh` and `setup.ps1` both refuse to write a credential containing a line
+break instead of storing a truncated token behind a success message — a
+credential pasted with a trailing CR or LF is reported and nothing is written.
 
 | Vendor | File | Accepted variable names |
 |--------|------|-------------------------|
@@ -1043,6 +1050,34 @@ The rest of the token — `repo` (or the fine-grained equivalent) plus
 See [SECURITY.md — Token Security](../SECURITY.md#-token-security) and
 [CONFIGURATION.md — Two axes of trust](CONFIGURATION.md#two-axes-of-trust).
 
+### The `workflow` scope
+
+Every monitored repository in this fleet carries `.github/workflows/`, and
+GitHub refuses a push from **any** OAuth token that creates or updates a file
+there unless the token has the `workflow` scope — the rejection reads
+`refusing to allow an OAuth App to create or update workflow … without
+'workflow' scope`, and it arrives only at the push, after the agent has done
+its work. A token minted by a plain `gh auth login` does **not** carry it.
+
+The worker reads the scope at start-up and, without it (Issue #1475):
+
+- logs `[SECURITY] gh token lacks the 'workflow' scope` at WARN with the fix;
+- **skips** an issue whose title names a workflow or GitHub Actions, or whose
+  body names `.github/workflows` (skip reason `workflow-scope-missing`);
+- **fails a run before the push** when the branch's diff touches
+  `.github/workflows/`, naming the files and the fix, and classifies it as
+  the host's credential (`token-scope`), never the issue's fault.
+
+`setup.sh` warns when the provisioned token lacks the scope. The fix, for the
+worker account:
+
+```bash
+gh auth refresh -s workflow     # adds the scope to the existing login
+```
+
+then re-provision `gh/hosts.yml` from the refreshed token and restart the
+worker.
+
 ## Manual setup: writing `.config.json`
 
 `.config.json` lives in the root of the VibeCoder checkout — every script
@@ -1260,7 +1295,7 @@ re-run converges on the same state rather than piling up duplicates.
 | `best-practices-sync` | Repo-side. Audits workflows for best-practice findings and files (or updates) one follow-up issue per repository. | Yes — same housekeeping category. |
 | `best-practices-relabel` | Repo-side. One-off back-fill of severity and category labels onto best-practice issues filed before those labels existed. Supports `--dry-run`. | Yes — internal maintenance; not part of `setup all`, and a fresh setup has nothing to relabel. |
 | `gitignore-sync` | Repo-side. Applies the canonical `.gitignore` and `.gitattributes` safety blocks to every monitored repository, so worker artefacts and credential-shaped files stay out of commits. | Yes, but recommended — the safety blocks exist for a reason. |
-| `verify-monitored-collaborator` | Repo-side, read-mostly. Verifies the worker account can be assigned issues on every monitored repository; files (or updates) a precheck issue for any repository that fails, and warns when `service_accounts` is empty. | Yes, but it is the step that tells you access is wrong *before* the first run does. |
+| `verify-monitored-collaborator` | Repo-side, read-mostly. Verifies the worker account has push access on every monitored repository — triage alone lets it be assigned issues but not list collaborators or push a branch (Issue #1455); files (or updates) a precheck issue naming the push grant for any repository that fails, and warns when `service_accounts` is empty. | Yes, but it is the step that tells you access is wrong *before* the first run does. |
 | `branch-protection-sync` | Repo-side. Applies the worker's default-branch ruleset to every monitored repository; repositories whose default branch takes direct pushes, or that opted out, are skipped, and leftover classic branch protection is flagged for manual removal. | Yes — but without it merges are not gated the way a scripted setup leaves them. |
 | `backfill-idle-task-labels` | Repo-side. One-off back-fill of the `idle-task` label onto security-scan wrapper issues that predate the label. | Yes — a fresh setup has nothing to back-fill. |
 | `label-colour-reconcile` | Repo-side. Repaints fleet-managed labels whose colour drifted from the canonical table — the `severity:*` / `confidence:*` ramps, `security`, `lang:*` and the per-scan category labels. Only labels the table **names** are touched, and none are created; a label a human added is left as they set it. Supports `--dry-run`. | Yes — a fresh setup has nothing to reconcile; run it on a fleet that predates the canonical table. |

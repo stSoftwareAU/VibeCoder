@@ -294,3 +294,63 @@ Deno.test(
     assertEquals(verdict.blocked[0]?.reason, "filtered-out");
   },
 );
+
+// ---------------------------------------------------------------------------
+// Issue #1475: a token without the `workflow` scope skips workflow work
+// ---------------------------------------------------------------------------
+
+Deno.test("filterNewWorkEligible - workflow issues are skipped when the token lacks the workflow scope (Issue #1475)", async () => {
+  const cache = createTestCache();
+  const config = makeConfig();
+  const issues = [
+    makeIssue(10, [LABEL], {
+      title: "Add Gitleaks Secrets Detection workflow",
+    }),
+    makeIssue(11, [LABEL], {
+      title: "Fix a typo in README",
+      body: "Just the README.",
+    }),
+    makeIssue(12, [LABEL], {
+      title: "Release job times out",
+      body: "The job in .github/workflows/release.yml needs a longer timeout.",
+    }),
+  ];
+  const gh = createGh({ issues: [] });
+  const ctx = await buildNewWorkGateContext(REPO, config, {
+    githubUser: "bot",
+    ghCommandFn: gh,
+    cache,
+    hasWorkflowScope: false,
+  }, gh);
+  const verdict = await filterNewWorkEligible(issues, LABEL, ctx);
+  assertEquals(verdict.eligible.map((i) => i.number), [11]);
+  assertEquals(
+    verdict.blocked.filter((b) => b.reason === "workflow-scope-missing").map((
+      b,
+    ) => b.issueNumber).sort(),
+    [10, 12],
+  );
+});
+
+Deno.test("filterNewWorkEligible - with the workflow scope nothing is skipped for it (Issue #1475)", async () => {
+  const cache = createTestCache();
+  const config = makeConfig();
+  const issues = [
+    makeIssue(10, [LABEL], {
+      title: "Add Gitleaks Secrets Detection workflow",
+    }),
+  ];
+  const gh = createGh({ issues: [] });
+  const ctx = await buildNewWorkGateContext(REPO, config, {
+    githubUser: "bot",
+    ghCommandFn: gh,
+    cache,
+    hasWorkflowScope: true,
+  }, gh);
+  const verdict = await filterNewWorkEligible(issues, LABEL, ctx);
+  assertEquals(verdict.eligible.map((i) => i.number), [10]);
+  assertEquals(
+    verdict.blocked.some((b) => b.reason === "workflow-scope-missing"),
+    false,
+  );
+});

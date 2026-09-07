@@ -50,7 +50,7 @@ useDefault = true
 # the key format for any issue number rather than one fixture value, so it does
 # not have to be revisited each time a new dedup key is asserted.
 [allowlist]
-description = "Synthetic secret fixtures in redaction and scrub-gate unit tests, plus non-secret dedupKey slugs (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196, #505, #1115, #1217)"
+description = "Synthetic secret fixtures in redaction and scrub-gate unit tests, plus non-secret dedupKey slugs (Issues #3203, #3636, #3648, #3705, #3707, #3942, #4196, #505, #1115, #1217, #1387)"
 regexTarget = "line"
 regexes = [
   '''self-diagnostic-unschedulable-\d+''',
@@ -89,6 +89,12 @@ paths = [
   # Fake AKIA/ghp_ values inside the gitleaks/trufflehog JSON fixtures the
   # full-history scanner tests parse and classify (Issue #4190).
   '''worker/deno/tests/secrets_history_scan_test\.ts''',
+  # Fake 32-hex "imgbb key" (now assembled from short halves at run time) fed
+  # to `redactSecrets()` to prove the bare-hex credential shape is masked
+  # (Issue #1387). The commit that introduced the fixture carries the literal
+  # in one piece, and gitleaks scans every commit in the PR range, so only a
+  # path allowlist clears the range scan.
+  '''worker/deno/tests/security_scan_overflow_1387_test\.ts''',
   # Fake ghp_ token (now assembled from parts at runtime) fed to
   # `redactedTail()` to prove a token straddling the tail cut is still masked
   # (Issue #1217). Earlier commits in the PR range carry the literal in one

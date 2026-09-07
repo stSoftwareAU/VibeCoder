@@ -36,7 +36,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { ghRootCommand, ghSubVerb } from "./audit_mutation_classifier.ts";
+import {
+  GH_EXTENSION_ROOTS,
+  ghRootCommand,
+  ghSubVerb,
+} from "./audit_mutation_classifier.ts";
 import { normaliseGhArgs } from "./gh_flag_parser.ts";
 
 /**
@@ -71,11 +75,17 @@ const GUARDED_ROOTS: Readonly<Record<string, string>> = {
   extension: "the installed extensions",
 };
 
-/** Root aliases the real binary accepts for a guarded root. */
-const ROOT_ALIASES: Readonly<Record<string, string>> = {
-  extensions: "extension",
-  ext: "extension",
-};
+/**
+ * Normalise a root spelling to its canonical form.
+ *
+ * The `gh extension` aliases come from {@link GH_EXTENSION_ROOTS} rather than
+ * a second copy kept here (Issue #1396) — one list of the spellings the real
+ * binary accepts, so the guard and the mutation classifier cannot drift into
+ * refusing `gh ext install` in one and waving it through in the other.
+ */
+function canonicalRoot(root: string): string {
+  return GH_EXTENSION_ROOTS.has(root) ? "extension" : root;
+}
 
 /** One classified attempt to rewrite local `gh` state. */
 export interface GhLocalStateChange {
@@ -102,7 +112,7 @@ export function classifyGhLocalStateChange(
   const args = normaliseGhArgs(rawArgs);
   const rawRoot = ghRootCommand(args)?.toLowerCase();
   if (rawRoot === undefined) return undefined;
-  const root = ROOT_ALIASES[rawRoot] ?? rawRoot;
+  const root = canonicalRoot(rawRoot);
   const target = GUARDED_ROOTS[root];
   if (target === undefined) return undefined;
 
