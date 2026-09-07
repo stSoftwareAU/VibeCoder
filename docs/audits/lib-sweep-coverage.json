@@ -487,6 +487,7 @@
         "worker/deno/lib/commands.ts",
         "worker/deno/lib/comment_cache.ts",
         "worker/deno/lib/comment_rate_limiter.ts",
+        "worker/deno/lib/completeness_checks.ts",
         "worker/deno/lib/config_defaults.ts",
         "worker/deno/lib/config_mapping.ts",
         "worker/deno/lib/config_precedence.ts",

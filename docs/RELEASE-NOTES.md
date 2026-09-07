@@ -28,6 +28,7 @@ if your worker login is read-only on any monitored repository.**
 | ------ | ----- |
 | A monitored repo the worker's login cannot list (404, or 403 "Must have push access") is skipped and named once instead of failing every cycle | #1453 |
 | A successful trusted-author resolve is reused for `trusted_authors_cache_hours` (new key, default `1`; `0` restores the per-cycle refresh), and a transient failure serves the snapshot, with its age logged, for up to six hours | #1453 |
+| The `graphql-calls:` line counts every GraphQL-backed `gh` call (`issue list`, `pr view`, `search`, … as well as `api graphql`), and both the counter and the primary-quota latch are enforced at the `gh` spawn chokepoint, so the thirty-odd modules that spawn `gh` directly are counted and short-circuited too | #1485 |
 
 ### In detail
 
@@ -47,6 +48,17 @@ Two behaviour changes to the per-cycle trusted-author refresh (Issue #1453):
 
 Nothing to migrate. To keep the previous cadence, state
 `"trusted_authors_cache_hours": 0`.
+
+The `graphql-calls:` telemetry line (Issue #1485) now counts every
+GraphQL-backed `gh` invocation — every `gh` sub-command plus `gh api
+graphql`; only a plain REST `gh api <path>` is excluded — using the same
+predicate as the primary-quota latch. Expect the number to rise sharply
+against earlier logs: the old line counted only `gh api graphql`, and a
+cycle's `issue list` / `pr list` traffic was invisible to it. The counter
+and the latch both moved to the `gh` spawn chokepoint, so a module that
+spawns `gh` directly is counted, and once the hourly quota is exhausted it
+is skipped without a process, exactly like one that goes through
+`runGhCommandRaw()`. Nothing to configure.
 
 ## 1.5.5 — the log directory comes from the file alone
 
