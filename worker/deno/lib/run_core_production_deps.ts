@@ -237,6 +237,19 @@ import { deriveIdleReason } from "./fleet_telemetry.ts";
 import { writeFleetTelemetryFile } from "./fleet_telemetry_sidecar.ts";
 import { preflightGitHubRateLimit } from "./github_rate_limit_preflight.ts";
 import { runGhCommandRaw } from "./github.ts";
+import {
+  formatGraphqlQuotaLine,
+  type GraphqlQuotaReading,
+  graphqlSpendBetween,
+  probeGraphqlQuota,
+  toRateLimitDocument,
+} from "./graphql_quota_probe.ts";
+
+/**
+ * The previous cycle's GraphQL quota reading, so the next `graphql-quota:`
+ * line can say how many points the account spent in between (Issue #1456).
+ */
+let lastGraphqlQuotaReading: GraphqlQuotaReading | null = null;
 
 // Liveness guard (Issue #2479)
 import { checkLivenessWindow } from "./liveness_guard.ts";
@@ -3396,9 +3409,15 @@ export async function createProductionRunCoreDeps(
     },
 
     async getRateLimitReset() {
-      // `gh api rate_limit` is a free call (does not consume quota and
-      // works while rate-limited), so it is safe to invoke from inside
-      // a rate-limit handler. Issue #1780.
+      // The GraphQL probe is free and answers while rate-limited, so it is
+      // safe to invoke from inside a rate-limit handler (Issue #1780). Its
+      // headers are the bucket's own accounting; `gh api rate_limit` has
+      // reported the GraphQL bucket as untouched while the headers said it
+      // was a third spent, so it is only the fallback (Issue #1456).
+      const probe = await probeGraphqlQuota();
+      if (probe.ok && Number.isFinite(probe.value.reset)) {
+        return probe.value.reset;
+      }
       try {
         const raw = await runGhCommand(["api", "rate_limit"]);
         const parsed = JSON.parse(raw) as {
@@ -3425,10 +3444,39 @@ export async function createProductionRunCoreDeps(
       return await preflightGitHubRateLimit({
         workDir,
         nowSeconds: () => Math.floor(Date.now() / 1000),
-        runGhRateLimit: () => runGhCommandRaw(["api", "rate_limit"]),
+        // The truthful numbers come from the GraphQL response headers,
+        // rendered in the `rate_limit` shape the gate already parses and
+        // caches. The REST document is the fallback only when the probe
+        // cannot run at all — see graphql_quota_probe.ts for why.
+        runGhRateLimit: async () => {
+          const probe = await probeGraphqlQuota();
+          if (probe.ok) return toRateLimitDocument(probe.value);
+          logger.warn(
+            `GraphQL quota probe failed — falling back to gh api rate_limit: ${probe.error.message}`,
+          );
+          return await runGhCommandRaw(["api", "rate_limit"]);
+        },
         log: (m) => logger.info(m),
         noCache,
       });
+    },
+
+    async describeGraphqlQuota() {
+      const probe = await probeGraphqlQuota();
+      if (!probe.ok) {
+        logger.warn(`GraphQL quota probe failed: ${probe.error.message}`);
+        return null;
+      }
+      const reading = probe.value;
+      const spent = lastGraphqlQuotaReading
+        ? graphqlSpendBetween(lastGraphqlQuotaReading, reading)
+        : undefined;
+      lastGraphqlQuotaReading = reading;
+      return formatGraphqlQuotaLine(
+        reading,
+        Math.floor(Date.now() / 1000),
+        spent,
+      );
     },
 
     // -- Repo failure tracking --
@@ -3852,6 +3900,13 @@ export async function createProductionRunCoreDeps(
           tick,
           scanFoundClaimable,
           ghCommandFn: auditGh,
+          // The audit used to list every repo's open issues itself, uncached,
+          // on every idle tick — a full duplicate of the scan's read. Serve it
+          // from the iteration's shared `issues_all` cache instead, through
+          // the same runner so a wiring test's stub still answers
+          // (Issue #1456).
+          openIssuesFn: (repo: string, limit: number) =>
+            fetchAllIssues(repo, issueCache, limit, auditGh),
           // Issue #4223: read each repo's open PRs through the same shared
           // `prs_open_all` cache the census uses (Issue #3526), so the audit
           // stops counting PR-blocked work as claimable. Whichever of the two
