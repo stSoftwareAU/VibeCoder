@@ -23,6 +23,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
+import { RepoLoopQuotaStop } from "./repo_loop_quota_stop.ts";
 import type { Logger, Result } from "../types.ts";
 import type { EnableAutoMergeResult } from "./pr_auto_merge.ts";
 
@@ -110,20 +111,32 @@ export async function sweepAutoMerge(
     reposWithNoCandidates: [],
   };
   const authors = fleetAuthors.join(", ");
+  // Issue #1515: one quota exhaustion is one line, not one per repository.
+  const quota = new RepoLoopQuotaStop(
+    "Auto-merge sweep",
+    repos.length,
+    (message) => logger.warn(message),
+  );
 
   try {
     for (const repo of repos) {
-      if (!isRepoAllowed(repo)) continue;
+      if (quota.latchedBeforeRepo()) break;
+      if (!isRepoAllowed(repo)) {
+        quota.repoDone();
+        continue;
+      }
       summary.reposVisited.push(repo);
 
       let prs: readonly SweepablePr[];
       try {
         prs = await listOpenPrs(repo, fleetAuthors);
       } catch (err) {
+        if (quota.isQuotaFailure(err)) break;
         logger.warn("Auto-merge sweep could not list open PRs", {
           repo,
           error: errorMessage(err),
         });
+        quota.repoDone();
         continue;
       }
 
@@ -133,6 +146,7 @@ export async function sweepAutoMerge(
       if (prs.length === 0) {
         summary.reposWithNoCandidates.push(repo);
         logger.info("Auto-merge sweep: no candidates", { repo, authors });
+        quota.repoDone();
         continue;
       }
       logger.info(
@@ -168,6 +182,7 @@ export async function sweepAutoMerge(
           });
         }
       }
+      quota.repoDone();
     }
     return { ok: true, value: summary };
   } catch (err) {

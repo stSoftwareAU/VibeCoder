@@ -164,6 +164,7 @@ Deno.test("SEC-1444 - the wrapper executes the checkout module, not a rewritten 
         active: true,
         allowedRepos: ["owner/repo"],
         verdictDir: dir,
+        denoDir: `${dir}/deno-cache`,
       }),
     );
     await Deno.chmod(shim, 0o755);

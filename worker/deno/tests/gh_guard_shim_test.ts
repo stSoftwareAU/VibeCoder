@@ -23,6 +23,11 @@ import {
 } from "../lib/gh_guard_shim.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 import {
+  DENO_SEED_DIR_ENV,
+  realGuardDenoDirProbe,
+} from "../lib/guard_deno_dir.ts";
+import { BASE_DIR_ENV } from "../lib/guard_module_path.ts";
+import {
   _resetWriteRepoAllowlistSinks,
   _setWriteRepoAllowlistSinks,
   registerWriteRepo,
@@ -1298,6 +1303,205 @@ Deno.test({
       await Deno.remove(shim.dir, { recursive: true }).catch(() => {});
       await Deno.remove(stub.dir, { recursive: true });
       await Deno.remove(tmp, { recursive: true });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1448: the guard child's Deno cache is the run's choice, read-only
+// where a seed exists — never the caller's, never something the agent's uid
+// can feed.
+// ---------------------------------------------------------------------------
+
+/** A stub `gh` that logs the DENO_DIR it was handed. */
+async function makeDenoDirLoggingStubGh(): Promise<StubGh> {
+  const dir = await Deno.makeTempDir({ prefix: "gh_guard_denodir_stub_" });
+  const log = `${dir}/env.log`;
+  await Deno.writeTextFile(
+    `${dir}/gh`,
+    `#!/bin/bash\nprintf 'DENO_DIR=%s\\n' "\${DENO_DIR-<unset>}" >> "${log}"\nprintf 'stub-gh-ok\\n'\n`,
+  );
+  await Deno.chmod(`${dir}/gh`, 0o755);
+  return { dir, log };
+}
+
+/** Deno cache artefacts a guard run would leave in a writable DENO_DIR. */
+async function hasDenoCacheArtefacts(dir: string): Promise<boolean> {
+  for (const name of ["gen", "dep_analysis_cache_v2", "v8_code_cache_v2"]) {
+    if (await pathExists(`${dir}/${name}`)) return true;
+  }
+  return false;
+}
+
+Deno.test({
+  name:
+    "gh-guard-shim - pins the guard child's DENO_DIR to the read-only seed, ignoring the caller's (Issue #1448)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const stub = await makeDenoDirLoggingStubGh();
+    const seed = await Deno.makeTempDir({ prefix: "gh_guard_seed_" });
+    const agentCache = await Deno.makeTempDir({
+      prefix: "gh_guard_agent_cache_",
+    });
+    await Deno.chmod(seed, 0o555);
+    const warnings: string[] = [];
+    try {
+      // root can write a 0555 directory, so the read-only half cannot be
+      // shown there; the container runs unprivileged, which is the case
+      // that matters.
+      if (realGuardDenoDirProbe(seed) !== "read-only") return;
+      const shim = expectInstalled(
+        await installGhGuardShim({
+          // The agent has pointed DENO_DIR at a cache it prepared.
+          baseEnv: {
+            ...Deno.env.toObject(),
+            PATH: stub.dir,
+            DENO_DIR: agentCache,
+          },
+          active: true,
+          allowedRepos: ["stSoftwareAU/VibeCoder"],
+          warn: (m) => warnings.push(m),
+          env: envFrom({
+            [DENO_SEED_DIR_ENV]: seed,
+            [BASE_DIR_ENV]: "/checkout",
+          }),
+        }),
+      );
+      try {
+        assertEquals(shim.denoDir, {
+          path: seed,
+          readOnly: true,
+          source: "seed-env",
+        });
+        const result = await runShim(shim.shimPath, shim.env, [
+          "issue",
+          "list",
+        ]);
+        assertEquals(result.code, 0, result.stderr);
+        // The guard child ran against the read-only seed and still answered…
+        assertEquals(await readLog(stub.log), `DENO_DIR=${seed}\n`);
+        // …and the agent's cache saw nothing: no emit, no analysis tables.
+        assertEquals(await hasDenoCacheArtefacts(agentCache), false);
+        assertEquals(
+          warnings.filter((w) => w.includes("GH_GUARD_CACHE_WRITABLE")),
+          [],
+          "a read-only seed is the expected state — nothing to warn about",
+        );
+        // The pin is the wrapper's own line, not an inherited value — and the
+        // git wrapper (installed only when git is on the base PATH) pins the
+        // same cache.
+        assertStringIncludes(
+          await Deno.readTextFile(shim.shimPath),
+          `export DENO_DIR='${seed}'`,
+        );
+        if (shim.gitShimPath) {
+          assertStringIncludes(
+            await Deno.readTextFile(shim.gitShimPath),
+            `export DENO_DIR='${seed}'`,
+          );
+        }
+      } finally {
+        await shim.cleanup();
+      }
+    } finally {
+      await Deno.chmod(seed, 0o755);
+      await Deno.remove(seed, { recursive: true });
+      await Deno.remove(agentCache, { recursive: true });
+      await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "gh-guard-shim - without a seed the cache is a per-run directory, still pinned, and a container says so (Issue #1448)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const stub = await makeDenoDirLoggingStubGh();
+    const agentCache = await Deno.makeTempDir({
+      prefix: "gh_guard_agent_cache_",
+    });
+    const missingSeed = `${agentCache}/no-such-seed`;
+    const warnings: string[] = [];
+    try {
+      const shim = expectInstalled(
+        await installGhGuardShim({
+          baseEnv: {
+            ...Deno.env.toObject(),
+            PATH: stub.dir,
+            DENO_DIR: agentCache,
+          },
+          active: true,
+          allowedRepos: ["stSoftwareAU/VibeCoder"],
+          warn: (m) => warnings.push(m),
+          env: envFrom({
+            [DENO_SEED_DIR_ENV]: missingSeed,
+            [BASE_DIR_ENV]: "/checkout",
+          }),
+        }),
+      );
+      try {
+        assertEquals(shim.denoDir.readOnly, false);
+        assertEquals(shim.denoDir.source, "per-run");
+        assert(
+          shim.denoDir.path.startsWith(`${shim.dir}/`),
+          `fallback lives inside the wrapper's own directory: ${shim.denoDir.path}`,
+        );
+        const result = await runShim(shim.shimPath, shim.env, [
+          "issue",
+          "list",
+        ]);
+        assertEquals(result.code, 0, result.stderr);
+        // Pinned: the agent's DENO_DIR was not what the child used.
+        assertEquals(
+          await readLog(stub.log),
+          `DENO_DIR=${shim.denoDir.path}\n`,
+        );
+        assertEquals(await hasDenoCacheArtefacts(agentCache), false);
+        // Inside a container (the checkout marker is set) the residual is loud.
+        assertEquals(
+          warnings.filter((w) => w.includes("GH_GUARD_CACHE_WRITABLE")).length,
+          1,
+          warnings.join("\n"),
+        );
+      } finally {
+        await shim.cleanup();
+      }
+    } finally {
+      await Deno.remove(agentCache, { recursive: true });
+      await Deno.remove(stub.dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "gh-guard-shim - a host with no checkout marker does not warn about the writable fallback (Issue #1448)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const stub = await makeStubGh();
+    const warnings: string[] = [];
+    const shim = expectInstalled(
+      await installGhGuardShim({
+        baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
+        active: true,
+        allowedRepos: ["stSoftwareAU/VibeCoder"],
+        warn: (m) => warnings.push(m),
+        env: envFrom({ [DENO_SEED_DIR_ENV]: `${stub.dir}/absent` }),
+      }),
+    );
+    try {
+      assertEquals(shim.denoDir.source, "per-run");
+      assertEquals(
+        warnings.filter((w) => w.includes("GH_GUARD_CACHE_WRITABLE")),
+        [],
+      );
+    } finally {
+      await shim.cleanup();
+      await Deno.remove(stub.dir, { recursive: true });
     }
   },
 });
