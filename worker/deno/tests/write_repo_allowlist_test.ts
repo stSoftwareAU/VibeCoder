@@ -23,9 +23,11 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import {
+  _resetUnseededWrites,
   _resetWriteRepoAllowlistSinks,
   _resetWriteRepoPins,
   _setWriteRepoAllowlistSinks,
+  countUnseededWrites,
   enforceGhWriteAllowlist,
   isWriteRepoAllowed,
   isWriteRepoAllowlistActive,
@@ -36,6 +38,7 @@ import {
   resetWriteRepoAllowlist,
   seedWriteRepoAllowlist,
   unpinWriteRepo,
+  unseededWriteCounts,
   withScopedWriteRepo,
   WriteRepoBlockedError,
 } from "../lib/write_repo_allowlist.ts";
@@ -76,6 +79,7 @@ function captureSinks(): { audits: AuditMutation[]; logs: string[] } {
 function cleanup(): void {
   resetWriteRepoAllowlist();
   _resetWriteRepoPins();
+  _resetUnseededWrites();
   _resetWriteRepoAllowlistSinks();
 }
 
@@ -460,11 +464,12 @@ Deno.test("write-repo-allowlist - pin matching is case-insensitive", () => {
   }
 });
 
-Deno.test("write-repo-allowlist - enforcement is inert when not seeded", async () => {
+Deno.test("write-repo-allowlist - enforcement is inert when not seeded, but the write is marked (Issue #1425)", async () => {
   try {
     const { audits, logs } = captureSinks();
     // No seed: even an explicit cross-repo write is allowed (fail-open) so
-    // unrelated flows and tests are unaffected until a run opts in.
+    // unrelated flows and tests are unaffected until a run opts in — but it
+    // no longer passes unseen: one security line and one audit event.
     await enforceGhWriteAllowlist([
       "issue",
       "comment",
@@ -474,8 +479,118 @@ Deno.test("write-repo-allowlist - enforcement is inert when not seeded", async (
       "--body",
       "x",
     ]);
-    assertEquals(audits.length, 0);
-    assertEquals(logs.length, 0);
+    assertEquals(logs.length, 1);
+    assertStringIncludes(logs[0] ?? "", "[SECURITY] [WRITE_REPO_UNSEEDED]");
+    assertStringIncludes(logs[0] ?? "", "issue-comment to other/repo");
+    assertStringIncludes(logs[0] ?? "", "allowlist inactive");
+    assertEquals(audits.length, 1);
+    assertEquals(audits[0]?.verb, "unseeded-issue-comment");
+    assertEquals(audits[0]?.outcome, "success");
+    assertEquals(audits[0]?.repo, "other/repo");
+    assertEquals(countUnseededWrites(), 1);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("write-repo-allowlist - unseeded writes are logged once per kind and counted every time (Issue #1425)", async () => {
+  try {
+    const { audits, logs } = captureSinks();
+    const comment = (repo: string) =>
+      enforceGhWriteAllowlist([
+        "issue",
+        "comment",
+        "1",
+        "-R",
+        repo,
+        "--body",
+        "x",
+      ]);
+    await comment("other/repo");
+    await comment("other/repo");
+    await comment("other/repo");
+    // Same kind three times: one line, one audit event, count of three.
+    assertEquals(logs.length, 1);
+    assertEquals(audits.length, 1);
+    // A different repo, and a different verb, are each a new kind.
+    await comment("third/repo");
+    await enforceGhWriteAllowlist(["pr", "merge", "7", "-R", "other/repo"]);
+    assertEquals(logs.length, 3);
+    assertEquals(audits.map((a) => a.verb), [
+      "unseeded-issue-comment",
+      "unseeded-issue-comment",
+      "unseeded-pr-merge",
+    ]);
+    assertEquals(unseededWriteCounts(), {
+      "issue-comment → other/repo": 3,
+      "issue-comment → third/repo": 1,
+      "pr-merge → other/repo": 1,
+    });
+    assertEquals(countUnseededWrites(), 5);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("write-repo-allowlist - a cwd-repo write while unseeded is marked as unscoped too (Issue #1425)", async () => {
+  try {
+    const { audits, logs } = captureSinks();
+    // No -R: the write goes to the run's own clone, which the seeded rule
+    // allows without comparison — but unseeded, nothing scoped it.
+    await enforceGhWriteAllowlist(["issue", "close", "12"]);
+    assertEquals(logs.length, 1);
+    assertStringIncludes(logs[0] ?? "", "issue-close to <cwd repo>");
+    assertEquals(audits[0]?.verb, "unseeded-issue-close");
+    assertEquals(audits[0]?.repo, undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("write-repo-allowlist - reads while unseeded are not marked (Issue #1425)", async () => {
+  try {
+    const { audits, logs } = captureSinks();
+    await enforceGhWriteAllowlist(["issue", "list", "-R", "other/repo"]);
+    await enforceGhWriteAllowlist(["pr", "view", "1", "-R", "other/repo"]);
+    await enforceGhWriteAllowlist(["api", "repos/other/repo/pulls/1"]);
+    assertEquals(logs, []);
+    assertEquals(audits, []);
+    assertEquals(countUnseededWrites(), 0);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("write-repo-allowlist - a seeded run's own writes are never marked unseeded (Issue #1425)", async () => {
+  try {
+    const { audits, logs } = captureSinks();
+    seedWriteRepoAllowlist("stSoftwareAU/VibeCoder");
+    await enforceGhWriteAllowlist([
+      "issue",
+      "comment",
+      "1",
+      "-R",
+      "stSoftwareAU/VibeCoder",
+      "--body",
+      "x",
+    ]);
+    await enforceGhWriteAllowlist(["issue", "close", "12"]);
+    assertEquals(logs, []);
+    assertEquals(audits, []);
+    assertEquals(countUnseededWrites(), 0);
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("write-repo-allowlist - the unseeded record survives a reseed and a reset (Issue #1425)", async () => {
+  try {
+    captureSinks();
+    await enforceGhWriteAllowlist(["issue", "close", "12"]);
+    seedWriteRepoAllowlist("stSoftwareAU/VibeCoder");
+    resetWriteRepoAllowlist();
+    // What ran unscoped between runs is exactly what the record is for.
+    assertEquals(countUnseededWrites(), 1);
   } finally {
     cleanup();
   }
