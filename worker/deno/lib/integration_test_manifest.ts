@@ -118,6 +118,12 @@ export const SCRIPT_READING_UNIT_TESTS: ReadonlyMap<string, string> = new Map([
     "#1401); it never spawns either one, and runs in milliseconds",
   ],
   [
+    "tests/loop_parity_test.ts",
+    "reads loop.sh and loop.ps1 with Deno.readTextFile to compare the " +
+    "supervision contract each one keeps (Issue #1403); it never spawns " +
+    "either one, and runs in milliseconds",
+  ],
+  [
     "tests/loop_log_dir_test.ts",
     "reads loop.sh and loop.ps1 with Deno.readTextFile to assert both " +
     "supervisors ask `mod.ts log-dir` where their launch logs go (Issue " +

@@ -169,6 +169,37 @@ The worker runs on **macOS**, **Linux**, and **Windows**:
 - `run.ps1` / `loop.ps1` — PowerShell launchers (Windows)
 - `worker/deno/` — Cross-platform TypeScript (all platforms)
 
+Each pair is held to **one contract by a parity test**, so a Windows host never
+ends up with a quieter, thinner worker than a macOS one. Each test reads both
+scripts' sources, extracts the contract each keeps, and fails on a divergence
+that no named exception covers:
+
+| Pair | Contract module | Parity test |
+| --- | --- | --- |
+| `setup.sh` / `setup.ps1` | `worker/deno/lib/setup_contract.ts` | `tests/setup_parity_test.ts` |
+| `run.sh` / `run.ps1` | `worker/deno/lib/launcher_contract.ts` | `tests/launcher_parity_test.ts` |
+| `loop.sh` / `loop.ps1` | `worker/deno/lib/loop_contract.ts` | `tests/loop_parity_test.ts` |
+
+The supervisor gate is the newest (Issue #1403) and the reason the other two
+exist: `loop` had no parity test, and the two supervisors drifted to 501 and
+148 lines before anyone noticed that `loop.ps1` never pulled its checkout
+(Issue #1401) or resolved its log directory (Issue #1402). It compares the
+never-exit loop, the delegated backoff, the resolved log directory, the
+per-cycle launch log and its pruning, the checkout refresh, the frozen
+lockfile, and the launcher exit statuses each supervisor tells apart — and it
+reports faults in one supervisor whatever the other does, because two
+supervisors that both stop pulling their checkout agree with each other and are
+both wrong.
+
+Three asymmetries are intended, and each is **named with the condition that
+would end it** rather than tolerated silently:
+
+| Exception | Why | Lapses when |
+| --- | --- | --- |
+| `host-side-run-bound` | `loop.ps1` invokes `run.ps1` in-process and can bound nothing host-side (Issue #423) | a supervisor caps a run without reaping the container the kill orphans (Issue #322) |
+| `macos-container-control-plane` | the probe exists for the macOS-only Apple `container` runtime and recovers through the Unix process tree (Issue #323) | a supervisor probes without being able to recover |
+| `process-group-signals` | SIGTERM/SIGHUP reach a bash supervisor through the Unix process group (Issue #1836) | the bash supervisor drops its traps |
+
 ---
 
 ## 🔄 1. Worker run loop and process lifecycle
