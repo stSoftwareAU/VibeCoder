@@ -279,6 +279,8 @@
         "worker/deno/lib/optional_feature_env.ts",
         "worker/deno/lib/orphan_deps_metadata.ts",
         "worker/deno/lib/orphan_deps_scanner.ts",
+        "worker/deno/lib/orphan_deps_severity_gate.ts",
+        "worker/deno/lib/orphan_deps_untrusted.ts",
         "worker/deno/lib/orphaned_rollup.ts",
         "worker/deno/lib/partial_answer.ts",
         "worker/deno/lib/phases/completion_phase.ts",

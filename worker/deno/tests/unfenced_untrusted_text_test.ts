@@ -364,6 +364,8 @@ Deno.test("buildQualityFixPrompt - neutralises a forged boundary in the output",
 
 Deno.test("buildQualityFixPrompt - redacts secrets echoed by the quality script", () => {
   const prompt = buildQualityFixPrompt(
+    // A synthetic token fixture — the assertion below is that it is redacted.
+    // nosemgrep: generic.secrets.security.detected-github-token.detected-github-token
     "fatal: clone https://x-access-token:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/o/r failed",
   );
   assertEquals(
