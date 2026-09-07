@@ -11,6 +11,22 @@ import {
   renderOpenIssueTitles,
 } from "../lib/idle_task_snapshot.ts";
 
+/**
+ * The fleet login every dedup fixture below is authored by (Issue #1243).
+ *
+ * The two finding-id look-ups verify the author of a `<!-- finding-id: … -->`
+ * match, so a fixture body only counts as an already-filed finding when a
+ * fleet account wrote it. `FLEET` states that fleet inline rather than writing
+ * a config file.
+ */
+const FLEET_LOGIN = "vibe-coder-bot";
+const FLEET = { fleetAuthors: [FLEET_LOGIN] } as const;
+
+/** A fleet-authored open issue row, as `gh issue list --json` returns it. */
+function fleetIssue(number: number, body: string) {
+  return { number, body, author: { login: FLEET_LOGIN } };
+}
+
 /** Capture console.error lines for the duration of `run`. */
 async function captureErrors(run: () => Promise<void>): Promise<string[]> {
   const original = console.error;
@@ -189,11 +205,17 @@ Deno.test("listKnownOpenFindingIds - extracts BP- ids from body markers", async 
   const gh = (_args: string[]) =>
     Promise.resolve(
       JSON.stringify([
-        { number: 1, body: "intro\n<!-- finding-id: BP-abc123def456 -->\n" },
-        { number: 2, body: "<!-- finding-id: BP-LINTER-rust -->" },
+        fleetIssue(1, "intro\n<!-- finding-id: BP-abc123def456 -->\n"),
+        fleetIssue(2, "<!-- finding-id: BP-LINTER-rust -->"),
       ]),
     );
-  const ids = await listKnownOpenFindingIds("o/r", "best-practices", gh);
+  const ids = await listKnownOpenFindingIds(
+    "o/r",
+    "best-practices",
+    gh,
+    "BP-",
+    FLEET,
+  );
   assertEquals(ids, ["BP-abc123def456", "BP-LINTER-rust"]);
 });
 
@@ -201,12 +223,18 @@ Deno.test("listKnownOpenFindingIds - ignores bodies without a marker", async () 
   const gh = (_args: string[]) =>
     Promise.resolve(
       JSON.stringify([
-        { number: 1, body: "no marker here" },
-        { number: 2 },
-        { number: 3, body: "<!-- finding-id: BP-keepthis01 -->" },
+        fleetIssue(1, "no marker here"),
+        { number: 2, author: { login: FLEET_LOGIN } },
+        fleetIssue(3, "<!-- finding-id: BP-keepthis01 -->"),
       ]),
     );
-  const ids = await listKnownOpenFindingIds("o/r", "test-audit", gh);
+  const ids = await listKnownOpenFindingIds(
+    "o/r",
+    "test-audit",
+    gh,
+    "BP-",
+    FLEET,
+  );
   assertEquals(ids, ["BP-keepthis01"]);
 });
 
@@ -214,11 +242,17 @@ Deno.test("listKnownOpenFindingIds - honours a custom id prefix", async () => {
   const gh = (_args: string[]) =>
     Promise.resolve(
       JSON.stringify([
-        { number: 1, body: "<!-- finding-id: SEC-aabbccddeeff -->" },
-        { number: 2, body: "<!-- finding-id: BP-shouldskip01 -->" },
+        fleetIssue(1, "<!-- finding-id: SEC-aabbccddeeff -->"),
+        fleetIssue(2, "<!-- finding-id: BP-shouldskip01 -->"),
       ]),
     );
-  const ids = await listKnownOpenFindingIds("o/r", "security", gh, "SEC-");
+  const ids = await listKnownOpenFindingIds(
+    "o/r",
+    "security",
+    gh,
+    "SEC-",
+    FLEET,
+  );
   assertEquals(ids, ["SEC-aabbccddeeff"]);
 });
 
@@ -228,11 +262,14 @@ Deno.test("listKnownOpenFindingIds - queries every open issue with no label filt
     captured = args;
     return Promise.resolve("[]");
   };
-  await listKnownOpenFindingIds("o/r", "best-practices", gh);
+  await listKnownOpenFindingIds("o/r", "best-practices", gh, "BP-", FLEET);
   assertEquals(captured.includes("--label"), false);
   assertEquals(captured[captured.indexOf("--repo") + 1], "o/r");
   assertEquals(captured[captured.indexOf("--state") + 1], "open");
-  assertEquals(captured[captured.indexOf("--json") + 1], "number,body");
+  assertEquals(
+    captured[captured.indexOf("--json") + 1],
+    "number,body,author",
+  );
   assertEquals(captured[captured.indexOf("--limit") + 1], "200");
 });
 
@@ -242,14 +279,13 @@ Deno.test("listKnownOpenFindingIds - collects ids from issues wearing another la
   const gh = (args: string[]) => {
     if (args.includes("--label")) return Promise.resolve("[]");
     return Promise.resolve(
-      JSON.stringify([
-        { number: 37, body: "<!-- finding-id: BP-CODEOWNERS01 -->" },
-      ]),
+      JSON.stringify([fleetIssue(37, "<!-- finding-id: BP-CODEOWNERS01 -->")]),
     );
   };
-  assertEquals(await listKnownOpenFindingIds("o/r", "best-practices", gh), [
-    "BP-CODEOWNERS01",
-  ]);
+  assertEquals(
+    await listKnownOpenFindingIds("o/r", "best-practices", gh, "BP-", FLEET),
+    ["BP-CODEOWNERS01"],
+  );
 });
 
 Deno.test("listKnownOpenFindingIds - ignores foreign-prefix ids from other scans", async () => {
@@ -258,27 +294,30 @@ Deno.test("listKnownOpenFindingIds - ignores foreign-prefix ids from other scans
   const gh = (_args: string[]) =>
     Promise.resolve(
       JSON.stringify([
-        { number: 1, body: "<!-- finding-id: SEC-aabbccddeeff -->" },
-        { number: 2, body: "<!-- finding-id: SWEEP-112233 -->" },
-        { number: 3, body: "<!-- finding-id: BP-keepthis01 -->" },
+        fleetIssue(1, "<!-- finding-id: SEC-aabbccddeeff -->"),
+        fleetIssue(2, "<!-- finding-id: SWEEP-112233 -->"),
+        fleetIssue(3, "<!-- finding-id: BP-keepthis01 -->"),
       ]),
     );
-  assertEquals(await listKnownOpenFindingIds("o/r", "best-practices", gh), [
-    "BP-keepthis01",
-  ]);
+  assertEquals(
+    await listKnownOpenFindingIds("o/r", "best-practices", gh, "BP-", FLEET),
+    ["BP-keepthis01"],
+  );
 });
 
 Deno.test("listKnownOpenFindingIds - hitting the limit logs a loud truncation warning", async () => {
-  const issues = Array.from({ length: 200 }, (_v, i) => ({
-    number: i + 1,
-    body: `<!-- finding-id: BP-bulk${i} -->`,
-  }));
+  const issues = Array.from(
+    { length: 200 },
+    (_v, i) => fleetIssue(i + 1, `<!-- finding-id: BP-bulk${i} -->`),
+  );
   let ids: string[] = [];
   const lines = await captureErrors(async () => {
     ids = await listKnownOpenFindingIds(
       "o/r",
       "best-practices",
       (_a) => Promise.resolve(JSON.stringify(issues)),
+      "BP-",
+      FLEET,
     );
   });
   assertEquals(ids.length, 200);
@@ -297,9 +336,11 @@ Deno.test("listKnownOpenFindingIds - staying under the limit logs nothing", asyn
       (_a) =>
         Promise.resolve(
           JSON.stringify([
-            { number: 1, body: "<!-- finding-id: BP-underlimit -->" },
+            fleetIssue(1, "<!-- finding-id: BP-underlimit -->"),
           ]),
         ),
+      "BP-",
+      FLEET,
     );
   });
   assertEquals(lines, []);
@@ -322,8 +363,8 @@ Deno.test("findOpenIssueByFindingId - returns the number of the matching open is
   const gh = (_args: string[]) =>
     Promise.resolve(
       JSON.stringify([
-        { number: 10, body: "<!-- finding-id: BP-other000001 -->" },
-        { number: 42, body: "lead\n<!-- finding-id: BP-LINTER-typescript -->" },
+        fleetIssue(10, "<!-- finding-id: BP-other000001 -->"),
+        fleetIssue(42, "lead\n<!-- finding-id: BP-LINTER-typescript -->"),
       ]),
     );
   const n = await findOpenIssueByFindingId(
@@ -331,6 +372,7 @@ Deno.test("findOpenIssueByFindingId - returns the number of the matching open is
     "best-practices",
     "BP-LINTER-typescript",
     gh,
+    FLEET,
   );
   assertEquals(n, 42);
 });
@@ -377,11 +419,14 @@ Deno.test("findOpenIssueByFindingId - queries every open issue with no label fil
     captured = args;
     return Promise.resolve("[]");
   };
-  await findOpenIssueByFindingId("o/r", "best-practices", "BP-x", gh);
+  await findOpenIssueByFindingId("o/r", "best-practices", "BP-x", gh, FLEET);
   assertEquals(captured.includes("--label"), false);
   assertEquals(captured[captured.indexOf("--repo") + 1], "o/r");
   assertEquals(captured[captured.indexOf("--state") + 1], "open");
-  assertEquals(captured[captured.indexOf("--json") + 1], "number,body");
+  assertEquals(
+    captured[captured.indexOf("--json") + 1],
+    "number,body,author",
+  );
   assertEquals(captured[captured.indexOf("--limit") + 1], "200");
 });
 
@@ -392,9 +437,7 @@ Deno.test("findOpenIssueByFindingId - matches an open issue wearing another labe
   const gh = (args: string[]) => {
     if (args.includes("--label")) return Promise.resolve("[]");
     return Promise.resolve(
-      JSON.stringify([
-        { number: 37, body: "<!-- finding-id: BP-CODEOWNERS01 -->" },
-      ]),
+      JSON.stringify([fleetIssue(37, "<!-- finding-id: BP-CODEOWNERS01 -->")]),
     );
   };
   assertEquals(
@@ -403,6 +446,7 @@ Deno.test("findOpenIssueByFindingId - matches an open issue wearing another labe
       "best-practices",
       "BP-CODEOWNERS01",
       gh,
+      FLEET,
     ),
     37,
   );
@@ -425,10 +469,10 @@ Deno.test("findOpenIssueByFindingId - malformed JSON returns null and logs the p
 });
 
 Deno.test("findOpenIssueByFindingId - hitting the limit logs a loud truncation warning", async () => {
-  const issues = Array.from({ length: 200 }, (_v, i) => ({
-    number: i + 1,
-    body: `<!-- finding-id: BP-bulk${i} -->`,
-  }));
+  const issues = Array.from(
+    { length: 200 },
+    (_v, i) => fleetIssue(i + 1, `<!-- finding-id: BP-bulk${i} -->`),
+  );
   let result: number | null = null;
   const lines = await captureErrors(async () => {
     result = await findOpenIssueByFindingId(
@@ -436,6 +480,7 @@ Deno.test("findOpenIssueByFindingId - hitting the limit logs a loud truncation w
       "best-practices",
       "BP-bulk7",
       (_a) => Promise.resolve(JSON.stringify(issues)),
+      FLEET,
     );
   });
   assertEquals(result, 8);
@@ -641,7 +686,7 @@ Deno.test("fileFindingOnce - skips filing when an open issue with the id exists"
   const gh = (_args: string[]) =>
     Promise.resolve(
       JSON.stringify([
-        { number: 99, body: "<!-- finding-id: BP-LINTER-typescript -->" },
+        fleetIssue(99, "<!-- finding-id: BP-LINTER-typescript -->"),
       ]),
     );
   const result = await fileFindingOnce({
@@ -649,6 +694,7 @@ Deno.test("fileFindingOnce - skips filing when an open issue with the id exists"
     logLabel: "best-practices",
     findingId: "BP-LINTER-typescript",
     ghCommandFn: gh,
+    dedupAuthors: FLEET,
     fileFn: () => {
       fileCalls++;
       return Promise.resolve({
@@ -670,9 +716,7 @@ Deno.test("fileFindingOnce - skips filing when the open duplicate wears another 
   const gh = (args: string[]) => {
     if (args.includes("--label")) return Promise.resolve("[]");
     return Promise.resolve(
-      JSON.stringify([
-        { number: 37, body: "<!-- finding-id: BP-CODEOWNERS01 -->" },
-      ]),
+      JSON.stringify([fleetIssue(37, "<!-- finding-id: BP-CODEOWNERS01 -->")]),
     );
   };
   const result = await fileFindingOnce({
@@ -680,6 +724,7 @@ Deno.test("fileFindingOnce - skips filing when the open duplicate wears another 
     logLabel: "github-actions-audit",
     findingId: "BP-CODEOWNERS01",
     ghCommandFn: gh,
+    dedupAuthors: FLEET,
     fileFn: () => {
       fileCalls++;
       return Promise.resolve({ number: 64, findingId: "BP-CODEOWNERS01" });
@@ -729,4 +774,143 @@ Deno.test("fileFindingOnce - returns null when no duplicate exists and fileFn fa
     fileFn: () => Promise.resolve(null),
   });
   assertEquals(result, null);
+});
+
+// --- Author verification of the finding-id marker (Issue #1243) --------------
+//
+// An issue body is text anyone with a GitHub account can write, and finding
+// ids are deterministic per scanner, so a planted `<!-- finding-id: … -->`
+// used to suppress a real finding for as long as the planted issue stayed
+// open. Only the author is authenticated, so the author is what the dedup
+// decision rests on. Fail direction: an unverifiable match is discarded and
+// the finding is filed.
+
+Deno.test("fileFindingOnce - files the finding when an outsider planted the finding-id marker", async () => {
+  let fileCalls = 0;
+  const gh = (_args: string[]) =>
+    Promise.resolve(
+      JSON.stringify([
+        {
+          number: 99,
+          body: "<!-- finding-id: BP-LINTER-typescript -->",
+          author: { login: "drive-by-attacker" },
+        },
+      ]),
+    );
+  const result = await fileFindingOnce({
+    repo: "o/r",
+    logLabel: "best-practices",
+    findingId: "BP-LINTER-typescript",
+    ghCommandFn: gh,
+    dedupAuthors: { ...FLEET, log: () => {} },
+    fileFn: () => {
+      fileCalls++;
+      return Promise.resolve({
+        number: 123,
+        findingId: "BP-LINTER-typescript",
+      });
+    },
+  });
+  assertEquals(fileCalls, 1);
+  assertEquals(result, {
+    number: 123,
+    findingId: "BP-LINTER-typescript",
+    skipped: false,
+  });
+});
+
+Deno.test("findOpenIssueByFindingId - ignores an outsider-authored marker and logs the discard", async () => {
+  const lines: string[] = [];
+  const gh = (_args: string[]) =>
+    Promise.resolve(
+      JSON.stringify([
+        {
+          number: 99,
+          body: "<!-- finding-id: BP-CODEOWNERS01 -->",
+          author: { login: "drive-by-attacker" },
+        },
+      ]),
+    );
+  const found = await findOpenIssueByFindingId(
+    "o/r",
+    "github-actions-audit",
+    "BP-CODEOWNERS01",
+    gh,
+    { ...FLEET, log: (m) => lines.push(m) },
+  );
+  assertEquals(found, null);
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0] ?? "", "authored outside the fleet");
+});
+
+Deno.test("findOpenIssueByFindingId - still matches a fleet-authored marker", async () => {
+  const gh = (_args: string[]) =>
+    Promise.resolve(
+      JSON.stringify([fleetIssue(37, "<!-- finding-id: BP-CODEOWNERS01 -->")]),
+    );
+  assertEquals(
+    await findOpenIssueByFindingId(
+      "o/r",
+      "github-actions-audit",
+      "BP-CODEOWNERS01",
+      gh,
+      FLEET,
+    ),
+    37,
+  );
+});
+
+Deno.test("listKnownOpenFindingIds - drops outsider-authored ids from the skip-list", async () => {
+  const gh = (_args: string[]) =>
+    Promise.resolve(
+      JSON.stringify([
+        fleetIssue(1, "<!-- finding-id: BP-keepthis01 -->"),
+        {
+          number: 2,
+          body: "<!-- finding-id: BP-planted0001 -->",
+          author: { login: "drive-by-attacker" },
+        },
+      ]),
+    );
+  assertEquals(
+    await listKnownOpenFindingIds("o/r", "best-practices", gh, "BP-", {
+      ...FLEET,
+      log: () => {},
+    }),
+    ["BP-keepthis01"],
+  );
+});
+
+Deno.test("listKnownOpenFindingIds - an unresolvable fleet author set drops every id", async () => {
+  const lines: string[] = [];
+  const gh = (_args: string[]) =>
+    Promise.resolve(
+      JSON.stringify([fleetIssue(1, "<!-- finding-id: BP-keepthis01 -->")]),
+    );
+  const ids = await listKnownOpenFindingIds(
+    "o/r",
+    "best-practices",
+    gh,
+    "BP-",
+    {
+      fleetAuthors: [],
+      log: (m) => lines.push(m),
+    },
+  );
+  assertEquals(ids, []);
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0] ?? "", "fleet author set unresolved");
+});
+
+Deno.test("listKnownOpenFindingIds - requests the author field from gh", async () => {
+  let captured: string[] = [];
+  const gh = (args: string[]) => {
+    captured = args;
+    return Promise.resolve("[]");
+  };
+  await listKnownOpenFindingIds("o/r", "best-practices", gh, "BP-", FLEET);
+  assertEquals(
+    captured[captured.indexOf("--json") + 1],
+    "number,body,author",
+  );
 });

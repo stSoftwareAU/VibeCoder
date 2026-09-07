@@ -30,6 +30,22 @@ import {
   WriteTargetUndeterminableError,
 } from "../lib/write_repo_allowlist.ts";
 import { envFrom } from "./support/env_lookup.ts";
+import { UnredactableBodyError } from "../lib/gh_body_redaction.ts";
+import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
+
+const GH_TOKEN_SAMPLE = `ghp_${"a1B2c3D4e5".repeat(4)}`;
+
+/** True when the path exists; used to assert a masked copy was removed. */
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
 import {
   getGhCallMetrics,
   resetGhCallMetrics,
@@ -379,6 +395,193 @@ Deno.test("spawnGh - the injected roots are the only ones the re-stage reads", a
     _resetGhSpawnRunner();
     resetGhRestageAttempts();
     await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("spawnGh - masks a secret read from a --body-file body (Issue #1254)", async () => {
+  const { calls } = recordingRunner();
+  silenceAllowlist();
+  seedWriteRepoAllowlist("me/target");
+  const path = await Deno.makeTempFile({ prefix: "vibe-body-", suffix: ".md" });
+  try {
+    await Deno.writeTextFile(path, `token ${GH_TOKEN_SAMPLE}\n`);
+
+    await spawnGh([
+      "issue",
+      "comment",
+      "1",
+      "-R",
+      "me/target",
+      "--body-file",
+      path,
+    ]);
+
+    assertEquals(calls, [[
+      "issue",
+      "comment",
+      "1",
+      "-R",
+      "me/target",
+      "--body",
+      `token ${REDACTION_PLACEHOLDER}\n`,
+    ]]);
+    // The agent's own file is never rewritten.
+    assertEquals(await Deno.readTextFile(path), `token ${GH_TOKEN_SAMPLE}\n`);
+  } finally {
+    await Deno.remove(path).catch(() => {});
+    restore();
+  }
+});
+
+Deno.test("spawnGh - refuses a body file it cannot read rather than publishing it unscanned (Issue #1254)", async () => {
+  const { calls } = recordingRunner();
+  silenceAllowlist();
+  seedWriteRepoAllowlist("me/target");
+  try {
+    await assertRejects(
+      () =>
+        spawnGh([
+          "issue",
+          "comment",
+          "1",
+          "-R",
+          "me/target",
+          "--body-file",
+          "/nonexistent/vibe-1254-body.md",
+        ]),
+      UnredactableBodyError,
+    );
+    assertEquals(calls, []);
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("spawnGh - masks an --input file body into a fresh file (Issue #1254)", async () => {
+  silenceAllowlist();
+  seedWriteRepoAllowlist("me/target");
+  const original = `{"body":"token ${GH_TOKEN_SAMPLE}"}`;
+  const path = await Deno.makeTempFile({
+    prefix: "vibe-input-",
+    suffix: ".json",
+  });
+  // The masked copy is read by the `gh` child *during* the call and removed
+  // once it exits (Issue #1364), so its contents are captured here rather
+  // than after the call — reading it afterwards would assert a leak.
+  let maskedPath: string | undefined;
+  let maskedBody: string | undefined;
+  _setGhSpawnRunner((args) => {
+    maskedPath = [...args][5];
+    maskedBody = Deno.readTextFileSync(maskedPath as string);
+    return Promise.resolve({
+      code: 0,
+      success: true,
+      stdout: "",
+      stderr: "",
+    });
+  });
+  try {
+    await Deno.writeTextFile(path, original);
+
+    await spawnGh([
+      "api",
+      "-X",
+      "PATCH",
+      "repos/me/target/issues/1",
+      "--input",
+      path,
+    ]);
+
+    assertEquals(typeof maskedPath, "string");
+    assertEquals(maskedPath === path, false);
+    assertEquals(maskedBody, `{"body":"token ${REDACTION_PLACEHOLDER}"}`);
+    // The caller's own file is left exactly as it was.
+    assertEquals(await Deno.readTextFile(path), original);
+    // And the masked copy is not left behind (Issue #1364): the chokepoint
+    // owns the directory it wrote into and removes it once the child exits.
+    assertEquals(await exists(maskedPath as string), false);
+  } finally {
+    await Deno.remove(path).catch(() => {});
+    restore();
+  }
+});
+
+Deno.test("spawnGh - leaves the secret-scanning hardening body untouched (Issue #1254)", async () => {
+  const { calls } = recordingRunner();
+  silenceAllowlist();
+  seedWriteRepoAllowlist("me/target");
+  // The body `repo_settings_harden` PATCHes to enable secret scanning: no
+  // secret, but keys a signature rule reads as one. Scanning it must neither
+  // refuse the call nor rewrite the request.
+  const body = JSON.stringify({
+    security_and_analysis: {
+      secret_scanning: { status: "enabled" },
+      secret_scanning_push_protection: { status: "enabled" },
+    },
+  });
+  const path = await Deno.makeTempFile({
+    prefix: "vibe-settings-",
+    suffix: ".json",
+  });
+  try {
+    await Deno.writeTextFile(path, body);
+
+    await spawnGh([
+      "api",
+      "--method",
+      "PATCH",
+      "repos/me/target",
+      "--input",
+      path,
+    ]);
+
+    assertEquals(calls, [[
+      "api",
+      "--method",
+      "PATCH",
+      "repos/me/target",
+      "--input",
+      path,
+    ]]);
+    assertEquals(await Deno.readTextFile(path), body);
+  } finally {
+    await Deno.remove(path).catch(() => {});
+    restore();
+  }
+});
+
+Deno.test("spawnGh - redacts the stdin body of an --input - call (Issue #1254)", async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  _setGhSpawnRunner((_args, options) => {
+    seen.push({ ...options });
+    return Promise.resolve({
+      code: 0,
+      success: true,
+      stdout: "",
+      stderr: "",
+    });
+  });
+  silenceAllowlist();
+  seedWriteRepoAllowlist("me/target");
+  try {
+    // `--input -` is the live spelling used by the SARIF upload and the
+    // ruleset writes: the body never appears in argv, so only a stdin scan
+    // can reach it — and the call must still be allowed to proceed.
+    await spawnGh([
+      "api",
+      "-X",
+      "POST",
+      "repos/me/target/code-scanning/sarifs",
+      "--input",
+      "-",
+    ], { stdin: `{"body":"token ${GH_TOKEN_SAMPLE}"}` });
+
+    assertEquals(
+      seen[0]?.stdin,
+      `{"body":"token ${REDACTION_PLACEHOLDER}"}`,
+    );
+  } finally {
+    restore();
   }
 });
 

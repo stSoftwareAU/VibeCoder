@@ -49,6 +49,15 @@ import type { LinterCheckResult } from "../lib/linter_in_ci_check.ts";
 import type { RepoLanguages } from "../lib/language_detector.ts";
 import type { Result } from "../types.ts";
 
+/**
+ * The fleet identity the finding-id dedup verifies against (Issue #1243).
+ *
+ * The stubbed known-open issues are ones the fleet filed, so they are
+ * attributed to a fleet login and the templates are handed the same list.
+ */
+const FLEET_DEDUP_AUTHOR = "vibe-bot";
+const DEDUP_AUTHORS = { fleetAuthors: [FLEET_DEDUP_AUTHOR] };
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -127,13 +136,22 @@ function makeGhStub(scenario: {
         JSON.stringify(nums.map((n) => ({ number: n }))),
       );
     }
-    // Known-open lookup: `issue list --json number,body` — repo-wide since
-    // Issue #539, so it carries no `--label` argument.
+    // Known-open lookup: `issue list --json number,body,author` — repo-wide
+    // since Issue #539, so it carries no `--label` argument, and
+    // author-bearing since Issue #1243, because a finding-id marker in a body
+    // anybody may write is not evidence the fleet filed the finding.
     const isKnownOpen = args[0] === "issue" && args[1] === "list" &&
       args.includes("--json") &&
-      args[args.indexOf("--json") + 1] === "number,body";
+      args[args.indexOf("--json") + 1] === "number,body,author";
     if (isKnownOpen) {
-      return Promise.resolve(JSON.stringify(scenario.knownOpen ?? []));
+      return Promise.resolve(
+        JSON.stringify(
+          (scenario.knownOpen ?? []).map((i) => ({
+            ...i,
+            author: { login: FLEET_DEDUP_AUTHOR },
+          })),
+        ),
+      );
     }
     // Wrapper body lookup: `issue view <n> --json body`
     if (args[0] === "issue" && args[1] === "view") {
@@ -424,6 +442,7 @@ Deno.test(
   "buildIssueBody - picks a bucket, inlines the guide, and records the bucket line",
   async () => {
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       detectLanguagesFn: () => Promise.resolve({ ok: true, value: LANGS_TS }),
       pickBucketFn: () => pickLanguage("typescript"),
       loadPromptFn: () => Promise.resolve({ ok: true, value: STUB_PROMPT }),
@@ -456,6 +475,7 @@ Deno.test(
   "buildIssueBody - falls back to general when language detection fails",
   async () => {
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       detectLanguagesFn: () =>
         Promise.resolve({ ok: false, error: "no auth" } as Result<
           RepoLanguages,
@@ -496,6 +516,7 @@ Deno.test(
       | { bucket: string; knownOpen: string[] }
       | undefined;
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubLinterConfigured,
       runScanFn: (opts) => {
@@ -552,6 +573,7 @@ Deno.test(
 
     let receivedPath: string | undefined;
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: (repoPath: string) => {
         receivedPath = repoPath;
@@ -588,6 +610,7 @@ Deno.test(
 
     let linterInvoked = false;
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: () => {
         linterInvoked = true;
@@ -633,6 +656,7 @@ Deno.test(
       | { bucket: string; knownOpen: string[] }
       | undefined;
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubLintMissingCompilePresent,
       runScanFn: (opts) => {
@@ -699,6 +723,7 @@ Deno.test(
 
     let scanReceived: { knownOpen: string[] } | undefined;
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubCompileMissingLintPresent,
       runScanFn: (opts) => {
@@ -750,6 +775,7 @@ Deno.test(
 
     let scanReceived: { knownOpen: string[] } | undefined;
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubBothGatesMissing,
       runScanFn: (opts) => {
@@ -808,6 +834,7 @@ Deno.test(
 
     let scanReceived: { knownOpen: string[] } | undefined;
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubZeroWorkflowsLoaded,
       runScanFn: (opts) => {
@@ -846,6 +873,7 @@ Deno.test(
     });
 
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubBothGatesMissing,
       runScanFn: () => Promise.resolve({ ok: true, value: true }),
@@ -877,6 +905,7 @@ Deno.test(
     });
 
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: () =>
         Promise.resolve({
@@ -914,6 +943,7 @@ Deno.test(
     });
 
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       // stubLinterMissing returns no `gates` field — mirrors the HTML
       // bucket's behaviour in `linter_in_ci_check.ts`.
@@ -960,6 +990,7 @@ Deno.test(
 
     let scanReceived: { knownOpen: string[] } | undefined;
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubBothGatesMissing,
       runScanFn: (opts) => {
@@ -998,6 +1029,7 @@ Deno.test(
     });
 
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubBothGatesMissing,
       runScanFn: () => Promise.resolve({ ok: true, value: true }),
@@ -1040,6 +1072,7 @@ Deno.test(
 
     let scanReceived: { knownOpen: string[] } | undefined;
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubLinterConfigured,
       runScanFn: (opts) => {
@@ -1081,6 +1114,7 @@ Deno.test(
     });
 
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubLinterConfigured,
       runScanFn: () => Promise.resolve({ ok: true, value: true }),
@@ -1111,6 +1145,7 @@ Deno.test(
 
     let scanInvoked = false;
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubLinterConfigured,
       runScanFn: () => {
@@ -1146,6 +1181,7 @@ Deno.test(
     });
 
     const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubLinterConfigured,
       runScanFn: () =>
@@ -1253,6 +1289,7 @@ Deno.test("assembleBestPracticesPrompt - an empty open-issue list renders (none)
 Deno.test("runTask - repo-wide open issue titles reach the scan runner", async () => {
   const seen: OpenIssueTitle[][] = [];
   const tpl = createBestPracticesTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: makeTitleGhStub([
       { number: 37, title: "Add a CODEOWNERS file" },
     ]),
@@ -1276,6 +1313,7 @@ Deno.test("runTask - repo-wide open issue titles reach the scan runner", async (
 Deno.test("runTask - a gh failure listing titles degrades to an empty list", async () => {
   const seen: OpenIssueTitle[][] = [];
   const tpl = createBestPracticesTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: makeTitleGhStub([], true),
     checkLinterInCIFn: stubLinterConfigured,
     runScanFn: (opts) => {

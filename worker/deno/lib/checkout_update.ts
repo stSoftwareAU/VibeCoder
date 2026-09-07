@@ -73,6 +73,7 @@ import {
   appendRunCoreLogLine,
   resolveOriginDefaultBranch,
 } from "./run_bootstrap.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 import {
   escalationHostId,
   fileOrCommentIssue,
@@ -388,9 +389,20 @@ export interface CheckoutUpdateDeps {
   log(logDir: string, message: string): Promise<void>;
 }
 
-/** Append a single line (newline-terminated) to a file, creating it if absent. */
+/**
+ * Append a single line (newline-terminated) to a file, creating it if absent.
+ *
+ * The line is redacted first (Issue #1258). `pull.log` carries git's raw
+ * stdout and stderr, and neither structural redactor covers this path — the
+ * logger is not used, and the console patch covers `console.*` only, not a
+ * file write. Git error text is the canonical carrier of a tokenised remote
+ * URL (`https://x-access-token:<token>@github.com/owner/repo`), so this is the
+ * chokepoint for every byte this module appends to the log directory.
+ */
 async function appendLine(filePath: string, line: string): Promise<void> {
-  await Deno.writeTextFile(filePath, `${line}\n`, { append: true });
+  await Deno.writeTextFile(filePath, `${redactSecrets(line)}\n`, {
+    append: true,
+  });
 }
 
 /**

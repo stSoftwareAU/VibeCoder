@@ -101,13 +101,54 @@ Deno.test("selectArtefactsToRemove - past the age limit, then oldest first until
 Deno.test("repoHasHeartbeat - matches the repo segment of a heartbeat file name", async () => {
   const tmp = await Deno.makeTempDir();
   try {
+    // A live beat, not the placeholder "1": the file's epoch is now read and
+    // age-checked, so only a fresh beat marks the repo active (Issue #1232).
     await Deno.writeTextFile(
       `${tmp}/.heartbeat_stSoftwareAU_NEAT-AI-core_42`,
-      "1",
+      `${NOW - 60}`,
     );
-    assertEquals(await repoHasHeartbeat(tmp, "NEAT-AI-core"), true);
-    assertEquals(await repoHasHeartbeat(tmp, "NEAT-AI"), false);
-    assertEquals(await repoHasHeartbeat(tmp, "core"), false);
+    assertEquals(await repoHasHeartbeat(tmp, "NEAT-AI-core", NOW), true);
+    assertEquals(await repoHasHeartbeat(tmp, "NEAT-AI", NOW), false);
+    assertEquals(await repoHasHeartbeat(tmp, "core", NOW), false);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("repoHasHeartbeat - a forged future-dated heartbeat never marks a repo active", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const path = `${tmp}/.heartbeat_a_NEAT-AI-core_1`;
+    // Exactly what any process in the agent-writable work root can drop.
+    await Deno.writeTextFile(path, "9999999999");
+    assertEquals(await repoHasHeartbeat(tmp, "NEAT-AI-core", NOW), false);
+
+    // A stale beat is no longer active either, and a fresh one still is.
+    await Deno.writeTextFile(path, `${NOW - 5 * 86400}`);
+    assertEquals(await repoHasHeartbeat(tmp, "NEAT-AI-core", NOW), false);
+    await Deno.writeTextFile(path, `${NOW - 30}`);
+    assertEquals(await repoHasHeartbeat(tmp, "NEAT-AI-core", NOW), true);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("pruneWorkVolume - a forged heartbeat does not exempt a repo's artefacts", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    const stale = await makeRepo(tmp, "stale", { targetAgeDays: 5 });
+    // The forged file names the repo and carries a far-future epoch.
+    await Deno.writeTextFile(`${tmp}/.heartbeat_a_stale_1`, "9999999999");
+
+    const result = await pruneWorkVolume({
+      workDir: tmp,
+      nowFn: () => NOW,
+      sizeOf: () => Promise.resolve(GIB),
+    });
+
+    assertEquals(result.artefacts.skippedActive, []);
+    assertEquals(result.artefacts.removed.map((r) => r.repo), ["stale"]);
+    assertEquals(await exists(stale), false);
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }

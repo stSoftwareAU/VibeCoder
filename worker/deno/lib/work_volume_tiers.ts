@@ -68,6 +68,11 @@ import {
   pushUnpushedBranches,
 } from "./stale_workdir.ts";
 import { duBytes, formatGb } from "./work_volume_prune.ts";
+import {
+  DEFAULT_HEARTBEAT_LIVE_WINDOW_SECONDS,
+  isHeartbeatEpochLive,
+  parseHeartbeatEpoch,
+} from "./heartbeat_freshness.ts";
 
 /** Days a tier-2 directory may sit untouched before it is aged out. */
 export const DEFAULT_SIDE_REPO_MAX_AGE_DAYS = 3;
@@ -80,8 +85,12 @@ export const DEFAULT_SIDE_REPO_MAX_AGE_DAYS = 3;
  */
 export const DEFAULT_SIDE_REPO_MAX_GIT_BYTES = 2 * 1024 * 1024 * 1024;
 
-/** How recent a heartbeat must be for its slot to count as mid-execute. */
-export const DEFAULT_ACTIVE_HEARTBEAT_WINDOW_SECONDS = 900;
+/**
+ * How recent a heartbeat must be for its slot to count as mid-execute —
+ * the shared window, so the tier sweep and the artefact prune cannot drift.
+ */
+export const DEFAULT_ACTIVE_HEARTBEAT_WINDOW_SECONDS =
+  DEFAULT_HEARTBEAT_LIVE_WINDOW_SECONDS;
 
 /** Which tier a work-root entry belongs to. */
 export type WorkRootTier =
@@ -251,6 +260,11 @@ async function pathExists(path: string): Promise<boolean> {
 /**
  * Default liveness check: any `.heartbeat_*` file in the work root whose
  * recorded epoch is inside the window means a slot is mid-execute.
+ *
+ * "Inside the window" is bounded at both ends (Issue #1232). The comparison
+ * used to be `now - epoch <= windowSeconds` alone, which a future-dated
+ * epoch satisfies for ever — one forged file in the agent-writable work root
+ * made every tier reclaim return `skippedSlotActive` and remove nothing.
  */
 export async function anySlotMidExecute(
   workDir: string,
@@ -262,9 +276,9 @@ export async function anySlotMidExecute(
       if (!entry.isFile || !entry.name.startsWith(".heartbeat_")) continue;
       try {
         const raw = await Deno.readTextFile(`${workDir}/${entry.name}`);
-        const epoch = parseInt(raw.trim(), 10);
-        if (Number.isNaN(epoch)) continue;
-        if (now - epoch <= windowSeconds) return true;
+        const epoch = parseHeartbeatEpoch(raw);
+        if (epoch === null) continue;
+        if (isHeartbeatEpochLive(epoch, now, windowSeconds)) return true;
       } catch {
         // Unreadable heartbeat — cannot claim a slot is live from it.
       }

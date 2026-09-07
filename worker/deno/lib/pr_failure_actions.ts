@@ -32,9 +32,8 @@ import {
   getCiLogProvider,
 } from "./ci_log_provider.ts";
 import { defaultLogger } from "./logger.ts";
-import { truncateLogTail } from "./log_tail.ts";
+import { redactedLogTail } from "./redacted_text.ts";
 import { codeFenceFor } from "./prompt_delimiter.ts";
-import { redactSecrets } from "./secret_redaction.ts";
 
 /** Result of running a single configured CI log provider. */
 export type PrFailureActionResult =
@@ -175,8 +174,11 @@ export function formatPrFailureActionsExcerpt(
   if (successes.length === 0) return "";
 
   const sections = successes.map(({ excerpt }) => {
-    // Truncate first so the byte cap applies to the raw log, then redact —
-    // the placeholder is a different width and would skew the cap.
+    // Redact the whole log, then cut (Issue #1257) — the same inversion the
+    // sibling `ci_failure_issue.ts` path carried. Cutting first splits a
+    // credential and the surviving fragment matches no rule on the later
+    // pass; redacting first also caps the finished block tighter, because a
+    // wide placeholder can no longer land past the budget.
     //
     // Issue #3871 (matching #3648 on the ci_failure_issue path): build logs
     // routinely echo injected credentials (a tokenised clone URL, a
@@ -184,9 +186,7 @@ export function formatPrFailureActionsExcerpt(
     // instructed to quote the log lines it diagnosed from back into a public
     // PR comment. Redact before the log reaches the prompt so a secret never
     // becomes quotable in the first place.
-    const tail = redactSecrets(
-      truncateLogTail(excerpt.logText, maxBytesPerAction),
-    );
+    const tail = redactedLogTail(excerpt.logText, maxBytesPerAction);
     // A dynamic fence so a backtick run inside the log cannot close it early
     // and let the remainder render as markdown structure.
     const fence = codeFenceFor(tail);

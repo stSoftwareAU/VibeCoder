@@ -19,6 +19,7 @@ import {
   PHASE_MODEL_DEFAULTS,
 } from "./config_defaults.ts";
 import { incrementCounter } from "./fault_tolerance_counters.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { resolvePhaseRoutedValue } from "./phase_routing.ts";
 import type { RepoConfig } from "../types.ts";
@@ -1188,9 +1189,13 @@ export function captureTimeoutDiagnostics(
   diagnosticLines: number = 50,
 ): TimeoutDiagnostics {
   incrementCounter("timeouts");
-  const lines = output.split("\n");
+  // Redacted whole, then cut (Issue #1257): the report is embedded in the
+  // failure comment the worker posts, and the agent's stdout is exactly where
+  // a credential it echoed would sit. Cutting first would split it.
+  const redactedOutput = redactSecrets(output);
+  const lines = redactedOutput.split("\n");
   const tailLines = lines.slice(-diagnosticLines);
-  const errorPatterns = extractErrorPatterns(output);
+  const errorPatterns = extractErrorPatterns(redactedOutput);
   const timestamp = new Date().toISOString();
 
   const parts = [

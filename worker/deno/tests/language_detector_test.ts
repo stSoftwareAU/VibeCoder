@@ -5,6 +5,7 @@
  */
 
 import { assertEquals } from "@std/assert";
+import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import {
   type CommandOutput,
   detectRepoLanguages,
@@ -435,4 +436,42 @@ Deno.test("language_detector - empty repo with no files and no API languages", a
   assertEquals(result.value.detected.length, 0);
   assertEquals(result.value.primary, "unknown");
   assertEquals(result.value.raw, {});
+});
+
+// ---------------------------------------------------------------------------
+// gh spawn chokepoint (Issue #1227)
+// ---------------------------------------------------------------------------
+
+Deno.test("language_detector - the default runner routes gh through the shared chokepoint", async () => {
+  // The default runner names its binary through `cmd[0]`, so before Issue
+  // #1227 it spawned `gh` itself — skipping the write-repo allowlist, the
+  // timeout and the audit journal that `spawnGh` owns.
+  const calls: string[][] = [];
+  _setGhSpawnRunner((args) => {
+    calls.push([...args]);
+    const endpoint = args[1] ?? "";
+    return Promise.resolve({
+      code: 0,
+      success: true,
+      stdout: endpoint.endsWith("/languages")
+        ? JSON.stringify({ Rust: 50000 })
+        : JSON.stringify([{ name: "Cargo.toml", type: "file" }]),
+      stderr: "",
+    });
+  });
+
+  try {
+    // No `runCommand` override — this exercises the production default.
+    const result = await detectRepoLanguages("owner/repo");
+    assertEquals(result.ok, true);
+    assertEquals(
+      calls.map((c) => c.join(" ")).sort(),
+      [
+        "api repos/owner/repo/contents/",
+        "api repos/owner/repo/languages",
+      ],
+    );
+  } finally {
+    _resetGhSpawnRunner();
+  }
 });

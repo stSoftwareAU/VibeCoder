@@ -8,7 +8,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
+import { parseAllowActionArg } from "../commands/repo_settings_harden.ts";
 import {
   allowListCovers,
   applyRepoSettingsPlan,
@@ -282,6 +283,94 @@ Deno.test("resolveTransitiveActionCoordinates - a lookup that fails for a reason
   assert(resolved.unreadable[0]?.includes("403"));
 });
 
+// =============================================================================
+// Issue #1235 — a hostile third-party manifest must not widen the allow-list
+// nor steer the contents endpoint
+// =============================================================================
+
+/** A composite manifest whose steps carry hostile `uses:` coordinates. */
+const HOSTILE_COMPOSITE = `name: Hostile
+runs:
+  using: composite
+  steps:
+    - uses: '*/*@v1'
+    - uses: 'owner/../../victim@x'
+    - uses: 'owner/repo with space@v1'
+    - uses: 'good/action@0057852bfaa89a56745cba8c7296529d2fc39830'
+`;
+
+/** A gh stub serving the hostile manifest for the entry action only. */
+function hostileManifestGh(): {
+  gh: (args: string[]) => Promise<string>;
+  calls: string[][];
+} {
+  const calls: string[][] = [];
+  const gh = (args: string[]) => {
+    calls.push(args);
+    const endpoint = args[1] ?? "";
+    if (endpoint.startsWith("repos/vendor/composite/contents/action.yml")) {
+      return Promise.resolve(HOSTILE_COMPOSITE);
+    }
+    return Promise.reject(new Error("HTTP 404: Not Found"));
+  };
+  return { gh, calls };
+}
+
+Deno.test("resolveTransitiveActionCoordinates - a hostile manifest's wildcard and traversal uses: are rejected, never collected and never fetched (Issue #1235)", async () => {
+  const { gh, calls } = hostileManifestGh();
+  const resolved = await resolveTransitiveActionCoordinates(
+    ["vendor/composite@0057852bfaa89a56745cba8c7296529d2fc39830"],
+    gh,
+  );
+  // Only the entry action and the legitimate step survive.
+  assertEquals(resolved.coordinates, ["good/action", "vendor/composite"]);
+  // `*/*@v1` must never reach the allow-list as `*/*@*`.
+  assertEquals(buildAllowedActionPatterns(resolved.coordinates), [
+    "good/action@*",
+    "vendor/composite@*",
+  ]);
+  // No traversal or wildcard coordinate is turned into an API path.
+  for (const call of calls) {
+    const endpoint = call[1] ?? "";
+    assert(!endpoint.includes(".."), endpoint);
+    assert(!endpoint.includes("*"), endpoint);
+  }
+  // Rejections are reported, never silently dropped.
+  assertEquals(resolved.unreadable.length, 3);
+  assert(
+    resolved.unreadable.every((u) => /not a valid owner\/repo/.test(u)),
+    resolved.unreadable.join("; "),
+  );
+});
+
+Deno.test("parseAllowActionArg - an operator coordinate the pattern builder would drop is rejected loudly, not silently (Issue #1235)", () => {
+  assertEquals(parseAllowActionArg("denoland/setup-deno,good/action"), [
+    "denoland/setup-deno",
+    "good/action",
+  ]);
+  for (const bad of ["../..", "*/*", "owner/./repo", "owner/repo/sub"]) {
+    assertThrows(
+      () => parseAllowActionArg(bad),
+      Error,
+      "--allow-action expects owner/repo",
+    );
+  }
+});
+
+Deno.test("buildAllowedActionPatterns - a wildcard or traversal coordinate never becomes an allow-list pattern (Issue #1235)", () => {
+  assertEquals(
+    buildAllowedActionPatterns([
+      "*/*",
+      "owner/*",
+      "../../victim",
+      "./local",
+      "owner/repo with space",
+      "denoland/setup-deno",
+    ]),
+    ["denoland/setup-deno@*"],
+  );
+});
+
 Deno.test("planRepoSettingsHardening - a selected allow-list missing a required pattern plans an extension that keeps the existing patterns (Issue #4424)", () => {
   const plan = planRepoSettingsHardening(
     {
@@ -362,6 +451,16 @@ Deno.test("allowListCovers - GitHub allow-list globs: owner/repo@*, owner/* and 
     ),
   );
   assert(!allowListCovers([], "aquasecurity/setup-trivy@*"));
+  // Multi-wildcard and exact patterns, after the matcher stopped building a
+  // regular expression from the allow-list (Issue #1235).
+  assert(allowListCovers(["*/setup-*"], "aquasecurity/setup-trivy@*"));
+  assert(!allowListCovers(["*/setup-*x"], "aquasecurity/setup-trivy@*"));
+  assert(
+    !allowListCovers(
+      ["aquasecurity/setup-trivy"],
+      "aquasecurity/setup-trivy@*",
+    ),
+  );
 });
 
 // =============================================================================

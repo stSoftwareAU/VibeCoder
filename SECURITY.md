@@ -316,7 +316,10 @@ bypassed), but it carries a standing obligation for every author.
 A "public or permanent outbound sink" is anything that writes text a secret
 could reach and that a third party or a durable record could later read:
 
-- **Logs** — `stderr`, `worker-*.log`, CI output (via the structured logger).
+- **Logs** — `stderr`, `worker-*.log`, CI output (via the structured
+  logger), and the log-directory files written *outside* it: `pull.log`
+  and `run_core.log` carry raw `git` stdout and stderr, so each module
+  redacts in its own `appendLine` (Issue #1258).
 - **Issue and PR comments** — question answers, clarifications, revision and
   refinement replies, and any other `gh issue/pr comment` body.
 - **Failure and crash notifications** — the automated-failure comment path and
@@ -368,6 +371,20 @@ writers are too numerous to wire one at a time:
   `redactGhBodyArgs` inside the guard child (§6a), extended
   there to the contents of `--body-file`. Both chokepoints are wired; a third
   `gh` caller would owe its own wiring.
+
+  **Both chokepoints scan the same body classes (Issue #1254).** `spawnGh` used
+  to pass argv alone — no file reader — so its whole `--body-file` / `-F <path>`
+  / `-F body=@path` / `--input <file>` branch was dead code: a file body was
+  neither scanned *nor* refused, and any worker module that switched from
+  `--body` to `--body-file` would have published unscanned while looking like a
+  refactor. It now supplies the same reader and writer the guard child does
+  ([`worker/deno/lib/gh_body_file_io.ts`](worker/deno/lib/gh_body_file_io.ts)),
+  and `UnredactableBodyError` propagates out of the call rather than being
+  swallowed. The **stdin** body (`gh api … --input -`, used by the SARIF upload
+  and the ruleset writes) never appears in argv at all, so `spawnGh` puts the
+  bytes it pipes to the child through `redactSecrets()` before the write — and
+  tells the argument redactor that stdin is scanned, so a genuinely scanned
+  body is not refused.
 - **`git` commit, tag and merge messages** are the other public sink, and a
   pushed one is permanent history rather than an editable comment.
   `redactGitMessageArgs()`
@@ -391,7 +408,8 @@ fragment that no rule matches on the later pass.
 That ordering is held by a **type**, not by every call site remembering
 (Issue #1217). `RedactedText`
 ([`worker/deno/lib/redacted_text.ts`](worker/deno/lib/redacted_text.ts)) is a
-branded string only `redactedTail()` / `redactedHead()` / `joinRedacted()` can
+branded string only `redactedTail()` / `redactedHead()` / `redactedLineTail()`
+/ `redactedLogTail()` / `joinRedacted()` can
 mint, and each redacts the whole input before it trims. A field carrying text
 destined for a size-capped public sink is typed `RedactedText`, so handing it
 `output.slice(-500)` fails `deno check` — a stage of the quality gate — rather
@@ -403,6 +421,24 @@ runs afterwards, when it builds the world-readable failure comment. Give a new
 size-capped sink the same brand. The sink enumeration behind that change — which
 paths route through `redactSecrets()` and which bypass it — is
 [`docs/audits/security-sweep-1217-env-config-secrets.md`](docs/audits/security-sweep-1217-env-config-secrets.md).
+
+**The order is also enforced statically, because the brand cannot see a nested
+cut** (Issue #1257). `RedactedText` stops a raw slice reaching a *branded
+field*; nothing stopped a call site writing
+`redactSecrets(truncateLogTail(log, maxBytes))`, and fourteen sinks had drifted
+into exactly that — two of them documenting the inversion in their own comments
+as a way of keeping the byte cap honest. (It does not: redacting first is the
+*tighter* cap, because a placeholder wider than the secret it replaced can no
+longer push the finished block past the budget.) The `redact before truncate`
+quality check
+([`worker/deno/lib/redact_truncate_order_check.ts`](worker/deno/lib/redact_truncate_order_check.ts))
+fails the build on any truncation — `.slice()`, `.substring()`,
+`truncateLogTail()` — nested inside a redaction call, in the same shape as the
+`gh`/`git` spawn chokepoint checks. It sees the inversion it can prove; a
+truncation with no redaction anywhere near it is still a call-site
+responsibility, which is why the sinks themselves were converted rather than
+merely guarded.
+
 
 **Redaction bounds its own work, never its input.** Because that ordering hands
 `redactSecrets()` untruncated, attacker-influenceable text, every rule must run
@@ -471,6 +507,7 @@ only a decoded *credential shape* is masked.
 | HTTP `Basic` auth redaction rule | `worker/deno/lib/secret_redaction.ts` | |
 | Bare OpenAI (`sk-`) and Google/Gemini (`AIzaSy`) key rules | `worker/deno/lib/secret_redaction.ts` | [#36](https://github.com/stSoftwareAU/VibeCoder/issues/36) |
 | `gh` comment / PR body arguments (worker chokepoint) | `worker/deno/lib/gh_body_redaction.ts` | |
+| Worker `gh` bodies from `--body-file` / `--input` files and stdin | `worker/deno/lib/gh_spawn.ts` | [#1254](https://github.com/stSoftwareAU/VibeCoder/issues/1254) |
 | `gh` title, label and milestone published fields (`--title`, `-f title=`, `-f description=`, `-f name=`) | `worker/deno/lib/gh_body_redaction.ts` | [#1283](https://github.com/stSoftwareAU/VibeCoder/issues/1283) |
 | Agent-authored `gh` bodies, incl. `--body-file` (shim chokepoint) | `worker/deno/lib/gh_guard_cli.ts` | |
 | PR-comment failure replies | `worker/deno/lib/pr_comments.ts` | |
@@ -1368,12 +1405,12 @@ because a suppressed wrapper produces no error and no log line.
   page JSON), `needs_human_escalation.ts`, `run_failure_issue.ts` (projects
   without a `select(.body`) and `milestone_branch_self_heal.ts`. All four now
   route through `alert_dedup_authors.ts` and fail towards acting.
-  `conflict_abandon_restart.ts` and `pr_merge_conflict_scan.ts` are recorded
-  in `MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS` rather than fixed, because
-  their restart marker suppresses a *destructive* action and its fail
-  direction is a design decision, not a filter
-  ([#1247](https://github.com/stSoftwareAU/VibeCoder/issues/1247)). The full
-  record is
+  `conflict_abandon_restart.ts` and `pr_merge_conflict_scan.ts` were recorded
+  in `MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS` rather than fixed with the
+  rest, because their restart marker suppresses a *destructive* action and
+  its fail direction is a design decision, not a filter. Both were paid down
+  by [#1247](https://github.com/stSoftwareAU/VibeCoder/issues/1247) and the
+  consumer list is empty again — see §5f. The full record is
   [`docs/audits/security-sweep-1216-untrusted-github-ingestion.md`](docs/audits/security-sweep-1216-untrusted-github-ingestion.md).
 
 #### 5e. Presence, reactions and identity — the last twelve ingestion sites (Issue #1249)
@@ -1422,6 +1459,43 @@ Directions are pinned by
 `worker/deno/tests/security_untrusted_ingestion_1249_test.ts`, one test per
 finding.
 
+#### 5f. Merge-conflict attempt history — the two fail directions (Issue #1247)
+
+The pair §5d deferred. The merge-conflict ladder keeps its whole attempt
+history in marker comments on the PR and its originating issue, and read them
+back off the raw REST array `fetchIssueCommentPages` returns — every author's.
+Both directions were exploitable from an ordinary GitHub account:
+
+- **Two planted `CONFLICT_FAILED_MARKER` comments closed the PR.**
+  `parseConflictAttempts` counted them, `hasExhaustedConflictAttempts` called
+  the budget spent, and `abandonAndRestart` closed the PR and re-queued its
+  issue — a destructive write driven entirely by unauthenticated text.
+- **One planted restart marker stalled the work for ever.** The same rung
+  declines `already-restarted` on a `<!-- vibe-merge-conflict-restart -->`
+  comment on the originating issue, so a PR could be parked unowned.
+
+Both now attribute the thread through
+[`conflict_marker_trust.ts`](worker/deno/lib/conflict_marker_trust.ts) against
+the push-capable fleet maintenance set the scan already resolves — no second
+definition of "the fleet", and no extra GitHub call.
+
+**The fail directions are opposite, which is why this was a design decision
+rather than a filter.** A marker that *drives* the destructive step is
+discarded when it cannot be attributed: fewer counted attempts means the PR is
+**not** abandoned. A marker that *suppresses* it is the only bound on how often
+the fleet closes and re-raises one issue's work, so discarding it would relax
+that bound — an unattributable restart claim therefore **declines** the abandon
+(`restart-claim-unverifiable`, escalated to a human naming the route) instead.
+An outsider's claim is still simply dropped, which is the fix; only a claim
+with no readable author, or none comparable because no fleet identity is
+configured, refuses. `trustedAuthors` is a **required** dependency of the rung,
+so no call site can read a claim off a comment anybody could have written.
+
+`MARKER_DEDUP_AUTHOR_UNVERIFIED_CONSUMERS` is empty again. Directions are
+pinned by `worker/deno/tests/conflict_marker_trust_test.ts` and the
+outsider-authored cases in `conflict_abandon_restart_test.ts` and
+`pr_merge_conflict_scan_test.ts`.
+
 ### 6. Egress Containment — Per-Run Write-Repo Allowlist
 
 The mitigations above narrow what untrusted content can *say* to the worker; egress containment narrows what a successful injection can *do*. Without it, an injection that reads a private repo can post the contents as a public comment in a different repo (four of the monitored repos are public, so the exfiltration sink is real).
@@ -1430,6 +1504,7 @@ The worker maintains a **per-run allowlist of repos it may write to** and valida
 
 - **Chokepoint (worker process).** Enforcement runs at the single lowest-level `gh` **spawn** (`spawnGh` in `worker/deno/lib/gh_spawn.ts`) — the shared path every comment / label / PR / `gh api` write **the worker itself** performs flows through, including `runGhCommandRaw` in `worker/deno/lib/github.ts`. The target `owner/repo` is derived by the existing mutation classifier (`audit_mutation_classifier.ts`). This chokepoint does *not* see the agent subprocess's own `gh` calls; those are covered by the shim in §6a.
 - **The chokepoint is enforced by the quality gate.** Until the contract was aspirational: ~20 modules spawned `gh` with their own `new Deno.Command("gh", …)`, so remote branch deletion, PR merge, issue close and branch-protection rewrites skipped both this allowlist and the audit journal. All of them now route through `spawnGh`/`runGhOrThrow`, and the `gh spawn chokepoint` quality check (`gh_spawn_chokepoint_check.ts`) fails the build on any new direct spawn outside `gh_spawn.ts`.
+- **A variable binary name no longer evades that check.** The check matched a **literal** `new Deno.Command("gh", …)`, so five modules that spawned `new Deno.Command(cmd[0]!, …)` and were handed `["gh", "api", …]` by their callers were direct `gh` spawns the gate reported as a clean tree (Issue #1227): `language_detector.ts`, `workflow_auditor.ts`, `repo_visibility.ts`, `recent_activity.ts` and the `gh --version` / `gh extension` calls in `software_updates.ts`. All five now delegate `gh` to the chokepoint, and both checks also flag a **variable** binary in any module that names the guarded binary at the head of an argv literal and does not import the chokepoint.
 - **Labels applied at issue creation have the same shape of chokepoint (Issue #1276).** The worker label guard was wired into the two paths that label an *existing* issue, while the 18 idle-task templates applied theirs via `gh issue create --label` and never reached it — the guard's own documentation asserted an invariant the code did not have. Every creation argv now builds its labels with `guardedLabelArgs` (`guarded_issue_labels.ts`), which asserts each one through `assertWorkerCanApplyLabel` and throws rather than dropping a refused label silently, and the `issue-create label guard` quality check (`issue_create_label_check.ts`) fails the build on any new `--label` argument reaching a `create` argv without it.
 - **Undeterminable targets fail closed.** The allowlist used to return early whenever no repo could be derived from the argv, so `gh api graphql` mutations, absolute `https://api.github.com/…` endpoints, and unlisted root verbs (`gist`, `ruleset`, `workflow`) passed unchecked and unjournalled. A mutation whose target repo cannot be determined is now refused with a `WriteTargetUndeterminableError`, a `[SECURITY] [WRITE_TARGET_UNDETERMINABLE]` line and a `blocked-*` journal entry. Absolute endpoints resolve their repo, GraphQL *reads* remain reads, and the worker's own non-repo mutation (`changeUserStatus`, the profile status) is a named exception.
 - **An absolute endpoint's HOST is checked, not just its path.** Resolving the repo out of an absolute endpoint (above) stripped any `scheme://host/` prefix without ever looking at the host, so a URL whose *path* named an allowed repository classified as an allowed on-repo write however far from GitHub it actually pointed — and `gh` then sent the request, field and body data included, to that host. The allowlist exists to decide *where* a write may go, and such a request never reaches GitHub, so nothing server-side stood behind it either (Issue #1420). An absolute endpoint now resolves a repo only when it addresses `GITHUB_API_HOST` (`api.github.com`); anything else is `scope: "unknown"` and takes the fail-closed path above. The comparison is against the **parsed hostname**, because a substring or prefix test on the raw URL is fooled by userinfo (`https://api.github.com@elsewhere.example/…`, whose host is `elsewhere.example`) and by a suffix (`evil-api.github.com.attacker.example`). The `repos/{owner}/{repo}/…` placeholder form is host-checked on the same footing: `gh` resolves it from the current clone, which is what makes it cwd-scoped and exempt from the allowlist comparison, and that reasoning holds only for a request actually bound for GitHub's API. A GitHub Enterprise deployment's absolute endpoints therefore fail closed; the host is deliberately not read from `GH_HOST`, which reaches the classifier through the same argv-adjacent environment the guard distrusts, and the relative endpoint form every ordinary call uses is unaffected.
@@ -1511,7 +1586,7 @@ flowchart TD
 
 The subprocess/argv sweep of every `worker/deno/lib` module that spawns a process (Issue #1214, parent #1209) surfaced two classes, both fixed. The swept paths are recorded in [`docs/audits/security-sweep-1214-subprocess-argv.md`](docs/audits/security-sweep-1214-subprocess-argv.md).
 
-- **`git` has a chokepoint too, and it is now enforced.** `runGitCommand` (`worker/deno/lib/git_timeout.ts`) owns three controls no caller may skip: the `AbortController` timeout, the audit journal for git mutations, and the work-volume fault detector. Seven modules had grown their own `new Deno.Command("git", …)` and skipped all three — including the stale-work-dir rescue, which ran `git push origin <branch>` untimed and unjournalled, so an unresponsive remote hung the worker outright rather than timing out. All seven now route through `runGitCommand`, and the `git spawn chokepoint` quality check (`git_spawn_chokepoint_check.ts`) fails the build on any new direct spawn outside `git_timeout.ts` — the same architectural invariant `gh_spawn_chokepoint_check.ts` enforces for `gh`, sharing its scanner via `spawn_chokepoint_scan.ts`. The benchmark harness (`benchmark.ts`) reached `git` through a variable and so stayed invisible to that check; its fixture repositories are built through `runGitCommand` too (Issue #1396), which is what lets a benchmark step failing with `Input/output error` record the work-volume fault the claim guards read rather than being reported as a slow benchmark.
+- **`git` has a chokepoint too, and it is now enforced.** `runGitCommand` (`worker/deno/lib/git_timeout.ts`) owns three controls no caller may skip: the `AbortController` timeout, the audit journal for git mutations, and the work-volume fault detector. Seven modules had grown their own `new Deno.Command("git", …)` and skipped all three — including the stale-work-dir rescue, which ran `git push origin <branch>` untimed and unjournalled, so an unresponsive remote hung the worker outright rather than timing out. All seven now route through `runGitCommand`, and the `git spawn chokepoint` quality check (`git_spawn_chokepoint_check.ts`) fails the build on any new direct spawn outside `git_timeout.ts` — the same architectural invariant `gh_spawn_chokepoint_check.ts` enforces for `gh`, sharing its scanner via `spawn_chokepoint_scan.ts`. Three further modules reached `git` through a **variable** binary the literal pattern could not see — `benchmark.ts`, `dependency_lock_regen.ts` and `security_tree_sweep.ts` — and now route through `runGitCommand` as well (Issue #1227). For the benchmark harness that check was blind twice over: its fixture repositories are built through `runGitCommand` too (Issue #1396), which is what lets a benchmark step failing with `Input/output error` record the work-volume fault the claim guards read rather than being reported as a slow benchmark.
 - **Repository-supplied code runs with a BUILT environment, never an inherited one.** `untrusted_command_env.ts` exists because the worker executes code it did not write, and an inherited environment hands that code every credential the run holds. The control was wired into the quality-gate spawn only; three sibling spawns of repository-supplied code inherited the worker's whole environment — the pre-flight gate (whose scripts are, by documented design, supplied by the target repo), the per-repo `bump-deps.sh`, and the lock-file regeneration tools that run `npm install` / `deno install` / `cargo update` / `go mod tidy` over a manifest the repository controls. `echo $CLAUDE_CODE_OAUTH_TOKEN` in any of those was the whole exploit. All three now build the child environment from `buildUntrustedCommandEnv()` with `clearEnv: true`, so only allowlisted names — `PATH`, `HOME`, the toolchain caches — are in scope. A fourth sibling, the per-repo `pre_setup_command` that runs the repository's own dependency setup (`runPreSetupCommand`), was the last spawn still inheriting the worker's environment and now builds it the same way, layering only `REPO_PATH` and `REPO_NAME` on top (Issue #1285).
 
 The chokepoint sweep of Issue #1217 then found the same asymmetry one level up: the `git` chokepoint existed but redacted nothing, and the agent had no `git` wrapper at all. Both halves are now closed (Issue #1284).

@@ -471,34 +471,47 @@ export async function getPromptsCommit(
   repoDir?: string,
 ): Promise<Result<string>> {
   const dir = repoDir ?? getPromptsDir();
-  const result = await runGitCommand(
-    ["-C", dir, "rev-parse", "--short", "HEAD"],
-  );
-  if (!result.ok) {
+  try {
+    // Issue #1214: every git spawn goes through the timeout chokepoint.
+    const result = await runGitCommand(
+      ["-C", dir, "rev-parse", "--short", "HEAD"],
+    );
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to resolve prompts commit in ${dir}: ${result.error.message}`,
+        ),
+      };
+    }
+    const output = result.value;
+    if (output.code !== 0) {
+      const stderr = output.stderr.trim();
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to resolve prompts commit in ${dir}: ${stderr}`,
+        ),
+      };
+    }
+    const commit = output.stdout.trim();
+    if (!commit) {
+      return {
+        ok: false,
+        error: new Error(`Empty commit hash resolved in ${dir}`),
+      };
+    }
+    return { ok: true, value: commit };
+  } catch (error: unknown) {
     return {
       ok: false,
       error: new Error(
-        `Failed to resolve prompts commit in ${dir}: ${result.error.message}`,
+        `Failed to resolve prompts commit in ${dir}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       ),
     };
   }
-  const { code, stdout, stderr } = result.value;
-  if (code !== 0) {
-    return {
-      ok: false,
-      error: new Error(
-        `Failed to resolve prompts commit in ${dir}: ${stderr.trim()}`,
-      ),
-    };
-  }
-  const commit = stdout.trim();
-  if (!commit) {
-    return {
-      ok: false,
-      error: new Error(`Empty commit hash resolved in ${dir}`),
-    };
-  }
-  return { ok: true, value: commit };
 }
 
 /**

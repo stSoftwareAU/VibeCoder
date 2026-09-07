@@ -14,7 +14,12 @@ import { runGitCommand, runGitCommandChecked } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import { recoverFromPushRejection } from "./git_push_recovery.ts";
 import { describeUnpushedCommits } from "./git_remote_head.ts";
-import { assertSafeGitRef, buildPushArgs } from "./git_ref_args.ts";
+import {
+  assertSafeGitRef,
+  assertSafeRefComponent,
+  buildFetchArgs,
+  buildPushArgs,
+} from "./git_ref_args.ts";
 import { assertSafeToCommit } from "./pre_commit_safety.ts";
 import { runPreFlightGate } from "./pre_flight_gate.ts";
 import type { PreFlightRunner } from "./pre_flight_gate.ts";
@@ -638,9 +643,23 @@ export async function ensureDefaultBranchCurrent(
   defaultBranch: string,
   options: GitCommandOptions = {},
 ): Promise<Result<string>> {
+  // A repo-derived default branch (setupRepo reads it from
+  // `.vibe_default_branch` inside the clone, Issue #1269) reaches git as a
+  // positional here and in the `git branch -f` below, and is interpolated
+  // into `origin/<branch>` — so it is validated as a ref *component*, not
+  // merely checked for a leading dash.
+  try {
+    assertSafeRefComponent(defaultBranch, "default branch name");
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+
   // Fetch the latest changes
   const fetchResult = await runGitCommandChecked(
-    ["fetch", "origin", defaultBranch],
+    buildFetchArgs("origin", defaultBranch),
     options,
   );
 

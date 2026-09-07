@@ -56,6 +56,7 @@ import {
 } from "./side_repo_clone_args.ts";
 import { resolveLocalDefaultBranch } from "./git_push.ts";
 import { createLogger } from "./logger.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 import {
   gzipOldWorkerLogs,
   type GzipWorkerLogsResult,
@@ -226,7 +227,6 @@ function utcTimestamp(date: Date = new Date()): string {
   return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-/** Append a single line (newline-terminated) to a file, creating it if absent. */
 /**
  * Append one timestamped line to `${logDir}/run_core.log` — best-effort,
  * never throws. Shared by the bootstrap prelude and the per-launch run-mode
@@ -244,8 +244,20 @@ export async function appendRunCoreLogLine(
   }
 }
 
+/**
+ * Append a single line (newline-terminated) to a file, creating it if absent.
+ *
+ * The line is redacted first (Issue #1258). `run_core.log` is written outside
+ * `createLogger`, and the console patch covers `console.*` only — not a file
+ * write — so nothing else on this path masks a secret. The host-side checkout
+ * update feeds it git stderr, which is the canonical carrier of a tokenised
+ * remote URL, so this is the chokepoint for every byte this module appends to
+ * the log directory.
+ */
 async function appendLine(filePath: string, line: string): Promise<void> {
-  await Deno.writeTextFile(filePath, `${line}\n`, { append: true });
+  await Deno.writeTextFile(filePath, `${redactSecrets(line)}\n`, {
+    append: true,
+  });
 }
 
 /**
@@ -328,7 +340,11 @@ export function createDefaultBootstrapDeps(logger?: Logger): BootstrapDeps {
     gzipPriorWorkerLogs: (logDir, currentLogFile) =>
       gzipOldWorkerLogs(logDir, { currentLogFile }),
     appendRunCoreLog: appendRunCoreLogLine,
-    checkUpdates: (options) => checkSoftwareUpdates(log, options ?? {}),
+    checkUpdates: async (options) => {
+      // The outcome is for the CLI command's exit status (Issue #1270); the
+      // bootstrap's own contract stays best-effort and void.
+      await checkSoftwareUpdates(log, options ?? {});
+    },
     setEnv: (name, value) => {
       try {
         Deno.env.set(name, value);

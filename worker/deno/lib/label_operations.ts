@@ -11,7 +11,11 @@
 import type { Result } from "../types.ts";
 import { runGhCommand } from "./github.ts";
 import type { LabelManagerDeps } from "./label_types.ts";
-import { getCachedLabels, labelCacheInvalidate } from "./label_cache.ts";
+import {
+  defaultLabelCacheDir,
+  getCachedLabels,
+  labelCacheInvalidate,
+} from "./label_cache.ts";
 import { invalidateTimelineCache } from "./timeline_cache.ts";
 import {
   getLabelByName,
@@ -130,8 +134,9 @@ export async function ensureLabelExists(
   const ghCommandFn = deps.ghCommandFn ?? runGhCommand;
   const canonicalColour = colour ?? getLabelColour(labelName);
   const canonicalDescription = description ?? getLabelDescription(labelName);
-  const cacheDir = deps.cacheDir ??
-    `${Deno.env.get("TMPDIR") ?? "/tmp"}/vibe-label-cache`;
+  // Issue #1242: a per-account directory, not the fixed
+  // `${TMPDIR}/vibe-label-cache` every account on the host shared.
+  const cacheDir = deps.cacheDir ?? defaultLabelCacheDir();
   const ttlSeconds = deps.cacheTtlSeconds ?? 3600;
 
   // Check cached labels first (Issue #333)

@@ -350,7 +350,7 @@
       "chunk": "12d",
       "title": "environment, configuration and secret sinks",
       "ledger": "docs/audits/security-sweep-1217-env-config-secrets.md",
-      "definition": "grep -rl \"Deno.env\" lib/ --include='*.ts' minus 12a, 12b and 12c",
+      "definition": "grep -rl \"Deno.env\" lib/ --include='*.ts' minus 12a, 12b and 12c; plus container_stamp.ts, the stamp reader this slice's SEC-1217-11 fix (#1262) extracted from agent_provider.ts, service_account_env.ts and stuck_issue_detector.ts",
       "status": "swept",
       "paths": [
         "worker/deno/lib/acting_github_user.ts",
@@ -361,6 +361,7 @@
         "worker/deno/lib/command_work_dir.ts",
         "worker/deno/lib/config_validator.ts",
         "worker/deno/lib/container_launch.ts",
+        "worker/deno/lib/container_stamp.ts",
         "worker/deno/lib/credential_preflight.ts",
         "worker/deno/lib/env_lookup.ts",
         "worker/deno/lib/gemini_env.ts",
@@ -495,6 +496,7 @@
         "worker/deno/lib/config_unknown_keys.ts",
         "worker/deno/lib/conflict_intent_audit.ts",
         "worker/deno/lib/conflict_intent_context.ts",
+        "worker/deno/lib/conflict_marker_trust.ts",
         "worker/deno/lib/conflict_queue_order.ts",
         "worker/deno/lib/console_redaction.ts",
         "worker/deno/lib/console_redaction_entrypoint_check.ts",
@@ -592,6 +594,7 @@
         "worker/deno/lib/handover_prompt_note.ts",
         "worker/deno/lib/hardcoded_branch_check.ts",
         "worker/deno/lib/heartbeat.ts",
+        "worker/deno/lib/heartbeat_freshness.ts",
         "worker/deno/lib/heartbeat_recovery_audit.ts",
         "worker/deno/lib/heartbeat_recovery_classifier.ts",
         "worker/deno/lib/heartbeat_storage.ts",
@@ -706,6 +709,7 @@
         "worker/deno/lib/pr_no_changes_response.ts",
         "worker/deno/lib/pr_run_provenance.ts",
         "worker/deno/lib/pr_summary_loader.ts",
+        "worker/deno/lib/pr_title_build.ts",
         "worker/deno/lib/pr_title_issue_ref.ts",
         "worker/deno/lib/pre_commit_safety.ts",
         "worker/deno/lib/preserved_wip_branch.ts",
@@ -738,6 +742,8 @@
         "worker/deno/lib/rate_limit_wait.ts",
         "worker/deno/lib/reactive_phase_timeout.ts",
         "worker/deno/lib/recovery_telemetry.ts",
+        "worker/deno/lib/redact_json.ts",
+        "worker/deno/lib/redact_truncate_order_check.ts",
         "worker/deno/lib/redacted_text.ts",
         "worker/deno/lib/references_doc.ts",
         "worker/deno/lib/release_notice.ts",
@@ -807,6 +813,7 @@
         "worker/deno/lib/terminal_title.ts",
         "worker/deno/lib/timeline_batch_registry.ts",
         "worker/deno/lib/timeout_extension_telemetry.ts",
+        "worker/deno/lib/tmp_state_dir_check.ts",
         "worker/deno/lib/torn_bytes.ts",
         "worker/deno/lib/transient_network_failure.ts",
         "worker/deno/lib/trust_snapshot.ts",
@@ -839,6 +846,18 @@
         "worker/deno/lib/worktree_cleanup.ts",
         "worker/deno/lib/worktree_progress.ts",
         "worker/deno/lib/xml_escape.ts"
+      ]
+    },
+    {
+      "issue": 1325,
+      "chunk": "12f",
+      "title": "top-up: gh chokepoint modules added after the chunk-12 slices",
+      "ledger": "docs/audits/security-sweep-1325-gh-body-file-io-and-timeout.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12e recorded their coverage: gh_body_file_io.ts (#1254, PR #1304) and gh_timeout.ts (#1229, PR #1319)",
+      "status": "swept",
+      "paths": [
+        "worker/deno/lib/gh_body_file_io.ts",
+        "worker/deno/lib/gh_timeout.ts"
       ]
     }
   ]

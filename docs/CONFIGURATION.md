@@ -1756,8 +1756,9 @@ redaction and the read access that follow. See
 Transcripts are bounded by the housekeeping every run already performs, with
 no operator action:
 
-- `log-rotation` size-rotates `*.jsonl`, transcripts included, into
-  `.jsonl.N` backups.
+- `log-rotation` size-rotates `agent-*.jsonl` transcripts into `.jsonl.N`
+  backups. It rotates only the worker's own log names (Issue #1267) — a
+  third-party `.log` or `.jsonl` sharing the log directory is left alone.
 - `worker-log-cleanup` then applies the worker-log retention policy to
   `agent-*.jsonl` and its rotated and gzipped forms: deleted after **3 days**,
   with a hard cap of **200** retained files, oldest deleted first.
@@ -2357,6 +2358,7 @@ can be overridden via environment variables for testing or special deployments.
 | Git merge timeout                                   | `GIT_MERGE_TIMEOUT`                      | `120`           | Timeout for merge/rebase/pull operations in seconds                                               |
 | GitHub CLI (Command-Line Interface) command timeout | `GH_COMMAND_TIMEOUT`                     | `60`            | Timeout for individual `gh` CLI commands in seconds                                               |
 | GitHub clone timeout                                | `GH_CLONE_TIMEOUT`                       | `600`           | Timeout for `gh repo clone` operations in seconds (large repos on shared networks need more time) |
+| GitHub paginated read timeout | `GH_PAGINATED_TIMEOUT` | `300` | Timeout for a `gh api --paginate` read in seconds — one call walks every page, so it outlives a single request |
 | GitHub rate-limit cooldown | `GH_RATE_LIMIT_COOLDOWN` | `300` | Rate-limit circuit breaker cooldown in seconds |
 | Assigned no-heartbeat timeout                       | `ASSIGNED_NO_HEARTBEAT_TIMEOUT`          | `1800`          | Grace period for assigned issues with no heartbeat before recovery (30 minutes)                   |
 | Stale assignment timeout                            | `STALE_ASSIGNMENT_TIMEOUT`               | `14400`         | Timeout for GitHub-based stale assignment recovery (4 hours)                                      |
@@ -2368,8 +2370,8 @@ can be overridden via environment variables for testing or special deployments.
 | Circuit breaker state expiry                        | `CIRCUIT_BREAKER_STATE_EXPIRY_SECONDS`   | `3600`          | Expiry threshold for persisted circuit breaker state (1 hour)                                     |
 | Operation backoff threshold                         | `OPERATION_BACKOFF_THRESHOLD`            | `2`             | Consecutive failure threshold for operation-specific backoff escalation                           |
 | Failure state expiry                                | `FAILURE_STATE_EXPIRY_SECONDS`           | `3600`          | Expiry threshold for persisted failure tracker state (1 hour)                                     |
-| Software update check interval                      | `SOFTWARE_UPDATE_CHECK_INTERVAL_SECONDS` | `604800`        | How often to check for software updates (7 days)                                                  |
-| Claude update timeout                               | `CLAUDE_UPDATE_TIMEOUT`                  | `120`           | Claude CLI update timeout in seconds                                                              |
+| Software update check interval                      | `SOFTWARE_UPDATE_CHECK_INTERVAL_SECONDS` | `604800`        | How often to check for software updates (7 days). Must be a positive whole number of seconds      |
+| Claude update timeout                               | `CLAUDE_UPDATE_TIMEOUT`                  | `120`           | Claude CLI update timeout in seconds. Must be a positive whole number of seconds                  |
 | Claude update kill-after                            | `CLAUDE_UPDATE_KILL_AFTER`               | `10`            | Claude CLI update kill grace period in seconds                                                    |
 | GitHub CLI update timeout                           | `GH_UPDATE_TIMEOUT`                      | `120`           | `gh` CLI update timeout in seconds                                                                |
 | GitHub CLI update kill-after                        | `GH_UPDATE_KILL_AFTER`                   | `10`            | `gh` CLI update kill grace period in seconds                                                      |
@@ -2382,6 +2384,21 @@ can be overridden via environment variables for testing or special deployments.
 | Answer truncate length                              | `ANSWER_TRUNCATE_LENGTH`                 | `500`           | Maximum characters to keep from a bot answer before truncating                                    |
 | Pre-setup command timeout                           | `PRE_SETUP_TIMEOUT`                      | `300`           | Timeout for repository pre-setup commands (5 minutes)                                             |
 | GitHub issue list limit                             | `GH_ISSUE_LIST_LIMIT`                    | `50`            | Default limit for `gh issue list` queries                                                         |
+
+### ⏱️ Every `gh` invocation is bounded
+
+The three `gh` timeouts are applied at the `gh` chokepoint itself
+([`worker/deno/lib/gh_spawn.ts`](../worker/deno/lib/gh_spawn.ts) via
+[`gh_timeout.ts`](../worker/deno/lib/gh_timeout.ts)), not by each caller
+(Issue #1229): `GH_CLONE_TIMEOUT` for `gh repo clone`, `GH_PAGINATED_TIMEOUT`
+for a `gh api --paginate` read, and `GH_COMMAND_TIMEOUT` for everything else. A
+call that exceeds its budget is aborted and reported loudly — exit code `124`
+with `TIMEOUT: gh <args> timed out after <n>s` on stderr — so a stalled GitHub
+call can no longer hang the run. A caller that supplies its own `AbortSignal`
+(the rate-limit wrapper in `gh_wrapper.ts`) keeps its own deadline.
+
+An override that is missing, unparseable or non-positive falls back to the
+default: a `GH_COMMAND_TIMEOUT=0` cannot restore unbounded behaviour.
 
 ### 🥇 The config file wins over the environment
 
@@ -2543,7 +2560,7 @@ operational purposes:
 | `VIBE_DAILY_SPEND_CEILING_USD` | `0` (disabled) | Daily estimated model-spend ceiling in USD |
 | `VIBE_HOST_DISK_LOW_FLOOR_GB` | `20` | Gigabyte term of the claiming floor. The `.config.json` key `host_disk_low_floor_gb` wins over it — see [The claiming floor](#the-claiming-floor-issue-732) |
 | `VIBE_HOST_DISK_LOW_FLOOR_PERCENT` | `10` | Percentage term of the claiming floor. The `.config.json` key `host_disk_low_floor_percent` wins over it — see [The claiming floor](#the-claiming-floor-issue-732) |
-| `VIBE_CREDIT_LOG_DIR`           | worker workDir | Directory holding the `.credit_log_YYYY-MM-DD.json` files      |
+| `VIBE_CREDIT_LOG_DIR`           | `<workDir>/.credit-logs` | Directory holding the `.credit_log_YYYY-MM-DD.json` files. The default is worker-private (`0700`) so the untrusted `agent` account cannot plant a symlink at the log path or delete the ceiling's only input — see [Where the credit logs live](#where-the-credit-logs-live-issue-1239) |
 | `VIBE_SIDE_REPO_CLONE_ARGS`     | `--filter=blob:none` | `git clone` arguments a gate uses for the sibling data repos it pulls in — see [Side/data repo clones are blobless](CONTAINER.md#sidedata-repo-clones-are-blobless-issue-243) |
 | `WORK_VOLUME_SIDE_REPO_MAX_AGE_DAYS` | `3` | Idle days before a side/data clone is aged out of the work volume |
 | `MERGED_PR_SWEEP_ISSUE_LIMIT` | `200` | Open issues examined per repo by the housekeeping merged-PR issue sweep (Issue #504) |
@@ -2640,7 +2657,44 @@ billed invoices — treat it as a guard rail, not an accounting record. A credit
 log that cannot be read is reported as `UNVERIFIED` rather than passed as
 under-budget: a monitoring fault must not halt the fleet, but it is never
 silent. Set `VIBE_CREDIT_LOG_DIR` when the credit logs live somewhere other
-than the worker's work directory.
+than the default directory below.
+
+### Where the credit logs live (Issue #1239)
+
+The logs default to `<workDir>/.credit-logs/`, a directory the worker creates
+`0700`, and each `.credit_log_YYYY-MM-DD.json` is created `0600` through an
+append that refuses to follow a symlink.
+
+They used to sit directly in the work root, which the container shares with
+the untrusted `agent` account (group-writable, setgid, no sticky bit — the
+account the repository's own quality command runs as). That account could
+therefore plant a symlink at the predictable log path and redirect every
+appended JSON line into any file the worker uid can write, or simply delete
+the day's log — and because the ceiling reads only that file, the day's spend
+then read `$0` however much had actually been spent. It can do neither
+inside an owner-only directory: it cannot write the log path, and it cannot
+remove a directory whose contents it cannot unlink.
+
+Two operator-visible consequences:
+
+- Logs written before this change stay in the work root and are no longer
+  summarised. Move them into `.credit-logs/` to keep the history, or delete
+  them — nothing sweeps the old location automatically (`credit-summary
+  --cleanup` only prunes the `--log-dir` it is given). While today's log is
+  still sitting there, the worker logs a `[SPEND_CEILING]` warning at
+  start-up naming both paths, so the mismatch is never a silent `$0`.
+- An explicit `VIBE_CREDIT_LOG_DIR` still wins and is used as given. The
+  worker refuses a log directory another account owns, and strips group/other
+  **write** access from whichever directory it uses (unlinking an entry needs
+  write on its directory); read access is left as the operator set it.
+
+```mermaid
+flowchart LR
+    W["Worker uid 1000"] -- "append 0600, refuses symlinks" --> L["&lt;workDir&gt;/.credit-logs/<br/>.credit_log_YYYY-MM-DD.json"]
+    A["agent uid 1001"] -- "no write, no unlink" --x L
+    L --> C["Daily spend ceiling"]
+    style L fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
 
 An invocation whose model id has no pricing row is charged at a conservative
 **upper bound** rather than counted as `$0` — otherwise a new

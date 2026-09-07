@@ -24,7 +24,13 @@
  *    closing a PR the fleet cannot re-raise loses the work outright;
  * 2. the issue has not already been restarted once — **one abandon per
  *    originating issue**, so a restarted issue whose fresh PR also exhausts
- *    its budget goes to `needs-human` rather than round the loop again;
+ *    its budget goes to `needs-human` rather than round the loop again. The
+ *    claim counts only when a **fleet account** wrote it (Issue #1247): a
+ *    comment body is text any GitHub account may write, and both directions
+ *    were exploitable — an outsider's restart marker stalled the rung for
+ *    ever, and outsider failure markers on the PR thread spent the budget
+ *    that brings the rung here at all. A claim whose author cannot be
+ *    established refuses the abandon rather than relaxing the bound;
  * 3. the issue has no *other* PR of its own; and
  * 4. the issue can actually be re-queued — it already carries the work label,
  *    or the worker is permitted to apply it (`worker_label_guard.ts` refuses
@@ -66,6 +72,7 @@ import { sanitiseIssueText } from "./conflict_intent_context.ts";
 import { addLabelToIssue } from "./label_operations.ts";
 import { isWorkerAppliableLabel } from "./worker_label_guard.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
+import { partitionConflictComments } from "./conflict_marker_trust.ts";
 
 // ---------------------------------------------------------------------------
 // Marker
@@ -89,6 +96,13 @@ export function conflictRestartMarker(repo: string, prNumber: number): string {
   return `${CONFLICT_RESTART_MARKER} pr="${repo}#${prNumber}" -->`;
 }
 
+/** Whether a raw comment carries a restart claim at all. */
+export function carriesRestartMarker(raw: unknown): boolean {
+  if (typeof raw !== "object" || raw === null) return false;
+  const body = (raw as { body?: unknown }).body;
+  return typeof body === "string" && body.includes(CONFLICT_RESTART_MARKER);
+}
+
 /**
  * The PRs a thread's restart markers name, in the order they appear.
  *
@@ -97,17 +111,22 @@ export function conflictRestartMarker(repo: string, prNumber: number): string {
  * restarted and its replacement failed too", and the human-facing text has to
  * tell them apart. An unparseable marker still counts as a restart: it is a
  * claim, and the bound must fail towards not abandoning twice.
+ *
+ * **Author-blind by construction** (Issue #1247): this marker *suppresses* the
+ * destructive step, so discarding one that cannot be attributed would relax
+ * the "one restart per originating issue" bound rather than tighten it.
+ * {@link abandonAndRestart} therefore attributes the thread first and refuses
+ * outright when a claim cannot be attributed, instead of quietly proceeding.
+ * Pass the trusted comments only.
  */
 export function restartMarkerPrNumbers(
   comments: readonly unknown[],
 ): Array<number | null> {
   const found: Array<number | null> = [];
   for (const raw of comments) {
-    if (typeof raw !== "object" || raw === null) continue;
-    const body = (raw as { body?: unknown }).body;
-    if (typeof body !== "string") continue;
+    if (!carriesRestartMarker(raw)) continue;
+    const body = (raw as { body: string }).body;
     const index = body.indexOf(CONFLICT_RESTART_MARKER);
-    if (index < 0) continue;
     const match = /pr="[^"#]*#(\d+)"/.exec(body.slice(index));
     const number = match ? Number(match[1]) : NaN;
     found.push(Number.isSafeInteger(number) && number > 0 ? number : null);
@@ -243,6 +262,20 @@ export type AbandonDeclineReason =
    * abandon of it started and did not finish.
    */
   | { kind: "already-restarted"; issueNumber: number; samePr: boolean }
+  /**
+   * A restart claim is on the issue but its author cannot be established, so
+   * the one-abandon-per-issue bound cannot be evaluated (Issue #1247).
+   *
+   * Distinct from `already-restarted`: there the fleet's own claim was read
+   * and honoured. Here the claim carries no readable author, or no fleet
+   * identity is configured to compare it against — and a destructive step
+   * must not proceed on a bound it cannot check.
+   */
+  | {
+    kind: "restart-claim-unverifiable";
+    issueNumber: number;
+    claimCount: number;
+  }
   /** The issue already has another PR of its own. */
   | { kind: "other-open-pr"; issueNumber: number; prUrl: string }
   /** The issue could not be put back in a queue the fleet reads. */
@@ -333,6 +366,18 @@ export function exhaustedEscalationRoute(
         kind: "restart-exhausted",
         issueNumber: reason.issueNumber,
         samePr: reason.samePr,
+      };
+    case "restart-claim-unverifiable":
+      return {
+        kind: "abandon-declined",
+        detail: `Issue #${reason.issueNumber} carries ${reason.claimCount} ` +
+          "merge-conflict restart claim(s) whose author could not be " +
+          "established — the comment names no author, or this host has no " +
+          "fleet identity configured (`service_accounts` / " +
+          "`fleet_pr_authors`) to compare it against. That claim is the only " +
+          "bound on how often the fleet closes and re-raises this work, so " +
+          "the PR was left open rather than abandoned on a bound that could " +
+          "not be checked.",
       };
     case "other-open-pr":
       return {
@@ -431,6 +476,10 @@ export interface AbandonRestartRequest {
    * the scan does. Omit it and the rung fetches the thread itself; it is
    * never assumed empty, because "no failure comment survives" is a claim
    * this comment makes in public and an unread thread is not evidence for it.
+   *
+   * Attributed against {@link AbandonRestartDeps.trustedAuthors} either way
+   * (Issue #1247), so a caller passing an unfiltered thread cannot publish an
+   * outsider's text as the fleet's own record.
    */
   prComments?: readonly unknown[];
 }
@@ -439,6 +488,19 @@ export interface AbandonRestartRequest {
 export interface AbandonRestartDeps {
   /** Runs `gh`, returning stdout; throws on failure. */
   gh: (args: string[]) => Promise<string>;
+  /**
+   * Fleet logins whose marker comments count (Issue #1247).
+   *
+   * **Required**, so no call site can read a restart claim or an attempt
+   * record off a comment anybody could have written — the same shape
+   * `merge_conflict_deferrals.ts` uses for its own marker dedup. Supply the
+   * push-capable maintenance set (`resolveFleetMaintenanceAuthorSet`).
+   *
+   * An empty list is not a shortcut: it means no identity was resolved, so a
+   * restart claim on the issue cannot be attributed and the abandon declines
+   * rather than closing a PR on a bound it cannot check.
+   */
+  trustedAuthors: readonly string[];
   logger?: Logger;
   /** Label that puts the restarted issue back in the queue. */
   workLabel?: string;
@@ -873,7 +935,36 @@ export async function abandonAndRestart(
   } catch (error) {
     return failed("restart-marker", error, issueNumber);
   }
-  const claimed = restartMarkerPrNumbers(issueComments);
+  // Issue #1247: the claim is only a bound if the fleet wrote it. An
+  // outsider's marker is discarded — otherwise one planted comment stalls
+  // every conflicted PR for this issue for ever — but a claim that cannot be
+  // attributed at all refuses the abandon, because discarding *that* would
+  // relax the bound on a step that closes a PR.
+  const claimComments = issueComments.filter(carriesRestartMarker);
+  const attribution = partitionConflictComments(
+    claimComments,
+    deps.trustedAuthors,
+  );
+  if (attribution.unattributable > 0) {
+    return {
+      outcome: "declined",
+      reason: {
+        kind: "restart-claim-unverifiable",
+        issueNumber,
+        claimCount: attribution.unattributable,
+      },
+    };
+  }
+  const outsiderClaims = claimComments.length - attribution.trusted.length;
+  if (outsiderClaims > 0) {
+    logger?.warn?.(
+      `Ignored ${outsiderClaims} merge-conflict restart claim(s) on issue ` +
+        `#${issueNumber} authored outside the fleet — a marker anyone can ` +
+        "post must not stall the restart",
+      { repo, prNumber, issueNumber, outsiderClaims },
+    );
+  }
+  const claimed = restartMarkerPrNumbers(attribution.trusted);
   if (claimed.length > 0) {
     return {
       outcome: "declined",
@@ -927,9 +1018,17 @@ export async function abandonAndRestart(
 
   let history: FailedAttemptHistory;
   try {
+    // Attributed here too (Issue #1247), whichever side supplied the thread:
+    // this comment is permanent and public, so quoting an outsider's text
+    // back as "what the attempts recorded" would publish a fabricated
+    // record — and the consulted-issue numbers it lists come from the same
+    // bodies. Idempotent when the caller already filtered.
     history = summariseFailedAttempts(
-      request.prComments ??
-        await fetchIssueCommentPages(repo, prNumber, gh),
+      partitionConflictComments(
+        request.prComments ??
+          await fetchIssueCommentPages(repo, prNumber, gh),
+        deps.trustedAuthors,
+      ).trusted,
     );
   } catch (error) {
     // The abandon comment quotes this thread. Publishing "no failure comment
