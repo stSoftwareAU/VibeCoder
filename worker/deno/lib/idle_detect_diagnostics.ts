@@ -237,19 +237,38 @@ function normaliseIssue(raw: unknown): {
   const v = raw as GhIssue;
   if (typeof v.number !== "number" || !Number.isFinite(v.number)) return null;
   const title = typeof v.title === "string" ? v.title : "";
+  // Two shapes arrive here: raw `gh issue list --json` objects (`labels:
+  // [{name}]`, `assignees: [{login}]`, `milestone: {title}`) and the
+  // already-flattened `FilterableIssue` the shared `issues_all` cache holds
+  // (`labels: string[]`, `assignees: string[]`, `milestone: string`).
   const labels = Array.isArray(v.labels)
-    ? v.labels
-      .map((l) => (typeof l?.name === "string" ? l.name : null))
+    ? (v.labels as unknown[])
+      .map((l) =>
+        typeof l === "string"
+          ? l
+          : (typeof (l as { name?: unknown })?.name === "string"
+            ? (l as { name: string }).name
+            : null)
+      )
       .filter((s): s is string => s !== null)
     : [];
   const assignees = Array.isArray(v.assignees)
-    ? v.assignees
-      .map((a) => (typeof a?.login === "string" ? a.login : null))
+    ? (v.assignees as unknown[])
+      .map((a) =>
+        typeof a === "string"
+          ? a
+          : (typeof (a as { login?: unknown })?.login === "string"
+            ? (a as { login: string }).login
+            : null)
+      )
       .filter((s): s is string => s !== null)
     : [];
-  const milestone = (v.milestone && typeof v.milestone.title === "string")
-    ? v.milestone.title
-    : "";
+  const rawMilestone = v.milestone as unknown;
+  const milestone = typeof rawMilestone === "string"
+    ? rawMilestone
+    : (typeof (rawMilestone as { title?: unknown })?.title === "string"
+      ? (rawMilestone as { title: string }).title
+      : "");
   const body = typeof (v as { body?: unknown }).body === "string"
     ? (v as { body: string }).body
     : undefined;
@@ -844,6 +863,16 @@ export interface AuditClaimableStateOptions {
   /** Injectable gh runner — defaults to the production retry wrapper. */
   ghCommandFn?: (args: string[]) => Promise<string>;
   /**
+   * Read a repo's open issues (already parsed) instead of running
+   * `gh issue list` through `ghCommandFn` (Issue #1456). Production hands in
+   * the iteration's shared `IssueCache`-backed `fetchAllIssues`, so the audit
+   * reads the same `issues_all` payload the census and the scan read — one
+   * GraphQL call per repo per ten minutes instead of an uncached
+   * `--limit 200` listing on every idle tick. Optional; absent, the audit
+   * lists live as before.
+   */
+  openIssuesFn?: (repo: string, limit: number) => Promise<unknown>;
+  /**
    * Supplies a repo's open PRs so the audit can exclude work the Priority 2
    * scan would refuse under `getBlockingPRForIssue` (Issue #4223).
    *
@@ -911,53 +940,10 @@ export async function auditClaimableState(
 
   const perRepo: RepoClaimableSnapshot[] = [];
   for (const repo of opts.repos) {
-    let raw: string;
-    try {
-      raw = await ghFn([
-        "issue",
-        "list",
-        "--repo",
-        repo,
-        "--state",
-        "open",
-        "--json",
-        // Issue #857: `body` carries the dependency references the scan's
-        // eighth gate reads. One extra field on a call already being made —
-        // no extra request, matching how the census gets it free.
-        // Issue #1050: `title` for the same reason — it is the fallback
-        // `isMilestoneTrackingIssue` falls back to for trackers filed before
-        // the body marker existed.
-        "number,title,labels,assignees,milestone,body",
-        "--limit",
-        String(limit),
-      ]);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const failureKind = classifyProbeFailure(message);
-      const snap: RepoClaimableSnapshot = {
-        repo,
-        totalOpen: 0,
-        claimable: 0,
-        reason: "probe_error",
-        errorMessage: message,
-        failureKind,
-      };
-      perRepo.push(snap);
-      recordRepoProbeBestEffort(repo, failureKind);
-      // `reason=probe_error` is deliberately unchanged — downstream log
-      // consumers parse it; `failure_kind` is additive.
-      log(
-        `[idle-detect] tick=${opts.tick} host=${host} repo=${repo} total_open=0 claimable=0 reason=probe_error failure_kind=${failureKind} message=${message}`,
-      );
-      continue;
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const errorMessage = `parse_failed: ${message}`;
+    const recordProbeError = (
+      errorMessage: string,
+      logMessage: string,
+    ): void => {
       const failureKind = classifyProbeFailure(errorMessage);
       const snap: RepoClaimableSnapshot = {
         repo,
@@ -969,10 +955,57 @@ export async function auditClaimableState(
       };
       perRepo.push(snap);
       recordRepoProbeBestEffort(repo, failureKind);
+      // `reason=probe_error` is deliberately unchanged — downstream log
+      // consumers parse it; `failure_kind` is additive.
       log(
-        `[idle-detect] tick=${opts.tick} host=${host} repo=${repo} total_open=0 claimable=0 reason=probe_error failure_kind=${failureKind} message=parse_failed`,
+        `[idle-detect] tick=${opts.tick} host=${host} repo=${repo} total_open=0 claimable=0 reason=probe_error failure_kind=${failureKind} message=${logMessage}`,
       );
-      continue;
+    };
+
+    let parsed: unknown;
+    if (opts.openIssuesFn) {
+      // The shared, cached read — no `gh` call of the audit's own.
+      try {
+        parsed = await opts.openIssuesFn(repo, limit);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        recordProbeError(message, message);
+        continue;
+      }
+    } else {
+      let raw: string;
+      try {
+        raw = await ghFn([
+          "issue",
+          "list",
+          "--repo",
+          repo,
+          "--state",
+          "open",
+          "--json",
+          // Issue #857: `body` carries the dependency references the scan's
+          // eighth gate reads. One extra field on a call already being made —
+          // no extra request, matching how the census gets it free.
+          // Issue #1050: `title` for the same reason — it is the fallback
+          // `isMilestoneTrackingIssue` falls back to for trackers filed before
+          // the body marker existed.
+          "number,title,labels,assignees,milestone,body",
+          "--limit",
+          String(limit),
+        ]);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        recordProbeError(message, message);
+        continue;
+      }
+
+      try {
+        parsed = JSON.parse(raw);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        recordProbeError(`parse_failed: ${message}`, "parse_failed");
+        continue;
+      }
     }
 
     const issues = Array.isArray(parsed)
