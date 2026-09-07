@@ -36,13 +36,13 @@ function userResponse(login: string): CommandOutput {
   return { success: true, stdout: login, stderr: "" };
 }
 
-/** A repo JSON body with the given triage permission. */
-function repoJson(triage: boolean): string {
+/** A repo JSON body with the given triage and push permissions. */
+function repoJson(triage: boolean, push = false): string {
   return JSON.stringify({
     full_name: "org/repo",
     permissions: {
       admin: false,
-      push: false,
+      push,
       pull: true,
       triage,
       maintain: false,
@@ -50,15 +50,28 @@ function repoJson(triage: boolean): string {
   });
 }
 
-Deno.test("classifyRepoAccess - 200 with triage true is ok", async () => {
+Deno.test("classifyRepoAccess - 200 with push true is ok (Issue #1455)", async () => {
   const { runner } = fakeRunner((cmd) => {
     if (cmd.includes("repos/org/repo")) {
-      return { success: true, stdout: repoJson(true), stderr: "" };
+      return { success: true, stdout: repoJson(true, true), stderr: "" };
     }
     return { success: false, stdout: "", stderr: "unexpected" };
   });
   const status = await classifyRepoAccess("org/repo", runner);
   assertEquals(status, "ok");
+});
+
+Deno.test("classifyRepoAccess - 200 with triage but no push is not_pushable, not ok (Issue #1455)", async () => {
+  // The bar is push: a triage-only login passed the old precheck and then
+  // stood the worker down on every cycle, because the trusted-author refresh
+  // cannot list collaborators without push.
+  const { runner } = fakeRunner(() => ({
+    success: true,
+    stdout: repoJson(true, false),
+    stderr: "",
+  }));
+  const status = await classifyRepoAccess("org/repo", runner);
+  assertEquals(status, "not_pushable");
 });
 
 Deno.test("classifyRepoAccess - 200 with triage false is not_assignable", async () => {
@@ -95,7 +108,7 @@ Deno.test("verifyMonitoredCollaborators - all ok files no issue", async () => {
   const { runner, calls } = fakeRunner((cmd) => {
     if (cmd.includes("user")) return userResponse("VibeWorker");
     if (cmd.some((a) => a.startsWith("repos/"))) {
-      return { success: true, stdout: repoJson(true), stderr: "" };
+      return { success: true, stdout: repoJson(true, true), stderr: "" };
     }
     return { success: false, stdout: "", stderr: "unexpected" };
   });
@@ -119,7 +132,7 @@ Deno.test("verifyMonitoredCollaborators - one missing files one issue", async ()
   const { runner, calls } = fakeRunner((cmd) => {
     if (cmd.includes("user")) return userResponse("VibeWorker");
     if (cmd.includes("repos/org/good")) {
-      return { success: true, stdout: repoJson(true), stderr: "" };
+      return { success: true, stdout: repoJson(true, true), stderr: "" };
     }
     if (cmd.includes("repos/org/bad")) {
       return { success: false, stdout: "", stderr: "gh: Not Found (HTTP 404)" };
@@ -189,6 +202,44 @@ Deno.test("verifyMonitoredCollaborators - multiple missing listed in one issue",
   assertEquals(body.includes("org/bad2"), true);
   assertEquals(body.includes("not_visible"), true);
   assertEquals(body.includes("not_assignable"), true);
+  // The remediation grants what the worker needs, not triage (Issue #1455).
+  assertEquals(body.includes("permission=push"), true);
+  assertEquals(body.includes("permission=triage"), false);
+});
+
+Deno.test("verifyMonitoredCollaborators - a triage-only repo is a miss with a push remediation (Issue #1455)", async () => {
+  const { runner, calls } = fakeRunner((cmd) => {
+    if (cmd.includes("user")) return userResponse("VibeWorker");
+    if (cmd.includes("repos/org/data")) {
+      return { success: true, stdout: repoJson(true, false), stderr: "" };
+    }
+    if (cmd.includes("list")) {
+      return { success: true, stdout: "[]", stderr: "" };
+    }
+    if (cmd.includes("create")) {
+      return { success: true, stdout: "url", stderr: "" };
+    }
+    return { success: false, stdout: "", stderr: "unexpected" };
+  });
+
+  const result = await verifyMonitoredCollaborators({
+    repos: ["org/data"],
+    runCommand: runner,
+  });
+
+  assertEquals(result.misses.length, 1);
+  assertEquals(result.misses[0]!.status, "not_pushable");
+  assertEquals(result.issueFiled, true);
+  const createCall = calls.find((c) => c.includes("create"))!;
+  const body = createCall.find((a) => a.includes(PRECHECK_DEDUP_TAG))!;
+  assertEquals(body.includes("not_pushable"), true);
+  assertEquals(body.includes("not a trust source"), true);
+  assertEquals(
+    body.includes(
+      "gh api -X PUT repos/org/data/collaborators/VibeWorker -f permission=push",
+    ),
+    true,
+  );
 });
 
 Deno.test("verifyMonitoredCollaborators - existing open issue is commented not duplicated", async () => {
@@ -239,7 +290,7 @@ Deno.test("verifyMonitoredCollaborators - empty service_accounts files an issue 
   const { runner, calls } = fakeRunner((cmd) => {
     if (cmd.includes("user")) return userResponse("VibeWorker");
     if (cmd.some((a) => a.startsWith("repos/"))) {
-      return { success: true, stdout: repoJson(true), stderr: "" };
+      return { success: true, stdout: repoJson(true, true), stderr: "" };
     }
     if (cmd.includes("list")) {
       return { success: true, stdout: "[]", stderr: "" };
@@ -270,7 +321,7 @@ Deno.test("verifyMonitoredCollaborators - blank-only service_accounts counts as 
   const { runner } = fakeRunner((cmd) => {
     if (cmd.includes("user")) return userResponse("VibeWorker");
     if (cmd.some((a) => a.startsWith("repos/"))) {
-      return { success: true, stdout: repoJson(true), stderr: "" };
+      return { success: true, stdout: repoJson(true, true), stderr: "" };
     }
     if (cmd.includes("list")) {
       return { success: true, stdout: "[]", stderr: "" };
@@ -295,7 +346,7 @@ Deno.test("verifyMonitoredCollaborators - a configured allowlist files nothing",
   const { runner, calls } = fakeRunner((cmd) => {
     if (cmd.includes("user")) return userResponse("VibeWorker");
     if (cmd.some((a) => a.startsWith("repos/"))) {
-      return { success: true, stdout: repoJson(true), stderr: "" };
+      return { success: true, stdout: repoJson(true, true), stderr: "" };
     }
     return { success: false, stdout: "", stderr: "unexpected" };
   });
@@ -349,7 +400,7 @@ Deno.test("verifyMonitoredCollaborators - omitted serviceAccounts skips the iden
   const { runner, calls } = fakeRunner((cmd) => {
     if (cmd.includes("user")) return userResponse("VibeWorker");
     if (cmd.some((a) => a.startsWith("repos/"))) {
-      return { success: true, stdout: repoJson(true), stderr: "" };
+      return { success: true, stdout: repoJson(true, true), stderr: "" };
     }
     return { success: false, stdout: "", stderr: "unexpected" };
   });
