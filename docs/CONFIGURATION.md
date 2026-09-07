@@ -65,6 +65,9 @@ for, such as `fleet_pr_authors` and `worker_name`. The only keys removed are:
 - `repo_config` entries whose repo is not in `repos` — dead config nothing
   reads. Each removal is printed as a warning, and a running worker raises the
   same non-blocking warning at startup config validation.
+- Case-variant `repos` entries — one repository listed twice under different
+  casing. The first spelling is kept and the drop is printed as a warning; see
+  [Monitored Repositories](#-monitored-repositories).
 
 A `.config.json` setup **cannot read** stops the run instead (Issue #1294).
 Only an absent file means "no config yet"; a truncated write, a permission
@@ -4266,3 +4269,26 @@ add or modify repositories, either:
 1. Re-run `./setup.sh` with the appropriate `VIBE_*` environment variables
 2. Add repos: `VIBE_ADD_REPOS="org/new-repo" ./setup.sh`
 3. Edit `.config.json` directly
+
+### One repository, one entry — casing is not a difference
+
+GitHub repository names are case-insensitive, so `org/My-Repo` and
+`org/my-repo` are the **same repository**. Listing both once meant every
+per-repository scan ran twice and the two slots of one worker raced each other
+for its issues (Issue #1546).
+
+Both the worker's config load and `./setup.sh` now collapse case-variant
+`repos` entries to the **first** spelling and say which entry was dropped:
+
+```text
+repos: "stSoftwareAU/GRQ-actual" duplicates "stSoftwareAU/GRQ-Actual"
+(GitHub repository names are case-insensitive) — ignoring the second
+```
+
+It is a warning, not a hard failure, so a casing slip never stands a host
+down — but the file has a defect worth fixing, because anything keyed by the
+configured spelling (watermarks, caches, the write-repo allowlist) is kept
+twice until it is. `./setup.sh` writes the collapsed list back, and
+`--add-repo` for a case-variant of a monitored repository is a no-op naming
+the spelling already in the list. Repositories that genuinely differ — a
+different owner or a different name — are untouched.

@@ -58,7 +58,12 @@ import {
   OPERATIONAL_DEFAULTS,
 } from "./config_defaults.ts";
 import type { VerbosityLevel } from "../types.ts";
-import { REPO_SLUG_PATTERN } from "./repo_slug.ts";
+import type { DuplicateRepoSlug } from "./repo_slug.ts";
+import {
+  dedupeRepoSlugs,
+  duplicateRepoSlugWarning,
+  REPO_SLUG_PATTERN,
+} from "./repo_slug.ts";
 
 /**
  * Pattern matching a valid GitHub `owner/repo` slug.
@@ -398,7 +403,12 @@ export async function loadConfig(
   const prReviewers = file.pr_reviewers ?? [];
   const prReviewer = prReviewers[0] ?? allowedAuthor ?? "";
 
-  const repos = file.repos ?? [];
+  // Issue #1546: GitHub repository names are case-insensitive, so two
+  // spellings of one repository are one repository. Left alone, the second
+  // entry ran every per-repository scan a second time and let the worker's
+  // own slots race each other for its issues.
+  const { repos, duplicates } = dedupeRepoSlugs(file.repos ?? []);
+  warnDuplicateRepos(duplicates);
 
   // Issue #1834: the three discovery labels (top-priority, work-on,
   // low-priority) are hardwired and NOT configurable. issueLabels is the
@@ -1128,6 +1138,34 @@ export function validateConfig(config: WorkerConfig): void {
         `Set ${FLEET_LOGIN_CONFIG_KEYS.join(" and/or ")} in .config.json to ` +
         "the fleet's own GitHub logins (run setup.sh to configure).",
     );
+  }
+}
+
+/** Guards {@link warnDuplicateRepos} to one notice per process. */
+let warnedDuplicateRepos = false;
+
+/** Re-arm the duplicate-repository notice. Test-only. */
+export function _resetDuplicateRepoWarning(): void {
+  warnedDuplicateRepos = false;
+}
+
+/**
+ * Name every `repos` entry dropped as a case-variant (Issue #1546).
+ *
+ * A warning rather than a hard failure, so a host is not stood down over a
+ * casing slip — but loud, because the operator's file has a defect worth
+ * fixing: whatever is keyed by the configured spelling (watermarks, caches,
+ * the write-repo allowlist) forks in two until it is.
+ */
+function warnDuplicateRepos(duplicates: readonly DuplicateRepoSlug[]): void {
+  if (duplicates.length === 0) return;
+  // Once per process: `loadConfig` is re-entered by sub-commands, and the
+  // same defect repeated on every read is noise an operator scrolls past.
+  if (warnedDuplicateRepos) return;
+  warnedDuplicateRepos = true;
+
+  for (const duplicate of duplicates) {
+    console.warn(`⚠️  ${duplicateRepoSlugWarning(duplicate)}`);
   }
 }
 

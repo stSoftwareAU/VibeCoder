@@ -17,6 +17,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   buildOverridesOnly,
+  dedupeConfigRepos,
   loadExistingConfig,
   mergeNonInteractive,
   parseCsv,
@@ -953,4 +954,37 @@ Deno.test("buildOverridesOnly - never writes a removed key back (Issue #805)", (
   );
   assertEquals(result.fleet_health_dir, undefined);
   assertEquals(result.fleet_health_repo, undefined);
+});
+
+// =============================================================================
+// dedupeConfigRepos — one repository per name, whatever the casing (#1546)
+// =============================================================================
+
+Deno.test("dedupeConfigRepos - collapses a case-variant, keeping the first spelling", () => {
+  const result = dedupeConfigRepos({
+    repos: ["stSoftwareAU/GRQ-Actual", "stSoftwareAU/GRQ-actual"],
+  });
+  assertEquals(result.config.repos, ["stSoftwareAU/GRQ-Actual"]);
+  assertEquals(result.duplicates.length, 1);
+  assertEquals(result.duplicates[0]?.dropped, "stSoftwareAU/GRQ-actual");
+});
+
+Deno.test("dedupeConfigRepos - leaves a genuinely distinct list untouched", () => {
+  const config: SetupConfig = { repos: ["org/one", "other/one"] };
+  const result = dedupeConfigRepos(config);
+  assertEquals(result.config, config);
+  assertEquals(result.duplicates, []);
+});
+
+Deno.test("dedupeConfigRepos - an absent repos list is a no-op", () => {
+  const config: SetupConfig = { allowed_authors: ["someone"] };
+  const result = dedupeConfigRepos(config);
+  assertEquals(result.config, config);
+  assertEquals(result.duplicates, []);
+});
+
+Deno.test("dedupeConfigRepos - does not mutate the input config", () => {
+  const config: SetupConfig = { repos: ["org/a", "org/A"] };
+  dedupeConfigRepos(config);
+  assertEquals(config.repos, ["org/a", "org/A"]);
 });

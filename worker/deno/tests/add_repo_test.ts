@@ -574,3 +574,49 @@ Deno.test("defaultAddRepoFsDeps - the production write is owner-only", async () 
     if (mode !== null) assertEquals(mode, 0o600);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Case-variant slugs are the same repository (Issue #1546)
+// ---------------------------------------------------------------------------
+
+Deno.test("addRepoToMonitoredList - refuses a case-variant of a monitored repo", async () => {
+  const original = JSON.stringify({ repos: ["stSoftwareAU/GRQ-Actual"] });
+  const store = { content: original };
+  const result = await addRepoToMonitoredList(
+    "stSoftwareAU/GRQ-actual",
+    "/tmp/.config.json",
+    fsDeps(store),
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.added, false);
+  assertEquals(result.value.existingSpelling, "stSoftwareAU/GRQ-Actual");
+  // No second entry, and no rewrite at all.
+  assertEquals(store.content, original);
+});
+
+Deno.test("addRepoToMonitoredList - an exact match reports no differing spelling", async () => {
+  const store = { content: JSON.stringify({ repos: ["owner/existing"] }) };
+  const result = await addRepoToMonitoredList(
+    "owner/existing",
+    "/tmp/.config.json",
+    fsDeps(store),
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value, { added: false });
+});
+
+Deno.test("addRepoToMonitoredList - a differently-owned repo is still added (Issue #1546)", async () => {
+  const store = { content: JSON.stringify({ repos: ["owner/repo"] }) };
+  const result = await addRepoToMonitoredList(
+    "other/repo",
+    "/tmp/.config.json",
+    fsDeps(store),
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value, { added: true });
+  const written = JSON.parse(store.content) as { repos: string[] };
+  assertEquals(written.repos, ["owner/repo", "other/repo"]);
+});

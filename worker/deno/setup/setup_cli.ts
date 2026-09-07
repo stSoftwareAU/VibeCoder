@@ -1436,6 +1436,15 @@ async function runRepos(
         "It is picked up on the next cycle. Seed its idle-task wrappers with: " +
           `deno run --allow-all worker/deno/mod.ts raise-all-idle-tasks --monitored-repos ${addRepo}`,
       );
+    } else if (result.value.existingSpelling) {
+      // Issue #1546: GitHub repository names are case-insensitive, so this
+      // is the same repository under a different spelling. Appending it
+      // would run its every scan twice and let the worker's two slots race
+      // each other for its issues.
+      printInfo(
+        `${addRepo} is already monitored as ${result.value.existingSpelling} ` +
+          "— GitHub repository names are case-insensitive, so nothing changed.",
+      );
     } else {
       printInfo(`${addRepo} is already monitored — nothing changed.`);
     }
