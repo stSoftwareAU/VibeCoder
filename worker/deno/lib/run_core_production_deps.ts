@@ -3692,7 +3692,10 @@ export async function createProductionRunCoreDeps(
     //     skip-cycle gate in run_core then stands the cycle down. A
     //     fallback would mean a GitHub outage silently restores whatever
     //     stale list sits in `.config.json`, which is the failure mode the
-    //     whole sub-issue exists to prevent.
+    //     whole sub-issue exists to prevent. What it MAY serve on a
+    //     transient failure is the resolver's own in-memory snapshot of a
+    //     real, timestamped fetch (Issue #1453) — and a monitored repo this
+    //     login cannot list is skipped and named, not treated as an outage.
     //  2. The fold is an intersection, not a union: write access on one
     //     monitored repo must not confer trust on another.
     //  3. `applyTrustSnapshot` is the only way in, so the comment-trust
@@ -3715,6 +3718,12 @@ export async function createProductionRunCoreDeps(
         {
           cycleId: `${trustRefreshScope}:${trustRefreshCycle}`,
           log: (message: string) => logger.info(message),
+          warn: (message: string) => logger.warn(message),
+          // Issue #1453: reuse a successful resolve for the configured
+          // window instead of re-listing every monitored repo each cycle.
+          snapshotTtlSeconds: Math.round(
+            config.trustedAuthorsCacheHours * 3600,
+          ),
         },
       );
 
@@ -3728,7 +3737,11 @@ export async function createProductionRunCoreDeps(
       }
 
       const folded = intersectDerivedAuthors(resolved.byRepo);
-      logger.info(formatDerivedAuthorsFoldSummary(resolved.byRepo, folded));
+      // The fold summary is worth one line per fetch, not one per cycle: a
+      // snapshot served inside its TTL changed nothing since it was logged.
+      if (resolved.servedFrom?.snapshot !== "within-ttl") {
+        logger.info(formatDerivedAuthorsFoldSummary(resolved.byRepo, folded));
+      }
       applyTrustSnapshot(folded);
       return { ok: true as const };
     },
