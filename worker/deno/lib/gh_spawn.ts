@@ -119,18 +119,92 @@ export type GhSpawnRunner = (
 export async function buildGhEnv(): Promise<
   Record<string, string> | undefined
 > {
-  const token = await getGhTokenForSubprocess(
+  const token = await mintRunScopedGhToken();
+  if (!token) return undefined;
+
+  const env: Record<string, string> = { ...Deno.env.toObject() };
+  env["GH_TOKEN"] = token;
+  return env;
+}
+
+/** Mints the credential a subprocess authenticates with. Injectable for tests. */
+export type GhTokenMinter = () => Promise<string | undefined>;
+
+/**
+ * Mint an installation token scoped to the run's write-repo allowlist.
+ *
+ * The one place that decides how a run-scoped credential is obtained, shared
+ * by {@link buildGhEnv} (the worker's own `gh` calls) and
+ * {@link withRunScopedGhToken} (the coding agent's). Two copies of this would
+ * be two scopes to keep in step, and the one that drifted would be the one
+ * handed to the agent.
+ */
+export function mintRunScopedGhToken(): Promise<string | undefined> {
+  return getGhTokenForSubprocess(
     Deno.env.get("GITHUB_APP_ID"),
     Deno.env.get("GITHUB_APP_INSTALLATION_ID"),
     Deno.env.get("GITHUB_APP_PRIVATE_KEY_PATH"),
     undefined,
     installationTokenRepoScope(),
   );
-  if (!token) return undefined;
+}
 
-  const env: Record<string, string> = { ...Deno.env.toObject() };
-  env["GH_TOKEN"] = token;
-  return env;
+/**
+ * Overlay a run-scoped `GH_TOKEN` onto an ALREADY-SANITISED child environment
+ * (Issue #1423).
+ *
+ * The write-repo allowlist defends in two layers: the argv classifier refuses
+ * an off-allowlist write before `gh` is spawned, and — since Issue #1391 —
+ * the credential itself cannot reach beyond the run's scope, so a write that
+ * gets past the classifier is still refused by GitHub. The second layer
+ * existed only for the worker's own calls. The coding agent's `gh` runs
+ * through the PATH shim (`gh_guard_shim.ts`) and never reached
+ * {@link buildGhEnv}, so it authenticated with whatever ambient credential
+ * was staged for the container — the installation's full reach. For the one
+ * component driven by untrusted issue and comment text, only layer one
+ * applied.
+ *
+ * This is deliberately NOT `buildGhEnv` (Issue #1423). That function builds
+ * its environment from `Deno.env.toObject()` — the worker's WHOLE
+ * environment, `GITHUB_APP_PRIVATE_KEY_PATH` among it. Handing that to the
+ * agent would undo every exclusion `agent_env.ts`/`claude_env.ts` make and
+ * put the PEM that mints installation tokens in reach of a prompt-injected
+ * shell: a far worse leak than the scoping gap being closed. So the caller's
+ * sanitised environment is the base, and exactly one value is overlaid onto
+ * it.
+ *
+ * `GITHUB_TOKEN` is overwritten when the base carries one, because `gh`
+ * accepts it as an alternative name: leaving the ambient value in place would
+ * park an unscoped credential beside the scoped one.
+ *
+ * Degrades rather than breaks. A host with no GitHub App configured mints
+ * nothing, and the environment is returned untouched so the agent keeps the
+ * ambient auth it has always used — the same fallback `buildGhEnv`'s callers
+ * make.
+ *
+ * Residual risk, recorded rather than hidden: the credential
+ * `gh_credential_stage.ts` stages into `GH_CONFIG_DIR`'s `hosts.yml` is still
+ * on disk and still unscoped. `gh` prefers `GH_TOKEN`, so the guarded path
+ * gets the scoped credential, but a process that reads that file directly
+ * does not. Removing it from the agent's reach is a mount-and-staging change,
+ * tracked separately.
+ *
+ * @param baseEnv - The sanitised child environment, secrets already dropped.
+ * @param mint - How to obtain the token; defaults to
+ *   {@link mintRunScopedGhToken}.
+ * @returns The environment with the scoped credential overlaid, or `baseEnv`
+ *   unchanged when no token could be minted.
+ */
+export async function withRunScopedGhToken(
+  baseEnv: Record<string, string>,
+  mint: GhTokenMinter = mintRunScopedGhToken,
+): Promise<Record<string, string>> {
+  const token = await mint();
+  if (!token) return baseEnv;
+
+  const scoped: Record<string, string> = { ...baseEnv, GH_TOKEN: token };
+  if ("GITHUB_TOKEN" in baseEnv) scoped["GITHUB_TOKEN"] = token;
+  return scoped;
 }
 
 /**
