@@ -70,6 +70,7 @@
 import type { AuditMutation } from "./audit_journal.ts";
 import { recordMutation, resolveRunId } from "./audit_journal.ts";
 import { isAuditJournalEnabled } from "./audit_hook.ts";
+import { resolveGuardModulePath } from "./guard_module_path.ts";
 import {
   GH_GUARD_ALLOW_MARKER,
   GH_GUARD_REFUSE_MARKER,
@@ -235,9 +236,10 @@ export function resolveExecutable(
 
 /** Absolute path of the guard entry point this shim invokes. */
 function defaultGuardModulePath(): string {
-  return decodeURIComponent(
-    new URL("./gh_guard_cli.ts", import.meta.url).pathname,
-  );
+  // Issue #1444: the read-only checkout, not the writable staged copy this
+  // module is running from — the agent must not be able to edit the guard
+  // that constrains it. See `guard_module_path.ts`.
+  return resolveGuardModulePath("gh_guard_cli.ts", import.meta.url);
 }
 
 /**
