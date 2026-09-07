@@ -169,7 +169,7 @@ Deno.test("fleet_telemetry - blocked time is its own idle reason and is not doub
   fresh(0);
   startFleetCycle(0);
   recordBlockedSeconds("rate_limited", 30);
-  recordBlockedSeconds("token_blocked", 20);
+  recordBlockedSeconds("usage_blocked", 20);
   recordCycleIdle("nothing_claimable_empty", 100_000);
 
   const snapshot = getFleetTelemetry(100_000);
@@ -178,7 +178,7 @@ Deno.test("fleet_telemetry - blocked time is its own idle reason and is not doub
   assertEquals(snapshot.rateLimitWaits, 1);
   assertEquals(snapshot.tokenBlockedWaits, 1);
   assertEquals(snapshot.idleByReason["rate_limited"], 30);
-  assertEquals(snapshot.idleByReason["token_blocked"], 20);
+  assertEquals(snapshot.idleByReason["usage_blocked"], 20);
   // 100s cycle: 30 rate-limited + 20 token-blocked + 50 unattributed idle.
   assertEquals(snapshot.idleByReason["nothing_claimable_empty"], 50);
   assertEquals(snapshot.idleSeconds, 100);
@@ -200,7 +200,7 @@ Deno.test("fleet_telemetry - a block inside a run counts as blocked, not idle", 
   startFleetCycle(0);
   beginBusy("serial", 0);
   // The agent's own retry ladder sleeps in-process, mid-run.
-  recordInRunBlockedSeconds("token_blocked", 30);
+  recordInRunBlockedSeconds("usage_blocked", 30);
   endBusy("serial", 60_000);
   recordCycleIdle("served", 100_000);
 
@@ -209,7 +209,7 @@ Deno.test("fleet_telemetry - a block inside a run counts as blocked, not idle", 
   assertEquals(snapshot.tokenBlockedSeconds, 30);
   assertEquals(snapshot.tokenBlockedWaits, 1);
   // … but the fleet held a claim throughout, so it is not idle.
-  assertEquals(snapshot.idleByReason["token_blocked"], undefined);
+  assertEquals(snapshot.idleByReason["usage_blocked"], undefined);
   assertEquals(snapshot.occupiedSeconds, 60);
   assertEquals(snapshot.idleSeconds, 40);
 });
@@ -218,7 +218,7 @@ Deno.test("fleet_telemetry - a zero-length wait is not reported as a wait", () =
   fresh(0);
   startFleetCycle(0);
   recordBlockedSeconds("rate_limited", 0);
-  recordInRunBlockedSeconds("token_blocked", 0);
+  recordInRunBlockedSeconds("usage_blocked", 0);
 
   const snapshot = getFleetTelemetry(1_000);
   assertEquals(snapshot.rateLimitWaits, 0);
@@ -293,7 +293,7 @@ Deno.test("fleet_telemetry - summary is one machine-readable line", () => {
   assertStringIncludes(line, "idle=60s");
   assertStringIncludes(line, "busy=40s");
   assertStringIncludes(line, "rate_limited=10s");
-  assertStringIncludes(line, "token_blocked=0s");
+  assertStringIncludes(line, "usage_blocked=0s");
   assertStringIncludes(line, "claims=1");
   assertStringIncludes(line, "successes=1");
   assertStringIncludes(line, "failures=0");
