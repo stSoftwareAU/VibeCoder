@@ -49,7 +49,7 @@ import {
   installationTokenRepoScope,
 } from "./write_repo_allowlist.ts";
 import { auditGhMutation } from "./audit_hook.ts";
-import { redactGhBodyArgs } from "./gh_body_redaction.ts";
+import { redactGhBodyArgs, redactGhBodyText } from "./gh_body_redaction.ts";
 import { noteGhIssueClose } from "./issue_close_notifier.ts";
 import { recordGhCall } from "./gh_call_metrics.ts";
 import {
@@ -344,7 +344,16 @@ export async function spawnGh(
   // Mask secrets in the published body arguments (Issue #3707) — the last
   // point before a comment or PR body leaves the worker for GitHub.
   const redacted = redactGhBodyArgs(args);
-  let result = await runner(redacted, options);
+  // Issue #1421: `gh api --input -` carries its body on STDIN, where there is
+  // no argument to rewrite — so it never passed through the mask above. The
+  // module doc promises every public sink inherits redaction by construction;
+  // that was true of the argv route only. Latent rather than live today (no
+  // production caller supplies stdin), which is exactly why it should be
+  // closed now rather than when one appears.
+  const spawnOptions = options.stdin === undefined
+    ? options
+    : { ...options, stdin: redactGhBodyText(options.stdin) };
+  let result = await runner(redacted, spawnOptions);
   // Issue #564: a call that failed for want of authentication did nothing,
   // so retrying it is safe — and the credential is very likely recoverable.
   // The writable copy of `hosts.yml` went missing mid-run once already and
@@ -363,7 +372,10 @@ export async function spawnGh(
     if (ensureUsableGhConfigDir(staging)) {
       // The retry is a second real `gh` process against the same quota.
       recordGhCall(args);
-      result = await runner(redacted, withStagedGhConfigDir(options, hostEnv));
+      result = await runner(
+        redacted,
+        withStagedGhConfigDir(spawnOptions, hostEnv),
+      );
     }
   }
   // Best-effort — never lets journalling alter or abort the gh call.
