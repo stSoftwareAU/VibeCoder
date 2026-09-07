@@ -253,6 +253,68 @@ holds *after* the agent has already been persuaded:
 A change that weakens one of these in exchange for a stronger prompt-level
 defence is a bad trade, and this document exists to make that visible.
 
+## 🎯 The containment goal: no persistence past the issue
+
+The design intent, stated plainly so it can be checked rather than assumed:
+
+> **A compromise must not outlive the single issue that introduced it.**
+
+This is a direction, not a claim of perfection. Nothing here is bullet-proof
+and the document does not pretend otherwise — R1–R9 record what is knowingly
+accepted. The standard is proportionate: take every step that meaningfully
+shrinks the blast radius at a cost the fleet can carry. In practice that means
+mount read-only wherever the worker does not need to write, keep the container
+disposable, and withhold every secret from every process that does not need
+it — rather than reaching for a stronger prompt and hoping.
+
+The worker takes its instructions from public repositories. Some of that text
+is written by people who want it to do something else, and the delivery does
+not have to look like text at all — an image carrying instructions a reader
+would not see is the same attack with a different envelope. Not every agent
+that reads it will be the strongest model available; cheaper ones are used
+where the task allows, and they are easier to persuade.
+
+So *not being tricked* is not a control. It is a probability, and the design
+must not depend on it. The question this model answers is the other one: when
+an agent **is** tricked, how far can it reach, and how long does it last? A
+remote-access trojan is exactly the shape being designed out — a foothold
+established while working one issue that is still there for the next one.
+
+That splits the container's contents in two, and the split is the design rule:
+
+- **Immutable to the agent** — the prompt templates it is instructed by, and
+  the programs that invoke and constrain it: the worker's own code, the
+  `gh`/`git` guard modules, the launcher. If the agent can rewrite what
+  instructs it or what checks it, one successful injection becomes every
+  later decision in the process, and none of it appears in a pull request
+  diff.
+- **Writable by the agent** — everything it genuinely needs: its own state,
+  session store and memories, the scratch it builds in, and the clone of the
+  repository it was asked to work on. Containment that stops the agent doing
+  its job is not containment, it is a broken worker, and it will be removed
+  by whoever is on call.
+
+Anything that is writable *and* read back on a later issue is where a trojan
+would live. That is the class to hunt.
+
+**Where the boundary actually sits today.** The immutable root filesystem
+(C22) bounds persistence to the **launch**, not to the issue. One launch
+processes many issues through the slot pool, so a foothold established on
+issue *n* can still be present for issue *n+1*. Two known instances, both
+tracked:
+
+- ignored paths survive the `git clean -fd` that resets a reused clone, so
+  content placed in a dependency cache or build directory is still there for
+  the next run of that repository (#1443);
+- the `gh`/`git` guard modules execute from the writable staged copy of the
+  worker source and are re-read on every call, so the control constraining the
+  agent is modifiable by it for the rest of the launch (#1444).
+
+Neither is closed by a permission bit on the work volume, because the coding
+agent runs as the owner of that volume — see the note under R9. They are
+recorded here so the gap between the stated goal and the current boundary is
+visible rather than assumed away.
+
 ## 📌 Change process
 
 - **A new inbound surface** — anything new that the worker reads from GitHub or
