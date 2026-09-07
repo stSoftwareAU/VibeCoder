@@ -409,7 +409,7 @@ exponential backoff on transient failures.
 
 adds a **minimum-version floor**: a tool also updates when its installed version
 is below a configured floor (`software_min_versions`, default
-`{ claude: "2.1.170" }`), bypassing the timestamp gate. The rule is **run when
+`{ claude: "2.1.260" }`), bypassing the timestamp gate. The rule is **run when
 interval elapsed OR installed version < floor**:
 
 1. `readVersion(tool)` reads the installed version (`claude --version` →

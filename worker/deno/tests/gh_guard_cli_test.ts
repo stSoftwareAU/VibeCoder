@@ -21,6 +21,16 @@ import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 /** A realistic GitHub token shape used by the redaction assertions (#3938). */
 const GH_TOKEN_SAMPLE = `ghp_${"a1B2c3D4e5".repeat(4)}`;
 
+/** Whether `path` still exists on disk (Issue #1364 lifetime assertions). */
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 Deno.test("gh-guard-cli - emits the allow marker for a permitted write", () => {
   const result = runGhGuardCli([
     "--active",
@@ -258,11 +268,14 @@ Deno.test("gh-guard-cli #91 - fails closed when the --input path does not exist"
 // ---------------------------------------------------------------------------
 // Issue #92 — end-to-end: `gh api …/comments --input <file>` through the guard.
 // The default reader + writer are wired, so a secret in the JSON body is masked
-// into a fresh temp file the executed argv points at — the agent's file and the
-// secret never reach GitHub.
+// into a fresh file the executed argv points at — the agent's file and the
+// secret never reach GitHub. Issue #1364 added `--body-dir`: the masked copy
+// now lands in a directory the caller owns rather than loose in TMPDIR, so this
+// case passes one.
 // ---------------------------------------------------------------------------
 
 Deno.test("gh-guard-cli #92 - masks a secret in a real --input body, pointing --input at the redacted copy", async () => {
+  const bodyDir = await Deno.makeTempDir({ prefix: "gh_guard_bodies_" });
   const path = await Deno.makeTempFile({ suffix: ".json" });
   try {
     await Deno.writeTextFile(
@@ -273,6 +286,8 @@ Deno.test("gh-guard-cli #92 - masks a secret in a real --input body, pointing --
       "--active",
       "--allow-repo",
       "stSoftwareAU/VibeCoder",
+      "--body-dir",
+      bodyDir,
       "--",
       "api",
       "repos/stSoftwareAU/VibeCoder/issues/1/comments",
@@ -291,8 +306,8 @@ Deno.test("gh-guard-cli #92 - masks a secret in a real --input body, pointing --
     assertEquals(sent.includes(GH_TOKEN_SAMPLE), false);
     // The agent's own file is left untouched.
     assertStringIncludes(await Deno.readTextFile(path), GH_TOKEN_SAMPLE);
-    await Deno.remove(materialised);
   } finally {
+    await Deno.remove(bodyDir, { recursive: true });
     await Deno.remove(path);
   }
 });
@@ -430,4 +445,87 @@ Deno.test("gh-guard-cli #11 - an -X GET --input - read is refused by the secret-
   assertEquals(result.stdout, GH_GUARD_REFUSE_MARKER);
   assertStringIncludes(result.stderr, "[SECURITY] [GH_BODY_UNREDACTABLE]");
   assertEquals(result.stderr.includes("WORKER_LABEL_REFUSED"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1364 — the masked `--input` copy needs an owner.
+//
+// The writer used to call `Deno.makeTempFileSync()` with no directory, so every
+// masked body landed in TMPDIR with nothing to remove it. The path is now
+// supplied by the caller (`--body-dir`), which owns the lifetime, and a caller
+// that names no directory is refused rather than leaking one.
+// ---------------------------------------------------------------------------
+
+Deno.test("gh-guard-cli #1364 - the masked --input copy lands in the caller's --body-dir", async () => {
+  const bodyDir = await Deno.makeTempDir({ prefix: "gh_guard_bodies_" });
+  const path = await Deno.makeTempFile({ suffix: ".json" });
+  try {
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({ body: `token ${GH_TOKEN_SAMPLE}` }),
+    );
+    const result = runGhGuardCli([
+      "--active",
+      "--allow-repo",
+      "stSoftwareAU/VibeCoder",
+      "--body-dir",
+      bodyDir,
+      "--",
+      "api",
+      "repos/stSoftwareAU/VibeCoder/issues/1/comments",
+      "--input",
+      path,
+    ]);
+    assertEquals(result.exitCode, 0);
+    assertEquals(result.stdout, GH_GUARD_ALLOW_MARKER);
+    const inputIdx = (result.ghArgs ?? []).indexOf("--input");
+    const materialised = (result.ghArgs ?? [])[inputIdx + 1] ?? "";
+    assertEquals(
+      materialised.startsWith(`${bodyDir}/`),
+      true,
+      `expected the masked copy under ${bodyDir}, got ${materialised}`,
+    );
+    const sent = await Deno.readTextFile(materialised);
+    assertStringIncludes(sent, REDACTION_PLACEHOLDER);
+    assertEquals(sent.includes(GH_TOKEN_SAMPLE), false);
+    // Removing the directory the caller owns takes the masked copy with it.
+    await Deno.remove(bodyDir, { recursive: true });
+    assertEquals(await pathExists(materialised), false);
+  } finally {
+    await Deno.remove(path);
+    await Deno.remove(bodyDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("gh-guard-cli #1364 - a masked --input body with no --body-dir is refused, never written loose", async () => {
+  const path = await Deno.makeTempFile({ suffix: ".json" });
+  try {
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({ body: `token ${GH_TOKEN_SAMPLE}` }),
+    );
+    const result = runGhGuardCli([
+      "--active",
+      "--allow-repo",
+      "stSoftwareAU/VibeCoder",
+      "--",
+      "api",
+      "repos/stSoftwareAU/VibeCoder/issues/1/comments",
+      "--input",
+      path,
+    ]);
+    assertEquals(result.exitCode, 1);
+    assertEquals(result.stdout, GH_GUARD_REFUSE_MARKER);
+    assertStringIncludes(result.stderr, "[SECURITY] [GH_BODY_UNREDACTABLE]");
+    assertEquals(result.ghArgs, undefined);
+  } finally {
+    await Deno.remove(path);
+  }
+});
+
+Deno.test("gh-guard-cli #1364 - --body-dir requires a value", () => {
+  const result = runGhGuardCli(["--active", "--body-dir"]);
+  assertEquals(result.exitCode, 2);
+  assertEquals(result.stdout, GH_GUARD_REFUSE_MARKER);
+  assertStringIncludes(result.stderr, "--body-dir requires a value");
 });

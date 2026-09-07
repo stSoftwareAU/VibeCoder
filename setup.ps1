@@ -1487,11 +1487,14 @@ function Invoke-VibeScheduledTaskPrompt {
         if ($registered -eq "registered") {
             Write-VibeWarning "The scheduled task is currently registered: Task Scheduler starts the worker every 5 minutes on this machine."
             Write-VibeInfo "Starting the worker by hand (.\loop.ps1) as well would run two workers on this host - one worker per host."
-            $remove = Read-Host "  Unregister the scheduled task now? [Y/n]"
-            if ($remove -match '^[nN]') {
-                Write-VibeInfo "Keeping the scheduled task - do not also start the worker by hand on this machine."
-            } else {
+            # Defaults to NO, matching setup.sh (Issue #1369): unregistering
+            # stops the worker on a host that was running fine, and a bare
+            # Enter must never do that. Only an explicit yes removes.
+            $remove = Read-Host "  Unregister the scheduled task now? [y/N]"
+            if ($remove -match '^(y|Y|yes|YES)$') {
                 Invoke-VibeSetupCli @("scheduled-task", "--uninstall")
+            } else {
+                Write-VibeInfo "Keeping the scheduled task - do not also start the worker by hand on this machine."
             }
         } else {
             Write-VibeInfo "Skipping the scheduled task - continue starting the worker manually (e.g. .\loop.ps1)."

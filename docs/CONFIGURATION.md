@@ -368,8 +368,8 @@ explicitly overridden.
 | `deepseek_phase_model_overrides` | `{}` | Per-phase **DeepSeek** model overrides, applied when `agent_provider` is `deepseek`. Same shape as `phase_model_overrides`, with DeepSeek model ids (`deepseek-reasoner` for the planning-shaped phases, `deepseek-chat` elsewhere). There is no DeepSeek effort key — DeepSeek's Anthropic-compatible endpoint has no effort control, and an effort requested for a DeepSeek phase is warned about instead. See [DeepSeek per-phase routing](MODEL-AND-CACHING.md#-deepseek-per-phase-routing). |
 | `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#-idle-task-template-weights))                                                                                                                                                                      |
 | `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence)) |
-| `software_min_versions`      | `{ "claude": "2.1.170" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
-| `log_dir` | platform default | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. Outranks `LAUNCH_LOG_DIR` and `LOG_DIR`; absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go). |
+| `software_min_versions`      | `{ "claude": "2.1.260" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
+| `log_dir` | platform default | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. The only way to move it — no environment variable does (Issue #1388); absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go). |
 | `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                           |
 | `exclusion_team`             | unset                     | Optional GitHub org team in `org/slug` form, excluded from the derived directing set **on top of** the Vibe Coder logins. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. See [Two axes of trust](#two-axes-of-trust). |
 
@@ -498,7 +498,7 @@ floors for `gh`/`deno` can be added later:
 ```json
 {
   "software_min_versions": {
-    "claude": "2.1.170"
+    "claude": "2.1.260"
   }
 }
 ```
@@ -521,9 +521,19 @@ Semantics:
 - **Skip flag still wins.** `SKIP_CLAUDE_UPDATE=true` (and the `gh`/`deno`
   equivalents) still suppresses the update, but logs that a version floor is
   unmet when it does so.
-- **Default.** `{ "claude": "2.1.170" }` — the oldest Claude CLI release
-  verified to support `--model fable`. Setting the key replaces the default map;
-  provide an empty map to remove the floor.
+- **Default.** `{ "claude": "2.1.260" }` — the oldest Claude CLI release
+  that resolves the `fable` alias to **Fable 5.1** (added as the default Fable
+  model in 2.1.257) *and* carries the 5.1 prompt-cache fixes that landed in
+  2.1.260 (Issue #1362). Setting the key replaces the default map; provide an
+  empty map to remove the floor.
+- **Hosts only, and the update channel bounds it.** Inside the worker container
+  the software-update step is suppressed altogether — the image is the update
+  mechanism, so `container/tools.json` is what decides the CLI version there
+  (pinned to 2.1.261 for the same issue). On a host in the default `dynamic`
+  mode the updater runs bare `claude update`, which follows the CLI's `stable`
+  channel; `stable` was 2.1.236 when this floor was raised, so such a host logs
+  "below required floor" once per interval until `stable` catches up or the host
+  moves to `update_mode: frozen` with a pinned version.
 
 **Gate role for new models.** Because the worker passes tier *aliases* (`opus`,
 `fable`, `haiku`) and the CLI resolves each to the latest model of that tier, the
@@ -2448,22 +2458,28 @@ path-valued keys (`ssh_key_path`, `gh_config_dir`).
 Setting `log_dir` also silences the legacy-location notice below: the directory
 is the operator's own choice, not a default that moved.
 
-Two variables still override the default, and `log_dir` outranks both — the
-precedence is **`log_dir`, then `LAUNCH_LOG_DIR`, then `LOG_DIR`, then the
-platform default**:
+The precedence is **`log_dir`, then the platform default** — nothing else.
+Before Issue #1388 two environment variables sat between the two,
+`LAUNCH_LOG_DIR` (the supervisor's own spelling from `loop.sh`) and `LOG_DIR`.
+Both are now **ignored**: on the host, `.config.json` is the only
+configuration. A value exported in a shell profile, a crontab line, a launchd
+plist or a systemd unit is invisible to the next reader and differs per
+launcher, which is exactly how one host on a fleet comes to behave unlike the
+rest. A system service that wants `/var/log/vibe-coder` states it as `log_dir`
+in the config file the unit already points the launcher at.
 
-| Variable          | Description                                                          |
-| ----------------- | -------------------------------------------------------------------- |
-| `LAUNCH_LOG_DIR`  | The supervisor's own spelling, kept from `loop.sh`                    |
-| `LOG_DIR`         | A system service names `/var/log/vibe-coder` here — a launchd or systemd unit sets an environment, not a config file |
+A host that still exports either variable is told once per launch, on stderr,
+by name and with the value quoted back so it can be moved into the file
+verbatim:
 
-Neither is deprecated: a unit file is the one place a directory genuinely has
-to come from the environment. For everything else, state `log_dir`.
+```text
+[log-dir] LOG_DIR="/var/log/vibe-coder" is set but ignored (Issue #1388): on the host only .config.json configures the worker. To keep that directory, state "log_dir": "/var/log/vibe-coder" in .config.json and unset the variable.
+```
 
-A blank value means unset, exactly as `${LOG_DIR:-…}` does in shell — in the
-config key as well as in the variables. One resolution serves the launcher,
-`run.sh`, `loop.sh`, `run.ps1` and the container mount (Issues #872, #873) —
-ask for it rather than assuming it:
+A blank config value means unset, exactly as an absent key does. One
+resolution serves the launcher, `run.sh`, `loop.sh`, `run.ps1` and the
+container mount (Issues #872, #873, #1388) — ask for it rather than assuming
+it:
 
 ```bash
 LOG_DIR="$(deno run --allow-env --allow-read worker/deno/mod.ts log-dir)"

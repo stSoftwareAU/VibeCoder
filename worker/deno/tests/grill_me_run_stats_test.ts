@@ -166,7 +166,7 @@ Deno.test("reportGrillMeDegradation - fable-served round is not degraded; no lab
   const verdict = await reportGrillMeDegradation({
     repo: "owner/repo",
     issueNumber: 5,
-    claudeResult: { runStats: runStats(["claude-fable-5-20250101"]) },
+    claudeResult: { runStats: runStats(["claude-fable-5-1-20260901"]) },
     ghClient,
     runGhCommand: ghCommandFn,
     logger,
@@ -196,7 +196,7 @@ Deno.test("reportGrillMeDegradation - healthy round posts at most one stats comm
   await reportGrillMeDegradation({
     repo: "owner/repo",
     issueNumber: 5,
-    claudeResult: { runStats: runStats(["claude-fable-5-20250101"]) },
+    claudeResult: { runStats: runStats(["claude-fable-5-1-20260901"]) },
     ghClient,
     runGhCommand: ghCommandFn,
     logger,
@@ -220,7 +220,7 @@ Deno.test("reportGrillMeDegradation - an earlier round's stats comment does not 
   await reportGrillMeDegradation({
     repo: "owner/repo",
     issueNumber: 5,
-    claudeResult: { runStats: runStats(["claude-fable-5-20250101"]) },
+    claudeResult: { runStats: runStats(["claude-fable-5-1-20260901"]) },
     ghClient,
     runGhCommand: ghCommandFn,
     logger,
@@ -279,7 +279,7 @@ Deno.test("reportGrillMeDegradation - explicit pre-flight flag is degraded even 
     issueNumber: 21,
     // Served fable (matches expected), but the pre-flight reroute flag is set.
     claudeResult: {
-      runStats: runStats(["claude-fable-5-20250101"]),
+      runStats: runStats(["claude-fable-5-1-20260901"]),
       preflightDegraded: true,
       preflightDegradedReason: "fable-unavailable (pre-flight health probe)",
     },

@@ -27,7 +27,9 @@
  * `interactive_login_scanner.ts` holds the worker's own source to, applied here
  * at the runtime guard. Read verbs (`gh auth status`, `gh config get`,
  * `gh alias list`, `gh extension list`) are untouched; the worker's own health
- * checks depend on them.
+ * checks depend on them. The one read that is not benign — `gh auth token`,
+ * which prints the credential rather than rewriting it — is refused by
+ * `gh_credential_disclosure_guard.ts` (Issue #1371) instead.
  *
  * Pure by design — it runs inside the guard's short-lived child process.
  *
@@ -48,7 +50,9 @@ import { normaliseGhArgs } from "./gh_flag_parser.ts";
 export const GH_LOCAL_STATE_VERBS: Readonly<
   Record<string, ReadonlySet<string>>
 > = {
-  // Credential store. `status` and `token` are reads and stay allowed.
+  // Credential store. `status` is a read and stays allowed; `token` — and
+  // `status --show-token` — is a credential disclosure refused separately
+  // by `gh_credential_disclosure_guard.ts` (Issue #1371).
   auth: new Set(["login", "logout", "switch", "refresh", "setup-git"]),
   // Config file. `get` and `list` are reads.
   config: new Set(["set", "clear-cache"]),

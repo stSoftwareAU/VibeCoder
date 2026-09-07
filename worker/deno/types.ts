@@ -513,7 +513,9 @@ export interface WorkerConfig {
   /**
    * Per-tool minimum version floors for software auto-update (Issue #2622).
    * When the installed version of a tool is below its floor, the update runs
-   * immediately, bypassing the interval gate. Default: `{ claude: "2.1.170" }`.
+   * immediately, bypassing the interval gate. Default: `{ claude: "2.1.260" }`
+   * — the oldest release that serves Fable 5.1 for the `fable` alias with the
+   * 5.1 prompt-cache fixes (Issue #1362).
    */
   softwareMinVersions: Record<string, string>;
   /**
@@ -1143,8 +1145,9 @@ export interface ConfigFile {
   /** gh config dir for separate gh CLI identity (Issue #583) */
   gh_config_dir?: string;
   /**
-   * Host log directory (Issue #873). Absolute, or anchored at `~`. Outranks
-   * `LAUNCH_LOG_DIR` and `LOG_DIR`; absent, the platform default applies.
+   * Host log directory (Issue #873). Absolute, or anchored at `~`. The only
+   * way to move it — no environment variable does (Issue #1388); absent, the
+   * platform default applies.
    *
    * Read straight from the file by `lib/log_dir.ts` rather than through the
    * loaded `WorkerConfig`, because the launchers ask for it before any

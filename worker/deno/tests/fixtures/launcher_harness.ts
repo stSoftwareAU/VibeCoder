@@ -555,12 +555,13 @@ export async function setupHarness(
     ...extraEnv,
   };
 
-  // What the `log-dir` stub answers (Issue #873). Resolved from the finished
-  // environment — after `extraEnv`, so a test that overrides `LOG_DIR` moves
-  // the stub's answer with it — and through the real `resolveLogDir`, so the
+  // What the `log-dir` stub answers (Issues #873, #1388). Resolved from the
+  // finished environment — after `extraEnv`, so the platform base directories
+  // a test sets are honoured, and an exported `LOG_DIR` is ignored exactly as
+  // the real command ignores it — through the real `resolveLogDir`, so the
   // launcher and `harness.logDir` below cannot disagree. A second copy of the
-  // precedence rules inside the shell stub would be a third place to keep in
-  // step with `lib/log_dir.ts`.
+  // rules inside the shell stub would be a third place to keep in step with
+  // `lib/log_dir.ts`.
   env.VIBE_STUB_LOG_DIR = resolveLogDir(
     home,
     (name) => env[name],
