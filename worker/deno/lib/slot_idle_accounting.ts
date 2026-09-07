@@ -30,7 +30,7 @@
  *     (the same call `fleet_telemetry.recordInRunBlockedSeconds` makes).
  *   - **blocked** — slot-seconds the whole fleet was paused waiting for a
  *     quota to refresh, split by {@link FleetBlockKind} — `rate_limited`
- *     (GitHub API) and `token_blocked` (model usage). Recorded from the
+ *     (GitHub API) and `usage_blocked` (model usage). Recorded from the
  *     loop-level pauses, where the waiting actually happens: a slot that
  *     meets an active rate-limit signal at its pre-claim guard drains the
  *     pool immediately rather than waiting in the slot, so the seconds
@@ -60,7 +60,7 @@
  * legitimately-occupied states already exists and is reused verbatim:
  * {@link FleetBlockKind} from `fleet_telemetry.ts`, which is itself derived
  * from `RateLimitBlockKind` in `rate_limit_signal.ts` (`github` →
- * `rate_limited`, `usage` → `token_blocked`). The reason a *cycle* was idle
+ * `rate_limited`, `usage` → `usage_blocked`). The reason a *cycle* was idle
  * stays where it already lives — the census's `FleetIdleReason`.
  *
  * # Lifecycle
