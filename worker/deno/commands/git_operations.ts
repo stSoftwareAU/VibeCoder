@@ -56,6 +56,10 @@ import {
   updatePrBranch,
 } from "../lib/git_pull.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import {
+  assertSafeRefComponent,
+  buildCheckoutArgs,
+} from "../lib/git_ref_args.ts";
 import { requireDiskSpaceForGitOperation } from "../lib/disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "../lib/config_defaults.ts";
 import { getSessionStorePath, restoreSession } from "../lib/session_manager.ts";
@@ -544,14 +548,31 @@ export async function setupRepo(
         defaultBranch = ref.replace("refs/remotes/origin/", "");
       }
 
-      // Read cached default branch if available
+      // Read cached default branch if available. The file lives *inside* the
+      // clone, so a repository that commits `.vibe_default_branch` controls
+      // the value (Issue #1269) — and it survives the `reset --hard` /
+      // `clean -fd` below, which run after this read. Validate it as a ref
+      // component before it can reach `git checkout` as a positional.
+      let cached = "";
       try {
-        const cached = await Deno.readTextFile(
-          `${repoPath}/.vibe_default_branch`,
-        );
-        if (cached.trim()) defaultBranch = cached.trim();
+        cached = (await Deno.readTextFile(`${repoPath}/.vibe_default_branch`))
+          .trim();
       } catch {
         // No cached default branch
+      }
+      if (cached) {
+        try {
+          assertSafeRefComponent(cached, "cached default branch");
+        } catch (error) {
+          return {
+            success: false,
+            message:
+              `Refusing to set up ${repo}: ${repoPath}/.vibe_default_branch ` +
+              `does not hold a safe branch name — ` +
+              `${error instanceof Error ? error.message : String(error)}`,
+          };
+        }
+        defaultBranch = cached;
       }
 
       // Recover from broken git states (Issue #467)
@@ -577,7 +598,7 @@ export async function setupRepo(
       // Restore per-repo Claude session state (Issue #1321, replaces Issue #384 blanket deletion)
       await restoreSession(repoPath, workDir, repo);
 
-      await runGitCommand(["checkout", defaultBranch], { cwd: repoPath });
+      await runGitCommand(buildCheckoutArgs(defaultBranch), { cwd: repoPath });
 
       // Repair a legacy single-branch clone (Issue #211). A clone made with a
       // bare `--depth=1` only ever tracks the default branch, so every

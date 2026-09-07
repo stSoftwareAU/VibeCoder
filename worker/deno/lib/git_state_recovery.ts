@@ -16,6 +16,7 @@ import type { Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import { emitSelfHealEventAuto } from "./self_heal_events.ts";
+import { assertSafeGitRef, buildCheckoutArgs } from "./git_ref_args.ts";
 
 /** Details about what was recovered. */
 export interface RecoveryDetails {
@@ -39,6 +40,19 @@ export async function recoverGitState(
   defaultBranch: string,
   options: GitCommandOptions = {},
 ): Promise<Result<RecoveryDetails>> {
+  // The caller's default branch can be repo-derived (setupRepo reads it from
+  // `.vibe_default_branch` inside the clone, Issue #1269), so a dash-leading
+  // name would reach the detached-HEAD `git checkout` as an option slot.
+  // Refuse it loudly before any git command runs.
+  try {
+    assertSafeGitRef(defaultBranch, "recovery default branch");
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error : new Error(String(error)),
+    };
+  }
+
   const actions: string[] = [];
 
   // Get the git directory path
@@ -134,7 +148,7 @@ export async function recoverGitState(
       actions.push(
         `SELF-HEALING: Detached HEAD detected — checking out '${defaultBranch}' (Issue #467)`,
       );
-      await runGitCommand(["checkout", defaultBranch], options);
+      await runGitCommand(buildCheckoutArgs(defaultBranch), options);
       await emitSelfHealEventAuto({
         module: "git_state_recovery",
         action: "detached_head_checkout",

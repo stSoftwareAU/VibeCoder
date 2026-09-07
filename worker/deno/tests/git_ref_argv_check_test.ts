@@ -38,8 +38,9 @@ Deno.test("scanner - the builder-shaped array is not a violation", () => {
     const line of [
       'return ["fetch", "--end-of-options", remote, ref];',
       'return ["checkout", "--end-of-options", ref];',
-      // safe internal refs are out of scope for this CWE-88 gate:
-      'runGitCommand(["checkout", defaultBranch], opts);',
+      // safe internal refs are out of scope for this CWE-88 gate.
+      // `defaultBranch` left this set in Issue #1269 — setupRepo reads it
+      // from `.vibe_default_branch` inside the clone, so it is not internal.
       'runGitCommand(["fetch", "origin", baseBranch], opts);',
       'runGitCommand(["rebase", baseBranch], opts);',
       'runGitCommand(["fetch", "origin", milestoneBranch], opts);',
@@ -124,9 +125,34 @@ Deno.test("scanner - a builder-shaped push with a flag before the separator is c
 Deno.test("scanner - safe internal refs stay out of scope for push and rebase (Issue #275)", () => {
   for (
     const line of [
-      'runGitCommand(["push", "origin", defaultBranch], opts);',
       'runGitCommand(["rebase", baseBranch], opts);',
       'runGitCommand(["push", "origin", milestoneBranch], opts);',
+    ]
+  ) {
+    assertEquals(scanContentForGitRefArgv(line, "x.ts"), [], line);
+  }
+});
+
+Deno.test("scanner - flags an unguarded checkout of defaultBranch (Issue #1269)", () => {
+  // `defaultBranch` was excluded as a "safe internal ref", but setupRepo reads
+  // it from `.vibe_default_branch` — a file inside the clone — so a repository
+  // that commits one controls the value. These shapes must now be violations.
+  for (
+    const line of [
+      'runGitCommand(["checkout", defaultBranch], opts);',
+      'runGitCommand(["fetch", "origin", defaultBranch], opts);',
+      'runGitCommand(["rebase", defaultBranch], opts);',
+    ]
+  ) {
+    assertEquals(scanContentForGitRefArgv(line, "x.ts").length, 1, line);
+  }
+});
+
+Deno.test("scanner - a builder-shaped defaultBranch call stays clean (Issue #1269)", () => {
+  for (
+    const line of [
+      "runGitCommand(buildCheckoutArgs(defaultBranch), opts);",
+      'runGitCommand(["checkout", "--end-of-options", defaultBranch], opts);',
     ]
   ) {
     assertEquals(scanContentForGitRefArgv(line, "x.ts"), [], line);

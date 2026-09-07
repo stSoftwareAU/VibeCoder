@@ -73,15 +73,21 @@ export const GIT_REF_ARGV_PATTERN = new RegExp(
 );
 
 /**
- * An attacker-controlled PR head branch identifier, in any object path.
+ * An attacker-controlled branch identifier, in any object path.
  *
- * Safe internal refs (defaultBranch, baseBranch, milestoneBranch, remotes,
- * `--abort`, `--`) are deliberately excluded — this gate is CWE-88 (a
- * dash-leading PR head branch reaching git as a positional), not a blanket
- * ban on positional refs.
+ * `defaultBranch` joins the set in Issue #1269. It was excluded as a "safe
+ * internal ref", but `setupRepo()` reads it from `.vibe_default_branch` — a
+ * file *inside the clone*, so a repository that commits one controls the
+ * value — and handed it to `git checkout` as a bare positional. The
+ * exclusion was an assumption about provenance the code did not hold.
+ *
+ * The remaining internal refs (baseBranch, milestoneBranch, remotes,
+ * `--abort`, `--`) stay excluded — this gate is CWE-88 (a dash-leading,
+ * externally-derived branch reaching git as a positional), not a blanket ban
+ * on positional refs.
  */
 export const GIT_REF_ARGV_UNTRUSTED_IDENTIFIER =
-  /\b(?:head(?:Ref)?[Bb]ranch|branchName|headRefName)\b/;
+  /\b(?:head(?:Ref)?[Bb]ranch|branchName|headRefName|defaultBranch)\b/;
 
 /**
  * Whether one array-literal's text is an unguarded guarded-verb call.

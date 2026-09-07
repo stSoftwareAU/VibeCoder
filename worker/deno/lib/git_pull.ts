@@ -159,7 +159,7 @@ export async function syncFeatureBranchWithDefault(
 
   // Attempt rebase
   const rebaseResult = await runGitCommand(
-    ["rebase", defaultBranch],
+    buildRebaseArgs(defaultBranch),
     options,
   );
 
@@ -196,7 +196,7 @@ export async function syncFeatureBranchWithDefault(
 
     if (remoteCommitCount > 0) {
       // Preserve remote commits (Issue #586)
-      await runGitCommand(["checkout", defaultBranch], options);
+      await runGitCommand(buildCheckoutArgs(defaultBranch), options);
       await runGitCommand(buildBranchDeleteArgs(branchName, true), options);
 
       const restoreResult = await runGitCommand(
@@ -245,7 +245,7 @@ export async function syncFeatureBranchWithDefault(
   }
 
   // No remote branch or no remote commits — recreate from the default branch
-  await runGitCommand(["checkout", defaultBranch], options);
+  await runGitCommand(buildCheckoutArgs(defaultBranch), options);
   await runGitCommand(buildBranchDeleteArgs(branchName, true), options);
   await runGitCommand(buildCheckoutNewBranchArgs(branchName), options);
 
