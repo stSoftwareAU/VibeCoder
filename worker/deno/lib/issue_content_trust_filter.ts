@@ -29,6 +29,11 @@ import {
   type TrustLevel,
 } from "./comment_trust_filter.ts";
 import { detectSuspiciousPatterns } from "./security.ts";
+import {
+  describeUntrustedImages,
+  findImageReferences,
+  type ImageReference,
+} from "./untrusted_image_signal.ts";
 
 /** Trust options needed to classify an issue author. */
 export type IssueAuthorTrustOptions = Pick<
@@ -44,6 +49,15 @@ export interface IssueContentTrustResult {
   titleSuspicious: boolean;
   /** Whether suspicious patterns were detected in the body. */
   bodySuspicious: boolean;
+  /**
+   * Image references carried by an untrusted body (Refs #1385).
+   *
+   * Observed here, in TypeScript, before the body reaches the agent — so the
+   * fact that an untrusted author put an image in front of it does not depend
+   * on the model emitting its own suspicious-image marker, which an image can
+   * instruct it to withhold. Recorded only; nothing gates on it.
+   */
+  untrustedImages: ImageReference[];
   /**
    * Security-audit messages, one per suspicious field, for logging as a
    * structured security-audit event. Empty for trusted authors (fast path)
@@ -80,6 +94,7 @@ export function annotateIssueContentWithTrust(
       trustLevel,
       titleSuspicious: false,
       bodySuspicious: false,
+      untrustedImages: [],
       securityAuditMessages: [],
     };
   }
@@ -102,10 +117,22 @@ export function annotateIssueContentWithTrust(
     );
   }
 
+  // Refs #1385: an independent observation, not a self-report. The agent may
+  // be persuaded to stay quiet about an image; the reference is already in the
+  // text the worker parsed before the agent saw any of it.
+  const untrustedImages = findImageReferences(body);
+  const imageMessage = describeUntrustedImages(
+    untrustedImages,
+    authorLabel,
+    "issue body",
+  );
+  if (imageMessage) securityAuditMessages.push(imageMessage);
+
   return {
     trustLevel,
     titleSuspicious: titleResult.detected,
     bodySuspicious: bodyResult.detected,
+    untrustedImages,
     securityAuditMessages,
   };
 }
