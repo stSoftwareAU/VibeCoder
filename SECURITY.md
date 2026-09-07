@@ -7,6 +7,7 @@ This document describes the security model, threat landscape, and best practices
 - [Threat Model](#-threat-model)
 - [Security Architecture](#security-architecture)
   - [Bounded outbound fetches — every fetch has a timeout and a size cap](#-bounded-outbound-fetches--every-fetch-has-a-timeout-and-a-size-cap)
+  - [Guarded outbound fetches — where the call is allowed to go](#-guarded-outbound-fetches--where-the-call-is-allowed-to-go)
   - [Release-age quarantine — dependencies and host toolchains](#-release-age-quarantine--dependencies-and-host-toolchains)
   - [Dependency audit — fail-closed on an unreachable advisory service](#-dependency-audit--fail-closed-on-an-unreachable-advisory-service)
 - [Secret Redaction — Every Outbound Sink](#-secret-redaction--every-outbound-sink)
@@ -149,6 +150,29 @@ Both bounds are mandatory for new outbound calls. A fetch that is bounded in
 time but not in memory still lets a hostile server exhaust the heap within the
 timeout; one bounded in memory but not in time still wedges on a server that
 never sends a byte.
+
+### 🚧 Guarded Outbound Fetches — Where the Call Is Allowed to Go
+
+`bounded_fetch.ts` bounds what a fetch may *cost*; it says nothing about where
+it *goes*. When the URL itself came from outside the worker — a
+`docs/REFERENCES.md` credit row, a dependency manifest, an issue body — that
+gap is server-side request forgery: `https://` alone still admits
+`https://127.0.0.1/`, `https://169.254.169.254/latest/meta-data/`, and any
+RFC-1918 address inside the operator's network.
+
+`worker/deno/lib/public_url_guard.ts` is the guard every such call must pass
+through (`fetchPublicUrl`). It refuses on three axes, because each one alone is
+bypassable:
+
+| Check | What it refuses |
+|-------|-----------------|
+| **Shape** (`assertPublicHttpsUrl`) | Any scheme but `https:`, `user:pass@` userinfo, a port other than 443, an IP literal in a loopback/link-local/unique-local/RFC-1918/CGNAT/multicast/reserved range (including the obfuscated `2130706433` and `0177.0.0.1` forms the URL parser normalises), and intranet-style hostnames — `localhost`, a single-label name, `.local`, `.internal`, `.home.arpa` |
+| **Address** (`assertPublicHost`) | A hostname that resolves to a private address, so `evil.example.com A 10.0.0.5` is refused before a socket is opened. A hostname that resolves to nothing at all is an error, not a hopeful fetch |
+| **Every redirect hop** (`fetchPublicUrl`) | Redirects are followed **manually**, re-running both checks on each hop and refusing a chain longer than five. `redirect: "follow"` re-validates nothing, so a public URL that 302s to `http://127.0.0.1:6379/` defeats the other two checks entirely |
+
+One abort signal covers the whole redirect chain, so hops cannot multiply the
+time budget, and the caller still owes the response a bounded read. A URL
+supplied by anything outside the worker gets `fetchPublicUrl`, not `fetch`.
 
 ### ⏳ Release-Age Quarantine — Dependencies *and* Host Toolchains
 
@@ -373,7 +397,10 @@ what redact-before-truncate forbids.
 `redactSecrets()` masks *known* shapes (GitHub tokens, Anthropic `sk-ant-`
 keys, OpenAI/Codex `sk-` keys, Google/Gemini `AIzaSy` keys, AWS access-key ids,
 PEM private-key blocks, `Bearer`/`Basic` auth headers, URL-embedded
-credentials, and `*_TOKEN=`/`*_SECRET=` assignments). A credential
+credentials, `*_TOKEN=`/`*_SECRET=` assignments, and a bare 32-hex credential —
+the ImgBB API key shape, which carries no provider prefix and so is recognised
+by its exact length, lowercase-hex charset and non-alphanumeric neighbours, a
+test a 40-hex git SHA and a 64-hex digest both fail). A credential
 shape it does not yet recognise passes through **verbatim**. When you introduce
 or discover a new credential shape, add a redaction rule to the `RULES` array in
 `secret_redaction.ts` (with tests) so every sink inherits the coverage at once.
