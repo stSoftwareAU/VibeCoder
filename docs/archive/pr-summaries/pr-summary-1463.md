@@ -136,4 +136,8 @@ the 81 tests across `prompt_leak_redaction`, `answer_sanitiser`,
 - `prompt leak - matches a synonym in the singular as well as the plural (Issue #1463)`
   — the stemmer fix (review finding 2).
 
+`worker/deno/lib/parallel_unsafe_test_manifest.ts` lists the test file as
+wall-clock, because `assertLinearGrowth` times real elapsed work and must run in
+the serial pass.
+
 No existing test was modified or removed.
