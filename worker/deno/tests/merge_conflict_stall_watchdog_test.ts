@@ -643,3 +643,79 @@ Deno.test("scanConflictQueueStalls - an unreadable PR does not stop the pass", a
   assertEquals(scan.length, 0);
   assertEquals(work.filed.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Issue #1515: one quota exhaustion is one line, not one per repository
+// ---------------------------------------------------------------------------
+
+const QUOTA_REFUSED =
+  "gh command failed (exit 1): GraphQL: API rate limit already exceeded for user ID 1.";
+
+function capturingLogger(): { logger: Logger; warnings: string[] } {
+  const warnings: string[] = [];
+  return {
+    warnings,
+    logger: {
+      ...logger,
+      warn: (message: string) => {
+        warnings.push(message);
+      },
+    },
+  };
+}
+
+Deno.test("scanConflictQueueStalls - an exhausted quota costs one call and one line, and skips the rest (Issue #1515)", async () => {
+  const listed: string[] = [];
+  const captured = capturingLogger();
+  const repos = Array.from({ length: 19 }, (_, i) => `org/repo-${i}`);
+
+  const stalls = await scanConflictQueueStalls({
+    repos,
+    ghCommandFn: (args: string[]) => {
+      if (args[0] === "pr" && args[1] === "list") {
+        listed.push(args[args.indexOf("--repo") + 1] ?? "");
+      }
+      return Promise.reject(new Error(QUOTA_REFUSED));
+    },
+    labelPr: () => Promise.resolve({ ok: true, value: undefined }),
+    escalateWork: () =>
+      Promise.resolve({ ok: true, value: { issueNumber: 1, filed: true } }),
+    isTrustedAuthor,
+    nowMs: () => NOW,
+    logger: captured.logger,
+  });
+
+  assertEquals(stalls, []);
+  assertEquals(listed.length, 1, "the first refusal is the last call");
+  assertEquals(captured.warnings.length, 1, captured.warnings.join("\n"));
+  assertStringIncludes(
+    captured.warnings[0]!,
+    "Merge-conflict stall watchdog: GraphQL quota exhausted",
+  );
+  assertStringIncludes(captured.warnings[0]!, "skipped 19 of 19 repo(s)");
+});
+
+Deno.test("scanConflictQueueStalls - an ordinary listing failure is still reported per repository (Issue #1515)", async () => {
+  const captured = capturingLogger();
+  const listed: string[] = [];
+
+  await scanConflictQueueStalls({
+    repos: ["org/a", "org/b"],
+    ghCommandFn: (args: string[]) => {
+      if (args[0] === "pr" && args[1] === "list") {
+        listed.push(args[args.indexOf("--repo") + 1] ?? "");
+      }
+      return Promise.reject(new Error("HTTP 404: Not Found"));
+    },
+    labelPr: () => Promise.resolve({ ok: true, value: undefined }),
+    escalateWork: () =>
+      Promise.resolve({ ok: true, value: { issueNumber: 1, filed: true } }),
+    isTrustedAuthor,
+    nowMs: () => NOW,
+    logger: captured.logger,
+  });
+
+  assertEquals(listed, ["org/a", "org/b"], "every repository is still visited");
+  assertEquals(captured.warnings.length, 2);
+  assertStringIncludes(captured.warnings[0]!, "failed to list labelled PRs");
+});
