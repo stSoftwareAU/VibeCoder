@@ -292,7 +292,10 @@ bypassed), but it carries a standing obligation for every author.
 A "public or permanent outbound sink" is anything that writes text a secret
 could reach and that a third party or a durable record could later read:
 
-- **Logs** — `stderr`, `worker-*.log`, CI output (via the structured logger).
+- **Logs** — `stderr`, `worker-*.log`, CI output (via the structured
+  logger), and the log-directory files written *outside* it: `pull.log`
+  and `run_core.log` carry raw `git` stdout and stderr, so each module
+  redacts in its own `appendLine` (Issue #1258).
 - **Issue and PR comments** — question answers, clarifications, revision and
   refinement replies, and any other `gh issue/pr comment` body.
 - **Failure and crash notifications** — the automated-failure comment path and

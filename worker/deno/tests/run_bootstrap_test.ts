@@ -14,6 +14,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  appendRunCoreLogLine,
   type BootstrapDeps,
   type BootstrapOptions,
   PRELUDE_STEPS,
@@ -598,4 +599,29 @@ Deno.test("runBootstrap - a throwing gzip step does not abort the prelude", asyn
   assertEquals(order.includes("checkUpdates"), true);
   const failureLine = order.find((o) => o.includes("readDir exploded"));
   assertStringIncludes(failureLine ?? "", "worker log gzip");
+});
+
+Deno.test("appendRunCoreLogLine - a tokenised remote URL never reaches run_core.log (Issue #1258)", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "run_core_redact_" });
+  const token = `ghs_${"A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"}`;
+  try {
+    await appendRunCoreLogLine(
+      `${tmp}/logs`,
+      `Checkout update failed: fatal: could not read from ` +
+        `https://x-access-token:${token}@github.com/owner/repo.git`,
+    );
+
+    const runCoreLog = await Deno.readTextFile(`${tmp}/logs/run_core.log`);
+    assertEquals(
+      runCoreLog.includes(token),
+      false,
+      "the token must not survive into run_core.log",
+    );
+    assertStringIncludes(runCoreLog, "***REDACTED***");
+    // The diagnostic itself is preserved — only the credential is masked.
+    assertStringIncludes(runCoreLog, "Checkout update failed:");
+    assertStringIncludes(runCoreLog, "github.com/owner/repo.git");
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
 });

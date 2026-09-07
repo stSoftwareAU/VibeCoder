@@ -87,7 +87,7 @@ closed. `spawnGh` supplies neither, so those branches are skipped outright
 | `setup/setup_cli.ts:168`, `setup/prerequisite_installer.ts:170` | fixed prompt text; a further uninstrumented entrypoint, folded into #1280 |
 | `lib/gh_guard_cli.ts:261` (`Deno.stdout.write`) | not a leak — the payload is already through `redactGhBodyArgs` |
 | `lib/gh_guard_cli.ts:262` (`console.error`) | separate process, no patch; content is `[SECURITY]` marker text plus a decision reason |
-| `pull.log`, `run_core.log` | **BYPASS** — SEC-1217-07 (#1258) |
+| `pull.log`, `run_core.log` | **BYPASS** — SEC-1217-07 (#1258); fixed there: both modules now redact in `appendLine` |
 
 ### 2 · GitHub writes
 
