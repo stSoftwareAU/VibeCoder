@@ -17,6 +17,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import {
+  AGENT_STATE_VOLUME_NAME,
   APPROVAL_STATE_VOLUME_NAME,
   buildContainerLaunchPlan,
   type ContainerExtensionLaunch,
@@ -34,6 +35,7 @@ import {
 } from "../lib/container_launch.ts";
 import { parseKeepReferences } from "../lib/container_image_prune.ts";
 import { resolveContentApprovalStateDir } from "../lib/content_approval_state_dir.ts";
+import { resolveAgentStateDir } from "../lib/agent_state_dir.ts";
 import {
   CONTAINER_RUNTIMES,
   type ContainerRuntimeDescriptor,
@@ -106,7 +108,7 @@ Deno.test("buildContainerLaunchPlan - mounts exactly the permitted host paths", 
   // `gh` material and the active provider's — so material belonging to any
   // other provider never enters the container.
   const provider = activeAgentProvider();
-  assertEquals(plan.mounts.length, 7);
+  assertEquals(plan.mounts.length, 8);
   assertEquals(
     plan.mounts.map((mount) => [mount.source, mount.target, !!mount.readOnly]),
     [
@@ -117,6 +119,9 @@ Deno.test("buildContainerLaunchPlan - mounts exactly the permitted host paths", 
       // (Issue #4186): fast guest-owned filesystems, no host directory.
       [WORK_VOLUME_NAME, targets.work, false],
       [APPROVAL_STATE_VOLUME_NAME, targets.approvalState, false],
+      // Issue #1407: the agent's own state rides its own volume too, so the
+      // work volume can be tightened without reaching the agent's sessions.
+      [AGENT_STATE_VOLUME_NAME, targets.agentState, false],
       ["/home/operator/logs", targets.logs, false],
       ["/home/operator/.vibe-coder/run-config", targets.config, true],
       [
@@ -136,6 +141,7 @@ Deno.test("buildContainerLaunchPlan - mounts exactly the permitted host paths", 
     `/opt/VibeCoder:${targets.base}:ro`,
     `${WORK_VOLUME_NAME}:${targets.work}`,
     `${APPROVAL_STATE_VOLUME_NAME}:${targets.approvalState}`,
+    `${AGENT_STATE_VOLUME_NAME}:${targets.agentState}`,
     `/home/operator/logs:${targets.logs}`,
     `/home/operator/.vibe-coder/run-config:${targets.config}:ro`,
     `/home/operator/.vibe-coder/credentials/gh:${targets.credentials}/gh:ro`,
@@ -151,7 +157,11 @@ Deno.test("buildContainerLaunchPlan - named volumes carry the work dir and appro
   // The volumes the launcher must ensure exist, in mount order. Fixed names,
   // independent of the per-run container name and of the image tag: clones
   // survive every cycle and every image upgrade.
-  assertEquals(plan.volumes, [WORK_VOLUME_NAME, APPROVAL_STATE_VOLUME_NAME]);
+  assertEquals(plan.volumes, [
+    WORK_VOLUME_NAME,
+    APPROVAL_STATE_VOLUME_NAME,
+    AGENT_STATE_VOLUME_NAME,
+  ]);
 
   // A fresh volume is root-owned, so the plan carries a one-shot init run the
   // launcher executes before the worker: root chowns the two mount roots to
@@ -169,10 +179,13 @@ Deno.test("buildContainerLaunchPlan - named volumes carry the work dir and appro
     `${WORK_VOLUME_NAME}:${targets.work}`,
     "--volume",
     `${APPROVAL_STATE_VOLUME_NAME}:${targets.approvalState}`,
+    "--volume",
+    `${AGENT_STATE_VOLUME_NAME}:${targets.agentState}`,
     "vibe-coder:0123456789ab",
     `${MANIFEST.user.uid}:${MANIFEST.user.gid}`,
     targets.work,
     targets.approvalState,
+    targets.agentState,
   ]);
 });
 
@@ -183,9 +196,14 @@ Deno.test("buildContainerLaunchPlan - volume-name overrides isolate tests, never
     volumes: {
       work: "vibe-test-work-1234",
       approvalState: "vibe-test-as-1234",
+      agentState: "vibe-test-agent-1234",
     },
   }));
-  assertEquals(plan.volumes, ["vibe-test-work-1234", "vibe-test-as-1234"]);
+  assertEquals(plan.volumes, [
+    "vibe-test-work-1234",
+    "vibe-test-as-1234",
+    "vibe-test-agent-1234",
+  ]);
 
   // The override is a volume *name*, never a host path: anything shaped like
   // a path (or otherwise unframeable) is refused, so the knob cannot broaden
@@ -198,6 +216,14 @@ Deno.test("buildContainerLaunchPlan - volume-name overrides isolate tests, never
     Error,
   );
   assertStringIncludes(error.message, "volume name");
+});
+
+Deno.test("containerTargetPaths - the agent-state volume lands where the worker resolves it (Issue #1407)", () => {
+  // Same pinning as the approval store below: the mount target must be the
+  // worker's own resolution, or the agent writes its sessions somewhere the
+  // volume is not mounted and loses them on every container replacement.
+  const targets = containerTargetPaths(MANIFEST);
+  assertEquals(targets.agentState, resolveAgentStateDir(targets.work));
 });
 
 Deno.test("containerTargetPaths - the approval-state volume lands where the worker resolves it", () => {
@@ -573,7 +599,7 @@ Deno.test("buildContainerLaunchPlan - omits flags the runtime does not support",
   assertEquals(plan.runArgs.includes("--tmpfs"), false);
   assertEquals(plan.runArgs.includes("--network"), false);
   // The mount set is identical regardless of runtime.
-  assertEquals(mountValues(plan.runArgs).length, 7);
+  assertEquals(mountValues(plan.runArgs).length, 8);
   // Singular `image`, verified against Apple container 1.2.2 on a real host:
   // `container images ...` is not a subcommand there — the CLI tries to load
   // a plugin named `container-images`, fails, and exits 64, which run.sh
@@ -921,6 +947,7 @@ Deno.test("buildContainerLaunchPlan - Windows hosts mount the same targets", () 
     // identical on every host (Issue #4186).
     `${WORK_VOLUME_NAME}:${targets.work}`,
     `${APPROVAL_STATE_VOLUME_NAME}:${targets.approvalState}`,
+    `${AGENT_STATE_VOLUME_NAME}:${targets.agentState}`,
     `C:\\Users\\operator\\logs:${targets.logs}`,
     `C:\\Users\\operator\\.vibe-coder\\run-config:${targets.config}:ro`,
     `C:\\Users\\operator\\.vibe-coder\\credentials\\gh:${targets.credentials}/gh:ro`,

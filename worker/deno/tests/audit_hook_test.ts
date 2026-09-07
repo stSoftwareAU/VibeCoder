@@ -90,6 +90,36 @@ Deno.test("audit_hook - auditGhMutation journals a gh mutation", async () => {
   });
 });
 
+Deno.test("audit_hook - a gh extension install is journalled as a local-tool mutation (Issue #1396)", async () => {
+  await withAuditEnv(async (journalPath, opts) => {
+    await auditGhMutation(
+      ["extension", "install", "dlvhdr/gh-dash", "--pin", "v4.2.0", "--force"],
+      0,
+      opts,
+    );
+
+    const loaded = await loadEntries(journalPath);
+    assert(loaded.ok, "journal file should exist after an extension install");
+    if (!loaded.ok) return;
+    assertEquals(loaded.value.length, 1);
+    const entry = loaded.value[0];
+    assertEquals(entry?.verb, "extension-install");
+    assertEquals(entry?.target, "dlvhdr/gh-dash");
+    assertEquals(entry?.outcome, "success");
+    // The extension's source repo is not a write target, so it is not
+    // recorded as the mutated repo.
+    assertEquals(entry?.repo, undefined);
+  });
+});
+
+Deno.test("audit_hook - gh extension list stays a read and is not journalled (Issue #1396)", async () => {
+  await withAuditEnv(async (journalPath, opts) => {
+    await auditGhMutation(["extension", "list"], 0, opts);
+    const loaded = await loadEntries(journalPath);
+    assertEquals(loaded.ok, false, "a read must write no journal entry");
+  });
+});
+
 Deno.test("audit_hook - non-zero exit records an error outcome", async () => {
   await withAuditEnv(async (journalPath, opts) => {
     await auditGhMutation(["issue", "close", "42"], 1, opts);

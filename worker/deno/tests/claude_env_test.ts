@@ -10,6 +10,7 @@
  */
 
 import { assertEquals } from "@std/assert";
+import { resolveAgentStateDir } from "../lib/agent_state_dir.ts";
 import { buildClaudeChildEnv, CLAUDE_ENV_DENYLIST } from "../lib/claude_env.ts";
 
 Deno.test("buildClaudeChildEnv - drops the GitHub App private key path", () => {
@@ -90,7 +91,7 @@ Deno.test("buildClaudeChildEnv - strips DEEPSEEK_API_KEY (Issue #412)", () => {
 // Durable transcripts inside the container (Issue #4170)
 // ---------------------------------------------------------------------------
 
-Deno.test("buildClaudeChildEnv - container child gets a durable CLAUDE_CONFIG_DIR under the work dir", () => {
+Deno.test("buildClaudeChildEnv - container child gets a durable CLAUDE_CONFIG_DIR on the agent-state volume", () => {
   // Claude's session transcripts (what --resume replays) live under
   // CLAUDE_CONFIG_DIR/projects. Left at the default ~/.claude they die with
   // the ephemeral VM — observed live: 70 minutes of execute-phase work on
@@ -102,9 +103,13 @@ Deno.test("buildClaudeChildEnv - container child gets a durable CLAUDE_CONFIG_DI
     WORK_DIR: "/home/vibe/auto-issue-work",
     VIBE_IMAGE_AGENT_PROVIDERS: "claude",
   });
+  // Issue #1407: on the agent-state volume, a sibling of the work dir, so
+  // tightening the work volume can never lock the agent out of its own
+  // configuration. Built through the resolver rather than a second copy of
+  // the path, so the two cannot drift.
   assertEquals(
     env["CLAUDE_CONFIG_DIR"],
-    "/home/vibe/auto-issue-work/.claude-config",
+    `${resolveAgentStateDir("/home/vibe/auto-issue-work")}/claude-config`,
   );
 });
 
