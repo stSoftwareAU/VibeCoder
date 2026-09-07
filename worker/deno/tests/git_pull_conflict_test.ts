@@ -533,8 +533,8 @@ Deno.test("syncMilestoneBranchWithDefault - a dirty shallow clone is healed rath
     assertEquals(result.ok, true, "the dirty tree must be healed, not fatal");
     if (result.ok) {
       // It says what it discarded, so a surprise stays diagnosable.
-      assertStringIncludes(result.value, "SELF-HEALING");
-      assertStringIncludes(result.value, "milestone.ts");
+      assertStringIncludes(result.value.message, "SELF-HEALING");
+      assertStringIncludes(result.value.message, "milestone.ts");
     }
     // The branch really is checked out, carrying the remote's own file.
     const branch = await runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], {

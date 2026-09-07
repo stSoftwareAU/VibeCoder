@@ -271,6 +271,7 @@
         "worker/deno/lib/milestone_merge_gate.ts",
         "worker/deno/lib/milestone_open_children.ts",
         "worker/deno/lib/milestone_ruleset_check.ts",
+        "worker/deno/lib/milestone_sync_conflict.ts",
         "worker/deno/lib/milestone_sync_pr.ts",
         "worker/deno/lib/milestone_sync_streak.ts",
         "worker/deno/lib/milestone_tracker_identity.ts",

@@ -283,7 +283,7 @@ export const gitOperationsCommand: Command = {
         );
         return {
           success: result.ok,
-          message: result.ok ? result.value : result.error.message,
+          message: result.ok ? result.value.message : result.error.message,
         };
       }
 

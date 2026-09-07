@@ -42,6 +42,7 @@ import { checkoutPrBranchAtRemoteHead } from "./pr_branch_checkout.ts";
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
+import type { MilestoneSyncOutcome } from "./milestone_sync_conflict.ts";
 import {
   checkMergedTree,
   mergeGateFailureError,
@@ -512,6 +513,28 @@ async function resolveConflictsTowardsDefault(
   };
 }
 
+/** Paths git currently reports as conflicted; empty when it reports none. */
+async function listConflictedFiles(
+  options: GitCommandOptions,
+): Promise<string[]> {
+  const result = await runGitCommand(
+    ["diff", "--name-only", "--diff-filter=U"],
+    options,
+  );
+  return result.ok
+    ? result.value.stdout.trim().split("\n").filter(Boolean)
+    : [];
+}
+
+/** Resolve a ref to its commit SHA; empty string when it cannot be read. */
+async function readRef(
+  ref: string,
+  options: GitCommandOptions,
+): Promise<string> {
+  const result = await runGitCommand(["rev-parse", ref], options);
+  return result.ok && result.value.code === 0 ? result.value.stdout.trim() : "";
+}
+
 /**
  * Sync a milestone branch with the default branch (Issue #422, #605).
  *
@@ -519,10 +542,16 @@ async function resolveConflictsTowardsDefault(
  * type-checked before it is pushed (Issue #974) — see
  * {@link gateThenPushMilestoneBranch}.
  *
+ * A merge that conflicts is still resolved towards the default branch so the
+ * branch keeps moving, but the conflict travels back with the outcome
+ * (Issue #1558): the files that collided and the commit each side stood at,
+ * so the caller can escalate it the same day instead of leaving a resolution
+ * nobody made deliberately to surface at rollup time.
+ *
  * @param milestoneBranch - The milestone branch name
  * @param defaultBranch - The default branch to sync from
  * @param options - Git command options
- * @returns Result indicating success or failure
+ * @returns Result carrying the summary, and the conflict when there was one
  */
 export async function syncMilestoneBranchWithDefault(
   milestoneBranch: string,
@@ -539,7 +568,7 @@ export async function syncMilestoneBranchWithDefault(
    * Defaults to the repository's own type check; tests inject a verdict.
    */
   mergeGate: MergeGateFn = checkMergedTree,
-): Promise<Result<string>> {
+): Promise<Result<MilestoneSyncOutcome>> {
   // Refuse an option-injecting ref before any git runs (Issue #12). The
   // default branch is repo-derived (setupRepo reads it from
   // `.vibe_default_branch` inside the clone, Issue #1269) and reaches
@@ -702,8 +731,10 @@ export async function syncMilestoneBranchWithDefault(
   if (behindCount === 0) {
     return {
       ok: true,
-      value:
-        `${selfHealNote}Milestone branch '${milestoneBranch}' is already up to date with '${defaultBranch}'`,
+      value: {
+        message:
+          `${selfHealNote}Milestone branch '${milestoneBranch}' is already up to date with '${defaultBranch}'`,
+      },
     };
   }
 
@@ -753,12 +784,22 @@ export async function syncMilestoneBranchWithDefault(
     if (!gated.ok) return gated;
     return {
       ok: true,
-      value:
-        `${selfHealNote}${gated.value}Successfully merged '${defaultBranch}' into '${milestoneBranch}' (${behindCount} commit(s) integrated)`,
+      value: {
+        message:
+          `${selfHealNote}${gated.value}Successfully merged '${defaultBranch}' into '${milestoneBranch}' (${behindCount} commit(s) integrated)`,
+      },
     };
   }
 
-  // Merge conflict — abort and retry with auto-resolution (Issue #605)
+  // Merge conflict. Record what collided BEFORE aborting — once the merge is
+  // aborted git no longer knows, and a conflict nobody can name is a
+  // conflict nobody reconciles (Issue #1558). An empty list is still carried:
+  // a conflict the sync could not describe must still reach a human rather
+  // than pass off as clean.
+  const conflictedFiles = await listConflictedFiles(options);
+  const defaultSha = await readRef(defaultBranch, options);
+
+  // Abort and retry with auto-resolution (Issue #605)
   await runGitCommand(["merge", "--abort"], options);
 
   // Retry merge favouring default branch changes for conflicted files
@@ -779,8 +820,16 @@ export async function syncMilestoneBranchWithDefault(
     if (!gated.ok) return gated;
     return {
       ok: true,
-      value:
-        `${selfHealNote}${gated.value}Issue #605: Auto-resolved merge conflicts (favouring '${defaultBranch}' changes)`,
+      value: {
+        message:
+          `${selfHealNote}${gated.value}Issue #605: Auto-resolved merge conflicts (favouring '${defaultBranch}' changes)`,
+        conflict: {
+          files: conflictedFiles,
+          milestoneSha: preMergeSha,
+          defaultSha,
+          resolution: "theirs",
+        },
+      },
     };
   }
 
@@ -797,18 +846,18 @@ export async function syncMilestoneBranchWithDefault(
   // reported with the outcome so a deletion is never a silent one.
   let deletionNote = "";
 
+  // What the resolution below actually operated on, so the conflict report
+  // names the files that were resolved rather than an earlier attempt's
+  // (Issue #1558). Falls back to the first merge's list when the retry needed
+  // no resolution at all.
+  let resolvedFiles = conflictedFiles;
+
   if (!finalMergeResult.ok || finalMergeResult.value.code !== 0) {
     // Get conflicted files and resolve each
-    const conflictedResult = await runGitCommand(
-      ["diff", "--name-only", "--diff-filter=U"],
-      options,
-    );
+    const stillConflicted = await listConflictedFiles(options);
+    resolvedFiles = stillConflicted;
 
-    const conflictedFiles = conflictedResult.ok
-      ? conflictedResult.value.stdout.trim().split("\n").filter(Boolean)
-      : [];
-
-    if (conflictedFiles.length === 0) {
+    if (stillConflicted.length === 0) {
       await runGitCommand(["merge", "--abort"], options);
       // Honest failure (Issue #4260): `-X theirs` already resolves any
       // content conflict, so a merge that fails with ZERO conflicted files
@@ -832,7 +881,7 @@ export async function syncMilestoneBranchWithDefault(
     }
 
     const resolved = await resolveConflictsTowardsDefault(
-      conflictedFiles,
+      stillConflicted,
       defaultBranch,
       milestoneBranch,
       options,
@@ -872,8 +921,16 @@ export async function syncMilestoneBranchWithDefault(
   if (!gatedResolved.ok) return gatedResolved;
   return {
     ok: true,
-    value:
-      `${selfHealNote}${gatedResolved.value}${deletionNote}Issue #605: Resolved merge conflicts for '${milestoneBranch}' (accepted '${defaultBranch}' changes)`,
+    value: {
+      message:
+        `${selfHealNote}${gatedResolved.value}${deletionNote}Issue #605: Resolved merge conflicts for '${milestoneBranch}' (accepted '${defaultBranch}' changes)`,
+      conflict: {
+        files: resolvedFiles,
+        milestoneSha: preMergeSha,
+        defaultSha,
+        resolution: "manual",
+      },
+    },
   };
 }
 
