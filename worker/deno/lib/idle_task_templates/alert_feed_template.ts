@@ -86,7 +86,10 @@ import {
   listKnownOpenAlertFingerprints,
   selectNewAlerts,
 } from "../alert_feeds/alert_fingerprint.ts";
-import { fenceUntrustedIssueText } from "../prompt_delimiter.ts";
+import {
+  fenceUntrustedIssueText,
+  scrubUntrustedText,
+} from "../prompt_delimiter.ts";
 import type { Result } from "../../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -143,9 +146,15 @@ export interface AlertFinding {
   title: string;
   /**
    * Structured, worker-authored detail lines (rendered between the marker and
-   * the untrusted advisory fence). Every value here is derived from a
-   * constrained alert field (severity, ecosystem, advisory/rule id) — never
-   * free-text — so it is safe to render outside the untrusted boundary.
+   * the untrusted advisory fence).
+   *
+   * Some values here **are** free-text — the fetchers document `ruleId`,
+   * `packageName`, `ecosystem` and `ghsaId` as carried verbatim — so every one
+   * of them is passed through {@link inlineAlertField} first (Issue #1275).
+   * That renders delimiter and HTML-comment sequences inert and collapses the
+   * value onto a single line, which is what makes these lines safe to render
+   * outside the untrusted boundary; the line labels themselves are
+   * worker-authored.
    */
   detailLines: string[];
   /**
@@ -212,6 +221,22 @@ function severityEmoji(severity: AlertSeverity): string {
 }
 
 /**
+ * Render an externally-sourced alert field inert for a single worker-authored
+ * line — a detail line or the issue title (Issue #1275).
+ *
+ * `ruleId`, `packageName`, `ecosystem` and `ghsaId` are free text carried
+ * verbatim from a SARIF upload or the dependency graph, and these lines sit
+ * **outside** the untrusted fence. {@link scrubUntrustedText} is the shared
+ * single-line scrub (a nonce-fenced block per bullet would be unreadable): it
+ * neutralises delimiter-like patterns and HTML comments, so a planted
+ * `<!-- alert-fingerprint: … -->` cannot form. Whitespace is then collapsed so
+ * a newline-bearing value cannot forge extra structural lines. Pure — no I/O.
+ */
+function inlineAlertField(value: string): string {
+  return scrubUntrustedText(value).replace(/\s+/gu, " ").trim();
+}
+
+/**
  * Build the finding for a single Dependabot alert, scoped to `repo`. Pure — no
  * I/O. The structured fields become {@link AlertFinding.detailLines}; the
  * advisory `summary` — externally-sourced free-text — is carried separately as
@@ -226,16 +251,18 @@ export function buildDependabotFinding(
     number: alert.number,
     ghsaId: alert.ghsaId,
   });
-  const pkg = alert.packageName || "(unknown package)";
+  const pkg = inlineAlertField(alert.packageName) || "(unknown package)";
+  const ecosystem = inlineAlertField(alert.ecosystem);
+  const ghsaId = inlineAlertField(alert.ghsaId);
   const emoji = severityEmoji(alert.severity);
   const title = `${emoji} [Dependabot] ${alert.severity}: ${pkg} — ${
-    alert.ghsaId || `alert #${alert.number}`
+    ghsaId || `alert #${alert.number}`
   }`;
   const detailLines = [
     `**Source:** Dependabot alert`,
     `**Severity:** ${alert.severity}`,
-    `**Package:** ${pkg}${alert.ecosystem ? ` (${alert.ecosystem})` : ""}`,
-    ...(alert.ghsaId ? [`**Advisory:** ${alert.ghsaId}`] : []),
+    `**Package:** ${pkg}${ecosystem ? ` (${ecosystem})` : ""}`,
+    ...(ghsaId ? [`**Advisory:** ${ghsaId}`] : []),
   ];
   return {
     fingerprint,
@@ -263,7 +290,7 @@ export function buildCodeScanningFinding(
     alert.ruleId,
     alert.number,
   );
-  const rule = alert.ruleId || "(unknown rule)";
+  const rule = inlineAlertField(alert.ruleId) || "(unknown rule)";
   const emoji = severityEmoji(alert.severity);
   const title =
     `${emoji} [Code scanning] ${alert.severity}: ${rule} (alert #${alert.number})`;
