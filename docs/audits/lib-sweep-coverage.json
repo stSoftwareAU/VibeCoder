@@ -125,6 +125,7 @@
         "worker/deno/lib/guard_module_path.ts",
         "worker/deno/lib/prompt_immutability.ts",
         "worker/deno/lib/prompt_manager.ts",
+        "worker/deno/lib/untrusted_image_signal.ts",
         "worker/deno/lib/quality_gate_cache.ts",
         "worker/deno/lib/quota_pause.ts",
         "worker/deno/lib/rate_limit_preflight_cache.ts",
