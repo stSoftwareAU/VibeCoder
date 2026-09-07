@@ -11,7 +11,7 @@
  *   - mark-failed: Mark an issue as permanently failed
  *   - handle-failure: Unified failure handler
  *   - handle-question-failure: Handle question answering failure
- *   - count-clarification-rounds: Count clarification comments
+ *   - count-clarification-rounds: Count the fleet-authored clarification rounds
  *   - validate-clarifying-questions: Validate questions text
  *   - post-clarifying-questions: Post clarifying questions
  *   - escalate-to-planning: Escalate to planning mode
@@ -34,9 +34,11 @@ import {
 import { handleQuestionFailure } from "../lib/label_question_failure.ts";
 import {
   countClarificationRounds,
+  ghClientFromCommandFn,
   postClarifyingQuestions,
   validateClarifyingQuestions,
 } from "../lib/label_clarification.ts";
+import { runGhCommand } from "../lib/github.ts";
 import { escalateToPlanning } from "../lib/label_planning_escalation.ts";
 
 export const labelManagerCommand: Command = {
@@ -266,8 +268,27 @@ export const labelManagerCommand: Command = {
       }
 
       case "count-clarification-rounds": {
-        const issueComments = String(args["issue-comments"] ?? "");
-        const count = countClarificationRounds(issueComments);
+        // Issue #1263: counted from the issue's own comment list, whose
+        // authors GitHub authenticates — never from a `--issue-comments`
+        // blob, which is text any commenter can write and which used to be
+        // enough to retire the clarity gate.
+        const repo = String(args["repo"] ?? "");
+        const issueNumber = toNumber(args["issue-number"], 0);
+
+        if (!repo || !issueNumber) {
+          return {
+            success: false,
+            message: "Missing required arguments: --repo, --issue-number",
+          };
+        }
+
+        const comments = await ghClientFromCommandFn(runGhCommand)
+          .getIssueComments(repo, issueNumber);
+        const count = await countClarificationRounds(comments, {
+          repo,
+          issueNumber,
+          githubUser,
+        });
         return {
           success: true,
           message: String(count),

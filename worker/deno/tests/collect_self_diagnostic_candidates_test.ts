@@ -21,6 +21,7 @@ import {
   SELF_DIAGNOSTIC_REPO,
   SELF_SCHEDULE_AUDIT_VERB,
 } from "../lib/self_diagnostic_provenance.ts";
+import type { AttestationVerdict } from "../lib/self_diagnostic_attestation.ts";
 import { formatIdleInversionBody } from "../lib/idle_inversion_streak.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { createIssueFetcher } from "../lib/issue_finder_common.ts";
@@ -107,7 +108,14 @@ function buildOptions(
   return { githubUser: WORKER_LOGIN, ghCommandFn };
 }
 
-/** Deps capturing audit decisions instead of writing a real journal. */
+/**
+ * Deps capturing audit decisions instead of writing a real journal.
+ *
+ * Issue #1277: every issue is treated as attested here, standing in for the
+ * filing attestation the worker's own filer records. The attestation gate
+ * itself is exercised against the real journal in
+ * `self_diagnostic_attestation_test.ts` and in the end-to-end test below.
+ */
 function captureDeps(
   audited: string[],
   logs: string[],
@@ -121,6 +129,17 @@ function captureDeps(
       );
       return Promise.resolve(recordOk);
     },
+    verifyFilings: (_repo, issues) =>
+      Promise.resolve(
+        new Map(
+          issues.map((
+            issue,
+          ) => [issue.number, {
+            attested: true,
+            familyId: "idle-inversion",
+          } as AttestationVerdict]),
+        ),
+      ),
     log: (message) => logs.push(message),
     dedupAuthors: FLEET_DEDUP,
   };
@@ -381,6 +400,7 @@ Deno.test("self-schedule - a failed announcement refuses the schedule", async ()
 Deno.test("self-schedule - a diagnostic a human already scheduled is left to its own tier", async () => {
   const { result } = await collect({
     issues: [makeIssue({ labels: ["work-on"] })],
+    deps: captureDeps([], []),
   });
   assertEquals(result.candidates, []);
 });
@@ -388,6 +408,7 @@ Deno.test("self-schedule - a diagnostic a human already scheduled is left to its
 Deno.test("self-schedule - a needs-human diagnostic is not re-scheduled", async () => {
   const { result } = await collect({
     issues: [makeIssue({ labels: ["needs-human"] })],
+    deps: captureDeps([], []),
   });
   assertEquals(result.candidates, []);
 });
@@ -405,6 +426,7 @@ Deno.test("self-schedule - an open fleet PR defers the diagnostic", async () => 
       } as OpenPR,
     ],
     config: makeConfig({ fleetPrAuthors: [WORKER_LOGIN] }),
+    deps: captureDeps([], []),
   });
   assertEquals(result.candidates, []);
 });

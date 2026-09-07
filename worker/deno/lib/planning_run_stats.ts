@@ -30,6 +30,7 @@ import {
   formatCacheHitRate,
   isCacheHitRateRegressed,
 } from "./prompt_cache_telemetry.ts";
+import { previousGenerationOf } from "./current_models.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -285,21 +286,61 @@ export function resolveExpectedPlanningModel(
 // ---------------------------------------------------------------------------
 
 /**
+ * Verdict for a run whose served models matched the expected *tier* but are all
+ * a previous generation of it (Issue #1362).
+ *
+ * @param matching - The served models that satisfied the expected model
+ * @param expectedModel - The expected (configured/derived) model
+ * @returns A degraded verdict naming the served and current models, or
+ *   undefined when nothing is stale (or the expectation itself pins an older
+ *   generation, which is the operator's own choice)
+ */
+function assessPreviousGeneration(
+  matching: string[],
+  expectedModel: string,
+): DegradationVerdict | undefined {
+  // The expectation itself pins an older generation — the operator asked for
+  // that model, so serving it is right.
+  if (previousGenerationOf(expectedModel)) return undefined;
+
+  const unique = [...new Set(matching)];
+  const stale = unique.map(previousGenerationOf);
+  // Lenient, as the tier rule above: one current model keeps the run healthy.
+  const reference = stale[0];
+  if (!reference || stale.some((s) => s === undefined)) return undefined;
+
+  const { tier, current } = reference;
+  return {
+    degraded: true,
+    reason: unique.length === 1
+      ? `served model \`${unique[0]}\` is a previous-generation \`${tier}\` ` +
+        `(current: \`${current}\`)`
+      : `every served model is a previous-generation \`${tier}\` (served: ${
+        unique.map((m) => `\`${m}\``).join(", ")
+      }; current: \`${current}\`)`,
+  };
+}
+
+/**
  * Assess whether a planning run was degraded.
  *
  * Degraded when **no** served model observed across the judged invocations
- * matches the expected model (prefix/alias-aware), **or** an invocation records
- * an explicit `fallbackModel` (rate-limit downgrade) or `preflightDegraded`
- * flag. Only invocations tagged with {@link phase} are judged — auxiliary calls
- * never trigger the flag.
+ * matches the expected model (prefix/alias-aware), when every model that *did*
+ * match it is a previous generation of that tier ({@link assessPreviousGeneration},
+ * Issue #1362), **or** when an invocation records an explicit `fallbackModel`
+ * (rate-limit downgrade) or `preflightDegraded` flag. Only invocations tagged
+ * with {@link phase} are judged — auxiliary calls never trigger the flag.
  *
  * The served-model rule is **lenient at run level** (Issue #3593): a mixed run
  * where the expected model served part of the work and another tier served the
  * rest is *not* degraded — the plan was still generated with the expected tier
- * in play. This is the same rule `isMismatch()` in
- * `planning_run_aggregation.ts` already applies to the fleet aggregate, so the
- * per-run verdict and the aggregate can no longer disagree. Every served model
- * still appears in the stats comment, so partial service stays visible.
+ * in play. The generation rule is lenient the same way. On the tier question
+ * this matches `isMismatch()` in `planning_run_aggregation.ts`, so the per-run
+ * verdict and the fleet aggregate cannot disagree about tier substitution; the
+ * aggregate deliberately does not judge *generation* — it answers "was the
+ * Fable tier substituted across runs" (Issue #2698), which is a different
+ * question. Every served model still appears in the stats comment, so partial
+ * service stays visible.
  *
  * **Indeterminate** (Issue #2745): when no degradation is detected but a judged
  * invocation ran and produced output (its `runStats` is present) while **no**
@@ -360,9 +401,8 @@ export function assessDegradation(
   // degraded — the same rule `isMismatch()` applies to the fleet aggregate.
   if (expectedResolved) {
     const served = judged.flatMap((inv) => inv.runStats?.servedModels ?? []);
-    if (
-      served.length > 0 && !served.some((s) => modelsMatch(expectedModel, s))
-    ) {
+    const matching = served.filter((s) => modelsMatch(expectedModel, s));
+    if (served.length > 0 && matching.length === 0) {
       const unique = [...new Set(served)];
       return {
         degraded: true,
@@ -375,6 +415,11 @@ export function assessDegradation(
           })`,
       };
     }
+
+    // The tier matched, but on a previous generation of it (Issue #1362) —
+    // rules in `assessPreviousGeneration` above.
+    const staleVerdict = assessPreviousGeneration(matching, expectedModel);
+    if (staleVerdict) return staleVerdict;
   }
 
   // No degradation detected. If a judged invocation ran and produced output but

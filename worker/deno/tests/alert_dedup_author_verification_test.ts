@@ -224,6 +224,7 @@ async function runFailure(
   await withTempDir(async (dir) => {
     const g = gh(listRows);
     const decision = await fileRunFailureIssue({
+      recordFiling: () => Promise.resolve(true),
       report: OOM_REPORT,
       ghFn: g.fn,
       workDir: dir,
@@ -299,6 +300,7 @@ async function inversion(
   await withTempDir(async (dir) => {
     const g = gh(listRows);
     const decision = await recordIdleInversion({
+      recordFiling: () => Promise.resolve(true),
       statePath: idleInversionStatePath(dir),
       cycleId: "run-1",
       report: { repo: REPO, claimable: 2, detail: "work_on=2" },

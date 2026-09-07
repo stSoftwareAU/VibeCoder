@@ -179,14 +179,20 @@ flowchart TD
   `/tmp/vibe-playwright-profile` — the launcher mounts `/tmp` as a `tmpfs`, so
   the profile dies with the container. Generating a config whose profile
   directory sits inside the mounted checkout throws rather than writing browser
-  state into the repository. `VIBE_BROWSER_PROFILE_DIR` overrides the location.
+  state into the repository. `VIBE_BROWSER_PROFILE_DIR` overrides the location;
+  it must be an absolute path, and containment is decided on whole path
+  segments after `.`/`..` are resolved, using the platform's own separators and
+  case rules — so a `..` walk back into the checkout, or a Windows path the old
+  hard-coded `/` never matched, is refused too (Issue #1293).
 - **`--no-sandbox` only inside the image.** Chromium's own sandbox needs user
   namespaces the container runtime may not grant, and the container boundary is
   the isolation that matters there. On a host with no baked browser the sandbox
   stays on.
 - **The secrets denylist is unchanged.** `--deny-env` still hides the worker's
   tokens and keys from the MCP process, and the npm registry age
-  gate still guards the pinned specifiers.
+  gate still guards the pinned specifiers. Since Issue #1288 the same names are
+  also blanked in the server's `env` block, because a permission flag binds the
+  Deno runtime and not the children it spawns under `--allow-run`.
 - **The server is handed to the agent only on a run that needs a browser**
   (Issue #192). Browser and outbound-network capability is granted on an
   explicit need signal — `RunClaudeOptions.mcpConfig: true` — not by the mere

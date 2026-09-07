@@ -1535,7 +1535,14 @@ RUN_DRAIN_SECONDS=10
 if command -v tee >/dev/null 2>&1 && command -v mkfifo >/dev/null 2>&1; then
   RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/vibe-run.XXXXXX")"
   RUN_ERR_FIFO="${RUN_LOG}.err"
-  mkfifo "${RUN_ERR_FIFO}"
+  # Owner-only, and at creation (Issue #1299). mktemp gives the log 0600; a
+  # FIFO takes the umask instead, so without -m it lands 0644 on the usual 022
+  # in a world-readable temporary directory. A second reader on this pipe is
+  # destructive as well as passive: bytes another process consumes are bytes
+  # tee never sees, so it would silently truncate the very evidence a refused
+  # start is reported with. -m is POSIX, and closes the window a follow-up
+  # chmod would only narrow.
+  mkfifo -m 600 "${RUN_ERR_FIFO}"
   tee -a "${RUN_LOG}" >&2 <"${RUN_ERR_FIFO}" &
   RUN_TEE_PID=$!
 else

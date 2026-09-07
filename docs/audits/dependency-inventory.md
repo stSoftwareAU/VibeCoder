@@ -18,7 +18,6 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | github/codeql-action/analyze | v4.37.9 | cdf488f595d80d6e07e03d4674febd5ab45fa938 | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | github/codeql-action/init | v4.37.9 | cdf488f595d80d6e07e03d4674febd5ab45fa938 | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | gitleaks/gitleaks-action | v3.0.0 | e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e | .github/workflows/gitleaks.yml | pinned to commit SHA |
-| ruby/setup-ruby | v1.321.0 | 95ef2b042f9d7a56d8268cba8559e2842e2ad01b | .github/workflows/dependency-audit.yml | pinned to commit SHA |
 
 ## Container base images
 
@@ -31,7 +30,7 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 
 | Tool | Kind | Version | SHA-256 | Verdict |
 | --- | --- | --- | --- | --- |
-| claude | provider | 2.1.223 | amd64: 98226474f802e3094d6a86c5ade8883c16206d0fcb5c400b7401c800063e99d7<br>arm64: 60e83d8db0e894d0e54413e5e7daa256d180db660f51e139a51b614fc30cf3ac | exact version + SHA-256 verified |
+| claude | provider | 2.1.261 | amd64: 4ae40dd1784e85753e742e09f267d29ecbb82890361ad3817d27560866d364a6<br>arm64: 7bbed5a9b0fc2e4ec67bad3490d06ca91b86d6b037d47520b7898951757d1b8a | exact version + SHA-256 verified |
 | codex | provider | 0.147.0 | amd64: 0246e2e773834e07f0fb5249ed6ebad12e4591e608f8c7bb97dd6a9690544c36<br>arm64: eb677c80f666b1ab8b4b1d083b66e8d614b1281d960bb6f9fd8ca98f58b38b90 | exact version + SHA-256 verified |
 | deepseek | provider | 2.1.223 | amd64: 98226474f802e3094d6a86c5ade8883c16206d0fcb5c400b7401c800063e99d7<br>arm64: 60e83d8db0e894d0e54413e5e7daa256d180db660f51e139a51b614fc30cf3ac | exact version + SHA-256 verified |
 | gemini | provider | 0.55.1 | noarch: 4587cc6fe4d794cd35517179642cf4df3133a073ef6f96dda691d5604bf4df7e | exact version + SHA-256 verified |

@@ -22,6 +22,7 @@
  */
 
 import { readHostname } from "../lib/identity_guard.ts";
+import { isValidRepoSlug, renderInertRepoSlug } from "../lib/repo_slug.ts";
 import {
   ALERT_DEDUP_JSON_FIELDS,
   type AlertDedupAuthorOptions,
@@ -232,17 +233,34 @@ export function buildIssueBody(
   identityGuardInactive = false,
   hostname = "unknown-host",
 ): string {
-  const rows = misses
-    .map((m) =>
-      `- \`${m.repo}\` — ${m.status} (${statusExplanation(m.status)})`
-    )
-    .join("\n");
+  // Defence in depth (Issue #1291): the invite commands below land in a
+  // ```bash fence a repo *admin* is told to paste, so a slug carrying a
+  // backtick or `$(…)` would hand attacker-chosen shell to a higher-privileged
+  // party. The config readers reject such slugs, but nothing may be
+  // interpolated here that has not passed the guard — and a rejected slug is
+  // still reported, rendered inert, rather than dropped silently.
+  const validMisses = misses.filter((m) => isValidRepoSlug(m.repo));
+  const invalidMisses = misses.filter((m) => !isValidRepoSlug(m.repo));
 
-  const inviteCommands = misses
-    .map((m) =>
-      `gh api -X PUT repos/${m.repo}/collaborators/${workerUser} -f permission=triage`
-    )
-    .join("\n");
+  const rows = [
+    ...validMisses.map((m) =>
+      `- \`${m.repo}\` — ${m.status} (${statusExplanation(m.status)})`
+    ),
+    ...invalidMisses.map((m) =>
+      `- \`${
+        renderInertRepoSlug(m.repo)
+      }\` — invalid repo slug in \`.config.json\` ` +
+      "(no invite command generated — fix the entry and re-run `setup.sh`)"
+    ),
+  ].join("\n");
+
+  const inviteCommands = validMisses.length > 0
+    ? validMisses
+      .map((m) =>
+        `gh api -X PUT repos/${m.repo}/collaborators/${workerUser} -f permission=triage`
+      )
+      .join("\n")
+    : "# No invite commands: every affected entry is an invalid repo slug — fix `.config.json` first.";
 
   const guardSection = identityGuardSection(
     workerUser,
