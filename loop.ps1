@@ -19,6 +19,10 @@
 # Issue #1401: Each cycle ends by pulling the checkout, exactly as loop.sh
 #              does, so a supervised Windows host cannot run frozen code for
 #              ever. A failed pull is logged and the loop continues.
+# Issue #1402: The log directory is asked of the worker (`mod.ts log-dir`),
+#              never spelled here, and each cycle's own record is written
+#              under it — the Issue #873 defect PR #1197 fixed in run.ps1 was
+#              still present in this supervisor, which resolved nothing at all.
 ################################################################################
 
 $ErrorActionPreference = "Stop"
@@ -73,6 +77,144 @@ $DenoCmd = Get-Command "deno" -CommandType Application -ErrorAction SilentlyCont
 
 <#
 .SYNOPSIS
+    Where this host's logs go, asked of the worker rather than spelled here.
+
+.DESCRIPTION
+    The worker owns the one resolution (Issues #872, #873, #1388) - the
+    `.config.json` `log_dir` key, then the platform's own standard location -
+    so this supervisor, run.ps1, run.sh and the container mount cannot
+    disagree about it, and the default moves in one place. LAUNCH_LOG_DIR and
+    LOG_DIR exported here are ignored; the command names them, and the
+    one-off legacy-location notice, on stderr.
+
+    Falls back - loudly, never silently - to the pre-#873 default when the
+    worker cannot answer: a supervisor that must never exit still says what
+    it did. run.ps1 exits instead, because refusing to launch is an option a
+    launcher has and a supervisor does not.
+#>
+function Resolve-LaunchLogDir {
+    $resolved = ""
+    if ($DenoCmd -and (Test-Path $WorkerMod)) {
+        try {
+            # stderr is left alone so the notices reach the operator.
+            $resolved = & $DenoCmd.Source run `
+                "--frozen" "--lock=$ScriptDir/worker/deno/deno.lock" `
+                "--allow-env" "--allow-read" `
+                $WorkerMod "log-dir" |
+                ForEach-Object { "$_".Trim() } |
+                Where-Object { $_ } |
+                Select-Object -Last 1
+        } catch {
+            # Deno missing, a broken lockfile, a non-zero exit: the fallback
+            # below reports it rather than this catch.
+            $resolved = ""
+        }
+    }
+    if ($resolved) { return $resolved }
+
+    # No environment variable is consulted here either (Issue #1388): the
+    # config file cannot be read without deno, so the one thing this script
+    # may spell is the pre-#873 default.
+    $homeDir = [Environment]::GetEnvironmentVariable("USERPROFILE")
+    if (-not $homeDir) { $homeDir = [Environment]::GetEnvironmentVariable("HOME") }
+    if (-not $homeDir) { $homeDir = [System.IO.Path]::GetTempPath() }
+    $fallback = Join-Path $homeDir "logs"
+    [Console]::Error.WriteLine(
+        "loop.ps1: cannot resolve the log directory (deno or $WorkerMod " +
+        "missing, or the log-dir command failed) - falling back to $fallback")
+    return $fallback
+}
+
+# Where each cycle's launch log is written, so a failed launch has evidence to
+# report (Issue #633). Resolved once, before the first cycle: the directory
+# does not move while the supervisor runs, and asking per cycle would spawn
+# deno on every iteration.
+$LoopLogDir = Resolve-LaunchLogDir
+
+# Keep the newest 50 and no more: these are diagnostics, not an archive, and
+# an unbounded directory on the host is its own incident (Issue #633).
+$LaunchLogKeep = 50
+
+<#
+.SYNOPSIS
+    Drop all but the newest $LaunchLogKeep launch logs (Issue #633).
+#>
+function Remove-OldLaunchLogs {
+    try {
+        # The epoch leads the filename, so name order IS chronological order -
+        # no reliance on the filesystem's modification times.
+        $logs = @(Get-ChildItem -LiteralPath $LoopLogDir -Filter "launch-*.log" `
+                -File -ErrorAction Stop | Sort-Object -Property Name)
+        for ($i = 0; $i -lt ($logs.Count - $LaunchLogKeep); $i++) {
+            Remove-Item -LiteralPath $logs[$i].FullName -Force `
+                -ErrorAction SilentlyContinue
+        }
+    } catch {
+        # Best-effort - reclaiming disk must never end a cycle - but never
+        # silent: a directory that stops being trimmed says so.
+        [Console]::Error.WriteLine(
+            "loop.ps1: cannot prune $LoopLogDir - $($_.Exception.Message)")
+    }
+}
+
+<#
+.SYNOPSIS
+    Create this cycle's launch log, or return "" when it cannot be written.
+
+.DESCRIPTION
+    Never fail a cycle over its own diagnostics: an unwritable directory is
+    reported and the cycle runs without one, exactly as loop.sh does.
+
+    What lands in it is this supervisor's own record of the cycle - the
+    launcher's exit status, the backoff it produced, the checkout refresh.
+    run.ps1's own diagnostics do not: it writes them straight to the process's
+    stderr handle ([Console]::Error, 65 call sites) and runs in-process here,
+    so no redirection this script can apply would see them. loop.sh captures
+    its launcher's output because it spawns run.sh as a child; that is the
+    divergence, said plainly rather than left as a file that looks like a
+    capture and holds nothing.
+#>
+function New-LaunchLog {
+    $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $path = Join-Path $LoopLogDir "launch-$epoch.log"
+    try {
+        New-Item -ItemType Directory -Force -Path $LoopLogDir -ErrorAction Stop |
+            Out-Null
+        New-Item -ItemType File -Force -Path $path -ErrorAction Stop | Out-Null
+        return $path
+    } catch {
+        [Console]::Error.WriteLine(
+            "loop.ps1: cannot write $path ($($_.Exception.Message)) - this " +
+            "cycle's launch log will not be written")
+        return ""
+    }
+}
+
+<#
+.SYNOPSIS
+    Say something on the console and in this cycle's launch log.
+
+.DESCRIPTION
+    The console line is what an operator watching sees; the log line is what
+    survives for the operator who was not, and what the escalation quotes
+    (--launch-log, below). A log that cannot be appended to never ends a
+    cycle - the console still has the line.
+#>
+function Write-LoopLine {
+    param([Parameter(Mandatory = $true)][string] $Message)
+
+    Write-Host $Message
+    if (-not $LaunchLog) { return }
+    try {
+        Add-Content -LiteralPath $LaunchLog -Value $Message -ErrorAction Stop
+    } catch {
+        [Console]::Error.WriteLine(
+            "loop.ps1: cannot append to $LaunchLog - $($_.Exception.Message)")
+    }
+}
+
+<#
+.SYNOPSIS
     Record one launcher outcome and return the seconds to wait before retrying.
 
 .DESCRIPTION
@@ -87,9 +229,17 @@ $DenoCmd = Get-Command "deno" -CommandType Application -ErrorAction SilentlyCont
     "unknown-host" - which is also its dedup key, so every host in the fleet
     collapses onto one issue per phase (Issues #633, #709, #710). loop.sh has
     carried the flag since Issue #633.
+
+    --launch-log: this cycle's own record, so an escalation can quote the
+    supervisor's account of the failure rather than only its exit status
+    (Issues #709, #1029). Omitted when the log could not be written, so the
+    recorder is never handed a path to nothing (Issue #1402).
 #>
 function Get-NextSleepSeconds {
-    param([Parameter(Mandatory = $true)][int] $Status)
+    param(
+        [Parameter(Mandatory = $true)][int] $Status,
+        [string] $LaunchLog = ""
+    )
 
     if (-not $DenoCmd -or -not (Test-Path $WorkerMod)) {
         [Console]::Error.WriteLine(
@@ -97,6 +247,9 @@ function Get-NextSleepSeconds {
             " — falling back to ${LoopSleepSeconds}s")
         return [int]$LoopSleepSeconds
     }
+
+    $logArgs = @()
+    if ($LaunchLog) { $logArgs = @("--launch-log", $LaunchLog) }
 
     $answer = ""
     try {
@@ -106,6 +259,7 @@ function Get-NextSleepSeconds {
             "--allow-sys=hostname" `
             $WorkerMod "container-restart-backoff" `
             "--exit-status" "$Status" `
+            @logArgs `
             "--base-sleep-seconds" "$LoopSleepSeconds" 2>$null |
             Select-Object -Last 1
     } catch {
@@ -125,6 +279,11 @@ function Get-NextSleepSeconds {
 
 while ($true) {
     $status = 0
+    # Issue #633: this cycle's record, in the directory the worker resolved,
+    # so a failed launch leaves evidence an operator can find afterwards
+    # rather than only a console nobody was watching (Issue #1402).
+    Remove-OldLaunchLogs
+    $LaunchLog = New-LaunchLog
     try {
         & "$ScriptDir/run.ps1"
         $status = $LASTEXITCODE
@@ -135,18 +294,18 @@ while ($true) {
     if ($null -eq $status) { $status = 0 }
 
     if ($status -eq $QuotaPauseExit) {
-        Write-Host ("loop.ps1: run.ps1 paused — this host is out of quota (status $status); " +
+        Write-LoopLine ("loop.ps1: run.ps1 paused — this host is out of quota (status $status); " +
             "re-probing on the quota cadence, not backing off (Issue #342)")
     } elseif ($status -eq $AnotherWorkerRunningExit) {
-        Write-Host ("loop.ps1: run.ps1 did not launch — another worker is already running " +
+        Write-LoopLine ("loop.ps1: run.ps1 did not launch — another worker is already running " +
             "on this host (status $status); one worker per host, so this is not a failure " +
             "(Issues #26, #1056)")
     } elseif ($status -ne 0) {
-        Write-Host "loop.ps1: run.ps1 exited with status $status — backing off and retrying"
+        Write-LoopLine "loop.ps1: run.ps1 exited with status $status — backing off and retrying"
     }
 
-    $sleepSeconds = Get-NextSleepSeconds -Status $status
-    Write-Host "Sleeping ${sleepSeconds}s..."
+    $sleepSeconds = Get-NextSleepSeconds -Status $status -LaunchLog $LaunchLog
+    Write-LoopLine "Sleeping ${sleepSeconds}s..."
     Start-Sleep -Seconds $sleepSeconds
 
     # Refresh the checkout at the end of every cycle, the same point loop.sh
@@ -164,9 +323,9 @@ while ($true) {
     try {
         & git pull
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "loop.ps1: git pull exited with status $LASTEXITCODE — continuing"
+            Write-LoopLine "loop.ps1: git pull exited with status $LASTEXITCODE — continuing"
         }
     } catch {
-        Write-Host "loop.ps1: git pull failed ($($_.Exception.Message)) — continuing"
+        Write-LoopLine "loop.ps1: git pull failed ($($_.Exception.Message)) — continuing"
     }
 }
