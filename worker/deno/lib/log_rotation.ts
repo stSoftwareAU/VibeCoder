@@ -12,6 +12,9 @@
  *   app.log.2    -> app.log.3
  *   app.log.3    -> deleted (exceeds maxRotations)
  *
+ * Only the worker's **own** log files are rotated (Issue #1267) — see
+ * {@link isRotatableLogName}.
+ *
  * Migrated from worker/shared/log_rotation.sh (Issue #902).
  * Issue #469: Size-based log rotation for unbounded log files.
  */
@@ -38,6 +41,54 @@ export interface RotateAllResult {
   skippedCount: number;
   /** Human-readable summary message. */
   message: string;
+}
+
+/**
+ * The log files this pass owns, by name (Issue #1267).
+ *
+ * The pass used to rotate **any** name ending `.log` or `.jsonl`, and rotation
+ * is destructive: `rotateLogFile` unlinks the oldest generation and renames the
+ * rest, so a file it does not own is renamed out from under its owner and its
+ * `.3` generation deleted. `log_dir` is operator-set and
+ * `normaliseConfiguredLogDir` explicitly accepts the bare value `"~"`
+ * (`lib/log_dir.ts`), resolving the log directory to the operator's `$HOME`,
+ * which `container_launch.ts` then bind-mounts read-write at the container's
+ * `~/logs`. Under that configuration `run_housekeeping.ts` turned a
+ * `postgres.log` into `postgres.log.1` on every worker start, unattended, with
+ * no `--dry-run` and no report-only mode.
+ *
+ * So the pass now names what it rotates, the same allowlist discipline
+ * `isForeignDebrisName` applies to the sibling cleanup sweep. Each pattern
+ * anchors on `.log` / `.jsonl` exactly, which keeps rotated backups (`.log.1`)
+ * and gzipped copies (`.log.gz`) out. `worker-*.log` is deliberately absent —
+ * its retention belongs to `lib/worker_log_cleanup.ts`.
+ */
+const ROTATABLE_LOG_PATTERNS: readonly RegExp[] = [
+  // Run driver and git-update logs (`lib/checkout_update.ts`, `run_core.sh`).
+  /^run_core\.log$/,
+  /^run_guard\.log$/,
+  /^pull\.log$/,
+  // Tabletop rehearsal run log (`lib/tabletop_container_runner.ts`).
+  /^tabletop-run\.log$/,
+  // Launcher logs, including the macOS LaunchAgent's stdout/stderr.
+  /^launch-[A-Za-z0-9._-]*\.log$/,
+  /^launchagent-[A-Za-z0-9._-]*\.log$/,
+  // Structured event logs (`lib/self_heal_events.ts`).
+  /^self-heal\.jsonl$/,
+  // Agent stream-json transcripts (`lib/agent_transcript.ts`).
+  /^agent-[A-Za-z0-9._-]*\.jsonl$/,
+];
+
+/**
+ * Whether a file in the log directory is one this pass may rotate.
+ *
+ * Exported so the refusal is testable against literal filenames.
+ *
+ * @param name - The bare file name (no directory part).
+ * @returns True only when the name is one the worker's own ecosystem writes.
+ */
+export function isRotatableLogName(name: string): boolean {
+  return ROTATABLE_LOG_PATTERNS.some((pattern) => pattern.test(name));
 }
 
 /**
@@ -119,11 +170,13 @@ export async function checkAndRotateLog(
 /**
  * Rotate all eligible log files in a directory.
  *
- * Scans the given directory for .log files and rotates any that exceed
+ * Scans the given directory and rotates any file the worker owns that exceeds
  * the size threshold. Skips:
- *   - worker-*.log files (managed separately by cleanup_old_logs)
+ *   - Every name outside {@link isRotatableLogName}, which covers third-party
+ *     files sharing the directory and `worker-*.log` (retained separately by
+ *     `lib/worker_log_cleanup.ts`)
  *   - Symlinks (e.g., worker.log -> worker-PID.log)
- *   - Already-rotated files (only processes *.log, not *.log.N)
+ *   - Already-rotated and gzipped copies (`*.log.N`, `*.log.gz`)
  */
 export async function rotateAllLogs(
   logDir: string,
@@ -155,13 +208,12 @@ export async function rotateAllLogs(
   }
 
   for await (const entry of Deno.readDir(logDir)) {
-    // Process .log and .jsonl files. Rotated copies (e.g. .log.1) are
-    // excluded by the extension check below — we only match files that
-    // end with `.log` or `.jsonl` directly. .jsonl coverage added for
-    // structured event logs such as self-heal.jsonl (Issue #1497).
-    const isLog = entry.name.endsWith(".log");
-    const isJsonl = entry.name.endsWith(".jsonl");
-    if (!isLog && !isJsonl) {
+    // Rotate only the worker's own log files (Issue #1267). A name this
+    // ecosystem did not write is not this pass's business, however large it
+    // grows — the directory is operator-set and can be their `$HOME`.
+    // Rotated copies (`.log.1`) and gzipped ones (`.log.gz`) fall outside the
+    // allowlist too, so a backup is never rotated again.
+    if (!isRotatableLogName(entry.name)) {
       continue;
     }
 
@@ -169,12 +221,6 @@ export async function rotateAllLogs(
 
     // Skip symlinks (e.g., worker.log -> worker-PID.log)
     if (entry.isSymlink) {
-      skippedCount++;
-      continue;
-    }
-
-    // Skip worker-PID log files (managed by cleanup_old_logs in run_core.sh)
-    if (/^worker-\d+\.log$/.test(entry.name)) {
       skippedCount++;
       continue;
     }

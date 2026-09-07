@@ -10,6 +10,7 @@ import {
   DEFAULT_LOG_MAX_ROTATIONS,
   DEFAULT_LOG_MAX_SIZE_MB,
   getFileSizeBytes,
+  isRotatableLogName,
   rotateAllLogs,
   rotateLogFile,
 } from "../lib/log_rotation.ts";
@@ -252,13 +253,15 @@ Deno.test("log_rotation - rotateAllLogs does not rotate small files", async () =
   const logDir = `${tmpDir}/logs`;
   await Deno.mkdir(logDir, { recursive: true });
 
-  await Deno.writeTextFile(`${logDir}/small.log`, "small");
-  await Deno.writeFile(`${logDir}/large.log`, new Uint8Array(2048));
+  // Both fixtures are worker-owned names (Issue #1267): the size threshold is
+  // what this test exercises, and only rotatable names reach it at all.
+  await Deno.writeTextFile(`${logDir}/pull.log`, "small");
+  await Deno.writeFile(`${logDir}/run_core.log`, new Uint8Array(2048));
 
   try {
     await rotateAllLogs(logDir, { maxSizeMb: 0.001, maxRotations: 3 });
-    assertEquals(await fileExists(`${logDir}/small.log.1`), false);
-    assertEquals(await fileExists(`${logDir}/large.log.1`), true);
+    assertEquals(await fileExists(`${logDir}/pull.log.1`), false);
+    assertEquals(await fileExists(`${logDir}/run_core.log.1`), true);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
@@ -280,6 +283,98 @@ Deno.test("log_rotation - rotateAllLogs handles empty directory", async () => {
 Deno.test("log_rotation - rotateAllLogs handles non-existent directory", async () => {
   const result = await rotateAllLogs("/tmp/no_such_dir_test_902");
   assertEquals(result.rotatedCount, 0);
+});
+
+// =============================================================================
+// Filename allowlist tests (Issue #1267)
+// =============================================================================
+
+Deno.test("log_rotation - isRotatableLogName accepts the worker's own logs", () => {
+  for (
+    const name of [
+      "run_core.log",
+      "run_guard.log",
+      "pull.log",
+      "tabletop-run.log",
+      "launch-20260101.log",
+      "launchagent-stdout.log",
+      "launchagent-stderr.log",
+      "self-heal.jsonl",
+      "agent-vibe-abc123-1267.jsonl",
+    ]
+  ) {
+    assertEquals(isRotatableLogName(name), true, name);
+  }
+});
+
+Deno.test("log_rotation - isRotatableLogName refuses files the worker does not own", () => {
+  for (
+    const name of [
+      "postgres.log",
+      "nginx-access.log",
+      "system.log",
+      "Xorg.0.log",
+      "events.jsonl",
+      "notes.txt",
+      // Rotated backups and gzipped copies are not rotated again.
+      "run_core.log.1",
+      "run_core.log.gz",
+      // worker-*.log retention belongs to worker_log_cleanup.ts.
+      "worker-12345.log",
+      "worker-20260817-021352.log",
+    ]
+  ) {
+    assertEquals(isRotatableLogName(name), false, name);
+  }
+});
+
+Deno.test("log_rotation - rotateAllLogs leaves third-party logs untouched", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const logDir = `${tmpDir}/logs`;
+  await Deno.mkdir(logDir, { recursive: true });
+
+  await Deno.writeFile(`${logDir}/postgres.log`, new Uint8Array(2048));
+  await Deno.writeFile(`${logDir}/metrics.jsonl`, new Uint8Array(2048));
+  await Deno.writeFile(`${logDir}/run_core.log`, new Uint8Array(2048));
+
+  try {
+    const result = await rotateAllLogs(logDir, {
+      maxSizeMb: 0.001,
+      maxRotations: 3,
+    });
+    // The foreign files are neither renamed nor shadowed by a backup.
+    assertEquals(await fileExists(`${logDir}/postgres.log`), true);
+    assertEquals(await fileExists(`${logDir}/postgres.log.1`), false);
+    assertEquals(await fileExists(`${logDir}/metrics.jsonl`), true);
+    assertEquals(await fileExists(`${logDir}/metrics.jsonl.1`), false);
+    // The worker's own log still rotates.
+    assertEquals(await fileExists(`${logDir}/run_core.log.1`), true);
+    assertEquals(result.rotatedCount, 1);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("log_rotation - rotateAllLogs never deletes a third-party generation", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const logDir = `${tmpDir}/logs`;
+  await Deno.mkdir(logDir, { recursive: true });
+
+  // A third-party rotation scheme of its own: the oldest generation was the
+  // one `rotateLogFile` unlinked before Issue #1267.
+  await Deno.writeFile(`${logDir}/postgres.log`, new Uint8Array(2048));
+  await Deno.writeTextFile(`${logDir}/postgres.log.3`, "oldest");
+
+  try {
+    await rotateAllLogs(logDir, { maxSizeMb: 0.001, maxRotations: 3 });
+    assertEquals(await fileExists(`${logDir}/postgres.log.3`), true);
+    assertEquals(
+      await Deno.readTextFile(`${logDir}/postgres.log.3`),
+      "oldest",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
 });
 
 // =============================================================================

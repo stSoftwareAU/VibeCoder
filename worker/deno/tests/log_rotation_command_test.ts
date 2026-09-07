@@ -90,3 +90,39 @@ Deno.test("log-rotation command - returns data with correct structure", async ()
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Security: the command only rotates the worker's own logs (Issue #1267)
+// ---------------------------------------------------------------------------
+
+Deno.test("log-rotation command - leaves an unrelated postgres.log untouched", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const logDir = `${tmpDir}/logs`;
+  await Deno.mkdir(logDir, { recursive: true });
+  await Deno.writeTextFile(`${logDir}/postgres.log`, "third-party log");
+
+  try {
+    // `--max-size-mb 0` makes every file eligible on size alone, so only the
+    // filename allowlist stands between the sweep and the operator's files.
+    const result = await logRotationCommand.execute(
+      { "log-dir": logDir, "max-size-mb": 0 },
+      createMockConfig(),
+    );
+
+    assertEquals(result.success, true);
+    assertEquals(
+      await Deno.readTextFile(`${logDir}/postgres.log`),
+      "third-party log",
+    );
+    let backupExists = true;
+    try {
+      await Deno.stat(`${logDir}/postgres.log.1`);
+    } catch {
+      backupExists = false;
+    }
+    assertEquals(backupExists, false);
+    assertEquals((result.data as { rotatedCount: number }).rotatedCount, 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
