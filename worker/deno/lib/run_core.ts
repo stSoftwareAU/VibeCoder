@@ -877,6 +877,14 @@ export interface RunCoreDeps {
     message: string;
   }>;
 
+  /**
+   * One `graphql-quota:` line from the free GraphQL probe — the account's
+   * true spend, window and reset, as GitHub counts it — for the per-cycle
+   * telemetry (Issue #1456). Optional; resolves `null` when the probe could
+   * not run.
+   */
+  describeGraphqlQuota?: () => Promise<string | null>;
+
   // Repo failure tracking
   // Issue #2793: these perform read-modify-write file I/O, so they return
   // promises that the loop awaits — preventing a lost-update race between
@@ -5255,6 +5263,14 @@ export async function runCoreLoop(
           // line names the hottest GraphQL call site so operators can
           // see at a glance which path is burning the budget.
           deps.log(formatGraphQLSummary());
+          // The account's GraphQL quota as GitHub counts it. The lines above
+          // count this process's calls; this one shows the points actually
+          // gone from the shared bucket — sibling hosts included — and when
+          // the window reopens (Issue #1456).
+          if (deps.describeGraphqlQuota) {
+            const quotaLine = await deps.describeGraphqlQuota();
+            if (quotaLine) deps.log(quotaLine);
+          }
 
           // --- Liveness guard (Issue #2479) ---
           // Best-effort end-of-cycle observation. The combined #2478 guard
