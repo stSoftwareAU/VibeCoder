@@ -17,6 +17,7 @@
  */
 
 import type { GhCommandFn } from "./milestone_branch_sync.ts";
+import type { FileDecision } from "./milestone_conflict_triage.ts";
 
 /** What collided when the default branch was merged down, and how it landed. */
 export interface MilestoneSyncConflict {
@@ -26,8 +27,20 @@ export interface MilestoneSyncConflict {
   milestoneSha: string;
   /** The default branch's tip that was merged in. */
   defaultSha: string;
-  /** Which resolution produced the merge that landed. */
-  resolution: "theirs" | "manual";
+  /**
+   * Which resolution produced the merge that landed.
+   *
+   * `auto` is the triaged resolution of Issue #1559 — each file decided on its
+   * own and verified before the push. `theirs` and `manual` are the older
+   * whole-merge resolutions towards the default branch, kept because comments
+   * carrying them are already in the wild.
+   */
+  resolution: "theirs" | "manual" | "auto";
+  /**
+   * What the triage decided, file by file (Issue #1559). Present only for an
+   * `auto` resolution, and the reason each decision was safe to take.
+   */
+  decisions?: FileDecision[];
 }
 
 /** Outcome of a milestone sync merge. */
@@ -159,6 +172,32 @@ export interface ConflictEscalation {
 export function buildConflictEscalationComment(
   e: ConflictEscalation,
 ): string {
+  // A triaged resolution is a different report (Issue #1559): every file was
+  // decided on its own and the merged tree was verified before the push, so
+  // the reader is told what was decided and why, not asked to check what was
+  // overwritten.
+  if (e.conflict.resolution === "auto") {
+    const decisions = (e.conflict.decisions ?? []).map((d) =>
+      `- \`${d.path}\` — **${d.case}**, took the ${
+        d.side === "ours"
+          ? `\`${e.milestoneBranch}\``
+          : `\`${e.defaultBranch}\``
+      } side: ${d.reason}`
+    ).join("\n");
+    return `## Milestone sync resolved a conflict automatically\n\n` +
+      `Merging \`${e.defaultBranch}\` into \`${e.milestoneBranch}\` in ` +
+      `\`${e.repo}\` conflicted, and every conflicted file was decided by a ` +
+      `rule that loses nothing (Issue #1559). The merged tree passed the ` +
+      `repository's own check, its manifest check and its unit suite before ` +
+      `it was pushed — a red tree would have been rolled back instead.\n\n` +
+      `${decisions || "- (no decision was recorded)"}\n\n` +
+      `${describeBranchTips(e.tips)}\n\n` +
+      `No conflicted test file was resolved by taking a side that drops ` +
+      `cases: a test file resolves only when one side keeps every case and ` +
+      `every line of the other. Nothing here needs a human, but the reasoning ` +
+      `is on the merge commit if you want to check it.`;
+  }
+
   // A conflict git could not itself name still has to reach a human — an
   // empty list says exactly that rather than rendering as nothing.
   const files = e.conflict.files.length > 0

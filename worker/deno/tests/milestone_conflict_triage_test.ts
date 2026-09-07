@@ -325,3 +325,38 @@ Deno.test("buildConflictAnalysisComment - carries both sides' exports, test name
     "nothing is pushed when the sync escalates",
   );
 });
+
+Deno.test("planConflictResolution - a duplicate fix is decided by the cases each side added, not only by the conflicted files", () => {
+  const conflicted = [
+    file({
+      path: "lib/spawn.ts",
+      ours: "export const impl = 'branch';\n",
+      theirs: "export const impl = 'main';\n",
+      oursFixes: [1270],
+      theirsFixes: [1270],
+    }),
+  ];
+
+  // No test file conflicted, but the milestone branch added a case for the
+  // fix in a file the default branch never touched.
+  const withEvidence = planConflictResolution(conflicted, {
+    oursAdded: ["covers the bounded fallback"],
+    theirsAdded: [],
+  });
+  assertEquals(withEvidence.testsSuperset, "ours");
+  assertEquals(withEvidence.decisions[0]?.side, "ours");
+
+  // Neither side's cases moved: nothing is at stake, so the default branch's
+  // side is taken and the green-tree gate is what checks it.
+  const noEvidence = planConflictResolution(conflicted);
+  assertEquals(noEvidence.testsSuperset, "theirs");
+  assertEquals(noEvidence.decisions[0]?.side, "theirs");
+
+  // Both sides added cases the other lacks — no side to prefer.
+  const incomparable = planConflictResolution(conflicted, {
+    oursAdded: ["branch case"],
+    theirsAdded: ["main case"],
+  });
+  assertEquals(incomparable.testsSuperset, null);
+  assertEquals(incomparable.escalations.length, 1);
+});

@@ -215,16 +215,20 @@ Deno.test(
   async () => {
     const fx = await setupBehindMilestone();
     try {
-      // Both branches edit the same file — the sync resolves with `-X theirs`
-      // and must gate that resolution too, since a resolution that keeps one
-      // side is exactly how the wiring was lost.
+      // Both branches edit the same file, and `main`'s side keeps every line
+      // of the milestone side — a conflict the triage resolves on its own
+      // (Issue #1559). The gate must guard that resolution too, since a
+      // resolution that keeps one side is exactly how the wiring was lost.
       await gitOk(["checkout", "main"], fx.clone);
-      await Deno.writeTextFile(`${fx.clone}/shared.txt`, "main side\n");
+      await Deno.writeTextFile(
+        `${fx.clone}/shared.txt`,
+        "shared line\nmain adds a line\n",
+      );
       await gitOk(["add", "shared.txt"], fx.clone);
       await gitOk(["commit", "-m", "main edits shared"], fx.clone);
       await gitOk(["push", "origin", "main"], fx.clone);
       await gitOk(["checkout", "milestone/974"], fx.clone);
-      await Deno.writeTextFile(`${fx.clone}/shared.txt`, "milestone side\n");
+      await Deno.writeTextFile(`${fx.clone}/shared.txt`, "shared line\n");
       await gitOk(["add", "shared.txt"], fx.clone);
       await gitOk(["commit", "-m", "milestone edits shared"], fx.clone);
       await gitOk(["push", "origin", "milestone/974"], fx.clone);

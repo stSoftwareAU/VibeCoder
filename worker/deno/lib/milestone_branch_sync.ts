@@ -41,6 +41,12 @@ import {
   UNRESOLVED_SHA,
 } from "./milestone_sync_conflict.ts";
 import {
+  buildConflictAnalysisComment,
+  type FileAnalysis,
+  type FileDecision,
+  isConflictEscalation,
+} from "./milestone_conflict_triage.ts";
+import {
   loadSyncStreaks,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
   saveSyncStreaks,
@@ -608,7 +614,31 @@ export async function syncMilestoneBranches(
             streaksDirty = true;
           }
 
-          if (isMergeGateFailure(syncResult.error)) {
+          if (isConflictEscalation(syncResult.error)) {
+            // Case 3 (Issue #1559): the conflict is two designs for the same
+            // problem, so nothing was pushed and the branch is untouched.
+            // What reaches the human is the preparation — both sides'
+            // exports, both sides' test names, and the difference between
+            // them — reported once per conflicting default-branch commit, so
+            // a branch that keeps conflicting against the same commit is not
+            // reported every cycle.
+            const conflictKey = syncResult.error.defaultSha || UNRESOLVED_SHA;
+            if (entry?.conflictEscalatedSha !== conflictKey) {
+              const escalated = await escalateConflictAnalysis(
+                repo,
+                milestone,
+                syncResult.error.analyses,
+                syncResult.error.resolved,
+                conflictKey,
+                ghCommandFn,
+                log,
+              );
+              // Without a streak file there is nowhere to record that the
+              // report went out, so the loud WARNING above stands alone
+              // rather than the same comment repeating every cycle.
+              if (escalated && entry) entry.conflictEscalatedSha = conflictKey;
+            }
+          } else if (isMergeGateFailure(syncResult.error)) {
             // Issue #974: a merged tree the repo's own check rejects is not a
             // transient condition a retry clears — it needs a human now, not
             // after three more cycles of the same refusal. `gateEscalated` is
@@ -735,6 +765,74 @@ async function escalateSyncConflict(
       what,
       {},
       conflictDiagnosticTitle(milestone.milestoneBranch, conflict.defaultSha),
+    );
+  }
+
+  return await postEscalationComment(
+    repo,
+    issueNumber,
+    body,
+    ghCommandFn,
+    log,
+    what,
+  );
+}
+
+/**
+ * Report a conflict no automatic rule could resolve (Issue #1559).
+ *
+ * Nothing was pushed and the branch is exactly as it was, so this is not a
+ * "check what was overwritten" report — it is the preparation a human would
+ * otherwise spend an hour on: what each side exports, what each side tests,
+ * and which cases exist on one side only.
+ *
+ * Best-effort, and returns true only when the report went out, so the caller
+ * remembers the commit it reported and does not repeat it every cycle.
+ */
+async function escalateConflictAnalysis(
+  repo: string,
+  milestone: ActiveMilestone,
+  analyses: FileAnalysis[],
+  resolved: FileDecision[],
+  /** The default-branch commit that conflicted, for the diagnostic's title. */
+  defaultSha: string,
+  ghCommandFn: GhCommandFn,
+  log: (message: string) => void,
+): Promise<boolean> {
+  const tips = await resolveBranchTips(
+    repo,
+    [
+      { branch: milestone.defaultBranch },
+      { branch: milestone.milestoneBranch },
+    ],
+    ghCommandFn,
+    log,
+  );
+
+  const body = `${
+    buildConflictAnalysisComment({
+      repo,
+      milestoneBranch: milestone.milestoneBranch,
+      defaultBranch: milestone.defaultBranch,
+      analyses,
+      resolved,
+    })
+  }\n\n${describeBranchTips(tips)}`;
+
+  const what = `a milestone sync conflict only a human can resolve for ` +
+    `'${milestone.milestoneBranch}' (Issue #1559)`;
+
+  const issueNumber = trackingIssueFromMilestoneTitle(milestone.milestoneTitle);
+  if (issueNumber === null) {
+    return await fileStuckSyncDiagnostic(
+      repo,
+      milestone.milestoneBranch,
+      body,
+      ghCommandFn,
+      log,
+      what,
+      {},
+      conflictDiagnosticTitle(milestone.milestoneBranch, defaultSha),
     );
   }
 

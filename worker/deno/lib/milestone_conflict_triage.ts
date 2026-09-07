@@ -419,24 +419,43 @@ export function classifyConflictedFile(
 }
 
 /**
- * Which side's conflicted test cases subsume the other's.
+ * The cases each side added since the merge base, across the test files it
+ * changed.
  *
- * Aggregated across every conflicted test file, because a duplicate fix is
- * decided by the suite as a whole rather than file by file. A merge with no
- * conflicted test file has no side's coverage at stake, so the default
- * branch's side is named and the green-tree gate is what checks the choice.
+ * A duplicate fix is usually not decided by the conflicted files alone: the
+ * branch fixed #1270 and wrote a case for it in a test file the default
+ * branch never touched, so nothing about that case conflicts and it is
+ * invisible to a file-by-file view. This is the evidence that makes "keep the
+ * side whose tests are a superset" answerable.
  */
-function decideTestsSuperset(files: ConflictedFile[]): ConflictSide | null {
-  const oursTests: string[] = [];
-  const theirsTests: string[] = [];
-  let sawTestFile = false;
+export interface TestEvidence {
+  /** Cases the milestone branch added since the merge base. */
+  oursAdded: string[];
+  /** Cases the default branch added since the merge base. */
+  theirsAdded: string[];
+}
+
+/**
+ * Which side's test cases subsume the other's.
+ *
+ * Aggregated across every conflicted test file and every case each side added
+ * since the merge base, because a duplicate fix is decided by the suite as a
+ * whole rather than file by file. A merge where neither side's cases moved has
+ * no coverage at stake, so the default branch's side is named and the
+ * green-tree gate is what checks the choice.
+ */
+function decideTestsSuperset(
+  files: ConflictedFile[],
+  evidence: TestEvidence,
+): ConflictSide | null {
+  const oursTests: string[] = [...evidence.oursAdded];
+  const theirsTests: string[] = [...evidence.theirsAdded];
   for (const file of files) {
     if (!isTestPath(file.path)) continue;
-    sawTestFile = true;
     oursTests.push(...extractTestNames(file.ours ?? ""));
     theirsTests.push(...extractTestNames(file.theirs ?? ""));
   }
-  if (!sawTestFile) return "theirs";
+  if (oursTests.length === 0 && theirsTests.length === 0) return "theirs";
   const onlyOurs = only(oursTests, theirsTests);
   const onlyTheirs = only(theirsTests, oursTests);
   if (onlyTheirs.length === 0 && onlyOurs.length > 0) return "ours";
@@ -448,10 +467,14 @@ function decideTestsSuperset(files: ConflictedFile[]): ConflictSide | null {
  * Plan the resolution of a conflicted sync merge.
  *
  * @param files - Every conflicted path, with both sides
+ * @param evidence - The cases each side added since the merge base
  * @returns What resolves, what does not, and why in both cases
  */
-export function planConflictResolution(files: ConflictedFile[]): ConflictPlan {
-  const testsSuperset = decideTestsSuperset(files);
+export function planConflictResolution(
+  files: ConflictedFile[],
+  evidence: TestEvidence = { oursAdded: [], theirsAdded: [] },
+): ConflictPlan {
+  const testsSuperset = decideTestsSuperset(files, evidence);
   const decisions = files.map((file) =>
     classifyConflictedFile(file, testsSuperset)
   );
