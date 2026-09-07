@@ -310,7 +310,11 @@ tracked:
   the next run of that repository (#1443);
 - the `gh`/`git` guard modules execute from the writable staged copy of the
   worker source and are re-read on every call, so the control constraining the
-  agent is modifiable by it for the rest of the launch (#1444).
+  agent is modifiable by it for the rest of the launch (#1444). Closed one
+  layer down as well: the Deno child that runs them persisted its compiled
+  modules in the work volume's cache, owned by the agent's uid, and read them
+  back on every call; the wrappers now pin `DENO_DIR` to the image's
+  read-only seed (#1448, `guard_deno_dir.ts`).
 
 Neither is closed by a permission bit on the work volume, because the coding
 agent runs as the owner of that volume — see the note under R9. They are
