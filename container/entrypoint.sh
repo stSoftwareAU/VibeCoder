@@ -87,13 +87,44 @@ TMP_SCRATCH_ROOT="${TMPDIR:-/tmp}/vibe-scratch"
 # it cannot, which is the honest signal: it tests the thing that matters
 # rather than a proxy for it. Warning here as well would fire in every
 # harness that owns no `vibework` group and say nothing the probe does not.
+#
+# THE GRANT IS FOR CLONES, NOT FOR THE WORKER'S OWN STATE (Issue #1384).
+# The volume is shared: every monitored repository's clone sits beside the
+# worker's own durable state under this one root. The walk used to hand the
+# same group write to every top-level directory, so repository-controlled
+# code running for one repository was also granted write on the worker's
+# hash-chained audit journal (`audit/`), its self-heal log directory
+# (`logs/`) and the lane worktree root (`worktrees/`) that another slot may
+# be running out of — none of which any repository's checks write to. Those
+# names — RESERVED_WORKDIR_NAMES in worker/deno/lib/stale_workdir.ts, kept in
+# step by worker/deno/tests/work_root_group_grant_test.ts — keep group
+# traversal (the gate reaches its own lane worktree through `worktrees/`) and
+# the setgid inheritance, and nothing more.
+#
+# Residual risk, recorded rather than hidden: the work ROOT itself stays
+# group-writable, because a monitored repository's own gate clones its
+# sibling data repositories as `../<name>` into exactly this directory
+# (`work_volume_tiers.ts`, tier 2). Directory write is what governs creating
+# and removing the entries inside it, so that grant still reaches a sibling
+# clone. Bounding it needs the gate's siblings to land somewhere per-run
+# rather than in the shared root, which is a change to the volume layout and
+# is tracked separately against Issue #1384.
 if [[ -d "${VIBE_WORK_ROOT}" ]] && getent group vibework >/dev/null 2>&1; then
   if chgrp vibework "${VIBE_WORK_ROOT}" 2>/dev/null &&
     chmod g+rwxs "${VIBE_WORK_ROOT}" 2>/dev/null; then
     for entry in "${VIBE_WORK_ROOT}"/*/; do
       [[ -d "${entry}" ]] || continue
+      entry_name="${entry%/}"
+      entry_name="${entry_name##*/}"
       chgrp vibework "${entry}" 2>/dev/null || true
-      chmod g+rwxs "${entry}" 2>/dev/null || true
+      case "${entry_name}" in
+        logs | lost+found | audit | worktrees) # reserved work-root names
+          chmod g+rxs,g-w "${entry}" 2>/dev/null || true
+          ;;
+        *)
+          chmod g+rwxs "${entry}" 2>/dev/null || true
+          ;;
+      esac
     done
   fi
 fi

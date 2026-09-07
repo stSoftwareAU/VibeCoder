@@ -513,7 +513,9 @@ export interface WorkerConfig {
   /**
    * Per-tool minimum version floors for software auto-update (Issue #2622).
    * When the installed version of a tool is below its floor, the update runs
-   * immediately, bypassing the interval gate. Default: `{ claude: "2.1.170" }`.
+   * immediately, bypassing the interval gate. Default: `{ claude: "2.1.260" }`
+   * — the oldest release that serves Fable 5.1 for the `fable` alias with the
+   * 5.1 prompt-cache fixes (Issue #1362).
    */
   softwareMinVersions: Record<string, string>;
   /**
