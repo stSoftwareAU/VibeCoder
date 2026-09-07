@@ -10,6 +10,7 @@
     "test:run-mode": "deno task test tests/run_sh_launcher_test.ts tests/run_ps1_launcher_test.ts tests/launcher_parity_test.ts tests/launcher_source_test.ts tests/run_mode_test.ts tests/run_mode_ci_coverage_test.ts tests/container_launch_test.ts tests/container_runtime_test.ts tests/setup_prerequisites_test.ts",
     "audit": "deno audit",
     "check": "deno check --frozen --lock=deno.lock '**/*.ts'",
+    "check:manifests": "deno run --frozen --lock=deno.lock --allow-read --allow-env --allow-run check_manifests.ts",
     "lint": "deno lint",
     "fmt": "deno fmt",
     "quality": "deno run --frozen --lock=deno.lock --allow-env --allow-read --allow-run --allow-write --allow-net quality.ts",
