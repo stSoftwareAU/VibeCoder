@@ -96,10 +96,10 @@ The same file against the fixed tree: `ok | 14 passed | 0 failed`.
 credential in attacker-influenceable text that a sink cuts before scanning. At
 every converted site the cut now operates on the output of `redactSecrets()`
 over the **whole** input, so no cut boundary can exist inside an unscanned
-secret: the boundary is chosen after masking, and masking is applied to text
-that was never truncated. The bypass a reviewer would look for — reintroducing
-the inversion elsewhere, or handing a branded constructor pre-cut text
-(`redactedTail(raw.slice(-500), 500)`, which type-checks) — is now a build
+credential — the boundary is chosen after masking, and masking is applied to
+text that was never truncated. The bypass a reviewer would look for —
+reintroducing the inversion elsewhere, or handing a branded constructor pre-cut
+text (`redactedTail(raw.slice(-500), 500)`, which type-checks) — is now a build
 failure: the `redact before truncate` gate stage flags a truncation nested
 inside _any_ redaction entry point, branded constructors included, and its
 argument extraction reads real nesting rather than a line-local regex, so
