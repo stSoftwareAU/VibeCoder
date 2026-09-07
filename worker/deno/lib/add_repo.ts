@@ -212,17 +212,24 @@ export const defaultAddRepoFsDeps: AddRepoFsDeps = {
  * approach from `config_setup.ts`'s `VIBE_ADD_REPOS` block, so a repo
  * already present yields `{ added: false }` and no duplicate is written.
  *
+ * Matching is case-insensitive (Issue #1546): GitHub repository names are,
+ * so appending `owner/Repo` beside `owner/repo` would list one repository
+ * twice — running its every scan twice and letting the worker's two slots
+ * race each other for its issues. A case-variant is reported back through
+ * `existingSpelling` so the caller can name the entry that already covers it.
+ *
  * @param repo - The `owner/repo` slug to add (untrusted; re-validated).
  * @param configPath - Path to the `.config.json` file.
  * @param deps - Injected filesystem functions (defaults to real Deno I/O).
  * @returns `Result` carrying `{ added }` — `true` when newly appended,
- *   `false` when already present.
+ *   `false` when already present. When the existing entry is spelt
+ *   differently, `existingSpelling` carries that spelling.
  */
 export async function addRepoToMonitoredList(
   repo: string,
   configPath: string,
   deps: AddRepoFsDeps = defaultAddRepoFsDeps,
-): Promise<Result<{ added: boolean }>> {
+): Promise<Result<{ added: boolean; existingSpelling?: string }>> {
   const slug = repo.trim();
 
   // Untrusted input — reject anything not in strict owner/repo form
@@ -273,9 +280,14 @@ export async function addRepoToMonitoredList(
     )
     : [];
 
-  // Idempotent: already present means no rewrite and no duplicate.
-  if (existing.includes(slug)) {
-    return { ok: true, value: { added: false } };
+  // Idempotent: already present means no rewrite and no duplicate. The
+  // comparison is case-insensitive because GitHub's names are (Issue #1546).
+  const key = slug.toLowerCase();
+  const present = existing.find((r) => r.trim().toLowerCase() === key);
+  if (present !== undefined) {
+    return present === slug
+      ? { ok: true, value: { added: false } }
+      : { ok: true, value: { added: false, existingSpelling: present } };
   }
 
   config.repos = [...new Set([...existing, slug])];

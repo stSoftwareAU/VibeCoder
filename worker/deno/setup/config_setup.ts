@@ -18,7 +18,12 @@ import {
 } from "../lib/config_defaults.ts";
 import { REMOVED_CONFIG_KEYS } from "../lib/validation.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
-import { assertValidRepoSlugs } from "../lib/repo_slug.ts";
+import type { DuplicateRepoSlug } from "../lib/repo_slug.ts";
+import {
+  assertValidRepoSlugs,
+  dedupeRepoSlugs,
+  duplicateRepoSlugWarnings,
+} from "../lib/repo_slug.ts";
 
 /**
  * Configuration values that can be set during setup.
@@ -377,6 +382,48 @@ export function pruneOrphanRepoConfig(
   if (removed.length === 0) return { config, removed };
 
   return { config: { ...config, repo_config: kept }, removed };
+}
+
+/** Result of collapsing case-variant `repos` entries (Issue #1546). */
+export interface RepoDedupResult {
+  /** The config, with `repos` reduced to one entry per repository. */
+  config: SetupConfig;
+  /** Every dropped entry, in file order. */
+  duplicates: DuplicateRepoSlug[];
+  /** The sentences the drops owe the operator. Callers must report these. */
+  warnings: string[];
+}
+
+/**
+ * Collapse case-variant `repos` entries before the file is written
+ * (Issue #1546).
+ *
+ * GitHub repository names are case-insensitive, so `stSoftwareAU/GRQ-Actual`
+ * and `stSoftwareAU/GRQ-actual` are one repository listed twice — which ran
+ * every per-repository scan twice and let a worker's two slots race each
+ * other for its issues. Setup is where the operator can see and fix it
+ * immediately, so the correction happens here as well as in the loader.
+ *
+ * Pure — the input is not mutated, and the first spelling wins. Callers must
+ * report `duplicates` so the drop is never silent.
+ */
+export function dedupeConfigRepos(config: SetupConfig): RepoDedupResult {
+  const repos = config.repos;
+  if (!repos || repos.length === 0) {
+    return { config, duplicates: [], warnings: [] };
+  }
+
+  const { repos: deduped, duplicates } = dedupeRepoSlugs(repos);
+  if (duplicates.length === 0) return { config, duplicates, warnings: [] };
+
+  return {
+    config: { ...config, repos: deduped },
+    duplicates,
+    warnings: duplicateRepoSlugWarnings(
+      duplicates,
+      Object.keys(config.repo_config ?? {}),
+    ),
+  };
 }
 
 /** Result of defaulting the service-account allowlist (Issue #4030). */
