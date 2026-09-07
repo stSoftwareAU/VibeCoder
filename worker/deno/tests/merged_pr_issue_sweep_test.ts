@@ -16,6 +16,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  buildSweepCloseComment,
   type MergedPrIssueSweepOptions,
   sweepMergedPrIssues,
 } from "../lib/merged_pr_issue_sweep.ts";
@@ -74,6 +75,8 @@ interface GhWorldPr {
   state?: string;
   mergeCommit?: string | null;
   baseRefName?: string;
+  /** The PR body, for its closing keywords (Issue #1528). */
+  body?: string;
 }
 
 interface GhWorld {
@@ -141,6 +144,7 @@ function makeGh(world: GhWorld, calls: GhCalls) {
           title: p.title,
           mergedAt: p.mergedAt,
           closedAt: p.closedAt,
+          body: p.body ?? "",
         })),
       ));
     }
@@ -686,4 +690,80 @@ Deno.test("sweepMergedPrIssues - a quota stop never advances the interrupted rep
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1528: a merged PR whose BODY closes the issue counts, whatever its
+// title says, and the closure names the milestone branch it landed on
+// ---------------------------------------------------------------------------
+
+Deno.test("sweepMergedPrIssues - a merged PR that names the issue only in its body closes it (Issue #1528)", async () => {
+  const calls: GhCalls = { closes: [] };
+  const world = landedWorld({
+    prs: [{
+      number: 49,
+      // No `#48` anywhere in the title — the shape of #1509 and #1524.
+      title: "🟡 producer picks its victims by head-branch name alone",
+      mergedAt: "2026-08-28T04:55:00Z",
+      closedAt: "2026-08-28T04:55:00Z",
+      mergeCommit: "f00dcafe",
+      body: "## Summary\n\nCloses #48\n",
+    }],
+  });
+
+  const result = await sweepMergedPrIssues(baseOptions(), {
+    ghCommandFn: makeGh(world, calls),
+    logger: makeLogger(),
+    isQuotaLatchedFn: () => false,
+  });
+
+  assertEquals(result.candidates, 1);
+  assertEquals(result.closed, 1);
+  assertEquals(calls.closes.map((c) => c.issue), ["48"]);
+});
+
+Deno.test("sweepMergedPrIssues - a body reference on a closed-unmerged PR closes nothing (Issue #1528)", async () => {
+  const calls: GhCalls = { closes: [] };
+  const world = landedWorld({
+    prs: [{
+      number: 49,
+      title: "abandoned attempt",
+      mergedAt: null,
+      closedAt: "2026-08-28T04:55:00Z",
+      body: "Closes #48",
+    }],
+  });
+
+  const result = await sweepMergedPrIssues(baseOptions(), {
+    ghCommandFn: makeGh(world, calls),
+    logger: makeLogger(),
+    isQuotaLatchedFn: () => false,
+  });
+
+  assertEquals(result.candidates, 0);
+  assertEquals(calls.closes, []);
+});
+
+Deno.test("buildSweepCloseComment - names the milestone branch when the merge was not into the default branch (Issue #1528)", () => {
+  const onMilestone = buildSweepCloseComment(1509, {
+    landed: true,
+    via: "milestone-route-open",
+    mergeCommit: "f00dcafe",
+    baseRefName: "milestone/fix-scan-issues-20260906",
+  });
+  assertStringIncludes(onMilestone, "PR #1509");
+  assertStringIncludes(
+    onMilestone,
+    "into `milestone/fix-scan-issues-20260906`",
+  );
+  assertStringIncludes(onMilestone, "milestone's rollup");
+
+  const onDefault = buildSweepCloseComment(49, {
+    landed: true,
+    via: "default-branch",
+    mergeCommit: "f00dcafe",
+    baseRefName: "Develop",
+  });
+  assert(!onDefault.includes("into `"), onDefault);
+  assertStringIncludes(onDefault, "PR #49 merged and its change landed");
 });

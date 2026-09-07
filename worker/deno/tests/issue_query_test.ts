@@ -1105,6 +1105,41 @@ Deno.test("issue_query - fetchMergedPRsByUser - cache miss fetches and parses JS
   }
 });
 
+Deno.test("issue_query - fetchMergedPRsByUser - reads the body's closing references, and caches those, not the body (Issue #1528)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    const calls: string[][] = [];
+    const mockGh = async (args: string[]): Promise<string> => {
+      calls.push(args);
+      return JSON.stringify([
+        {
+          number: 1509,
+          title:
+            "🟡 close-duplicate-prs picks its victims by head-branch name alone",
+          headRefName: "issue-1264",
+          mergedAt: "2026-09-07T11:00:00Z",
+          body:
+            "## Summary\n\nCloses #1264\n\nAlso touches #1270 without closing it.",
+        },
+        { number: 2, title: "no body", headRefName: "b" },
+      ]);
+    };
+    const prs = await fetchMergedPRsByUser("o/r", "bot", cache, 30, mockGh);
+    assertEquals(prs[0]?.closingRefs, [1264]);
+    assertEquals(prs[1]?.closingRefs, []);
+    assertEquals(calls[0]!.join(" ").includes("mergedAt,body"), true);
+    // The cached entry carries the references and nothing of the prose.
+    const cached = await cache.read<Array<Record<string, unknown>>>(
+      "o/r",
+      "prs_merged_bot",
+    );
+    assertEquals(cached?.[0]?.closingRefs, [1264]);
+    assertEquals(cached?.[0]?.body, undefined);
+  } finally {
+    await cleanup();
+  }
+});
+
 Deno.test("issue_query - fetchMergedPRsByUser - cache hit avoids gh call", async () => {
   const { cache, cleanup } = await makeTempCache();
   try {

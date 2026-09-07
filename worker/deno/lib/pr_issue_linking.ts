@@ -16,12 +16,13 @@ import {
   fetchPRsByBranch,
   fetchPRsForIssueByTitle,
   invalidatePRsByBranch,
+  type MergedPR,
   type TitleSearchPR,
 } from "./issue_query.ts";
 import { extractIssueNumberFromPrTitle } from "./pr_body.ts";
 import { filterOutWorkflowLabels } from "./workflow_labels.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
-import { verifyMergeLanded } from "./merge_landing.ts";
+import { type MergeLanding, verifyMergeLanded } from "./merge_landing.ts";
 import {
   loadSweepWatermarks,
   saveSweepWatermarks,
@@ -711,6 +712,23 @@ export function classifyMergeCloseOrdering(
   return created <= merged ? "issue-predates-merge" : "issue-postdates-merge";
 }
 
+/**
+ * The comment a merged-PR close carries (Issues #482, #1528): the PR, and —
+ * when it merged into a milestone branch rather than the default one — the
+ * branch, so the issue says where its fix lives until the rollup lands.
+ */
+export function mergedPrCloseComment(
+  prNumber: number,
+  landing: Extract<MergeLanding, { landed: true }>,
+): string {
+  const base = landing.via === "default-branch"
+    ? "has been merged."
+    : `has been merged into \`${landing.baseRefName}\` — a milestone ` +
+      `branch, so the change reaches the default branch with that ` +
+      `milestone's rollup (via \`${landing.via}\`).`;
+  return `Closed automatically — PR #${prNumber} ${base}`;
+}
+
 export async function closeIssuesForMergedPrs(
   repos: string[],
   githubUser: string,
@@ -745,7 +763,7 @@ export async function closeIssuesForMergedPrs(
   let watermarksDirty = false;
 
   for (const repo of repos) {
-    let mergedPrs: Array<{ number: number; title: string; mergedAt: string }>;
+    let mergedPrs: MergedPR[];
     try {
       // Issue #1787: route through `fetchMergedPRsByUser` so this
       // call reuses the iteration-scoped `prs_merged_${user}` cache.
@@ -773,82 +791,98 @@ export async function closeIssuesForMergedPrs(
       if (pr.number > windowMax) windowMax = pr.number;
       if (pr.number <= mark) continue;
 
+      // The issues this PR fixes: the title's trailing `(#N)` / `(Issue #N)`
+      // and, since Issue #1528, the body's closing keywords — the reference
+      // GitHub itself honours on the default branch and ignores on a
+      // milestone branch, which left four milestone sub-issues open and the
+      // rollup held shut.
       const issueResult = extractIssueNumberFromPrTitle(pr.title);
-      if (!issueResult.ok) continue;
-      const issueNumber = issueResult.value;
+      const issueNumbers = [
+        ...new Set([
+          ...(issueResult.ok ? [issueResult.value] : []),
+          ...(pr.closingRefs ?? []),
+        ]),
+      ];
+      if (issueNumbers.length === 0) continue;
 
-      try {
-        const issueOutput = await ghCommandFn([
-          "issue",
-          "view",
-          String(issueNumber),
-          "--repo",
-          repo,
-          "--json",
-          "state,labels,createdAt",
-        ]);
+      for (const issueNumber of issueNumbers) {
+        try {
+          const issueOutput = await ghCommandFn([
+            "issue",
+            "view",
+            String(issueNumber),
+            "--repo",
+            repo,
+            "--json",
+            "state,labels,createdAt",
+          ]);
 
-        const issueData = JSON.parse(issueOutput) as {
-          state: string;
-          labels: Array<{ name: string }>;
-          createdAt?: string;
-        };
+          const issueData = JSON.parse(issueOutput) as {
+            state: string;
+            labels: Array<{ name: string }>;
+            createdAt?: string;
+          };
 
-        if (issueData.state !== "OPEN") continue;
+          if (issueData.state !== "OPEN") continue;
 
-        // Issue #482: a fix cannot predate the thing it fixes. Issues and PRs
-        // share one number sequence, so a stale or invented reference in an
-        // already-merged PR is otherwise a standing instruction to close
-        // whatever later takes that number — which is how PR #476, merged at
-        // 06:44Z naming a then-nonexistent "Issue #477", closed the unrelated
-        // issue #477 filed at 06:53Z. The close is silent and destroys work.
-        const ordering = classifyMergeCloseOrdering(
-          pr.mergedAt,
-          issueData.createdAt,
-        );
-        if (ordering !== "issue-predates-merge") {
-          // `issue-postdates-merge` is permanent — the number can never
-          // become this PR's subject, so it is watermarked away rather than
-          // re-examined for ever. An `unknown` ordering is transient (a cache
-          // entry written before `mergedAt` was collected), so it is held
-          // back and decided next cycle: closing is destructive and
-          // unprompted, while deferring costs one cycle.
-          if (ordering === "unknown") holdBack = Math.min(holdBack, pr.number);
-          continue;
-        }
+          // Issue #482: a fix cannot predate the thing it fixes. Issues and PRs
+          // share one number sequence, so a stale or invented reference in an
+          // already-merged PR is otherwise a standing instruction to close
+          // whatever later takes that number — which is how PR #476, merged at
+          // 06:44Z naming a then-nonexistent "Issue #477", closed the unrelated
+          // issue #477 filed at 06:53Z. The close is silent and destroys work.
+          const ordering = classifyMergeCloseOrdering(
+            pr.mergedAt,
+            issueData.createdAt,
+          );
+          if (ordering !== "issue-predates-merge") {
+            // `issue-postdates-merge` is permanent — the number can never
+            // become this PR's subject, so it is watermarked away rather than
+            // re-examined for ever. An `unknown` ordering is transient (a cache
+            // entry written before `mergedAt` was collected), so it is held
+            // back and decided next cycle: closing is destructive and
+            // unprompted, while deferring costs one cycle.
+            if (ordering === "unknown") {
+              holdBack = Math.min(holdBack, pr.number);
+            }
+            continue;
+          }
 
-        if (issueData.labels.some((l) => l.name === planningLabel)) {
+          if (issueData.labels.some((l) => l.name === planningLabel)) {
+            holdBack = Math.min(holdBack, pr.number);
+            continue;
+          }
+
+          // A merged PR is not a landed change (Issue #4396): held back, not
+          // watermarked away, so an orphaned merge is re-examined next cycle
+          // rather than silently forgotten.
+          const landing = await (options?.verifyMergeLandedFn ??
+            verifyMergeLanded)(repo, pr.number, ghCommandFn);
+          if (!landing.landed) {
+            holdBack = Math.min(holdBack, pr.number);
+            continue;
+          }
+
+          await ghCommandFn([
+            "issue",
+            "close",
+            String(issueNumber),
+            "--repo",
+            repo,
+            "--comment",
+            // Issue #482: name the PR. A wrong close must be traceable to its
+            // cause from the issue alone, without reading the worker's logs.
+            // Issue #1528: and the branch, when it is not the default one, so
+            // the audit trail says where the fix lives until the rollup.
+            mergedPrCloseComment(pr.number, landing),
+          ]);
+          closedCount++;
+          mutated = true;
+        } catch {
+          // Individual issue close failure is not fatal — but it must be
+          // retried next cycle rather than watermarked away (Issue #4256).
           holdBack = Math.min(holdBack, pr.number);
-          continue;
         }
-
-        // A merged PR is not a landed change (Issue #4396): held back, not
-        // watermarked away, so an orphaned merge is re-examined next cycle
-        // rather than silently forgotten.
-        const landing = await (options?.verifyMergeLandedFn ??
-          verifyMergeLanded)(repo, pr.number, ghCommandFn);
-        if (!landing.landed) {
-          holdBack = Math.min(holdBack, pr.number);
-          continue;
-        }
-
-        await ghCommandFn([
-          "issue",
-          "close",
-          String(issueNumber),
-          "--repo",
-          repo,
-          "--comment",
-          // Issue #482: name the PR. A wrong close must be traceable to its
-          // cause from the issue alone, without reading the worker's logs.
-          `Closed automatically — PR #${pr.number} has been merged.`,
-        ]);
-        closedCount++;
-        mutated = true;
-      } catch {
-        // Individual issue close failure is not fatal — but it must be
-        // retried next cycle rather than watermarked away (Issue #4256).
-        holdBack = Math.min(holdBack, pr.number);
       }
     }
 
