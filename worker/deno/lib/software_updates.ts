@@ -49,6 +49,7 @@ import {
   type ReleaseAgeVerdict,
   type ReleaseChannel,
 } from "./tool_release_age.ts";
+import { spawnGh } from "./gh_spawn.ts";
 
 /** Default update check interval: 7 days in seconds. */
 export const DEFAULT_UPDATE_INTERVAL_SECONDS = 604800;
@@ -345,6 +346,53 @@ export function classifyUpdateError(
   return "transient";
 }
 
+/** One finished update subprocess, however it was spawned. */
+interface UpdateCommandOutput {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Spawn one update command, routing `gh` through the worker's chokepoint
+ * (Issue #1396).
+ *
+ * `runWithTimeout` reaches its binary through `cmd[0]`, so the two `gh` calls
+ * in this module — `gh extension list` and the pinned
+ * `gh extension install` — spawned outside `spawnGh` and skipped the
+ * write-repo allowlist and the audit journal that every other worker `gh`
+ * call passes through. Dispatching on the binary name here re-routes them,
+ * and keeps any `gh` command a future caller passes on the same path.
+ * `gh extension` verbs classify as `non-repo` local-tool mutations
+ * (`audit_mutation_classifier.ts`), so they are journalled rather than
+ * refused as an undeterminable repo write.
+ *
+ * Every other tool (`brew`, `claude`, `deno`, `npm`, `which`) has no
+ * chokepoint of its own and is spawned directly, under the same abort signal.
+ */
+async function runUpdateCommand(
+  cmd: string[],
+  signal: AbortSignal,
+): Promise<UpdateCommandOutput> {
+  if (cmd[0] === "gh") {
+    const result = await spawnGh(cmd.slice(1), { signal });
+    return { code: result.code, stdout: result.stdout, stderr: result.stderr };
+  }
+
+  const output = await new Deno.Command(cmd[0]!, {
+    args: cmd.slice(1),
+    stdout: "piped",
+    stderr: "piped",
+    signal,
+  }).output();
+  const decoder = new TextDecoder();
+  return {
+    code: output.code,
+    stdout: decoder.decode(output.stdout),
+    stderr: decoder.decode(output.stderr),
+  };
+}
+
 /**
  * Run a command with a timeout and return the result.
  *
@@ -353,6 +401,10 @@ export function classifyUpdateError(
  * resolves — on the success path as well as the timeout path. Leaving a live
  * timer queued on the fast success path would keep the event loop non-idle and
  * delay process exit for up to `timeoutSeconds` (Issue #3167).
+ *
+ * A `gh` command is spawned by {@link runUpdateCommand} through `spawnGh`
+ * rather than here (Issue #1396), so it carries the write-repo allowlist and
+ * the audit journal like every other worker `gh` call.
  *
  * Exported for direct unit testing; not part of the module's public API.
  */
@@ -365,14 +417,7 @@ export async function runWithTimeout(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const command = new Deno.Command(cmd[0]!, {
-      args: cmd.slice(1),
-      stdout: "piped",
-      stderr: "piped",
-      signal: controller.signal,
-    });
-
-    const result = await command.output();
+    const result = await runUpdateCommand(cmd, controller.signal);
 
     // The abort signal terminates the child rather than throwing, so detect
     // the timeout by inspecting the controller after `output()` resolves.
@@ -383,11 +428,12 @@ export async function runWithTimeout(
       };
     }
 
-    const stdout = new TextDecoder().decode(result.stdout);
-    const stderr = new TextDecoder().decode(result.stderr);
     return {
       ok: true,
-      value: { exitCode: result.code, output: `${stdout}\n${stderr}`.trim() },
+      value: {
+        exitCode: result.code,
+        output: `${result.stdout}\n${result.stderr}`.trim(),
+      },
     };
   } catch (err) {
     // Some runtimes surface the abort as an AbortError instead.

@@ -50,6 +50,7 @@ import {
   updateGhCli,
   versionMatchesExactly,
 } from "../lib/software_updates.ts";
+import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import {
   describeChannel,
   type ReleaseAgeGate,
@@ -1247,6 +1248,83 @@ Deno.test("runWithTimeout - returns exitCode 124 on timeout", async () => {
 Deno.test("runWithTimeout - returns error for non-existent executable", async () => {
   const result = await runWithTimeout(["nonexistent_cmd_3167_xyz"], 300);
   assertEquals(result.ok, false);
+});
+
+// =============================================================================
+// runWithTimeout — `gh` goes through the chokepoint (Issue #1396)
+// =============================================================================
+
+Deno.test("runWithTimeout - a gh command is spawned by the gh chokepoint, not directly", async () => {
+  const seen: string[][] = [];
+  _setGhSpawnRunner((args) => {
+    seen.push([...args]);
+    return Promise.resolve({
+      code: 0,
+      success: true,
+      stdout: "dlvhdr/gh-dash\tv4.2.0\n",
+      stderr: "",
+    });
+  });
+  try {
+    const result = await runWithTimeout(["gh", "extension", "list"], 30);
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.exitCode, 0);
+      assertStringIncludes(result.value.output, "dlvhdr/gh-dash");
+    }
+    // The chokepoint saw the call — the binary name is stripped, as spawnGh
+    // takes arguments only.
+    assertEquals(seen, [["extension", "list"]]);
+  } finally {
+    _resetGhSpawnRunner();
+  }
+});
+
+Deno.test("runWithTimeout - the pinned extension install is routed through the chokepoint too", async () => {
+  const seen: string[][] = [];
+  _setGhSpawnRunner((args) => {
+    seen.push([...args]);
+    return Promise.resolve({
+      code: 0,
+      success: true,
+      stdout: "installed",
+      stderr: "",
+    });
+  });
+  try {
+    const result = await runWithTimeout(
+      ["gh", "extension", "install", "dlvhdr/gh-dash", "--pin", "v4.2.0"],
+      30,
+    );
+    assertEquals(result.ok, true);
+    assertEquals(seen, [[
+      "extension",
+      "install",
+      "dlvhdr/gh-dash",
+      "--pin",
+      "v4.2.0",
+    ]]);
+  } finally {
+    _resetGhSpawnRunner();
+  }
+});
+
+Deno.test("runWithTimeout - a non-gh command still spawns directly", async () => {
+  // The chokepoint is for `gh` only: brew/claude/deno/npm have none, so a
+  // stubbed gh runner must not be consulted for them.
+  let ghCalls = 0;
+  _setGhSpawnRunner(() => {
+    ghCalls++;
+    return Promise.resolve({ code: 0, success: true, stdout: "", stderr: "" });
+  });
+  try {
+    const result = await runWithTimeout(["echo", "brewish"], 30);
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value.output, "brewish");
+    assertEquals(ghCalls, 0);
+  } finally {
+    _resetGhSpawnRunner();
+  }
 });
 
 // ---------- Release-age quarantine (Issue #3655) ----------

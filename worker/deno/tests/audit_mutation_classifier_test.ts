@@ -247,3 +247,44 @@ Deno.test("classifyGhMutation - git globals are not gh value flags", () => {
     "pr-merge",
   );
 });
+
+// ---------- `gh extension` is a local-tool mutation (Issue #1396) ----------
+
+Deno.test("classifyGhMutation - gh extension install is a non-repo mutation", () => {
+  const info = classifyGhMutation([
+    "extension",
+    "install",
+    "dlvhdr/gh-dash",
+    "--pin",
+    "v4.2.0",
+    "--force",
+  ]);
+  assertEquals(info?.verb, "extension-install");
+  assertEquals(info?.target, "dlvhdr/gh-dash");
+  assertEquals(info?.scope, "non-repo");
+  // The extension's source repo is never a write target, so it must not be
+  // compared against the write-repo allowlist.
+  assertEquals(info?.repo, undefined);
+});
+
+Deno.test("classifyGhMutation - gh extension upgrade/remove/create are non-repo, not undeterminable", () => {
+  for (const verb of ["upgrade", "remove", "create"]) {
+    const info = classifyGhMutation(["extension", verb, "gh-dash"]);
+    assertEquals(info?.verb, `extension-${verb}`);
+    assertEquals(info?.scope, "non-repo");
+  }
+});
+
+Deno.test("classifyGhMutation - the ext/extensions root spellings classify alike", () => {
+  for (const root of ["ext", "extensions"]) {
+    const info = classifyGhMutation([root, "install", "owner/gh-thing"]);
+    assertEquals(info?.verb, "extension-install");
+    assertEquals(info?.scope, "non-repo");
+  }
+});
+
+Deno.test("classifyGhMutation - gh extension reads stay reads", () => {
+  assertEquals(classifyGhMutation(["extension", "list"]), null);
+  assertEquals(classifyGhMutation(["extension", "browse"]), null);
+  assertEquals(classifyGhMutation(["extension", "exec", "gh-dash"]), null);
+});

@@ -654,3 +654,29 @@ Deno.test("write-repo-allowlist - a scoped grant blocks nothing while enforcemen
     cleanup();
   }
 });
+
+// ---------- `gh extension` is a local-tool mutation (Issue #1396) ----------
+
+Deno.test("write-repo-allowlist - a pinned gh extension install is allowed, not refused as undeterminable", async () => {
+  try {
+    captureSinks();
+    seedWriteRepoAllowlist("stSoftwareAU/VibeCoder");
+    // The extension's source repo is not on the allowlist and never needs to
+    // be: installing an extension writes to the local gh installation, not to
+    // GitHub. Refusing it is what kept `software_updates.ts` outside the
+    // `spawnGh` chokepoint (Issue #1396).
+    await enforceGhWriteAllowlist([
+      "extension",
+      "install",
+      "dlvhdr/gh-dash",
+      "--pin",
+      "v4.2.0",
+      "--force",
+    ]);
+    await enforceGhWriteAllowlist(["extension", "upgrade", "gh-dash"]);
+    await enforceGhWriteAllowlist(["extension", "remove", "gh-dash"]);
+    await enforceGhWriteAllowlist(["extension", "list"]);
+  } finally {
+    cleanup();
+  }
+});

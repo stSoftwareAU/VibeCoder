@@ -27,6 +27,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { runGitCommand } from "./git_timeout.ts";
+
 /** One measured step. */
 export interface BenchmarkStep {
   name: string;
@@ -74,15 +76,47 @@ export interface BenchmarkOptions {
   only?: string[];
 }
 
-async function defaultRun(
+/**
+ * The benchmark's production command runner — `git` through the worker's
+ * chokepoint, everything else spawned here (Issue #1396).
+ *
+ * The `git-clone-local` step builds a throwaway fixture repository, but it
+ * ran through `new Deno.Command(cmd, …)` with the binary supplied by the
+ * caller, so it was a production `git` spawn outside `runGitCommand` — no
+ * timeout, no audit journal, and no work-volume fault detection. A fixture is
+ * exactly where an I/O-faulted work volume shows itself first (Issue #229),
+ * so the step now inherits all three: a `git` step that fails with
+ * "Input/output error" records the fault the claim guards read, instead of
+ * being reported as a slow benchmark.
+ *
+ * Exported so the routing is testable against a real repository; production
+ * callers get it as the default {@link BenchmarkOptions.run}.
+ *
+ * @param cmd - Binary to run.
+ * @param args - Arguments for it.
+ * @param env - Extra environment variables, merged over the process's own.
+ * @returns The exit code and stderr; code `-1` when the spawn itself failed.
+ */
+export async function runBenchmarkCommand(
   cmd: string,
   args: string[],
   env?: Record<string, string>,
 ): Promise<{ code: number; stderr: string }> {
+  const mergedEnv = env ? { ...Deno.env.toObject(), ...env } : undefined;
+
+  if (cmd === "git") {
+    const result = await runGitCommand(args, {
+      ...(mergedEnv ? { env: mergedEnv } : {}),
+    });
+    return result.ok
+      ? { code: result.value.code, stderr: result.value.stderr }
+      : { code: -1, stderr: result.error.message };
+  }
+
   try {
     const out = await new Deno.Command(cmd, {
       args,
-      env: env ? { ...Deno.env.toObject(), ...env } : undefined,
+      env: mergedEnv,
       stdout: "null",
       stderr: "piped",
     }).output();
@@ -99,7 +133,7 @@ async function defaultRun(
 export async function runBenchmark(
   options: BenchmarkOptions,
 ): Promise<BenchmarkReport> {
-  const run = options.run ?? defaultRun;
+  const run = options.run ?? runBenchmarkCommand;
   const now = options.now ?? Date.now;
   const fsFiles = options.fsFiles ?? 200;
   const cpuIterations = options.cpuIterations ?? 2000;
