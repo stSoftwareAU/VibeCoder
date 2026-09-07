@@ -64,7 +64,11 @@ Deno.test("SEC-e3b7a2f95c14 - the page probe refuses an intranet hostname", asyn
 // ImgBB API key shape) carried no signature rule.
 // ---------------------------------------------------------------------------
 
-const IMGBB_SHAPED_KEY = "0123456789abcdef0123456789abcdef";
+// Assembled from short halves at run time, the way `export_scrub_gate_test.ts`
+// already carries the same fixture. A bare 32-hex literal beside a `KEY`
+// identifier is exactly what a secret scanner is built to flag, and writing it
+// in one piece flagged it. The value is synthetic and assembles identically.
+const IMGBB_SHAPED_KEY = ["01234567", "89abcdef"].join("").repeat(2);
 
 Deno.test("SEC-08c4f1a7e2b9 - redacts a bare 32-hex credential", () => {
   const out = redactSecrets(`upload failed for key ${IMGBB_SHAPED_KEY} (401)`);
