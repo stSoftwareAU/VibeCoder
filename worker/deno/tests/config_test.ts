@@ -1642,3 +1642,49 @@ Deno.test("config - a stall window equal to the check interval is accepted (Issu
     assertEquals(config.progressExtensionStallSeconds, 120);
   });
 });
+
+// ── Issue #1453: trusted_authors_cache_hours ─────────────────────────────
+
+Deno.test("config - trusted_authors_cache_hours defaults to one hour (Issue #1453)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+  };
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.trustedAuthorsCacheHours, 1);
+  });
+});
+
+Deno.test("config - trusted_authors_cache_hours accepts 0 (refresh every cycle) and fractions (Issue #1453)", async () => {
+  for (const hours of [0, 0.5, 2, 24]) {
+    const testConfig: ConfigFile = {
+      allowed_authors: ["testuser"],
+      repos: ["org/repo1"],
+      trusted_authors_cache_hours: hours,
+    };
+    await withTempConfig(testConfig, async (configPath) => {
+      const config = await loadConfig(configPath);
+      assertEquals(config.trustedAuthorsCacheHours, hours);
+    });
+  }
+});
+
+Deno.test("config - trusted_authors_cache_hours outside 0..24 is rejected (Issue #1453)", async () => {
+  // A revoked collaborator must not stay trusted for longer than a day, and a
+  // negative window is nonsense; both are refused at load, not clamped.
+  for (const hours of [-1, 25]) {
+    const testConfig: ConfigFile = {
+      allowed_authors: ["testuser"],
+      repos: ["org/repo1"],
+      trusted_authors_cache_hours: hours,
+    };
+    await withTempConfig(testConfig, async (configPath) => {
+      await assertRejects(
+        () => loadConfig(configPath),
+        Error,
+        "trusted_authors_cache_hours must be a number between 0 and 24",
+      );
+    });
+  }
+});
