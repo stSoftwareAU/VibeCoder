@@ -22,6 +22,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   applyAllowlist,
   formatGateReport,
+  gatePasses,
   maskMatch,
   parseAllowlist,
   parseIdentifiers,
@@ -311,25 +312,161 @@ async function makeTree(files: Record<string, string>): Promise<string> {
   return root;
 }
 
+/**
+ * Covers the synthetic PNG `makeTree` plants in every fixture tree. Since a
+ * file the gate cannot decode is a blocking `binary-unscanned` finding, a
+ * fixture that wants to exercise some *other* behaviour has to account for it
+ * the same way a real export would: a reviewed allowlist entry naming it.
+ */
+const LOGO_ALLOWLIST =
+  "# Reviewed: synthetic 9-byte PNG fixture, no shipped content\n" +
+  "binary-unscanned img/logo.png *\n";
+
 const CLEAN_TREE: Record<string, string> = {
   "README.md": "# Vibe Coder\n\nRuns on your own machine.\n",
   "docs/USAGE.md": "Run ./run.sh and watch the log.\n",
   "worker/deno/mod.ts": "export const version = 1;\n",
 };
 
-Deno.test("scrub-gate - a clean tree passes with zero findings", async () => {
+Deno.test("scrub-gate - a clean tree passes with zero blocking findings", async () => {
   const root = await makeTree(CLEAN_TREE);
   try {
-    const report = await scanTree({ tree: root, identifiersText: IDENTIFIERS });
+    const report = await scanTree({
+      tree: root,
+      identifiersText: IDENTIFIERS,
+      allowlistText: LOGO_ALLOWLIST,
+    });
     assertEquals(report.errors, []);
-    assertEquals(report.findings, []);
     assertEquals(report.blocking, 0);
     assertEquals(report.filesScanned, 3);
     assertEquals(report.filesSkippedBinary, 1);
+    assert(gatePasses(report));
     assertStringIncludes(formatGateReport(report), "0 blocking");
+    assertStringIncludes(formatGateReport(report), "verdict: PASS");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
+});
+
+// =============================================================================
+// Coverage is part of the verdict (Issue #1265)
+// =============================================================================
+
+/**
+ * A file the gate cannot decode, carrying a fixture identifier so the test can
+ * prove the gate never saw it. The leading NUL is what makes the bytes
+ * undecodable — the same heuristic git uses.
+ */
+const UNDECODABLE_BYTES = new TextEncoder().encode(
+  `\u0000 host HOST-42 owner acme-ops-bot\n`,
+);
+
+/** Valid latin-1, invalid UTF-8, no NUL: undecodable for a different reason. */
+const LATIN1_BYTES = new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0a]);
+
+async function treeWithBlob(bytes: Uint8Array): Promise<string> {
+  const root = await makeTree(CLEAN_TREE);
+  await writeFile(`${root}/assets/blob.bin`, bytes);
+  return root;
+}
+
+Deno.test("scrub-gate - a file the gate could not decode blocks, and the report names it", async () => {
+  const root = await treeWithBlob(UNDECODABLE_BYTES);
+  try {
+    const report = await scanTree({
+      tree: root,
+      identifiersText: IDENTIFIERS,
+      allowlistText: LOGO_ALLOWLIST,
+    });
+    assertEquals(report.errors, []);
+    assertEquals(report.filesSkippedBinary, 2);
+    assertEquals(report.perClass["binary-unscanned"], 1);
+    assertEquals(report.blocking, 1);
+    assert(!gatePasses(report), "an unscanned file must never pass the gate");
+
+    const text = formatGateReport(report);
+    assertStringIncludes(text, "verdict: BLOCKED");
+    assertStringIncludes(text, "[binary-unscanned] assets/blob.bin");
+    // The gate never opened the file, so nothing inside it reaches the report.
+    assert(!text.includes("HOST-42"));
+    assert(!text.includes("acme-ops-bot"));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("scrub-gate - non-UTF-8 text blocks the same way a binary file does", async () => {
+  const root = await treeWithBlob(LATIN1_BYTES);
+  try {
+    const report = await scanTree({
+      tree: root,
+      identifiersText: IDENTIFIERS,
+      allowlistText: LOGO_ALLOWLIST,
+    });
+    assertEquals(report.perClass["binary-unscanned"], 1);
+    assert(!gatePasses(report));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("scrub-gate - a reviewed allowlist entry is the only way an unscanned file passes", async () => {
+  const root = await treeWithBlob(UNDECODABLE_BYTES);
+  try {
+    const allowed = await scanTree({
+      tree: root,
+      identifiersText: IDENTIFIERS,
+      allowlistText: LOGO_ALLOWLIST +
+        "# Reviewed: synthetic fixture blob, reviewed byte by byte\n" +
+        "binary-unscanned assets/blob.bin *\n",
+    });
+    assertEquals(allowed.errors, []);
+    assertEquals(allowed.blocking, 0);
+    assertEquals(allowed.allowlisted, 2);
+    assert(gatePasses(allowed));
+    assertStringIncludes(formatGateReport(allowed), "verdict: PASS");
+
+    // An entry for a different path does not cover it.
+    const elsewhere = await scanTree({
+      tree: root,
+      identifiersText: IDENTIFIERS,
+      allowlistText: LOGO_ALLOWLIST +
+        "# Reviewed: names a path that is not the blob\n" +
+        "binary-unscanned assets/other.bin *\n",
+    });
+    assertEquals(elsewhere.blocking, 1);
+    assert(!gatePasses(elsewhere));
+
+    // An entry without a justifying comment is a gate error, not an exemption.
+    const unjustified = await scanTree({
+      tree: root,
+      identifiersText: IDENTIFIERS,
+      allowlistText: LOGO_ALLOWLIST + "binary-unscanned assets/blob.bin *\n",
+    });
+    assert(unjustified.errors.length >= 1);
+    assert(!gatePasses(unjustified));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("scrub-gate - a skipped file that raised no finding cannot report PASS", () => {
+  // Defends the invariant directly: even a report assembled with the counter
+  // set and no matching finding must not read as a pass.
+  const report = {
+    tree: "/staged",
+    filesScanned: 3,
+    filesSkippedBinary: 1,
+    findings: [],
+    blocking: 0,
+    allowlisted: 0,
+    errors: [],
+    allowlistEntries: 0,
+    unusedAllowlist: [],
+    perClass: {},
+    perTopDir: {},
+  };
+  assert(!gatePasses(report), "unaccounted coverage must not read as a pass");
 });
 
 Deno.test("scrub-gate - one planted value per class blocks with a distinct class label", async () => {
@@ -343,7 +480,11 @@ Deno.test("scrub-gate - one planted value per class blocks with a distinct class
     "worker/F.ts": `// see https://github.com/${OTHER_PRIVATE}\n`,
   });
   try {
-    const report = await scanTree({ tree: root, identifiersText: IDENTIFIERS });
+    const report = await scanTree({
+      tree: root,
+      identifiersText: IDENTIFIERS,
+      allowlistText: LOGO_ALLOWLIST,
+    });
     assertEquals(report.blocking, 6);
     assertEquals(report.perClass["account"], 1);
     assertEquals(report.perClass["hostname"], 1);
@@ -389,12 +530,13 @@ Deno.test("scrub-gate - an allowlisted finding does not block; an unjustified en
     const ok = await scanTree({
       tree: root,
       identifiersText: IDENTIFIERS,
-      allowlistText: "# Reviewed: illustrative handle in the usage example\n" +
+      allowlistText: LOGO_ALLOWLIST +
+        "# Reviewed: illustrative handle in the usage example\n" +
         "account docs/A.md acme-ops-bot\n",
     });
     assertEquals(ok.errors, []);
     assertEquals(ok.blocking, 0);
-    assertEquals(ok.allowlisted, 1);
+    assertEquals(ok.allowlisted, 2);
     assertStringIncludes(formatGateReport(ok), "allowlisted");
 
     const bad = await scanTree({
@@ -450,10 +592,12 @@ Deno.test("scrub-gate command - exits non-zero on a finding and writes the repor
 Deno.test("scrub-gate command - a clean tree passes; missing inputs fail loud", async () => {
   const root = await makeTree(CLEAN_TREE);
   const identifiers = `${root}.identifiers.txt`;
+  const allowlist = `${root}.allowlist.txt`;
   await Deno.writeTextFile(identifiers, IDENTIFIERS);
+  await Deno.writeTextFile(allowlist, LOGO_ALLOWLIST);
   try {
     const ok = await exportScrubGateCommand.execute(
-      { tree: root, identifiers },
+      { tree: root, identifiers, allowlist },
       buildDefaultWorkerConfig(),
     );
     assertEquals(ok.success, true, ok.message);
@@ -480,6 +624,46 @@ Deno.test("scrub-gate command - a clean tree passes; missing inputs fail loud", 
   } finally {
     await Deno.remove(root, { recursive: true });
     await Deno.remove(identifiers);
+    await Deno.remove(allowlist);
+  }
+});
+
+Deno.test("scrub-gate command - an undecodable staged file fails the run, and passes only once allowlisted", async () => {
+  const root = await treeWithBlob(UNDECODABLE_BYTES);
+  const identifiers = `${root}.identifiers.txt`;
+  const allowlist = `${root}.allowlist.txt`;
+  const reportPath = `${root}.report.txt`;
+  await Deno.writeTextFile(identifiers, IDENTIFIERS);
+  await Deno.writeTextFile(allowlist, LOGO_ALLOWLIST);
+  try {
+    const blocked = await exportScrubGateCommand.execute(
+      { tree: root, identifiers, allowlist, report: reportPath },
+      buildDefaultWorkerConfig(),
+    );
+    assertEquals(blocked.success, false);
+    assertStringIncludes(blocked.message, "[binary-unscanned] assets/blob.bin");
+    assert(!blocked.message.includes("HOST-42"));
+    assertStringIncludes(
+      await Deno.readTextFile(reportPath),
+      "binary-unscanned",
+    );
+
+    await Deno.writeTextFile(
+      allowlist,
+      LOGO_ALLOWLIST +
+        "# Reviewed: synthetic fixture blob, reviewed byte by byte\n" +
+        "binary-unscanned assets/blob.bin *\n",
+    );
+    const passed = await exportScrubGateCommand.execute(
+      { tree: root, identifiers, allowlist },
+      buildDefaultWorkerConfig(),
+    );
+    assertEquals(passed.success, true, passed.message);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(identifiers);
+    await Deno.remove(allowlist);
+    await Deno.remove(reportPath).catch(() => {});
   }
 });
 
