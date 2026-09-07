@@ -224,7 +224,7 @@ the issue names as the comparison, is in the same class.
 | `LOG_LEVEL`, `DEBUG` | log verbosity | `parseLogLevel` rejects garbage loudly and falls back |
 | `VIBE_CONTAINER_MEMORY` / `CPUS` / `CPU_RESERVE`, disk floors | resource ceilings, not security guards | safe defaults; host-launcher-only |
 | `VIBE_RUN_MAX_SECONDS`, `VIBE_RUN_STARTED_EPOCH` | the run's own wall-clock ceiling | malformed ⇒ **no ceiling**: fail-open by design, logged with a reason, and the supervisor's own `timeout` remains the real cap |
-| `VIBE_IMAGE_AGENT_PROVIDERS` in the `gh` container fallback | whether the ambient-credential fall-through is re-enabled | keyed on **presence**, so an empty value re-enables it — SEC-1217-11 (#1262) |
+| `VIBE_IMAGE_AGENT_PROVIDERS` in the `gh` container fallback | whether the ambient-credential fall-through is re-enabled | was keyed on **presence**, so an empty value re-enabled it — SEC-1217-11 (#1262), **fixed**: `runningInContainerImage` requires a non-blank stamp |
 
 The parent run noted chunks 3 and 7 are fail-closed on every error path. Config
 loading generally is the same, with the two exceptions named above: `run_hard_cap`
@@ -325,7 +325,7 @@ unfixed code and passing after the fix.
 | SEC-1217-08 — `setup/` spawns `gh` directly and the chokepoint gate does not scan `setup/` — since **fixed** in #1259 | [#1259](https://github.com/stSoftwareAU/VibeCoder/issues/1259) | medium |
 | SEC-1217-09 — `console_redaction` passes non-string arguments through | [#1260](https://github.com/stSoftwareAU/VibeCoder/issues/1260) | low |
 | SEC-1217-10 — `baseline_quality_cache` and `issue_cache` persist unredacted output | [#1261](https://github.com/stSoftwareAU/VibeCoder/issues/1261) | low |
-| SEC-1217-11 — the `gh` container fallback is keyed on the *presence* of `VIBE_IMAGE_AGENT_PROVIDERS` | [#1262](https://github.com/stSoftwareAU/VibeCoder/issues/1262) | low |
+| SEC-1217-11 — the `gh` container fallback is keyed on the *presence* of `VIBE_IMAGE_AGENT_PROVIDERS` — since **fixed** in #1262 | [#1262](https://github.com/stSoftwareAU/VibeCoder/issues/1262) | low |
 | SEC-1217-12 — `quality.ts` is an entrypoint that never installs console redaction | [#1280](https://github.com/stSoftwareAU/VibeCoder/issues/1280) | high |
 | SEC-1217-13 — the gate's `deno test` stage hands repo-supplied test code the whole credential environment | [#1281](https://github.com/stSoftwareAU/VibeCoder/issues/1281) | high |
 | SEC-1217-14 — the `gh` credential is staged to a predictable `/tmp` path, chmod'd after the write, never removed | [#1282](https://github.com/stSoftwareAU/VibeCoder/issues/1282) | medium |
@@ -379,6 +379,7 @@ Every module below was read at its `Deno.env` reads and config-load sites.
 | `command_work_dir.ts` | `WORK_DIR` as a defaulted parameter; empty ⇒ refusal | clean |
 | `config_validator.ts` | `HOME` for `~` expansion; messages echo the App id and key **path**, never material | clean |
 | `container_launch.ts` | resource, path and marker variables; no secret in `runArgs` | clean |
+| `container_stamp.ts` | `VIBE_IMAGE_AGENT_PROVIDERS` — the one stamp rule the SEC-1217-11 fix (#1262) extracted; blank ⇒ host | clean |
 | `credential_preflight.ts` | credential variables **by presence only** (`firstEnvValue` returns the *name*) | clean |
 | `env_lookup.ts` | the `Deno.env.get` seam itself | clean |
 | `gemini_env.ts` | as `codex_env.ts` | clean |
@@ -399,6 +400,6 @@ Every module below was read at its `Deno.env` reads and config-load sites.
 | `run_mode_record.ts` | `VIBE_HOST_ID`; whitespace-scrubbed before it is logged | clean |
 | `service_account_env.ts` | `HOME`, `GH_CONFIG_DIR`, `VIBE_SCRATCH_DIR`; the SSH key **path** is shell-quoted, no token in argv or log | clean |
 | `shell_helpers.ts` | none directly | clean |
-| `stuck_issue_detector.ts` | `VIBE_IMAGE_AGENT_PROVIDERS`; absent ⇒ narrower behaviour | clean |
+| `stuck_issue_detector.ts` | `VIBE_IMAGE_AGENT_PROVIDERS`; absent **or blank** (#1262) ⇒ narrower behaviour | clean |
 | `timeline_cache.ts` | `TMPDIR`; per-user suffix, `verifyPrivateDir`, cache disabled when not worker-private | clean |
 | `unit_test_passes.ts` | the **whole** ambient environment, minus two non-secret names | **SEC-1217-13** (#1281) |

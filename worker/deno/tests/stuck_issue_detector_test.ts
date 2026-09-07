@@ -10,6 +10,7 @@ import {
   clearHeartbeat,
   DEFAULT_MARKER_REFRESH_SECONDS,
   detectAndRecoverStuckHeartbeats,
+  detectAndRecoverStuckIssues,
   detectAssignedWithClosedPr,
   detectAssignedWithoutHeartbeat,
   formatHeartbeatMarker,
@@ -1756,4 +1757,68 @@ Deno.test("stuck issue detector - scanHeartbeatMarkers exposes cleared flag", as
     epoch: 1700000500,
     cleared: false,
   });
+});
+
+// ============================================================================
+// detectAndRecoverStuckIssues — a blank container stamp is a HOST run
+// (Issue #1262)
+// ============================================================================
+
+Deno.test("detectAndRecoverStuckIssues - a blank container stamp does not sweep a live heartbeat (Issue #1262)", async () => {
+  // SEC-1217-11: the start-up sweep was keyed on the PRESENCE of the image
+  // stamp, so `VIBE_IMAGE_AGENT_PROVIDERS=` flipped it on for a host run —
+  // and a host sharing a work volume would then strip a sibling worker's
+  // live claim. A young heartbeat must survive a blank stamp.
+  const workDir = await makeTempDir();
+  try {
+    const nowEpoch = 1_786_000_000;
+    const heartbeat = heartbeatFilePath(workDir, "org/repo", 42);
+    await Deno.writeTextFile(heartbeat, `${nowEpoch - 30}`);
+    const calls: string[][] = [];
+    const result = await detectAndRecoverStuckIssues(
+      testConfig(workDir),
+      "worker-bot",
+      () => nowEpoch,
+      undefined,
+      {
+        env: (name) => (name === "VIBE_IMAGE_AGENT_PROVIDERS" ? "" : undefined),
+        ghCommandFn: (args) => {
+          calls.push(args);
+          return Promise.resolve("");
+        },
+      },
+    );
+    assertEquals(result.ok, true);
+    assertEquals(result.ok && result.value.stuckRecovered, 0);
+    assertEquals(calls, []);
+    // The sibling's claim is still there.
+    assertEquals((await Deno.stat(heartbeat)).isFile, true);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("detectAndRecoverStuckIssues - a stamped container run still sweeps every heartbeat (Issue #4241)", async () => {
+  // The other half of the same rule: a real stamp must keep sweeping, so the
+  // #1262 fix cannot be mistaken for switching container mode off.
+  const workDir = await makeTempDir();
+  try {
+    const nowEpoch = 1_786_000_000;
+    const heartbeat = heartbeatFilePath(workDir, "org/repo", 42);
+    await Deno.writeTextFile(heartbeat, `${nowEpoch - 30}`);
+    const result = await detectAndRecoverStuckIssues(
+      testConfig(workDir),
+      "worker-bot",
+      () => nowEpoch,
+      undefined,
+      {
+        env: (name) =>
+          name === "VIBE_IMAGE_AGENT_PROVIDERS" ? "claude" : undefined,
+        ghCommandFn: () => Promise.resolve(""),
+      },
+    );
+    assertEquals(result.ok && result.value.stuckRecovered, 1);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
 });

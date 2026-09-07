@@ -1609,8 +1609,9 @@ Two invariants keep the set honest:
   `imageAgentProviderIds()` in `agent_provider.ts` reads it back and
   `resolveAgentProviderId()` fails loudly when a phase asks for a provider the
   running image did not install — rather than a "command not found" mid-run.
-  With no stamp (an uncontained worker on a host) there is no image set to
-  check against, and the check stands aside.
+  With no stamp — absent, or blank, which is the same thing (Issue #1262):
+  an uncontained worker on a host — there is no image set to check against,
+  and the check stands aside.
 
 ```mermaid
 flowchart LR
