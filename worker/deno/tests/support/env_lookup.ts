@@ -36,9 +36,15 @@ export const emptyEnv: EnvLookup = envFrom();
  * than the agent-writable staged copy. A suite that let the ambient value
  * through would execute the *mounted* checkout's guard instead of the one
  * under test, so every shim install names this checkout explicitly.
+ *
+ * Decoded, because the module under test decodes its own `import.meta.url`
+ * before comparing the two: leaving this one percent-encoded makes the paths
+ * differ on any checkout whose path contains a space, and every install in
+ * the suite then resolves to a path that does not exist.
  */
-export const CHECKOUT_ROOT = new URL("../../../../", import.meta.url).pathname
-  .replace(/\/$/, "");
+export const CHECKOUT_ROOT = decodeURIComponent(
+  new URL("../../../../", import.meta.url).pathname,
+).replace(/\/$/, "");
 
 /** An {@link EnvLookup} naming {@link CHECKOUT_ROOT} as `VIBE_BASE_DIR`. */
 export const checkoutEnv: EnvLookup = envFrom({

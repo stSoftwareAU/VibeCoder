@@ -154,8 +154,10 @@ export interface GhGuardShimOptions {
   claimedIssue?: ClaimedIssue;
   /** Sink for the loud warning when the shim cannot be installed. */
   warn?: (message: string) => void;
-  /** Override the guard module path (test seam). */
+  /** Override the `gh` guard module path (test seam). */
   guardModulePath?: string;
+  /** Override the `git` guard module path (test seam). */
+  gitGuardModulePath?: string;
   /** Override the `deno` binary path (test seam). */
   denoPath?: string;
   /**
@@ -490,6 +492,16 @@ export async function installGhGuardShim(
     if (resolved.degraded) return await unavailable(resolved.degraded);
     guardModulePath = resolved.path;
   }
+  // The `git` wrapper is installed beside the `gh` one whenever the base PATH
+  // carries a git at all, so its guard is resolved here too — beside the gh
+  // one and before any directory exists, so a refusal has nothing to unwind.
+  const realGitPath = resolveExecutable("git", pathValue);
+  let gitGuardModulePath = opts.gitGuardModulePath;
+  if (realGitPath && !gitGuardModulePath) {
+    const resolved = defaultGitGuardModulePath({ env });
+    if (resolved.degraded) return await unavailable(resolved.degraded);
+    gitGuardModulePath = resolved.path;
+  }
   const makeTempDir = opts.makeTempDir ??
     (() => Deno.makeTempDir({ prefix: "vibe-gh-guard-" }));
 
@@ -506,22 +518,21 @@ export async function installGhGuardShim(
 
   // Issue #1284: the `git` wrapper goes in the same directory, so one PATH
   // prefix covers both binaries and one cleanup removes both.
-  const realGitPath = resolveExecutable("git", pathValue);
   const gitShimPath = realGitPath ? `${dir}/git` : undefined;
-  const gitGuard = defaultGitGuardModulePath({ env });
-  if (gitShimPath && gitGuard.degraded) {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
-    return await unavailable(gitGuard.degraded);
-  }
 
   const shimPath = `${dir}/gh`;
   try {
     if (gitShimPath && realGitPath) {
+      // Resolved above whenever a git wrapper is to be installed, so an absent
+      // path here is a programming error, not a condition to paper over.
+      if (!gitGuardModulePath) {
+        throw new Error("git guard module path was not resolved");
+      }
       await Deno.writeTextFile(
         gitShimPath,
         renderGitShimScript({
           denoPath,
-          guardModulePath: gitGuard.path,
+          guardModulePath: gitGuardModulePath,
           realGitPath,
           verdictDir: dir,
         }),

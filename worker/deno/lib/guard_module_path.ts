@@ -30,8 +30,8 @@
  * but cannot supply the guard from it is a broken containment boundary, not a
  * degradation to absorb: the resolution reports `degraded`, and
  * `installGhGuardShim` turns that into the same `blocked`/`degraded` verdict
- * every other uninstallable-shim fault takes ({@link GhGuardShimOutcome}), so
- * the agent is not spawned behind a guard it could rewrite.
+ * every other uninstallable-shim fault takes, so the agent is not spawned
+ * behind a guard it could rewrite.
  *
  * **No checkout named is not a degradation.** With `VIBE_BASE_DIR` unset
  * nothing was staged — a host run executes the checkout directly, so the
@@ -72,13 +72,30 @@ export interface GuardModuleResolution {
   degraded?: string;
 }
 
-/** Whether `path` is a readable file. A refused stat counts as absent. */
+/**
+ * Whether `path` is a readable file.
+ *
+ * A genuinely absent file answers `false`; any other stat fault (a denied
+ * `--allow-read`, an I/O error, a broken mount) is re-raised with the path in
+ * the message rather than collapsed into "absent", so the caller reports the
+ * cause it actually hit instead of a plausible-looking wrong one.
+ *
+ * @throws If the path could not be probed for a reason other than absence.
+ */
 function fileExists(path: string): boolean {
   try {
     return Deno.statSync(path).isFile;
-  } catch {
-    return false;
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return false;
+    throw new Error(`${path} could not be probed: ${describe(err)}`, {
+      cause: err,
+    });
   }
+}
+
+/** An error's message, for a reason string. */
+function describe(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -120,21 +137,31 @@ export function resolveGuardModulePath(
   } catch (err) {
     // A denied `--allow-env` leaves the checkout unnameable, which lands on
     // exactly the same writable copy as a missing module — reported as loudly.
-    return degraded(
-      `VIBE_BASE_DIR could not be read (${
-        err instanceof Error ? err.message : String(err)
-      })`,
-    );
+    return degraded(`VIBE_BASE_DIR could not be read (${describe(err)})`);
   }
 
   const trimmed = (baseDir ?? "").trim().replace(/\/+$/, "");
   // Nothing was staged, so the running copy is the checkout copy.
   if (trimmed === "") return { path: running };
 
+  // A relative base dir is refused rather than resolved. The path it produces
+  // is baked into the wrapper script verbatim, and the wrapper runs from the
+  // *agent's* working directory, not the worker's — so `deno run` would
+  // resolve it somewhere the agent chooses and can write to, which is the
+  // exact property this module exists to deny. The one input that crosses
+  // into here from outside gets the same scrutiny as the file name.
+  if (!trimmed.startsWith("/")) {
+    return degraded(`VIBE_BASE_DIR is not an absolute path (${trimmed})`);
+  }
+
   const candidate = `${trimmed}/${GUARD_MODULE_DIR}/${fileName}`;
   if (candidate === running) return { path: running };
   const exists = opts.exists ?? fileExists;
-  if (exists(candidate)) return { path: candidate };
+  try {
+    if (exists(candidate)) return { path: candidate };
+  } catch (err) {
+    return degraded(describe(err));
+  }
 
   return degraded(`${candidate} is absent`);
 }

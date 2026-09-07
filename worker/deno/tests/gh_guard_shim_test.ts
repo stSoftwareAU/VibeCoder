@@ -879,10 +879,14 @@ Deno.test({
           seedWriteRepoAllowlist("stSoftwareAU/VibeCoder");
           await tick();
           shimA = expectInstalled(
-            await prepareGhGuardShim({
-              ...Deno.env.toObject(),
-              PATH: stub.dir,
-            }),
+            await prepareGhGuardShim(
+              {
+                ...Deno.env.toObject(),
+                PATH: stub.dir,
+              },
+              undefined,
+              checkoutEnv,
+            ),
           );
         },
       );
@@ -892,10 +896,14 @@ Deno.test({
           seedWriteRepoAllowlist("stSoftwareAU/private-repo-14");
           await tick();
           shimB = expectInstalled(
-            await prepareGhGuardShim({
-              ...Deno.env.toObject(),
-              PATH: stub.dir,
-            }),
+            await prepareGhGuardShim(
+              {
+                ...Deno.env.toObject(),
+                PATH: stub.dir,
+              },
+              undefined,
+              checkoutEnv,
+            ),
           );
         },
       );
