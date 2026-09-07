@@ -1180,6 +1180,48 @@ Deno.test("entrypoint - deno-seed keeps its missing-list out of shared /tmp when
   }
 });
 
+Deno.test("entrypoint - deno-seed refuses to write through a symlink at its temp path (Issue #1522)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    await stubDenoWithEnv(dir);
+    await fakeRepo(dir);
+    const home = `${dir}/home`;
+    const cache = `${home}/auto-issue-work/.deno-cache`;
+    await Deno.mkdir(`${cache}/.seed-tmp`, { recursive: true });
+    const canary = `${dir}/canary.txt`;
+    await Deno.writeTextFile(canary, "untouched\n");
+    // The attack: a symlink pre-placed at the path the no-mktemp fallback
+    // reaches for, aimed at a file elsewhere.
+    await Deno.symlink(canary, `${cache}/.seed-tmp/seed-npm`);
+    const seed = await fakeSeed(dir);
+    await stubMktempFailureAndTarLog(dir);
+
+    const { code, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin:/usr/bin:/bin`,
+      env: {
+        VIBE_BASE_DIR: `${dir}/repo`,
+        HOME: home,
+        VIBE_DENO_SEED_DIR: seed,
+      },
+    });
+    assertEquals(code, 0, stderr);
+
+    // The noclobber open refused the symlink: the target was never written
+    // to, and the link itself was neither followed nor removed.
+    assertEquals(await Deno.readTextFile(canary), "untouched\n");
+    assertEquals(await Deno.readLink(`${cache}/.seed-tmp/seed-npm`), canary);
+    // …and the seed step still completed around it.
+    assertStringIncludes(stderr, "seeded the Deno cache");
+    assert(
+      await exists(`${cache}/remote/https/jsr.io/@std/assert/1.0.18/mod.ts`),
+      "the remote sub-tree was not seeded",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("entrypoint - deno-seed degrades to a warning when no private temp file can be created (Issue #1522)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
   try {

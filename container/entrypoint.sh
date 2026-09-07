@@ -75,15 +75,34 @@ vibe_first_writable_dir() {
 # refused and every mktemp in the container failing has been seen (see the
 # scratch-root block below) — the fallback creates the file under `set -C`,
 # whose O_EXCL open fails on an existing file or symlink instead of following
-# it. A path that cannot be created safely is a failure the caller must
-# handle, never a write through whatever is already there.
+# it, and retries once under a random name so a leftover does not strand the
+# fallback for ever. A path that cannot be created safely is a failure the
+# caller must handle, never a write through whatever is already there.
 vibe_private_temp_file() {
   local dir="$1" name="$2" candidate
-  mkdir -p "${dir}" 2>/dev/null || return 1
-  chmod 700 "${dir}" 2>/dev/null || true
+  # The mode is asserted rather than assumed: `mkdir -p` succeeds through a
+  # pre-existing symlink and leaves an existing directory's mode alone, so a
+  # directory that is not a private directory of ours is a failure, not a
+  # place to write.
+  (umask 077 && mkdir -p "${dir}") 2>/dev/null || return 1
+  [[ -d "${dir}" && ! -L "${dir}" ]] || return 1
+  chmod 700 "${dir}" 2>/dev/null || return 1
   candidate="$(mktemp "${dir}/${name}.XXXXXX" 2>/dev/null)" || candidate=""
-  if [[ -z "${candidate}" ]]; then
-    candidate="${dir}/${name}.$$"
+  if [[ -n "${candidate}" ]]; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+  # No usable mktemp. `set -C` opens with O_EXCL, so a leftover from a killed
+  # launch — or a symlink another local process planted — fails the create
+  # instead of being followed or written through.
+  candidate="${dir}/${name}"
+  if ! (
+    set -C
+    : > "${candidate}"
+  ) 2>/dev/null; then
+    # Something is already there. A random name gets this launch past a
+    # leftover without ever clobbering it; noclobber still guards the open.
+    candidate="${dir}/${name}.$$.${RANDOM}${RANDOM}"
     (
       set -C
       : > "${candidate}"
