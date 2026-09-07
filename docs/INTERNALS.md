@@ -180,6 +180,13 @@ that no named exception covers:
 | `run.sh` / `run.ps1` | `worker/deno/lib/launcher_contract.ts` | `tests/launcher_parity_test.ts` |
 | `loop.sh` / `loop.ps1` | `worker/deno/lib/loop_contract.ts` | `tests/loop_parity_test.ts` |
 
+The setup contract covers **credential handling** as well as the subcommands
+each script runs (Issue #1430): a `provider.env` value carrying a line break
+must be refused on both sides (Issue #1301), and credential directories must be
+owner-only from the instant they exist rather than created wide and narrowed
+afterwards (Issue #1374) — on Windows too, where the guarantee is an ACL
+carried by the creation call rather than a umask.
+
 The supervisor gate is the newest (Issue #1403) and the reason the other two
 exist: `loop` had no parity test, and the two supervisors drifted to 501 and
 148 lines before anyone noticed that `loop.ps1` never pulled its checkout
