@@ -529,11 +529,30 @@ Deno.test("pr_issue_linking - findExistingPrForIssue does not match partial issu
 
 // --- closeDuplicatePrs ---
 
+/**
+ * Render a `gh pr list --json number,title,baseRefName,headRefName,author,
+ * headRepositoryOwner` payload for the branch under test (Issue #1264).
+ */
+function prListJson(
+  prs: Array<{ number: number; author: string; headOwner?: string }>,
+): string {
+  return JSON.stringify(
+    prs.map((pr) => ({
+      number: pr.number,
+      title: `PR ${pr.number}`,
+      baseRefName: "main",
+      headRefName: "issue-42-fix",
+      author: { login: pr.author },
+      headRepositoryOwner: { login: pr.headOwner ?? "owner" },
+    })),
+  );
+}
+
 Deno.test("pr_issue_linking - closeDuplicatePrs returns 0 for invalid keepPrUrl (error message)", async () => {
   const closedPrs: string[] = [];
   const fn = async (args: string[]): Promise<string> => {
     if (args[0] === "pr" && args[1] === "list") {
-      return "10|https://github.com/owner/repo/pull/10\n";
+      return prListJson([{ number: 10, author: "vibe-bot" }]);
     }
     if (args[0] === "pr" && args[1] === "close") {
       closedPrs.push(args[2]!);
@@ -555,7 +574,7 @@ Deno.test("pr_issue_linking - closeDuplicatePrs returns 0 for non-URL keepPrUrl"
   const closedPrs: string[] = [];
   const fn = async (args: string[]): Promise<string> => {
     if (args[0] === "pr" && args[1] === "list") {
-      return "5|https://github.com/owner/repo/pull/5\n";
+      return prListJson([{ number: 5, author: "vibe-bot" }]);
     }
     if (args[0] === "pr" && args[1] === "close") {
       closedPrs.push(args[2]!);
@@ -576,7 +595,10 @@ Deno.test("pr_issue_linking - closeDuplicatePrs closes duplicates and keeps spec
   const closedPrs: string[] = [];
   const fn = async (args: string[]): Promise<string> => {
     if (args[0] === "pr" && args[1] === "list") {
-      return "10|https://github.com/owner/repo/pull/10\n42|https://github.com/owner/repo/pull/42\n";
+      return prListJson([
+        { number: 10, author: "vibe-bot" },
+        { number: 42, author: "vibe-bot" },
+      ]);
     }
     if (args[0] === "pr" && args[1] === "close") {
       closedPrs.push(args[2]!);
@@ -588,10 +610,182 @@ Deno.test("pr_issue_linking - closeDuplicatePrs closes duplicates and keeps spec
     "fix-branch",
     "https://github.com/owner/repo/pull/42",
     fn,
+    { allowedAuthors: ["vibe-bot"], dryRun: false, log: () => {} },
   );
   assertEquals(count, 1);
   assertEquals(closedPrs.includes("10"), true);
   assertEquals(closedPrs.includes("42"), false);
+});
+
+// --- closeDuplicatePrs — ownership gate (Issue #1264) ---
+
+Deno.test("pr_issue_linking - closeDuplicatePrs never closes an outsider's PR on the same branch", async () => {
+  const closedPrs: string[] = [];
+  const fn = async (args: string[]): Promise<string> => {
+    if (args[0] === "api") return "vibe-bot\n";
+    if (args[0] === "pr" && args[1] === "list") {
+      return prListJson([
+        { number: 42, author: "vibe-bot" },
+        { number: 43, author: "vibe-bot" },
+        { number: 99, author: "outsider" },
+      ]);
+    }
+    if (args[0] === "pr" && args[1] === "close") {
+      closedPrs.push(args[2]!);
+    }
+    return "";
+  };
+  const count = await closeDuplicatePrs(
+    "owner/repo",
+    "issue-42-fix",
+    "https://github.com/owner/repo/pull/42",
+    fn,
+    { dryRun: false, log: () => {} },
+  );
+  assertEquals(closedPrs, ["43"]);
+  assertEquals(count, 1);
+});
+
+Deno.test("pr_issue_linking - closeDuplicatePrs skips a fork PR that shares the branch name", async () => {
+  const closedPrs: string[] = [];
+  const fn = async (args: string[]): Promise<string> => {
+    if (args[0] === "pr" && args[1] === "list") {
+      return prListJson([
+        { number: 42, author: "vibe-bot" },
+        { number: 77, author: "vibe-bot", headOwner: "forker" },
+      ]);
+    }
+    if (args[0] === "pr" && args[1] === "close") {
+      closedPrs.push(args[2]!);
+    }
+    return "";
+  };
+  const count = await closeDuplicatePrs(
+    "owner/repo",
+    "issue-42-fix",
+    "https://github.com/owner/repo/pull/42",
+    fn,
+    { allowedAuthors: ["vibe-bot"], dryRun: false, log: () => {} },
+  );
+  assertEquals(closedPrs, []);
+  assertEquals(count, 0);
+});
+
+Deno.test("pr_issue_linking - closeDuplicatePrs closes a fleet sibling's duplicate", async () => {
+  const closedPrs: string[] = [];
+  const fn = async (args: string[]): Promise<string> => {
+    if (args[0] === "pr" && args[1] === "list") {
+      return prListJson([
+        { number: 42, author: "vibe-bot" },
+        { number: 43, author: "Sibling-Host" },
+      ]);
+    }
+    if (args[0] === "pr" && args[1] === "close") {
+      closedPrs.push(args[2]!);
+    }
+    return "";
+  };
+  const count = await closeDuplicatePrs(
+    "owner/repo",
+    "issue-42-fix",
+    "https://github.com/owner/repo/pull/42",
+    fn,
+    {
+      allowedAuthors: ["vibe-bot", "sibling-host"],
+      dryRun: false,
+      log: () => {},
+    },
+  );
+  assertEquals(closedPrs, ["43"]);
+  assertEquals(count, 1);
+});
+
+Deno.test("pr_issue_linking - closeDuplicatePrs is report-only by default", async () => {
+  const closedPrs: string[] = [];
+  const logged: string[] = [];
+  const fn = async (args: string[]): Promise<string> => {
+    if (args[0] === "pr" && args[1] === "list") {
+      return prListJson([
+        { number: 42, author: "vibe-bot" },
+        { number: 43, author: "vibe-bot" },
+      ]);
+    }
+    if (args[0] === "pr" && args[1] === "close") {
+      closedPrs.push(args[2]!);
+    }
+    return "";
+  };
+  const count = await closeDuplicatePrs(
+    "owner/repo",
+    "issue-42-fix",
+    "https://github.com/owner/repo/pull/42",
+    fn,
+    { allowedAuthors: ["vibe-bot"], log: (m) => logged.push(m) },
+  );
+  assertEquals(closedPrs, []);
+  assertEquals(count, 1);
+  assertEquals(logged.some((m) => m.includes("dry run")), true);
+});
+
+Deno.test("pr_issue_linking - closeDuplicatePrs closes nothing when the acting login is unresolvable", async () => {
+  const closedPrs: string[] = [];
+  const fn = async (args: string[]): Promise<string> => {
+    if (args[0] === "api") throw new Error("gh api user failed");
+    if (args[0] === "pr" && args[1] === "list") {
+      return prListJson([
+        { number: 42, author: "vibe-bot" },
+        { number: 43, author: "vibe-bot" },
+      ]);
+    }
+    if (args[0] === "pr" && args[1] === "close") {
+      closedPrs.push(args[2]!);
+    }
+    return "";
+  };
+  const count = await closeDuplicatePrs(
+    "owner/repo",
+    "issue-42-fix",
+    "https://github.com/owner/repo/pull/42",
+    fn,
+    { dryRun: false, log: () => {} },
+  );
+  assertEquals(closedPrs, []);
+  assertEquals(count, 0);
+});
+
+Deno.test("pr_issue_linking - closeDuplicatePrs skips a candidate with no author (stale cache shape)", async () => {
+  const closedPrs: string[] = [];
+  const fn = async (args: string[]): Promise<string> => {
+    if (args[0] === "pr" && args[1] === "list") {
+      return JSON.stringify([
+        {
+          number: 42,
+          title: "Keep",
+          baseRefName: "main",
+          headRefName: "issue-42-fix",
+        },
+        {
+          number: 43,
+          title: "Dup",
+          baseRefName: "main",
+          headRefName: "issue-42-fix",
+        },
+      ]);
+    }
+    if (args[0] === "pr" && args[1] === "close") {
+      closedPrs.push(args[2]!);
+    }
+    return "";
+  };
+  const count = await closeDuplicatePrs(
+    "owner/repo",
+    "issue-42-fix",
+    "https://github.com/owner/repo/pull/42",
+    fn,
+    { allowedAuthors: ["vibe-bot"], dryRun: false, log: () => {} },
+  );
+  assertEquals(closedPrs, []);
+  assertEquals(count, 0);
 });
 
 Deno.test("pr_issue_linking - closeDuplicatePrs returns 0 for empty branch", async () => {
@@ -922,16 +1116,16 @@ Deno.test("pr_issue_linking - closeDuplicatePrs invalidates cache after closing"
             title: "Keep",
             baseRefName: "main",
             headRefName: "fix-branch",
-            body: "",
-            url: "https://github.com/o/r/pull/100",
+            author: { login: "vibe-bot" },
+            headRepositoryOwner: { login: "o" },
           },
           {
             number: 101,
             title: "Dup",
             baseRefName: "main",
             headRefName: "fix-branch",
-            body: "",
-            url: "https://github.com/o/r/pull/101",
+            author: { login: "vibe-bot" },
+            headRepositoryOwner: { login: "o" },
           },
         ]);
       }
@@ -945,7 +1139,7 @@ Deno.test("pr_issue_linking - closeDuplicatePrs invalidates cache after closing"
       "fix-branch",
       "https://github.com/o/r/pull/100",
       fn,
-      cache,
+      { cache, allowedAuthors: ["vibe-bot"], dryRun: false, log: () => {} },
     );
     assertEquals(closed, 1);
 

@@ -223,12 +223,16 @@ Deno.test("closeDuplicatePrs - invalidates per-branch open cache after close", a
             title: "Keep",
             baseRefName: "main",
             headRefName: "fix-branch",
+            author: { login: "vibe-bot" },
+            headRepositoryOwner: { login: "o" },
           },
           {
             number: 101,
             title: "Dup",
             baseRefName: "main",
             headRefName: "fix-branch",
+            author: { login: "vibe-bot" },
+            headRepositoryOwner: { login: "o" },
           },
         ]));
       }
@@ -242,7 +246,7 @@ Deno.test("closeDuplicatePrs - invalidates per-branch open cache after close", a
       "fix-branch",
       "https://github.com/o/r/pull/100",
       fn,
-      cache,
+      { cache, allowedAuthors: ["vibe-bot"], dryRun: false, log: () => {} },
     );
     assertEquals(closed, 1);
     assertEquals(listCalls, 1);
@@ -269,6 +273,8 @@ Deno.test("closeDuplicatePrs - no invalidation when nothing was closed", async (
             title: "Keep",
             baseRefName: "main",
             headRefName: "fix-branch",
+            author: { login: "vibe-bot" },
+            headRepositoryOwner: { login: "o" },
           },
         ]));
       }
@@ -280,7 +286,7 @@ Deno.test("closeDuplicatePrs - no invalidation when nothing was closed", async (
       "fix-branch",
       "https://github.com/o/r/pull/100",
       fn,
-      cache,
+      { cache, allowedAuthors: ["vibe-bot"], dryRun: false, log: () => {} },
     );
     assertEquals(closed, 0);
 

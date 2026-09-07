@@ -518,22 +518,98 @@ function pickRecentlyClosedMatch(
   return null;
 }
 
+/** Options for {@link closeDuplicatePrs} (Issues #623, #1264). */
+export interface CloseDuplicatePrsOptions {
+  /**
+   * Iteration-scoped cache for the per-branch open-PR lookup (Issue #1796).
+   */
+  cache?: IssueCache;
+  /**
+   * Fleet logins whose PRs this worker may close — the push-capable
+   * maintenance set (`resolveFleetMaintenanceAuthorSet`), never the
+   * defer-to set, because closing a PR is acting on it.
+   *
+   * When empty, the acting `gh` login is resolved from the API and used
+   * as the sole allowed author. A candidate authored by anyone else is
+   * left alone (Issue #1264).
+   */
+  allowedAuthors?: readonly string[];
+  /**
+   * Report-only mode — **defaults to `true`**.
+   *
+   * Closing someone's PR is destructive and irreversible in effect, so the
+   * safe outcome is the default and every caller that really means to close
+   * states it (Issue #1264). In dry-run the return value is the number of
+   * duplicates that *would* be closed and each one is logged.
+   */
+  dryRun?: boolean;
+  /** Log sink for skip/dry-run reporting (injectable for testing). */
+  log?: (message: string) => void;
+}
+
+/** Normalise a GitHub login for comparison — logins are case-insensitive. */
+function normaliseLogin(login: string): string {
+  return login.trim().toLowerCase();
+}
+
+/**
+ * Resolve the set of logins whose PRs this worker may close (Issue #1264).
+ *
+ * Returns an empty set when no author can be established — the caller must
+ * then close nothing, because "author unknown" can never authorise a close.
+ */
+async function resolveCloseAuthorSet(
+  allowedAuthors: readonly string[],
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<Set<string>> {
+  const set = new Set<string>();
+  for (const author of allowedAuthors) {
+    const key = normaliseLogin(author);
+    if (key) set.add(key);
+  }
+  if (set.size > 0) return set;
+
+  // No configured set — fall back to the acting `gh` login, the same
+  // identity check `merge_if_checks_passed` makes before it merges.
+  try {
+    const login = normaliseLogin(
+      await ghCommandFn(["api", "user", "--jq", ".login"]),
+    );
+    if (login) set.add(login);
+  } catch {
+    // Unresolvable identity: the empty set makes the caller close nothing.
+  }
+  return set;
+}
+
 /**
  * Close duplicate PRs for a branch, keeping the specified one (Issue #623).
+ *
+ * Only the fleet's own duplicates are ever closed (Issue #1264).
+ * `gh pr list --head <branch>` filters on `headRefName` alone, so it also
+ * returns PRs opened from forks and PRs opened by third parties — and the
+ * worker's branch convention (`issue-<n>-<slug>`) is public and trivially
+ * guessable. Without an ownership check, naming a branch that way was
+ * enough to have an outsider's PR closed by the service account with a
+ * misleading "duplicate" comment. Every candidate must therefore be
+ * authored by an allowed fleet login **and** live in the target repo.
  *
  * @param repo - Repository in "owner/repo" format
  * @param branchName - The head branch
  * @param keepPrUrl - The PR URL to keep open
  * @param ghCommandFn - Function to run gh commands (injectable for testing)
- * @returns Number of duplicates closed
+ * @param options - Ownership, dry-run and cache options
+ * @returns Number of duplicates closed (in dry-run, the number that would be)
  */
 export async function closeDuplicatePrs(
   repo: string,
   branchName: string,
   keepPrUrl: string,
   ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
-  cache?: IssueCache,
+  options: CloseDuplicatePrsOptions = {},
 ): Promise<number> {
+  const { cache, dryRun = true, log = console.error } = options;
+
   if (!branchName) {
     return 0;
   }
@@ -546,52 +622,39 @@ export async function closeDuplicatePrs(
     return 0;
   }
   const keepPrNumber = prNumberMatch[1]!;
+
+  const repoOwner = normaliseLogin(repo.split("/")[0] ?? "");
+  if (!repoOwner) {
+    log(`closeDuplicatePrs: refusing — "${repo}" is not owner/repo`);
+    return 0;
+  }
+
+  const allowedLogins = await resolveCloseAuthorSet(
+    options.allowedAuthors ?? [],
+    ghCommandFn,
+  );
+  if (allowedLogins.size === 0) {
+    // Fail loud and closed: with no identity there is no PR we own.
+    log(
+      `closeDuplicatePrs: refusing to close any PR on ${branchName} in ` +
+        `${repo} — no fleet author set and the acting gh login could not ` +
+        `be resolved (Issue #1264)`,
+    );
+    return 0;
+  }
+
   let closedCount = 0;
 
   // Issue #1796: route the open-PR-by-branch lookup through
   // `fetchPRsByBranch` so per-branch checks collapse to one network
   // call per (branch, state) pair across the iteration.
-  let candidates: Array<{ number: number; url: string }> = [];
-  if (cache) {
-    const prs = await fetchPRsByBranch(
-      repo,
-      branchName,
-      "open",
-      cache,
-      ghCommandFn,
-    );
-    candidates = prs.map((pr) => ({
-      number: pr.number,
-      url: buildPrUrl(repo, pr.number),
-    }));
-  } else {
-    try {
-      const output = await ghCommandFn([
-        "pr",
-        "list",
-        "--repo",
-        repo,
-        "--head",
-        branchName,
-        "--state",
-        "open",
-        "--json",
-        "number,url",
-        "--jq",
-        '.[] | "\\(.number)|\\(.url)"',
-      ]);
-
-      for (const line of output.trim().split("\n")) {
-        if (!line) continue;
-        const [prNumberStr, url] = line.split("|");
-        if (!prNumberStr) continue;
-        candidates.push({ number: Number(prNumberStr), url: url ?? "" });
-      }
-    } catch {
-      // API call failed — empty candidate list, return 0.
-      return 0;
-    }
-  }
+  const candidates = await fetchPRsByBranch(
+    repo,
+    branchName,
+    "open",
+    cache,
+    ghCommandFn,
+  );
 
   // Mutation: invalidate the per-branch open-PR cache after closing
   // duplicates so subsequent reads in the same iteration see fresh state.
@@ -600,6 +663,36 @@ export async function closeDuplicatePrs(
   for (const cand of candidates) {
     const prNumberStr = String(cand.number);
     if (prNumberStr === keepPrNumber) continue;
+
+    // Ownership gate (Issue #1264). Unknown author or unknown head
+    // repository is "not ours" — the listing carries both fields, so a
+    // missing one means a stale cache entry, never permission.
+    const author = normaliseLogin(cand.author ?? "");
+    if (!author || !allowedLogins.has(author)) {
+      log(
+        `closeDuplicatePrs: leaving PR #${prNumberStr} in ${repo} open — ` +
+          `author "${cand.author ?? "unknown"}" is not a fleet author`,
+      );
+      continue;
+    }
+    const headOwner = normaliseLogin(cand.headRepositoryOwner ?? "");
+    if (headOwner !== repoOwner) {
+      log(
+        `closeDuplicatePrs: leaving PR #${prNumberStr} in ${repo} open — ` +
+          `head repository owner "${cand.headRepositoryOwner ?? "unknown"}" ` +
+          `is not ${repoOwner}`,
+      );
+      continue;
+    }
+
+    if (dryRun) {
+      log(
+        `closeDuplicatePrs: dry run — would close PR #${prNumberStr} in ` +
+          `${repo} as a duplicate of #${keepPrNumber}`,
+      );
+      closedCount++;
+      continue;
+    }
 
     try {
       await ghCommandFn([

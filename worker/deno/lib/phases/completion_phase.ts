@@ -367,7 +367,12 @@ export async function recoverAndFinaliseExistingPr(
     if (!prAlreadyMerged) {
       await deps.pr.linkPrToIssue(repo, issueNumber, prUrl);
     }
-    await deps.pr.closeDuplicatePrs(repo, state.branchName, prUrl);
+    // Issue #1264: name the fleet authors and opt out of the report-only
+    // default — only the fleet's own duplicate on this branch is closed.
+    await deps.pr.closeDuplicatePrs(repo, state.branchName, prUrl, undefined, {
+      allowedAuthors: fleetAuthorsFor(ctx),
+      dryRun: false,
+    });
 
     if (milestoneTitle && state.milestoneBranch && prNumber > 0) {
       await deps.pr.retargetPrToMilestone(
@@ -1542,7 +1547,12 @@ async function completionBody(
     await deps.pr.linkPrToIssue(repo, issueNumber, prUrl);
 
     // Close duplicate PRs
-    await deps.pr.closeDuplicatePrs(repo, state.branchName, prUrl);
+    // Issue #1264: name the fleet authors and opt out of the report-only
+    // default — only the fleet's own duplicate on this branch is closed.
+    await deps.pr.closeDuplicatePrs(repo, state.branchName, prUrl, undefined, {
+      allowedAuthors: fleetAuthorsFor(ctx),
+      dryRun: false,
+    });
 
     // Retarget to milestone if applicable
     if (milestoneTitle && state.milestoneBranch && prNumber > 0) {
