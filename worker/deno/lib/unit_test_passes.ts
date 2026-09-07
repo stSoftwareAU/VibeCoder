@@ -39,6 +39,11 @@
  * suite becomes an OOM. An operator who sets `DENO_JOBS` themselves wins —
  * the bound is a default, not a policy.
  *
+ * Both passes run with a BUILT environment rather than the worker's own
+ * (Issue #1281): the suite is repository-supplied code, so
+ * {@link testStageEnv} applies the same allowlist every other
+ * repository-controlled spawn gets.
+ *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
@@ -50,45 +55,7 @@ import {
   PARALLEL_UNSAFE_TEST_FILES,
   parallelUnsafeIgnoreArg,
 } from "./parallel_unsafe_test_manifest.ts";
-
-/**
- * Ambient variables the container sets that the Deno suite must not inherit
- * (Issue #891).
- *
- * The container exports
- * `CONFIG_PATH=/home/vibe/.vibe-coder/run-config/.config.json`. Thirty-three
- * tests set their own `CONFIG_FILE` in a temp directory and then die on
- * `setup.sh`'s guard:
- *
- * ```text
- * ERROR: CONFIG_FILE and CONFIG_PATH are both set and name different files
- * ```
- *
- * The guard is right — two different config files named at once is a real
- * misconfiguration — and the tests are right to point at their own fixture.
- * What is wrong is the gate handing the suite an ambient variable that has
- * nothing to do with the change under test, so `deno tests FAILED` reported
- * the container rather than the code. A gate that fails on its own
- * environment teaches everyone to ignore it, which is the real cost.
- *
- * `WORK_DIR` is the same class (Issue #1098). The container exports the live
- * worker volume, and `runCoreLoop` used to fall back to it for the state a run
- * must keep across restarts — so every suite that drove the loop without
- * naming its own work directory read and wrote the running fleet's
- * `idle_disagreement_streak.json`. Under `--parallel` that is one file shared
- * by four worker processes: the idle-disagreement suites watched their streak
- * reset mid-run by a sibling process and failed, deterministically green on
- * their own, and the operator's real streak state was overwritten with test
- * timestamps.
- *
- * That fallback is gone (Issue #1177): the loop takes its work directory from
- * `config.workDir` and nowhere else, so a caller that names none keeps the
- * streak in memory whatever the environment says. The scrub stays as the
- * second layer — `WORK_DIR` is read by other production surfaces
- * (`audit_journal.ts`, `agent_mcp_config.ts`, `deepseek_env.ts`), and the gate
- * has no business handing any of them the live volume.
- */
-const SCRUBBED_TEST_VARS: readonly string[] = ["CONFIG_PATH", "WORK_DIR"];
+import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 
 /**
  * The variable the container image exports and no host run has (#4269).
@@ -100,6 +67,45 @@ const SCRUBBED_TEST_VARS: readonly string[] = ["CONFIG_PATH", "WORK_DIR"];
 export const CONTAINER_MARKER_VAR = "VIBE_IMAGE_AGENT_PROVIDERS";
 
 /**
+ * Names the suite genuinely needs beyond `ALLOWED_ENV_NAMES` (Issue #1281).
+ *
+ * The base allowlist covers finding and running tools — `PATH`, `HOME`,
+ * `TMPDIR`, `DENO_DIR`, locale. These are the extras this particular
+ * repository-controlled command has a reason for, and every one of them is a
+ * switch or a path, never a credential:
+ *
+ * - `DENO_JOBS` — an operator debugging a race pins the worker count, and the
+ *   container bound below is only a default. Dropped, that override would be
+ *   silently replaced by the bound.
+ * - `VIBE_IMAGE_AGENT_PROVIDERS` — the image stamp that tells container from
+ *   host (#4269). A provider list, not a secret, and the suite should see the
+ *   same host it runs on.
+ * - The opt-in switches (`RUN_INTEGRATION_TESTS`, `VIBE_PWSH`,
+ *   `VIBE_CONTAINMENT_REQUIRED`, `VIBE_CONTAINMENT_IMAGE`,
+ *   `VIBE_GHOSTCOMMIT_LIVE_VISION`, `VIBE_GHOSTCOMMIT_VISION_DRIVER`) —
+ *   each turns a suite's SKIP into a real run. Dropping them would not fail
+ *   the gate; it would quietly shrink it, which is worse.
+ * - `XDG_RUNTIME_DIR` — where `container_containment_test.ts` looks for the
+ *   rootless Podman socket.
+ * - `PATHEXT` — how `tests/support/pwsh.ts` resolves an executable on Windows.
+ *
+ * Adding a name here is a decision about what repository-supplied test code
+ * may read, so keep it short and say why.
+ */
+export const TEST_STAGE_EXTRA_ENV_NAMES: readonly string[] = [
+  "DENO_JOBS",
+  CONTAINER_MARKER_VAR,
+  "RUN_INTEGRATION_TESTS",
+  "VIBE_PWSH",
+  "VIBE_CONTAINMENT_REQUIRED",
+  "VIBE_CONTAINMENT_IMAGE",
+  "VIBE_GHOSTCOMMIT_LIVE_VISION",
+  "VIBE_GHOSTCOMMIT_VISION_DRIVER",
+  "XDG_RUNTIME_DIR",
+  "PATHEXT",
+];
+
+/**
  * Parallel workers allowed inside the container.
  *
  * Four is the count the `DENO_JOBS=4` trial recorded in #880 was measured
@@ -109,13 +115,43 @@ export const CONTAINER_MARKER_VAR = "VIBE_IMAGE_AGENT_PROVIDERS";
  */
 export const CONTAINER_DENO_JOBS = "4";
 
-/** The environment the `deno test` stage runs with. */
+/**
+ * The environment the `deno test` stage runs with (Issue #1281).
+ *
+ * BUILT from an allowlist, never inherited — the same rule
+ * `untrusted_command_env.ts` states for every other repository-controlled
+ * spawn, and for the same reason. The suite is repository-supplied code: it
+ * includes the `*_test.ts` files the coding agent added or edited during this
+ * run, and the gate runs it before the work is pushed. Handed the worker's
+ * whole environment it could read `GH_TOKEN`, the provider credentials
+ * `credential_preflight.ts` exports into the process, and the worker-only
+ * secrets `agent_env.ts` denies to every agent child by name.
+ *
+ * This replaced a two-name denylist (`CONFIG_PATH`, `WORK_DIR`) that scrubbed
+ * no credential at all. Those two are still absent — nothing puts them on the
+ * allowlist — so the reasons they were dropped in the first place still hold:
+ *
+ * - `CONFIG_PATH` (#891): the container exports
+ *   `/home/vibe/.vibe-coder/run-config/.config.json`, thirty-three tests point
+ *   `CONFIG_FILE` at their own fixture in a temp directory, and `setup.sh`'s
+ *   guard — rightly — fails them all on `CONFIG_FILE and CONFIG_PATH are both
+ *   set and name different files`. A gate that fails on its own container
+ *   teaches everyone to re-run rather than read.
+ * - `WORK_DIR` (#1098): the container exports the live worker volume, and
+ *   production surfaces still read it (`audit_journal.ts`,
+ *   `agent_mcp_config.ts`, `deepseek_env.ts`). The gate has no business
+ *   handing the running fleet's state directory to four parallel test workers.
+ *
+ * The allowlist covers both without naming either, and covers the next
+ * credential nobody has added yet — which a denylist cannot.
+ */
 export function testStageEnv(
   base: Record<string, string>,
 ): Record<string, string> {
-  const env = { ...base };
-  for (const name of SCRUBBED_TEST_VARS) delete env[name];
-  return env;
+  return buildUntrustedCommandEnv({
+    source: base,
+    extraNames: TEST_STAGE_EXTRA_ENV_NAMES,
+  });
 }
 
 /** The permission set both passes run with. */

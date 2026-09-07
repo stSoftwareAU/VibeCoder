@@ -2,8 +2,9 @@
  * Tests for the repo-root `renovate.json` supply-chain quarantine config
  * (Issue #2124).
  *
- * The repo has third-party Deno (JSR `@std/*`) and Ruby (`Gemfile.lock`) deps
- * but previously shipped no auto-update tooling or quarantine gate.
+ * The repo has third-party Deno (JSR `@std/*`) deps — and had Ruby ones, until
+ * the Jekyll site's `Gemfile.lock` went with the Pages pipeline (Issues #1344,
+ * #1376) — but previously shipped no auto-update tooling or quarantine gate.
  * `renovate.json` closes the gap identified by the security-scan
  * dependency-update quarantine audit (`supply-chain:quarantine-missing`):
  * every external bump must wait at least `VIBE_BUMP_QUARANTINE_HOURS`

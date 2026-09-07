@@ -16,7 +16,7 @@
  *   launchagent        Setup macOS LaunchAgent
  *   scheduled-task     Register the Windows Task Scheduler entry
  *   screenshot         Setup Playwright MCP for screenshots
- *   label-sync         Synchronise labels across repos
+ *   label-sync         Synchronise labels across repos (--dry-run plans only)
  *   label-colour-reconcile  Repaint drifted fleet label colours
  *   workflow-sync      Audit workflows and raise issues for missing protections
  *   best-practices-sync  Audit workflows for best-practice findings and file follow-ups
@@ -32,6 +32,7 @@
  * Issue #923: Migrate setup scripts to Deno TypeScript.
  */
 
+import { installConsoleRedaction } from "../lib/console_redaction.ts";
 import { terminalStyler } from "../lib/console_style.ts";
 import { resolveHostConfigPath } from "../lib/host_config_path.ts";
 import {
@@ -61,6 +62,11 @@ import {
   setupScheduledTask,
 } from "./scheduled_task.ts";
 import { setupPlaywrightMcp } from "./screenshot.ts";
+import {
+  type ConsentReader,
+  isAffirmative,
+  readConsentLine,
+} from "./consent_prompt.ts";
 import {
   addRepoToMonitoredList,
   listMonitoredRepos,
@@ -154,6 +160,16 @@ function createSetupGhJson(ghConfigDir?: string) {
   };
 }
 
+/** The terminal edges of {@link askCreateMilestoneRuleset}, injectable. */
+export interface ConsentPromptSeams {
+  /** Where the answer is read. Defaults to `Deno.stdin`. */
+  reader?: ConsentReader;
+  /** Whether a terminal is attached. Defaults to `Deno.stdin.isTerminal()`. */
+  isTerminal?: () => boolean;
+  /** Where the question is written. Defaults to `Deno.stdout`. */
+  write?: (chunk: Uint8Array) => Promise<number>;
+}
+
 /**
  * Ask whether to create the missing `milestone/**` ruleset (Issue #586).
  *
@@ -161,11 +177,22 @@ function createSetupGhJson(ghConfigDir?: string) {
  * ask on there is no consent to infer, so the check warns and changes
  * nothing: a scripted run can never hang here, and never writes a ruleset
  * nobody agreed to.
+ *
+ * The answer is read one whole line at a time (Issue #1296). This question is
+ * asked once per repository, so a fixed-size read left the tail of a long
+ * answer in the buffer to approve the NEXT repository's ruleset — consent the
+ * operator never gave to a question they never saw.
  */
-async function askCreateMilestoneRuleset(repo: string): Promise<boolean> {
-  if (!Deno.stdin.isTerminal()) return false;
+export async function askCreateMilestoneRuleset(
+  repo: string,
+  seams: ConsentPromptSeams = {},
+): Promise<boolean> {
+  const isTerminal = seams.isTerminal ?? (() => Deno.stdin.isTerminal());
+  if (!isTerminal()) return false;
 
-  await Deno.stdout.write(
+  const write = seams.write ??
+    ((chunk: Uint8Array) => Deno.stdout.write(chunk));
+  await write(
     new TextEncoder().encode(
       out.question(
         `${repo}: no ruleset covers \`milestone/**\`, so GitHub cannot arm ` +
@@ -174,12 +201,7 @@ async function askCreateMilestoneRuleset(repo: string): Promise<boolean> {
         out.plain("Create one mirroring the default-branch checks? [y/N] "),
     ),
   );
-  const buffer = new Uint8Array(16);
-  const read = await Deno.stdin.read(buffer);
-  if (read === null) return false;
-  const answer = new TextDecoder().decode(buffer.subarray(0, read)).trim()
-    .toLowerCase();
-  return answer === "y" || answer === "yes";
+  return isAffirmative(await readConsentLine(seams.reader ?? Deno.stdin));
 }
 
 function printError(msg: string): void {
@@ -314,8 +336,13 @@ async function runPrerequisites(
         Deno.env.get("HOME") ?? "~",
       );
     }
-  } catch {
-    // Config may not exist yet on first setup — that's fine
+  } catch (error) {
+    // A missing config is not an error — `loadExistingConfig` returns `{}` for
+    // one. Anything that throws is a rejected config (e.g. an invalid repo
+    // slug, Issue #1291) and must stop setup rather than silently probing with
+    // the wrong `gh` identity.
+    printError((error as Error).message);
+    return false;
   }
 
   const probeOptions: PrerequisiteOptions = {
@@ -591,8 +618,15 @@ async function runScreenshotSetup(scriptDir: string): Promise<boolean> {
   return result.ok;
 }
 
-async function runLabelSync(configPath: string): Promise<boolean> {
-  printInfo("Synchronising labels across monitored repositories...");
+async function runLabelSync(
+  configPath: string,
+  dryRun = false,
+): Promise<boolean> {
+  printInfo(
+    dryRun
+      ? "Planning label sync across monitored repositories (dry run — nothing is changed)..."
+      : "Synchronising labels across monitored repositories...",
+  );
 
   try {
     const config = await loadExistingConfig(configPath);
@@ -605,15 +639,21 @@ async function runLabelSync(configPath: string): Promise<boolean> {
     const ghConfigDir = config.gh_config_dir
       ? config.gh_config_dir.replace(/^~/, Deno.env.get("HOME") ?? "~")
       : undefined;
-    const results = await syncLabelsForAllRepos(repos, { ghConfigDir });
+    const results = await syncLabelsForAllRepos(repos, { ghConfigDir, dryRun });
     let anyFailure = false;
     for (const r of results) {
       if (r.ok) {
         printInfo(
-          `Labels synced for ${r.repo}: ${r.created} created, ${r.updated} updated, ${r.skipped} skipped`,
+          r.dryRun
+            ? `Label sync plan for ${r.repo}: ${r.created} would be created, ${r.updated} would be updated (colour + description overwritten), ${r.deprecated_removed} deprecated would be deleted, ${r.skipped} skipped`
+            : `Labels synced for ${r.repo}: ${r.created} created, ${r.updated} updated, ${r.skipped} skipped`,
         );
       } else {
-        printWarning(`Label sync for ${r.repo} had ${r.failures} failure(s)`);
+        printWarning(
+          `Label sync for ${r.repo} had ${r.failures} failure(s)${
+            r.error ? `: ${r.error}` : ""
+          }`,
+        );
         anyFailure = true;
       }
     }
@@ -1185,8 +1225,13 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
         continue;
       }
       if (r.changed) {
+        // Name the other rules carried through, so a run that touches an
+        // admin-hardened ruleset shows what survived the PUT (Issue #1290).
+        const keptRules = r.preservedRules?.length
+          ? `, rules kept: ${r.preservedRules.join(", ")}`
+          : "";
         printSuccess(
-          `${r.repo} (${r.visibility}, ${r.branch}): ruleset updated (+${r.added.length} contexts, ${r.preserved.length} pre-existing kept)`,
+          `${r.repo} (${r.visibility}, ${r.branch}): ruleset updated (+${r.added.length} contexts, ${r.preserved.length} pre-existing kept${keptRules})`,
         );
       } else if (r.skipped === "no-reported-checks") {
         printInfo(
@@ -1450,7 +1495,8 @@ Subcommands:
                   (Issue #730 — setup.sh runs each one's credential flow)
   launchagent     Setup macOS LaunchAgent (--status / --uninstall to query or remove it)
   screenshot      Setup Playwright MCP for screenshots
-  label-sync      Synchronise labels across repos
+  label-sync      Synchronise labels across repos (supports --dry-run, which
+                  reports what would change without touching a label)
   label-colour-reconcile  Repaint drifted fleet label colours to the canonical
                   table (supports --dry-run)
   workflow-sync   Audit workflows and raise issues for missing protections
@@ -1470,6 +1516,11 @@ Subcommands:
 }
 
 if (import.meta.main) {
+  // Issue #1280 (SEC-1217-12): setup runs as its own process, so it installs
+  // its own console patch — setup prints config paths, prerequisite install
+  // output and `gh` error text straight to the terminal.
+  installConsoleRedaction();
+
   const args = Deno.args;
   const subcommand = args[0] ?? "all";
 
@@ -1549,7 +1600,7 @@ if (import.meta.main) {
       ok = await runScreenshotSetup(scriptDir);
       break;
     case "label-sync":
-      ok = await runLabelSync(configPath);
+      ok = await runLabelSync(configPath, dryRun);
       break;
     case "label-colour-reconcile":
       ok = await runLabelColourReconcile(configPath, dryRun);

@@ -26,6 +26,7 @@ import {
 } from "../lib/secret_redaction.ts";
 import { formatDetailedFailureMessage } from "../lib/failure_message.ts";
 import {
+  captureKillDiagnostics,
   formatProcessTable,
   parseProcessTable,
 } from "../lib/kill_diagnostics.ts";
@@ -199,6 +200,90 @@ Deno.test("kill diagnostics - a token in a ps argv is masked before the per-row 
     "no fragment of the token may survive the 90-character command budget",
   );
   assertStringIncludes(table, "pid=101");
+});
+
+// ============================================================================
+// The kill-diagnostics chokepoint: every source, not just the default one
+// ============================================================================
+
+/** A synthetic `ps` table with nothing secret in it. */
+const CLEAN_PS_OUTPUT = [
+  "  PID  PPID   RSS ELAPSED COMMAND",
+  "  101     1  524288   01:00 deno run --allow-all worker/deno/main.ts",
+  "  102   101   65536   00:30 claude --print --output-format stream-json",
+].join("\n");
+
+Deno.test("captureKillDiagnostics - a credential in the kernel log is masked whatever the source (Issue #1256)", async () => {
+  // The dmesg reader is an injected seam, so the redaction cannot live in the
+  // default implementation alone: the guarantee belongs at the chokepoint that
+  // assembles the text, or it holds only for whichever source happens to be
+  // wired in. The kernel ring buffer carries whatever userspace logged into it.
+  const text = await captureKillDiagnostics({
+    agentPid: 101,
+    knownDescendants: [],
+    runPs: () => Promise.resolve(CLEAN_PS_OUTPUT),
+    readKernelLog: () =>
+      Promise.resolve(
+        `oom-kill: killed process 101 (deno) GH_TOKEN=${FAKE_TOKEN}`,
+      ),
+    readFile: () => Promise.reject(new Error("no cgroup here")),
+  });
+
+  assert(
+    !text.includes(FAKE_TOKEN.slice(0, 12)),
+    "no fragment of the token may reach the kill diagnostics",
+  );
+  // ... and the evidence itself must survive: a table redacted into
+  // uselessness would defeat the purpose the capture exists for.
+  assertStringIncludes(text, "oom-kill: killed process 101");
+});
+
+Deno.test("captureKillDiagnostics - a credential in a source's failure message is masked (Issue #1256)", async () => {
+  // Each unreadable source reports itself in one line that interpolates the
+  // error. A spawn failure quotes the command it tried to run, and an argv is
+  // exactly where this host's credentials have been found.
+  const text = await captureKillDiagnostics({
+    agentPid: 101,
+    knownDescendants: [],
+    runPs: () =>
+      Promise.reject(new Error(`spawn failed: ps --api-key ${FAKE_TOKEN}`)),
+    readKernelLog: () =>
+      Promise.reject(new Error(`dmesg failed: GH_TOKEN=${FAKE_TOKEN}`)),
+    readFile: () => Promise.reject(new Error("no cgroup here")),
+  });
+
+  assert(
+    !text.includes(FAKE_TOKEN.slice(0, 12)),
+    "no fragment of the token may survive an unreadable-source note",
+  );
+  assertStringIncludes(text, "process table unavailable");
+  assertStringIncludes(text, "dmesg not readable here");
+});
+
+Deno.test("captureKillDiagnostics - masking leaves the evidence readable (Issue #1256)", async () => {
+  // The other direction. Issue #4382 captured this table to answer "who was
+  // eating the VM?", so the redaction must touch credential shapes and nothing
+  // else: pids, parentage, sizes, ages and ordinary argv all stay legible.
+  const text = await captureKillDiagnostics({
+    agentPid: 101,
+    knownDescendants: [102],
+    runPs: () => Promise.resolve(CLEAN_PS_OUTPUT),
+    readKernelLog: () => Promise.resolve("oom-kill: killed process 101 (deno)"),
+    readFile: (path) =>
+      path.endsWith("memory.max")
+        ? Promise.resolve("8589934592\n")
+        : Promise.reject(new Error("unreadable")),
+  });
+
+  assert(
+    !text.includes(REDACTION_PLACEHOLDER),
+    "clean diagnostics must come back byte-for-byte, with nothing masked",
+  );
+  assertStringIncludes(text, "pid=101 ppid=1 rss=512 MiB up=01:00 [agent]");
+  assertStringIncludes(text, "worker/deno/main.ts");
+  assertStringIncludes(text, "[agent-tree]");
+  assertStringIncludes(text, "--output-format stream-json");
+  assertStringIncludes(text, "Cgroup memory: current=?/max=8.0 GiB");
 });
 
 Deno.test("joinRedacted - no parts, or only empty parts, yields empty", () => {

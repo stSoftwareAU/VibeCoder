@@ -17,8 +17,11 @@
  * branch diff, which the agent cannot satisfy by writing prose:
  *
  *  1. the diff **adds or modifies a test file**; and
- *  2. a **test identifier named in the PR summary actually appears** in the
- *     added lines of that test diff.
+ *  2. a **test identifier named in the PR summary actually names a test
+ *     declared** in the added lines of that test diff — matched on whole
+ *     tokens of a test-declaration line, with generic tokens (`test`, `spec`,
+ *     `case`, …) rejected outright, so neither the `test` inside `Deno.test`
+ *     nor a name borrowed from an assertion body satisfies it (Issue #1279).
  *
  * **Self-reported prose (a human-review aid, kept as a secondary requirement)**
  * — a regression-test fail-before/pass-after linkage, and an original-trigger-
@@ -147,8 +150,41 @@ function normalise(text: string): string {
 }
 
 /**
+ * Minimum length of a normalised identifier (Issue #1279). Four characters
+ * admitted every generic token in the fleet's test vocabulary.
+ */
+const MIN_IDENTIFIER_LENGTH = 6;
+
+/**
+ * Tokens that name no particular test (Issue #1279). An identifier built only
+ * from these — `test`, `test_case`, `it should` — cites nothing checkable, so
+ * it is dropped rather than matched against the diff.
+ */
+const GENERIC_IDENTIFIER_TOKENS = new Set([
+  "test",
+  "tests",
+  "spec",
+  "specs",
+  "deno",
+  "case",
+  "cases",
+  "it",
+  "should",
+  "todo",
+]);
+
+/** Whether a normalised candidate names a specific test rather than a shape. */
+function isMeaningfulIdentifier(candidate: string): boolean {
+  if (candidate.length < MIN_IDENTIFIER_LENGTH) return false;
+  return candidate
+    .split(" ")
+    .some((token) => !GENERIC_IDENTIFIER_TOKENS.has(token));
+}
+
+/**
  * Extract the test identifiers a PR summary claims to have added, e.g. the
- * `rejects_injection` in ``tests/db_test.ts::rejects_injection``.
+ * `rejects_injection` in ``tests/db_test.ts::rejects_injection``. Generic and
+ * trivially short candidates are dropped — see {@link isMeaningfulIdentifier}.
  */
 export function extractTestIdentifiers(content: string): string[] {
   const scanned = content.slice(0, MAX_SCAN_CHARS);
@@ -156,33 +192,82 @@ export function extractTestIdentifiers(content: string): string[] {
   for (const pattern of TEST_IDENTIFIER_PATTERNS) {
     for (const match of scanned.matchAll(pattern)) {
       const candidate = normalise(match[1] ?? "");
-      // Four characters keeps trivially-short matches from passing the gate.
-      if (candidate.length >= 4) identifiers.add(candidate);
+      if (isMeaningfulIdentifier(candidate)) identifiers.add(candidate);
     }
   }
   return [...identifiers];
 }
 
-/** Added (`+`) lines of a unified diff, excluding the `+++` file header. */
-function addedLines(diffText: string): string {
+/**
+ * Added (`+`) line bodies of a unified diff, excluding the `+++` file header.
+ * The leading `+` is stripped so each entry is the source line as written.
+ */
+function addedLines(diffText: string): string[] {
   return diffText
     .slice(0, MAX_SCAN_CHARS)
     .split("\n")
     .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
-    .join("\n");
+    .map((line) => line.slice(1));
+}
+
+/** Lines that declare a test across this fleet's ecosystems (Issue #1279). */
+const TEST_DECLARATION_PATTERNS: RegExp[] = [
+  /\bDeno\.test\s*\(/, // Deno.test("name", …) and the object form
+  /^\s*name\s*:\s*["'`]/, // the `name:` field of Deno.test({ … })
+  /(^|[^.\w])(it|test|specify)\s*(\.\s*[a-z]+\s*)?\(\s*["'`]/, // Jest/Mocha/Cypress
+  /^\s*@test\b/i, // BATS: @test "name" {
+  /\bdef\s+test_\w+\s*\(/, // pytest
+];
+
+/**
+ * Java-style annotation alone on a line — the test name is on the line that
+ * follows it, so that next line counts as the declaration.
+ */
+const TEST_ANNOTATION_LINE =
+  /^\s*@(Test|ParameterizedTest|RepeatedTest|TestTemplate)\s*(\(.*\))?\s*$/;
+
+/**
+ * Added lines that declare a test, so citing a token from an assertion body
+ * does not satisfy the gate (Issue #1279).
+ */
+function testDeclarationLines(diffText: string): string[] {
+  const declarations: string[] = [];
+  let previousWasAnnotation = false;
+  for (const line of addedLines(diffText)) {
+    if (
+      previousWasAnnotation ||
+      TEST_DECLARATION_PATTERNS.some((pattern) => pattern.test(line))
+    ) {
+      declarations.push(line);
+    }
+    previousWasAnnotation = TEST_ANNOTATION_LINE.test(line);
+  }
+  return declarations;
+}
+
+/** Whether `haystack` contains `needle` as a whole normalised token run. */
+function containsWholeToken(haystack: string, needle: string): boolean {
+  return ` ${haystack} `.includes(` ${needle} `);
 }
 
 /**
- * Whether any identifier cited in the summary actually appears in the added
- * lines of the test diff — the coupling that prose alone cannot fake.
+ * Whether any identifier cited in the summary actually names a test declared
+ * in the added lines of the test diff — the coupling that prose alone cannot
+ * fake. The match is on whole tokens of a declaration line, so neither the
+ * `test` inside `Deno.test` nor a name used only in an assertion body counts
+ * (Issue #1279).
  */
 export function citedTestIdentifierInDiff(
   content: string,
   testDiffText: string,
 ): boolean {
-  const added = normalise(addedLines(testDiffText));
-  if (!added) return false;
-  return extractTestIdentifiers(content).some((id) => added.includes(id));
+  const declarations = testDeclarationLines(testDiffText)
+    .map(normalise)
+    .filter((line) => line.length > 0);
+  if (declarations.length === 0) return false;
+  return extractTestIdentifiers(content).some((id) =>
+    declarations.some((line) => containsWholeToken(line, id))
+  );
 }
 
 /** Whether the issue labels contain `security` as a whole label. */
@@ -257,7 +342,7 @@ export const SECURITY_FIX_EVIDENCE_DESCRIPTIONS: Record<
   "test-file-changed":
     "Add or modify a TEST FILE in this branch. The branch diff currently changes no test file, so there is no regression test to verify — prose in the summary cannot substitute for it.",
   "test-identifier-in-diff":
-    "Name the ACTUAL TEST IDENTIFIER you added, in the form `path/to/foo_test.ts::the test name`, and make sure that name matches a test added in this branch's diff. The summary either names no test or names one that does not appear in the added test lines.",
+    "Name the ACTUAL TEST IDENTIFIER you added, in the form `path/to/foo_test.ts::the test name`, and make sure that name matches the declaration of a test added in this branch's diff. A generic token (`test`, `spec`, `case`, …) or a name that only appears inside a test body does not count. The summary either names no test or names one that does not declare a test in the added lines.",
   "diff-unavailable":
     "The branch diff could not be computed against the base branch, so the machine-checkable test assertion could not run. Ensure the base branch is fetched (`git fetch origin <base>`) and retry — an uncheckable security fix is blocked rather than assumed good.",
   "regression-test":

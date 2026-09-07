@@ -33,6 +33,7 @@
  */
 
 import { runGhCommand as defaultGhCommand } from "./github.ts";
+import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import { findFleetAuthoredIssuesTitled } from "./idle_task_wrapper_dedup.ts";
 import type { GenericFinding } from "./baseline_gate.ts";
@@ -154,6 +155,13 @@ export async function fileBaselineCarryoverTracker(
   const ghCommand = deps.ghCommand ?? defaultGhCommand;
   const logger = deps.logger ?? { warn: (m: string) => console.error(m) };
 
+  // Built before the try so a refused label fails loud rather than being
+  // folded into the "filing failed (continuing)" warning.
+  const labelArgs = guardedLabelArgs(
+    [TRACKER_LABEL],
+    "worker/deno/lib/baseline_carryover_tracker.ts",
+  );
+
   try {
     if (
       await hasOpenCarryoverTracker(
@@ -174,8 +182,7 @@ export async function fileBaselineCarryoverTracker(
       repo,
       "--title",
       buildCarryoverTrackerTitle(repo),
-      "--label",
-      TRACKER_LABEL,
+      ...labelArgs,
       "--body",
       formatCarryoverTrackerBody(repo, findings),
     ]);

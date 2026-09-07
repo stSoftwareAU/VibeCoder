@@ -14,23 +14,15 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
-  type BodyFileReader,
   redactGhBodyArgs,
   UnredactableBodyError,
 } from "../lib/gh_body_redaction.ts";
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
-
-/** A realistic GitHub token shape — the payload each body carries. */
-const GH_TOKEN_SAMPLE = `ghp_${"a1B2c3D4e5".repeat(4)}`;
-
-/** A reader serving a fixed set of paths; anything else fails to read. */
-function readerFor(files: Record<string, string>): BodyFileReader {
-  return (path: string) => {
-    const content = files[path];
-    if (content === undefined) throw new Error(`no such file: ${path}`);
-    return content;
-  };
-}
+import {
+  capturingWriter,
+  GH_TOKEN_SAMPLE,
+  readerFor,
+} from "./support/gh_body_fixtures.ts";
 
 Deno.test("redactGhBodyArgs - masks a secret read from --body-file", () => {
   const read = readerFor({ "/tmp/body.md": `token ${GH_TOKEN_SAMPLE}\n` });
@@ -88,9 +80,14 @@ Deno.test("redactGhBodyArgs - leaves a clean body file byte-for-byte alone", () 
   assertEquals(redactGhBodyArgs(args, read), args);
 });
 
+// Issue #1283 changed this case's field: `title` is published text now, so the
+// non-published example moved to `assignee`, a routing field. The invariant the
+// test asserts — a field key outside the published set is never read or
+// rewritten — is unchanged, and `title=@path` is covered in
+// gh_title_redaction_test.ts.
 Deno.test("redactGhBodyArgs - leaves a non-body @file field alone", () => {
   const read = readerFor({ "/tmp/b": `leak ${GH_TOKEN_SAMPLE}` });
-  const args = ["api", "repos/org/repo/issues", "-F", "title=@/tmp/b"];
+  const args = ["api", "repos/org/repo/issues", "-F", "assignee=@/tmp/b"];
   assertEquals(redactGhBodyArgs(args, read), args);
 });
 
@@ -148,18 +145,6 @@ Deno.test("redactGhBodyArgs - still masks argv bodies when a reader is supplied"
 // text must be masked into a fresh temp file (never the agent's own file), and
 // a body that cannot be safely masked must refuse rather than publish unscanned.
 // ---------------------------------------------------------------------------
-
-import { type BodyFileWriter } from "../lib/gh_body_redaction.ts";
-
-/** A writer that records every content it materialises and hands back a path. */
-function capturingWriter(): { writer: BodyFileWriter; written: string[] } {
-  const written: string[] = [];
-  const writer: BodyFileWriter = (content) => {
-    written.push(content);
-    return `/tmp/gh-input-${written.length}.json`;
-  };
-  return { writer, written };
-}
 
 Deno.test("redactGhBodyArgs #92 - masks a secret in an --input JSON body into a fresh file", () => {
   const read = readerFor({
@@ -276,11 +261,15 @@ Deno.test("redactGhBodyArgs #92 - a non-JSON --input body with a secret refuses 
   );
 });
 
+// Issue #1283 changed this case's field too: a `title` is masked structurally
+// now, so the unreachable-field example moved to `head`, which routes a pull
+// request and is deliberately not redactable. The fail-closed invariant is
+// unchanged.
 Deno.test("redactGhBodyArgs #92 - a secret outside the body field refuses rather than pass unscanned", () => {
   const read = readerFor({
     "/tmp/c.json": JSON.stringify({
       body: "clean",
-      title: `t ${GH_TOKEN_SAMPLE}`,
+      head: `t ${GH_TOKEN_SAMPLE}`,
     }),
   });
   const { writer } = capturingWriter();

@@ -22,9 +22,12 @@ import { LABEL_DEFAULTS, OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import type { LabelManagerDeps } from "./label_types.ts";
 import {
   countClarificationRounds,
+  ghClientFromCommandFn,
   postClarifyingQuestions,
   validateClarifyingQuestions,
 } from "./label_clarification.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import type { IssueComment } from "./issue_data.ts";
 import { escalateToPlanning } from "./label_planning_escalation.ts";
 import { detectComplexity } from "../commands/assess_clarity.ts";
 import {
@@ -62,6 +65,15 @@ export interface ClarityPhaseParams {
    * survive its sanitiser pass while forgeries stay degraded.
    */
   commentBoundaryId?: string;
+  /**
+   * The issue's comments with their authors (Issue #1263).
+   *
+   * `issueComments` above is the blob handed to the model; it carries no
+   * authorship, so the clarification round limit — which retires the clarity
+   * gate — cannot be counted from it. Supply these when the caller already
+   * holds them; otherwise the phase reads them from GitHub itself.
+   */
+  issueCommentRows?: readonly IssueComment[];
   /** GitHub username of the worker. */
   githubUser: string;
   /** Working directory for the repo. */
@@ -108,6 +120,11 @@ export interface ClarityPhaseDeps {
   clarificationTimeout?: number;
   /** Clarification kill-after in seconds. */
   clarificationKillAfter?: number;
+  /**
+   * Fleet identity inputs for the clarification round count (Issue #1263).
+   * Tests state the fleet instead of writing a config file.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
 }
 
 // ---------------------------------------------------------------------------
@@ -240,10 +257,34 @@ export async function runClarityPhase(
     clarityStatus = "skipped";
   }
 
-  let clarificationRound = 0;
-  if (params.issueComments.trim()) {
-    clarificationRound = countClarificationRounds(params.issueComments);
+  // Issue #1263: a round counts only when a fleet account posted it. The
+  // rows come from the caller when it already holds them, and otherwise from
+  // GitHub, whose comment list carries the one authenticated part of a
+  // match. A read that fails leaves no attributable round, so the gate stays
+  // on rather than being retired by text anyone can write.
+  let commentRows = params.issueCommentRows;
+  if (commentRows === undefined) {
+    try {
+      commentRows = await ghClientFromCommandFn(ghCommandFn).getIssueComments(
+        params.repo,
+        params.issueNumber,
+      );
+    } catch (err) {
+      defaultLogger.warn(
+        "[clarity-phase] could not read the issue comments — no " +
+          "clarification round is counted and the clarity gate stays on",
+        { error: err instanceof Error ? err.message : String(err) },
+      );
+      commentRows = [];
+    }
   }
+  const clarificationRound = await countClarificationRounds(commentRows, {
+    issueNumber: params.issueNumber,
+    repo: params.repo,
+    githubUser: params.githubUser,
+    dedupAuthors: deps.dedupAuthors,
+    log: (message: string) => defaultLogger.warn(message),
+  });
 
   if (clarificationRound >= maxClarificationRounds) {
     skipClarification = true;

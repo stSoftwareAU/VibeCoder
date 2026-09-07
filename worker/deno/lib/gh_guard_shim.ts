@@ -38,6 +38,12 @@
  *     G -- refused --> X["exit 1 + SECURITY log line"]
  * ```
  *
+ * **The `git` wrapper rides in the same directory (Issue #1284).** `git push`
+ * is as public a sink as a comment and its history is permanent, so
+ * `installGhGuardShim` also writes the `git` wrapper described in
+ * `git_guard_shim.ts` beside the `gh` one — one PATH prefix covers both
+ * binaries, and one cleanup removes both.
+ *
  * **Fails closed.** If the guard cannot be evaluated (missing Deno, missing
  * module, any non-refusal error) the wrapper refuses the call rather than
  * passing it through. If the shim itself cannot be installed while the
@@ -73,6 +79,10 @@ import {
   listAllowedWriteRepos,
   noteAgentAllowlistSnapshot,
 } from "./write_repo_allowlist.ts";
+import {
+  defaultGitGuardModulePath,
+  renderGitShimScript,
+} from "./git_guard_shim.ts";
 import { posixSingleQuote as shellQuote } from "./shell_quote.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import { type ClaimedIssue, claimedIssueGuard } from "./claimed_issue_guard.ts";
@@ -185,6 +195,14 @@ export interface GhGuardShim {
   dir: string;
   /** Absolute path of the wrapper itself. */
   shimPath: string;
+  /**
+   * Absolute path of the `git` wrapper installed beside it (Issue #1284).
+   *
+   * Absent only when the base `PATH` carries no `git` at all — the child
+   * searches the same directories, so there is then no `git` for the agent to
+   * run and nothing the shim could have guarded.
+   */
+  gitShimPath?: string;
   /** The child environment with the wrapper first on `PATH`. */
   env: Record<string, string>;
   /** Remove the wrapper directory. Best-effort; warns on failure. */
@@ -467,8 +485,25 @@ export async function installGhGuardShim(
     );
   }
 
+  // Issue #1284: the `git` wrapper goes in the same directory, so one PATH
+  // prefix covers both binaries and one cleanup removes both.
+  const realGitPath = resolveExecutable("git", pathValue);
+  const gitShimPath = realGitPath ? `${dir}/git` : undefined;
+
   const shimPath = `${dir}/gh`;
   try {
+    if (gitShimPath && realGitPath) {
+      await Deno.writeTextFile(
+        gitShimPath,
+        renderGitShimScript({
+          denoPath,
+          guardModulePath: defaultGitGuardModulePath(),
+          realGitPath,
+          verdictDir: dir,
+        }),
+      );
+      await Deno.chmod(gitShimPath, 0o755);
+    }
     await Deno.writeTextFile(
       shimPath,
       renderGhShimScript({
@@ -502,6 +537,7 @@ export async function installGhGuardShim(
     shim: {
       dir,
       shimPath,
+      ...(gitShimPath ? { gitShimPath } : {}),
       env: { ...opts.baseEnv, PATH: pathValue ? `${dir}:${pathValue}` : dir },
       cleanup: async () => {
         try {

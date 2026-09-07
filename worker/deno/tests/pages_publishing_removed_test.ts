@@ -25,11 +25,14 @@ const REMOVED_PATHS = [
   ".github/scripts/normalise_heading_ids.rb",
   ".github/scripts/strip_unpublished_links.rb",
   ".github/scripts/wrap_pr_summary_raw.rb",
-  // Jekyll site. `Gemfile`/`Gemfile.lock` are deliberately absent: dropping
-  // them means *modifying* `.github/workflows/dependency-audit.yml` to delete
-  // the `bundler-audit` job, and without the `workflow` OAuth scope GitHub
-  // refuses a push that creates or updates a workflow file. Deleting one is
-  // allowed, which is why `pages.yml` above could go. Tracked in #1376.
+  // Jekyll site and the Ruby manifests that built it. The manifests lagged
+  // the rest by one change (Issue #1376): dropping them meant *modifying*
+  // `.github/workflows/dependency-audit.yml` to delete the `bundler-audit`
+  // job, and without the `workflow` OAuth scope GitHub refuses a push that
+  // updates a workflow file — deleting one is allowed, which is why
+  // `pages.yml` above could go in the first pass.
+  "Gemfile",
+  "Gemfile.lock",
   "_config.yml",
   "_data/page_titles.yml",
   "_includes/head-custom.html",

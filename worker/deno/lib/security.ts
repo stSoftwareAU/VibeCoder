@@ -19,14 +19,52 @@ export const DEFAULT_MAX_TITLE_LENGTH = 500;
 export const DEFAULT_MAX_BODY_LENGTH = 50000;
 
 /**
- * Bounded any-character gap between the tokens of a multi-token rule.
+ * Longest bounded gap between two tokens of a multi-token rule.
  *
- * Replaces a bare `.*` (Issue #3665). Combined with the `s` flag it spans
- * newlines — issue bodies are multi-line Markdown, so an unbounded-but-
- * line-bound `.*` missed every payload carrying a line break. The upper bound
- * keeps a failed match cheap on a 50,000-byte body rather than quadratic.
+ * Replaces a bare `.*` (Issue #3665). The gap spans newlines — issue bodies are
+ * multi-line Markdown, so an unbounded-but-line-bound `.*` missed every payload
+ * carrying a line break. The upper bound keeps a failed match cheap on a
+ * 50,000-byte body rather than quadratic.
  */
-const GAP = ".{0,200}";
+const GAP_CHARS = 200;
+
+/** Longest single token any rule matches (`instructions` is 12). */
+const TOKEN_CHARS = 20;
+
+/**
+ * Express a multi-token rule as independent bounded lookaheads (Issue #1274).
+ *
+ * Four rules chained two or three `GAP`s in sequence — `what GAP are GAP your
+ * GAP instructions`. Consecutive gaps are *nested* quantifiers: a failed match
+ * retries every combination of gap lengths, up to 200³ per start offset, and
+ * this scanner runs over every untrusted comment untruncated on the worker's
+ * only thread (50 KB of `what-are-your…` measured at 540 ms).
+ *
+ * Anchoring each later token to the **head** token instead makes the cost
+ * additive rather than multiplicative: each lookahead scans its own window once
+ * and none of them can be re-driven by another's failure. The windows widen by
+ * one gap plus one token per hop, so every payload the nested form matched
+ * still matches — a token reachable through k chained gaps lies within
+ * `k × (GAP + TOKEN_CHARS)` characters of the head. The rewrite is deliberately
+ * a *superset*: it also fires when the middle tokens appear out of order inside
+ * the window. This detector logs and never blocks, so a slightly wider net
+ * costs an audit line, while a narrower one would lose a detection.
+ *
+ * No input cap is applied: capping would silently blind the scanner to the tail
+ * of a body, which is where an attacker would then put the payload.
+ *
+ * @param head - Leading token of the rule, matched literally in sequence
+ * @param tail - Later tokens, each anchored to `head` by its own window
+ * @returns The rule as a single regex source fragment
+ */
+function proximityRule(head: string, ...tail: string[]): string {
+  return head + tail
+    .map((token, hop) => {
+      const window = (hop + 1) * (GAP_CHARS + TOKEN_CHARS) - TOKEN_CHARS;
+      return `(?=[\\s\\S]{0,${window}}${token})`;
+    })
+    .join("");
+}
 
 /**
  * Combined regex for suspicious prompt injection patterns.
@@ -44,24 +82,31 @@ const GAP = ".{0,200}";
  */
 const SUSPICIOUS_PATTERN = new RegExp(
   [
-    `(ignore|disregard|forget)\\b${GAP}(previous|prior|above|all|your)\\b${GAP}\\binstructions\\b`,
+    proximityRule(
+      "(?:ignore|disregard|forget)\\b",
+      "\\b(?:previous|prior|above|all|your)\\b",
+      "\\binstructions\\b",
+    ),
     "system\\s+prompt",
-    `what\\b${GAP}\\bare\\b${GAP}\\byour\\b${GAP}\\binstructions\\b`,
-    `show\\b${GAP}\\bme\\b${GAP}\\byour\\b${GAP}\\bprompt\\b`,
-    `reveal\\b${GAP}\\byour\\b${GAP}\\binstructions\\b`,
+    proximityRule("what\\b", "\\bare\\b", "\\byour\\b", "\\binstructions\\b"),
+    proximityRule("show\\b", "\\bme\\b", "\\byour\\b", "\\bprompt\\b"),
+    proximityRule("reveal\\b", "\\byour\\b", "\\binstructions\\b"),
     "you\\b.are\\b.now\\b.DAN\\b",
-    `\\bDAN\\b${GAP}\\bmode\\b`,
-    `developer\\s+mode${GAP}(bypass|unlock|activat|restrict|enabl)`,
+    proximityRule("\\bDAN\\b", "\\bmode\\b"),
+    proximityRule(
+      "developer\\s+mode",
+      "(?:bypass|unlock|activat|restrict|enabl)",
+    ),
     "\\bjailbreak\\b",
-    `from\\b.now\\b.on\\b${GAP}\\byou\\b.are\\b`,
+    proximityRule("from\\b.now\\b.on\\b", "\\byou\\b.are\\b"),
     "\\bpretend\\s+to\\s+be\\b",
     "\\bact\\s+as\\s+if\\b",
     "you\\b.are\\b.a\\b.different\\b",
-    `<!--${GAP}\\binstructions\\b${GAP}-->`,
-    `<!--${GAP}\\bhidden\\b${GAP}-->`,
-    `<!--${GAP}\\bignore\\b${GAP}-->`,
-    `base64${GAP}\\bdecode\\b`,
-    `\\beval\\b${GAP}\\bbase64\\b`,
+    proximityRule("<!--", "\\binstructions\\b", "-->"),
+    proximityRule("<!--", "\\bhidden\\b", "-->"),
+    proximityRule("<!--", "\\bignore\\b", "-->"),
+    proximityRule("base64", "\\bdecode\\b"),
+    proximityRule("\\beval\\b", "\\bbase64\\b"),
   ].join("|"),
   "is",
 );

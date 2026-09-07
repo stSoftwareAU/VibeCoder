@@ -18,6 +18,7 @@ import {
 } from "../lib/config_defaults.ts";
 import { REMOVED_CONFIG_KEYS } from "../lib/validation.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
+import { assertValidRepoSlugs } from "../lib/repo_slug.ts";
 
 /**
  * Configuration values that can be set during setup.
@@ -470,18 +471,73 @@ export async function writeConfigFile(
 /**
  * Load existing configuration from a JSON file.
  *
+ * Every `repos` entry is checked against `REPO_SLUG_PATTERN` (Issue #1291).
+ * This is the setup CLI's *own* reader of `.config.json` — the worker's
+ * loader (`lib/config.ts`) has always validated here, and this second reader
+ * did not, so a slug such as `org/..` reached `syncGitignoreForAllRepos`
+ * (which derives a filesystem path from it) and a slug carrying a backtick
+ * reached the pasteable `gh api` commands in the collaborator precheck issue.
+ * Bad entries are reported by throwing, never dropped silently.
+ *
+ * Only a missing file is `{}` (Issue #1294). A permission error, a truncated
+ * write or a hand-edit that broke the JSON used to be caught here and read as
+ * "no config yet", and because setup rewrites `.config.json` from scratch the
+ * operator's `service_accounts` (the #3528 identity guard's allowlist),
+ * `repos`, `repo_config` and any narrowed `authorized_commenters` were
+ * dropped — `mergeNonInteractive` then repopulated the trusted-bot list from
+ * `DEFAULT_TRUSTED_INPUT_BOTS`, re-granting input trust the operator had
+ * removed. Those failures now throw, matching `readConfigRecord` in
+ * config_writer.ts, which already refuses invalid JSON in the same file.
+ *
  * @param configPath - Path to the .config.json file
- * @returns The existing configuration, or empty object if file doesn't exist
+ * @returns The existing configuration, or empty object if the file is absent
+ * @throws When the file cannot be read, is not a JSON object, or `repos` is
+ *   not an array of valid `owner/repo` slugs
  */
 export async function loadExistingConfig(
   configPath: string,
 ): Promise<SetupConfig> {
+  let content: string;
   try {
-    const content = await Deno.readTextFile(configPath);
-    return JSON.parse(content) as SetupConfig;
-  } catch {
-    return {};
+    content = await Deno.readTextFile(configPath);
+  } catch (error) {
+    // Absent is the one legitimate `{}` — first setup writes a fresh file.
+    if (error instanceof Deno.errors.NotFound) return {};
+    throw new Error(
+      `Cannot read ${configPath}: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
   }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    throw new Error(
+      `${configPath} contains invalid JSON — fix it by hand before setup ` +
+        `can run, or setup would replace your settings with defaults: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(
+      `${configPath} is not a JSON object — fix it by hand before setup ` +
+        `can run, or setup would replace your settings with defaults.`,
+    );
+  }
+  const config = parsed as SetupConfig;
+
+  if (config.repos !== undefined) {
+    if (!Array.isArray(config.repos)) {
+      throw new Error(
+        `Configuration error in ${configPath}: "repos" must be an array of ` +
+          "owner/repo slugs.",
+      );
+    }
+    assertValidRepoSlugs(config.repos, configPath);
+  }
+
+  return config;
 }
 
 /**
@@ -523,14 +579,20 @@ export function mergeNonInteractive(
     result.pr_reviewer = vibePrReviewer;
   }
 
-  // Handle repos
+  // Handle repos. Both variables are operator-supplied and flow into a
+  // filesystem path and a pasteable shell command downstream, so each entry
+  // is checked against `REPO_SLUG_PATTERN` here (Issue #1291) — the same
+  // guard the worker's own loader applies.
   const vibeRepos = env("VIBE_REPOS");
   const vibeAddRepos = env("VIBE_ADD_REPOS");
   if (vibeRepos) {
-    result.repos = parseCsv(vibeRepos);
+    result.repos = assertValidRepoSlugs(parseCsv(vibeRepos), "VIBE_REPOS");
   }
   if (vibeAddRepos) {
-    const addRepos = parseCsv(vibeAddRepos);
+    const addRepos = assertValidRepoSlugs(
+      parseCsv(vibeAddRepos),
+      "VIBE_ADD_REPOS",
+    );
     const existingRepos = result.repos ?? [];
     const merged = [...new Set([...existingRepos, ...addRepos])];
     result.repos = merged;

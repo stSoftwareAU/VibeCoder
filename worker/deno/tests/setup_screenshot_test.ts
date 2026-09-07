@@ -6,6 +6,7 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
+  blockedOriginsValue,
   BROWSER_OUTPUT_DIR_NAME,
   BROWSER_PROFILE_DIR_NAME,
   checkDenoVersion,
@@ -14,10 +15,12 @@ import {
   generateMcpConfig,
   installPlaywrightBrowsers,
   PLAYWRIGHT_INSTALLER_VERSION,
+  PLAYWRIGHT_MCP_BLOCKED_HOSTS,
   PLAYWRIGHT_MCP_DENIED_ENV,
   PLAYWRIGHT_MCP_VERSION,
   playwrightQuarantinedPackages,
   resolveBrowserEnvironment,
+  resolveDeniedPaths,
   setupPlaywrightMcp,
   verifyScreenshotNpmQuarantine,
 } from "../setup/screenshot.ts";
@@ -306,6 +309,56 @@ Deno.test("generateMcpConfig - denies env vars that hold worker secrets", () => 
   assertEquals(
     denied.sort().join(","),
     [...PLAYWRIGHT_MCP_DENIED_ENV].sort().join(","),
+  );
+});
+
+// ── Issue #1292: cloud-metadata SSRF ───────────────────────────────────
+
+Deno.test("generateMcpConfig - blocks cloud metadata origins so a prompt-injected navigate cannot screenshot instance credentials (Issue #1292)", () => {
+  const args: string[] =
+    JSON.parse(generateMcpConfig({ scriptDir: "/opt/vibe" }))
+      .mcpServers.playwright.args;
+
+  const index = args.indexOf("--blocked-origins");
+  assertEquals(index >= 0, true, "expected a --blocked-origins flag");
+  const blocked = (args[index + 1] ?? "").split(";");
+
+  // Every metadata host, in the forms @playwright/mcp matches on: the bare
+  // host (any scheme, default port) and an explicit wildcard port per scheme.
+  for (const host of PLAYWRIGHT_MCP_BLOCKED_HOSTS) {
+    for (const origin of [host, `http://${host}:*`, `https://${host}:*`]) {
+      assertEquals(
+        blocked.includes(origin),
+        true,
+        `${origin} must be blocked (Issue #1292 exfiltration vector)`,
+      );
+    }
+  }
+  // The endpoint named in the issue's trigger.
+  assertEquals(blocked.includes("169.254.169.254"), true);
+});
+
+Deno.test("blockedOriginsValue - keeps loopback navigable so local pages can still be screenshotted (Issue #1292)", () => {
+  // prompt_builder.ts and screenshot_validation.ts tell the agent to serve
+  // local pages on 127.0.0.1 — a blocklist that caught them would break
+  // every UI evidence capture.
+  const blocked = blockedOriginsValue().split(";");
+  for (const host of ["127.0.0.1", "localhost", "[::1]"]) {
+    assertEquals(
+      blocked.some((origin: string) => origin.includes(host)),
+      false,
+      `${host} must stay navigable`,
+    );
+  }
+});
+
+Deno.test("blockedOriginsValue - fails loud when a host contains the list separator (Issue #1292)", () => {
+  // A semicolon would split one entry into two origins that block nothing,
+  // leaving a list that looks complete and protects nothing.
+  assertThrows(
+    () => blockedOriginsValue(["169.254.169.254;evil.example"]),
+    Error,
+    "semicolon",
   );
 });
 
@@ -639,7 +692,9 @@ Deno.test("generateMcpConfig - keeps the OS sandbox when no browser is baked in"
     browserEnvironment: hostBrowser(),
   })).mcpServers.playwright;
 
-  assertEquals(server.env, undefined);
+  // Issue #1288: the env block is now always present (it blanks the
+  // secrets), but with no baked browser it must not point at one.
+  assertEquals("PLAYWRIGHT_BROWSERS_PATH" in server.env, false);
   assertEquals((server.args as string[]).includes("--no-sandbox"), false);
 });
 
@@ -670,6 +725,183 @@ Deno.test("generateMcpConfig - refuses a profile directory inside the mounted ch
     Error,
     "inside the mounted checkout",
   );
+});
+
+// Issue #1293: the guard compared raw strings against a hard-coded "/", so a
+// Windows checkout, a `..` walk, or a relative value all slipped past it.
+Deno.test("generateMcpConfig - refuses a Windows profile directory inside the checkout", () => {
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "C:\\Users\\me\\VibeCoder",
+        os: "windows",
+        browserEnvironment: {
+          profileDir: "C:\\Users\\me\\VibeCoder\\profile",
+          baked: true,
+          browsersPath: CONTAINER_BROWSERS_PATH,
+        },
+      }),
+    Error,
+    "inside the mounted checkout",
+  );
+});
+
+Deno.test("generateMcpConfig - refuses a Windows profile directory whose case differs", () => {
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "C:\\Users\\me\\VibeCoder",
+        os: "windows",
+        browserEnvironment: {
+          profileDir: "c:/users/ME/vibecoder/state/profile",
+          baked: true,
+          browsersPath: CONTAINER_BROWSERS_PATH,
+        },
+      }),
+    Error,
+    "inside the mounted checkout",
+  );
+});
+
+Deno.test("generateMcpConfig - refuses a Windows device-prefixed profile directory", () => {
+  // `\\?\C:\x` is the same directory as `C:\x`; parsed as a UNC root it would
+  // look like a different volume and slip past the containment check.
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "C:\\Users\\me\\VibeCoder",
+        os: "windows",
+        browserEnvironment: {
+          profileDir: "\\\\?\\C:\\Users\\me\\VibeCoder\\profile",
+          baked: true,
+          browsersPath: CONTAINER_BROWSERS_PATH,
+        },
+      }),
+    Error,
+    "inside the mounted checkout",
+  );
+});
+
+Deno.test("generateMcpConfig - refuses a Windows path padded with trailing dots", () => {
+  // Windows strips trailing dots and spaces from a component, so this
+  // resolves inside the checkout even though the raw strings differ.
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "C:\\Users\\me\\VibeCoder",
+        os: "windows",
+        browserEnvironment: {
+          profileDir: "C:\\Users\\me\\VibeCoder.\\profile",
+          baked: true,
+          browsersPath: CONTAINER_BROWSERS_PATH,
+        },
+      }),
+    Error,
+    "inside the mounted checkout",
+  );
+});
+
+Deno.test("generateMcpConfig - refuses a profile directory reached through ..", () => {
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "/home/vibe/auto-issue-work/repo",
+        os: "linux",
+        browserEnvironment: {
+          profileDir: "/tmp/../home/vibe/auto-issue-work/repo/profile",
+          baked: true,
+          browsersPath: CONTAINER_BROWSERS_PATH,
+        },
+      }),
+    Error,
+    "inside the mounted checkout",
+  );
+});
+
+Deno.test("generateMcpConfig - refuses a relative profile directory", () => {
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "/workspace",
+        os: "linux",
+        browserEnvironment: {
+          profileDir: "profile",
+          baked: true,
+          browsersPath: CONTAINER_BROWSERS_PATH,
+        },
+      }),
+    Error,
+    "is not an absolute path",
+  );
+});
+
+Deno.test("generateMcpConfig - refuses a checkout directory that is not absolute", () => {
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "relative/checkout",
+        os: "linux",
+        browserEnvironment: bakedBrowser(),
+      }),
+    Error,
+    "is not an absolute path",
+  );
+});
+
+Deno.test("generateMcpConfig - allows a sibling directory whose name shares the checkout prefix", () => {
+  const args: string[] = JSON.parse(generateMcpConfig({
+    scriptDir: "/workspace",
+    os: "linux",
+    browserEnvironment: {
+      profileDir: "/workspace-scratch/profile",
+      baked: true,
+      browsersPath: CONTAINER_BROWSERS_PATH,
+    },
+  })).mcpServers.playwright.args;
+
+  assertEquals(
+    args[args.indexOf("--user-data-dir") + 1],
+    "/workspace-scratch/profile",
+  );
+});
+
+Deno.test("resolveBrowserEnvironment - refuses a relative VIBE_BROWSER_PROFILE_DIR", () => {
+  assertThrows(
+    () =>
+      resolveBrowserEnvironment({
+        getEnv: (name) =>
+          name === "VIBE_BROWSER_PROFILE_DIR" ? "profile" : undefined,
+        dirExists: () => false,
+        os: "linux",
+      }),
+    Error,
+    "VIBE_BROWSER_PROFILE_DIR",
+  );
+});
+
+Deno.test("resolveBrowserEnvironment - refuses a drive-less Windows VIBE_BROWSER_PROFILE_DIR", () => {
+  assertThrows(
+    () =>
+      resolveBrowserEnvironment({
+        getEnv: (name) =>
+          name === "VIBE_BROWSER_PROFILE_DIR" ? "Temp\\profile" : undefined,
+        dirExists: () => false,
+        os: "windows",
+      }),
+    Error,
+    "VIBE_BROWSER_PROFILE_DIR",
+  );
+});
+
+Deno.test("resolveBrowserEnvironment - accepts an absolute Windows VIBE_BROWSER_PROFILE_DIR", () => {
+  const env = resolveBrowserEnvironment({
+    getEnv: (name) =>
+      name === "VIBE_BROWSER_PROFILE_DIR" ? "D:\\scratch\\profile" : undefined,
+    dirExists: () => false,
+    os: "windows",
+  });
+
+  assertEquals(env.profileDir, "D:\\scratch\\profile");
 });
 
 Deno.test("generateMcpConfig - still denies every secret when the browser is baked in", () => {
@@ -777,4 +1009,135 @@ Deno.test("generateMcpConfig - selects the chromium browser channel, baked or ho
       true,
     );
   }
+});
+
+// ── #1288: --deny-env does not bound a child process ──────────────────────
+
+Deno.test("generateMcpConfig - blanks every denied secret in the server's own environment (Issue #1288)", () => {
+  // `--deny-env` is a permission check inside the Deno runtime: the value is
+  // still in the process environment, so any child spawned under
+  // `--allow-run` (`printenv GH_TOKEN`) reads it. Blanking the values is what
+  // actually removes them from the child's view.
+  for (const browserEnvironment of [bakedBrowser(), hostBrowser()]) {
+    const server = JSON.parse(generateMcpConfig({
+      scriptDir: "/workspace",
+      browserEnvironment,
+    })).mcpServers.playwright;
+
+    const env = server.env as Record<string, string> | undefined;
+    assertEquals(
+      typeof env,
+      "object",
+      "the server config must carry an env block that blanks the secrets",
+    );
+    for (const name of PLAYWRIGHT_MCP_DENIED_ENV) {
+      assertEquals(
+        env?.[name],
+        "",
+        `${name} must be blanked for the MCP server and its children`,
+      );
+    }
+  }
+});
+
+Deno.test("generateMcpConfig - blanking the secrets keeps the baked browser pointer (Issue #1288)", () => {
+  const baked = JSON.parse(generateMcpConfig({
+    scriptDir: "/workspace",
+    browserEnvironment: bakedBrowser(),
+  })).mcpServers.playwright.env as Record<string, string>;
+  assertEquals(baked.PLAYWRIGHT_BROWSERS_PATH, CONTAINER_BROWSERS_PATH);
+
+  const host = JSON.parse(generateMcpConfig({
+    scriptDir: "/opt/vibe",
+    browserEnvironment: hostBrowser(),
+  })).mcpServers.playwright.env as Record<string, string>;
+  assertEquals("PLAYWRIGHT_BROWSERS_PATH" in host, false);
+});
+
+Deno.test("generateMcpConfig - denies read and write of the credential stores (Issue #1288)", () => {
+  const args: string[] = JSON.parse(generateMcpConfig({
+    scriptDir: "/workspace",
+    browserEnvironment: bakedBrowser(),
+    deniedPaths: ["/home/vibe/.config/gh", "/home/vibe/.ssh"],
+  })).mcpServers.playwright.args;
+
+  for (const flag of ["--deny-read=", "--deny-write="]) {
+    const arg = args.find((a) => a.startsWith(flag));
+    assertEquals(typeof arg, "string", `expected a ${flag}... flag`);
+    assertEquals(
+      (arg as string).slice(flag.length).split(","),
+      ["/home/vibe/.config/gh", "/home/vibe/.ssh"],
+    );
+  }
+});
+
+Deno.test("generateMcpConfig - omits the deny-path flags when there is nothing to deny (Issue #1288)", () => {
+  // `--deny-read=` with an empty list denies every read and would break the
+  // server outright, so the flag must be dropped rather than emitted empty.
+  const args: string[] = JSON.parse(generateMcpConfig({
+    scriptDir: "/workspace",
+    browserEnvironment: bakedBrowser(),
+    deniedPaths: [],
+  })).mcpServers.playwright.args;
+
+  assertEquals(args.some((a) => a.startsWith("--deny-read")), false);
+  assertEquals(args.some((a) => a.startsWith("--deny-write")), false);
+});
+
+Deno.test("resolveDeniedPaths - covers the credential stores under HOME", () => {
+  const paths = resolveDeniedPaths({
+    getEnv: (name) => (name === "HOME" ? "/home/vibe" : undefined),
+  });
+
+  for (
+    const expected of [
+      "/home/vibe/.ssh",
+      "/home/vibe/.config/gh",
+      "/home/vibe/.aws",
+      "/home/vibe/.gnupg",
+      "/home/vibe/.netrc",
+      "/home/vibe/.git-credentials",
+    ]
+  ) {
+    assertEquals(paths.includes(expected), true, `missing ${expected}`);
+  }
+});
+
+Deno.test("resolveDeniedPaths - covers the relocated gh config and the app private key", () => {
+  const paths = resolveDeniedPaths({
+    getEnv: (name) =>
+      ({
+        HOME: "/home/vibe",
+        GH_CONFIG_DIR: "/srv/state/gh",
+        CLAUDE_CONFIG_DIR: "/srv/state/claude",
+        GITHUB_APP_PRIVATE_KEY_PATH: "/srv/secrets/app.pem",
+      })[name],
+  });
+
+  assertEquals(paths.includes("/srv/state/gh"), true);
+  assertEquals(paths.includes("/srv/state/claude"), true);
+  assertEquals(paths.includes("/srv/secrets/app.pem"), true);
+  // No duplicates, and nothing empty — an empty entry in a deny list is a
+  // path that never matches, silently weakening the guard.
+  assertEquals(new Set(paths).size, paths.length);
+  assertEquals(paths.some((p) => p.trim() === ""), false);
+});
+
+Deno.test("resolveDeniedPaths - returns nothing when the environment names no home", () => {
+  assertEquals(resolveDeniedPaths({ getEnv: () => undefined }), []);
+});
+
+Deno.test("generateMcpConfig - refuses a denied path Deno cannot express (Issue #1288)", () => {
+  // Deno splits permission lists on commas, so such a path would deny two
+  // directories that do not exist while looking like a complete guard.
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "/workspace",
+        browserEnvironment: bakedBrowser(),
+        deniedPaths: ["/home/vibe/creds,backup"],
+      }),
+    Error,
+    "breaks Deno's permission list",
+  );
 });

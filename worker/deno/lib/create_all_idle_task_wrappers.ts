@@ -43,6 +43,7 @@
 
 import type { Result } from "../types.ts";
 import { runGhCommand as defaultGhCommand } from "./github.ts";
+import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { listTemplates } from "./idle_task_template.ts";
 import { ensureIdleTaskLabel as defaultEnsureIdleTaskLabel } from "./label_operations.ts";
@@ -474,8 +475,10 @@ export async function createAllIdleTaskWrappers(
         "create",
         "--repo",
         repo,
-        "--label",
-        IDLE_TASK_LABEL,
+        ...guardedLabelArgs(
+          [IDLE_TASK_LABEL],
+          "worker/deno/lib/create_all_idle_task_wrappers.ts",
+        ),
       ];
       if (milestone !== null) {
         createArgs.push("--milestone", milestone.title);

@@ -91,6 +91,7 @@ function okLabelSync(repo: string): Promise<LabelSyncResult> {
     skipped: 0,
     failures: 0,
     deprecated_removed: 0,
+    dryRun: false,
   });
 }
 
@@ -443,6 +444,7 @@ Deno.test("happy path - syncs canonical labels before seeding wrappers", async (
         skipped: 0,
         failures: 0,
         deprecated_removed: 0,
+        dryRun: false,
       });
     },
     createWrappersFn: () => {
@@ -520,6 +522,7 @@ Deno.test("partial label sync failures are reported but non-fatal", async () => 
         skipped: 0,
         failures: 2,
         deprecated_removed: 0,
+        dryRun: false,
       }),
     createWrappersFn: () =>
       Promise.resolve({

@@ -226,6 +226,11 @@ script is never printed.
 | SEC-1218-08 | [#1270](https://github.com/stSoftwareAU/VibeCoder/issues/1270) | `commands/software_updates.ts:47`                                                            | low / high            |
 | SEC-1218-09 | [#1271](https://github.com/stSoftwareAU/VibeCoder/issues/1271) | `commands/security_tree_sweep.ts:98`                                                         | low / medium          |
 
+SEC-1218-01 has since been fixed on #1263: the clarification round limit is
+counted from the issue's authored comments, filtered through the fleet identity
+in `alert_dedup_authors.ts`, rather than by matching a heading in the comment
+blob assembled for the model.
+
 SEC-1218-02's reachability was corrected after filing and the correction posted
 to the issue: `closeDuplicatePrs` is not CLI-only.
 `lib/issue_worker_wiring.ts:88` imports it, `:255` declares it on `PrDeps` and

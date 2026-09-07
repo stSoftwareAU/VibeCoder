@@ -39,6 +39,7 @@
  * Australian English throughout (behaviour, authorise, organisation).
  */
 
+import { guardedLabelArgs } from "../guarded_issue_labels.ts";
 import { fileFindingOnce } from "../idle_task_snapshot.ts";
 
 /** The two alert feeds the idle task reads (Issues #3392 / #3393). */
@@ -331,8 +332,10 @@ async function createEnableFeedIssue(
     buildEnableFeedTitle(repo, feed),
     "--body",
     buildEnableFeedBody(repo, feed, unavailable, footer),
-    "--label",
-    ENABLE_FEED_LABEL,
+    ...guardedLabelArgs(
+      [ENABLE_FEED_LABEL],
+      "worker/deno/lib/alert_feeds/alert_feed_enable_issue.ts",
+    ),
   ];
   let raw: string;
   try {

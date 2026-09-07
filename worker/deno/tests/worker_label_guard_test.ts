@@ -12,6 +12,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   assertWorkerCanApplyLabel,
   isWorkerAppliableLabel,
+  WORKER_APPLIABLE_CONTENT_LABELS,
   WORKER_APPLIABLE_LABEL_LITERALS,
   WORKER_APPLIABLE_LABEL_PREFIXES,
   WORKER_FORBIDDEN_LABEL_LITERALS,
@@ -96,7 +97,10 @@ Deno.test("worker_label_guard - degraded-model is appliable (Issue #2650)", () =
 });
 
 Deno.test("worker_label_guard - random unrelated label is rejected", () => {
-  assertEquals(isWorkerAppliableLabel("bug"), false);
+  // Issue #1276 moved `bug` onto the allowlist — the run-failure filer
+  // applies it at `gh issue create` time — so this case now uses a label the
+  // worker genuinely never applies. Everything else here is unchanged.
+  assertEquals(isWorkerAppliableLabel("wontfix"), false);
   assertEquals(isWorkerAppliableLabel(""), false);
   assertEquals(isWorkerAppliableLabel("custom-label"), false);
   assertEquals(isWorkerAppliableLabel("severity"), false); // missing colon
@@ -166,5 +170,26 @@ Deno.test("worker_label_guard - allowlist and forbidden list are disjoint", () =
       false,
       `forbidden label '${label}' must not appear in the allowlist`,
     );
+    // Issue #1276: the content set widened the guard, so it must be
+    // disjoint from the forbidden list too.
+    assertEquals(
+      WORKER_APPLIABLE_CONTENT_LABELS.has(label),
+      false,
+      `forbidden label '${label}' must not appear in the content set`,
+    );
   }
+});
+
+Deno.test("worker_label_guard - every content label is appliable (Issue #1276)", () => {
+  for (const label of WORKER_APPLIABLE_CONTENT_LABELS) {
+    assert(
+      isWorkerAppliableLabel(label),
+      `expected content label '${label}' to be appliable`,
+    );
+  }
+});
+
+Deno.test("worker_label_guard - content labels are matched case-insensitively", () => {
+  assert(isWorkerAppliableLabel("Dead-Code"));
+  assert(isWorkerAppliableLabel("CONFIDENCE:high"));
 });

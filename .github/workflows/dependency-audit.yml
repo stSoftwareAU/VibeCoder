@@ -6,9 +6,11 @@
 # advisories. This workflow closes that gap: it scans the committed
 # dependency trees for known-vulnerable packages.
 #
-# Two ecosystems are present and each gets its native scanner:
+# One ecosystem is present and gets its native scanner:
 #   - Deno (worker/deno/deno.lock) -> `deno audit`
-#   - Ruby/Jekyll site (Gemfile.lock) -> `bundle-audit`
+#
+# A Ruby/Jekyll tree (Gemfile.lock -> `bundle-audit`) sat beside it until
+# the Pages site was removed (Issues #1344, #1376).
 #
 # The `generate-sbom` job emits a machine-readable CycloneDX Software
 # Bill of Materials and uploads it as a build artefact (Issue #2687 —
@@ -41,8 +43,6 @@ on:
       - 'worker/deno/deno.lock'
       - 'container/deno-seed/deno.json'
       - 'container/deno-seed/deno.lock'
-      - 'Gemfile'
-      - 'Gemfile.lock'
       - '.github/workflows/dependency-audit.yml'
   push:
     branches: [Develop, main]
@@ -51,8 +51,6 @@ on:
       - 'worker/deno/deno.lock'
       - 'container/deno-seed/deno.json'
       - 'container/deno-seed/deno.lock'
-      - 'Gemfile'
-      - 'Gemfile.lock'
       - '.github/workflows/dependency-audit.yml'
   schedule:
     # Weekly, Mondays 04:17 UTC — re-audit unchanged trees against newly
@@ -165,38 +163,6 @@ jobs:
             --repo "$REPO" --ecosystem deno --run-url "$RUN_URL" \
             --audit-log "$AUDIT_LOG"
 
-  bundler-audit:
-    name: Audit Ruby dependencies
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout code
-        # actions/checkout@v7.0.1
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-
-      - name: Setup Ruby
-        # ruby/setup-ruby@v1.321.0
-        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b
-        with:
-          ruby-version: "3.1"
-
-      - name: Run bundler-audit
-        run: |
-          set -euo pipefail
-          echo "=== Auditing Ruby dependencies (Gemfile.lock) ==="
-          # Issue #3642: pinned to an exact version so the auditing tool
-          # itself sits inside the 24h dependency quarantine (the
-          # `renovate.json` custom manager bumps this pin under
-          # `minimumReleaseAge`). An unpinned install let a hijacked release
-          # both execute on the runner and report a clean scan.
-          gem install --no-document bundler-audit -v 0.9.3
-          # --update refreshes the ruby-advisory-db before checking, so the
-          # scan uses the latest advisories. A known-vulnerable gem in
-          # Gemfile.lock fails the job.
-          bundle-audit check --update
-
   generate-sbom:
     name: Generate CycloneDX SBOM
     runs-on: ubuntu-latest
@@ -212,9 +178,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # Trivy reads the committed lockfiles (worker/deno/deno.lock,
-      # Gemfile.lock) directly — no `deno`/`bundle` install needed — and
-      # writes a CycloneDX SBOM of every detected component.
+      # Trivy reads the committed lockfiles (worker/deno/deno.lock)
+      # directly — no `deno` install needed — and writes a CycloneDX SBOM
+      # of every detected component.
       - name: Generate CycloneDX SBOM
         # aquasecurity/trivy-action@v0.36.0
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25

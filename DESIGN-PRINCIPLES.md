@@ -665,8 +665,11 @@ late: the deploy/publish workflows have already fired. Enforcement is
   block every merge. A default branch that takes **direct pushes** (a data
   repo the fleet checks results in to, with no PR) is never locked: the
   recent history is inspected first (`assessBranchPushPolicy()`), and a
-  direct-push or opted-out branch gets no ruleset — the worker even removes
-  its own stale one there.
+  direct-push or opted-out branch gets no ruleset. Removing protection needs
+  stronger evidence than declining to add it: the worker deletes its own stale
+  ruleset only for observed direct pushes or the admin-gated `direct-push`
+  topic, never for the `.vibe/no-default-branch-ruleset` marker file, which is
+  repository content anyone with write access can land.
 - **Backstop (worker pre-merge gate).** `enforcePreMergeRequirements()` in
   `worker/deno/lib/direct_merge.ts` re-fetches CI status and branch freshness at
   merge time inside `directMergePr()`; it refuses to merge unless CI is `passed`

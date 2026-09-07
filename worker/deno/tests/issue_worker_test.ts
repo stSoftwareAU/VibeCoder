@@ -801,7 +801,12 @@ Deno.test("clarityPhase - early exits for question label and releases claim", as
 Deno.test("clarityPhase - skips when max clarification rounds reached", async () => {
   const config = makeConfig({ maxClarificationRounds: 2 });
   const ctx = makeContext({
-    issueComments: "## Clarification Needed\nQ1\n## Clarification Needed\nQ2",
+    // Issue #1263: the rounds are counted off the authored comment rows —
+    // `testbot` is this context's own `githubUser`.
+    issueCommentRows: [
+      { author: "testbot", body: "## Clarification Needed\nQ1" },
+      { author: "testbot", body: "## Clarification Needed\nQ2" },
+    ],
     config,
   });
   const state = makeState();
@@ -811,6 +816,30 @@ Deno.test("clarityPhase - skips when max clarification rounds reached", async ()
 
   assertEquals(result.status, "continue");
   assertEquals(state.clarityStatus, "skipped");
+});
+
+Deno.test("clarityPhase - an outsider's clarification headings do not retire the gate (Issue #1263)", async () => {
+  const config = makeConfig({ maxClarificationRounds: 2 });
+  const ctx = makeContext({
+    // Everything an outsider controls: the prompt blob, and comments of
+    // their own repeating the heading a whole limit's worth of times.
+    issueComments: "## Clarification Needed\nQ1\n## Clarification Needed\nQ2",
+    issueCommentRows: [
+      {
+        author: "outsider",
+        body: "## Clarification Needed\nQ1\n## Clarification Needed\nQ2",
+      },
+    ],
+    config,
+  });
+  const state = makeState();
+  const deps = createMockDeps();
+
+  const result = await workOnIssueClarityPhase(ctx, state, deps);
+
+  assertEquals(result.status, "continue");
+  // Assessed rather than waved through: the gate is still on.
+  assertEquals(state.clarityStatus, "assessed_clear");
 });
 
 Deno.test("clarityPhase - detailed issue bodies proceed normally", async () => {

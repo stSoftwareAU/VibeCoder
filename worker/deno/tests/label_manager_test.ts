@@ -661,19 +661,41 @@ Deno.test("label manager - handleQuestionFailure adds failed on second failure",
 // Clarification
 // ---------------------------------------------------------------------------
 
-Deno.test("label manager - countClarificationRounds counts headers correctly", () => {
-  assertEquals(countClarificationRounds(""), 0);
+Deno.test("label manager - countClarificationRounds counts the fleet's own rounds", async () => {
+  // Issue #1263: a round is a fleet-authored comment. `worker` here is the
+  // counting host's own login, so no configured fleet set is needed.
+  const count = (comments: { author: string; body: string }[]) =>
+    countClarificationRounds(comments, {
+      issueNumber: 7,
+      githubUser: "worker",
+      log: () => {},
+    });
+
+  assertEquals(await count([]), 0);
   assertEquals(
-    countClarificationRounds("## Clarification Needed\nsome text"),
+    await count([
+      { author: "worker", body: "## Clarification Needed\nsome text" },
+    ]),
     1,
   );
   assertEquals(
-    countClarificationRounds(
-      "## Clarification Needed\nfirst\n## Clarification Needed\nsecond",
-    ),
+    await count([
+      { author: "worker", body: "## Clarification Needed\nfirst" },
+      { author: "worker", body: "## Clarification Needed\nsecond" },
+    ]),
     2,
   );
-  assertEquals(countClarificationRounds("No clarification here"), 0);
+  assertEquals(
+    await count([{ author: "worker", body: "No clarification here" }]),
+    0,
+  );
+  // A heading anyone can write is not a round.
+  assertEquals(
+    await count([
+      { author: "outsider", body: "## Clarification Needed\nplanted" },
+    ]),
+    0,
+  );
 });
 
 Deno.test("label manager - validateClarifyingQuestions rejects empty input", () => {
