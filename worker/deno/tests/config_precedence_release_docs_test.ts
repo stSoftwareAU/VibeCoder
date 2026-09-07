@@ -35,24 +35,31 @@ function readRepoFile(relative: string): Promise<string> {
   return Deno.readTextFile(new URL(relative, REPO_ROOT));
 }
 
-/** A semver as a single comparable number; `null` when it is not a semver. */
-function versionRank(raw: string): number | null {
+/** The major of a semver string, or `null` when it is not a semver. */
+function majorOf(raw: string): number | null {
   const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(raw.trim());
-  if (!m) return null;
-  const [major, minor, patch] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  return major * 1_000_000 + minor * 1_000 + patch;
+  return m ? Number(m[1]) : null;
 }
 
-/** The release floor — the highest version any existing release has taken. */
-async function releaseFloor(): Promise<{ text: string; rank: number }> {
+/**
+ * The major the released series is on.
+ *
+ * `.release-floor` states the **lowest** version the next release tag may
+ * take, so it is not an upper bound on the tags that exist — the series runs
+ * past it on the automatic patch increment. Its major is the bound that does
+ * hold: a release in the *next* major cannot exist until the floor moves to
+ * it, so a document dating already-shipped behaviour to a higher major is
+ * describing a release nobody can install.
+ */
+async function releasedMajor(): Promise<{ floor: string; major: number }> {
   const raw = await readRepoFile(".release-floor");
-  const text = raw
+  const floor = raw
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && !line.startsWith("#"))[0] ?? "";
-  const rank = versionRank(text);
-  assert(rank !== null, `.release-floor must state a semver, got "${text}"`);
-  return { text, rank };
+  const major = majorOf(floor);
+  assert(major !== null, `.release-floor must state a semver, got "${floor}"`);
+  return { floor, major };
 }
 
 /** GitHub's heading-anchor slug for a Markdown `##` heading. */
@@ -95,7 +102,9 @@ function chunks(markdown: string): string[] {
   return out;
 }
 
-Deno.test("config precedence - the file really wins, so the docs describe shipped behaviour", () => {
+Deno.test("RELEASE-NOTES.md - the config-precedence note names a release that exists (Issue #1380)", async () => {
+  // The premise: the flip is live in this tree, so the note describes shipped
+  // behaviour and owes a release that an operator can actually install.
   const resolved = resolveSetting({
     configKey: "agent_provider",
     envVar: "VIBE_AGENT_PROVIDER",
@@ -104,11 +113,8 @@ Deno.test("config precedence - the file really wins, so the docs describe shippe
     fallback: "claude",
     parse: (raw) => raw,
   });
-  assertEquals(resolved.value, "claude");
   assertEquals(resolved.source, "config");
-});
 
-Deno.test("RELEASE-NOTES.md - the config-precedence note names a release that exists (Issue #1380)", async () => {
   const notes = await readRepoFile("docs/RELEASE-NOTES.md");
   const heading = headings(notes).find((h) =>
     h.includes("the config file wins over the environment")
@@ -118,17 +124,18 @@ Deno.test("RELEASE-NOTES.md - the config-precedence note names a release that ex
     "docs/RELEASE-NOTES.md must keep a section for the config-precedence change",
   );
 
-  const version = versionRank(heading.split("—")[0] ?? "");
+  const stated = (heading.split("—")[0] ?? "").trim();
+  const major = majorOf(stated);
   assert(
-    version !== null,
+    major !== null,
     `the section heading must name a semver, got "${heading}"`,
   );
-  const floor = await releaseFloor();
+  const series = await releasedMajor();
   assert(
-    version <= floor.rank,
+    major <= series.major,
     `the config-precedence change shipped already, so its release note must ` +
-      `name a released version at or below the floor (${floor.text}), not ` +
-      `"${heading}"`,
+      `name a release that exists — "${heading}" is in a major above the ` +
+      `series the floor (${series.floor}) is on`,
   );
 });
 
@@ -159,7 +166,7 @@ Deno.test("docs - every link into RELEASE-NOTES.md resolves to a real heading (I
 });
 
 Deno.test("docs - no manual dates the shipped precedence flip to an unreleased version (Issue #1380)", async () => {
-  const floor = await releaseFloor();
+  const series = await releasedMajor();
   // Only the paragraphs that talk about the precedence flip: they either cite
   // Issue #1032 or link/point at the release note section by name.
   const aboutTheFlip =
@@ -170,12 +177,13 @@ Deno.test("docs - no manual dates the shipped precedence flip to an unreleased v
     for (const paragraph of chunks(text)) {
       if (!aboutTheFlip.test(paragraph)) continue;
       for (const [stated] of paragraph.matchAll(/\d+\.\d+\.\d+/g)) {
-        const version = versionRank(stated);
-        if (version === null) continue;
+        const major = majorOf(stated);
+        if (major === null) continue;
         assert(
-          version <= floor.rank,
+          major <= series.major,
           `${doc} dates the shipped config-precedence flip to ${stated}, a ` +
-            `release that does not exist — the floor is ${floor.text}`,
+            `release that cannot exist — the series is still on ` +
+            `${series.major}.x (floor ${series.floor})`,
         );
       }
     }

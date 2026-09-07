@@ -188,7 +188,7 @@ Deno.test("warnDeprecatedEnvSetting - each setting is reported on its own", () =
  * **Empty, and meant to stay that way** (Issue #1032). It held
  * `optional_feature_env.ts` and `agent_provider.ts`, the two that resolved
  * `env ?? config` — the reverse of the rule Issue #289 states. Both were
- * moved onto {@link resolveSetting} in the 2.0.0 flip, so every module that
+ * moved onto {@link resolveSetting} in the 1.4.0 flip, so every module that
  * resolves both sources now obeys one order and any new divergence fails the
  * conformance test below immediately, with nothing to hide behind.
  */
