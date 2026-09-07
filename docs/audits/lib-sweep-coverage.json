@@ -561,6 +561,7 @@
         "worker/deno/lib/gh_flag_parser.ts",
         "worker/deno/lib/gh_issue_lifecycle.ts",
         "worker/deno/lib/gh_local_state_guard.ts",
+        "worker/deno/lib/gh_pr_lifecycle.ts",
         "worker/deno/lib/git_base_ref.ts",
         "worker/deno/lib/git_branch.ts",
         "worker/deno/lib/git_branch_sync.ts",
