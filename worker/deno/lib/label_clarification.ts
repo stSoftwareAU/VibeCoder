@@ -2,7 +2,7 @@
  * Clarification workflow for the Vibe Coder worker (Issue #107).
  *
  * Provides:
- *   - `countClarificationRounds` — pure helper to count posted rounds
+ *   - `countClarificationRounds` — counts the rounds the fleet itself posted
  *   - `validateClarifyingQuestions` — sanity check on question text (Issue #190)
  *   - `postClarifyingQuestions` — post questions and mark the issue
  *
@@ -17,6 +17,11 @@ import type { ClarificationOptions, LabelManagerDeps } from "./label_types.ts";
 import { DEFAULT_LABEL_CONFIG } from "./label_types.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { buildDedupMarker, escalateToHuman } from "./needs_human_escalation.ts";
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredComments,
+} from "./alert_dedup_authors.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
 /**
@@ -82,13 +87,116 @@ export function ghClientFromCommandFn(
 }
 
 /**
- * Count how many "Clarification Needed" comments have been posted.
+ * The heading every clarification comment opens with.
  *
- * Pure function — no side effects.
+ * Kept as a constant so the counter and the two posters cannot drift apart.
  */
-export function countClarificationRounds(issueComments: string): number {
-  const matches = issueComments.match(/## Clarification Needed/g);
-  return matches?.length ?? 0;
+export const CLARIFICATION_HEADING = "## Clarification Needed";
+
+/**
+ * The `escalateToHuman` dedup key for the clarification round on one issue.
+ *
+ * Both posters (`postClarifyingQuestions` here, and the clarity-assessment
+ * phase) build the same key so the shared escalation helper recognises the
+ * comment they just posted; the round counter looks for the marker that key
+ * produces. One helper, so a rename cannot leave the counter looking for a
+ * marker nobody writes any more.
+ */
+export function clarificationDedupKey(issueNumber: number): string {
+  return `clarification-${issueNumber}`;
+}
+
+/**
+ * The two fields the round counter needs from a comment.
+ *
+ * Deliberately a structural shape rather than a new comment type: both
+ * `issue_data.ts`'s `IssueComment` and `types.ts`'s `GitHubComment` already
+ * satisfy it, so no caller has to reshape what it already holds.
+ */
+export interface ClarificationRoundComment {
+  /** The commenter's login — the only authenticated part of a match. */
+  author?: string | null;
+  /** The comment body. */
+  body: string;
+}
+
+/**
+ * Count the clarification rounds **the fleet itself** has posted.
+ *
+ * The round limit exists to stop the worker asking forever, and reaching it
+ * retires the clarity gate: no more clarifying questions, no `needs-human`,
+ * no escalation of an over-complex issue to planning. It used to be counted
+ * by substring-matching the `## Clarification Needed` heading across the
+ * concatenated comment blob that is handed to the model — text any commenter
+ * on a public repository may write, and counted by occurrence, so one comment
+ * could carry a whole limit's worth. Nothing consulted who wrote it.
+ *
+ * That is the marker-dedup-without-author-verification class recorded in
+ * {@link file://./marker_dedup_author_manifest.ts}, and it fails in the usual
+ * direction: towards silence, with the human-in-the-loop check switched off.
+ *
+ * So a round is counted only when it is **evidence**: a comment carrying the
+ * clarification heading or this issue's escalation marker, written by a fleet
+ * account. Two sources of authorship, in the same order
+ * `escalateToHuman` uses them:
+ *
+ *   1. `githubUser` — this worker's own login, which is worker configuration
+ *      rather than anything a comment can influence, so a comment it wrote is
+ *      evidence without reading a config; and
+ *   2. the shared fleet identity, through `selectFleetAuthoredComments`, so
+ *      rounds posted by a sibling host still count and there is no second
+ *      notion of "the fleet" in the worker.
+ *
+ * **Fail direction: towards keeping the gate on.** A comment that cannot be
+ * attributed — an unresolvable fleet set, an author GitHub did not supply —
+ * is not counted, so the worker keeps asking rather than waving an unclear
+ * issue through to the coding agent. Answering the questions, or the
+ * `documentation` label, still moves such an issue on.
+ *
+ * Counted per comment, not per occurrence: a comment is one round however
+ * many times it repeats the heading.
+ *
+ * @param comments - The issue's comments, with their authors.
+ * @param opts - Issue number, this worker's login, and author-check inputs.
+ * @returns How many rounds the fleet has posted.
+ */
+export async function countClarificationRounds(
+  comments: readonly ClarificationRoundComment[],
+  opts: {
+    /** The issue the rounds belong to — keys the escalation marker. */
+    issueNumber: number;
+    /** Repository, for the log line only. */
+    repo?: string;
+    /** This worker's own login (`GITHUB_USER`), when known. */
+    githubUser?: string;
+    /** Fleet identity inputs; tests state the fleet instead of a config. */
+    dedupAuthors?: AlertDedupAuthorOptions;
+    /** Sink for the author-verification diagnostics. */
+    log?: (message: string) => void;
+  },
+): Promise<number> {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const marker = buildDedupMarker(clarificationDedupKey(opts.issueNumber));
+  const candidates = comments.filter((comment) =>
+    typeof comment.body === "string" &&
+    (comment.body.includes(marker) ||
+      comment.body.includes(CLARIFICATION_HEADING))
+  );
+  if (candidates.length === 0) return 0;
+
+  const own = opts.githubUser
+    ? candidates.filter((c) => isFleetAuthor(c.author, [opts.githubUser!]))
+    : [];
+  const rest = candidates.filter((c) => !own.includes(c));
+  const verified = await selectFleetAuthoredComments(
+    rest,
+    `clarification round count on ${opts.repo ?? "issue"}#${opts.issueNumber}`,
+    opts.dedupAuthors ?? {},
+    log,
+    "the round is not counted and the clarity gate stays on — a heading " +
+      "anyone can write must not disable a human-in-the-loop check",
+  );
+  return own.length + verified.length;
 }
 
 /**
@@ -143,7 +251,7 @@ export async function postClarifyingQuestions(
   // secret into its questions output must be masked before it is posted.
   const safeQuestions = redactSecrets(options.clarifyingQuestions);
 
-  let commentBody = `## Clarification Needed
+  let commentBody = `${CLARIFICATION_HEADING}
 
 Before proceeding with this issue, I need some additional information to ensure the implementation meets your expectations.
 
@@ -169,7 +277,7 @@ If you want the worker to proceed without answering these questions, add the \`d
   // Append the escalation dedup marker (Issue #2210) so the shared
   // `escalateToHuman` helper recognises this comment and adds the label
   // without posting a duplicate.
-  const dedupKey = `clarification-${options.issueNumber}`;
+  const dedupKey = clarificationDedupKey(options.issueNumber);
   commentBody += `\n\n${buildDedupMarker(dedupKey)}`;
 
   try {
