@@ -58,13 +58,26 @@ import {
   GIT_GUARD_ALLOW_MARKER,
   GIT_GUARD_REFUSE_MARKER,
 } from "./git_guard_cli.ts";
+import {
+  type GuardModulePathOptions,
+  resolveGuardModulePath,
+} from "./guard_module_path.ts";
 import { posixSingleQuote as shellQuote } from "./shell_quote.ts";
 
-/** Absolute path of the guard entry point the `git` shim invokes. */
-export function defaultGitGuardModulePath(): string {
-  return decodeURIComponent(
-    new URL("./git_guard_cli.ts", import.meta.url).pathname,
-  );
+/**
+ * Absolute path of the guard entry point the `git` shim invokes.
+ *
+ * Resolved against the read-only checkout rather than this module's own path
+ * (Issue #1444) — see {@link resolveGuardModulePath}.
+ *
+ * @param opts - Environment lookup, existence probe and warning sink.
+ * @returns The checkout copy when the launcher named one carrying the module,
+ *   otherwise the copy the worker is running from.
+ */
+export function defaultGitGuardModulePath(
+  opts: GuardModulePathOptions = {},
+): string {
+  return resolveGuardModulePath("git_guard_cli.ts", opts);
 }
 
 /**

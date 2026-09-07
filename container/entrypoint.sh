@@ -418,6 +418,13 @@ if [[ -n "${HOME:-}" ]]; then
     # found in ~/.worker-src/worker/deno/lib/../../../prompts". Point the
     # prompt loader at the checkout explicitly.
     export PROMPTS_DIR="${BASE_DIR}/prompts"
+    # And name the checkout for the agent-side gh/git guards (Issue #1444).
+    # The staged tree above is writable by `vibe` — the uid the coding agent
+    # runs as — and the PATH wrappers re-read their guard module on every
+    # call, so the guard must execute the mounted, unwritable copy. The image
+    # bakes VIBE_BASE_DIR, but BASE_DIR is derived when it is unset, so it is
+    # exported here rather than assumed.
+    export VIBE_BASE_DIR="${BASE_DIR}"
   else
     echo "Warning: could not stage the worker source locally — running from ${BASE_DIR} (virtiofs)" >&2
   fi

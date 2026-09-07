@@ -13,6 +13,7 @@ import {
   defaultGitGuardModulePath,
   renderGitShimScript,
 } from "../lib/git_guard_shim.ts";
+import { envFrom } from "./support/env_lookup.ts";
 import {
   type GhGuardShim,
   type GhGuardShimOutcome,
@@ -48,6 +49,22 @@ async function makeStubGit(): Promise<StubGit> {
   return { dir, log };
 }
 
+/**
+ * The checkout under test, as the guard resolution names it (Issue #1444).
+ *
+ * The wrapper's guard entry point is resolved from `VIBE_BASE_DIR` so it runs
+ * from the read-only checkout rather than the agent-writable staged copy. A
+ * suite that let the ambient value through would execute the *mounted*
+ * checkout's guard instead of this branch's, so every install below names this
+ * one explicitly.
+ */
+const CHECKOUT_ENV = envFrom({
+  VIBE_BASE_DIR: new URL("../../../", import.meta.url).pathname.replace(
+    /\/$/,
+    "",
+  ),
+});
+
 /** Unwrap an installed shim, failing the test when the install was refused. */
 function expectInstalled(outcome: GhGuardShimOutcome): GhGuardShim {
   assert(
@@ -63,6 +80,7 @@ function installOver(stub: StubGit): Promise<GhGuardShimOutcome> {
     baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
     active: true,
     allowedRepos: ["owner/repo"],
+    env: CHECKOUT_ENV,
   });
 }
 
@@ -286,6 +304,7 @@ Deno.test({
           baseEnv: { ...Deno.env.toObject(), PATH: dir },
           active: true,
           allowedRepos: ["owner/repo"],
+          env: CHECKOUT_ENV,
         }),
       );
       assertEquals(shim.gitShimPath, undefined);
@@ -300,5 +319,8 @@ Deno.test({
 });
 
 Deno.test("git guard shim - resolves its guard module inside the worker lib", () => {
-  assertStringIncludes(defaultGitGuardModulePath(), "/lib/git_guard_cli.ts");
+  assertStringIncludes(
+    defaultGitGuardModulePath({ env: CHECKOUT_ENV }),
+    "/lib/git_guard_cli.ts",
+  );
 });

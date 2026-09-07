@@ -106,6 +106,7 @@
         "worker/deno/lib/git_guard_cli.ts",
         "worker/deno/lib/git_guard_shim.ts",
         "worker/deno/lib/gitignore_enforcer.ts",
+        "worker/deno/lib/guard_module_path.ts",
         "worker/deno/lib/handover_note.ts",
         "worker/deno/lib/health_check_cache.ts",
         "worker/deno/lib/idle_starvation_escalation.ts",

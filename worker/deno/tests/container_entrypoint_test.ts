@@ -71,6 +71,12 @@ interface EntrypointOpts {
   args?: string[];
   /** Run with HOME genuinely unset (the legacy-path case only). */
   homeless?: boolean;
+  /**
+   * Entry point to run; defaults to the repository's own. A case that needs
+   * BASE_DIR *derived* rather than named runs a copy planted in its fixture
+   * repo, so the derivation lands on the fixture (Issue #1444).
+   */
+  script?: string;
 }
 
 /**
@@ -117,7 +123,7 @@ function spawnEntrypoint(opts: EntrypointOpts): Deno.ChildProcess {
   // Absolute interpreter path: the child PATH is deliberately restricted to
   // the stub bin directory, so `bash` must not be resolved through it.
   return new Deno.Command("/bin/bash", {
-    args: [ENTRYPOINT, ...(opts.args ?? [])],
+    args: [opts.script ?? ENTRYPOINT, ...(opts.args ?? [])],
     env: entrypointEnv(opts),
     clearEnv: true,
     stdout: "piped",
@@ -1732,6 +1738,58 @@ Deno.test("entrypoint - with no extension configured the launch is unchanged (Is
       false,
       `an unconfigured deployment says nothing about extensions:\n${stderr}`,
     );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/** Create a stub `deno` that records the checkout-naming environment it saw. */
+async function stubDenoRecordingCheckoutEnv(dir: string): Promise<string> {
+  const binDir = `${dir}/bin`;
+  const envFile = `${dir}/checkout-env.txt`;
+  await Deno.mkdir(binDir, { recursive: true });
+  await Deno.writeTextFile(
+    `${binDir}/deno`,
+    "#!/bin/bash\n" +
+      `{ printf 'VIBE_BASE_DIR=%s\\n' "\${VIBE_BASE_DIR:-}"; ` +
+      `printf 'PROMPTS_DIR=%s\\n' "\${PROMPTS_DIR:-}"; } > "${envFile}"\n` +
+      "exit 0\n",
+  );
+  await Deno.chmod(`${binDir}/deno`, 0o755);
+  return envFile;
+}
+
+Deno.test("entrypoint - names the checkout for the gh/git guards when it staged the source (Issue #1444)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const envFile = await stubDenoRecordingCheckoutEnv(dir);
+    await fakeRepo(dir);
+    // A copy of the real entrypoint inside the fixture, so the unset
+    // VIBE_BASE_DIR derives to the fixture rather than this checkout.
+    await Deno.mkdir(`${dir}/repo/container`, { recursive: true });
+    await Deno.copyFile(ENTRYPOINT, `${dir}/repo/container/entrypoint.sh`);
+    const home = `${dir}/home`;
+    await Deno.mkdir(home, { recursive: true });
+
+    const { code } = await runEntrypoint({
+      dir,
+      script: `${dir}/repo/container/entrypoint.sh`,
+      // mkdir/cp must resolve for the staging block, as in the cases above.
+      path: `${dir}/bin:/usr/bin:/bin`,
+      env: { HOME: home },
+    });
+    assertEquals(code, 0);
+
+    // The staged copy is what runs; the guards must still resolve from the
+    // read-only checkout, so the driver is handed its path explicitly.
+    const staged = `${scratchRoot(dir)}/worker-src`;
+    assert(
+      await Deno.stat(`${staged}/worker/deno/mod.ts`).then(() => true),
+      "the source was not staged, so this case proves nothing",
+    );
+    const recorded = (await Deno.readTextFile(envFile)).trim().split("\n");
+    assertEquals(recorded[0], `VIBE_BASE_DIR=${dir}/repo`);
+    assertEquals(recorded[1], `PROMPTS_DIR=${dir}/repo/prompts`);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

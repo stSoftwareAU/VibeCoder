@@ -85,6 +85,10 @@ import {
 } from "./git_guard_shim.ts";
 import { posixSingleQuote as shellQuote } from "./shell_quote.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import {
+  type GuardModulePathOptions,
+  resolveGuardModulePath,
+} from "./guard_module_path.ts";
 import { type ClaimedIssue, claimedIssueGuard } from "./claimed_issue_guard.ts";
 
 /**
@@ -233,11 +237,15 @@ export function resolveExecutable(
   return undefined;
 }
 
-/** Absolute path of the guard entry point this shim invokes. */
-function defaultGuardModulePath(): string {
-  return decodeURIComponent(
-    new URL("./gh_guard_cli.ts", import.meta.url).pathname,
-  );
+/**
+ * Absolute path of the guard entry point this shim invokes.
+ *
+ * Resolved against the read-only checkout rather than this module's own path
+ * (Issue #1444): the worker runs from a staged copy the coding agent's own uid
+ * can write to, and the wrapper re-reads the guard on every `gh` call.
+ */
+function defaultGuardModulePath(opts: GuardModulePathOptions = {}): string {
+  return resolveGuardModulePath("gh_guard_cli.ts", opts);
 }
 
 /**
@@ -470,7 +478,8 @@ export async function installGhGuardShim(
   if (!realGhPath) return await unavailable("no gh binary found on PATH");
 
   const denoPath = opts.denoPath ?? Deno.execPath();
-  const guardModulePath = opts.guardModulePath ?? defaultGuardModulePath();
+  const guardModulePath = opts.guardModulePath ??
+    defaultGuardModulePath({ env, warn });
   const makeTempDir = opts.makeTempDir ??
     (() => Deno.makeTempDir({ prefix: "vibe-gh-guard-" }));
 
@@ -497,7 +506,7 @@ export async function installGhGuardShim(
         gitShimPath,
         renderGitShimScript({
           denoPath,
-          guardModulePath: defaultGitGuardModulePath(),
+          guardModulePath: defaultGitGuardModulePath({ env, warn }),
           realGitPath,
           verdictDir: dir,
         }),
