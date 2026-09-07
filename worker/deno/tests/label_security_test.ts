@@ -15,6 +15,8 @@ import {
   type OperationalLabelResult,
   verifyOperationalLabels,
 } from "../lib/label_security.ts";
+import { operationalDispatchLabels } from "../lib/operational_dispatch_labels.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 
 // =============================================================================
 // OPERATIONAL_LABEL_NAMES constant tests
@@ -1051,5 +1053,179 @@ Deno.test("label_security - a label that makes the worker ACT is still verified"
   assertEquals(result.untrustedLabels, [{
     label: "best-model",
     addedBy: "mallory",
+  }]);
+});
+
+// =============================================================================
+// grill-me trust verification and dispatch-list drift (Issue #1521)
+// =============================================================================
+
+/** Run `fn` with `console.error` captured; returns the logged lines. */
+async function captureErrors(fn: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  };
+  try {
+    await fn();
+  } finally {
+    console.error = original;
+  }
+  return lines;
+}
+
+Deno.test("label_security - OPERATIONAL_LABEL_NAMES includes grill-me (Issue #1521)", () => {
+  // `grill-me` dispatches the grilling phase via operationalDispatchLabels(),
+  // so it must be trust-verified here like every other dispatch label.
+  assertEquals(OPERATIONAL_LABEL_NAMES.includes("grill-me"), true);
+});
+
+Deno.test("label_security - every operational dispatch label is trust-verified (Issue #1521)", () => {
+  // Set-equivalence guard: the privileged dispatch set is maintained in
+  // operational_dispatch_labels.ts, and every member of it must also be
+  // authorship-checked here. A future dispatch label added there without a
+  // matching entry in OPERATIONAL_LABEL_NAMES fails this case.
+  const config = buildDefaultWorkerConfig();
+  for (const label of operationalDispatchLabels(config)) {
+    assertEquals(
+      isOperationalLabel(label),
+      true,
+      `dispatch label '${label}' is not trust-verified by isOperationalLabel()`,
+    );
+  }
+});
+
+Deno.test("label_security - operator-renamed dispatch labels are covered via extraOperationalLabels (Issue #1521)", () => {
+  // Dispatch labels are operator-renamable, so the static constant can only
+  // cover the defaults. A caller that supplies the config-derived dispatch
+  // labels as extras covers the renamed names too.
+  const config = buildDefaultWorkerConfig({
+    grillMeLabel: "roast-me",
+    planningLabel: "plan-it",
+  });
+  const dispatchLabels = operationalDispatchLabels(config);
+  for (const label of dispatchLabels) {
+    assertEquals(
+      isOperationalLabel(label, dispatchLabels),
+      true,
+      `renamed dispatch label '${label}' is not trust-verified`,
+    );
+  }
+});
+
+Deno.test("label_security - an untrusted grill-me is stripped and audited (Issue #1521)", async () => {
+  const mockGh = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([
+      {
+        event: "labeled",
+        label: { name: "grill-me" },
+        actor: { login: "mallory" },
+      },
+    ]));
+
+  let result: OperationalLabelResult | undefined;
+  const lines = await captureErrors(async () => {
+    result = await verifyOperationalLabels(
+      "owner/repo",
+      1521,
+      ["grill-me", "bug"],
+      ["alice"],
+      mockGh,
+    );
+  });
+
+  assertEquals(result?.trustedLabels, []);
+  assertEquals(result?.untrustedLabels, [{
+    label: "grill-me",
+    addedBy: "mallory",
+  }]);
+  // The label is stripped from the issue record the collectors carry forward.
+  assertEquals(filterTrustedLabels(["grill-me", "bug"], result!), ["bug"]);
+  // …and the strip is visible in the audit trail.
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0]!, "[SECURITY] [UNTRUSTED_LABEL_CHANGE]");
+  assertStringIncludes(lines[0]!, "grill-me");
+  assertStringIncludes(lines[0]!, "mallory");
+});
+
+Deno.test("label_security - grill-me with no verifiable adder fails closed (Issue #1521)", async () => {
+  // grill-me dispatches a phase, so it is permissive rather than blocking-only:
+  // an unverifiable adder must strip it, matching planning / question /
+  // needs-revision rather than failed / refine-issue.
+  const mockGh = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([
+      { event: "labeled", label: { name: "grill-me" }, actor: null },
+    ]));
+
+  const result = await verifyOperationalLabels(
+    "owner/repo",
+    1521,
+    ["grill-me"],
+    ["alice"],
+    mockGh,
+  );
+
+  assertEquals(result.trustedLabels, []);
+  assertEquals(result.untrustedLabels, [{
+    label: "grill-me",
+    addedBy: "unknown",
+  }]);
+});
+
+Deno.test("label_security - grill-me added by an allowed human is kept (Issue #1521)", async () => {
+  const mockGh = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([
+      {
+        event: "labeled",
+        label: { name: "Grill-Me" },
+        actor: { login: "Alice" },
+      },
+    ]));
+
+  const result = await verifyOperationalLabels(
+    "owner/repo",
+    1521,
+    ["Grill-Me"],
+    ["alice"],
+    mockGh,
+  );
+
+  assertEquals(result.trustedLabels, ["Grill-Me"]);
+  assertEquals(result.untrustedLabels, []);
+});
+
+Deno.test("label_security - worker failure bookkeeping survives beside an untrusted grill-me (Issue #1521)", async () => {
+  // Trust-verifying grill-me must not disturb the worker's own labels: the
+  // failure marks it applies stay trusted, while a grill-me the worker applied
+  // to itself is stripped (self-dispatch, per the fleet exclusion of #3225).
+  const mockGh = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([
+      {
+        event: "labeled",
+        label: { name: "failed-once" },
+        actor: { login: "vibe-bot" },
+      },
+      {
+        event: "labeled",
+        label: { name: "grill-me" },
+        actor: { login: "vibe-bot" },
+      },
+    ]));
+
+  const result = await verifyOperationalLabels(
+    "owner/repo",
+    1521,
+    ["failed-once", "grill-me"],
+    ["alice"],
+    mockGh,
+    "vibe-bot",
+    ["vibe-bot"],
+  );
+
+  assertEquals(result.trustedLabels, ["failed-once"]);
+  assertEquals(result.untrustedLabels, [{
+    label: "grill-me",
+    addedBy: "vibe-bot",
   }]);
 });

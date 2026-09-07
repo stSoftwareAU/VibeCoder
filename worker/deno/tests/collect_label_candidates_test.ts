@@ -535,3 +535,78 @@ Deno.test(
     );
   },
 );
+
+// ---------------------------------------------------------------------------
+// grill-me is trust-gated here too (Issue #1521)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collect_label_candidates - strips a grill-me label added by an untrusted actor (Issue #1521)",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 61,
+          title: "Grill-me smuggled in",
+          url: "https://github.com/owner/repo/issues/61",
+          assignees: [],
+          labels: [{ name: "top-priority" }, { name: "grill-me" }],
+          createdAt: "2024-03-04T00:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "top-priority" },
+          actor: { login: "alice" },
+          created_at: "2024-03-04T00:00:00Z",
+        },
+        // grill-me applied by a non-allowlisted triage collaborator.
+        {
+          event: "labeled",
+          label: { name: "grill-me" },
+          actor: { login: "mallory" },
+          created_at: "2024-03-04T01:00:00Z",
+        },
+      ],
+      issueView: { title: "Grill-me smuggled in", body: "" },
+    });
+
+    const lines: string[] = [];
+    const cache = createTestCache();
+    const result = await collectLabelCandidates(
+      "owner/repo",
+      config,
+      {
+        ...buildOptions(mockGh, cache),
+        diagnostics: createDiagnostics({
+          enabled: true,
+          write: (line) => lines.push(line),
+        }),
+      },
+      [],
+      [],
+      createIssueFetcher(mockGh),
+      [],
+    );
+
+    // The issue still qualifies on its trusted `top-priority` label …
+    assertEquals(result.candidates.length, 1);
+    // … but the untrusted grill-me was stripped and audited.
+    assertEquals(
+      lines.some(
+        (l) =>
+          l.includes("issue=#61") &&
+          l.includes("untrusted-operational-label") &&
+          l.includes("grill-me(mallory)"),
+      ),
+      true,
+      `expected an untrusted-operational-label diagnostic, got: ${
+        lines.join("\n")
+      }`,
+    );
+  },
+);
