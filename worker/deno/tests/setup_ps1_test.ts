@@ -40,26 +40,53 @@ interface PwshRun {
  *
  * `env` is applied to the child process, so a test controls HOME, the
  * credential directory and the config path exactly as the bash suite does.
+ *
+ * `umask` runs the interpreter under an explicit file-creation mask, because
+ * PowerShell cannot set one itself and the mask is exactly what the
+ * creation-time permission cases (Issue #1374) are about: under the runner's
+ * own mask a directory created wide could still look owner-only.
  */
 async function runPwsh(
   body: string,
   env: Record<string, string>,
+  umask?: string,
 ): Promise<PwshRun> {
   const script = `
     $ErrorActionPreference = "Stop"
     . "${SETUP_PS1}"
 ${body}
   `;
-  const output = await new Deno.Command(PWSH!, {
-    args: ["-NoProfile", "-NonInteractive", "-Command", script],
-    env: {
-      // A PATH without gh or claude keeps the lookups off the network.
-      PATH: "/usr/bin:/bin",
-      ...env,
-    },
-    stdin: "null",
-    clearEnv: true,
-  }).output();
+  if (umask !== undefined && !/^[0-7]{3}$/.test(umask)) {
+    throw new Error(`umask must be three octal digits, got: ${umask}`);
+  }
+  const command = umask === undefined
+    ? new Deno.Command(PWSH!, {
+      args: ["-NoProfile", "-NonInteractive", "-Command", script],
+      env: {
+        // A PATH without gh or claude keeps the lookups off the network.
+        PATH: "/usr/bin:/bin",
+        ...env,
+      },
+      stdin: "null",
+      clearEnv: true,
+    })
+    // The interpreter and the script travel as `$0`/`$1`, never interpolated
+    // into the shell command, so neither can be read as shell syntax.
+    : new Deno.Command("/bin/sh", {
+      args: [
+        "-c",
+        `umask ${umask}; exec "$0" -NoProfile -NonInteractive -Command "$1"`,
+        PWSH!,
+        script,
+      ],
+      env: {
+        PATH: "/usr/bin:/bin",
+        ...env,
+      },
+      stdin: "null",
+      clearEnv: true,
+    });
+  const output = await command.output();
   const decoder = new TextDecoder();
   return {
     code: output.code,
@@ -978,3 +1005,267 @@ pwshTest(
     }
   },
 );
+
+// ── A credential provider.env cannot hold (Issue #1301) ─────────────────
+//
+// `provider.env` is one `NAME=value` line, and all three readers — setup.sh,
+// setup.ps1 and worker/deno/lib/credential_preflight.ts — split on the first
+// `=` and take the rest of the line. A value carrying a line break cannot be
+// represented that way, so writing it stores a truncated credential behind a
+// ✓ and leaves the worker to discover the broken token unattended. setup.sh
+// refuses it (`provision_provider_credential`); these are the twin cases.
+
+pwshTest(
+  "setup.ps1 - a credential holding a newline is refused, not truncated",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const run = await runPwsh(
+        `
+    $row = Get-VibeProviderCredentialRow -Id "claude"
+    if (Set-VibeProviderCredential -Dir (Get-VibeCredentialDir) -Provider $row -Quiet) {
+        Write-Output "WROTE=yes"
+    } else {
+        Write-Output "WROTE=no"
+    }
+        `,
+        {
+          HOME: tmp,
+          CONFIG_FILE: `${tmp}/.config.json`,
+          VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY: "sk-ant-first\nsk-ant-second",
+        },
+      );
+      assertEquals(run.code, 0, run.output);
+      assertStringIncludes(run.output, "WROTE=no");
+      assert(/newline/i.test(run.output), `no newline refusal: ${run.output}`);
+
+      const dir = `${tmp}/.vibe-coder/credentials/claude`;
+      assertEquals(
+        await exists(`${dir}/provider.env`),
+        false,
+        "a value that cannot be represented must not be written",
+      );
+      // Refused before the directory is created: nothing is left behind.
+      assertEquals(
+        await exists(dir),
+        false,
+        "a refused credential must leave no directory behind",
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+pwshTest(
+  "setup.ps1 - a pasted credential ending in CRLF is refused too",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      // The interactive flow's path: the secret arrives as a parameter, which
+      // is where a copy-paste picks up a trailing line break.
+      const run = await runPwsh(
+        `
+    $row = Get-VibeProviderCredentialRow -Id "claude"
+    $secret = "sk-ant-pasted" + [char]13 + [char]10
+    if (Set-VibeProviderCredential -Dir (Get-VibeCredentialDir) -Provider $row \`
+        -VarName "CLAUDE_CODE_OAUTH_TOKEN" -Secret $secret -Quiet) {
+        Write-Output "WROTE=yes"
+    } else {
+        Write-Output "WROTE=no"
+    }
+        `,
+        { HOME: tmp, CONFIG_FILE: `${tmp}/.config.json` },
+      );
+      assertEquals(run.code, 0, run.output);
+      assertStringIncludes(run.output, "WROTE=no");
+      assert(/newline/i.test(run.output), `no newline refusal: ${run.output}`);
+      assertEquals(
+        await exists(`${tmp}/.vibe-coder/credentials/claude/provider.env`),
+        false,
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+pwshTest(
+  "setup.ps1 - a credential with no line break is still written",
+  async () => {
+    // The guard must refuse only what cannot be represented: the ordinary
+    // credential still reaches the file.
+    const tmp = await Deno.makeTempDir();
+    try {
+      const run = await runPwsh(
+        `
+    $row = Get-VibeProviderCredentialRow -Id "claude"
+    if (Set-VibeProviderCredential -Dir (Get-VibeCredentialDir) -Provider $row -Quiet) {
+        Write-Output "WROTE=yes"
+    } else {
+        Write-Output "WROTE=no"
+    }
+        `,
+        {
+          HOME: tmp,
+          CONFIG_FILE: `${tmp}/.config.json`,
+          VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY: "sk-ant-single-line",
+        },
+      );
+      assertEquals(run.code, 0, run.output);
+      assertStringIncludes(run.output, "WROTE=yes");
+      assertEquals(
+        await Deno.readTextFile(
+          `${tmp}/.vibe-coder/credentials/claude/provider.env`,
+        ),
+        "ANTHROPIC_API_KEY=sk-ant-single-line\n",
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+// ── Creation-time permissions (Issue #1374) ─────────────────────────────
+//
+// A directory created under the ambient umask and narrowed by a following
+// chmod/ACL call is group- and world-readable for the window between the two,
+// and every parent created on the way keeps that loose mode permanently,
+// because only the last two are ever narrowed. The mode a directory is
+// *finally* left with cannot see that window, so these cases observe the mode
+// each directory has at the instant it is created, by resolving `mkdir` to a
+// shim that records it — the same technique the setup.sh suite uses.
+
+/**
+ * A `mkdir` that runs the real one and records the mode of every directory it
+ * created, one `<octal> <path>` line per directory, into `mkdir.log` beside
+ * itself.
+ */
+const PS_MKDIR_OBSERVER = `#!/usr/bin/env bash
+real=""
+for candidate in /bin/mkdir /usr/bin/mkdir; do
+    if [[ -x "$candidate" ]]; then
+        real="$candidate"
+        break
+    fi
+done
+if [[ -z "$real" ]]; then
+    echo "mkdir observer: no real mkdir found" >&2
+    exit 127
+fi
+"$real" "$@" || exit $?
+log="\${0%/*}/mkdir.log"
+for arg in "$@"; do
+    [[ -d "$arg" ]] || continue
+    mode="$(stat -c '%a' "$arg" 2>/dev/null || stat -f '%Lp' "$arg" 2>/dev/null || echo '?')"
+    printf '%s %s\\n' "$mode" "$arg" >> "$log"
+done
+`;
+
+/** One directory as it existed the instant `mkdir` created it. */
+interface CreatedDir {
+  mode: number;
+  path: string;
+}
+
+/**
+ * Run `fn` with a PATH whose `mkdir` is the observer above (and whose `gh`
+ * reaches nothing), returning what `fn` returned alongside every directory
+ * created during the run.
+ */
+async function withMkdirObserver<T>(
+  fn: (path: string) => Promise<T>,
+): Promise<{ result: T; created: CreatedDir[] }> {
+  const bin = await Deno.makeTempDir({ prefix: "vibe_ps1_mkdir_" });
+  try {
+    await Deno.writeTextFile(`${bin}/gh`, "#!/usr/bin/env bash\nexit 1\n");
+    await Deno.chmod(`${bin}/gh`, 0o755);
+    await Deno.writeTextFile(`${bin}/mkdir`, PS_MKDIR_OBSERVER);
+    await Deno.chmod(`${bin}/mkdir`, 0o755);
+
+    const result = await fn(`${bin}:/usr/bin:/bin`);
+
+    const log = await Deno.readTextFile(`${bin}/mkdir.log`).catch(() => "");
+    const created = log.split("\n").filter((line) => line.length > 0).map(
+      (line) => {
+        const [mode, ...rest] = line.split(" ");
+        return { mode: parseInt(mode ?? "", 8), path: rest.join(" ") };
+      },
+    );
+    return { result, created };
+  } finally {
+    await Deno.remove(bin, { recursive: true });
+  }
+}
+
+/** Directories an observed run created with any group or world bit set. */
+function exposed(created: CreatedDir[]): string[] {
+  return created
+    .filter((dir) => (dir.mode & 0o077) !== 0)
+    .map((dir) => `${dir.path} (${dir.mode.toString(8)})`);
+}
+
+Deno.test({
+  name:
+    "setup.ps1 - every credential directory is owner-only from creation (Issue #1374)",
+  // POSIX modes: the Windows half of Protect-VibePath is ACLs, which this
+  // observation cannot see.
+  ignore: PWSH === null || Deno.build.os === "windows",
+  fn: async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      // Two levels of the credential path are missing, so the parents
+      // `mkdir -p` creates on the way are observed as well as the leaf.
+      const dir = `${tmp}/.vibe-coder/credentials`;
+      const { result, created } = await withMkdirObserver((path) =>
+        runPwsh(
+          "    Invoke-VibeCredentialProvisioning",
+          {
+            PATH: path,
+            HOME: tmp,
+            CONFIG_FILE: `${tmp}/.config.json`,
+            VIBE_LAUNCHAGENT_GH_TOKEN: "gho_provisioned",
+            VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY: "sk-ant-provisioned",
+          },
+          // The permissive default of the shared multi-user host this
+          // provisioning has to be safe on.
+          "022",
+        )
+      );
+      assertEquals(result.code, 0, result.output);
+
+      // Both credential directories are created through `mkdir`, which is
+      // what the observation depends on: a run that created them any other
+      // way would leave the log empty and pass on nothing.
+      const underDir = created.filter((entry) =>
+        entry.path === dir || entry.path.startsWith(`${dir}/`)
+      );
+      assert(
+        underDir.length >= 2,
+        `expected the provider and gh directories to be observed, saw: ` +
+          JSON.stringify(created),
+      );
+      assertEquals(
+        exposed(underDir),
+        [],
+        "every credential directory must be owner-only from the instant it exists",
+      );
+
+      // The parents created on the way are the half a later chmod can never
+      // repair — nothing ever narrows `~/.vibe-coder`, so the mode it has now
+      // is the mode it was created with.
+      assertEquals(
+        await modeOf(`${tmp}/.vibe-coder`),
+        0o700,
+        "a parent created on the way keeps its creation mode forever",
+      );
+
+      // And the end state is what the worker's preflight requires.
+      assertEquals(await modeOf(dir), 0o700);
+      assertEquals(await modeOf(`${dir}/claude`), 0o700);
+      assertEquals(await modeOf(`${dir}/gh`), 0o700);
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+});

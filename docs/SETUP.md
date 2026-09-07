@@ -388,10 +388,13 @@ Docker first, then Podman. What the runtime runs and how the image is built is
 credential directories are `chmod` 0700 and the files within 0600 — and they
 are *created* owner-only, under a `umask 077`, rather than created under the
 host's ambient umask and narrowed afterwards, so no window exists in which a
-co-resident local account can enumerate them (Issue #1374). On Windows
-the same protection is an ACL: `Protect-VibePath` (`setup.ps1`) strips the
-path's inherited access outright and grants full control to the current
-identity alone, so a profile that gives *Users* read access cannot leak a
+co-resident local account can enumerate them (Issue #1374). `setup.ps1` keeps
+the same guarantee on a POSIX host — `New-VibeCredentialDirectory` creates
+every level through one `umask 077` `mkdir -p`, exactly as `setup.sh` does. On
+Windows the same protection is an ACL: each missing directory is created with
+an explicit, de-inherited ACL granting the current identity alone, and
+`Protect-VibePath` (`setup.ps1`) re-applies it to a directory that already
+existed, so a profile that gives *Users* read access cannot leak a
 credential. Windows also writes every credential and config file LF-terminated
 and without a byte-order mark (`Write-VibeTextFile`), because the container
 reads them on Linux — hand-edit these files on Windows with the same
@@ -681,8 +684,9 @@ The file is **data, never a shell script**. Every reader — `setup.sh`,
 first `=` and takes the remainder verbatim, so a value holding a space, a `;`,
 a `#` or `$(...)` is stored and read as those characters rather than executed
 (Issue #1301). One consequence: the whole value must fit on one line, so
-`setup.sh` refuses to write a credential containing a line break instead of
-storing a truncated token behind a success message.
+`setup.sh` and `setup.ps1` both refuse to write a credential containing a line
+break instead of storing a truncated token behind a success message — a
+credential pasted with a trailing CR or LF is reported and nothing is written.
 
 | Vendor | File | Accepted variable names |
 |--------|------|-------------------------|

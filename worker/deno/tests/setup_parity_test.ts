@@ -101,9 +101,10 @@ Deno.test("extractSetupContract - names a script that decides for itself", () =>
 
   const faults = setupContractFaults(contract);
   // Delegation, lockfile, every shared subcommand, the supervisor, gh
-  // provisioning, credential validation, the provider gate (Issue #745) and
-  // the cache-only work dir removal.
-  assertEquals(faults.length, 8, faults.join("\n"));
+  // provisioning, credential validation, the provider gate (Issue #745), the
+  // cache-only work dir removal, owner-only credential directory creation
+  // (Issue #1374) and the newline-credential refusal (Issue #1301).
+  assertEquals(faults.length, 10, faults.join("\n"));
 });
 
 Deno.test("setupContractFaults - a dropped setup step is named", () => {
@@ -121,6 +122,11 @@ Deno.test("setupContractFaults - a dropped setup step is named", () => {
       "write_gh_hosts_file() { : > hosts.yml; }",
       "claude -p 'Say hello'",
       'rm -rf "${dir}/.vibe-cache"',
+      // Credential handling too: owner-only directories (Issue #1374) and the
+      // refusal of a value the one-line format cannot hold (Issue #1301).
+      "        umask 077",
+      '        mkdir -p "$@"',
+      `[[ "$value" == *$'\\n'* ]] && return 1`,
     ].join("\n"),
     "bash",
   );
@@ -185,6 +191,92 @@ Deno.test("compareSetupContracts - a script with no supervisor is a real diverge
   assert(
     divergences.some((message) => message.includes("platform supervisor")),
     `a supervisor-less setup.ps1 must diverge: ${divergences.join("\n")}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Credential handling (Issues #1301, #1374)
+//
+// The contract compared what each script *runs*, not how it handles the
+// credential it was given, so a security fix applied to one side and not the
+// other passed cleanly — which is how setup.ps1 came to be missing both of
+// these (Issue #1430). Credential handling is part of the contract now.
+// ---------------------------------------------------------------------------
+
+Deno.test("extractSetupContract - reads a script's credential handling", () => {
+  const sound = extractSetupContract(
+    "sound.sh",
+    [
+      "(",
+      "    umask 077",
+      '    mkdir -p "$@"',
+      ")",
+      `if [[ "$value" == *$'\\n'* || "$value" == *$'\\r'* ]]; then`,
+      '    print_error "contains a newline"',
+      "fi",
+    ].join("\n"),
+    "bash",
+  );
+  assertEquals(sound.createsCredentialDirsOwnerOnly, true);
+  assertEquals(sound.refusesNewlineCredential, true);
+
+  const wide = extractSetupContract(
+    "wide.sh",
+    [
+      'mkdir -p "$provider_dir"',
+      'chmod 700 "$provider_dir"',
+      'printf "%s=%s\\n" "$name" "$value" > "$file"',
+    ].join("\n"),
+    "bash",
+  );
+  assertEquals(wide.createsCredentialDirsOwnerOnly, false);
+  assertEquals(wide.refusesNewlineCredential, false);
+});
+
+Deno.test("extractSetupContract - a commented-out guard does not count", () => {
+  const contract = extractSetupContract(
+    "commented.ps1",
+    [
+      `# & sh -c 'umask 077; mkdir -p -- "$1"' sh $Path`,
+      '# if ($value -match "[`r`n]") { return $false }',
+      "New-Item -ItemType Directory -Force -Path $providerDir | Out-Null",
+    ].join("\n"),
+    "powershell",
+  );
+  assertEquals(contract.createsCredentialDirsOwnerOnly, false);
+  assertEquals(contract.refusesNewlineCredential, false);
+});
+
+Deno.test("compareSetupContracts - a one-sided credential fix is a divergence (Issue #1430)", () => {
+  // Exactly the shape this contract failed to catch: the guard lands on
+  // setup.sh and setup.ps1 keeps writing whatever it was handed.
+  const drifted = extractSetupContract(
+    "setup.ps1",
+    SETUP_PS1_SOURCE
+      .replace(/if \(\$value -match "\[`r`n\]"\) \{/, "if ($false) {")
+      .replace(/umask 077; mkdir -p/, "mkdir -p"),
+    "powershell",
+  );
+
+  assertEquals(drifted.refusesNewlineCredential, false);
+  assertEquals(drifted.createsCredentialDirsOwnerOnly, false);
+
+  const { divergences } = compareSetupContracts(SETUP_SH, drifted);
+  assert(
+    divergences.some((message) =>
+      message.includes("newline-bearing credential refusal")
+    ),
+    `a setup.ps1 without the newline guard must diverge: ${
+      divergences.join("\n")
+    }`,
+  );
+  assert(
+    divergences.some((message) =>
+      message.includes("owner-only credential directory creation")
+    ),
+    `a setup.ps1 that narrows after creation must diverge: ${
+      divergences.join("\n")
+    }`,
   );
 });
 

@@ -212,6 +212,74 @@ function Protect-VibePath {
 
 <#
 .SYNOPSIS
+    Create a credential directory that is owner-only from the instant it exists.
+
+.DESCRIPTION
+    The twin of setup.sh's `make_credential_dir` (Issue #1374). Creating the
+    directory and narrowing it afterwards leaves it readable to every local
+    account for the window between the two calls, and every parent created on
+    the way keeps the loose mode permanently, because only the last two are
+    ever narrowed.
+
+    Off Windows the mask is set in a subshell around one `mkdir -p`, exactly as
+    setup.sh does, so every parent it creates is owner-only too — which
+    `mkdir -m 700` would not give.
+
+    On Windows the same thing is expressed in the platform's own terms: each
+    missing ancestor is created with an explicit, de-inherited ACL granting
+    only the current account, so the directory never exists under whatever
+    access the profile it sits in hands out. Which call carries that ACL
+    depends on the edition — .NET Framework puts it on Directory.CreateDirectory
+    and .NET moved it to an extension method — so both spellings are here, as
+    Windows PowerShell 5.1 is a supported host (see docs/DEPLOYMENT.md).
+
+    Callers still call Protect-VibePath afterwards: a directory that already
+    existed keeps whatever mode it was created with, and only that narrows it.
+#>
+function New-VibeCredentialDirectory {
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    if (-not $script:VibeIsWindows) {
+        # The path travels as `$1`, never interpolated into the command, so a
+        # directory name cannot be read as shell syntax.
+        & sh -c 'umask 077; mkdir -p -- "$1"' sh $Path
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not create credential directory $Path (mkdir exited $LASTEXITCODE)"
+        }
+        return
+    }
+
+    # Deepest-first walk up to the first ancestor that exists, so the missing
+    # ones are created top-down with the owner-only ACL already on them.
+    $missing = [System.Collections.Generic.List[string]]::new()
+    $cursor = $Path
+    while ($cursor -and -not (Test-Path -LiteralPath $cursor)) {
+        $missing.Insert(0, $cursor)
+        $parent = Split-Path -Parent $cursor
+        if ($parent -eq $cursor) { break }
+        $cursor = $parent
+    }
+    if ($missing.Count -eq 0) { return }
+
+    $security = [System.Security.AccessControl.DirectorySecurity]::new()
+    $security.SetAccessRuleProtection($true, $false)
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $security.AddAccessRule(
+        [System.Security.AccessControl.FileSystemAccessRule]::new(
+            $identity, "FullControl", "ContainerInherit,ObjectInherit", "None",
+            "Allow"))
+    foreach ($directory in $missing) {
+        if ($PSVersionTable.PSEdition -eq "Desktop") {
+            [void][System.IO.Directory]::CreateDirectory($directory, $security)
+        } else {
+            [void][System.IO.FileSystemAclExtensions]::CreateDirectory(
+                $security, $directory)
+        }
+    }
+}
+
+<#
+.SYNOPSIS
     Write a file with LF endings and no byte-order mark.
 
 .DESCRIPTION
@@ -406,8 +474,24 @@ function Set-VibeProviderCredential {
 
     if (-not $value) { return $false }
 
+    # One `NAME=value` line is the whole file format, and all three readers -
+    # setup.sh, this script and worker/deno/lib/credential_preflight.ts - split
+    # on the first `=` and take the rest of the line. A value carrying a line
+    # break cannot be represented that way, so writing it would store a
+    # truncated credential behind a success message and leave the worker to
+    # discover the broken token unattended (Issue #1301). Refuse it loudly.
+    #
+    # Checked BEFORE the directory is created: a refused credential should
+    # leave nothing behind.
+    if ($value -match "[`r`n]") {
+        Write-VibeError ("The $($Provider.Subdir) credential contains a " +
+            "newline - provider.env holds one $name=value line, so nothing " +
+            "was written (re-copy the credential without the line break)")
+        return $false
+    }
+
     $providerDir = Join-Path $Dir $Provider.Subdir
-    New-Item -ItemType Directory -Force -Path $providerDir | Out-Null
+    New-VibeCredentialDirectory -Path $providerDir
     Protect-VibePath -Path $Dir -Mode "700"
     Protect-VibePath -Path $providerDir -Mode "700"
 
@@ -469,7 +553,7 @@ function Invoke-VibeCredentialProvisioning {
     }
 
     if ($ghToken) {
-        New-Item -ItemType Directory -Force -Path $ghDir | Out-Null
+        New-VibeCredentialDirectory -Path $ghDir
         Protect-VibePath -Path $dir -Mode "700"
         Protect-VibePath -Path $ghDir -Mode "700"
         Write-VibeGhHostsFile -GhDir $ghDir -Token $ghToken
@@ -919,7 +1003,7 @@ function Invoke-VibeInteractiveCredentials {
                 "$GhSource into $dir/gh? [Y/n]")
             if ($answer -notmatch '^[nN]') {
                 $ghDir = Join-Path $dir "gh"
-                New-Item -ItemType Directory -Force -Path $ghDir | Out-Null
+                New-VibeCredentialDirectory -Path $ghDir
                 Protect-VibePath -Path $dir -Mode "700"
                 Protect-VibePath -Path $ghDir -Mode "700"
                 # The host login usually keeps its token in Windows Credential

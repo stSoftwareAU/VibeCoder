@@ -65,6 +65,41 @@ const AGENT_PROVIDERS_SUBCOMMAND = "agent-providers";
 /** Provisioning variables, one per registered coding-agent provider. */
 const PROVIDER_PROVISION_VAR = /VIBE_LAUNCHAGENT_[A-Z]+_API_KEY/g;
 
+/**
+ * How each dialect spells "create this directory under an owner-only mask".
+ *
+ * Credential material is the one thing setup writes that a co-resident local
+ * account must never see, and a directory created wide and narrowed by a
+ * following `chmod`/ACL call is readable for the window between the two — with
+ * every parent created on the way keeping the loose mode permanently, because
+ * only the last two are ever narrowed (Issue #1374). Both scripts set the mask
+ * around the creation itself; the pairing is what is matched, because either
+ * half alone proves nothing.
+ */
+const OWNER_ONLY_DIRECTORY_CREATION: Record<LauncherDialect, RegExp> = {
+  // A subshell sets the mask, then one `mkdir -p` creates every level under it.
+  bash: /umask 077\s*\n\s*mkdir -p/,
+  // The same subshell, spelled as the one-line `sh -c` PowerShell needs.
+  powershell: /umask 077;\s*mkdir -p/,
+};
+
+/**
+ * How each dialect spells "refuse a credential carrying a line break".
+ *
+ * `provider.env` holds one `NAME=value` line and every reader splits on the
+ * first `=`, so a value with a line break in it cannot be represented: writing
+ * it stores a truncated credential behind a success message and leaves the
+ * unattended worker to discover the broken token (Issue #1301). The guard is
+ * matched by its condition rather than its message, because each script wraps
+ * that message its own way.
+ */
+const NEWLINE_CREDENTIAL_GUARD: Record<LauncherDialect, RegExp> = {
+  // [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]
+  bash: /\*\$'\\n'\*/,
+  // $value -match "[`r`n]"
+  powershell: /-match\s+"\[`r`n\]"/,
+};
+
 /** How each dialect spells "run this setup CLI subcommand". */
 const SUBCOMMAND_INVOCATION: Record<LauncherDialect, RegExp> = {
   // `run_setup_cli label-sync || print_warning ...`
@@ -110,6 +145,16 @@ export interface SetupContract {
    * reminder only — this field covers reclaiming setup's own leftovers.
    */
   removesCacheOnlyWorkDir: boolean;
+  /**
+   * True when every credential directory is owner-only from the instant it
+   * exists, rather than created wide and narrowed afterwards (Issue #1374).
+   */
+  createsCredentialDirsOwnerOnly: boolean;
+  /**
+   * True when a credential value carrying a line break is refused rather than
+   * written truncated into `provider.env` (Issue #1301).
+   */
+  refusesNewlineCredential: boolean;
 }
 
 /**
@@ -136,6 +181,11 @@ function runs(lines: string[], ...fragments: string[]): boolean {
   return lines.some((line) =>
     fragments.every((fragment) => line.includes(fragment))
   );
+}
+
+/** Does the executable source, read as one block, match `pattern`? */
+function matches(lines: string[], pattern: RegExp): boolean {
+  return pattern.test(lines.join("\n"));
 }
 
 /**
@@ -178,6 +228,11 @@ export function extractSetupContract(
     removesCacheOnlyWorkDir: dialect === "bash"
       ? runs(code, "rm -rf", ".vibe-cache")
       : runs(code, "Remove-Item", ".vibe-cache"),
+    createsCredentialDirsOwnerOnly: matches(
+      code,
+      OWNER_ONLY_DIRECTORY_CREATION[dialect],
+    ),
+    refusesNewlineCredential: matches(code, NEWLINE_CREDENTIAL_GUARD[dialect]),
   };
 }
 
@@ -196,7 +251,9 @@ export type SetupComparedField =
   | "provisionsGhCredential"
   | "validatesClaudeCredential"
   | "gatesCredentialsByProvider"
-  | "removesCacheOnlyWorkDir";
+  | "removesCacheOnlyWorkDir"
+  | "createsCredentialDirsOwnerOnly"
+  | "refusesNewlineCredential";
 
 /** What each compared field is called in a divergence message. */
 const COMPARED_FIELDS: Record<SetupComparedField, string> = {
@@ -209,6 +266,8 @@ const COMPARED_FIELDS: Record<SetupComparedField, string> = {
   validatesClaudeCredential: "live credential validation",
   gatesCredentialsByProvider: "provider-gated credential prompts",
   removesCacheOnlyWorkDir: "cache-only host work dir removal",
+  createsCredentialDirsOwnerOnly: "owner-only credential directory creation",
+  refusesNewlineCredential: "newline-bearing credential refusal",
 };
 
 /**
@@ -357,6 +416,21 @@ export function setupContractFaults(contract: SetupContract): string[] {
       `${contract.name} prompts for credentials without asking which ` +
         `coding-agent providers this host runs, so a Codex-only host is ` +
         `asked for a Claude token it will never use (Issues #730, #745)`,
+    );
+  }
+  if (!contract.createsCredentialDirsOwnerOnly) {
+    faults.push(
+      `${contract.name} creates credential directories under the ambient ` +
+        `umask and narrows them afterwards, so they are readable to every ` +
+        `local account for the window in between and their parents keep the ` +
+        `loose mode for good (Issue #1374)`,
+    );
+  }
+  if (!contract.refusesNewlineCredential) {
+    faults.push(
+      `${contract.name} writes a credential carrying a line break into the ` +
+        `one-line provider.env format, storing a truncated token behind a ` +
+        `success message (Issue #1301)`,
     );
   }
   if (!contract.removesCacheOnlyWorkDir) {
