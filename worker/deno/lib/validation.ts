@@ -862,6 +862,14 @@ export function validateConfigFileJson(
 export interface GitHubMilestoneJson {
   title: string;
   number: number;
+  /**
+   * Closed issue + PR count carried by the REST milestone payload
+   * (Issue #1488). Optional and deliberately not required here: a payload
+   * built with `--jq` may omit it, and a caller that gates on it fails
+   * open (spends the query) for anything that is not a number, rather
+   * than rejecting the whole listing and disabling the sweep.
+   */
+  closed_issues?: number;
 }
 
 /**

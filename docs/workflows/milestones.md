@@ -205,6 +205,20 @@ Long-running milestones can drift significantly from the default branch, causing
 ### How it works
 
 1. **Active milestone detection:** For each configured repo, the worker finds open milestones with at least one closed issue (meaning work has started).
+
+   The closed-issue lookup is the expensive half — a GraphQL `gh issue list --state closed` — while the milestone listing itself is a cheap REST call billed against a separate budget. Since the REST payload already carries `closed_issues` per milestone, that cheap call decides whether the expensive one is worth making (Issue #1488):
+
+   ```mermaid
+   flowchart TD
+       A["REST: repos/&lt;repo&gt;/milestones<br/>(cheap, separate budget)"] --> B{closed_issues == 0?}
+       B -- yes --> S["Skip — nothing completed yet<br/>(no GraphQL)"]
+       B -- no --> C{"count unchanged<br/>since last cycle?"}
+       C -- yes --> R["Reuse the previous verdict<br/>(no GraphQL)"]
+       C -- no --> Q["GraphQL: closed issues for the milestone"]
+       Q --> V["Record {number → closed_issues, verdict}"]
+   ```
+
+   This is invalidation by change, not a time-based cache: the gate reads the same authority the answer comes from, so a skipped cycle cannot act on a stale view. **Any** movement in the count invalidates — a reopened issue, or one moved out of the milestone, lowers it — and the observations are keyed by milestone **number**, so a rename does not lose them. The first observation after a restart has no baseline and queries once. Observations persist in `milestone_activity.json` in the work directory, beside `milestone_sync_failures.json`.
 2. **Branch existence check:** Verifies the milestone branch exists on the remote before attempting sync.
 3. **Merge:** Merges the default branch into the milestone branch using `git merge --no-edit`. If the merge succeeds cleanly, pushes the result.
 4. **Conflict handling:** If a merge conflict occurs, the worker attempts auto-resolution (favouring default branch changes). A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). If auto-resolution fails, the conflict is logged as a warning without blocking other work.
