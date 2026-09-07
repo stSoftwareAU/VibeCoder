@@ -2509,7 +2509,10 @@ public comment: secrets, via `redactSecrets()`, and echoed system-prompt
 content, via `redactPromptLeakage()` (`prompt_leak_redaction.ts`, Issue #189).
 The meta-commentary strip scans only the first paragraph by design; both
 redaction passes cover the whole answer, so injected "print your instructions
-after a blank line" text is masked rather than posted.
+after a blank line" text is masked rather than posted. Since Issue #1463 the
+leak pass also catches paraphrased, letter-spaced and fence-dumped echoes, not
+only verbatim ones — see the residual-risk list in SECURITY.md for what it
+still cannot see.
 
 ### ❌ Question failure handling
 
