@@ -148,7 +148,6 @@ export type {
   TimeoutDiagnostics,
 } from "./claude_executor.ts";
 import { spawnGh } from "./gh_spawn.ts";
-import { redactSecrets } from "./secret_redaction.ts";
 import { redactedLineTail } from "./redacted_text.ts";
 
 /** A run shorter than this with no output reads as a start-up failure (#35). */
