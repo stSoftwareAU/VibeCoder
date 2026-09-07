@@ -37,11 +37,21 @@
  * the repos the run may write to, so a bypass of the wrapper is not a bypass
  * of the boundary.
  *
- * Fail-open until seeded. The allowlist is inert until a run seeds it with
- * {@link seedWriteRepoAllowlist}, so unrelated flows and tests are
+ * Fail-open until seeded — but never silently (Issue #1425). The allowlist
+ * is inert until a run seeds it with {@link seedWriteRepoAllowlist}, so the
+ * main loop's legitimate cross-repo maintenance and unrelated flows are
  * unaffected until a run opts in. The production seed points are
  * `issue_worker.ts` (the claimed issue's own repo) and
- * `idle_task_claim_handler.ts` (the scanned repo).
+ * `idle_task_claim_handler.ts` (the scanned repo). The gap that rule leaves
+ * is that a code path which *forgot* to seed — a new command, a
+ * mis-ordered initialisation, a promise settling outside the seeded
+ * `AsyncLocalStorage` scope — used to be indistinguishable from a protected
+ * one. So a mutation classified while enforcement is inactive is still
+ * allowed, but it is now marked: the first write of each kind (verb and
+ * target repo) in a context emits a `[SECURITY] [WRITE_REPO_UNSEEDED]` line
+ * and an `unseeded-<verb>` audit event, and every one is counted
+ * ({@link unseededWriteCounts}). Once per kind, not once per write, because
+ * a line that fires on every maintenance write is a line nobody reads.
  *
  * Extension points, and their limit (Issue #3861). Exactly three things
  * widen a seeded allowlist:
@@ -88,7 +98,10 @@ import type { Result } from "../types.ts";
 import type { AuditEntry, AuditMutation } from "./audit_journal.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { recordMutation, resolveRunId } from "./audit_journal.ts";
-import { classifyGhMutation } from "./audit_mutation_classifier.ts";
+import {
+  classifyGhMutation,
+  type MutationInfo,
+} from "./audit_mutation_classifier.ts";
 
 /** Sink for recording a security audit event (injectable for tests). */
 export type AuditRecorder = (
@@ -215,6 +228,14 @@ export interface WriteRepoAllowlistContext {
    */
   readonly slugCasing: Map<string, string>;
   /**
+   * Mutations classified while enforcement was inactive (Issue #1425), by
+   * kind (`verb → repo`), with a count per kind. The first of each kind is
+   * logged and journalled; the rest are only counted here. A record of the
+   * context's lifetime — neither a reseed nor a reset clears it, because
+   * the whole point is to see what ran unscoped between runs.
+   */
+  readonly unseededWrites: Map<string, number>;
+  /**
    * Whether an agent subprocess has already baked a snapshot of this run's
    * allowlist into its `gh` guard shim (Issue #3861).
    *
@@ -233,6 +254,7 @@ export function createWriteRepoAllowlistContext(): WriteRepoAllowlistContext {
     pinned: new Map<string, number>(),
     tokenScoped: new Map<string, number>(),
     slugCasing: new Map<string, string>(),
+    unseededWrites: new Map<string, number>(),
     agentSnapshotTaken: false,
   };
 }
@@ -560,6 +582,74 @@ export function isWriteRepoAllowed(repo: string): boolean {
   return c.allowed.has(n) || c.pinned.has(n);
 }
 
+/** The target a classified mutation is written to, for the unseeded record. */
+function unseededTarget(info: MutationInfo): string {
+  if (info.repo) return info.repo;
+  return info.scope === "unknown" ? "<undeterminable>" : "<cwd repo>";
+}
+
+/**
+ * Mark a mutation that ran with the allowlist inactive (Issue #1425).
+ *
+ * The write is still allowed — this is the fail-open rule, unchanged — but
+ * it no longer passes unseen. The first mutation of each kind (verb and
+ * target) in this context emits a `[SECURITY] [WRITE_REPO_UNSEEDED]` line
+ * and an `unseeded-<verb>` audit event; every one is counted.
+ */
+async function noteUnseededWrite(
+  c: WriteRepoAllowlistContext,
+  info: MutationInfo,
+): Promise<void> {
+  const where = unseededTarget(info);
+  const key = `${info.verb} → ${where}`;
+  const seen = (c.unseededWrites.get(key) ?? 0) + 1;
+  c.unseededWrites.set(key, seen);
+  if (seen > 1) return;
+  securityLogger(
+    `[SECURITY] [WRITE_REPO_UNSEEDED] ${info.verb} to ${where}` +
+      (info.target ? ` (${info.target})` : "") +
+      " ran with the write-repo allowlist inactive — no run has seeded it, " +
+      "so this write is unscoped. Allowed (fail-open until seeded); first of " +
+      "its kind in this context, later ones are counted (Issue #1425).",
+  );
+  try {
+    await auditRecorder({
+      runId: resolveRunId(),
+      verb: `unseeded-${info.verb}`,
+      outcome: "success",
+      ...(info.repo ? { repo: info.repo } : {}),
+      ...(info.target ? { target: info.target } : {}),
+      caller: "worker/deno/lib/write_repo_allowlist.ts",
+    });
+  } catch {
+    // Best-effort: the signal must never fail the write it describes.
+  }
+}
+
+/**
+ * Mutations that ran while enforcement was inactive in the current context
+ * (Issue #1425): `verb → repo` kinds with a count each, sorted by kind.
+ */
+export function unseededWriteCounts(): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const key of [...ctx().unseededWrites.keys()].sort()) {
+    out[key] = ctx().unseededWrites.get(key) ?? 0;
+  }
+  return out;
+}
+
+/** Total mutations that ran while enforcement was inactive (Issue #1425). */
+export function countUnseededWrites(): number {
+  let total = 0;
+  for (const n of ctx().unseededWrites.values()) total += n;
+  return total;
+}
+
+/** Forget the unseeded-write record. Test-only. */
+export function _resetUnseededWrites(): void {
+  ctx().unseededWrites.clear();
+}
+
 /** Record a blocked write as a security audit event (best-effort). */
 async function recordBlocked(
   repo: string,
@@ -583,8 +673,10 @@ async function recordBlocked(
 /**
  * Enforce the allowlist for a single `gh` invocation.
  *
- * A no-op when enforcement is inactive, when the command is not a GitHub
- * mutation, or when the mutation targets the cwd repo (no explicit repo).
+ * A no-op when the command is not a GitHub mutation, or when the mutation
+ * targets the cwd repo (no explicit repo). While enforcement is inactive a
+ * mutation is allowed through unchanged, but marked — see
+ * {@link unseededWriteCounts} (Issue #1425).
  * When the mutation explicitly targets an off-allowlist repo, emits a
  * security audit event plus a `[SECURITY]` log line and throws
  * {@link WriteRepoBlockedError} — before the caller spawns `gh`.
@@ -601,10 +693,16 @@ async function recordBlocked(
 export async function enforceGhWriteAllowlist(
   args: readonly string[],
 ): Promise<void> {
-  if (!ctx().active) return;
+  const c = ctx();
   const info = classifyGhMutation(args);
   // Not a mutation — reads are never the exfiltration sink.
   if (!info) return;
+
+  // Fail-open until seeded (see the module doc) — but seen (Issue #1425).
+  if (!c.active) {
+    await noteUnseededWrite(c, info);
+    return;
+  }
 
   if (info.scope === "unknown") {
     securityLogger(
