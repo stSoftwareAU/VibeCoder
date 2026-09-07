@@ -1311,7 +1311,11 @@ network hiccups, and even its own mistakes:
   suggesting actions: merge, close, or add `ignore-open-prs` label. State
   tracked in `$WORK_DIR/.repo_blocked_state`.
 - **Software updates** — the Deno `software-updates` command performs weekly
-  checks for Claude CLI and GitHub CLI updates.
+  checks for Claude CLI and GitHub CLI updates. `--interval` and `--timeout`
+  take positive whole seconds; an unreadable value (an empty shell expansion
+  such as `--timeout "$UNSET_VAR"`, or a valueless trailing flag) is refused
+  with a non-zero exit rather than passed on as `NaN`, and a tool update that
+  was attempted and failed also exits non-zero (Issue #1270).
 
 ---
 

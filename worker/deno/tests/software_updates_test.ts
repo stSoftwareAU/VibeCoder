@@ -18,7 +18,12 @@
  * quarantine tests below and by `tool_release_age_test.ts`.
  */
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   checkSoftwareUpdates,
   classifyUpdateError,
@@ -2590,4 +2595,165 @@ Deno.test("skipSoftwareUpdateFromEnv - a real container stamp still suppresses (
     ),
     true,
   );
+});
+
+// ---------------------------------------------------------------------------
+// A NaN interval or timeout is refused, not passed through (Issue #1270)
+// ---------------------------------------------------------------------------
+
+Deno.test("shouldCheckForUpdates - a NaN interval is refused before the gate (Issue #1270)", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const now = 1700000000;
+    recordUpdateCheck(tmpDir, () => now);
+    // Unfixed, `elapsed >= NaN` is false: the interval never elapses and the
+    // weekly check is skipped forever while the command still exits 0.
+    const err = assertThrows(
+      () => shouldCheckForUpdates(tmpDir, NaN, () => now + 999999999),
+      Error,
+      "update interval",
+    );
+    assertStringIncludes(err.message, "positive number of seconds");
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("shouldCheckForUpdates - a non-positive interval is refused (Issue #1270)", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    for (const bad of [0, -1, Infinity]) {
+      assertThrows(
+        () => shouldCheckForUpdates(tmpDir, bad),
+        Error,
+        "update interval",
+      );
+    }
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("shouldAttemptFloorUpdate - a NaN interval is refused (Issue #1270)", () => {
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    assertThrows(
+      () => shouldAttemptFloorUpdate(tmpDir, "claude", NaN),
+      Error,
+      "update interval",
+    );
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("checkSoftwareUpdates - a NaN timeout fails loud instead of aborting every install (Issue #1270)", async () => {
+  const { logger } = testLogger();
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const err = await assertRejects(
+      () =>
+        checkSoftwareUpdates(logger, {
+          env: () => undefined,
+          timestampDir: tmpDir,
+          timeout: NaN,
+          now: () => 1700000000,
+          ageGate: openGate(),
+          retry: {
+            runFn: alwaysOkRunner([]),
+            sleepFn: () => Promise.resolve(),
+          },
+        }),
+      Error,
+      "update timeout",
+    );
+    assertStringIncludes(err.message, "positive number of seconds");
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("checkSoftwareUpdates - reports which attempted tool updates failed (Issue #1270)", async () => {
+  const { logger, errors } = testLogger();
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    // Every update command fails permanently: unfixed, the run ended with a
+    // "continuing anyway" warning and told its caller nothing at all.
+    const failingRunner = (cmd: string[]) =>
+      Promise.resolve({
+        ok: true as const,
+        value: cmd[0] === "which"
+          ? { exitCode: 0, output: `/usr/bin/${cmd[1]}` }
+          : { exitCode: 1, output: "command not found: permission denied" },
+      });
+    const outcome = await checkSoftwareUpdates(logger, {
+      env: () => undefined,
+      timestampDir: tmpDir,
+      intervalSeconds: 604800,
+      now: () => 1700000000,
+      ageGate: openGate(),
+      retry: { runFn: failingRunner, sleepFn: () => Promise.resolve() },
+    });
+    assertEquals(outcome.status, "ran");
+    assertEquals(outcome.attempted, ["claude", "gh", "deno"]);
+    assertEquals(outcome.failed.length > 0, true);
+    assertEquals(outcome.failed.includes("claude"), true);
+    assertEquals(
+      errors.some((m) => m.includes("Software update failed for")),
+      true,
+    );
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("checkSoftwareUpdates - a skipped tool is reported as skipped, not failed (Issue #1270)", async () => {
+  const { logger } = testLogger();
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const outcome = await checkSoftwareUpdates(logger, {
+      env: () => undefined,
+      timestampDir: tmpDir,
+      intervalSeconds: 604800,
+      now: () => 1700000000,
+      skipClaude: true,
+      skipGh: true,
+      skipDeno: true,
+      ageGate: openGate(),
+      retry: {
+        runFn: alwaysOkRunner([]),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(outcome.status, "ran");
+    assertEquals(outcome.attempted, []);
+    assertEquals(outcome.skipped, ["claude", "gh", "deno"]);
+    assertEquals(outcome.failed, []);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("checkSoftwareUpdates - a not-due run says so rather than reporting a completed check (Issue #1270)", async () => {
+  const { logger } = testLogger();
+  const tmpDir = Deno.makeTempDirSync();
+  try {
+    const now = 1700000000;
+    recordUpdateCheck(tmpDir, () => now);
+    const outcome = await checkSoftwareUpdates(logger, {
+      env: () => undefined,
+      timestampDir: tmpDir,
+      intervalSeconds: 604800,
+      now: () => now + 100,
+      ageGate: openGate(),
+      retry: {
+        runFn: alwaysOkRunner([]),
+        sleepFn: () => Promise.resolve(),
+      },
+    });
+    assertEquals(outcome.status, "not-due");
+    assertEquals(outcome.attempted, []);
+  } finally {
+    Deno.removeSync(tmpDir, { recursive: true });
+  }
 });

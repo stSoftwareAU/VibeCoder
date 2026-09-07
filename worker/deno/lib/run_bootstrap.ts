@@ -340,7 +340,11 @@ export function createDefaultBootstrapDeps(logger?: Logger): BootstrapDeps {
     gzipPriorWorkerLogs: (logDir, currentLogFile) =>
       gzipOldWorkerLogs(logDir, { currentLogFile }),
     appendRunCoreLog: appendRunCoreLogLine,
-    checkUpdates: (options) => checkSoftwareUpdates(log, options ?? {}),
+    checkUpdates: async (options) => {
+      // The outcome is for the CLI command's exit status (Issue #1270); the
+      // bootstrap's own contract stays best-effort and void.
+      await checkSoftwareUpdates(log, options ?? {});
+    },
     setEnv: (name, value) => {
       try {
         Deno.env.set(name, value);
