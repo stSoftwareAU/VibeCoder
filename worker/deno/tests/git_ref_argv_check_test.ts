@@ -201,3 +201,32 @@ Deno.test("only the builders file is allowlisted", () => {
     "worker/deno/lib/git_ref_args.ts",
   ]);
 });
+
+Deno.test("scanner - flags a binary-head argv built for a generic runner (Issue #1548)", () => {
+  for (
+    const line of [
+      'await runner(["git", "-C", repoDir, "push", "-u", "origin", req.branch]);',
+      'await runner(["git", "-C", dir, "checkout", "-b", req.branch]);',
+      'await run(["git", "fetch", "origin", branchName]);',
+    ]
+  ) {
+    const v = scanContentForGitRefArgv(line, "worker/deno/lib/x.ts");
+    assertEquals(v.length, 1, line);
+  }
+});
+
+Deno.test("scanner - a guarded binary-head argv is not a violation (Issue #1548)", () => {
+  for (
+    const line of [
+      'await runner(["git", "-C", repoDir, "push", "-u", "--end-of-options", "origin", req.branch]);',
+      'await runner(["git", "-C", repoDir, "add", "-A"]);',
+      'await runner(["git", "-C", repoDir, "checkout", "-b", req.name]);',
+    ]
+  ) {
+    assertEquals(
+      scanContentForGitRefArgv(line, "worker/deno/lib/x.ts"),
+      [],
+      line,
+    );
+  }
+});
