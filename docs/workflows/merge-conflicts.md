@@ -290,6 +290,16 @@ settle still reaches no agent and now consults no issue either.
 
 ## 🔁 Bounds and escalation
 
+- **The clone holds the merge base before anything is attempted** (Issue
+  #1458). Monitored repos are `--depth=1` clones, and a merge on a shallow
+  clone whose tips have diverged fails with `refusing to merge unrelated
+  histories` — GitHub can see the ancestor; the clone cannot. The resolver
+  deepens the clone (`git fetch --deepen`, then `--unshallow`) until
+  `git merge-base` answers, a no-op on a full clone, **before** the attempt
+  marker is posted. A branch with no common ancestor even in full history is
+  escalated to a human as its own outcome — a re-initialised or rewritten
+  branch, not a conflict the agent failed to resolve — and spends **no**
+  attempt.
 - **One attempt per PR per 4 hours**, at most **2 concluded attempts**.
 - The attempt is recorded as a marker comment on the PR **before** the merge
   starts. That marker *opens* the attempt; it does not spend it.
