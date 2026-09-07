@@ -55,10 +55,7 @@ import {
   installationTokenRepoScope,
 } from "./write_repo_allowlist.ts";
 import { auditGhMutation } from "./audit_hook.ts";
-import {
-  type BodyFileWriter,
-  redactGhBodyArgs,
-} from "./gh_body_redaction.ts";
+import { type BodyFileWriter, redactGhBodyArgs } from "./gh_body_redaction.ts";
 import { bodyFileWriterIn, denoBodyFileReader } from "./gh_body_file_io.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { noteGhIssueClose } from "./issue_close_notifier.ts";
