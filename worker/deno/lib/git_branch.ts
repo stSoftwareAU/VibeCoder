@@ -11,6 +11,7 @@
 
 import type { Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import { detachLaneWorktreeHead, LANE_WORKTREE_ROOT } from "./lane_worktree.ts";
 import type { GitCommandOptions, GitCommandOutput } from "./git_timeout.ts";
 import {
   buildCheckoutResetBranchArgs,
@@ -97,6 +98,36 @@ export function isProtectedBranch(branchName: string): boolean {
 }
 
 /**
+ * The lane worktree holding `branchName`, when git refused for that reason
+ * (Issue #1564).
+ *
+ * Returns a path only when it is one of **this host's own lane worktrees** —
+ * `<work root>/worktrees/<lane>/<repo>`, the shape `laneWorktreePath` builds.
+ * A branch held by anything else (a developer's own worktree, a path git
+ * names that this module does not recognise) is reported rather than wrenched
+ * away: the repair is for the fleet's own contention, not for whatever else
+ * happens to share the clone.
+ */
+function laneWorktreeHoldingBranch(
+  checkout: Result<GitCommandOutput>,
+): string | undefined {
+  if (!checkout.ok || checkout.value.code === 0) return undefined;
+  const match = checkout.value.stderr.match(
+    /is already used by worktree at '([^']+)'/,
+  );
+  const path = match?.[1];
+  if (path === undefined) return undefined;
+
+  // `<...>/<LANE_WORKTREE_ROOT>/<lane>/<repo>`: the lane root must be the
+  // third segment from the end, so a merely similar path does not qualify.
+  const segments = path.split("/").filter((segment) => segment !== "");
+  if (segments.length < 3) return undefined;
+  return segments[segments.length - 3] === LANE_WORKTREE_ROOT
+    ? path
+    : undefined;
+}
+
+/**
  * Create a feature branch from a specified base branch (Issue #476, #1501).
  *
  * Explicitly creates a feature branch from the given base branch. This ensures
@@ -159,6 +190,7 @@ export async function createFeatureBranchFromBase(
     : [baseBranch, `origin/${baseBranch}`];
 
   const failures: string[] = [];
+  let heldBy: string | undefined;
   for (const startPoint of startPoints) {
     const args = buildCheckoutResetBranchArgs(branchName, startPoint);
     const checkout = await runGitCommand(args, options);
@@ -169,6 +201,36 @@ export async function createFeatureBranchFromBase(
       };
     }
     failures.push(describeGitFailure(args, checkout));
+    heldBy ??= laneWorktreeHoldingBranch(checkout);
+  }
+
+  // Issue #1564: branches are shared between the worktrees of one clone, so
+  // git refuses to move a branch another worktree has checked out. Slot s2
+  // checks an issue's feature branch out in its lane worktree and then loses
+  // the acquire race; s1 wins the claim and cannot have the branch. Both
+  // start points fail the same way, the issue dies in phase `setup` within
+  // seconds, and — because nothing releases s2's hold — every later attempt
+  // fails identically. VibeCoder#1548 had two before this was found.
+  //
+  // Detaching the holder is exactly what `detachLaneWorktreeHead` exists for;
+  // it was only ever called on the happy path, after a lane finished with a
+  // PR. Calling it here closes the loop for the lane that *didn't* finish.
+  if (heldBy !== undefined) {
+    if (await detachLaneWorktreeHead(heldBy)) {
+      for (const startPoint of startPoints) {
+        const args = buildCheckoutResetBranchArgs(branchName, startPoint);
+        const retry = await runGitCommand(args, options);
+        if (retry.ok && retry.value.code === 0) {
+          return {
+            ok: true,
+            value: `Created feature branch '${branchName}' from ` +
+              `'${startPoint}' after releasing it from the lane worktree at ` +
+              `${heldBy}`,
+          };
+        }
+        failures.push(describeGitFailure(args, retry));
+      }
+    }
   }
 
   // Fail loud with git's own words: the release comment for Issue #356 read
