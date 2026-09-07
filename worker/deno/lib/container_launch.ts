@@ -840,8 +840,8 @@ export function containerTargetPaths(
  * @param style - How this host spells its paths; inferred from `baseDir`
  * @param platform - Whose log convention the default follows
  * @param configuredLogDir - The `.config.json` `log_dir` value (Issue #873),
- *   read by the caller with `readConfiguredLogDir`. It outranks
- *   `LAUNCH_LOG_DIR` and `LOG_DIR`, so the writable log mount points at the
+ *   read by the caller with `readConfiguredLogDir`. It is the only way to
+ *   move the directory (Issue #1388), so the writable log mount points at the
  *   same directory the launcher's own `log-dir` command reports — a split
  *   would put `launch-*.log` and `worker-*.log` in different places.
  * @returns The resolved host paths
@@ -895,14 +895,14 @@ export function resolveContainerLaunchHostPaths(
     homeDir: home,
     baseDir: base,
     workDir: normalise(absolute(workDir), style),
-    // Issue #872: `LOG_DIR` was honoured by `loop.sh` but ignored here and in
-    // `run.sh`, so setting it split the logs across two directories with no
-    // warning — and the worker's own `worker-*.log` could not be relocated at
-    // all, because this value is the container's writable host mount. One
-    // resolution, shared by all three. `LAUNCH_LOG_DIR` is checked first to
-    // match `loop.sh`'s precedence exactly. Issue #873 moved the default that
-    // chain falls back to onto the platform's own standard location, and gave
-    // the operator the `.config.json` `log_dir` key that outranks both.
+    // Issue #872: a log-directory variable was honoured by `loop.sh` but
+    // ignored here and in `run.sh`, so setting it split the logs across two
+    // directories with no warning — and the worker's own `worker-*.log` could
+    // not be relocated at all, because this value is the container's writable
+    // host mount. One resolution, shared by all three. Issue #873 moved the
+    // default onto the platform's own standard location and gave the operator
+    // the `.config.json` `log_dir` key; Issue #1388 made that key the only
+    // way to move it — `LAUNCH_LOG_DIR` and `LOG_DIR` are ignored.
     logDir: resolveLogDir(home, env, style, platform, configuredLogDir),
     configFile,
     configStageDir: joinPath(home, ".vibe-coder/run-config", style),

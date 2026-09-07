@@ -14,10 +14,12 @@
  * need to move (a different volume, a log-shipping directory, somewhere the
  * platform already rotates).
  *
- * Precedence matches `loop.sh` exactly: `LAUNCH_LOG_DIR`, then `LOG_DIR`,
- * then the default. Issue #873 moved that default off `$HOME/logs` and onto
- * the platform's own standard location — the defaults themselves are covered
- * by `log_dir_default_test.ts`; what this suite pins is the precedence.
+ * Issue #873 moved the default off `$HOME/logs` and onto the platform's own
+ * standard location, and Issue #1388 removed the two environment overrides
+ * that used to sit above it: on the host, `.config.json` is the only
+ * configuration, so `LAUNCH_LOG_DIR` and `LOG_DIR` are ignored rather than
+ * honoured. The defaults themselves are covered by `log_dir_default_test.ts`;
+ * what this suite pins is that nothing in the environment moves the answer.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -43,7 +45,7 @@ Deno.test("log dir - falls back to the platform default when nothing is set (Iss
   );
 });
 
-Deno.test("log dir - LOG_DIR is honoured (Issue #872)", () => {
+Deno.test("log dir - LOG_DIR is ignored (Issue #1388)", () => {
   assertEquals(
     resolveLogDir(
       "/home/vibe",
@@ -51,11 +53,12 @@ Deno.test("log dir - LOG_DIR is honoured (Issue #872)", () => {
       "posix",
       "linux",
     ),
-    "/var/log/vibe",
+    "/home/vibe/.local/state/vibe-coder",
+    "an exported LOG_DIR must not move the directory",
   );
 });
 
-Deno.test("log dir - LAUNCH_LOG_DIR outranks LOG_DIR, as loop.sh has it (Issue #872)", () => {
+Deno.test("log dir - LAUNCH_LOG_DIR is ignored too (Issue #1388)", () => {
   assertEquals(
     resolveLogDir(
       "/home/vibe",
@@ -63,47 +66,41 @@ Deno.test("log dir - LAUNCH_LOG_DIR outranks LOG_DIR, as loop.sh has it (Issue #
       "posix",
       "linux",
     ),
-    "/var/log/launch",
+    "/home/vibe/.local/state/vibe-coder",
+    "neither variable, nor both together, moves the directory",
   );
 });
 
-Deno.test("log dir - a blank value is treated as unset (Issue #872)", () => {
-  // An exported-but-empty variable meant the empty string, which would have
-  // mounted the wrong host path into the container.
-  const blankCases: Record<string, string>[] = [
-    { LOG_DIR: "" },
-    { LOG_DIR: "   " },
-    { LAUNCH_LOG_DIR: "", LOG_DIR: "/var/log/vibe" },
-  ];
-  for (const vars of blankCases) {
-    const resolved = resolveLogDir(
-      "/home/vibe",
-      envFrom(vars),
-      "posix",
-      "linux",
-    );
-    assertEquals(
-      resolved === "" || resolved === "/home/vibe" ? "bad" : "ok",
-      "ok",
-      `blank must not resolve to an empty or bare-home path: ${
-        JSON.stringify(vars)
-      } -> ${resolved}`,
-    );
-  }
-  assertEquals(
-    resolveLogDir("/home/vibe", envFrom({ LOG_DIR: "" }), "posix", "linux"),
-    "/home/vibe/.local/state/vibe-coder",
-  );
+Deno.test("log dir - only the config key moves it (Issues #873, #1388)", () => {
   assertEquals(
     resolveLogDir(
       "/home/vibe",
-      envFrom({ LAUNCH_LOG_DIR: "  ", LOG_DIR: "/var/log/vibe" }),
+      envFrom({ LAUNCH_LOG_DIR: "/var/log/launch", LOG_DIR: "/var/log/vibe" }),
       "posix",
       "linux",
+      "/srv/vibe-logs",
     ),
-    "/var/log/vibe",
-    "a blank LAUNCH_LOG_DIR falls through to LOG_DIR",
+    "/srv/vibe-logs",
   );
+});
+
+Deno.test("log dir - a blank or hostile value can never become the path (Issue #872)", () => {
+  // An exported-but-empty variable once meant the empty string, which would
+  // have mounted the wrong host path into the container. The variables are
+  // ignored now; this pins that nothing they carry can leak into the answer.
+  const cases: Record<string, string>[] = [
+    { LOG_DIR: "" },
+    { LOG_DIR: "   " },
+    { LAUNCH_LOG_DIR: "", LOG_DIR: "/var/log/vibe" },
+    { LAUNCH_LOG_DIR: "relative/dir" },
+  ];
+  for (const vars of cases) {
+    assertEquals(
+      resolveLogDir("/home/vibe", envFrom(vars), "posix", "linux"),
+      "/home/vibe/.local/state/vibe-coder",
+      `must resolve to the default regardless of ${JSON.stringify(vars)}`,
+    );
+  }
 });
 
 Deno.test("log dir - a Windows host spells the default its own way (Issue #872)", () => {

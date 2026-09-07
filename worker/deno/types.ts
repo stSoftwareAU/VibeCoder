@@ -1143,8 +1143,9 @@ export interface ConfigFile {
   /** gh config dir for separate gh CLI identity (Issue #583) */
   gh_config_dir?: string;
   /**
-   * Host log directory (Issue #873). Absolute, or anchored at `~`. Outranks
-   * `LAUNCH_LOG_DIR` and `LOG_DIR`; absent, the platform default applies.
+   * Host log directory (Issue #873). Absolute, or anchored at `~`. The only
+   * way to move it — no environment variable does (Issue #1388); absent, the
+   * platform default applies.
    *
    * Read straight from the file by `lib/log_dir.ts` rather than through the
    * loaded `WorkerConfig`, because the launchers ask for it before any

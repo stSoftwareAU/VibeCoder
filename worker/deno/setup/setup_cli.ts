@@ -51,7 +51,7 @@ import {
   updateGitInfoExclude,
 } from "./config_writer.ts";
 import {
-  isLaunchAgentInstalled,
+  getLaunchAgentStatus,
   removeLaunchAgent,
   setupLaunchAgent,
 } from "./launchagent.ts";
@@ -477,14 +477,17 @@ async function runHooks(scriptDir: string): Promise<boolean> {
 }
 
 /**
- * `launchagent --status`: print `installed` or `not-installed`, nothing else,
- * so setup.sh can read the answer (Issue #26).
+ * `launchagent --status`: print one word — `installed`, `plist-not-loaded` or
+ * `not-installed` — and nothing else, so setup.sh can read the answer
+ * (Issues #26, #1369).
+ *
+ * launchd is asked, not just the filesystem: a plist left behind by an agent
+ * that was booted out used to print `installed` while nothing ran the worker.
  */
 async function runLaunchAgentStatus(): Promise<boolean> {
-  const installed = await isLaunchAgentInstalled(
-    Deno.env.get("VIBE_LAUNCHAGENT_DIR"),
+  console.log(
+    await getLaunchAgentStatus(Deno.env.get("VIBE_LAUNCHAGENT_DIR")),
   );
-  console.log(installed ? "installed" : "not-installed");
   return true;
 }
 

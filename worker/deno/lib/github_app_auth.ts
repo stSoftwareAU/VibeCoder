@@ -4,6 +4,16 @@
  * Issue #958: Creates short-lived installation access tokens from the
  * GitHub App private key. Tokens auto-rotate — no manual refresh needed.
  *
+ * Issue #1391: a token may also be **scoped to a set of repositories**. An
+ * installation token minted with no body carries the App's permissions on
+ * *every* repository the installation covers — a whole organisation, for a
+ * run that is only ever meant to write to one repo. `write_repo_allowlist.ts`
+ * contains that blast radius in code; the repository scope contains it in the
+ * credential itself, so a write that slips past the code layer is refused by
+ * GitHub rather than performed. Callers pass `owner/repo` slugs; the API takes
+ * bare names resolved against the installation's account, and
+ * {@link installationRepoNames} is the one place that conversion happens.
+ *
  * Uses Deno's built-in Web Crypto API (RS256) — no external dependencies.
  * Australian English spelling throughout (behaviour, authorisation, etc.)
  */
@@ -28,21 +38,37 @@ export type FetchFn = (
 ) => Promise<Response>;
 
 /**
- * Cached installation token with its expiry and the identity it was minted for.
+ * Cached installation token with its expiry.
  *
- * Issue #38 (SEC-0f7d3c9a4e21): the identity is part of the cache entry so a
+ * Issue #38 (SEC-0f7d3c9a4e21): the identity is part of the cache *key* so a
  * request for a different App or installation can never be served another
  * identity's credential — a cross-tenant leak that would fail silently.
+ * Issue #1391 puts the repository scope in that key for the same reason: a
+ * narrowly-scoped run must never be handed the wider token a previous claim
+ * minted.
  */
 interface CachedToken {
   token: string;
   expiresAt: Date;
-  appId: string;
-  installationId: string;
 }
 
-/** In-memory token cache. */
-let cachedToken: CachedToken | null = null;
+/**
+ * In-memory token cache, keyed by minting identity **and** repository scope.
+ *
+ * A map rather than a single entry because concurrent slots (Issue #4175) each
+ * hold their own write-repo allowlist, so two live claims legitimately need two
+ * differently-scoped tokens; a single entry would be re-minted on every `gh`
+ * call as the slots alternated.
+ */
+const tokenCache = new Map<string, CachedToken>();
+
+/**
+ * Distinct (identity, scope) tokens kept in memory at once.
+ *
+ * Bounded so a long-lived process cannot accumulate credentials: well above
+ * the handful of concurrent slots a host runs, far below unbounded growth.
+ */
+const TOKEN_CACHE_LIMIT = 16;
 
 /** Refresh buffer — refresh token if it expires within this many ms. */
 const REFRESH_BUFFER_MS = 5 * 60 * 1000; // 5 minutes
@@ -50,11 +76,85 @@ const REFRESH_BUFFER_MS = 5 * 60 * 1000; // 5 minutes
 /**
  * Reset the in-memory token cache.
  *
- * Discards the whole entry — token, expiry and minting identity — so a reset
- * can never leave a stale identity behind. Exposed for testing only.
+ * Discards every entry — token, expiry, minting identity and scope — so a
+ * reset can never leave a stale identity behind. Exposed for testing only.
  */
 export function resetTokenCache(): void {
-  cachedToken = null;
+  tokenCache.clear();
+}
+
+/**
+ * The cache key for one minting identity and repository scope.
+ *
+ * `null`/`undefined` scope is the unscoped token and gets its own key, so an
+ * unscoped entry can never satisfy a scoped request (or the reverse).
+ */
+function tokenCacheKey(
+  appId: string,
+  installationId: string,
+  repositories: RepositoryScope,
+): string {
+  const scope = repositories === null || repositories === undefined
+    ? "*"
+    : JSON.stringify(installationRepoNames(repositories));
+  return JSON.stringify([appId, installationId, scope]);
+}
+
+/** Drop expired entries, then evict the soonest-expiring while over the cap. */
+function pruneTokenCache(): void {
+  const now = Date.now();
+  for (const [key, entry] of tokenCache) {
+    if (entry.expiresAt.getTime() <= now) tokenCache.delete(key);
+  }
+  while (tokenCache.size > TOKEN_CACHE_LIMIT) {
+    let oldestKey: string | undefined;
+    let oldestAt = Infinity;
+    for (const [key, entry] of tokenCache) {
+      const at = entry.expiresAt.getTime();
+      if (at < oldestAt) {
+        oldestAt = at;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey === undefined) return;
+    tokenCache.delete(oldestKey);
+  }
+}
+
+/**
+ * The repositories a token may reach: `owner/repo` slugs, or `null`/`undefined`
+ * for an unscoped token carrying the installation's full reach.
+ */
+export type RepositoryScope = readonly string[] | null | undefined;
+
+/**
+ * Convert `owner/repo` slugs to the bare repository names the API expects.
+ *
+ * GitHub resolves the `repositories` field against the installation's own
+ * account, so only the name after the owner is sent. The result is
+ * de-duplicated and sorted, which also makes it a stable cache key.
+ *
+ * Fails loud on anything that is not exactly `owner/repo` (Issue #1391): a
+ * malformed slug silently dropped from the scope would widen — or wrongly
+ * narrow — the credential, and neither may pass as success.
+ *
+ * @param repositories - `owner/repo` slugs the token may reach.
+ * @throws Error when a slug is blank or is not of the form `owner/repo`.
+ */
+export function installationRepoNames(
+  repositories: readonly string[],
+): string[] {
+  const names = new Set<string>();
+  for (const slug of repositories) {
+    const parts = slug.trim().split("/");
+    if (parts.length !== 2 || parts[0] === "" || parts[1] === "") {
+      throw new Error(
+        `Cannot scope an installation token to '${slug}': expected owner/repo`,
+      );
+    }
+    names.add(parts[1]!);
+  }
+  return [...names].sort();
 }
 
 /**
@@ -107,12 +207,16 @@ export async function generateAppJWT(
  * @param jwt - Signed JWT from generateAppJWT
  * @param installationId - GitHub App installation ID
  * @param fetchFn - Optional fetch function (injectable for testing)
+ * @param repositories - `owner/repo` slugs the token may reach (Issue #1391).
+ *   Omitted or `null` mints the installation's full, unscoped reach.
  * @returns Token string and expiry timestamp
+ * @throws Error when the scope is present but empty, or holds a malformed slug
  */
 export async function getInstallationToken(
   jwt: string,
   installationId: string,
   fetchFn: FetchFn = globalThis.fetch,
+  repositories: RepositoryScope = undefined,
 ): Promise<{ token: string; expiresAt: Date }> {
   if (!installationId || installationId.trim() === "") {
     throw new Error("installationId must not be empty");
@@ -121,13 +225,32 @@ export async function getInstallationToken(
   const url =
     `https://api.github.com/app/installations/${installationId}/access_tokens`;
 
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${jwt}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+
+  // A caller that asked for a scope but named no repository wants a token that
+  // may write nowhere. GitHub has no spelling for that, and minting the
+  // unscoped token instead would hand back the widest credential in answer to
+  // the narrowest request — so refuse rather than silently widen.
+  let body: string | undefined;
+  if (repositories !== null && repositories !== undefined) {
+    const names = installationRepoNames(repositories);
+    if (names.length === 0) {
+      throw new Error(
+        "Refusing to mint an installation token for an empty repository scope",
+      );
+    }
+    body = JSON.stringify({ repositories: names });
+    headers["Content-Type"] = "application/json";
+  }
+
   const fetchInit: RequestInit = {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${jwt}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
+    headers,
+    ...(body === undefined ? {} : { body }),
   };
 
   const response = fetchFn === globalThis.fetch
@@ -170,6 +293,8 @@ export async function getInstallationToken(
  * @param installationId - GitHub App installation ID
  * @param privateKeyPath - File system path to the PEM private key
  * @param fetchFn - Optional fetch function (injectable for testing)
+ * @param repositories - `owner/repo` slugs the token may reach (Issue #1391).
+ *   Part of the cache key, so a narrower scope never reuses a wider token.
  * @returns Valid installation access token string
  */
 export async function ensureValidToken(
@@ -177,15 +302,14 @@ export async function ensureValidToken(
   installationId: string,
   privateKeyPath: string,
   fetchFn: FetchFn = globalThis.fetch,
+  repositories: RepositoryScope = undefined,
 ): Promise<string> {
-  // Return cached token only when it was minted for THIS identity and is
-  // still valid (not expiring within the buffer). An identity mismatch is
-  // treated as a miss and falls through to a fresh mint below.
-  if (
-    cachedToken !== null &&
-    cachedToken.appId === appId &&
-    cachedToken.installationId === installationId
-  ) {
+  // Return cached token only when it was minted for THIS identity and THIS
+  // repository scope, and is still valid (not expiring within the buffer).
+  // Any mismatch is a cache miss and falls through to a fresh mint below.
+  const cacheKey = tokenCacheKey(appId, installationId, repositories);
+  const cachedToken = tokenCache.get(cacheKey);
+  if (cachedToken !== undefined) {
     const msUntilExpiry = cachedToken.expiresAt.getTime() - Date.now();
     if (msUntilExpiry > REFRESH_BUFFER_MS) {
       return cachedToken.token;
@@ -211,15 +335,19 @@ export async function ensureValidToken(
 
   // Generate JWT and exchange for installation token
   const jwt = await generateAppJWT(appId, pemContents);
-  const result = await getInstallationToken(jwt, installationId, fetchFn);
+  const result = await getInstallationToken(
+    jwt,
+    installationId,
+    fetchFn,
+    repositories,
+  );
 
-  // Cache the new token alongside the identity it was minted for
-  cachedToken = {
+  // Cache the new token under the identity and scope it was minted for
+  tokenCache.set(cacheKey, {
     token: result.token,
     expiresAt: result.expiresAt,
-    appId,
-    installationId,
-  };
+  });
+  pruneTokenCache();
 
   return result.token;
 }
@@ -290,12 +418,17 @@ export type AuthEventLogger = Pick<Logger, "security">;
  * event so it is visible in the run log and reconstructable afterwards.
  *
  * @param logger - Sink for the fallback security event (injectable for testing)
+ * @param repositories - `owner/repo` slugs the token may reach (Issue #1391).
+ *   `gh_spawn.ts` derives this from the run's write-repo allowlist, so the
+ *   credential the subprocess receives cannot reach a repo the run may not
+ *   write to. `null`/omitted keeps the installation's full reach.
  */
 export async function getGhTokenForSubprocess(
   appId?: string,
   installationId?: string,
   privateKeyPath?: string,
   logger: AuthEventLogger = defaultLogger,
+  repositories: RepositoryScope = undefined,
 ): Promise<string | undefined> {
   const config = { appId, installationId, privateKeyPath };
   if (!isGitHubAppConfigured(config)) {
@@ -309,6 +442,8 @@ export async function getGhTokenForSubprocess(
       config.appId,
       config.installationId,
       config.privateKeyPath,
+      globalThis.fetch,
+      repositories,
     );
   } catch (err) {
     // The guard above established the App IS configured, so reaching here is
@@ -318,7 +453,11 @@ export async function getGhTokenForSubprocess(
     logger.security(
       APP_AUTH_FALLBACK_EVENT,
       `GitHub App token minting failed (appId=${config.appId} ` +
-        `installationId=${config.installationId}); falling back to ambient gh ` +
+        `installationId=${config.installationId} scope=${
+          repositories === null || repositories === undefined
+            ? "<unscoped>"
+            : repositories.join(",")
+        }); falling back to ambient gh ` +
         `authentication, so subsequent calls may run as a different identity ` +
         `with broader permissions. Cause: ${message}`,
     );
