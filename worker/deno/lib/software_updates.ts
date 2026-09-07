@@ -95,7 +95,9 @@ export interface SoftwareUpdateOptions {
   /**
    * Per-tool minimum version floors (Issue #2622). When the installed version
    * of a tool is below its floor, the update runs immediately, bypassing the
-   * interval timestamp gate. Empty by default. Example: `{ claude: "2.1.170" }`.
+   * interval timestamp gate. Empty when the caller passes nothing; the worker
+   * passes `OPERATIONAL_DEFAULTS.softwareMinVersions`, which is the map's
+   * single source of truth (`{ claude: "2.1.260" }` today).
    */
   minVersions?: Record<string, string>;
   /**
