@@ -14,6 +14,7 @@ import { assessClarityCommand } from "../commands/assess_clarity.ts";
 import { suggestImprovementsCommand } from "../commands/suggest_improvements.ts";
 import { versionCommand } from "../commands/version.ts";
 import {
+  coercePositiveIntFlag,
   validateAssessClarityArgs,
   validateCheckParentDepsArgs,
   validateCheckRepoAvailabilityArgs,
@@ -289,4 +290,48 @@ Deno.test("command_args - suggest-improvements handles valid dry-run", async () 
     createMockConfig(),
   );
   assertEquals(result.success, true);
+});
+
+// =============================================================================
+// coercePositiveIntFlag (Issue #1270)
+// =============================================================================
+
+Deno.test("command_args - coercePositiveIntFlag accepts numbers and numeric strings", () => {
+  for (
+    const [input, expected] of [[120, 120], ["120", 120], [" 7 ", 7]] as const
+  ) {
+    const result = coercePositiveIntFlag(input, "timeout");
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value, expected);
+  }
+});
+
+Deno.test("command_args - coercePositiveIntFlag reads absence as undefined", () => {
+  for (const absent of [undefined, null]) {
+    const result = coercePositiveIntFlag(absent, "timeout");
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value, undefined);
+  }
+});
+
+Deno.test("command_args - coercePositiveIntFlag refuses values parseInt turns into NaN (Issue #1270)", () => {
+  // "" is an unset-but-quoted shell variable; true is a valueless trailing
+  // flag. `parseInt` maps both to NaN, which flows past a `??` default.
+  for (const bad of ["", "  ", true, "abc", "12x", [], {}]) {
+    const result = coercePositiveIntFlag(bad, "timeout");
+    assertEquals(result.ok, false, `${JSON.stringify(bad)} must be refused`);
+    if (!result.ok) {
+      assertEquals(result.error.message.includes("--timeout"), true);
+    }
+  }
+});
+
+Deno.test("command_args - coercePositiveIntFlag refuses non-positive and non-integer values", () => {
+  for (const bad of [0, -1, 1.5, NaN, Infinity, "-1", "0"]) {
+    const result = coercePositiveIntFlag(bad, "interval");
+    assertEquals(result.ok, false, `${String(bad)} must be refused`);
+    if (!result.ok) {
+      assertEquals(result.error.message.includes("--interval"), true);
+    }
+  }
 });
