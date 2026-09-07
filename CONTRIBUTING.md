@@ -95,8 +95,10 @@ unattended runs cannot hang waiting for input.
 Run it in the **foreground** and let it finish — each check reports as it
 settles, so you can watch progress. Never background it and poll with a
 `sleep`/`pgrep` wait loop (Issue #399). While iterating, prefer the fast checks
-(`deno fmt`, `deno lint`, `deno check`, and the test files you touched); the
-full gate is the last step before the PR.
+(`deno fmt`, `deno lint`, `deno check`, and the test files you touched), then
+`deno task check:manifests` — the tree-scanning completeness tests, a few
+seconds, and the usual reason a correct change goes red in CI (Issue #1483);
+the full gate is the last step before the PR.
 
 CI-enforced workflows live under `.github/workflows/`, including
 `validate-scripts.yml`, `markdown-lint.yml`, `gitleaks.yml`, and
