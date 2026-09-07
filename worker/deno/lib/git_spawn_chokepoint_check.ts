@@ -62,15 +62,14 @@ export const GIT_INDIRECT_SPAWN_RULES: IndirectSpawnRules = {
 };
 
 /**
- * Modules whose indirect `git` routing predates the indirection rule
- * (Issue #1378 follow-up, #1396). `benchmark.ts` builds throwaway fixture
- * repositories — the same fixture case `excludeTests` already forgives for
- * `*_test.ts`. Their **literal** spawns are still forbidden, and the set must
- * shrink, never grow.
+ * Modules exempt from the indirection signal (Issue #1378). Empty since
+ * Issue #1429: the one entry, `benchmark.ts`, builds its throwaway fixture
+ * repositories through `runGitCommand` (Issue #1396) and satisfies the rule
+ * on its own merits. Their **literal** spawns were never exempt. The set
+ * stays as the documented shape for a future gap — and must shrink, never
+ * grow.
  */
-export const GIT_INDIRECT_KNOWN_GAPS: ReadonlySet<string> = new Set<string>([
-  "worker/deno/lib/benchmark.ts",
-]);
+export const GIT_INDIRECT_KNOWN_GAPS: ReadonlySet<string> = new Set<string>();
 
 /**
  * Scan a file's content for direct or indirect `git` spawns.
