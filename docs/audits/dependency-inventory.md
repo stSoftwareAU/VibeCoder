@@ -18,7 +18,6 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | github/codeql-action/analyze | v4.37.9 | cdf488f595d80d6e07e03d4674febd5ab45fa938 | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | github/codeql-action/init | v4.37.9 | cdf488f595d80d6e07e03d4674febd5ab45fa938 | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | gitleaks/gitleaks-action | v3.0.0 | e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e | .github/workflows/gitleaks.yml | pinned to commit SHA |
-| ruby/setup-ruby | v1.321.0 | 95ef2b042f9d7a56d8268cba8559e2842e2ad01b | .github/workflows/dependency-audit.yml | pinned to commit SHA |
 
 ## Container base images
 

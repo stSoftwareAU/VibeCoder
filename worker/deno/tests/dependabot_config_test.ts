@@ -2,10 +2,13 @@
  * Tests for the repo-root `.github/dependabot.yml` supply-chain
  * quarantine (Issue #273).
  *
- * `Gemfile.lock` (Jekyll / Pages) already has advisory scanning
- * (`bundle-audit`, `dependency-review.yml`) but previously had no
- * automated 24h age embargo. The bundler ecosystem entry must honour
- * the same `cooldown.default-days: 1` as the github-actions entry.
+ * The github-actions ecosystem must honour `cooldown.default-days: 1`, the
+ * same 24h embargo every other ecosystem in the repository applies.
+ *
+ * A bundler entry sat beside it for the Jekyll site's `Gemfile.lock`. The
+ * site and both manifests went with the Pages pipeline (Issues #1344,
+ * #1376), so the suite now asserts that entry is *absent* rather than
+ * quarantined.
  *
  * Australian English used throughout (behaviour, honour, etc.).
  */
@@ -70,21 +73,20 @@ Deno.test("dependabot.yml - github-actions keeps a 24h cooldown", async () => {
 });
 
 Deno.test(
-  "dependabot.yml - bundler ecosystem has a 24h cooldown (Issue #273)",
+  "dependabot.yml - no bundler ecosystem, the Ruby tree is gone (Issue #1376)",
   async () => {
+    // The bundler entry existed for the Jekyll site's `Gemfile.lock`. The
+    // site went with the Pages publishing pipeline (Issue #1344) and the
+    // manifests with it, so an ecosystem pointing at a lockfile the
+    // repository no longer carries would be Dependabot polling nothing —
+    // and `pages_publishing_removed_test.ts` now asserts both files are
+    // absent. Re-adding one here without a lockfile is the drift this
+    // catches.
     const config = await loadDependabotConfig();
-    const bundler = findUpdate(config, "bundler");
-    assertNotEquals(
-      bundler,
-      undefined,
-      "bundler ecosystem must cover Gemfile.lock at the repo root",
-    );
-    assertEquals(bundler!.directory, "/");
-    const days = bundler!.cooldown?.["default-days"];
     assertEquals(
-      typeof days === "number" && days >= 1,
-      true,
-      `bundler cooldown.default-days must be at least 1 (24h); got ${days}`,
+      findUpdate(config, "bundler"),
+      undefined,
+      "bundler ecosystem must not outlive the Gemfile it audited",
     );
   },
 );
