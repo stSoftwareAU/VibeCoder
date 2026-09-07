@@ -777,6 +777,21 @@ Deno.test("gh-guard #187 - refuses config, alias and extension writes", () => {
   }
 });
 
+Deno.test("gh-guard #1396 - the extension refusal survives its non-repo mutation classification", () => {
+  // `gh extension install` now classifies as a `non-repo` local-tool mutation
+  // (Issue #1396) so the worker's own age-gated installs can be journalled
+  // rather than fail closed. The agent boundary is unchanged: the local-state
+  // refusal still wins, with the allowlist active or inert.
+  for (const ctx of [ACTIVE, INACTIVE]) {
+    const decision = evaluateGhCommand(
+      ["extension", "install", "attacker/gh-evil", "--pin", "v1", "--force"],
+      ctx,
+    );
+    assertEquals(decision.allowed, false);
+    assertEquals(decision.marker, "GH_LOCAL_STATE_REFUSED");
+  }
+});
+
 Deno.test("gh-guard #187 - a global flag before the root does not smuggle the verb past", () => {
   const decision = evaluateGhCommand(
     ["--repo", "o/r", "auth", "login"],
