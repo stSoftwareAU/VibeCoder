@@ -43,7 +43,7 @@ async function auditPattern(): Promise<RegExp> {
   return new RegExp(body, "i");
 }
 
-Deno.test("benchmark audit - a camelCase function name is not a benchmark", async () => {
+Deno.test("audit pattern - a camelCase function name is not flagged", async () => {
   const pattern = await auditPattern();
   // The three real test names from `benchmark_test.ts` that turned it red.
   for (
@@ -61,7 +61,7 @@ Deno.test("benchmark audit - a camelCase function name is not a benchmark", asyn
   }
 });
 
-Deno.test("benchmark audit - a disguised benchmark is still caught", async () => {
+Deno.test("audit pattern - a disguised perf test is still caught", async () => {
   const pattern = await auditPattern();
   // The direction that matters: the gate must keep doing its job. Asserted
   // beside the exemption above so narrowing one cannot silently widen it.
