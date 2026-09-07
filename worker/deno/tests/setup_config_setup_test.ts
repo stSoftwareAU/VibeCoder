@@ -988,3 +988,21 @@ Deno.test("dedupeConfigRepos - does not mutate the input config", () => {
   dedupeConfigRepos(config);
   assertEquals(config.repos, ["org/a", "org/A"]);
 });
+
+Deno.test("dedupeConfigRepos - warns that repo_config under the dropped spelling stops being read", () => {
+  const result = dedupeConfigRepos({
+    repos: ["org/Repo", "org/repo"],
+    repo_config: { "org/repo": { max_auto_fix_attempts: 2 } },
+  });
+  assertEquals(result.config.repos, ["org/Repo"]);
+  assertEquals(result.warnings.length, 2);
+  assert(result.warnings[1]?.includes("repo_config"));
+});
+
+Deno.test("dedupeConfigRepos - repo_config on the kept spelling needs no extra warning", () => {
+  const result = dedupeConfigRepos({
+    repos: ["org/Repo", "org/repo"],
+    repo_config: { "org/Repo": { max_auto_fix_attempts: 2 } },
+  });
+  assertEquals(result.warnings.length, 1);
+});

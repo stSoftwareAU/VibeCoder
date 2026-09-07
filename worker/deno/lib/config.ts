@@ -61,7 +61,7 @@ import type { VerbosityLevel } from "../types.ts";
 import type { DuplicateRepoSlug } from "./repo_slug.ts";
 import {
   dedupeRepoSlugs,
-  duplicateRepoSlugWarning,
+  duplicateRepoSlugWarnings,
   REPO_SLUG_PATTERN,
 } from "./repo_slug.ts";
 
@@ -408,7 +408,7 @@ export async function loadConfig(
   // entry ran every per-repository scan a second time and let the worker's
   // own slots race each other for its issues.
   const { repos, duplicates } = dedupeRepoSlugs(file.repos ?? []);
-  warnDuplicateRepos(duplicates);
+  warnDuplicateRepos(duplicates, Object.keys(file.repo_config ?? {}));
 
   // Issue #1834: the three discovery labels (top-priority, work-on,
   // low-priority) are hardwired and NOT configurable. issueLabels is the
@@ -1157,15 +1157,18 @@ export function _resetDuplicateRepoWarning(): void {
  * fixing: whatever is keyed by the configured spelling (watermarks, caches,
  * the write-repo allowlist) forks in two until it is.
  */
-function warnDuplicateRepos(duplicates: readonly DuplicateRepoSlug[]): void {
+function warnDuplicateRepos(
+  duplicates: readonly DuplicateRepoSlug[],
+  repoConfigKeys: readonly string[],
+): void {
   if (duplicates.length === 0) return;
   // Once per process: `loadConfig` is re-entered by sub-commands, and the
   // same defect repeated on every read is noise an operator scrolls past.
   if (warnedDuplicateRepos) return;
   warnedDuplicateRepos = true;
 
-  for (const duplicate of duplicates) {
-    console.warn(`⚠️  ${duplicateRepoSlugWarning(duplicate)}`);
+  for (const warning of duplicateRepoSlugWarnings(duplicates, repoConfigKeys)) {
+    console.warn(`⚠️  ${warning}`);
   }
 }
 

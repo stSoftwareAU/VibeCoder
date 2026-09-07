@@ -157,3 +157,44 @@ export function duplicateRepoSlugWarning(
   return `repos: "${dropped}" duplicates "${kept}" (GitHub repository names ` +
     "are case-insensitive) — ignoring the second";
 }
+
+/**
+ * Every sentence a set of dropped duplicates owes the operator.
+ *
+ * One line per duplicate, plus a second line whenever `repo_config` is keyed
+ * to the spelling that was dropped: the orphan prune matches
+ * case-insensitively so that block survives the rewrite, but per-repo
+ * settings are looked up by the exact configured slug, so it is never read
+ * again. Losing per-repo settings without a word is the silent failure this
+ * names (Issue #1546).
+ *
+ * @param duplicates - The dropped entries, from {@link dedupeRepoSlugs}.
+ * @param repoConfigKeys - The `repo_config` keys the same config carries.
+ */
+export function duplicateRepoSlugWarnings(
+  duplicates: readonly DuplicateRepoSlug[],
+  repoConfigKeys: readonly string[] = [],
+): string[] {
+  const warnings: string[] = [];
+  for (const duplicate of duplicates) {
+    warnings.push(duplicateRepoSlugWarning(duplicate));
+
+    // An identical entry keys repo_config the same way the kept one does,
+    // so nothing is orphaned by dropping it.
+    if (duplicate.dropped.trim() === duplicate.kept.trim()) continue;
+
+    const droppedKey = duplicate.dropped.trim().toLowerCase();
+
+    const orphaned = repoConfigKeys.some((key) =>
+      key.trim().toLowerCase() === droppedKey && key !== duplicate.kept
+    );
+    if (!orphaned) continue;
+
+    warnings.push(
+      `repo_config is keyed to "${renderInertRepoSlug(duplicate.dropped)}", ` +
+        "the spelling just dropped, so its per-repo settings are no longer " +
+        `read — re-key it to "${renderInertRepoSlug(duplicate.kept)}"`,
+    );
+  }
+  return warnings;
+}

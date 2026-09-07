@@ -21,7 +21,6 @@ import {
   writeConfigFile,
 } from "./config_setup.ts";
 import { UPDATE_MODES } from "../lib/config_defaults.ts";
-import { duplicateRepoSlugWarning } from "../lib/repo_slug.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
 import { expandHome, runSetupCommand } from "./setup_command_runner.ts";
 import type { PinnedToolVersions, Result, UpdateMode } from "../types.ts";
@@ -127,8 +126,10 @@ export async function runConfigSetup(
     // Issue #1546: one repository listed under two casings is one
     // repository. Collapse it before anything downstream keys off the
     // spelling, and name the entry that was dropped.
-    const { config: deduped, duplicates } = dedupeConfigRepos(merged);
-    const warnings = duplicates.map(duplicateRepoSlugWarning);
+    const { config: deduped, warnings: duplicateWarnings } = dedupeConfigRepos(
+      merged,
+    );
+    const warnings = [...duplicateWarnings];
     // Issue #4033: drop dead per-repo config, reporting every removal.
     const { config: pruned, removed } = pruneOrphanRepoConfig(deduped);
     warnings.push(

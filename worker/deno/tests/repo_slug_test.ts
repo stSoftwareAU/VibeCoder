@@ -8,8 +8,12 @@
  * issue.
  */
 
-import { assertEquals } from "@std/assert";
-import { dedupeRepoSlugs, duplicateRepoSlugWarning } from "../lib/repo_slug.ts";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  dedupeRepoSlugs,
+  duplicateRepoSlugWarning,
+  duplicateRepoSlugWarnings,
+} from "../lib/repo_slug.ts";
 
 Deno.test("dedupeRepoSlugs - keeps a genuinely distinct list unchanged", () => {
   const result = dedupeRepoSlugs(["org/one", "org/two", "other/one"]);
@@ -91,4 +95,35 @@ Deno.test("duplicateRepoSlugWarning - renders an untrusted spelling inert", () =
     dropped: "org/a`rm -rf /`",
   });
   assertEquals(warning.includes("`"), false);
+});
+
+Deno.test("duplicateRepoSlugWarnings - names a repo_config entry the drop makes inert", () => {
+  const warnings = duplicateRepoSlugWarnings(
+    [{ kept: "org/Repo", dropped: "org/repo" }],
+    ["org/repo"],
+  );
+  assertEquals(warnings.length, 2);
+  assertStringIncludes(warnings[1] ?? "", "repo_config");
+  assertStringIncludes(warnings[1] ?? "", "org/repo");
+  assertStringIncludes(warnings[1] ?? "", "org/Repo");
+});
+
+Deno.test("duplicateRepoSlugWarnings - stays quiet when repo_config uses the kept spelling", () => {
+  const warnings = duplicateRepoSlugWarnings(
+    [{ kept: "org/Repo", dropped: "org/repo" }],
+    ["org/Repo"],
+  );
+  assertEquals(warnings.length, 1);
+});
+
+Deno.test("duplicateRepoSlugWarnings - no duplicates means no warnings", () => {
+  assertEquals(duplicateRepoSlugWarnings([], ["org/Repo"]), []);
+});
+
+Deno.test("duplicateRepoSlugWarnings - repo_config keys default to none", () => {
+  const warnings = duplicateRepoSlugWarnings([{
+    kept: "org/Repo",
+    dropped: "org/repo",
+  }]);
+  assertEquals(warnings.length, 1);
 });

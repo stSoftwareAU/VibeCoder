@@ -4293,7 +4293,14 @@ twice until it is. `./setup.sh` writes the collapsed list back, and
 the spelling already in the list. Repositories that genuinely differ — a
 different owner or a different name — are untouched.
 
-One consequence worth knowing: a `repo_config` block keyed to the **dropped**
-spelling survives the rewrite (the orphan prune matches case-insensitively)
-but is no longer read, because per-repo settings are looked up by the exact
-configured slug. Re-key it to the spelling the warning says was kept.
+One consequence gets its own warning: a `repo_config` block keyed to the
+**dropped** spelling survives the rewrite (the orphan prune matches
+case-insensitively) but is no longer read, because per-repo settings are
+looked up by the exact configured slug. Rather than lose those settings
+silently, both the loader and setup say so:
+
+```text
+repo_config is keyed to "stSoftwareAU/GRQ-actual", the spelling just dropped,
+so its per-repo settings are no longer read — re-key it to
+"stSoftwareAU/GRQ-Actual"
+```

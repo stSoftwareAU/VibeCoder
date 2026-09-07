@@ -19,7 +19,11 @@ import {
 import { REMOVED_CONFIG_KEYS } from "../lib/validation.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
 import type { DuplicateRepoSlug } from "../lib/repo_slug.ts";
-import { assertValidRepoSlugs, dedupeRepoSlugs } from "../lib/repo_slug.ts";
+import {
+  assertValidRepoSlugs,
+  dedupeRepoSlugs,
+  duplicateRepoSlugWarnings,
+} from "../lib/repo_slug.ts";
 
 /**
  * Configuration values that can be set during setup.
@@ -384,8 +388,10 @@ export function pruneOrphanRepoConfig(
 export interface RepoDedupResult {
   /** The config, with `repos` reduced to one entry per repository. */
   config: SetupConfig;
-  /** Every dropped entry, in file order. Callers must report these. */
+  /** Every dropped entry, in file order. */
   duplicates: DuplicateRepoSlug[];
+  /** The sentences the drops owe the operator. Callers must report these. */
+  warnings: string[];
 }
 
 /**
@@ -404,13 +410,20 @@ export interface RepoDedupResult {
 export function dedupeConfigRepos(config: SetupConfig): RepoDedupResult {
   const repos = config.repos;
   if (!repos || repos.length === 0) {
-    return { config, duplicates: [] };
+    return { config, duplicates: [], warnings: [] };
   }
 
   const { repos: deduped, duplicates } = dedupeRepoSlugs(repos);
-  if (duplicates.length === 0) return { config, duplicates };
+  if (duplicates.length === 0) return { config, duplicates, warnings: [] };
 
-  return { config: { ...config, repos: deduped }, duplicates };
+  return {
+    config: { ...config, repos: deduped },
+    duplicates,
+    warnings: duplicateRepoSlugWarnings(
+      duplicates,
+      Object.keys(config.repo_config ?? {}),
+    ),
+  };
 }
 
 /** Result of defaulting the service-account allowlist (Issue #4030). */
