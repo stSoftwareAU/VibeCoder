@@ -60,6 +60,7 @@ import {
 } from "./git_guard_cli.ts";
 import {
   type GuardModulePathOptions,
+  type GuardModuleResolution,
   resolveGuardModulePath,
 } from "./guard_module_path.ts";
 import { posixSingleQuote as shellQuote } from "./shell_quote.ts";
@@ -70,13 +71,13 @@ import { posixSingleQuote as shellQuote } from "./shell_quote.ts";
  * Resolved against the read-only checkout rather than this module's own path
  * (Issue #1444) — see {@link resolveGuardModulePath}.
  *
- * @param opts - Environment lookup, existence probe and warning sink.
- * @returns The checkout copy when the launcher named one carrying the module,
- *   otherwise the copy the worker is running from.
+ * @param opts - Environment lookup and existence probe.
+ * @returns The resolution — the checkout copy when the launcher named one
+ *   carrying the module, otherwise the running copy marked `degraded`.
  */
 export function defaultGitGuardModulePath(
   opts: GuardModulePathOptions = {},
-): string {
+): GuardModuleResolution {
   return resolveGuardModulePath("git_guard_cli.ts", opts);
 }
 

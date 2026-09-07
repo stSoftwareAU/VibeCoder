@@ -27,3 +27,20 @@ export function envFrom(values: Record<string, string> = {}): EnvLookup {
 
 /** An {@link EnvLookup} in which every variable is absent. */
 export const emptyEnv: EnvLookup = envFrom();
+
+/**
+ * The checkout the guard resolution should name for a suite (Issue #1444).
+ *
+ * `worker/deno/lib/guard_module_path.ts` resolves the `gh`/`git` guard entry
+ * point from `VIBE_BASE_DIR` so it runs from the read-only checkout rather
+ * than the agent-writable staged copy. A suite that let the ambient value
+ * through would execute the *mounted* checkout's guard instead of the one
+ * under test, so every shim install names this checkout explicitly.
+ */
+export const CHECKOUT_ROOT = new URL("../../../../", import.meta.url).pathname
+  .replace(/\/$/, "");
+
+/** An {@link EnvLookup} naming {@link CHECKOUT_ROOT} as `VIBE_BASE_DIR`. */
+export const checkoutEnv: EnvLookup = envFrom({
+  VIBE_BASE_DIR: CHECKOUT_ROOT,
+});

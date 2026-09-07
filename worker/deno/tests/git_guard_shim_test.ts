@@ -13,7 +13,7 @@ import {
   defaultGitGuardModulePath,
   renderGitShimScript,
 } from "../lib/git_guard_shim.ts";
-import { envFrom } from "./support/env_lookup.ts";
+import { CHECKOUT_ROOT, checkoutEnv } from "./support/env_lookup.ts";
 import {
   type GhGuardShim,
   type GhGuardShimOutcome,
@@ -49,22 +49,6 @@ async function makeStubGit(): Promise<StubGit> {
   return { dir, log };
 }
 
-/**
- * The checkout under test, as the guard resolution names it (Issue #1444).
- *
- * The wrapper's guard entry point is resolved from `VIBE_BASE_DIR` so it runs
- * from the read-only checkout rather than the agent-writable staged copy. A
- * suite that let the ambient value through would execute the *mounted*
- * checkout's guard instead of this branch's, so every install below names this
- * one explicitly.
- */
-const CHECKOUT_ENV = envFrom({
-  VIBE_BASE_DIR: new URL("../../../", import.meta.url).pathname.replace(
-    /\/$/,
-    "",
-  ),
-});
-
 /** Unwrap an installed shim, failing the test when the install was refused. */
 function expectInstalled(outcome: GhGuardShimOutcome): GhGuardShim {
   assert(
@@ -80,7 +64,7 @@ function installOver(stub: StubGit): Promise<GhGuardShimOutcome> {
     baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
     active: true,
     allowedRepos: ["owner/repo"],
-    env: CHECKOUT_ENV,
+    env: checkoutEnv,
   });
 }
 
@@ -304,7 +288,7 @@ Deno.test({
           baseEnv: { ...Deno.env.toObject(), PATH: dir },
           active: true,
           allowedRepos: ["owner/repo"],
-          env: CHECKOUT_ENV,
+          env: checkoutEnv,
         }),
       );
       assertEquals(shim.gitShimPath, undefined);
@@ -318,9 +302,14 @@ Deno.test({
   },
 });
 
-Deno.test("git guard shim - resolves its guard module inside the worker lib", () => {
-  assertStringIncludes(
-    defaultGitGuardModulePath({ env: CHECKOUT_ENV }),
-    "/lib/git_guard_cli.ts",
+Deno.test("git guard shim - resolves its guard module from the named checkout", () => {
+  const resolved = defaultGitGuardModulePath({ env: checkoutEnv });
+  assertEquals(
+    resolved.path,
+    `${CHECKOUT_ROOT}/worker/deno/lib/git_guard_cli.ts`,
   );
+  assertEquals(resolved.degraded, undefined);
+  // The layout the resolution assumes is the layout on disk — a move that
+  // broke it would otherwise fall back to the staged copy with green tests.
+  assert(Deno.statSync(resolved.path).isFile, `${resolved.path} must exist`);
 });

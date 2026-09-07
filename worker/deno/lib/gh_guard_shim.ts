@@ -87,6 +87,7 @@ import { posixSingleQuote as shellQuote } from "./shell_quote.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import {
   type GuardModulePathOptions,
+  type GuardModuleResolution,
   resolveGuardModulePath,
 } from "./guard_module_path.ts";
 import { type ClaimedIssue, claimedIssueGuard } from "./claimed_issue_guard.ts";
@@ -244,7 +245,9 @@ export function resolveExecutable(
  * (Issue #1444): the worker runs from a staged copy the coding agent's own uid
  * can write to, and the wrapper re-reads the guard on every `gh` call.
  */
-function defaultGuardModulePath(opts: GuardModulePathOptions = {}): string {
+function defaultGuardModulePath(
+  opts: GuardModulePathOptions = {},
+): GuardModuleResolution {
   return resolveGuardModulePath("gh_guard_cli.ts", opts);
 }
 
@@ -478,8 +481,15 @@ export async function installGhGuardShim(
   if (!realGhPath) return await unavailable("no gh binary found on PATH");
 
   const denoPath = opts.denoPath ?? Deno.execPath();
-  const guardModulePath = opts.guardModulePath ??
-    defaultGuardModulePath({ env, warn });
+  // A guard the agent's own uid could rewrite is no boundary at all, so an
+  // unusable checkout copy is refused exactly like an uninstallable shim
+  // (Issue #1444). The explicit override is a test seam and stands.
+  let guardModulePath = opts.guardModulePath;
+  if (!guardModulePath) {
+    const resolved = defaultGuardModulePath({ env });
+    if (resolved.degraded) return await unavailable(resolved.degraded);
+    guardModulePath = resolved.path;
+  }
   const makeTempDir = opts.makeTempDir ??
     (() => Deno.makeTempDir({ prefix: "vibe-gh-guard-" }));
 
@@ -498,6 +508,11 @@ export async function installGhGuardShim(
   // prefix covers both binaries and one cleanup removes both.
   const realGitPath = resolveExecutable("git", pathValue);
   const gitShimPath = realGitPath ? `${dir}/git` : undefined;
+  const gitGuard = defaultGitGuardModulePath({ env });
+  if (gitShimPath && gitGuard.degraded) {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    return await unavailable(gitGuard.degraded);
+  }
 
   const shimPath = `${dir}/gh`;
   try {
@@ -506,7 +521,7 @@ export async function installGhGuardShim(
         gitShimPath,
         renderGitShimScript({
           denoPath,
-          guardModulePath: defaultGitGuardModulePath({ env, warn }),
+          guardModulePath: gitGuard.path,
           realGitPath,
           verdictDir: dir,
         }),

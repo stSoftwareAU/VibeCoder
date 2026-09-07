@@ -26,7 +26,12 @@ import {
   type GhGuardShimOutcome,
   installGhGuardShim,
 } from "../lib/gh_guard_shim.ts";
-import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+import {
+  CHECKOUT_ROOT,
+  checkoutEnv,
+  emptyEnv,
+  envFrom,
+} from "./support/env_lookup.ts";
 
 /** Unwrap an installed shim, failing the test when the install was refused. */
 function expectInstalled(outcome: GhGuardShimOutcome): GhGuardShim {
@@ -102,45 +107,85 @@ async function readLog(log: string): Promise<string> {
 }
 
 Deno.test("guard-module-path - prefers the checkout copy over the running one", () => {
-  const path = resolveGuardModulePath("gh_guard_cli.ts", {
+  const resolved = resolveGuardModulePath("gh_guard_cli.ts", {
     env: envFrom({ VIBE_BASE_DIR: "/mnt/checkout" }),
     exists: () => true,
-    warn: () => assert(false, "a present checkout copy must not warn"),
   });
-  assertEquals(path, `/mnt/checkout/${GUARD_MODULE_DIR}/gh_guard_cli.ts`);
+  assertEquals(
+    resolved.path,
+    `/mnt/checkout/${GUARD_MODULE_DIR}/gh_guard_cli.ts`,
+  );
+  assertEquals(resolved.degraded, undefined);
 });
 
 Deno.test("guard-module-path - trailing separators on the base dir are ignored", () => {
-  const path = resolveGuardModulePath("git_guard_cli.ts", {
+  const resolved = resolveGuardModulePath("git_guard_cli.ts", {
     env: envFrom({ VIBE_BASE_DIR: "/mnt/checkout//" }),
     exists: () => true,
   });
-  assertEquals(path, `/mnt/checkout/${GUARD_MODULE_DIR}/git_guard_cli.ts`);
+  assertEquals(
+    resolved.path,
+    `/mnt/checkout/${GUARD_MODULE_DIR}/git_guard_cli.ts`,
+  );
 });
 
-Deno.test("guard-module-path - falls back to the running copy without VIBE_BASE_DIR", () => {
-  const path = resolveGuardModulePath("gh_guard_cli.ts", {
+Deno.test("guard-module-path - without VIBE_BASE_DIR the running copy is the checkout copy", () => {
+  const resolved = resolveGuardModulePath("gh_guard_cli.ts", {
     env: emptyEnv,
     exists: () => {
       throw new Error("no checkout named — nothing to probe");
     },
-    warn: () => assert(false, "an unset VIBE_BASE_DIR is not a degradation"),
   });
-  assertStringIncludes(path, `/lib/gh_guard_cli.ts`);
+  assertStringIncludes(resolved.path, "/lib/gh_guard_cli.ts");
+  assertEquals(resolved.degraded, undefined, "nothing was staged to degrade");
 });
 
-Deno.test("guard-module-path - warns loudly when the checkout lacks the guard", () => {
-  const warnings: string[] = [];
-  const path = resolveGuardModulePath("gh_guard_cli.ts", {
+Deno.test("guard-module-path - the named checkout that carries no guard is degraded", () => {
+  const resolved = resolveGuardModulePath("gh_guard_cli.ts", {
     env: envFrom({ VIBE_BASE_DIR: "/mnt/checkout" }),
     exists: () => false,
-    warn: (m) => warnings.push(m),
   });
-  assertStringIncludes(path, `/lib/gh_guard_cli.ts`);
-  assertEquals(warnings.length, 1);
-  const warning = warnings[0] ?? "";
-  assertStringIncludes(warning, "GUARD_MODULE_NOT_IN_CHECKOUT");
-  assertStringIncludes(warning, "/mnt/checkout");
+  assertStringIncludes(resolved.path, "/lib/gh_guard_cli.ts");
+  assertStringIncludes(resolved.degraded ?? "", "GUARD_MODULE_NOT_IN_CHECKOUT");
+  assertStringIncludes(resolved.degraded ?? "", "/mnt/checkout");
+});
+
+Deno.test("guard-module-path - an unreadable VIBE_BASE_DIR is degraded, not swallowed", () => {
+  const resolved = resolveGuardModulePath("gh_guard_cli.ts", {
+    env: () => {
+      throw new Deno.errors.NotCapable("requires env access");
+    },
+  });
+  assertStringIncludes(resolved.path, "/lib/gh_guard_cli.ts");
+  assertStringIncludes(resolved.degraded ?? "", "GUARD_MODULE_NOT_IN_CHECKOUT");
+  assertStringIncludes(
+    resolved.degraded ?? "",
+    "VIBE_BASE_DIR could not be read",
+  );
+});
+
+Deno.test("guard-module-path - the running copy inside the named checkout needs no probe", () => {
+  // A host run: nothing was staged, so the two paths are the same file.
+  const resolved = resolveGuardModulePath("gh_guard_cli.ts", {
+    env: checkoutEnv,
+    exists: () => {
+      throw new Error("the identical path must not be probed");
+    },
+  });
+  assertEquals(
+    resolved.path,
+    `${CHECKOUT_ROOT}/${GUARD_MODULE_DIR}/gh_guard_cli.ts`,
+  );
+  assertEquals(resolved.degraded, undefined);
+});
+
+Deno.test("guard-module-path - the checkout layout it assumes is the one on disk", () => {
+  // GUARD_MODULE_DIR is a hardcoded relative path; a layout move that broke it
+  // would otherwise degrade every run to the staged copy unnoticed.
+  for (const name of ["gh_guard_cli.ts", "git_guard_cli.ts"]) {
+    const path = `${CHECKOUT_ROOT}/${GUARD_MODULE_DIR}/${name}`;
+    assert(Deno.statSync(path).isFile, `${path} must exist in the checkout`);
+  }
 });
 
 Deno.test("guard-module-path - refuses a traversing module name", () => {
@@ -221,6 +266,82 @@ Deno.test({
       await shim.cleanup();
       await Deno.remove(stub.dir, { recursive: true });
       await Deno.remove(checkout, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "gh-guard-shim - the real guard still refuses an off-allowlist write from another checkout root",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    // The whole guard, not a stub, reached through a checkout root it was
+    // never installed under: the entry point's own import graph has to resolve
+    // from wherever the launcher mounted it.
+    const root = await Deno.makeTempDir({ prefix: "vibe_mounted_" });
+    await Deno.mkdir(`${root}/worker`);
+    await Deno.symlink(
+      `${CHECKOUT_ROOT}/worker/deno`,
+      `${root}/worker/deno`,
+    );
+    const stub = await makeStubBinaries();
+    const shim = expectInstalled(
+      await installGhGuardShim({
+        baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
+        active: true,
+        allowedRepos: ["stSoftwareAU/VibeCoder"],
+        env: envFrom({ VIBE_BASE_DIR: root }),
+      }),
+    );
+    try {
+      const result = await runShim(shim.shimPath, shim.env, [
+        "issue",
+        "comment",
+        "1",
+        "-R",
+        "other-owner/other-repo",
+        "--body",
+        "leak",
+      ]);
+      assert(result.code !== 0, "expected a non-zero exit for a refused write");
+      assertStringIncludes(result.stderr, "WRITE_REPO_BLOCKED");
+      assertEquals(await readLog(stub.log), "", "gh must not have been run");
+    } finally {
+      await shim.cleanup();
+      await Deno.remove(stub.dir, { recursive: true });
+      await Deno.remove(root, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "gh-guard-shim - blocks the run when the named checkout carries no guard module",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const empty = await Deno.makeTempDir({ prefix: "vibe_no_guard_" });
+    const stub = await makeStubBinaries();
+    const warnings: string[] = [];
+    try {
+      const outcome = await installGhGuardShim({
+        baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
+        active: true,
+        allowedRepos: ["stSoftwareAU/VibeCoder"],
+        env: envFrom({ VIBE_BASE_DIR: empty }),
+        warn: (m) => warnings.push(m),
+        allowUnguarded: false,
+        record: () => Promise.resolve(),
+      });
+      // A guard the agent could rewrite is refused like an uninstallable shim.
+      assertEquals(outcome.status, "blocked");
+      assert(outcome.status === "blocked");
+      assertStringIncludes(outcome.reason, "GUARD_MODULE_NOT_IN_CHECKOUT");
+      assertStringIncludes(warnings[0] ?? "", "GH_GUARD_SHIM_UNAVAILABLE");
+    } finally {
+      await Deno.remove(stub.dir, { recursive: true });
+      await Deno.remove(empty, { recursive: true });
     }
   },
 });

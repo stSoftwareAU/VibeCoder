@@ -26,10 +26,16 @@
  *     C --> G
  * ```
  *
- * **Never silently degrades.** When `VIBE_BASE_DIR` names a checkout that does
- * not carry the guard module, the fallback to the running copy is announced
- * with a `[SECURITY]` warning naming both paths, rather than quietly handing
- * the agent back a boundary it can edit.
+ * **Fails closed, like the shim it serves.** A launcher that named a checkout
+ * but cannot supply the guard from it is a broken containment boundary, not a
+ * degradation to absorb: the resolution reports `degraded`, and
+ * `installGhGuardShim` turns that into the same `blocked`/`degraded` verdict
+ * every other uninstallable-shim fault takes ({@link GhGuardShimOutcome}), so
+ * the agent is not spawned behind a guard it could rewrite.
+ *
+ * **No checkout named is not a degradation.** With `VIBE_BASE_DIR` unset
+ * nothing was staged — a host run executes the checkout directly, so the
+ * running copy *is* the checkout copy.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -46,14 +52,24 @@ export const GUARD_MODULE_DIR = "worker/deno/lib";
  */
 const GUARD_MODULE_NAME = /^[A-Za-z0-9_][A-Za-z0-9_-]*\.ts$/;
 
-/** Test seams and the warning sink for {@link resolveGuardModulePath}. */
+/** Test seams for {@link resolveGuardModulePath}. */
 export interface GuardModulePathOptions {
   /** Environment lookup; defaults to the process environment. */
   env?: EnvLookup;
   /** Existence probe for the checkout candidate (test seam). */
   exists?: (path: string) => boolean;
-  /** Sink for the loud warning when the checkout copy is unusable. */
-  warn?: (message: string) => void;
+}
+
+/** Where a guard entry point resolved to, and whether that is safe to use. */
+export interface GuardModuleResolution {
+  /** Absolute path of the guard entry point. */
+  path: string;
+  /**
+   * Why {@link path} is the running (agent-writable) copy even though a
+   * checkout was named. Absent when the path is trustworthy; present means the
+   * caller must refuse to install the shim.
+   */
+  degraded?: string;
 }
 
 /** Whether `path` is a readable file. A refused stat counts as absent. */
@@ -66,18 +82,19 @@ function fileExists(path: string): boolean {
 }
 
 /**
- * Absolute path of a guard entry point, preferring the read-only checkout.
+ * Resolve a guard entry point, preferring the read-only checkout.
  *
  * @param fileName - Guard module file name, e.g. `gh_guard_cli.ts`.
- * @param opts - Environment lookup, existence probe and warning sink.
+ * @param opts - Environment lookup and existence probe.
  * @returns The checkout copy when `VIBE_BASE_DIR` names one that carries the
- *   module; otherwise the copy this module is running from.
+ *   module; otherwise the running copy, marked `degraded` unless no checkout
+ *   was named at all.
  * @throws If `fileName` is not a bare `*.ts` file name.
  */
 export function resolveGuardModulePath(
   fileName: string,
   opts: GuardModulePathOptions = {},
-): string {
+): GuardModuleResolution {
   if (!GUARD_MODULE_NAME.test(fileName)) {
     throw new Error(
       `guard module name must be a bare *.ts file name, got: ${fileName}`,
@@ -88,28 +105,36 @@ export function resolveGuardModulePath(
     new URL(`./${fileName}`, import.meta.url).pathname,
   );
 
+  /** The running copy, with the reason it is not the checkout's. */
+  const degraded = (why: string): GuardModuleResolution => ({
+    path: running,
+    degraded: `[GUARD_MODULE_NOT_IN_CHECKOUT] ${why}, so the guard would run ` +
+      `from ${running} — the staged worker copy, which the coding agent's own ` +
+      `uid can write to (Issue #1444)`,
+  });
+
   const env = opts.env ?? processEnvLookup;
   let baseDir: string | undefined;
   try {
     baseDir = env("VIBE_BASE_DIR");
-  } catch {
-    // No --allow-env: the launcher's checkout cannot be named, and the
-    // running copy is the only path there is.
-    baseDir = undefined;
+  } catch (err) {
+    // A denied `--allow-env` leaves the checkout unnameable, which lands on
+    // exactly the same writable copy as a missing module — reported as loudly.
+    return degraded(
+      `VIBE_BASE_DIR could not be read (${
+        err instanceof Error ? err.message : String(err)
+      })`,
+    );
   }
+
   const trimmed = (baseDir ?? "").trim().replace(/\/+$/, "");
-  if (trimmed === "") return running;
+  // Nothing was staged, so the running copy is the checkout copy.
+  if (trimmed === "") return { path: running };
 
   const candidate = `${trimmed}/${GUARD_MODULE_DIR}/${fileName}`;
-  if (candidate === running) return running;
+  if (candidate === running) return { path: running };
   const exists = opts.exists ?? fileExists;
-  if (exists(candidate)) return candidate;
+  if (exists(candidate)) return { path: candidate };
 
-  const warn = opts.warn ?? ((m: string) => console.error(m));
-  warn(
-    `[SECURITY] [GUARD_MODULE_NOT_IN_CHECKOUT] ${candidate} is absent, so the ` +
-      `guard runs from ${running} instead — the staged worker copy, which the ` +
-      `coding agent's own uid can write to (Issue #1444).`,
-  );
-  return running;
+  return degraded(`${candidate} is absent`);
 }

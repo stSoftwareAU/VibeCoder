@@ -21,7 +21,7 @@ import {
   UNGUARDED_AGENT_GH_ENV,
   unguardedOptInFromEnv,
 } from "../lib/gh_guard_shim.ts";
-import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+import { checkoutEnv, emptyEnv, envFrom } from "./support/env_lookup.ts";
 import {
   _resetWriteRepoAllowlistSinks,
   _setWriteRepoAllowlistSinks,
@@ -31,22 +31,6 @@ import {
 } from "../lib/write_repo_allowlist.ts";
 import { WORKER_FORBIDDEN_LABEL_LITERALS } from "../lib/worker_label_guard.ts";
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
-
-/**
- * The checkout under test, as the guard resolution names it (Issue #1444).
- *
- * The wrapper's guard entry point is resolved from `VIBE_BASE_DIR` so it runs
- * from the read-only checkout rather than the agent-writable staged copy. A
- * suite that let the ambient value through would execute the *mounted*
- * checkout's guard instead of this branch's, so every install below names this
- * one explicitly.
- */
-const CHECKOUT_ENV = envFrom({
-  VIBE_BASE_DIR: new URL("../../../", import.meta.url).pathname.replace(
-    /\/$/,
-    "",
-  ),
-});
 
 /** The `gh` target variables the wrapper is expected to control (#3866). */
 const GH_TARGET_ENV_NAMES = [
@@ -167,7 +151,7 @@ Deno.test({
         baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
         active: true,
         allowedRepos: ["stSoftwareAU/VibeCoder"],
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       }),
     );
     try {
@@ -202,7 +186,7 @@ Deno.test({
         baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
         active: true,
         allowedRepos: ["stSoftwareAU/VibeCoder"],
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       }),
     );
     try {
@@ -234,7 +218,7 @@ Deno.test({
         baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
         active: true,
         allowedRepos: ["stSoftwareAU/VibeCoder"],
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       }),
     );
     try {
@@ -272,7 +256,7 @@ Deno.test({
         active: true,
         allowedRepos: ["stSoftwareAU/VibeCoder"],
         guardModulePath: "/nonexistent/gh_guard_cli.ts",
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       }),
     );
     try {
@@ -304,7 +288,7 @@ Deno.test({
         baseEnv: { ...Deno.env.toObject(), PATH: `${stub.dir}:/usr/bin` },
         active: false,
         allowedRepos: [],
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       }),
     );
     try {
@@ -348,7 +332,7 @@ Deno.test({
           PATH: stub.dir,
         },
         undefined,
-        CHECKOUT_ENV,
+        checkoutEnv,
       ),
     );
     try {
@@ -396,7 +380,7 @@ Deno.test({
           PATH: stub.dir,
         },
         undefined,
-        CHECKOUT_ENV,
+        checkoutEnv,
       ),
     );
     try {
@@ -434,7 +418,7 @@ Deno.test({
           recorded.push(m);
           return Promise.resolve();
         },
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       });
       assertEquals(outcome.status, "blocked");
       assertEquals(warnings.length, 1);
@@ -470,7 +454,7 @@ Deno.test({
         allowUnguarded: false,
         record: () => Promise.resolve(),
         makeTempDir: () => Promise.reject(new Error("no space left on device")),
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       });
       assertEquals(outcome.status, "blocked");
       assert(outcome.status === "blocked");
@@ -502,7 +486,7 @@ Deno.test({
           recorded.push(m);
           return Promise.resolve();
         },
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       });
       assertEquals(outcome.status, "degraded");
       assertStringIncludes(warnings[0] ?? "", "GH_GUARD_SHIM_UNAVAILABLE");
@@ -529,7 +513,7 @@ Deno.test({
         warn: (m) => warnings.push(m),
         allowUnguarded: true,
         record: () => Promise.resolve(),
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       });
       assertEquals(outcome.status, "degraded");
       assertStringIncludes(warnings[0] ?? "", UNGUARDED_AGENT_GH_ENV);
@@ -621,7 +605,7 @@ Deno.test({
         warn: (m) => warnings.push(m),
         allowUnguarded: false,
         record: () => Promise.reject(new Error("journal unavailable")),
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       });
       assertEquals(outcome.status, "blocked");
       assert(
@@ -645,7 +629,7 @@ Deno.test({
         baseEnv: baseEnvWithoutGhTargets(stub.dir),
         active: true,
         allowedRepos: ["stSoftwareAU/VibeCoder"],
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       }),
     );
     try {
@@ -693,7 +677,7 @@ Deno.test({
         },
         active: true,
         allowedRepos: ["stSoftwareAU/VibeCoder"],
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       }),
     );
     try {
@@ -739,7 +723,7 @@ Deno.test({
         baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
         active: true,
         allowedRepos: ["stSoftwareAU/VibeCoder"],
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       }),
     );
     try {
@@ -783,7 +767,7 @@ Deno.test({
         baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
         active: true,
         allowedRepos: ["stSoftwareAU/VibeCoder"],
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       }),
     );
     try {
@@ -825,7 +809,7 @@ Deno.test({
         baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
         active: true,
         allowedRepos: ["stSoftwareAU/VibeCoder"],
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       }),
     );
     try {
@@ -857,7 +841,7 @@ Deno.test({
         baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
         active: true,
         allowedRepos: ["stSoftwareAU/VibeCoder"],
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       }),
     );
     try {
@@ -994,7 +978,7 @@ async function installOwnRepoShim(stub: StubGh): Promise<GhGuardShim> {
       baseEnv: { ...Deno.env.toObject(), PATH: stub.dir },
       active: true,
       allowedRepos: [OWN_REPO],
-      env: CHECKOUT_ENV,
+      env: checkoutEnv,
     }),
   );
 }
@@ -1289,7 +1273,7 @@ Deno.test({
         baseEnv: { ...Deno.env.toObject(), PATH: stub.dir, TMPDIR: tmp },
         active: true,
         allowedRepos: [OWN_REPO],
-        env: CHECKOUT_ENV,
+        env: checkoutEnv,
       }),
     );
     try {

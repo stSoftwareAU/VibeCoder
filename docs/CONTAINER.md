@@ -775,6 +775,10 @@ over the virtiofs `/workspace` mount. The entrypoint now:
   and runs the driver from there, so module reads stop crossing virtiofs. The
   mounted checkout stays the source of truth (`--base-dir` still points at
   it), and any staging failure falls back loudly to the previous behaviour.
+  The checkout is also named to the driver — `PROMPTS_DIR` for the prompt
+  templates, and `VIBE_BASE_DIR` for the agent's `gh`/`git` guard entry points
+  (Issue #1444), which must execute from the read-only mount rather than the
+  staged copy the agent's own uid can write to.
 
 ## The work volume has two tiers (Issue #242)
 
