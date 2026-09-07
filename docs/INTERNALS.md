@@ -1290,6 +1290,18 @@ network hiccups, and even its own mistakes:
   marker-not-account keying as the failure-marker fix. A round that is still
   unanswered makes the run a no-op success; once a human has replied to it the
   round really is missing and the failure is still reported loudly.
+- **Cross-identity awaiting-reply gate for grill-me** — the pre-Claude gate had
+  the same author-keyed blind spot, so the fix above only cleaned up after the
+  event: `stservice` posted Round 1 on an issue and six minutes later, with no
+  developer reply in between, `VibeCoderST` claimed it and invoked Claude on
+  the unanswered round (incident). The gate now calls the author-agnostic
+  `hasGrillMeRoundAwaitingReply()` before invoking Claude, so a peer's
+  unanswered round stops the invocation instead of costing one wasted run per
+  scan. `countGrillMeRounds()` and `findLatestWorkerRoundTimestamp()` count
+  markers from **any** identity for the same reason — `ROUND_NUMBER` continues
+  from the peer's round rather than restarting at 1, and the Issue #1878
+  override still recognises a developer's explicit `needs-human` removal as
+  their "proceed" signal when the pending round came from a peer.
 - **Crash cleanup** — trap handler (Deno `crash-cleanup` command) cleans up
   heartbeat files and unassigns the worker from claimed issues on unexpected
   exit, closing the crash window between claim and heartbeat recording.

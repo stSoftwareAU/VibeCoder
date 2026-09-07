@@ -241,23 +241,37 @@ export interface BuildGrillMePromptOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Count how many grill-me rounds the worker has already posted.
+ * Count how many grill-me rounds the fleet has already posted.
  *
- * A worker round is a comment authored by `githubUser` containing the
- * `## Grill-Me Round N` marker. The final-confirmation comment also counts
- * because finalisation is itself the last round.
+ * A round is any comment carrying the `## Grill-Me Round N` marker; the
+ * final-confirmation comment also counts because finalisation is itself the
+ * last round.
+ *
+ * Counting is **author-agnostic** (Issue #1560). A fleet running more than
+ * one worker identity (e.g. `stservice` on one host and `VibeCoderST` on
+ * another) posts rounds under whichever identity claimed the issue, so an
+ * author-keyed count restarted `ROUND_NUMBER` at 1 whenever a peer had posted
+ * the previous round — observed on stSoftwareAU/GRQ#4686. Keying off the
+ * distinctive marker rather than the author matches
+ * {@link countConsecutiveFailures} (#2729) and
+ * {@link hasGrillMeRoundAwaitingReply} (#3768).
+ *
+ * A forged marker in a non-worker comment therefore inflates the count. That
+ * fails safe in both directions it can move: a higher count either continues
+ * the numbering or trips the safety cap, and the cap hands the issue to a
+ * human rather than acting on the forgery.
  *
  * @param comments - Issue comments (chronological order)
- * @param githubUser - Worker's GitHub username
- * @returns The number of prior rounds posted by the worker
+ * @param _githubUser - Worker's GitHub username (unused — counting spans every
+ *   fleet identity; retained for call-site symmetry with the sibling helpers)
+ * @returns The number of prior rounds posted by any worker identity
  */
 export function countGrillMeRounds(
   comments: readonly GitHubComment[],
-  githubUser: string,
+  _githubUser: string,
 ): number {
   let count = 0;
   for (const c of comments) {
-    if (c.author !== githubUser) continue;
     if (
       c.body.includes(GRILL_ME_ROUND_MARKER) ||
       c.body.includes(GRILL_ME_FINAL_MARKER)
@@ -584,25 +598,31 @@ export function hasGrillMeRoundAwaitingReply(
 }
 
 /**
- * Find the `createdAt` ISO timestamp of the most recent worker-authored
- * Round N (or final-confirmation) comment, or `null` when no such
- * comment exists (Issue #1878).
+ * Find the `createdAt` ISO timestamp of the most recent Round N (or
+ * final-confirmation) comment, or `null` when no such comment exists
+ * (Issue #1878).
  *
  * Used to test whether a `needs-human` removal event in the issue
  * timeline came AFTER the latest grilling round. Heartbeat and other
- * non-marker worker comments are skipped so they do not shadow the
- * round timestamp.
+ * non-marker comments are skipped so they do not shadow the round
+ * timestamp.
+ *
+ * Author-agnostic for the same reason as {@link countGrillMeRounds}
+ * (Issue #1560): when a peer identity posted the pending round, the
+ * developer's explicit `needs-human` removal must still be recognised as
+ * their "proceed" signal, otherwise the #1878 override dies the moment two
+ * identities share an issue.
  *
  * @param comments - Issue comments (chronological order)
- * @param githubUser - Worker's GitHub username
+ * @param _githubUser - Worker's GitHub username (unused — the lookup spans
+ *   every fleet identity; retained for call-site symmetry)
  */
 export function findLatestWorkerRoundTimestamp(
   comments: readonly GitHubComment[],
-  githubUser: string,
+  _githubUser: string,
 ): string | null {
   for (let i = comments.length - 1; i >= 0; i--) {
     const c = comments[i]!;
-    if (c.author !== githubUser) continue;
     if (
       c.body.includes(GRILL_ME_ROUND_MARKER) ||
       c.body.includes(GRILL_ME_FINAL_MARKER)
@@ -1049,7 +1069,16 @@ async function _processGrillMeWithHeartbeat(
   //
   //     This comment-state gate fires regardless of label state, so
   //     it survives the operational-label strip and prevents the race.
-  if (isAwaitingDeveloperReply(comments, githubUser)) {
+  //
+  //     The gate is author-agnostic (Issue #1560). Keyed on this
+  //     identity's own comments it returned false the moment it met a
+  //     peer identity's round, so a second machine claimed the issue
+  //     and invoked Claude on the unanswered round — observed on
+  //     stSoftwareAU/GRQ#4686, six minutes after `stservice` posted
+  //     Round 1. `hasGrillMeRoundAwaitingReply` sees any identity's
+  //     unanswered round, so the invocation is prevented, not merely
+  //     recovered from after the fact by the #3768 post-run check.
+  if (hasGrillMeRoundAwaitingReply(comments, githubUser)) {
     // Issue #1878: Treat an explicit non-worker removal of
     // `needs-human` after the latest Round N as the developer's "go"
     // signal — even when no separate reply comment has been posted.
@@ -1098,7 +1127,15 @@ async function _processGrillMeWithHeartbeat(
     if (!explicitRemoval) {
       logger.info(
         "Latest grill-me round has no developer reply yet — skipping Claude invocation",
-        { repo, issueNumber },
+        {
+          repo,
+          issueNumber,
+          // Which identity is being waited on (Issue #1560) — a peer's
+          // round is the case the author-keyed gate used to let through.
+          pendingRoundIdentity: isAwaitingDeveloperReply(comments, githubUser)
+            ? "this worker"
+            : "peer worker identity",
+        },
       );
       // Defence in depth: re-add `needs-human` if it has been stripped.
       // The discovery filter skips `needs-human` issues so this also

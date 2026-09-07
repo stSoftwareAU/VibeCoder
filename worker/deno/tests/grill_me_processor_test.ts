@@ -225,15 +225,53 @@ Deno.test("countGrillMeRounds - counts the final-confirmation comment", () => {
   assertEquals(countGrillMeRounds(comments, "testbot"), 1);
 });
 
-Deno.test("countGrillMeRounds - ignores rounds posted by other authors", () => {
-  const comments: GitHubComment[] = [
-    makeComment({
-      author: "someone-else",
-      body: `${GRILL_ME_ROUND_MARKER}1`,
-    }),
-  ];
-  assertEquals(countGrillMeRounds(comments, "testbot"), 0);
-});
+// Issue #1560: counting is author-agnostic. This test previously asserted
+// that a round posted by another author counted 0, which made `ROUND_NUMBER`
+// restart at 1 whenever a fleet peer posted the round — the bug this issue
+// fixes. It now asserts the fleet-wide count.
+Deno.test(
+  "countGrillMeRounds - counts a round posted by a peer worker identity (Issue #1560)",
+  () => {
+    const comments: GitHubComment[] = [
+      makeComment({
+        author: "stservice",
+        body: `${GRILL_ME_ROUND_MARKER}1`,
+      }),
+    ];
+    assertEquals(countGrillMeRounds(comments, "testbot"), 1);
+  },
+);
+
+Deno.test(
+  "countGrillMeRounds - counts rounds from this identity and a peer together (Issue #1560)",
+  () => {
+    const comments: GitHubComment[] = [
+      makeComment({
+        id: 1,
+        author: "stservice",
+        body: `${GRILL_ME_ROUND_MARKER}1`,
+      }),
+      makeComment({ id: 2, author: "user1", body: "1a" }),
+      makeComment({
+        id: 3,
+        author: "testbot",
+        body: `${GRILL_ME_ROUND_MARKER}2`,
+      }),
+    ];
+    assertEquals(countGrillMeRounds(comments, "testbot"), 2);
+  },
+);
+
+Deno.test(
+  "countGrillMeRounds - a plain developer comment never counts (Issue #1560)",
+  () => {
+    const comments: GitHubComment[] = [
+      makeComment({ author: "user1", body: "Answers: 1a, 2c" }),
+      makeComment({ author: "testbot", body: "heartbeat" }),
+    ];
+    assertEquals(countGrillMeRounds(comments, "testbot"), 0);
+  },
+);
 
 // ============================================================================
 // countConsecutiveFailures
@@ -731,6 +769,24 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "findLatestWorkerRoundTimestamp - finds a peer identity's round (Issue #1560)",
+  () => {
+    const comments: GitHubComment[] = [
+      makeComment({
+        id: 1,
+        author: "stservice",
+        body: `${GRILL_ME_ROUND_MARKER}1`,
+        createdAt: "2026-09-07T21:30:00Z",
+      }),
+    ];
+    assertEquals(
+      findLatestWorkerRoundTimestamp(comments, "testbot"),
+      "2026-09-07T21:30:00Z",
+    );
+  },
+);
+
 // ============================================================================
 // isNonWorkerRemovalAfterRound (Issue #1878)
 // ============================================================================
@@ -897,6 +953,143 @@ Deno.test(
       "Worker must unassign itself when awaiting developer reply",
     );
     assertNoForbiddenLabel(addedLabels);
+  },
+);
+
+Deno.test(
+  "processGrillMe - skips Claude when a peer identity posted the unanswered round (Issue #1560)",
+  async () => {
+    // The production race on stSoftwareAU/GRQ#4686: identity `stservice`
+    // posted Round 1 and no developer had replied when identity `testbot`
+    // claimed the same issue. The author-keyed gate let `testbot` through and
+    // burned a Claude invocation on an unanswered round whose checkboxes
+    // Claude itself had pre-ticked.
+    const ctx = makeContext();
+    const addedLabels: string[] = [];
+    const unassignedFromUsers: string[] = [];
+
+    const ghClient = stubGhClient({
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+      getIssueComments: () =>
+        Promise.resolve([
+          makeComment({
+            id: 1,
+            author: "stservice",
+            body: `${GRILL_ME_ROUND_MARKER}1\n\nQuestions...`,
+            createdAt: "2026-09-07T21:30:00Z",
+          }),
+        ]),
+      addLabel: (_r, _n, label) => {
+        addedLabels.push(label);
+        return Promise.resolve();
+      },
+      unassignIssue: (_r, _n, assignees) => {
+        unassignedFromUsers.push(...assignees);
+        return Promise.resolve();
+      },
+    });
+
+    let claudeInvoked = false;
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: () => {
+          claudeInvoked = true;
+          return Promise.resolve({
+            ok: true,
+            value: { output: "ok", exitCode: 0, timedOut: false },
+          });
+        },
+      },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(
+      claudeInvoked,
+      false,
+      "Claude must not be invoked when a peer identity's round is unanswered",
+    );
+    assertEquals(result.value.processed, false);
+    assertEquals(result.value.workerCommentPosted, false);
+    assertStringIncludes(result.value.summary, "awaiting developer reply");
+    // The peer's round counts, so the round number does not restart at 0/1.
+    assertEquals(result.value.roundNumber, 1);
+    assertEquals(
+      unassignedFromUsers.includes("testbot"),
+      true,
+      "Worker must unassign itself when a peer round is awaiting a reply",
+    );
+    assertNoForbiddenLabel(addedLabels);
+  },
+);
+
+Deno.test(
+  "processGrillMe - invokes Claude once the developer has replied to a peer identity's round (Issue #1560)",
+  async () => {
+    // The gate must not become a permanent block: once a developer answers
+    // the peer's round, this identity proceeds and continues the numbering
+    // from the peer's round rather than restarting at 1.
+    const ctx = makeContext();
+    let fetchCallCount = 0;
+    const peerRound = makeComment({
+      id: 1,
+      author: "stservice",
+      body: `${GRILL_ME_ROUND_MARKER}1\n\nQuestions...`,
+      createdAt: "2026-09-07T21:30:00Z",
+    });
+    const developerReply = makeComment({
+      id: 2,
+      author: "user1",
+      body: "1a, 2c",
+      createdAt: "2026-09-07T21:40:00Z",
+    });
+
+    const ghClient = stubGhClient({
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+      getIssueComments: () => {
+        fetchCallCount++;
+        return Promise.resolve([peerRound, developerReply]);
+      },
+    });
+
+    let capturedPrompt = "";
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (opts: { prompt: string }) => {
+          capturedPrompt = opts.prompt;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              output: `${GRILL_ME_ROUND_MARKER}2`,
+              exitCode: 0,
+              timedOut: false,
+            },
+          });
+        },
+      },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(result.value.processed, true);
+    // Round 1 came from the peer, so this run is Round 2.
+    assertEquals(result.value.roundNumber, 2);
+    assertStringIncludes(capturedPrompt, "Round 2");
+    assert(fetchCallCount >= 2);
   },
 );
 
