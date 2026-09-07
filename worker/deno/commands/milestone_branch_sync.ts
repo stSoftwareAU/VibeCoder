@@ -18,6 +18,7 @@ import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import { ensureMilestoneBranchExists } from "../lib/git_branch.ts";
 import { ensureDefaultBranchCurrent } from "../lib/git_push.ts";
 import { getRepoDefaultBranch } from "../lib/shell_helpers.ts";
+import { milestoneActivityPath } from "../lib/milestone_activity_gate.ts";
 
 export const milestoneBranchSyncCommand: Command = {
   name: "sync-milestone-branches",
@@ -92,6 +93,9 @@ export const milestoneBranchSyncCommand: Command = {
       log: (msg: string) => logs.push(msg),
       cooldownSeconds: config.milestoneSyncCooldownSeconds ?? 3600,
       lastSyncTimes: new Map(),
+      // Issue #1488: skip the closed-issue query for milestones whose
+      // REST closed count has not moved since the previous run.
+      activityPath: milestoneActivityPath(workDir),
     };
 
     const result = await syncMilestoneBranches(deps);

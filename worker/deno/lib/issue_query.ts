@@ -278,6 +278,68 @@ export function parsePRListJson(jsonStr: string): OpenPR[] {
 }
 
 /**
+ * The `issues_all` cache payload (Issue #1486).
+ *
+ * The listing is stored with the `--limit` it was fetched with, so a caller
+ * asking for a wider listing is never handed a narrower cached one.
+ */
+interface AllIssuesCacheEntry {
+  /** The `--limit` this listing was fetched with. */
+  limit: number;
+  /** The issues returned by that listing. */
+  issues: FilterableIssue[];
+  /**
+   * Rows GitHub returned, before parsing dropped any malformed ones.
+   *
+   * Exhaustion is judged on this, not on `issues.length`: a listing that hit
+   * its limit but lost one unparseable row would otherwise look short - and
+   * therefore complete - to a wider caller. Absent on a legacy entry.
+   */
+  rawCount?: number;
+}
+
+/**
+ * Read an `issues_all` cache payload, tolerating the pre-#1486 bare array.
+ *
+ * A legacy entry carries no limit, so it is treated as the historical
+ * default (100) — the conservative reading, which at worst costs one
+ * refetch for a wider caller.
+ *
+ * @param cached - Whatever the cache returned.
+ * @returns The normalised entry, or `null` when there was nothing usable.
+ */
+function readAllIssuesEntry(cached: unknown): AllIssuesCacheEntry | null {
+  if (cached === null || cached === undefined) return null;
+  if (Array.isArray(cached)) {
+    return { limit: LEGACY_ALL_ISSUES_LIMIT, issues: cached };
+  }
+  if (!isRecord(cached)) return null;
+  if (typeof cached.limit !== "number" || !Array.isArray(cached.issues)) {
+    return null;
+  }
+  return {
+    limit: cached.limit,
+    issues: cached.issues as FilterableIssue[],
+    ...(typeof cached.rawCount === "number"
+      ? { rawCount: cached.rawCount }
+      : {}),
+  };
+}
+
+/** Rows in a `gh issue list` payload, or `null` when it is unreadable. */
+function countListRows(output: string): number | null {
+  try {
+    const parsed: unknown = JSON.parse(output.trim() || "[]");
+    return Array.isArray(parsed) ? parsed.length : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The `--limit` a pre-#1486 cache entry was written with. */
+const LEGACY_ALL_ISSUES_LIMIT = 100;
+
+/**
  * Fetch all open issues for a repo with comprehensive fields.
  *
  * Issue #4037: this is the issue-list fetch the Priority 2 scan already
@@ -286,6 +348,15 @@ export function parsePRListJson(jsonStr: string): OpenPR[] {
  * the signal stays fresh on busy ticks when the idle-detect audit never
  * runs. Only a real fetch is recorded: a cache hit returns above, since
  * a cached read is not evidence of current access.
+ *
+ * Issue #1486: the one `issues_all` entry is shared by callers asking for
+ * different limits (200 from `find_oldest_issue`, 100 from `stuck_recovery`
+ * and `find_planning_issues`). Whichever call ran first used to decide what
+ * every later caller saw, so a pass that asked for 200 could silently be
+ * handed a 100-issue listing. The limit the entry was fetched with is now
+ * stored beside it and a narrower entry is refetched rather than served —
+ * unless GitHub returned fewer rows than that limit, which proves the
+ * listing was exhaustive.
  *
  * @param repo - Repository in "owner/repo" format
  * @param cache - Optional cache instance
@@ -302,8 +373,13 @@ export async function fetchAllIssues(
   const cacheKey = "issues_all";
 
   if (cache) {
-    const cached = await cache.read<FilterableIssue[]>(repo, cacheKey);
-    if (cached) return cached;
+    const entry = readAllIssuesEntry(await cache.read<unknown>(repo, cacheKey));
+    // Serve when the cached listing is at least as wide as this request, or
+    // when it came back short of its own limit (so nothing was truncated).
+    const rows = entry === null ? 0 : entry.rawCount ?? entry.issues.length;
+    if (entry !== null && (entry.limit >= limit || rows < entry.limit)) {
+      return entry.issues;
+    }
   }
 
   let output: string;
@@ -339,7 +415,15 @@ export async function fetchAllIssues(
   assertListOutput(output, `fetchAllIssues(${repo})`);
 
   const issues = parseIssueListJson(output);
-  if (cache) await cache.write(repo, cacheKey, issues);
+  if (cache) {
+    const rawCount = countListRows(output);
+    const entry: AllIssuesCacheEntry = {
+      limit,
+      issues,
+      ...(rawCount === null ? {} : { rawCount }),
+    };
+    await cache.write(repo, cacheKey, entry);
+  }
   return issues;
 }
 

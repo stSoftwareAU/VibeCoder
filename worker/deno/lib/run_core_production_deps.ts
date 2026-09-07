@@ -291,6 +291,7 @@ import {
   resolveFleetPrAuthorSet,
   resolveSuppressionExcludedLogins,
 } from "./fleet_authors.ts";
+import { prefetchFleetOpenPrs } from "./fleet_pr_prefetch.ts";
 import {
   clearIdleInversion,
   idleInversionStatePath,
@@ -431,6 +432,17 @@ export interface ProductionDepsOptions {
    * `gh` override would be a much larger surface for a much smaller reason.
    */
   idleDetectGhCommandFn?: (args: string[]) => Promise<string>;
+
+  /**
+   * `gh` runner for the cross-repo open-PR prefetch (Issue #1486).
+   *
+   * Production leaves this unset and gets {@link runGhCommand}. Tests inject
+   * a stub for the same reason #1050 did: the thing worth asserting is the
+   * *wiring* — which author sets this factory hands the prefetch, and that
+   * what it writes is what the per-repo listings read back. Scoped to the
+   * prefetch, not factory-wide.
+   */
+  fleetPrefetchGhCommandFn?: (args: string[]) => Promise<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -3736,6 +3748,40 @@ export async function createProductionRunCoreDeps(
       resetRepoAccessLogState();
     },
 
+    // Issue #1486: one cross-repo search per owner fills the per-repo
+    // per-author open-PR listings the duplicate guard, the PR-maintenance
+    // scans and the invitation lookup read, collapsing ~130 GraphQL-backed
+    // `gh pr list` calls per cold cycle into one call per owner. Each
+    // consumer keeps its own author set - they are resolved differently, and
+    // populating one from another's set would leave an entry a scan reads
+    // empty. A failed or truncated search writes nothing, so those scans
+    // simply run their per-repo listings as before.
+    prefetchFleetOpenPrs: async () => {
+      const guardAuthors = resolveFleetPrAuthorSet(fleetPrAuthorInput);
+      const maintenanceKeys = new Set(
+        maintenanceAuthors.map((a) => a.toLowerCase()),
+      );
+      const invitationAuthors = (config.allowedAuthors ?? []).filter((a) =>
+        !maintenanceKeys.has(a.trim().toLowerCase())
+      );
+      const outcome = await prefetchFleetOpenPrs({
+        repos: config.repos ?? [],
+        guardAuthors,
+        maintenanceAuthors,
+        invitationAuthors,
+        cache: issueCache,
+        ghCommandFn: options.fleetPrefetchGhCommandFn ?? runGhCommand,
+        log: (message: string) => logger.info(message),
+      });
+      logger.info(
+        `[fleet-pr-prefetch] owners=${outcome.ownersServed.length} ` +
+          `searches=${outcome.searchCalls} ` +
+          `entries=${outcome.entriesWritten} ` +
+          `listings-avoided=${outcome.listingsAvoided} ` +
+          `skipped=${outcome.ownersSkipped.length}`,
+      );
+    },
+
     // Issue #256, #1066: the per-cycle trusted-author refresh. There is no
     // mode switch — this is the only source of trust.
     //
@@ -4378,6 +4424,9 @@ async function syncMilestoneBranchesFn(
   const { milestoneSyncStreakPath } = await import(
     "./milestone_sync_streak.ts"
   );
+  const { milestoneActivityPath } = await import(
+    "./milestone_activity_gate.ts"
+  );
   const { selfHealMilestoneBranches } = await import(
     "./milestone_branch_self_heal.ts"
   );
@@ -4439,6 +4488,10 @@ async function syncMilestoneBranchesFn(
     // tracking issue (proposal 2).
     emitSelfHealEvent: (event) => emitSelfHealEventAuto(event),
     streakPath: milestoneSyncStreakPath(workDir),
+    // Issue #1488: gate the closed-issue query on the REST milestone
+    // counts, so a repo whose milestones have not changed spends nothing
+    // on the expensive half.
+    activityPath: milestoneActivityPath(workDir),
   });
 }
 

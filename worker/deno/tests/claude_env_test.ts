@@ -166,8 +166,10 @@ Deno.test("buildClaudeChildEnv - a real container stamp still redirects (Issue #
     WORK_DIR: "/home/vibe/auto-issue-work",
     VIBE_IMAGE_AGENT_PROVIDERS: " claude ",
   });
+  // Issue #1407: the redirect target is the agent-state volume beside the
+  // work dir, not a directory inside it.
   assertEquals(
     env["CLAUDE_CONFIG_DIR"],
-    "/home/vibe/auto-issue-work/.claude-config",
+    `${resolveAgentStateDir("/home/vibe/auto-issue-work")}/claude-config`,
   );
 });
