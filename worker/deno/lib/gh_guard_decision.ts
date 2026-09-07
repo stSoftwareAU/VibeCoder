@@ -57,6 +57,7 @@ import {
   classifyIssueLifecycle,
   ISSUE_LIFECYCLE_VERBS,
 } from "./gh_issue_lifecycle.ts";
+import { classifyPrLifecycle, PR_LIFECYCLE_VERBS } from "./gh_pr_lifecycle.ts";
 import { classifyGhCredentialDisclosure } from "./gh_credential_disclosure_guard.ts";
 import { classifyGhLocalStateChange } from "./gh_local_state_guard.ts";
 import type { ClaimedIssue } from "./claimed_issue_guard.ts";
@@ -95,7 +96,8 @@ export type GhGuardMarker =
   | "GH_UNKNOWN_COMMAND"
   | "GH_LOCAL_STATE_REFUSED"
   | "GH_CREDENTIAL_DISCLOSURE_REFUSED"
-  | "ISSUE_LIFECYCLE_REFUSED";
+  | "ISSUE_LIFECYCLE_REFUSED"
+  | "PR_LIFECYCLE_REFUSED";
 
 /** The guard's verdict for one `gh` argument vector. */
 export interface GhGuardDecision {
@@ -566,6 +568,62 @@ function refuseClaimedIssueLifecycle(
 }
 
 /**
+ * Refuse a PR-lifecycle decision in the claimed repo (Issue #1462).
+ *
+ * The sibling of {@link refuseClaimedIssueLifecycle}, and the same principle:
+ * the agent decides what the *code* should be, not that the pull request
+ * carrying it is merged, closed, reopened, marked ready or approved. Those are
+ * the worker's calls, and the worker makes them through `direct_merge.ts` —
+ * inside its own Deno process, which never traverses this guard — where CI
+ * freshness and the default-branch human-approval gate are applied. A
+ * prompt-injected agent running `gh pr merge` skips all of it.
+ *
+ * Scoped exactly as the issue-lifecycle refusal is, and for the same reasons:
+ * a command naming a *different* repo is left to the write-repo allowlist,
+ * which refuses it already, and a command naming no repo is `gh`'s cwd form,
+ * which during a coding run is the claimed repo — so it is treated as naming
+ * the claim, the fail-closed direction.
+ *
+ * `ClaimedIssue.allowedVerbs` is deliberately NOT consulted. It is an
+ * *issue*-verb allowance — the shim spells it `--allow-issue-verb`, and it
+ * defaults to `edit` so the `needs-human` escalation keeps working. Reading it
+ * here would mean a future route that permitted `close` on its planning issue
+ * silently permitted `gh pr close` too. No route grants a PR verb, so there is
+ * nothing to read.
+ */
+function refuseClaimedPrLifecycle(
+  args: readonly string[],
+  info: MutationInfo,
+  ctx: GhGuardContext,
+): GhGuardDecision | undefined {
+  const claim = ctx.claimedIssue;
+  if (!claim) return undefined;
+
+  const attempt = classifyPrLifecycle(args, info);
+  if (!attempt) return undefined;
+
+  const targetRepo = attempt.repo ?? claim.repo;
+  if (!sameRepo(targetRepo, claim.repo)) return undefined;
+
+  const target = attempt.prNumber === undefined
+    ? targetRepo
+    : `${targetRepo}#${attempt.prNumber}`;
+  return {
+    allowed: false,
+    marker: "PR_LIFECYCLE_REFUSED",
+    reason: `Refused 'gh ${info.verb}' on ${target} from the agent ` +
+      `subprocess — pull request lifecycle decisions (` +
+      `${PR_LIFECYCLE_VERBS.join(", ")}) on ${claim.repo} are the worker's ` +
+      `or a human's, not the implementing agent's. The worker merges through ` +
+      `its own path, which re-checks CI status, branch freshness and the ` +
+      `default-branch approval gate; a merge issued here has none of them. ` +
+      `Raise the PR with 'gh pr create' and stop there — 'gh pr view', ` +
+      `'gh pr list', 'gh pr comment' and 'gh pr edit' are unaffected. If the ` +
+      `PR should not land, say so in a comment rather than closing it.`,
+  };
+}
+
+/**
  * Decide whether one agent `gh` invocation may proceed.
  *
  * @param args - Arguments about to be passed to the `gh` binary.
@@ -596,6 +654,15 @@ export function evaluateGhCommand(
 
     const lifecycleRefusal = refuseClaimedIssueLifecycle(args, info, ctx);
     if (lifecycleRefusal) return lifecycleRefusal;
+
+    // Issue #1462: the same reasoning one step further along the workflow.
+    // `classifyIssueLifecycle` returns `undefined` for a PR operation by
+    // design, so `gh pr merge` on the claimed repo reached the write-repo
+    // allowlist — which allows it, the claimed repo being on the allowlist by
+    // construction — and merged the agent's own PR with none of the checks
+    // `direct_merge.ts` applies.
+    const prRefusal = refuseClaimedPrLifecycle(args, info, ctx);
+    if (prRefusal) return prRefusal;
 
     // Issue #11/#90/#91: a REST mutation whose body is supplied by `--input`
     // (or an `@file`-sourced query) is argv-invisible, so `extractLabelValues`
