@@ -15,33 +15,50 @@
  * alone. `top-priority` and `work-on` remain human-only, unconditionally.
  *
  * **Provenance, not author.** An injected agent can file issues too, so
- * three independent signals must agree before an issue is self-schedulable:
+ * four independent signals must agree before an issue is self-schedulable:
  *
  *   1. **repo** — it is in {@link SELF_DIAGNOSTIC_REPO}, the worker's own
  *      repo, where the deciding code lives;
  *   2. **marker** — its body carries a recognised machine-written marker
  *      from {@link SELF_DIAGNOSTIC_FAMILIES}, matched as a whole HTML
- *      comment rather than as a substring; and
- *   3. **author** — it was filed by a fleet worker login.
+ *      comment rather than as a substring;
+ *   3. **author** — it was filed by a fleet worker login; and
+ *   4. **filing attestation** (Issue #1277) — the worker's own filer
+ *      recorded this issue number, and a digest of the body it posted, in
+ *      the tamper-evident audit chain (`self_diagnostic_attestation.ts`).
  *
- * Marker forgery through a filed body is already closed at the source: the
+ * Signals 1–3 are all things the agent subprocess can produce: it holds the
+ * run's `gh` credential, its writes are allowed in the claimed repo, and it
+ * writes the body the marker lives in. Signal 4 is the one it cannot mint —
+ * the journal lives outside every working tree, its own `gh` calls are
+ * journalled under the classifier's verb rather than this one, and a line
+ * appended by hand breaks the hash chain and its anchor.
+ *
+ * Marker forgery through a filed body is also closed at the source: the
  * filers escape `<!--`/`-->` out of every interpolated field before the
  * body is written (`bodySafe` in `idle_inversion_streak.ts`), so a marker in
  * a filed body can only have come from the template.
  *
  * Residual risk, deliberately accepted: an actor with write access to this
- * repo can edit a worker-filed body. That actor can already apply `work-on`
- * directly, so self-scheduling grants them nothing new, and issue content
- * reaches the agent inside the untrusted-content boundary either way.
+ * repo can edit a worker-filed body. Editing it no longer makes the issue
+ * self-schedulable — the attested body digest stops matching, so the
+ * diagnostic falls back to waiting for a human `work-on` — and that actor
+ * can already apply `work-on` directly, so self-scheduling grants them
+ * nothing new. Issue content reaches the agent inside the
+ * untrusted-content boundary either way.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
 import {
+  IDLE_INVERSION_FAMILY_ID,
   IDLE_INVERSION_MARKER_PREFIX,
   IDLE_INVERSION_TARGET_REPO,
 } from "./idle_inversion_streak.ts";
-import { RUN_FAILURE_MARKER_PREFIX } from "./run_failure_issue.ts";
+import {
+  RUN_FAILURE_FAMILY_ID,
+  RUN_FAILURE_MARKER_PREFIX,
+} from "./run_failure_issue.ts";
 import type { UnworkableEscalation } from "./escalate_unworkable_work_on.ts";
 
 /**
@@ -79,12 +96,15 @@ export interface SelfDiagnosticFamily {
  */
 export const SELF_DIAGNOSTIC_FAMILIES: readonly SelfDiagnosticFamily[] = [
   {
-    id: "idle-inversion",
+    // Ids are owned by the filers (Issue #1277) so the family a candidate is
+    // recognised under and the family its filing attestation records cannot
+    // drift apart.
+    id: IDLE_INVERSION_FAMILY_ID,
     markerPrefix: IDLE_INVERSION_MARKER_PREFIX,
     filedBy: "idle_inversion_streak.ts",
   },
   {
-    id: "run-failure",
+    id: RUN_FAILURE_FAMILY_ID,
     markerPrefix: RUN_FAILURE_MARKER_PREFIX,
     filedBy: "run_failure_issue.ts",
   },

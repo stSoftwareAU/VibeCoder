@@ -150,7 +150,12 @@ export const MARKER_DEDUP_AUTHOR_UNVERIFIED_FILES: readonly string[] = [];
  * without a `select(.body` (`run_failure_issue.ts`), reads `--jq .[].body`
  * across all authors (`milestone_children_gate.ts`, #1249) or matches
  * client-side over a plain `gh issue list` (`idle_task_snapshot.ts`, #1243) is
- * invisible to it. Both lists were empty while six live instances of the class
+ * invisible to it. So is a gate that makes no `gh` call of its own and reads
+ * the marker out of a blob another module assembled — the clarity gate's
+ * clarification round limit counted a `## Clarification Needed` heading
+ * across the concatenated comment text handed to the model, which is every
+ * comment including the untrusted ones (`label_clarification.ts`, #1263,
+ * fixed there against the fleet identity). Both lists were empty while six live instances of the class
  * sat in the tree, which is what #1216 found and fixed.
  *
  * Cleared by Issue #1124 — what each of the original entries needed, and where

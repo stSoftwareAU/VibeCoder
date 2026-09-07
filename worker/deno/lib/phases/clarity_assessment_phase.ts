@@ -21,6 +21,8 @@ import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { analyseIssueClarity } from "../../commands/assess_clarity.ts";
 import { LABEL_DEFAULTS } from "../config_defaults.ts";
 import {
+  CLARIFICATION_HEADING,
+  clarificationDedupKey,
   countClarificationRounds,
   validateClarifyingQuestions,
 } from "../label_clarification.ts";
@@ -77,7 +79,6 @@ export async function workOnIssueClarityPhase(
     issueLabels,
     issueBody,
     issueTitle,
-    issueComments,
     githubUser,
     config,
   } = ctx;
@@ -131,8 +132,30 @@ export async function workOnIssueClarityPhase(
     return { status: "continue" };
   }
 
-  // Check clarification round limit
-  const clarificationRounds = countClarificationRounds(issueComments);
+  // Check clarification round limit.
+  //
+  // Issue #1263: counted from the comment rows the issue fetch already
+  // returned, which carry their authors, and never from `issueComments` —
+  // that blob is assembled for the model out of every comment, untrusted ones
+  // included, so a heading in it is a claim rather than evidence. Reaching
+  // the limit retires the clarity gate outright, so an unattributable comment
+  // must not raise the count.
+  if (ctx.issueCommentRows === undefined) {
+    logger.warn(
+      "No authored comment rows for the clarification round count — the " +
+        "clarity gate stays on",
+      { repo, issueNumber },
+    );
+  }
+  const clarificationRounds = await countClarificationRounds(
+    ctx.issueCommentRows ?? [],
+    {
+      issueNumber,
+      repo,
+      githubUser,
+      log: (message: string) => logger.warn(message),
+    },
+  );
   if (clarificationRounds >= config.maxClarificationRounds) {
     logger.info(
       "Max clarification rounds reached, proceeding with implementation",
@@ -182,8 +205,8 @@ export async function workOnIssueClarityPhase(
     // The clarification comment states the questions AND the next step, and
     // carries a dedup marker so the shared escalation helper recognises it
     // and skips posting a duplicate (Issue #2210).
-    const dedupKey = `clarification-${issueNumber}`;
-    const commentBody = `## Clarification Needed\n\n${questionsText}\n\n` +
+    const dedupKey = clarificationDedupKey(issueNumber);
+    const commentBody = `${CLARIFICATION_HEADING}\n\n${questionsText}\n\n` +
       `**Next step:** ${CLARIFICATION_NEXT_STEP}\n\n${
         buildDedupMarker(dedupKey)
       }`;

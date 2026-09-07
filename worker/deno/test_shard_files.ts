@@ -21,6 +21,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import { installConsoleRedaction } from "./lib/console_redaction.ts";
 import { testShardPlan } from "./lib/unit_test_passes.ts";
 
 /** The directory the gate and CI both run `deno test` from. */
@@ -52,6 +53,9 @@ function requireInteger(value: string | undefined, name: string): number {
 }
 
 async function main(): Promise<void> {
+  // Issue #1280 (SEC-1217-12): every entry point patches its own console.
+  installConsoleRedaction();
+
   const index = requireInteger(Deno.args[0], "shard index");
   const count = requireInteger(Deno.args[1], "shard count");
   const plan = testShardPlan({

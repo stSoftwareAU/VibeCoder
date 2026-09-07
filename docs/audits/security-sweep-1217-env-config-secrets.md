@@ -97,8 +97,8 @@ closed. `spawnGh` supplies neither, so those branches are skipped outright
 | `--body-file`, `-F <path>`, `-f key=@path`, `--input <path>` (`lib/repo_settings_harden.ts:484-485`, `lib/milestone_ruleset_check.ts:753`) | **BYPASS**, fail-**open** — SEC-1217-03 (#1254) |
 | piped stdin bodies (`lib/security_sarif_upload.ts:196-215`, `lib/repo_rulesets.ts:328-361`) | **BYPASS** — SEC-1217-03 (#1254); the SARIF leg is also SEC-1217-04 (#1255) |
 | `--title`, `-f title=`, `-f description=`, `-f name=` | **BYPASS** — SEC-1217-15 (#1283) |
-| `git commit -m <message>` via `runGitCommand` | **BYPASS** — SEC-1217-16 (#1284) |
-| the agent's own `git commit && git push` (no `git` PATH shim exists) | **BYPASS** — SEC-1217-16 (#1284), the sharper half |
+| `git commit -m <message>` via `runGitCommand` | ~~BYPASS~~ **FIXED** — SEC-1217-16 (#1284): `covered-by-redactGitMessageArgs` inside `runGitCommand` |
+| the agent's own `git commit && git push` (no `git` PATH shim exists) | ~~BYPASS~~ **FIXED** — SEC-1217-16 (#1284), the sharper half: a `git` PATH shim now rides beside the `gh` one and applies the same redaction |
 | `fetch()` to `api.github.com` | none exists — verified |
 
 ### 3 · Files written under the work volume or the repo

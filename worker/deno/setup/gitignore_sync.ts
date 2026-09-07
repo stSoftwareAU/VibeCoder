@@ -32,6 +32,7 @@ import {
   ensureGitattributesPatterns,
   ensureGitignorePatterns,
 } from "../lib/gitignore_enforcer.ts";
+import { isValidRepoSlug, renderInertRepoSlug } from "../lib/repo_slug.ts";
 
 /** Result of a single repo's enforcement pass. */
 export interface RepoSyncResult {
@@ -83,6 +84,25 @@ export async function syncGitignoreForAllRepos(
   let failed = 0;
 
   for (const repo of repos) {
+    // Defence in depth (Issue #1291): the config readers validate slugs, but
+    // a path is derived from `repo` here, so a `..` or empty segment would
+    // steer the enforcers at the work-volume root or its parent — outside
+    // every clone. Refuse loudly rather than writing there.
+    if (!isValidRepoSlug(repo)) {
+      failed++;
+      results.push({
+        repo: renderInertRepoSlug(repo),
+        applied: false,
+        added: [],
+        existed: [],
+        gitattributesAdded: [],
+        gitattributesExisted: [],
+        error:
+          "invalid owner/repo slug — refusing to derive a path from it (Issue #1291)",
+      });
+      continue;
+    }
+
     const repoName = repo.split("/").pop() ?? repo;
     const repoPath = `${workDir}/${repoName}`;
 
