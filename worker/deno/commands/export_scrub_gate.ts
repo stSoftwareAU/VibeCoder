@@ -17,10 +17,12 @@
  * lets a finding through: an unrecognised option is itself an error, so a
  * `--force`, `--skip` or similar can never be quietly ignored.
  *
- * A staged file the gate cannot decode as UTF-8 text is a blocking
- * `binary-unscanned` finding (Issue #1265), not a silent skip: the gate
- * reports PASS only over a tree it examined in full, so such a file must be
- * dropped from the export or carry a reviewed allowlist entry naming it.
+ * An input the gate cannot read is a blocking coverage finding, not a silent
+ * skip: a staged file it cannot decode as UTF-8 text is `binary-unscanned`
+ * (Issue #1265) and a staged symlink, whose target path it never follows, is
+ * `symlink-unscanned` (Issue #1412). The gate reports PASS only over a tree
+ * it examined in full, so each such input must be dropped from the export or
+ * carry a reviewed allowlist entry naming it.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */

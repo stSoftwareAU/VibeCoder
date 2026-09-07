@@ -402,6 +402,12 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "launch_plumbing",
     note: "the per-host state directory the launcher creates",
   },
+  VIBE_SUPERVISOR_RECORDS_OUTCOME: {
+    role: "launch_plumbing",
+    note:
+      "set by loop.sh/loop.ps1 so the launcher does not record an outcome " +
+      "the supervisor already recorded (Issues #4072, #1403)",
+  },
   VIBE_LAUNCH_PHASE_FILE: {
     role: "launch_plumbing",
     note: "where the launcher records the phase it reached",

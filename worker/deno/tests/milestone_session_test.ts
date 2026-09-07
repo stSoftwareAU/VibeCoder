@@ -13,6 +13,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  getSessionStorePath,
   getWorkStreamSessionPath,
   initialiseMilestoneSession,
   restoreSession,
@@ -47,19 +48,28 @@ async function pathExists(path: string): Promise<boolean> {
 
 Deno.test("milestone_session - getWorkStreamSessionPath returns default/ subdir when no milestoneId", () => {
   const result = getWorkStreamSessionPath("/work", "owner/repo");
-  assertEquals(result, "/work/.claude-sessions/owner/repo/default");
+  assertEquals(result, "/work-agent-state/.claude-sessions/owner/repo/default");
 });
 
 Deno.test("milestone_session - getWorkStreamSessionPath returns milestone subdir with milestoneId", () => {
   const result = getWorkStreamSessionPath("/work", "owner/repo", 42);
-  assertEquals(result, "/work/.claude-sessions/owner/repo/milestone-42");
+  assertEquals(
+    result,
+    "/work-agent-state/.claude-sessions/owner/repo/milestone-42",
+  );
 });
 
 Deno.test("milestone_session - getWorkStreamSessionPath handles different milestones separately", () => {
   const path1 = getWorkStreamSessionPath("/work", "owner/repo", 1);
   const path2 = getWorkStreamSessionPath("/work", "owner/repo", 2);
-  assertEquals(path1, "/work/.claude-sessions/owner/repo/milestone-1");
-  assertEquals(path2, "/work/.claude-sessions/owner/repo/milestone-2");
+  assertEquals(
+    path1,
+    "/work-agent-state/.claude-sessions/owner/repo/milestone-1",
+  );
+  assertEquals(
+    path2,
+    "/work-agent-state/.claude-sessions/owner/repo/milestone-2",
+  );
   assertEquals(path1 !== path2, true);
 });
 
@@ -278,8 +288,11 @@ Deno.test("milestone_session - restoreSession migrates old-style session to defa
     const repoPath = `${testDir}/repo`;
     await Deno.mkdir(repoPath, { recursive: true });
 
-    // Set up old-style session (files directly in owner/repo/)
-    const oldStorePath = `${testDir}/.claude-sessions/owner/repo`;
+    // Set up old-style session (files directly in owner/repo/). Issue #1407
+    // moved the store root onto the agent-state volume, a sibling of the work
+    // dir, so the fixture is built through the same resolver the code uses
+    // rather than a second copy of the path.
+    const oldStorePath = `${getSessionStorePath(testDir, "owner/repo")}`;
     await Deno.mkdir(oldStorePath, { recursive: true });
     await Deno.writeTextFile(
       `${oldStorePath}/session-legacy.json`,

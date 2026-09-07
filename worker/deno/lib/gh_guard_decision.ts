@@ -554,7 +554,9 @@ export function evaluateGhCommand(
 
   // Issue #187: a command that rewrites the local `gh` installation —
   // credentials, config, aliases, extensions — changes nothing on GitHub, so
-  // `classifyGhMutation` reports no mutation and it reached here as a "read".
+  // `classifyGhMutation` reports no repo write and it reached here as a
+  // "read" (or, since Issue #1396, as a `non-repo` extension mutation the
+  // write-repo allowlist has nothing to compare).
   // It is not one: the wrapper pins `GH_CONFIG_DIR` to the worker's own
   // persistent identity directory, so a credential written there re-points
   // every later `gh` call, the worker's included. Refused unconditionally,
