@@ -66,9 +66,14 @@ async function buildClone(): Promise<{
 }
 
 Deno.test(
-  "setupRepo - refuses a poisoned .vibe_default_branch instead of checking it out",
+  "setupRepo - ignores a poisoned .vibe_default_branch instead of checking it out",
   async () => {
     const { tmp, clonePath, cleanup } = await buildClone();
+    const errors: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
     try {
       // A committed cache file: it survives reset --hard and clean -fd, and
       // setupRepo reads it before either runs.
@@ -79,12 +84,18 @@ Deno.test(
 
       const result = await setupRepo("owner/downstream", tmp);
 
+      // The poisoned value must never become the default branch: the
+      // git-derived value stands and the refusal is logged loudly.
       assertEquals(
-        result.success,
-        false,
-        "setupRepo must refuse a dash-leading cached default branch",
+        (result.data as { defaultBranch?: string } | undefined)?.defaultBranch,
+        "main",
       );
-      assertStringIncludes(result.message, ".vibe_default_branch");
+      const warning = errors.find((e) => e.includes(".vibe_default_branch"));
+      assert(
+        warning !== undefined,
+        `expected a loud refusal on stderr, got: ${errors.join(" / ")}`,
+      );
+      assertStringIncludes(warning, "Issue #1269");
 
       // The clone must still be on its real default branch — the poisoned
       // value never reached `git checkout` as an option slot.
@@ -98,6 +109,7 @@ Deno.test(
       ).trim();
       assertEquals(head, "main");
     } finally {
+      console.error = realError;
       await cleanup();
     }
   },

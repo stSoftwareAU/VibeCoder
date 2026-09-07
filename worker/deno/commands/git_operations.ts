@@ -563,16 +563,20 @@ export async function setupRepo(
       if (cached) {
         try {
           assertSafeRefComponent(cached, "cached default branch");
+          defaultBranch = cached;
         } catch (error) {
-          return {
-            success: false,
-            message:
-              `Refusing to set up ${repo}: ${repoPath}/.vibe_default_branch ` +
-              `does not hold a safe branch name — ` +
-              `${error instanceof Error ? error.message : String(error)}`,
-          };
+          // Ignore the poisoned cache rather than latch on it: the file is
+          // committed, so refusing the repo outright would turn one file
+          // write into a permanent denial of service. `defaultBranch` still
+          // holds the value `git symbolic-ref` derived above, and the refusal
+          // is logged on every run because `reset --hard` restores the file.
+          console.error(
+            `[setup-repo] SECURITY (Issue #1269): ignoring ` +
+              `${repoPath}/.vibe_default_branch — ` +
+              `${error instanceof Error ? error.message : String(error)}. ` +
+              `Falling back to '${defaultBranch}'.`,
+          );
         }
-        defaultBranch = cached;
       }
 
       // Recover from broken git states (Issue #467)

@@ -16,6 +16,7 @@ import { recoverFromPushRejection } from "./git_push_recovery.ts";
 import { describeUnpushedCommits } from "./git_remote_head.ts";
 import {
   assertSafeGitRef,
+  assertSafeRefComponent,
   buildFetchArgs,
   buildPushArgs,
 } from "./git_ref_args.ts";
@@ -644,10 +645,11 @@ export async function ensureDefaultBranchCurrent(
 ): Promise<Result<string>> {
   // A repo-derived default branch (setupRepo reads it from
   // `.vibe_default_branch` inside the clone, Issue #1269) reaches git as a
-  // positional here and in the `git branch -f` below — refuse a dash-leading
-  // name before any of them run.
+  // positional here and in the `git branch -f` below, and is interpolated
+  // into `origin/<branch>` — so it is validated as a ref *component*, not
+  // merely checked for a leading dash.
   try {
-    assertSafeGitRef(defaultBranch, "default branch name");
+    assertSafeRefComponent(defaultBranch, "default branch name");
   } catch (error) {
     return {
       ok: false,

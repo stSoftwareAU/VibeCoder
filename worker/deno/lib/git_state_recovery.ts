@@ -16,7 +16,7 @@ import type { Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import { emitSelfHealEventAuto } from "./self_heal_events.ts";
-import { assertSafeGitRef, buildCheckoutArgs } from "./git_ref_args.ts";
+import { assertSafeRefComponent, buildCheckoutArgs } from "./git_ref_args.ts";
 
 /** Details about what was recovered. */
 export interface RecoveryDetails {
@@ -45,7 +45,7 @@ export async function recoverGitState(
   // name would reach the detached-HEAD `git checkout` as an option slot.
   // Refuse it loudly before any git command runs.
   try {
-    assertSafeGitRef(defaultBranch, "recovery default branch");
+    assertSafeRefComponent(defaultBranch, "recovery default branch");
   } catch (error) {
     return {
       ok: false,
