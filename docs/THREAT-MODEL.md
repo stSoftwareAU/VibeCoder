@@ -151,7 +151,7 @@ answer is enforced.
 | **AP-10** | **Supply-chain compromise** — a freshly published dependency, or a hijacked host toolchain release, executes on the host with the worker's privileges | A1, A2 | C18, C19 | `worker/deno/lib/npm_package_age.ts` |
 | **AP-11** | **Credential theft from the agent's environment** — the injected agent reads a credential straight out of its own process environment or the credential directory | A1 | C20, C21 | `worker/deno/lib/claude_env.ts` |
 | **AP-12** | **Host compromise beyond the work directory** — the agent reads or writes host material that is none of its business | A2, A4 | C21, C22 | `worker/deno/lib/container_launch.ts` |
-| **AP-13** | **Secret leakage into a permanent public record** — a token echoed by a subprocess is quoted into a comment, PR body or log that cannot be un-published | A1, A5 | C23, C24 | `worker/deno/lib/secret_redaction.ts` |
+| **AP-13** | **Secret leakage into a permanent public record** — a token echoed by a subprocess is quoted into a comment, PR body or log that cannot be un-published, or a credential quoted in untrusted text enters the model's own context before any sink sees it | A1, A5 | C23, C24, C31 | `worker/deno/lib/secret_redaction.ts` |
 | **AP-14** | **Credential drift / identity confusion** — the host's ambient credential resolves to a human account, so worker writes run with that person's broader permissions | A1, A3 | C25 | `worker/deno/lib/identity_guard.ts` |
 | **AP-15** | **Committing a secret** — a credential file staged into a commit and pushed to a public repository | A1 | C26 | `hooks/pre-commit` |
 | **AP-16** | **Grant write access to instruct the worker** — adding a write collaborator authorises an instructor, since trust is derived from repository permissions. Compromise of the worker token is now trust resolution, not just repo actions | A1–A4 | C1, C25, C29 | `worker/deno/lib/collaborator_permissions.ts` |
@@ -197,6 +197,7 @@ here exists.
 | **C28** | Automated-failure comment path masks secrets before posting | `worker/deno/lib/label_failure.ts` | **Gap G2** |
 | **C29** | Fail-closed trusted-author refresh — any collaborator or exclusion-team fetch failure skips the cycle rather than widening trust; `service_accounts` and the host login are excluded so a fleet account cannot authorise itself | `worker/deno/lib/run_core.ts`, `worker/deno/lib/collaborator_permissions.ts`, `worker/deno/lib/trust_exclusions.ts` | `worker/deno/tests/run_core_trust_refresh_test.ts`, `worker/deno/tests/trust_exclusions_test.ts` |
 | **C30** | SSRF guard on externally-supplied URLs — HTTPS-only shape checks, private/loopback/link-local address refusal (literals and what a hostname resolves to), and manual redirect following that re-validates every hop | `worker/deno/lib/public_url_guard.ts` | `worker/deno/tests/public_url_guard_test.ts`, `worker/deno/tests/security_scan_overflow_1387_test.ts` |
+| **C31** | Inbound secret redaction — untrusted text is masked at the ingestion chokepoint every prompt builder routes through, so a credential in an issue body, comment, repository guidance document or codebase map never reaches the model's context | `worker/deno/lib/prompt_delimiter.ts` | `worker/deno/tests/prompt_context_secret_redaction_1424_test.ts` |
 
 ## 🕳️ Known gaps — controls with no enforcing test
 
