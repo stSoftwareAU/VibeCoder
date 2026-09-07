@@ -309,6 +309,56 @@ Deno.test("openCrossRepoFixPr - rejects an invalid repo slug before any command"
   assertEquals(ran, false);
 });
 
+Deno.test("openCrossRepoFixPr - rejects a dash-leading branch before any command (Issue #1548)", async () => {
+  let ran = false;
+  const runner: RunCommand = (_cmd) => {
+    ran = true;
+    return Promise.resolve(ok());
+  };
+  const result = await openCrossRepoFixPr(
+    baseRequest({ branch: "--receive-pack=touch /tmp/pwned" }),
+    runner,
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) assertStringIncludes(result.error.message, "must not begin");
+  // Nothing was spawned: the branch never reached `git push -u origin <ref>`.
+  assertEquals(ran, false);
+});
+
+Deno.test("openCrossRepoFixPr - rejects a branch that is not a valid ref component (Issue #1548)", async () => {
+  let ran = false;
+  const runner: RunCommand = (_cmd) => {
+    ran = true;
+    return Promise.resolve(ok());
+  };
+  const result = await openCrossRepoFixPr(
+    baseRequest({ branch: "fix/bad:refspec" }),
+    runner,
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "not a valid ref component");
+  }
+  assertEquals(ran, false);
+});
+
+Deno.test("openCrossRepoFixPr - pushes the branch behind --end-of-options (Issue #1548)", async () => {
+  const { runner, calls } = scriptedRunner();
+  const result = await openCrossRepoFixPr(baseRequest(), runner);
+
+  assertEquals(result.ok, true);
+  const pushed = calls.find((c) => c[0] === "git" && c.includes("push"));
+  // The branch is a positional after the separator, never an option.
+  const separator = pushed?.indexOf("--end-of-options") ?? -1;
+  assertEquals(separator > -1, true);
+  assertEquals(
+    pushed?.indexOf("fix/issue-2941-root-cause")! > separator,
+    true,
+  );
+});
+
 // ---------------------------------------------------------------------------
 // authoriseCrossRepoTarget (Issue #1382)
 // ---------------------------------------------------------------------------
