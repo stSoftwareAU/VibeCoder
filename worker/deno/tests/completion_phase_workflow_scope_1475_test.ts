@@ -5,8 +5,9 @@
  * failure is classified as the host's credential, not the issue.
  *
  * Drives `workOnIssueCompletion`, the path `issue_worker.ts` actually runs,
- * with the scope flag set in the process environment the way the launcher's
- * preflight sets it.
+ * with the scope verdict injected through `deps.infrastructure` — the seam
+ * production fills from the launcher's preflight — so no test mutates the
+ * process environment (Issue #880).
  *
  * Australian English throughout (behaviour, organisation).
  */
@@ -17,7 +18,6 @@ import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient, Result, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { WORKFLOW_SCOPE_ENV } from "../lib/workflow_scope.ts";
 import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
 
 const SHA = "1f0c2b3a4d5e6f708192a3b4c5d6e7f8091a2b3c";
@@ -67,10 +67,6 @@ async function runCompletion(
     `${repoPath}/docs/archive/pr-summaries/pr-summary-10.md`,
     SUMMARY,
   );
-  const previous = Deno.env.get(WORKFLOW_SCOPE_ENV);
-  if (scope === undefined) Deno.env.delete(WORKFLOW_SCOPE_ENV);
-  else Deno.env.set(WORKFLOW_SCOPE_ENV, scope);
-
   const comments: string[] = [];
   let prCreateCalls = 0;
   let pushes = 0;
@@ -127,6 +123,8 @@ async function runCompletion(
       findExistingPrForBranch: () =>
         Promise.resolve({ ok: false, error: new Error("none") }),
     },
+    // `undefined` models a launcher that recorded no verdict: fail open.
+    infrastructure: { tokenHasWorkflowScope: () => scope !== "false" },
   });
   try {
     const result = await workOnIssueCompletion(ctx, state, deps);
@@ -137,8 +135,6 @@ async function runCompletion(
       prCreateCalls,
     };
   } finally {
-    if (previous === undefined) Deno.env.delete(WORKFLOW_SCOPE_ENV);
-    else Deno.env.set(WORKFLOW_SCOPE_ENV, previous);
     await Deno.remove(repoPath, { recursive: true });
   }
 }
@@ -146,7 +142,7 @@ async function runCompletion(
 Deno.test({
   name:
     "completion - without the workflow scope, a workflow change fails before any push, naming the fix (Issue #1475)",
-  permissions: { env: true, read: true, write: true },
+  permissions: { read: true, write: true },
   async fn() {
     const outcome = await runCompletion(
       [".github/workflows/gitleaks.yml", "README.md"],
@@ -171,7 +167,7 @@ Deno.test({
 Deno.test({
   name:
     "completion - without the scope, a change that touches no workflow is pushed as normal (Issue #1475)",
-  permissions: { env: true, read: true, write: true },
+  permissions: { read: true, write: true },
   async fn() {
     const outcome = await runCompletion(
       ["README.md", ".github/CODEOWNERS"],
@@ -190,7 +186,7 @@ Deno.test({
 Deno.test({
   name:
     "completion - with the scope, or with no preflight verdict, a workflow change is pushed (Issue #1475)",
-  permissions: { env: true, read: true, write: true },
+  permissions: { read: true, write: true },
   async fn() {
     for (const scope of ["true", undefined] as const) {
       const outcome = await runCompletion([".github/workflows/ci.yml"], scope);

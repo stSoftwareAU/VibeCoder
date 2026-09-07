@@ -831,7 +831,10 @@ async function completionBody(
   // what this branch changes and stop here, with the fix, when the answer
   // needs a scope the token does not have. A `git diff` that cannot answer
   // is left to the push: a wrong guess here would block a legitimate PR.
-  if (!tokenHasWorkflowScope()) {
+  const hasWorkflowScope = deps.infrastructure.tokenHasWorkflowScope
+    ? deps.infrastructure.tokenHasWorkflowScope()
+    : tokenHasWorkflowScope();
+  if (!hasWorkflowScope) {
     const changed = await deps.git.runGitCommand(
       ["diff", "--name-only", `origin/${baseBranch}...HEAD`],
       { cwd: state.repoPath },
