@@ -214,7 +214,11 @@ fails if the lock would change (every tarball's integrity is pinned), and
 proves the result with `deno run --cached-only`. At container start the
 entrypoint copies whatever the durable volume cache lacks from the seed
 (never overwriting what is there), so a cold cache needs no npm or jsr.io
-round trip. `worker/deno/tests/container_manifest_test.ts` fails the gate
+round trip. The list of missing files it builds for that copy is a private
+temporary file under `${DENO_DIR}/.seed-tmp` — a 0700 directory on the
+durable volume, never world-writable `/tmp` — and when no such file can be
+created safely the seed step warns and startup continues unseeded rather
+than writing through whatever is at the path (Issue #1522). `worker/deno/tests/container_manifest_test.ts` fails the gate
 when the seed's pins drift from `screenshot.ts`, the Containerfile ARG or
 the worker lock, and Container Build drives the MCP server from the seed
 with `--network none`.
