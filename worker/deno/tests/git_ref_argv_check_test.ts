@@ -123,6 +123,8 @@ Deno.test("scanner - a builder-shaped push with a flag before the separator is c
 });
 
 Deno.test("scanner - safe internal refs stay out of scope for push and rebase (Issue #275)", () => {
+  // The `["push", "origin", defaultBranch]` case moved to the Issue #1269 test
+  // below: `defaultBranch` is repo-file-derived, so it is no longer excluded.
   for (
     const line of [
       'runGitCommand(["rebase", baseBranch], opts);',
@@ -142,6 +144,7 @@ Deno.test("scanner - flags an unguarded checkout of defaultBranch (Issue #1269)"
       'runGitCommand(["checkout", defaultBranch], opts);',
       'runGitCommand(["fetch", "origin", defaultBranch], opts);',
       'runGitCommand(["rebase", defaultBranch], opts);',
+      'runGitCommand(["push", "origin", defaultBranch], opts);',
     ]
   ) {
     assertEquals(scanContentForGitRefArgv(line, "x.ts").length, 1, line);

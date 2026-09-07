@@ -17,6 +17,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { setupRepo } from "../commands/git_operations.ts";
 import { recoverGitState } from "../lib/git_state_recovery.ts";
+import { ensureDefaultBranchCurrent } from "../lib/git_push.ts";
 
 /** The attack value the finding names. */
 const POISONED_BRANCH = "--pathspec-from-file=/etc/passwd";
@@ -145,6 +146,40 @@ Deno.test(
     try {
       const result = await recoverGitState("main", { cwd: clonePath });
       assert(result.ok, "expected recovery to succeed on a clean clone");
+    } finally {
+      await cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "ensureDefaultBranchCurrent - refuses a dash-leading default branch (Issue #1269)",
+  async () => {
+    const { clonePath, cleanup } = await buildClone();
+    try {
+      const result = await ensureDefaultBranchCurrent(POISONED_BRANCH, {
+        cwd: clonePath,
+      });
+      assertEquals(result.ok, false);
+      if (!result.ok) {
+        assertStringIncludes(result.error.message, "must not begin with '-'");
+      }
+    } finally {
+      await cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "ensureDefaultBranchCurrent - a valid default branch is brought up to date",
+  async () => {
+    const { clonePath, cleanup } = await buildClone();
+    try {
+      const result = await ensureDefaultBranchCurrent("main", {
+        cwd: clonePath,
+      });
+      assert(result.ok, "expected a valid branch name to be accepted");
+      if (result.ok) assertStringIncludes(result.value, "main");
     } finally {
       await cleanup();
     }
