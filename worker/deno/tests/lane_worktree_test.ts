@@ -9,13 +9,19 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   detachLaneWorktreeHead,
   ensureLaneWorktree,
   LANE_WORKTREE_ROOT,
   laneWorktreePath,
   PR_BRANCH_UPDATE_LANE_ID,
+  worktreeAddFailureDetail,
 } from "../lib/lane_worktree.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import { isReservedWorkRootEntry } from "../lib/stale_workdir.ts";
@@ -270,4 +276,140 @@ Deno.test("ensureLaneWorktree - fails loud when the clone is not a repository", 
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Orphaned target directory (Issue #1561)
+//
+// `git worktree add` refuses a path that already exists as a directory, and
+// `--force` does not override that — it overrides an already-checked-out
+// branch and an already-registered path, not a stray directory. `worktree
+// prune` does not help either: it drops administration for worktrees whose
+// directory has *gone*, and this directory has not gone.
+//
+// So a leftover directory — a container killed mid-run, or a shared clone
+// recreated underneath its linked worktrees — wedges the lane permanently.
+// Every cycle dies in phase `setup` within a minute, releases the claim with
+// no PR, and leaves the same issue for the next cycle to fail on identically.
+// ---------------------------------------------------------------------------
+
+Deno.test("ensureLaneWorktree - clears an orphaned directory at the target path (Issue #1561)", async () => {
+  const { workDir, repoPath } = await setupClone();
+  try {
+    const path = laneWorktreePath(workDir, "owner/demo", "s2");
+    // A directory left behind by a killed container: no git administration
+    // anywhere, just files sitting where the worktree needs to go.
+    await Deno.mkdir(path, { recursive: true });
+    await Deno.writeTextFile(`${path}/leftover.txt`, "from a killed run\n");
+
+    const result = await ensureLaneWorktree({
+      workDir,
+      repo: "owner/demo",
+      laneId: "s2",
+      repoPath,
+    });
+
+    assertEquals(result.ok, true, JSON.stringify(result));
+    if (result.ok) {
+      assertEquals(result.value, path);
+      // A real, linked worktree — not the stale directory left in place.
+      const inside = await runGitCommand(
+        ["rev-parse", "--is-inside-work-tree"],
+        { cwd: path },
+      );
+      assert(inside.ok && inside.value.stdout.trim() === "true");
+      assertEquals(await head(path), await head(repoPath));
+      // The stale content is gone, so the lane does not inherit it.
+      await assertRejects(() => Deno.stat(`${path}/leftover.txt`));
+    }
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("ensureLaneWorktree - recovers when the shared clone was recreated under the worktree (Issue #1561)", async () => {
+  const { workDir, repoPath } = await setupClone();
+  try {
+    const path = laneWorktreePath(workDir, "owner/demo", "s2");
+    const first = await ensureLaneWorktree({
+      workDir,
+      repo: "owner/demo",
+      laneId: "s2",
+      repoPath,
+    });
+    assertEquals(first.ok, true);
+
+    // The clone is re-made, so the worktree's `.git` file points at
+    // administration that no longer exists. `rev-parse` in the worktree now
+    // fails outright — it is neither a valid worktree nor an empty path.
+    await Deno.remove(`${repoPath}/.git/worktrees`, { recursive: true });
+
+    const second = await ensureLaneWorktree({
+      workDir,
+      repo: "owner/demo",
+      laneId: "s2",
+      repoPath,
+    });
+
+    assertEquals(second.ok, true, JSON.stringify(second));
+    if (second.ok) {
+      const inside = await runGitCommand(
+        ["rev-parse", "--is-inside-work-tree"],
+        { cwd: path },
+      );
+      assert(inside.ok && inside.value.stdout.trim() === "true");
+    }
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("worktreeAddFailureDetail - leads with the cause, not git's preamble (Issue #1561)", () => {
+  // Exactly what `git worktree add --detach --force <existing-dir> HEAD`
+  // writes to stderr, reproduced against real git.
+  const stderr = [
+    "Preparing worktree (detached HEAD 698531e)",
+    "fatal: '/home/vibe/auto-issue-work/worktrees/s2/NEAT-AI-core' already exists",
+  ].join("\n");
+
+  const detail = worktreeAddFailureDetail({
+    ok: true,
+    value: { code: 128, stdout: "", stderr },
+  });
+
+  // The preamble is what truncation left behind on Issue #1561; the `fatal:`
+  // is the half that says what to do.
+  assertEquals(detail.includes("Preparing worktree"), false);
+  assertStringIncludes(detail, "already exists");
+});
+
+Deno.test("worktreeAddFailureDetail - falls back to the exit code when git said nothing", () => {
+  assertEquals(
+    worktreeAddFailureDetail({
+      ok: true,
+      value: {
+        code: 128,
+        stdout: "",
+        stderr: "Preparing worktree (detached HEAD 698531e)\n",
+      },
+    }),
+    "exit 128",
+  );
+});
+
+Deno.test("worktreeAddFailureDetail - keeps every line git wrote bar the preamble", () => {
+  const detail = worktreeAddFailureDetail({
+    ok: true,
+    value: {
+      code: 128,
+      stdout: "",
+      stderr: [
+        "Preparing worktree (detached HEAD 698531e)",
+        "warning: something unfamiliar",
+        "fatal: could not create directory",
+      ].join("\n"),
+    },
+  });
+  assertStringIncludes(detail, "warning: something unfamiliar");
+  assertStringIncludes(detail, "fatal: could not create directory");
 });
