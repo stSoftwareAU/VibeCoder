@@ -702,6 +702,7 @@
         "worker/deno/lib/prompt_override_resolver.ts",
         "worker/deno/lib/prompt_prefix.ts",
         "worker/deno/lib/provider_token_usage.ts",
+        "worker/deno/lib/public_url_guard.ts",
         "worker/deno/lib/publish_decision_check.ts",
         "worker/deno/lib/push_claim_verification.ts",
         "worker/deno/lib/push_recovery_retry.ts",
