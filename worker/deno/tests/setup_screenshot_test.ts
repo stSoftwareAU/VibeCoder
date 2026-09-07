@@ -6,6 +6,7 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
+  allowedNetValue,
   blockedOriginsValue,
   BROWSER_OUTPUT_DIR_NAME,
   BROWSER_PROFILE_DIR_NAME,
@@ -15,10 +16,12 @@ import {
   generateMcpConfig,
   installPlaywrightBrowsers,
   PLAYWRIGHT_INSTALLER_VERSION,
+  PLAYWRIGHT_MCP_ALLOWED_NET_HOSTS,
   PLAYWRIGHT_MCP_BLOCKED_HOSTS,
   PLAYWRIGHT_MCP_DENIED_ENV,
   PLAYWRIGHT_MCP_VERSION,
   playwrightQuarantinedPackages,
+  resolveAllowedNetHosts,
   resolveBrowserEnvironment,
   resolveDeniedPaths,
   setupPlaywrightMcp,
@@ -359,6 +362,82 @@ Deno.test("blockedOriginsValue - fails loud when a host contains the list separa
     () => blockedOriginsValue(["169.254.169.254;evil.example"]),
     Error,
     "semicolon",
+  );
+});
+
+// ── Issue #1386: unbounded egress from the MCP server process ──────────
+
+Deno.test("generateMcpConfig - scopes --allow-net to a host allowlist instead of granting unrestricted egress (Issue #1386)", () => {
+  const args: string[] =
+    JSON.parse(generateMcpConfig({ scriptDir: "/opt/vibe" }))
+      .mcpServers.playwright.args;
+
+  assertEquals(
+    args.includes("--allow-net"),
+    false,
+    "a bare --allow-net lets the MCP server reach any host (Issue #1386)",
+  );
+  const flag = args.find((a) => a.startsWith("--allow-net="));
+  assertEquals(typeof flag, "string", "expected a host-scoped --allow-net=");
+
+  const allowed = (flag as string).slice("--allow-net=".length).split(",");
+  assertEquals(allowed.includes(""), false, "an empty host grants nothing");
+  // Loopback stays reachable: that is where playwright-core talks to the
+  // browser it launched, and where the prompts serve local pages from.
+  for (const host of PLAYWRIGHT_MCP_ALLOWED_NET_HOSTS) {
+    assertEquals(allowed.includes(host), true, `${host} must stay allowed`);
+  }
+  // The exfiltration destination from the issue's exploit sketch is not.
+  assertEquals(allowed.includes("attacker.example"), false);
+});
+
+Deno.test("resolveAllowedNetHosts - extends the allowlist from VIBE_BROWSER_ALLOWED_HOSTS without replacing it", () => {
+  const hosts = resolveAllowedNetHosts({
+    getEnv: (name) =>
+      name === "VIBE_BROWSER_ALLOWED_HOSTS"
+        ? " preview.example , 10.0.0.5:8080 , "
+        : undefined,
+  });
+  assertEquals(hosts.includes("preview.example"), true);
+  assertEquals(hosts.includes("10.0.0.5:8080"), true);
+  // Blank entries are dropped, and the defaults survive.
+  assertEquals(hosts.includes(""), false);
+  for (const host of PLAYWRIGHT_MCP_ALLOWED_NET_HOSTS) {
+    assertEquals(hosts.includes(host), true);
+  }
+});
+
+Deno.test("resolveAllowedNetHosts - unset knob yields exactly the default allowlist", () => {
+  assertEquals(
+    resolveAllowedNetHosts({ getEnv: () => undefined }),
+    [...PLAYWRIGHT_MCP_ALLOWED_NET_HOSTS],
+  );
+});
+
+Deno.test("allowedNetValue - fails loud on an empty allowlist rather than emitting a flag that grants everything", () => {
+  assertThrows(() => allowedNetValue([]), Error, "empty");
+});
+
+Deno.test("allowedNetValue - fails loud when a host contains the list separator", () => {
+  // A comma would split one entry into fragments that match no host, leaving
+  // a list that looks complete and grants nothing.
+  assertThrows(
+    () => allowedNetValue(["127.0.0.1,evil.example"]),
+    Error,
+    "comma or whitespace",
+  );
+  assertThrows(() => allowedNetValue(["evil example"]), Error, "whitespace");
+});
+
+Deno.test("generateMcpConfig - propagates an unexpressible allowed host instead of emitting a broken flag (Issue #1386)", () => {
+  assertThrows(
+    () =>
+      generateMcpConfig({
+        scriptDir: "/opt/vibe",
+        allowedNetHosts: ["127.0.0.1", "bad,host"],
+      }),
+    Error,
+    "comma or whitespace",
   );
 });
 
