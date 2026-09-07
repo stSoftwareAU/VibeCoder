@@ -514,6 +514,7 @@ async function buildHostFixture(
   const volumes = {
     work: `vibe-test-work-${token}`,
     approvalState: `vibe-test-approval-${token}`,
+    agentState: `vibe-test-agent-${token}`,
   };
 
   // An operator's custom prompt directory (Issue #850): world-writable on the
