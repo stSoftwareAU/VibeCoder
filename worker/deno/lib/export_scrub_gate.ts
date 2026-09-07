@@ -49,6 +49,12 @@
  *                        of the verdict: PASS means "the whole staged tree
  *                        was examined and nothing unallowlisted was found",
  *                        never "nothing was found in the part I could read".
+ *   - `symlink-unscanned` a staged symlink (Issue #1412). The walk never
+ *                        follows one, so its target path — itself content,
+ *                        and possibly an operator home path — was never
+ *                        scanned. Same two ways past it as an undecodable
+ *                        file: drop it from the export, or name its path in
+ *                        a reviewed allowlist entry.
  *
  * Every finding carries path, 1-based line (0 for a hit in the path itself),
  * class, a mask of the match (first two and last two characters) and a short
@@ -66,9 +72,10 @@
 
 import {
   decodeTextOrNull,
-  listTreeFiles,
   topLevelDirectory,
+  walkTree,
 } from "./export_tree.ts";
+import { assertNever } from "./assert_never.ts";
 
 /** Classes sourced from the identifiers file. */
 export const IDENTIFIER_CLASSES = [
@@ -92,7 +99,10 @@ export const BUILTIN_CLASSES = [
  * examine at all, so that an unscanned file is a loud finding rather than a
  * silent omission from the verdict.
  */
-export const COVERAGE_CLASSES = ["binary-unscanned"] as const;
+export const COVERAGE_CLASSES = [
+  "binary-unscanned",
+  "symlink-unscanned",
+] as const;
 
 export type IdentifierClass = (typeof IDENTIFIER_CLASSES)[number];
 export type BuiltinClass = (typeof BUILTIN_CLASSES)[number];
@@ -257,9 +267,14 @@ function compileRepoName(value: string): RegExp | null {
 export function compileIdentifier(value: string): RegExp | null {
   const regexForm = /^\/(.+)\/(i?)$/.exec(value);
   try {
+    // The value comes from the operator's private identifiers file, and a
+    // literal is metacharacter-escaped before compilation — the same
+    // justification `compileRepoName` above carries.
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
     if (regexForm) {
       return new RegExp(regexForm[1]!, `g${regexForm[2] ?? ""}`);
     }
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
     return new RegExp(
       `(?<![A-Za-z0-9_])${escapeRegExp(value)}(?![A-Za-z0-9_])`,
       "gi",
@@ -716,6 +731,8 @@ export interface GateReport {
   tree: string;
   filesScanned: number;
   filesSkippedBinary: number;
+  /** Staged symlinks found and never followed (Issue #1412). */
+  symlinksSkipped: number;
   findings: GateFinding[];
   blocking: number;
   allowlisted: number;
@@ -739,36 +756,64 @@ export interface ScanTreeOptions {
 /**
  * True when the report lets the export proceed.
  *
- * Coverage is part of the verdict (Issue #1265): every file the scan could
- * not decode must be accounted for by a `binary-unscanned` finding, and that
- * finding must have been either allowlisted or counted as blocking. A report
- * whose skip counter outruns its coverage findings describes a tree the gate
- * did not fully examine, and an unexamined tree never passes — the absence of
- * a match in the subset that could be read is not success.
+ * Coverage is part of the verdict (Issues #1265, #1412): every input the scan
+ * could not read — a file it could not decode, a symlink it did not follow —
+ * must be accounted for by a coverage finding, and that finding must have
+ * been either allowlisted or counted as blocking. A report whose skip
+ * counters outrun its coverage findings describes a tree the gate did not
+ * fully examine, and an unexamined tree never passes — the absence of a match
+ * in the subset that could be read is not success.
  */
 export function gatePasses(report: GateReport): boolean {
   if (report.errors.length > 0 || report.blocking > 0) return false;
-  const accountedFor = report.findings.filter(
-    (f) => f.klass === "binary-unscanned",
-  ).length;
-  return accountedFor === report.filesSkippedBinary;
+  return COVERAGE_CLASSES.every((klass) => coverageAccountedFor(report, klass));
 }
 
 /**
- * The finding raised for a staged file the gate could not decode. It carries
- * no excerpt of the file because the gate never read one: the path is the
- * whole of what is known, and it is also what an allowlist entry names
- * (`binary-unscanned <path> *`).
+ * Inputs of one coverage class the scan could not read. The switch is
+ * exhaustive: a new coverage class breaks the compile rather than being
+ * silently compared against another class's counter.
  */
-function unscannableFinding(rel: string): RawFinding {
+function skippedCount(report: GateReport, klass: CoverageClass): number {
+  switch (klass) {
+    case "binary-unscanned":
+      return report.filesSkippedBinary;
+    case "symlink-unscanned":
+      return report.symlinksSkipped;
+    default:
+      return assertNever(klass);
+  }
+}
+
+/** True when every skipped input of one coverage class raised a finding. */
+function coverageAccountedFor(
+  report: GateReport,
+  klass: CoverageClass,
+): boolean {
+  const accountedFor = report.findings.filter((f) => f.klass === klass).length;
+  return accountedFor === skippedCount(report, klass);
+}
+
+/**
+ * The finding raised for an input the gate could not read — a file it could
+ * not decode, or a symlink it did not follow (Issues #1265, #1412). It
+ * carries no excerpt of the input because the gate never read one: the path
+ * is the whole of what is known, and it is also what an allowlist entry
+ * names (`<class> <path> *`).
+ */
+function coverageFinding(
+  rel: string,
+  klass: CoverageClass,
+  excerpt: string,
+): RawFinding {
   return {
     path: rel,
     line: 0,
-    klass: "binary-unscanned",
+    klass,
     column: 0,
     match: rel,
     masked: maskMatch(rel),
-    excerpt: "binary or non-UTF-8 — contents never scanned",
+    excerpt,
     allowlisted: false,
   };
 }
@@ -782,7 +827,20 @@ export async function scanTree(options: ScanTreeOptions): Promise<GateReport> {
   const raw: RawFinding[] = [];
   let filesScanned = 0;
   let filesSkippedBinary = 0;
-  for (const rel of await listTreeFiles(options.tree)) {
+  const walked = await walkTree(options.tree);
+  for (const rel of walked.symlinks) {
+    // The walk did not follow it, so its target was never scanned: a blocking
+    // coverage finding, not a silent omission (Issue #1412).
+    raw.push(...scanPath(rel, identifiers.patterns, identifiers.repoPolicy));
+    raw.push(
+      coverageFinding(
+        rel,
+        "symlink-unscanned",
+        "symlink — target path never scanned",
+      ),
+    );
+  }
+  for (const rel of walked.files) {
     raw.push(...scanPath(rel, identifiers.patterns, identifiers.repoPolicy));
     const text = decodeTextOrNull(
       await Deno.readFile(`${options.tree}/${rel}`),
@@ -791,7 +849,13 @@ export async function scanTree(options: ScanTreeOptions): Promise<GateReport> {
       // The gate cannot read this file, so it cannot vouch for it: record a
       // blocking coverage finding rather than skipping it into silence.
       filesSkippedBinary++;
-      raw.push(unscannableFinding(rel));
+      raw.push(
+        coverageFinding(
+          rel,
+          "binary-unscanned",
+          "binary or non-UTF-8 — contents never scanned",
+        ),
+      );
       continue;
     }
     filesScanned++;
@@ -829,6 +893,7 @@ export async function scanTree(options: ScanTreeOptions): Promise<GateReport> {
     tree: options.tree,
     filesScanned,
     filesSkippedBinary,
+    symlinksSkipped: walked.symlinks.length,
     findings,
     blocking,
     allowlisted,
@@ -857,6 +922,10 @@ export function formatGateReport(report: GateReport): string {
     (report.filesSkippedBinary > 0
       ? " (unreadable as text; each is a binary-unscanned finding)"
       : ""),
+    `symlinks-skipped: ${report.symlinksSkipped}` +
+    (report.symlinksSkipped > 0
+      ? " (never followed; each is a symlink-unscanned finding)"
+      : ""),
     `findings: ${report.findings.length} total, ${report.blocking} blocking, ` +
     `${report.allowlisted} allowlisted`,
     `allowlist: ${report.allowlistEntries} entries, ` +
@@ -872,9 +941,17 @@ export function formatGateReport(report: GateReport): string {
   } else if (!gatePasses(report)) {
     // Belt and braces: the verdict line and `gatePasses` can never disagree,
     // so a coverage hole cannot be printed as a pass (Issue #1265).
+    const parts: string[] = [];
+    if (report.filesSkippedBinary > 0) {
+      parts.push(`${report.filesSkippedBinary} unreadable file(s)`);
+    }
+    if (report.symlinksSkipped > 0) {
+      parts.push(`${report.symlinksSkipped} symlink(s)`);
+    }
     lines.push(
-      `verdict: BLOCKED (${report.filesSkippedBinary} unreadable file(s) ` +
-        `unaccounted for)`,
+      `verdict: BLOCKED (${
+        parts.length > 0 ? parts.join(" and ") : "coverage"
+      } unaccounted for)`,
     );
   } else {
     lines.push("verdict: PASS (0 blocking findings, whole tree covered)");
