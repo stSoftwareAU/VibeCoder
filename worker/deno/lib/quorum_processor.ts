@@ -57,6 +57,7 @@ import { prepareTrustAnnotatedCommentList } from "./comment_trust_filter.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { releaseAllWorkerClaims } from "./claim_release.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { redactPromptLeakage } from "./prompt_leak_redaction.ts";
 import { WORKER_COMMENT_FOOTER_PREFIX } from "./grill_me_processor.ts";
 import {
   type QuorumInvoker,
@@ -141,6 +142,13 @@ export interface QuorumResult {
  * - the Quorum markers are demoted, so an echoed marker cannot make a later
  *   run mistake quoted text for its own prior output.
  *
+ * Echoed prompt scaffolding is masked too (Issue #1372): the plan is model
+ * output bound for a public comment, the same sink `answer_sanitiser.ts`
+ * chains `redactPromptLeakage()` for, and neither the demotions above nor
+ * secret-shape redaction recognise instruction text — so an issue that tells
+ * a drafter to print its instructions or this run's boundary nonce would
+ * otherwise publish them (LLM07 System Prompt Leakage, CWE-200).
+ *
  * Secrets are redacted last, over the whole string, so a secret split by one
  * of the substitutions is still caught.
  *
@@ -159,7 +167,7 @@ export function sanitisePlanForComment(text: string): string {
       QUORUM_DEGRADED_MARKER,
       () => "### (quoted) Quorum — Degraded Result",
     );
-  return redactSecrets(defanged);
+  return redactSecrets(redactPromptLeakage(defanged));
 }
 
 /** Name one plan by its provider and anonymised position. */

@@ -83,7 +83,9 @@ A clean run posts one comment headed `## Quorum — Winning Plan`:
 - the **judge's reasoning** in a second collapsed section.
 
 Plan text is agent output derived from untrusted issue content, so before it
-reaches the comment it is secret-redacted, its `</details>` sequences are
+reaches the comment it is secret-redacted, prompt-leak redacted (echoed
+`<coding_guidelines>` blocks, boundary nonces and instruction phrases are masked
+with `***PROMPT-LEAK-REDACTED***`, Issue #1372), its `</details>` sequences are
 defanged (a plan cannot break out of its collapsed section), and any
 worker-footer or Quorum-heading lookalike is demoted so quoted text cannot forge
 the worker's own attribution.
