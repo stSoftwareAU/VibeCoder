@@ -40,6 +40,7 @@
  */
 
 import { redactSecrets } from "./secret_redaction.ts";
+import { truncateLogTail } from "./log_tail.ts";
 
 declare const redactedTextBrand: unique symbol;
 
@@ -110,4 +111,41 @@ export function joinRedacted(
 ): RedactedText {
   const joined = parts.filter((part) => part.length > 0).join(separator);
   return redactSecrets(joined) as RedactedText;
+}
+
+/**
+ * Redact `text` in full, then keep its last `maxLines` lines.
+ *
+ * The line-granular cut is what a stderr tail or a quality-gate excerpt wants,
+ * and it is the shape most of the inverted sites had (Issue #1257): a cut is
+ * line-granular but the *file* is not, so the kept tail can still begin in the
+ * middle of a PEM block whose `BEGIN` marker fell above the cut.
+ *
+ * @param text - The full, untruncated text.
+ * @param maxLines - Lines to keep. Zero or less keeps nothing.
+ * @returns The redacted tail, branded as {@link RedactedText}.
+ */
+export function redactedLineTail(text: string, maxLines: number): RedactedText {
+  const budget = clampBudget(maxLines);
+  if (budget === 0) return "" as RedactedText;
+  return redactSecrets(text).split("\n").slice(-budget).join(
+    "\n",
+  ) as RedactedText;
+}
+
+/**
+ * Redact `text` in full, then keep the tail that fits in `maxBytes` UTF-8
+ * bytes, with the drop marker `truncateLogTail` prepends.
+ *
+ * This is the constructor for the CI log-tail sinks (Issue #1257). They used
+ * to cut first so the byte cap applied to the raw log; redacting first is both
+ * safer and a *tighter* cap, because a placeholder wider than the secret it
+ * replaced can no longer push the finished block past the budget.
+ *
+ * @param text - The full, untruncated log.
+ * @param maxBytes - Byte ceiling for the returned text.
+ * @returns The redacted tail, branded as {@link RedactedText}.
+ */
+export function redactedLogTail(text: string, maxBytes: number): RedactedText {
+  return truncateLogTail(redactSecrets(text), maxBytes) as RedactedText;
 }

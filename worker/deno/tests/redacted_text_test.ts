@@ -18,6 +18,8 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   joinRedacted,
   redactedHead,
+  redactedLineTail,
+  redactedLogTail,
   redactedTail,
 } from "../lib/redacted_text.ts";
 import {
@@ -313,4 +315,43 @@ Deno.test("joinRedacted - the separator is redacted, not trusted", () => {
     "a secret in the separator must not survive the join",
   );
   assertStringIncludes(joined, REDACTION_PLACEHOLDER);
+});
+
+Deno.test("redactedLineTail - keeps the last lines and masks a straddling secret", () => {
+  const text = [
+    `leading noise ${FAKE_TOKEN}`,
+    "line one",
+    "line two",
+    "line three",
+  ].join("\n");
+  const tail = redactedLineTail(text, 2);
+  assertEquals(tail, "line two\nline three");
+  assert(!tail.includes(FAKE_TOKEN));
+
+  // The whole text is scanned before the cut, so a secret on a dropped line
+  // cannot reappear through a later concatenation of the same input.
+  const whole = redactedLineTail(text, 10);
+  assert(!whole.includes(FAKE_TOKEN));
+  assertStringIncludes(whole, REDACTION_PLACEHOLDER);
+});
+
+Deno.test("redactedLineTail - a budget of zero or less keeps nothing", () => {
+  assertEquals(redactedLineTail("a\nb", 0), "");
+  assertEquals(redactedLineTail("a\nb", -3), "");
+});
+
+Deno.test("redactedLogTail - redacts before the byte cap, at every cap size", () => {
+  const log = `${"filler line\n".repeat(20)}token ${FAKE_TOKEN} used\n` +
+    "trailing line\n".repeat(20);
+  for (let maxBytes = 40; maxBytes <= 600; maxBytes += 10) {
+    const tail = redactedLogTail(log, maxBytes);
+    assert(
+      !tail.includes(FAKE_TOKEN),
+      `the token survived a ${maxBytes}-byte cap`,
+    );
+  }
+});
+
+Deno.test("redactedLogTail - text within the cap is returned whole", () => {
+  assertEquals(redactedLogTail("short log", 1000), "short log");
 });

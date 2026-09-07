@@ -73,9 +73,14 @@ const finding = (
 
 /**
  * gh stub. `--json number` calls are the before/after snapshots (first and
- * second entry of `snapshots`); `--json number,body` is the dedup lookup;
+ * second entry of `snapshots`); `--json number,body,author` is the dedup
+ * lookup (author-verified since Issue #1243);
  * `issue create` returns a synthetic issue URL from `createNumbers`.
  */
+/** The fleet identity the finding-id dedup verifies against (Issue #1243). */
+const FLEET_LOGIN = "vibe-coder-bot";
+const DEDUP_AUTHORS = { fleetAuthors: [FLEET_LOGIN] };
+
 function makeGhStub(scenario: {
   snapshots?: [number[], number[]];
   dedup?: Array<{ number: number; body: string }>;
@@ -102,8 +107,17 @@ function makeGhStub(scenario: {
         JSON.stringify(result.map((n) => ({ number: n }))),
       );
     }
-    if (jsonField === "number,body") {
-      return Promise.resolve(JSON.stringify(scenario.dedup ?? []));
+    if (jsonField === "number,body,author") {
+      // Fleet-authored (Issue #1243): the dedup look-up only counts a
+      // finding-id marker a fleet account wrote.
+      return Promise.resolve(
+        JSON.stringify(
+          (scenario.dedup ?? []).map((i) => ({
+            ...i,
+            author: { login: FLEET_LOGIN },
+          })),
+        ),
+      );
     }
     return Promise.resolve("[]");
   };
@@ -219,6 +233,7 @@ Deno.test("runTask - files one issue per missing path and diffs snapshot", async
   const ensureCalls: string[] = [];
   const t = createBashScriptRefsTemplate({
     ghCommandFn: gh,
+    dedupAuthors: DEDUP_AUTHORS,
     loadPromptFn: okPrompt,
     ensureLabelFn: (repo) => {
       ensureCalls.push(repo);
@@ -263,6 +278,7 @@ Deno.test("runTask - dedup skips a missing path with an existing open issue", as
   });
   const t = createBashScriptRefsTemplate({
     ghCommandFn: gh,
+    dedupAuthors: DEDUP_AUTHORS,
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
     scanFn: () =>
@@ -294,6 +310,7 @@ Deno.test("runTask - fail-loud when the scanner errors", async () => {
   const { gh } = makeGhStub({ snapshots: [[], []] });
   const t = createBashScriptRefsTemplate({
     ghCommandFn: gh,
+    dedupAuthors: DEDUP_AUTHORS,
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
     scanFn: () =>
@@ -319,6 +336,7 @@ Deno.test("runTask - no findings reports no findings", async () => {
   const { gh } = makeGhStub({ snapshots: [[], []] });
   const t = createBashScriptRefsTemplate({
     ghCommandFn: gh,
+    dedupAuthors: DEDUP_AUTHORS,
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
     scanFn: () =>
@@ -342,6 +360,7 @@ Deno.test("runTask - threw path is caught and surfaced", async () => {
   const { gh } = makeGhStub({ snapshots: [[], []] });
   const t = createBashScriptRefsTemplate({
     ghCommandFn: gh,
+    dedupAuthors: DEDUP_AUTHORS,
     loadPromptFn: okPrompt,
     ensureLabelFn: () => {
       throw new Error("kaboom");
@@ -373,6 +392,7 @@ Deno.test("runTask - scans the repo's own checkout, not the parent work dir (Iss
   const scanRoots: string[] = [];
   const t = createBashScriptRefsTemplate({
     ghCommandFn: gh,
+    dedupAuthors: DEDUP_AUTHORS,
     loadPromptFn: okPrompt,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
     scanFn: (workDir, _repo) => {

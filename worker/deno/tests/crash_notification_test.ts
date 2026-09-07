@@ -699,3 +699,48 @@ Deno.test("notifyCrashViaIssueComment - reports whether a comment was actually p
   );
   assertEquals(refused.ok && refused.value.delivered, false);
 });
+
+// ---------------------------------------------------------------------------
+// A blank container stamp is a HOST run (Issue #1493, follow-up to #1262)
+// ---------------------------------------------------------------------------
+
+/** An environment lookup carrying `base` plus a container image stamp. */
+function stampedEnv(
+  base: Record<string, string>,
+  stamp: string,
+): (name: string) => string | undefined {
+  const values: Record<string, string> = {
+    ...base,
+    VIBE_IMAGE_AGENT_PROVIDERS: stamp,
+  };
+  return (name) => Object.hasOwn(values, name) ? values[name] : undefined;
+}
+
+Deno.test("resolveCrashStateDir - a blank container stamp keeps the host path (Issue #1493)", () => {
+  // The container branch was keyed on the PRESENCE of the image stamp, so
+  // `VIBE_IMAGE_AGENT_PROVIDERS=` scattered a host run's rate-limit state
+  // into whatever work directory was passed instead of ~/.vibe-coder, where
+  // the operator's other worker state lives — and the cooldown the file
+  // exists to enforce then reset on every work-dir change. Blank is a host.
+  for (const blank of ["", "   "]) {
+    assertEquals(
+      resolveCrashStateDir(
+        "/Users/dev/auto-issue-work",
+        stampedEnv({ HOME: "/Users/dev" }, blank),
+      ),
+      "/Users/dev/.vibe-coder",
+      `a stamp of ${JSON.stringify(blank)} must not take the container branch`,
+    );
+  }
+});
+
+Deno.test("resolveCrashStateDir - a real container stamp still uses the work volume (Issue #1493)", () => {
+  // The other direction: #515's image-layer write must stay avoided.
+  assertEquals(
+    resolveCrashStateDir(
+      "/home/vibe/auto-issue-work",
+      stampedEnv({ HOME: "/home/vibe" }, " claude "),
+    ),
+    "/home/vibe/auto-issue-work/.crash-state",
+  );
+});

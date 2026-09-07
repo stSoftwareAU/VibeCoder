@@ -327,6 +327,23 @@ Deno.test("prManagerCommand - close-duplicate-prs requires repo, branch-name, ke
   assertStringIncludes(result.message, "Missing required arguments");
 });
 
+// Issue #1264: the destructive flag is refused rather than ignored — an
+// unreadable value must never fall through to the closing path.
+Deno.test("prManagerCommand - close-duplicate-prs refuses an unreadable --dry-run", async () => {
+  const result = await prManagerCommand.execute(
+    {
+      operation: "close-duplicate-prs",
+      repo: "owner/repo",
+      "branch-name": "issue-42-fix",
+      "keep-pr-url": "https://github.com/owner/repo/pull/42",
+      "dry-run": 1,
+    },
+    config,
+  );
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "Invalid --dry-run");
+});
+
 Deno.test("prManagerCommand - close-issues-for-merged-prs requires github-user and repos", async () => {
   const result = await prManagerCommand.execute(
     { operation: "close-issues-for-merged-prs" },

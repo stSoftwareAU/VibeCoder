@@ -15,6 +15,8 @@
  */
 
 import type { Result } from "../types.ts";
+import { spawnGh } from "./gh_spawn.ts";
+import { runGitCommandChecked } from "./git_timeout.ts";
 import { IssueCache } from "./issue_cache.ts";
 import { fetchOpenPRsByUser, fetchRecentMergedPRs } from "./issue_query.ts";
 import { sanitiseDelimiterPatterns } from "./prompt_delimiter.ts";
@@ -85,12 +87,33 @@ export interface RecentActivityOptions {
 
 /**
  * Default command runner that executes real git/gh commands.
+ *
+ * Issue #1227: the binary is a variable, and the call sites below name `gh`
+ * and `git` — direct spawns of both guarded binaries that the
+ * literal-matching chokepoint gates could not see. Each is delegated to the
+ * chokepoint that owns its controls (`spawnGh` for the write-repo allowlist,
+ * timeout and audit journal; `runGitCommand` for the git timeout and journal);
+ * any other binary is spawned directly.
  */
 async function defaultRunner(
   command: string,
   args: string[],
 ): Promise<Result<string>> {
   try {
+    if (command === "gh") {
+      const result = await spawnGh(args);
+      if (!result.success) {
+        return {
+          ok: false,
+          error: new Error(result.stderr.trim() || "Command failed"),
+        };
+      }
+      return { ok: true, value: result.stdout.trim() };
+    }
+    if (command === "git") {
+      const result = await runGitCommandChecked(args);
+      return result.ok ? { ok: true, value: result.value.trim() } : result;
+    }
     const cmd = new Deno.Command(command, {
       args,
       stdout: "piped",

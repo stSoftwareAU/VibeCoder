@@ -42,6 +42,8 @@ export const SHELL_OPERATIONAL_DEFAULTS = {
   GH_COMMAND_TIMEOUT: "60",
   /** Timeout for gh repo clone operations in seconds */
   GH_CLONE_TIMEOUT: "600",
+  /** Timeout for a paginated `gh api --paginate` read in seconds (Issue #1229) */
+  GH_PAGINATED_TIMEOUT: "300",
   /** Rate-limit circuit breaker cooldown in seconds (Issue #650) */
   GH_RATE_LIMIT_COOLDOWN: "300",
 

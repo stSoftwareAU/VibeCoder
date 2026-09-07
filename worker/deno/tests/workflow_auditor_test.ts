@@ -5,6 +5,7 @@
  */
 
 import { assertEquals } from "@std/assert";
+import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import {
   auditRepoWorkflows,
   type CommandOutput,
@@ -973,3 +974,44 @@ Deno.test(
     assertEquals(result.value.partial.length, 0);
   },
 );
+
+// ---------------------------------------------------------------------------
+// gh spawn chokepoint (Issue #1227)
+// ---------------------------------------------------------------------------
+
+Deno.test("workflow_auditor - the default runner routes gh through the shared chokepoint", async () => {
+  // The default runner names its binary through `cmd[0]`, so before Issue
+  // #1227 it spawned `gh` itself — skipping the write-repo allowlist, the
+  // timeout and the audit journal that `spawnGh` owns.
+  const calls: string[][] = [];
+  _setGhSpawnRunner((args) => {
+    calls.push([...args]);
+    // An empty workflows directory: the audit needs no further calls.
+    return Promise.resolve({
+      code: 1,
+      success: false,
+      stdout: "",
+      stderr: "gh: Not Found (HTTP 404)",
+    });
+  });
+
+  const languages: RepoLanguages = {
+    detected: [{ language: "Deno", confidence: "marker" }],
+    primary: "Deno",
+    raw: {},
+  };
+
+  try {
+    // No `runCommand` override — this exercises the production default.
+    const result = await auditRepoWorkflows("owner/repo", languages);
+    assertEquals(result.ok, true);
+    assertEquals(
+      calls.some((c) =>
+        c.join(" ") === "api repos/owner/repo/contents/.github/workflows"
+      ),
+      true,
+    );
+  } finally {
+    _resetGhSpawnRunner();
+  }
+});

@@ -1,7 +1,8 @@
 # Gitleaks configuration for VibeCoder.
 #
-# Extends the upstream default rule set and allowlists ONLY test files
-# that exist to exercise secret redaction against synthetic credentials:
+# Extends the upstream default rule set and allowlists ONLY test files that
+# exist to exercise secret redaction against synthetic credentials, plus the
+# archived PR summaries that quote those same fixtures in prose:
 #
 #  - secret_redaction_test.ts (Issue #3203): fake PEM "private key"
 #    blocks fed to `redactSecrets()`.

@@ -37,6 +37,7 @@ import { reactivePhaseTimeout } from "./reactive_phase_timeout.ts";
 // Config & logging
 import { loadConfig } from "./config.ts";
 import { createLogger } from "./logger.ts";
+import { LOG_FILE_PREFIX, LOG_FILE_SUFFIX } from "./credit_tracker.ts";
 import { buildDefaultWorkerConfig } from "./config_defaults.ts";
 import {
   setSuppressionAuthorAllowlist,
@@ -76,6 +77,7 @@ import {
 // Issue finding
 import { findIssuesByLabel, findOldestIssue } from "./issue_finder.ts";
 import { IssueCache } from "./issue_cache.ts";
+import { ensureStateDir, sharedTmpStateDir } from "./private_cache_dir.ts";
 import type {
   BlockedCandidateInfo,
   DiagnosticSummary,
@@ -470,6 +472,41 @@ function resolveClaimHardCap(
 }
 
 /**
+ * Warn when credit logs are stranded in the old work-root location
+ * (Issue #1239).
+ *
+ * The default log directory moved into `<workDir>/.credit-logs`, which the
+ * untrusted `agent` account cannot write to or unlink from. A deployment that
+ * still points its writer at the work root would leave the ceiling reading an
+ * empty directory and treating the day's spend as `$0` — the very bypass this
+ * move closes — so the mismatch is reported rather than left silent.
+ *
+ * @param workDir - The worker work directory
+ * @param creditLogDir - The directory the ceiling reads
+ * @param logger - Where the warning goes
+ */
+async function warnOnStrandedCreditLogs(
+  workDir: string,
+  creditLogDir: string,
+  logger: Logger,
+): Promise<void> {
+  const legacy = `${workDir.replace(/\/+$/, "")}/${LOG_FILE_PREFIX}${
+    new Date().toISOString().slice(0, 10)
+  }${LOG_FILE_SUFFIX}`;
+  try {
+    await Deno.lstat(legacy);
+  } catch {
+    return; // Nothing stranded — the normal case.
+  }
+  logger.warn(
+    `[SPEND_CEILING] Today's credit log still exists at the pre-#1239 ` +
+      `location ${legacy}, but the ceiling reads ${creditLogDir}. Spend ` +
+      `written there is NOT counted — move the file, or set ` +
+      `${CREDIT_LOG_DIR_ENV} to the directory the writer uses.`,
+  );
+}
+
+/**
  * How many deps factories this process has built (Issue #1098).
  *
  * Scopes each factory's trusted-author cache key, so two factories in one
@@ -568,6 +605,11 @@ export async function createProductionRunCoreDeps(
         spendCeilingUsd.toFixed(2)
       } (credit log: ${creditLogDir})`,
     );
+    // The default moved out of the work root (Issue #1239). A deployment
+    // still writing to the old location would leave the ceiling reading an
+    // empty directory — a silent $0 — so say so rather than let the guard go
+    // quietly inert.
+    await warnOnStrandedCreditLogs(workDir, creditLogDir, logger);
   }
 
   // Create worker deps for issue processing
@@ -648,9 +690,21 @@ export async function createProductionRunCoreDeps(
     stateExpirySeconds: 3600,
   };
 
-  const repoFailureFile = `${
-    env("TMPDIR") ?? "/tmp"
-  }/vibe-repo-failures-${Deno.pid}`;
+  // Issue #1242: the counters live in a per-account directory created 0700,
+  // not at the fixed `${TMPDIR}/vibe-repo-failures-<pid>` — the pid made that
+  // path guessable, not unpredictable, so any local account could plant the
+  // failure counts that decide whether a repo is skipped. A directory another
+  // account owns is reported rather than written to silently.
+  const repoFailureDir = sharedTmpStateDir("vibe-repo-failures", env);
+  const repoFailureTrust = await ensureStateDir(repoFailureDir, env);
+  if (!repoFailureTrust.trusted) {
+    logger.warn(
+      `Repo failure directory ${repoFailureDir} is not worker-private: ${
+        repoFailureTrust.reason ?? "unknown"
+      } (Issue #1242)`,
+    );
+  }
+  const repoFailureFile = `${repoFailureDir}/failures-${Deno.pid}`;
   const repoFailureConfig: RepoFailureTrackerConfig = {
     failureFile: repoFailureFile,
     threshold: 3,
@@ -1996,14 +2050,13 @@ export async function createProductionRunCoreDeps(
       // A marker only dedups when the fleet wrote it: a comment body is text
       // anyone can post, and a dedup that trusts it goes quiet
       // (`marker_dedup_author_manifest.ts`).
+      const trustedAuthors = resolveFleetMaintenanceAuthorSet({
+        githubUser,
+        allowedAuthors: fleetPrAuthorInput.allowedAuthors,
+        fleetPrAuthors: fleetPrAuthorInput.fleetPrAuthors,
+      });
       const isTrustedAuthor = (login: string) =>
-        isFleetAuthor(login, [
-          ...resolveFleetMaintenanceAuthorSet({
-            githubUser,
-            allowedAuthors: fleetPrAuthorInput.allowedAuthors,
-            fleetPrAuthors: fleetPrAuthorInput.fleetPrAuthors,
-          }),
-        ]);
+        isFleetAuthor(login, [...trustedAuthors]);
       // Issue #1112: every decision this cycle's scans reached, so the stall
       // watchdog can name the skip reasons recorded for a stalled PR (#1109).
       const scanDecisions: ConflictPrDecision[] = [];
@@ -2098,6 +2151,10 @@ export async function createProductionRunCoreDeps(
             workerId: getWorkerUniqueId(config.workerName),
             needsHumanLabel: config.needsHumanLabel,
             repoConfigs: config.repoConfig,
+            // Issue #1247: the abandon rung reads its one-restart-per-issue
+            // bound off comment markers, so it needs to know whose markers
+            // count.
+            trustedAuthors,
           });
 
           if (!result.ok) {

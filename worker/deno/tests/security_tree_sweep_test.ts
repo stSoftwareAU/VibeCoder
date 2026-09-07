@@ -1292,3 +1292,45 @@ Deno.test("classifyClusters - an entry with no snippet keeps the line-window beh
     "false-positive",
   );
 });
+
+// ---------------------------------------------------------------------------
+// Explicit --slug validation (Issue #1271). The slug derived from `gh repo
+// view` has always been shape-checked before use, but the explicit `--slug`
+// bypassed that check entirely and went straight into an API path and an
+// issue-create target. The two paths must apply the same guard.
+// ---------------------------------------------------------------------------
+
+Deno.test("command: a malformed --slug is refused, not interpolated (Issue #1271)", async () => {
+  const stub = makeStub();
+  const { repoDir } = await tempRepo(EMPTY_BASELINE);
+  const malformed = [
+    "..", // no owner segment at all
+    "owner/..", // traversal segment
+    "../owner/repo", // climbs above the work root
+    "owner repo/x", // whitespace
+    "owner/repo extra", // trailing junk
+    "https://example.com/owner/repo", // a URL, not a slug
+  ];
+  for (const slug of malformed) {
+    const result = await createSecurityTreeSweepCommand(stub.deps).execute(
+      { repo: repoDir, slug },
+      {} as WorkerConfig,
+    );
+    assertEquals(result.success, false, `accepted malformed slug ${slug}`);
+    assertStringIncludes(result.message, "could not run");
+    assertStringIncludes(result.message, "slug");
+  }
+  assertEquals(stub.filed.length, 0);
+});
+
+Deno.test("command: a well-formed --slug is still accepted (Issue #1271)", async () => {
+  const stub = makeStub();
+  const { repoDir } = await tempRepo(EMPTY_BASELINE);
+  const result = await createSecurityTreeSweepCommand(stub.deps).execute(
+    { repo: repoDir, slug: "st-Software.AU/Vibe_Coder-1" },
+    {} as WorkerConfig,
+  );
+  // Unbaselined findings, not a slug rejection: the sweep actually ran.
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "Unbaselined");
+});

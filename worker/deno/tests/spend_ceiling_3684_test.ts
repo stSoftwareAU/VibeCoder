@@ -19,6 +19,7 @@ import {
 import {
   createSpendCeilingCheck,
   CREDIT_LOG_DIR_ENV,
+  CREDIT_LOG_DIR_NAME,
   resolveCreditLogDir,
   resolveSpendCeilingUsd,
   SPEND_CEILING_ENV,
@@ -91,9 +92,18 @@ Deno.test("resolveSpendCeilingUsd - a malformed value fails loudly", () => {
 // resolveCreditLogDir
 // ---------------------------------------------------------------------------
 
-Deno.test("resolveCreditLogDir - defaults to the worker work directory", () => {
-  assertEquals(resolveCreditLogDir("/work", undefined), "/work");
-  assertEquals(resolveCreditLogDir("/work", "  "), "/work");
+// The default moved from the work root itself to a worker-private
+// subdirectory of it (Issue #1239) — the work root is group-writable by the
+// untrusted `agent` account, which could delete the ceiling's only input.
+Deno.test("resolveCreditLogDir - defaults to a private dir under the work directory", () => {
+  assertEquals(
+    resolveCreditLogDir("/work", undefined),
+    `/work/${CREDIT_LOG_DIR_NAME}`,
+  );
+  assertEquals(
+    resolveCreditLogDir("/work", "  "),
+    `/work/${CREDIT_LOG_DIR_NAME}`,
+  );
 });
 
 Deno.test("resolveCreditLogDir - honours an explicit override", () => {

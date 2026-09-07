@@ -116,7 +116,10 @@ distinct root cause from the two above and from each other.
   PR-merged repository), `lib/security_tree_sweep.ts:1602` (`semgrep` over the
   swept tree) and `lib/workflow_auditor.ts:94` (`gh api` over the network).
   Reported as a missing bound rather than a proven hang. `severity:medium` ·
-  `confidence:high`
+  `confidence:high` — **closed by #1228**: all three now run under
+  `runWithTimeout` with a module constant (`DENO_DOC_TIMEOUT_MS` 120 s,
+  `SWEEP_SCANNER_TIMEOUT_MS` 900 s, `AUDITOR_COMMAND_TIMEOUT_MS` 60 s), and each
+  timeout surfaces as a fault rather than a clean result.
 - **SEC-1214-06**
   ([#1229](https://github.com/stSoftwareAU/VibeCoder/issues/1229)) —
   `lib/gh_spawn.ts`'s `signal` is opt-in, and the dominant path
@@ -155,6 +158,20 @@ inherits the limitation SEC-1214-04
 `gh` sibling: a spawn written as `new Deno.Command(cmd[0], …)` with `"git"`
 supplied by the caller is invisible to it. That is stated here rather than left
 implicit — the gate closes the class as written today, not every spelling of it.
+
+**Closed by #1227.** Both checks now also flag a **variable** binary in any
+module that names the guarded binary at the head of an argv literal and does
+not import the chokepoint. Running the extended scan over `worker/deno/lib` and
+`worker/deno/commands` surfaced five `gh` evasions (`language_detector.ts`,
+`workflow_auditor.ts`, `repo_visibility.ts`, `recent_activity.ts`,
+`software_updates.ts`) and three `git` ones (`benchmark.ts`,
+`dependency_lock_regen.ts`, `security_tree_sweep.ts`) — more than the two this
+sweep named — and all eight now delegate to their chokepoint. The remaining
+residual risk is stated in `git_spawn_chokepoint_check.ts`: the variable-binary
+half is module-level, so a module that imports the chokepoint for one path is
+exempt on every other, and the two documented false positives
+(`secrets_history_scan.ts`, `claude_runner.ts`, which name `git` as tool data
+rather than as a binary) are allowlisted outright.
 
 ## Refuted / no finding
 

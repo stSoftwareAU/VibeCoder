@@ -87,7 +87,7 @@ closed. `spawnGh` supplies neither, so those branches are skipped outright
 | `setup/setup_cli.ts:168`, `setup/prerequisite_installer.ts:170` | fixed prompt text; a further uninstrumented entrypoint, folded into #1280 |
 | `lib/gh_guard_cli.ts:261` (`Deno.stdout.write`) | not a leak — the payload is already through `redactGhBodyArgs` |
 | `lib/gh_guard_cli.ts:262` (`console.error`) | separate process, no patch; content is `[SECURITY]` marker text plus a decision reason |
-| `pull.log`, `run_core.log` | **BYPASS** — SEC-1217-07 (#1258) |
+| `pull.log`, `run_core.log` | **BYPASS** — SEC-1217-07 (#1258); fixed there: both modules now redact in `appendLine` |
 
 ### 2 · GitHub writes
 
@@ -97,6 +97,7 @@ closed. `spawnGh` supplies neither, so those branches are skipped outright
 | `--body-file`, `-F <path>`, `-f key=@path`, `--input <path>` (`lib/repo_settings_harden.ts:484-485`, `lib/milestone_ruleset_check.ts:753`) | **BYPASS**, fail-**open** — SEC-1217-03 (#1254) |
 | piped stdin bodies (`lib/security_sarif_upload.ts:196-215`, `lib/repo_rulesets.ts:328-361`) | **BYPASS** — SEC-1217-03 (#1254); the SARIF leg is also SEC-1217-04 (#1255) |
 | `--title`, `-f title=`, `-f description=`, `-f name=` | **BYPASS** — SEC-1217-15 (#1283) |
+| `setup/` `gh` spawns (`setup/config_writer.ts:104`, `setup/setup_cli.ts:131`, and the seven copied setup runners) | ~~BYPASS~~ **FIXED** — SEC-1217-08 (#1259): every setup `gh` and `git` call routes through `setup/setup_command_runner.ts`, and the chokepoint gate now scans `worker/deno/setup` |
 | `git commit -m <message>` via `runGitCommand` | ~~BYPASS~~ **FIXED** — SEC-1217-16 (#1284): `covered-by-redactGitMessageArgs` inside `runGitCommand` |
 | the agent's own `git commit && git push` (no `git` PATH shim exists) | ~~BYPASS~~ **FIXED** — SEC-1217-16 (#1284), the sharper half: a `git` PATH shim now rides beside the `gh` one and applies the same redaction |
 | `fetch()` to `api.github.com` | none exists — verified |
@@ -125,8 +126,8 @@ closed. `spawnGh` supplies neither, so those branches are skipped outright
 
 | Cache | Verdict |
 | --- | --- |
-| `.gh-scan-cache` (`lib/issue_cache.ts:200`) | raw issue JSON including untrusted bodies, unredacted — SEC-1217-10 (#1261) |
-| `lib/baseline_quality_cache.ts:340,365` | raw quality-gate subprocess output, unredacted, replayed into a public comment — SEC-1217-10 (#1261) |
+| `.gh-scan-cache` (`lib/issue_cache.ts:200`) | ~~unredacted~~ **FIXED** — SEC-1217-10 (#1261): every string value is redacted on write, the directory is ownership-checked wherever it sits, entries are `0600` |
+| `lib/baseline_quality_cache.ts:340,365` | ~~unredacted~~ **FIXED** — SEC-1217-10 (#1261): `redactedTail` redacts the whole gate output before the cut, secret-bearing findings are dropped, and the directory is ownership-checked on read and write |
 | `.gh-timeline-cache` (`lib/timeline_cache.ts:86-134`) | label events only; `ensurePrivateDir` / `verifyPrivateDir` hardened. Clean |
 | `lib/comment_cache.ts:50` | in-memory only, never reaches disk. Clean |
 | `lib/prompt_cache.ts`, `health_check_cache.ts`, `codebase_map_cache.ts`, `default_branch_cache.ts` | template text and structured values. Clean |
@@ -144,9 +145,21 @@ nothing at the sink and is published.
 | --- | --- |
 | `lib/failure_message.ts:142,161` and the ten phase-module call sites feeding it | **fixed in this change** — see below |
 | `lib/kill_diagnostics.ts:86,94` | **fixed in this change** — SEC-1217-05 (#1256) |
-| `lib/pr_failure_actions.ts:187-189`, `lib/ci_failure_issue.ts:356` (the inversion documented in their own comments) | SEC-1217-06 (#1257) |
-| `lib/quality_helpers.ts:277,283,366`; `lib/claude_runner.ts:176,2452,2572`; `lib/bump_deps.ts:257`; `lib/github_status.ts:117` | SEC-1217-06 (#1257) |
+| `lib/pr_failure_actions.ts:187-189`, `lib/ci_failure_issue.ts:356` (the inversion documented in their own comments) | **fixed** — SEC-1217-06 (#1257) |
+| `lib/quality_helpers.ts:277,283,366`; `lib/claude_runner.ts:176,2452,2572`; `lib/bump_deps.ts:257`; `lib/github_status.ts:117` | **fixed** — SEC-1217-06 (#1257) |
 | `lib/crash_notification.ts:190-193`, `lib/bump_deps.ts:194-197`, `lib/dependency_lock_regen.ts:290-299`, `lib/run_callbacks.ts:293-297`, `lib/phases/handle_no_changes_phase.ts:56` | **correct order** — the pattern to copy |
+
+**SEC-1217-06 is closed (#1257).** Every site above now redacts the whole text
+before it cuts, through the `redacted_text.ts` constructors — `redactedLineTail`
+and `redactedLogTail` were added for the line-granular and byte-capped shapes —
+and `execute_claude_phase.ts` brands its failure-output tail so the message
+builders cannot be handed a raw slice. The two comments that argued the
+inversion kept the byte cap honest were wrong on their own terms and are
+replaced: redacting first is the *tighter* cap, because a placeholder wider than
+the secret it replaced can no longer push the finished block past the budget.
+The class is held open-ended by the `redact before truncate` quality check
+(`lib/redact_truncate_order_check.ts`), which fails the build on any truncation
+nested inside a redaction call.
 
 ### 7 · Config or env interpolated into an error or a report
 
@@ -211,7 +224,7 @@ the issue names as the comparison, is in the same class.
 | `LOG_LEVEL`, `DEBUG` | log verbosity | `parseLogLevel` rejects garbage loudly and falls back |
 | `VIBE_CONTAINER_MEMORY` / `CPUS` / `CPU_RESERVE`, disk floors | resource ceilings, not security guards | safe defaults; host-launcher-only |
 | `VIBE_RUN_MAX_SECONDS`, `VIBE_RUN_STARTED_EPOCH` | the run's own wall-clock ceiling | malformed ⇒ **no ceiling**: fail-open by design, logged with a reason, and the supervisor's own `timeout` remains the real cap |
-| `VIBE_IMAGE_AGENT_PROVIDERS` in the `gh` container fallback | whether the ambient-credential fall-through is re-enabled | keyed on **presence**, so an empty value re-enables it — SEC-1217-11 (#1262) |
+| `VIBE_IMAGE_AGENT_PROVIDERS` in the `gh` container fallback | whether the ambient-credential fall-through is re-enabled | was keyed on **presence**, so an empty value re-enabled it — SEC-1217-11 (#1262), **fixed**: `runningInContainerImage` requires a non-blank stamp |
 
 The parent run noted chunks 3 and 7 are fail-closed on every error path. Config
 loading generally is the same, with the two exceptions named above: `run_hard_cap`
@@ -309,10 +322,10 @@ unfixed code and passing after the fix.
 | SEC-1217-04 — the SARIF payload is gzipped before any redactor can see it | [#1255](https://github.com/stSoftwareAU/VibeCoder/issues/1255) | high |
 | SEC-1217-06 — the truncate-before-redact inversions **outside** the failure-message path (the `ci_failure_issue` / `pr_failure_actions` / `quality_helpers` / `bump_deps` sites), which this change does not touch | [#1257](https://github.com/stSoftwareAU/VibeCoder/issues/1257) | medium |
 | SEC-1217-07 — `pull.log` and `run_core.log` are written outside the logger | [#1258](https://github.com/stSoftwareAU/VibeCoder/issues/1258) | medium |
-| SEC-1217-08 — `setup/` spawns `gh` directly and the chokepoint gate does not scan `setup/` | [#1259](https://github.com/stSoftwareAU/VibeCoder/issues/1259) | medium |
+| SEC-1217-08 — `setup/` spawns `gh` directly and the chokepoint gate does not scan `setup/` — since **fixed** in #1259 | [#1259](https://github.com/stSoftwareAU/VibeCoder/issues/1259) | medium |
 | SEC-1217-09 — `console_redaction` passes non-string arguments through | [#1260](https://github.com/stSoftwareAU/VibeCoder/issues/1260) | low |
 | SEC-1217-10 — `baseline_quality_cache` and `issue_cache` persist unredacted output | [#1261](https://github.com/stSoftwareAU/VibeCoder/issues/1261) | low |
-| SEC-1217-11 — the `gh` container fallback is keyed on the *presence* of `VIBE_IMAGE_AGENT_PROVIDERS` | [#1262](https://github.com/stSoftwareAU/VibeCoder/issues/1262) | low |
+| SEC-1217-11 — the `gh` container fallback is keyed on the *presence* of `VIBE_IMAGE_AGENT_PROVIDERS` — since **fixed** in #1262 | [#1262](https://github.com/stSoftwareAU/VibeCoder/issues/1262) | low |
 | SEC-1217-12 — `quality.ts` is an entrypoint that never installs console redaction | [#1280](https://github.com/stSoftwareAU/VibeCoder/issues/1280) | high |
 | SEC-1217-13 — the gate's `deno test` stage hands repo-supplied test code the whole credential environment | [#1281](https://github.com/stSoftwareAU/VibeCoder/issues/1281) | high |
 | SEC-1217-14 — the `gh` credential is staged to a predictable `/tmp` path, chmod'd after the write, never removed | [#1282](https://github.com/stSoftwareAU/VibeCoder/issues/1282) | medium |
@@ -366,6 +379,7 @@ Every module below was read at its `Deno.env` reads and config-load sites.
 | `command_work_dir.ts` | `WORK_DIR` as a defaulted parameter; empty ⇒ refusal | clean |
 | `config_validator.ts` | `HOME` for `~` expansion; messages echo the App id and key **path**, never material | clean |
 | `container_launch.ts` | resource, path and marker variables; no secret in `runArgs` | clean |
+| `container_stamp.ts` | `VIBE_IMAGE_AGENT_PROVIDERS` — the one stamp rule the SEC-1217-11 fix (#1262) extracted; blank ⇒ host | clean |
 | `credential_preflight.ts` | credential variables **by presence only** (`firstEnvValue` returns the *name*) | clean |
 | `env_lookup.ts` | the `Deno.env.get` seam itself | clean |
 | `gemini_env.ts` | as `codex_env.ts` | clean |
@@ -386,6 +400,6 @@ Every module below was read at its `Deno.env` reads and config-load sites.
 | `run_mode_record.ts` | `VIBE_HOST_ID`; whitespace-scrubbed before it is logged | clean |
 | `service_account_env.ts` | `HOME`, `GH_CONFIG_DIR`, `VIBE_SCRATCH_DIR`; the SSH key **path** is shell-quoted, no token in argv or log | clean |
 | `shell_helpers.ts` | none directly | clean |
-| `stuck_issue_detector.ts` | `VIBE_IMAGE_AGENT_PROVIDERS`; absent ⇒ narrower behaviour | clean |
+| `stuck_issue_detector.ts` | `VIBE_IMAGE_AGENT_PROVIDERS`; absent **or blank** (#1262) ⇒ narrower behaviour | clean |
 | `timeline_cache.ts` | `TMPDIR`; per-user suffix, `verifyPrivateDir`, cache disabled when not worker-private | clean |
 | `unit_test_passes.ts` | the **whole** ambient environment, minus two non-secret names | **SEC-1217-13** (#1281) |

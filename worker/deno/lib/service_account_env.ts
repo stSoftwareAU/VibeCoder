@@ -34,6 +34,7 @@ import {
   restageGhConfigDir,
 } from "./gh_credential_stage.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import { runningInContainerImage } from "./container_stamp.ts";
 
 /** Resolved env entries; absent when the operator did not configure them. */
 export interface ServiceAccountEnv {
@@ -65,7 +66,9 @@ export interface ServiceAccountEnvOptions {
    * there: on the host a configured-but-missing path must keep failing
    * loudly (a silent fall-through to ambient credentials is exactly the
    * Issue #3530 leak). The container stamps VIBE_IMAGE_AGENT_PROVIDERS into
-   * the image environment, which {@link applyServiceAccountEnv} reads.
+   * the image environment, which {@link applyServiceAccountEnv} reads through
+   * {@link runningInContainerImage} — a non-blank stamp, never mere presence
+   * (Issue #1262).
    */
   inContainer?: boolean;
   /**
@@ -185,7 +188,10 @@ export function buildServiceAccountEnv(
   home?: string,
   env: EnvLookup = processEnvLookup,
 ): ServiceAccountEnv {
-  const inContainer = env("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined;
+  // Value, not presence (Issue #1262): a blank stamp is a host run, where a
+  // configured-but-missing path must keep failing loudly rather than falling
+  // through to the ambient credential (the Issue #3530 leak).
+  const inContainer = runningInContainerImage(env);
   const homeDir = home ?? env("HOME") ?? "";
   const resolved = resolveServiceAccountEnv(config, homeDir, {
     probe: fsProbe,

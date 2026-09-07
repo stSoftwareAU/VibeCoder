@@ -35,6 +35,7 @@ import type { Result } from "../types.ts";
 import type { BumpAgeAuditResult } from "./bump_age_audit.ts";
 import { truncateLogTail } from "./log_tail.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { redactedTail } from "./redacted_text.ts";
 
 // =============================================================================
 // Types
@@ -219,6 +220,9 @@ export function buildBumpCommitMessage(issueNumber?: number): string {
   return `chore: bump dependencies via bump-deps.sh${suffix}`;
 }
 
+/** Characters of script output quoted in the rejection comment. */
+const BUMP_COMMENT_TAIL_CHARS = 4000;
+
 /** Comment heading per rejection status. */
 const BUMP_REJECTION_HEADINGS = {
   rejected_by_script: "Dependency bump rejected by `bump-deps.sh`",
@@ -252,9 +256,11 @@ export function buildBumpRejectionComment(info: BumpInfo): string {
       info.files.map((f) => `- \`${f}\``).join("\n")
     }`
     : "";
+  // Redacted whole, then cut (Issue #1257): this comment is public, and the
+  // raw slice here bypassed the compliant `formatBumpOutputTail` above.
   const tail = info.output.length > 0
-    ? `\n\n<details><summary>bump-deps.sh output (last 4000 chars)</summary>\n\n\`\`\`\n${
-      info.output.slice(-4000)
+    ? `\n\n<details><summary>bump-deps.sh output (last ${BUMP_COMMENT_TAIL_CHARS} chars)</summary>\n\n\`\`\`\n${
+      redactedTail(info.output, BUMP_COMMENT_TAIL_CHARS)
     }\n\`\`\`\n\n</details>`
     : "";
   return `### ${heading}${reason}${filesBlock}${tail}`;

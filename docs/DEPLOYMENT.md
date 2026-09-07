@@ -575,7 +575,7 @@ These only tune the *generated* LaunchAgent (tokens, paths, logs); whether it is
 | `VIBE_SKIP_SCREENSHOT_INSTALL` | Set to `true` to skip browser installation (for testing) |
 | `VIBE_MCP_CONFIG_DIR` | Directory for `.mcp.json` (default: script directory) |
 | `VIBE_SCREENSHOT_DIR` | Directory name for screenshots (default: `docs/evidence`) |
-| `VIBE_BROWSER_PROFILE_DIR` | Disposable directory the browser writes its profile to (default: `/tmp/vibe-playwright-profile`). Must be an **absolute** path outside the checkout — a relative or inside-the-checkout value is refused (Issue #1293) |
+| `VIBE_BROWSER_PROFILE_DIR` | Disposable directory the browser writes its profile to (default: `/tmp/vibe-playwright-profile-<user>`, per-account since Issue #1242). Must be an **absolute** path outside the checkout — a relative or inside-the-checkout value is refused (Issue #1293) |
 | `VIBE_IMGBB_API_KEY` | ImgBB API key for automatic screenshot uploads, when `.config.json` states no `imgbb_api_key` (Issue #1032) |
 
 **Testing/CI environment variables:**
@@ -907,8 +907,10 @@ zcat "${LOG_DIR}/worker-<PID>.log.gz" | less
 
 Worker logs — plain or gzipped — are deleted once older than
 `WORKER_LOG_MAX_AGE_DAYS` (default 3), with header-only stubs pruned after an
-hour and a hard cap of `WORKER_LOG_HARD_CAP_COUNT` (default 200) files. Large
-per-run logs are also size-rotated while a run is in flight.
+hour and a hard cap of `WORKER_LOG_HARD_CAP_COUNT` (default 200) files. Those
+three limits are what bounds a `worker-<timestamp>.log`; size rotation applies
+to the worker's other logs — `run_core.log`, `worker.log`, `cron.log` and
+`security.log` among them — while a run is in flight.
 
 > **💡 Tip:** The worker automatically strips terminal escape sequences from Claude Code output, ensuring logs contain only human-readable text.
 
@@ -925,8 +927,9 @@ time and the host needs no browser, desktop session or window server. See
 [Container Image](CONTAINER.md#headless-chromium--the-browser-is-in-the-image)
 and [Containment](CONTAINMENT.md).
 
-The browser profile is written to `/tmp/vibe-playwright-profile` on the
-container's `tmpfs`, so it dies with the container.
+The browser profile is written to `/tmp/vibe-playwright-profile-<user>` on the
+container's `tmpfs`, so it dies with the container. The per-account suffix
+(Issue #1242) keeps two accounts on one host off the same profile path.
 
 ### 🔧 Setup
 

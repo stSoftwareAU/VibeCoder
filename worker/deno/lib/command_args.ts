@@ -377,3 +377,56 @@ export function findUnknownOptions(
 ): string[] {
   return Object.keys(args).filter((key) => !known.has(key));
 }
+
+/**
+ * Coerce a parsed CLI flag into a positive whole number, failing closed
+ * (Issue #1270).
+ *
+ * `mod.ts::parseArgs` JSON-parses every flag value, so a well-written
+ * `--timeout 120` arrives as a number while `--timeout ""` — a wrapper
+ * expanding an unset-but-quoted variable — arrives as the empty string, and a
+ * bare `--timeout` at the end of the line arrives as `true`. `parseInt` maps
+ * both of those to `NaN`, and `NaN` is neither nullish nor negative, so it
+ * flows past a `??` default straight into arithmetic that silently disables
+ * whatever the number controlled. Every unreadable value is therefore refused
+ * here rather than mapped to `undefined` or `NaN`.
+ *
+ * @param value Raw value from the parsed argument record.
+ * @param flag  Flag name without the leading `--`, used in the message.
+ * @returns The parsed number, or `undefined` when the flag is absent.
+ */
+export function coercePositiveIntFlag(
+  value: unknown,
+  flag: string,
+): Result<number | undefined> {
+  const refuse = (reason: string): Result<number | undefined> => ({
+    ok: false,
+    error: new Error(
+      `Invalid --${flag}: ${reason}. A numeric flag whose value cannot be ` +
+        `read is refused, not treated as absent — passing it on would ` +
+        `silently disable what it controls.`,
+    ),
+  });
+
+  if (value === undefined || value === null) {
+    return { ok: true, value: undefined };
+  }
+
+  let parsed: number;
+  if (typeof value === "number") {
+    parsed = value;
+  } else if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    parsed = parseInt(value.trim(), 10);
+  } else {
+    return refuse(
+      `expected a positive whole number, got ${describeFlagValue(value)}`,
+    );
+  }
+
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    return refuse(
+      `expected a positive whole number, got ${describeFlagValue(value)}`,
+    );
+  }
+  return { ok: true, value: parsed };
+}

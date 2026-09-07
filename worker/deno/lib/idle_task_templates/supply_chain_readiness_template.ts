@@ -396,6 +396,10 @@ export function createSupplyChainReadinessTemplate(
         opts.repo,
         SUPPLY_CHAIN_READINESS_LABEL,
         ghCommandFn,
+        "BP-",
+        // Author-verified dedup (Issue #1243): a finding-id marker in an
+        // issue body anybody can write is not evidence the fleet filed it.
+        dedupAuthors,
       );
 
       // Repo-wide open-issue titles (Issue #537) — the semantic second
