@@ -1186,8 +1186,18 @@ Deno.test("issue_query - fetchAllIssues rejects empty gh output and leaves the c
         Promise.resolve(JSON.stringify([{ number: 9, title: "Real issue" }])),
     );
     assertEquals(issues.length, 1);
-    const cached = await cache.read<unknown[]>("org/repo", "issues_all");
-    assertEquals(cached?.length, 1);
+    // Issue #1486: the payload now carries the `--limit` it was fetched
+    // with, so a caller asking for a wider listing is never served a
+    // narrower cached one.
+    const cached = await cache.read<
+      { limit: number; issues: unknown[]; rawCount: number }
+    >(
+      "org/repo",
+      "issues_all",
+    );
+    assertEquals(cached?.limit, 100);
+    assertEquals(cached?.issues.length, 1);
+    assertEquals(cached?.rawCount, 1);
   } finally {
     await cleanup();
   }
@@ -1218,11 +1228,124 @@ Deno.test("issue_query - fetchAllIssues caches a genuine empty list (Issue #4257
       () => Promise.resolve("[]"),
     );
     assertEquals(issues, []);
+    // Issue #1486: stored as `{ limit, issues }` rather than a bare array.
     assertEquals(
       await cache.read("org/repo", "issues_all"),
-      [],
+      { limit: 100, issues: [], rawCount: 0 },
       "an empty successful list is a real answer and belongs in the cache",
     );
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - a 100-limit cache entry does not serve a 200-limit caller (Issue #1486)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    // A full 100-issue listing: it may have been truncated at its limit.
+    const hundred = Array.from({ length: 100 }, (_, i) => ({
+      number: i + 1,
+      title: `Issue ${i + 1}`,
+    }));
+    const limits: string[] = [];
+    const gh = (args: string[]) => {
+      const limit = args[args.indexOf("--limit") + 1] ?? "";
+      limits.push(limit);
+      const count = Number(limit);
+      return Promise.resolve(
+        JSON.stringify(
+          Array.from({ length: Math.min(count, 150) }, (_, i) => ({
+            number: i + 1,
+            title: `Issue ${i + 1}`,
+          })),
+        ),
+      );
+    };
+
+    const first = await fetchAllIssues(
+      "org/repo",
+      cache,
+      100,
+      () => Promise.resolve(JSON.stringify(hundred)),
+    );
+    assertEquals(first.length, 100);
+
+    // The 200-limit caller must not be handed the narrower listing.
+    const second = await fetchAllIssues("org/repo", cache, 200, gh);
+    assertEquals(limits, ["200"]);
+    assertEquals(second.length, 150);
+
+    // ...and the wider entry now serves the 100-limit caller with no call.
+    const third = await fetchAllIssues("org/repo", cache, 100, () => {
+      throw new Error("must be served from the cache");
+    });
+    assertEquals(third.length, 150);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - a truncated listing with a dropped row is refetched (Issue #1486)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    // 100 rows returned at limit 100 - the listing may be truncated - but one
+    // row is malformed and never reaches the parsed array. Judging exhaustion
+    // on the parsed length would call this 99-of-100 listing "complete".
+    const rows: Record<string, unknown>[] = [{ title: "no number" }];
+    for (let i = 1; i < 100; i++) rows.push({ number: i, title: `Issue ${i}` });
+    const first = await fetchAllIssues(
+      "org/repo",
+      cache,
+      100,
+      () => Promise.resolve(JSON.stringify(rows)),
+    );
+    assertEquals(first.length, 99);
+
+    let widerCall = 0;
+    const second = await fetchAllIssues("org/repo", cache, 200, () => {
+      widerCall++;
+      return Promise.resolve(JSON.stringify([{ number: 1, title: "Wide" }]));
+    });
+    assertEquals(widerCall, 1, "the wider caller must refetch, not be served");
+    assertEquals(second.length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - a short listing serves any limit (Issue #1486)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    // Fewer issues than the limit proves the listing was exhaustive, so a
+    // wider caller can be served without a refetch.
+    await fetchAllIssues(
+      "org/repo",
+      cache,
+      100,
+      () => Promise.resolve(JSON.stringify([{ number: 1, title: "Only one" }])),
+    );
+
+    const wider = await fetchAllIssues("org/repo", cache, 200, () => {
+      throw new Error("a complete listing must be served from the cache");
+    });
+    assertEquals(wider.length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - a legacy bare-array cache entry is still readable (Issue #1486)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    // Entries written before #1486 hold the array itself.
+    await cache.write("org/repo", "issues_all", [
+      { number: 4, title: "Legacy", labels: [], assignees: [] },
+    ]);
+    const issues = await fetchAllIssues("org/repo", cache, 100, () => {
+      throw new Error("a legacy entry must still be served");
+    });
+    assertEquals(issues.length, 1);
+    assertEquals(issues[0]?.number, 4);
   } finally {
     await cleanup();
   }
