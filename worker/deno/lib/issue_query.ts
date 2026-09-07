@@ -55,6 +55,12 @@ export interface OpenPR {
    * refuse to act.
    */
   headRepositoryOwner?: string;
+  /**
+   * True when the head branch lives in a **different** repository — a fork
+   * (Issue #1264). Set only when the query asked for it; unset means
+   * "unknown", which a destructive consumer must treat as "not ours".
+   */
+  isCrossRepository?: boolean;
 }
 
 /**
@@ -259,6 +265,9 @@ export function parsePRListJson(jsonStr: string): OpenPR[] {
         : undefined;
       if (typeof headOwner === "string" && headOwner !== "") {
         entry.headRepositoryOwner = headOwner;
+      }
+      if (typeof item.isCrossRepository === "boolean") {
+        entry.isCrossRepository = item.isCrossRepository;
       }
       items.push(entry);
     }
@@ -820,7 +829,8 @@ export async function fetchPRsByBranch(
       // Issue #1264: ownership fields travel with every per-branch listing
       // so a consumer that closes a PR can tell a fleet PR on this repo
       // from an outsider's fork PR that merely shares the branch name.
-      "number,title,baseRefName,headRefName,author,headRepositoryOwner",
+      "number,title,baseRefName,headRefName,author,headRepositoryOwner," +
+      "isCrossRepository",
       "--limit",
       "50",
     ]);

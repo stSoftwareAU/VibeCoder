@@ -35,6 +35,24 @@ function buildPrUrl(repo: string, prNumber: number): string {
 /** Pattern for a valid GitHub PR URL (https://github.com/owner/repo/pull/123). */
 const PR_URL_PATTERN = /^https?:\/\/.+\/pull\/\d+$/;
 
+/**
+ * Every worker issue marker in a PR body, as a literal pattern.
+ *
+ * Built from a literal rather than interpolating the issue number into
+ * `new RegExp(...)`: a dynamic regex over an attacker-writable PR body is
+ * a ReDoS surface the SAST gate refuses. The captured digits are compared
+ * numerically, which also rules out `…-issue-42` matching issue 4.
+ */
+const WORKER_ISSUE_MARKER_PATTERN = /vibe-worker-issue-(\d+)/g;
+
+/** True when `body` carries the worker marker for exactly `issueNumber`. */
+function bodyHasWorkerIssueMarker(body: string, issueNumber: number): boolean {
+  for (const match of body.matchAll(WORKER_ISSUE_MARKER_PATTERN)) {
+    if (Number(match[1]) === issueNumber) return true;
+  }
+  return false;
+}
+
 // Issue #319: moved to a leaf module so `issue_query.ts` can use it without
 // an import cycle. Re-exported here for the existing importers.
 import { prTitleMatchesIssue } from "./pr_title_issue_ref.ts";
@@ -357,8 +375,6 @@ export async function findExistingPrForIssue(
   cache?: IssueCache,
   log: (message: string) => void = console.error,
 ): Promise<Result<string, Error>> {
-  const issueStr = String(issueNumber);
-
   // Issue #1796: when a cache is available, route every state through
   // `fetchPRsForIssueByTitle` so the per-issue search collapses to one
   // network call per (issue, state) pair across the iteration. The
@@ -423,7 +439,6 @@ export async function findExistingPrForIssue(
   }
 
   // Uncached fallback path (legacy body-marker matching retained).
-  const markerPattern = new RegExp(`vibe-worker-issue-${issueStr}([^0-9]|$)`);
   const statesToCheck: string[] = ["open", "merged", "closed"];
 
   for (const state of statesToCheck) {
@@ -459,7 +474,9 @@ export async function findExistingPrForIssue(
 
       for (const pr of prs) {
         const titleMatch = prTitleMatchesIssue(pr.title, issueNumber);
-        const markerMatch = pr.body ? markerPattern.test(pr.body) : false;
+        const markerMatch = pr.body
+          ? bodyHasWorkerIssueMarker(pr.body, issueNumber)
+          : false;
 
         if (!titleMatch && !markerMatch) continue;
 
@@ -561,6 +578,7 @@ function normaliseLogin(login: string): string {
 async function resolveCloseAuthorSet(
   allowedAuthors: readonly string[],
   ghCommandFn: (args: string[]) => Promise<string>,
+  log: (message: string) => void,
 ): Promise<Set<string>> {
   const set = new Set<string>();
   for (const author of allowedAuthors) {
@@ -576,8 +594,13 @@ async function resolveCloseAuthorSet(
       await ghCommandFn(["api", "user", "--jq", ".login"]),
     );
     if (login) set.add(login);
-  } catch {
+  } catch (error: unknown) {
     // Unresolvable identity: the empty set makes the caller close nothing.
+    // The cause travels with it so the refusal names why, not just what.
+    log(
+      `closeDuplicatePrs: could not resolve the acting gh login — ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   return set;
 }
@@ -632,6 +655,7 @@ export async function closeDuplicatePrs(
   const allowedLogins = await resolveCloseAuthorSet(
     options.allowedAuthors ?? [],
     ghCommandFn,
+    log,
   );
   if (allowedLogins.size === 0) {
     // Fail loud and closed: with no identity there is no PR we own.
@@ -675,12 +699,17 @@ export async function closeDuplicatePrs(
       );
       continue;
     }
+    // The head must live in the target repo itself. `isCrossRepository`
+    // is the field the rest of the codebase uses for this question, and
+    // it also catches a fork under the *same* owner that an owner-only
+    // comparison would wave through.
     const headOwner = normaliseLogin(cand.headRepositoryOwner ?? "");
-    if (headOwner !== repoOwner) {
+    if (headOwner !== repoOwner || cand.isCrossRepository !== false) {
       log(
         `closeDuplicatePrs: leaving PR #${prNumberStr} in ${repo} open — ` +
-          `head repository owner "${cand.headRepositoryOwner ?? "unknown"}" ` +
-          `is not ${repoOwner}`,
+          `its head is not a branch of ${repo} (owner ` +
+          `"${cand.headRepositoryOwner ?? "unknown"}", cross-repository ` +
+          `${cand.isCrossRepository ?? "unknown"})`,
       );
       continue;
     }

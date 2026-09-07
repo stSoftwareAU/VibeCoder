@@ -225,6 +225,7 @@ Deno.test("closeDuplicatePrs - invalidates per-branch open cache after close", a
             headRefName: "fix-branch",
             author: { login: "vibe-bot" },
             headRepositoryOwner: { login: "o" },
+            isCrossRepository: false,
           },
           {
             number: 101,
@@ -233,6 +234,7 @@ Deno.test("closeDuplicatePrs - invalidates per-branch open cache after close", a
             headRefName: "fix-branch",
             author: { login: "vibe-bot" },
             headRepositoryOwner: { login: "o" },
+            isCrossRepository: false,
           },
         ]));
       }
@@ -275,6 +277,7 @@ Deno.test("closeDuplicatePrs - no invalidation when nothing was closed", async (
             headRefName: "fix-branch",
             author: { login: "vibe-bot" },
             headRepositoryOwner: { login: "o" },
+            isCrossRepository: false,
           },
         ]));
       }

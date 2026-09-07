@@ -530,10 +530,15 @@ Deno.test("pr_issue_linking - findExistingPrForIssue does not match partial issu
 // --- closeDuplicatePrs ---
 
 /**
- * Render a `gh pr list --json number,title,baseRefName,headRefName,author,
- * headRepositoryOwner` payload for the branch under test (Issue #1264).
+ * Render a `gh pr list --json …,author,headRepositoryOwner,isCrossRepository`
+ * payload for the branch under test (Issue #1264).
+ *
+ * `headRef` mirrors the `--head` the caller queried, and a PR whose head
+ * owner differs from the repo owner is reported as cross-repository, the
+ * way the API does.
  */
 function prListJson(
+  headRef: string,
   prs: Array<{ number: number; author: string; headOwner?: string }>,
 ): string {
   return JSON.stringify(
@@ -541,9 +546,10 @@ function prListJson(
       number: pr.number,
       title: `PR ${pr.number}`,
       baseRefName: "main",
-      headRefName: "issue-42-fix",
+      headRefName: headRef,
       author: { login: pr.author },
       headRepositoryOwner: { login: pr.headOwner ?? "owner" },
+      isCrossRepository: (pr.headOwner ?? "owner") !== "owner",
     })),
   );
 }
@@ -552,7 +558,7 @@ Deno.test("pr_issue_linking - closeDuplicatePrs returns 0 for invalid keepPrUrl 
   const closedPrs: string[] = [];
   const fn = async (args: string[]): Promise<string> => {
     if (args[0] === "pr" && args[1] === "list") {
-      return prListJson([{ number: 10, author: "vibe-bot" }]);
+      return prListJson("fix-branch", [{ number: 10, author: "vibe-bot" }]);
     }
     if (args[0] === "pr" && args[1] === "close") {
       closedPrs.push(args[2]!);
@@ -574,7 +580,7 @@ Deno.test("pr_issue_linking - closeDuplicatePrs returns 0 for non-URL keepPrUrl"
   const closedPrs: string[] = [];
   const fn = async (args: string[]): Promise<string> => {
     if (args[0] === "pr" && args[1] === "list") {
-      return prListJson([{ number: 5, author: "vibe-bot" }]);
+      return prListJson("fix-branch", [{ number: 5, author: "vibe-bot" }]);
     }
     if (args[0] === "pr" && args[1] === "close") {
       closedPrs.push(args[2]!);
@@ -595,7 +601,7 @@ Deno.test("pr_issue_linking - closeDuplicatePrs closes duplicates and keeps spec
   const closedPrs: string[] = [];
   const fn = async (args: string[]): Promise<string> => {
     if (args[0] === "pr" && args[1] === "list") {
-      return prListJson([
+      return prListJson("fix-branch", [
         { number: 10, author: "vibe-bot" },
         { number: 42, author: "vibe-bot" },
       ]);
@@ -624,7 +630,7 @@ Deno.test("pr_issue_linking - closeDuplicatePrs never closes an outsider's PR on
   const fn = async (args: string[]): Promise<string> => {
     if (args[0] === "api") return "vibe-bot\n";
     if (args[0] === "pr" && args[1] === "list") {
-      return prListJson([
+      return prListJson("issue-42-fix", [
         { number: 42, author: "vibe-bot" },
         { number: 43, author: "vibe-bot" },
         { number: 99, author: "outsider" },
@@ -650,7 +656,7 @@ Deno.test("pr_issue_linking - closeDuplicatePrs skips a fork PR that shares the 
   const closedPrs: string[] = [];
   const fn = async (args: string[]): Promise<string> => {
     if (args[0] === "pr" && args[1] === "list") {
-      return prListJson([
+      return prListJson("issue-42-fix", [
         { number: 42, author: "vibe-bot" },
         { number: 77, author: "vibe-bot", headOwner: "forker" },
       ]);
@@ -675,7 +681,7 @@ Deno.test("pr_issue_linking - closeDuplicatePrs closes a fleet sibling's duplica
   const closedPrs: string[] = [];
   const fn = async (args: string[]): Promise<string> => {
     if (args[0] === "pr" && args[1] === "list") {
-      return prListJson([
+      return prListJson("issue-42-fix", [
         { number: 42, author: "vibe-bot" },
         { number: 43, author: "Sibling-Host" },
       ]);
@@ -705,7 +711,7 @@ Deno.test("pr_issue_linking - closeDuplicatePrs is report-only by default", asyn
   const logged: string[] = [];
   const fn = async (args: string[]): Promise<string> => {
     if (args[0] === "pr" && args[1] === "list") {
-      return prListJson([
+      return prListJson("issue-42-fix", [
         { number: 42, author: "vibe-bot" },
         { number: 43, author: "vibe-bot" },
       ]);
@@ -732,7 +738,7 @@ Deno.test("pr_issue_linking - closeDuplicatePrs closes nothing when the acting l
   const fn = async (args: string[]): Promise<string> => {
     if (args[0] === "api") throw new Error("gh api user failed");
     if (args[0] === "pr" && args[1] === "list") {
-      return prListJson([
+      return prListJson("issue-42-fix", [
         { number: 42, author: "vibe-bot" },
         { number: 43, author: "vibe-bot" },
       ]);
@@ -1118,6 +1124,7 @@ Deno.test("pr_issue_linking - closeDuplicatePrs invalidates cache after closing"
             headRefName: "fix-branch",
             author: { login: "vibe-bot" },
             headRepositoryOwner: { login: "o" },
+            isCrossRepository: false,
           },
           {
             number: 101,
@@ -1126,6 +1133,7 @@ Deno.test("pr_issue_linking - closeDuplicatePrs invalidates cache after closing"
             headRefName: "fix-branch",
             author: { login: "vibe-bot" },
             headRepositoryOwner: { login: "o" },
+            isCrossRepository: false,
           },
         ]);
       }
