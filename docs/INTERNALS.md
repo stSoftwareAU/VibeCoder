@@ -2874,6 +2874,23 @@ Milestone branches are now periodically synchronised with the default branch,
 ensuring they stay up-to-date and reducing merge conflicts when the milestone is
 consolidated.
 
+#### 🚪 The closed-issue query is gated on a cheap REST signal
+
+The pass spends against two budgets per repo per cycle: a REST milestone
+listing, and the GraphQL `gh issue list --state closed` that answers only
+"has anything been completed in this milestone yet?". The REST payload already
+carries `closed_issues` per milestone, so
+[milestone_activity_gate.ts](../worker/deno/lib/milestone_activity_gate.ts)
+decides from the cheap call whether the expensive one is worth making
+(Issue #1488): a milestone that has closed nothing is skipped outright, and one
+whose count has not moved since the previous cycle reuses the recorded verdict.
+Any movement — up **or** down, since an issue can be reopened or moved out of a
+milestone — re-runs the query, and the observations are keyed by milestone
+number so a rename keeps them. This is invalidation by change, not a TTL: the
+gate derives from the same authority the answer does, so a skipped cycle cannot
+act on a stale view. Observations live in `milestone_activity.json` in the work
+directory; a missing or corrupt file simply costs one query per milestone.
+
 #### 🚦 The merged tree is type-checked before it is pushed
 
 Git reporting no conflict says only that each side of the merge is internally
@@ -3440,6 +3457,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_progress.ts](../worker/deno/lib/milestone_progress.ts)                                                 | Milestone progress notifications                                                                                                                                                     |
 |                             | [milestone_priority.ts](../worker/deno/lib/milestone_priority.ts)                                                 | Configurable issue ordering within milestones                                                                                                                                        |
 |                             | [milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts)                                           | Periodic milestone branch sync with default branch                                                                                                                                   |
+|                             | [milestone_activity_gate.ts](../worker/deno/lib/milestone_activity_gate.ts)                                       | Gates the sync's closed-issue query on the cheap REST `closed_issues` count, so an unchanged milestone costs no GraphQL call                                                          |
 |                             | [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts)                                             | Type-checks the sync's merged tree before it is pushed, and refuses the push when it does not compile                                                                                |
 |                             | [milestone_branch_self_heal.ts](../worker/deno/lib/milestone_branch_self_heal.ts)                                 | Recreate a deleted branch for an open milestone with open children, and retarget stranded child PRs                                                                                  |
 |                             | [milestone_health.ts](../worker/deno/lib/milestone_health.ts)                                                     | Milestone health diagnostics                                                                                                                                                         |
