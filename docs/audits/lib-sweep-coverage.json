@@ -731,6 +731,7 @@
         "worker/deno/lib/rate_limit_wait.ts",
         "worker/deno/lib/reactive_phase_timeout.ts",
         "worker/deno/lib/recovery_telemetry.ts",
+        "worker/deno/lib/redact_json.ts",
         "worker/deno/lib/redact_truncate_order_check.ts",
         "worker/deno/lib/redacted_text.ts",
         "worker/deno/lib/references_doc.ts",

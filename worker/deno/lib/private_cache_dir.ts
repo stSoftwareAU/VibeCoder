@@ -162,10 +162,40 @@ export async function ensureStateDir(
     await Deno.mkdir(dir, { recursive: true });
     return { trusted: true };
   }
-  try {
-    await ensurePrivateDir(dir);
-  } catch {
-    // Creation failure is reported by the verification below.
+  return await hardenStateDir(dir, { create: true });
+}
+
+/**
+ * Harden `dir` wherever it lives, and report whether it may be trusted
+ * (Issue #1261).
+ *
+ * {@link ensureStateDir} trusts a work-volume directory on sight, which is
+ * right for state the worker only writes. A cache whose entries are read
+ * back into a prompt — or, for the baseline quality cache, read back as
+ * "the gate already passed" — needs the ownership check wherever the
+ * directory sits: the work volume is not automatically private either, and
+ * a planted `passed: true` entry would skip a whole quality gate.
+ *
+ * A pre-existing directory at the umask default is narrowed to `0700` by
+ * {@link tightenOwnDir} rather than refused, so a cache directory an earlier
+ * release created `0755` keeps working. A group/other **writable** directory,
+ * or one owned by another uid, is refused — the caller must skip the cache.
+ *
+ * @param dir - Directory to harden.
+ * @param options.create - Create the directory `0700` when absent. Leave it
+ *   off on a read path so a miss never creates anything.
+ * @returns Whether the directory is safe for this worker to use.
+ */
+export async function hardenStateDir(
+  dir: string,
+  options: { create?: boolean } = {},
+): Promise<PrivateDirTrust> {
+  if (options.create) {
+    try {
+      await ensurePrivateDir(dir);
+    } catch {
+      // Creation failure is reported by the verification below.
+    }
   }
   const trust = await verifyPrivateDir(dir);
   if (trust.trusted) return trust;

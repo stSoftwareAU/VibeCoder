@@ -125,8 +125,8 @@ closed. `spawnGh` supplies neither, so those branches are skipped outright
 
 | Cache | Verdict |
 | --- | --- |
-| `.gh-scan-cache` (`lib/issue_cache.ts:200`) | raw issue JSON including untrusted bodies, unredacted — SEC-1217-10 (#1261) |
-| `lib/baseline_quality_cache.ts:340,365` | raw quality-gate subprocess output, unredacted, replayed into a public comment — SEC-1217-10 (#1261) |
+| `.gh-scan-cache` (`lib/issue_cache.ts:200`) | ~~unredacted~~ **FIXED** — SEC-1217-10 (#1261): every string value is redacted on write, the directory is ownership-checked wherever it sits, entries are `0600` |
+| `lib/baseline_quality_cache.ts:340,365` | ~~unredacted~~ **FIXED** — SEC-1217-10 (#1261): `redactedTail` redacts the whole gate output before the cut, secret-bearing findings are dropped, and the directory is ownership-checked on read and write |
 | `.gh-timeline-cache` (`lib/timeline_cache.ts:86-134`) | label events only; `ensurePrivateDir` / `verifyPrivateDir` hardened. Clean |
 | `lib/comment_cache.ts:50` | in-memory only, never reaches disk. Clean |
 | `lib/prompt_cache.ts`, `health_check_cache.ts`, `codebase_map_cache.ts`, `default_branch_cache.ts` | template text and structured values. Clean |
