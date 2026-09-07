@@ -1330,6 +1330,14 @@ async function runDenoLint(
  * line wrapping) could merge unnoticed. This check fails when any file in
  * the Deno tree is not formatted to the configured style; the offending
  * paths are surfaced in the output.
+ *
+ * Scope, deliberately (Issue #1503): it runs from `config.denoDir`, so the
+ * Deno tree is the formatter's whole remit. The Markdown under `docs/` and
+ * at the repository root is hand-wrapped and checked by markdownlint's
+ * structural rules instead — `deno fmt`'s Markdown rules would rewrap every
+ * paragraph, turning a two-line doc edit into a 1,500-line diff.
+ * CONTRIBUTING.md says so to contributors; this says so to the next reader
+ * wondering why the docs are not in the gate's fmt run.
  */
 export async function runDenoFmtCheck(
   config: QualityGateConfig,

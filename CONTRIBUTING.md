@@ -100,6 +100,16 @@ settles, so you can watch progress. Never background it and poll with a
 seconds, and the usual reason a correct change goes red in CI (Issue #1483);
 the full gate is the last step before the PR.
 
+**`deno fmt` governs `worker/deno/**` only.** The gate runs `deno fmt --check`
+from `worker/deno`, so that tree is the formatter's whole scope. Markdown
+under `docs/` and at the repository root is hand-wrapped and governed by
+markdownlint's structural rules instead — never run `deno fmt` on a `.md`
+file outside `worker/deno`. The formatter's Markdown rules rewrap every
+paragraph to its own width, so a two-line edit to `docs/CONTAINER.md` comes
+back as a 1,500-line diff that buries the change (Issue #1503); 62 of the 63
+Markdown files there are in that state on `main`, by design rather than by
+drift. Match the surrounding wrapping by hand, as the existing text does.
+
 CI-enforced workflows live under `.github/workflows/`, including
 `validate-scripts.yml`, `markdown-lint.yml`, `gitleaks.yml`, and
 `semgrep.yml`. A green local `./quality.sh` is the best predictor of a
