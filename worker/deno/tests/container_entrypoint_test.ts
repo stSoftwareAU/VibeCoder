@@ -1074,6 +1074,195 @@ Deno.test("entrypoint - no seed directory in the image → nothing seeded, no fa
 });
 
 // ---------------------------------------------------------------------------
+// Issue #1522 — the seed list is a private temp file, never predictable /tmp
+// ---------------------------------------------------------------------------
+
+/** Where the real `tar` lives, so the logging shim below can delegate. */
+async function realTar(): Promise<string> {
+  for (const candidate of ["/usr/bin/tar", "/bin/tar"]) {
+    if (await exists(candidate)) return candidate;
+  }
+  throw new Error("no tar on this host — the seed tests need one");
+}
+
+/**
+ * Shim `mktemp` so it always fails, driving the entrypoint's fallback path,
+ * and `tar` so the `-T <list>` it is handed is recorded.
+ *
+ * Returns the log file the tar shim appends its argv to.
+ */
+async function stubMktempFailureAndTarLog(dir: string): Promise<string> {
+  const binDir = `${dir}/bin`;
+  const tarLog = `${dir}/tar-argv.txt`;
+  await Deno.mkdir(binDir, { recursive: true });
+  await Deno.writeTextFile(
+    `${binDir}/mktemp`,
+    "#!/bin/bash\necho 'mktemp: refused (test shim)' >&2\nexit 1\n",
+  );
+  await Deno.chmod(`${binDir}/mktemp`, 0o755);
+  await Deno.writeTextFile(
+    `${binDir}/tar`,
+    `#!/bin/bash\nprintf '%s\\n' "$@" >> "${tarLog}"\nexec ${await realTar()} "$@"\n`,
+  );
+  await Deno.chmod(`${binDir}/tar`, 0o755);
+  return tarLog;
+}
+
+/** The paths the entrypoint handed to `tar -T` during a run. */
+function tarListPaths(log: string): string[] {
+  const argv = log.split("\n");
+  return argv.flatMap((arg, i) => arg === "-T" ? [argv[i + 1] ?? ""] : []);
+}
+
+Deno.test("entrypoint - deno-seed keeps its missing-list out of shared /tmp when mktemp fails (Issue #1522)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    await stubDenoWithEnv(dir);
+    await fakeRepo(dir);
+    const home = `${dir}/home`;
+    await Deno.mkdir(home, { recursive: true });
+    const seed = await fakeSeed(dir);
+    const tarLog = await stubMktempFailureAndTarLog(dir);
+
+    const { code, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin:/usr/bin:/bin`,
+      env: {
+        VIBE_BASE_DIR: `${dir}/repo`,
+        HOME: home,
+        VIBE_DENO_SEED_DIR: seed,
+      },
+    });
+    assertEquals(code, 0, stderr);
+
+    // Seeding still works with no mktemp at all: both sub-trees copied.
+    assertStringIncludes(stderr, "seeded the Deno cache");
+    const cache = `${home}/auto-issue-work/.deno-cache`;
+    assert(
+      await exists(
+        `${cache}/npm/registry.npmjs.org/@playwright/mcp/0.0.75/package.json`,
+      ),
+      "the npm sub-tree was not seeded",
+    );
+    assert(
+      await exists(`${cache}/remote/https/jsr.io/@std/assert/1.0.18/mod.ts`),
+      "the remote sub-tree was not seeded — the loop stopped early",
+    );
+
+    // The list both iterations were built from lives in a directory the
+    // container owns, never in world-writable /tmp under a guessable name.
+    const lists = tarListPaths(await Deno.readTextFile(tarLog));
+    assertEquals(lists.length, 2, `expected one list per sub: ${lists}`);
+    for (const list of lists) {
+      assert(
+        list.startsWith(`${cache}/`),
+        `the seed list must live under the private cache: ${list}`,
+      );
+      // A file directly in the /tmp root is the world-writable, guessable
+      // case the old `/tmp/vibe-deno-seed-<pid>.<sub>` fallback used.
+      assert(
+        !/^\/tmp\/[^/]+$/.test(list),
+        `the seed list must not sit in shared /tmp: ${list}`,
+      );
+    }
+    // …and the directory holding it is private to this container.
+    const mode = (await Deno.stat(`${cache}/.seed-tmp`)).mode ?? 0;
+    assertEquals(mode & 0o077, 0, "the seed temp directory must be private");
+
+    // Nothing left behind for the next launch to trip over.
+    const leftovers: string[] = [];
+    for await (const entry of Deno.readDir(`${cache}/.seed-tmp`)) {
+      leftovers.push(entry.name);
+    }
+    assertEquals(leftovers, [], "the seed list was not cleaned up");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - deno-seed refuses to write through a symlink at its temp path (Issue #1522)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    await stubDenoWithEnv(dir);
+    await fakeRepo(dir);
+    const home = `${dir}/home`;
+    const cache = `${home}/auto-issue-work/.deno-cache`;
+    await Deno.mkdir(`${cache}/.seed-tmp`, { recursive: true });
+    const canary = `${dir}/canary.txt`;
+    await Deno.writeTextFile(canary, "untouched\n");
+    // The attack: a symlink pre-placed at the path the no-mktemp fallback
+    // reaches for, aimed at a file elsewhere.
+    await Deno.symlink(canary, `${cache}/.seed-tmp/seed-npm`);
+    const seed = await fakeSeed(dir);
+    await stubMktempFailureAndTarLog(dir);
+
+    const { code, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin:/usr/bin:/bin`,
+      env: {
+        VIBE_BASE_DIR: `${dir}/repo`,
+        HOME: home,
+        VIBE_DENO_SEED_DIR: seed,
+      },
+    });
+    assertEquals(code, 0, stderr);
+
+    // The noclobber open refused the symlink: the target was never written
+    // to, and the link itself was neither followed nor removed.
+    assertEquals(await Deno.readTextFile(canary), "untouched\n");
+    assertEquals(await Deno.readLink(`${cache}/.seed-tmp/seed-npm`), canary);
+    // …and the seed step still completed around it.
+    assertStringIncludes(stderr, "seeded the Deno cache");
+    assert(
+      await exists(`${cache}/remote/https/jsr.io/@std/assert/1.0.18/mod.ts`),
+      "the remote sub-tree was not seeded",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("entrypoint - deno-seed degrades to a warning when no private temp file can be created (Issue #1522)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const argvFile = await stubDenoWithEnv(dir);
+    await fakeRepo(dir);
+    const home = `${dir}/home`;
+    const cache = `${home}/auto-issue-work/.deno-cache`;
+    await Deno.mkdir(cache, { recursive: true });
+    // A plain file where the private temp directory belongs: the seed step
+    // can create nothing safely and must bail rather than write elsewhere.
+    await Deno.writeTextFile(`${cache}/.seed-tmp`, "not a directory\n");
+    const seed = await fakeSeed(dir);
+
+    const { code, stderr } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin:/usr/bin:/bin`,
+      env: {
+        VIBE_BASE_DIR: `${dir}/repo`,
+        HOME: home,
+        VIBE_DENO_SEED_DIR: seed,
+      },
+    });
+
+    // Seeding is an optimisation: startup continues and execs the driver.
+    assertEquals(code, 0, stderr);
+    const argv = await Deno.readTextFile(argvFile);
+    assertStringIncludes(argv, "run-entrypoint");
+    assert(!stderr.includes("seeded the Deno cache"), stderr);
+    // Both iterations report, so the loop ran to completion.
+    assertStringIncludes(stderr, `could not seed ${cache}/npm`);
+    assertStringIncludes(stderr, `could not seed ${cache}/remote`);
+    assert(
+      !(await exists(`${cache}/npm`)),
+      "nothing may be copied when no safe list could be written",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Issue #515 — no in-container write outside /tmp and the mounted volumes
 // ---------------------------------------------------------------------------
 //
