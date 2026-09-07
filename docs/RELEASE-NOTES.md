@@ -30,6 +30,7 @@ if your worker login is read-only on any monitored repository.**
 | A successful trusted-author resolve is reused for `trusted_authors_cache_hours` (new key, default `1`; `0` restores the per-cycle refresh), and a transient failure serves the snapshot, with its age logged, for up to six hours | #1453 |
 | The `graphql-calls:` line counts every GraphQL-backed `gh` call (`issue list`, `pr view`, `search`, … as well as `api graphql`), and both the counter and the primary-quota latch are enforced at the `gh` spawn chokepoint, so the thirty-odd modules that spawn `gh` directly are counted and short-circuited too | #1485 |
 | The housekeeping merged-PR issue sweep pre-flights the quota once, stops at the first rate-limit refusal and reports one skipped sweep instead of one failure per repository; it reads through the shared scan and timeline caches and keeps its own watermark (`merged_issue_sweep_watermarks.json` in the work directory) | #1477 |
+| A GitHub mutation that runs while the write-repo allowlist is inactive is still allowed, but the first of each kind per context now logs `[SECURITY] [WRITE_REPO_UNSEEDED]` and journals an `unseeded-<verb>` audit event, so an unseeded write path is visible instead of indistinguishable from a protected one | #1425 |
 
 ### In detail
 
@@ -71,6 +72,17 @@ the discovery passes fill, and keeps a per-repository watermark in
 `merged_issue_sweep_watermarks.json` under the work directory, advancing only
 past merged PRs it closed or ruled out for good. Delete that file to make the
 sweep re-examine everything once. Nothing to configure.
+
+The write-repo allowlist stays fail-open until a run seeds it (Issue #1425),
+but that state is no longer silent. The first GitHub mutation of each kind —
+verb and target repository — that runs while the allowlist is inactive logs a
+`[SECURITY] [WRITE_REPO_UNSEEDED]` line and records an `unseeded-<verb>`
+event in the audit journal; later writes of the same kind are counted, not
+logged. Expect a handful of these lines per worker process from the main
+loop's ordinary cross-repo maintenance, which runs unseeded by design. A line
+naming a verb you did not expect to see outside a claim is the signal the
+issue asked for: a write path that never seeded the allowlist. Nothing to
+configure.
 
 ## 1.5.5 — the log directory comes from the file alone
 
