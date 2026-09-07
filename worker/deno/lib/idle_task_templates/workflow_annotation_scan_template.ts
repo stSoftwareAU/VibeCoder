@@ -54,6 +54,7 @@ import {
   registerTemplate,
 } from "../idle_task_template.ts";
 import { runGhCommand as defaultGhCommand } from "../github.ts";
+import { guardedLabelArgs } from "../guarded_issue_labels.ts";
 import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
 import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
 import { loadPrompt as defaultLoadPrompt } from "../prompt_manager.ts";
@@ -243,10 +244,10 @@ async function defaultFileFinding(
     finding.title,
     "--body",
     body,
-    "--label",
-    WORKFLOW_ANNOTATION_SCAN_LABEL,
-    "--label",
-    `severity:${finding.severity}`,
+    ...guardedLabelArgs(
+      [WORKFLOW_ANNOTATION_SCAN_LABEL, `severity:${finding.severity}`],
+      "worker/deno/lib/idle_task_templates/workflow_annotation_scan_template.ts",
+    ),
   ];
   let raw: string;
   try {

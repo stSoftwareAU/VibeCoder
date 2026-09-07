@@ -110,6 +110,20 @@ Deno.test("extractTestIdentifiers - ignores trivially short candidates", () => {
   assertEquals(extractTestIdentifiers("no identifiers at all here"), []);
 });
 
+Deno.test("extractTestIdentifiers - drops generic tokens that name no test", () => {
+  // Issue #1279: `tests/foo_test.ts::test` used to clear the four-character
+  // floor and then match any added test line by substring.
+  for (const generic of ["test", "spec", "deno", "case", "should", "it"]) {
+    assertEquals(
+      extractTestIdentifiers(`Added \`tests/foo_test.ts::${generic}\`.`),
+      [],
+      `generic token "${generic}" must not count as a cited identifier`,
+    );
+  }
+  // A name made only of generic tokens is just as empty.
+  assertEquals(extractTestIdentifiers("`tests/foo_test.ts::test_case`"), []);
+});
+
 // --- citedTestIdentifierInDiff ----------------------------------------------
 
 Deno.test("citedTestIdentifierInDiff - matches a cited name in added lines", () => {
@@ -129,6 +143,60 @@ Deno.test("citedTestIdentifierInDiff - ignores names only present in removed lin
 
 Deno.test("citedTestIdentifierInDiff - false when the diff is empty", () => {
   assertEquals(citedTestIdentifierInDiff(GOOD_SUMMARY, ""), false);
+});
+
+Deno.test("citedTestIdentifierInDiff - rejects the generic token test cited against an unrelated test", () => {
+  // Issue #1279 regression: the whole gate was satisfiable by citing
+  // `tests/anything_test.ts::test` on a branch adding any test line at all,
+  // because `Deno.test(` normalises to text containing `test`.
+  const fakeSummary = `## Summary
+Fixed the flaw. Added \`tests/anything_test.ts::test\` — a regression test that
+reproduces it: it fails against the unfixed code and passes after the fix.`;
+  const unrelatedDiff = `--- a/tests/anything_test.ts
++++ b/tests/anything_test.ts
+@@ -0,0 +1,3 @@
++Deno.test("unrelated name", () => {
++  assertEquals(1, 1);
++});`;
+  assertEquals(citedTestIdentifierInDiff(fakeSummary, unrelatedDiff), false);
+});
+
+Deno.test("citedTestIdentifierInDiff - requires a whole-token match, not a substring", () => {
+  const summary = "Added `tests/db_test.ts::inject` as the regression test.";
+  assertEquals(
+    citedTestIdentifierInDiff(summary, GOOD_DIFF.testDiffText),
+    false,
+  );
+});
+
+Deno.test("citedTestIdentifierInDiff - ignores an identifier used only in an assertion body", () => {
+  const bodyOnly = `--- a/tests/db_test.ts
++++ b/tests/db_test.ts
+@@ -0,0 +1,3 @@
++Deno.test("unrelated name", () => {
++  assertThrows(() => rejects_injection());
++});`;
+  assertEquals(citedTestIdentifierInDiff(GOOD_SUMMARY, bodyOnly), false);
+});
+
+Deno.test("citedTestIdentifierInDiff - matches pytest, BATS and JUnit declarations", () => {
+  const pytest = "+def test_rejects_injection():\n+    assert True";
+  assertEquals(citedTestIdentifierInDiff(GOOD_SUMMARY, pytest), true);
+
+  const bats = '+@test "rejects injection" {\n+  run query\n+}';
+  assertEquals(citedTestIdentifierInDiff(GOOD_SUMMARY, bats), true);
+
+  const junit = "+  @Test\n+  public void rejectsInjection() {\n+  }";
+  const junitSummary = "Added `FooTest.java::rejectsInjection` as the test.";
+  assertEquals(citedTestIdentifierInDiff(junitSummary, junit), true);
+});
+
+Deno.test("citedTestIdentifierInDiff - matches the Deno object-form test name", () => {
+  const objectForm = `+Deno.test({
++  name: "rejects_injection",
++  fn: () => {},
++});`;
+  assertEquals(citedTestIdentifierInDiff(GOOD_SUMMARY, objectForm), true);
 });
 
 // --- evaluateSecurityFixGate: inactive --------------------------------------
@@ -193,6 +261,25 @@ Deno.test("evaluateSecurityFixGate - test file changed but cited test absent fro
     diff: {
       changedFiles: ["tests/db_test.ts"],
       testDiffText: '+Deno.test("some unrelated case", () => {});',
+    },
+  });
+  assertEquals(result.ok, false);
+  assertEquals(result.missing, ["test-identifier-in-diff"]);
+});
+
+Deno.test("evaluateSecurityFixGate - blocks a summary citing the generic token test", () => {
+  // Issue #1279: the one unfakeable check must not be satisfiable by a
+  // four-character token plus any added test line.
+  const fakeSummary = `## Summary
+Fixed the flaw. Added \`tests/anything_test.ts::test\` — a regression test that
+reproduces it: it fails against the unfixed code and passes after the fix. The
+original trigger is now closed with no trivial bypass.`;
+  const result = evaluateSecurityFixGate({
+    prSummaryContent: fakeSummary,
+    issueLabels: "security",
+    diff: {
+      changedFiles: ["tests/anything_test.ts"],
+      testDiffText: '+Deno.test("unrelated name", () => {});',
     },
   });
   assertEquals(result.ok, false);
