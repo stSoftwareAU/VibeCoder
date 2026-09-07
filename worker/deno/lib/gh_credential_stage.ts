@@ -173,9 +173,20 @@ const productionIo: GhCredentialStageIo = {
     return resolveOwnUid();
   },
   isWritableDir(path) {
-    const probe = `${path}/.vibe-write-probe`;
+    // A fixed probe name is an arbitrary-truncation primitive on every path
+    // this probes (Issue #1238): `writeTextFileSync` is O_CREAT|O_TRUNC and
+    // follows symlinks, so a link planted at the predictable name was
+    // followed and its target truncated — and the probe then removed the
+    // link, leaving the damage with nothing to show for it. A kernel-random
+    // name cannot be pre-positioned, and `createNew` refuses anything already
+    // at the name rather than opening it.
+    const probe = `${path}/.vibe-write-probe.${crypto.randomUUID()}`;
     try {
-      Deno.writeTextFileSync(probe, "");
+      Deno.openSync(probe, {
+        write: true,
+        createNew: true,
+        mode: STAGED_HOSTS_MODE,
+      }).close();
       Deno.removeSync(probe);
       return true;
     } catch {
