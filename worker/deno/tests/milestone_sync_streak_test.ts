@@ -136,7 +136,7 @@ Deno.test("sync streaks - a success clears the streak so it can re-escalate late
     // Now a success clears it.
     const okDeps = failingSyncDeps(streakPath, []);
     okDeps.syncBranchFn = () =>
-      Promise.resolve({ ok: true as const, value: "synced" });
+      Promise.resolve({ ok: true as const, value: { message: "synced" } });
     await syncMilestoneBranches(okDeps);
     streaks = await loadSyncStreaks(streakPath);
     assertEquals(

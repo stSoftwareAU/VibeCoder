@@ -173,7 +173,7 @@ Deno.test(
         result.ok,
         `expected a successful sync: ${!result.ok && result.error.message}`,
       );
-      assertStringIncludes(result.value, "lib/fleet_health.ts");
+      assertStringIncludes(result.value.message, "lib/fleet_health.ts");
 
       const tree = await gitOk(
         ["ls-tree", "-r", "--name-only", "milestone/1048"],
