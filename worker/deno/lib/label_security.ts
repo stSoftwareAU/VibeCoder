@@ -24,18 +24,24 @@ import { runGhCommand } from "./github.ts";
  *
  * Relationship to `operationalDispatchLabels()` in
  * `operational_dispatch_labels.ts` (Issue #1521): that
- * function resolves the *config-driven* privileged dispatch set consumed by
- * `requiresLabelAdderTrust` in `find_issues_by_label.ts`, and every label it
+ * function resolves the *config-driven* privileged dispatch set that
+ * `requiresLabelAdderTrust` applies for the phase gate in
+ * `find_issues_by_label.ts`, and every label it
  * returns under the default config must also appear here — otherwise the
  * discovery collectors never authorship-check it and an untrusted add
  * survives on the in-memory issue record with no `[SECURITY]` audit event.
  * The two lists are independent by necessity (this one is static, that one is
  * operator-configurable), so `label_security_test.ts` asserts the
- * set-equivalence: a new dispatch label added there without an entry here
- * fails CI. `grill-me` was exactly that drift. Operator-*renamed* dispatch
- * labels cannot live in a static constant — a caller that supports renames
- * passes the resolved names through `extraOperationalLabels`, as the
- * collectors already do for `custom_label_prompts` labels.
+ * containment that matters: every label that function returns under the
+ * default config must be trust-verified here, so a new dispatch label added
+ * there without an entry here fails CI. `grill-me` was exactly that drift.
+ *
+ * Operator-*renamed* dispatch labels cannot live in a static constant, and no
+ * caller supplies them through `extraOperationalLabels` today — the
+ * collectors pass only the `custom_label_prompts` labels. A renamed
+ * `grill_me_label` is therefore still gated by `requiresLabelAdderTrust` at
+ * dispatch, but is not stripped here; closing that gap needs the resolved
+ * dispatch labels passed in as extras.
  *
  * These labels change how the worker processes an issue:
  * - planning: triggers the planning phase

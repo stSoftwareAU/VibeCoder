@@ -454,8 +454,90 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
-// custom_label_prompts labels are trust-gated here too (Issue #847, part of #843)
+// Untrusted operational labels are stripped here too
+// (custom_label_prompts: Issue #847, part of #843; grill-me: Issue #1521)
 // ---------------------------------------------------------------------------
+
+/**
+ * Assert that an operational label an untrusted actor added is stripped from
+ * the discovered issue and audited, while the issue still qualifies on its
+ * trusted `top-priority` label.
+ *
+ * `collectLabelCandidates` does not return the (mutated) label list, so the
+ * observable evidence of the strip is the `untrusted-operational-label`
+ * diagnostic naming the label and its adder.
+ */
+async function assertUntrustedLabelStripped(
+  config: WorkerConfig,
+  issueNumber: number,
+  label: string,
+): Promise<void> {
+  const title = `${label} smuggled in`;
+  const mockGh = createMockGh({
+    issues: [
+      {
+        number: issueNumber,
+        title,
+        url: `https://github.com/owner/repo/issues/${issueNumber}`,
+        assignees: [],
+        labels: [{ name: "top-priority" }, { name: label }],
+        createdAt: "2024-03-03T00:00:00Z",
+        author: { login: "alice" },
+        milestone: null,
+      },
+    ],
+    timeline: [
+      {
+        event: "labeled",
+        label: { name: "top-priority" },
+        actor: { login: "alice" },
+        created_at: "2024-03-03T00:00:00Z",
+      },
+      // The operational label came from a non-allowlisted triage collaborator.
+      {
+        event: "labeled",
+        label: { name: label },
+        actor: { login: "mallory" },
+        created_at: "2024-03-03T01:00:00Z",
+      },
+    ],
+    issueView: { title, body: "" },
+  });
+
+  const lines: string[] = [];
+  const cache = createTestCache();
+  const result = await collectLabelCandidates(
+    "owner/repo",
+    config,
+    {
+      ...buildOptions(mockGh, cache),
+      diagnostics: createDiagnostics({
+        enabled: true,
+        write: (line) => lines.push(line),
+      }),
+    },
+    [],
+    [],
+    createIssueFetcher(mockGh),
+    [],
+  );
+
+  // The issue still qualifies on its trusted `top-priority` label …
+  assertEquals(result.candidates.length, 1);
+  // … but the untrusted operational label was stripped and audited.
+  assertEquals(
+    lines.some(
+      (l) =>
+        l.includes(`issue=#${issueNumber}`) &&
+        l.includes("untrusted-operational-label") &&
+        l.includes(`${label}(mallory)`),
+    ),
+    true,
+    `expected an untrusted-operational-label diagnostic, got: ${
+      lines.join("\n")
+    }`,
+  );
+}
 
 Deno.test(
   "collect_label_candidates - strips a custom_label_prompts label added by an untrusted actor (Issue #847)",
@@ -469,144 +551,15 @@ Deno.test(
         },
       ],
     });
-    const mockGh = createMockGh({
-      issues: [
-        {
-          number: 60,
-          title: "Custom label smuggled in",
-          url: "https://github.com/owner/repo/issues/60",
-          assignees: [],
-          labels: [{ name: "top-priority" }, { name: "deploy-review" }],
-          createdAt: "2024-03-03T00:00:00Z",
-          author: { login: "alice" },
-          milestone: null,
-        },
-      ],
-      timeline: [
-        {
-          event: "labeled",
-          label: { name: "top-priority" },
-          actor: { login: "alice" },
-          created_at: "2024-03-03T00:00:00Z",
-        },
-        // The custom label came from a non-allowlisted triage collaborator.
-        {
-          event: "labeled",
-          label: { name: "deploy-review" },
-          actor: { login: "mallory" },
-          created_at: "2024-03-03T01:00:00Z",
-        },
-      ],
-      issueView: { title: "Custom label smuggled in", body: "" },
-    });
-
-    const lines: string[] = [];
-    const cache = createTestCache();
-    const result = await collectLabelCandidates(
-      "owner/repo",
-      config,
-      {
-        ...buildOptions(mockGh, cache),
-        diagnostics: createDiagnostics({
-          enabled: true,
-          write: (line) => lines.push(line),
-        }),
-      },
-      [],
-      [],
-      createIssueFetcher(mockGh),
-      [],
-    );
-
-    // The issue still qualifies on its trusted `top-priority` label …
-    assertEquals(result.candidates.length, 1);
-    // … but the untrusted custom label was stripped and audited.
-    assertEquals(
-      lines.some(
-        (l) =>
-          l.includes("issue=#60") &&
-          l.includes("untrusted-operational-label") &&
-          l.includes("deploy-review(mallory)"),
-      ),
-      true,
-      `expected an untrusted-operational-label diagnostic, got: ${
-        lines.join("\n")
-      }`,
-    );
+    await assertUntrustedLabelStripped(config, 60, "deploy-review");
   },
 );
-
-// ---------------------------------------------------------------------------
-// grill-me is trust-gated here too (Issue #1521)
-// ---------------------------------------------------------------------------
 
 Deno.test(
   "collect_label_candidates - strips a grill-me label added by an untrusted actor (Issue #1521)",
   async () => {
-    const config = makeConfig();
-    const mockGh = createMockGh({
-      issues: [
-        {
-          number: 61,
-          title: "Grill-me smuggled in",
-          url: "https://github.com/owner/repo/issues/61",
-          assignees: [],
-          labels: [{ name: "top-priority" }, { name: "grill-me" }],
-          createdAt: "2024-03-04T00:00:00Z",
-          author: { login: "alice" },
-          milestone: null,
-        },
-      ],
-      timeline: [
-        {
-          event: "labeled",
-          label: { name: "top-priority" },
-          actor: { login: "alice" },
-          created_at: "2024-03-04T00:00:00Z",
-        },
-        // grill-me applied by a non-allowlisted triage collaborator.
-        {
-          event: "labeled",
-          label: { name: "grill-me" },
-          actor: { login: "mallory" },
-          created_at: "2024-03-04T01:00:00Z",
-        },
-      ],
-      issueView: { title: "Grill-me smuggled in", body: "" },
-    });
-
-    const lines: string[] = [];
-    const cache = createTestCache();
-    const result = await collectLabelCandidates(
-      "owner/repo",
-      config,
-      {
-        ...buildOptions(mockGh, cache),
-        diagnostics: createDiagnostics({
-          enabled: true,
-          write: (line) => lines.push(line),
-        }),
-      },
-      [],
-      [],
-      createIssueFetcher(mockGh),
-      [],
-    );
-
-    // The issue still qualifies on its trusted `top-priority` label …
-    assertEquals(result.candidates.length, 1);
-    // … but the untrusted grill-me was stripped and audited.
-    assertEquals(
-      lines.some(
-        (l) =>
-          l.includes("issue=#61") &&
-          l.includes("untrusted-operational-label") &&
-          l.includes("grill-me(mallory)"),
-      ),
-      true,
-      `expected an untrusted-operational-label diagnostic, got: ${
-        lines.join("\n")
-      }`,
-    );
+    // `grill-me` dispatches the grilling phase, so an untrusted add must be
+    // stripped and audited here, not carried forward on the issue record.
+    await assertUntrustedLabelStripped(makeConfig(), 61, "grill-me");
   },
 );

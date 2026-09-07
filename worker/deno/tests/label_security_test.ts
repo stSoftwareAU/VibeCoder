@@ -1082,7 +1082,7 @@ Deno.test("label_security - OPERATIONAL_LABEL_NAMES includes grill-me (Issue #15
 });
 
 Deno.test("label_security - every operational dispatch label is trust-verified (Issue #1521)", () => {
-  // Set-equivalence guard: the privileged dispatch set is maintained in
+  // Drift guard: the privileged dispatch set is maintained in
   // operational_dispatch_labels.ts, and every member of it must also be
   // authorship-checked here. A future dispatch label added there without a
   // matching entry in OPERATIONAL_LABEL_NAMES fails this case.
@@ -1092,24 +1092,6 @@ Deno.test("label_security - every operational dispatch label is trust-verified (
       isOperationalLabel(label),
       true,
       `dispatch label '${label}' is not trust-verified by isOperationalLabel()`,
-    );
-  }
-});
-
-Deno.test("label_security - operator-renamed dispatch labels are covered via extraOperationalLabels (Issue #1521)", () => {
-  // Dispatch labels are operator-renamable, so the static constant can only
-  // cover the defaults. A caller that supplies the config-derived dispatch
-  // labels as extras covers the renamed names too.
-  const config = buildDefaultWorkerConfig({
-    grillMeLabel: "roast-me",
-    planningLabel: "plan-it",
-  });
-  const dispatchLabels = operationalDispatchLabels(config);
-  for (const label of dispatchLabels) {
-    assertEquals(
-      isOperationalLabel(label, dispatchLabels),
-      true,
-      `renamed dispatch label '${label}' is not trust-verified`,
     );
   }
 });
