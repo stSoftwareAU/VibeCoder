@@ -20,8 +20,16 @@
  * each row is redacted **before** it is cut to the per-row budget: cutting first
  * splits a token, and every signature rule in `secret_redaction.ts` is anchored
  * on the credential's leading bytes, so the downstream pass would match nothing.
- * The `dmesg` capture is masked at its own source for the same reason, even
- * though its own cut is line-granular.
+ * The `dmesg` capture is masked for the same reason, even though its own cut is
+ * line-granular.
+ *
+ * Every source is a **seam**: `runPs`, `readKernelLog` and `readFile` are all
+ * injectable, so a mask that lives only in a default implementation guarantees
+ * nothing about the text the module actually returns — it is the per-call-site
+ * convention that drifted in the first place. {@link captureKillDiagnostics} is
+ * therefore the chokepoint: whatever a source hands back, and whatever an
+ * unreadable source puts in its error message, is masked there before it is
+ * filtered, cut or joined into the returned evidence.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -242,10 +250,11 @@ async function defaultReadKernelLog(): Promise<string> {
     stderr: "null",
   }).output();
   if (!out.success) throw new Error("dmesg failed");
-  // Masked at its own source (Issue #1217). This cut is line-granular so it
-  // cannot split a token by itself, but the kernel ring buffer carries whatever
-  // userspace logged into it, and redacting here keeps the captured text safe
-  // whatever a later caller does with it.
+  // Masked at the source as well as at the chokepoint (Issue #1217). This cut
+  // is line-granular so it cannot split a token by itself, but the kernel ring
+  // buffer carries whatever userspace logged into it, and redaction is
+  // idempotent, so masking here costs nothing and keeps the text this function
+  // returns safe for any caller, not only `captureKillDiagnostics`.
   const text = redactSecrets(new TextDecoder().decode(out.stdout));
   // Keep the tail only — the OOM lines are the most recent.
   return text.split("\n").slice(-400).join("\n");
@@ -272,10 +281,15 @@ export async function captureKillDiagnostics(
       }`,
     );
   } catch (err) {
+    // The message is masked too (Issue #1256): a spawn failure quotes the
+    // command it tried to run, and an argv is precisely where this host's
+    // credentials have turned up.
     sections.push(
-      `Top processes at the kill: process table unavailable (${
-        err instanceof Error ? err.message : String(err)
-      })`,
+      redactSecrets(
+        `Top processes at the kill: process table unavailable (${
+          err instanceof Error ? err.message : String(err)
+        })`,
+      ),
     );
   }
   const cgroup = await describeCgroupMemory(
@@ -287,7 +301,12 @@ export async function captureKillDiagnostics(
       : "Cgroup memory: not readable here",
   );
   try {
-    const log = await (options.readKernelLog ?? defaultReadKernelLog)();
+    // Masked here, at the chokepoint, rather than trusting the source: the
+    // reader is injectable, and the OOM lines are then filtered and cut to the
+    // last five before they reach the failure comment (Issue #1256).
+    const log = redactSecrets(
+      await (options.readKernelLog ?? defaultReadKernelLog)(),
+    );
     const oomLines = log.split("\n").filter((l) => OOM_LINE_RE.test(l))
       .slice(-5);
     if (oomLines.length > 0) {
