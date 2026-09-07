@@ -32,6 +32,14 @@ import {
   saveMilestoneActivity,
 } from "./milestone_activity_gate.ts";
 import {
+  buildConflictEscalationComment,
+  conflictDiagnosticTitle,
+  describeBranchTips,
+  type MilestoneSyncConflict,
+  type MilestoneSyncOutcome,
+  resolveBranchTips,
+} from "./milestone_sync_conflict.ts";
+import {
   loadSyncStreaks,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
   saveSyncStreaks,
@@ -54,12 +62,18 @@ export type GhCommandFn = (args: string[]) => Promise<string>;
  */
 export type DefaultBranchFn = (repo: string) => Promise<Result<string>>;
 
-/** Function signature for syncing a milestone branch with the default branch. */
+/**
+ * Function signature for syncing a milestone branch with the default branch.
+ *
+ * The outcome carries the conflict when the merge had one (Issue #1558), so
+ * a resolution that favoured the default branch is escalated the same day
+ * rather than discovered at rollup time.
+ */
 export type SyncBranchFn = (
   repo: string,
   milestoneBranch: string,
   defaultBranch: string,
-) => Promise<Result<string>>;
+) => Promise<Result<MilestoneSyncOutcome>>;
 
 /**
  * Function signature for checking whether a repository has been cloned
@@ -77,6 +91,13 @@ export interface ActiveMilestone {
   milestoneBranch: string;
   /** The repository's default branch (e.g., "main", "Develop"). */
   defaultBranch: string;
+  /**
+   * True when this milestone's REST closed count moved since the previous
+   * cycle — a sub-issue PR merged (Issue #1558). Such a milestone syncs now
+   * rather than waiting out the cooldown, because that is exactly the moment
+   * the branch and the default branch have both just moved.
+   */
+  closedCountChanged?: boolean;
 }
 
 /** Dependencies for the milestone branch sync orchestration. */
@@ -268,10 +289,17 @@ export async function findActiveMilestoneBranches(
 
       // Issue #1488: decide from the cheap REST count whether the
       // expensive closed-issue query is worth making at all.
-      const decision = decideMilestoneQuery(
-        activity?.observations[milestoneActivityKey(repo, milestone.number)],
-        milestone.closed_issues,
-      );
+      const previous = activity
+        ?.observations[milestoneActivityKey(repo, milestone.number)];
+      const decision = decideMilestoneQuery(previous, milestone.closed_issues);
+
+      // Issue #1558: a count that has MOVED since the previous cycle means
+      // something closed — a sub-issue PR merged. The same cheap listing
+      // that gates the query above therefore also answers "has this
+      // milestone just moved?", at no extra API cost.
+      const closedCountChanged = previous !== undefined &&
+        typeof milestone.closed_issues === "number" &&
+        previous.closedIssues !== milestone.closed_issues;
 
       if (decision.query) {
         // Check if milestone has at least one closed issue (Issue #1786:
@@ -307,6 +335,7 @@ export async function findActiveMilestoneBranches(
         milestoneTitle: milestone.title,
         milestoneBranch: createMilestoneBranchName(milestone.title),
         defaultBranch,
+        closedCountChanged,
       });
     }
 
@@ -441,8 +470,13 @@ export async function syncMilestoneBranches(
       }
 
       for (const milestone of milestonesResult.value) {
-        // Frequency guard: skip if synced recently
+        // Frequency guard: skip if synced recently — unless a sub-issue PR
+        // has just merged (Issue #1558). The default branch is merged down
+        // after each closure, not once per cooldown window, because that is
+        // when both sides have just moved and a conflict is still one day
+        // wide rather than a week of divergence.
         if (
+          !milestone.closedCountChanged &&
           !shouldSyncMilestone(
             repo,
             milestone.milestoneTitle,
@@ -489,16 +523,52 @@ export async function syncMilestoneBranches(
 
         if (syncResult.ok) {
           log(
-            `Synced milestone branch '${milestone.milestoneBranch}' in ${repo}: ${syncResult.value}`,
+            `Synced milestone branch '${milestone.milestoneBranch}' in ${repo}: ${syncResult.value.message}`,
           );
           // Record successful sync time
           const key = `${repo}|${milestone.milestoneTitle}`;
           lastSyncTimes.set(key, Date.now());
           synced++;
-          // A success ends the failure streak (Issue #4260): clear it so a
-          // branch that recovers is not still counted as diverging.
+
+          // A merge that conflicted still landed, but the resolution favoured
+          // the default branch and nobody chose it (Issue #1558). Report it
+          // now, while the divergence is one day wide — once per conflicting
+          // default-branch commit, so a branch that keeps conflicting against
+          // the same commit is not reported every cycle.
           const streakKey = `${repo}|${milestone.milestoneBranch}`;
-          if (streakPath && streaks[streakKey]) {
+          const conflict = syncResult.value.conflict;
+          if (conflict) {
+            let reportedSha = streaks[streakKey]?.conflictEscalatedSha;
+            if (reportedSha !== conflict.defaultSha) {
+              const escalated = await escalateSyncConflict(
+                repo,
+                milestone,
+                conflict,
+                ghCommandFn,
+                log,
+              );
+              // Only a report that went out is remembered: an escalation
+              // that failed must be retried next cycle, not marked done.
+              if (escalated) reportedSha = conflict.defaultSha;
+            }
+            if (streakPath) {
+              // The sync succeeded, so any failure streak ends here
+              // (Issue #4260) while the reported-conflict marker survives.
+              if (reportedSha) {
+                streaks[streakKey] = {
+                  count: 0,
+                  escalated: false,
+                  conflictEscalatedSha: reportedSha,
+                };
+                streaksDirty = true;
+              } else if (streaks[streakKey]) {
+                delete streaks[streakKey];
+                streaksDirty = true;
+              }
+            }
+          } else if (streakPath && streaks[streakKey]) {
+            // A clean success ends the failure streak (Issue #4260): clear it
+            // so a branch that recovers is not still counted as diverging.
             delete streaks[streakKey];
             streaksDirty = true;
           }
@@ -604,6 +674,66 @@ export async function syncMilestoneBranches(
 }
 
 /**
+ * Report a sync merge that conflicted, on the cycle it conflicted
+ * (Issue #1558).
+ *
+ * The merge landed — this is not a blocked sync — but the resolution
+ * favoured the default branch, so the branch's own version of every
+ * conflicting file was replaced by a decision nobody made. Both sides'
+ * commits are named so the reader can see what changed on each without
+ * reconstructing it days later.
+ *
+ * Best-effort, and returns true only when the report went out, so the caller
+ * remembers the commit it reported and does not repeat it every cycle.
+ */
+async function escalateSyncConflict(
+  repo: string,
+  milestone: ActiveMilestone,
+  conflict: MilestoneSyncConflict,
+  ghCommandFn: GhCommandFn,
+  log: (message: string) => void,
+): Promise<boolean> {
+  const tips = await resolveBranchTips(repo, [
+    { branch: milestone.defaultBranch, sha: conflict.defaultSha },
+    { branch: milestone.milestoneBranch, sha: conflict.milestoneSha },
+  ], ghCommandFn);
+
+  const body = buildConflictEscalationComment({
+    repo,
+    milestoneBranch: milestone.milestoneBranch,
+    defaultBranch: milestone.defaultBranch,
+    conflict,
+    tips,
+  });
+
+  const what = `a conflicting milestone sync merge for ` +
+    `'${milestone.milestoneBranch}' (Issue #1558)`;
+
+  const issueNumber = trackingIssueFromMilestoneTitle(milestone.milestoneTitle);
+  if (issueNumber === null) {
+    return await fileStuckSyncDiagnostic(
+      repo,
+      milestone.milestoneBranch,
+      body,
+      ghCommandFn,
+      log,
+      what,
+      {},
+      conflictDiagnosticTitle(milestone.milestoneBranch, conflict.defaultSha),
+    );
+  }
+
+  return await postEscalationComment(
+    repo,
+    issueNumber,
+    body,
+    ghCommandFn,
+    log,
+    what,
+  );
+}
+
+/**
  * Post one needs-human comment for a merge the gate refused (Issue #974).
  *
  * Best-effort, and returns true only when the comment was posted, so the
@@ -619,12 +749,21 @@ async function escalateMergeGateFailure(
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
 ): Promise<boolean> {
-  const gateBody = buildMergeGateEscalationComment({
-    repo,
-    milestoneBranch: milestone.milestoneBranch,
-    defaultBranch: milestone.defaultBranch,
-    reason,
-  });
+  // Both sides' commits travel with every sync escalation (Issue #1558), so
+  // whoever picks it up can diff each side rather than reconstruct it.
+  const tips = await resolveBranchTips(repo, [
+    { branch: milestone.defaultBranch },
+    { branch: milestone.milestoneBranch },
+  ], ghCommandFn);
+
+  const gateBody = `${
+    buildMergeGateEscalationComment({
+      repo,
+      milestoneBranch: milestone.milestoneBranch,
+      defaultBranch: milestone.defaultBranch,
+      reason,
+    })
+  }\n\n${describeBranchTips(tips)}`;
 
   const issueNumber = trackingIssueFromMilestoneTitle(milestone.milestoneTitle);
   if (issueNumber === null) {
@@ -702,9 +841,9 @@ async function fileStuckSyncDiagnostic(
   log: (message: string) => void,
   what: string,
   dedupAuthors: AlertDedupAuthorOptions = {},
+  /** Overrides the stuck-sync title — a conflict report is not a stall. */
+  title: string = stuckSyncDiagnosticTitle(milestoneBranch),
 ): Promise<boolean> {
-  const title = stuckSyncDiagnosticTitle(milestoneBranch);
-
   try {
     // Author-verified, never title-only (the `marker_dedup_author_cap`
     // invariant). A lookup that trusts a title alone lets anyone suppress
@@ -840,11 +979,17 @@ async function escalateSyncFailure(
     // Compare is a nicety; the comment stands without it.
   }
 
+  const tips = await resolveBranchTips(repo, [
+    { branch: milestone.defaultBranch },
+    { branch: milestone.milestoneBranch },
+  ], ghCommandFn);
+
   const body = `## Milestone branch sync is stuck — needs a human\n\n` +
     `\`${milestone.milestoneBranch}\` has failed to sync with ` +
     `\`${milestone.defaultBranch}\` for ${failureCount} consecutive cycles` +
     `${aheadBehind}.\n\n` +
     `Latest reason from git:\n\n> ${reason}\n\n` +
+    `${describeBranchTips(tips)}\n\n` +
     `The worker will keep retrying but cannot resolve this itself. Once the ` +
     `branch syncs, this escalation clears automatically (Issue #4260).`;
 
