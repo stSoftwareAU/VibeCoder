@@ -125,6 +125,89 @@ export function blockedOriginsValue(
 }
 
 /**
+ * Hosts the Playwright MCP **server process** may open sockets to.
+ *
+ * Issue #1386: the spawn args carried a bare `--allow-net`, so the Deno
+ * process could reach any host on the network. Deno's host-scoped form is
+ * used instead, and the list is exactly what the server itself needs:
+ * loopback, which is where `playwright-core` reaches the browser it launched
+ * (and where the prompts tell the agent to serve a local page from). Module
+ * resolution is not covered by `--allow-net` — Deno gates `npm:` fetches
+ * under import permissions — so the registry is deliberately absent.
+ *
+ * Residual risk, stated plainly: like every Deno permission this binds the
+ * server process only. Chromium is spawned under `--allow-run` and does its
+ * own networking, so a `browser_navigate` to an attacker host is bounded by
+ * {@link PLAYWRIGHT_MCP_BLOCKED_HOSTS} and the container's egress boundary,
+ * not by this list. What this list removes is the server process itself as a
+ * general-purpose egress channel.
+ *
+ * Operators who need the server to reach a further host (a CI preview URL, a
+ * dev server on a non-loopback address) extend the list through
+ * `VIBE_BROWSER_ALLOWED_HOSTS` — see {@link resolveAllowedNetHosts}.
+ */
+export const PLAYWRIGHT_MCP_ALLOWED_NET_HOSTS: readonly string[] = [
+  "127.0.0.1",
+  "localhost",
+  "[::1]",
+];
+
+/**
+ * Resolve the `--allow-net` host allowlist, extended by the operator knob.
+ *
+ * `VIBE_BROWSER_ALLOWED_HOSTS` is a comma-separated list of extra hosts
+ * (`host` or `host:port`, as Deno spells them). It only ever *adds* to
+ * {@link PLAYWRIGHT_MCP_ALLOWED_NET_HOSTS}, so a malformed value cannot
+ * widen the grant to everything.
+ *
+ * @param deps - Injectable environment seam (testing).
+ * @returns Hosts to allow, in a stable order and without duplicates.
+ */
+export function resolveAllowedNetHosts(
+  deps: Pick<BrowserEnvironmentDeps, "getEnv"> = {},
+): string[] {
+  const getEnv = deps.getEnv ?? defaultGetEnv;
+  const extra = (getEnv("VIBE_BROWSER_ALLOWED_HOSTS") ?? "")
+    .split(",")
+    .map((host) => host.trim())
+    .filter((host) => host !== "");
+  return [...new Set([...PLAYWRIGHT_MCP_ALLOWED_NET_HOSTS, ...extra])];
+}
+
+/**
+ * Build the `--allow-net=<hosts>` flag value.
+ *
+ * @param hosts - Hosts to allow (default: {@link resolveAllowedNetHosts}).
+ * @returns The comma-separated host list.
+ * @throws Error when the list is empty — Deno reads `--allow-net=` as a
+ *   parse error rather than "deny everything", and a bare `--allow-net`
+ *   would silently restore unrestricted egress.
+ * @throws Error when a host contains the `,` separator or whitespace, either
+ *   of which splits one entry into fragments that match no host, leaving a
+ *   list that looks complete and grants nothing.
+ */
+export function allowedNetValue(
+  hosts: readonly string[] = resolveAllowedNetHosts(),
+): string {
+  if (hosts.length === 0) {
+    throw new Error(
+      "Cannot build --allow-net: the host allowlist is empty. An empty " +
+        "value is a Deno parse error and dropping the flag would restore " +
+        "unrestricted network access for the MCP server.",
+    );
+  }
+  const unexpressible = hosts.find((host) => /[,\s]/.test(host));
+  if (unexpressible !== undefined) {
+    throw new Error(
+      `Cannot allow "${unexpressible}": a comma or whitespace in the host ` +
+        `breaks Deno's permission list, which would silently disable the ` +
+        `guard. Name one host (or host:port) per entry.`,
+    );
+  }
+  return hosts.join(",");
+}
+
+/**
  * Where the container image bakes Playwright's browsers (Issue #4069).
  *
  * `container/Containerfile` installs Chromium here at build time and sets
@@ -415,6 +498,11 @@ export interface ScreenshotConfig {
    */
   deniedPaths?: readonly string[];
   /**
+   * Hosts the MCP server process may open sockets to (Issue #1386). When
+   * omitted they are resolved by {@link resolveAllowedNetHosts}.
+   */
+  allowedNetHosts?: readonly string[];
+  /**
    * Host platform (default: `Deno.build.os`). Decides the path semantics the
    * profile-directory guard compares with (Issue #1293).
    */
@@ -588,6 +676,13 @@ export function generateMcpConfig(config: ScreenshotConfig): string {
     );
   }
 
+  // Issue #1386: host-scoped, never a bare --allow-net. Built before the
+  // args so an unexpressible host fails loud instead of emitting a flag that
+  // grants nothing.
+  const allowedNet = allowedNetValue(
+    config.allowedNetHosts ?? resolveAllowedNetHosts(),
+  );
+
   const args = [
     "run",
     "--allow-read",
@@ -598,7 +693,7 @@ export function generateMcpConfig(config: ScreenshotConfig): string {
         `--deny-write=${deniedPaths.join(",")}`,
       ]
       : []),
-    "--allow-net",
+    `--allow-net=${allowedNet}`,
     "--allow-env",
     `--deny-env=${denyEnv}`,
     "--allow-run",
