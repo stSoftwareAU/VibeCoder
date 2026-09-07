@@ -530,10 +530,19 @@ On macOS, `setup.sh` interactively offers to configure a LaunchAgent that runs t
 When you run `setup.sh` on macOS from a terminal, it asks:
 
 ```
-Install the LaunchAgent now? [Y/n]
+Install the LaunchAgent now? [y/N]
 ```
 
-Answer **Y** (the default) on machines that should run unattended via launchd. Answer **n** on a machine where you keep starting the worker manually with `loop.sh` (for example a laptop in daily interactive use). Non-interactive runs (no TTY) and non-macOS hosts skip the offer automatically — there is no longer a `VIBE_SETUP_LAUNCHAGENT` env var to set.
+Answer **y** on machines that should run unattended via launchd. Answer **n** — or press Enter, which is the default — on a machine where you keep starting the worker manually with `loop.sh` (for example a laptop in daily interactive use). Non-interactive runs (no TTY) and non-macOS hosts skip the offer automatically — there is no longer a `VIBE_SETUP_LAUNCHAGENT` env var to set.
+
+Declining on a host that already has the agent asks what to do with it, and every one of those prompts defaults to **no**: a bare Enter leaves the host exactly as it was (Issue #1369).
+
+```
+Remove the installed LaunchAgent now? [y/N]      ← only an explicit y uninstalls
+Load the LaunchAgent again now? [y/N]            ← offered when the plist is on disk but launchd has no such service
+```
+
+The second prompt is the repair for a host whose agent was booted out: the plist survives, so the old `--status` called it `installed` while nothing ran the worker. `./setup.sh` now asks launchd (`launchctl print gui/<uid>/<label>`) and reloads the plist rather than reporting it up to date.
 
 **Setup with LaunchAgent:**
 ```bash
@@ -542,7 +551,7 @@ VIBE_REPOS="myorg/repo1" \
 VIBE_LAUNCHAGENT_GH_TOKEN="ghp_your_token" \
 VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY="sk-ant-your_key" \
 ./setup.sh
-# → answer Y at the "Install the LaunchAgent now?" prompt
+# → answer y at the "Install the LaunchAgent now?" prompt
 ```
 
 **LaunchAgent environment variables:**
@@ -748,8 +757,12 @@ nothing below needs doing by hand:
 ```text
 [i]  The Windows scheduled task runs the worker automatically via Task
 [i]  Scheduler (run.ps1 every 5 minutes, and again at logon).
-  Register the scheduled task now? [Y/n]
+  Register the scheduled task now? [y/N]
 ```
+
+Both this prompt and the unregister offer that follows a decline default to
+**no** — a bare Enter leaves the host as it is, matching `setup.sh`
+(Issue #1369).
 
 The registered definition runs `run.ps1` from the checkout every five minutes
 under a logon trigger, with `IgnoreNew` so a second launch never stacks on a
