@@ -5,9 +5,10 @@
  * worker, because the only thing that switches it on is
  * `run_core_production_deps.ts`. So this drives the real
  * `createProductionRunCoreDeps`, calls the real `prefetchFleetOpenPrs` dep it
- * builds with a stubbed `gh`, and then asks the **real** consumers what they
- * see — with a `gh` runner that fails the test if any per-repo listing is
- * issued. Delete the wiring and the first test fails.
+ * builds against `fakeGithubPrSearch` — which answers the search the way
+ * GitHub would, so a factory that handed over the wrong author set gets a
+ * truthfully wrong answer — and then asks the **real** consumers what they
+ * see, with a `gh` runner that records any per-repo listing still issued.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -23,6 +24,11 @@ import {
   PR_MAINTENANCE_LIST_FIELDS,
 } from "../lib/pr_maintenance.ts";
 import { listInvitedHumanPrs } from "../lib/pr_invitation_lookup.ts";
+import {
+  type FakeGh,
+  fakeGithubPrSearch,
+  type FakeSearchPr,
+} from "./support/github_graphql_fake.ts";
 import type { TrustedAuthors } from "../lib/derived_authors.ts";
 import type { WorkerConfig } from "../types.ts";
 
@@ -34,53 +40,17 @@ const SIBLING = "sibling-bot";
 /** A trusted human - `allowed_authors` only. */
 const HUMAN = "human-dev";
 
-/** One GraphQL search node, as GitHub returns it. */
-function searchNode(
-  repo: string,
-  number: number,
-  author: string,
-  comments: unknown[] = [],
-): Record<string, unknown> {
-  return {
-    number,
-    title: `Work (Issue #${number})`,
-    baseRefName: "main",
-    headRefName: `issue-${number}-work`,
-    headRefOid: `oid-${number}`,
-    createdAt: "2026-09-01T00:00:00Z",
-    updatedAt: "2026-09-02T00:00:00Z",
-    isDraft: false,
-    mergeable: "MERGEABLE",
-    author: { login: author },
-    repository: { nameWithOwner: repo },
-    labels: { nodes: [] },
-    autoMergeRequest: null,
-    comments: { nodes: comments },
-    reviews: { nodes: [] },
-  };
-}
-
-/** A `gh` stub answering the one cross-repo search this cycle makes. */
-function searchGh(seen: string[][]): (args: string[]) => Promise<string> {
-  return (args) => {
-    seen.push(args);
-    return Promise.resolve(JSON.stringify({
-      data: {
-        search: {
-          issueCount: 3,
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: [
-            searchNode(REPO_A, 11, WORKER_USER),
-            searchNode(REPO_A, 12, SIBLING),
-            searchNode(REPO_A, 13, HUMAN, [
-              { author: { login: HUMAN }, body: `@${WORKER_USER} take this` },
-            ]),
-          ],
-        },
-      },
-    }));
-  };
-}
+/** One open PR per account, all in repo-a; repo-b is quiet. */
+const PRS: FakeSearchPr[] = [
+  { repo: REPO_A, number: 11, author: WORKER_USER },
+  { repo: REPO_A, number: 12, author: SIBLING },
+  {
+    repo: REPO_A,
+    number: 13,
+    author: HUMAN,
+    comments: [{ author: HUMAN, body: `@${WORKER_USER} take this` }],
+  },
+];
 
 /** The collaborator set the stubbed resolver returns for every repo. */
 function trusted(): TrustedAuthors {
@@ -151,7 +121,7 @@ function recordingGh(seen: string[][]): (args: string[]) => Promise<string> {
 }
 
 Deno.test("production deps - one search serves every repo's open-PR guard (Issue #1486)", async () => {
-  await withDeps(searchGh([]), async (prefetch, cache) => {
+  await withDeps(fakeGithubPrSearch(PRS).gh, async (prefetch, cache) => {
     await prefetch();
 
     const listings: string[][] = [];
@@ -168,6 +138,8 @@ Deno.test("production deps - one search serves every repo's open-PR guard (Issue
       recordingGh(listings),
     );
 
+    // All three logins came back, so the factory handed all three to the
+    // search — the fake returns nothing for an author the query omitted.
     assertEquals(inA.map((pr) => pr.number).sort(), [11, 12, 13]);
     assertEquals(inB, [], "a repo with no PR is answered without a call");
     assertEquals(listings, [], "no per-repo listing was issued");
@@ -175,23 +147,15 @@ Deno.test("production deps - one search serves every repo's open-PR guard (Issue
 });
 
 Deno.test("production deps - the prefetch issues one search for the whole owner (Issue #1486)", async () => {
-  const calls: string[][] = [];
-  await withDeps(searchGh(calls), async (prefetch) => {
+  const fake: FakeGh = fakeGithubPrSearch(PRS);
+  await withDeps(fake.gh, async (prefetch) => {
     await prefetch();
-    assertEquals(calls.length, 1, "two repos, one owner, one search");
-    assertEquals(calls[0]![0], "api");
-    assertEquals(calls[0]![1], "graphql");
-    const q = calls[0]!.find((a) => a.startsWith("q="));
-    assert(q !== undefined);
-    // The factory must hand over every login the listings ask about.
-    for (const login of [WORKER_USER, SIBLING, HUMAN]) {
-      assert(q.includes(`author:${login}`), `search must cover ${login}`);
-    }
+    assertEquals(fake.queries.length, 1, "two repos, one owner, one search");
   });
 });
 
 Deno.test("production deps - the maintenance scan reads the prefetched listing (Issue #1486)", async () => {
-  await withDeps(searchGh([]), async (prefetch, cache) => {
+  await withDeps(fakeGithubPrSearch(PRS).gh, async (prefetch, cache) => {
     await prefetch();
 
     const listings: string[][] = [];
@@ -210,7 +174,7 @@ Deno.test("production deps - the maintenance scan reads the prefetched listing (
 });
 
 Deno.test("production deps - the invitation lookup reads the prefetched listing (Issue #1486)", async () => {
-  await withDeps(searchGh([]), async (prefetch, cache) => {
+  await withDeps(fakeGithubPrSearch(PRS).gh, async (prefetch, cache) => {
     await prefetch();
 
     const listings: string[][] = [];

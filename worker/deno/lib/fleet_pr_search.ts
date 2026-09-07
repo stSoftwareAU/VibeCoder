@@ -64,6 +64,16 @@ export interface FleetSearchPr {
   autoMergeRequest: { enabledAt: string | null; mergeMethod: string } | null;
   comments: FleetSearchComment[];
   reviews: FleetSearchComment[];
+  /**
+   * True when the labels, comments or reviews connection held more entries
+   * than one page returned.
+   *
+   * The invitation predicate reads all three, and a mention sitting past the
+   * page would silently fail to admit an invited PR - so a truncated PR is
+   * reported rather than served, and its consumer falls back to the per-repo
+   * listing that pages properly.
+   */
+  detailTruncated: boolean;
 }
 
 /** Outcome of one owner-wide search. */
@@ -95,6 +105,33 @@ const DEFAULT_MAX_PAGES = 10;
 const DEFAULT_CONVERSATION_SIZE = 100;
 
 /**
+ * Trim, drop blanks, and de-duplicate logins case-insensitively (GitHub
+ * logins are), preserving first-seen casing and order.
+ *
+ * Exported so the prefetch normalises its author sets the same way the
+ * query builder does - one rule, one implementation.
+ *
+ * @param logins - Raw configured logins.
+ * @returns The normalised list.
+ */
+export function normaliseLogins(
+  logins: readonly (string | undefined)[] | undefined,
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of logins ?? []) {
+    if (typeof raw !== "string") continue;
+    const login = raw.trim();
+    if (login.length === 0) continue;
+    const key = login.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(login);
+  }
+  return out;
+}
+
+/**
  * Build the search query string for one owner.
  *
  * Repeated `author:` qualifiers are ORed by GitHub search, so every fleet
@@ -111,17 +148,7 @@ export function buildFleetPrSearchQuery(
 ): string | null {
   const trimmedOwner = owner.trim();
   if (trimmedOwner.length === 0) return null;
-  const seen = new Set<string>();
-  const logins: string[] = [];
-  for (const raw of authors) {
-    if (typeof raw !== "string") continue;
-    const login = raw.trim();
-    if (login.length === 0) continue;
-    const key = login.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    logins.push(login);
-  }
+  const logins = normaliseLogins(authors);
   if (logins.length === 0) return null;
   // `user:` matches organisation-owned repos as well as user-owned ones.
   return `is:pr is:open user:${trimmedOwner} ${
@@ -149,10 +176,16 @@ query($q: String!, $first: Int!, $after: String) {
         mergeable
         author { login }
         repository { nameWithOwner }
-        labels(first: 50) { nodes { name } }
+        labels(first: 50) { totalCount nodes { name } }
         autoMergeRequest { enabledAt mergeMethod }
-        comments(first: ${conversationSize}) { nodes { author { login } body } }
-        reviews(first: ${conversationSize}) { nodes { author { login } body } }
+        comments(first: ${conversationSize}) {
+          totalCount
+          nodes { author { login } body }
+        }
+        reviews(first: ${conversationSize}) {
+          totalCount
+          nodes { author { login } body }
+        }
       }
     }
   }
@@ -162,6 +195,12 @@ query($q: String!, $first: Int!, $after: String) {
 /** Read a string property, defaulting to `""`. */
 function str(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+/** The `totalCount` of a connection, or `null` when it was not requested. */
+function totalCount(value: unknown): number | null {
+  const count = (value as { totalCount?: unknown } | null)?.totalCount;
+  return typeof count === "number" ? count : null;
 }
 
 /** Project a GraphQL comment/review connection into the flat shape. */
@@ -199,6 +238,10 @@ function toSearchPr(node: unknown): FleetSearchPr | null {
       if (name !== "") labels.push(name);
     }
   }
+  const comments = toComments(rec.comments);
+  const reviews = toComments(rec.reviews);
+  const truncated = (count: number | null, fetched: number) =>
+    count !== null && count > fetched;
   const autoMerge = rec.autoMergeRequest as
     | { enabledAt?: unknown; mergeMethod?: unknown }
     | null
@@ -220,8 +263,11 @@ function toSearchPr(node: unknown): FleetSearchPr | null {
       enabledAt: str(autoMerge.enabledAt) || null,
       mergeMethod: str(autoMerge.mergeMethod),
     },
-    comments: toComments(rec.comments),
-    reviews: toComments(rec.reviews),
+    comments,
+    reviews,
+    detailTruncated: truncated(totalCount(rec.labels), labels.length) ||
+      truncated(totalCount(rec.comments), comments.length) ||
+      truncated(totalCount(rec.reviews), reviews.length),
   };
 }
 

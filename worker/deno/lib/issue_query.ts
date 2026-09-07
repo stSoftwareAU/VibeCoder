@@ -256,6 +256,14 @@ interface AllIssuesCacheEntry {
   limit: number;
   /** The issues returned by that listing. */
   issues: FilterableIssue[];
+  /**
+   * Rows GitHub returned, before parsing dropped any malformed ones.
+   *
+   * Exhaustion is judged on this, not on `issues.length`: a listing that hit
+   * its limit but lost one unparseable row would otherwise look short - and
+   * therefore complete - to a wider caller. Absent on a legacy entry.
+   */
+  rawCount?: number;
 }
 
 /**
@@ -277,7 +285,23 @@ function readAllIssuesEntry(cached: unknown): AllIssuesCacheEntry | null {
   if (typeof cached.limit !== "number" || !Array.isArray(cached.issues)) {
     return null;
   }
-  return { limit: cached.limit, issues: cached.issues as FilterableIssue[] };
+  return {
+    limit: cached.limit,
+    issues: cached.issues as FilterableIssue[],
+    ...(typeof cached.rawCount === "number"
+      ? { rawCount: cached.rawCount }
+      : {}),
+  };
+}
+
+/** Rows in a `gh issue list` payload, or `null` when it is unreadable. */
+function countListRows(output: string): number | null {
+  try {
+    const parsed: unknown = JSON.parse(output.trim() || "[]");
+    return Array.isArray(parsed) ? parsed.length : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The `--limit` a pre-#1486 cache entry was written with. */
@@ -299,7 +323,8 @@ const LEGACY_ALL_ISSUES_LIMIT = 100;
  * every later caller saw, so a pass that asked for 200 could silently be
  * handed a 100-issue listing. The limit the entry was fetched with is now
  * stored beside it and a narrower entry is refetched rather than served —
- * unless it came back short, which proves the listing was exhaustive.
+ * unless GitHub returned fewer rows than that limit, which proves the
+ * listing was exhaustive.
  *
  * @param repo - Repository in "owner/repo" format
  * @param cache - Optional cache instance
@@ -319,10 +344,8 @@ export async function fetchAllIssues(
     const entry = readAllIssuesEntry(await cache.read<unknown>(repo, cacheKey));
     // Serve when the cached listing is at least as wide as this request, or
     // when it came back short of its own limit (so nothing was truncated).
-    if (
-      entry !== null &&
-      (entry.limit >= limit || entry.issues.length < entry.limit)
-    ) {
+    const rows = entry === null ? 0 : entry.rawCount ?? entry.issues.length;
+    if (entry !== null && (entry.limit >= limit || rows < entry.limit)) {
       return entry.issues;
     }
   }
@@ -361,7 +384,12 @@ export async function fetchAllIssues(
 
   const issues = parseIssueListJson(output);
   if (cache) {
-    const entry: AllIssuesCacheEntry = { limit, issues };
+    const rawCount = countListRows(output);
+    const entry: AllIssuesCacheEntry = {
+      limit,
+      issues,
+      ...(rawCount === null ? {} : { rawCount }),
+    };
     await cache.write(repo, cacheKey, entry);
   }
   return issues;

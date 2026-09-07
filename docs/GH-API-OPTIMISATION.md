@@ -141,7 +141,17 @@ Three boundaries keep this from trading correctness for calls:
   cover, and the `forceRefresh` read-after-write re-check
   (`fetchOpenPRsByUser`, Issue #3150) all still issue `gh pr list`. Search is
   eventually consistent, so any path that needs read-after-write must keep
-  using it.
+  using it — and the duplicate guard does: `claimIssue` re-checks the repo it
+  is about to claim **live**, bypassing this cache, so a blind or stale
+  discovery-time answer cannot by itself open a duplicate PR.
+- **A conversation that did not fit one page is not served.** The invitation
+  predicate reads every label, comment and review, so the search asks for
+  each connection's `totalCount`; a PR holding more than one page is left to
+  the per-repo listing rather than admitted — or refused — on a partial read.
+- **A warm cycle costs nothing.** A per-owner marker is written beside the
+  entries and read before the next pass, so a second cycle inside the cache
+  TTL issues no search at all. An entry invalidated in the meantime simply
+  misses and falls back to its per-repo listing.
 - **Open PRs only.** The closed/merged half is deliberately left on its
   per-repo listing: `fetchRecentlyClosedPRsForFleet` treats a merged PR as a
   **permanent** skip regardless of age, and this fleet has ~8,500 closed PRs

@@ -4,11 +4,20 @@
  * The per-repo per-author `gh pr list` fan-out collapses into one GraphQL
  * search per owner. What must hold:
  *
- *   - one call covers every author (repeated `author:` qualifiers are ORed);
+ *   - one call covers every repo of the owner and every author;
  *   - the returned fields match what `gh pr list` gave the consumers;
  *   - paging follows `endCursor` rather than stopping at page one;
  *   - a result set larger than the page budget is reported as unusable, not
  *     served as a short listing that looks complete.
+ *
+ * The happy paths run against `fakeGithubPrSearch`, which models the search
+ * API's own rules — it reads the `q` variable and the selection set, so a
+ * query that named the wrong owner, dropped an author, forgot `is:open` or
+ * stopped requesting a field receives a truthfully wrong answer and the
+ * assertion goes red. Nothing here asserts the *text* of the query
+ * (CODING-STANDARDS: "Fake the external service, do not assert the
+ * request"). The failure paths use direct stubs, because what they model is
+ * the response, not the request.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -16,140 +25,129 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildFleetPrSearchQuery,
+  normaliseLogins,
   searchOpenFleetPrs,
 } from "../lib/fleet_pr_search.ts";
+import {
+  fakeGithubPrSearch,
+  type FakeSearchPr,
+} from "./support/github_graphql_fake.ts";
 
-/** Build one GraphQL search node as GitHub returns it. */
-function node(
-  overrides: Record<string, unknown> = {},
-): Record<string, unknown> {
-  return {
+/** The fleet's PRs, as the fake's GitHub holds them. */
+const PRS: FakeSearchPr[] = [
+  {
+    repo: "owner/repo-a",
     number: 7,
-    title: "Fix the thing (Issue #1)",
-    baseRefName: "main",
-    headRefName: "issue-1-fix",
-    headRefOid: "abc123",
-    createdAt: "2026-09-01T00:00:00Z",
-    updatedAt: "2026-09-02T00:00:00Z",
-    isDraft: false,
-    mergeable: "MERGEABLE",
-    author: { login: "VibeCoderST" },
-    repository: { nameWithOwner: "owner/repo-a" },
-    labels: { nodes: [{ name: "enhancement" }] },
+    author: "VibeCoderST",
+    labels: ["enhancement"],
     autoMergeRequest: {
       enabledAt: "2026-09-02T01:00:00Z",
       mergeMethod: "SQUASH",
     },
-    comments: { nodes: [{ author: { login: "alice" }, body: "@bot please" }] },
-    reviews: { nodes: [] },
-    ...overrides,
-  };
-}
+    comments: [{ author: "alice", body: "@bot please" }],
+  },
+  { repo: "owner/repo-b", number: 8, author: "stservice" },
+  // Invisible to this fleet's query: another owner, another author, closed.
+  { repo: "elsewhere/repo-c", number: 9, author: "VibeCoderST" },
+  { repo: "owner/repo-a", number: 10, author: "stranger" },
+  { repo: "owner/repo-a", number: 11, author: "VibeCoderST", state: "closed" },
+];
 
-/** A GraphQL search response envelope. */
-function response(
-  nodes: unknown[],
-  hasNextPage = false,
-  endCursor: string | null = null,
-): string {
-  return JSON.stringify({
-    data: {
-      search: {
-        issueCount: nodes.length,
-        pageInfo: { hasNextPage, endCursor },
-        nodes,
-      },
-    },
-  });
-}
-
-Deno.test("buildFleetPrSearchQuery - ORs every author into one query", () => {
-  const query = buildFleetPrSearchQuery("stSoftwareAU", [
-    "VibeCoderST",
-    "stservice",
-    "alice",
-  ]);
+Deno.test("normaliseLogins - drops blanks and case-duplicates, keeps casing", () => {
   assertEquals(
-    query,
-    "is:pr is:open user:stSoftwareAU author:VibeCoderST author:stservice " +
-      "author:alice",
+    normaliseLogins([" VibeCoderST ", "vibecoderst", "", "   ", "alice"]),
+    ["VibeCoderST", "alice"],
   );
 });
 
-Deno.test("buildFleetPrSearchQuery - drops blanks and case-duplicates", () => {
-  const query = buildFleetPrSearchQuery("owner", [
-    " VibeCoderST ",
-    "vibecoderst",
-    "",
-    "   ",
-  ]);
-  assertEquals(query, "is:pr is:open user:owner author:VibeCoderST");
-});
-
-Deno.test("buildFleetPrSearchQuery - null when nothing to search", () => {
+Deno.test("buildFleetPrSearchQuery - nothing to search yields no query", () => {
   assertEquals(buildFleetPrSearchQuery("", ["a"]), null);
   assertEquals(buildFleetPrSearchQuery("owner", []), null);
   assertEquals(buildFleetPrSearchQuery("owner", ["  "]), null);
 });
 
-Deno.test("searchOpenFleetPrs - one call covers every repo and author", async () => {
-  const calls: string[][] = [];
+Deno.test("searchOpenFleetPrs - one call returns every author's open PRs across the owner", async () => {
+  const fake = fakeGithubPrSearch(PRS);
   const result = await searchOpenFleetPrs({
     owner: "owner",
     authors: ["VibeCoderST", "stservice"],
-    ghCommandFn: (args) => {
-      calls.push(args);
-      return Promise.resolve(
-        response([
-          node(),
-          node({
-            number: 8,
-            repository: { nameWithOwner: "owner/repo-b" },
-            author: { login: "stservice" },
-          }),
-        ]),
-      );
-    },
+    ghCommandFn: fake.gh,
   });
 
   assert(result.ok, "search should succeed");
   assertEquals(result.calls, 1);
-  assertEquals(result.prs.length, 2);
+  // #7 and #8 only: the other owner, the other author and the closed PR are
+  // all excluded by the query the code actually sent.
+  assertEquals(result.prs.map((pr) => pr.number), [7, 8]);
   assertEquals(result.prs.map((pr) => pr.repo), [
     "owner/repo-a",
     "owner/repo-b",
   ]);
-  assertEquals(calls.length, 1);
-  assertEquals(calls[0]![0], "api");
-  assertEquals(calls[0]![1], "graphql");
-  const queryArg = calls[0]!.find((a) => a.startsWith("q="));
-  assert(queryArg !== undefined, "query variable must be passed");
-  assertStringIncludes(queryArg, "author:VibeCoderST");
-  assertStringIncludes(queryArg, "author:stservice");
+  assertEquals(fake.queries.length, 1);
+});
+
+Deno.test("searchOpenFleetPrs - an author left out of the query is not returned", async () => {
+  const fake = fakeGithubPrSearch(PRS);
+  const result = await searchOpenFleetPrs({
+    owner: "owner",
+    authors: ["VibeCoderST"],
+    ghCommandFn: fake.gh,
+  });
+
+  assert(result.ok);
+  assertEquals(result.prs.map((pr) => pr.number), [7]);
 });
 
 Deno.test("searchOpenFleetPrs - returns the fields gh pr list gave consumers", async () => {
   const result = await searchOpenFleetPrs({
     owner: "owner",
     authors: ["VibeCoderST"],
-    ghCommandFn: () => Promise.resolve(response([node()])),
+    ghCommandFn: fakeGithubPrSearch(PRS).gh,
   });
 
   assert(result.ok);
   const pr = result.prs[0]!;
   assertEquals(pr.number, 7);
-  assertEquals(pr.title, "Fix the thing (Issue #1)");
+  assertEquals(pr.title, "PR 7");
   assertEquals(pr.baseRefName, "main");
-  assertEquals(pr.headRefName, "issue-1-fix");
-  assertEquals(pr.headRefOid, "abc123");
+  assertEquals(pr.headRefName, "branch-7");
+  assertEquals(pr.headRefOid, "oid-7");
   assertEquals(pr.mergeable, "MERGEABLE");
   assertEquals(pr.author, "VibeCoderST");
+  assertEquals(pr.repo, "owner/repo-a");
   assertEquals(pr.labels, ["enhancement"]);
   assertEquals(pr.autoMergeRequest?.mergeMethod, "SQUASH");
   assertEquals(pr.comments, [
     { author: { login: "alice" }, body: "@bot please" },
   ]);
   assertEquals(pr.reviews, []);
+  assertEquals(pr.detailTruncated, false);
+});
+
+Deno.test("searchOpenFleetPrs - a conversation past the page is reported truncated", async () => {
+  const result = await searchOpenFleetPrs({
+    owner: "owner",
+    authors: ["VibeCoderST"],
+    conversationSize: 1,
+    ghCommandFn: fakeGithubPrSearch([
+      {
+        repo: "owner/repo-a",
+        number: 7,
+        author: "VibeCoderST",
+        comments: [{ author: "alice", body: "first" }],
+        // Two further comments GitHub holds but this page did not return.
+        extraComments: 2,
+      },
+    ]).gh,
+  });
+
+  assert(result.ok);
+  assertEquals(result.prs[0]!.comments.length, 1);
+  assertEquals(
+    result.prs[0]!.detailTruncated,
+    true,
+    "a mention could be sitting in the comments this page did not return",
+  );
 });
 
 Deno.test("searchOpenFleetPrs - missing author or auto-merge degrade safely", async () => {
@@ -157,11 +155,21 @@ Deno.test("searchOpenFleetPrs - missing author or auto-merge degrade safely", as
     owner: "owner",
     authors: ["VibeCoderST"],
     ghCommandFn: () =>
-      Promise.resolve(
-        response([
-          node({ author: null, autoMergeRequest: null, labels: { nodes: [] } }),
-        ]),
-      ),
+      Promise.resolve(JSON.stringify({
+        data: {
+          search: {
+            issueCount: 1,
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [{
+              number: 7,
+              repository: { nameWithOwner: "owner/repo-a" },
+              author: null,
+              autoMergeRequest: null,
+              labels: { nodes: [] },
+            }],
+          },
+        },
+      })),
   });
 
   assert(result.ok);
@@ -171,45 +179,32 @@ Deno.test("searchOpenFleetPrs - missing author or auto-merge degrade safely", as
 });
 
 Deno.test("searchOpenFleetPrs - pages through every result", async () => {
-  const calls: string[][] = [];
+  const fake = fakeGithubPrSearch(PRS);
   const result = await searchOpenFleetPrs({
     owner: "owner",
-    authors: ["VibeCoderST"],
+    authors: ["VibeCoderST", "stservice"],
+    // One PR per page, so the second page is only reached by following the
+    // cursor the fake handed back.
     pageSize: 1,
-    ghCommandFn: (args) => {
-      calls.push(args);
-      if (calls.length === 1) {
-        return Promise.resolve(response([node()], true, "CURSOR1"));
-      }
-      return Promise.resolve(response([node({ number: 8 })]));
-    },
+    ghCommandFn: fake.gh,
   });
 
   assert(result.ok);
   assertEquals(result.calls, 2);
   assertEquals(result.prs.map((pr) => pr.number), [7, 8]);
-  // The first page carries no cursor; the second resumes from endCursor.
-  assertEquals(calls[0]!.some((a) => a.startsWith("after=")), false);
-  assert(calls[1]!.includes("after=CURSOR1"));
 });
 
 Deno.test("searchOpenFleetPrs - refuses to serve a truncated result set", async () => {
-  let calls = 0;
+  const fake = fakeGithubPrSearch(PRS);
   const result = await searchOpenFleetPrs({
     owner: "owner",
-    authors: ["VibeCoderST"],
+    authors: ["VibeCoderST", "stservice"],
     pageSize: 1,
-    maxPages: 2,
-    ghCommandFn: () => {
-      calls++;
-      return Promise.resolve(
-        response([node({ number: calls })], true, `CURSOR${calls}`),
-      );
-    },
+    maxPages: 1,
+    ghCommandFn: fake.gh,
   });
 
-  assertEquals(result.ok, false);
-  assertEquals(calls, 2);
+  assertEquals(result.ok, false, "a page budget short of the result set fails");
   if (!result.ok) assertStringIncludes(result.reason, "truncated");
 });
 
@@ -217,7 +212,16 @@ Deno.test("searchOpenFleetPrs - a next page with no cursor is a failure", async 
   const result = await searchOpenFleetPrs({
     owner: "owner",
     authors: ["VibeCoderST"],
-    ghCommandFn: () => Promise.resolve(response([node()], true, null)),
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify({
+        data: {
+          search: {
+            issueCount: 2,
+            pageInfo: { hasNextPage: true, endCursor: null },
+            nodes: [],
+          },
+        },
+      })),
   });
 
   assertEquals(result.ok, false);
@@ -267,7 +271,7 @@ Deno.test("searchOpenFleetPrs - no author means no call at all", async () => {
     authors: [],
     ghCommandFn: () => {
       calls++;
-      return Promise.resolve(response([]));
+      return Promise.resolve("{}");
     },
   });
 

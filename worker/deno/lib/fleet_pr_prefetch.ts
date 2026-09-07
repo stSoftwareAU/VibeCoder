@@ -33,6 +33,15 @@
  * permanent skip regardless of age. A windowed search would silently drop
  * older merged PRs, so that path keeps its per-repo listing.
  *
+ * **What "no PRs" means here.** A monitored repo the search did not mention
+ * is cached as an empty listing - that is the whole saving, since learning a
+ * quiet repo is quiet must not cost a call. It rests on the search covering
+ * every repo of the owner it names, which is why the duplicate guard is not
+ * left resting on it: `claimIssue` re-checks the repo it is about to claim
+ * **live**, with `forceRefresh` bypassing this cache entirely (Issue #3150),
+ * so a discovery-time answer that was stale or blind cannot by itself open a
+ * duplicate PR.
+ *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
@@ -40,6 +49,7 @@ import type { IssueCache } from "./issue_cache.ts";
 import {
   type FleetPrSearchResult,
   type FleetSearchPr,
+  normaliseLogins,
   searchOpenFleetPrs,
 } from "./fleet_pr_search.ts";
 
@@ -68,6 +78,12 @@ export interface FleetPrPrefetchOptions {
   cache: IssueCache;
   /** Function to run gh commands. */
   ghCommandFn: (args: string[]) => Promise<string>;
+  /**
+   * Comments and reviews fetched per PR. A PR with more than this is not
+   * served to the invitation listing from here - see {@link
+   * prefetchFleetOpenPrs}. Defaults to the search module's own page size.
+   */
+  conversationSize?: number;
   /** Optional log sink; failures are always reported through it. */
   log?: (message: string) => void;
   /** Injectable search, for tests. */
@@ -80,6 +96,11 @@ export interface FleetPrPrefetchOptions {
 export interface FleetPrPrefetchResult {
   /** Owners whose search succeeded and populated the cache. */
   ownersServed: string[];
+  /**
+   * Owners skipped because a previous pass's entries are still inside the
+   * cache TTL, so this cycle needs no search at all.
+   */
+  ownersFresh: string[];
   /** Owners left on the per-repo path, each with the reason. */
   ownersSkipped: { owner: string; reason: string }[];
   /** `gh api graphql` calls issued. */
@@ -88,22 +109,6 @@ export interface FleetPrPrefetchResult {
   entriesWritten: number;
   /** Per-repo `gh pr list` calls this pass makes unnecessary. */
   listingsAvoided: number;
-}
-
-/** Trim, drop blanks, de-duplicate case-insensitively, keep first casing. */
-function distinct(logins: readonly string[] | undefined): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of logins ?? []) {
-    if (typeof raw !== "string") continue;
-    const login = raw.trim();
-    if (login.length === 0) continue;
-    const key = login.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(login);
-  }
-  return out;
 }
 
 /** The `prs_${author}` entry shape (`fetchOpenPRsByUser`). */
@@ -143,6 +148,26 @@ function toInvitationEntry(pr: FleetSearchPr) {
   };
 }
 
+/**
+ * Cache key of the per-owner freshness marker (Issue #1486).
+ *
+ * Written after a successful prefetch and read before the next one, so a
+ * warm cycle inside the cache TTL costs no search at all. It expires with
+ * the entries it stands for, and an entry invalidated in the meantime simply
+ * misses and falls back to its per-repo listing.
+ */
+const PREFETCH_MARKER_KEY = "prs_prefetch";
+
+/**
+ * The pseudo-repo the owner's freshness marker is filed under.
+ *
+ * `IssueCache` keys everything by repo, and the marker is owner-scoped; the
+ * leading underscore cannot collide with a real repository slug.
+ */
+function sentinelRepo(owner: string): string {
+  return `${owner}/_fleet-pr-prefetch`;
+}
+
 /** Owner half of an "owner/repo" slug, or `""` when malformed. */
 function ownerOf(repo: string): string {
   const slash = repo.indexOf("/");
@@ -168,16 +193,17 @@ export async function prefetchFleetOpenPrs(
   // maintenance scans and the invitation lookup resolve different sets, and
   // collapsing them here would populate an entry no consumer reads (or, worse,
   // leave one it does read empty).
-  const guardAuthors = distinct(options.guardAuthors);
-  const maintenanceAuthors = distinct(options.maintenanceAuthors);
-  const invitationAuthors = distinct(options.invitationAuthors);
-  const searchAuthors = distinct([
+  const guardAuthors = normaliseLogins(options.guardAuthors);
+  const maintenanceAuthors = normaliseLogins(options.maintenanceAuthors);
+  const invitationAuthors = normaliseLogins(options.invitationAuthors);
+  const searchAuthors = normaliseLogins([
     ...guardAuthors,
     ...maintenanceAuthors,
     ...invitationAuthors,
   ]);
   const result: FleetPrPrefetchResult = {
     ownersServed: [],
+    ownersFresh: [],
     ownersSkipped: [],
     searchCalls: 0,
     entriesWritten: 0,
@@ -200,10 +226,22 @@ export async function prefetchFleetOpenPrs(
 
   for (const repos of byOwner.values()) {
     const owner = ownerOf(repos[0] ?? "");
+    // A previous pass inside the cache TTL already wrote every entry this
+    // one would, so searching again would spend a call to overwrite live
+    // data with the same answer (Issue #1486). The marker expires with the
+    // entries it stands for.
+    const marker = sentinelRepo(owner);
+    if (await options.cache.read<unknown>(marker, PREFETCH_MARKER_KEY)) {
+      result.ownersFresh.push(owner);
+      continue;
+    }
     const outcome = await search({
       owner,
       authors: searchAuthors,
       ghCommandFn: options.ghCommandFn,
+      ...(options.conversationSize === undefined
+        ? {}
+        : { conversationSize: options.conversationSize }),
     });
     result.searchCalls += outcome.calls;
     if (!outcome.ok) {
@@ -244,18 +282,36 @@ export async function prefetchFleetOpenPrs(
           prsFor(author).map(toMaintenanceEntry),
         );
       }
+      let invitationsWritten = 0;
       for (const author of invitationAuthors) {
+        const prs = prsFor(author);
+        // The invitation predicate reads every label, comment and review, so
+        // a PR whose conversation did not fit one page must not be served
+        // from here - the per-repo listing pages it properly.
+        if (prs.some((pr) => pr.detailTruncated)) {
+          options.log?.(
+            `[fleet-pr-prefetch] ${repo}: invitation listing for ` +
+              `${author} left to the per-repo path - a PR's labels, ` +
+              `comments or reviews exceeded one page`,
+          );
+          continue;
+        }
         await options.cache.write(
           repo,
           `prs_invited_${author}`,
-          prsFor(author).map(toInvitationEntry),
+          prs.map(toInvitationEntry),
         );
+        invitationsWritten++;
       }
       const written = guardAuthors.length + maintenanceAuthors.length +
-        invitationAuthors.length;
+        invitationsWritten;
       result.entriesWritten += written;
       result.listingsAvoided += written;
     }
+    await options.cache.write(sentinelRepo(owner), PREFETCH_MARKER_KEY, {
+      owner,
+      repos: repos.length,
+    });
     result.ownersServed.push(owner);
   }
 
