@@ -37,7 +37,14 @@ function ruleset(overrides: Partial<RulesetDetail> = {}): RulesetDetail {
     rules: [
       {
         type: "required_status_checks",
-        parameters: { required_status_checks: [{ context: "semgrep" }] },
+        parameters: {
+          required_status_checks: [{ context: "semgrep" }],
+          // A correct milestone ruleset is exempt on create (Issue #3912
+          // follow-up): the checks gate the merge, but a branch that does not
+          // exist yet has no check runs to satisfy. Tests that want the
+          // defect override this explicitly.
+          do_not_enforce_on_create: true,
+        },
       },
     ],
     bypass_actors: [],
@@ -481,4 +488,63 @@ Deno.test("assessDefaultBranchAutoMerge - silent when auto-merge is available", 
     ),
     null,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Required checks enforced on branch CREATION (Issue #3912 follow-up)
+// ---------------------------------------------------------------------------
+
+Deno.test("assessMilestoneRuleset - checks enforced on branch creation are reported as an error", () => {
+  // The failure this catches, observed 2026-09-06: a repository whose
+  // `milestone/**` ruleset carried six PR-only checks refused the push that
+  // would CREATE a milestone branch — "5 of 6 required status checks are
+  // expected" — because a branch that does not exist yet has no check runs.
+  // Six issues on one milestone were stranded for twelve hours, each
+  // re-escalating to `needs-human` every time the label was cleared, because
+  // the cause was on the ruleset rather than on any issue.
+  //
+  // It hides on a host whose account holds an admin bypass, so the same fleet
+  // works on one machine and stalls on another. That is exactly why setup
+  // should say so rather than leave it to be discovered.
+  const findings = assessMilestoneRuleset(
+    [ruleset({
+      rules: [{
+        type: "required_status_checks",
+        parameters: {
+          required_status_checks: [{ context: "semgrep" }],
+          do_not_enforce_on_create: false,
+        },
+      }],
+    })],
+    ACCOUNT,
+  );
+  const created = findings.find((f) => f.code === "create-blocked");
+  assert(
+    created,
+    `expected create-blocked: ${JSON.stringify(codes(findings))}`,
+  );
+  assertEquals(created.severity, "error");
+  // The remedy must name the flag, and must NOT suggest removing the rule:
+  // `required_status_checks` is what makes the base protected, which is what
+  // lets auto-merge be armed at PR creation (`pr_auto_merge.ts`).
+  assert(created.message.includes("do_not_enforce_on_create"));
+  assert(created.message.includes("NOT remove the rule"));
+});
+
+Deno.test("assessMilestoneRuleset - a ruleset already exempt on create is not reported", () => {
+  // The shared fixture is already the correct shape, which is the point.
+  const findings = assessMilestoneRuleset([ruleset()], ACCOUNT);
+  assertEquals(findings.filter((f) => f.code === "create-blocked"), []);
+});
+
+Deno.test("assessMilestoneRuleset - a ruleset with no required checks raises no create finding", () => {
+  // Nothing to relax: with no `required_status_checks` there is no create-time
+  // enforcement to lift. It is reported as `no-required-checks` instead — a
+  // different problem, and one this check must not double-report.
+  const findings = assessMilestoneRuleset(
+    [ruleset({ rules: [{ type: "deletion" }] })],
+    ACCOUNT,
+  );
+  assertEquals(findings.filter((f) => f.code === "create-blocked"), []);
+  assert(codes(findings).includes("no-required-checks"));
 });
