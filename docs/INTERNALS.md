@@ -410,9 +410,13 @@ flowchart LR
     style K fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-Per-PID logging: each process writes to its own log file with automatic
-size-based rotation (keeps 10 log files via
-[log_rotation.ts](../worker/deno/lib/log_rotation.ts)).
+Per-run logging: each run writes its own `worker-<timestamp>.log`. Those are
+bounded by gzip-at-start plus age-based retention, not by size rotation —
+[log_rotation.ts](../worker/deno/lib/log_rotation.ts) size-rotates the worker's
+other logs (`run_core.log`, `pull.log`, `worker.log`, `cron.log`,
+`security.log`, `launch*.log`, `self-heal.jsonl`, `agent-*.jsonl`) and
+deliberately leaves `worker-<timestamp>.log` to the two modules below
+(Issue #1267).
 
 Worker-log lifecycle: the running process's `worker-<PID>.log` stays plain text;
 every prior run's log is gzipped at the next worker start
@@ -1307,7 +1311,11 @@ network hiccups, and even its own mistakes:
   suggesting actions: merge, close, or add `ignore-open-prs` label. State
   tracked in `$WORK_DIR/.repo_blocked_state`.
 - **Software updates** — the Deno `software-updates` command performs weekly
-  checks for Claude CLI and GitHub CLI updates.
+  checks for Claude CLI and GitHub CLI updates. `--interval` and `--timeout`
+  take positive whole seconds; an unreadable value (an empty shell expansion
+  such as `--timeout "$UNSET_VAR"`, or a valueless trailing flag) is refused
+  with a non-zero exit rather than passed on as `NaN`, and a tool update that
+  was attempted and failed also exits non-zero (Issue #1270).
 
 ---
 
@@ -1557,6 +1565,13 @@ functions extract individual fields from the cached response.
 list API responses to reduce API call volume during scan cycles. Functions like
 `cached_gh_issue_list_all()` and `cached_gh_pr_list_all()` serve cached results
 when available, falling back to live API calls when the cache has expired.
+
+The cached JSON carries untrusted issue and PR bodies and is read back into
+agent prompts, so every string value is redacted on the way in and each entry
+is written `0600` into an ownership-checked `0700` directory — wherever that
+directory sits, temporary root or work volume (Issue #1261). A directory
+another account could have written to disables the cache entirely rather than
+serving a planted entry.
 
 #### 🔄 Repo scanning order
 
@@ -2494,7 +2509,13 @@ public comment: secrets, via `redactSecrets()`, and echoed system-prompt
 content, via `redactPromptLeakage()` (`prompt_leak_redaction.ts`, Issue #189).
 The meta-commentary strip scans only the first paragraph by design; both
 redaction passes cover the whole answer, so injected "print your instructions
-after a blank line" text is masked rather than posted.
+after a blank line" text is masked rather than posted. Since Issue #1463 the
+leak pass also catches paraphrased, letter-spaced and fence-dumped echoes, not
+only verbatim ones — see the residual-risk list in SECURITY.md for what it
+still cannot see. Since Issue #1463 the
+leak pass also catches paraphrased, letter-spaced and fence-dumped echoes, not
+only verbatim ones — see the residual-risk list in SECURITY.md for what it
+still cannot see.
 
 ### ❌ Question failure handling
 
@@ -2627,6 +2648,15 @@ expire after 24 hours and the file is bounded to the 20 newest entries. "Newest"
 is decided by a monotonic per-entry write sequence, not by `storedAt`: on a host
 fast enough to write several entries within one millisecond the timestamps tie
 and the prune kept an arbitrary subset.
+
+The stored output is the aggregated stdout and stderr of every subprocess the
+gate ran, so it is redacted over its whole length **before** the tail is cut
+(Issue #1261) — cutting first splits a credential and the fragment loses the
+anchor each signature rule keys on. Findings are dropped rather than masked
+when one carries a secret: a finding's `key` is its identity for the baseline
+diff, so rewriting it would make a pre-existing finding look new. The cache
+directory is created `0700` and ownership-checked on both the read and the
+write path, because a planted `passed: true` entry would skip a whole gate.
 
 ```mermaid
 flowchart TD

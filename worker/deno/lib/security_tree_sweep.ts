@@ -29,6 +29,9 @@
  * by fingerprint (rule family + path + line window), classified against the
  * committed baseline (`.github/security-tree-sweep-baseline.json`, one
  * justification per entry) and rendered to a deterministic Markdown report.
+ * A cluster only the worker source reported is `tracked` rather than new: it
+ * mirrors an open `security` issue, so it is already owned and it clears when
+ * that issue closes (Issue #1518).
  * `fileIssues` files one GitHub issue per NEW cluster with a stable
  * `SWEEP-<hex>` id, most important first, deduplicated against the issues
  * already open, capped per run so the fleet is not flooded.
@@ -44,6 +47,8 @@
  */
 
 import { parseHttpStatus } from "./alert_feeds/code_scanning_alerts.ts";
+import { runGitCommand } from "./git_timeout.ts";
+import { runWithTimeout } from "./subprocess_timeout.ts";
 import { runGhCommand } from "./github.ts";
 import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import { listAllOpenIssueTitles } from "./idle_task_snapshot.ts";
@@ -55,6 +60,7 @@ import {
   stripSeverityEmoji,
 } from "./security_sarif.ts";
 import { runSecurityScan } from "./security_scanner.ts";
+import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -94,7 +100,11 @@ export interface SweepFinding {
 }
 
 /** Baseline classification of a deduplicated cluster. */
-export type ClusterStatus = "new" | "false-positive" | "accepted";
+export type ClusterStatus =
+  | "new"
+  | "false-positive"
+  | "accepted"
+  | "tracked";
 
 /** Findings from every source that share one fingerprint. */
 export interface SweepCluster {
@@ -120,7 +130,10 @@ export interface SweepRow extends SweepCluster {
   status: ClusterStatus;
   /** Baseline reason, when baselined. */
   reason?: string;
-  /** Tracking issue number, when the baseline names one. */
+  /**
+   * Tracking issue number — the one the baseline names, or the open
+   * `security` issue a `tracked` cluster mirrors (Issue #1518).
+   */
   issue?: number;
 }
 
@@ -259,6 +272,11 @@ export interface SweepRunResult {
   sourceStatus: SourceStatus[];
   rows: SweepRow[];
   newRows: SweepRow[];
+  /**
+   * Clusters the worker scan alone reported, each mirroring an open
+   * `security` issue — already tracked, so not unbaselined (Issue #1518).
+   */
+  trackedRows: SweepRow[];
   /** New clusters whose id already has an open issue. */
   alreadyOpen: SweepRow[];
   filed: FiledIssue[];
@@ -1212,14 +1230,47 @@ function entryMatches(
 }
 
 /**
- * Classify each cluster against the baseline: `false-positive`, `accepted`
- * or `new`. Also reports baseline entries that matched nothing (stale — not
- * fatal, but a stale entry suppresses nothing and should be removed).
+ * The open `security` issue a worker-scan-only cluster mirrors, or `null`
+ * when the cluster is not one (Issue #1518).
+ *
+ * The worker source harvests **open** `security` issues, so such a cluster
+ * exists precisely because a tracking issue is open: it is already triaged,
+ * already owned, and it leaves the sweep the moment that issue closes.
+ * Counting it as unbaselined made the gate red for the whole life of the
+ * security backlog — every run failed, so nobody could tell a new finding
+ * from the standing list, and the sweep reported nothing anybody read.
+ *
+ * A cluster a scanner also reported is deliberately **not** this: semgrep or
+ * CodeQL seeing the same site makes it a code finding, and it is triaged as
+ * one. Baselining is never the answer either — the finding is real, and it
+ * disappears by being fixed, not by being silenced.
+ */
+function trackingIssue(cluster: SweepCluster): number | null {
+  if (cluster.sources.length !== 1 || cluster.sources[0] !== "worker-scan") {
+    return null;
+  }
+  for (const finding of cluster.findings) {
+    const match = /^#(\d+)$/.exec(finding.ref ?? "");
+    if (match !== null) return Number(match[1]);
+  }
+  return null;
+}
+
+/**
+ * Classify each cluster against the baseline: `false-positive`, `accepted`,
+ * `tracked` (mirrors an open `security` issue — Issue #1518) or `new`. Also
+ * reports baseline entries that matched nothing (stale — not fatal, but a
+ * stale entry suppresses nothing and should be removed).
  */
 export function classifyClusters(
   clusters: readonly SweepCluster[],
   baseline: SweepBaseline,
-): { rows: SweepRow[]; newRows: SweepRow[]; staleEntries: string[] } {
+): {
+  rows: SweepRow[];
+  newRows: SweepRow[];
+  trackedRows: SweepRow[];
+  staleEntries: string[];
+} {
   const usedFp = new Set<number>();
   const usedAccepted = new Set<number>();
   const rows: SweepRow[] = clusters.map((cluster) => {
@@ -1247,6 +1298,10 @@ export function classifyClusters(
         ...(entry.issue !== undefined ? { issue: entry.issue } : {}),
       };
     }
+    const tracked = trackingIssue(cluster);
+    if (tracked !== null) {
+      return { ...cluster, status: "tracked", issue: tracked };
+    }
     return { ...cluster, status: "new" };
   });
   const staleEntries = [
@@ -1256,6 +1311,7 @@ export function classifyClusters(
   return {
     rows,
     newRows: rows.filter((r) => r.status === "new"),
+    trackedRows: rows.filter((r) => r.status === "tracked"),
     staleEntries,
   };
 }
@@ -1362,6 +1418,8 @@ export interface RenderSweepReportOptions {
   sourceStatus: readonly SourceStatus[];
   rows: readonly SweepRow[];
   newRows: readonly SweepRow[];
+  /** Clusters that mirror an open `security` issue (Issue #1518). */
+  trackedRows: readonly SweepRow[];
   alreadyOpen: readonly SweepRow[];
   filed: readonly FiledIssue[];
   deferred: readonly SweepRow[];
@@ -1394,6 +1452,7 @@ export function renderSweepReport(options: RenderSweepReportOptions): string {
     sourceStatus,
     rows,
     newRows,
+    trackedRows,
     alreadyOpen,
     filed,
     deferred,
@@ -1437,22 +1496,23 @@ export function renderSweepReport(options: RenderSweepReportOptions): string {
   }
   lines.push("", "## Summary", "");
   lines.push(
-    "| Severity | Deduplicated | New | Baselined |",
-    "| -------- | -----------: | --: | --------: |",
+    "| Severity | Deduplicated | New | Tracked | Baselined |",
+    "| -------- | -----------: | --: | ------: | --------: |",
   );
   const severities: SweepSeverity[] = ["critical", "high", "medium", "low"];
   for (const severity of severities) {
     const all = rows.filter((r) => r.severity === severity);
     const fresh = all.filter((r) => r.status === "new");
+    const tracked = all.filter((r) => r.status === "tracked");
     lines.push(
-      `| ${severity} | ${all.length} | ${fresh.length} | ${
-        all.length - fresh.length
+      `| ${severity} | ${all.length} | ${fresh.length} | ${tracked.length} | ${
+        all.length - fresh.length - tracked.length
       } |`,
     );
   }
   lines.push(
-    `| **total** | **${rows.length}** | **${newRows.length}** | **${
-      rows.length - newRows.length
+    `| **total** | **${rows.length}** | **${newRows.length}** | **${trackedRows.length}** | **${
+      rows.length - newRows.length - trackedRows.length
     }** |`,
     "",
     "## Triage table",
@@ -1510,6 +1570,26 @@ export function renderSweepReport(options: RenderSweepReportOptions): string {
     lines.push("");
   }
 
+  if (trackedRows.length > 0) {
+    lines.push(
+      "## Tracked by an open issue",
+      "",
+      "Reported by the worker scan alone, so each of these *is* an open",
+      "`security` issue in this repository — already triaged and already",
+      "owned. They leave the sweep when their issue closes, so they are not",
+      "baseline material and they do not fail the run (Issue #1518).",
+      "",
+    );
+    for (const row of trackedRows) {
+      const detail = row.findings.map((f) => `\`${f.ruleId}\``).join("; ");
+      lines.push(
+        `- \`${row.id}\` ${SEVERITY_EMOJI[row.severity]} ${row.family} — ` +
+          `${detail}${row.issue !== undefined ? ` (#${row.issue})` : ""}`,
+      );
+    }
+    lines.push("");
+  }
+
   if (staleEntries.length > 0) {
     lines.push(
       "## Stale baseline entries",
@@ -1524,7 +1604,13 @@ export function renderSweepReport(options: RenderSweepReportOptions): string {
 
   lines.push("## Verdict", "");
   if (baselineErrors.length === 0 && newRows.length === 0) {
-    lines.push("✅ No unbaselined findings.", "");
+    lines.push(
+      "✅ No unbaselined findings." +
+        (trackedRows.length > 0
+          ? ` ${trackedRows.length} finding(s) tracked by an open issue.`
+          : ""),
+      "",
+    );
   } else {
     if (newRows.length > 0) {
       lines.push(
@@ -1561,6 +1647,10 @@ function statusCell(
       return row.issue !== undefined
         ? `accepted (#${row.issue})`
         : "accepted (baselined)";
+    case "tracked":
+      return row.issue !== undefined
+        ? `tracked (#${row.issue})`
+        : "tracked (open issue)";
     default: {
       const filedIssue = filedById.get(row.id);
       if (filedIssue !== undefined) {
@@ -1763,28 +1853,84 @@ async function fileSweepIssue(
 // Default deps
 // ---------------------------------------------------------------------------
 
-/** Default runner — spawns the tool as a subprocess. */
-const defaultRunner: SweepCommandRunner = async (cmd, cwd) => {
-  let output: Deno.CommandOutput;
-  try {
-    output = await new Deno.Command(cmd.bin, {
-      args: cmd.args,
+/**
+ * Names the scanners need on top of the untrusted-command allowlist.
+ *
+ * `docker`/`podman` reach their daemon through these; without them the
+ * container path fails to start at all. Neither carries a credential.
+ */
+const SCANNER_ENV_NAMES: readonly string[] = [
+  "DOCKER_HOST",
+  "XDG_RUNTIME_DIR",
+];
+
+/**
+ * Bound on a scanner spawn (Issue #1228).
+ *
+ * A scanner reads the tree being swept — content whose author is the
+ * attacker in this threat model — so an unbounded spawn is a hang that
+ * starves the worker's watchdogs, not a slow scan. Fifteen minutes is
+ * generous for semgrep over a large tree, including the container pull.
+ */
+export const SWEEP_SCANNER_TIMEOUT_MS = 900_000;
+
+/**
+ * Build the default runner — spawns the tool as a subprocess.
+ *
+ * Issue #1227: the binary comes from `cmd.bin`, and the coverage measurement
+ * passes `"git"` — a direct `git` spawn the literal-matching chokepoint gate
+ * could not see. It is delegated to `runGitCommand`, which owns the timeout,
+ * the audit journal and the work-volume fault detector; the scanners
+ * (gitleaks, trufflehog, semgrep) are spawned directly, under
+ * {@link SWEEP_SCANNER_TIMEOUT_MS} (Issue #1228). A timed-out scanner returns
+ * exit 124, which every collector already treats as a fault rather than a
+ * clean scan.
+ *
+ * `runFn` is injectable so the bound is unit-tested without a subprocess.
+ */
+export function createDefaultRunner(
+  runFn: typeof runWithTimeout = runWithTimeout,
+): SweepCommandRunner {
+  return async (cmd, cwd) => {
+    if (cmd.bin === "git") {
+      const result = await runGitCommand([...cmd.args], { cwd });
+      // Fail loud, matching the spawn-failure contract below.
+      if (!result.ok) {
+        throw new Error(
+          `failed to run "git": ${result.error.message}. ` +
+            `Install git before running the sweep.`,
+        );
+      }
+      return result.value;
+    }
+
+    const result = await runFn(cmd.bin, [...cmd.args], {
       cwd,
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-  } catch (error) {
-    throw new Error(
-      `failed to run "${cmd.bin}": ${(error as Error).message}. ` +
-        `Install ${cmd.bin} before running the sweep.`,
-    );
-  }
-  return {
-    code: output.code,
-    stdout: new TextDecoder().decode(output.stdout),
-    stderr: new TextDecoder().decode(output.stderr),
+      timeoutMs: SWEEP_SCANNER_TIMEOUT_MS,
+      // Issue #1226: this runs a scanner (or a container image of one) over
+      // attacker-authored tree content, so its environment is BUILT from the
+      // allowlist rather than inherited. The container-runtime names are the
+      // only additions — a rootless podman or a remote Docker daemon is
+      // unreachable without them, and neither carries a credential.
+      env: buildUntrustedCommandEnv({ extraNames: SCANNER_ENV_NAMES }),
+      clearEnv: true,
+    });
+    if (!result.ok) {
+      throw new Error(
+        `failed to run "${cmd.bin}": ${result.error.message}. ` +
+          `Install ${cmd.bin} before running the sweep.`,
+      );
+    }
+    return {
+      code: result.value.code,
+      stdout: result.value.stdout,
+      stderr: result.value.stderr,
+    };
   };
-};
+}
+
+/** Default runner used in production. */
+const defaultRunner: SweepCommandRunner = createDefaultRunner();
 
 /** Resolve `bin` on PATH without spawning anything. */
 async function defaultWhich(bin: string): Promise<string | null> {
@@ -2058,7 +2204,10 @@ export async function runSecurityTreeSweep(
     // back to the line anchor rather than failing the sweep.
     (path, line) => readTreeLine(options.repoDir, path, line),
   );
-  const { rows, newRows, staleEntries } = classifyClusters(clusters, baseline);
+  const { rows, newRows, trackedRows, staleEntries } = classifyClusters(
+    clusters,
+    baseline,
+  );
 
   // Dedup against the issues already open, whichever mode we are in — the
   // report says "already open" either way, and filing skips them.
@@ -2107,6 +2256,7 @@ export async function runSecurityTreeSweep(
     sourceStatus,
     rows,
     newRows,
+    trackedRows,
     alreadyOpen,
     filed,
     deferred,
@@ -2124,6 +2274,7 @@ export async function runSecurityTreeSweep(
     ok,
     rows: rows.length,
     newRows: newRows.length,
+    trackedRows: trackedRows.length,
     alreadyOpen: alreadyOpen.length,
     filed: filed.length,
     deferred: deferred.length,
@@ -2137,6 +2288,7 @@ export async function runSecurityTreeSweep(
     sourceStatus,
     rows,
     newRows,
+    trackedRows,
     alreadyOpen,
     filed,
     deferred,
@@ -2153,6 +2305,7 @@ function buildSummary(counts: {
   ok: boolean;
   rows: number;
   newRows: number;
+  trackedRows: number;
   alreadyOpen: number;
   filed: number;
   deferred: number;
@@ -2162,7 +2315,13 @@ function buildSummary(counts: {
   const scope = `${counts.rows} deduplicated finding(s) across ` +
     `${counts.trackedFiles} tracked file(s)`;
   if (counts.ok) {
-    return `✅ Whole-tree security sweep clean: ${scope}, all baselined.`;
+    // A tracked finding is not baselined — it is an open issue — so the
+    // clean line must not claim it was (Issue #1518).
+    const triaged = counts.trackedRows > 0
+      ? `all baselined or tracked (${counts.trackedRows} tracked by an ` +
+        `open issue)`
+      : "all baselined";
+    return `✅ Whole-tree security sweep clean: ${scope}, ${triaged}.`;
   }
   const problems: string[] = [];
   if (counts.baselineErrors > 0) {
@@ -2179,6 +2338,9 @@ function buildSummary(counts: {
     if (parts.length > 0) text += ` (${parts.join(", ")})`;
     problems.push(text);
   }
+  const tracked = counts.trackedRows > 0
+    ? `, ${counts.trackedRows} tracked by an open issue`
+    : "";
   return `❌ Whole-tree security sweep failed: ${problems.join(", ")} ` +
-    `(${scope}).`;
+    `(${scope}${tracked}).`;
 }

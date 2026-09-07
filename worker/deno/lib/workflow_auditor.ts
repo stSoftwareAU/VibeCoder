@@ -101,7 +101,7 @@ export interface WorkflowAuditResult {
  * while the quality gate's literal-string scan saw nothing. Any other binary
  * is refused loudly rather than spawned outside the chokepoint.
  */
-function createDefaultRunCommand(
+export function createDefaultRunCommand(
   ghConfigDir?: string,
 ): (cmd: string[]) => Promise<CommandOutput> {
   const env = ghConfigDir ? { GH_CONFIG_DIR: ghConfigDir } : undefined;

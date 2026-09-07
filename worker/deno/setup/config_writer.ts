@@ -13,6 +13,7 @@
 
 import {
   applyServiceAccountDefault,
+  dedupeConfigRepos,
   loadExistingConfig,
   mergeNonInteractive,
   pruneOrphanRepoConfig,
@@ -21,6 +22,7 @@ import {
 } from "./config_setup.ts";
 import { UPDATE_MODES } from "../lib/config_defaults.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
+import { expandHome, runSetupCommand } from "./setup_command_runner.ts";
 import type { PinnedToolVersions, Result, UpdateMode } from "../types.ts";
 
 export {
@@ -81,35 +83,27 @@ export interface ConfigSetupDeps {
   resolveWorkerLogin?: (ghConfigDir?: string) => Promise<string | undefined>;
 }
 
-/** Expand a leading `~` to $HOME so `gh` reads the right config dir. */
-function expandHome(path: string | undefined): string | undefined {
-  if (!path) return undefined;
-  return path.replace(/^~/, Deno.env.get("HOME") ?? "~");
-}
-
 /**
  * Resolve the authenticated worker login via `gh api user` (Issue #4030).
  *
  * Mirrors the lookup the collaborator precheck does. Returns undefined on any
  * failure — the caller must warn loudly, because an unresolved login leaves
  * the identity guard inactive.
+ *
+ * Routed through the shared setup runner (Issue #1259): this spawned `gh`
+ * itself, outside the write-repo allowlist, the body redaction and the audit
+ * journal that `spawnGh` owns.
  */
 async function resolveWorkerLoginViaGh(
   ghConfigDir?: string,
 ): Promise<string | undefined> {
   try {
-    const env = ghConfigDir
-      ? { ...Deno.env.toObject(), GH_CONFIG_DIR: ghConfigDir }
-      : undefined;
-    const output = await new Deno.Command("gh", {
-      args: ["api", "user", "--jq", ".login"],
-      stdout: "piped",
-      stderr: "piped",
-      env,
-    }).output();
+    const output = await runSetupCommand(
+      ["gh", "api", "user", "--jq", ".login"],
+      ghConfigDir,
+    );
     if (!output.success) return undefined;
-    const login = new TextDecoder().decode(output.stdout).trim();
-    return login.length > 0 ? login : undefined;
+    return output.stdout.length > 0 ? output.stdout : undefined;
   } catch {
     return undefined;
   }
@@ -129,10 +123,19 @@ export async function runConfigSetup(
   try {
     const existing = await loadExistingConfig(configPath);
     const merged = mergeNonInteractive(existing, env);
+    // Issue #1546: one repository listed under two casings is one
+    // repository. Collapse it before anything downstream keys off the
+    // spelling, and name the entry that was dropped.
+    const { config: deduped, warnings: duplicateWarnings } = dedupeConfigRepos(
+      merged,
+    );
+    const warnings = [...duplicateWarnings];
     // Issue #4033: drop dead per-repo config, reporting every removal.
-    const { config: pruned, removed } = pruneOrphanRepoConfig(merged);
-    const warnings = removed.map((repo) =>
-      `Removed repo_config entry for '${repo}' — not in repos`
+    const { config: pruned, removed } = pruneOrphanRepoConfig(deduped);
+    warnings.push(
+      ...removed.map((repo) =>
+        `Removed repo_config entry for '${repo}' — not in repos`
+      ),
     );
 
     // Issue #4030: never leave the #3528 identity guard inactive. Resolve the

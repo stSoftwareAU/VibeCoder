@@ -183,6 +183,15 @@ export interface MergeConflictProcessorDeps {
   abandonRestartFn?: (
     request: AbandonRestartRequest,
   ) => Promise<AbandonRestartOutcome>;
+  /**
+   * Fleet logins whose marker comments count (Issue #1247), passed through to
+   * the abandon rung.
+   *
+   * Left empty, a restart claim on the originating issue cannot be
+   * attributed, so the rung declines and the conflict rests at `needs-human`
+   * naming that route — loud and non-destructive, never a silent close.
+   */
+  trustedAuthors?: readonly string[];
 }
 
 const DEFAULT_CLAUDE_TIMEOUT = OPERATIONAL_DEFAULTS.prFeedbackTimeout;
@@ -1396,6 +1405,7 @@ async function failAttempt(
       abandonAndRestart(request, {
         gh: deps.github.runGhCommand,
         logger,
+        trustedAuthors: processorDeps.trustedAuthors ?? [],
       })))({
       repo,
       prNumber,

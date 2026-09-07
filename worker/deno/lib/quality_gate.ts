@@ -29,8 +29,16 @@ import {
 import { recordFaultEvent } from "./fault_tolerance_counters.ts";
 import { scanDirectoriesForHardcodedBranches } from "./hardcoded_branch_check.ts";
 import { scanDirectoriesForDirectNeedsHuman } from "./needs_human_direct_label_check.ts";
-import { scanDirectoriesForGhSpawn } from "./gh_spawn_chokepoint_check.ts";
-import { scanDirectoriesForGitSpawn } from "./git_spawn_chokepoint_check.ts";
+import {
+  GH_SPAWN_SCAN_DIRS,
+  scanDirectoriesForGhSpawn,
+} from "./gh_spawn_chokepoint_check.ts";
+import {
+  GIT_SPAWN_SCAN_DIRS,
+  scanDirectoriesForGitSpawn,
+} from "./git_spawn_chokepoint_check.ts";
+import { scanDirectoriesForRedactInversion } from "./redact_truncate_order_check.ts";
+import { scanDirectoriesForSharedTmpPath } from "./tmp_state_dir_check.ts";
 import { scanDirectoriesForHomeWorkDir } from "./home_workdir_check.ts";
 import { scanDirectoriesForGitRefArgv } from "./git_ref_argv_check.ts";
 import {
@@ -476,17 +484,21 @@ async function runNeedsHumanHelperCheck(
 /**
  * Run the `gh` spawn chokepoint check (Issue #3703).
  *
- * Scans Deno lib/ and commands/ source files for a direct
- * `new Deno.Command("gh", …)`. Such a spawn bypasses both the per-run
+ * Scans Deno lib/, commands/ and setup/ source files (Issue #1259) for a
+ * direct `new Deno.Command("gh", …)`. Such a spawn bypasses both the per-run
  * write-repo allowlist and the audit journal, which is exactly how ~20
  * modules had drifted away from the documented chokepoint. The only
  * permitted spawn is the chokepoint itself (`worker/deno/lib/gh_spawn.ts`).
+ *
+ * A spawn whose binary is a variable counts too (Issue #1227): five modules
+ * wrote `new Deno.Command(cmd[0]!, …)` and were handed `["gh", …]` by their
+ * callers, so they spawned `gh` while this check reported a clean tree.
  */
 async function runGhSpawnChokepointCheck(
   config: QualityGateConfig,
 ): Promise<CheckExecutionResult> {
   const name = "gh spawn chokepoint";
-  const relDirs = ["worker/deno/lib", "worker/deno/commands"];
+  const relDirs = GH_SPAWN_SCAN_DIRS;
 
   let hasDirs = false;
   for (const relDir of relDirs) {
@@ -525,6 +537,10 @@ async function runGhSpawnChokepointCheck(
     "spawn skips the per-run write-repo allowlist and the audit journal.",
     "Route the call through `spawnGh`/`runGhOrThrow` in",
     "`worker/deno/lib/gh_spawn.ts` instead.",
+    "",
+    "A spawn whose binary is a variable (`new Deno.Command(cmd[0]!, …)`) in a",
+    "module that names `gh` in an argv literal counts too (Issue #1227) —",
+    "delegate `gh` to the chokepoint and spawn other binaries directly.",
   ].join("\n");
 
   return {
@@ -535,20 +551,91 @@ async function runGhSpawnChokepointCheck(
 }
 
 /**
+ * Run the redact-before-truncate order check (Issue #1257).
+ *
+ * Scans Deno lib/ and commands/ source files for a truncation nested inside a
+ * redaction call — `redactSecrets(truncateLogTail(log, maxBytes))` and the
+ * `.slice()` variants. `SECURITY.md` requires the opposite order: cutting
+ * first splits a credential, and the fragment left in the kept text matches no
+ * signature rule on the later pass. Fourteen sinks had drifted into the
+ * inversion, two of them documenting it as deliberate.
+ */
+async function runRedactTruncateOrderCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const name = "redact before truncate";
+  const relDirs = ["worker/deno/lib", "worker/deno/commands"];
+
+  let hasDirs = false;
+  for (const relDir of relDirs) {
+    try {
+      const stat = await Deno.stat(`${config.scriptDir}/${relDir}`);
+      if (stat.isDirectory) hasDirs = true;
+    } catch { /* directory doesn't exist */ }
+  }
+
+  if (!hasDirs) {
+    return {
+      name,
+      status: "SKIPPED",
+      output: "deno source directories not found",
+    };
+  }
+
+  const result = await scanDirectoriesForRedactInversion(
+    config.scriptDir,
+    relDirs,
+  );
+
+  if (result.violations.length === 0) {
+    return {
+      name,
+      status: "PASSED",
+      output:
+        `redact before truncate: PASSED (${result.filesScanned} files scanned)`,
+    };
+  }
+
+  const output = [
+    ...result.violations.map(
+      (v) => `VIOLATION: ${v.file}:${v.line}: ${v.text}`,
+    ),
+    "",
+    "A truncation runs inside a redaction call (Issue #1257). Cutting first",
+    "splits a credential — most damagingly a PEM block, whose END marker",
+    "falls past the cut — and the fragment matches no rule on the later pass.",
+    "",
+    "Redact the whole text first: use `redactedTail`/`redactedHead`/",
+    "`redactedLineTail`/`redactedLogTail` from",
+    "`worker/deno/lib/redacted_text.ts`, or call `redactSecrets()` on the",
+    "untruncated text and cut its result.",
+  ].join("\n");
+
+  return {
+    name,
+    status: "FAILED",
+    output: `redact before truncate: FAILED\n${output}`,
+  };
+}
+
+/**
  * Run the `git` spawn chokepoint check (Issue #1214).
  *
- * Scans Deno lib/ and commands/ source files for a direct
- * `new Deno.Command("git", …)`. Such a spawn bypasses the timeout, the audit
+ * Scans Deno lib/, commands/ and setup/ source files (Issue #1259) for a
+ * direct `new Deno.Command("git", …)`. Such a spawn bypasses the timeout, the audit
  * journal and the work-volume fault detector that `runGitCommand` owns — the
  * unpushed-work rescue in `stale_workdir.ts` was pushing to a remote outside
  * all three. The only permitted spawn is the chokepoint itself
  * (`worker/deno/lib/git_timeout.ts`).
+ *
+ * A spawn whose binary is a variable counts too (Issue #1227) — three further
+ * modules named `git` only in the argv they passed to their own runner.
  */
 async function runGitSpawnChokepointCheck(
   config: QualityGateConfig,
 ): Promise<CheckExecutionResult> {
   const name = "git spawn chokepoint";
-  const relDirs = ["worker/deno/lib", "worker/deno/commands"];
+  const relDirs = GIT_SPAWN_SCAN_DIRS;
 
   let hasDirs = false;
   for (const relDir of relDirs) {
@@ -588,6 +675,10 @@ async function runGitSpawnChokepointCheck(
     "mutation never reaches the audit journal. Route the call through",
     "`runGitCommand`/`runGitCommandChecked` in",
     "`worker/deno/lib/git_timeout.ts` instead.",
+    "",
+    "A spawn whose binary is a variable (`new Deno.Command(call.bin, …)`) in a",
+    "module that names `git` in an argv literal counts too (Issue #1227) —",
+    "delegate `git` to the chokepoint and spawn other binaries directly.",
   ].join("\n");
 
   return {
@@ -672,6 +763,74 @@ async function runHomeWorkDirGuardCheck(
     name,
     status: "FAILED",
     output: `host work-dir guard: FAILED\n${output}`,
+  };
+}
+
+/**
+ * Run the shared-tmp state directory check (Issue #1242, SEC-1215-06).
+ *
+ * Scans the Deno source tree for a worker state directory composed from the
+ * host's shared temporary root by hand — the residual class Issue #1215 left
+ * behind in the label cache, the MCP config, the audit journal, the repo
+ * failure counters and the browser profile. Such a path is the same for every
+ * account on the host, so whoever creates it first owns what the worker later
+ * reads back.
+ */
+async function runTmpStateDirCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const name = "tmp state dir chokepoint";
+  const relDirs = [
+    "worker/deno/lib",
+    "worker/deno/commands",
+    "worker/deno/setup",
+  ];
+
+  let hasDirs = false;
+  for (const relDir of relDirs) {
+    try {
+      const stat = await Deno.stat(`${config.scriptDir}/${relDir}`);
+      if (stat.isDirectory) hasDirs = true;
+    } catch { /* directory doesn't exist */ }
+  }
+  if (!hasDirs) {
+    return {
+      name,
+      status: "SKIPPED",
+      output: "deno source directories not found",
+    };
+  }
+
+  const result = await scanDirectoriesForSharedTmpPath(
+    config.scriptDir,
+    relDirs,
+  );
+  if (result.violations.length === 0) {
+    return {
+      name,
+      status: "PASSED",
+      output:
+        `tmp state dir chokepoint: PASSED (${result.filesScanned} files scanned)`,
+    };
+  }
+
+  const output = [
+    ...result.violations.map((v) =>
+      `VIOLATION: ${v.file}:${v.line}: ${v.text}`
+    ),
+    "",
+    "A worker state directory is built from the shared temporary root by hand",
+    "(Issue #1242, CWE-377). That path is identical for every account on the",
+    "host, so a local user can create it first and own what the worker reads",
+    "back. Compose it with `sharedTmpStateDir(<name>)` from",
+    "`worker/deno/lib/private_cache_dir.ts`, create it with `ensureStateDir`",
+    "and act on the trust verdict it returns.",
+  ].join("\n");
+
+  return {
+    name,
+    status: "FAILED",
+    output: `tmp state dir chokepoint: FAILED\n${output}`,
   };
 }
 
@@ -1173,6 +1332,14 @@ async function runDenoLint(
  * line wrapping) could merge unnoticed. This check fails when any file in
  * the Deno tree is not formatted to the configured style; the offending
  * paths are surfaced in the output.
+ *
+ * Scope, deliberately (Issue #1503): it runs from `config.denoDir`, so the
+ * Deno tree is the formatter's whole remit. The Markdown under `docs/` and
+ * at the repository root is hand-wrapped and checked by markdownlint's
+ * structural rules instead — `deno fmt`'s Markdown rules would rewrap every
+ * paragraph, turning a two-line doc edit into a 1,500-line diff.
+ * CONTRIBUTING.md says so to contributors; this says so to the next reader
+ * wondering why the docs are not in the gate's fmt run.
  */
 export async function runDenoFmtCheck(
   config: QualityGateConfig,
@@ -1384,6 +1551,10 @@ export async function runQualityGate(
   // unavoidable.
   note(await runGitSpawnChokepointCheck(config));
 
+  // redact before truncate (Issue #1257) — a size cap may not run inside a
+  // redaction call, or the cut splits the credential the rules key on.
+  note(await runRedactTruncateOrderCheck(config));
+
   // host work-dir guard (Issue #135, parent #118) — no source file may build
   // a work-dir path from HOME/USERPROFILE outside the commented allowlist,
   // so a host-side entry point can never grow back a ~/auto-issue-work
@@ -1393,6 +1564,11 @@ export async function runQualityGate(
   // git ref chokepoint (Issue #12) — a PR head branch name must reach git
   // only through the ref-arg builders, never as an inline positional.
   note(await runGitRefArgvCheck(config));
+
+  // shared-tmp state dir chokepoint (Issue #1242) — a worker state directory
+  // under the host's temporary root must be composed by `sharedTmpStateDir`,
+  // never by raw TMPDIR/`/tmp` interpolation.
+  note(await runTmpStateDirCheck(config));
 
   // Workflow hygiene (Issue #3716) — strict-mode `run:` blocks and
   // consistent SHA/version pin comments across .github/workflows.

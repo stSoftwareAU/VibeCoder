@@ -29,7 +29,8 @@
  *   - verify-issue-link-comment: Check if linking comment exists
  *   - find-existing-pr-for-branch: Find open PR for a branch
  *   - find-existing-pr-for-issue: Find open PR for an issue
- *   - close-duplicate-prs: Close duplicate PRs
+ *   - close-duplicate-prs: Close the fleet's own duplicate PRs on a branch
+ *     (report-only unless --dry-run false is passed)
  *   - close-issues-for-merged-prs: Close issues whose PRs merged
  *   - retarget-pr-to-milestone: Re-target PR to milestone branch
  *
@@ -37,7 +38,12 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
-import { coerceStringListFlag } from "../lib/command_args.ts";
+import {
+  coerceBooleanFlag,
+  coerceStringListFlag,
+} from "../lib/command_args.ts";
+import { resolveActingGithubUser } from "../lib/acting_github_user.ts";
+import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
 import {
   buildIdempotencyMarker,
   buildMilestonePrSection,
@@ -645,16 +651,38 @@ export const prManagerCommand: Command = {
               "Missing required arguments: --repo, --branch-name, --keep-pr-url",
           };
         }
+        // Issue #1264: the destructive path is opt-in. Absent --dry-run the
+        // operation reports what it would close and closes nothing.
+        const dryRunResult = coerceBooleanFlag(
+          args["dry-run"],
+          "dry-run",
+          true,
+        );
+        if (!dryRunResult.ok) {
+          return { success: false, message: dryRunResult.error.message };
+        }
+        const dryRun = dryRunResult.value;
         const count = await closeDuplicatePrs(
           repo,
           branchName,
           keepPrUrl,
           runGhCommand,
+          {
+            allowedAuthors: resolveFleetMaintenanceAuthorSet({
+              githubUser: resolveActingGithubUser(args),
+              fleetPrAuthors: _config.fleetPrAuthors ?? [],
+              serviceAccounts: _config.serviceAccounts ?? [],
+            }),
+            dryRun,
+          },
         );
         return {
           success: true,
-          message: String(count),
-          data: { closedCount: count },
+          message: dryRun
+            ? `dry run: would close ${count} duplicate PR(s) — pass ` +
+              `--dry-run false to close them`
+            : String(count),
+          data: { closedCount: count, dryRun },
         };
       }
 

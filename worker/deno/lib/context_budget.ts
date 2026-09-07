@@ -11,6 +11,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { PRIVATE_DIR_MODE } from "./private_cache_dir.ts";
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -336,7 +338,11 @@ export async function logContextBudget(
   logDir: string,
   entry: BudgetLogEntry,
 ): Promise<void> {
-  await Deno.mkdir(logDir, { recursive: true });
+  // Owner-only (Issue #1239): this shares the credit log's directory and is
+  // usually the writer that creates it, so creating it at the process umask
+  // here would hand the untrusted `agent` account the ability to unlink the
+  // spend ceiling's input that `logInvocation` exists to deny it.
+  await Deno.mkdir(logDir, { recursive: true, mode: PRIVATE_DIR_MODE });
   const logPath = buildBudgetLogPath(logDir, todayString());
   const line = JSON.stringify(entry) + "\n";
   await Deno.writeTextFile(logPath, line, { append: true });

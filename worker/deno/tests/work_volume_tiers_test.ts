@@ -618,6 +618,26 @@ Deno.test("anySlotMidExecute - a fresh heartbeat is live, a stale one is not", a
   }
 });
 
+Deno.test("anySlotMidExecute - a forged future-dated heartbeat is not a live slot", async () => {
+  const workDir = await Deno.makeTempDir();
+  try {
+    // The attacker's file: agent-writable work root, epoch far in the future.
+    await Deno.writeTextFile(
+      `${workDir}/.heartbeat_a_GRQ_1`,
+      "9999999999",
+    );
+    assertEquals(await anySlotMidExecute(workDir, NOW), false);
+    // A clock a couple of minutes ahead is still a legitimate beat.
+    await Deno.writeTextFile(
+      `${workDir}/.heartbeat_a_GRQ_1`,
+      `${NOW + 120}`,
+    );
+    assertEquals(await anySlotMidExecute(workDir, NOW), true);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
 Deno.test("anySlotMidExecute - an unreadable work root fails safe", async () => {
   assertEquals(
     await anySlotMidExecute("/nonexistent-work-root-242", NOW),

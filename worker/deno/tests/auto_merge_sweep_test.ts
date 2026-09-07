@@ -312,3 +312,29 @@ Deno.test("the candidates a repo contributes are named before they are attempted
   assertEquals(candidateLine.context?.repo, "stSoftwareAU/VibeCoder");
   assertEquals(candidateLine.context?.prNumbers, "1133, 1134");
 });
+
+// ---------------------------------------------------------------------------
+// Issue #1515: one quota exhaustion is one line, not one per repository
+// ---------------------------------------------------------------------------
+
+Deno.test("an exhausted quota costs one listing and one warning, and skips the remaining repos (Issue #1515)", async () => {
+  const before = warnings.length;
+  const { state, options } = harness({}, {
+    listOpenPrs: () =>
+      Promise.reject(
+        new Error(
+          "gh command skipped: GraphQL primary quota exhausted (API rate limit already exceeded) — in 7m",
+        ),
+      ),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.listed.length, 1, "the first refusal is the last call");
+  assertEquals(result.value.reposVisited, [REPOS[0]]);
+  const mine = warnings.slice(before).map((w) => w.message);
+  assertEquals(mine.length, 1, mine.join("\n"));
+  assert(mine[0]!.startsWith("Auto-merge sweep: GraphQL quota exhausted"));
+  assert(mine[0]!.includes("skipped 3 of 3 repo(s)"));
+});

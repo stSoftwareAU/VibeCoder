@@ -20,6 +20,7 @@ import {
   repoHasUi,
 } from "./label_definitions.ts";
 import type { LabelDefinition } from "./label_definitions.ts";
+import { createSetupRunCommand } from "./setup_command_runner.ts";
 
 /** Result of syncing labels for a single repo. */
 export interface LabelSyncResult {
@@ -61,29 +62,6 @@ interface CommandOutput {
   stderr: string;
 }
 
-function createDefaultRunCommand(
-  ghConfigDir?: string,
-): (cmd: string[]) => Promise<CommandOutput> {
-  return async (cmd: string[]): Promise<CommandOutput> => {
-    const env = ghConfigDir
-      ? { ...Deno.env.toObject(), GH_CONFIG_DIR: ghConfigDir }
-      : undefined;
-    const command = new Deno.Command(cmd[0]!, {
-      args: cmd.slice(1),
-      stdout: "piped",
-      stderr: "piped",
-      env,
-    });
-    const output = await command.output();
-    const decoder = new TextDecoder();
-    return {
-      success: output.success,
-      stdout: decoder.decode(output.stdout).trim(),
-      stderr: decoder.decode(output.stderr).trim(),
-    };
-  };
-}
-
 /**
  * Read the names of the labels a repo currently carries, lower-cased.
  *
@@ -95,7 +73,7 @@ export async function fetchRemoteLabelNames(
   repo: string,
   opts: LabelSyncOptions = {},
 ): Promise<Set<string>> {
-  const runner = opts.runCommand ?? createDefaultRunCommand(opts.ghConfigDir);
+  const runner = opts.runCommand ?? createSetupRunCommand(opts.ghConfigDir);
   const result = await runner([
     "gh",
     "label",
@@ -151,7 +129,7 @@ export async function syncSingleLabel(
   label: LabelDefinition,
   opts: LabelSyncOptions = {},
 ): Promise<"created" | "updated" | "failed"> {
-  const runner = opts.runCommand ?? createDefaultRunCommand(opts.ghConfigDir);
+  const runner = opts.runCommand ?? createSetupRunCommand(opts.ghConfigDir);
 
   if (opts.dryRun) {
     const existing = opts.remoteLabels ??
@@ -205,7 +183,7 @@ export async function removeDeprecatedLabels(
   repo: string,
   opts: LabelSyncOptions = {},
 ): Promise<number> {
-  const runner = opts.runCommand ?? createDefaultRunCommand(opts.ghConfigDir);
+  const runner = opts.runCommand ?? createSetupRunCommand(opts.ghConfigDir);
   const deletable = DEPRECATED_LABELS.filter((l) => !isProtectedStockLabel(l));
 
   if (opts.dryRun) {
@@ -240,7 +218,7 @@ export async function detectRepoUi(
   repo: string,
   opts: LabelSyncOptions = {},
 ): Promise<boolean> {
-  const runner = opts.runCommand ?? createDefaultRunCommand(opts.ghConfigDir);
+  const runner = opts.runCommand ?? createSetupRunCommand(opts.ghConfigDir);
   const result = await runner(["gh", "api", `repos/${repo}/languages`]);
   if (!result.success) return false;
 

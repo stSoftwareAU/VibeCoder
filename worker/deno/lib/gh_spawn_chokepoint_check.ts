@@ -9,6 +9,13 @@
  * `spawnGh`/`runGhOrThrow` fixed the instances; this check keeps the class
  * fixed by failing the build on any new direct spawn.
  *
+ * A literal binary name is not the only way to spawn `gh`. Two modules wrote
+ * `new Deno.Command(cmd[0]!, …)` and were handed `["gh", "api", …]` by their
+ * callers, so they spawned `gh` outside the chokepoint while this check
+ * reported a clean tree (Issue #1227). The check now also flags a variable
+ * binary in any module that names `gh` at the head of an argv literal and does
+ * not import the chokepoint.
+ *
  * Like the `needs-human` chokepoint check (Issue #2689) this is an
  * architectural, whole-codebase invariant — a static property rather than the
  * behaviour of a single function — so it lives in the quality gate, not the
@@ -45,6 +52,21 @@ export const GH_SPAWN_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "worker/deno/lib/gh_spawn.ts",
 ]);
 
+/**
+ * The directories the quality gate scans (Issue #1259).
+ *
+ * `worker/deno/setup` was never in this set, so `setup/` grew seven copies of
+ * a runner that spawned `gh` itself — outside the write-repo allowlist, the
+ * body redaction and the audit journal — while the gate reported a clean
+ * tree. Scanning the directory is the durable half of that fix: it is what
+ * stops the next one.
+ */
+export const GH_SPAWN_SCAN_DIRS: readonly string[] = [
+  "worker/deno/lib",
+  "worker/deno/commands",
+  "worker/deno/setup",
+];
+
 /** Matches a direct `gh` subprocess construction. */
 export const GH_SPAWN_PATTERN =
   /new\s+Deno\.Command\s*\(\s*["'`]gh["'`]|Deno\.Command\s*\(\s*["'`]gh["'`]/;
@@ -61,13 +83,32 @@ export const GH_INDIRECT_SPAWN_RULES: IndirectSpawnRules = {
 };
 
 /**
- * Modules exempt from the indirection signal (Issue #1378). Empty since
- * Issue #1429: the one entry, `software_updates.ts`, routes `gh extension
- * install/list` through `spawnGh` (Issue #1396) and satisfies the rule on
- * its own merits. Their **literal** spawns were never exempt. The set stays
- * as the documented shape for a future gap — and must shrink, never grow.
+ * Modules exempt from the indirection signal (Issue #1378). Their **literal**
+ * spawns are never exempt.
+ *
+ * Two different things can put an entry here, and conflating them is how an
+ * exemption set rots:
+ *
+ *  - a **documented false positive** — the module names `gh` as data, not as
+ *    a binary, so there is nothing to fix and the entry is permanent;
+ *  - a **known gap** — a real bypass carrying its own follow-up issue, which
+ *    must shrink, never grow.
+ *
+ * Issue #1429 emptied the known-gap half: `software_updates.ts` routes
+ * `gh extension install/list` through `spawnGh` (Issue #1396) and satisfies
+ * the rule on its own merits.
+ *
+ * The one entry below is a false positive, carried over from the checker this
+ * one supersedes (Issue #1227's `GH_VARIABLE_SPAWN_ALLOWLIST`, merged in from
+ * `main`). `prerequisite_install_plan.ts` names `gh` as *package data* — the
+ * formula and package identifiers a host installs the CLI from, written
+ * `brewFormula("gh", "gh")`, which reads to the argv-head pattern as a
+ * command array. The one process it spawns is the package manager (`brew`,
+ * `apt-get`, `winget`), never `gh`.
  */
-export const GH_INDIRECT_KNOWN_GAPS: ReadonlySet<string> = new Set<string>();
+export const GH_INDIRECT_KNOWN_GAPS: ReadonlySet<string> = new Set<string>([
+  "worker/deno/setup/prerequisite_install_plan.ts",
+]);
 
 /**
  * Scan a file's content for direct or indirect `gh` spawns.

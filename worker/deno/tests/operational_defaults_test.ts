@@ -55,6 +55,10 @@ Deno.test("operational_defaults - GH_CLONE_TIMEOUT defaults to 600", () => {
   assertEquals(SHELL_OPERATIONAL_DEFAULTS.GH_CLONE_TIMEOUT, "600");
 });
 
+Deno.test("operational_defaults - GH_PAGINATED_TIMEOUT defaults to 300", () => {
+  assertEquals(SHELL_OPERATIONAL_DEFAULTS.GH_PAGINATED_TIMEOUT, "300");
+});
+
 Deno.test("operational_defaults - GH_RATE_LIMIT_COOLDOWN defaults to 300", () => {
   assertEquals(SHELL_OPERATIONAL_DEFAULTS.GH_RATE_LIMIT_COOLDOWN, "300");
 });

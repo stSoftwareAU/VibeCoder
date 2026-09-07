@@ -195,8 +195,13 @@ export function buildSweepCloseComment(
   prNumber: number,
   landing: Extract<MergeLanding, { landed: true }>,
 ): string {
-  return `Closed automatically — PR #${prNumber} merged and its change landed ` +
-    `(merge commit \`${landing.mergeCommit}\`, via \`${landing.via}\`).\n\n` +
+  const where = landing.via === "default-branch"
+    ? ""
+    : ` into \`${landing.baseRefName}\` — a milestone branch, so the change ` +
+      `reaches the default branch with that milestone's rollup —`;
+  return `Closed automatically — PR #${prNumber} merged${where} and its ` +
+    `change landed (merge commit \`${landing.mergeCommit}\`, via ` +
+    `\`${landing.via}\`).\n\n` +
     `This issue was not closed by the run that produced the fix, so every ` +
     `claim scan refused it as \`merged-pr-permanent\` while it stayed open. ` +
     `The housekeeping merged-PR issue sweep closed it (Issue #504).`;
@@ -383,8 +388,15 @@ export async function sweepMergedPrIssues(
 
       // The claim scan's own verdict: only a **merged** match is the
       // permanent block this sweep exists to clear. A closed-unmerged match
-      // is a cooldown that expires by itself.
-      const blocking = isBlockedByRecentlyClosedPR(closedPRs, issue.number);
+      // is a cooldown that expires by itself. Issue #1528: a merged PR whose
+      // BODY closes this issue (`Fixes #N`) counts too — GitHub honours that
+      // reference only on the default branch, so a sub-issue PR merged into
+      // a milestone branch never closed its issue and held the rollup shut.
+      const byBody = closedPRs.find((pr) =>
+        pr.merged === true && (pr.closingRefs ?? []).includes(issue.number)
+      );
+      const blocking = byBody ??
+        isBlockedByRecentlyClosedPR(closedPRs, issue.number);
       if (!blocking || !blocking.merged) continue;
       if (blocking.number <= mark) {
         result.belowWatermark++;

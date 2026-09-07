@@ -90,6 +90,55 @@ Deno.test("issue_query - parsePRListJson parses valid JSON", () => {
   assertEquals(result[0]?.headRefName, "fix-branch");
 });
 
+// Issue #1264: a destructive consumer decides ownership from these two
+// fields, so an absent or malformed one must stay `undefined` ("unknown")
+// rather than becoming a value that could pass a comparison.
+Deno.test("issue_query - parsePRListJson reads the ownership fields (Issue #1264)", () => {
+  const json = JSON.stringify([
+    {
+      number: 11,
+      title: "Fleet PR",
+      baseRefName: "main",
+      headRefName: "issue-11-fix",
+      author: { login: "vibe-bot" },
+      headRepositoryOwner: { login: "owner" },
+      isCrossRepository: false,
+    },
+  ]);
+  const result = parsePRListJson(json);
+  assertEquals(result[0]?.author, "vibe-bot");
+  assertEquals(result[0]?.headRepositoryOwner, "owner");
+  assertEquals(result[0]?.isCrossRepository, false);
+});
+
+Deno.test("issue_query - parsePRListJson leaves malformed ownership fields unset (Issue #1264)", () => {
+  const json = JSON.stringify([
+    {
+      number: 12,
+      title: "No ownership",
+      baseRefName: "main",
+      headRefName: "issue-12-fix",
+    },
+    {
+      number: 13,
+      title: "Blank and wrongly shaped",
+      baseRefName: "main",
+      headRefName: "issue-13-fix",
+      author: { login: "" },
+      headRepositoryOwner: "owner",
+      isCrossRepository: "false",
+    },
+  ]);
+  const result = parsePRListJson(json);
+  assertEquals(result.length, 2);
+  assertEquals(result[0]?.author, undefined);
+  assertEquals(result[0]?.headRepositoryOwner, undefined);
+  assertEquals(result[0]?.isCrossRepository, undefined);
+  assertEquals(result[1]?.author, undefined);
+  assertEquals(result[1]?.headRepositoryOwner, undefined);
+  assertEquals(result[1]?.isCrossRepository, undefined);
+});
+
 // =============================================================================
 // createMilestoneBranchName tests
 // =============================================================================
@@ -1100,6 +1149,41 @@ Deno.test("issue_query - fetchMergedPRsByUser - cache miss fetches and parses JS
     const sent = calls[0]!.join(" ");
     assertEquals(sent.includes("--author bot"), true);
     assertEquals(sent.includes("--state merged"), true);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchMergedPRsByUser - reads the body's closing references, and caches those, not the body (Issue #1528)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    const calls: string[][] = [];
+    const mockGh = async (args: string[]): Promise<string> => {
+      calls.push(args);
+      return JSON.stringify([
+        {
+          number: 1509,
+          title:
+            "🟡 close-duplicate-prs picks its victims by head-branch name alone",
+          headRefName: "issue-1264",
+          mergedAt: "2026-09-07T11:00:00Z",
+          body:
+            "## Summary\n\nCloses #1264\n\nAlso touches #1270 without closing it.",
+        },
+        { number: 2, title: "no body", headRefName: "b" },
+      ]);
+    };
+    const prs = await fetchMergedPRsByUser("o/r", "bot", cache, 30, mockGh);
+    assertEquals(prs[0]?.closingRefs, [1264]);
+    assertEquals(prs[1]?.closingRefs, []);
+    assertEquals(calls[0]!.join(" ").includes("mergedAt,body"), true);
+    // The cached entry carries the references and nothing of the prose.
+    const cached = await cache.read<Array<Record<string, unknown>>>(
+      "o/r",
+      "prs_merged_bot",
+    );
+    assertEquals(cached?.[0]?.closingRefs, [1264]);
+    assertEquals(cached?.[0]?.body, undefined);
   } finally {
     await cleanup();
   }

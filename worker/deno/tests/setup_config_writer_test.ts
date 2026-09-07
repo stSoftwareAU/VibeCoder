@@ -8,7 +8,7 @@
  * Issue #923: Migrate setup scripts to Deno TypeScript.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   installPreCommitHook,
   removePrePushHook,
@@ -337,5 +337,56 @@ Deno.test("updateGitInfoExclude - skips when not in a git repo", async () => {
   const result = await updateGitInfoExclude(tmpDir);
   assertEquals(result.ok, true);
   assertEquals(result.message, "Not in a git repository");
+  await Deno.remove(tmpDir, { recursive: true });
+});
+
+// ── repos de-duplication (Issue #1546) ──────────────────────────────────
+
+Deno.test("runConfigSetup - warns about a case-variant repos entry and writes one", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const configPath = `${tmpDir}/.config.json`;
+
+  const env = (name: string): string | undefined =>
+    name === "VIBE_REPOS"
+      ? "stSoftwareAU/GRQ-Actual,stSoftwareAU/GRQ-actual"
+      : undefined;
+
+  const result = await runConfigSetup(configPath, env, {
+    resolveWorkerLogin: () => Promise.resolve("Vibecoderbot"),
+  });
+  assertEquals(result.ok, true);
+
+  const config = JSON.parse(await Deno.readTextFile(configPath));
+  assertEquals(config.repos, ["stSoftwareAU/GRQ-Actual"]);
+
+  const duplicateWarnings = (result.warnings ?? []).filter((w) =>
+    w.includes("case-insensitive")
+  );
+  assertEquals(duplicateWarnings.length, 1);
+  assertStringIncludes(duplicateWarnings[0] ?? "", "stSoftwareAU/GRQ-actual");
+  assertStringIncludes(duplicateWarnings[0] ?? "", "stSoftwareAU/GRQ-Actual");
+
+  await Deno.remove(tmpDir, { recursive: true });
+});
+
+Deno.test("runConfigSetup - a genuinely distinct repos list warns about nothing (Issue #1546)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const configPath = `${tmpDir}/.config.json`;
+
+  const env = (name: string): string | undefined =>
+    name === "VIBE_REPOS" ? "org/one,other/one" : undefined;
+
+  const result = await runConfigSetup(configPath, env, {
+    resolveWorkerLogin: () => Promise.resolve("Vibecoderbot"),
+  });
+  assertEquals(result.ok, true);
+
+  const config = JSON.parse(await Deno.readTextFile(configPath));
+  assertEquals(config.repos, ["org/one", "other/one"]);
+  assertEquals(
+    (result.warnings ?? []).filter((w) => w.includes("case-insensitive")),
+    [],
+  );
+
   await Deno.remove(tmpDir, { recursive: true });
 });

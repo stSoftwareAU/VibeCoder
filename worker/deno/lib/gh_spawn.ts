@@ -49,7 +49,14 @@ import {
   installationTokenRepoScope,
 } from "./write_repo_allowlist.ts";
 import { auditGhMutation } from "./audit_hook.ts";
-import { redactGhBodyArgs, redactGhBodyText } from "./gh_body_redaction.ts";
+import {
+  type BodyFileWriter,
+  redactGhBodyArgs,
+  redactGhBodyText,
+} from "./gh_body_redaction.ts";
+// The same reader/writer pair the agent's guard child supplies (Issue #1254),
+// so the two chokepoints cannot drift on which body classes get scanned.
+import { bodyFileWriterIn, denoBodyFileReader } from "./gh_body_file_io.ts";
 import { noteGhIssueClose } from "./issue_close_notifier.ts";
 import { recordGhCall } from "./gh_call_metrics.ts";
 import {
@@ -343,7 +350,30 @@ export async function spawnGh(
   recordGhCall(args);
   // Mask secrets in the published body arguments (Issue #3707) — the last
   // point before a comment or PR body leaves the worker for GitHub.
-  const redacted = redactGhBodyArgs(args);
+  //
+  // The reader and writer are the same pair the agent's guard child supplies
+  // (Issue #1254): without them this call passed argv alone, so a
+  // `--body-file` / `-F <path>` / `--input <file>` body was neither scanned
+  // nor refused, and a module switching from `--body` to `--body-file` would
+  // have published unscanned while looking like a refactor.
+  //
+  // Issue #1364: a masked `--input` copy needs a directory that owns it. The
+  // guard child cannot clean up — it exits before its `gh` child reads the
+  // file — but this chokepoint awaits the child, so it can, and does, in the
+  // `finally` below. The directory is created only when a body is actually
+  // masked, so an ordinary call does no filesystem work.
+  let maskedBodyDir: string | undefined;
+  const writeMaskedBody: BodyFileWriter = (content) => {
+    maskedBodyDir ??= Deno.makeTempDirSync({ prefix: "gh-spawn-body-" });
+    return bodyFileWriterIn(maskedBodyDir)(content);
+  };
+  const stdinScanned = options.stdin !== undefined;
+  const redacted = redactGhBodyArgs(
+    args,
+    denoBodyFileReader,
+    writeMaskedBody,
+    stdinScanned,
+  );
   // Issue #1421: `gh api --input -` carries its body on STDIN, where there is
   // no argument to rewrite — so it never passed through the mask above. The
   // module doc promises every public sink inherits redaction by construction;
@@ -353,38 +383,51 @@ export async function spawnGh(
   const spawnOptions = options.stdin === undefined
     ? options
     : { ...options, stdin: redactGhBodyText(options.stdin) };
-  let result = await runner(redacted, spawnOptions);
-  // Issue #564: a call that failed for want of authentication did nothing,
-  // so retrying it is safe — and the credential is very likely recoverable.
-  // The writable copy of `hosts.yml` went missing mid-run once already and
-  // every later call failed with the intact original still on its mount.
-  // Rebuild from the mount and try once more, here at the chokepoint, so
-  // every gh caller in the worker inherits the recovery.
-  if (
-    isGhAuthMissingFailure(result) && restageAttempts < MAX_RESTAGE_ATTEMPTS
-  ) {
-    restageAttempts++;
-    const hostEnv = options.hostEnv ?? processEnvLookup;
-    const staging: EnsureGhConfigDirOptions = {
-      env: hostEnv,
-      ...(options.setHostEnv ? { setEnv: options.setHostEnv } : {}),
-    };
-    if (ensureUsableGhConfigDir(staging)) {
-      // The retry is a second real `gh` process against the same quota.
-      recordGhCall(args);
-      result = await runner(
-        redacted,
-        withStagedGhConfigDir(spawnOptions, hostEnv),
-      );
+  try {
+    let result = await runner(redacted, spawnOptions);
+    // Issue #564: a call that failed for want of authentication did nothing,
+    // so retrying it is safe — and the credential is very likely recoverable.
+    // The writable copy of `hosts.yml` went missing mid-run once already and
+    // every later call failed with the intact original still on its mount.
+    // Rebuild from the mount and try once more, here at the chokepoint, so
+    // every gh caller in the worker inherits the recovery.
+    if (
+      isGhAuthMissingFailure(result) && restageAttempts < MAX_RESTAGE_ATTEMPTS
+    ) {
+      restageAttempts++;
+      const hostEnv = options.hostEnv ?? processEnvLookup;
+      const staging: EnsureGhConfigDirOptions = {
+        env: hostEnv,
+        ...(options.setHostEnv ? { setEnv: options.setHostEnv } : {}),
+      };
+      if (ensureUsableGhConfigDir(staging)) {
+        // The retry is a second real `gh` process against the same quota.
+        recordGhCall(args);
+        result = await runner(
+          redacted,
+          withStagedGhConfigDir(spawnOptions, hostEnv),
+        );
+      }
+    }
+    // Best-effort — never lets journalling alter or abort the gh call.
+    await auditGhMutation(args, result.code);
+    // Issue #181: a close the worker just performed invalidates the scan-cache
+    // entries that still describe the issue as open, and marks it finished for
+    // the rest of the run so no slot re-claims it. Also best-effort.
+    await noteGhIssueClose(args, result.code);
+    return result;
+  } finally {
+    // The `gh` child has exited by the time the call above resolves, so the
+    // masked copy it read is safe to remove (Issue #1364). Best-effort: a
+    // cleanup failure must never turn a completed `gh` call into a thrown one.
+    if (maskedBodyDir !== undefined) {
+      try {
+        Deno.removeSync(maskedBodyDir, { recursive: true });
+      } catch {
+        // Nothing to do — the directory is under TMPDIR either way.
+      }
     }
   }
-  // Best-effort — never lets journalling alter or abort the gh call.
-  await auditGhMutation(args, result.code);
-  // Issue #181: a close the worker just performed invalidates the scan-cache
-  // entries that still describe the issue as open, and marks it finished for
-  // the rest of the run so no slot re-claims it. Also best-effort.
-  await noteGhIssueClose(args, result.code);
-  return result;
 }
 
 /**

@@ -9,6 +9,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import { extractClosingIssueNumbers } from "./pr_body.ts";
 import { runGhCommand } from "./github.ts";
 import { prTitleReferencesIssue } from "./pr_title_issue_ref.ts";
 // Issue #2900: re-export the single canonical milestone-branch namer from
@@ -44,6 +45,23 @@ export interface OpenPR {
    * scan set. Optional: cache entries written before #4024 lack it.
    */
   author?: string;
+  /**
+   * The login of the head repository's owner, when the query asked for it
+   * (Issue #1264). `gh pr list --head <branch>` matches on `headRefName`
+   * alone, so a fork's PR appears in a per-branch listing exactly like a
+   * PR from the target repo. Any consumer that acts *destructively* on a
+   * listed PR must compare this against the target repo's owner. Optional:
+   * queries that do not request the field, and cache entries written
+   * before #1264, leave it unset — treat unset as "ownership unknown" and
+   * refuse to act.
+   */
+  headRepositoryOwner?: string;
+  /**
+   * True when the head branch lives in a **different** repository — a fork
+   * (Issue #1264). Set only when the query asked for it; unset means
+   * "unknown", which a destructive consumer must treat as "not ours".
+   */
+  isCrossRepository?: boolean;
 }
 
 /**
@@ -72,6 +90,15 @@ export interface MergedPR {
    * decidable with this timestamp.
    */
   mergedAt: string;
+  /**
+   * Issues the PR body's closing keywords name (`Fixes #N`, `Closes #N`, …),
+   * same-repository only (Issue #1528). GitHub honours them only on a merge
+   * into the default branch, so a sub-issue PR merged into a milestone
+   * branch never closed its issue and held the rollup shut; the closers read
+   * them here instead. Absent on a cache entry written before this field was
+   * collected — treat as no references, never as "no fix".
+   */
+  closingRefs?: number[];
 }
 
 /**
@@ -89,6 +116,8 @@ export interface ClosedPR {
    * missing value is treated as closed-unmerged.
    */
   merged?: boolean;
+  /** Issues the PR body's closing keywords name (Issue #1528); see MergedPR. */
+  closingRefs?: number[];
 }
 
 /**
@@ -103,6 +132,8 @@ export interface ClosedPRWithMerge {
   title: string;
   mergedAt: string | null;
   closedAt: string | null;
+  /** Issues the PR body's closing keywords name (Issue #1528); see MergedPR. */
+  closingRefs?: number[];
 }
 
 /**
@@ -228,7 +259,7 @@ export function parsePRListJson(jsonStr: string): OpenPR[] {
     for (const item of raw) {
       if (!isRecord(item)) continue;
       if (typeof item.number !== "number") continue;
-      items.push({
+      const entry: OpenPR = {
         number: item.number,
         title: typeof item.title === "string" ? item.title : "",
         baseRefName: typeof item.baseRefName === "string"
@@ -237,7 +268,22 @@ export function parsePRListJson(jsonStr: string): OpenPR[] {
         headRefName: typeof item.headRefName === "string"
           ? item.headRefName
           : "",
-      });
+      };
+      // Issue #1264: `author` and `headRepositoryOwner` are nested login
+      // objects in the `gh` JSON. Only set when actually present, so an
+      // absent field stays `undefined` ("unknown") rather than "".
+      const author = isRecord(item.author) ? item.author.login : undefined;
+      if (typeof author === "string" && author !== "") entry.author = author;
+      const headOwner = isRecord(item.headRepositoryOwner)
+        ? item.headRepositoryOwner.login
+        : undefined;
+      if (typeof headOwner === "string" && headOwner !== "") {
+        entry.headRepositoryOwner = headOwner;
+      }
+      if (typeof item.isCrossRepository === "boolean") {
+        entry.isCrossRepository = item.isCrossRepository;
+      }
+      items.push(entry);
     }
     return items;
   } catch {
@@ -878,7 +924,11 @@ export async function fetchPRsByBranch(
       "--state",
       state,
       "--json",
-      "number,title,baseRefName,headRefName",
+      // Issue #1264: ownership fields travel with every per-branch listing
+      // so a consumer that closes a PR can tell a fleet PR on this repo
+      // from an outsider's fork PR that merely shares the branch name.
+      "number,title,baseRefName,headRefName,author,headRepositoryOwner," +
+      "isCrossRepository",
       "--limit",
       "50",
     ]);
@@ -1382,7 +1432,7 @@ export async function fetchMergedPRsByUser(
     "--author",
     githubUser,
     "--json",
-    "number,title,headRefName,mergedAt",
+    "number,title,headRefName,mergedAt,body",
     "--limit",
     String(limit),
   ]);
@@ -1409,6 +1459,10 @@ export async function fetchMergedPRsByUser(
       title: typeof item.title === "string" ? item.title : "",
       headRefName: typeof item.headRefName === "string" ? item.headRefName : "",
       mergedAt: typeof item.mergedAt === "string" ? item.mergedAt : "",
+      // The body itself is not cached — only what the closers need from it.
+      closingRefs: extractClosingIssueNumbers(
+        typeof item.body === "string" ? item.body : "",
+      ),
     });
   }
 
@@ -2193,7 +2247,7 @@ export async function fetchClosedPRsByUser(
     "--author",
     githubUser,
     "--json",
-    "number,title,mergedAt,closedAt",
+    "number,title,mergedAt,closedAt,body",
     "--limit",
     String(limit),
   ]);
@@ -2215,6 +2269,10 @@ export async function fetchClosedPRsByUser(
       title: typeof item.title === "string" ? item.title : "",
       mergedAt: typeof item.mergedAt === "string" ? item.mergedAt : null,
       closedAt: typeof item.closedAt === "string" ? item.closedAt : null,
+      // Issue #1528: what the body's closing keywords name, not the body.
+      closingRefs: extractClosingIssueNumbers(
+        typeof item.body === "string" ? item.body : "",
+      ),
     });
   }
 
@@ -2353,6 +2411,7 @@ export async function fetchRecentlyClosedPRsForFleet(
           title: pr.title,
           closedAt: pr.closedAt ?? pr.mergedAt ?? "",
           merged: true,
+          ...(pr.closingRefs ? { closingRefs: pr.closingRefs } : {}),
         });
         continue;
       }
@@ -2366,6 +2425,7 @@ export async function fetchRecentlyClosedPRsForFleet(
         title: pr.title,
         closedAt: pr.closedAt,
         merged: false,
+        ...(pr.closingRefs ? { closingRefs: pr.closingRefs } : {}),
       });
     }
   }

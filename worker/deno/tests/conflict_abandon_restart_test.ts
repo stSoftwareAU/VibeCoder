@@ -53,9 +53,28 @@ const REPO = "org/repo";
 const PR_NUMBER = 48;
 const ISSUE_NUMBER = 16;
 
+/** The fleet login every fixture comment is written by (Issue #1247). */
+const FLEET = "vibe-bot";
+/** The resolved fleet identity the rung attributes markers against. */
+const FLEET_AUTHORS = [FLEET];
+/** An account with no fleet privileges at all — the attacker. */
+const OUTSIDER = "drive-by";
+
+/** One comment as the REST API renders it: body plus its author. */
+function comment(
+  body: string,
+  login: string = FLEET,
+  createdAt = "2026-08-19T10:00:00Z",
+): { body: string; created_at: string; user: { login: string } } {
+  return { body, created_at: createdAt, user: { login } };
+}
+
 /** Two concluded failures, exactly as the processor writes them. */
-function failedComments(): Array<{ body: string; created_at: string }> {
+function failedComments(
+  login: string = FLEET,
+): Array<{ body: string; created_at: string; user: { login: string } }> {
   return [1, 2].map((n) => ({
+    user: { login },
     body: [
       `${CONFLICT_FAILED_MARKER} n="${n}" -->`,
       `❌ **Merge-conflict resolution — attempt ${n} of 2 failed**`,
@@ -90,7 +109,7 @@ interface FakeState {
   issueState: string;
   issueLabels: string[];
   /** Comments already on the originating issue. */
-  issueComments: Array<{ body: string }>;
+  issueComments: Array<{ body: string; user?: { login: string } }>;
   /** PRs the open-PR lookup should see, keyed by state. */
   prsByState: Record<string, Array<{ number: number; title: string }>>;
   /** Issue numbers `gh issue view --json number,title,state,body` knows. */
@@ -169,8 +188,11 @@ function makeFake(overrides: Partial<FakeState> = {}): FakeGh {
     }
 
     if (args[0] === "issue" && args[1] === "comment") {
+      // The worker's own comment, so it carries the worker's login — that is
+      // what makes the cross-host restart claim readable back (Issue #1247).
       state.issueComments.push({
         body: String(args[args.indexOf("--body") + 1] ?? ""),
+        user: { login: FLEET },
       });
       return Promise.resolve("");
     }
@@ -260,7 +282,10 @@ Deno.test("restartMarkerPrNumbers - a thread with no claim records none", () => 
 Deno.test("abandonAndRestart - closes the PR, re-queues the issue, keeps the branch", async () => {
   const fake = makeFake();
 
-  const outcome = await abandonAndRestart(makeRequest(), { gh: fake.gh });
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
 
   assertEquals(outcome, { outcome: "abandoned", issueNumber: ISSUE_NUMBER });
 
@@ -295,7 +320,10 @@ Deno.test("abandonAndRestart - claims the restart on the issue before closing th
   // The marker is the claim two hosts race for: it must exist before anything
   // is destroyed, or the loser destroys the PR twice.
   const fake = makeFake();
-  await abandonAndRestart(makeRequest(), { gh: fake.gh });
+  await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
 
   const claim = indexOfCall(fake, "issue", "comment");
   const close = indexOfCall(fake, "pr", "close");
@@ -308,6 +336,7 @@ Deno.test("abandonAndRestart - reopens a closed issue and applies an appliable w
 
   const outcome = await abandonAndRestart(makeRequest(), {
     gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
     // `idle-task` is the operational label the worker may self-apply.
     workLabel: "idle-task",
   });
@@ -331,6 +360,7 @@ Deno.test("abandonAndRestart - no originating issue: nothing is closed at all", 
     makeRequest({ branchName: "hotfix/no-issue-here", prComments: [] }),
     {
       gh: fake.gh,
+      trustedAuthors: FLEET_AUTHORS,
       resolveContext: () =>
         Promise.resolve({
           repo: REPO,
@@ -368,7 +398,10 @@ Deno.test("abandonAndRestart - an issue with another open PR is left alone", asy
     },
   });
 
-  const outcome = await abandonAndRestart(makeRequest(), { gh: fake.gh });
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
 
   assertEquals(outcome.outcome, "declined");
   assert(outcome.outcome === "declined");
@@ -382,7 +415,10 @@ Deno.test("abandonAndRestart - an unqueueable issue is refused before the close"
   // issue open, unqueued and invisible — worse than the stall.
   const fake = makeFake({ issueLabels: [] });
 
-  const outcome = await abandonAndRestart(makeRequest(), { gh: fake.gh });
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
 
   assertEquals(outcome, {
     outcome: "declined",
@@ -403,12 +439,15 @@ Deno.test("abandonAndRestart - a restarted issue is never abandoned twice", asyn
   // The fresh PR is a different PR, so the marker has to be keyed to the
   // issue: a PR-keyed marker would let this loop forever.
   const fake = makeFake();
-  const first = await abandonAndRestart(makeRequest(), { gh: fake.gh });
+  const first = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
   assertEquals(first.outcome, "abandoned");
 
   const second = await abandonAndRestart(
     makeRequest({ prNumber: 77, branchName: `issue-${ISSUE_NUMBER}-limits-2` }),
-    { gh: fake.gh },
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
   );
 
   assertEquals(second, {
@@ -423,12 +462,132 @@ Deno.test("abandonAndRestart - a restarted issue is never abandoned twice", asyn
   assertEquals(callsMatching(fake, "pr", "close").length, 1);
 });
 
+// ---------------------------------------------------------------------------
+// Who wrote the marker (Issue #1247, SEC-1216-06)
+// ---------------------------------------------------------------------------
+
+Deno.test("abandonAndRestart - an outsider's restart claim does not stall the rung", async () => {
+  // The suppression half of the exploit: one planted marker on the issue made
+  // the rung decline `already-restarted` for ever, so every conflicted PR for
+  // that issue stalled unowned. An outsider's claim is not the fleet's claim.
+  const fake = makeFake({
+    issueComments: [
+      comment(conflictRestartMarker(REPO, 999), OUTSIDER),
+      comment("plausible chatter", OUTSIDER),
+    ],
+  });
+
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
+
+  assertEquals(outcome, { outcome: "abandoned", issueNumber: ISSUE_NUMBER });
+  assertEquals(callsMatching(fake, "pr", "close").length, 1);
+});
+
+Deno.test("abandonAndRestart - the fleet's own restart claim still bounds the rung", async () => {
+  // The other direction of the same check: filtering must not weaken the
+  // one-abandon-per-issue bound the fleet's own marker carries.
+  const fake = makeFake({
+    issueComments: [comment(conflictRestartMarker(REPO, PR_NUMBER), FLEET)],
+  });
+
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
+
+  assertEquals(outcome, {
+    outcome: "declined",
+    reason: {
+      kind: "already-restarted",
+      issueNumber: ISSUE_NUMBER,
+      samePr: true,
+    },
+  });
+  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+});
+
+Deno.test("abandonAndRestart - a claim that cannot be attributed refuses the close", async () => {
+  // The restart marker *suppresses* a destructive step, so an unattributable
+  // claim must not be discarded: with no fleet identity resolved, a genuine
+  // fleet claim is indistinguishable from an outsider's, and proceeding would
+  // relax the only bound on closing and re-raising this work.
+  const fake = makeFake({
+    issueComments: [comment(conflictRestartMarker(REPO, PR_NUMBER), FLEET)],
+  });
+
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: [],
+  });
+
+  assertEquals(outcome, {
+    outcome: "declined",
+    reason: {
+      kind: "restart-claim-unverifiable",
+      issueNumber: ISSUE_NUMBER,
+      claimCount: 1,
+    },
+  });
+  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+});
+
+Deno.test("abandonAndRestart - an outsider's failure text is never quoted back", async () => {
+  // `summariseFailedAttempts` reads the PR thread the abandon comment quotes,
+  // so an unfiltered thread publishes an outsider's invented "attempt" and
+  // its invented issue numbers as the fleet's own permanent record.
+  const fake = makeFake();
+
+  await abandonAndRestart(
+    makeRequest({
+      prComments: [
+        ...failedComments(FLEET),
+        comment(
+          [
+            `${CONFLICT_FAILED_MARKER} n="9" -->`,
+            "attempt 9 tripped on a file nobody touched",
+            "",
+            "Conflicted files:",
+            "- `planted/never-conflicted.ts`",
+          ].join("\n"),
+          OUTSIDER,
+        ),
+        comment(
+          `${CONFLICT_ATTEMPT_MARKER} n="9" -->\n### Issues consulted\n\n- #4242`,
+          OUTSIDER,
+        ),
+      ],
+    }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  );
+
+  const prBody = bodyOfCall(fake, "pr", "comment");
+  assert(
+    !prBody.includes("planted/never-conflicted.ts"),
+    "an outsider's conflicted path was quoted as the fleet's record",
+  );
+  assert(
+    !prBody.includes("#4242"),
+    "an outsider's consulted-issue number was quoted as the fleet's record",
+  );
+  // The fleet's own two attempts are still there.
+  assertStringIncludes(prBody, "two different values");
+});
+
 Deno.test("abandonAndRestart - two hosts on the same PR produce one abandon", async () => {
   // Cross-host dedupe: both hosts see the same issue thread, so the marker
   // the first one posts is what the second one reads.
   const shared = makeFake();
-  const hostA = await abandonAndRestart(makeRequest(), { gh: shared.gh });
-  const hostB = await abandonAndRestart(makeRequest(), { gh: shared.gh });
+  const hostA = await abandonAndRestart(makeRequest(), {
+    gh: shared.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
+  const hostB = await abandonAndRestart(makeRequest(), {
+    gh: shared.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
 
   assertEquals(hostA.outcome, "abandoned");
   assertEquals(hostB.outcome, "declined");
@@ -453,7 +612,10 @@ Deno.test("abandonAndRestart - a failure at any step names that step and stops",
 
   for (const testCase of cases) {
     const fake = makeFake({ failOn: testCase.failOn });
-    const outcome = await abandonAndRestart(makeRequest(), { gh: fake.gh });
+    const outcome = await abandonAndRestart(makeRequest(), {
+      gh: fake.gh,
+      trustedAuthors: FLEET_AUTHORS,
+    });
 
     assertEquals(outcome.outcome, "failed", `${testCase.failOn} should fail`);
     assert(outcome.outcome === "failed");
@@ -480,6 +642,7 @@ Deno.test("abandonAndRestart - a failed reopen leaves the step named, not a sile
 
   const outcome = await abandonAndRestart(makeRequest(), {
     gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
     workLabel: "idle-task",
   });
 
@@ -496,6 +659,7 @@ Deno.test("abandonAndRestart - a failed label add names the label step", async (
 
   const outcome = await abandonAndRestart(makeRequest(), {
     gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
     workLabel: "idle-task",
     addLabel: () =>
       Promise.resolve({ ok: false, error: new Error("labels are down") }),
@@ -584,6 +748,7 @@ Deno.test("abandonAndRestart - an unreadable PR listing stops the abandon, it do
   const fake = makeFake();
   const outcome = await abandonAndRestart(makeRequest(), {
     gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
     findOtherPrs: () => Promise.reject(new Error("pr list exploded")),
   });
 
@@ -684,7 +849,7 @@ Deno.test("abandonAndRestart - quoted failure text cannot forge a marker or leak
         ].join("\n"),
       }],
     }),
-    { gh: fake.gh },
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
   );
 
   const prBody = bodyOfCall(fake, "pr", "comment");
@@ -770,7 +935,10 @@ Deno.test("abandonAndRestart - an unreadable PR thread stops the abandon before 
   });
   const request = { ...makeRequest(), prComments: undefined };
 
-  const outcome = await abandonAndRestart(request, { gh: fake.gh });
+  const outcome = await abandonAndRestart(request, {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
 
   assert(outcome.outcome === "failed");
   assertEquals(outcome.step, "pr-thread");
@@ -780,6 +948,7 @@ Deno.test("abandonAndRestart - an unreadable PR thread stops the abandon before 
 Deno.test("abandonAndRestart - an unreadable issue view is not an open, unlabelled issue", async () => {
   const fake = makeFake();
   const outcome = await abandonAndRestart(makeRequest(), {
+    trustedAuthors: FLEET_AUTHORS,
     gh: (args) =>
       args[0] === "issue" && args[1] === "view" &&
         String(args[args.indexOf("--json") + 1] ?? "").includes("labels")

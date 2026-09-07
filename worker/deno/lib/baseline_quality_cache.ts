@@ -21,6 +21,13 @@
  *
  * Set `VIBE_CODER_BASELINE_QUALITY_CACHE=0` to disable reuse entirely.
  *
+ * Issue #1261: the stored gate output is the aggregated stdout and stderr of
+ * every subprocess the gate ran, so it is redacted before it is trimmed and
+ * written, and the cache directory is ownership-checked on both the read and
+ * the write path. An entry another account could have planted is not merely
+ * secret-bearing text on disk — a planted `passed: true` would skip a whole
+ * baseline gate.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -31,6 +38,10 @@ import {
   type WorkerCacheDirOptions,
   workerCachePath,
 } from "./worker_cache_dir.ts";
+import { defaultLogger } from "./logger.ts";
+import { hardenStateDir } from "./private_cache_dir.ts";
+import { redactedTail } from "./redacted_text.ts";
+import { containsSecret } from "./secret_redaction.ts";
 import type { DiffableCheck, GenericFinding } from "./baseline_gate.ts";
 
 /**
@@ -165,6 +176,53 @@ export async function computeBaselineQualityCacheKey(
   return `${repo}@${sha}`;
 }
 
+/** Directory holding `path`; null when the path names no directory. */
+function directoryOf(path: string): string | null {
+  const slash = path.lastIndexOf("/");
+  return slash > 0 ? path.slice(0, slash) : null;
+}
+
+/** Warn once about a cache directory the worker must not use. */
+function warnUntrusted(dir: string, reason: string): void {
+  defaultLogger.warn(
+    "Baseline quality cache directory is not worker-private — cache " +
+      "disabled (Issue #1261)",
+    { cacheDir: dir, reason },
+  );
+}
+
+/**
+ * Whether the cache file at `path` may be read (Issue #1261).
+ *
+ * An absent directory is the ordinary cold-cache case and stays silent; it
+ * is never created here, so a read still creates nothing. A directory that
+ * exists but is group/other accessible or owned by another account is
+ * refused loudly — its entries could have been planted, and a planted
+ * `passed: true` would skip the gate.
+ */
+async function readableCacheFile(path: string): Promise<boolean> {
+  const dir = directoryOf(path);
+  if (dir === null) return true;
+  try {
+    await Deno.stat(dir);
+  } catch {
+    return false; // no cache directory yet — an ordinary miss
+  }
+  const trust = await hardenStateDir(dir);
+  if (!trust.trusted) warnUntrusted(dir, trust.reason ?? "unknown");
+  return trust.trusted;
+}
+
+/** Read a cache file, or null when its directory is untrusted or the read fails. */
+async function readCacheFile(path: string): Promise<string | null> {
+  if (!await readableCacheFile(path)) return null;
+  try {
+    return await Deno.readTextFile(path);
+  } catch {
+    return null;
+  }
+}
+
 /** Read the whole cache file, dropping anything malformed. */
 async function loadCache(
   path: string | undefined,
@@ -175,27 +233,16 @@ async function loadCache(
   // baseline gate — the correct uncached behaviour on a host-side run.
   if (path === undefined) return new Map();
 
-  let text: string | null = null;
-  try {
-    text = await Deno.readTextFile(path);
-  } catch {
-    // Fall through to the legacy location below.
-  }
+  let text: string | null = await readCacheFile(path);
   if (text === null) {
     // Legacy-location fallback (Issue #4318): a native host that cached
     // under $HOME/.vibe-coder keeps its warm cache across the move. Read
     // only — it never creates a directory.
-    if (path === baselineQualityCachePath(roots)) {
-      try {
-        text = await Deno.readTextFile(
-          legacyHomeCachePath(BASELINE_QUALITY_CACHE_FILE, roots),
-        );
-      } catch {
-        return new Map();
-      }
-    } else {
-      return new Map();
-    }
+    if (path !== baselineQualityCachePath(roots)) return new Map();
+    text = await readCacheFile(
+      legacyHomeCachePath(BASELINE_QUALITY_CACHE_FILE, roots),
+    );
+    if (text === null) return new Map();
   }
 
   let parsed: unknown;
@@ -315,6 +362,44 @@ function nextSequence(cache: Map<string, BaselineQualityCacheEntry>): number {
 }
 
 /**
+ * Create and check the directory holding `path`, returning whether the cache
+ * may be written (Issue #1261). Refusing a directory another account could
+ * have written to keeps the worker from adding to a poisoned cache.
+ */
+async function writableCacheDir(path: string): Promise<boolean> {
+  const dir = directoryOf(path);
+  if (dir === null) return true;
+  const trust = await hardenStateDir(dir, { create: true });
+  if (!trust.trusted) warnUntrusted(dir, trust.reason ?? "unknown");
+  return trust.trusted;
+}
+
+/**
+ * The findings safe to persist (Issue #1261).
+ *
+ * A finding's `key` is its identity for the baseline diff — it is matched
+ * against keys recomputed live on the next run — so masking a secret inside
+ * one would make a pre-existing finding look new and fail the gate on a
+ * finding nobody introduced. A findings list carrying a secret is therefore
+ * dropped whole: the entry still records the pass/fail outcome, and the
+ * caller re-runs the gate when it needs findings.
+ */
+function persistableFindings(
+  findings: GenericFinding[] | undefined,
+): GenericFinding[] | undefined {
+  if (!findings) return undefined;
+  const bearsSecret = findings.some((finding) =>
+    containsSecret(finding.key) || containsSecret(finding.display)
+  );
+  if (!bearsSecret) return findings;
+  defaultLogger.warn(
+    "Baseline gate findings carried a secret — not persisted (Issue #1261)",
+    { findings: findings.length },
+  );
+  return undefined;
+}
+
+/**
  * Record the baseline outcome for `key`, pruning the oldest entries so the
  * file stays bounded. Throws only if the file cannot be written — callers
  * treat a write failure as non-fatal. No resolvable path (no cache
@@ -333,12 +418,17 @@ export async function writeBaselineQualityCache(
 ): Promise<void> {
   const resolved = path ?? baselineQualityCachePath(roots);
   if (resolved === undefined) return;
+  if (!await writableCacheDir(resolved)) return;
   const cache = await loadCache(resolved, roots);
+  const findings = persistableFindings(outcome.findings);
   cache.set(key, {
     version: BASELINE_QUALITY_CACHE_VERSION,
     passed: outcome.passed,
-    output: outcome.output.slice(-MAX_CACHED_OUTPUT_CHARS),
-    ...(outcome.findings ? { findings: outcome.findings } : {}),
+    // Redact the whole output before the tail is cut (Issue #1261): cutting
+    // first splits a credential and the fragment loses the anchor every
+    // signature rule keys on, so `redactedTail` is the only correct order.
+    output: redactedTail(outcome.output, MAX_CACHED_OUTPUT_CHARS),
+    ...(findings ? { findings } : {}),
     storedAt: Date.now(),
     seq: nextSequence(cache),
   });
@@ -358,12 +448,9 @@ export async function writeBaselineQualityCache(
     .slice(0, MAX_BASELINE_QUALITY_CACHE_ENTRIES)
     .map(({ entry }) => entry);
 
-  const slash = resolved.lastIndexOf("/");
-  if (slash > 0) {
-    await Deno.mkdir(resolved.slice(0, slash), { recursive: true });
-  }
   await Deno.writeTextFile(
     resolved,
     JSON.stringify(Object.fromEntries(kept), null, 2),
+    { mode: 0o600 },
   );
 }

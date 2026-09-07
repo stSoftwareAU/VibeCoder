@@ -36,6 +36,7 @@ import {
   type UnitTestPassOutcome,
   unitTestStageVerdict,
 } from "../lib/unit_test_passes.ts";
+import { CONTAINER_IMAGE_STAMP_ENV } from "../lib/container_stamp.ts";
 import { INTEGRATION_TEST_FILES } from "../lib/integration_test_manifest.ts";
 import { PARALLEL_UNSAFE_TEST_FILES } from "../lib/parallel_unsafe_test_manifest.ts";
 
@@ -446,4 +447,42 @@ Deno.test("unit passes - a stage that ran nothing has not passed (Issue #940)", 
     "FAILED",
     "a pass that never ran cannot count towards the stage passing",
   );
+});
+
+// ---------------------------------------------------------------------------
+// A blank container stamp is a HOST run (Issue #1493, follow-up to #1262)
+// ---------------------------------------------------------------------------
+
+Deno.test("unit passes - a blank container marker leaves the host's worker count alone (Issue #1493)", () => {
+  // The bound was keyed on the PRESENCE of the image stamp, so
+  // `VIBE_IMAGE_AGENT_PROVIDERS=` capped a HOST run at four workers and threw
+  // away most of the #940 win on a 10-core box. Blank reads as absent.
+  for (const blank of ["", "   "]) {
+    for (
+      const pass of passes({ ...HOST_ENV, [CONTAINER_MARKER_VAR]: blank })
+    ) {
+      assertEquals(
+        Object.hasOwn(pass.env, "DENO_JOBS"),
+        false,
+        `${pass.label} pinned DENO_JOBS for a stamp of ${
+          JSON.stringify(blank)
+        }`,
+      );
+    }
+  }
+});
+
+Deno.test("unit passes - a real container marker still bounds DENO_JOBS (Issue #1493)", () => {
+  // The other direction: #4267's OOM SIGKILLs are what the bound prevents,
+  // and whitespace padding must not hide a real stamp.
+  const [parallel] = passes({
+    ...HOST_ENV,
+    [CONTAINER_MARKER_VAR]: " claude ",
+  });
+  assertEquals(parallel!.env.DENO_JOBS, CONTAINER_DENO_JOBS);
+});
+
+Deno.test("unit passes - CONTAINER_MARKER_VAR is the canonical stamp name (Issue #1493)", () => {
+  // Aliased rather than re-spelled, so the two cannot drift apart.
+  assertEquals(CONTAINER_MARKER_VAR, CONTAINER_IMAGE_STAMP_ENV);
 });

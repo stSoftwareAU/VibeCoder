@@ -16,12 +16,13 @@ import {
   fetchPRsByBranch,
   fetchPRsForIssueByTitle,
   invalidatePRsByBranch,
+  type MergedPR,
   type TitleSearchPR,
 } from "./issue_query.ts";
 import { extractIssueNumberFromPrTitle } from "./pr_body.ts";
 import { filterOutWorkflowLabels } from "./workflow_labels.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
-import { verifyMergeLanded } from "./merge_landing.ts";
+import { type MergeLanding, verifyMergeLanded } from "./merge_landing.ts";
 import {
   loadSweepWatermarks,
   saveSweepWatermarks,
@@ -34,6 +35,24 @@ function buildPrUrl(repo: string, prNumber: number): string {
 
 /** Pattern for a valid GitHub PR URL (https://github.com/owner/repo/pull/123). */
 const PR_URL_PATTERN = /^https?:\/\/.+\/pull\/\d+$/;
+
+/**
+ * Every worker issue marker in a PR body, as a literal pattern.
+ *
+ * Built from a literal rather than interpolating the issue number into
+ * `new RegExp(...)`: a dynamic regex over an attacker-writable PR body is
+ * a ReDoS surface the SAST gate refuses. The captured digits are compared
+ * numerically, which also rules out `…-issue-42` matching issue 4.
+ */
+const WORKER_ISSUE_MARKER_PATTERN = /vibe-worker-issue-(\d+)/g;
+
+/** True when `body` carries the worker marker for exactly `issueNumber`. */
+function bodyHasWorkerIssueMarker(body: string, issueNumber: number): boolean {
+  for (const match of body.matchAll(WORKER_ISSUE_MARKER_PATTERN)) {
+    if (Number(match[1]) === issueNumber) return true;
+  }
+  return false;
+}
 
 // Issue #319: moved to a leaf module so `issue_query.ts` can use it without
 // an import cycle. Re-exported here for the existing importers.
@@ -357,8 +376,6 @@ export async function findExistingPrForIssue(
   cache?: IssueCache,
   log: (message: string) => void = console.error,
 ): Promise<Result<string, Error>> {
-  const issueStr = String(issueNumber);
-
   // Issue #1796: when a cache is available, route every state through
   // `fetchPRsForIssueByTitle` so the per-issue search collapses to one
   // network call per (issue, state) pair across the iteration. The
@@ -423,7 +440,6 @@ export async function findExistingPrForIssue(
   }
 
   // Uncached fallback path (legacy body-marker matching retained).
-  const markerPattern = new RegExp(`vibe-worker-issue-${issueStr}([^0-9]|$)`);
   const statesToCheck: string[] = ["open", "merged", "closed"];
 
   for (const state of statesToCheck) {
@@ -459,7 +475,9 @@ export async function findExistingPrForIssue(
 
       for (const pr of prs) {
         const titleMatch = prTitleMatchesIssue(pr.title, issueNumber);
-        const markerMatch = pr.body ? markerPattern.test(pr.body) : false;
+        const markerMatch = pr.body
+          ? bodyHasWorkerIssueMarker(pr.body, issueNumber)
+          : false;
 
         if (!titleMatch && !markerMatch) continue;
 
@@ -518,22 +536,104 @@ function pickRecentlyClosedMatch(
   return null;
 }
 
+/** Options for {@link closeDuplicatePrs} (Issues #623, #1264). */
+export interface CloseDuplicatePrsOptions {
+  /**
+   * Iteration-scoped cache for the per-branch open-PR lookup (Issue #1796).
+   */
+  cache?: IssueCache;
+  /**
+   * Fleet logins whose PRs this worker may close — the push-capable
+   * maintenance set (`resolveFleetMaintenanceAuthorSet`), never the
+   * defer-to set, because closing a PR is acting on it.
+   *
+   * When empty, the acting `gh` login is resolved from the API and used
+   * as the sole allowed author. A candidate authored by anyone else is
+   * left alone (Issue #1264).
+   */
+  allowedAuthors?: readonly string[];
+  /**
+   * Report-only mode — **defaults to `true`**.
+   *
+   * Closing someone's PR is destructive and irreversible in effect, so the
+   * safe outcome is the default and every caller that really means to close
+   * states it (Issue #1264). In dry-run the return value is the number of
+   * duplicates that *would* be closed and each one is logged.
+   */
+  dryRun?: boolean;
+  /** Log sink for skip/dry-run reporting (injectable for testing). */
+  log?: (message: string) => void;
+}
+
+/** Normalise a GitHub login for comparison — logins are case-insensitive. */
+function normaliseLogin(login: string): string {
+  return login.trim().toLowerCase();
+}
+
+/**
+ * Resolve the set of logins whose PRs this worker may close (Issue #1264).
+ *
+ * Returns an empty set when no author can be established — the caller must
+ * then close nothing, because "author unknown" can never authorise a close.
+ */
+async function resolveCloseAuthorSet(
+  allowedAuthors: readonly string[],
+  ghCommandFn: (args: string[]) => Promise<string>,
+  log: (message: string) => void,
+): Promise<Set<string>> {
+  const set = new Set<string>();
+  for (const author of allowedAuthors) {
+    const key = normaliseLogin(author);
+    if (key) set.add(key);
+  }
+  if (set.size > 0) return set;
+
+  // No configured set — fall back to the acting `gh` login, the same
+  // identity check `merge_if_checks_passed` makes before it merges.
+  try {
+    const login = normaliseLogin(
+      await ghCommandFn(["api", "user", "--jq", ".login"]),
+    );
+    if (login) set.add(login);
+  } catch (error: unknown) {
+    // Unresolvable identity: the empty set makes the caller close nothing.
+    // The cause travels with it so the refusal names why, not just what.
+    log(
+      `closeDuplicatePrs: could not resolve the acting gh login — ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return set;
+}
+
 /**
  * Close duplicate PRs for a branch, keeping the specified one (Issue #623).
+ *
+ * Only the fleet's own duplicates are ever closed (Issue #1264).
+ * `gh pr list --head <branch>` filters on `headRefName` alone, so it also
+ * returns PRs opened from forks and PRs opened by third parties — and the
+ * worker's branch convention (`issue-<n>-<slug>`) is public and trivially
+ * guessable. Without an ownership check, naming a branch that way was
+ * enough to have an outsider's PR closed by the service account with a
+ * misleading "duplicate" comment. Every candidate must therefore be
+ * authored by an allowed fleet login **and** live in the target repo.
  *
  * @param repo - Repository in "owner/repo" format
  * @param branchName - The head branch
  * @param keepPrUrl - The PR URL to keep open
  * @param ghCommandFn - Function to run gh commands (injectable for testing)
- * @returns Number of duplicates closed
+ * @param options - Ownership, dry-run and cache options
+ * @returns Number of duplicates closed (in dry-run, the number that would be)
  */
 export async function closeDuplicatePrs(
   repo: string,
   branchName: string,
   keepPrUrl: string,
   ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
-  cache?: IssueCache,
+  options: CloseDuplicatePrsOptions = {},
 ): Promise<number> {
+  const { cache, dryRun = true, log = console.error } = options;
+
   if (!branchName) {
     return 0;
   }
@@ -546,52 +646,40 @@ export async function closeDuplicatePrs(
     return 0;
   }
   const keepPrNumber = prNumberMatch[1]!;
+
+  const repoOwner = normaliseLogin(repo.split("/")[0] ?? "");
+  if (!repoOwner) {
+    log(`closeDuplicatePrs: refusing — "${repo}" is not owner/repo`);
+    return 0;
+  }
+
+  const allowedLogins = await resolveCloseAuthorSet(
+    options.allowedAuthors ?? [],
+    ghCommandFn,
+    log,
+  );
+  if (allowedLogins.size === 0) {
+    // Fail loud and closed: with no identity there is no PR we own.
+    log(
+      `closeDuplicatePrs: refusing to close any PR on ${branchName} in ` +
+        `${repo} — no fleet author set and the acting gh login could not ` +
+        `be resolved (Issue #1264)`,
+    );
+    return 0;
+  }
+
   let closedCount = 0;
 
   // Issue #1796: route the open-PR-by-branch lookup through
   // `fetchPRsByBranch` so per-branch checks collapse to one network
   // call per (branch, state) pair across the iteration.
-  let candidates: Array<{ number: number; url: string }> = [];
-  if (cache) {
-    const prs = await fetchPRsByBranch(
-      repo,
-      branchName,
-      "open",
-      cache,
-      ghCommandFn,
-    );
-    candidates = prs.map((pr) => ({
-      number: pr.number,
-      url: buildPrUrl(repo, pr.number),
-    }));
-  } else {
-    try {
-      const output = await ghCommandFn([
-        "pr",
-        "list",
-        "--repo",
-        repo,
-        "--head",
-        branchName,
-        "--state",
-        "open",
-        "--json",
-        "number,url",
-        "--jq",
-        '.[] | "\\(.number)|\\(.url)"',
-      ]);
-
-      for (const line of output.trim().split("\n")) {
-        if (!line) continue;
-        const [prNumberStr, url] = line.split("|");
-        if (!prNumberStr) continue;
-        candidates.push({ number: Number(prNumberStr), url: url ?? "" });
-      }
-    } catch {
-      // API call failed — empty candidate list, return 0.
-      return 0;
-    }
-  }
+  const candidates = await fetchPRsByBranch(
+    repo,
+    branchName,
+    "open",
+    cache,
+    ghCommandFn,
+  );
 
   // Mutation: invalidate the per-branch open-PR cache after closing
   // duplicates so subsequent reads in the same iteration see fresh state.
@@ -600,6 +688,41 @@ export async function closeDuplicatePrs(
   for (const cand of candidates) {
     const prNumberStr = String(cand.number);
     if (prNumberStr === keepPrNumber) continue;
+
+    // Ownership gate (Issue #1264). Unknown author or unknown head
+    // repository is "not ours" — the listing carries both fields, so a
+    // missing one means a stale cache entry, never permission.
+    const author = normaliseLogin(cand.author ?? "");
+    if (!author || !allowedLogins.has(author)) {
+      log(
+        `closeDuplicatePrs: leaving PR #${prNumberStr} in ${repo} open — ` +
+          `author "${cand.author ?? "unknown"}" is not a fleet author`,
+      );
+      continue;
+    }
+    // The head must live in the target repo itself. `isCrossRepository`
+    // is the field the rest of the codebase uses for this question, and
+    // it also catches a fork under the *same* owner that an owner-only
+    // comparison would wave through.
+    const headOwner = normaliseLogin(cand.headRepositoryOwner ?? "");
+    if (headOwner !== repoOwner || cand.isCrossRepository !== false) {
+      log(
+        `closeDuplicatePrs: leaving PR #${prNumberStr} in ${repo} open — ` +
+          `its head is not a branch of ${repo} (owner ` +
+          `"${cand.headRepositoryOwner ?? "unknown"}", cross-repository ` +
+          `${cand.isCrossRepository ?? "unknown"})`,
+      );
+      continue;
+    }
+
+    if (dryRun) {
+      log(
+        `closeDuplicatePrs: dry run — would close PR #${prNumberStr} in ` +
+          `${repo} as a duplicate of #${keepPrNumber}`,
+      );
+      closedCount++;
+      continue;
+    }
 
     try {
       await ghCommandFn([
@@ -711,6 +834,23 @@ export function classifyMergeCloseOrdering(
   return created <= merged ? "issue-predates-merge" : "issue-postdates-merge";
 }
 
+/**
+ * The comment a merged-PR close carries (Issues #482, #1528): the PR, and —
+ * when it merged into a milestone branch rather than the default one — the
+ * branch, so the issue says where its fix lives until the rollup lands.
+ */
+export function mergedPrCloseComment(
+  prNumber: number,
+  landing: Extract<MergeLanding, { landed: true }>,
+): string {
+  const base = landing.via === "default-branch"
+    ? "has been merged."
+    : `has been merged into \`${landing.baseRefName}\` — a milestone ` +
+      `branch, so the change reaches the default branch with that ` +
+      `milestone's rollup (via \`${landing.via}\`).`;
+  return `Closed automatically — PR #${prNumber} ${base}`;
+}
+
 export async function closeIssuesForMergedPrs(
   repos: string[],
   githubUser: string,
@@ -745,7 +885,7 @@ export async function closeIssuesForMergedPrs(
   let watermarksDirty = false;
 
   for (const repo of repos) {
-    let mergedPrs: Array<{ number: number; title: string; mergedAt: string }>;
+    let mergedPrs: MergedPR[];
     try {
       // Issue #1787: route through `fetchMergedPRsByUser` so this
       // call reuses the iteration-scoped `prs_merged_${user}` cache.
@@ -773,82 +913,98 @@ export async function closeIssuesForMergedPrs(
       if (pr.number > windowMax) windowMax = pr.number;
       if (pr.number <= mark) continue;
 
+      // The issues this PR fixes: the title's trailing `(#N)` / `(Issue #N)`
+      // and, since Issue #1528, the body's closing keywords — the reference
+      // GitHub itself honours on the default branch and ignores on a
+      // milestone branch, which left four milestone sub-issues open and the
+      // rollup held shut.
       const issueResult = extractIssueNumberFromPrTitle(pr.title);
-      if (!issueResult.ok) continue;
-      const issueNumber = issueResult.value;
+      const issueNumbers = [
+        ...new Set([
+          ...(issueResult.ok ? [issueResult.value] : []),
+          ...(pr.closingRefs ?? []),
+        ]),
+      ];
+      if (issueNumbers.length === 0) continue;
 
-      try {
-        const issueOutput = await ghCommandFn([
-          "issue",
-          "view",
-          String(issueNumber),
-          "--repo",
-          repo,
-          "--json",
-          "state,labels,createdAt",
-        ]);
+      for (const issueNumber of issueNumbers) {
+        try {
+          const issueOutput = await ghCommandFn([
+            "issue",
+            "view",
+            String(issueNumber),
+            "--repo",
+            repo,
+            "--json",
+            "state,labels,createdAt",
+          ]);
 
-        const issueData = JSON.parse(issueOutput) as {
-          state: string;
-          labels: Array<{ name: string }>;
-          createdAt?: string;
-        };
+          const issueData = JSON.parse(issueOutput) as {
+            state: string;
+            labels: Array<{ name: string }>;
+            createdAt?: string;
+          };
 
-        if (issueData.state !== "OPEN") continue;
+          if (issueData.state !== "OPEN") continue;
 
-        // Issue #482: a fix cannot predate the thing it fixes. Issues and PRs
-        // share one number sequence, so a stale or invented reference in an
-        // already-merged PR is otherwise a standing instruction to close
-        // whatever later takes that number — which is how PR #476, merged at
-        // 06:44Z naming a then-nonexistent "Issue #477", closed the unrelated
-        // issue #477 filed at 06:53Z. The close is silent and destroys work.
-        const ordering = classifyMergeCloseOrdering(
-          pr.mergedAt,
-          issueData.createdAt,
-        );
-        if (ordering !== "issue-predates-merge") {
-          // `issue-postdates-merge` is permanent — the number can never
-          // become this PR's subject, so it is watermarked away rather than
-          // re-examined for ever. An `unknown` ordering is transient (a cache
-          // entry written before `mergedAt` was collected), so it is held
-          // back and decided next cycle: closing is destructive and
-          // unprompted, while deferring costs one cycle.
-          if (ordering === "unknown") holdBack = Math.min(holdBack, pr.number);
-          continue;
-        }
+          // Issue #482: a fix cannot predate the thing it fixes. Issues and PRs
+          // share one number sequence, so a stale or invented reference in an
+          // already-merged PR is otherwise a standing instruction to close
+          // whatever later takes that number — which is how PR #476, merged at
+          // 06:44Z naming a then-nonexistent "Issue #477", closed the unrelated
+          // issue #477 filed at 06:53Z. The close is silent and destroys work.
+          const ordering = classifyMergeCloseOrdering(
+            pr.mergedAt,
+            issueData.createdAt,
+          );
+          if (ordering !== "issue-predates-merge") {
+            // `issue-postdates-merge` is permanent — the number can never
+            // become this PR's subject, so it is watermarked away rather than
+            // re-examined for ever. An `unknown` ordering is transient (a cache
+            // entry written before `mergedAt` was collected), so it is held
+            // back and decided next cycle: closing is destructive and
+            // unprompted, while deferring costs one cycle.
+            if (ordering === "unknown") {
+              holdBack = Math.min(holdBack, pr.number);
+            }
+            continue;
+          }
 
-        if (issueData.labels.some((l) => l.name === planningLabel)) {
+          if (issueData.labels.some((l) => l.name === planningLabel)) {
+            holdBack = Math.min(holdBack, pr.number);
+            continue;
+          }
+
+          // A merged PR is not a landed change (Issue #4396): held back, not
+          // watermarked away, so an orphaned merge is re-examined next cycle
+          // rather than silently forgotten.
+          const landing = await (options?.verifyMergeLandedFn ??
+            verifyMergeLanded)(repo, pr.number, ghCommandFn);
+          if (!landing.landed) {
+            holdBack = Math.min(holdBack, pr.number);
+            continue;
+          }
+
+          await ghCommandFn([
+            "issue",
+            "close",
+            String(issueNumber),
+            "--repo",
+            repo,
+            "--comment",
+            // Issue #482: name the PR. A wrong close must be traceable to its
+            // cause from the issue alone, without reading the worker's logs.
+            // Issue #1528: and the branch, when it is not the default one, so
+            // the audit trail says where the fix lives until the rollup.
+            mergedPrCloseComment(pr.number, landing),
+          ]);
+          closedCount++;
+          mutated = true;
+        } catch {
+          // Individual issue close failure is not fatal — but it must be
+          // retried next cycle rather than watermarked away (Issue #4256).
           holdBack = Math.min(holdBack, pr.number);
-          continue;
         }
-
-        // A merged PR is not a landed change (Issue #4396): held back, not
-        // watermarked away, so an orphaned merge is re-examined next cycle
-        // rather than silently forgotten.
-        const landing = await (options?.verifyMergeLandedFn ??
-          verifyMergeLanded)(repo, pr.number, ghCommandFn);
-        if (!landing.landed) {
-          holdBack = Math.min(holdBack, pr.number);
-          continue;
-        }
-
-        await ghCommandFn([
-          "issue",
-          "close",
-          String(issueNumber),
-          "--repo",
-          repo,
-          "--comment",
-          // Issue #482: name the PR. A wrong close must be traceable to its
-          // cause from the issue alone, without reading the worker's logs.
-          `Closed automatically — PR #${pr.number} has been merged.`,
-        ]);
-        closedCount++;
-        mutated = true;
-      } catch {
-        // Individual issue close failure is not fatal — but it must be
-        // retried next cycle rather than watermarked away (Issue #4256).
-        holdBack = Math.min(holdBack, pr.number);
       }
     }
 

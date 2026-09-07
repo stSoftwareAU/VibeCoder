@@ -26,6 +26,7 @@ import {
 } from "../setup/collaborator_precheck.ts";
 import { getRepoVisibility, type RepoVisibility } from "./repo_visibility.ts";
 import { REPO_SLUG_PATTERN } from "./config.ts";
+import { atomicWrite } from "./file_utils.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -144,9 +145,60 @@ export interface AddRepoFsDeps {
   writeTextFile: (path: string, data: string) => Promise<void>;
 }
 
-const defaultFsDeps: AddRepoFsDeps = {
+/** Owner-only permissions for the credential-bearing `.config.json`. */
+const CONFIG_FILE_MODE = 0o600;
+
+/**
+ * The path {@link atomicWrite} should be handed for a config file.
+ *
+ * `atomicWrite` derives the target directory from the last `/`, so a bare
+ * relative filename — the production default `.config.json` — would yield an
+ * empty directory and fail. Prefixing `./` names the current directory
+ * explicitly; a path that already has a `/` is passed through untouched.
+ *
+ * @param path - The config path as the caller supplied it.
+ */
+export function configWriteTarget(path: string): string {
+  return path.includes("/") ? path : `./${path}`;
+}
+
+/**
+ * Write `.config.json` with owner-only permissions (Issue #1241).
+ *
+ * `.config.json` is credential-bearing — `imgbb_api_key`, the GitHub App
+ * identifiers, and the per-repo `repo_config` block — so it must never be
+ * left world-readable. The plain `Deno.writeTextFile` this replaced created
+ * the file at the process umask default (0o644) and left a pre-existing
+ * 0o644 copy untightened. Writing through {@link atomicWrite} at mode 0o600
+ * matches the canonical writer in `setup/config_setup.ts` and tightens an
+ * already-loose file, because the 0o600 temp file is renamed over it.
+ *
+ * @param path - Path to the config file.
+ * @param data - The serialised config to write.
+ * @throws When the write fails — callers convert this into a `Result` error
+ *   rather than letting a config that was not written look like one that was.
+ */
+async function writeConfigSecurely(path: string, data: string): Promise<void> {
+  const result = await atomicWrite({
+    targetFile: configWriteTarget(path),
+    content: data,
+    mode: CONFIG_FILE_MODE,
+  });
+  if (!result.ok) {
+    throw result.error;
+  }
+}
+
+/**
+ * Production filesystem deps: reads directly, writes owner-only.
+ *
+ * Exported so every caller that wires its own deps (e.g.
+ * `commands/process_add_repo.ts`) inherits the hardened write rather than
+ * re-rolling a bare `Deno.writeTextFile`.
+ */
+export const defaultAddRepoFsDeps: AddRepoFsDeps = {
   readTextFile: (path) => Deno.readTextFile(path),
-  writeTextFile: (path, data) => Deno.writeTextFile(path, data),
+  writeTextFile: (path, data) => writeConfigSecurely(path, data),
 };
 
 /**
@@ -160,17 +212,24 @@ const defaultFsDeps: AddRepoFsDeps = {
  * approach from `config_setup.ts`'s `VIBE_ADD_REPOS` block, so a repo
  * already present yields `{ added: false }` and no duplicate is written.
  *
+ * Matching is case-insensitive (Issue #1546): GitHub repository names are,
+ * so appending `owner/Repo` beside `owner/repo` would list one repository
+ * twice — running its every scan twice and letting the worker's two slots
+ * race each other for its issues. A case-variant is reported back through
+ * `existingSpelling` so the caller can name the entry that already covers it.
+ *
  * @param repo - The `owner/repo` slug to add (untrusted; re-validated).
  * @param configPath - Path to the `.config.json` file.
  * @param deps - Injected filesystem functions (defaults to real Deno I/O).
  * @returns `Result` carrying `{ added }` — `true` when newly appended,
- *   `false` when already present.
+ *   `false` when already present. When the existing entry is spelt
+ *   differently, `existingSpelling` carries that spelling.
  */
 export async function addRepoToMonitoredList(
   repo: string,
   configPath: string,
-  deps: AddRepoFsDeps = defaultFsDeps,
-): Promise<Result<{ added: boolean }>> {
+  deps: AddRepoFsDeps = defaultAddRepoFsDeps,
+): Promise<Result<{ added: boolean; existingSpelling?: string }>> {
   const slug = repo.trim();
 
   // Untrusted input — reject anything not in strict owner/repo form
@@ -221,9 +280,14 @@ export async function addRepoToMonitoredList(
     )
     : [];
 
-  // Idempotent: already present means no rewrite and no duplicate.
-  if (existing.includes(slug)) {
-    return { ok: true, value: { added: false } };
+  // Idempotent: already present means no rewrite and no duplicate. The
+  // comparison is case-insensitive because GitHub's names are (Issue #1546).
+  const key = slug.toLowerCase();
+  const present = existing.find((r) => r.trim().toLowerCase() === key);
+  if (present !== undefined) {
+    return present === slug
+      ? { ok: true, value: { added: false } }
+      : { ok: true, value: { added: false, existingSpelling: present } };
   }
 
   config.repos = [...new Set([...existing, slug])];
@@ -266,7 +330,7 @@ export async function addRepoToMonitoredList(
 export async function removeRepoFromMonitoredList(
   repo: string,
   configPath: string,
-  deps: AddRepoFsDeps = defaultFsDeps,
+  deps: AddRepoFsDeps = defaultAddRepoFsDeps,
 ): Promise<Result<{ removed: boolean; repoConfigRemoved: boolean }>> {
   const slug = repo.trim();
 
@@ -357,7 +421,7 @@ export async function removeRepoFromMonitoredList(
  */
 export async function listMonitoredRepos(
   configPath: string,
-  deps: AddRepoFsDeps = defaultFsDeps,
+  deps: AddRepoFsDeps = defaultAddRepoFsDeps,
 ): Promise<Result<string[]>> {
   let raw = "";
   try {

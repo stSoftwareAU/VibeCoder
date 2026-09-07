@@ -39,6 +39,7 @@ import {
   type SweepRunResult,
   type SweepSource,
 } from "../lib/security_tree_sweep.ts";
+import { isValidRepoSlug, renderInertRepoSlug } from "../lib/repo_slug.ts";
 
 /** Default baseline path, relative to the swept checkout. */
 export const DEFAULT_BASELINE = ".github/security-tree-sweep-baseline.json";
@@ -101,7 +102,20 @@ async function resolveSlug(
   deps: SweepDeps,
 ): Promise<string> {
   const explicit = optionalStringArg(args, "slug");
-  if (explicit !== undefined) return explicit;
+  if (explicit !== undefined) {
+    // Issue #1271: the derived slug below has always been shape-checked, but
+    // the explicit one was taken on trust and then interpolated into an API
+    // path and an issue-create target. Both paths now apply the same guard,
+    // and the rejected value is rendered inert before it reaches the message.
+    if (!isValidRepoSlug(explicit)) {
+      throw new Error(
+        `--slug "${renderInertRepoSlug(explicit)}" is not a valid owner/repo ` +
+          "slug — pass --slug owner/repo, or omit it to derive the slug from " +
+          "the checkout",
+      );
+    }
+    return explicit;
+  }
   const raw = await deps.runner(
     {
       bin: "gh",
@@ -200,6 +214,12 @@ export function createSecurityTreeSweepCommand(
           (r.lineStart !== null ? `:${r.lineStart}` : "")
         ),
         ...result.filed.map((f) => `Filed: #${f.number} ${f.id}`),
+        // Issue #1518: a tracked cluster is an open `security` issue, not a
+        // clean result — name each one, on a green run and a red one alike,
+        // so the class is never invisible on the CLI.
+        ...result.trackedRows.map((r) =>
+          `Tracked: ${r.id} ${r.severity} ${r.family} (#${r.issue})`
+        ),
         ...result.staleEntries.map((k) => `Stale baseline entry: ${k}`),
       ].join("\n");
 

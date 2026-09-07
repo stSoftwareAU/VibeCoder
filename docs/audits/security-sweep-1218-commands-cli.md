@@ -226,16 +226,36 @@ script is never printed.
 | SEC-1218-08 | [#1270](https://github.com/stSoftwareAU/VibeCoder/issues/1270) | `commands/software_updates.ts:47`                                                            | low / high            |
 | SEC-1218-09 | [#1271](https://github.com/stSoftwareAU/VibeCoder/issues/1271) | `commands/security_tree_sweep.ts:98`                                                         | low / medium          |
 
+SEC-1218-05 has since been fixed on #1267: `rotateAllLogs` now names what it
+rotates (`isRotatableLogName` in `lib/log_rotation.ts`) instead of accepting any
+`.log` / `.jsonl` name, so a third-party file in the operator-set log directory
+is neither renamed nor stripped of its oldest generation.
+
 SEC-1218-01 has since been fixed on #1263: the clarification round limit is
 counted from the issue's authored comments, filtered through the fleet identity
 in `alert_dedup_authors.ts`, rather than by matching a heading in the comment
 blob assembled for the model.
+
+SEC-1218-07 has since been fixed on #1269: `setupRepo` validates the branch it
+reads from `.vibe_default_branch` with `assertSafeRefComponent` and refuses the
+repo when the file is poisoned, both `git checkout <defaultBranch>` sites route
+through `buildCheckoutArgs`, and `defaultBranch` joined
+`GIT_REF_ARGV_UNTRUSTED_IDENTIFIER` so the CI chokepoint no longer treats a
+working-tree-derived default branch as a safe internal ref.
 
 SEC-1218-02's reachability was corrected after filing and the correction posted
 to the issue: `closeDuplicatePrs` is not CLI-only.
 `lib/issue_worker_wiring.ts:88` imports it, `:255` declares it on `PrDeps` and
 `:524` binds the real implementation, so the unauthenticated head-branch
 selection runs unattended during ordinary issue work.
+
+SEC-1218-02 has since been fixed on #1264: `closeDuplicatePrs` now lists
+`author` and `headRepositoryOwner` with each candidate and closes one only when
+its author is in the push-capable fleet maintenance set **and** its head
+repository is the target repo, so an outsider's PR that merely shares a
+worker-shaped branch name is left open. The operation is also report-only by
+default — both the library and `--operation close-duplicate-prs` need an
+explicit `dryRun: false` / `--dry-run false` before anything is closed.
 
 Deduped onto issues that already existed rather than re-filed: the variable
 binary name that evades the `gh` chokepoint gate (**#1227**) and the unscanned

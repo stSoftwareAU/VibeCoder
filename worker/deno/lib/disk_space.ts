@@ -19,6 +19,7 @@ import { isReservedWorkRootEntry } from "./stale_workdir.ts";
 import { runWithTimeout, type SubprocessResult } from "./subprocess_timeout.ts";
 import { cleanDenoCache as realCleanDenoCache } from "./deno_cache.ts";
 import { emitSelfHealEventAuto } from "./self_heal_events.ts";
+import { runningInContainerImage } from "./container_stamp.ts";
 
 /** Timeout for df commands: 10 seconds (handles NFS stalls). */
 const DF_TIMEOUT_MS = 10_000;
@@ -47,6 +48,73 @@ export const DEFAULT_DISK_CLEANUP_GENTLE_THRESHOLD = 80;
 
 /** Default minimum free space in MB before large git operations (Issue #1168). */
 export const DEFAULT_MIN_FREE_SPACE_MB = 500;
+
+/** Lowest usable cleanup threshold (Issue #1268). */
+export const DISK_CLEANUP_THRESHOLD_MIN = 1;
+
+/** Highest usable cleanup threshold — disk usage is a percentage. */
+export const DISK_CLEANUP_THRESHOLD_MAX = 100;
+
+/**
+ * Check an operator-supplied cleanup threshold (Issue #1268).
+ *
+ * A threshold of `0` reads as "usage is always at or above the aggressive
+ * threshold", so every start nuked the work directory and every cloned
+ * repository on the volume with it — the opposite of the "disabled" an
+ * operator naturally expects `0` to mean. Negative values and values above
+ * 100 are equally meaningless against a usage percentage, as is a fraction.
+ *
+ * Enforced at the operator-facing boundaries — the `disk-space` CLI args and
+ * the housekeeping environment values — so a bad value is refused before it
+ * can reach {@link checkAndCleanupDiskSpace}. There is no "disabled"
+ * spelling: set the threshold to 100 to make the aggressive tier
+ * unreachable in practice.
+ *
+ * @param name - Flag or variable name to name in the failure message.
+ * @param value - The supplied threshold.
+ * @returns `null` when the value is usable, otherwise the failure message.
+ */
+export function validateCleanupThreshold(
+  name: string,
+  value: number,
+): string | null {
+  if (
+    Number.isInteger(value) &&
+    value >= DISK_CLEANUP_THRESHOLD_MIN &&
+    value <= DISK_CLEANUP_THRESHOLD_MAX
+  ) {
+    return null;
+  }
+  return `${name} must be ${DISK_CLEANUP_THRESHOLD_MIN}–` +
+    `${DISK_CLEANUP_THRESHOLD_MAX} (whole percent), got ${value}: ` +
+    `refusing to run disk cleanup`;
+}
+
+/**
+ * Parse an operator-supplied threshold, from a CLI argument or an
+ * environment string (Issue #1268).
+ *
+ * `parseInt` read `"0abc"` as `0` — the very value that made every start
+ * aggressive — and `"9x"` as `9`, so a present-but-unreadable value returns
+ * `NaN` here and is refused by {@link validateCleanupThreshold} rather than
+ * standing in for a number the operator never wrote. Only an absent value
+ * falls back.
+ *
+ * @param value - The supplied threshold (CLI argument or environment string).
+ * @param fallback - Used when the value is absent.
+ * @returns The parsed threshold, `fallback` when absent, `NaN` when unreadable.
+ */
+export function parseCleanupThreshold(
+  value: unknown,
+  fallback: number,
+): number {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+    return parseInt(value.trim(), 10);
+  }
+  return NaN;
+}
 
 /** Ordered list of reclaim tier names. */
 export type ReclaimTierName =
@@ -576,7 +644,7 @@ export async function checkAndCleanupDiskSpace(
   // seen through the mount, not the work directory's contribution to it.
   let containerPreserveMessage: string | null = null;
   const envLookup = options.env ?? ((name: string) => Deno.env.get(name));
-  if (isAggressive && envLookup("VIBE_IMAGE_AGENT_PROVIDERS") !== undefined) {
+  if (isAggressive && runningInContainerImage(envLookup)) {
     const probe = options.freeBytesProbe ?? getDiskFreeBytes;
     const freeBytes = await probe(workDir);
     if (freeBytes === null || freeBytes >= CONTAINER_NUKE_FREE_BYTES_FLOOR) {

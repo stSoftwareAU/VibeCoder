@@ -46,6 +46,20 @@ export const GIT_SPAWN_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "worker/deno/lib/git_timeout.ts",
 ]);
 
+/**
+ * The directories the quality gate scans (Issue #1259).
+ *
+ * `worker/deno/setup` was never scanned, so the setup prerequisite probe ran
+ * `git config --global …` through its own untimed, unjournalled spawn while
+ * the gate reported a clean tree. Kept in step with
+ * `GH_SPAWN_SCAN_DIRS` — the two checks scan the same tree.
+ */
+export const GIT_SPAWN_SCAN_DIRS: readonly string[] = [
+  "worker/deno/lib",
+  "worker/deno/commands",
+  "worker/deno/setup",
+];
+
 /** Matches a direct `git` subprocess construction. */
 export const GIT_SPAWN_PATTERN =
   /new\s+Deno\.Command\s*\(\s*["'`]git["'`]|Deno\.Command\s*\(\s*["'`]git["'`]/;
@@ -62,14 +76,29 @@ export const GIT_INDIRECT_SPAWN_RULES: IndirectSpawnRules = {
 };
 
 /**
- * Modules exempt from the indirection signal (Issue #1378). Empty since
- * Issue #1429: the one entry, `benchmark.ts`, builds its throwaway fixture
- * repositories through `runGitCommand` (Issue #1396) and satisfies the rule
- * on its own merits. Their **literal** spawns were never exempt. The set
- * stays as the documented shape for a future gap — and must shrink, never
- * grow.
+ * Modules exempt from the indirection signal (Issue #1378). Their **literal**
+ * spawns are never exempt. See {@link GH_INDIRECT_KNOWN_GAPS} for why a false
+ * positive and a known gap are recorded as different things.
+ *
+ * Issue #1429 emptied the known-gap half: `benchmark.ts` builds its throwaway
+ * fixture repositories through `runGitCommand` (Issue #1396) and satisfies
+ * the rule on its own merits.
+ *
+ * The one entry below is a false positive, carried over from the checker this
+ * one supersedes (Issue #1227's `GIT_VARIABLE_SPAWN_ALLOWLIST`, merged in
+ * from `main`). `prerequisite_install_plan.ts` names `git` as the package a
+ * host installs (Issue #1259); the process it spawns is the package manager.
+ *
+ * That allowlist held two further entries — `secrets_history_scan.ts`, which
+ * passes `git` as the *source type* argument to gitleaks and trufflehog, and
+ * `claude_runner.ts`, which lists it among the CLI tools the worker requires.
+ * Neither is needed here: this rule demands an indirect construction in the
+ * same file as well as the argv-head shape, and neither module has one. The
+ * narrower rule needs fewer exemptions, which is the point of it.
  */
-export const GIT_INDIRECT_KNOWN_GAPS: ReadonlySet<string> = new Set<string>();
+export const GIT_INDIRECT_KNOWN_GAPS: ReadonlySet<string> = new Set<string>([
+  "worker/deno/setup/prerequisite_install_plan.ts",
+]);
 
 /**
  * Scan a file's content for direct or indirect `git` spawns.

@@ -145,10 +145,11 @@ Deno.test("write_interactive_config - merges the interactive answers on success"
     assertEquals(code, 0, output);
 
     const written = JSON.parse(await Deno.readTextFile(configFile));
-    assertEquals(written.repos, [
-      "stSoftwareAU/VibeCoder",
-      "stSoftwareAU/other",
-    ]);
+    // Issue #1546: `repos` is no longer merged here — the answer reaches the
+    // file through VIBE_REPOS and the TypeScript writer, which validates each
+    // slug and collapses case-variant duplicates. This merge would otherwise
+    // write the raw answer back over the de-duplicated list.
+    assertEquals(written.repos, ["stSoftwareAU/VibeCoder"]);
     assertEquals(written.imgbb_api_key, "new-key");
     // Keys nobody answered survive the rewrite.
     assertEquals(written.allowed_authors, ["operator"]);
@@ -172,6 +173,24 @@ Deno.test("write_interactive_config - is a no-op when nothing was answered", asy
     await Deno.writeTextFile(configFile, ORIGINAL_CONFIG);
 
     const { code, output } = await writeInteractiveConfig(configFile, {});
+    assertEquals(code, 0, output);
+
+    assertEquals(await Deno.readTextFile(configFile), ORIGINAL_CONFIG);
+    assertEquals(await entriesOf(tmp), [".config.json"]);
+  });
+});
+
+Deno.test("write_interactive_config - leaves repos to the TypeScript writer (Issue #1546)", async () => {
+  await withTempDir(async (tmp) => {
+    const configFile = `${tmp}/.config.json`;
+    await Deno.writeTextFile(configFile, ORIGINAL_CONFIG);
+
+    // A repos-only answer is a no-op here: merging it would write the
+    // operator's raw list back over the list `run_setup_cli config` just
+    // de-duplicated, leaving the case-variant defect the warning named.
+    const { code, output } = await writeInteractiveConfig(configFile, {
+      INTERACTIVE_REPOS: "stSoftwareAU/GRQ-Actual,stSoftwareAU/GRQ-actual",
+    });
     assertEquals(code, 0, output);
 
     assertEquals(await Deno.readTextFile(configFile), ORIGINAL_CONFIG);

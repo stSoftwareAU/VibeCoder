@@ -512,3 +512,54 @@ Deno.test("buildHousekeepingSteps - a non-numeric override falls back rather tha
     200,
   );
 });
+
+// ---------------------------------------------------------------------------
+// A blank container stamp is a HOST run (Issue #1493, follow-up to #1262)
+// ---------------------------------------------------------------------------
+
+Deno.test("sweepVolatileCliState - a blank container stamp does not sweep a host's CLI state (Issue #1493)", async () => {
+  // The sweep was keyed on the PRESENCE of the image stamp, so
+  // `VIBE_IMAGE_AGENT_PROVIDERS=` on a host run destroyed the operator's own
+  // agent-CLI session registry. Blank reads as absent: the host keeps it.
+  const workDir = await Deno.makeTempDir({ prefix: "cli_state_blank_" });
+  try {
+    await Deno.mkdir(`${workDir}/.claude-config/sessions`, { recursive: true });
+    for (const blank of ["", "   "]) {
+      const summary = await sweepVolatileCliState(
+        workDir,
+        envFrom({ VIBE_IMAGE_AGENT_PROVIDERS: blank }),
+      );
+      assertStringIncludes(summary, "not inside the worker container");
+      assertEquals(
+        (await Deno.stat(`${workDir}/.claude-config/sessions`)).isDirectory,
+        true,
+        `a stamp of ${JSON.stringify(blank)} must leave the host's state alone`,
+      );
+    }
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("sweepVolatileCliState - a real container stamp still sweeps (Issue #1493)", async () => {
+  // The other direction: narrowing the predicate must not disarm the sweep
+  // the container relies on at start-up.
+  const workDir = await Deno.makeTempDir({ prefix: "cli_state_stamped_" });
+  try {
+    await Deno.mkdir(`${workDir}/.claude-config/sessions`, { recursive: true });
+    const summary = await sweepVolatileCliState(
+      workDir,
+      envFrom({ VIBE_IMAGE_AGENT_PROVIDERS: "claude,codex" }),
+    );
+    assertStringIncludes(summary, "swept dead-run CLI state");
+    assertEquals(
+      await Deno.stat(`${workDir}/.claude-config/sessions`).then(
+        () => true,
+        () => false,
+      ),
+      false,
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});

@@ -60,6 +60,10 @@ import { runIdleTaskClaude } from "../idle_task_claude_budget.ts";
 import { RUN_ID_ENV_VAR } from "../run_id.ts";
 import { buildAttributionFooter } from "../idle_task_attribution.ts";
 import { collectInSourceSuppressedIds } from "../orphan_deps_suppression_scan.ts";
+import {
+  type OrphanSeverityGateReport,
+  verifyFiledOrphanSeverities,
+} from "../orphan_deps_severity_gate.ts";
 import { renderSuppressionSummary } from "../suppression_comments.ts";
 import { defaultLogger } from "../logger.ts";
 import type { Result } from "../../types.ts";
@@ -146,6 +150,18 @@ export interface OrphanDepsTemplateDeps {
    * failure returns `[]` and the scan still runs.
    */
   collectSuppressedIdsFn?: (workDir: string) => Promise<string[]>;
+  /**
+   * Deterministic severity corroboration over the findings this run filed
+   * (Issue #1549). Defaults to {@link verifyFiledOrphanSeverities}; tests
+   * inject a stub. The scan reads live publisher-authored metadata, so the
+   * LLM's severity verdict is re-checked against the structured signals the
+   * worker can verify before it stands unreviewed.
+   */
+  verifySeveritiesFn?: (opts: {
+    repo: string;
+    issueNumbers: readonly number[];
+    ghCommandFn: (args: string[]) => Promise<string>;
+  }) => Promise<OrphanSeverityGateReport>;
 }
 
 /** Inputs to an orphan-dependency Claude run. */
@@ -232,6 +248,7 @@ export function assembleOrphanDepsPrompt(
 export function renderOrphanDepsSummary(
   newlyFiled: readonly number[] | null,
   suppressionReport: string = renderSuppressionSummary(),
+  severityReport?: OrphanSeverityGateReport,
 ): string {
   let head: string;
   if (newlyFiled === null) {
@@ -244,7 +261,35 @@ export function renderOrphanDepsSummary(
         [...newlyFiled].sort((a, b) => a - b).map((n) => `#${n}`).join(", ")
       }`;
   }
-  return suppressionReport.length > 0 ? `${head} ${suppressionReport}` : head;
+  const parts = [head];
+  if (suppressionReport.length > 0) parts.push(suppressionReport);
+  parts.push(...renderSeverityGateNotes(severityReport));
+  return parts.join(" ");
+}
+
+/**
+ * Render the severity-gate sentences appended to the close summary
+ * (Issue #1549). A flagged finding and a check that could not run are both
+ * reported — an unchecked finding is never left to read as a pass.
+ */
+function renderSeverityGateNotes(
+  report: OrphanSeverityGateReport | undefined,
+): string[] {
+  if (!report) return [];
+  const notes: string[] = [];
+  if (report.flagged.length > 0) {
+    const refs = [...report.flagged]
+      .sort((a, b) => a.issueNumber - b.issueNumber)
+      .map((f) => `#${f.issueNumber} (${f.verdict.status})`)
+      .join(", ");
+    notes.push(
+      `Severity not corroborated — flagged for human review: ${refs}.`,
+    );
+  }
+  if (report.failures.length > 0) {
+    notes.push(`Severity gate incomplete: ${report.failures.join("; ")}.`);
+  }
+  return notes;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +385,8 @@ export function createOrphanDepsTemplate(
       ));
   const runScanFn = deps.runScanFn ??
     ((opts) => defaultRunScan(opts, loadPromptFn));
+  const verifySeveritiesFn = deps.verifySeveritiesFn ??
+    ((opts) => verifyFiledOrphanSeverities(opts));
   const collectSuppressedIdsFn = deps.collectSuppressedIdsFn ??
     // Issue #3942: surface the scan's input-cap notices — no silent caps.
     ((workDir) =>
@@ -414,6 +461,10 @@ export function createOrphanDepsTemplate(
         opts.repo,
         ORPHAN_DEPS_LABEL,
         ghCommandFn,
+        "BP-",
+        // Author-verified dedup (Issue #1243): a finding-id marker in an
+        // issue body anybody can write is not evidence the fleet filed it.
+        dedupAuthors,
       );
 
       // 4. Collect the in-source suppressed ids so a finding silenced with
@@ -460,9 +511,25 @@ export function createOrphanDepsTemplate(
       );
       const newlyFiled = diffNewlyFiled(before, after);
 
+      // 7. Deterministic severity corroboration (Issue #1549). The scan is
+      //    the one template that reads live publisher-authored metadata, so
+      //    a steered verdict is a real possibility: every finding it filed
+      //    is re-checked against the structured signals the worker can
+      //    verify, and a disagreement is flagged for a human rather than
+      //    left to stand on the model's word alone.
+      const severityReport = await verifySeveritiesFn({
+        repo: opts.repo,
+        issueNumbers: newlyFiled ?? [],
+        ghCommandFn,
+      });
+
       return {
         ok: true,
-        summary: renderOrphanDepsSummary(newlyFiled),
+        summary: renderOrphanDepsSummary(
+          newlyFiled,
+          renderSuppressionSummary(),
+          severityReport,
+        ),
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

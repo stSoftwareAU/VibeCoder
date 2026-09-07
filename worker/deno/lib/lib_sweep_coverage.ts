@@ -206,6 +206,55 @@ export async function listSweptModules(
 }
 
 /**
+ * Largest slice whose record must name every module the slice claims.
+ *
+ * The five original slices each cover dozens to hundreds of modules and
+ * describe them collectively, so naming each one is neither possible nor
+ * useful. A **top-up** slice — the recurring shape, one or two modules added
+ * to `lib/` after the sweeps recorded their coverage — is small precisely
+ * because it exists to name them. Twenty is the line between the two.
+ */
+export const ENUMERATED_SLICE_MAX_PATHS = 20;
+
+/**
+ * Modules a small slice claims that its written record never names.
+ *
+ * This is the honesty half of the coverage gate. `diffCoverage` only asks
+ * whether *some* slice owns each module, so the cheapest way to turn it green
+ * is to append a new module's path to a slice whose sweep ran before that
+ * module existed — a false record in a security-audit ledger, and exactly what
+ * happened to `gh_body_file_io.ts` and `gh_timeout.ts` (Issue #1325). A
+ * top-up slice cannot take that shortcut: its record has to name what it
+ * claims to have read.
+ *
+ * Fails loud on a record it was not given: a local record whose text is
+ * missing reports every path the slice claims, rather than passing for want
+ * of evidence.
+ *
+ * @param ledger - The parsed ledger.
+ * @param recordTexts - Repo-relative record path to that record's text.
+ * @returns Sorted `path (chunk — record)` entries; empty when every small
+ *   slice's record names each module it claims.
+ */
+export function unnamedSmallSliceModules(
+  ledger: SweepCoverageLedger,
+  recordTexts: ReadonlyMap<string, string>,
+): string[] {
+  const gaps: string[] = [];
+  for (const slice of ledger.slices) {
+    if (slice.paths.length > ENUMERATED_SLICE_MAX_PATHS) continue;
+    // A slice still in progress points at its issue, which is not in the tree.
+    if (/^https?:\/\//.test(slice.ledger)) continue;
+    const text = recordTexts.get(slice.ledger);
+    for (const path of slice.paths) {
+      if (text?.includes(path)) continue;
+      gaps.push(`${path} (${slice.chunk} — ${slice.ledger})`);
+    }
+  }
+  return gaps.sort();
+}
+
+/**
  * Repo-relative written records named by the ledger's slices.
  *
  * A slice may point at a file in this repository (`docs/audits/….md`) or, for

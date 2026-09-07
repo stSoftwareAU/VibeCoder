@@ -46,6 +46,7 @@ import {
   getRepoVisibility,
   type RepoVisibility,
 } from "../lib/repo_visibility.ts";
+import { createSetupRunCommand } from "./setup_command_runner.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -167,28 +168,6 @@ export interface SyncRepoOptions {
 /** Validate an `owner/repo` slug (allowlist — no shell metacharacters). */
 function isValidRepoSlug(repo: string): boolean {
   return /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo);
-}
-
-/** Create a default runner using `Deno.Command` with optional gh config. */
-function createDefaultRunCommand(ghConfigDir?: string): RunCommand {
-  return async (cmd: string[]): Promise<CommandOutput> => {
-    const env = ghConfigDir
-      ? { ...Deno.env.toObject(), GH_CONFIG_DIR: ghConfigDir }
-      : undefined;
-    const command = new Deno.Command(cmd[0]!, {
-      args: cmd.slice(1),
-      stdout: "piped",
-      stderr: "piped",
-      env,
-    });
-    const output = await command.output();
-    const decoder = new TextDecoder();
-    return {
-      success: output.success,
-      stdout: decoder.decode(output.stdout).trim(),
-      stderr: decoder.decode(output.stderr).trim(),
-    };
-  };
 }
 
 /**
@@ -332,7 +311,7 @@ async function resolveRepoContext(
   | { ok: false; error: string; visibility?: RepoVisibility }
 > {
   const runner = options.runCommand ??
-    createDefaultRunCommand(options.ghConfigDir);
+    createSetupRunCommand(options.ghConfigDir);
 
   // Input validation — never trust a slug into a gh call.
   if (!isValidRepoSlug(repo)) {
@@ -382,7 +361,7 @@ export async function syncBranchProtectionForAllRepos(
   options: BranchProtectionSyncOptions,
 ): Promise<BranchProtectionSyncSummary> {
   const runner = options.runCommand ??
-    createDefaultRunCommand(options.ghConfigDir);
+    createSetupRunCommand(options.ghConfigDir);
 
   const results: SyncResult[] = [];
   let configured = 0;

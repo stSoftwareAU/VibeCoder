@@ -119,11 +119,19 @@ function stripBlockComments(source: string): string {
 }
 
 /**
- * The file's text with comments blanked out, newlines preserved so every
- * offset still maps to its original line.
+ * Strip block comments and trailing line comments, preserving newlines so
+ * every offset still maps to its original line, and so line numbers (and
+ * therefore reported violations) stay aligned with the original source.
+ *
+ * Shared with the shared-tmp state-directory check (Issue #1242) and the
+ * redact/truncate order check, both of which scan across lines and so need
+ * the whole file rather than one line at a time.
+ *
+ * @param source - The raw file text.
+ * @returns The same text with comment content blanked out.
  */
-function codeOnly(content: string): string {
-  return stripBlockComments(content)
+export function stripLineAndBlockComments(source: string): string {
+  return stripBlockComments(source)
     .split("\n")
     .map((line) => line.replace(/\/\/.*$/, ""))
     .join("\n");
@@ -175,7 +183,7 @@ export function scanContentForDirectSpawn(
   pattern: RegExp,
   rules?: IndirectSpawnRules,
 ): DirectSpawnViolation[] {
-  const code = codeOnly(content);
+  const code = stripLineAndBlockComments(content);
   const offending = new Set(matchingLines(code, pattern));
 
   if (rules) {
@@ -204,8 +212,16 @@ export function scanContentForDirectSpawn(
 /** An empty negative lookahead: matches nothing, anywhere. */
 const NEVER_MATCHES = /(?!)/;
 
-/** Recursively walk a directory yielding `.ts` file paths (absolute). */
-async function* walkTsFiles(
+/**
+ * Recursively walk a directory yielding `.ts` file paths (absolute).
+ *
+ * Exported for the sibling static checks that scan the same tree
+ * (Issue #1242) — the walk is identical, so it lives here once.
+ *
+ * @param dir - Absolute directory to walk; a missing directory yields nothing.
+ * @param excludeTests - Skip `*_test.ts` files.
+ */
+export async function* walkTsFiles(
   dir: string,
   excludeTests: boolean,
 ): AsyncGenerator<string> {

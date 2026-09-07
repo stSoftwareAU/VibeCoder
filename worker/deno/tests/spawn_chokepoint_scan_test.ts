@@ -212,3 +212,30 @@ Deno.test("scanDirectoriesForDirectSpawn - excludeTests skips co-located test fi
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Variable-binary spawns (Issue #1227)
+// ---------------------------------------------------------------------------
+
+// The variable-binary suite that used to sit here tested
+// `scanContentForVariableBinarySpawn` (Issue #1227), which the indirection
+// rules above supersede: #1227's signal is #1378's second signal, and #1378
+// adds the generic-wrapper signal it never had. Each of its cases has an
+// equivalent above — flagging, the generic runner, the delegating module, the
+// exemption set — bar the one below, which is ported onto the rules so the
+// comment-stripping coverage is not lost with the mechanism.
+
+Deno.test("scanContentForDirectSpawn - a comment naming the binary is not an indirect spawn", () => {
+  const violations = scanContentForDirectSpawn(
+    [
+      "/**",
+      ' * Callers pass ["docker", "ps"] — never spawn it here.',
+      " */",
+      "const command = new Deno.Command(cmd[0]!, { args });",
+    ].join("\n"),
+    "worker/deno/lib/example.ts",
+    DOCKER_SPAWN,
+    DOCKER_RULES,
+  );
+  assertEquals(violations, []);
+});

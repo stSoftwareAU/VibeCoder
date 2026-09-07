@@ -22,6 +22,27 @@ import { runGhCommand } from "./github.ts";
 /**
  * Labels that affect worker behaviour and require trusted authorship.
  *
+ * Relationship to `operationalDispatchLabels()` in
+ * `operational_dispatch_labels.ts` (Issue #1521): that
+ * function resolves the *config-driven* privileged dispatch set that
+ * `requiresLabelAdderTrust` applies for the phase gate in
+ * `find_issues_by_label.ts`, and every label it
+ * returns under the default config must also appear here — otherwise the
+ * discovery collectors never authorship-check it and an untrusted add
+ * survives on the in-memory issue record with no `[SECURITY]` audit event.
+ * The two lists are independent by necessity (this one is static, that one is
+ * operator-configurable), so `label_security_test.ts` asserts the
+ * containment that matters: every label that function returns under the
+ * default config must be trust-verified here, so a new dispatch label added
+ * there without an entry here fails CI. `grill-me` was exactly that drift.
+ *
+ * Operator-*renamed* dispatch labels cannot live in a static constant, and no
+ * caller supplies them through `extraOperationalLabels` today — the
+ * collectors pass only the `custom_label_prompts` labels. A renamed
+ * `grill_me_label` is therefore still gated by `requiresLabelAdderTrust` at
+ * dispatch, but is not stripped here; closing that gap needs the resolved
+ * dispatch labels passed in as extras.
+ *
  * These labels change how the worker processes an issue:
  * - planning: triggers the planning phase
  * - question: triggers question answering phase
@@ -39,6 +60,11 @@ import { runGhCommand } from "./github.ts";
  *   every downstream sub-issue, so the label is human-applied only — the
  *   worker's own attempt to add it is refused by `worker_label_guard.ts` and
  *   an untrusted actor's add is stripped here.
+ * - grill-me: dispatches the grilling phase (Issue #1521). Human-applied
+ *   only — the worker itself never adds it, it only removes it once the
+ *   grilling has run (`grill_me_processor.ts`), so trust-verifying it strips
+ *   nothing the worker owns. Permissive, not blocking-only: an unverifiable
+ *   adder fails closed exactly like `planning`.
  * - refine-issue, failed, failed-once: block pickup in every discovery tier
  *   (see `filterAndSort` in `issue_filter.ts`) but were absent from this list
  *   until Issue #3648, so unlike the five above they were never trust-verified
@@ -55,6 +81,7 @@ export const OPERATIONAL_LABEL_NAMES: readonly string[] = [
   "failed",
   "failed-once",
   "quorum",
+  "grill-me",
 ] as const;
 
 /**

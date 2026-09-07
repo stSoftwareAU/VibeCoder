@@ -12,6 +12,7 @@ import {
   assertThrows,
 } from "@std/assert";
 import {
+  _resetDuplicateRepoWarning,
   _resetRemovedTrustKeyWarning,
   getEnvArrayOrDefault,
   getEnvNumberOrDefault,
@@ -25,6 +26,7 @@ import {
 import type { ConfigFile, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+import { capturingWarningsAsync } from "./support/warnings.ts";
 
 // Test helper to create a temporary config file
 async function withTempConfig(
@@ -1687,4 +1689,61 @@ Deno.test("config - trusted_authors_cache_hours outside 0..24 is rejected (Issue
       );
     });
   }
+});
+
+// =============================================================================
+// repos is one repository per name, whatever the casing (Issue #1546)
+// =============================================================================
+
+Deno.test("config - loadConfig collapses a case-variant repos entry, keeping the first spelling", async () => {
+  _resetDuplicateRepoWarning();
+  const testConfig: ConfigFile = {
+    repos: ["stSoftwareAU/GRQ-Actual", "stSoftwareAU/GRQ-actual"],
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const warnings = await capturingWarningsAsync(async () => {
+      const config = await loadConfig(configPath);
+      assertEquals(config.repos, ["stSoftwareAU/GRQ-Actual"]);
+    });
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0] ?? "", "stSoftwareAU/GRQ-actual");
+    assertStringIncludes(warnings[0] ?? "", "stSoftwareAU/GRQ-Actual");
+    assertStringIncludes(warnings[0] ?? "", "case-insensitive");
+  });
+});
+
+Deno.test("config - loadConfig leaves genuinely different repositories alone (Issue #1546)", async () => {
+  _resetDuplicateRepoWarning();
+  const testConfig: ConfigFile = {
+    repos: ["org/repo1", "other/repo1", "org/repo2"],
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const warnings = await capturingWarningsAsync(async () => {
+      const config = await loadConfig(configPath);
+      assertEquals(config.repos, ["org/repo1", "other/repo1", "org/repo2"]);
+    });
+    assertEquals(warnings, []);
+  });
+});
+
+Deno.test("config - loadConfig warns about the duplicate once per process (Issue #1546)", async () => {
+  _resetDuplicateRepoWarning();
+  const testConfig: ConfigFile = {
+    repos: ["org/Repo", "org/repo"],
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const first = await capturingWarningsAsync(async () => {
+      await loadConfig(configPath);
+    });
+    const second = await capturingWarningsAsync(async () => {
+      const config = await loadConfig(configPath);
+      // The de-duplication itself still applies on every load.
+      assertEquals(config.repos, ["org/Repo"]);
+    });
+    assertEquals(first.length, 1);
+    assertEquals(second, []);
+  });
 });

@@ -42,7 +42,10 @@ import {
   isFindingSuppressed,
   type WorkflowFindingSeverity,
 } from "./workflow_scan_common.ts";
-import { listKnownOpenFindingIds } from "./idle_task_snapshot.ts";
+import {
+  type FindingIdDedupOptions,
+  listKnownOpenFindingIds,
+} from "./idle_task_snapshot.ts";
 import { fenceUntrustedIssueText } from "./prompt_delimiter.ts";
 import type {
   AnnotationClass,
@@ -293,6 +296,11 @@ export interface FileAnnotationClassesOptions {
   fileFindingFn?: typeof fileWorkflowFinding;
   /** Optional structured logger for per-class skip/failure lines. */
   log?: (message: string) => void;
+  /**
+   * Author-verification inputs for the `knownOpenIds` look-up (Issue #1243).
+   * Omitted — every production caller — reads the configured fleet identity.
+   */
+  dedupAuthors?: FindingIdDedupOptions;
 }
 
 /**
@@ -320,6 +328,10 @@ export async function fileAnnotationClasses(
         opts.repo,
         ANNOTATION_FINDING_LABEL,
         opts.ghCommandFn,
+        "BP-",
+        // Author-verified dedup (Issue #1243): a finding-id marker in an
+        // issue body anybody can write is not evidence the fleet filed it.
+        opts.dedupAuthors,
       )),
   );
 

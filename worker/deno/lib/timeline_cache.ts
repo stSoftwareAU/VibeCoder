@@ -18,8 +18,8 @@
 import { IssueCache } from "./issue_cache.ts";
 import { defaultLogger } from "./logger.ts";
 import {
-  cacheDirUserSuffix,
   ensurePrivateDir,
+  sharedTmpStateDir,
   verifyPrivateDir,
 } from "./private_cache_dir.ts";
 import type { TimelineLabelEventJson } from "./validation.ts";
@@ -80,10 +80,13 @@ function timelineKey(issueNumber: number): string {
  * host never share one directory under a world-writable `TMPDIR`, and the
  * directory itself is created `0700` and ownership-checked before use (see
  * {@link TimelineCache.dirIsPrivate}).
+ *
+ * Issue #1242: composed by {@link sharedTmpStateDir} rather than by
+ * interpolating `TMPDIR` here, so the name is built in exactly one place and
+ * the quality gate can prove no new site builds its own.
  */
 function defaultTimelineCacheDir(): string {
-  const tmpDir = Deno.env.get("TMPDIR") ?? "/tmp";
-  return `${tmpDir}/vibe-timeline-cache-deno-${cacheDirUserSuffix()}`;
+  return sharedTmpStateDir("vibe-timeline-cache-deno");
 }
 
 /**

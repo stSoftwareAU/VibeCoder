@@ -39,6 +39,7 @@ import {
   type AlertDedupRow,
   selectFleetAuthoredMatches,
 } from "../lib/alert_dedup_authors.ts";
+import { createSetupRunCommand } from "./setup_command_runner.ts";
 
 /** Output from a shell command. */
 export interface CommandOutput {
@@ -129,28 +130,6 @@ const DEFAULT_TARGET_REPO = "stSoftwareAU/VibeCoder";
 // ---------------------------------------------------------------------------
 // Command runner
 // ---------------------------------------------------------------------------
-
-/** Create a default runner using `Deno.Command` with optional gh config. */
-function createDefaultRunCommand(ghConfigDir?: string): RunCommand {
-  return async (cmd: string[]): Promise<CommandOutput> => {
-    const env = ghConfigDir
-      ? { ...Deno.env.toObject(), GH_CONFIG_DIR: ghConfigDir }
-      : undefined;
-    const command = new Deno.Command(cmd[0]!, {
-      args: cmd.slice(1),
-      stdout: "piped",
-      stderr: "piped",
-      env,
-    });
-    const output = await command.output();
-    const decoder = new TextDecoder();
-    return {
-      success: output.success,
-      stdout: decoder.decode(output.stdout).trim(),
-      stderr: decoder.decode(output.stderr).trim(),
-    };
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Core logic
@@ -406,7 +385,7 @@ export async function verifyMonitoredCollaborators(
   options: CollaboratorPrecheckOptions,
 ): Promise<CollaboratorPrecheckResult> {
   const runner = options.runCommand ??
-    createDefaultRunCommand(options.ghConfigDir);
+    createSetupRunCommand(options.ghConfigDir);
   const targetRepo = options.targetRepo ?? DEFAULT_TARGET_REPO;
 
   // Undefined means the caller did not ask for the identity check.

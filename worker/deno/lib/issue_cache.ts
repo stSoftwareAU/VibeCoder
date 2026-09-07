@@ -12,8 +12,13 @@
  * ownership-checked before any entry is read or written — the same control
  * `timeline_cache.ts` has had since Issue #3709. Without it any local account
  * could pre-create the directory and plant entries the worker would read back
- * as GitHub API responses. A caller-supplied directory (the production path,
- * on the user-owned work volume) is used verbatim and not permission-checked.
+ * as GitHub API responses.
+ *
+ * Issue #1261: that check now follows the cache rather than the location. A
+ * caller-supplied work-volume directory (`${WORK_DIR}/.gh-scan-cache`, the
+ * production path) is hardened and ownership-checked too, and every payload
+ * is redacted on the way in — the cached JSON carries untrusted issue and PR
+ * bodies, which are read back into agent prompts.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -24,12 +29,8 @@ import {
   recordCacheMiss,
 } from "./gh_call_metrics.ts";
 import { defaultLogger } from "./logger.ts";
-import {
-  ensurePrivateDir,
-  isSharedTmpPath,
-  sharedTmpStateDir,
-  verifyPrivateDir,
-} from "./private_cache_dir.ts";
+import { hardenStateDir, sharedTmpStateDir } from "./private_cache_dir.ts";
+import { redactJsonStrings } from "./redact_json.ts";
 
 /**
  * Default cache directory: per-account, under the shared temporary root.
@@ -69,8 +70,6 @@ export interface CacheStats {
 export class IssueCache {
   private readonly cacheDir: string;
   private readonly ttlSeconds: number;
-  /** True when the directory is the shared-tmp default and must be verified. */
-  private readonly sharedTmpDir: boolean;
   /** Memoised result of the one-off directory ownership check. */
   private privateDirCheck: Promise<boolean> | null = null;
   private stats: CacheStats;
@@ -79,38 +78,30 @@ export class IssueCache {
    * Create a new issue cache.
    *
    * @param cacheDir - Directory to store cache files. Omit it to use the
-   *   per-account default under `TMPDIR`. Any directory under the shared
-   *   temporary root — supplied or defaulted — is ownership-checked.
+   *   per-account default under `TMPDIR`. Every directory — supplied or
+   *   defaulted, temporary root or work volume — is ownership-checked.
    * @param ttlSeconds - Cache time-to-live in seconds (default: 600 = 10 minutes)
    */
   constructor(cacheDir?: string, ttlSeconds = 600) {
     this.cacheDir = cacheDir ?? defaultIssueCacheDir();
-    this.sharedTmpDir = isSharedTmpPath(this.cacheDir);
     this.ttlSeconds = ttlSeconds;
     this.stats = { hits: 0, misses: 0, saved: 0 };
   }
 
   /**
-   * Whether the backing directory may be used (Issue #1215).
+   * Whether the backing directory may be used (Issues #1215, #1261).
    *
-   * The check follows the directory's **location**, not whether the caller
-   * named it: any directory at or below the shared temporary root is created
-   * `0700` and ownership-checked, while a work-volume directory (whose
-   * permissions the worker does not own) is used as given. A directory
-   * another account could have written to disables the cache entirely, so
-   * planted entries can never be read back and a poisoned directory is never
-   * written to. Checked once per instance; failure is logged, never
-   * swallowed.
+   * Every directory is created `0700` and ownership-checked, wherever it
+   * sits: the shared temporary root is world-writable, and the work-volume
+   * path is not private on its own either. A directory another account could
+   * have written to disables the cache entirely, so planted entries can never
+   * be read back and a poisoned directory is never written to. One left at
+   * the umask default by an earlier release is narrowed instead of refused.
+   * Checked once per instance; failure is logged, never swallowed.
    */
   private dirIsUsable(): Promise<boolean> {
-    if (!this.sharedTmpDir) return Promise.resolve(true);
     this.privateDirCheck ??= (async () => {
-      try {
-        await ensurePrivateDir(this.cacheDir);
-      } catch {
-        // Creation failure is reported by the verification below.
-      }
-      const trust = await verifyPrivateDir(this.cacheDir);
+      const trust = await hardenStateDir(this.cacheDir, { create: true });
       if (!trust.trusted) {
         defaultLogger.warn(
           "Issue cache directory is not worker-private — cache disabled " +
@@ -181,6 +172,11 @@ export class IssueCache {
   /**
    * Write data to cache with current timestamp.
    *
+   * The payload is redacted on the way in (Issue #1261): the cached objects
+   * are GitHub issue and PR JSON, so a token pasted into a body would
+   * otherwise sit on the work volume and be read back into a later prompt.
+   * Only string values change, so the document stays parseable.
+   *
    * @param repo - Repository in "owner/repo" format
    * @param cacheKey - Cache key string
    * @param data - Data to cache
@@ -190,14 +186,14 @@ export class IssueCache {
     const filePath = this.getCacheFilePath(repo, cacheKey);
 
     try {
-      await Deno.mkdir(this.cacheDir, { recursive: true });
-
       const entry: CacheEntry = {
         timestamp: Math.floor(Date.now() / 1000),
-        data,
+        data: redactJsonStrings(data),
       };
 
-      await Deno.writeTextFile(filePath, JSON.stringify(entry));
+      await Deno.writeTextFile(filePath, JSON.stringify(entry), {
+        mode: 0o600,
+      });
     } catch {
       // Cache write failures are non-fatal — log and continue
     }

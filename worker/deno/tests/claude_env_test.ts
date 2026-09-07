@@ -132,3 +132,44 @@ Deno.test("buildClaudeChildEnv - host children keep the default config dir", () 
   });
   assertEquals(env["CLAUDE_CONFIG_DIR"], undefined);
 });
+
+// ---------------------------------------------------------------------------
+// A blank container stamp is a HOST run (Issue #1493, follow-up to #1262)
+// ---------------------------------------------------------------------------
+
+Deno.test("buildClaudeChildEnv - a blank container stamp leaves CLAUDE_CONFIG_DIR alone (Issue #1493)", () => {
+  // The redirect was keyed on the PRESENCE of the image stamp, so
+  // `VIBE_IMAGE_AGENT_PROVIDERS=` pointed a HOST run's claude at
+  // <work dir>/.claude-config — away from the operator's own ~/.claude and
+  // the login state it holds. Blank reads as absent: the default stands.
+  for (const blank of ["", "   "]) {
+    const env = buildClaudeChildEnv({
+      HOME: "/Users/operator",
+      PATH: "/usr/local/bin",
+      WORK_DIR: "/Users/operator/auto-issue-work",
+      VIBE_IMAGE_AGENT_PROVIDERS: blank,
+    });
+    assertEquals(
+      env["CLAUDE_CONFIG_DIR"],
+      undefined,
+      `a stamp of ${JSON.stringify(blank)} must not redirect a host run`,
+    );
+  }
+});
+
+Deno.test("buildClaudeChildEnv - a real container stamp still redirects (Issue #1493)", () => {
+  // The other direction: #4170's durable transcripts must survive the
+  // narrowed predicate, whitespace padding included.
+  const env = buildClaudeChildEnv({
+    HOME: "/home/vibe",
+    PATH: "/usr/local/bin",
+    WORK_DIR: "/home/vibe/auto-issue-work",
+    VIBE_IMAGE_AGENT_PROVIDERS: " claude ",
+  });
+  // Issue #1407: the redirect target is the agent-state volume beside the
+  // work dir, not a directory inside it.
+  assertEquals(
+    env["CLAUDE_CONFIG_DIR"],
+    `${resolveAgentStateDir("/home/vibe/auto-issue-work")}/claude-config`,
+  );
+});

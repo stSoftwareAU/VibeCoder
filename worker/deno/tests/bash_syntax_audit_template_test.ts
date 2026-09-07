@@ -92,10 +92,11 @@ function langResult(
 
 /** A fleet login, so a stubbed wrapper reads as one the fleet filed. */
 const FLEET_DEDUP_AUTHOR = "vibe-bot";
+const DEDUP_AUTHORS = { fleetAuthors: [FLEET_DEDUP_AUTHOR] };
 
 /**
  * gh stub. `--json number` calls are the before/after snapshots; the
- * `--json number,body` call is the dedup lookup; `issue create` returns a
+ * `--json number,body,author` call is the dedup lookup; `issue create` returns a
  * synthetic issue URL from `createNumbers`.
  */
 function makeGhStub(scenario: {
@@ -117,6 +118,19 @@ function makeGhStub(scenario: {
     }
     const jsonIdx = args.indexOf("--json");
     const jsonField = jsonIdx >= 0 ? args[jsonIdx + 1] : "";
+    if (jsonField === "number,body,author") {
+      // Finding-id dedup look-up. Author-verified since Issue #1243, so the
+      // stub answers as a fleet account — a marker anybody could write is not
+      // evidence the fleet filed the finding.
+      return Promise.resolve(
+        JSON.stringify(
+          (scenario.dedup ?? []).map((i) => ({
+            ...i,
+            author: { login: FLEET_DEDUP_AUTHOR },
+          })),
+        ),
+      );
+    }
     if (jsonField === "number,title" || (jsonField ?? "").includes("author")) {
       // Wrapper-open lookup used by shouldFile. The search now also asks for
       // `author`, because a title alone is text anybody may write and only
@@ -139,9 +153,6 @@ function makeGhStub(scenario: {
       return Promise.resolve(
         JSON.stringify(result.map((n) => ({ number: n }))),
       );
-    }
-    if (jsonField === "number,body") {
-      return Promise.resolve(JSON.stringify(scenario.dedup ?? []));
     }
     return Promise.resolve("[]");
   };
@@ -189,7 +200,10 @@ Deno.test("bash-syntax-audit - contract flags", () => {
 });
 
 Deno.test("bash-syntax-audit - buildIssueBody matches title and fingerprint", async () => {
-  const t = createBashSyntaxAuditTemplate({ loadPromptFn: okPrompt });
+  const t = createBashSyntaxAuditTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
+    loadPromptFn: okPrompt,
+  });
   const body = await Promise.resolve(
     t.buildIssueBody({
       repo: "acme/widget",
@@ -282,6 +296,7 @@ Deno.test("bash-syntax-audit runTask - missing gate files a finding with correct
     createNumbers: [50],
   });
   const t = createBashSyntaxAuditTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     ensureLabelFn: okLabel,
     checkBashCiGatesFn: () =>
@@ -315,6 +330,7 @@ Deno.test("bash-syntax-audit runTask - missing gate files a finding with correct
 Deno.test("bash-syntax-audit runTask - all gates present → no findings", async () => {
   const { gh, calls } = makeGhStub({ snapshots: [[], []] });
   const t = createBashSyntaxAuditTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     ensureLabelFn: okLabel,
     checkBashCiGatesFn: () => Promise.resolve(bashResult()),
@@ -341,6 +357,7 @@ Deno.test("bash-syntax-audit runTask - all gates present → no findings", async
 Deno.test("bash-syntax-audit runTask - detector throw → ok:false, never throws", async () => {
   const { gh } = makeGhStub({ snapshots: [[], []] });
   const t = createBashSyntaxAuditTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     ensureLabelFn: okLabel,
     checkBashCiGatesFn: () => {
@@ -365,6 +382,7 @@ Deno.test("bash-syntax-audit runTask - detector throw → ok:false, never throws
 Deno.test("bash-syntax-audit runTask - suppressed gate id is not filed", async () => {
   const { gh, calls } = makeGhStub({ snapshots: [[], []] });
   const t = createBashSyntaxAuditTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     ensureLabelFn: okLabel,
     checkBashCiGatesFn: () =>
@@ -400,6 +418,7 @@ Deno.test("bash-syntax-audit runTask - native detectors use the repo checkout, n
   const langPaths: string[] = [];
   const suppressPaths: string[] = [];
   const t = createBashSyntaxAuditTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     ensureLabelFn: okLabel,
     checkBashCiGatesFn: (workDir: string) => {
@@ -442,7 +461,10 @@ Deno.test("bash-syntax-audit shouldFile - vetoes while a wrapper is open", async
     dedupAuthors: { fleetAuthors: [FLEET_DEDUP_AUTHOR] },
     ghCommandFn: openStub.gh,
   });
-  const cleanT = createBashSyntaxAuditTemplate({ ghCommandFn: cleanStub.gh });
+  const cleanT = createBashSyntaxAuditTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
+    ghCommandFn: cleanStub.gh,
+  });
   assertEquals(await openT.shouldFile!({ repo: "acme/widget" }), false);
   assertEquals(await cleanT.shouldFile!({ repo: "acme/widget" }), true);
 });
@@ -454,6 +476,7 @@ Deno.test("bash-syntax-audit shouldFile - vetoes while a wrapper is open", async
 Deno.test("bash-syntax-audit - claim handler dispatches wrapper to runTask", async () => {
   const { gh } = makeGhStub({ snapshots: [[], []] });
   const template = createBashSyntaxAuditTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: gh,
     ensureLabelFn: okLabel,
     checkBashCiGatesFn: () => Promise.resolve(bashResult()),

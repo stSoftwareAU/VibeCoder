@@ -81,6 +81,7 @@ import {
 } from "./issue_lifecycle.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
 import { createLogger } from "./logger.ts";
+import { redactedLineTail, type RedactedText } from "./redacted_text.ts";
 import {
   collectRecentActivity,
   formatRecentActivity,
@@ -415,6 +416,28 @@ export function detectScreenshotRequired(
 // Failure message formatting
 // =============================================================================
 
+/** Lines of agent stdout carried into a failure message. */
+const FAILURE_OUTPUT_TAIL_LINES = 100;
+
+/**
+ * The tail of the agent's stdout carried into a public failure message
+ * (Issue #1257).
+ *
+ * The three failure branches below (OOM, SIGKILL, timeout/rate limit) each cut
+ * the agent's output to its last {@link FAILURE_OUTPUT_TAIL_LINES} lines and
+ * embedded the result verbatim in a world-readable comment. The cut ran
+ * *before* any redaction, so a PEM block whose `BEGIN` marker fell above the
+ * cut reached the comment as an unmatched fragment. Redaction now runs over the
+ * whole output first, and the result is branded {@link RedactedText} so the
+ * message builders cannot be handed a raw slice again.
+ *
+ * @param claudeOutput - The agent's full stdout, untruncated.
+ * @returns The redacted tail; empty when there was no output.
+ */
+export function buildFailureOutputTail(claudeOutput: string): RedactedText {
+  return redactedLineTail(claudeOutput, FAILURE_OUTPUT_TAIL_LINES);
+}
+
 /**
  * Build a failure message for timeout or rate-limit failures.
  *
@@ -424,7 +447,7 @@ export function detectScreenshotRequired(
 export function buildFailureMessage(options: {
   failureType: "timeout" | "rate_limit" | "killed";
   failureReason: string;
-  failureOutput: string;
+  failureOutput: RedactedText;
   timeoutFailureSummary: string;
   diagnosticContent: string;
 }): string {
@@ -487,7 +510,7 @@ export function buildFailureMessage(options: {
  * diagnostics) is included so an operator can confirm the cause.
  */
 export function buildOutOfMemoryMessage(options: {
-  failureOutput: string;
+  failureOutput: RedactedText;
 }): string {
   const { failureOutput } = options;
 
@@ -1211,9 +1234,7 @@ export async function runExecuteClaudePhase(
   if (outOfMemory) {
     deps.log(`Claude ran out of memory while working on issue #${issueNumber}`);
 
-    const failureOutput = claudeOutput
-      ? claudeOutput.split("\n").slice(-100).join("\n")
-      : "";
+    const failureOutput = buildFailureOutputTail(claudeOutput);
 
     const failureMessage = buildOutOfMemoryMessage({ failureOutput });
 
@@ -1261,9 +1282,7 @@ export async function runExecuteClaudePhase(
       `Claude was killed (SIGKILL, no watchdog) while working on issue #${issueNumber}`,
     );
 
-    const failureOutput = claudeOutput
-      ? claudeOutput.split("\n").slice(-100).join("\n")
-      : "";
+    const failureOutput = buildFailureOutputTail(claudeOutput);
 
     // Self-healing: a kill late in the run may follow a pushed PR (#386).
     const selfHealResult = await attemptPrSelfHealing(
@@ -1325,9 +1344,7 @@ export async function runExecuteClaudePhase(
     deps.log(`Claude ${failureType} while working on issue #${issueNumber}`);
 
     // Extract tail output for diagnostics
-    const failureOutput = claudeOutput
-      ? claudeOutput.split("\n").slice(-100).join("\n")
-      : "";
+    const failureOutput = buildFailureOutputTail(claudeOutput);
 
     // Build failure message
     const failureMessage = buildFailureMessage({

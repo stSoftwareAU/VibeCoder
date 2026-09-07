@@ -106,16 +106,20 @@ plants the poisoned entry in **both** the pre-fix shared path and the
 per-account path so it cannot pass by addressing a directory the code no longer
 uses.
 
-### Residual — the class is closed in the caches, not in the tree
+### Residual — closed by Issue #1242
 
-Five sites still interpolate `TMPDIR`/`/tmp` into a worker state directory by
-hand; they are filed as
+Five sites still interpolated `TMPDIR`/`/tmp` into a worker state directory by
+hand when this sweep shipped; they were filed as
 [#1242](https://github.com/stSoftwareAU/VibeCoder/issues/1242) rather than
-fixed here, and the durable form named in the issue — the helper **plus** a
-quality-gate check that fails the build on a raw `${TMPDIR}/vibe-…`
-interpolation, the idiom `gh_spawn_chokepoint_check.ts` uses for `gh` — is part
-of that issue. Stating it plainly: this sweep shipped the helper and the three
-consumers that mattered most, not the gate.
+fixed here. That issue has since landed the durable form it named: every one of
+those directories is composed by `sharedTmpStateDir()` and created through
+`ensureStateDir()`, and the `tmp state dir chokepoint` quality check
+(`worker/deno/lib/tmp_state_dir_check.ts`) now fails the build on a raw
+`${TMPDIR}/vibe-…` interpolation — the idiom `gh_spawn_chokepoint_check.ts`
+uses for `gh`. Two further sites the gate surfaced, `timeline_cache.ts` and the
+staged `gh` credential directory in `gh_credential_stage.ts`, were converted
+with them. Stating it plainly: this sweep shipped the helper and the three
+consumers that mattered most; #1242 shipped the gate.
 
 ## Findings filed, not fixed here
 
@@ -147,7 +151,8 @@ Each is a distinct root cause from SEC-1215-01 and from the others, filed per
   canonical writer (`setup/config_setup.ts:443-451`) documents as mandatory.
   `severity:low` · `confidence:high`
 - **SEC-1215-06** ([#1242](https://github.com/stSoftwareAU/VibeCoder/issues/1242))
-  — the residual raw-`TMPDIR` state directories described above.
+  — the residual raw-`TMPDIR` state directories described above. **Fixed** by
+  #1242, together with the quality-gate check that keeps the class closed.
   `severity:medium` · `confidence:high`
 
 Filed by an earlier attempt at this same sweep, before its branch was lost —
