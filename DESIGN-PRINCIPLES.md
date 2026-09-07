@@ -894,6 +894,13 @@ Planning runs produce a stronger plan and surface silent model degradation.
   base > global > `PHASE_MODEL_DEFAULTS.planning`; pinnable via
   `best_planning_model`), or an explicit rate-limit fallback fired. Passive
   logging only — no canary benchmark.
+- **A previous generation of the right tier is also degraded** (Issue #1362).
+  The tier match is family-level, so a run served `claude-fable-5` while
+  `claude-fable-5-1` is the current Fable read as healthy and the downgrade was
+  visible only in the bill. `worker/deno/lib/current_models.ts` holds the
+  worker's "latest model of this tier" reference and the verdict names both the
+  served and the current model. An operator who pinned an older generation is
+  never flagged — they were served what they asked for.
 - **`degraded-model` label.** On a degraded run the worker applies
   the non-reserved `degraded-model` label to the parent issue and every
   sub-issue that run created. It is not in `RESERVED_LABELS`, so it survives
@@ -2078,9 +2085,9 @@ for another day and every `--model fable` invocation would fail meanwhile.
 version is below a configured floor.** Floors live in the
 `software_min_versions` config key (defaults in
 `worker/deno/lib/config_defaults.ts`, the single source of truth; default
-`{ claude: "2.1.170" }` — the oldest release verified to support
-`--model fable`). The map is generic per tool so `gh`/`deno` floors can be added
-later.
+`{ claude: "2.1.260" }` — the oldest release that resolves the `fable` alias
+to Fable 5.1 *and* carries its prompt-cache fixes, Issue #1362). The map is
+generic per tool so `gh`/`deno` floors can be added later.
 
 - **Below floor → immediate update**, bypassing the timestamp gate. At/above
   floor preserves the existing interval behaviour exactly.
