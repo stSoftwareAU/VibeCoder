@@ -2930,6 +2930,49 @@ gate derives from the same authority the answer does, so a skipped cycle cannot
 act on a stale view. Observations live in `milestone_activity.json` in the work
 directory; a missing or corrupt file simply costs one query per milestone.
 
+#### ⏱️ The merge-down happens on closure, and a conflict is reported that day
+
+Divergence cost grows superlinearly: one day of drift is a fast-forward, three
+days is a merge, a week is an archaeology exercise because by then the two
+sides have solved the same problem twice. Two behaviours keep the window
+narrow (Issue #1558).
+
+**Cadence.** The sync runs every cycle at priority 1.72 and, ordinarily, honours
+`milestone_sync_cooldown_seconds`. A milestone whose REST `closed_issues` count
+has **moved** since the previous cycle skips that cooldown — something just
+closed, which means a sub-issue PR merged, which is precisely the moment both
+sides have moved. The signal is the same cheap listing the closed-issue gate
+above already fetches, so the extra cadence costs no additional API calls.
+
+**Conflict reporting.** A conflicting merge is still resolved towards the
+default branch so the branch keeps moving, but that resolution is a decision
+nobody made deliberately — the branch's version of every conflicting file is
+replaced by the default branch's. So the conflict travels back with the
+outcome
+([milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts)):
+the conflicting paths, and the commit each side stood at. The sync reports it
+on the cycle it happened, naming both sides' commits so the reader can diff
+each without reconstructing it days later. A clean merge is pushed without
+ceremony and raises nothing.
+
+```mermaid
+flowchart TD
+    A[Sub-issue PR merges → closed count moves] --> B[Cooldown skipped: merge default down now]
+    B --> C{Conflicts?}
+    C -- no --> D[Push, no issue, no comment]
+    C -- yes --> E["Resolve towards the default branch<br/>and push (branch keeps moving)"]
+    E --> F["Report the same cycle:<br/>files + both sides' commits"]
+    F --> G{Milestone has a tracking issue?}
+    G -- yes --> H[Comment on it]
+    G -- no --> I["File a diagnostic issue,<br/>titled per branch and conflicting commit"]
+```
+
+The report is deduped on the default-branch commit that conflicted
+(`conflictEscalatedSha` in the streak file), so the same conflict is reported
+once while a conflict against a **new** commit is reported again. Only a report
+that actually went out is remembered — an escalation that failed to post is
+retried next cycle rather than marked done.
+
 #### 🚦 The merged tree is type-checked before it is pushed
 
 Git reporting no conflict says only that each side of the merge is internally
@@ -3498,6 +3541,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts)                                           | Periodic milestone branch sync with default branch                                                                                                                                   |
 |                             | [milestone_activity_gate.ts](../worker/deno/lib/milestone_activity_gate.ts)                                       | Gates the sync's closed-issue query on the cheap REST `closed_issues` count, so an unchanged milestone costs no GraphQL call                                                          |
 |                             | [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts)                                             | Type-checks the sync's merged tree before it is pushed, and refuses the push when it does not compile                                                                                |
+|                             | [milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts)                                       | Reports a sync merge that conflicted — the files that collided and both sides' commits — on the cycle it happened                                                                    |
 |                             | [milestone_branch_self_heal.ts](../worker/deno/lib/milestone_branch_self_heal.ts)                                 | Recreate a deleted branch for an open milestone with open children, and retarget stranded child PRs                                                                                  |
 |                             | [milestone_health.ts](../worker/deno/lib/milestone_health.ts)                                                     | Milestone health diagnostics                                                                                                                                                         |
 |                             | [resurrected_file_check.ts](../worker/deno/lib/resurrected_file_check.ts)                                         | Detects files the default branch deleted that a milestone branch still carries, naming the commit that deleted each                                                                  |

@@ -167,7 +167,7 @@ Deno.test(
         result.ok,
         `expected ok, got: ${!result.ok && result.error.message}`,
       );
-      assertStringIncludes(result.value, "SELF-HEALING");
+      assertStringIncludes(result.value.message, "SELF-HEALING");
 
       const headSha = (await gitOk(["rev-parse", "HEAD"], worker)).trim();
       assertEquals(headSha, remoteTip, "HEAD must match the remote tip");
@@ -216,7 +216,7 @@ Deno.test(
         `expected ok, got: ${!result.ok && result.error.message}`,
       );
       // A plain fast-forward is not a self-heal — nothing was discarded.
-      assertEquals(result.value.includes("SELF-HEALING"), false);
+      assertEquals(result.value.message.includes("SELF-HEALING"), false);
 
       const headSha = (await gitOk(["rev-parse", "HEAD"], worker)).trim();
       assertEquals(headSha, remoteTip);
