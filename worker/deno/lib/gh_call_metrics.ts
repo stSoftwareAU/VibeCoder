@@ -54,12 +54,14 @@ export interface GhCallMetricsSnapshot {
    */
   graphqlTotal: number;
   /**
-   * Counts grouped by GraphQL caller source (Issue #1924). Only calls
-   * issued while an `enterGraphQLSource()` or `withGraphQLSource()` context
-   * is active are attributed; calls without a wrapping context are credited
-   * to the "unattributed" bucket so future regressions surface in the log.
-   * Issue #1585: the `withGraphQLSource` context is async-scoped, so two
-   * lanes running at once attribute independently.
+   * Counts grouped by GraphQL caller source (Issue #1924). The source is
+   * resolved in four steps: the explicit `enterGraphQLSource()` stack
+   * (innermost wins), else the async-scoped `withGraphQLSource()` context
+   * (Issue #1585, so two lanes running at once attribute independently),
+   * else the active priority emitted as `priority:<name>` (Issue #1586),
+   * else the `"unattributed"` bucket. The `priority:` prefix keeps a derived
+   * bucket distinguishable from an explicit source. These values sum exactly
+   * to `graphqlTotal`: every counted call chooses a bucket.
    */
   graphqlBySource: Record<string, number>;
 }
@@ -80,6 +82,13 @@ const state = {
   graphqlBySource: new Map<string, number>(),
   graphqlSourceStack: [] as string[],
 };
+
+/**
+ * Prefix marking a GraphQL bucket derived from the active priority rather
+ * than an explicit source (Issue #1586). See `recordGhCall` for the
+ * resolution order it is applied in.
+ */
+const PRIORITY_SOURCE_PREFIX = "priority:";
 
 /**
  * Normalise a priority name for telemetry output: lowercase, with
@@ -357,9 +366,12 @@ export function recordGhCall(args: readonly string[]): void {
     // Issue #1585: an explicit stack entry still wins (innermost-wins for a
     // nested `enterGraphQLSource`); otherwise the async-scoped context
     // attributes the call, so concurrent lanes do not cross-credit.
+    // Issue #1586: failing both, fall back to the priority resolved above so
+    // the ordinary `issue list` / `pr list` traffic — which no module wraps in
+    // a GraphQL source — lands in a named bucket rather than `unattributed`.
     const src = state.graphqlSourceStack[state.graphqlSourceStack.length - 1] ??
       graphqlSourceStorage.getStore() ??
-      "unattributed";
+      (top ? `${PRIORITY_SOURCE_PREFIX}${top}` : "unattributed");
     state.graphqlBySource.set(
       src,
       (state.graphqlBySource.get(src) ?? 0) + 1,
@@ -525,9 +537,11 @@ export function formatGhCallsByPrioritySummary(): string {
  *   `graphql-calls: 245 total, pr-linkage=110, milestone-health=45,
  *   check-runs=30`
  *
- * Sources without a wrapping `enterGraphQLSource()` block are surfaced
- * under the `unattributed` bucket so future regressions (a new caller
- * that forgot to wrap itself) are obvious in the log.
+ * Each call is attributed by the resolution order in `recordGhCall`, so since
+ * Issue #1586 the ordinary `issue list` / `pr list` / `issue view` traffic
+ * lands under its priority as `priority:<name>`. `unattributed` is therefore
+ * an anomaly signal rather than the normal case: a call issued outside both a
+ * source and a priority context, i.e. a pass that forgot to wrap itself.
  */
 export function formatGraphQLSummary(): string {
   const snap = getGhCallMetrics();

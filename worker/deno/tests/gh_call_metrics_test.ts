@@ -25,6 +25,7 @@ import {
   withGraphQLSource,
   withGraphQLSourceContext,
   withPriority,
+  withPriorityContext,
 } from "../lib/gh_call_metrics.ts";
 
 Deno.test("gh_call_metrics - classifyGhArgs categorises common sub-commands", () => {
@@ -592,4 +593,171 @@ Deno.test("gh_call_metrics - withGraphQLSourceContext scopes currentGraphQLSourc
   const snap = getGhCallMetrics();
   assertEquals(snap.graphqlBySource["comments-batch"], 1);
   assertEquals(snap.graphqlBySource["unattributed"], 1);
+});
+
+// ---------------------------------------------------------------------------
+// Priority fallback for GraphQL attribution (Issue #1586)
+// ---------------------------------------------------------------------------
+
+Deno.test("gh_call_metrics - GraphQL calls fall back to the active priority context", async () => {
+  resetGhCallMetrics();
+
+  await withPriorityContext("Issue Scanning", async () => {
+    await Promise.resolve();
+    recordGhCall(["issue", "list", "--repo", "o/r", "--json", "number"]);
+    recordGhCall(["pr", "list", "--repo", "o/r"]);
+  });
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlTotal, 2);
+  assertEquals(snap.graphqlBySource["priority:issue-scanning"], 2);
+  assertEquals(snap.graphqlBySource["unattributed"], undefined);
+});
+
+Deno.test("gh_call_metrics - GraphQL calls fall back to the explicit priority stack", () => {
+  resetGhCallMetrics();
+
+  enterPriority("Stale Workflow Detection");
+  recordGhCall(["issue", "view", "1", "--repo", "o/r"]);
+  exitPriority();
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlBySource["priority:stale-workflow-detection"], 1);
+});
+
+Deno.test("gh_call_metrics - an explicit GraphQL source beats an enclosing priority", async () => {
+  resetGhCallMetrics();
+
+  await withPriorityContext("Issue Scanning", async () => {
+    await withGraphQLSource("timeline-batch", () => {
+      recordGhCall(["api", "graphql", "-f", "query=Q"]);
+    });
+    enterGraphQLSource("comments-batch");
+    recordGhCall(["api", "graphql", "-f", "query=Q2"]);
+    exitGraphQLSource();
+    recordGhCall(["issue", "list", "--repo", "o/r"]);
+  });
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlBySource["timeline-batch"], 1);
+  assertEquals(snap.graphqlBySource["comments-batch"], 1);
+  assertEquals(snap.graphqlBySource["priority:issue-scanning"], 1);
+});
+
+Deno.test("gh_call_metrics - REST calls inside a priority context are not GraphQL", async () => {
+  resetGhCallMetrics();
+
+  await withPriorityContext("Issue Scanning", async () => {
+    await Promise.resolve();
+    recordGhCall(["api", "/repos/o/r/issues/1/comments"]);
+    recordGhCall(["api", "-X", "PATCH", "/repos/o/r/issues/1"]);
+  });
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.total, 2);
+  assertEquals(snap.graphqlTotal, 0);
+  assertEquals(Object.keys(snap.graphqlBySource).length, 0);
+});
+
+Deno.test("gh_call_metrics - a call with neither source nor priority stays unattributed", () => {
+  resetGhCallMetrics();
+  recordGhCall(["issue", "list", "--repo", "o/r"]);
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlBySource["unattributed"], 1);
+});
+
+/**
+ * Standing invariant (Issue #1586): every increment of `graphqlTotal` must
+ * choose a bucket, so any future path that counts a call without attributing
+ * it fails here before merge.
+ */
+Deno.test("gh_call_metrics - graphqlBySource sums exactly to graphqlTotal", async () => {
+  resetGhCallMetrics();
+
+  // Unattributed: no source, no priority.
+  recordGhCall(["issue", "list", "--repo", "o/r"]);
+  // REST — contributes to neither counter.
+  recordGhCall(["api", "/repos/o/r/issues/1"]);
+
+  await withPriorityContext("Issue Scanning", async () => {
+    await Promise.resolve();
+    recordGhCall(["issue", "list", "--repo", "o/r"]);
+    recordGhCall(["pr", "view", "42", "--json", "mergeable"]);
+    // REST inside a priority — still excluded.
+    recordGhCall(["api", "rate_limit"]);
+    await withGraphQLSource("timeline-batch", () => {
+      recordGhCall(["api", "graphql", "-f", "query=Q"]);
+    });
+  });
+
+  enterPriority("Auto Merge");
+  recordGhCall(["pr", "list", "--repo", "o/r"]);
+  exitPriority();
+
+  await withGraphQLSource("comments-batch", () => {
+    recordGhCall(["api", "graphql", "-f", "query=Q2"]);
+  });
+
+  const snap = getGhCallMetrics();
+  const summed = Object.values(snap.graphqlBySource).reduce(
+    (a, b) => a + b,
+    0,
+  );
+  assertEquals(snap.graphqlTotal, 6);
+  assertEquals(summed, snap.graphqlTotal);
+  assertEquals(snap.graphqlBySource["unattributed"], 1);
+  assertEquals(snap.graphqlBySource["priority:issue-scanning"], 2);
+  assertEquals(snap.graphqlBySource["priority:auto-merge"], 1);
+  assertEquals(snap.graphqlBySource["timeline-batch"], 1);
+  assertEquals(snap.graphqlBySource["comments-batch"], 1);
+});
+
+Deno.test("gh_call_metrics - formatGraphQLSummary names derived priority buckets", async () => {
+  resetGhCallMetrics();
+
+  await withPriorityContext("Issue Scanning", async () => {
+    await Promise.resolve();
+    recordGhCall(["issue", "list", "--repo", "o/r"]);
+    recordGhCall(["pr", "list", "--repo", "o/r"]);
+  });
+  await withGraphQLSource("timeline-batch", () => {
+    recordGhCall(["api", "graphql", "-f", "query=Q"]);
+  });
+
+  const summary = formatGraphQLSummary();
+  assertStringIncludes(summary, "graphql-calls: 3 total");
+  assertStringIncludes(summary, "priority:issue-scanning=2");
+  assertStringIncludes(summary, "timeline-batch=1");
+});
+
+/**
+ * The derived bucket inherits the priority axis, so it must inherit its
+ * async scoping too (Issue #1586, the shape Issue #213 fixed): two priority
+ * lanes running at once must not credit each other's GraphQL calls.
+ */
+Deno.test("gh_call_metrics - concurrent priority lanes do not cross-credit derived buckets", async () => {
+  resetGhCallMetrics();
+
+  // Bounded rendezvous, never a sleep: a lane that never arrives fails the
+  // assertion below rather than hanging the suite.
+  const meeting = createRendezvous(2);
+
+  const scanning = withPriorityContext("Issue Scanning", async () => {
+    // Suspend inside the priority, exactly as an awaited `gh` spawn does.
+    assertEquals(await meeting.arrive(), 2);
+    recordGhCall(["issue", "list", "--repo", "o/r"]);
+  });
+
+  const merging = withPriorityContext("Auto Merge", async () => {
+    await Promise.resolve();
+    recordGhCall(["pr", "list", "--repo", "o/r"]);
+    assertEquals(await meeting.arrive(), 2);
+  });
+
+  await Promise.all([scanning, merging]);
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlTotal, 2);
+  assertEquals(snap.graphqlBySource["priority:issue-scanning"], 1);
+  assertEquals(snap.graphqlBySource["priority:auto-merge"], 1);
 });
