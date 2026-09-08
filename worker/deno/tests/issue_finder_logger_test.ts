@@ -8,6 +8,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   createDiagnostics,
+  formatScanOutcome,
   formatScanSummary,
   type IssueFinderDiagnostics,
   sanitiseLogField,
@@ -559,4 +560,87 @@ Deno.test("formatScanSummary - a scan with no skips still renders (Issue #219)",
   });
 
   assertEquals(line, "considered=0 eligible=0 skipped=0 top-skips=(none)");
+});
+
+// =============================================================================
+// Scan-outcome sentence (Issue #1573)
+// =============================================================================
+
+Deno.test("formatScanOutcome - never says 'no eligible work' when work was eligible (Issue #1573)", () => {
+  const line = formatScanOutcome({
+    totalConsidered: 36,
+    totalEligible: 3,
+    skippedByReason: {
+      "needs-human": 16,
+      "milestone-occupied": 12,
+      "filtered-out": 3,
+    },
+    claimRaceWins: 0,
+    claimRaceLosses: 0,
+  });
+
+  assertEquals(
+    line.includes("no eligible work"),
+    false,
+    `a scan with 3 eligible issues must not report "no eligible work": ${line}`,
+  );
+  assertStringIncludes(line, "3 eligible, none claimable");
+  assertStringIncludes(
+    line,
+    "considered=36 eligible=3 skipped=31 " +
+      "top-skips=needs-human=16,milestone-occupied=12,filtered-out=3",
+  );
+});
+
+Deno.test("formatScanOutcome - a genuinely empty scan still reads 'no eligible work' (Issue #1573)", () => {
+  const line = formatScanOutcome({
+    totalConsidered: 7,
+    totalEligible: 0,
+    skippedByReason: { cooldown: 7 },
+    claimRaceWins: 0,
+    claimRaceLosses: 0,
+  });
+
+  assertStringIncludes(
+    line,
+    "no eligible work: considered=7 eligible=0 skipped=7 top-skips=cooldown=7",
+  );
+});
+
+Deno.test("formatScanOutcome - says the counts measure different populations (Issue #1573)", () => {
+  const line = formatScanOutcome({
+    totalConsidered: 36,
+    totalEligible: 3,
+    skippedByReason: { "milestone-occupied": 33 },
+    claimRaceWins: 0,
+    claimRaceLosses: 0,
+  });
+
+  assertStringIncludes(line, "considered/eligible are per-issue");
+  assertStringIncludes(line, "repo-level");
+});
+
+Deno.test("formatScanOutcome - keeps the (none) fallback when nothing was skipped (Issue #1573)", () => {
+  const line = formatScanOutcome({
+    totalConsidered: 0,
+    totalEligible: 0,
+    skippedByReason: {},
+    claimRaceWins: 0,
+    claimRaceLosses: 0,
+  });
+
+  assertStringIncludes(line, "top-skips=(none)");
+});
+
+Deno.test("formatScanOutcome - a single eligible issue reads without a plural mismatch (Issue #1573)", () => {
+  const line = formatScanOutcome({
+    totalConsidered: 4,
+    totalEligible: 1,
+    skippedByReason: { "repo-busy": 3 },
+    claimRaceWins: 0,
+    claimRaceLosses: 0,
+  });
+
+  assertStringIncludes(line, "1 eligible, none claimable");
+  assertEquals(line.includes("no eligible work"), false);
 });

@@ -124,7 +124,7 @@ import {
 } from "./adaptive_floor_starvation.ts";
 import {
   type DiagnosticSummary,
-  formatScanSummary,
+  formatScanOutcome,
 } from "./issue_finder_logger.ts";
 import { formatRateLimitReset } from "./rate_limit_signal.ts";
 import { isPrimaryRateLimitMessage } from "./primary_quota_latch.ts";
@@ -3210,9 +3210,14 @@ async function runSlot(
         // null parked the slot until the whole pool drained — a two-slot pool
         // ran as one for an hour with a dozen eligible issues waiting, and
         // the log said nothing at all.
+        // Issue #1573: the sentence agrees with the counters it carries —
+        // a scan with `eligible=3` reports eligible-but-unclaimable work
+        // rather than "no eligible work", which reads as a contradiction
+        // and gets investigated by a human who cannot yet know it is
+        // benign.
         const detail = scanSummary
-          ? formatScanSummary(scanSummary)
-          : "scan summary unavailable";
+          ? formatScanOutcome(scanSummary)
+          : "no eligible work: scan summary unavailable";
         // Sibling *slots* only (Issue #213): a maintenance pass running beside
         // the pool is not a reason for an idle slot to keep re-scanning for an
         // hour, so it does not count.
@@ -3220,13 +3225,13 @@ async function runSlot(
           .filter((h) => h.slotId !== slotId).length;
         if (siblings === 0) {
           log(
-            `stop reason=no-work — no eligible work: ${detail}; ` +
+            `stop reason=no-work — ${detail}; ` +
               "no sibling slot is running, so the pool drains and the cycle continues.",
           );
           return;
         }
         log(
-          `no eligible work: ${detail} — re-scanning in ${
+          `${detail} — re-scanning in ${
             rescanMs / 1000
           }s while ${siblings} sibling slot(s) work (Issue #219).`,
         );

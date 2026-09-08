@@ -222,6 +222,19 @@ export interface ContainerLaunchInputs {
    */
   containerToolsSpecJson?: string;
   /**
+   * The commit the mounted checkout is at, passed into the container as
+   * `VIBE_BUILD_COMMIT` so every log line the run emits names the code that
+   * produced it (Issue #1572). Carries `-dirty` when that checkout had
+   * uncommitted changes, and the literal `unknown` when it could not be
+   * resolved at all.
+   *
+   * Required, unlike the other stamps here: it was optional in spirit before
+   * — read by `lib/worker_build_info.ts`, set by nobody — and `commit=unknown`
+   * became the only value a fleet log could ever report. Making it part of
+   * the plan's type is what stops the wiring being dropped again in silence.
+   */
+  buildCommit: string;
+  /**
    * The host's own short hostname, passed into the container as
    * VIBE_HOST_ID so fleet telemetry names the real machine
    * rather than the ephemeral container hostname. Optional: absent means
@@ -1169,6 +1182,11 @@ export function buildContainerLaunchPlan(
   if (extensionStart !== undefined) {
     runArgs.push("--env", `${EXTENSION_START_ENV}=${extensionStart}`);
   }
+  // The build stamp (Issue #1572): which commit this run is actually running.
+  // Always emitted — an unresolvable checkout stamps `unknown`, so a log that
+  // says `commit=unknown` means a genuinely unstamped build rather than a
+  // launcher that forgot to say.
+  runArgs.push("--env", `VIBE_BUILD_COMMIT=${inputs.buildCommit}`);
   // Fleet telemetry names the real host, not the per-run container name.
   if (inputs.hostId) {
     runArgs.push("--env", `VIBE_HOST_ID=${inputs.hostId}`);

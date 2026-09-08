@@ -319,6 +319,51 @@ export function formatScanSummary(
 }
 
 /**
+ * What the three counters actually measure (Issue #1573).
+ *
+ * `considered` and `eligible` tally **issues** that reached the per-issue
+ * filter; `skipped` tallies **skip decisions**, repo-level ones included,
+ * which never enter the `considered` count. The three therefore need not
+ * sum, and a reader who assumes they do goes looking for a counting bug
+ * that is not there.
+ */
+export const SCAN_COUNT_POPULATIONS =
+  "(considered/eligible are per-issue; skipped counts skip decisions " +
+  "including repo-level ones, so the three need not sum)";
+
+/**
+ * Render a scan's outcome as the sentence a slot logs (Issue #1573).
+ *
+ * `formatScanSummary` renders the counters; this renders the claim built
+ * around them, and the two must agree. Saying "no eligible work" beside
+ * `eligible=3` reads as a self-contradiction and costs a human real
+ * investigation time before they establish it was benign — the counters
+ * measure different things: `eligible` is "passed the per-issue filter",
+ * while the slot stopped because nothing was **claimable** (the streams
+ * holding that work were occupied by another slot).
+ *
+ * So a scan that found eligible-but-unclaimable work says exactly that,
+ * and points at `top-skips` for what refused it. Only a genuinely empty
+ * scan reads "no eligible work".
+ *
+ * @param summary - Counts collected during the scan.
+ * @param topReasons - How many skip reasons to name, busiest first.
+ * @returns A single-line outcome sentence carrying the counter fields.
+ */
+export function formatScanOutcome(
+  summary: DiagnosticSummary,
+  topReasons = 3,
+): string {
+  const lead = summary.totalEligible > 0
+    ? `${summary.totalEligible} eligible, none claimable ` +
+      "(top-skips names what refused them)"
+    : "no eligible work";
+  return `${lead}: ${
+    formatScanSummary(summary, topReasons)
+  } ${SCAN_COUNT_POPULATIONS}`;
+}
+
+/**
  * Check whether issue finder diagnostics are enabled.
  *
  * Reads from the ISSUE_FINDER_DEBUG environment variable.
