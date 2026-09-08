@@ -55,9 +55,11 @@ export interface GhCallMetricsSnapshot {
   graphqlTotal: number;
   /**
    * Counts grouped by GraphQL caller source (Issue #1924). Only calls
-   * issued while an `enterGraphQLSource()` context is active are
-   * attributed; calls without a wrapping context are credited to the
-   * "unattributed" bucket so future regressions surface in the log.
+   * issued while an `enterGraphQLSource()` or `withGraphQLSource()` context
+   * is active are attributed; calls without a wrapping context are credited
+   * to the "unattributed" bucket so future regressions surface in the log.
+   * Issue #1585: the `withGraphQLSource` context is async-scoped, so two
+   * lanes running at once attribute independently.
    */
   graphqlBySource: Record<string, number>;
 }
@@ -252,19 +254,58 @@ export function exitGraphQLSource(): void {
 }
 
 /**
- * Run `fn` inside an `enterGraphQLSource(name)` / `exitGraphQLSource()`
- * pair, restoring the stack even if `fn` throws (Issue #1924).
+ * Async-scoped GraphQL source attribution (Issue #1585).
+ *
+ * The `enterGraphQLSource`/`exitGraphQLSource` stack above is process-wide,
+ * which is exact only while sources run strictly one after another. Every
+ * wrapper is `await`-ed around a `gh` spawn, so while `comment_batch.ts` is
+ * awaiting its `api graphql` call, any `gh issue list` or `gh pr view` issued
+ * by a lane running beside it was credited to `comments-batch`. This storage
+ * binds the source to the async chain that entered it instead, so concurrent
+ * lanes attribute independently — the same fix Issue #213 applied to the
+ * priority axis.
+ *
+ * Finding (Issue #1571): the parent's unresolved caveat — attributed buckets
+ * summing to 40 against an `api-graphql` sub-command counter of 23 for the
+ * same cycle — IS explained by this cross-crediting. The reproduction in
+ * `tests/gh_call_metrics_test.ts` ("concurrent chains do not cross-credit
+ * GraphQL sources") shows a suspended `comments-batch` chain absorbing two
+ * unrelated sub-command calls from the lane beside it, which is exactly how a
+ * named bucket outgrows the `api graphql` count it can legitimately hold.
  */
-export async function withGraphQLSource<T>(
+const graphqlSourceStorage = new AsyncLocalStorage<string>();
+
+/**
+ * Run `fn` with its GraphQL-backed `gh` calls attributed to `name`, for the
+ * whole async chain and for nothing running beside it (Issue #1585).
+ */
+export function withGraphQLSourceContext<T>(
   name: string,
   fn: () => Promise<T> | T,
 ): Promise<T> {
-  enterGraphQLSource(name);
-  try {
-    return await fn();
-  } finally {
-    exitGraphQLSource();
-  }
+  return graphqlSourceStorage.run(
+    normalisePriorityName(name),
+    async () => await fn(),
+  );
+}
+
+/** The GraphQL source the current async chain runs under, if any (#1585). */
+export function currentGraphQLSourceContext(): string | undefined {
+  return graphqlSourceStorage.getStore();
+}
+
+/**
+ * Run `fn` attributed to the GraphQL caller source `name` (Issue #1924).
+ *
+ * Issue #1585: implemented on the async-scoped context above, so every
+ * existing call site became concurrency-safe with no edit. An explicit
+ * `enterGraphQLSource()` nested inside `fn` still wins.
+ */
+export function withGraphQLSource<T>(
+  name: string,
+  fn: () => Promise<T> | T,
+): Promise<T> {
+  return withGraphQLSourceContext(name, fn);
 }
 
 /**
@@ -294,7 +335,11 @@ export function recordGhCall(args: readonly string[]): void {
   // sub-command is GraphQL-backed; only a plain REST `gh api <path>` is not.
   if (!isQuotaExemptGhCall(args)) {
     state.graphqlTotal++;
+    // Issue #1585: an explicit stack entry still wins (innermost-wins for a
+    // nested `enterGraphQLSource`); otherwise the async-scoped context
+    // attributes the call, so concurrent lanes do not cross-credit.
     const src = state.graphqlSourceStack[state.graphqlSourceStack.length - 1] ??
+      graphqlSourceStorage.getStore() ??
       "unattributed";
     state.graphqlBySource.set(
       src,

@@ -370,6 +370,19 @@ counts. Before Issue #1485 only `gh api graphql` was counted, and the
 line showed a fraction of the real burn — a whole cycle's `issue list`
 and `pr list` traffic was invisible to it.
 
+Source attribution is scoped to the async chain that entered it
+(`withGraphQLSource`, Issue #1585), so two lanes running at once cannot
+credit each other's calls. Before that, the source was a process-wide
+stack: while `comment_batch.ts` awaited its `api graphql` spawn, an
+`issue list` from the lane beside it was credited to `comments-batch`.
+That is what explains the earlier reading where the attributed buckets
+summed to 40 against an `api-graphql` sub-command counter of 23 for the
+same cycle — a wrapper cannot issue more `api graphql` calls than were
+classified as such, but a shared stack let it absorb 17 unrelated
+sub-command calls. An explicit `enterGraphQLSource()` nested inside a
+wrapped chain still wins, and calls issued outside any source land in
+the `unattributed` bucket.
+
 The primary-quota latch (Issue #42) is enforced at the same chokepoint:
 once the hourly GraphQL quota is exhausted, every GraphQL-backed spawn
 from any module returns a `gh command skipped: … API rate limit already

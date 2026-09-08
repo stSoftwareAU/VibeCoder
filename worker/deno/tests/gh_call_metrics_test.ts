@@ -5,6 +5,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   classifyGhArgs,
+  currentGraphQLSourceContext,
   enterGraphQLSource,
   enterPriority,
   exitGraphQLSource,
@@ -21,6 +22,7 @@ import {
   recordGhCall,
   resetGhCallMetrics,
   withGraphQLSource,
+  withGraphQLSourceContext,
   withPriority,
 } from "../lib/gh_call_metrics.ts";
 
@@ -503,4 +505,71 @@ Deno.test("gh_call_metrics - formatGraphQLSummary marks unattributed graphql cal
   // The "unattributed" sentinel surfaces unwrapped GraphQL call sites
   // so future regressions are obvious in the log.
   assertStringIncludes(summary, "unattributed=2");
+});
+
+/**
+ * Issue #1585: the GraphQL source axis must be async-scoped, so two lanes
+ * running at once cannot credit each other's `gh` calls. Interleave a
+ * wrapped chain and an unwrapped one through a manually resolved promise:
+ * the unwrapped chain's calls must land in `unattributed`.
+ */
+Deno.test("gh_call_metrics - concurrent chains do not cross-credit GraphQL sources", async () => {
+  resetGhCallMetrics();
+
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  const wrapped = withGraphQLSource("comments-batch", async () => {
+    // Suspend inside the source, exactly as an awaited `gh` spawn does.
+    await gate;
+    recordGhCall(["api", "graphql", "-f", "query=Q"]);
+  });
+
+  // A second lane, outside any source, runs while the first is suspended.
+  const unwrapped = (async () => {
+    await Promise.resolve();
+    recordGhCall(["issue", "list", "--repo", "o/r"]);
+    recordGhCall(["pr", "view", "42", "--json", "mergeable"]);
+    release();
+  })();
+
+  await Promise.all([wrapped, unwrapped]);
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlTotal, 3);
+  assertEquals(snap.graphqlBySource["comments-batch"], 1);
+  assertEquals(snap.graphqlBySource["unattributed"], 2);
+});
+
+Deno.test("gh_call_metrics - nested enterGraphQLSource still wins inside a wrapped chain", async () => {
+  resetGhCallMetrics();
+
+  await withGraphQLSource("comments-batch", async () => {
+    await Promise.resolve();
+    enterGraphQLSource("timeline-batch");
+    recordGhCall(["api", "graphql", "-f", "query=Inner"]);
+    exitGraphQLSource();
+    recordGhCall(["api", "graphql", "-f", "query=Outer"]);
+  });
+
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlBySource["timeline-batch"], 1);
+  assertEquals(snap.graphqlBySource["comments-batch"], 1);
+});
+
+Deno.test("gh_call_metrics - withGraphQLSourceContext scopes currentGraphQLSourceContext", async () => {
+  resetGhCallMetrics();
+
+  assertEquals(currentGraphQLSourceContext(), undefined);
+
+  const seen = await withGraphQLSourceContext("Comments Batch", async () => {
+    await Promise.resolve();
+    return currentGraphQLSourceContext();
+  });
+
+  // Names are normalised the same way priority names are.
+  assertEquals(seen, "comments-batch");
+  assertEquals(currentGraphQLSourceContext(), undefined);
 });
