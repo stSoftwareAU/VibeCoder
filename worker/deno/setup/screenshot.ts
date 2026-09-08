@@ -23,6 +23,7 @@ import {
   isSharedTmpPath,
   sharedTmpStateDir,
 } from "../lib/private_cache_dir.ts";
+import { runGitArgv } from "../lib/git_timeout.ts";
 import {
   DEFAULT_NPM_QUARANTINE_HOURS,
   defaultNpmAgeDeps,
@@ -496,7 +497,15 @@ interface CommandOutput {
   stderr: string;
 }
 
+/**
+ * Runs a command whose binary is the head of the argv.
+ *
+ * Issue #1553: a `git` argv is delegated to the chokepoint so it keeps the
+ * timeout, the audit journal and the work-volume fault detector; every other
+ * binary is spawned here.
+ */
 async function defaultRunCommand(cmd: string[]): Promise<CommandOutput> {
+  if (cmd[0] === "git") return await runGitArgv(cmd);
   const command = new Deno.Command(cmd[0]!, {
     args: cmd.slice(1),
     stdout: "piped",

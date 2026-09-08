@@ -57,6 +57,7 @@ import {
 } from "./workflow_auditor.ts";
 import { WORKFLOW_SPECS } from "./workflow_definitions.ts";
 import { spawnGh } from "./gh_spawn.ts";
+import { runGitArgv } from "./git_timeout.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -130,6 +131,12 @@ function createDefaultRunCommand(
 ): (cmd: string[]) => Promise<CommandOutput> {
   const extraEnv = ghConfigDir ? { GH_CONFIG_DIR: ghConfigDir } : undefined;
   return async (cmd: string[]): Promise<CommandOutput> => {
+    // Issue #1553: a `git` argv is delegated too, so a caller handing this
+    // generic runner one keeps the timeout, the journal and the work-volume
+    // detector rather than losing all three to a direct spawn.
+    if (cmd[0] === "git") {
+      return await runGitArgv(cmd, extraEnv ? { env: extraEnv } : {});
+    }
     if (cmd[0] === "gh") {
       const result = await spawnGh(
         cmd.slice(1),

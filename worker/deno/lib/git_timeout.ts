@@ -342,3 +342,46 @@ export async function runGitCommandChecked(
 
   return { ok: true, value: stdout };
 }
+
+/** Output of a full-argv git call, as the worker's argv runners report it. */
+export interface GitArgvOutput {
+  /** True when git exited zero. */
+  success: boolean;
+  /** Trimmed standard output. */
+  stdout: string;
+  /** Trimmed standard error, or the refusal that stopped the call. */
+  stderr: string;
+}
+
+/**
+ * Run a full `git …` argv — binary included — through the chokepoint
+ * (Issue #1553).
+ *
+ * The worker's generic pass-through runners are handed an argv whose head is
+ * the binary (`["git", "-C", dir, "push", …]`), often built in a different
+ * module. `runGitCommand` takes the arguments *after* the binary, so each
+ * runner had to strip the head itself; none did, and they spawned git
+ * directly instead — outside the timeout, the audit journal and the
+ * work-volume fault detector. This adapter is the one-line delegation those
+ * runners use, so the head-stripping is written once rather than per caller.
+ *
+ * A `Result` error (a redaction refusal, a spawn failure) is reported as an
+ * unsuccessful call carrying the message, never swallowed.
+ *
+ * @param argv - Full argv with `git` as its head; a missing head is fine, the
+ *   remainder is still routed.
+ * @param options - Same options as {@link runGitCommand}.
+ * @returns Success plus the trimmed streams.
+ */
+export async function runGitArgv(
+  argv: readonly string[],
+  options: GitCommandOptions = {},
+): Promise<GitArgvOutput> {
+  const args = argv[0] === "git" ? argv.slice(1) : [...argv];
+  const result = await runGitCommand(args, options);
+  if (!result.ok) {
+    return { success: false, stdout: "", stderr: result.error.message };
+  }
+  const { code, stdout, stderr } = result.value;
+  return { success: code === 0, stdout: stdout.trim(), stderr: stderr.trim() };
+}
