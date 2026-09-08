@@ -9,13 +9,29 @@
  * plus git commit) and formats it for the startup banner and for
  * claim-time / PR-open log lines.
  *
- * The commit is read from the `VIBE_BUILD_COMMIT` environment variable,
- * which the shell orchestration layer stamps at deploy time. When it is
- * absent (e.g. a local dev run) the commit is reported as `unknown` — the
- * function never shells out to git so it stays pure and testable.
+ * The commit is read from the `VIBE_BUILD_COMMIT` environment variable.
+ * Issue #1572: nothing ever set it, so `commit=unknown` was not a degraded
+ * case but the only value the stamp could take, and a log line could never
+ * say which code produced it. {@link resolveBuildCommit} is the producing
+ * half — the launch plan resolves the staged checkout's HEAD with it and
+ * hands the value to the container, so `unknown` now means a genuinely
+ * unstamped build. {@link getWorkerBuildInfo} still never shells out, so the
+ * reading half stays pure and testable.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
+
+import { type GitCommandOutput, runGitCommand } from "./git_timeout.ts";
+import type { Result } from "../types.ts";
+
+/** Suffix marking a stamp whose checkout carried uncommitted changes. */
+export const BUILD_COMMIT_DIRTY_SUFFIX = "-dirty";
+
+/** The shape a stamped commit takes: a full sha, optionally `-dirty`. */
+export const BUILD_COMMIT_PATTERN = /^[0-9a-f]{40}(-dirty)?$/;
+
+/** A full git object name, as `git rev-parse HEAD` prints it. */
+const COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/;
 
 /** Resolved build identity of the running worker. */
 export interface WorkerBuildInfo {
@@ -55,9 +71,16 @@ export function getWorkerBuildInfo(
  * @returns e.g. `version=1.2.3 commit=abcdef012345`.
  */
 export function formatBuildStamp(info: WorkerBuildInfo): string {
+  const dirty = info.commit.endsWith(BUILD_COMMIT_DIRTY_SUFFIX);
+  const sha = dirty
+    ? info.commit.slice(0, -BUILD_COMMIT_DIRTY_SUFFIX.length)
+    : info.commit;
+  // The dirty marker survives truncation (Issue #1572): a stamp that reads
+  // as a clean commit while the checkout carried uncommitted changes is
+  // worse than `unknown`, because it names code that was never run.
   const shortCommit = info.commit === "unknown"
     ? "unknown"
-    : info.commit.slice(0, 12);
+    : `${sha.slice(0, 12)}${dirty ? BUILD_COMMIT_DIRTY_SUFFIX : ""}`;
   return `version=${info.version} commit=${shortCommit}`;
 }
 
@@ -96,4 +119,114 @@ export function readWorkerVersion(): string {
  */
 export function resolveWorkerBuildInfo(): WorkerBuildInfo {
   return getWorkerBuildInfo(readWorkerVersion());
+}
+
+/** Runs git for {@link resolveBuildCommit}; injectable for tests. */
+export type BuildCommitGitRunner = (
+  args: string[],
+) => Promise<Result<GitCommandOutput>>;
+
+/** What {@link resolveBuildCommit} concluded about a checkout. */
+export interface BuildCommitResolution {
+  /** The stamp — a 40-hex sha, `-dirty` when the tree was modified. */
+  commit?: string;
+  /** Why no stamp could be produced. Set exactly when `commit` is not. */
+  reason?: string;
+}
+
+/**
+ * Resolve the commit a checkout would run (Issue #1572).
+ *
+ * Called by the container launch plan against the checkout it is about to
+ * mount, so the running worker reports the code it was actually launched
+ * from. Both launchers update that checkout before the plan is built, so its
+ * HEAD is the code the container runs.
+ *
+ * Never throws and never guesses: anything it cannot establish comes back as
+ * a `reason` the caller logs, and the stamp degrades to `unknown` rather than
+ * to a commit that was not run. In particular an unreadable worktree state is
+ * *not* reported as clean — claiming a clean commit while running modified
+ * code is the one outcome worse than `unknown`.
+ *
+ * @param baseDir - The checkout to stamp.
+ * @param runGit - Git runner; defaults to the shared timeout/audit chokepoint.
+ * @returns The stamp, or the reason there is none.
+ */
+export async function resolveBuildCommit(
+  baseDir: string,
+  runGit: BuildCommitGitRunner = (args) => runGitCommand(args),
+): Promise<BuildCommitResolution> {
+  const head = await runGit(["-C", baseDir, "rev-parse", "HEAD"]);
+  if (!head.ok) {
+    return { reason: `git rev-parse HEAD failed: ${head.error.message}` };
+  }
+  if (head.value.code !== 0) {
+    const detail = head.value.stderr.trim() || head.value.stdout.trim();
+    return {
+      reason:
+        `git rev-parse HEAD exited ${head.value.code} in ${baseDir}: ${detail}`,
+    };
+  }
+  const sha = head.value.stdout.trim();
+  if (!COMMIT_SHA_PATTERN.test(sha)) {
+    return {
+      reason:
+        `git rev-parse HEAD in ${baseDir} did not name a commit: "${sha}"`,
+    };
+  }
+
+  // Git's own definition of a clean worktree — modified tracked files and
+  // untracked-but-unignored ones alike. Over-reporting is the safe direction:
+  // the marker is a warning about what the run may be executing, and a stamp
+  // that reads clean while the tree was not is the outcome to avoid.
+  const status = await runGit(["-C", baseDir, "status", "--porcelain"]);
+  if (!status.ok || status.value.code !== 0) {
+    const detail = status.ok
+      ? status.value.stderr.trim() || `exit ${status.value.code}`
+      : status.error.message;
+    return {
+      reason: `git status could not be read in ${baseDir} (${detail}) — ` +
+        "refusing to stamp a possibly-modified checkout as clean",
+    };
+  }
+  const dirty = status.value.stdout.trim().length > 0;
+  return { commit: dirty ? `${sha}${BUILD_COMMIT_DIRTY_SUFFIX}` : sha };
+}
+
+/**
+ * The stamp the launch plan hands the container (Issue #1572).
+ *
+ * {@link resolveBuildCommit} with the fallback policy applied: an
+ * unstampable checkout is reported loudly and degrades to the `unknown`
+ * sentinel the reader already understands, so `unknown` in a fleet log means
+ * a genuinely unstamped build rather than a launcher that forgot to say. The
+ * produced stamp is re-checked against {@link BUILD_COMMIT_PATTERN} before it
+ * crosses into the container's environment — the stamp is only worth reading
+ * while it can only be a commit.
+ *
+ * @param baseDir - The checkout about to be mounted.
+ * @param options - Injectable git runner and log sink, for tests.
+ * @returns A 40-hex commit (optionally `-dirty`), or `unknown`.
+ */
+export async function resolveBuildCommitStamp(
+  baseDir: string,
+  options: {
+    runGit?: BuildCommitGitRunner;
+    log?: (message: string) => void;
+  } = {},
+): Promise<string> {
+  const log = options.log ?? ((message: string) => console.error(message));
+  const resolved = options.runGit
+    ? await resolveBuildCommit(baseDir, options.runGit)
+    : await resolveBuildCommit(baseDir);
+  const commit = resolved.commit;
+  if (commit === undefined || !BUILD_COMMIT_PATTERN.test(commit)) {
+    log(
+      `build stamp unresolved for ${baseDir} — ${
+        resolved.reason ?? `refusing the malformed stamp "${commit}"`
+      }`,
+    );
+    return "unknown";
+  }
+  return commit;
 }
