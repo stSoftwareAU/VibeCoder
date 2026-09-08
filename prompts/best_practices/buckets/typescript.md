@@ -285,8 +285,11 @@ every change.
 **Already-tracked debt is silent.** Where the repo keeps a shrink-only
 list of its known parallel-unsafe test files, or a manifest of the
 integration tests its every-change suite excludes, a file on either
-list is debt already accepted and bounded — do not re-file it. The
-finding worth filing is the test that is recorded in neither.
+list is debt already accepted and bounded — do not re-file it. A
+manifest that instead names a script-driving suite the every-change
+suite runs **deliberately**, with a reason recorded beside it, counts
+the same way: the decision is taken and written down. The finding worth
+filing is the test that is recorded in none of them.
 
 **How a test asserts is not this bucket's business.** An absolute
 wall-clock threshold inside a test is a `test-audit` finding — do not

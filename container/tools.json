@@ -172,7 +172,7 @@
         "arm64": "ed4084f215d8bce2edd23aa7cb1f1e7b0818e41363a635a22065d2701b6141df"
       },
       "repos": ["stSoftwareAU/VibeCoder"],
-      "notes": "PowerShell 7 for this repository's .ps1 launchers (Issue #1596) — the one user-directed exception to the \"the gate runs it and CI enforces it\" rule for a toolchain. .github/workflows/validate-scripts.yml fails loud when pwsh is absent and runs the run.ps1 suites, which the local gate excludes (Issue #971, worker/deno/tests/pwsh_suites_outside_the_gate_test.ts); wiring those suites into the local gate is separate work. Checksums are the release's powershell-<version>-linux-x64/arm64.tar.gz entries from its hashes.sha256. No apt step: the runtime libraries the .NET host needs (libicu76, libssl3t64, libstdc++6, libgssapi-krb5-2) are already in the digest-pinned base, verified by running the extracted binary on the image."
+      "notes": "PowerShell 7 for this repository's .ps1 launchers (Issue #1596). With the interpreter in the image the local gate runs the run.ps1 launcher suites itself (Issue #1598, IN_GATE_SCRIPT_SUITES in worker/deno/lib/integration_test_manifest.ts), and .github/workflows/validate-scripts.yml still fails loud when pwsh is absent, for the setup.ps1 suites. Checksums are the release's powershell-<version>-linux-x64/arm64.tar.gz entries from its hashes.sha256. No apt step: the runtime libraries the .NET host needs (libicu76, libssl3t64, libstdc++6, libgssapi-krb5-2) are already in the digest-pinned base, verified by running the extracted binary on the image."
     },
     {
       "id": "bats-core",

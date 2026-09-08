@@ -36,8 +36,10 @@
  * main" while working on something else.
  *
  * A file the classifier claims must now be placed deliberately: in this
- * list, or in {@link SCRIPT_READING_UNIT_TESTS} with a reason. Neither is
- * the failure.
+ * list, in {@link SCRIPT_READING_UNIT_TESTS} with a reason, or — since the
+ * image began shipping `pwsh` (#1596) — in {@link IN_GATE_SCRIPT_SUITES}
+ * with a reason, which is the gate running a script-driving suite on
+ * purpose. None of the three is the failure; being in none of them is.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -59,13 +61,10 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   // fragments, the same shape as the provider-set suite above.
   "tests/install_toolchains_test.ts",
   "tests/install_tools_test.ts",
-  "tests/launcher_egress_probe_test.ts",
-  "tests/launcher_parity_test.ts",
   // Issue #873: runs loop.sh in a sandbox to prove the operator's log-directory
   // override reaches the resolver and is written to.
   "tests/log_dir_launcher_test.ts",
   "tests/loop_supervisor_test.ts",
-  "tests/run_ps1_launcher_test.ts",
   "tests/run_sh_launcher_test.ts",
   "tests/run_sh_upgrade_test.ts",
   "tests/setup_parity_test.ts",
@@ -96,6 +95,58 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   // read-only checkout mount and are never staged into the writable copy.
   "tests/prompt_immutability_test.ts",
 ];
+
+/**
+ * Script-driving suites the gate runs anyway, and why (Issue #1598).
+ *
+ * The exclusion above is about a **prerequisite the gate cannot count on**,
+ * not about the cost alone: a suite that needs `pwsh` fails on a host that
+ * has none, for reasons no change of its own could affect. Issue #1596 baked
+ * PowerShell 7 into the container image, so for the `run.ps1` launcher — the
+ * Windows containment boundary — that prerequisite is now met wherever the
+ * worker runs its gate, and #971's exclusion has outlived its reason.
+ *
+ * The three entries below cost about 97s of the gate on the image (76s, 15s
+ * and 6s, measured serially inside the container at PowerShell 7.6.5). What
+ * they buy is a verdict on `run.ps1` **before the push**, from the same gate
+ * that decides everything else about the change. CI's cover was uneven:
+ * `deno task test:run-mode` already ran two of them in the required
+ * `validate (container)` / `validate (no-runtime)` legs, while
+ * `launcher_egress_probe_test.ts` was only ever in the `integration tests`
+ * job, which deliberately cannot block a merge.
+ *
+ * The `setup.ps1` suites stay excluded: nothing in this repository's
+ * containment story turns on them being verified locally, and one of them
+ * reads the ambient environment it inherits, so the image's own
+ * `CONFIG_PATH` fails two of its cases inside the container (Issue #1656).
+ *
+ * An entry here is a **named exception with a reason**, exactly as
+ * {@link SCRIPT_READING_UNIT_TESTS} is: the classifier claims these files,
+ * and being claimed means being placed deliberately in one of the three
+ * lists rather than defaulting into any of them.
+ *
+ * Fail loud, never skip: `pwsh_suites_in_the_gate_test.ts` fails the gate on
+ * a host without PowerShell rather than letting these suites report
+ * "ignored" and the gate report green.
+ */
+export const IN_GATE_SCRIPT_SUITES: ReadonlyMap<string, string> = new Map([
+  [
+    "tests/run_ps1_launcher_test.ts",
+    "drives run.ps1, the Windows containment boundary, against a stub " +
+    "PATH; the image ships pwsh 7.6.5 (Issue #1596) so the gate can run " +
+    "it — 76s, in the serial pass because it times a launcher watchdog",
+  ],
+  [
+    "tests/launcher_parity_test.ts",
+    "compares the contract run.sh and run.ps1 keep, so a run.ps1 that " +
+    "gains a host-execution path is caught before the push — 15s",
+  ],
+  [
+    "tests/launcher_egress_probe_test.ts",
+    "holds run.ps1's egress probe to the same behaviour as run.sh's " +
+    "wherever PowerShell is installed — 6s",
+  ],
+]);
 
 /**
  * Files the classifier claims that are **not** integration tests (Issue #935).
