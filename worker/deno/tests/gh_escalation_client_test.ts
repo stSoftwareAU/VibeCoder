@@ -108,7 +108,7 @@ Deno.test("getIssueComments - parses valid JSON into GitHubComment shape", async
 
   assertEquals(calls[0], [
     "api",
-    "repos/owner/repo/issues/9/comments",
+    "repos/owner/repo/issues/9/comments?per_page=100&page=1",
   ]);
   assertEquals(comments.length, 2);
   const [c0, c1] = comments;
@@ -130,7 +130,7 @@ Deno.test("getIssueComments - returns [] for malformed JSON without throwing", a
 
 Deno.test("getIssueComments - returns [] when ghFn throws", async () => {
   const { ghFn } = makeFakeGh({ failWhen: () => true });
-  const client = createGhEscalationClient(ghFn);
+  const client = createGhEscalationClient(ghFn, () => {});
 
   const comments = await client.getIssueComments("owner/repo", 1);
 
@@ -217,4 +217,134 @@ Deno.test("unsupported methods reject with a descriptive error", async () => {
     }
     assert(threw, "expected the unsupported method to reject");
   }
+});
+
+// ---------------------------------------------------------------------------
+// getIssueComments — paging (Issue #1619)
+// ---------------------------------------------------------------------------
+
+/** Build a JSON page of `count` comments numbered from `startId`. */
+function commentPage(startId: number, count: number): string {
+  const entries = Array.from({ length: count }, (_, i) => ({
+    id: startId + i,
+    body: `comment ${startId + i}`,
+    created_at: "2026-01-01T00:00:00Z",
+    user: { login: "vibe-coder[bot]" },
+  }));
+  return JSON.stringify(entries);
+}
+
+/** Extract the `page=N` parameter from a `repos/.../comments?...` path. */
+function pageOf(args: string[]): number {
+  const match = /[?&]page=(\d+)/.exec(args[1] ?? "");
+  return match ? Number(match[1]) : 0;
+}
+
+Deno.test("getIssueComments - follows a full page with a page=2 request", async () => {
+  const { ghFn, calls } = makeFakeGh({
+    response: (args) =>
+      pageOf(args) === 1 ? commentPage(1, 100) : commentPage(101, 7),
+  });
+  const client = createGhEscalationClient(ghFn);
+
+  const comments = await client.getIssueComments("owner/repo", 3);
+
+  assertEquals(calls.length, 2);
+  assertEquals(calls[0], [
+    "api",
+    "repos/owner/repo/issues/3/comments?per_page=100&page=1",
+  ]);
+  assertEquals(calls[1], [
+    "api",
+    "repos/owner/repo/issues/3/comments?per_page=100&page=2",
+  ]);
+  assertEquals(comments.length, 107);
+  // Oldest first across pages, so escalateToHuman's tail slice sees the newest.
+  assertEquals(comments[0]?.body, "comment 1");
+  assertEquals(comments[99]?.body, "comment 100");
+  assertEquals(comments[100]?.body, "comment 101");
+  assertEquals(comments[106]?.body, "comment 107");
+});
+
+Deno.test("getIssueComments - a short first page stops paging", async () => {
+  const { ghFn, calls } = makeFakeGh({ response: () => commentPage(1, 47) });
+  const client = createGhEscalationClient(ghFn);
+
+  const comments = await client.getIssueComments("owner/repo", 3);
+
+  assertEquals(calls.length, 1);
+  assertEquals(comments.length, 47);
+});
+
+Deno.test("getIssueComments - stops at the 10-page cap and says so", async () => {
+  const { ghFn, calls } = makeFakeGh({
+    // Every page is full, so only the cap can end the loop.
+    response: (args) => commentPage((pageOf(args) - 1) * 100 + 1, 100),
+  });
+  const warnings: string[] = [];
+  const client = createGhEscalationClient(ghFn, (m) => warnings.push(m));
+
+  const comments = await client.getIssueComments("owner/repo", 3);
+
+  assertEquals(calls.length, 10);
+  assertEquals(comments.length, 1000);
+  // Truncation is the best-effort contract; silence about it is not.
+  assertEquals(warnings.length, 1);
+  assert(warnings[0]?.includes("at least 1000 comments"));
+});
+
+Deno.test("getIssueComments - a full page carrying an unparseable entry still pages on", async () => {
+  const { ghFn, calls } = makeFakeGh({
+    response: (args) => {
+      if (pageOf(args) > 1) return commentPage(101, 4);
+      // A full page whose 50th entry is a null the parser drops: the page is
+      // still full, so the thread must not be treated as ended here.
+      const page = JSON.parse(commentPage(1, 100));
+      page[49] = null;
+      return JSON.stringify(page);
+    },
+  });
+  const client = createGhEscalationClient(ghFn);
+
+  const comments = await client.getIssueComments("owner/repo", 3);
+
+  assertEquals(calls.length, 2);
+  assertEquals(comments.length, 103);
+  assertEquals(comments[102]?.body, "comment 104");
+});
+
+Deno.test("getIssueComments - a mid-thread page that is not a JSON array is reported", async () => {
+  const { ghFn, calls } = makeFakeGh({
+    // Page 2 comes back as an HTML interstitial: a successful call whose
+    // body is not the list. Left unreported it would look like the end of
+    // the thread — the very blind spot that hid the dedup marker.
+    response: (args) =>
+      pageOf(args) === 1 ? commentPage(1, 100) : "<html>rate limited</html>",
+  });
+  const warnings: string[] = [];
+  const client = createGhEscalationClient(ghFn, (m) => warnings.push(m));
+
+  const comments = await client.getIssueComments("owner/repo", 3);
+
+  assertEquals(calls.length, 2);
+  assertEquals(comments.length, 100);
+  assertEquals(warnings.length, 1);
+  assert(warnings[0]?.includes("comment page 2"));
+  assert(warnings[0]?.includes("not a JSON array"));
+});
+
+Deno.test("getIssueComments - a failing later page returns what was fetched, loudly", async () => {
+  const { ghFn } = makeFakeGh({
+    failWhen: (args) => pageOf(args) === 2,
+    response: () => commentPage(1, 100),
+  });
+  const warnings: string[] = [];
+  const client = createGhEscalationClient(ghFn, (m) => warnings.push(m));
+
+  const comments = await client.getIssueComments("owner/repo", 3);
+
+  assertEquals(comments.length, 100);
+  assertEquals(comments[0]?.body, "comment 1");
+  assertEquals(warnings.length, 1);
+  assert(warnings[0]?.includes("comment page 2"));
 });
