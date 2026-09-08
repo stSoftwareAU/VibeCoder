@@ -24,10 +24,10 @@ import {
   correlateGateSkipDrift,
   findCiToolEnforcements,
   findGateToolSkips,
-  gateSkipFindingId,
-  type GateToolSkip,
   type GateSkipDriftResult,
   type GateSkipDriftValue,
+  gateSkipFindingId,
+  type GateToolSkip,
   scanGateSkipDrift,
 } from "../lib/gate_skip_drift_scanner.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";

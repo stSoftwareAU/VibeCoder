@@ -282,11 +282,34 @@ function findSkipForGuard(
   return skip;
 }
 
-/** Does this line name `tool` as a word of its own? */
+/** Is this byte part of a shell word (so not a boundary)? */
+function isWordChar(ch: string | undefined): boolean {
+  if (ch === undefined) return false;
+  return /[A-Za-z0-9_]/.test(ch);
+}
+
+/**
+ * Does this line name `tool` as a word of its own?
+ *
+ * Plain string scanning rather than a `RegExp` built from `tool`: the tool
+ * name is read out of a monitored repository's gate script, and a dynamic
+ * pattern over untrusted text is a ReDoS surface.
+ */
 function namesTool(line: string, tool: string): boolean {
-  const escaped = tool.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
-  return new RegExp(`(?:^|[^A-Za-z0-9_])${escaped}(?:[^A-Za-z0-9_]|$)`, "i")
-    .test(line);
+  if (tool === "") return false;
+  const haystack = line.toLowerCase();
+  const needle = tool.toLowerCase();
+  let from = 0;
+  for (;;) {
+    const at = haystack.indexOf(needle, from);
+    if (at < 0) return false;
+    if (
+      !isWordChar(haystack[at - 1]) && !isWordChar(haystack[at + needle.length])
+    ) {
+      return true;
+    }
+    from = at + 1;
+  }
 }
 
 // ---------------------------------------------------------------------------
