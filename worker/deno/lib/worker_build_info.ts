@@ -175,16 +175,11 @@ export async function resolveBuildCommit(
     };
   }
 
-  // Tracked changes only: a stray scratch file in the checkout does not
-  // change the code that runs, and marking every such run dirty would make
-  // the marker noise rather than a signal.
-  const status = await runGit([
-    "-C",
-    baseDir,
-    "status",
-    "--porcelain",
-    "--untracked-files=no",
-  ]);
+  // Git's own definition of a clean worktree — modified tracked files and
+  // untracked-but-unignored ones alike. Over-reporting is the safe direction:
+  // the marker is a warning about what the run may be executing, and a stamp
+  // that reads clean while the tree was not is the outcome to avoid.
+  const status = await runGit(["-C", baseDir, "status", "--porcelain"]);
   if (!status.ok || status.value.code !== 0) {
     const detail = status.ok
       ? status.value.stderr.trim() || `exit ${status.value.code}`
@@ -196,4 +191,42 @@ export async function resolveBuildCommit(
   }
   const dirty = status.value.stdout.trim().length > 0;
   return { commit: dirty ? `${sha}${BUILD_COMMIT_DIRTY_SUFFIX}` : sha };
+}
+
+/**
+ * The stamp the launch plan hands the container (Issue #1572).
+ *
+ * {@link resolveBuildCommit} with the fallback policy applied: an
+ * unstampable checkout is reported loudly and degrades to the `unknown`
+ * sentinel the reader already understands, so `unknown` in a fleet log means
+ * a genuinely unstamped build rather than a launcher that forgot to say. The
+ * produced stamp is re-checked against {@link BUILD_COMMIT_PATTERN} before it
+ * crosses into the container's environment — the stamp is only worth reading
+ * while it can only be a commit.
+ *
+ * @param baseDir - The checkout about to be mounted.
+ * @param options - Injectable git runner and log sink, for tests.
+ * @returns A 40-hex commit (optionally `-dirty`), or `unknown`.
+ */
+export async function resolveBuildCommitStamp(
+  baseDir: string,
+  options: {
+    runGit?: BuildCommitGitRunner;
+    log?: (message: string) => void;
+  } = {},
+): Promise<string> {
+  const log = options.log ?? ((message: string) => console.error(message));
+  const resolved = options.runGit
+    ? await resolveBuildCommit(baseDir, options.runGit)
+    : await resolveBuildCommit(baseDir);
+  const commit = resolved.commit;
+  if (commit === undefined || !BUILD_COMMIT_PATTERN.test(commit)) {
+    log(
+      `build stamp unresolved for ${baseDir} — ${
+        resolved.reason ?? `refusing the malformed stamp "${commit}"`
+      }`,
+    );
+    return "unknown";
+  }
+  return commit;
 }

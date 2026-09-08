@@ -12,6 +12,7 @@ import {
   formatBuildStamp,
   getWorkerBuildInfo,
   resolveBuildCommit,
+  resolveBuildCommitStamp,
 } from "../lib/worker_build_info.ts";
 import type { GitCommandOutput } from "../lib/git_timeout.ts";
 import type { Result } from "../types.ts";
@@ -112,6 +113,17 @@ Deno.test("resolveBuildCommit - marks a modified checkout dirty", async () => {
   assertEquals(resolved.commit, `${CLEAN_SHA}-dirty`);
 });
 
+Deno.test("resolveBuildCommit - an untracked file is a dirty checkout too", async () => {
+  // Git's own reading of "clean": `git status` reports an untracked file, so
+  // a tree carrying one is not the commit it names.
+  const git = scriptedGit([
+    gitOk(`${CLEAN_SHA}\n`),
+    gitOk("?? worker/deno/lib/scratch.ts\n"),
+  ]);
+  const resolved = await resolveBuildCommit("/opt/VibeCoder", git.run);
+  assertEquals(resolved.commit, `${CLEAN_SHA}-dirty`);
+});
+
 Deno.test("resolveBuildCommit - reports why a non-repository cannot be stamped", async () => {
   const git = scriptedGit([
     { ok: true, value: { code: 128, stdout: "", stderr: "not a git repo\n" } },
@@ -140,11 +152,53 @@ Deno.test("resolveBuildCommit - never claims clean when the worktree state is un
   assertStringIncludes(resolved.reason ?? "", "status");
 });
 
+Deno.test("resolveBuildCommit - a failing status exit never stamps clean", async () => {
+  const git = scriptedGit([
+    gitOk(`${CLEAN_SHA}\n`),
+    { ok: true, value: { code: 128, stdout: "", stderr: "" } },
+  ]);
+  const resolved = await resolveBuildCommit("/opt/VibeCoder", git.run);
+  assertEquals(resolved.commit, undefined);
+  assertStringIncludes(resolved.reason ?? "", "exit 128");
+});
+
+Deno.test("resolveBuildCommitStamp - hands the launch plan the resolved commit", async () => {
+  const git = scriptedGit([gitOk(`${CLEAN_SHA}\n`), gitOk("")]);
+  const logged: string[] = [];
+  const stamp = await resolveBuildCommitStamp("/opt/VibeCoder", {
+    runGit: git.run,
+    log: (message) => logged.push(message),
+  });
+  assertEquals(stamp, CLEAN_SHA);
+  assertEquals(logged, []);
+});
+
+Deno.test("resolveBuildCommitStamp - an unstampable checkout says why and stamps unknown", async () => {
+  // The fallback is loud: `unknown` reaching a fleet log must be traceable to
+  // a stated reason, not to a launcher that silently stopped stamping.
+  const git = scriptedGit([
+    { ok: true, value: { code: 128, stdout: "", stderr: "not a git repo\n" } },
+  ]);
+  const logged: string[] = [];
+  const stamp = await resolveBuildCommitStamp("/tmp/not-a-checkout", {
+    runGit: git.run,
+    log: (message) => logged.push(message),
+  });
+  assertEquals(stamp, "unknown");
+  assertEquals(logged.length, 1);
+  assertStringIncludes(logged[0] ?? "", "not a git repo");
+});
+
 Deno.test("resolveBuildCommit - the production path resolves this checkout to a real commit", async () => {
   // The regression test Issue #1572 asks for: the resolution the launch plan
   // runs, against the real checkout, through the real git chokepoint. It
   // fails if the resolver stops producing a commit — which is the state that
   // made `commit=unknown` the only value the stamp could take.
+  //
+  // It reads the surrounding checkout on purpose, where most unit tests would
+  // build a fixture: a checkout the launch plan cannot stamp is the defect
+  // itself, so a red here is the signal being asked for rather than host
+  // flakiness.
   const repoRoot = new URL("../../../", import.meta.url).pathname;
   const resolved = await resolveBuildCommit(repoRoot);
   assertEquals(
@@ -156,6 +210,9 @@ Deno.test("resolveBuildCommit - the production path resolves this checkout to a 
     BUILD_COMMIT_PATTERN.test(resolved.commit ?? ""),
     `expected a 40-hex commit (optionally -dirty), got ${resolved.commit}`,
   );
+  // And the value the launch plan actually passes to the container is that
+  // commit, never the `unknown` sentinel.
+  assertEquals(await resolveBuildCommitStamp(repoRoot), resolved.commit);
 });
 
 Deno.test("formatBuildStamp - keeps the dirty marker when truncating", () => {

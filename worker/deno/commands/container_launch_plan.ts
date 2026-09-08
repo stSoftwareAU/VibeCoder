@@ -37,7 +37,7 @@ import {
   STRIPPED_CONTAINERFILE_SUFFIX,
 } from "../lib/containerfile_strip.ts";
 import { detectContainerRuntime } from "../lib/container_runtime.ts";
-import { resolveBuildCommit } from "../lib/worker_build_info.ts";
+import { resolveBuildCommitStamp } from "../lib/worker_build_info.ts";
 import { resolveWatchdogSeconds } from "../lib/container_watchdog.ts";
 import { readRunCapPassthrough } from "../lib/run_hard_cap.ts";
 import { formatGb, probeDiskReading } from "../lib/host_disk.ts";
@@ -234,13 +234,9 @@ export async function buildLaunchPlanForCommand(
   // launchers from one place rather than from two shells that could drift.
   // A checkout that cannot be stamped says why and reports `unknown`, which
   // now means a genuinely unstamped build rather than the normal case.
-  const resolvedBuild = await resolveBuildCommit(baseDir);
-  if (resolvedBuild.commit === undefined) {
-    console.error(
-      `container-launch-plan: build stamp unresolved — ${resolvedBuild.reason}`,
-    );
-  }
-  const buildCommit = resolvedBuild.commit ?? "unknown";
+  const buildCommit = await resolveBuildCommitStamp(baseDir, {
+    log: (message) => console.error(`container-launch-plan: ${message}`),
+  });
 
   // The host's own name, for fleet telemetry inside the container
   // (VIBE_HOST_ID). Best-effort: an unreadable hostname just omits the env
