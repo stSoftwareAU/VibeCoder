@@ -327,8 +327,9 @@ is ordered by exposure, the chunks most worth sweeping come first:
   trips, the chunks to stop at are the ones whose modules the Phase 1
   prior-sweep-record inventory already accounts for, before any chunk no
   record covers. A remaining chunk holding one never-recorded or changed
-  module outranks a chunk holding none, whatever their order in the plan;
-  within one of those groups the exposure ordering still decides.
+  module outranks a chunk holding none; within one of those groups the
+  exposure ordering still decides, and the highest-exposure chunk is still
+  never the one skipped.
 - **Record which chunks were not reached**, by number and name, and list
   them in the Phase 4 overflow tracker (step 4) so the omission is visible
   rather than silent. Never present a partial sweep as a complete one. A

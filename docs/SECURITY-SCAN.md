@@ -679,10 +679,12 @@ the post-triage survivors list contains more than six items.
 trigger: Phase 2 stops sweeping lower-exposure chunks once the candidate set
 already exceeds roughly twice the cap, so a run may finish with chunks
 unswept. The tracker then also carries a `## Chunks not reached` section
-listing each one by number, name and exposure band — and is filed for that
-reason alone, titled `security-scan-overflow: N chunks not reached`, even
-when six or fewer findings survived. A bounded sweep is therefore always
-visible in the filed output rather than silent.
+listing each one by number, name, exposure band and prior-sweep state (the
+two line shapes below) — and is filed for that reason alone, titled
+`security-scan-overflow: N chunks not reached`, even when six or fewer
+findings survived, whenever a chunk no earlier sweep recorded was left
+unswept. Genuinely unaudited code is therefore always visible in the filed
+output rather than silent.
 
 **Two line shapes, because "unswept" is not one state (Issue #1614).**
 Phase 1 inventories what earlier sweeps already recorded —
