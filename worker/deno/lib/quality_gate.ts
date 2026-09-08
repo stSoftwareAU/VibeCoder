@@ -679,6 +679,11 @@ async function runGitSpawnChokepointCheck(
     "A spawn whose binary is a variable (`new Deno.Command(call.bin, …)`) in a",
     "module that names `git` in an argv literal counts too (Issue #1227) —",
     "delegate `git` to the chokepoint and spawn other binaries directly.",
+    "",
+    "So does a generic argv pass-through runner that spawns the head of a",
+    "caller's argv (Issue #1553): its callers are in other modules, so the",
+    "gate cannot see whether one hands it `git`. Delegate with",
+    '`if (cmd[0] === "git") return await runGitArgv(cmd);`.',
   ].join("\n");
 
   return {

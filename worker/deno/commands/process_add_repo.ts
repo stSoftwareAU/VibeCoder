@@ -80,6 +80,7 @@ import {
 } from "../lib/create_all_idle_task_wrappers.ts";
 import { runGhCommand as defaultGhCommand } from "../lib/github.ts";
 import { spawnGh } from "../lib/gh_spawn.ts";
+import { runGitArgv } from "../lib/git_timeout.ts";
 import {
   type LabelSyncResult,
   syncLabelsForRepo,
@@ -618,6 +619,10 @@ export const processAddRepoCommand: Command = {
  * sanctioned runner in `lib/purge_stale_workflow_issues.ts`.
  */
 export const defaultRunCommand: RunCommand = async (cmd: string[]) => {
+  // Issue #1553: `git` is delegated for the same reasons — this runner takes
+  // whatever argv its callers build, so a `git` one would otherwise run with
+  // no timeout and leave no journal entry.
+  if (cmd[0] === "git") return await runGitArgv(cmd);
   if (cmd[0] === "gh") {
     const result = await spawnGh(cmd.slice(1));
     return {

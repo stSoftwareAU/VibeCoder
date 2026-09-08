@@ -63,6 +63,25 @@ export interface DirectSpawnScanResult {
  */
 export const INDIRECT_SPAWN_PATTERN = /new\s+Deno\.Command\s*\(\s*[^"'`\s]/;
 
+/**
+ * Matches a **generic argv pass-through** spawn — `new Deno.Command(cmd[0]!,
+ * { args: cmd.slice(1) })` — where the binary is the head of an argv array
+ * (Issue #1553).
+ *
+ * Such a runner spawns whatever its callers hand it, and those callers live
+ * in other modules, so no same-file signal can tell whether the guarded
+ * binary reaches it. {@link IndirectSpawnRules.argvHeadPattern} therefore
+ * cannot see it at all: `resolve_cross_repo_dep.ts` is handed `git` argv
+ * built in `cross_repo_fix.ts` and never spells the word itself. The runner
+ * must delegate the guarded binary to its chokepoint instead.
+ *
+ * A spawn whose binary is resolved inside the module (`new
+ * Deno.Command(binary, …)`, `new Deno.Command(call.bin, …)`) is not an argv
+ * head and is left to the narrower indirection rule.
+ */
+export const PASS_THROUGH_SPAWN_PATTERN =
+  /new\s+Deno\.Command\s*\(\s*[A-Za-z_$][\w$]*\s*\[\s*0\s*\]/;
+
 /** The indirection signals a check supplies for its binary (Issue #1378). */
 export interface IndirectSpawnRules {
   /**
@@ -84,6 +103,12 @@ export interface IndirectSpawnRules {
    * binaries rather than a bypass.
    */
   chokepointImportPattern: RegExp;
+  /**
+   * Flag every {@link PASS_THROUGH_SPAWN_PATTERN} match in a file that does
+   * not import the chokepoint, whatever the file's argv literals say
+   * (Issue #1553). Opt-in per check.
+   */
+  flagArgvHeadSpawn?: boolean;
 }
 
 /** Options for {@link scanDirectoriesForDirectSpawn}. */
@@ -105,6 +130,13 @@ export interface DirectSpawnScanOptions {
    * carrying its own follow-up, never a licence to spawn directly.
    */
   indirectExempt?: ReadonlySet<string>;
+  /**
+   * Repo-relative paths exempt from the **pass-through** rule only
+   * (Issue #1553). Every other signal still applies. Each entry names a
+   * module whose argv head is built locally rather than taken from a
+   * caller, so the guarded binary provably cannot reach the spawn.
+   */
+  passThroughExempt?: ReadonlySet<string>;
 }
 
 /**
@@ -197,6 +229,14 @@ export function scanContentForDirectSpawn(
         offending.add(line);
       }
     }
+    // Issue #1553: a pass-through runner's callers are in other modules, so
+    // the argv-literal pairing above cannot see them. Delegation is the only
+    // evidence that the guarded binary is routed.
+    if (rules.flagArgvHeadSpawn && !delegates) {
+      for (const line of matchingLines(code, PASS_THROUGH_SPAWN_PATTERN)) {
+        offending.add(line);
+      }
+    }
   }
 
   const lines = content.split("\n");
@@ -273,10 +313,15 @@ export async function scanDirectoriesForDirectSpawn(
       filesScanned++;
       const content = await Deno.readTextFile(absFile);
       // An exempt file keeps the literal and wrapper checks; only the
-      // argv pairing that drives the indirection rule is switched off.
-      const rules = options.rules && options.indirectExempt?.has(repoRel)
-        ? { ...options.rules, argvHeadPattern: NEVER_MATCHES }
-        : options.rules;
+      // argv pairing that drives the indirection rule is switched off, and
+      // the pass-through rule is exempted separately (Issue #1553).
+      let rules = options.rules;
+      if (rules && options.indirectExempt?.has(repoRel)) {
+        rules = { ...rules, argvHeadPattern: NEVER_MATCHES };
+      }
+      if (rules && options.passThroughExempt?.has(repoRel)) {
+        rules = { ...rules, flagArgvHeadSpawn: false };
+      }
       violations.push(
         ...scanContentForDirectSpawn(content, repoRel, options.pattern, rules),
       );
