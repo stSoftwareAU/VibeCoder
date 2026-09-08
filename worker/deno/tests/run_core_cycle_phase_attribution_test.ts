@@ -228,8 +228,10 @@ Deno.test("run_core phase attribution - post-run issue callbacks credit their ow
   resetGhCallMetrics();
   const probe = ghProbe();
   const time = clock();
+  const logs: string[] = [];
   const deps = createMockDeps({
     ...time,
+    log: (message: string) => logs.push(message),
     findNextIssue: (() => {
       let served = false;
       return () => {
@@ -248,6 +250,7 @@ Deno.test("run_core phase attribution - post-run issue callbacks credit their ow
   await runCoreLoop(createDefaultRunCoreConfig(), deps);
 
   assertEquals([...probe.credited()], ["issue-callbacks"]);
+  assertNamedInSummary(logs, "issue-callbacks");
 });
 
 Deno.test("run_core phase attribution - the idle work hooks credit their own bucket (Issue #1587)", async () => {
@@ -290,3 +293,83 @@ Deno.test("run_core phase attribution - a dispatched handler keeps its own name 
   // added by a phase wrapper around it.
   assertEquals([...probe.credited()], ["milestone-completions"]);
 });
+
+/**
+ * The outer-loop audit (Issue #1587) wrapped four further gh-issuing phases
+ * that priority dispatch never covered. Each is driven through the real
+ * loop and must credit its own bucket.
+ */
+const AUDITED_PHASES: {
+  bucket: string;
+  wire: (fire: () => void, burn: () => void) => Partial<RunCoreDeps>;
+}[] = [
+  {
+    bucket: "trust-refresh",
+    wire: (fire, burn) => ({
+      refreshTrustedAuthors: () => {
+        fire();
+        burn();
+        return Promise.resolve({ ok: true as const });
+      },
+    }),
+  },
+  {
+    bucket: "fleet-pr-prefetch",
+    wire: (fire, burn) => ({
+      prefetchFleetOpenPrs: () => {
+        fire();
+        burn();
+        return Promise.resolve();
+      },
+    }),
+  },
+  {
+    bucket: "stale-assignment-recovery",
+    wire: (fire, burn) => ({
+      recoverStaleAssignments: () => {
+        fire();
+        burn();
+        return Promise.resolve();
+      },
+    }),
+  },
+  {
+    bucket: "github-auth-check",
+    wire: (fire, burn) => ({
+      checkGhAuth: () => {
+        fire();
+        burn();
+        return Promise.resolve({ ok: true as const, value: { valid: true } });
+      },
+    }),
+  },
+  {
+    bucket: "liveness-guard",
+    wire: (fire, burn) => ({
+      checkLivenessWindow: () => {
+        fire();
+        burn();
+        return Promise.resolve();
+      },
+    }),
+  },
+];
+
+for (const phase of AUDITED_PHASES) {
+  Deno.test(
+    `run_core phase attribution - ${phase.bucket} credits its own bucket (Issue #1587)`,
+    async () => {
+      resetGhCallMetrics();
+      const probe = ghProbe();
+      const time = clock();
+      const deps = createMockDeps({
+        ...time,
+        ...phase.wire(probe.fire, time.burnCycle),
+      });
+
+      await runCoreLoop(createDefaultRunCoreConfig(), deps);
+
+      assertEquals([...probe.credited()], [phase.bucket]);
+    },
+  );
+}

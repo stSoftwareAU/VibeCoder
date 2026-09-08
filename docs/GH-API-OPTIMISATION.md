@@ -395,6 +395,34 @@ from any module returns a `gh command skipped: … API rate limit already
 exceeded` failure without starting a process, while REST `gh api <path>`
 calls and the quota probe that learns the reset still run.
 
+### The `gh-calls-by-priority:` line — which pass spent the calls
+
+A third line attributes the same invocations to the cycle phase that
+issued them:
+
+```
+gh-calls-by-priority: issue-scanning=239 post-scan-auto-merge=12 initialisation=6
+```
+
+Every dispatched priority handler is attributed by
+`executePriorityHandler`, and the Priority 2 scan by its own
+`"Issue Scanning"` wrapper. Issue #1587 extended the axis to the phases
+that run *outside* priority dispatch, each in its own named context:
+`initialisation`, `issue-callbacks`, `post-scan-auto-merge`,
+`idle-work-hooks`, plus the outer-loop passes the same audit found —
+`trust-refresh`, `fleet-pr-prefetch`, `stale-assignment-recovery`,
+`github-auth-check` and `liveness-guard`. Before that, those phases'
+calls appeared in `gh-calls:` and in no by-priority bucket at all.
+
+Attribution uses `withPriorityContext` (async-scoped, Issue #213), so a
+phase overlapping the scan pool cannot cross-credit it, and the
+innermost context wins — the callbacks a scan slot fires are credited
+to `issue-callbacks`, not to `issue-scanning`.
+
+Two probes are deliberately left bare: `preflightGitHubRateLimit` and
+`describeGraphqlQuota` read the quota itself, which GitHub does not
+charge, and both run after the summary line is emitted.
+
 ### The `graphql-quota:` line — points, as GitHub counts them
 
 The call counters above count *this process's* invocations, and they

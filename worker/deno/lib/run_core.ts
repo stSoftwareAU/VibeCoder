@@ -4933,7 +4933,13 @@ export async function runCoreLoop(
             continue;
           }
 
-          const ghAuth = await deps.checkGhAuth();
+          // Issue #1587: `gh auth status` spawns through the recorded
+          // chokepoint on a health-cache miss, once per cycle, outside
+          // priority dispatch.
+          const ghAuth = await withPriorityContext(
+            "GitHub Auth Check",
+            () => deps.checkGhAuth(),
+          );
           if (!ghAuth.ok || !ghAuth.value.valid) {
             lastHealthCheckPassed = false;
             deps.logError("GitHub auth check failed — skipping cycle");
@@ -5355,11 +5361,17 @@ export async function runCoreLoop(
           // a bounded cadence so the guard's `2 × repos` `gh` probes do not
           // multiply the loop's API cost every cycle. Any throw is caught
           // and logged so the guard can never abort the loop.
-          if (deps.checkLivenessWindow) {
+          const checkLiveness = deps.checkLivenessWindow;
+          if (checkLiveness) {
             livenessTick += 1;
             if (livenessTick % LIVENESS_CHECK_CADENCE === 1) {
               try {
-                await deps.checkLivenessWindow({ tick: livenessTick });
+                // Issue #1587: the guard's `2 × repos` probes, attributed
+                // to it rather than to nothing.
+                await withPriorityContext(
+                  "Liveness Guard",
+                  () => checkLiveness({ tick: livenessTick }),
+                );
               } catch (livenessErr) {
                 const msg = livenessErr instanceof Error
                   ? livenessErr.message
