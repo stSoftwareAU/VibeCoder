@@ -1797,10 +1797,40 @@ as mergeable.
 
 1. Lists open PRs authored by the worker.
 2. Queries check runs for each PR (`repos/{repo}/commits/{branch}/check-runs`).
-3. Filters for failed checks matching `spell|cspell|typo|codespell`.
+3. Shortlists failed checks whose **name** matches `spell|cspell|typo|codespell`,
+   then confirms each one by the **step that actually failed** — see
+   [Routing by failed step](#routing-by-failed-step-issue-1579).
 4. Fetches check annotations (file paths and messages).
 5. Passes annotations to `work_on_spelling_failure()`, which uses the
    `spelling_fix` prompt template.
+
+#### Routing by failed step (Issue #1579)
+
+A GitHub Actions **job** bundles many steps under one check name.
+NEAT-AI-core's `Scripts & spelling` job runs bats *and* codespell, so its
+name matched the spelling pattern while its failing step was
+`Run bats (tests/scripts)` — the spelling fixer found no spelling
+annotations and posted "no changes needed" twice while the bats failure went
+unfixed.
+
+`resolveCheckFixRoute()` (`worker/deno/lib/pr_ci_checks.ts`) therefore routes
+on the step, not the name:
+
+```mermaid
+flowchart TD
+    A["Failed check"] --> B{"Name looks<br/>spelling-related?"}
+    B -- no --> CI["CI-fix route<br/>(no extra API call)"]
+    B -- yes --> C["resolveFailedStepName()<br/>check-run → Actions job → first failed step"]
+    C -- "step is codespell / cspell / typos" --> SP["Spelling route"]
+    C -- "any other step" --> CI
+    C -- "no resolvable step (not Actions, or lookup error)" --> CI
+```
+
+The job lookup runs **only** for checks whose name already matches the
+spelling pattern, so every other check keeps its zero-extra-call path. A
+check with no resolvable failed step goes to the CI-fix route — which can
+fix spelling too — and the reason is logged at info level; the spelling
+route is never taken on a guess.
 
 ### 🔧 CI/integration test failure detection
 
@@ -1809,8 +1839,10 @@ as mergeable.
 1. Lists open PRs authored by the worker (with `baseRefName` for priority
    sorting).
 2. Queries check runs for each PR (`repos/{repo}/commits/{branch}/check-runs`).
-3. Filters for failed checks, **excluding** spelling patterns
-   (`spell|cspell|typo|codespell`).
+3. Filters for failed checks, **excluding** the ones the spelling route
+   claims — a check is excluded only when its failing *step* is a spelling
+   tool (see [Routing by failed step](#routing-by-failed-step-issue-1579)),
+   not merely because its name mentions spelling.
 4. Checks retry count against `CI_CHECK_MAX_RETRIES` (default 3) — skips
    over-retried failures.
 5. Prioritises PRs targeting the default branch (where integration tests run).

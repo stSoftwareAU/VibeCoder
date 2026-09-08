@@ -14,6 +14,7 @@ import {
   MAX_ACTIONS_EXCERPT_BYTES,
   parseActionsCheckUrl,
   resolveActionsJobId,
+  resolveFailedStepName,
   stripAnsi,
   summariseActionsLog,
 } from "../lib/github_actions_log_fetcher.ts";
@@ -442,4 +443,108 @@ Deno.test("stripAnsi - removes CSI colour and OSC sequences, keeps text (Issue #
     ),
     "Check mod.ts link",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Failed-step resolution (Issue #1579)
+// ---------------------------------------------------------------------------
+
+Deno.test("resolveFailedStepName - names the first failed step of the Actions job", async () => {
+  const gh = fakeGh({
+    "repos/o/r/check-runs/555": JSON.stringify({
+      app: { slug: "github-actions" },
+      details_url: "https://github.com/o/r/actions/runs/123/job/456",
+    }),
+    "repos/o/r/actions/jobs/456": JSON.stringify({
+      steps: [
+        { name: "Set up job", conclusion: "success" },
+        { name: "Run bats (tests/scripts)", conclusion: "failure" },
+        { name: "Run codespell", conclusion: "skipped" },
+      ],
+    }),
+  });
+
+  const resolution = await resolveFailedStepName({
+    repo: "o/r",
+    checkRunId: "555",
+    checkName: "Scripts & spelling",
+    ghFn: gh,
+  });
+
+  assertEquals(resolution, { kind: "step", name: "Run bats (tests/scripts)" });
+});
+
+Deno.test("resolveFailedStepName - a job with no failed step is not applicable", async () => {
+  const gh = fakeGh({
+    "repos/o/r/check-runs/555": JSON.stringify({
+      app: { slug: "github-actions" },
+      details_url: "https://github.com/o/r/actions/runs/123/job/456",
+    }),
+    "repos/o/r/actions/jobs/456": JSON.stringify({
+      steps: [{ name: "Set up job", conclusion: "success" }],
+    }),
+  });
+
+  const resolution = await resolveFailedStepName({
+    repo: "o/r",
+    checkRunId: "555",
+    ghFn: gh,
+  });
+
+  assertEquals(resolution.kind, "not-applicable");
+});
+
+Deno.test("resolveFailedStepName - a non-Actions check is not applicable", async () => {
+  const gh = fakeGh({
+    "repos/o/r/check-runs/555": JSON.stringify({
+      app: { slug: "some-other-ci" },
+      details_url: "https://ci.example.com/build/9",
+    }),
+  });
+
+  const resolution = await resolveFailedStepName({
+    repo: "o/r",
+    checkRunId: "555",
+    ghFn: gh,
+  });
+
+  assertEquals(resolution.kind, "not-applicable");
+});
+
+Deno.test("resolveFailedStepName - a failed job lookup is an error, never a step", async () => {
+  const gh = (args: string[]): Promise<string> => {
+    const endpoint = args[args.length - 1] ?? "";
+    if (endpoint === "repos/o/r/check-runs/555") {
+      return Promise.resolve(JSON.stringify({
+        app: { slug: "github-actions" },
+        details_url: "https://github.com/o/r/actions/runs/123/job/456",
+      }));
+    }
+    return Promise.reject(new Error("HTTP 500"));
+  };
+
+  const resolution = await resolveFailedStepName({
+    repo: "o/r",
+    checkRunId: "555",
+    ghFn: gh,
+  });
+
+  assertEquals(resolution.kind, "error");
+});
+
+Deno.test("summariseActionsLog - anchors on a TAP 'not ok' line (Issue #1579)", () => {
+  const lines: string[] = [];
+  for (let i = 1; i <= 5000; i++) {
+    lines.push(`2026-07-28T01:02:03.0000000Z ok ${i} some passing case`);
+  }
+  lines.push(
+    "2026-07-28T01:02:03.0000000Z not ok 263 research_docs_removed_modules",
+  );
+  for (let i = 0; i < 5000; i++) {
+    lines.push(`2026-07-28T01:02:03.0000000Z ok ${5001 + i} later case`);
+  }
+
+  const excerpt = summariseActionsLog(lines.join("\n"));
+
+  assertStringIncludes(excerpt, "not ok 263 research_docs_removed_modules");
 });

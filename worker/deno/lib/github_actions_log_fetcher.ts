@@ -318,6 +318,58 @@ async function resolveJobFromRun(
   return { kind: "job", jobId };
 }
 
+/** Result of resolving the step that failed inside an Actions job. */
+export type FailedStepResolution =
+  | { kind: "step"; name: string }
+  | { kind: "not-applicable"; reason: string }
+  | { kind: "error"; error: string };
+
+/**
+ * Name the first step that failed inside the Actions job behind a check
+ * run (Issue #1579).
+ *
+ * A GitHub Actions *job* bundles many steps, and its check name says
+ * nothing about which of them failed — NEAT-AI-core's `Scripts & spelling`
+ * job runs bats and codespell under one name. Callers routing a failure to
+ * a specialised fixer need the step, not the job name.
+ *
+ * Returns `not-applicable` when the check is not an Actions job or the job
+ * reports no failed step, and `error` when the lookup itself failed. Never
+ * throws, and never guesses a step name.
+ */
+export async function resolveFailedStepName(
+  opts: ActionsLogOptions,
+): Promise<FailedStepResolution> {
+  const resolution = await resolveActionsJobId(opts);
+  if (resolution.kind !== "job") return resolution;
+
+  const response = await ghApi(
+    opts.ghFn,
+    `repos/${opts.repo}/actions/jobs/${resolution.jobId}`,
+  );
+  if (!response.ok) return { kind: "error", error: response.error };
+
+  let steps: Array<Record<string, unknown>>;
+  try {
+    const parsed = JSON.parse(response.body) as { steps?: unknown };
+    steps = Array.isArray(parsed.steps)
+      ? parsed.steps as Array<Record<string, unknown>>
+      : [];
+  } catch {
+    return { kind: "error", error: "job response was not valid JSON" };
+  }
+
+  const failed = steps.find((step) => step["conclusion"] === "failure");
+  const name = typeof failed?.["name"] === "string" ? failed["name"] : "";
+  if (name === "") {
+    return {
+      kind: "not-applicable",
+      reason: `Actions job ${resolution.jobId} reports no failed step`,
+    };
+  }
+  return { kind: "step", name };
+}
+
 /**
  * Strip the ISO-8601 timestamp GitHub Actions prepends to every log
  * line. The timestamps burn context for no diagnostic signal. Lines
@@ -337,6 +389,11 @@ const FAILURE_MARKERS = [
   /\bBUILD FAILURE\b/,
   /\bFAILED\b/,
   /\bTests? run:.*Failures: [1-9]/,
+  // TAP (bats, prove, node:test): the failing assertion is a `not ok N`
+  // line carrying no error word at all, so without this marker a bats
+  // failure far from the log tail was trimmed out of the excerpt
+  // entirely (Issue #1579).
+  /^\s*not ok \d+\b/,
   /\bAssertionError\b/,
   /\bException\b/,
 ];
