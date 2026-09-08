@@ -172,8 +172,8 @@ coding-agent provider` in `.github/workflows/container-build.yml`.
             fi
             mkdir -p dirty clean
             # Written from two halves, the shape the gitleaks probe uses for
-            # its planted credential: the misspelling exists only inside the
-            # container, never as a literal in this file.
+            # its own planted string. The misspelling then exists only inside
+            # the container, never as a literal in this file.
             printf "the %s%s is wrong\n" "enviro" "ment" > dirty/note.txt
             printf "the environment is fine\n" > clean/note.txt
             if codespell dirty; then
