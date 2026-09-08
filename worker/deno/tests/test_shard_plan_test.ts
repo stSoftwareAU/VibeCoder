@@ -158,8 +158,9 @@ Deno.test("testShardPlan - the manifests are injectable, and drive the split", (
 });
 
 Deno.test("testShardPlan - a file that is both integration and parallel-unsafe runs nowhere in the gate", () => {
-  // `run_ps1_launcher_test.ts` is exactly this: it spawns pwsh and it times
-  // itself. Naming it in the serial pass would run in the merge gate the very
+  // `run_ps1_launcher_test.ts` was exactly this until Issue #1598 brought it
+  // into the gate: a suite that spawns pwsh and times itself. Naming an
+  // excluded suite in the serial pass would run in the merge gate the very
   // suite #907 took out of it.
   const plan = testShardPlan({
     testFiles: ["tests/both_test.ts"],
