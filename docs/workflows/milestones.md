@@ -221,9 +221,65 @@ Long-running milestones can drift significantly from the default branch, causing
    This is invalidation by change, not a time-based cache: the gate reads the same authority the answer comes from, so a skipped cycle cannot act on a stale view. **Any** movement in the count invalidates — a reopened issue, or one moved out of the milestone, lowers it — and the observations are keyed by milestone **number**, so a rename does not lose them. The first observation after a restart has no baseline and queries once. Observations persist in `milestone_activity.json` in the work directory, beside `milestone_sync_failures.json`.
 2. **Branch existence check:** Verifies the milestone branch exists on the remote before attempting sync.
 3. **Merge:** Merges the default branch into the milestone branch using `git merge --no-edit`. If the merge succeeds cleanly, pushes the result.
-4. **Conflict handling:** If a merge conflict occurs, the worker attempts auto-resolution (favouring default branch changes). A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). If auto-resolution fails, the conflict is logged as a warning without blocking other work.
+4. **Conflict handling:** If a merge conflict occurs, the worker **triages** it file by file rather than taking one side wholesale (Issue #1559) — see [Conflict triage](#conflict-triage) below. A **modify/delete** conflict — the milestone branch edited a file the default branch deleted — resolves as a **delete**, never by keeping the file (Issue #1048). A conflict no rule can settle aborts the merge and escalates with both sides prepared, without blocking other work.
 5. **Frequency guard:** Each milestone is synced at most once per cooldown period (default: 1 hour). The cooldown resets after each successful sync.
 6. **Gated branches:** Where a ruleset refuses the direct push, the same merge lands through a `sync/milestone-<name>` PR (Issue #589). That PR merges as a **merge commit, never a squash** (Issue #1048) — see below.
+
+### Conflict triage
+
+A conflicted sync used to have two moves, and both were wrong: taking the
+default branch's side wholesale is a decision nobody made, and handing the
+whole merge to a human asks a person to choose between two changes they did not
+write. Since Issue #1559 the worker decides what is mechanical and escalates
+only what is not.
+
+```mermaid
+flowchart TD
+    A["main → milestone/* merge conflicts"] --> B{"For each conflicted file"}
+    B --> T{"Test file?"}
+    T -- yes --> U{"One side keeps every<br/>case AND every line<br/>of the other?"}
+    U -- yes --> K["Take that side (a union)"]
+    U -- no --> H["Escalate — coverage would drop"]
+    T -- no --> D{"Both sides cite the<br/>same Fixes #NNNN?"}
+    D -- yes --> E{"One side's tests<br/>a superset?"}
+    E -- yes --> K
+    E -- no --> H
+    D -- no --> F{"One side keeps every<br/>line of the other?"}
+    F -- yes --> K
+    F -- no --> H
+    K --> G{"Any file escalated?"}
+    H --> G
+    G -- yes --> X["Abort the merge — nothing pushed —<br/>and post both sides' exports,<br/>test names and the difference"]
+    G -- no --> V["Commit with the reasoning, then verify:<br/>deno task check + check:manifests + unit suite"]
+    V -- green --> P["Push"]
+    V -- red or unverifiable --> R["Roll back to the pre-merge commit<br/>and escalate"]
+```
+
+Three rules decide a file, and one rule outranks all of them:
+
+1. **The same fix landed twice** — both sides' commits touching the file cite
+   the same `Fixes #NNNN` (or this fleet's own `(Issue #N)` stamp). The side
+   whose tests are a superset is kept, and what was dropped is named on the
+   merge commit.
+2. **One side subsumes the other** — every line of the smaller side survives in
+   the larger, so the larger is taken and nothing is lost.
+3. **Two designs for the same problem** — neither side contains the other, so a
+   human chooses. The merge is aborted and the escalation carries the
+   preparation: what each side exports, what each side tests, and which cases
+   exist on one side only.
+
+**No resolution may reduce test coverage.** A conflicted test file resolves
+only when one side is a genuine union of both — every case *and* every line of
+the other side survives in it. Equal case names are not enough: an assertion
+changed inside a case with the same name is a silent loss, so that file
+escalates too.
+
+**Every automatic resolution is verified before it is pushed.** The merged tree
+must pass the repository's own `check`, `check:manifests` and unit suite
+(`test:unit`, else `test`). A red tree is reset to the pre-merge commit and
+escalated; a tree that defines none of those tasks is *unverifiable*, and a
+resolution that cannot be verified is not a resolution — it is refused the same
+way.
 
 ### The sync must record the default branch as an ancestor
 
@@ -294,7 +350,7 @@ To disable milestone branch sync entirely, set `sync_milestone_branches: false` 
 - The sync is **best-effort** — failures are logged but do not block the main event loop or prevent other work.
 - The cooldown state is held in memory and resets when the worker process restarts.
 - A milestone whose REST `closed_issues` count has **moved** since the previous cycle skips the cooldown and syncs now (Issue #1558): something just closed, which means a sub-issue PR merged, which is exactly when both sides have moved and a conflict is still one day wide.
-- A merge that conflicts is still resolved towards the default branch, but it is reported on that cycle — naming the conflicting files and both sides' commits — rather than surfacing at rollup time. A clean merge raises nothing.
+- A merge that conflicts is triaged on that cycle and reported — naming the conflicting files, what was decided about each and both sides' commits — rather than surfacing at rollup time. A clean merge raises nothing.
 - This complements (syncing before each feature branch creation) by proactively keeping milestone branches current between issues.
 
 ## 🏷️ Issue ordering within milestones

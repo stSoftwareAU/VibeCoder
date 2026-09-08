@@ -1070,9 +1070,12 @@ async function applyConflictPlan(
     }
 
     // The chosen side has no version of the file: taking that side deletes it.
-    if (
-      (side === "theirs" && !stages.theirs) || (side === "ours" && !stages.ours)
-    ) {
+    // For the incoming side that rule lives in `merge_conflict_stages.ts`
+    // (Issue #1048), so it is read from there rather than restated here.
+    const deletes = side === "theirs"
+      ? resolveTowardsIncoming(stages) === "delete"
+      : !stages.ours;
+    if (deletes) {
       const removed = await runGitCommand(
         buildRemovePathArgs(decision.path),
         options,
