@@ -34,6 +34,8 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
+import { runGitArgv } from "./git_timeout.ts";
+
 /**
  * Variables a build legitimately needs, by name.
  *
@@ -213,8 +215,14 @@ export async function canRunAsUntrustedUser(
   return await probe(["sudo", "-n", "-u", UNTRUSTED_USER, "--", "true"]);
 }
 
-/** Runs a command, reporting only whether it succeeded. */
+/**
+ * Runs a command, reporting only whether it succeeded.
+ *
+ * Issue #1553: the binary is the head of the argv, so a `git` probe is
+ * delegated to the chokepoint rather than spawned here without a timeout.
+ */
 async function defaultProbe(cmd: string[]): Promise<boolean> {
+  if (cmd[0] === "git") return (await runGitArgv(cmd)).success;
   try {
     const output = await new Deno.Command(cmd[0]!, {
       args: cmd.slice(1),

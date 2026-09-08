@@ -226,3 +226,80 @@ Deno.test("scanDirectoriesForGitSpawn - the worker tree has no direct git spawns
     [],
   );
 });
+
+// ---------------------------------------------------------------------------
+// Cross-module pass-through runners (Issue #1553)
+// ---------------------------------------------------------------------------
+
+Deno.test("scanContentForGitSpawn - flags an argv-head pass-through runner whose callers live elsewhere (Issue #1553)", () => {
+  // The argv is built in another module, so the file never names `git` — the
+  // blind spot `resolve_cross_repo_dep.ts` sat in.
+  const violations = scanContentForGitSpawn(
+    [
+      "export const run: RunCommand = async (cmd: string[]) => {",
+      "  const command = new Deno.Command(cmd[0]!, {",
+      "    args: cmd.slice(1),",
+      "  });",
+      "  return await command.output();",
+      "};",
+    ].join("\n"),
+    "worker/deno/commands/example.ts",
+  );
+  assertEquals(violations.length, 1);
+  assertEquals(violations[0]?.line, 2);
+});
+
+Deno.test("scanContentForGitSpawn - a pass-through runner that delegates git is compliant (Issue #1553)", () => {
+  const violations = scanContentForGitSpawn(
+    [
+      'import { runGitArgv } from "../lib/git_timeout.ts";',
+      "export const run: RunCommand = async (cmd: string[]) => {",
+      '  if (cmd[0] === "git") return await runGitArgv(cmd);',
+      "  const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
+      "  return await command.output();",
+      "};",
+    ].join("\n"),
+    "worker/deno/commands/example.ts",
+  );
+  assertEquals(violations, []);
+});
+
+Deno.test("scanContentForGitSpawn - a spawn of a resolved binary is not a pass-through (Issue #1553)", () => {
+  // `binary` is chosen inside the module, not taken from a caller's argv
+  // head, so the widened rule leaves it alone.
+  const violations = scanContentForGitSpawn(
+    [
+      "const binary = await resolveSemgrep();",
+      "const command = new Deno.Command(binary, { args: probeArgs });",
+      "return await command.output();",
+    ].join("\n"),
+    "worker/deno/lib/example.ts",
+  );
+  assertEquals(violations, []);
+});
+
+Deno.test("scanDirectoriesForGitSpawn - a pass-through runner in the scanned tree is caught (Issue #1553)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${tmpDir}/worker/deno/commands`, { recursive: true });
+    await Deno.writeTextFile(
+      `${tmpDir}/worker/deno/commands/passthrough.ts`,
+      [
+        "export async function run(cmd: string[]) {",
+        "  const command = new Deno.Command(cmd[0]!, { args: cmd.slice(1) });",
+        "  return await command.output();",
+        "}",
+      ].join("\n"),
+    );
+
+    const result = await scanDirectoriesForGitSpawn(tmpDir, [
+      "worker/deno/commands",
+    ]);
+    assertEquals(
+      result.violations.map((v) => `${v.file}:${v.line}`),
+      ["worker/deno/commands/passthrough.ts:2"],
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
