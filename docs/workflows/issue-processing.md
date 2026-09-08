@@ -964,10 +964,32 @@ claimable issue in the fleet went untouched. Two behaviours close the loop:
   at `WARNING`, no failure tracking or circuit-breaker counting occurs, and
   `WORKER_SUMMARY`'s `issues_processed` does not count the bounce.
 
+A merged PR that *did* land still does not always mean the issue is finished.
+Two guards sit ahead of the close:
+
+- **Unpublished work (Issue #174).** An issue with commits on a pushed branch
+  nobody has raised a PR for is not closed — the run resumes that branch.
+- **Re-approval after the merge (Issue #1618).** The linker matches a PR by the
+  issue number in its title, so a PR that merged last night can be found against
+  an issue a human re-approved this morning. When an approval label still on the
+  issue (`top-priority` or `work-on`) was last added by a trusted author —
+  `allowed_authors` minus the fleet's own push-capable logins — **after** the
+  PR's `mergedAt`, the pre-check logs `Merged PR pre-check: NOT closing —
+  approval post-dates merge` with the issue, PR, label, adder and both
+  timestamps, and continues so the run works the re-approved scope. #1562 was
+  grilled to Ready and given `top-priority` at 00:21 and closed at 00:41 on a PR
+  merged at 22:49 the night before; re-opening by hand achieved nothing, because
+  the pre-check runs on every claim. Once the re-approved run's own PR merges,
+  its merge is newer than the approval and the ordinary close path resumes. An
+  unverifiable approval time — no `mergedAt`, or a timeline lookup that fails —
+  is stated at `WARNING` and keeps the close.
+
 ```mermaid
 flowchart TD
   Pre["Merged-PR pre-check"] --> Landed{"Merge reachable from<br/>the default branch?"}
-  Landed -->|Yes| Close["Close the issue<br/>(success)"]
+  Landed -->|Yes| Reapp{"Trusted approval label<br/>added after mergedAt?"}
+  Reapp -->|"Yes — re-approved"| Work["Continue the run:<br/>WARNING, no close"]
+  Reapp -->|No| Close["Close the issue<br/>(success)"]
   Landed -->|"No — orphaned"| Heal["Raise / confirm a rollup PR<br/>milestone branch → default"]
   Heal --> Bounce["Expected skip:<br/>cooldown + WARNING,<br/>not counted as processed"]
   Bounce --> Next["Slot takes a DIFFERENT issue"]
@@ -976,11 +998,12 @@ flowchart TD
   style Close fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Heal fill:#e0a050,stroke:#8b4500,color:#1a1a1a
   style Bounce fill:#7a9cc4,stroke:#2c4a6b,color:#1a1a1a
+  style Work fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
 ```
 
 **Implementation:** [orphaned_rollup.ts](../../worker/deno/lib/orphaned_rollup.ts)
 (the repair), [phases/merged_pr_precheck_phase.ts](../../worker/deno/lib/phases/merged_pr_precheck_phase.ts)
-(detect → self-heal → bounce), `isExpectedSkipResult` in
+(detect → self-heal → bounce, and the re-approval skip), `isExpectedSkipResult` in
 [issue_worker_types.ts](../../worker/deno/lib/issue_worker_types.ts) (the main
 loop's skip-versus-failure classification).
 
