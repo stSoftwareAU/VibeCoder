@@ -316,9 +316,38 @@ export function createLogger(options: LoggerOptions = {}): Logger {
 }
 
 /**
+ * Read one environment variable, treating an unpermitted read as unset.
+ *
+ * `defaultLogger` below is constructed at module scope, so every module that
+ * transitively imports this one inherits the env read at *load* time. A tool
+ * running on a narrow permission set — `test_shard_files.ts` is spawned with
+ * `--allow-read` alone (`.github/scripts/deno-test-shard.sh`) — then dies with
+ * `NotCapable: Requires env access to "DEBUG"` before it executes a line of
+ * its own, and the failure surfaces nowhere near the import that caused it.
+ *
+ * That is not hypothetical: widening an unrelated import graph so it reached
+ * this module emptied the shard plan and failed all four `validate (tests
+ * N/4)` shards at once, with the planner's stderr discarded.
+ *
+ * A log level is a diagnostic preference, never a control, so degrading to
+ * the default is right. Mirrors `setup/screenshot.ts`'s `defaultGetEnv`,
+ * which takes the same view for the same reason.
+ *
+ * @param name - Variable to read.
+ * @returns The value, or undefined when unset OR unreadable.
+ */
+function envOrUndefined(name: string): string | undefined {
+  try {
+    return Deno.env.get(name);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Default logger instance using console output.
  */
 export const defaultLogger = createLogger({
-  debug: Deno.env.get("DEBUG") === "true",
-  logLevel: parseLogLevel(Deno.env.get("LOG_LEVEL")),
+  debug: envOrUndefined("DEBUG") === "true",
+  logLevel: parseLogLevel(envOrUndefined("LOG_LEVEL")),
 });
