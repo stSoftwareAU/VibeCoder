@@ -13,6 +13,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { ghCallKindOf, ghPositionalArgs } from "./gh_argv.ts";
 import { isQuotaExemptGhCall } from "./primary_quota_latch.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -54,10 +55,14 @@ export interface GhCallMetricsSnapshot {
    */
   graphqlTotal: number;
   /**
-   * Counts grouped by GraphQL caller source (Issue #1924). Only calls
-   * issued while an `enterGraphQLSource()` context is active are
-   * attributed; calls without a wrapping context are credited to the
-   * "unattributed" bucket so future regressions surface in the log.
+   * Counts grouped by GraphQL caller source (Issue #1924). The source is
+   * resolved in four steps: the explicit `enterGraphQLSource()` stack
+   * (innermost wins), else the async-scoped `withGraphQLSource()` context
+   * (Issue #1585, so two lanes running at once attribute independently),
+   * else the active priority emitted as `priority:<name>` (Issue #1586),
+   * else the `"unattributed"` bucket. The `priority:` prefix keeps a derived
+   * bucket distinguishable from an explicit source. These values sum exactly
+   * to `graphqlTotal`: every counted call chooses a bucket.
    */
   graphqlBySource: Record<string, number>;
 }
@@ -78,6 +83,13 @@ const state = {
   graphqlBySource: new Map<string, number>(),
   graphqlSourceStack: [] as string[],
 };
+
+/**
+ * Prefix marking a GraphQL bucket derived from the active priority rather
+ * than an explicit source (Issue #1586). See `recordGhCall` for the
+ * resolution order it is applied in.
+ */
+const PRIORITY_SOURCE_PREFIX = "priority:";
 
 /**
  * Normalise a priority name for telemetry output: lowercase, with
@@ -164,21 +176,28 @@ export function currentPriorityContext(): string | undefined {
  * Classify a `gh` argument list into a sub-command bucket.
  *
  * Returns a short label for telemetry: `"issue list"`, `"pr view"`,
- * `"api"`, etc. Skips leading flags so `gh --version issue list`
- * still resolves to `"issue list"`.
+ * `"api"`, `"api graphql"`, etc.
+ *
+ * Issue #1588: the argv itself is parsed by the shared classifier in
+ * `gh_argv.ts` — flag-aware, so `gh --version issue list` still resolves to
+ * `"issue list"` and a value-taking flag's value is never read as a
+ * positional token. That is the same parse `isQuotaExemptGhCall` uses, so the
+ * `api graphql` bucket and the GraphQL-quota predicate cannot disagree about
+ * what an `api graphql` invocation is.
  *
  * @param args - Argument list passed to the `gh` binary.
  */
 export function classifyGhArgs(args: readonly string[]): string {
-  // Find first non-flag token
-  let i = 0;
-  let cur = args[i];
-  while (cur !== undefined && cur.startsWith("-")) {
-    i++;
-    cur = args[i];
-  }
-  const head = cur;
+  const positionals = ghPositionalArgs(args);
+  const head = positionals[0];
   if (!head) return "unknown";
+
+  // Issue #1924: split `api graphql` from REST `api` calls so the
+  // bySubCommand bucket and downstream telemetry can distinguish the
+  // 5000-point/hour GraphQL quota from the 5000-call/hour REST quota.
+  if (head === "api") {
+    return ghCallKindOf(positionals) === "api-graphql" ? "api graphql" : "api";
+  }
 
   // For two-word sub-commands (issue/pr/repo/etc.), include the verb.
   const twoWordRoots = new Set([
@@ -198,33 +217,8 @@ export function classifyGhArgs(args: readonly string[]): string {
   ]);
 
   if (twoWordRoots.has(head)) {
-    // Find next non-flag token
-    let j = i + 1;
-    let next = args[j];
-    while (next !== undefined && next.startsWith("-")) {
-      j++;
-      next = args[j];
-    }
-    if (next) {
-      return `${head} ${next}`;
-    }
-    return head;
-  }
-
-  // Issue #1924: split `api graphql` from REST `api` calls so the
-  // bySubCommand bucket and downstream telemetry can distinguish the
-  // 5000-point/hour GraphQL quota from the 5000-call/hour REST quota.
-  if (head === "api") {
-    let j = i + 1;
-    let next = args[j];
-    while (next !== undefined && next.startsWith("-")) {
-      j++;
-      next = args[j];
-    }
-    if (next === "graphql") {
-      return "api graphql";
-    }
-    return "api";
+    const verb = positionals[1];
+    return verb ? `${head} ${verb}` : head;
   }
 
   return head;
@@ -252,19 +246,77 @@ export function exitGraphQLSource(): void {
 }
 
 /**
- * Run `fn` inside an `enterGraphQLSource(name)` / `exitGraphQLSource()`
- * pair, restoring the stack even if `fn` throws (Issue #1924).
+ * Async-scoped GraphQL source attribution (Issue #1585).
+ *
+ * The `enterGraphQLSource`/`exitGraphQLSource` stack above is process-wide,
+ * which is exact only while sources run strictly one after another. Every
+ * wrapper is `await`-ed around a `gh` spawn, so while `comment_batch.ts` is
+ * awaiting its `api graphql` call, any `gh issue list` or `gh pr view` issued
+ * by a lane running beside it was credited to `comments-batch`. This storage
+ * binds the source to the async chain that entered it instead, so concurrent
+ * lanes attribute independently — the same fix Issue #213 applied to the
+ * priority axis.
+ *
+ * The explicit stack still wins when one is active, so an `enterGraphQLSource()`
+ * nested inside a wrapped chain keeps its innermost-wins semantics. The reverse
+ * nesting changed with this fix, and it is the trade-off the priority axis
+ * already made: an explicit source wrapping a `withGraphQLSource` chain now
+ * wins over the inner one, because the stack is consulted first. No production
+ * call site enters a source explicitly, so nothing depends on the old order.
+ *
+ * Finding (Issue #1571) — the parent's unresolved caveat, that the attributed
+ * buckets summed to 40 against an `api-graphql` sub-command counter of 23 for
+ * the same cycle. Which answer holds depends on which 40 was read, and both
+ * readings are now accounted for:
+ *
+ * - Summed over the NAMED buckets only, cross-crediting explains it. Every
+ *   `withGraphQLSource` call site wraps exactly one `gh api graphql` spawn, so
+ *   absent concurrency the named buckets sum to exactly the `api graphql`
+ *   count. The reproduction in `tests/gh_call_metrics_test.ts` ("concurrent
+ *   chains do not cross-credit GraphQL sources") shows a suspended
+ *   `comments-batch` chain absorbing two unrelated sub-command calls from the
+ *   lane beside it — the only mechanism by which a named bucket can outgrow
+ *   that count. This fix removes it.
+ * - Summed over ALL buckets including `unattributed`, no cross-crediting is
+ *   needed: since Issue #1485 `graphqlBySource` counts every GraphQL-backed
+ *   sub-command (`issue list`, `pr view`, `search`, …), while
+ *   `bySubCommand["api graphql"]` counts only the explicit ones. The two
+ *   counters measure different sets by design, so a total above the
+ *   `api graphql` count is expected and is not a defect.
  */
-export async function withGraphQLSource<T>(
+const graphqlSourceStorage = new AsyncLocalStorage<string>();
+
+/**
+ * Run `fn` with its GraphQL-backed `gh` calls attributed to `name`, for the
+ * whole async chain and for nothing running beside it (Issue #1585).
+ */
+export function withGraphQLSourceContext<T>(
   name: string,
   fn: () => Promise<T> | T,
 ): Promise<T> {
-  enterGraphQLSource(name);
-  try {
-    return await fn();
-  } finally {
-    exitGraphQLSource();
-  }
+  return graphqlSourceStorage.run(
+    normalisePriorityName(name),
+    async () => await fn(),
+  );
+}
+
+/** The GraphQL source the current async chain runs under, if any (#1585). */
+export function currentGraphQLSourceContext(): string | undefined {
+  return graphqlSourceStorage.getStore();
+}
+
+/**
+ * Run `fn` attributed to the GraphQL caller source `name` (Issue #1924).
+ *
+ * Issue #1585: implemented on the async-scoped context above, so every
+ * existing call site became concurrency-safe with no edit. An explicit
+ * `enterGraphQLSource()` nested inside `fn` still wins.
+ */
+export function withGraphQLSource<T>(
+  name: string,
+  fn: () => Promise<T> | T,
+): Promise<T> {
+  return withGraphQLSourceContext(name, fn);
 }
 
 /**
@@ -294,8 +346,15 @@ export function recordGhCall(args: readonly string[]): void {
   // sub-command is GraphQL-backed; only a plain REST `gh api <path>` is not.
   if (!isQuotaExemptGhCall(args)) {
     state.graphqlTotal++;
+    // Issue #1585: an explicit stack entry still wins (innermost-wins for a
+    // nested `enterGraphQLSource`); otherwise the async-scoped context
+    // attributes the call, so concurrent lanes do not cross-credit.
+    // Issue #1586: failing both, fall back to the priority resolved above so
+    // the ordinary `issue list` / `pr list` traffic — which no module wraps in
+    // a GraphQL source — lands in a named bucket rather than `unattributed`.
     const src = state.graphqlSourceStack[state.graphqlSourceStack.length - 1] ??
-      "unattributed";
+      graphqlSourceStorage.getStore() ??
+      (top ? `${PRIORITY_SOURCE_PREFIX}${top}` : "unattributed");
     state.graphqlBySource.set(
       src,
       (state.graphqlBySource.get(src) ?? 0) + 1,
@@ -461,9 +520,11 @@ export function formatGhCallsByPrioritySummary(): string {
  *   `graphql-calls: 245 total, pr-linkage=110, milestone-health=45,
  *   check-runs=30`
  *
- * Sources without a wrapping `enterGraphQLSource()` block are surfaced
- * under the `unattributed` bucket so future regressions (a new caller
- * that forgot to wrap itself) are obvious in the log.
+ * Each call is attributed by the resolution order in `recordGhCall`, so since
+ * Issue #1586 the ordinary `issue list` / `pr list` / `issue view` traffic
+ * lands under its priority as `priority:<name>`. `unattributed` is therefore
+ * an anomaly signal rather than the normal case: a call issued outside both a
+ * source and a priority context, i.e. a pass that forgot to wrap itself.
  */
 export function formatGraphQLSummary(): string {
   const snap = getGhCallMetrics();

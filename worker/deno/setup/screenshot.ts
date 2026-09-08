@@ -129,81 +129,45 @@ export function blockedOriginsValue(
 }
 
 /**
- * Hosts the Playwright MCP **server process** may open sockets to.
+ * Hosts the Playwright MCP **server process** must never open a socket to.
  *
- * Issue #1386: the spawn args carried a bare `--allow-net`, so the Deno
- * process could reach any host on the network. Deno's host-scoped form is
- * used instead, and the list is exactly what the server itself needs:
- * loopback, which is where `playwright-core` reaches the browser it launched
- * (and where the prompts tell the agent to serve a local page from). Module
- * resolution is not covered by `--allow-net` — Deno gates `npm:` fetches
- * under import permissions — so the registry is deliberately absent.
+ * Issue #1386 scoped the server's `--allow-net` to a loopback host allowlist.
+ * That grant is no longer expressible: `@playwright/mcp` binds a browser
+ * server on a **unix domain socket** whose name carries a random guid
+ * (`makeSocketPath` in `playwright-core` →
+ * `$TMPDIR/pw-<user-hash>/browser/browser@<guid>.sock`), and Deno scopes a
+ * unix socket by its exact absolute path only — there is no directory or
+ * glob form, and the guid is fresh per browser. A host-scoped allowlist
+ * therefore failed every `browser_navigate` in the container with
+ * `NotCapable: … Requires net access to "unix:/tmp/pw-…/browser@….sock"`.
  *
- * Residual risk, stated plainly: like every Deno permission this binds the
- * server process only. Chromium is spawned under `--allow-run` and does its
- * own networking, so a `browser_navigate` to an attacker host is bounded by
- * {@link PLAYWRIGHT_MCP_BLOCKED_HOSTS} and the container's egress boundary,
- * not by this list. What this list removes is the server process itself as a
- * general-purpose egress channel.
+ * What is still expressible is the deny side, and Deno's deny list beats its
+ * allow list: the server process gets `--allow-net`, and `--deny-net` takes
+ * the cloud metadata endpoints back off it — the highest-value target for a
+ * compromised server or a prompt-injected session, and the same list
+ * `--blocked-origins` uses ({@link PLAYWRIGHT_MCP_BLOCKED_HOSTS}).
  *
- * Operators who need the server to reach a further host (a CI preview URL, a
- * dev server on a non-loopback address) extend the list through
- * `VIBE_BROWSER_ALLOWED_HOSTS` — see {@link resolveAllowedNetHosts}.
+ * Residual risk, stated plainly: this is weaker than the allowlist it
+ * replaces — the server process can reach any host that is not named here.
+ * The boundaries that remain are the container's egress boundary, the
+ * `--blocked-origins` guard on what the browser may request, and the denied
+ * credential paths and environment variables that keep a compromised server
+ * from having anything worth exfiltrating.
  */
-export const PLAYWRIGHT_MCP_ALLOWED_NET_HOSTS: readonly string[] = [
-  "127.0.0.1",
-  "localhost",
-  "[::1]",
-];
-
-/**
- * Resolve the `--allow-net` host allowlist, extended by the operator knob.
- *
- * `VIBE_BROWSER_ALLOWED_HOSTS` is a comma-separated list of extra hosts
- * (`host` or `host:port`, as Deno spells them). It only ever *adds* to
- * {@link PLAYWRIGHT_MCP_ALLOWED_NET_HOSTS}, so a malformed value cannot
- * widen the grant to everything.
- *
- * @param deps - Injectable environment seam (testing).
- * @returns Hosts to allow, in a stable order and without duplicates.
- */
-export function resolveAllowedNetHosts(
-  deps: Pick<BrowserEnvironmentDeps, "getEnv"> = {},
-): string[] {
-  const getEnv = deps.getEnv ?? defaultGetEnv;
-  const extra = (getEnv("VIBE_BROWSER_ALLOWED_HOSTS") ?? "")
-    .split(",")
-    .map((host) => host.trim())
-    .filter((host) => host !== "");
-  return [...new Set([...PLAYWRIGHT_MCP_ALLOWED_NET_HOSTS, ...extra])];
-}
-
-/**
- * Build the `--allow-net=<hosts>` flag value.
- *
- * @param hosts - Hosts to allow (default: {@link resolveAllowedNetHosts}).
- * @returns The comma-separated host list.
- * @throws Error when the list is empty — Deno reads `--allow-net=` as a
- *   parse error rather than "deny everything", and a bare `--allow-net`
- *   would silently restore unrestricted egress.
- * @throws Error when a host contains the `,` separator or whitespace, either
- *   of which splits one entry into fragments that match no host, leaving a
- *   list that looks complete and grants nothing.
- */
-export function allowedNetValue(
-  hosts: readonly string[] = resolveAllowedNetHosts(),
+export function deniedNetValue(
+  hosts: readonly string[] = PLAYWRIGHT_MCP_BLOCKED_HOSTS,
 ): string {
   if (hosts.length === 0) {
     throw new Error(
-      "Cannot build --allow-net: the host allowlist is empty. An empty " +
-        "value is a Deno parse error and dropping the flag would restore " +
-        "unrestricted network access for the MCP server.",
+      "Cannot build --deny-net: the blocked-host list is empty. Dropping " +
+        "the flag would leave the MCP server process able to reach the " +
+        "cloud metadata endpoints.",
     );
   }
   const unexpressible = hosts.find((host) => /[,\s]/.test(host));
   if (unexpressible !== undefined) {
     throw new Error(
-      `Cannot allow "${unexpressible}": a comma or whitespace in the host ` +
+      `Cannot deny "${unexpressible}": a comma or whitespace in the host ` +
         `breaks Deno's permission list, which would silently disable the ` +
         `guard. Name one host (or host:port) per entry.`,
     );
@@ -509,10 +473,10 @@ export interface ScreenshotConfig {
    */
   deniedPaths?: readonly string[];
   /**
-   * Hosts the MCP server process may open sockets to (Issue #1386). When
-   * omitted they are resolved by {@link resolveAllowedNetHosts}.
+   * Hosts the MCP server process may never open a socket to (Issue #1386).
+   * Defaults to {@link PLAYWRIGHT_MCP_BLOCKED_HOSTS}.
    */
-  allowedNetHosts?: readonly string[];
+  deniedNetHosts?: readonly string[];
   /**
    * Host platform (default: `Deno.build.os`). Decides the path semantics the
    * profile-directory guard compares with (Issue #1293).
@@ -687,12 +651,12 @@ export function generateMcpConfig(config: ScreenshotConfig): string {
     );
   }
 
-  // Issue #1386: host-scoped, never a bare --allow-net. Built before the
-  // args so an unexpressible host fails loud instead of emitting a flag that
-  // grants nothing.
-  const allowedNet = allowedNetValue(
-    config.allowedNetHosts ?? resolveAllowedNetHosts(),
-  );
+  // Issue #1386: the server process keeps --allow-net, because the browser
+  // server it binds listens on a unix socket whose name Deno cannot be told
+  // in advance (see deniedNetValue), and --deny-net takes the cloud metadata
+  // endpoints back off that grant. Built before the args so an unexpressible
+  // host fails loud instead of emitting a flag that denies nothing.
+  const deniedNet = deniedNetValue(config.deniedNetHosts);
 
   const args = [
     "run",
@@ -704,7 +668,8 @@ export function generateMcpConfig(config: ScreenshotConfig): string {
         `--deny-write=${deniedPaths.join(",")}`,
       ]
       : []),
-    `--allow-net=${allowedNet}`,
+    "--allow-net",
+    `--deny-net=${deniedNet}`,
     "--allow-env",
     `--deny-env=${denyEnv}`,
     "--allow-run",

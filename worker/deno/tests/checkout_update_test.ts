@@ -569,12 +569,24 @@ Deno.test("resetCheckoutToDefaultBranch - the real update sequence rides the ret
     // run never reaches the failure streak at all.
     assertEquals(reset.ok, true);
     assertEquals(fetches, 2, "the fetch is retried, once");
-    assertEquals(attempts.slice(1), [
+    assertEquals(attempts.slice(1, 5), [
       "fetch origin",
       "checkout main",
       "reset --hard origin/main",
       "clean -fd",
     ]);
+
+    // Issue #1443 appended the scoped ignored clean, because `-fd` leaves
+    // ignored paths standing. Asserted by its own shape rather than by
+    // calling the builder, so this cannot agree with a builder that changed.
+    const sequence = attempts.slice(1);
+    assertEquals(
+      sequence.length,
+      5,
+      "the sequence ends with the ignored clean",
+    );
+    assert(sequence[4]!.startsWith("clean -ffdx -- "), sequence[4]);
+    assertStringIncludes(sequence[4]!, ":(glob)**/node_modules");
 
     // And the recovery is on the record an operator already reads for this
     // update, rather than being silently absorbed.

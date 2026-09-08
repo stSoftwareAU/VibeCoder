@@ -61,6 +61,7 @@ import { noteGhIssueClose } from "./issue_close_notifier.ts";
 import { recordGhCall } from "./gh_call_metrics.ts";
 import {
   isPrimaryQuotaLatched,
+  isPrimaryRateLimitMessage,
   isQuotaExemptGhCall,
   primaryQuotaSkipMessage,
 } from "./primary_quota_latch.ts";
@@ -101,6 +102,48 @@ export interface GhSpawnOptions {
    * one GraphQL call that lifts the latch rather than burning against it.
    */
   bypassQuotaLatch?: boolean;
+  /**
+   * Where the shared rate-limit signal is written when this call is the one
+   * that discovers the primary quota is exhausted (Issue #1540). Defaults to
+   * the `WORK_DIR` the run driver exports; `runGhCommandRaw` threads its own
+   * override through here.
+   */
+  workDir?: string;
+}
+
+/**
+ * What the chokepoint reports when a GraphQL-backed call comes back refused
+ * for want of primary quota (Issue #1540).
+ */
+export interface PrimaryQuotaRefusal {
+  /** The `gh` arguments that were refused. */
+  args: readonly string[];
+  /** The refusal as `gh` printed it. */
+  stderr: string;
+  /** The caller's signal directory override, when it gave one. */
+  workDir?: string;
+}
+
+/**
+ * Registered by `github.ts` at load: probes the reset, latches the process
+ * and writes the shared rate-limit signal (Issue #42). A hook rather than an
+ * import because `github.ts` imports this module. Null until registered, so
+ * a tool or test that never loads `github.ts` spawns exactly as before.
+ */
+export type PrimaryQuotaExhaustionHook = (
+  refusal: PrimaryQuotaRefusal,
+) => Promise<void>;
+
+let quotaExhaustionHook: PrimaryQuotaExhaustionHook | null = null;
+
+/**
+ * Install the exhaustion hook the chokepoint calls on the first refusal
+ * (Issue #1540). `github.ts` registers the production one at module load.
+ */
+export function setPrimaryQuotaExhaustionHook(
+  hook: PrimaryQuotaExhaustionHook | null,
+): void {
+  quotaExhaustionHook = hook;
 }
 
 /** Outcome of a `gh` invocation. */
@@ -407,6 +450,31 @@ export async function spawnGh(
           redacted,
           withStagedGhConfigDir(spawnOptions, hostEnv),
         );
+      }
+    }
+    // Issue #1540: the latch used to be SET only from `runGhCommandRaw`'s
+    // catch, so the thirty-odd modules that spawn through this chokepoint
+    // directly saw the refusal, logged it, retried it — four real spawns on
+    // one auto-merge — and never latched. The refusal is recognised here,
+    // where it is seen, and handed to the registered hook, which probes the
+    // reset, latches the process and writes the shared signal. Not for the
+    // probe itself (`bypassQuotaLatch`): it is the call that learns the reset,
+    // and the hook coalesces a refusal it is already recording.
+    if (
+      !result.success && !options.bypassQuotaLatch &&
+      !isQuotaExemptGhCall(args) && quotaExhaustionHook !== null &&
+      isPrimaryRateLimitMessage(result.stderr)
+    ) {
+      try {
+        await quotaExhaustionHook({
+          args,
+          stderr: result.stderr,
+          ...(options.workDir !== undefined
+            ? { workDir: options.workDir }
+            : {}),
+        });
+      } catch {
+        // Best-effort bookkeeping: the caller still sees its own failure.
       }
     }
     // Best-effort — never lets journalling alter or abort the gh call.
