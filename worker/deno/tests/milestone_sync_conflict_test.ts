@@ -142,3 +142,57 @@ Deno.test(
     );
   },
 );
+
+Deno.test(
+  "buildConflictEscalationComment - an automatic resolution reports what it decided, not what to check (Issue #1559)",
+  () => {
+    const body = buildConflictEscalationComment({
+      repo: "owner/repo",
+      milestoneBranch: MILESTONE_BRANCH,
+      defaultBranch: "main",
+      conflict: {
+        ...CONFLICT,
+        resolution: "auto",
+        decisions: [
+          {
+            path: "worker/deno/lib/scan_content.ts",
+            case: "superset",
+            action: "theirs",
+            reason: "the default branch's side keeps every line of the other",
+          },
+          {
+            path: "worker/deno/tests/scan_content_test.ts",
+            case: "test-union",
+            action: "union",
+            reason: "both sides' hunks are kept",
+          },
+        ],
+      },
+      tips: [{ branch: "main", sha: DEFAULT_SHA, subject: "" }],
+    });
+
+    assertStringIncludes(body, "resolved a conflict automatically");
+    assertStringIncludes(body, "worker/deno/lib/scan_content.ts");
+    assertStringIncludes(body, "superset");
+    assertStringIncludes(body, "kept both sides' hunks");
+    assert(
+      !body.includes("check what was overwritten"),
+      "a verified resolution is a report, not a warning to go and check",
+    );
+  },
+);
+
+Deno.test(
+  "buildConflictEscalationComment - an automatic resolution with no recorded decision still says so (Issue #1559)",
+  () => {
+    const body = buildConflictEscalationComment({
+      repo: "owner/repo",
+      milestoneBranch: MILESTONE_BRANCH,
+      defaultBranch: "main",
+      conflict: { ...CONFLICT, resolution: "auto" },
+      tips: [],
+    });
+
+    assertStringIncludes(body, "no decision was recorded");
+  },
+);

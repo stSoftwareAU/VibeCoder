@@ -18,16 +18,6 @@ import {
 } from "./milestone_sync_pr.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import { buildBranchDeleteArgs } from "./git_branch_args.ts";
-import {
-  buildAddPathArgs,
-  buildCheckoutStrategyArgs,
-  buildRemovePathArgs,
-} from "./git_conflict_args.ts";
-import {
-  hasAnyStage,
-  parseUnmergedStages,
-  resolveTowardsIncoming,
-} from "./merge_conflict_stages.ts";
 import { ensureDefaultBranchCurrent } from "./git_push.ts";
 import {
   assertSafeGitRef,
@@ -43,6 +33,20 @@ import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
 import type { MilestoneSyncOutcome } from "./milestone_sync_conflict.ts";
+import {
+  analyseConflictedFile,
+  buildResolutionCommitMessage,
+  MilestoneConflictEscalation,
+  planConflictResolution,
+} from "./milestone_conflict_triage.ts";
+import {
+  applyConflictPlan,
+  readConflictedSides,
+  readMergeBase,
+  readTestEvidence,
+  unionMergeConflictedFile,
+} from "./milestone_conflict_git.ts";
+import { verifyResolvedTree } from "./milestone_resolution_gate.ts";
 import {
   checkMergedTree,
   mergeGateFailureError,
@@ -381,138 +385,6 @@ async function gateThenPushMilestoneBranch(
   return { ok: true, value: `${gateNote}${pushNote}` };
 }
 
-/** Build the refusal for a conflicted path whose incoming side would not take. */
-function takeSideError(
-  what: string,
-  file: string,
-  defaultBranch: string,
-  milestoneBranch: string,
-  detail: string,
-): Error {
-  return new Error(
-    `Failed to ${what} '${defaultBranch}'s version of '${file}' while ` +
-      `merging into '${milestoneBranch}' — refusing to commit a resolution ` +
-      `that would keep this branch's side instead (Issue #1048): ${
-        detail.trim() || "git reported no stderr"
-      }`,
-  );
-}
-
-/**
- * Resolve every conflicted path in favour of the default branch (Issue #1048).
- *
- * "In favour of the default branch" is not the same as "keep the file". Where
- * the default branch **deleted** a file the milestone branch edited, git
- * reports a modify/delete conflict with no incoming stage: `git checkout
- * --theirs` cannot produce a version, so the old loop staged the working-tree
- * copy — the milestone branch's own edit — and the deletion was silently
- * undone. That is how `lib/fleet_health.ts` came back on `milestone/863`.
- *
- * Each path is therefore resolved by what its merge stages actually say, and a
- * path whose stages cannot be read fails the whole resolution rather than
- * being guessed at.
- *
- * @returns A note naming what was deleted, for the sync's own outcome message.
- */
-async function resolveConflictsTowardsDefault(
-  conflictedFiles: string[],
-  defaultBranch: string,
-  milestoneBranch: string,
-  options: GitCommandOptions,
-): Promise<Result<string>> {
-  const deleted: string[] = [];
-  for (const file of conflictedFiles) {
-    const staged = await runGitCommand(
-      ["ls-files", "-u", "--", file],
-      options,
-    );
-    const stages = staged.ok && staged.value.code === 0
-      ? parseUnmergedStages(staged.value.stdout)
-      : { base: false, ours: false, theirs: false };
-    if (!hasAnyStage(stages)) {
-      // Every conflicted path has stages. None means git could not be read,
-      // and guessing here is precisely the silent wrong answer (Issue #1048).
-      const detail = staged.ok
-        ? staged.value.stderr.trim()
-        : staged.error.message;
-      return {
-        ok: false,
-        error: new Error(
-          `Refusing to resolve the merge of '${defaultBranch}' into ` +
-            `'${milestoneBranch}': the merge stages of conflicted file ` +
-            `'${file}' could not be read, so whether '${defaultBranch}' ` +
-            `deleted it is unknown (Issue #1048): ${
-              detail || "git reported no stderr"
-            }`,
-        ),
-      };
-    }
-
-    if (resolveTowardsIncoming(stages) === "delete") {
-      const removed = await runGitCommand(buildRemovePathArgs(file), options);
-      if (!removed.ok || removed.value.code !== 0) {
-        const detail = removed.ok
-          ? removed.value.stderr.trim()
-          : removed.error.message;
-        return {
-          ok: false,
-          error: new Error(
-            `Failed to delete '${file}' while merging '${defaultBranch}' ` +
-              `into '${milestoneBranch}' — '${defaultBranch}' deleted it, so ` +
-              `keeping it would revive removed code (Issue #1048): ${
-                detail || "git reported no stderr"
-              }`,
-          ),
-        };
-      }
-      deleted.push(file);
-      continue;
-    }
-
-    // Both exit codes matter (Issue #1048): a `checkout --theirs` that failed
-    // leaves the milestone branch's own working-tree copy in place, and the
-    // `add` below would stage exactly the wrong side under a merge commit
-    // that claims the default branch won.
-    const checkedOut = await runGitCommand(
-      buildCheckoutStrategyArgs("theirs", file),
-      options,
-    );
-    if (!checkedOut.ok || checkedOut.value.code !== 0) {
-      return {
-        ok: false,
-        error: takeSideError(
-          "check out",
-          file,
-          defaultBranch,
-          milestoneBranch,
-          checkedOut.ok ? checkedOut.value.stderr : checkedOut.error.message,
-        ),
-      };
-    }
-    const added = await runGitCommand(buildAddPathArgs(file), options);
-    if (!added.ok || added.value.code !== 0) {
-      return {
-        ok: false,
-        error: takeSideError(
-          "stage",
-          file,
-          defaultBranch,
-          milestoneBranch,
-          added.ok ? added.value.stderr : added.error.message,
-        ),
-      };
-    }
-  }
-
-  if (deleted.length === 0) return { ok: true, value: "" };
-  return {
-    ok: true,
-    value: `deleted ${deleted.length} file(s) '${defaultBranch}' had removed (${
-      deleted.slice(0, 3).join(", ")
-    }${deleted.length > 3 ? `, +${deleted.length - 3} more` : ""}) — `,
-  };
-}
-
 /** Paths git currently reports as conflicted; empty when it reports none. */
 async function listConflictedFiles(
   options: GitCommandOptions,
@@ -542,11 +414,15 @@ async function readRef(
  * type-checked before it is pushed (Issue #974) — see
  * {@link gateThenPushMilestoneBranch}.
  *
- * A merge that conflicts is still resolved towards the default branch so the
- * branch keeps moving, but the conflict travels back with the outcome
- * (Issue #1558): the files that collided and the commit each side stood at,
- * so the caller can escalate it the same day instead of leaving a resolution
- * nobody made deliberately to surface at rollup time.
+ * A merge that conflicts is triaged rather than resolved towards the default
+ * branch on sight (Issue #1559). Where an automatic rule can decide the
+ * conflict — the same fix landed twice, or one side keeps every line of the
+ * other — the decision is applied, recorded on the merge commit, verified
+ * against the repository's own check, manifest check and unit suite, and only
+ * then pushed. Where no rule can decide it, the merge is aborted and the
+ * refusal carries both sides prepared for a human. Either way the conflict
+ * travels back with the outcome (Issue #1558): the files that collided and
+ * the commit each side stood at.
  *
  * @param milestoneBranch - The milestone branch name
  * @param defaultBranch - The default branch to sync from
@@ -568,6 +444,18 @@ export async function syncMilestoneBranchWithDefault(
    * Defaults to the repository's own type check; tests inject a verdict.
    */
   mergeGate: MergeGateFn = checkMergedTree,
+  /**
+   * The gate a merge whose conflicts the worker resolved itself must pass
+   * (Issue #1559). Stricter than the type check above, because choosing a
+   * side compiles perfectly and still drops the other side's behaviour — so
+   * the repository's own check, manifest check and unit suite all run.
+   *
+   * A caller that injected its own `mergeGate` gets that gate here too: a
+   * sync whose verification is stubbed stays stubbed on both paths.
+   */
+  resolutionGate: MergeGateFn = mergeGate === checkMergedTree
+    ? verifyResolvedTree
+    : mergeGate,
 ): Promise<Result<MilestoneSyncOutcome>> {
   // Refuse an option-injecting ref before any git runs (Issue #12). The
   // default branch is repo-derived (setupRepo reads it from
@@ -791,144 +679,208 @@ export async function syncMilestoneBranchWithDefault(
     };
   }
 
-  // Merge conflict. Record what collided BEFORE aborting — once the merge is
-  // aborted git no longer knows, and a conflict nobody can name is a
-  // conflict nobody reconciles (Issue #1558). An empty list is still carried:
-  // a conflict the sync could not describe must still reach a human rather
-  // than pass off as clean.
+  // Merge conflict. Both sides are read straight out of the conflicted index
+  // — once the merge is aborted git no longer holds them, and a conflict
+  // nobody can describe is a conflict nobody reconciles (Issues #1558,
+  // #1559).
   const conflictedFiles = await listConflictedFiles(options);
   const defaultSha = await readRef(defaultBranch, options);
 
-  // Abort and retry with auto-resolution (Issue #605)
-  await runGitCommand(["merge", "--abort"], options);
-
-  // Retry merge favouring default branch changes for conflicted files
-  const retryResult = await runGitCommand(
-    ["merge", defaultBranch, "--no-edit", "-X", "theirs"],
-    options,
-  );
-
-  if (retryResult.ok && retryResult.value.code === 0) {
-    const gated = await gateThenPushMilestoneBranch(
-      milestoneBranch,
-      defaultBranch,
-      options,
-      repo,
-      mergeGate,
-      preMergeSha,
-    );
-    if (!gated.ok) return gated;
+  if (conflictedFiles.length === 0) {
+    await runGitCommand(["merge", "--abort"], options);
+    // Honest failure (Issue #4260): a merge that fails with ZERO conflicted
+    // files failed for a non-conflict reason (unrelated histories, shallow
+    // history, dirty tree, vanished remote…). This used to return ok:true and
+    // be logged as "Synced …" — FLEET milestone/4064 sat 5 commits behind
+    // Develop for days while every cycle said 0 failed. Surface git's own
+    // stderr so the real reason is in the log.
+    const stderrTail =
+      (mergeResult.ok ? mergeResult.value.stderr : mergeResult.error.message)
+        .trim().split("\n").slice(-3).join(" | ");
     return {
-      ok: true,
-      value: {
-        message:
-          `${selfHealNote}${gated.value}Issue #605: Auto-resolved merge conflicts (favouring '${defaultBranch}' changes)`,
-        conflict: {
-          files: conflictedFiles,
-          milestoneSha: preMergeSha,
-          defaultSha,
-          resolution: "theirs",
-        },
-      },
+      ok: false,
+      error: new Error(
+        `Merge of '${defaultBranch}' into '${milestoneBranch}' failed ` +
+          `with no conflicted files — a non-conflict failure ` +
+          `(Issue #4260): ${stderrTail || "git reported no stderr"}`,
+      ),
     };
   }
 
-  // -X theirs failed — resolve manually
-  await runGitCommand(["merge", "--abort"], options);
-
-  // Final attempt: merge and force-accept default branch version for all conflicts
-  const finalMergeResult = await runGitCommand(
-    ["merge", defaultBranch, "--no-edit"],
+  const mergeBase = await readMergeBase(preMergeSha, defaultBranch, options);
+  const readSides = await readConflictedSides(
+    conflictedFiles,
+    mergeBase,
+    defaultBranch,
+    defaultSha || defaultBranch,
+    preMergeSha,
     options,
   );
-
-  // What accepting the default branch's side actually removed (Issue #1048),
-  // reported with the outcome so a deletion is never a silent one.
-  let deletionNote = "";
-
-  // What the resolution below actually operated on, so the conflict report
-  // names the files that were resolved rather than an earlier attempt's
-  // (Issue #1558). Falls back to the first merge's list when the retry needed
-  // no resolution at all.
-  let resolvedFiles = conflictedFiles;
-
-  if (!finalMergeResult.ok || finalMergeResult.value.code !== 0) {
-    // Get conflicted files and resolve each
-    const stillConflicted = await listConflictedFiles(options);
-    resolvedFiles = stillConflicted;
-
-    if (stillConflicted.length === 0) {
-      await runGitCommand(["merge", "--abort"], options);
-      // Honest failure (Issue #4260): `-X theirs` already resolves any
-      // content conflict, so a merge that fails with ZERO conflicted files
-      // failed for a non-conflict reason (unrelated histories, shallow
-      // history, dirty tree, vanished remote…). This used to return
-      // ok:true and be logged as "Synced …" — FLEET milestone/4064 sat 5
-      // commits behind Develop for days while every cycle said 0 failed.
-      // Surface git's own stderr so the real reason is in the log.
-      const stderrTail = (finalMergeResult.ok
-        ? finalMergeResult.value.stderr
-        : finalMergeResult.error.message)
-        .trim().split("\n").slice(-3).join(" | ");
-      return {
-        ok: false,
-        error: new Error(
-          `Merge of '${defaultBranch}' into '${milestoneBranch}' failed ` +
-            `with no conflicted files — a non-conflict failure ` +
-            `(Issue #4260): ${stderrTail || "git reported no stderr"}`,
-        ),
-      };
-    }
-
-    const resolved = await resolveConflictsTowardsDefault(
-      stillConflicted,
-      defaultBranch,
-      milestoneBranch,
+  if (!readSides.ok) {
+    await runGitCommand(["merge", "--abort"], options);
+    return readSides;
+  }
+  const sides = readSides.value;
+  const plan = planConflictResolution(
+    sides,
+    await readTestEvidence(
+      mergeBase,
+      defaultSha || defaultBranch,
+      preMergeSha,
       options,
-    );
-    if (!resolved.ok) {
-      await runGitCommand(["merge", "--abort"], options);
-      return resolved;
-    }
-    deletionNote = resolved.value;
+    ),
+  );
 
-    const commitResult = await runGitCommand(["commit", "--no-edit"], options);
-    if (!commitResult.ok || commitResult.value.code !== 0) {
-      await runGitCommand(["merge", "--abort"], options);
-      // Honest failure (Issue #4260) — same reasoning as above.
-      const stderrTail = (commitResult.ok
-        ? commitResult.value.stderr
-        : commitResult.error.message)
-        .trim().split("\n").slice(-3).join(" | ");
-      return {
-        ok: false,
-        error: new Error(
-          `Failed to commit conflict resolution for '${milestoneBranch}' ` +
-            `(Issue #4260): ${stderrTail || "git reported no stderr"}`,
-        ),
-      };
+  // A conflicted test file whose sides do not contain one another is merged
+  // as a union — both sides' hunks kept — rather than escalated on sight
+  // (Issue #1559). A union that would lose a case, or that git could not
+  // produce, becomes an escalation for that file instead.
+  const decided = new Map(plan.decisions.map((d) => [d.path, d]));
+  for (const file of sides) {
+    const decision = decided.get(file.path);
+    if (decision?.action !== "union") continue;
+    const failure = await unionMergeConflictedFile(file, options);
+    if (failure) {
+      decision.action = "escalate";
+      decision.reason = `${decision.reason} — and ${failure}`;
     }
   }
+  const resolved = plan.decisions.filter((d) => d.action !== "escalate");
+  const escalations = plan.decisions.filter((d) => d.action === "escalate");
 
+  // Case 3 (Issue #1559): no automatic rule can choose between the two sides,
+  // so nothing is pushed and the branch is left exactly as it was. The
+  // analysis travels with the refusal — both sides' exports, both sides' test
+  // names and the difference between them — because that preparation is most
+  // of the hour the reader would otherwise spend.
+  if (escalations.length > 0) {
+    await runGitCommand(["merge", "--abort"], options);
+    const escalated = new Map(escalations.map((d) => [d.path, d]));
+    const analyses = sides
+      .filter((side) => escalated.has(side.path))
+      .map((side) =>
+        analyseConflictedFile(side, escalated.get(side.path)!.reason)
+      );
+    return {
+      ok: false,
+      error: new MilestoneConflictEscalation(
+        `Refusing to resolve the merge of '${defaultBranch}' into ` +
+          `'${milestoneBranch}': ${escalations.length} of ` +
+          `${conflictedFiles.length} conflicted file(s) need a human ` +
+          `(Issue #1559) — ${
+            escalations.map((d) => `${d.path}: ${d.reason}`).join("; ")
+          }`,
+        analyses,
+        resolved,
+        defaultSha,
+      ),
+    };
+  }
+
+  const applied = await applyConflictPlan(
+    { ...plan, resolved, escalations },
+    sides,
+    defaultBranch,
+    milestoneBranch,
+    options,
+  );
+  if (!applied.ok) {
+    await runGitCommand(["merge", "--abort"], options);
+    return applied;
+  }
+
+  const commitResult = await runGitCommand(
+    [
+      "commit",
+      "-m",
+      buildResolutionCommitMessage({
+        defaultBranch,
+        milestoneBranch,
+        plan: { ...plan, resolved, escalations },
+      }),
+    ],
+    options,
+  );
+  if (!commitResult.ok || commitResult.value.code !== 0) {
+    await runGitCommand(["merge", "--abort"], options);
+    // Honest failure (Issue #4260) — same reasoning as above.
+    const stderrTail =
+      (commitResult.ok ? commitResult.value.stderr : commitResult.error.message)
+        .trim().split("\n").slice(-3).join(" | ");
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to commit conflict resolution for '${milestoneBranch}' ` +
+          `(Issue #4260): ${stderrTail || "git reported no stderr"}`,
+      ),
+    };
+  }
+
+  // A resolution the worker chose is verified the way a human's would be
+  // (Issue #1559): the repository's own check, its manifest check and its
+  // unit suite. A tree that defines none of them verified nothing, so
+  // `skipped` refuses the push rather than reading as a pass.
   const gatedResolved = await gateThenPushMilestoneBranch(
     milestoneBranch,
     defaultBranch,
     options,
     repo,
-    mergeGate,
+    async (repoDir) => {
+      const outcome = await resolutionGate(repoDir);
+      return outcome.status === "skipped"
+        ? {
+          ...outcome,
+          status: "failed" as const,
+          detail: `${outcome.detail} — an automatic conflict resolution that ` +
+            `cannot be verified is not a resolution (Issue #1559)`,
+        }
+        : outcome;
+    },
     preMergeSha,
   );
-  if (!gatedResolved.ok) return gatedResolved;
+  if (!gatedResolved.ok) {
+    // The resolution was made and the verification refused it. The reader
+    // gets both halves (Issue #1559) — what the gate said, and the two sides
+    // that produced it — rather than the wall of compiler output that made
+    // #1542 nearly useless for deciding anything. The branch was already
+    // reset by the gate, so nothing was pushed.
+    return {
+      ok: false,
+      error: new MilestoneConflictEscalation(
+        gatedResolved.error.message,
+        sides.map((side) =>
+          analyseConflictedFile(
+            side,
+            decided.get(side.path)?.reason ?? "resolved automatically",
+          )
+        ),
+        resolved,
+        defaultSha,
+        gatedResolved.error.message,
+      ),
+    };
+  }
+
+  const summary = resolved
+    .map((d) =>
+      `${d.path} (${d.case}, ${
+        d.action === "union"
+          ? "kept both sides"
+          : `took ${d.action === "ours" ? milestoneBranch : defaultBranch}`
+      })`
+    )
+    .join(", ");
   return {
     ok: true,
     value: {
       message:
-        `${selfHealNote}${gatedResolved.value}${deletionNote}Issue #605: Resolved merge conflicts for '${milestoneBranch}' (accepted '${defaultBranch}' changes)`,
+        `${selfHealNote}${gatedResolved.value}Issue #1559: resolved ${resolved.length} conflict(s) automatically — ${summary}`,
       conflict: {
-        files: resolvedFiles,
+        files: conflictedFiles,
         milestoneSha: preMergeSha,
         defaultSha,
-        resolution: "manual",
+        resolution: "auto",
+        decisions: resolved,
       },
     },
   };

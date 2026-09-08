@@ -12,6 +12,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
+import { isConflictEscalation } from "../lib/milestone_conflict_triage.ts";
 import {
   isMergeGateFailure,
   type MergeGateFn,
@@ -215,16 +216,20 @@ Deno.test(
   async () => {
     const fx = await setupBehindMilestone();
     try {
-      // Both branches edit the same file — the sync resolves with `-X theirs`
-      // and must gate that resolution too, since a resolution that keeps one
-      // side is exactly how the wiring was lost.
+      // Both branches edit the same file, and `main`'s side keeps every line
+      // of the milestone side — a conflict the triage resolves on its own
+      // (Issue #1559). The gate must guard that resolution too, since a
+      // resolution that keeps one side is exactly how the wiring was lost.
       await gitOk(["checkout", "main"], fx.clone);
-      await Deno.writeTextFile(`${fx.clone}/shared.txt`, "main side\n");
+      await Deno.writeTextFile(
+        `${fx.clone}/shared.txt`,
+        "shared line\nmain adds a line\n",
+      );
       await gitOk(["add", "shared.txt"], fx.clone);
       await gitOk(["commit", "-m", "main edits shared"], fx.clone);
       await gitOk(["push", "origin", "main"], fx.clone);
       await gitOk(["checkout", "milestone/974"], fx.clone);
-      await Deno.writeTextFile(`${fx.clone}/shared.txt`, "milestone side\n");
+      await Deno.writeTextFile(`${fx.clone}/shared.txt`, "shared line\n");
       await gitOk(["add", "shared.txt"], fx.clone);
       await gitOk(["commit", "-m", "milestone edits shared"], fx.clone);
       await gitOk(["push", "origin", "milestone/974"], fx.clone);
@@ -239,7 +244,17 @@ Deno.test(
       );
 
       assert(!result.ok, "a conflict-resolved merge is gated too");
-      assert(isMergeGateFailure(result.error));
+      // Issue #1559: the refusal now carries both halves — what the gate
+      // said, and the two sides that produced it — rather than the raw
+      // compiler output alone.
+      assert(
+        isConflictEscalation(result.error),
+        `expected the prepared refusal, got: ${result.error.message}`,
+      );
+      assertStringIncludes(
+        result.error.gateFailure ?? "",
+        "does not pass the repository's own check",
+      );
       assertEquals(
         await remoteSha(fx, "milestone/974"),
         published,

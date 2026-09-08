@@ -99,16 +99,43 @@ async function isFile(path: string): Promise<boolean> {
  * files with default flags.
  */
 async function resolveCheckArgs(manifestPath: string): Promise<string[]> {
+  return (await readManifestTasks(manifestPath)).includes("check")
+    ? ["task", "check"]
+    : ["check", "**/*.ts"];
+}
+
+/**
+ * The task names a Deno manifest defines.
+ *
+ * Only tasks with a non-empty command string count: a manifest whose `tasks`
+ * key is malformed defines none, and an unparseable manifest is read the same
+ * way — the caller then falls back to a check it can run rather than trying to
+ * run a task that may not exist.
+ *
+ * Shared with the conflict-resolution gate (Issue #1559), which runs more of a
+ * repository's own tasks than a type check alone.
+ *
+ * @param manifestPath - Path to `deno.json` or `deno.jsonc`
+ * @returns Every task name the manifest defines; empty when it defines none
+ */
+export async function readManifestTasks(
+  manifestPath: string,
+): Promise<string[]> {
   try {
     const parsed = JSON.parse(
       stripJsonc(await Deno.readTextFile(manifestPath)),
     );
-    const task = parsed?.tasks?.check;
-    if (typeof task === "string" && task.trim()) return ["task", "check"];
+    const tasks = parsed?.tasks;
+    if (!tasks || typeof tasks !== "object") return [];
+    return Object.entries(tasks as Record<string, unknown>)
+      .filter(([, command]) =>
+        typeof command === "string" && command.trim().length > 0
+      )
+      .map(([name]) => name);
   } catch {
-    // Unparseable manifest — the generic check still type-checks the tree.
+    // Unparseable manifest — it defines nothing this gate can run.
+    return [];
   }
-  return ["check", "**/*.ts"];
 }
 
 /** The manifest in a directory, or null when it holds none. */
@@ -121,18 +148,7 @@ async function manifestIn(dir: string): Promise<string | null> {
 }
 
 /**
- * Locate every Deno project in the tree, breadth-first from the repo root.
- *
- * **All** of them, not the first one found: this repository carries
- * `container/deno-seed/deno.json` alongside `worker/deno/deno.json`, and a
- * search that stopped at whichever `Deno.readDir` happened to return first
- * would type-check a single-file seed project and call a broken
- * `worker/deno` clean — a gate that passes everything, which is the state
- * this issue exists to end.
- *
- * A directory that holds a manifest is not descended into: its own project
- * covers what lies beneath it. Each level is sorted, so the same tree yields
- * the same order on every host.
+ * The type check to run for every Deno project in a tree.
  *
  * @param repoDir - Root of the merged working tree
  * @returns Every project to check; empty when the tree defines none
@@ -141,13 +157,54 @@ export async function findTypeCheckProjects(
   repoDir: string,
 ): Promise<TypeCheckProject[]> {
   const found: TypeCheckProject[] = [];
+  for (const project of await findProjectManifests(repoDir)) {
+    found.push({
+      dir: project.dir,
+      args: await resolveCheckArgs(project.manifest),
+    });
+  }
+  return found;
+}
+
+/** A Deno project found in a tree, and the manifest that declares it. */
+export interface ProjectManifest {
+  /** Directory holding the manifest. */
+  dir: string;
+  /** Path to `deno.json` or `deno.jsonc` in that directory. */
+  manifest: string;
+}
+
+/**
+ * Locate every Deno project in the tree, breadth-first from the repo root.
+ *
+ * **All** of them, not the first one found: this repository carries
+ * `container/deno-seed/deno.json` alongside `worker/deno/deno.json`, and a
+ * search that stopped at whichever `Deno.readDir` happened to return first
+ * would type-check a single-file seed project and call a broken
+ * `worker/deno` clean — a gate that passes everything, which is the state
+ * Issue #974 exists to end.
+ *
+ * A directory that holds a manifest is not descended into: its own project
+ * covers what lies beneath it. Each level is sorted, so the same tree yields
+ * the same order on every host.
+ *
+ * Shared by the type-check gate (Issue #974) and the conflict-resolution gate
+ * (Issue #1559) so both judge the same set of projects.
+ *
+ * @param repoDir - Root of the merged working tree
+ * @returns Every project found; empty when the tree defines none
+ */
+export async function findProjectManifests(
+  repoDir: string,
+): Promise<ProjectManifest[]> {
+  const found: ProjectManifest[] = [];
   let level = [repoDir];
   for (let depth = 0; depth <= MERGE_GATE_MAX_DEPTH && level.length; depth++) {
     const next: string[] = [];
     for (const dir of level.sort()) {
       const manifest = await manifestIn(dir);
       if (manifest) {
-        found.push({ dir, args: await resolveCheckArgs(manifest) });
+        found.push({ dir, manifest });
         continue;
       }
       if (depth === MERGE_GATE_MAX_DEPTH) continue;
