@@ -3,6 +3,7 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { createRendezvous } from "./support/rendezvous.ts";
 import {
   classifyGhArgs,
   currentGraphQLSourceContext,
@@ -516,14 +517,14 @@ Deno.test("gh_call_metrics - formatGraphQLSummary marks unattributed graphql cal
 Deno.test("gh_call_metrics - concurrent chains do not cross-credit GraphQL sources", async () => {
   resetGhCallMetrics();
 
-  let release: () => void = () => {};
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  // Bounded rendezvous, never a sleep: a lane that never arrives fails the
+  // assertion below rather than hanging the suite.
+  const meeting = createRendezvous(2);
 
   const wrapped = withGraphQLSource("comments-batch", async () => {
     // Suspend inside the source, exactly as an awaited `gh` spawn does.
-    await gate;
+    const arrived = await meeting.arrive();
+    assertEquals(arrived, 2);
     recordGhCall(["api", "graphql", "-f", "query=Q"]);
   });
 
@@ -532,7 +533,7 @@ Deno.test("gh_call_metrics - concurrent chains do not cross-credit GraphQL sourc
     await Promise.resolve();
     recordGhCall(["issue", "list", "--repo", "o/r"]);
     recordGhCall(["pr", "view", "42", "--json", "mergeable"]);
-    release();
+    assertEquals(await meeting.arrive(), 2);
   })();
 
   await Promise.all([wrapped, unwrapped]);
@@ -572,4 +573,23 @@ Deno.test("gh_call_metrics - withGraphQLSourceContext scopes currentGraphQLSourc
   // Names are normalised the same way priority names are.
   assertEquals(seen, "comments-batch");
   assertEquals(currentGraphQLSourceContext(), undefined);
+
+  // Error path: a throwing `fn` propagates and still unwinds the context.
+  let thrown: unknown;
+  try {
+    await withGraphQLSourceContext("comments-batch", async () => {
+      await Promise.resolve();
+      recordGhCall(["api", "graphql", "-f", "query=Q"]);
+      throw new Error("boom");
+    });
+  } catch (err) {
+    thrown = err;
+  }
+  assertEquals((thrown as Error).message, "boom");
+  assertEquals(currentGraphQLSourceContext(), undefined);
+
+  recordGhCall(["api", "graphql", "-f", "query=After"]);
+  const snap = getGhCallMetrics();
+  assertEquals(snap.graphqlBySource["comments-batch"], 1);
+  assertEquals(snap.graphqlBySource["unattributed"], 1);
 });

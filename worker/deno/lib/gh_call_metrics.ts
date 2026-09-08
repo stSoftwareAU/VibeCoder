@@ -265,13 +265,32 @@ export function exitGraphQLSource(): void {
  * lanes attribute independently — the same fix Issue #213 applied to the
  * priority axis.
  *
- * Finding (Issue #1571): the parent's unresolved caveat — attributed buckets
- * summing to 40 against an `api-graphql` sub-command counter of 23 for the
- * same cycle — IS explained by this cross-crediting. The reproduction in
- * `tests/gh_call_metrics_test.ts` ("concurrent chains do not cross-credit
- * GraphQL sources") shows a suspended `comments-batch` chain absorbing two
- * unrelated sub-command calls from the lane beside it, which is exactly how a
- * named bucket outgrows the `api graphql` count it can legitimately hold.
+ * The explicit stack still wins when one is active, so an `enterGraphQLSource()`
+ * nested inside a wrapped chain keeps its innermost-wins semantics. The reverse
+ * nesting changed with this fix, and it is the trade-off the priority axis
+ * already made: an explicit source wrapping a `withGraphQLSource` chain now
+ * wins over the inner one, because the stack is consulted first. No production
+ * call site enters a source explicitly, so nothing depends on the old order.
+ *
+ * Finding (Issue #1571) — the parent's unresolved caveat, that the attributed
+ * buckets summed to 40 against an `api-graphql` sub-command counter of 23 for
+ * the same cycle. Which answer holds depends on which 40 was read, and both
+ * readings are now accounted for:
+ *
+ * - Summed over the NAMED buckets only, cross-crediting explains it. Every
+ *   `withGraphQLSource` call site wraps exactly one `gh api graphql` spawn, so
+ *   absent concurrency the named buckets sum to exactly the `api graphql`
+ *   count. The reproduction in `tests/gh_call_metrics_test.ts` ("concurrent
+ *   chains do not cross-credit GraphQL sources") shows a suspended
+ *   `comments-batch` chain absorbing two unrelated sub-command calls from the
+ *   lane beside it — the only mechanism by which a named bucket can outgrow
+ *   that count. This fix removes it.
+ * - Summed over ALL buckets including `unattributed`, no cross-crediting is
+ *   needed: since Issue #1485 `graphqlBySource` counts every GraphQL-backed
+ *   sub-command (`issue list`, `pr view`, `search`, …), while
+ *   `bySubCommand["api graphql"]` counts only the explicit ones. The two
+ *   counters measure different sets by design, so a total above the
+ *   `api graphql` count is expected and is not a defect.
  */
 const graphqlSourceStorage = new AsyncLocalStorage<string>();
 
