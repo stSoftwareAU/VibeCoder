@@ -79,7 +79,7 @@ ln -sf "${INSTALL_DIR}/pwsh" /usr/local/bin/pwsh
 # carries the libraries it needs.
 installed="$(pwsh --version < /dev/null)"
 case "${installed}" in
-    "PowerShell ${version}") ;;
+    *"PowerShell ${version}"*) ;;
     *)
         echo "[${TOOLCHAIN_ID}] Installed binary reports \"${installed}\", expected PowerShell ${version}" >&2
         exit 1

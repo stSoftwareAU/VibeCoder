@@ -118,9 +118,11 @@ Five consequences worth knowing:
   GRQ-AutoTrader (which has no `quality.sh`) nor NEAT-AI-Explore runs the
   scanner from its local gate, so it is here for the agent's benefit: with the
   binary in the image the same scan an agent's PR will face can be run before
-  the PR exists. The amd64 checksum is deliberately the digest
-  GRQ-AutoTrader's `.github/workflows/gitleaks.yml` pins for its CLI fallback,
-  so the image and that workflow cannot diverge.
+  the PR exists. The amd64 checksum is deliberately the digest the gitleaks
+  CLI fallback pins in both that scan and this repository's own
+  `.github/workflows/gitleaks.yml`; the local half of that claim is enforced —
+  `container_manifest_test.ts` fails the gate when the manifest pin and that
+  workflow's `GITLEAKS_VERSION` / `GITLEAKS_SHA256` drift apart.
 - **`pwsh` is the one user-directed exception to "the gate runs it and CI
   enforces it".** This repo's `run.ps1`, `setup.ps1` and `loop.ps1` suites are
   excluded from the local gate (Issue #971,
@@ -152,11 +154,7 @@ version. It then runs the stages a monitored Rust gate runs — `cargo fmt
 --check`, `cargo clippy -- -D warnings`, `cargo test`, `cargo deny check` —
 against a crate created inside the container, so an image that would leave a
 monitored repository unbuildable fails on the pull request rather than
-mid-run on an unattended host. A version string only proves a file exists, so
-a further probe step runs `gitleaks` over a temporary directory holding a
-planted secret (exit 1) and over a clean one (exit 0), and runs
-`pwsh -NoProfile -NonInteractive -Command 'exit 3'` — the exit code is what
-proves the .NET runtime starts rather than that the binary is on PATH.
+mid-run on an unattended host.
 
 ```mermaid
 flowchart TD
@@ -289,8 +287,8 @@ never neither, and `parseContainerManifest` rejects the manifest otherwise.
 restate the pin as `ARG`s; `fragment` means `container/toolchains/<id>.sh`
 installs it and reads the pin from `container/tools.json` with `jq`, so the
 Containerfile states no version at all. `shellcheck`, `actionlint`,
-`cargo-deny`, `gitleaks`, `pwsh` and `rust` are fragments (Issues #1594, #1596) — they are the
-fetch-verify-extract toolchains, whose `ARG` blocks and `RUN` bodies were the
+`cargo-deny`, `gitleaks`, `pwsh` and `rust` are fragments
+(Issues #1594, #1596) — they are the fetch-verify-extract toolchains, whose `ARG` blocks and `RUN` bodies were the
 bulk of the Containerfile's size. `node`, `npm`, `markdownlint-cli2` and
 `semgrep` keep `versionArg`: Node's layer must precede the provider layer, and
 the npm- and pip-installed tools have their own steps.
