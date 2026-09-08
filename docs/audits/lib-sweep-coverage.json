@@ -564,6 +564,7 @@
         "worker/deno/lib/fleet_telemetry.ts",
         "worker/deno/lib/gemini_auth.ts",
         "worker/deno/lib/gemini_executor.ts",
+        "worker/deno/lib/gh_argv.ts",
         "worker/deno/lib/gh_call_metrics.ts",
         "worker/deno/lib/gh_credential_disclosure_guard.ts",
         "worker/deno/lib/gh_flag_parser.ts",

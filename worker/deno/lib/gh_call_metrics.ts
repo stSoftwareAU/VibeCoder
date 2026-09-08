@@ -13,6 +13,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { classifyGhCall, ghPositionalArgs } from "./gh_argv.ts";
 import { isQuotaExemptGhCall } from "./primary_quota_latch.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -175,21 +176,28 @@ export function currentPriorityContext(): string | undefined {
  * Classify a `gh` argument list into a sub-command bucket.
  *
  * Returns a short label for telemetry: `"issue list"`, `"pr view"`,
- * `"api"`, etc. Skips leading flags so `gh --version issue list`
- * still resolves to `"issue list"`.
+ * `"api"`, `"api graphql"`, etc.
+ *
+ * Issue #1588: the argv itself is parsed by the shared classifier in
+ * `gh_argv.ts` — flag-aware, so `gh --version issue list` still resolves to
+ * `"issue list"` and a value-taking flag's value is never read as a
+ * positional token. That is the same parse `isQuotaExemptGhCall` uses, so the
+ * `api graphql` bucket and the GraphQL-quota predicate cannot disagree about
+ * what an `api graphql` invocation is.
  *
  * @param args - Argument list passed to the `gh` binary.
  */
 export function classifyGhArgs(args: readonly string[]): string {
-  // Find first non-flag token
-  let i = 0;
-  let cur = args[i];
-  while (cur !== undefined && cur.startsWith("-")) {
-    i++;
-    cur = args[i];
-  }
-  const head = cur;
+  const positionals = ghPositionalArgs(args);
+  const head = positionals[0];
   if (!head) return "unknown";
+
+  // Issue #1924: split `api graphql` from REST `api` calls so the
+  // bySubCommand bucket and downstream telemetry can distinguish the
+  // 5000-point/hour GraphQL quota from the 5000-call/hour REST quota.
+  if (head === "api") {
+    return classifyGhCall(args) === "api-graphql" ? "api graphql" : "api";
+  }
 
   // For two-word sub-commands (issue/pr/repo/etc.), include the verb.
   const twoWordRoots = new Set([
@@ -209,33 +217,8 @@ export function classifyGhArgs(args: readonly string[]): string {
   ]);
 
   if (twoWordRoots.has(head)) {
-    // Find next non-flag token
-    let j = i + 1;
-    let next = args[j];
-    while (next !== undefined && next.startsWith("-")) {
-      j++;
-      next = args[j];
-    }
-    if (next) {
-      return `${head} ${next}`;
-    }
-    return head;
-  }
-
-  // Issue #1924: split `api graphql` from REST `api` calls so the
-  // bySubCommand bucket and downstream telemetry can distinguish the
-  // 5000-point/hour GraphQL quota from the 5000-call/hour REST quota.
-  if (head === "api") {
-    let j = i + 1;
-    let next = args[j];
-    while (next !== undefined && next.startsWith("-")) {
-      j++;
-      next = args[j];
-    }
-    if (next === "graphql") {
-      return "api graphql";
-    }
-    return "api";
+    const verb = positionals[1];
+    return verb ? `${head} ${verb}` : head;
   }
 
   return head;

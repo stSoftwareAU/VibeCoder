@@ -372,6 +372,46 @@ counts. Before Issue #1485 only `gh api graphql` was counted, and the
 line showed a fraction of the real burn — a whole cycle's `issue list`
 and `pr list` traffic was invisible to it.
 
+### How the two counters relate
+
+`graphql-calls: N total` and the `api-graphql=` bucket of the
+`gh-calls:` line answer different questions, and both are wanted:
+
+- **`graphql-calls: N total`** counts *every* GraphQL-billed
+  sub-command — `issue list`, `pr view`, `search`, and `api graphql`.
+- **`api-graphql=` in `gh-calls:`** is the subset that is an explicit
+  `gh api graphql`. It is always ≤ the `graphql-calls:` total.
+
+So `api-graphql=23` beside `graphql-calls: 796 total` is normal, not a
+defect. What the two must agree on is *which argv is an `api graphql`
+invocation*, and since Issue #1588 they do by construction: both derive
+from the one flag-aware classifier in `worker/deno/lib/gh_argv.ts`
+(`classifyGhCall`), which skips flags **and the values of value-taking
+flags** (`-f`, `-F`, `--field`, `--raw-field`, `-H`, `--header`, `-X`,
+`--method`, `-q`, `--jq`, `-t`, `--template`, `--input`, `-R`,
+`--repo`, `--cache`, `-p`, `--preview`, `--hostname`) before reading
+the endpoint token. Before that, `classifyGhArgs` read
+`["api", "-f", "query=…", "graphql"]` as REST `api` while the latch
+read it as GraphQL, and the latch's `args.includes("graphql")` matched
+the token anywhere in argv — including as a flag value.
+
+Only a positively-classified REST `gh api <path>` is exempt from the
+latch; anything the classifier cannot place as REST stays
+GraphQL-billed, so tightening the token test cannot let a real GraphQL
+call escape the latch.
+
+Because every `withGraphQLSource` call site wraps exactly one
+`gh api graphql` spawn, the **explicitly-sourced** buckets (steps 1–2
+of the resolution below — not the derived `priority:` ones, and not
+`unattributed`) should sum to exactly the `api-graphql=` count. A
+divergence therefore means one of two concrete things, and nothing
+vaguer: either a `withGraphQLSource` wrapper spans a call that is not
+an `api graphql` spawn (the sum runs high), or an `api graphql` call
+site is not wrapped at all (the sum runs low). A table-driven test in
+`worker/deno/tests/gh_call_metrics_test.ts` holds both functions to the
+same argv rows, so a future edit to either classifier that reopens the
+divergence fails before merge.
+
 Source attribution is scoped to the async chain that entered it
 (`withGraphQLSource`, Issue #1585), so two lanes running at once cannot
 credit each other's calls. Before that, the source was a process-wide

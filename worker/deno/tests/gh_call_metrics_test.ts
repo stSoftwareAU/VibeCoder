@@ -27,6 +27,8 @@ import {
   withPriority,
   withPriorityContext,
 } from "../lib/gh_call_metrics.ts";
+import { isApiGraphQLCall } from "../lib/gh_argv.ts";
+import { isQuotaExemptGhCall } from "../lib/primary_quota_latch.ts";
 
 Deno.test("gh_call_metrics - classifyGhArgs categorises common sub-commands", () => {
   assertEquals(
@@ -760,4 +762,75 @@ Deno.test("gh_call_metrics - concurrent priority lanes do not cross-credit deriv
   assertEquals(snap.graphqlTotal, 2);
   assertEquals(snap.graphqlBySource["priority:issue-scanning"], 1);
   assertEquals(snap.graphqlBySource["priority:auto-merge"], 1);
+});
+
+/**
+ * Issue #1588 — one argv classifier behind both counters.
+ *
+ * `classifyGhArgs` and `isQuotaExemptGhCall` used to parse argv their own
+ * way, so the `api-graphql=` sub-command bucket could not be reconciled with
+ * the GraphQL attribution that shares the latch predicate. Each row states
+ * what the invocation actually is; the assertions below hold both functions
+ * to it.
+ */
+const GH_ARGV_ROWS: ReadonlyArray<
+  { readonly argv: readonly string[]; readonly graphql: boolean }
+> = [
+  // The ordinary shape: `graphql` is the endpoint token after `api`.
+  { argv: ["api", "graphql", "-f", "query=…"], graphql: true },
+  // The endpoint token sits after a value-taking flag's value — the row the
+  // old flag-skipper read as `"api"` while the latch read it as GraphQL.
+  { argv: ["api", "-f", "query=…", "graphql"], graphql: true },
+  // A method or header before the endpoint must not hide it either.
+  { argv: ["api", "-X", "POST", "graphql", "-f", "query=…"], graphql: true },
+  // Plain REST paths.
+  { argv: ["api", "/repos/o/r/issues"], graphql: false },
+  { argv: ["api", "rate_limit", "--jq", ".resources"], graphql: false },
+  // A REST path containing the word `graphql` is still REST.
+  { argv: ["api", "/search/issues?q=graphql"], graphql: false },
+  // …and so is a flag *value* that is exactly `graphql`.
+  { argv: ["api", "repos/o/r/labels", "--jq", "graphql"], graphql: false },
+  { argv: ["api", "-f", "q=graphql", "/search/issues"], graphql: false },
+  // Every non-`api` sub-command is GraphQL-backed.
+  { argv: ["issue", "list", "--limit", "500"], graphql: true },
+  { argv: ["pr", "view", "42"], graphql: true },
+];
+
+Deno.test("gh_call_metrics - classifyGhArgs and isQuotaExemptGhCall agree on every argv shape", () => {
+  for (const { argv, graphql } of GH_ARGV_ROWS) {
+    const bucket = classifyGhArgs(argv);
+    const isApiGraphQLBucket = bucket === "api graphql";
+    const isApi = bucket === "api" || isApiGraphQLBucket;
+    // The latch bills everything that is not positively a REST `gh api` call.
+    assertEquals(
+      isQuotaExemptGhCall(argv),
+      !graphql,
+      `latch disagrees for ${JSON.stringify(argv)}`,
+    );
+    // …and the sub-command bucket names `api graphql` on exactly the `api`
+    // invocations the latch bills as GraphQL.
+    assertEquals(
+      isApiGraphQLBucket,
+      graphql && isApi,
+      `bucket disagrees for ${JSON.stringify(argv)}`,
+    );
+  }
+});
+
+Deno.test("gh_call_metrics - the api-graphql bucket equals the recorded api graphql calls", () => {
+  resetGhCallMetrics();
+
+  // A recorded mixed sequence: every row above, twice over.
+  const sequence = [...GH_ARGV_ROWS, ...GH_ARGV_ROWS];
+  for (const { argv } of sequence) recordGhCall(argv);
+
+  const expected = sequence.filter(({ argv }) => isApiGraphQLCall(argv)).length;
+  const snap = getGhCallMetrics();
+  assertEquals(snap.bySubCommand["api graphql"], expected);
+  // The REST rows are the rest of the `api` traffic, and none of them is
+  // billed against the GraphQL quota.
+  assertEquals(
+    snap.graphqlTotal,
+    sequence.filter(({ graphql }) => graphql).length,
+  );
 });

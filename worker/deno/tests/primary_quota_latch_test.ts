@@ -57,6 +57,22 @@ Deno.test("isQuotaExemptGhCall - REST `gh api` calls are exempt, GraphQL is not"
   assert(!isQuotaExemptGhCall(["pr", "list", "--repo", "o/r"]));
 });
 
+Deno.test("isQuotaExemptGhCall - the endpoint token decides, not a flag value (Issue #1588)", () => {
+  // The endpoint sits after a value-taking flag's value: still GraphQL, and
+  // the sub-command bucket now names it the same way.
+  assert(!isQuotaExemptGhCall(["api", "-f", "query=...", "graphql"]));
+  assert(!isQuotaExemptGhCall(["api", "-X", "POST", "graphql", "-f", "q=1"]));
+  // A REST path or a flag value merely containing — or equal to — `graphql`
+  // is a REST call, and stays callable while the latch is held.
+  assert(isQuotaExemptGhCall(["api", "/search/issues?q=graphql"]));
+  assert(isQuotaExemptGhCall(["api", "repos/o/r/labels", "--jq", "graphql"]));
+  assert(isQuotaExemptGhCall(["api", "-f", "q=graphql", "/search/issues"]));
+  // Nothing that is not positively a REST `gh api <path>` escapes the latch.
+  assert(!isQuotaExemptGhCall([]));
+  assert(!isQuotaExemptGhCall(["--version"]));
+  assert(!isQuotaExemptGhCall(["search", "issues", "graphql"]));
+});
+
 Deno.test("isPrimaryQuotaLatched - unlatched by default", () => {
   reset();
   assertEquals(isPrimaryQuotaLatched(1000), false);
