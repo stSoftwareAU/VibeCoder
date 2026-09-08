@@ -19,6 +19,7 @@
 
 import type { Result } from "../types.ts";
 import { atomicWrite } from "./file_utils.ts";
+import { stripWorkerRecordBlocks } from "./worker_record_block.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -187,6 +188,11 @@ const KNOWN_HASH_ENCODINGS: readonly string[] = [
  *   timeline shows a *trusted* author added it (`getLabelLastAddInfo` in
  *   `work_on_content_integrity.ts`), and `label_security` strips reserved
  *   workflow labels added by anyone else (Issue #1344).
+ *
+ * One region of the body is also out: the worker's machine-owned record block
+ * (Issue #1631), stripped by `stripWorkerRecordBlocks` before the digest is
+ * taken. The exemption is scoped to the *edit* and not the editor — see
+ * `worker_record_block.ts` for why that keeps the gate author-blind.
  *
  * Uses Deno's built-in Web Crypto API — deterministic and dependency-free.
  *
@@ -743,7 +749,14 @@ export async function captureContentSnapshot(
   issueAuthor: string,
   deps: ContentApprovalDeps = {},
 ): Promise<Result<void>> {
-  const contentHash = await computeContentHash(title, body);
+  // Issue #1631: the baseline covers the body with the worker's machine-owned
+  // record block removed, so the fleet's own deferral bookkeeping cannot make
+  // the next verification look like a content change. The exemption is scoped
+  // to the *edit*, never the editor — see `worker_record_block.ts`.
+  const contentHash = await computeContentHash(
+    title,
+    stripWorkerRecordBlocks(body),
+  );
   const key = snapshotKey(repo, issueNumber);
   const snapshot: ContentSnapshot = {
     contentHash,
@@ -770,6 +783,17 @@ export async function captureContentSnapshot(
 
   loaded.state.snapshots[key] = snapshot;
   return await saveContentApprovalState(stateDir, loaded.state, deps);
+}
+
+/**
+ * The body forms a stored digest may legitimately have been computed over
+ * (Issue #1631): the body as it stands, and the body with the worker's
+ * machine-owned record block stripped. Identical when there is no block, in
+ * which case only one hash is computed.
+ */
+function candidateApprovalBodies(body: string): string[] {
+  const stripped = stripWorkerRecordBlocks(body);
+  return stripped === body ? [body] : [body, stripped];
 }
 
 /**
@@ -829,13 +853,27 @@ export async function verifyContentUnchanged(
       return { status: "error", message: encodings.error.message };
     }
 
+    // Issue #1631: both the body as it stands and the body with the
+    // machine-owned record block removed are accepted. The stripped form is
+    // what new baselines are captured over; the raw form is what baselines
+    // captured before a block existed were hashed from, and either match
+    // proves every byte outside the block equals the approved content.
+    const candidateBodies = candidateApprovalBodies(currentBody);
+
     for (const encoding of encodings.value) {
-      const hash = await computeContentHash(
-        currentTitle,
-        currentBody,
-        encoding,
-      );
-      if (hash !== snapshot.contentHash) continue;
+      let matched = false;
+      for (const candidate of candidateBodies) {
+        const hash = await computeContentHash(
+          currentTitle,
+          candidate,
+          encoding,
+        );
+        if (hash === snapshot.contentHash) {
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) continue;
       // A snapshot with no stamp is re-baselined too: an unstamped digest
       // stays ambiguous until it is rewritten with its encoding recorded.
       return snapshot.encoding === CURRENT_CONTENT_HASH_ENCODING

@@ -208,7 +208,7 @@ the log could not say so. Three behaviours close that hole:
   `shutdown`, `drain`, `exit`, `find-error` — each is written at INFO with the
   `[sN]` prefix, so an idle slot is distinguishable from a working one by
   reading the log alone.
-- **An empty scan is quantified.** The `no eligible work:` line carries
+- **An empty scan is quantified.** The line carries
   `considered=N eligible=N skipped=N top-skips=reason=count,…`, taken from the
   scan's own diagnostic counts. Those counts now ride the scan result, so they
   are visible **without** `ISSUE_FINDER_DEBUG` (which is off in production).
@@ -217,6 +217,16 @@ the log could not say so. Three behaviours close that hole:
   becomes claimable mid-cycle is picked up within one interval. Only when *no*
   sibling is running does the slot retire — that is the pool draining so the
   cycle's maintenance ladder can run, and it says so (`stop reason=no-work`).
+
+**The sentence agrees with its counters (Issue #1573).** Only a scan with
+`eligible=0` reads `no eligible work:`. A scan that found work no slot could
+claim reads `N eligible, none claimable (top-skips names what refused them):`
+instead — *eligible* means "passed the per-issue filter", while the stop means
+"nothing claimable now". Asserting both at once reads as a self-contradiction
+and costs a human an investigation before they can establish it was benign.
+Every such line closes with the note that `considered` and `eligible` count
+issues while `skipped` counts skip decisions, repo-level ones included, so the
+three need not sum.
 
 A slot that loses the `tryAcquire` race also drops the winning repository's
 cached issue list before scanning again, so the next scan cannot be served the
@@ -229,7 +239,7 @@ flowchart TD
   Race -->|Yes| Work["Claim and process"]
   Race -->|"No — sibling won"| Drop["Drop that repo's cached<br/>issue list, scan again"]
   Drop --> Scan
-  Found -->|No| Log["Log: no eligible work:<br/>considered / eligible / skipped<br/>+ top skip reasons"]
+  Found -->|No| Log["Log: 'no eligible work' when eligible=0,<br/>else 'N eligible, none claimable'<br/>+ considered / eligible / skipped<br/>+ top skip reasons"]
   Log --> Sibling{"Any sibling slot<br/>still working?"}
   Sibling -->|Yes| Wait["Sleep sleep_interval,<br/>re-scan"]
   Wait --> Scan

@@ -75,6 +75,8 @@ function inputs(
     manifest: MANIFEST,
     image: "vibe-coder:0123456789ab",
     containerName: "vibe-coder-4242",
+    // The build stamp the launch plan resolves from the checkout (Issue #1572).
+    buildCommit: "0123456789abcdef0123456789abcdef01234567",
     watchdogSeconds: 11_400,
     hostPaths: {
       homeDir: "/home/operator",
@@ -402,6 +404,20 @@ Deno.test("buildContainerLaunchPlan - passes the host identity into the containe
     bare.runArgs.some((arg) => arg.startsWith("VIBE_HOST_ID=")),
     false,
   );
+});
+
+Deno.test("buildContainerLaunchPlan - stamps the running build into the container (Issue #1572)", () => {
+  // The commit is what makes "did that change help?" answerable: without it
+  // every log line reads `commit=unknown` and the running code cannot be
+  // identified. It is a required input, not an optional one, so the launch
+  // plan cannot stop carrying it without failing the type check.
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+  const plan = buildContainerLaunchPlan(inputs({ buildCommit: sha }));
+  assertEquals(plan.runArgs.includes(`VIBE_BUILD_COMMIT=${sha}`), true);
+  // An unstampable checkout says so rather than reporting a commit it does
+  // not have — `unknown` now means genuinely unstamped.
+  const bare = buildContainerLaunchPlan(inputs({ buildCommit: "unknown" }));
+  assertEquals(bare.runArgs.includes("VIBE_BUILD_COMMIT=unknown"), true);
 });
 
 Deno.test("buildContainerLaunchPlan - points the worker at the staged read-only config", () => {
