@@ -56,6 +56,7 @@ import {
   updatePrBranch,
 } from "../lib/git_pull.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import { cleanWorkingTree } from "../lib/ignored_path_clean.ts";
 import {
   assertSafeRefComponent,
   buildCheckoutArgs,
@@ -583,7 +584,11 @@ export async function setupRepo(
       await recoverGitState(defaultBranch, { cwd: repoPath });
 
       await runGitCommand(["reset", "--hard", "HEAD"], { cwd: repoPath });
-      await runGitCommand(["clean", "-fd"], { cwd: repoPath });
+      // Issue #1443: the clean also erases the ignored directories that carry
+      // executable content (`node_modules/`, `.venv/`, `target/`, …), so a
+      // previous run cannot leave something behind for this one to execute.
+      // Pure download caches are left warm — see `ignored_path_clean.ts`.
+      await cleanWorkingTree({ cwd: repoPath });
 
       // Measure and compact session before restoring (Issue #1328)
       const sessionStorePath = getSessionStorePath(workDir, repo);

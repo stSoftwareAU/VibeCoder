@@ -11,6 +11,7 @@
 
 import type { Result } from "../types.ts";
 import { runGitCommand, runGitCommandChecked } from "./git_timeout.ts";
+import { cleanWorkingTree } from "./ignored_path_clean.ts";
 import { spawnGh } from "./gh_spawn.ts";
 import {
   isRuleViolationPush,
@@ -527,7 +528,8 @@ export async function syncMilestoneBranchWithDefault(
     if (dirty.ok && dirty.value.code === 0 && dirty.value.stdout.trim()) {
       const files = dirty.value.stdout.trim().split("\n");
       await runGitCommand(["reset", "--hard"], options);
-      await runGitCommand(["clean", "-fd"], options);
+      // Ignored executable paths go with it (Issue #1443).
+      await cleanWorkingTree(options);
       dirtyNote = `SELF-HEALING: discarded ${files.length} uncommitted ` +
         `change(s) in the shared clone before checkout (${
           // Porcelain v1 is a two-character status field, then the path.

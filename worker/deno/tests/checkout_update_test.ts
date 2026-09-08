@@ -40,6 +40,7 @@ import {
   SKIP_CHECKOUT_UPDATE_ENV,
   updateCheckout,
 } from "../lib/checkout_update.ts";
+import { ignoredExecutableCleanArgs } from "../lib/ignored_path_clean.ts";
 import type { Result } from "../types.ts";
 
 /** The tag a frozen host is pinned to, and the commit it resolves to. */
@@ -574,6 +575,10 @@ Deno.test("resetCheckoutToDefaultBranch - the real update sequence rides the ret
       "checkout main",
       "reset --hard origin/main",
       "clean -fd",
+      // Issue #1443 added the scoped ignored clean to the sequence: `-fd`
+      // leaves ignored paths standing, so the executable-bearing ones are
+      // erased by name after it.
+      ignoredExecutableCleanArgs().join(" "),
     ]);
 
     // And the recovery is on the record an operator already reads for this

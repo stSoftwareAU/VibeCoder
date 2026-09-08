@@ -240,7 +240,9 @@ reset's enemy, in both directions:
   the checkout.
 - The moment the tree is clean, the reset **succeeds**: the checkout is
   yanked onto `Develop` and `git clean -fd` deletes every untracked file —
-  silently destroying interactive work.
+  silently destroying interactive work. Since Issue #1443 a scoped
+  `git clean -ffdx` follows it, so an ignored `node_modules/`, `.venv/` or
+  `target/` in that checkout goes too.
 
 So: never point the worker at a clone you also develop in. Give it its own
 directory (e.g. `~/vibe-coder-runtime`) and do interactive work elsewhere —

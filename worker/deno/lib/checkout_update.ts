@@ -69,6 +69,7 @@ import type { Result, UpdateMode } from "../types.ts";
 import { DEFAULT_UPDATE_MODE } from "./config_defaults.ts";
 import { atomicWrite } from "./file_utils.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import { ignoredExecutableCleanArgs } from "./ignored_path_clean.ts";
 import {
   appendRunCoreLogLine,
   resolveOriginDefaultBranch,
@@ -428,6 +429,9 @@ export function resetCheckoutToDefaultBranch(
     ["checkout", branch],
     ["reset", "--hard", `origin/${branch}`],
     ["clean", "-fd"],
+    // Issue #1443: and the ignored directories that carry executable content,
+    // so nothing a previous launch left in them runs in this one.
+    ignoredExecutableCleanArgs(),
   ], deps);
 }
 
@@ -467,6 +471,7 @@ export function checkoutPinnedRef(
     ["checkout", "--force", "--detach", ref],
     ["reset", "--hard", ref],
     ["clean", "-fd"],
+    ignoredExecutableCleanArgs(),
   ], deps);
 }
 
