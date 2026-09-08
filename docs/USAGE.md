@@ -390,6 +390,15 @@ subsequent scan until a human removes the label.
 4. On the next scan cycle the worker will re-evaluate the issue and pick it up
    again if it now has a configured label and is otherwise eligible.
 
+> **🔐 Content-approval escalations:** when `needs-human` was added because the
+> issue was edited after approval, your removal is also the **re-approval**
+> (Issue #1617) — the worker re-baselines its approval snapshot onto the current
+> content and proceeds, so the label is not re-added on the next scan. The
+> removal only counts when it is made by a trusted author (`allowed_authors`,
+> and not a fleet login) *after* the most recent edit; edit the issue again
+> afterwards and the gate blocks again with a fresh comment. See
+> [issue-processing.md — Content modified after approval](workflows/issue-processing.md#-issue-selection-priority).
+
 > **📝 Note:** The worker uses `needs-human` exclusively for escalation. It
 > **does not** self-apply `top-priority`, `work-on`, `low-priority`,
 > `failed-once`/`failed` (those are internal failure-tracker labels, not
