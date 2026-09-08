@@ -261,6 +261,8 @@ async function runProcessor(opts?: {
   });
 
   const workDir = await Deno.makeTempDir({ prefix: "vibe-intent-conflict-" });
+  // Issue #1660: heartbeat state belongs in the work root, not the clone.
+  const workRoot = await Deno.makeTempDir({ prefix: "vibe-intent-root-" });
   if (opts?.agentReply !== undefined) {
     await Deno.writeTextFile(
       `${workDir}/.pr_response_message`,
@@ -296,6 +298,7 @@ async function runProcessor(opts?: {
     logger: makeSilentLogger(),
     deps,
     workDir,
+    workRoot,
     promptsDir: PROMPTS_DIR,
     gatherIssueContextFn,
   });

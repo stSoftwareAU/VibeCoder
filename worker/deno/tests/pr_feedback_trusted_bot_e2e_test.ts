@@ -234,6 +234,7 @@ function makeProcessorDeps(
     logger: makeSilentLogger(),
     deps,
     workDir,
+    workRoot: workDir,
     trustedReviewBots: [TRUSTED_BOT],
   };
 }
@@ -509,6 +510,7 @@ Deno.test(
         logger: makeSilentLogger(),
         deps,
         workDir: tmpDir,
+        workRoot: tmpDir,
         // trustedReviewBots intentionally omitted.
       };
 

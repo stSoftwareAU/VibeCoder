@@ -170,6 +170,7 @@ async function runNoChangesScenario(
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     const result = await processCiFailure(input, processorDeps);
@@ -364,6 +365,7 @@ Deno.test("processCiFailure - Claude self-pushed: HEAD moved triggers success re
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
       verifyPushFn: REMOTE_CONFIRMS_PUSH,
     };
 
@@ -437,6 +439,7 @@ Deno.test("processCiFailure - genuine no-changes when HEAD unchanged still posts
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
     };
 
     const result = await processCiFailure(makeInput(), processorDeps);
@@ -528,6 +531,7 @@ Deno.test("processCiFailure - HEAD moved but the remote disagrees: no success cl
       deps,
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
+      workRoot: tmpDir,
       // The remote cannot be reached — a broken git credential, which is
       // exactly what happened in Issue #564 and produced PR #549's false
       // claim. Silence from the remote is never evidence of success.

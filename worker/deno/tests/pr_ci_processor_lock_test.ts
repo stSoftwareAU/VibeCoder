@@ -247,6 +247,7 @@ function makeProcessorDeps(params: {
     }),
     stateDir: params.stateDir,
     workDir: params.workDir,
+    workRoot: params.workDir,
     workerId: params.workerId,
     // Delegate to the real protocol, but with no consistency sleep and a
     // deterministic clock so the race resolves instantly.
