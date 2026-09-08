@@ -622,8 +622,12 @@ export async function syncMilestoneBranches(
             // them — reported once per conflicting default-branch commit, so
             // a branch that keeps conflicting against the same commit is not
             // reported every cycle.
+            // Without a streak file there is nowhere to record that the
+            // report went out, so escalating would repeat every cycle — the
+            // loud WARNING log above stands on its own there, as it does for
+            // the Issue #974 gate refusal below.
             const conflictKey = syncResult.error.defaultSha || UNRESOLVED_SHA;
-            if (entry?.conflictEscalatedSha !== conflictKey) {
+            if (entry && entry.conflictEscalatedSha !== conflictKey) {
               const escalated = await escalateConflictAnalysis(
                 repo,
                 milestone,
@@ -633,10 +637,7 @@ export async function syncMilestoneBranches(
                 ghCommandFn,
                 log,
               );
-              // Without a streak file there is nowhere to record that the
-              // report went out, so the loud WARNING above stands alone
-              // rather than the same comment repeating every cycle.
-              if (escalated && entry) entry.conflictEscalatedSha = conflictKey;
+              if (escalated) entry.conflictEscalatedSha = conflictKey;
             }
           } else if (isMergeGateFailure(syncResult.error)) {
             // Issue #974: a merged tree the repo's own check rejects is not a

@@ -162,3 +162,31 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "milestone sync - without a streak file the analysis is logged, not repeated every cycle (Issue #1559)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-1559-nostreak-" });
+    try {
+      const calls: string[][] = [];
+      const built = deps(calls, {
+        milestoneTitle: "#1559 Rival designs",
+        error: escalation(),
+        streakPath: milestoneSyncStreakPath(dir),
+      });
+      // No streak file: there is nowhere to record that a report went out.
+      delete built.streakPath;
+
+      await syncMilestoneBranches(built);
+      await syncMilestoneBranches(built);
+
+      assertEquals(
+        commentCalls(calls).length,
+        0,
+        "a report that could not be remembered is not posted every cycle",
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
