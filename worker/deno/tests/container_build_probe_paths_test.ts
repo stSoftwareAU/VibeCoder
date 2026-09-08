@@ -9,12 +9,13 @@
  * job in four seconds, and landed a `main` where every `browser_navigate`
  * failed with `NotCapable`.
  *
- * These tests run the real `git diff --name-only` with the pathspecs parsed out
- * of the committed workflow, against a throwaway repository — the same command
- * CI runs, so a pathspec that stops matching fails here rather than on `main`.
+ * These tests run the real `git diff --name-only` with the pathspecs taken from
+ * the committed workflow, against a throwaway repository — the same command CI
+ * runs, so a pathspec that stops matching fails here rather than on `main`.
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { parse } from "@std/yaml/parse";
 
 const REPO_ROOT = new URL("../../..", import.meta.url).pathname.replace(
   /\/$/,
@@ -31,41 +32,76 @@ const PROBE_PATHS = [
 /**
  * The pathspecs the workflow hands `git diff --name-only` on a pull request.
  *
- * Fails loudly when the command's shape changes, rather than silently
- * returning an empty list that would make every assertion below vacuous.
+ * The workflow is parsed as YAML down to the detection step's script, and the
+ * pathspecs are read from the `git diff` command inside it. Every step fails
+ * loudly rather than returning an empty list, which would make the assertions
+ * below vacuously true.
  */
-function pullRequestPathspecs(workflow: string): string[] {
-  const start = workflow.indexOf('changed="$(git diff --name-only');
-  assert(start >= 0, "the changes job no longer runs `git diff --name-only`");
-  const end = workflow.indexOf("|| true)", start);
+function pullRequestPathspecs(workflowYaml: string): string[] {
+  const workflow = parse(workflowYaml) as {
+    jobs?: Record<string, { steps?: { id?: string; run?: string }[] }>;
+  };
+  const steps = workflow.jobs?.changes?.steps ?? [];
+  const script = steps.find((step) => step.id === "filter")?.run;
+  assert(
+    script,
+    "the `changes` job has no `filter` step to read pathspecs from",
+  );
+  const start = script.indexOf("git diff --name-only");
+  assert(start >= 0, "the filter step no longer runs `git diff --name-only`");
+  const end = script.indexOf("|| true)", start);
   assert(end > start, "the `git diff` pathspec list is unterminated");
-  const specs = [...workflow.slice(start, end).matchAll(/'([^']+)'/g)]
+  const specs = [...script.slice(start, end).matchAll(/'([^']+)'/g)]
     .map((match) => match[1] ?? "");
-  assert(specs.length > 0, "no pathspecs found in the changes job");
+  assert(specs.length > 0, "no pathspecs found in the filter step");
   return specs;
 }
 
-/** Files changed between two commits of a throwaway repo, per the workflow. */
+/** Run `git` in `cwd`, failing loudly with git's own stderr. */
+async function git(cwd: string, ...args: string[]): Promise<string> {
+  const output = await new Deno.Command("git", {
+    args,
+    cwd,
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  assert(
+    output.success,
+    `git ${args.join(" ")} failed: ${new TextDecoder().decode(output.stderr)}`,
+  );
+  return new TextDecoder().decode(output.stdout);
+}
+
+/** A throwaway repo with a base commit, then `changed` touched in a second. */
+async function repoWithChange(changed: string[]): Promise<string> {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-probe-paths-" });
+  await git(dir, "init", "-q");
+  await git(dir, "config", "user.email", "test@example.com");
+  await git(dir, "config", "user.name", "Test");
+  for (const path of [...new Set([...changed, "README.md"])]) {
+    const slash = path.lastIndexOf("/");
+    if (slash > 0) {
+      await Deno.mkdir(`${dir}/${path.slice(0, slash)}`, { recursive: true });
+    }
+    await Deno.writeTextFile(`${dir}/${path}`, "base\n");
+  }
+  await git(dir, "add", "-A");
+  await git(dir, "commit", "-q", "-m", "base");
+  for (const path of changed) {
+    await Deno.writeTextFile(`${dir}/${path}`, "changed\n");
+  }
+  await git(dir, "add", "-A");
+  await git(dir, "commit", "-q", "-m", "change");
+  return dir;
+}
+
+/** The files the workflow's own pathspecs select between the two commits. */
 async function changedUnderPathspecs(
   cwd: string,
   pathspecs: string[],
 ): Promise<string[]> {
-  const run = async (...args: string[]) => {
-    const output = await new Deno.Command("git", {
-      args,
-      cwd,
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    assert(
-      output.success,
-      `git ${args.join(" ")} failed: ${
-        new TextDecoder().decode(output.stderr)
-      }`,
-    );
-    return new TextDecoder().decode(output.stdout);
-  };
-  const stdout = await run(
+  const stdout = await git(
+    cwd,
     "diff",
     "--name-only",
     "HEAD~1",
@@ -78,51 +114,17 @@ async function changedUnderPathspecs(
   );
 }
 
-/** A throwaway repo with a base commit, then `changed` touched in a second. */
-async function repoWithChange(changed: string[]): Promise<string> {
-  const dir = await Deno.makeTempDir({ prefix: "vibe-probe-paths-" });
-  const seeded = [...new Set([...changed, "README.md"])];
-  const git = async (...args: string[]) => {
-    const output = await new Deno.Command("git", {
-      args,
-      cwd: dir,
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    assert(
-      output.success,
-      `git ${args.join(" ")} failed: ${
-        new TextDecoder().decode(output.stderr)
-      }`,
-    );
-  };
-  await git("init", "-q");
-  await git("config", "user.email", "test@example.com");
-  await git("config", "user.name", "Test");
-  for (const path of seeded) {
-    const parent = path.includes("/")
-      ? path.slice(0, path.lastIndexOf("/"))
-      : "";
-    if (parent !== "") {
-      await Deno.mkdir(`${dir}/${parent}`, { recursive: true });
-    }
-    await Deno.writeTextFile(`${dir}/${path}`, "base\n");
-  }
-  await git("add", "-A");
-  await git("commit", "-q", "-m", "base");
-  for (const path of changed) {
-    await Deno.writeTextFile(`${dir}/${path}`, "changed\n");
-  }
-  await git("add", "-A");
-  await git("commit", "-q", "-m", "change");
-  return dir;
-}
-
 Deno.test("container-build PR filter builds on an MCP-config change (Issue #1584)", async () => {
   const pathspecs = pullRequestPathspecs(
     await Deno.readTextFile(CONTAINER_WORKFLOW),
   );
   for (const probePath of PROBE_PATHS) {
+    // A pathspec naming a file that no longer exists matches nothing in the
+    // real repository, so the probe would silently stop running.
+    assert(
+      (await Deno.stat(`${REPO_ROOT}/${probePath}`)).isFile,
+      `${probePath} is watched by the PR filter but is gone from the tree`,
+    );
     const dir = await repoWithChange([probePath]);
     try {
       assertEquals(
@@ -149,12 +151,5 @@ Deno.test("container-build PR filter still skips an unrelated change (Issue #158
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
-  }
-});
-
-Deno.test("the paths the Container Build probe watches exist (Issue #1584)", async () => {
-  for (const probePath of PROBE_PATHS) {
-    const stat = await Deno.stat(`${REPO_ROOT}/${probePath}`);
-    assert(stat.isFile, `${probePath} is listed in the PR filter but is gone`);
   }
 });

@@ -419,12 +419,13 @@ export function detectScreenshotRequired(
 
   // `skip_screenshot_check` wins over both triggers (Issue #1584).
   if (getRepoConfig(repoConfigs, repo, "skipScreenshotCheck") === "true") {
+    const overridden = [
+      ...(labelPresent ? [`the ${needsScreenshotLabel} label`] : []),
+      ...(repoRequires ? ["requires_screenshots"] : []),
+    ].join(", ");
     log?.(
       `${repo} sets skip_screenshot_check — no screenshot instructions and ` +
-        `no Playwright MCP browser, overriding ` +
-        `${labelPresent ? `the ${needsScreenshotLabel} label` : ""}` +
-        `${labelPresent && repoRequires ? " and " : ""}` +
-        `${repoRequires ? "requires_screenshots" : ""} (Issue #1584)`,
+        `no Playwright MCP browser, overriding ${overridden} (Issue #1584)`,
     );
     return false;
   }
