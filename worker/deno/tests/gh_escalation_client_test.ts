@@ -293,6 +293,26 @@ Deno.test("getIssueComments - stops at the 10-page cap and says so", async () =>
   assert(warnings[0]?.includes("more than 1000 comments"));
 });
 
+Deno.test("getIssueComments - a mid-thread page that is not a JSON array is reported", async () => {
+  const { ghFn, calls } = makeFakeGh({
+    // Page 2 comes back as an HTML interstitial: a successful call whose
+    // body is not the list. Left unreported it would look like the end of
+    // the thread — the very blind spot that hid the dedup marker.
+    response: (args) =>
+      pageOf(args) === 1 ? commentPage(1, 100) : "<html>rate limited</html>",
+  });
+  const warnings: string[] = [];
+  const client = createGhEscalationClient(ghFn, (m) => warnings.push(m));
+
+  const comments = await client.getIssueComments("owner/repo", 3);
+
+  assertEquals(calls.length, 2);
+  assertEquals(comments.length, 100);
+  assertEquals(warnings.length, 1);
+  assert(warnings[0]?.includes("comment page 2"));
+  assert(warnings[0]?.includes("not a JSON array"));
+});
+
 Deno.test("getIssueComments - a failing later page returns what was fetched, loudly", async () => {
   const { ghFn } = makeFakeGh({
     failWhen: (args) => pageOf(args) === 2,

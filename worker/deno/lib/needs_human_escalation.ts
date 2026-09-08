@@ -104,20 +104,21 @@ export interface EscalateToHumanOptions {
   /**
    * Optional dedup key. When supplied, the helper appends a marker
    * `<!-- needs-human-escalation: {dedupKey} -->` to the comment body and
-   * scans the newest 50 comments for the same marker; if a match was
-   * created within 24 hours, the duplicate comment is skipped (the label
-   * add is still re-attempted, idempotently). Which comments are in reach
-   * is the `ghClient`'s business: `gh_escalation_client.ts` fetches every
-   * page up to 1 000 comments, so the newest 50 of a thread that long are
-   * scanned and a marker past the oldest 30 is found (Issue #1619).
+   * scans the newest 50 of the comments `ghClient.getIssueComments`
+   * returns; if a match was created within 24 hours, the duplicate comment
+   * is skipped (the label add is still re-attempted, idempotently). The
+   * contract this places on `ghClient` is that its read reaches the newest
+   * comment: both clients page to do so — `gh_escalation_client.ts` best
+   * effort to 1 000 comments, `github.ts` fail-loud to 2 000 — because the
+   * un-paged endpoint returns the oldest 30 and hid the marker on a busy
+   * issue (Issue #1619).
    */
   dedupKey?: string;
   /**
    * Optional list of additional substrings that count as a pre-existing
    * explanation. When the dedup scan finds any of these substrings in
-   * the newest 50 comments (of all pages fetched, capped at 1 000)
-   * within the 24-hour window, the
-   * duplicate comment is skipped — even if the helper's own dedup
+   * the newest 50 of the comments the `ghClient` returned, within the
+   * 24-hour window, the duplicate comment is skipped — even if the helper's own dedup
    * marker is absent. Used by callers (e.g. the grill-me processor)
    * whose Round N / Ready comments already serve as the explanation
    * the helper would otherwise duplicate. The label is still added,
