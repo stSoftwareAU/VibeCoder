@@ -1043,7 +1043,8 @@ is draining — on such a cycle the backlog was never evaluated, so nothing
 refused it.
 
 The loop therefore passes `claimScanCompleted` into the census hook: `true` only
-when a scan returned "no eligible work", `false` for every lifecycle stop. The
+when a scan completed an eligibility pass and claimed nothing (the "no
+eligible work" / "none claimable" stop), `false` for every lifecycle stop. The
 census records it as `scanned=<bool>` (with `skip_reason=cycle_deadline`) and
 splits the inverted repos in two:
 
