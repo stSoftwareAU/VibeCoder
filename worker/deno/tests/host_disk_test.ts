@@ -9,7 +9,7 @@
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   classifyHostDisk,
   DEFAULT_LOW_FLOOR_GB,
@@ -20,8 +20,10 @@ import {
   HOST_DISK_LOW_FLOOR_GB_ENV,
   HOST_DISK_TOTAL_ENV,
   HostDiskMonitor,
+  type HostDiskRefresh,
   lowFloorBytes,
   parseDfKP,
+  parseHostDiskRefresh,
   readHostDiskBaseline,
   resolveDiskFloors,
 } from "../lib/host_disk.ts";
@@ -112,6 +114,9 @@ function monitor(options: {
   baseline?: { avail: number; total: number };
   readings: Array<DiskReading | null>;
   sampleIntervalMs?: number;
+  /** The launcher's reading file, when the test wants one (Issue #1550). */
+  refresh?: () => HostDiskRefresh | null;
+  refreshMaxAgeMs?: number;
 }) {
   let i = 0;
   let now = 0;
@@ -133,6 +138,15 @@ function monitor(options: {
     now: () => now,
     sampleIntervalMs: options.sampleIntervalMs ?? 60_000,
     log: (m) => log.push(m),
+    ...(options.refresh
+      ? {
+        refreshFile: "/home/vibe/logs/host-disk.json",
+        readRefresh: () => Promise.resolve(options.refresh!()),
+      }
+      : {}),
+    ...(options.refreshMaxAgeMs !== undefined
+      ? { refreshMaxAgeMs: options.refreshMaxAgeMs }
+      : {}),
   });
   return { m, log, advance: (ms: number) => (now += ms) };
 }
@@ -331,4 +345,157 @@ Deno.test("HostDiskMonitor - native mode reads df directly, so there is no ratch
     "on a native host df is the host: freed space is genuinely free",
   );
   assertEquals(m.workVolumeRatchet.ratcheted, false);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1550: the launcher keeps measuring, and the worker adopts it
+// ---------------------------------------------------------------------------
+
+Deno.test("HostDiskMonitor - a newer launcher reading raises the estimate above the floor mid-run (Issue #1550)", async () => {
+  // Launch: 39 GB free — below the 46 GB floor. The host then frees space;
+  // the launcher's next tick says 66 GB.
+  let file: HostDiskRefresh | null = null;
+  const { m, log, advance } = monitor({
+    baseline: { avail: 39 * GIB, total: 460 * GIB },
+    readings: [
+      { availableBytes: 0, usedBytes: 30 * GIB, totalBytes: 504 * GIB },
+    ],
+    refresh: () => file,
+  });
+  advance(1_000);
+  const first = await m.check();
+  assertEquals(first.level, "low");
+  assertEquals(first.availableBytes, 39 * GIB);
+
+  // The launcher measured 5 minutes later; the worker checks a minute after.
+  file = { availableBytes: 66 * GIB, totalBytes: 460 * GIB, measuredAt: 300 };
+  advance(360_000);
+  const second = await m.check();
+  assertEquals(second.level, "ok");
+  assertEquals(second.availableBytes, 66 * GIB);
+  assertEquals(second.source, "launch-baseline");
+  assert(second.detail.includes("launcher's reading"), second.detail);
+  assert(
+    log.some((l) => l.includes("adopted the launcher's reading")),
+    log.join("\n"),
+  );
+});
+
+Deno.test("HostDiskMonitor - a newer launcher reading lowers the estimate when another account consumed space (Issue #1550)", async () => {
+  let file: HostDiskRefresh | null = null;
+  const { m, advance } = monitor({
+    baseline: { avail: 60 * GIB, total: 460 * GIB },
+    readings: [
+      { availableBytes: 0, usedBytes: 30 * GIB, totalBytes: 504 * GIB },
+    ],
+    refresh: () => file,
+  });
+  advance(1_000);
+  assertEquals((await m.check()).level, "ok");
+  file = { availableBytes: 23 * GIB, totalBytes: 460 * GIB, measuredAt: 300 };
+  advance(360_000);
+  const after = await m.check();
+  assertEquals(after.level, "low");
+  assertEquals(after.availableBytes, 23 * GIB);
+});
+
+Deno.test("HostDiskMonitor - growth after an adopted reading still lowers the estimate, from the new origin (Issue #384, #1550)", async () => {
+  let file: HostDiskRefresh | null = null;
+  const { m, advance } = monitor({
+    baseline: { avail: 39 * GIB, total: 460 * GIB },
+    readings: [
+      { availableBytes: 0, usedBytes: 30 * GIB, totalBytes: 504 * GIB },
+      { availableBytes: 0, usedBytes: 30 * GIB, totalBytes: 504 * GIB },
+      { availableBytes: 0, usedBytes: 50 * GIB, totalBytes: 504 * GIB }, // +20 GB since adoption
+    ],
+    refresh: () => file,
+  });
+  advance(1_000);
+  await m.check();
+  file = { availableBytes: 66 * GIB, totalBytes: 460 * GIB, measuredAt: 300 };
+  advance(360_000);
+  assertEquals((await m.check()).availableBytes, 66 * GIB);
+  advance(61_000);
+  const grown = await m.check();
+  assertEquals(grown.availableBytes, 46 * GIB, "66 GB less 20 GB of growth");
+});
+
+Deno.test("HostDiskMonitor - a launcher reading older than the one held, or stale, or from before launch, is ignored (Issue #1550)", async () => {
+  let file: HostDiskRefresh | null = null;
+  const { m, advance } = monitor({
+    baseline: { avail: 39 * GIB, total: 460 * GIB },
+    readings: [
+      { availableBytes: 0, usedBytes: 30 * GIB, totalBytes: 504 * GIB },
+    ],
+    refresh: () => file,
+    refreshMaxAgeMs: 15 * 60_000,
+  });
+  // The monitor was constructed at t=0; the launcher's launch-time file
+  // (measured at or before that) is the same figure the env baseline holds.
+  advance(60_000);
+  file = { availableBytes: 66 * GIB, totalBytes: 460 * GIB, measuredAt: 0 };
+  assertEquals(
+    (await m.check()).availableBytes,
+    39 * GIB,
+    "not newer than launch",
+  );
+
+  // Adopt a fresh one.
+  file = { availableBytes: 66 * GIB, totalBytes: 460 * GIB, measuredAt: 300 };
+  advance(300_000);
+  assertEquals((await m.check()).availableBytes, 66 * GIB);
+
+  // An older reading than the one held changes nothing.
+  file = { availableBytes: 10 * GIB, totalBytes: 460 * GIB, measuredAt: 200 };
+  advance(61_000);
+  assertEquals((await m.check()).availableBytes, 66 * GIB, "older is ignored");
+
+  // A reading newer than the held one but older than the max age is stale:
+  // the launcher that wrote it is not the one running now.
+  advance(30 * 60_000);
+  file = { availableBytes: 10 * GIB, totalBytes: 460 * GIB, measuredAt: 400 };
+  assertEquals((await m.check()).availableBytes, 66 * GIB, "stale is ignored");
+});
+
+Deno.test("HostDiskMonitor - native mode ignores the launcher file: df on the work dir is the truth (Issue #1550)", async () => {
+  const { m, advance } = monitor({
+    readings: [
+      { availableBytes: 100 * GIB, usedBytes: 1, totalBytes: 460 * GIB },
+    ],
+    refresh: () => ({
+      availableBytes: 1 * GIB,
+      totalBytes: 460 * GIB,
+      measuredAt: 300,
+    }),
+  });
+  advance(400_000);
+  const status = await m.check();
+  assertEquals(status.source, "native-df");
+  assertEquals(status.availableBytes, 100 * GIB);
+});
+
+Deno.test("parseHostDiskRefresh - accepts the launcher's shape and nothing looser (Issue #1550)", () => {
+  assertEquals(
+    parseHostDiskRefresh(
+      '{"availableBytes":1024,"totalBytes":4096,"measuredAt":1700000000,"path":"/x"}',
+    ),
+    { availableBytes: 1024, totalBytes: 4096, measuredAt: 1700000000 },
+  );
+  assertEquals(parseHostDiskRefresh(""), null);
+  assertEquals(parseHostDiskRefresh("not json"), null);
+  assertEquals(parseHostDiskRefresh("[]"), null);
+  assertEquals(
+    parseHostDiskRefresh(
+      '{"availableBytes":"1","totalBytes":4096,"measuredAt":1}',
+    ),
+    null,
+  );
+  assertEquals(
+    parseHostDiskRefresh('{"availableBytes":1,"totalBytes":0,"measuredAt":1}'),
+    null,
+  );
+  assertEquals(
+    parseHostDiskRefresh('{"availableBytes":1,"totalBytes":4096}'),
+    null,
+  );
 });
