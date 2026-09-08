@@ -528,14 +528,19 @@ export async function syncMilestoneBranchWithDefault(
     if (dirty.ok && dirty.value.code === 0 && dirty.value.stdout.trim()) {
       const files = dirty.value.stdout.trim().split("\n");
       await runGitCommand(["reset", "--hard"], options);
-      // Ignored executable paths go with it (Issue #1443).
-      await cleanWorkingTree(options);
+      // Ignored executable paths go with it (Issue #1443). A failure is
+      // named in the note this function returns, so the sync's own record
+      // carries it rather than it being dropped here.
+      const cleaned = await cleanWorkingTree(options);
+      if (!cleaned.ok) {
+        console.error(`[sync] ${cleaned.error.message}`);
+      }
       dirtyNote = `SELF-HEALING: discarded ${files.length} uncommitted ` +
         `change(s) in the shared clone before checkout (${
           // Porcelain v1 is a two-character status field, then the path.
           files.slice(0, 3).map((line) => line.slice(2).trim()).join(", ")}${
           files.length > 3 ? `, +${files.length - 3} more` : ""
-        }) — `;
+        })${cleaned.ok ? "" : " — WARNING: " + cleaned.error.message} — `;
     }
 
     const checkoutResult = await runGitCommand(

@@ -70,8 +70,11 @@ export async function validateRepoState(
         "SELF-HEALING: Resetting uncommitted changes to restore clean state (Issue #621)",
       );
       await runGitCommand(["reset", "--hard", "HEAD"], options);
-      // Ignored executable paths go with it (Issue #1443).
-      await cleanWorkingTree(options);
+      // Ignored executable paths go with it (Issue #1443); a clean that
+      // could not reach them is a warning on the validation result, never a
+      // silent pass.
+      const cleaned = await cleanWorkingTree(options);
+      if (!cleaned.ok) warnings.push(cleaned.error.message);
 
       // Re-check
       const recheckResult = await runGitCommand(

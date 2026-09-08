@@ -44,10 +44,11 @@ Shapes checked (12a's — subprocess and argv construction):
 | -------- | ------ |
 | every argument is a constant | ✅ `EXECUTABLE_IGNORED_DIRS` is a literal in this module; no caller, repository or environment value reaches the argv |
 | no option injection | ✅ the pathspecs follow `--`, so a name could not be read as an option even if one were attacker-controlled |
+| the control is not evaded by a symlink | ✅ two pathspec forms per name — `:(glob)**/<dir>/**` for a real directory's contents and `:(glob)**/<dir>` for the entry itself, which is what catches `node_modules -> store/real`; pinned by `cleanWorkingTree - erases a symlinked dependency directory, not only a real one` |
 | the pathspec cannot escape the working tree | ✅ `:(glob)**/<dir>/**` is relative and matches directory *names*; `git clean` refuses to remove anything outside the repository, and tracked paths are never removed |
 | the spawn goes through the chokepoint | ✅ `runGitCommand` (`git_timeout.ts`, swept in 12a), so the timeout, redaction and auth-repair behaviour is the audited one |
 | no secret reaches a sink | ✅ the only sink is `console.error` on failure, and it carries a path and git's stderr through the patched console (C24) |
-| a failure cannot read as success | ✅ the ignored clean's non-zero exit and transport error are both reported loud with `SECURITY (Issue #1443)` and the path; the untracked `clean -fd` keeps its long-standing best-effort semantics, and the checkout that follows fails on a tree it could not clean |
+| a failure cannot read as success | ✅ the ignored clean's non-zero exit and transport error both return a fail-loud `Result` naming the path, git's own message and the directories that may still hold content; `setupRepo` and the lane worktree reset refuse the tree on it, `validateRepoState` records it as a warning and the milestone sync names it in its note. The untracked `clean -fd` keeps its long-standing best-effort semantics, but its failure is warned rather than dropped |
 | force scope | ✅ `-ff` is needed for a dependency directory that holds a nested `.git` (a single `-f` skips it); the pathspec bounds what the extra force can reach to the named set |
 
 No findings. The residual — ignored content under a name outside

@@ -422,8 +422,10 @@ async function setupRepoFn(
     await runGitCommand(["reset", "--hard", "HEAD"], { cwd: worktree.value });
     // Including the ignored executable paths (Issue #1443): a lane's worktree
     // is the longest-lived reused tree there is, so it is exactly where a
-    // previous run's content would wait for the next one.
-    await cleanWorkingTree({ cwd: worktree.value });
+    // previous run's content would wait for the next one. As in `setupRepo`,
+    // a clean that could not do that refuses the worktree.
+    const cleaned = await cleanWorkingTree({ cwd: worktree.value });
+    if (!cleaned.ok) return { ok: false, error: cleaned.error };
     await restoreSession(worktree.value, workDir, repo);
     return worktree;
   }

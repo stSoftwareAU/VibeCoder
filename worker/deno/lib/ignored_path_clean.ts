@@ -46,6 +46,7 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
+import type { Result } from "../types.ts";
 import { type GitCommandOptions, runGitCommand } from "./git_timeout.ts";
 
 /**
@@ -72,63 +73,75 @@ export const EXECUTABLE_IGNORED_DIRS: readonly string[] = [
  * The `git clean` invocation that erases {@link EXECUTABLE_IGNORED_DIRS} at
  * any depth, and nothing else.
  *
- * `:(glob)**\/<name>/**` is the pathspec form that actually matches: a bare
- * `<name>` matches only at the repository root (monorepo
- * `packages/*\/node_modules` would survive), and `:(glob)**\/<name>` matches
- * nothing at all — git needs the trailing `/**` to match the directory's
- * contents, and removes the directory with them.
+ * Two pathspec forms per name, because one alone leaves a hole:
+ *
+ * - `:(glob)**\/<name>/**` matches the *contents* of a real directory, and
+ *   git removes the directory with them. A bare `<name>` would match only at
+ *   the repository root, so a monorepo's `packages/*\/node_modules` survived.
+ * - `:(glob)**\/<name>` matches the entry itself, which is what catches a
+ *   **symlinked** dependency directory (`node_modules -> store/real`). Git
+ *   does not descend a symlink, so the contents form matches nothing there —
+ *   and `ln -s` would otherwise be a one-command evasion of this control.
  */
 export function ignoredExecutableCleanArgs(): string[] {
   return [
     "clean",
     "-ffdx",
     "--",
-    ...EXECUTABLE_IGNORED_DIRS.map((dir) => `:(glob)**/${dir}/**`),
+    ...EXECUTABLE_IGNORED_DIRS.flatMap((dir) => [
+      `:(glob)**/${dir}`,
+      `:(glob)**/${dir}/**`,
+    ]),
   ];
 }
 
 /**
- * The full reset-clean sequence every reused clone or worktree runs: the
- * existing untracked clean, then the scoped ignored clean.
+ * Erase the untracked files and then the ignored executable paths in
+ * `options.cwd`.
  *
- * Returned as argument vectors so a caller that drives git through its own
- * step runner (`checkout_update.ts`) can splice them into its sequence.
- */
-export function workingTreeCleanSteps(): string[][] {
-  return [["clean", "-fd"], ignoredExecutableCleanArgs()];
-}
-
-/**
- * Run {@link workingTreeCleanSteps} in `options.cwd`.
+ * The untracked `clean -fd` keeps the best-effort semantics every caller has
+ * relied on since it was written — but its failure is now reported rather than
+ * dropped. The **ignored** clean is a security control, so its failure is
+ * returned: a run that could not erase the previous run's executable content
+ * must not be able to continue as though it had.
  *
- * The untracked clean keeps its existing best-effort semantics — callers have
- * always treated a failed clean as non-fatal, and a clone that cannot be
- * cleaned still fails loudly at the checkout that follows. The **ignored**
- * clean is a security control, so a failure of that step is reported on
- * stderr with the path and git's own message rather than being swallowed: a
- * run that could not erase last run's executable content must be visible in
- * the log.
+ * @param options - Git command options; `cwd` is the tree to clean.
+ * @returns `ok` once the ignored executable paths are gone; a fail-loud error
+ * naming the path and git's own message when they may still be present.
  */
 export async function cleanWorkingTree(
   options: GitCommandOptions = {},
-): Promise<void> {
-  await runGitCommand(["clean", "-fd"], options);
+): Promise<Result<void>> {
+  const where = options.cwd ?? Deno.cwd();
+
+  const untracked = await runGitCommand(["clean", "-fd"], options);
+  if (!untracked.ok) {
+    console.warn(
+      `[clean] could not remove untracked files in ${where} — ` +
+        `${untracked.error.message}`,
+    );
+  } else if (untracked.value.code !== 0) {
+    console.warn(
+      `[clean] could not remove untracked files in ${where} — git exited ` +
+        `${untracked.value.code}: ${untracked.value.stderr.trim()}`,
+    );
+  }
 
   const ignored = await runGitCommand(ignoredExecutableCleanArgs(), options);
-  if (!ignored.ok) {
-    console.error(
-      `[clean] SECURITY (Issue #1443): could not erase ignored executable ` +
-        `paths in ${options.cwd ?? Deno.cwd()} — ${ignored.error.message}. ` +
-        `Content a previous run left there may still be present.`,
-    );
-    return;
+  const detail = !ignored.ok
+    ? ignored.error.message
+    : ignored.value.code !== 0
+    ? `git exited ${ignored.value.code}: ${ignored.value.stderr.trim()}`
+    : null;
+  if (detail !== null) {
+    return {
+      ok: false,
+      error: new Error(
+        `SECURITY (Issue #1443): could not erase ignored executable paths ` +
+          `in ${where} — ${detail}. Content a previous run left in ` +
+          `${EXECUTABLE_IGNORED_DIRS.join(", ")} may still be present.`,
+      ),
+    };
   }
-  if (ignored.value.code !== 0) {
-    console.error(
-      `[clean] SECURITY (Issue #1443): could not erase ignored executable ` +
-        `paths in ${options.cwd ?? Deno.cwd()} — git exited ` +
-        `${ignored.value.code}: ${ignored.value.stderr.trim()}. ` +
-        `Content a previous run left there may still be present.`,
-    );
-  }
+  return { ok: true, value: undefined };
 }

@@ -19,12 +19,10 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   cleanWorkingTree,
-  EXECUTABLE_IGNORED_DIRS,
   ignoredExecutableCleanArgs,
-  workingTreeCleanSteps,
 } from "../lib/ignored_path_clean.ts";
 import { setupRepo } from "../commands/git_operations.ts";
 
@@ -88,29 +86,38 @@ async function buildRepo(prefix: string): Promise<
 }
 
 Deno.test("ignoredExecutableCleanArgs - scopes an ignored clean to the executable-bearing directories", () => {
-  const args = ignoredExecutableCleanArgs();
-
-  // `-x` is what reaches ignored paths at all; the second `-f` is what stops
-  // git skipping a dependency directory that holds a nested `.git`.
-  assertEquals(args[0], "clean");
-  assertEquals(args[1], "-ffdx");
-  assertEquals(args[2], "--");
-
-  // Every entry is a pathspec, never a bare `-x` over the whole tree, so
-  // download caches outside the named set are not discarded.
-  const pathspecs = args.slice(3);
-  assertEquals(pathspecs.length, EXECUTABLE_IGNORED_DIRS.length);
-  for (const dir of EXECUTABLE_IGNORED_DIRS) {
-    assert(
-      pathspecs.includes(`:(glob)**/${dir}/**`),
-      `${dir} must be cleaned at any depth`,
-    );
-  }
-
-  // The reset sequence keeps the untracked clean first, then the scoped one.
-  const steps = workingTreeCleanSteps();
-  assertEquals(steps[0], ["clean", "-fd"]);
-  assertEquals(steps[1], args);
+  // Pinned literally, not re-derived from the module's own constant: dropping
+  // a directory name, or mistyping one, has to fail here rather than agree
+  // with whatever the module now says.
+  assertEquals(ignoredExecutableCleanArgs(), [
+    "clean",
+    // `-x` is what reaches ignored paths at all; the second `-f` is what stops
+    // git skipping a dependency directory that holds a nested `.git`.
+    "-ffdx",
+    // Everything after `--` is a pathspec, so a name can never be read as an
+    // option, and nothing outside the named set is discarded.
+    "--",
+    ":(glob)**/node_modules",
+    ":(glob)**/node_modules/**",
+    ":(glob)**/.venv",
+    ":(glob)**/.venv/**",
+    ":(glob)**/venv",
+    ":(glob)**/venv/**",
+    ":(glob)**/.tox",
+    ":(glob)**/.tox/**",
+    ":(glob)**/__pycache__",
+    ":(glob)**/__pycache__/**",
+    ":(glob)**/target",
+    ":(glob)**/target/**",
+    ":(glob)**/build",
+    ":(glob)**/build/**",
+    ":(glob)**/dist",
+    ":(glob)**/dist/**",
+    ":(glob)**/out",
+    ":(glob)**/out/**",
+    ":(glob)**/vendor",
+    ":(glob)**/vendor/**",
+  ]);
 });
 
 Deno.test("cleanWorkingTree - erases ignored executable paths at any depth and keeps caches warm", async () => {
@@ -128,8 +135,9 @@ Deno.test("cleanWorkingTree - erases ignored executable paths at any depth and k
     // And an ordinary untracked file, which the existing `-fd` clean removes.
     await write(`${dir}/scratch.txt`, "untracked\n");
 
-    await cleanWorkingTree({ cwd: dir });
+    const cleaned = await cleanWorkingTree({ cwd: dir });
 
+    assertEquals(cleaned.ok, true);
     assert(!exists(`${dir}/node_modules`), "root node_modules must be erased");
     assert(
       !exists(`${dir}/packages/app/node_modules`),
@@ -185,6 +193,45 @@ Deno.test("cleanWorkingTree - an ignored file outside the executable set is the 
     );
   } finally {
     await cleanup();
+  }
+});
+
+Deno.test("cleanWorkingTree - erases a symlinked dependency directory, not only a real one", async () => {
+  const { dir, cleanup } = await buildRepo("ignored_clean_symlink_");
+  try {
+    // `ln -s` would otherwise be a one-command evasion: git does not descend a
+    // symlink, so a contents-only pathspec matches nothing and the tampered
+    // tree stays reachable under the name a gate executes from.
+    await write(`${dir}/store/real/.bin/tool`, "#!/bin/sh\nevil\n");
+    await Deno.symlink("store/real", `${dir}/node_modules`);
+
+    const cleaned = await cleanWorkingTree({ cwd: dir });
+
+    assertEquals(cleaned.ok, true);
+    assert(
+      !exists(`${dir}/node_modules`),
+      "the symlink named after a dependency directory must be erased",
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("cleanWorkingTree - a clean that cannot run fails loud instead of reporting success", async () => {
+  // Not a git repository, so `git clean` exits non-zero. The security-relevant
+  // step must surface that, naming the path — a run that could not erase the
+  // previous run's executable content must not read as one that did.
+  const dir = await Deno.makeTempDir({ prefix: "ignored_clean_failure_" });
+  try {
+    const cleaned = await cleanWorkingTree({ cwd: dir });
+
+    assertEquals(cleaned.ok, false);
+    assert(!cleaned.ok);
+    assertStringIncludes(cleaned.error.message, "Issue #1443");
+    assertStringIncludes(cleaned.error.message, dir);
+    assertStringIncludes(cleaned.error.message, "node_modules");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
 });
 
