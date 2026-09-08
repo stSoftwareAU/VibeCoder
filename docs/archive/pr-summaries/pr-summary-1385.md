@@ -75,6 +75,8 @@ line. The security-fix gate matches a cited identifier against the declaration
 line in the branch diff (`citedTestIdentifierInDiff`), so a name carried on a
 continuation line cites a declaration the gate cannot see — which is what
 blocked this PR on the previous attempt. The test bodies are unchanged.
+The gate's blind spot for the wrapped declaration form is filed separately
+as #1581 — out of scope here.
 
 ### Security-fix evidence
 
